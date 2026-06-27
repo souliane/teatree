@@ -47,9 +47,11 @@ from teatree.utils.git_worktree import (
     bundle_create,
     bundle_create_at_sha,
     commits_absent_from_all_remotes,
+    locked_worktree_paths,
     recovered_head_sha_after_ref_gone,
     worktree_add,
     worktree_add_at_ref,
+    worktree_move,
     worktree_remove,
 )
 
@@ -74,6 +76,7 @@ __all__ = [
     "git_env_without_overrides",
     "head_sha",
     "last_commit_message",
+    "locked_worktree_paths",
     "log_oneline",
     "merge_abort",
     "merge_base",
@@ -93,6 +96,7 @@ __all__ = [
     "unsynced_commits",
     "worktree_add",
     "worktree_add_at_ref",
+    "worktree_move",
     "worktree_remove",
 ]
 

@@ -105,11 +105,10 @@ class _OrphanRefWorktreeFixture(TestCase):
 
     def _cleanup(self, worktree: Worktree, *, pr_merged: bool = False) -> CleanupResult:
         with (
-            patch("teatree.core.cleanup.load_config") as mock_config,
+            patch("teatree.core.cleanup.clone_root", return_value=self.workspace),
             patch("teatree.core.cleanup.get_overlay_for_worktree") as mock_overlay,
             patch("teatree.core.cleanup._branch_pr_is_merged", return_value=pr_merged),
         ):
-            mock_config.return_value.user.workspace_dir = self.workspace
             mock_overlay.return_value.get_cleanup_steps.return_value = []
             return cleanup_worktree(worktree, force=False, strict_hygiene=False)
 

@@ -849,6 +849,10 @@
           "name": "landscape"
         },
         {
+          "help": "Move this overlay's teatree-managed worktrees under the per-overlay dir (regroup)",
+          "name": "relocate"
+        },
+        {
           "help": "Print the machine-readable JSON handoff for every NOT-auto-deleted item (#2763)",
           "name": "emit"
         },

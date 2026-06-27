@@ -22,7 +22,9 @@ need effective values must use ``get_effective_settings``, not the bare
 """
 
 import logging
+import os
 import tomllib
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -124,10 +126,15 @@ def _parse_toml_value(key: str, value: object) -> object:
 
 
 def _db_home_keys_in(toml_table: dict[str, Any]) -> list[str]:
-    """The DB-home keys present in *toml_table* (a cheap, static, no-DB check)."""
+    """The DB-home keys present in *toml_table* (a cheap, static, no-DB check).
+
+    ``_MIGRATED_SETTING_KEYS`` are excluded — they are warned about unconditionally
+    by :func:`_warn_migrated_keys_in_toml`, so routing them through the quiet
+    conflict-only path here would double-warn.
+    """
     from teatree.config.homes import SETTING_HOMES, SettingHome  # noqa: PLC0415
 
-    return [key for key in toml_table if SETTING_HOMES.get(key) is SettingHome.DB]
+    return [key for key in toml_table if SETTING_HOMES.get(key) is SettingHome.DB and key not in _MIGRATED_SETTING_KEYS]
 
 
 # Settings whose ``UserSettings`` field was removed (souliane/teatree#2731). A
@@ -135,6 +142,48 @@ def _db_home_keys_in(toml_table: dict[str, Any]) -> list[str]:
 # nothing — the key no longer maps to any field — so a leftover entry is warned
 # about (never silently no-opped) so the operator knows it has no effect.
 _RETIRED_SETTING_KEYS: frozenset[str] = frozenset({"branch_prefix", "ask_before_post_on_behalf"})
+
+# DB-home keys whose SILENT TOML drop changes high-impact behaviour — ``workspace_dir``
+# (historically the CLONE root ``~/workspace``) now names the per-overlay WORKTREE
+# root, so a leftover ``[teatree] workspace_dir`` silently RELOCATES where worktrees
+# are created. Unlike the quiet DB-home conflict path (which warns only when the
+# TOML value DISAGREES with a stored row), these warn whenever PRESENT — a silent
+# relocation with zero signal is unacceptable. The operator migrates the value into
+# the ``ConfigSetting`` store with ``config_setting import`` (or sets it explicitly).
+_MIGRATED_SETTING_KEYS: frozenset[str] = frozenset({"workspace_dir"})
+
+
+def _warn_migrated_keys_in_toml(raw: dict, path: Path) -> None:
+    """Emit ONE aggregated WARN for a high-impact migrated DB-home key still in TOML.
+
+    ``workspace_dir`` moved to the DB store and now drives the per-overlay WORKTREE
+    root (``config.worktree_root()``); a value left in ``[teatree]`` /
+    ``[overlays.<name>]`` is IGNORED on read and would silently change where
+    worktrees are created. This warns on PRESENCE (not just on a value conflict)
+    so the operator is told to migrate it. Clones are still discovered under the
+    CLONE root ``~/workspace`` (``config.clone_root()``, ``T3_WORKSPACE_DIR`` env).
+    """
+    offenders: list[str] = []
+    teatree = raw.get("teatree")
+    if isinstance(teatree, dict):
+        offenders.extend(f"[teatree] {key}" for key in _MIGRATED_SETTING_KEYS if key in teatree)
+    overlays = raw.get("overlays")
+    if isinstance(overlays, dict):
+        for overlay_name, overlay_cfg in overlays.items():
+            if not isinstance(overlay_cfg, dict):
+                continue
+            offenders.extend(f"[overlays.{overlay_name}] {key}" for key in _MIGRATED_SETTING_KEYS if key in overlay_cfg)
+    if offenders:
+        _logger.warning(
+            "Config keys in %s are DB-home now and IGNORED on read — leaving a stored value would "
+            "silently change where worktrees are created (workspace_dir is the per-overlay WORKTREE "
+            "root, not the clone root): %s. Migrate them into the ConfigSetting store with "
+            "`t3 <overlay> config_setting import`, or set explicitly with "
+            "`t3 <overlay> config_setting set workspace_dir <path> [--overlay <name>]`. Clones are "
+            "still discovered under ~/workspace (override with the T3_WORKSPACE_DIR env var).",
+            path,
+            ", ".join(offenders),
+        )
 
 
 def _warn_retired_keys_in_toml(raw: dict, path: Path) -> None:
@@ -254,9 +303,13 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
     raw = _load_toml(path)
     _warn_db_home_keys_in_toml(raw, path)
     _warn_retired_keys_in_toml(raw, path)
+    _warn_migrated_keys_in_toml(raw, path)
 
     teatree = raw.get("teatree", {})
-    workspace_dir = Path(teatree.get("workspace_dir", "~/workspace")).expanduser()
+    # ``workspace_dir`` is DB-home (#regroup): its ``[teatree]`` value is ignored on
+    # read (warned + migrate via ``config_setting import``); the field keeps its
+    # dataclass default here and ``config.worktree_root()`` resolves the per-overlay
+    # WORKTREE root, distinct from ``config.clone_root()`` (the clone root).
     worktrees_dir = Path(teatree.get("worktrees_dir", str(DATA_DIR / "worktrees"))).expanduser()
 
     # The hard partition (#1775): ``load_config`` builds ONLY the TOML-home fields
@@ -268,7 +321,6 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
     # is ignored on read (its home is the DB); migrate it into the store with
     # ``t3 <overlay> config_setting import``.
     user = UserSettings(
-        workspace_dir=workspace_dir,
         worktrees_dir=worktrees_dir,
         privacy=teatree.get("privacy", ""),
         check_updates=teatree.get("check_updates", True),
@@ -311,13 +363,101 @@ def load_e2e_repos(path: Path | None = None) -> list[E2ERepo]:
     return repos
 
 
-def workspace_dir() -> Path:
-    """Canonical workspace directory (where main repo clones live)."""
+def clone_root() -> Path:
+    """Canonical CLONE root — where main repo clones live (``~/workspace``).
+
+    This is the OLD ``workspace_dir()`` semantics, kept intact for every
+    clone-discovery caller (``find_clone_path`` + the direct readers). It is
+    DISTINCT from :func:`worktree_root` (the per-overlay WORKTREE root): conflating
+    the two would make provisioning scan the worktree root for clones and fail
+    with "No git clone found".
+
+    Resolution, first match wins:
+
+    1.  ``T3_WORKSPACE_DIR`` — the env var, then the ``settings.T3_WORKSPACE_DIR``
+        Django setting: the explicit, highest-precedence override an operator uses
+        to pin clones somewhere other than ``~/workspace``.
+    2.  the default ``~/workspace``.
+
+    Pre-Django safe: the env tier short-circuits before any Django access, and the
+    Django-settings probe is guarded so a caller with Django unconfigured (a cold
+    TOML reader) still resolves the default rather than raising.
+    """
+    env_override = os.environ.get("T3_WORKSPACE_DIR")
+    if env_override:
+        return Path(env_override).expanduser()
+    from django.core.exceptions import ImproperlyConfigured  # noqa: PLC0415
+
+    with suppress(ImproperlyConfigured):
+        from django.conf import settings  # noqa: PLC0415
+
+        if hasattr(settings, "T3_WORKSPACE_DIR"):
+            return Path(settings.T3_WORKSPACE_DIR)
+    return Path.home() / "workspace"
+
+
+def _default_worktree_root(overlay_name: str) -> Path:
+    """The sound per-overlay default WORKTREE root: ``~/workspace/t3-workspaces/<overlay>/``.
+
+    Worktrees regroup under a dedicated dir PER OVERLAY so a multi-overlay host
+    keeps each overlay's worktrees apart. With no resolvable overlay the base
+    ``~/workspace/t3-workspaces`` stands (no overlay subdir).
+
+    This is a PURE resolver — it never touches the filesystem. Directory creation
+    happens at the point of USE (ticket-dir provisioning, the relocate move target)
+    so the getter has no side effect; the walkers that read it (clean-all's
+    ``remove_empty_ticket_dirs``, the landscape survey) each guard a not-yet-created
+    dir on their own.
+    """
+    base = Path.home() / "workspace" / "t3-workspaces"
+    return base / overlay_name if overlay_name else base
+
+
+def worktree_root() -> Path:
+    """Canonical per-overlay WORKTREE root (where ticket worktrees are created).
+
+    DISTINCT from :func:`clone_root` (the ``~/workspace`` CLONE root): this names
+    where worktrees REGROUP, the clone root names where source clones live.
+
+    Resolution precedence, first match wins:
+
+    1.  ``T3_WORKSPACE_DIR`` — the env var, then the ``settings.T3_WORKSPACE_DIR``
+        Django setting: an explicit, highest-precedence override kept for
+        back-compat (an operator who pinned a workspace dir keeps it — and it then
+        pins BOTH this root and :func:`clone_root`, matching pre-regroup behaviour).
+    2.  the DB-home ``ConfigSetting`` ``workspace_dir`` row — the active overlay's
+        scope first (a per-overlay opinion), then the global scope (a workspace
+        default for every overlay). Set with
+        ``t3 <overlay> config_setting set workspace_dir <path> [--overlay <name>]``.
+    3.  the sound default ``~/workspace/t3-workspaces/<overlay>/``.
+
+    The active overlay is resolved exactly as every other per-overlay setting
+    (``T3_OVERLAY_NAME`` → cwd discovery → the single installed overlay). The DB
+    tier is read through the resolution helpers (the deferred loader → resolution
+    edge the module docstring describes) so it stays fail-safe to "no row" when
+    Django is unconfigured.
+    """
     from django.conf import settings  # noqa: PLC0415
 
+    from teatree.config.resolution import (  # noqa: PLC0415
+        _db_global_overrides,
+        _db_overlay_overrides,
+        _resolved_overlay_name,
+    )
+
+    env_override = os.environ.get("T3_WORKSPACE_DIR")
+    if env_override:
+        return Path(env_override).expanduser()
     if hasattr(settings, "T3_WORKSPACE_DIR"):
         return Path(settings.T3_WORKSPACE_DIR)
-    return _facade.load_config().user.workspace_dir
+
+    overlay_name = _resolved_overlay_name(None)
+    stored = _db_overlay_overrides(overlay_name).get("workspace_dir")
+    if stored is None:
+        stored = _db_global_overrides().get("workspace_dir")
+    if stored is not None:
+        return Path(str(stored)).expanduser()
+    return _default_worktree_root(overlay_name)
 
 
 def worktrees_dir() -> Path:

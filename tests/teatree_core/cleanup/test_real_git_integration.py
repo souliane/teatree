@@ -58,10 +58,9 @@ class TestCleanupWorktreeRemovesOnDiskWorktree(TestCase):
 
     def _cleanup(self, worktree: Worktree) -> CleanupResult:
         with (
-            patch("teatree.core.cleanup.load_config") as mock_config,
+            patch("teatree.core.cleanup.clone_root", return_value=self.workspace),
             patch("teatree.core.cleanup.get_overlay_for_worktree") as mock_overlay,
         ):
-            mock_config.return_value.user.workspace_dir = self.workspace
             mock_overlay.return_value.get_cleanup_steps.return_value = []
             return cleanup_worktree(worktree, force=True)
 
@@ -132,10 +131,9 @@ class TestCleanupWorktreeNamespacedClone(TestCase):
         )
 
         with (
-            patch("teatree.core.cleanup.load_config") as mock_config,
+            patch("teatree.core.cleanup.clone_root", return_value=self.workspace),
             patch("teatree.core.cleanup.get_overlay_for_worktree") as mock_overlay,
         ):
-            mock_config.return_value.user.workspace_dir = self.workspace
             mock_overlay.return_value.get_cleanup_steps.return_value = []
             result = cleanup_worktree(wt, force=True)
 
@@ -189,10 +187,9 @@ class TestCleanupReapsStalePrekHook(TestCase):
 
     def _cleanup(self, worktree: Worktree) -> CleanupResult:
         with (
-            patch("teatree.core.cleanup.load_config") as mock_config,
+            patch("teatree.core.cleanup.clone_root", return_value=self.workspace),
             patch("teatree.core.cleanup.get_overlay_for_worktree") as mock_overlay,
         ):
-            mock_config.return_value.user.workspace_dir = self.workspace
             mock_overlay.return_value.get_cleanup_steps.return_value = []
             return cleanup_worktree(worktree, force=True)
 

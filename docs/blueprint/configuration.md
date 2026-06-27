@@ -18,7 +18,9 @@ Detail behind [BLUEPRINT.md](https://github.com/souliane/teatree/blob/main/BLUEP
 # survives); `t3 <overlay> config_setting import` is the manual equivalent (it
 # refreshes every operational key from the file).
 [teatree]
-workspace_dir = "~/workspace"
+# workspace_dir is DB-home now (per-overlay; default ~/workspace/t3-workspaces/<overlay>/).
+# Set it with `t3 <overlay> config_setting set workspace_dir <path> [--overlay <name>]`;
+# a value left here is ignored on read. T3_WORKSPACE_DIR env still overrides (back-compat).
 privacy = "strict"
 statusline_chain = []                      # extra statusline scripts (glob patterns) chained after the loop's zones (read by the bash statusline hook)
 orchestrator_bash_gate_enabled = true      # #115 kill-switch, read directly by the hook layer (pre-Django)
@@ -123,7 +125,7 @@ a field that CAN live in the DB is **DB-home**, and only the irreducible carve-o
 stays **TOML-home**. The two homes are disjoint (a fitness function asserts it) — a
 setting is never read from both tiers. A DB-home field resolves from `ConfigSetting`
 (global + overlay rows) + env only; a TOML-home field resolves from `[teatree]` +
-`[overlays.<name>]` + env only. The TOML carve-out is the eleven fields a non-Django
+`[overlays.<name>]` + env only. The TOML carve-out is the ten fields a non-Django
 or pre-Django reader needs (`orchestrator_bash_gate_enabled`, `speak` — the Stop
 hook re-reads the `[teatree.speak]` sub-table with tomllib and cannot reach the
 DB — `handover_mirror_path` — the SessionStart bootstrap path read precisely when
@@ -131,10 +133,25 @@ the DB is unreachable — `check_updates`, `autoload` — the cold SessionStart 
 UserPromptSubmit hooks read `[teatree] autoload` with tomllib to decide default-off
 engagement before any Django bootstrap (#256) — and `statusline_chain` — read
 straight from `~/.teatree.toml` by the **bash** statusline hook, which has no path
-to the DB), path/infra bootstrap (`workspace_dir`, `worktrees_dir`,
-`timezone`, `privacy`), and the nested structured `mr_reminder`
-table. The one DERIVED field (`notify_on_behalf`) is computed by the resolver and
-has no home. The resolution-tier wiring below details each home's chain.
+to the DB), path/infra bootstrap (`worktrees_dir`, `timezone`, `privacy`), and the
+nested structured `mr_reminder` table. `workspace_dir` is **DB-home** and
+per-overlay overridable (it is read only after Django is up): it names the
+per-overlay **WORKTREE root** where ticket worktrees are created — worktrees
+regroup under a per-overlay default `~/workspace/t3-workspaces/<overlay>/`,
+resolved by `config.worktree_root()` — `T3_WORKSPACE_DIR` env/Django-setting
+override (highest, back-compat) → DB `ConfigSetting` (overlay scope, then global)
+→ that default. This is **distinct from** the **CLONE root** `config.clone_root()`
+(`~/workspace`, where main repo clones live; `T3_WORKSPACE_DIR` env/Django-setting
+override → `~/workspace`), which `find_clone_path` and every clone-discovery caller
+use — conflating the two would make provisioning scan the worktree root for clones
+and fail. A `[teatree] workspace_dir` (or `[overlays.<name>] workspace_dir`) value
+left in TOML is **ignored on read** and warned about on load (it silently relocated
+worktrees pre-warning); migrate it into the store with `t3 <overlay> config_setting
+import` or set it explicitly. `t3 <overlay> workspace relocate` moves an overlay's
+EXISTING teatree-managed worktrees to that per-overlay dir with `git worktree move`
+(skipping any locked / dirty / live mid-task one, idempotent, `--dry-run`-able). The one DERIVED field
+(`notify_on_behalf`) is computed by the resolver and has no home. The
+resolution-tier wiring below details each home's chain.
 
 The resolution chain is **per home** (first match wins) — each field reads from
 exactly the tiers its home allows:

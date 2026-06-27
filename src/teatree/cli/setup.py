@@ -559,12 +559,14 @@ def run(
     if stripped:
         typer.echo(f"OK    Stripped {stripped} APM-injected hook(s) from settings.json.")
 
-    from teatree.config import load_config  # noqa: PLC0415
+    from teatree.config import clone_root, load_config  # noqa: PLC0415
 
     config = load_config()
 
     all_excluded = list(dict.fromkeys(CORE_EXCLUDED_SKILLS + config.user.excluded_skills))
-    workspace_dir = Path(config.user.workspace_dir).expanduser()
+    # The CLONE root (``~/workspace``) — skill-symlink targets are checked for
+    # being under it, not under the per-overlay worktree root.
+    workspace_dir = clone_root()
 
     # Ensure the Claude skills dir exists so overlay symlinks have a target.
     # Core skills reach Claude via the t3 plugin, not via this directory.

@@ -65,6 +65,10 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("doctor", "Detect state drift across every store; optionally fix it."),
             ("clean-merged", "Tear down every worktree whose ticket is already MERGED."),
             ("clean-all", "Prune merged worktrees, stale branches, orphaned stashes, orphan DBs, old DSLR snapshots."),
+            (
+                "relocate",
+                "Move this overlay's existing worktrees under the per-overlay workspace dir (git worktree move).",
+            ),
             ("list-orphans", "List orphan branches (commits not on main, no open PR)."),
             ("landscape", "Survey in-flight PRs/MRs and local unsynced work before planning (read-only)."),
             ("reap-stale", "Tear down ABANDONED docker stacks no live worktree owns (age-guarded)."),

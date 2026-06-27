@@ -79,8 +79,8 @@ class _ReaperFixture(TestCase):
 
         # No git worktree, DB, or docker is destroyed against a real overlay: route
         # cleanup through the overlay-free teardown and stub the docker side-effect.
-        monkeypatch.setattr("teatree.core.cleanup.load_config", self._config)
-        monkeypatch.setattr("teatree.core.worktree_done.load_config", self._config)
+        monkeypatch.setattr("teatree.core.cleanup.clone_root", lambda: self.workspace)
+        monkeypatch.setattr("teatree.core.worktree_done.clone_root", lambda: self.workspace)
         monkeypatch.setattr("teatree.core.cleanup._resolve_overlay_or_none", lambda _wt: None)
         self.docker_calls: list[tuple[str, bool]] = []
         monkeypatch.setattr(
@@ -95,13 +95,6 @@ class _ReaperFixture(TestCase):
             "teatree.core.worktree_done.worktree_liveness",
             lambda *_a, **_k: LivenessVerdict(active=False),
         )
-
-    def _config(self) -> object:
-        class _Cfg:
-            class user:  # noqa: N801 — mirrors load_config().user.workspace_dir
-                workspace_dir = self.workspace
-
-        return _Cfg()
 
     def _make_worktree(self, state: str) -> Worktree:
         ticket = Ticket.objects.create(issue_url="https://example.com/issues/2761", state=state)
@@ -439,15 +432,8 @@ class TestNonMainDefaultThreading(TestCase):
         _run_git("add", "-A", cwd=self.wt_path)
         _run_git("commit", "-q", "-m", "feat: unique unpushed work", cwd=self.wt_path)
 
-        monkeypatch.setattr("teatree.core.worktree_done.load_config", self._config)
+        monkeypatch.setattr("teatree.core.worktree_done.clone_root", lambda: self.workspace)
         monkeypatch.setattr("teatree.core.branch_classification.probe_host_cli", lambda *_a, **_k: "")
-
-    def _config(self) -> object:
-        class _Cfg:
-            class user:  # noqa: N801 — mirrors load_config().user.workspace_dir
-                workspace_dir = self.workspace
-
-        return _Cfg()
 
     def _worktree(self) -> Worktree:
         ticket = Ticket.objects.create(issue_url="https://example.com/issues/n1", state=Ticket.State.MERGED)

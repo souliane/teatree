@@ -36,7 +36,7 @@ import teatree.utils.run as utils_run_mod
 from teatree.config import load_config
 from teatree.core.cleanup_liveness import LivenessVerdict
 from teatree.core.management.commands._workspace_ticket_intake import build_branch_name
-from teatree.core.management.commands.workspace import _branch_prefix, _workspace_dir
+from teatree.core.management.commands.workspace import _branch_prefix, _worktree_root
 from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.overlay import OverlayBase, ProvisionStep
 from teatree.core.runners import RunnerResult
@@ -205,17 +205,61 @@ class TestBuildBranchName(TestCase):
         assert re.fullmatch(r"[a-z0-9-]+", branch)
 
 
-class TestWorkspaceDirHelper(TestCase):
-    def test_uses_config_workspace_dir(self) -> None:
-        from teatree.config import TeaTreeConfig, UserSettings  # noqa: PLC0415
-
-        cfg = TeaTreeConfig(user=UserSettings(workspace_dir=Path("/tmp/ws-test")))
-        with patch.object(workspace_mod, "load_config", return_value=cfg):
-            result = _workspace_dir()
+class TestWorktreeRootHelper(TestCase):
+    def test_delegates_to_per_overlay_resolver(self) -> None:
+        # The worktree-creation path resolves through config.worktree_root()
+        # (the per-overlay env → DB → default WORKTREE root), NOT the CLONE root
+        # config.clone_root() used for clone discovery.
+        with patch.object(workspace_mod, "_config_worktree_root", return_value=Path("/tmp/ws-test")):
+            result = _worktree_root()
             assert result == Path("/tmp/ws-test")
 
 
 # ── Workspace commands ──────────────────────────────────────────────
+
+
+class TestProvisionSplitsCloneRootFromWorktreeRoot(TestCase):
+    """Provisioning splits the clone root from the per-overlay worktree root.
+
+    It DISCOVERS clones under the CLONE root and CREATES worktrees under the
+    per-overlay WORKTREE root — with NO ``T3_WORKSPACE_DIR`` pin.
+
+    Anti-vacuity: on the pre-split code (clone discovery shared the per-overlay
+    worktree root) ``find_clone_path`` scanned ``~/workspace/t3-workspaces/<overlay>``
+    for clones, found none, and provisioning failed — so this test goes RED there.
+    The two existing pinned setUps masked exactly this; here the pin is absent.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        mock_result = MagicMock(returncode=0, stdout="dev", stderr="")
+        self.enterContext(patch.object(utils_run_mod.subprocess, "run", return_value=mock_result))
+        # Seed clones at the realistic NAMESPACED clone-root layout
+        # ``~/workspace/<ns>/<repo>`` (HOME sandboxed by the autouse fixture).
+        # No ``T3_WORKSPACE_DIR`` pin: clone_root() defaults to ``~/workspace``.
+        self.workspace = Path(os.environ["HOME"]) / "workspace"
+        for repo in ("backend", "frontend"):
+            (self.workspace / "souliane" / repo / ".git").mkdir(parents=True, exist_ok=True)
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_clone_at_clone_root_worktree_under_per_overlay_worktree_root(self) -> None:
+        ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/42"))
+
+        # Provisioning SUCCEEDED — clones were discovered at the namespaced clone
+        # root via clone_root() even with no env pin (rc 0 means a failed provision).
+        assert ticket_id, "provisioning failed: clone discovery did not resolve the clone root"
+        ticket = Ticket.objects.get(pk=ticket_id)
+        assert ticket.repos == ["backend", "frontend"]
+        assert ticket.worktrees.count() == 2
+        # Every worktree was CREATED under the per-overlay WORKTREE root
+        # ``~/workspace/t3-workspaces/<overlay>/`` — distinct from the clone root.
+        for wt in ticket.worktrees.all():
+            assert wt.worktree_path, "worktree not provisioned"
+            parts = Path(wt.worktree_path).parts
+            assert "t3-workspaces" in parts, wt.worktree_path
+            # …and NOT created flat under the clone root (the pre-split colocation).
+            assert Path(wt.worktree_path).parent.parent != self.workspace, wt.worktree_path
 
 
 class TestWorkspaceTicket(TestCase):
@@ -253,7 +297,7 @@ class TestWorkspaceTicket(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
             (workspace / "42-someone-else-already-here").mkdir()
-            with patch.object(workspace_mod, "_workspace_dir", return_value=workspace):
+            with patch.object(workspace_mod, "_worktree_root", return_value=workspace):
                 rc = call_command("workspace", "ticket", "https://example.com/issues/42")
         assert rc == 0
         assert not Ticket.objects.filter(issue_url="https://example.com/issues/42").exists()
@@ -265,7 +309,7 @@ class TestWorkspaceTicket(TestCase):
             workspace = Path(tmp)
             (workspace / "42-someone-else-already-here").mkdir()
             with (
-                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(workspace_mod, "_worktree_root", return_value=workspace),
                 patch.object(workspace_mod, "WorktreeProvisioner") as provisioner,
             ):
                 provisioner.return_value.run.return_value = RunnerResult(ok=True, detail="ok")
@@ -281,7 +325,7 @@ class TestWorkspaceTicket(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
             with (
-                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(workspace_mod, "_worktree_root", return_value=workspace),
                 patch.object(workspace_mod, "WorktreeProvisioner") as provisioner,
             ):
                 provisioner.return_value.run.return_value = RunnerResult(ok=True, detail="ok")
@@ -449,8 +493,9 @@ class TestWorkspaceTicket(TestCase):
             mock_result.returncode = 0
 
             with (
-                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
+                patch.object(workspace_mod, "_worktree_root", return_value=workspace),
+                patch.object(provision_mod, "clone_root", return_value=workspace),
+                patch.object(provision_mod, "worktree_root", return_value=workspace),
                 patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
             ):
                 ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/80"))
@@ -483,7 +528,7 @@ class TestWorkspaceTicket(TestCase):
         ]
         stderr_buf = StringIO()
         with patch(
-            "teatree.core.management.commands.workspace.find_orphans_in_workspace",
+            "teatree.core.management.commands._workspace_helpers.find_orphans_in_workspace",
             return_value=fake_orphans,
         ):
             call_command("workspace", "ticket", "https://example.com/issues/500", stderr=stderr_buf)
@@ -542,8 +587,9 @@ class TestWorkspaceTicket(TestCase):
             mock_result.returncode = 0
 
             with (
-                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
+                patch.object(workspace_mod, "_worktree_root", return_value=workspace),
+                patch.object(provision_mod, "clone_root", return_value=workspace),
+                patch.object(provision_mod, "worktree_root", return_value=workspace),
                 patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
             ):
                 ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/81"))
@@ -577,8 +623,9 @@ class TestWorkspaceTicket(TestCase):
             mock_result.returncode = 0
 
             with (
-                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
+                patch.object(workspace_mod, "_worktree_root", return_value=workspace),
+                patch.object(provision_mod, "clone_root", return_value=workspace),
+                patch.object(provision_mod, "worktree_root", return_value=workspace),
                 patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
             ):
                 ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/82"))
@@ -613,8 +660,9 @@ class TestWorkspaceTicket(TestCase):
                 return mock_pull
 
             with (
-                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
+                patch.object(workspace_mod, "_worktree_root", return_value=workspace),
+                patch.object(provision_mod, "clone_root", return_value=workspace),
+                patch.object(provision_mod, "worktree_root", return_value=workspace),
                 patch.object(utils_run_mod.subprocess, "run", side_effect=side_effect),
             ):
                 result = cast("int", call_command("workspace", "ticket", "https://example.com/issues/83"))
@@ -677,8 +725,9 @@ class TestWorkspaceTicket(TestCase):
                 return mock_pull
 
             with (
-                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
+                patch.object(workspace_mod, "_worktree_root", return_value=workspace),
+                patch.object(provision_mod, "clone_root", return_value=workspace),
+                patch.object(provision_mod, "worktree_root", return_value=workspace),
                 patch.object(utils_run_mod.subprocess, "run", side_effect=side_effect),
             ):
                 ticket_id = cast(
@@ -724,8 +773,9 @@ class TestWorkspaceTicket(TestCase):
                 return mock_add_ok
 
             with (
-                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
+                patch.object(workspace_mod, "_worktree_root", return_value=workspace),
+                patch.object(provision_mod, "clone_root", return_value=workspace),
+                patch.object(provision_mod, "worktree_root", return_value=workspace),
                 patch.object(utils_run_mod.subprocess, "run", side_effect=side_effect),
             ):
                 ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/103"))
@@ -758,8 +808,9 @@ class TestWorkspaceTicket(TestCase):
                 return MagicMock(returncode=0, stdout=stdout, stderr="")
 
             with (
-                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
+                patch.object(workspace_mod, "_worktree_root", return_value=workspace),
+                patch.object(provision_mod, "clone_root", return_value=workspace),
+                patch.object(provision_mod, "worktree_root", return_value=workspace),
                 patch.object(utils_run_mod.subprocess, "run", side_effect=fake_run),
             ):
                 ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/90"))
@@ -798,8 +849,9 @@ class TestWorkspaceTicket(TestCase):
 
             mock_result = MagicMock(returncode=0, stdout="", stderr="")
             with (
-                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
+                patch.object(workspace_mod, "_worktree_root", return_value=workspace),
+                patch.object(provision_mod, "clone_root", return_value=workspace),
+                patch.object(provision_mod, "worktree_root", return_value=workspace),
                 patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
                 patch("teatree.core.dev_repo.find_project_root", return_value=core),
                 patch("teatree.core.dev_repo.discover_active_overlay", return_value=None),
@@ -826,8 +878,9 @@ class TestWorkspaceTicket(TestCase):
 
             mock_result = MagicMock(returncode=0, stdout="", stderr="")
             with (
-                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
+                patch.object(workspace_mod, "_worktree_root", return_value=workspace),
+                patch.object(provision_mod, "clone_root", return_value=workspace),
+                patch.object(provision_mod, "worktree_root", return_value=workspace),
                 patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
                 patch("teatree.core.dev_repo.find_project_root", return_value=core),
                 patch("teatree.core.dev_repo.discover_active_overlay", return_value=None),
@@ -1284,7 +1337,7 @@ class TestWorkspaceEmitAndSalvage(TestCase):
     """The ``workspace emit`` (structured handoff) and ``workspace salvage`` CLI entries (#2763)."""
 
     def test_emit_prints_json_array(self) -> None:
-        with patch.object(workspace_mod, "_workspace_dir", return_value=Path("/ws")):
+        with patch.object(workspace_mod, "_worktree_root", return_value=Path("/ws")):
             rendered = cast("str", call_command("workspace", "emit"))
         assert json.loads(rendered) == [], "no NOT-auto-deleted items → empty JSON array"
 
@@ -1293,7 +1346,7 @@ class TestWorkspaceEmitAndSalvage(TestCase):
 
         record = CleanupEmitRecord(path="/ws/feat", branch="feat", kind="worktree", unique_commit_shas=["abc"])
         with (
-            patch.object(workspace_mod, "_workspace_dir", return_value=Path("/ws")),
+            patch.object(workspace_mod, "_worktree_root", return_value=Path("/ws")),
             patch.object(ws_salvage_mod, "collect_emit_records", return_value=[record]),
         ):
             data = json.loads(cast("str", call_command("workspace", "emit")))
@@ -1344,7 +1397,7 @@ class TestCleanAllDryRun(TestCase):
 
         with (
             tempfile.TemporaryDirectory() as tmp,
-            patch.object(workspace_mod, "_workspace_dir", return_value=Path(tmp)),
+            patch.object(workspace_mod, "_worktree_root", return_value=Path(tmp)),
             patch.object(ws_clean_all_mod, "reap_done_worktrees", side_effect=_spy),
             patch.object(ws_clean_all_mod, "drop_orphan_databases") as mock_drop,
         ):
@@ -1396,8 +1449,9 @@ class TestWorkspaceCleanAll(TestCase):
             _fake_discover.cache_clear = lambda: None
 
             with (
-                patch.object(workspace_mod, "_workspace_dir", return_value=tmp),
-                patch.object(provision_mod, "_workspace_dir", return_value=tmp),
+                patch.object(workspace_mod, "_worktree_root", return_value=tmp),
+                patch.object(provision_mod, "clone_root", return_value=tmp),
+                patch.object(provision_mod, "worktree_root", return_value=tmp),
                 patch.object(overlay_loader_mod, "_discover_overlays", new=_fake_discover),
                 patch.object(cleanup_mod, "drop_db"),
                 patch("teatree.core.runners.worktree_start.docker_compose_down"),
@@ -1433,8 +1487,9 @@ class TestWorkspaceCleanAll(TestCase):
             (nonempty_dir / "some_file.txt").write_text("content", encoding="utf-8")
 
             with (
-                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
+                patch.object(workspace_mod, "_worktree_root", return_value=workspace),
+                patch.object(provision_mod, "clone_root", return_value=workspace),
+                patch.object(provision_mod, "worktree_root", return_value=workspace),
             ):
                 cleaned = cast("list[str]", call_command("workspace", "clean-all"))
 
@@ -1455,8 +1510,9 @@ class TestWorkspaceCleanAll(TestCase):
         """clean-all includes DSLR snapshot pruning results."""
         with (
             tempfile.TemporaryDirectory() as tmp,
-            patch.object(workspace_mod, "_workspace_dir", return_value=Path(tmp)),
-            patch.object(provision_mod, "_workspace_dir", return_value=Path(tmp)),
+            patch.object(workspace_mod, "_worktree_root", return_value=Path(tmp)),
+            patch.object(provision_mod, "clone_root", return_value=Path(tmp)),
+            patch.object(provision_mod, "worktree_root", return_value=Path(tmp)),
             patch("teatree.utils.django_db.prune_dslr_snapshots", return_value=["old-snapshot-2025"]),
         ):
             cleaned = cast("list[str]", call_command("workspace", "clean-all"))
@@ -1489,8 +1545,9 @@ class TestWorkspaceCleanAll(TestCase):
 
         with (
             tempfile.TemporaryDirectory() as tmp,
-            patch.object(workspace_mod, "_workspace_dir", return_value=Path(tmp)),
-            patch.object(provision_mod, "_workspace_dir", return_value=Path(tmp)),
+            patch.object(workspace_mod, "_worktree_root", return_value=Path(tmp)),
+            patch.object(provision_mod, "clone_root", return_value=Path(tmp)),
+            patch.object(provision_mod, "worktree_root", return_value=Path(tmp)),
             patch("teatree.utils.django_db.prune_dslr_snapshots", side_effect=fake_prune),
         ):
             ticket = Ticket.objects.create(
@@ -1639,8 +1696,9 @@ class TestPruneBranches(TestCase):
 
         gh_merged = subprocess.CompletedProcess([], 0, stdout='[{"number":1}]')
         with (
-            patch.object(workspace_mod, "_workspace_dir", return_value=Path("/tmp/ws")),
-            patch.object(provision_mod, "_workspace_dir", return_value=Path("/tmp/ws")),
+            patch.object(workspace_mod, "_worktree_root", return_value=Path("/tmp/ws")),
+            patch.object(provision_mod, "clone_root", return_value=Path("/tmp/ws")),
+            patch.object(provision_mod, "worktree_root", return_value=Path("/tmp/ws")),
             patch.object(ws_cleanup_mod, "worktree_map", return_value=wt_map),
             patch.object(ws_cleanup_mod, "worktree_branches", return_value={"gone-branch"}),
             # The layered detection is real-git-tested in test_branch_redundancy.py; here
@@ -1678,8 +1736,9 @@ class TestPruneBranches(TestCase):
 
         gh_merged = subprocess.CompletedProcess([], 0, stdout='[{"number":1}]')
         with (
-            patch.object(workspace_mod, "_workspace_dir", return_value=Path("/tmp/ws")),
-            patch.object(provision_mod, "_workspace_dir", return_value=Path("/tmp/ws")),
+            patch.object(workspace_mod, "_worktree_root", return_value=Path("/tmp/ws")),
+            patch.object(provision_mod, "clone_root", return_value=Path("/tmp/ws")),
+            patch.object(provision_mod, "worktree_root", return_value=Path("/tmp/ws")),
             patch.object(ws_cleanup_mod, "worktree_map", return_value=wt_map),
             patch.object(ws_cleanup_mod, "worktree_branches", return_value={"gone-branch"}),
             # The layered detection is real-git-tested in test_branch_redundancy.py; here
@@ -1715,8 +1774,9 @@ class TestPruneBranches(TestCase):
 
         gh_merged = subprocess.CompletedProcess([], 0, stdout='[{"number":1}]')
         with (
-            patch.object(workspace_mod, "_workspace_dir", return_value=Path("/tmp/ws")),
-            patch.object(provision_mod, "_workspace_dir", return_value=Path("/tmp/ws")),
+            patch.object(workspace_mod, "_worktree_root", return_value=Path("/tmp/ws")),
+            patch.object(provision_mod, "clone_root", return_value=Path("/tmp/ws")),
+            patch.object(provision_mod, "worktree_root", return_value=Path("/tmp/ws")),
             patch.object(ws_cleanup_mod, "worktree_map", return_value=wt_map),
             patch.object(ws_cleanup_mod, "worktree_branches", return_value={"gone-branch"}),
             # The layered detection is real-git-tested in test_branch_redundancy.py; here
@@ -3025,13 +3085,13 @@ class TestCleanAllReapsAndSurvivesForeignOverlay(TestCase):
         """
         dropped: list[str] = []
         with (
-            patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-            patch.object(provision_mod, "_workspace_dir", return_value=workspace),
-            patch.object(cleanup_mod, "load_config") as mock_config,
+            patch.object(workspace_mod, "_worktree_root", return_value=workspace),
+            patch.object(provision_mod, "clone_root", return_value=workspace),
+            patch.object(provision_mod, "worktree_root", return_value=workspace),
+            patch.object(cleanup_mod, "clone_root", return_value=workspace),
             patch("teatree.core.runners.worktree_start.docker_compose_down") as mock_docker_down,
             patch.object(cleanup_mod, "drop_db", side_effect=lambda name, **_kw: dropped.append(name)),
         ):
-            mock_config.return_value.user.workspace_dir = workspace
             cleaned = cast("list[str]", call_command("workspace", "clean-all"))
         return cleaned, mock_docker_down, dropped
 
@@ -3236,13 +3296,13 @@ class TestCleanAllKeepsBusyWorktree(TestCase):
         """
         dropped: list[str] = []
         with (
-            patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-            patch.object(provision_mod, "_workspace_dir", return_value=workspace),
-            patch.object(cleanup_mod, "load_config") as mock_config,
+            patch.object(workspace_mod, "_worktree_root", return_value=workspace),
+            patch.object(provision_mod, "clone_root", return_value=workspace),
+            patch.object(provision_mod, "worktree_root", return_value=workspace),
+            patch.object(cleanup_mod, "clone_root", return_value=workspace),
             patch("teatree.core.runners.worktree_start.docker_compose_down") as mock_docker_down,
             patch.object(cleanup_mod, "drop_db", side_effect=lambda name, **_kw: dropped.append(name)),
         ):
-            mock_config.return_value.user.workspace_dir = workspace
             cleaned = cast("list[str]", call_command("workspace", "clean-all"))
         return cleaned, mock_docker_down, dropped
 
@@ -3300,7 +3360,7 @@ class TestCleanAllKeepsBusyWorktree(TestCase):
             session.save(update_fields=["ended_at"])
             Task.objects.create(ticket=busy_ticket, session=session, status=Task.Status.CLAIMED)
 
-            with patch.object(workspace_mod, "_workspace_dir", return_value=workspace):
+            with patch.object(workspace_mod, "_worktree_root", return_value=workspace):
                 cleaned = cast("list[str]", call_command("workspace", "clean-all"))
 
             assert Worktree.objects.filter(pk=busy.pk).exists(), "DATA LOSS: busy CREATED worktree reaped"
@@ -3379,9 +3439,10 @@ class TestCleanAllUnattendedReapMatrix(TestCase):
 
         forge_merged = forge is not None
         with (
-            patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-            patch.object(provision_mod, "_workspace_dir", return_value=workspace),
-            patch.object(cleanup_mod, "load_config") as mock_config,
+            patch.object(workspace_mod, "_worktree_root", return_value=workspace),
+            patch.object(provision_mod, "clone_root", return_value=workspace),
+            patch.object(provision_mod, "worktree_root", return_value=workspace),
+            patch.object(cleanup_mod, "clone_root", return_value=workspace),
             # The forge is corroborating-only now: stub both its probe (so no real
             # gh/glab subprocess runs) and the merged report. It never alone reaps.
             patch.object(bc_mod, "probe_host_cli", return_value="42" if forge_merged else ""),
@@ -3391,7 +3452,6 @@ class TestCleanAllUnattendedReapMatrix(TestCase):
             patch.object(cleanup_mod, "drop_db", side_effect=lambda name, **_kw: dropped.append(name)),
             patch("builtins.input", side_effect=_input_must_not_be_called),
         ):
-            mock_config.return_value.user.workspace_dir = workspace
             return cast("list[str]", call_command("workspace", "clean-all"))
 
     def _row(self, work: Path, wt_path: Path, *, branch: str = "feature", number: str = "1830") -> Worktree:

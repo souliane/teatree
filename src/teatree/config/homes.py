@@ -50,7 +50,7 @@ class SettingHome(StrEnum):
 # from the partition. ``notify_on_behalf`` is ORed in by the autonomy collapse.
 DERIVED_FIELDS: frozenset[str] = frozenset({"notify_on_behalf"})
 
-# The irreducible TOML-home carve-out (exactly these eleven):
+# The irreducible TOML-home carve-out (exactly these ten):
 # - non-Django / pre-Django readers (read via tomllib or a bash grep, no DB):
 #   ``orchestrator_bash_gate_enabled``, ``speak`` (the Stop hook re-reads the
 #   ``[teatree.speak]`` sub-table with tomllib — it cannot reach the Django DB),
@@ -62,8 +62,15 @@ DERIVED_FIELDS: frozenset[str] = frozenset({"notify_on_behalf"})
 #   statusline_chain`` straight from ``~/.teatree.toml`` — it has no path to the
 #   Django DB, so a DB row for it would be silently unread)
 # - path / infra bootstrap the settings module needs to even open the DB:
-#   ``workspace_dir``, ``worktrees_dir``, ``timezone``, ``privacy``
+#   ``worktrees_dir``, ``timezone``, ``privacy``
 # - nested structured table with no flat ConfigSetting shape: ``mr_reminder``
+#
+# ``workspace_dir`` is DB-home (per-overlay overridable via the ``ConfigSetting``
+# store): worktrees regroup under a per-overlay default
+# ``~/workspace/t3-workspaces/<overlay>/``, resolved by ``config.worktree_root()``
+# (env → DB overlay-scope → DB global-scope → default). It is read only after
+# Django is up, so it carries no bootstrap need. It is distinct from the CLONE
+# root ``config.clone_root()`` (``~/workspace``, where main repo clones live).
 _TOML_HOME: frozenset[str] = frozenset(
     {
         "orchestrator_bash_gate_enabled",
@@ -73,7 +80,6 @@ _TOML_HOME: frozenset[str] = frozenset(
         "check_updates",
         "autoload",
         "statusline_chain",
-        "workspace_dir",
         "worktrees_dir",
         "timezone",
         "privacy",

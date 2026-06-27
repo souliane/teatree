@@ -35,7 +35,7 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from teatree.config import get_effective_settings, load_config
+from teatree.config import clone_root, get_effective_settings
 from teatree.core.branch_classification import (
     _branch_tree_matches_squash,
     branch_redundancy,
@@ -155,7 +155,7 @@ def worktree_is_done(worktree: Worktree) -> DoneSignal:
 
 def _branch_squash_merged(worktree: Worktree) -> bool:
     """Whether the forge reports ``worktree``'s branch squash-merged. Fail-safe to False."""
-    workspace = load_config().user.workspace_dir
+    workspace = clone_root()
     repo = resolve_clone_path(workspace, worktree)
     if repo is None or not repo.is_dir():
         return False

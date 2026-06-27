@@ -591,7 +591,7 @@ class TestAutoRegisterReusesExistingWorktree(TestCase):
         """Owner is found even when the stored path is the unresolved (symlinked) form.
 
         Provision records ``worktree_path`` verbatim from
-        ``config.workspace_dir()`` (no ``.resolve()``), while resolution
+        ``config.worktree_root()`` (no ``.resolve()``), while resolution
         ``.resolve()``-s cwd. On a symlinked workspace root (macOS
         ``/tmp`` → ``/private/tmp``) the two forms differ; the match must
         still succeed via ``_candidate_paths``.

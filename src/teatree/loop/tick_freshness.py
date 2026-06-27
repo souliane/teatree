@@ -46,6 +46,8 @@ def _repo_freshness(repo_path: Path) -> dict[str, int | str] | None:
 
 def _repos_from_toml() -> dict[str, Path]:
     """Extract repo paths from ~/.teatree.toml overlays."""
+    from teatree.config import clone_root  # noqa: PLC0415
+
     toml_path = Path.home() / ".teatree.toml"
     if not toml_path.is_file():
         return {}
@@ -53,7 +55,11 @@ def _repos_from_toml() -> dict[str, Path]:
         data = tomllib.loads(toml_path.read_text(encoding="utf-8"))
     except tomllib.TOMLDecodeError:
         return {}
-    workspace_dir = Path(str(data.get("teatree", {}).get("workspace_dir", "~/workspace"))).expanduser()
+    # ``workspace_repos`` resolve to CLONES, so join them under the CLONE root.
+    # The legacy ``[teatree] workspace_dir`` key is retired (DB-home now); reading
+    # it here would honour a value ignored everywhere else, so route through the
+    # one clone-root accessor (env ``T3_WORKSPACE_DIR`` → default ``~/workspace``).
+    workspace_dir = clone_root()
     repos: dict[str, Path] = {}
     for name, overlay in (data.get("overlays") or {}).items():
         if not isinstance(overlay, dict):

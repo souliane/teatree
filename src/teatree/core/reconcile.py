@@ -16,7 +16,7 @@ from pathlib import Path
 
 from django.core.exceptions import ImproperlyConfigured
 
-from teatree.config import load_config
+from teatree.config import clone_root
 from teatree.core.clone_paths import resolve_clone_path
 from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree_env import compose_project, detect_drift, render_env_cache, worktree_pg_connection
@@ -251,7 +251,7 @@ def _collect_stale_worktree_dirs(drift: Drift, worktrees: list[Worktree], ticket
 def reconcile_ticket(ticket: Ticket) -> Drift:
     """Walk every state store and return a typed ``Drift`` for *ticket*."""
     drift = Drift(ticket_pk=ticket.pk)
-    workspace = load_config().user.workspace_dir
+    workspace = clone_root()
     worktrees = list(Worktree.objects.filter(ticket=ticket))
 
     for wt in worktrees:

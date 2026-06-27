@@ -245,12 +245,9 @@ def _parse_strict_str(raw: object) -> str:
     """Coerce a TOML/JSON value for a str-typed overridable setting, strictly.
 
     Accepts only a real ``str``; REJECTS a ``bool``/``int``/``float``/``list``
-    rather than stringifying it via ``str(...)`` (#258). The bare ``str`` parser
-    accepted anything (``str(True) == "True"``, ``str(5) == "5"``), so a
-    type-mismatched value for a str-typed setting was silently coerced into a
-    nonsense string instead of being rejected. Single coercer for every
-    str-typed overridable setting, applied identically on the write and read
-    paths.
+    rather than stringifying it via ``str(...)`` (#258, which the bare ``str``
+    parser silently did: ``str(True) == "True"``). The single coercer for every
+    str-typed overridable setting, applied identically on read and write.
     """
     if not isinstance(raw, str):
         msg = f"Invalid str value {raw!r}; expected a JSON/TOML string"
@@ -287,6 +284,9 @@ def _parse_user_identity_aliases(raw: object) -> list[str]:
 # fitness test asserts this registry covers exactly the DB-home set (no TOML-home
 # key, every DB-home key present).
 OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
+    # Stored as a path STRING (JSONField holds no Path); config.worktree_root() is
+    # the typed accessor that expanduser()-wraps it and applies the per-overlay default.
+    "workspace_dir": _parse_strict_str,
     "mode": Mode.parse,
     "autonomy": Autonomy.parse,
     "speed": Speed.parse,

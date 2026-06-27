@@ -421,6 +421,7 @@ Generate Ticket.short_description (#1156).
 | `finalize` | Squash worktree commits into one, then rebase on the default branch |
 | `doctor` | Detect state drift across every store; optionally fix it |
 | `landscape` | Survey what is already in flight or settled before planning (#2541) |
+| `relocate` | Move this overlay's teatree-managed worktrees under the per-overlay dir (regroup) |
 | `emit` | Print the machine-readable JSON handoff for every NOT-auto-deleted item (#2763) |
 | `salvage` | Capture a branch's unique content to a PR, verify it landed, then delete the branch (#2763) |
 | `clean-merged` | Tear down every done worktree (analyze-then-wipe) on demand |

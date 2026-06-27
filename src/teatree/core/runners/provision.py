@@ -3,7 +3,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-from teatree.config import workspace_dir as _workspace_dir
+from teatree.config import clone_root, worktree_root
 from teatree.core.clone_paths import find_clone_path
 from teatree.core.models import Ticket, Worktree
 from teatree.core.public_identity import is_public_github_remote, set_local_noreply_identity
@@ -59,15 +59,19 @@ class WorktreeProvisioner(RunnerBase):
         # differs. Repos absent from the map fall back to ``branch``.
         branches = dict(extra.get("branches") or {})
 
-        workspace = _workspace_dir()
+        # Two DISTINCT roots (the #regroup split): worktrees are CREATED under the
+        # per-overlay WORKTREE root, but their source clones are DISCOVERED under
+        # the CLONE root (``~/workspace``). Passing the worktree root to
+        # ``find_clone_path`` would scan the wrong dir and fail "No git clone found".
+        clone_root_path = clone_root()
         # A repo ADDED to a ticket that already has materialised worktrees must
         # co-locate as a SIBLING of the existing ones — derive the ticket dir
         # from an existing worktree's parent, not blindly from ``branch``. The
         # ``auto:<branch>`` case is where this matters: the first worktree lives
-        # in ``<workspace>/<actual-branch>`` while ``extra['branch']`` may have
+        # in ``<worktree_root>/<actual-branch>`` while ``extra['branch']`` may have
         # been (re)set to a pk-default like ``<pk>-ticket`` by a later scope(),
-        # so ``workspace / branch`` would split the second repo into a new dir.
-        ticket_dir = self._existing_ticket_dir(ticket) or (workspace / branch)
+        # so ``worktree_root / branch`` would split the second repo into a new dir.
+        ticket_dir = self._existing_ticket_dir(ticket) or (worktree_root() / branch)
         ticket_dir.mkdir(parents=True, exist_ok=True)
 
         provisioned: dict[str, str] = dict(extra.get("provision") or {})
@@ -88,7 +92,7 @@ class WorktreeProvisioner(RunnerBase):
                 overlay=ticket.overlay,
             )
 
-            created = self._create(workspace, repo_name, ticket_dir, repo_branch)
+            created = self._create(clone_root_path, repo_name, ticket_dir, repo_branch)
             if created is None:
                 worktree.delete()
                 failed.append(repo_name)
@@ -132,21 +136,23 @@ class WorktreeProvisioner(RunnerBase):
         return parents.pop() if len(parents) == 1 else None
 
     @staticmethod
-    def _create(workspace: Path, repo_name: str, ticket_dir: Path, branch: str) -> tuple[str, Path] | None:
+    def _create(clones_root: Path, repo_name: str, ticket_dir: Path, branch: str) -> tuple[str, Path] | None:
         """Run ``git worktree add`` for one repo.
 
-        Returns ``(worktree_path, clone_path)`` on success or ``None`` on
-        failure (no clone found, or ``git worktree add`` rejected the path).
-        Retries without ``-b`` so partial-failure recovery picks up an
-        existing branch.
+        *clones_root* is the CLONE root (``config.clone_root()``, ``~/workspace``)
+        — where source clones are DISCOVERED — NOT the WORKTREE root the new
+        worktree lands under (that is *ticket_dir*). Returns
+        ``(worktree_path, clone_path)`` on success or ``None`` on failure (no clone
+        found, or ``git worktree add`` rejected the path). Retries without ``-b`` so
+        partial-failure recovery picks up an existing branch.
         """
-        repo_path = find_clone_path(workspace, repo_name)
+        repo_path = find_clone_path(clones_root, repo_name)
         if repo_path is None:
             logger.warning(
                 "No git clone found for %s under %s (looked at %s and one-level subdirs)",
                 repo_name,
-                workspace,
-                workspace / repo_name,
+                clones_root,
+                clones_root / repo_name,
             )
             return None
 

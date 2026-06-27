@@ -4,7 +4,7 @@ from typing import TypedDict
 from django.db import transaction
 from django.tasks import task
 
-from teatree.config import workspace_dir
+from teatree.config import worktree_root
 from teatree.core.landscape_gather import run_landscape
 from teatree.core.models import LandscapeArtifact, Task, Ticket
 from teatree.core.models.external_delivery import under_external_delivery
@@ -27,7 +27,7 @@ def _persist_intake_landscape(ticket: Ticket) -> None:
     leaves no artifact.
     """
     try:
-        survey = run_landscape(workspace_dir())
+        survey = run_landscape(worktree_root())
     except Exception:
         logger.warning("Intake landscape gather failed for ticket %s; skipping artifact", ticket.pk, exc_info=True)
         return

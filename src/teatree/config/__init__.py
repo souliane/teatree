@@ -27,10 +27,11 @@ from teatree.config.loader import (
     CONFIG_PATH,
     _load_toml,
     check_for_updates,
+    clone_root,
     default_logging,
     load_config,
     load_e2e_repos,
-    workspace_dir,
+    worktree_root,
     worktrees_dir,
 )
 from teatree.config.resolution import (
@@ -102,6 +103,7 @@ __all__ = [
     "_resolve_ep_project_path",
     "cadence_seconds",
     "check_for_updates",
+    "clone_root",
     "default_logging",
     "discover_active_overlay",
     "discover_overlays",
@@ -113,6 +115,6 @@ __all__ = [
     "resolve_mr_reminder",
     "resolve_speak",
     "speak_from_subtable",
-    "workspace_dir",
+    "worktree_root",
     "worktrees_dir",
 ]

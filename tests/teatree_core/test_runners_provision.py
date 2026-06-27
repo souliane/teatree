@@ -6,6 +6,8 @@ worker. The worker runs ``WorktreeProvisioner`` and on success schedules
 the coding task.
 """
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -35,8 +37,18 @@ class TestWorktreeProvisioner(TestCase):
             extra={"branch": branch, "description": "x"},
         )
 
-    def _patch_workspace_dir(self) -> Any:
-        return patch("teatree.core.runners.provision._workspace_dir", return_value=self.workspace)
+    @contextmanager
+    def _patch_workspace_dir(self) -> Iterator[None]:
+        """Point both #regroup roots at the one test workspace.
+
+        Clone discovery and worktree creation use separate resolvers after the
+        split; here both resolve to the same dir, as they did before the split.
+        """
+        with (
+            patch("teatree.core.runners.provision.clone_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.worktree_root", return_value=self.workspace),
+        ):
+            yield
 
     def test_returns_failure_when_no_repos(self) -> None:
         ticket = self._scoped_ticket(repos=[])
@@ -237,8 +249,18 @@ class TestWorktreeProvisionerPerRepoBranches(TestCase):
         self.workspace = tmp_path / "workspace"
         self.workspace.mkdir()
 
-    def _patch_workspace_dir(self) -> Any:
-        return patch("teatree.core.runners.provision._workspace_dir", return_value=self.workspace)
+    @contextmanager
+    def _patch_workspace_dir(self) -> Iterator[None]:
+        """Point both #regroup roots at the one test workspace.
+
+        Clone discovery and worktree creation use separate resolvers after the
+        split; here both resolve to the same dir, as they did before the split.
+        """
+        with (
+            patch("teatree.core.runners.provision.clone_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.worktree_root", return_value=self.workspace),
+        ):
+            yield
 
     def _make_clones(self, *repos: str) -> None:
         for repo in repos:
@@ -377,8 +399,18 @@ class TestWorktreeProvisionerCoLocatesAddedRepo(TestCase):
         self.workspace = tmp_path / "workspace"
         self.workspace.mkdir()
 
-    def _patch_workspace_dir(self) -> Any:
-        return patch("teatree.core.runners.provision._workspace_dir", return_value=self.workspace)
+    @contextmanager
+    def _patch_workspace_dir(self) -> Iterator[None]:
+        """Point both #regroup roots at the one test workspace.
+
+        Clone discovery and worktree creation use separate resolvers after the
+        split; here both resolve to the same dir, as they did before the split.
+        """
+        with (
+            patch("teatree.core.runners.provision.clone_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.worktree_root", return_value=self.workspace),
+        ):
+            yield
 
     def _make_clone(self, repo: str) -> None:
         repo_dir = self.workspace / repo
@@ -515,7 +547,8 @@ class TestWorktreeProvisionerStampsScopedIdentity(TestCase):
 
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch("teatree.core.runners.provision._workspace_dir", return_value=self.workspace),
+            patch("teatree.core.runners.provision.clone_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.worktree_root", return_value=self.workspace),
             patch("teatree.core.runners.provision.git.worktree_add", side_effect=fake_worktree_add),
             patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
             # #2655: the call site now reads the FULL remote URL (host
@@ -641,7 +674,8 @@ class TestWorktreeProvisionerGuardsWrongRepo(TestCase):
         ticket = self._scoped_ticket(repos=repos, branch=branch)
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch("teatree.core.runners.provision._workspace_dir", return_value=self.workspace),
+            patch("teatree.core.runners.provision.clone_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.worktree_root", return_value=self.workspace),
             patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
             patch("teatree.core.runners.provision.is_public_github_remote", return_value=False),
         ):
