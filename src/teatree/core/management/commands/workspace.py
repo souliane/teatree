@@ -4,7 +4,7 @@ import os
 from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, TypedDict, cast
+from typing import TYPE_CHECKING, Annotated, cast
 
 import typer
 from django.db import transaction
@@ -13,13 +13,13 @@ from django_typer.management import TyperCommand, command
 
 from teatree.config import workspace_dir as _config_workspace_dir
 from teatree.core.gates.local_stack_gate import acquire_or_enqueue
-from teatree.core.gates.orphan_guard import find_orphans_in_workspace
 from teatree.core.management.commands import _workspace_helpers as _wh
 from teatree.core.management.commands._workspace_clean_all import CleanAllIO, run_clean_all
 from teatree.core.management.commands._workspace_cleanup import _die, _fix_drift, clean_merged_worktrees
 from teatree.core.management.commands._workspace_docker import reap_stale_local_stacks, reap_stale_report
 from teatree.core.management.commands._workspace_finalize import refuse_finalize_on_main_clone_default
 from teatree.core.management.commands._workspace_landscape import LandscapeReport, run_landscape
+from teatree.core.management.commands._workspace_relocate import RelocateIO, active_overlay_name, run_relocate
 from teatree.core.management.commands._workspace_ticket_intake import (
     ForeignIssueWorktreeRefusedError,
     RawTicketInputs,
@@ -46,29 +46,6 @@ from teatree.utils.run import CommandFailedError
 if TYPE_CHECKING:
     from teatree.core.models.types import TicketExtra
     from teatree.core.overlay import OverlayBase
-
-
-class OrphanEntry(TypedDict):
-    repo: str
-    branch: str
-    status: str
-    ahead_count: int
-
-
-def _warn_orphans(write: Callable[[str], None]) -> None:
-    orphans = find_orphans_in_workspace()
-    if not orphans:
-        return
-    preview = orphans[:5]
-    write(f"WARNING: {len(orphans)} orphan branch(es) in the workspace:")
-    for r in preview:
-        write(f"  - {r.repo} ({r.branch}, {r.ahead_count} ahead, {r.status.value})")
-    if len(orphans) > len(preview):
-        write(f"  - …and {len(orphans) - len(preview)} more")
-    write(
-        "Run `t3 <overlay> pr ensure-pr --branch <name>` to track them, "
-        "or `t3 <overlay> workspace clean-all` to reap synced ones.",
-    )
 
 
 def _workspace_dir() -> Path:
@@ -181,7 +158,7 @@ class Command(TyperCommand):
         already exists (someone may already be on it) unless ``--take-over`` is
         passed. Re-provisioning the ticket's own existing dir is always allowed.
         """
-        _warn_orphans(self.stderr.write)
+        _wh.warn_orphans(self.stderr.write)
         # #1310: a multi-overlay install with ``T3_OVERLAY_NAME`` missing
         # used to die on the ambiguous ``get_overlay()`` call here.
         # Infer from the issue URL whose workspace repos own it; the
@@ -505,18 +482,15 @@ class Command(TyperCommand):
         return StampResult(stamped=True, repo=repo, slug=slug)
 
     @command(name="list-orphans")
-    def list_orphans(self) -> list[OrphanEntry]:
+    def list_orphans(self) -> list[_wh.OrphanEntry]:
         """List orphan branches (commits ahead of origin/main AND no open PR) across the workspace.
 
         Used by the session-end hook and the ``workspace ticket`` warning to
         surface work that would otherwise be lost when a session closes or a
         new worktree is created. Emits a JSON-serialisable list — one entry
-        per orphan.
+        per orphan (the mapping lives in :func:`_wh.list_orphan_entries`).
         """
-        return [
-            OrphanEntry(repo=r.repo, branch=r.branch, status=r.status.value, ahead_count=r.ahead_count)
-            for r in find_orphans_in_workspace()
-        ]
+        return _wh.list_orphan_entries()
 
     @command()
     def landscape(self) -> LandscapeReport:
@@ -601,3 +575,17 @@ class Command(TyperCommand):
             reap_unsynced=reap_unsynced,
             interactive=interactive,
         )
+
+    @command()
+    def relocate(
+        self,
+        dry_run: bool = typer.Option(default=False, help="List the moves without moving anything."),  # noqa: FBT001 — CLI flag
+    ) -> list[str]:
+        """Move this overlay's teatree-managed worktrees under the per-overlay dir (regroup).
+
+        Thin wrapper supplying the resolved overlay + per-overlay ``workspace_dir``
+        to :func:`run_relocate` (the engine, with the full locked/dirty/active
+        skip doctrine + idempotency + ``--dry-run``); see ``/t3:workspace``.
+        """
+        io = RelocateIO(write_out=self.stdout.write, write_err=self.stderr.write)
+        return run_relocate(active_overlay_name(), _config_workspace_dir(), io, dry_run=dry_run).render()

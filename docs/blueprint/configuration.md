@@ -136,8 +136,11 @@ per-overlay overridable (it is read only after Django is up): worktrees regroup
 under a per-overlay default `~/workspace/t3-workspaces/<overlay>/`, resolved by
 `config.workspace_dir()` — `T3_WORKSPACE_DIR` env/Django-setting override (highest,
 back-compat) → DB `ConfigSetting` (overlay scope, then global) → that default.
-The one DERIVED field (`notify_on_behalf`) is computed by the resolver and
-has no home. The resolution-tier wiring below details each home's chain.
+`t3 <overlay> workspace relocate` moves an overlay's EXISTING teatree-managed
+worktrees to that per-overlay dir with `git worktree move` (skipping any locked /
+dirty / live mid-task one, idempotent, `--dry-run`-able). The one DERIVED field
+(`notify_on_behalf`) is computed by the resolver and has no home. The
+resolution-tier wiring below details each home's chain.
 
 The resolution chain is **per home** (first match wins) — each field reads from
 exactly the tiers its home allows:

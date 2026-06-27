@@ -436,7 +436,7 @@ class TestWorkspaceTicket(TestCase):
         ]
         stderr_buf = StringIO()
         with patch(
-            "teatree.core.management.commands.workspace.find_orphans_in_workspace",
+            "teatree.core.management.commands._workspace_helpers.find_orphans_in_workspace",
             return_value=fake_orphans,
         ):
             call_command("workspace", "ticket", "https://example.com/issues/500", stderr=stderr_buf)

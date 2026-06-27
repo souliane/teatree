@@ -4956,6 +4956,8 @@ Usage: t3 teatree workspace [OPTIONS] COMMAND [ARGS]...
 │ clean-merged    Tear down every worktree whose ticket is already MERGED.     │
 │ clean-all       Prune merged worktrees, stale branches, orphaned stashes,    │
 │                 orphan DBs, old DSLR snapshots.                              │
+│ relocate        Move this overlay's existing worktrees under the per-overlay │
+│                 workspace dir (git worktree move).                           │
 │ list-orphans    List orphan branches (commits not on main, no open PR).      │
 │ landscape       Survey in-flight PRs/MRs and local unsynced work before      │
 │                 planning (read-only).                                        │
@@ -5195,6 +5197,25 @@ Usage: t3 teatree workspace clean-all [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+##### `t3 teatree workspace relocate`
+
+```
+Usage: t3 teatree workspace relocate [OPTIONS]
+
+ Move this overlay's teatree-managed worktrees under the per-overlay dir
+ (regroup).
+
+ Thin wrapper supplying the resolved overlay + per-overlay ``workspace_dir``
+ to :func:`run_relocate` (the engine, with the full locked/dirty/active
+ skip doctrine + idempotency + ``--dry-run``); see ``/t3:workspace``.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --dry-run    --no-dry-run      List the moves without moving anything.       │
+│                                [default: no-dry-run]                         │
+│ --help                         Show this message and exit.                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 ##### `t3 teatree workspace list-orphans`
 
 ```
@@ -5206,7 +5227,7 @@ Usage: t3 teatree workspace list-orphans [OPTIONS]
  Used by the session-end hook and the ``workspace ticket`` warning to
  surface work that would otherwise be lost when a session closes or a
  new worktree is created. Emits a JSON-serialisable list — one entry
- per orphan.
+ per orphan (the mapping lives in :func:`_wh.list_orphan_entries`).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │

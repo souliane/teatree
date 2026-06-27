@@ -89,6 +89,36 @@ def worktree_remove(repo: str = ".", path: str = "") -> bool:
     return check(repo=repo, args=["worktree", "remove", "--force", path])
 
 
+def worktree_move(repo: str, src: str, dst: str) -> None:
+    """``git worktree move <src> <dst>`` run from *repo* (the source clone).
+
+    Updates git's worktree admin (the per-worktree gitdir + the gitfile pointer)
+    so the moved worktree stays linked to its clone — the reason a raw ``mv`` is
+    wrong (it leaves git's metadata pointing at the stale path). Run from *repo*
+    (the clone, or any OTHER worktree), never from inside *src*: git refuses to
+    move the worktree it is currently sitting in. Raises ``CommandFailedError``
+    on failure so the caller can report-and-continue.
+    """
+    run_strict(repo=repo, args=["worktree", "move", src, dst])
+
+
+def locked_worktree_paths(repo: str) -> set[str]:
+    """Resolved paths of *repo*'s git-locked worktrees (``git worktree list --porcelain``).
+
+    A ``locked`` line in the porcelain listing marks the preceding ``worktree``
+    entry as locked; a locked worktree must never be relocated. Paths are
+    ``resolve()``-d so they compare equal to a caller's ``Path(...).resolve()``.
+    """
+    locked: set[str] = set()
+    current: str | None = None
+    for line in run(repo=repo, args=["worktree", "list", "--porcelain"]).splitlines():
+        if line.startswith("worktree "):
+            current = line[len("worktree ") :]
+        elif line.startswith("locked") and current is not None:
+            locked.add(str(Path(current).resolve()))
+    return locked
+
+
 def worktree_add_at_ref(repo: str, path: str, ref: str) -> bool:
     """Materialise a detached worktree at an explicit ``ref`` (SHA or branch).
 
