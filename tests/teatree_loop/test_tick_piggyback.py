@@ -191,6 +191,33 @@ class TestTickPiggybackSelfImprove:
         assert SelfImproveFiring.objects.filter(detector="stale_statusline_entry").exists()
 
 
+class TestTickPiggybackSelfHealInjection:
+    """The piggyback injects the real orchestration render seam as the auto-fix self-heal (#2625)."""
+
+    def test_self_improve_rerender_invokes_the_render_seam(self) -> None:
+        from teatree.loop import tick_piggyback  # noqa: PLC0415
+
+        with patch.object(tick_piggyback, "rerender_statusline") as seam:
+            tick_piggyback._self_improve_rerender(object())
+
+        seam.assert_called_once()
+
+    def test_piggyback_self_improve_passes_the_rerender_seam_to_run_tier(self) -> None:
+        from teatree.loop import tick_piggyback  # noqa: PLC0415
+
+        captured: dict[str, object] = {}
+
+        def _fake_run_tier(tier: str, *, auto_fix_callable: object = None, **_kw: object) -> None:
+            captured["tier"] = tier
+            captured["callable"] = auto_fix_callable
+
+        with patch("teatree.loop.self_improve.schedule.run_tier", _fake_run_tier):
+            tick_piggyback._piggyback_self_improve()
+
+        assert captured["tier"] == "cheap"
+        assert captured["callable"] is tick_piggyback._self_improve_rerender
+
+
 class TestTickPiggybackOwnerGate:
     def test_non_owner_skip_does_not_piggyback(self) -> None:
         """Anti-#1073: a foreign-session SKIP must NOT piggyback.

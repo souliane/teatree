@@ -102,13 +102,30 @@ def run_tier(
     reports: list[DetectorReport] = []
     actions: list[ActionResult] = []
     for detector in detector_list:
+        fix = auto_fix_callable if auto_fix_callable is not None else _detector_auto_fix(detector)
         for report in detector.detect():
             reports.append(report)
             result = run_action_ladder(
                 report,
                 messaging=messaging,
-                auto_fix_callable=auto_fix_callable,
+                auto_fix_callable=fix,
             )
             if result is not None:
                 actions.append(result)
     return TierResult(tier=tier, budget=verdict, reports=reports, actions=actions)
+
+
+def _detector_auto_fix(detector: SelfImproveDetector) -> Callable[[DetectorReport], None] | None:
+    """Adapt a detector's own ``rerender`` self-heal into the ladder callable (#2625).
+
+    Only the whitelisted ``auto_fix=True`` detectors carry a ``rerender``; the
+    action ladder still refuses to execute it unless the report opted in
+    (``report.auto_fix``). A detector without ``rerender`` contributes no
+    callable, so the ladder's auto-fix rung is a no-op for it. This is the
+    fallback the dedicated ``loop_self_improve`` slot relies on; the tick
+    piggyback injects the orchestration render seam directly instead.
+    """
+    rerender = getattr(detector, "rerender", None)
+    if rerender is None:
+        return None
+    return lambda _report: rerender()

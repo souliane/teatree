@@ -226,3 +226,22 @@ def _populate_loop_owner_anchor(zones: StatuslineZones) -> None:
         return
     if line:
         getattr(zones, zone).append(line)
+
+
+def rerender_statusline(target: Path | None = None, *, colorize: bool | None = None) -> Path:
+    """Re-render the statusline from current state without a full tick (#2625).
+
+    Runs the idle (no-jobs) render path — the live-loop, open-PR, and loop-owner
+    anchors over an empty zone set — so a stale merged-PR / terminal-ticket URL
+    drops out of the rendered file. This is the idempotent self-heal seam the
+    domain-layer ``StaleStatuslineEntryDetector`` cannot reach itself (it would
+    invert the tach-enforced dependency DAG); the orchestration layer injects it
+    as the action-ladder ``auto_fix_callable``, retiring the prior
+    ``_default_rerender`` no-op.
+    """
+    zones = StatuslineZones()
+    _populate_live_loops_in_anchors(zones, colorize=colorize)
+    _write_open_prs_cache([], target=target)
+    _populate_open_prs_in_anchors(zones, target=target, colorize=colorize)
+    _populate_loop_owner_anchor(zones)
+    return render(zones, target=target, colorize=colorize)

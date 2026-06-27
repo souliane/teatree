@@ -1,8 +1,9 @@
 """Scheduler meta-tests: budget skipping, tier filtering, lease, Slack cap downgrade."""
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import ClassVar
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
 
@@ -160,3 +161,97 @@ class SchedulerIterationTests(TestCase):
         run_tier(Tier.CHEAP, detectors=[a, b], budget=BudgetVerdict.allow())
         assert a.scan_count == 1
         assert b.scan_count == 1
+
+
+@dataclass(slots=True)
+class _StubWithRerender:
+    """A detector that emits one report and carries its own ``rerender`` self-heal."""
+
+    name: ClassVar[str] = "stub_rerender"
+    tier: ClassVar[str] = "cheap"
+    severity: ClassVar[str] = "info"
+    max_rung: ClassVar[str] = ActionRung.STATUSLINE
+    auto_fix: ClassVar[bool] = True
+
+    rerender: object = None
+
+    def detect(self) -> list[DetectorReport]:
+        return [
+            DetectorReport(
+                detector="stub_rerender",
+                dedup_key="stub_rerender::x",
+                state_hash="h1",
+                severity="info",
+                max_rung=ActionRung.STATUSLINE,
+                summary="stub",
+                auto_fix=True,
+            )
+        ]
+
+    def scan(self) -> list[object]:
+        return []
+
+
+class SchedulerAutoFixAdapterTests(TestCase):
+    """``_detector_auto_fix`` adapts a detector's own ``rerender`` into the ladder callable (#2625)."""
+
+    def test_adapter_routes_a_detectors_own_rerender(self) -> None:
+        from teatree.loop.self_improve.detectors import StaleStatuslineEntryDetector  # noqa: PLC0415
+        from teatree.loop.self_improve.schedule import _detector_auto_fix  # noqa: PLC0415
+
+        rerender = MagicMock()
+        adapted = _detector_auto_fix(StaleStatuslineEntryDetector(rerender=rerender))
+
+        assert adapted is not None
+        adapted(object())
+        rerender.assert_called_once()
+
+    def test_adapter_returns_none_for_a_detector_without_rerender(self) -> None:
+        from teatree.loop.self_improve.detectors import DispatchGapDetector  # noqa: PLC0415
+        from teatree.loop.self_improve.schedule import _detector_auto_fix  # noqa: PLC0415
+
+        assert _detector_auto_fix(DispatchGapDetector()) is None
+
+    def test_run_tier_routes_per_detector_rerender_when_no_global_callable(self) -> None:
+        """Without a global ``auto_fix_callable``, the ladder gets the detector's own rerender.
+
+        Guards against the schedule passing ``None`` and the whitelisted self-heal
+        never being wired (the dedicated ``loop_self_improve`` slot path).
+        """
+        from teatree.loop.self_improve import schedule  # noqa: PLC0415
+
+        captured: dict[str, Callable[[DetectorReport], None] | None] = {}
+
+        def _fake_ladder(
+            report: DetectorReport,
+            *,
+            messaging: object = None,
+            auto_fix_callable: Callable[[DetectorReport], None] | None = None,
+        ) -> None:
+            captured["callable"] = auto_fix_callable
+
+        rerender = MagicMock()
+        detector = _StubWithRerender(rerender=rerender)
+        with patch.object(schedule, "run_action_ladder", _fake_ladder):
+            run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow())
+
+        routed = captured["callable"]
+        assert routed is not None
+        routed(object())
+        rerender.assert_called_once()
+
+    def test_explicit_global_callable_wins_over_per_detector(self) -> None:
+        """A piggyback-style global ``auto_fix_callable`` takes precedence over the adapter."""
+        from teatree.loop.self_improve import schedule  # noqa: PLC0415
+
+        captured: dict[str, object] = {}
+
+        def _fake_ladder(report: DetectorReport, *, messaging: object = None, auto_fix_callable: object = None) -> None:
+            captured["callable"] = auto_fix_callable
+
+        sentinel = MagicMock()
+        detector = _StubWithRerender(rerender=MagicMock())
+        with patch.object(schedule, "run_action_ladder", _fake_ladder):
+            run_tier(Tier.CHEAP, detectors=[detector], budget=BudgetVerdict.allow(), auto_fix_callable=sentinel)
+
+        assert captured["callable"] is sentinel
