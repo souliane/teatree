@@ -17,12 +17,11 @@ from teatree.loops.orchestrator import TickRequest
 from teatree.loops.scoped_tick import run_scoped_tick
 
 
-def _stub_loop(name: str, *, always_on: bool = False) -> MiniLoop:
+def _stub_loop(name: str) -> MiniLoop:
     return MiniLoop(
         name=name,
         default_cadence_seconds=300,
         build_jobs=lambda **_: [],
-        always_on=always_on,
     )
 
 
@@ -50,7 +49,7 @@ class TestRunScopedTick(TestCase):
         # subset of the dispatch group's members and nothing else.
         members = member_names("dispatch")
         registry = (
-            *(_stub_loop(m, always_on=(m == "dispatch")) for m in members),
+            *(_stub_loop(m) for m in members),
             _stub_loop("review"),  # belongs to the review group, not dispatch
             _stub_loop("housekeeping"),  # belongs to housekeeping, not dispatch
         )
@@ -79,7 +78,7 @@ class TestRunScopedTick(TestCase):
         # honours Loop.enabled (#2584), so enable them for the all-dispatch case.
         for m in members:
             _ensure_loop(m, enabled=True)
-        registry = tuple(_stub_loop(m, always_on=(m == "dispatch")) for m in members)
+        registry = tuple(_stub_loop(m) for m in members)
         outcome = run_scoped_tick(
             "dispatch",
             TickRequest(),

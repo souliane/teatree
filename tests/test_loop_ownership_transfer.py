@@ -47,7 +47,7 @@ def _isolation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Force the teatree opt-in marker AND the #256 auto-load opt-in active:
     # these cover ownership transfer / claim atomicity, not the opt-in gates.
     monkeypatch.setattr(router, "_teatree_active", lambda session_id: True)
-    monkeypatch.setattr(router, "_loops_auto_load_enabled", lambda: True)
+    monkeypatch.setattr(router, "_autoload_enabled", lambda: True)
 
 
 def _live_pid() -> int:
@@ -220,7 +220,7 @@ def _race_round(
     # The bootstrap only fires for an opted-in loop owner (#256): a real
     # teatree-active marker file (read via the child's STATE_DIR env) plus the
     # auto-load opt-in env — monkeypatch does not cross the process boundary.
-    os.environ["T3_LOOPS_AUTO_LOAD"] = "1"
+    os.environ["T3_AUTOLOAD"] = "1"
     # State dir co-located with the shared registry dir so the reloaded child's
     # STATE_DIR (read at import from this env) sees the teatree-active marker.
     state_dir = Path(reg_dir).parent / "state"

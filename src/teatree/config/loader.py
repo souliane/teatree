@@ -272,6 +272,10 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         worktrees_dir=worktrees_dir,
         privacy=teatree.get("privacy", ""),
         check_updates=teatree.get("check_updates", True),
+        # Strict bool: only a real TOML boolean ``true`` engages autoload — a
+        # quoted ``"true"`` / ``"false"`` string is ignored (matches the
+        # cold-read in ``teatree_settings.autoload_enabled``).
+        autoload=teatree.get("autoload", False) is True,
         timezone=teatree.get("timezone", ""),
         speak=resolve_speak(teatree),
         mr_reminder=resolve_mr_reminder(raw),

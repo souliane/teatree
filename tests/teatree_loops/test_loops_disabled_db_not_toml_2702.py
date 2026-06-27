@@ -1,21 +1,17 @@
-"""Loop-disabled state resolves env → DB ``LoopState`` → default, never ``[loops]`` toml (#2702).
+"""Loop-disabled state resolves via DB ``LoopState`` only, never env or ``[loops]`` toml.
 
-The last #2697 config-toml→DB bypass reader (B6): ``T3_LOOPS_DISABLED`` read env
-FIRST (a deliberate platform-leaf hard kill-switch, settled by #2359 — kept
-byte-for-byte) but then fell back to a ``tomllib.load()`` of the ``[loops]`` toml
-section for the *disabled* decision. That toml fallback is the bypass: the DB
-``LoopState`` tier (``loops/config.py:is_enabled``) is already the authority, so
-loop-disabled state must resolve env → DB ``LoopState`` → default with the
-``[loops]``/``[loops.<name>]`` ``enabled`` toml keys no longer read.
+Loop control is DB-only: ``loops/config.py:is_enabled`` resolves purely through
+the DB ``LoopState`` tier — there is no ``T3_LOOPS_DISABLED`` env kill-switch and
+no ``[loops]``/``[loops.<name>]`` ``enabled`` toml fallback.
 
-These pin three things that together are anti-vacuous (RED on pre-#2702 code).
-First, a ``[loops] enabled = false`` toml file with NO env set NO LONGER disables
-a loop — RED before (the toml fallback read it and disabled), GREEN after (the
-toml ``enabled`` key is ignored; DB/default authoritative). Same for the per-loop
-``[loops.<name>] enabled = false`` key. Second, a DB ``LoopState`` pause/disable
-IS honoured with no toml present and no env set (the DB tier stays authoritative
-— must not regress). Third, the env kill-switch STILL overrides regardless of the
-DB (env set → disabled), proving the #2359 env-first path is untouched.
+These pin three things, anti-vacuously. First, a ``[loops] enabled = false`` toml
+file does NOT disable a loop (the toml ``enabled`` key is ignored; DB/default
+authoritative) — same for the per-loop key. Second, a DB ``LoopState``
+pause/disable IS honoured with no toml present (the DB tier is the authority —
+must not regress). Third, a set ``T3_LOOPS_DISABLED`` env var is INERT (RED on
+the pre-cutover env-tier code, which disabled the loop; GREEN now) while a DB
+``LoopState`` DISABLE still suppresses regardless of the (inert) env — the same
+control outcome the env tier used to provide, now DB-only.
 """
 
 import os
@@ -33,8 +29,8 @@ def _build(**_: object) -> list[object]:
     return []
 
 
-def _loop(name: str, *, always_on: bool = False) -> MiniLoop:
-    return MiniLoop(name=name, default_cadence_seconds=60, build_jobs=_build, always_on=always_on)
+def _loop(name: str) -> MiniLoop:
+    return MiniLoop(name=name, default_cadence_seconds=60, build_jobs=_build)
 
 
 class _TomlTestCase(TestCase):
@@ -74,14 +70,16 @@ class TestDbTierHonouredWithoutTomlOrEnv(TestCase):
         config = LoopsConfig()
         assert config.is_enabled(_loop("review")) is True
 
-    def test_db_disable_skips_an_always_on_loop_with_no_toml_no_env(self) -> None:
+    def test_db_disable_skips_the_dispatch_loop_with_no_toml_no_env(self) -> None:
+        # Even the core ``dispatch`` loop is stopped by a DB DISABLE (the env
+        # tier that once exempted an ``always_on`` loop is gone).
         LoopState.objects.disable("dispatch")
         config = LoopsConfig()
-        assert config.is_enabled(_loop("dispatch", always_on=True)) is False
+        assert config.is_enabled(_loop("dispatch")) is False
 
 
-class TestEnvKillSwitchStillOverridesDb(TestCase):
-    """The #2359 env-first kill-switch is untouched: env set → disabled regardless of the DB."""
+class TestEnvKillSwitchIsInert(TestCase):
+    """``T3_LOOPS_DISABLED`` is removed: a set env var is INERT — the DB is the only control."""
 
     def _with_env(self, value: str) -> None:
         old = os.environ.get("T3_LOOPS_DISABLED")
@@ -95,14 +93,22 @@ class TestEnvKillSwitchStillOverridesDb(TestCase):
         else:
             os.environ["T3_LOOPS_DISABLED"] = old
 
-    def test_env_disables_named_loop_even_with_db_enabled(self) -> None:
+    def test_env_named_loop_does_not_disable_with_db_enabled(self) -> None:
         LoopState.objects.enable("review")  # DB says runnable
         self._with_env("review")
         config = LoopsConfig()
-        assert config.is_enabled(_loop("review")) is False
+        assert config.is_enabled(_loop("review")) is True  # env inert
 
-    def test_env_all_sentinel_disables_even_with_db_enabled(self) -> None:
+    def test_env_all_sentinel_does_not_disable_with_db_enabled(self) -> None:
         LoopState.objects.enable("review")
         self._with_env("all")
+        config = LoopsConfig()
+        assert config.is_enabled(_loop("review")) is True  # env inert
+
+    def test_db_disable_still_suppresses_regardless_of_inert_env(self) -> None:
+        # The DB is the only control: a DISABLED row suppresses even with an env
+        # value set (which no longer does anything).
+        LoopState.objects.disable("review")
+        self._with_env("")  # env says "not disabled" — still suppressed by DB
         config = LoopsConfig()
         assert config.is_enabled(_loop("review")) is False

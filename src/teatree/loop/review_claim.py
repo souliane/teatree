@@ -16,9 +16,9 @@ binding discipline:
     ``add_approval_reaction``) once a review actually lands — this module is
     that outcome path.
 2. **Respect "review loop stopped".** When the review mini-loop is
-    disabled (``[loops.review] enabled = false`` /
-    ``T3_LOOPS_DISABLED=review``), no review-intent signal is queued — the
-    discovery stratum reads that state from :class:`LoopsConfig`.
+    disabled (``t3 loop disable review`` — a durable DB ``LoopState`` hold),
+    no review-intent signal is queued — the discovery stratum reads that state
+    from :func:`teatree.loop.loop_state_db.loop_held_in_db`.
 3. **Dedup against existing reactors.** A reaction already present from a
     colleague or the bot is never re-added — :func:`reaction_already_present`
     consults the live message reactions and the :class:`OutboundClaim`

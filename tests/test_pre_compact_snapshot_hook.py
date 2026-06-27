@@ -39,7 +39,7 @@ def _isolation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Force the teatree opt-in marker AND the #256 auto-load opt-in active:
     # these cover the snapshot / compact-recovery mechanism, not the opt-in gates.
     monkeypatch.setattr(router, "_teatree_active", lambda session_id: True)
-    monkeypatch.setattr(router, "_loops_auto_load_enabled", lambda: True)
+    monkeypatch.setattr(router, "_autoload_enabled", lambda: True)
 
 
 def _snapshot_for(session_id: str) -> Path:

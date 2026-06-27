@@ -45,6 +45,7 @@ from teatree.eval.report import ScenarioResult, evaluate
 from teatree.eval.skip_guard import UnmeteredApiRunError, assert_api_run_was_metered
 from teatree.eval.transcript_conformance import InvariantResult
 from teatree.eval.trigger_qa import TriggerQAReport, run_trigger_qa
+from teatree.llm.anthropic_limits import CreditExhaustedError
 from teatree.utils.django_bootstrap import ensure_django
 
 
@@ -165,7 +166,11 @@ def run_ai_lane(
     if isinstance(runner, TranscriptRunner) and not _any_transcript_present(specs, runner):
         _emit_transcript_recipe(specs, target_dir)
         return AiLaneOutcome(lane=_ai_lane_result([], backend=backend, graded=False), results=[])
-    runs = run_specs(runner, specs, parallel=parallel)
+    try:
+        runs = run_specs(runner, specs, parallel=parallel)
+    except CreditExhaustedError as exc:
+        typer.echo(f"ABORTED: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
     results = list(starmap(evaluate, zip(specs, runs, strict=True)))
     return AiLaneOutcome(lane=_ai_lane_result(results, backend=backend, graded=True), results=results)
 

@@ -390,6 +390,12 @@ t3 startoverlay my-overlay ~/workspace/my-overlay
 `uv tool install` puts `t3` in `~/.local/bin/`. If that directory is not on your
 `PATH`, add `export PATH="$HOME/.local/bin:$PATH"` to your shell rc.
 
+Installing the plugin does **not** force teatree on. By default a fresh Claude
+session does not auto-engage teatree — no skill auto-suggest, no load-block, no
+loop scheduling — and just shows a one-line how-to. Run `/teatree` (or load any
+`t3:` skill) to engage teatree for that session, or set `[teatree] autoload =
+true` in `~/.teatree.toml` (env `T3_AUTOLOAD=1`) to auto-engage every session.
+
 ### For contributors
 
 [Fork the repo](https://github.com/souliane/teatree/fork), then:

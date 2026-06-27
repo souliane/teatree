@@ -60,6 +60,8 @@ from no_self_reviewer_assign import handle_block_self_reviewer_assign
 from question_gates import FENCED_CODE_RE, handle_warn_batched_questions, is_user_directed_question
 from state_files import append_line, read_lines
 from subagent_skill_gate import is_file_safe, unreferenced_demand_reason
+from teatree_settings import autoload_enabled as _autoload_enabled
+from teatree_settings import section_bool_setting as _section_bool_setting
 from teatree_settings import teatree_bool_setting as _teatree_bool_setting
 from turn_inspect import current_turn_tool_commands
 from unknown_repo_push_gate import handle_block_unknown_repo_push
@@ -745,6 +747,21 @@ def _teatree_active(session_id: str) -> bool:
     return _state_file(session_id, "teatree-active").is_file()
 
 
+def _t3_engaged(session_id: str) -> bool:
+    # #256 Option-1 marker: any ``t3:`` skill loaded this session engages the
+    # SUGGESTER (set by :func:`handle_track_skill_usage`). Distinct from
+    # ``.teatree-active`` — the loop machinery still consults only that one, so a
+    # plain lifecycle skill never arms loops.
+    return bool(session_id) and _state_file(session_id, "t3-engaged").is_file()
+
+
+def _teatree_engaged(session_id: str) -> bool:
+    # #256 engagement seam: teatree is engaged when the owner enabled autoload,
+    # a teatree-requiring skill was loaded (``.teatree-active``), OR any ``t3:``
+    # skill was loaded (``.t3-engaged``). Gates the suggester + T3 CLI reminder.
+    return _autoload_enabled() or _teatree_active(session_id) or _t3_engaged(session_id)
+
+
 def _loop_auto_load_active(session_id: str) -> bool:
     """Whether this session may auto-arm the loop/statusline machinery (#256).
 
@@ -755,15 +772,15 @@ def _loop_auto_load_active(session_id: str) -> bool:
 
     - the session opted into teatree (:func:`_teatree_active` — a teatree
         skill was loaded), AND
-    - the operator explicitly enabled auto-load (:func:`_loops_auto_load_enabled`).
+    - the operator enabled autoload (:func:`_autoload_enabled`).
 
-    The second condition defaults OFF so a colleague who merely clones the
-    repo (and even loads a teatree skill) is never nagged to register a cron
-    or shown the loop statusline. The loop owner opts in once via
-    ``[loops] auto_load = true`` in ``~/.teatree.toml`` (or
-    ``T3_LOOPS_AUTO_LOAD=1``) and keeps the existing behaviour intact.
+    ``autoload`` is the ONE owner flag (``[teatree] autoload = true``, or the
+    ``T3_AUTOLOAD`` env): it both ENGAGES the session and ARMS its loops. It
+    defaults OFF so a colleague who merely clones the repo (and even loads a
+    teatree skill) is never nagged to register a cron or shown the loop
+    statusline.
     """
-    return _teatree_active(session_id) and _loops_auto_load_enabled()
+    return _teatree_active(session_id) and _autoload_enabled()
 
 
 def _is_teatree_skill(name: str) -> bool:
@@ -882,6 +899,14 @@ def handle_user_prompt_submit(data: dict) -> None:
     pending = _state_file(session_id, "pending")
     pending.write_text("", encoding="utf-8")
 
+    # #256 default-OFF: a session that has not engaged teatree (no autoload, no
+    # teatree/t3: skill loaded) gets NO skill suggestion, NO ``.pending`` write,
+    # and NO T3 CLI reminder. ``.pending`` stays empty above, so the PreToolUse
+    # skill-loading gate never blocks (never-lockout). The owner opts in via
+    # ``/teatree`` (or any ``t3:`` skill), or ``[teatree] autoload = true``.
+    if not _teatree_engaged(session_id):
+        return
+
     scripts_dir = Path(__file__).resolve().parent.parent.parent / "scripts"
     if not (scripts_dir / "lib" / "skill_loader.py").is_file():
         return
@@ -991,59 +1016,8 @@ _LOOP_CADENCE_DEFAULT = 720
 
 
 def _loops_toml_enabled() -> bool:
-    """Whether ``[loops] enabled`` is true in ``~/.teatree.toml`` (default True).
-
-    Fails open (True) on a missing or broken config — only an explicit
-    ``false`` suppresses loop behavior.
-    """
-    import tomllib  # noqa: PLC0415
-
-    config_path = Path.home() / ".teatree.toml"
-    if not config_path.is_file():
-        return True
-    try:
-        with config_path.open("rb") as f:
-            config = tomllib.load(f)
-    except Exception:  # noqa: BLE001
-        return True
-    loops = config.get("loops") if isinstance(config, dict) else None
-    if not isinstance(loops, dict):
-        return True
-    return loops.get("enabled") is not False
-
-
-_AUTO_LOAD_TRUTHY: frozenset[str] = frozenset({"1", "true", "yes", "on"})
-
-
-def _loops_auto_load_enabled() -> bool:
-    """Whether the operator opted into session-start loop/statusline auto-load (#256).
-
-    The opt-in knob the loop OWNER sets; default OFF so a colleague cloning
-    the repo is never nagged. Resolved env-first (``T3_LOOPS_AUTO_LOAD`` via
-    :func:`_resolve_loop_env`, so the ``~/.teatree`` bash env file the
-    unsourced hook misses is still honoured), then ``[loops] auto_load`` in
-    ``~/.teatree.toml``. Unlike :func:`_loops_toml_enabled` (a fail-OPEN
-    kill-switch), this fails CLOSED (OFF) on a missing/broken config: a fresh
-    clone has neither the env var nor the flag, so it stays silent.
-    """
-    import tomllib  # noqa: PLC0415
-
-    env = _resolve_loop_env("T3_LOOPS_AUTO_LOAD").strip().lower()
-    if env:
-        return env in _AUTO_LOAD_TRUTHY
-
-    config_path = Path.home() / ".teatree.toml"
-    if not config_path.is_file():
-        return False
-    try:
-        with config_path.open("rb") as f:
-            config = tomllib.load(f)
-    except Exception:  # noqa: BLE001
-        return False
-    loops = config.get("loops") if isinstance(config, dict) else None
-    if not isinstance(loops, dict):
-        return False
-    return loops.get("auto_load") is True
+    """Whether ``[loops] enabled`` is true (default True, fails OPEN; see :func:`_section_bool_setting`)."""
+    return _section_bool_setting("loops", "enabled", default=True)
 
 
 _LOOP_PROMPT = "Run `t3 loop tick` in Bash, then briefly report the tick summary."
@@ -1112,15 +1086,16 @@ def _claim_loop_ownership(session_id: str) -> None:
     gated out), the ownership-claim logic in
     :func:`handle_session_start_bootstrap` never ran.  The first
     UserPromptSubmit after the marker is set calls this to fill the gap.
-    No-ops if a live foreign owner already holds the record, or if any of
-    the loop kill-switches are engaged: ``[loops] enabled = false`` in
-    ``~/.teatree.toml``, ``T3_LOOPS_DISABLED=all``, or ``T3_LOOP_DISOWN``
-    truthy.  Re-arming a paused loop here would resurrect the very
-    machinery the pause surface exists to silence.
+    No-ops if a live foreign owner already holds the record, or if either
+    loop kill-switch is engaged: ``[loops] enabled = false`` in
+    ``~/.teatree.toml`` or ``T3_LOOP_DISOWN`` truthy.  Re-arming a paused
+    loop here would resurrect the very machinery the pause surface exists to
+    silence.  Durable per-loop pause/disable lives in the DB ``LoopState``
+    tier (``t3 loop pause``/``disable``) — the in-process ``T3_LOOP_DISOWN``
+    knob is the orthogonal immediate-mitigation lever, not a loops
+    kill-switch.
     """
     if not _loops_toml_enabled():
-        return
-    if _all_loops_disabled():
         return
     if _resolve_loop_env("T3_LOOP_DISOWN").strip() not in _DISOWN_FALSEY:
         return
@@ -1193,7 +1168,7 @@ def _loop_registration_exempt(data: dict) -> bool:
         (``_loop_auto_load_active`` False — no teatree marker OR auto-load not
         enabled, #256), so a colleague who merely cloned the repo is never
         nagged to register a cron; default OFF until the owner opts in via
-        ``[loops] auto_load = true``;
+        ``[teatree] autoload = true``;
     - the tool is a cron-management / skill tool the agent uses to register the
         loop (no point blocking the very tools that satisfy the gate);
     - the call comes from a sub-agent (non-empty ``agent_id``) — a sub-agent has
@@ -4104,6 +4079,19 @@ def _record_skills(skills_file: Path, existing: set[str], closure: list[str]) ->
             _append_line(skills_file, name)
 
 
+def _maybe_engage_t3(session_id: str, names: list[str]) -> None:
+    # #256 Option-1: a token that canonicalizes to the ``t3:`` namespace engages
+    # the SUGGESTER via ``.t3-engaged`` — NOT ``.teatree-active`` (loops stay
+    # reserved for teatree-requiring skills, preserving downstream-overlay loop
+    # isolation). Canonicalize through the SAME identity seam
+    # (:func:`normalize_skill_name`, normalize UP) that ``_is_teatree_skill``
+    # uses, so a bare ``code`` and a qualified ``t3:code`` are detected
+    # identically while a foreign ``other:review`` keeps its namespace and never
+    # matches (no qualifier-stripping conflation).
+    if any(normalize_skill_name(name).startswith("t3:") for name in names):
+        _state_file(session_id, "t3-engaged").touch()
+
+
 def handle_track_skill_usage(data: dict) -> None:
     """Track which skills are active this session, including their closure.
 
@@ -4127,6 +4115,7 @@ def handle_track_skill_usage(data: dict) -> None:
         _record_skills(skills_file, existing, _resolve_skill_closure([skill_name]))
         if _skill_load_activates_teatree([skill_name]):
             _state_file(session_id, "teatree-active").touch()
+        _maybe_engage_t3(session_id, [skill_name])
         return
 
     # InstructionsLoaded: array of skill objects or skill name strings
@@ -4143,6 +4132,7 @@ def handle_track_skill_usage(data: dict) -> None:
     _record_skills(skills_file, existing, _resolve_skill_closure(loaded))
     if _skill_load_activates_teatree(loaded):
         _state_file(session_id, "teatree-active").touch()
+    _maybe_engage_t3(session_id, loaded)
 
 
 # ── PostToolUse: read-dedup ────────────────────────────────────────
@@ -5344,6 +5334,27 @@ def _merge_session_start_context(context: str, session_id: str, source: str) -> 
     return context
 
 
+# #256 one-line how-to-start advisory for a default-off, not-yet-engaged session.
+_TEATREE_NOT_ACTIVE_ADVISORY = (
+    "teatree is installed but not active in this session — run /teatree to start it "
+    "(or set [teatree] autoload = true to start it automatically)."
+)
+
+
+def _emit_session_start_context(context: str) -> None:
+    # #1452: the harness silently drops the legacy flat top-level
+    # ``{"additionalContext": ...}`` form for SessionStart; the documented schema
+    # (Agent SDK ``SessionStartHookSpecificOutput``) requires the nested envelope.
+    # An empty merge (a not-engaged compact resume with no recovery context)
+    # emits nothing (#256).
+    if not context.strip():
+        return
+    json.dump(
+        {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": context}},
+        sys.stdout,
+    )
+
+
 def handle_session_start_bootstrap(data: dict) -> None:
     """Emit the tick-dispatch bootstrap directive (#786 WS3 — roster retired).
 
@@ -5371,9 +5382,24 @@ def handle_session_start_bootstrap(data: dict) -> None:
     tick-owner record / emits the bootstrap directive when it both opted into
     teatree AND the operator enabled session-start auto-load. Default OFF, so a
     colleague cloning the repo never silently becomes the loop owner.
+
+    Default-off engagement (#256): when ``[teatree] autoload`` is set the owner
+    default flips the session ``teatree-active`` BEFORE the loop gate, so today's
+    bootstrap fires unchanged. When the session is neither autoloaded nor
+    teatree-active, a FRESH start surfaces a one-line how-to-start advisory
+    instead of returning silently; a compact/resume skips the advisory but still
+    merges so snapshot-recovery / hand-off context is never dropped.
     """
     session_id = data.get("session_id", "")
     if not session_id:
+        return
+    source = data.get("source", "")
+    if _autoload_enabled():
+        _ensure_state_dir()
+        _state_file(session_id, "teatree-active").touch()
+    elif not _teatree_active(session_id):
+        advisory = "" if source in {"compact", "resume"} else _TEATREE_NOT_ACTIVE_ADVISORY
+        _emit_session_start_context(_merge_session_start_context(advisory, session_id, source))
         return
     if not _loop_auto_load_active(session_id):
         return
@@ -5438,7 +5464,6 @@ def handle_session_start_bootstrap(data: dict) -> None:
     # the flock — the DB has its own CAS serialization; holding the registry
     # flock across a Django bootstrap would needlessly stall sibling
     # SessionStart hooks.
-    source = data.get("source", "")
     if became_owner_after_rotation or source == "compact":
         _evict_stale_db_lease_owner(session_id, current_pid=current_pid)
 
@@ -5448,22 +5473,7 @@ def handle_session_start_bootstrap(data: dict) -> None:
         _emit_osc_title()
 
     context = _merge_session_start_context(context, session_id, source)
-
-    # #1452: the harness silently drops the legacy flat top-level
-    # ``{"additionalContext": ...}`` form for SessionStart events; the
-    # documented schema (Agent SDK ``SessionStartHookSpecificOutput``)
-    # requires the nested envelope. Confirmed empirically: 24 compactions
-    # in session a1e3d2d8-… emitted the flat form and zero of them
-    # injected the snapshot text into the post-compact model context.
-    json.dump(
-        {
-            "hookSpecificOutput": {
-                "hookEventName": "SessionStart",
-                "additionalContext": context,
-            },
-        },
-        sys.stdout,
-    )
+    _emit_session_start_context(context)
 
 
 def handle_session_end_loop_registry(data: dict) -> None:
@@ -5709,31 +5719,6 @@ def _resolve_loop_env(name: str) -> str:
     return _read_bash_env_var(name)
 
 
-def _all_loops_disabled() -> bool:
-    """Does ``T3_LOOPS_DISABLED`` fully prune the loop for this session?
-
-    Mirrors the ``all`` sentinel of ``teatree.loops.config._env_disabled_names``
-    without importing ``teatree`` (a Stop hook runs under whatever
-    interpreter the harness invokes, where ``teatree`` may be absent —
-    #810). The orchestrator gates every ``t3 loop tick`` job through that
-    same env var; the Stop self-pump is the in-session counterpart of a
-    tick, so it must honour the kill-switch identically. ``T3_LOOPS_DISABLED=all``
-    means every non-always-on loop is off — re-pumping then only re-runs the
-    one ``always_on`` ``dispatch`` scanner, doing no useful work while the
-    pending Tasks that drive ``pending-spawn`` keep the pump re-arming every
-    interval. That is the busy-loop the prune is meant to silence, so a fully
-    pruned session never pumps.
-
-    The value is resolved via :func:`_resolve_loop_env` so the kill-switch
-    set in ``~/.teatree`` (never sourced into the bare-``python3`` Stop
-    hook) is still honoured.
-    """
-    raw = _resolve_loop_env("T3_LOOPS_DISABLED").strip()
-    if not raw:
-        return False
-    return any(part.strip().lower() == "all" for part in raw.split(","))
-
-
 def _pause_suppresses_self_pump() -> bool:
     """True when an explicit user pause must win over the standing loop directive.
 
@@ -5774,24 +5759,22 @@ def _self_pump_suppressed(session_id: str) -> bool:
     per-agent consolidation slot stays as a secondary cross-session
     dedup, NOT a substitute for this gate.
 
-    ``T3_LOOPS_DISABLED=all`` fully prunes the loop (the same kill-switch
-    the orchestrator honours per tick job): the owner's Stop hook becomes
-    a clean no-op so a pruned environment cannot busy-loop on stale
-    pending work. Both this and ``T3_LOOP_DISOWN`` resolve through
-    :func:`_resolve_loop_env`, which falls back to the ``~/.teatree`` bash
-    env file when the var is absent from the process env — the bare
-    ``python3`` Stop hook never sources that file, so a kill-switch set
-    only there would otherwise be invisible to the self-pump.
+    A durable DB ``LoopState`` pause/disable of ``dispatch`` (the loop the
+    self-pump drives) makes the owner's Stop hook a clean no-op so a paused
+    control plane cannot busy-loop on stale pending work — the
+    restart-surviving 'pause everything' (#1913,
+    :func:`db_loop_state_suppresses_self_pump`). Loop control is ``/loops`` +
+    the DB only; there is no env kill-switch.
 
     Immediate mitigation knob: ``T3_LOOP_DISOWN`` truthy (in the session's
-    env or the bash env file) makes even the owner's Stop hook a clean
-    no-op, so a session can stop driving the loop in-process without
-    touching the registry or ending the session.
+    env or the bash env file, resolved via :func:`_resolve_loop_env`) makes
+    even the owner's Stop hook a clean no-op, so a session can stop driving
+    the loop in-process without touching the registry or ending the session.
 
-    A user pause (away, #2247/#2250, :func:`_pause_suppresses_self_pump`) or a
-    durable DB ``LoopState`` pause of ``dispatch`` (#1913, :func:`db_loop_state_suppresses_self_pump`) gate it off.
+    A user pause (away, #2247/#2250, :func:`_pause_suppresses_self_pump`) also
+    gates it off.
     """
-    if _all_loops_disabled() or db_loop_state_suppresses_self_pump():
+    if db_loop_state_suppresses_self_pump():
         return True
     if _resolve_loop_env("T3_LOOP_DISOWN").strip() not in _DISOWN_FALSEY:
         return True
