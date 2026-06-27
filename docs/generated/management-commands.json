@@ -849,6 +849,14 @@
           "name": "landscape"
         },
         {
+          "help": "Print the machine-readable JSON handoff for every NOT-auto-deleted item (#2763)",
+          "name": "emit"
+        },
+        {
+          "help": "Capture a branch's unique content to a PR, verify it landed, then delete the branch (#2763)",
+          "name": "salvage"
+        },
+        {
           "help": "Tear down every done worktree (analyze-then-wipe) on demand",
           "name": "clean-merged"
         },

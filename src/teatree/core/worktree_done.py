@@ -34,15 +34,19 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from teatree.config import load_config
+from teatree.config import get_effective_settings, load_config
 from teatree.core.branch_classification import (
     _branch_tree_matches_squash,
+    branch_redundancy,
     content_equivalence_blockers,
     is_squash_merged,
 )
 from teatree.core.clean_ignore import is_clean_ignored
 from teatree.core.cleanup import _effective_target, _EffectiveTarget, _resolve_worktree_path, cleanup_worktree
+from teatree.core.cleanup_emit import CleanupEmitRecord, banned_terms_status
+from teatree.core.cleanup_liveness import worktree_liveness
 from teatree.core.cleanup_orphan_ref import classify_orphan_ref
+from teatree.core.cleanup_ownership import is_excluded_by_ownership
 from teatree.core.clone_paths import resolve_clone_path
 from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree_env import CACHE_DIRNAME, CACHE_FILENAME
@@ -97,13 +101,17 @@ class ReapOutcome:
     """The disposition of one worktree under :func:`reap_done_worktree`.
 
     ``action`` is ``wiped`` / ``kept`` / ``would-wipe`` (dry-run) / ``skipped``
-    (clean_ignore). ``label`` is the human-readable result line. ``errors`` carries
-    any non-fatal teardown-step failure surfaced by :func:`cleanup_worktree`.
+    (clean_ignore) / ``excluded`` (colleague-owned) / ``active`` (live). ``label``
+    is the human-readable result line. ``errors`` carries any non-fatal
+    teardown-step failure surfaced by :func:`cleanup_worktree`. ``emit`` is the
+    structured handoff record for the judgment skill, set on every item the CLI
+    did NOT auto-delete (``None`` for wiped / would-wipe / clean_ignore-skipped).
     """
 
     action: str
     label: str
     errors: list[str] = field(default_factory=list)
+    emit: CleanupEmitRecord | None = None
 
 
 def worktree_is_done(worktree: Worktree) -> DoneSignal:
@@ -247,32 +255,107 @@ def _branch_ref_gone_reasons(target: _EffectiveTarget, exc: CommandFailedError) 
     return [f"{count} commit(s) on NO remote (content not upstream): {preview}"]
 
 
+def _build_emit_record(worktree: Worktree, *, workspace: Path, liveness: str) -> CleanupEmitRecord:
+    """Assemble the structured handoff record for a NOT-auto-deleted worktree.
+
+    Resolves the current-tip redundancy (for ``unique_commit_shas`` +
+    ``merged_with_post_merge_work``), the banned-terms status of the unique
+    content, the tip author/date, and the liveness reason — everything the
+    judgment skill needs to route the item without re-probing git itself.
+    """
+    wt_path = _resolve_worktree_path(workspace, worktree)
+    repo_main = resolve_clone_path(workspace, worktree) or workspace / worktree.repo_path
+    target = _effective_target(str(repo_main), wt_path, worktree)
+    ref = target.branch_to_delete or worktree.branch
+    probe_repo = str(repo_main)
+    verdict = branch_redundancy(probe_repo, ref)
+    try:
+        texts = [
+            git.run(repo=probe_repo, args=["log", f"origin/main..{ref}", "--format=%B"]),
+            git.run(repo=probe_repo, args=["diff", f"origin/main...{ref}"]),
+        ]
+    except CommandFailedError:
+        texts = []
+    status, found = banned_terms_status(texts)
+    owner = git.run(repo=probe_repo, args=["log", "-1", "--format=%an", ref])
+    last_date = git.run(repo=probe_repo, args=["log", "-1", "--format=%cI", ref])
+    return CleanupEmitRecord(
+        path=wt_path,
+        branch=worktree.branch,
+        kind="worktree",
+        unique_commit_shas=verdict.unique_shas,
+        merged_with_post_merge_work=verdict.merged_with_post_merge_work,
+        banned_terms_status=status,
+        banned_terms_found=found,
+        liveness=liveness,
+        last_commit_date=last_date,
+        owner=owner,
+    )
+
+
+def _ownership_liveness_skip(worktree: Worktree, *, workspace: Path) -> ReapOutcome | None:
+    """The OWNERSHIP then LIVENESS pre-gate: a skip :class:`ReapOutcome`, or ``None`` to proceed.
+
+    A colleague's work on a product repo is EXCLUDED up front; an actively-worked
+    item is skipped-as-ACTIVE. Both carry a structured emit record so the skill
+    sees them. ``None`` means neither gate fired and the reaper may continue to
+    done-detection.
+    """
+    wt_path = _resolve_worktree_path(workspace, worktree)
+    repo_main = resolve_clone_path(workspace, worktree) or workspace / worktree.repo_path
+    settings = get_effective_settings()
+    ownership = is_excluded_by_ownership(
+        str(repo_main),
+        worktree.branch,
+        owner_aliases=settings.user_identity_aliases,
+        colleague_pattern=settings.colleague_repo_url_pattern,
+    )
+    if ownership.excluded:
+        return ReapOutcome(
+            "excluded",
+            f"EXCLUDED '{worktree.branch}': {ownership.reason}",
+            emit=_build_emit_record(worktree, workspace=workspace, liveness=""),
+        )
+    liveness = worktree_liveness(worktree, wt_path=Path(wt_path))
+    if liveness.active:
+        return ReapOutcome(
+            "active",
+            f"ACTIVE '{worktree.branch}': {liveness.reason} — skipping (do not wipe a live item)",
+            emit=_build_emit_record(worktree, workspace=workspace, liveness=liveness.reason),
+        )
+    return None
+
+
 def reap_done_worktree(
     worktree: Worktree,
     *,
     workspace: Path,
     dry_run: bool,
 ) -> ReapOutcome:
-    """Wipe one worktree only when done AND every change is proven redundant.
+    """Wipe one worktree only when owned, not live, done AND every change proven redundant.
 
     The single per-worktree seam both ``clean-all`` and the FSM-automatic
     teardown funnel through. Order is load-bearing: ``clean_ignore`` skip →
-    :func:`worktree_is_done` (necessary) → :func:`analyze_worktree_changes`
-    (sufficient, primary safety) → wipe. A not-done or potentially-needed worktree
-    is KEPT and reported, never snapshot. The wipe goes through
-    :func:`cleanup_worktree` (git worktree + branch, the per-worktree DB, docker
-    containers/images/volumes, overlay cleanup); the analysis already proved
-    redundancy, so it runs with ``force=True`` (the analysis IS the data-loss
-    gate) and ``strict_hygiene=False``.
+    OWNERSHIP guard (exclude a colleague's work on a product repo) → LIVENESS guard
+    (skip an actively-worked item) → :func:`worktree_is_done` (necessary) →
+    :func:`analyze_worktree_changes` (sufficient, primary safety) → wipe. Every
+    item NOT auto-deleted carries a structured ``emit`` record for the judgment
+    skill; only a provably-redundant item is wiped (``force=True`` —  the analysis
+    IS the data-loss gate — ``strict_hygiene=False``).
     """
     if is_clean_ignored(worktree.branch, overlay=worktree.overlay):
         return ReapOutcome("skipped", f"SKIPPED '{worktree.branch}': matches clean_ignore — keeping")
+
+    pre_gate = _ownership_liveness_skip(worktree, workspace=workspace)
+    if pre_gate is not None:
+        return pre_gate
 
     signal = worktree_is_done(worktree)
     if not signal.done:
         return ReapOutcome(
             "kept",
             f"KEPT '{worktree.branch}': not done ({signal.source}) — keeping the worktree",
+            emit=_build_emit_record(worktree, workspace=workspace, liveness=""),
         )
 
     analysis = analyze_worktree_changes(worktree, workspace=workspace)
@@ -280,7 +363,8 @@ def reap_done_worktree(
         return ReapOutcome(
             "kept",
             f"KEPT '{worktree.branch}': done ({signal.source}) but {'; '.join(analysis.kept_reasons)} "
-            f"— salvage with `t3 <overlay> pr create`, do not wipe",
+            f"— salvage with `t3 <overlay> workspace salvage`, do not wipe",
+            emit=_build_emit_record(worktree, workspace=workspace, liveness=""),
         )
 
     if dry_run:
@@ -293,21 +377,33 @@ def reap_done_worktree(
     return ReapOutcome("wiped", f"Wiped '{worktree.branch}' ({signal.source}): {result.label}", errors=result.errors)
 
 
-def reap_done_worktrees(workspace: Path, *, dry_run: bool) -> list[str]:
-    """The one consolidated reaping pass — wipe every done+redundant worktree.
+def reap_done_worktrees_detailed(workspace: Path, *, dry_run: bool) -> list[ReapOutcome]:
+    """The one consolidated reaping pass — full :class:`ReapOutcome` per Worktree row.
 
     Replaces the three former ``clean-all`` passes. Iterates every ``Worktree``
-    row, keeps the not-done and potentially-needed ones with a reported reason, and
-    wipes (or, under ``dry_run``, lists) the rest. The reaper is fully unattended
-    by design (CORRECTION 3): an uncertain worktree is kept with a warning, never
-    prompted — the old interactive push/abandon resolution is gone, salvage is a
-    separate explicit action (``t3 <overlay> pr create``).
-
-    DSLR snapshots are deliberately untouched: they are tenant baselines the
-    snapshot worktrees restore FROM, not ticket-specific artifacts (CORRECTION 2),
-    and are pruned by their own keep-latest-per-tenant pass.
+    row; wipes (or, under ``dry_run``, lists) only the owned, non-live,
+    done+redundant ones and KEEPS/EXCLUDES/skips-as-ACTIVE the rest — each with a
+    structured ``emit`` record for the judgment skill. Fully unattended (CORRECTION
+    3): never prompts, salvage is the separate explicit ``t3 <overlay> workspace
+    salvage``. DSLR snapshots are deliberately untouched (CORRECTION 2).
     """
     return [
-        reap_done_worktree(worktree, workspace=workspace, dry_run=dry_run).label
+        reap_done_worktree(worktree, workspace=workspace, dry_run=dry_run)
         for worktree in Worktree.objects.select_related("ticket")
+    ]
+
+
+def reap_done_worktrees(workspace: Path, *, dry_run: bool) -> list[str]:
+    """The label-only view of :func:`reap_done_worktrees_detailed` (back-compat for the CLI)."""
+    return [outcome.label for outcome in reap_done_worktrees_detailed(workspace, dry_run=dry_run)]
+
+
+def collect_emit_records(workspace: Path) -> list[CleanupEmitRecord]:
+    """The structured handoff for the judgment skill — one record per NOT-auto-deleted item.
+
+    A read-only pass (``dry_run=True`` so nothing is wiped) that returns the
+    machine-readable EMIT records the skill consumes (it serialises them to JSON).
+    """
+    return [
+        outcome.emit for outcome in reap_done_worktrees_detailed(workspace, dry_run=True) if outcome.emit is not None
     ]

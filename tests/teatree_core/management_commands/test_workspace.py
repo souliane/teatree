@@ -1,5 +1,6 @@
 """Tests for the workspace and worktree management commands."""
 
+import json
 import os
 import re
 import subprocess
@@ -21,15 +22,18 @@ import teatree.core.cleanup as cleanup_mod
 import teatree.core.management.commands._workspace_clean_all as ws_clean_all_mod
 import teatree.core.management.commands._workspace_cleanup as ws_cleanup_mod
 import teatree.core.management.commands._workspace_docker as ws_docker_mod
+import teatree.core.management.commands._workspace_salvage as ws_salvage_mod
 import teatree.core.management.commands._workspace_stash as ws_stash_mod
 import teatree.core.management.commands.workspace as workspace_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.runners.provision as provision_mod
+import teatree.core.worktree_done as worktree_done_mod
 import teatree.utils.db as db_mod
 import teatree.utils.git as git_mod
 import teatree.utils.git_commit as git_commit_mod
 import teatree.utils.run as utils_run_mod
 from teatree.config import load_config
+from teatree.core.cleanup_liveness import LivenessVerdict
 from teatree.core.management.commands._workspace_ticket_intake import build_branch_name
 from teatree.core.management.commands.workspace import _branch_prefix, _workspace_dir
 from teatree.core.models import Ticket, Worktree
@@ -813,6 +817,12 @@ _no_orphan_raw = patch.object(ws_clean_all_mod, "reap_orphan_raw_worktrees", new
 _no_dslr_prune = patch("teatree.utils.django_db.prune_dslr_snapshots", new=lambda **kw: [])
 
 
+# These integration tests model SETTLED worktrees (cleanup's target). The freshly
+# created fixture worktrees would trip the liveness "recent commit" gate, which is
+# tested directly in test_cleanup_liveness.py — neutralise it here.
+_no_liveness = patch.object(worktree_done_mod, "worktree_liveness", new=lambda *_a, **_k: LivenessVerdict(active=False))
+
+
 class TestWorkspaceProvisionPositionalId(TestCase):
     """#941: ``workspace provision`` accepts an optional positional ticket id.
 
@@ -1224,6 +1234,49 @@ class TestWorkspaceMultiOverlayResolution(TestCase):
                 call_command("workspace", "teardown", path=str(wt_dir))
 
 
+class TestWorkspaceEmitAndSalvage(TestCase):
+    """The ``workspace emit`` (structured handoff) and ``workspace salvage`` CLI entries (#2763)."""
+
+    def test_emit_prints_json_array(self) -> None:
+        with patch.object(workspace_mod, "_workspace_dir", return_value=Path("/ws")):
+            rendered = cast("str", call_command("workspace", "emit"))
+        assert json.loads(rendered) == [], "no NOT-auto-deleted items → empty JSON array"
+
+    def test_emit_serialises_collected_records(self) -> None:
+        from teatree.core.cleanup_emit import CleanupEmitRecord  # noqa: PLC0415
+
+        record = CleanupEmitRecord(path="/ws/feat", branch="feat", kind="worktree", unique_commit_shas=["abc"])
+        with (
+            patch.object(workspace_mod, "_workspace_dir", return_value=Path("/ws")),
+            patch.object(ws_salvage_mod, "collect_emit_records", return_value=[record]),
+        ):
+            data = json.loads(cast("str", call_command("workspace", "emit")))
+        assert data[0]["branch"] == "feat"
+        assert data[0]["unique_commit_shas"] == ["abc"]
+        assert data[0]["schema_version"] == 1
+
+    def test_salvage_builds_request_and_reports_outcome(self) -> None:
+        from teatree.core.cleanup_salvage import SalvageRequest, SalvageResult  # noqa: PLC0415
+
+        captured: dict[str, object] = {}
+
+        def _fake_salvage(request: SalvageRequest, _hooks: object) -> SalvageResult:
+            captured["source_ref"] = request.source_ref
+            captured["salvage_branch"] = request.salvage_branch
+            return SalvageResult(salvaged=True, deleted=True, pr_url="https://x/pr/9", salvage_branch="salvage/feat")
+
+        with (
+            patch.object(ws_salvage_mod.git, "run", return_value="/repo"),
+            patch.object(ws_salvage_mod, "salvage_item", side_effect=_fake_salvage),
+        ):
+            line = cast("str", call_command("workspace", "salvage", "feat"))
+
+        assert captured["source_ref"] == "feat"
+        assert captured["salvage_branch"] == "salvage/feat", "defaults to salvage/<source_ref>"
+        assert "salvaged=True" in line
+        assert "deleted=True" in line
+
+
 class TestCleanAllDryRun(TestCase):
     """``clean-all --dry-run`` previews the done-reaper and removes nothing."""
 
@@ -1274,6 +1327,7 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_orphan_isolated_roots
     @_no_orphan_docker
     @_no_dslr_prune
+    @_no_liveness
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_runs_overlay_cleanup_steps_on_a_reaped_worktree(self) -> None:
@@ -2885,6 +2939,7 @@ def _make_squash_merged_worktree(tmp: Path, *, overlay: str = "test", ticket_num
 @_no_orphan_isolated_roots
 @_no_orphan_docker
 @_no_dslr_prune
+@_no_liveness
 @_patch_overlays(FULL_OVERLAY)
 @override_settings(**SETTINGS)
 @_no_orphan_raw
@@ -3132,6 +3187,7 @@ class TestIsSquashMergedRealGit(TestCase):
 @_no_orphan_docker
 @_no_orphan_raw
 @_no_dslr_prune
+@_no_liveness
 @_patch_overlays(FULL_OVERLAY)
 @override_settings(**SETTINGS)
 class TestCleanAllUnattendedReapMatrix(TestCase):
@@ -3139,9 +3195,9 @@ class TestCleanAllUnattendedReapMatrix(TestCase):
 
     Each case runs the whole command unattended (no ``--interactive``) against a
     real on-disk git repo, mocking only the unstoppable forge CLI (``gh``/``glab``
-    via ``_run_host_cli``) and the docker-down / dropdb side effects — never the
-    git layer, so the deterministic squash signals and data-loss guards run for
-    real. Asserts the reap/keep decision and that no prompt was ever issued.
+    via ``probe_host_cli`` / ``_branch_pr_is_merged``) and the docker-down / dropdb
+    side effects — never the git layer, so the deterministic squash signals and
+    data-loss guards run for real. Asserts the reap/keep decision and no prompt.
     """
 
     def _run(self, workspace: Path, *, forge: "subprocess.CompletedProcess[str] | None") -> list[str]:

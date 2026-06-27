@@ -19,6 +19,7 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
+from teatree.core.cleanup_liveness import LivenessVerdict
 from teatree.core.models import Ticket, Worktree
 from teatree.core.runners import worktree_start
 from teatree.core.worktree_done import (
@@ -87,6 +88,12 @@ class _ReaperFixture(TestCase):
         )
         # Neutralise the forge so the patch-id / FSM signals are the only deciders.
         monkeypatch.setattr("teatree.core.branch_classification.probe_host_cli", lambda *_a, **_k: "")
+        # These tests model SETTLED worktrees (cleanup's target), not live ones; the
+        # liveness guard has its own dedicated tests, so neutralise it here.
+        monkeypatch.setattr(
+            "teatree.core.worktree_done.worktree_liveness",
+            lambda *_a, **_k: LivenessVerdict(active=False),
+        )
 
     def _config(self) -> object:
         class _Cfg:
@@ -305,6 +312,77 @@ class TestDryRunAndCleanIgnore(_ReaperFixture):
 
         assert len(lines) == 1
         assert lines[0].startswith("WOULD WIPE")
+
+
+class TestReaperGatesAndEmit(_ReaperFixture):
+    """The ownership/liveness pre-gates route correctly, and kept items carry an emit record."""
+
+    def test_kept_item_carries_an_emit_record(self) -> None:
+        worktree = self._make_worktree(Ticket.State.STARTED)  # not done → kept
+
+        outcome = self._reap(worktree)
+
+        assert outcome.action == "kept"
+        assert outcome.emit is not None
+        emit = outcome.emit
+        assert emit.branch == self.slug
+        assert emit.kind == "worktree"
+        assert emit.unique_commit_shas, "the unique commit must be emitted for salvage"
+        assert emit.banned_terms_status == "clean"
+        assert emit.owner == "t"
+        assert emit.last_commit_date, "the tip commit date must be emitted"
+        assert emit.merged_with_post_merge_work is False
+
+    def test_active_item_is_skipped_and_emitted(self) -> None:
+        worktree = self._make_worktree(Ticket.State.MERGED)
+        with patch(
+            "teatree.core.worktree_done.worktree_liveness",
+            return_value=LivenessVerdict(active=True, reason="ticket has a live session or active/claimed task"),
+        ):
+            outcome = self._reap(worktree)
+
+        assert outcome.action == "active", outcome.label
+        assert "live session" in outcome.label
+        assert self.wt_path.exists(), "a live item must never be wiped"
+        assert outcome.emit is not None
+        assert outcome.emit.liveness
+
+    def test_colleague_authored_item_is_excluded(self) -> None:
+        from teatree.core.cleanup_ownership import OwnershipVerdict  # noqa: PLC0415
+
+        worktree = self._make_worktree(Ticket.State.MERGED)
+        with patch(
+            "teatree.core.worktree_done.is_excluded_by_ownership",
+            return_value=OwnershipVerdict(excluded=True, reason="colleague-authored (bob) on a product repo"),
+        ):
+            outcome = self._reap(worktree)
+
+        assert outcome.action == "excluded", outcome.label
+        assert "colleague-authored" in outcome.label
+        assert self.wt_path.exists(), "a colleague's work must never be wiped"
+        assert outcome.emit is not None
+
+
+class TestPostMergeWorkEmitTag(_ReaperFixture):
+    """A merged-PR branch with post-merge work is KEPT and emitted tagged merged_with_post_merge_work."""
+
+    def test_post_merge_kept_item_emit_is_tagged(self) -> None:
+        _run_git("merge", "-q", "--squash", self.slug, cwd=self.repo_main)
+        _run_git("commit", "-q", "-m", "squash: ship the feature (#2761)", cwd=self.repo_main)
+        _run_git("push", "-q", "origin", "main", cwd=self.repo_main)
+        _run_git("fetch", "-q", "origin", cwd=self.repo_main)
+        (self.wt_path / "post.txt").write_text("post-merge work\n", encoding="utf-8")
+        _run_git("add", "-A", cwd=self.wt_path)
+        _run_git("commit", "-q", "-m", "feat: continued after the merge", cwd=self.wt_path)
+        worktree = self._make_worktree(Ticket.State.MERGED)
+
+        with patch("teatree.core.branch_classification.probe_host_cli", return_value="42"):
+            outcome = self._reap(worktree)
+
+        assert outcome.action == "kept", outcome.label
+        assert outcome.emit is not None
+        assert outcome.emit.merged_with_post_merge_work is True
+        assert outcome.emit.unique_commit_shas, "post-merge SHAs must be emitted for a fresh PR"
 
 
 class TestSnapshotModulesRemoved:
