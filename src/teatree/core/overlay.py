@@ -496,6 +496,20 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
         """Manifest entry id (e.g. CI lane) for *spec_path*, recorded on the run (#272); ``""`` default."""
         return ""
 
+    def get_e2e_playwright_args(self, spec_path: str) -> list[str]:
+        """Extra ``npx playwright test`` CLI args for *spec_path* (e.g. ``-c <config>``).
+
+        The args-sibling of :meth:`get_e2e_env_extras`: where that hook
+        contributes environment variables, this contributes Playwright CLI
+        flags the overlay derives from the spec. A multi-config Playwright
+        suite (one config per lane — api-flow vs contrib vs portal) needs the
+        runner to pass the right ``-c <config>`` per spec; the overlay knows
+        the lane->config mapping, core does not. Default ``[]`` — no flags, so
+        every overlay that does not override keeps the exact prior behaviour.
+        """
+        del spec_path
+        return []
+
     def get_e2e_scenarios(self, spec_path: str) -> tuple:
         """Return the per-feature acceptance scenarios for *spec_path*; ``()`` default.
 

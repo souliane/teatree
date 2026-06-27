@@ -4,7 +4,8 @@ import os
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
@@ -26,6 +27,7 @@ from tests.teatree_core.management_commands._overlays import (
     _INFER_EXTERNAL_OVERLAY,
     _INFER_PROJECT_OVERLAY,
     _OVERLAY_REPO_OVERLAY,
+    _PLAYWRIGHT_ARGS_OVERLAY,
     _PROJECT_RUNNER_OVERLAY,
     _UNCONFIGURED_OVERLAY,
     FULL_OVERLAY,
@@ -545,6 +547,65 @@ class TestE2eExternal(TestCase):
             assert env["BASE_URL"] == "http://localhost:5555"
             assert env["CUSTOMER"] == "acme"
             assert env["CI"] == "1"
+
+    @_patch_overlays(_PLAYWRIGHT_ARGS_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_overlay_playwright_args_select_config_per_spec(self) -> None:
+        """An overlay maps a spec lane to its Playwright config (``-c <config>``).
+
+        A multi-config Playwright suite needs the right ``-c`` per lane; the
+        overlay knows the lane->config mapping. The external runner must thread
+        ``get_e2e_playwright_args(spec)`` into the ``npx playwright test``
+        command — without it, an api-flow spec runs under the wrong default
+        config (the UI-login one) and fails.
+        """
+        spec = "playwright/api-flow/agent-portal/tests/api-tests/acme.spec.ts"
+        with self._external_run(spec) as mock_run:
+            cmd = mock_run.call_args[0][0]
+        assert cmd[:3] == ["npx", "playwright", "test"]
+        assert "-c" in cmd
+        assert cmd[cmd.index("-c") + 1] == "api.config.ts"
+        assert spec in cmd
+
+    @_patch_overlays(_PLAYWRIGHT_ARGS_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_overlay_playwright_args_empty_for_other_lanes(self) -> None:
+        """A spec the overlay does not map adds no Playwright args (default-empty)."""
+        spec = "playwright/contrib/acme/loan-request/child-allowance.spec.ts"
+        with self._external_run(spec) as mock_run:
+            cmd = mock_run.call_args[0][0]
+        assert "-c" not in cmd
+        assert spec in cmd
+
+    @contextmanager
+    def _external_run(self, spec: str) -> Iterator[MagicMock]:
+        """Run ``e2e external <spec> --target local`` against a provisioned worktree.
+
+        Yields the ``Popen`` mock so the caller can assert the built command.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            wt_dir = tmp_path / "worktree"
+            wt_dir.mkdir()
+            private_dir = tmp_path / "private"
+            private_dir.mkdir()
+            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/pwargs")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="backend",
+                branch="feature",
+                extra={"worktree_path": str(wt_dir)},
+                state=Worktree.State.SERVICES_UP,
+            )
+            mock_result = MagicMock(returncode=0)
+            with (
+                patch.dict("os.environ", {"T3_PRIVATE_TESTS": str(private_dir), "T3_ORIG_CWD": str(wt_dir)}),
+                patch.object(e2e_disc_mod, "get_service_port", return_value=5555),
+                patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
+            ):
+                call_command("e2e", "external", test_path=spec, target="local")
+                yield mock_run
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
