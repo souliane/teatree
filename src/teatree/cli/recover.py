@@ -4,7 +4,9 @@ Thin Typer wrapper forwarding to the active overlay's ``manage.py recover``
 (the django-typer command in ``teatree.core.management.commands.recover``),
 mirroring the ``t3 task`` alias. The active overlay is resolved the same way as
 the rest of the CLI; with no overlay registered it falls back to teatree's own
-management command via ``python -m teatree``.
+management command via ``python -m teatree``. Default is a dry-run report;
+``--requeue`` reopens FAILED tasks. There is no ``--snapshot`` — stranded work is
+surfaced for salvage (push to a PR), not auto-captured.
 """
 
 from pathlib import Path

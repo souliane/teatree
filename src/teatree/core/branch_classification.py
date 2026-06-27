@@ -1,19 +1,35 @@
-"""Classify a branch's unsynced commits and ask the forge whether its PR merged.
+"""Canonical layered merged-detection for a branch's CURRENT tip.
 
-The teardown data-loss guards in :mod:`teatree.core.cleanup` need to tell three
-things apart: commits already integrated by a squash-merge (safe), merge commits
-(no net content, safe), and genuinely-ahead work (would be lost). The subject
-matcher here is the reason cleanup can be honest about squash-merges:
-``git log <branch> --not origin/main`` detects commits by SHA, but a squash-merge
-creates a NEW SHA on the default branch. Without subject-matching, every
-squash-merged branch looks "unsynced" and blocks cleanup. Comparing against
-``origin/main`` (not ``--remotes``) is essential — ``--remotes`` would also
-exclude the feature branch's own remote tracking ref, hiding commits that are
-pushed but not yet on main.
+A branch is REDUNDANT (auto-deletable) only when its CURRENT tip is provably,
+fully captured on the target — never on a forge "merged" signal alone. The
+detection is three explicit layers, in escalating order, every one CONTENT-based:
 
-For branches that diverged so far the subject matcher and the squash-tree
-heuristic both break down, :func:`_branch_pr_is_merged` asks the forge directly
-(``gh``/``glab``) — the canonical merged signal (#1578).
+cherry-zero — ``git cherry <target> <branch>`` shows no ``+`` line: every unique
+commit's patch is already upstream. :func:`content_equivalence_blockers` is the
+fail-closed form (it also blocks on a unique merge commit and on any git error).
+
+synthetic-squash (b) — the git-delete-squashed canonical squash detector:
+``git cherry <target> $(git commit-tree <branch^{tree}> -p $(git merge-base
+<target> <branch>) -m _)``. A leading ``-`` means the branch's WHOLE current
+tree-delta is already on ``<target>`` as one squashed patch. This is what
+recognises a squash-merge: ``git log <branch> --not <target>`` detects commits by
+SHA, but a squash-merge rewrites them into a NEW SHA, so a per-commit /
+is-ancestor / three-dot test misses it.
+
+branch-merged (c) — ``git branch --merged <target>`` lists the branch: a plain
+merge commit whose tip is an ancestor of the target.
+
+The forge (``gh pr list --state merged`` / ``glab mr list --merged``) is
+CORROBORATING ONLY — :func:`_branch_pr_is_merged` reports it for the emit/route
+decision, but it NEVER alone authorises a delete (the same invariant the
+worktree reaper enforces in :mod:`teatree.core.worktree_done`). A forge-merged
+branch whose current tip still carries content not on the target is classified
+NOT-redundant and tagged ``merged_with_post_merge_work`` so the salvage skill
+routes that delta to a FRESH PR rather than the CLI silently destroying it.
+
+Comparing against ``origin/main`` (not ``--remotes``) is essential — ``--remotes``
+would also exclude the feature branch's own remote tracking ref, hiding commits
+that are pushed but not yet on main.
 """
 
 import json
@@ -58,6 +74,38 @@ class BranchClassification:
     squash_merged: list[BranchCommit] = field(default_factory=list)
     merge_commits: list[BranchCommit] = field(default_factory=list)
     genuinely_ahead: list[BranchCommit] = field(default_factory=list)
+
+
+@dataclass(frozen=True, slots=True)
+class RedundancyVerdict:
+    """The canonical layered verdict on whether a branch's CURRENT tip is redundant.
+
+    ``redundant`` is ``True`` only when one of the three CONTENT layers proved the
+    current tip fully captured on the target (auto-delete authorised). The forge
+    signal never sets it. ``forge_merged`` is the corroborating forge report.
+    ``unique_shas`` are the commits whose patch content is NOT provably on the
+    target (the per-commit ``git cherry`` ``+`` SHAs plus any unique merge
+    commit); they are the delta the salvage skill routes to a fresh PR when the
+    branch is kept. ``source`` names the deciding layer:
+    ``cherry-zero-unique`` / ``synthetic-squash`` / ``branch-merged`` /
+    ``not-redundant`` / ``inconclusive``.
+    """
+
+    redundant: bool
+    forge_merged: bool
+    unique_shas: list[str] = field(default_factory=list)
+    source: str = "not-redundant"
+
+    @property
+    def merged_with_post_merge_work(self) -> bool:
+        """The forge says merged, yet the current tip carries content not on target.
+
+        The post-merge-work emit tag: the branch shipped a PR/MR but has since
+        grown (or never squashed-down) unique content, so it is NOT redundant and
+        its ``unique_shas`` are NEW work bound for a fresh PR — never wiped on the
+        stale merged signal.
+        """
+        return self.forge_merged and not self.redundant and bool(self.unique_shas)
 
 
 def _canonicalize_subject(subject: str) -> str:
@@ -268,3 +316,102 @@ def _branch_tree_matches_squash(repo: str, branch: str) -> bool:
     if not merge_sha:
         return False
     return git.check(repo=repo, args=["diff", "--quiet", merge_sha, branch])
+
+
+def _tree_delta_captured(repo: str, ref: str, target: str) -> bool:
+    """The git-delete-squashed canonical squash detector — layer (b).
+
+    Builds a SYNTHETIC commit whose tree is ``ref``'s CURRENT tree, parented at
+    ``git merge-base <target> <ref>``, then asks ``git cherry <target>
+    <synthetic>`` whether that single squashed patch already landed on
+    ``<target>``. A leading ``-`` means the branch's WHOLE current tree-delta is
+    captured on the target as one squash commit ⇒ fully redundant. This is the
+    layer that recognises a squash-merge that a per-commit / is-ancestor test
+    misses, AND distinguishes a clean squash from one that grew post-merge work
+    (the larger current tree-delta no longer matches the squash patch → ``+``).
+
+    Fails CLOSED: any git error (unresolvable ref/target, corrupt repo) reads as
+    NOT captured, so destruction is never authorised on an inconclusive probe.
+    Works on any committish ``ref`` — a branch name, ``HEAD``, or a ``stash@{N}``.
+    """
+    try:
+        merge_base = git.run_strict(repo=repo, args=["merge-base", target, ref])
+        tree = git.run_strict(repo=repo, args=["rev-parse", f"{ref}^{{tree}}"])
+        synthetic = git.run_strict(repo=repo, args=["commit-tree", tree, "-p", merge_base, "-m", "_"])
+        cherry = git.run_strict(repo=repo, args=["cherry", target, synthetic])
+    except CommandFailedError:
+        return False
+    lines = [line for line in cherry.splitlines() if line.strip()]
+    return bool(lines) and all(line.startswith("-") for line in lines)
+
+
+def branch_redundancy(repo: str, branch: str, target: str = "origin/main") -> RedundancyVerdict:
+    """The canonical layered verdict: is ``branch``'s CURRENT tip provably on ``target``?
+
+    Three CONTENT layers decide ``redundant`` (see the module docstring):
+    cherry-zero (:func:`content_equivalence_blockers` empty), synthetic-squash
+    (:func:`_tree_delta_captured`), then ``git branch --merged``. The forge
+    (:func:`_branch_pr_is_merged`) is read for ``forge_merged`` but NEVER enters
+    the redundancy decision — a forge-merged tip still carrying unique content is
+    returned NOT-redundant with that content in ``unique_shas`` and surfaced via
+    :attr:`RedundancyVerdict.merged_with_post_merge_work`.
+
+    Fail-CLOSED on an inconclusive content probe: an erroring ``git cherry``
+    (``content_equivalence_blockers`` returns a parenthesised marker) skips the
+    squash/merged layers and returns NOT-redundant, so an uncertain branch is
+    kept, never deleted.
+    """
+    forge_merged = _branch_pr_is_merged(repo, branch)
+    blockers = content_equivalence_blockers(repo, branch, target)
+    unique_shas = [b for b in blockers if not b.startswith("(")]
+    inconclusive = any(b.startswith("(") for b in blockers)
+    if not blockers:
+        return RedundancyVerdict(redundant=True, forge_merged=forge_merged, source="cherry-zero-unique")
+    if not inconclusive and _tree_delta_captured(repo, branch, target):
+        return RedundancyVerdict(
+            redundant=True, forge_merged=forge_merged, unique_shas=unique_shas, source="synthetic-squash"
+        )
+    if not inconclusive and git.branch_merged(repo, branch, target):
+        return RedundancyVerdict(
+            redundant=True, forge_merged=forge_merged, unique_shas=unique_shas, source="branch-merged"
+        )
+    return RedundancyVerdict(
+        redundant=False,
+        forge_merged=forge_merged,
+        unique_shas=unique_shas,
+        source="inconclusive" if inconclusive else "not-redundant",
+    )
+
+
+def is_squash_merged(repo: str, branch: str, default: str) -> bool:
+    """Whether ``branch``'s current tip is PROVABLY fully captured on ``origin/<default>``.
+
+    The boolean view of :func:`branch_redundancy` the reaper and branch-prune
+    pass share: ``True`` only when a content layer (cherry-zero / synthetic-squash
+    / branch-merged) proved the tip redundant. The forge "merged" signal NEVER
+    alone returns ``True`` — a forge-merged branch with unique current-tip content
+    is kept for salvage, not deleted (the #2763 invariant). Survives a deleted
+    local branch ref: the layers read the branch NAME, and the data-loss guards
+    downstream keep an uncertain branch.
+    """
+    return branch_redundancy(repo, branch, f"origin/{default}").redundant
+
+
+def _branch_captured_upstream(repo: str, branch: str, default: str) -> bool:
+    """Whether every unique commit of ``branch`` is already in ``origin/<default>`` (patch-id).
+
+    The forge-CLI-free per-commit cherry-zero signal the orphaned-stash reaper
+    uses on a ``stash@{N}`` ref. ``git cherry`` prints ``- <sha>`` for each commit
+    whose change is already upstream (a squash captured it) and ``+ <sha>`` for
+    one that is not; the ref is captured when cherry finds no ``+`` line. A probe
+    failure reads as not-captured so the data-loss guards keep the work.
+
+    The richer current-tip detector is :func:`branch_redundancy` (which also runs
+    the synthetic-squash and ``--merged`` layers); this one stays the minimal
+    per-commit form the stash path wants.
+    """
+    try:
+        cherry = git.run(repo=repo, args=["cherry", f"origin/{default}", branch])
+    except CommandFailedError:
+        return False
+    return all(line.startswith("-") for line in cherry.splitlines() if line.strip())

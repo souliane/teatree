@@ -49,15 +49,9 @@ class _OrphanRefWorktreeFixture(TestCase):
     slug = "feat-x"
 
     @pytest.fixture(autouse=True)
-    def _tmp_workspace(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _tmp_workspace(self, tmp_path: Path) -> None:
         self.workspace = tmp_path / "workspace"
         self.workspace.mkdir()
-        self.temp_root = tmp_path / "systmp"
-        self.temp_root.mkdir()
-        monkeypatch.setattr(
-            "teatree.core.worktree_snapshot.tempfile.gettempdir",
-            lambda: str(self.temp_root),
-        )
 
         self.remote = tmp_path / "remote.git"
         subprocess.run(

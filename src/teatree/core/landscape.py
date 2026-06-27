@@ -12,8 +12,8 @@ This module is the deterministic, gather-once-correctly half of that survey:
 * **Local git landscape** — every worktree under the workspace, each tagged with
     its branch, whether it has uncommitted changes, and whether it carries commits
     absent from every remote (forgotten unpushed work). Django-free, depending only
-    on :mod:`teatree.utils.git` exactly like :mod:`teatree.core.worktree_snapshot`,
-    so it can run from any context (including a bare-``python3`` hook).
+    on :mod:`teatree.utils.git`, so it can run from any context (including a
+    bare-``python3`` hook).
 * **Forge landscape** — the operator's open PRs/MRs and the open issues for the
     repos in scope, gathered through an injected :class:`CodeHostBackend` (the
     Protocol, never a concrete backend — no integration-layer import).
@@ -102,7 +102,7 @@ class WorktreeState:
     ``has_unpushed`` flags commits absent from every remote — forgotten work
     that a fresh plan would duplicate. Both fail *open*: an inconclusive git
     probe is reported as ``True`` so the survey never silently hides in-flight
-    work (mirrors :mod:`teatree.core.worktree_snapshot`).
+    work.
     """
 
     path: Path
