@@ -2263,9 +2263,13 @@ _GIT_IDENTITY_ENV = {
 }
 
 
-def _git(repo: Path, *args: str) -> str:
-    """Run git in ``repo`` with a deterministic identity, returning stdout."""
-    env = {**os.environ, **_GIT_IDENTITY_ENV}
+def _git(repo: Path, *args: str, env_extra: dict[str, str] | None = None) -> str:
+    """Run git in ``repo`` with a deterministic identity, returning stdout.
+
+    ``env_extra`` overlays extra environment for the one invocation (e.g.
+    ``GIT_COMMITTER_DATE``/``GIT_AUTHOR_DATE`` to backdate a commit).
+    """
+    env = {**os.environ, **_GIT_IDENTITY_ENV, **(env_extra or {})}
     out = subprocess.run(
         ["git", "-C", str(repo), *args],  # noqa: S607
         check=True,
@@ -2908,7 +2912,21 @@ def _make_squash_merged_worktree(tmp: Path, *, overlay: str = "test", ticket_num
     _git(work, "checkout", "-q", "-b", "feature")
     (work / "f.py").write_text("work\n", encoding="utf-8")
     _git(work, "add", "f.py")
-    _git(work, "commit", "-q", "-m", f"feat: shipped work (#{ticket_number})")
+    # Backdate this commit — it becomes the ``feature`` worktree's HEAD, which the
+    # liveness predicate reads as its recent-commit signal. A fresh timestamp would
+    # mask the busy-ticket signal under test (a live Session / claimed Task), making
+    # the keep VACUOUS — it would fire on recency regardless of the ticket. An old
+    # date keeps the recent-commit signal silent so the busy-ticket signal is what
+    # is actually proven. Mirrors the ``test_cleanup_liveness`` fixture's backdating.
+    old = "2020-01-01T00:00:00 +0000"
+    _git(
+        work,
+        "commit",
+        "-q",
+        "-m",
+        f"feat: shipped work (#{ticket_number})",
+        env_extra={"GIT_COMMITTER_DATE": old, "GIT_AUTHOR_DATE": old},
+    )
     _git(work, "push", "-q", "origin", "feature")
     _git(work, "checkout", "-q", "main")
     _git(work, "merge", "-q", "--squash", "feature")
@@ -3201,8 +3219,12 @@ class TestCleanAllKeepsBusyWorktree(TestCase):
 
             assert Worktree.objects.filter(pk=wt.pk).exists(), f"DATA LOSS: busy merged row reaped; got: {cleaned!r}"
             assert wt_path.is_dir(), "DATA LOSS: busy worktree dir removed"
-            assert any("ACTIVE" in c and "skipping" in c for c in cleaned), (
-                f"expected a live-work skip line, got: {cleaned!r}"
+            # Assert the BUSY-TICKET-specific keep reason, not the generic
+            # ``ACTIVE … skipping`` — the recent-commit signal also emits that generic
+            # phrase, so a generic match would pass on recency alone (vacuous). The
+            # backdated factory commit silences recency; this pins the live-Session signal.
+            assert any("live session or active/claimed task" in c and "skipping" in c for c in cleaned), (
+                f"expected the busy-ticket keep reason, got: {cleaned!r}"
             )
 
     def test_keeps_busy_created_worktree(self) -> None:
@@ -3237,8 +3259,8 @@ class TestCleanAllKeepsBusyWorktree(TestCase):
                 cleaned = cast("list[str]", call_command("workspace", "clean-all"))
 
             assert Worktree.objects.filter(pk=busy.pk).exists(), "DATA LOSS: busy CREATED worktree reaped"
-            assert any("ACTIVE" in c and "skipping" in c for c in cleaned), (
-                f"expected a live-work skip line, got: {cleaned!r}"
+            assert any("live session or active/claimed task" in c and "skipping" in c for c in cleaned), (
+                f"expected the busy-ticket keep reason, got: {cleaned!r}"
             )
 
 
