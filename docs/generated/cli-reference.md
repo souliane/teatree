@@ -5553,7 +5553,11 @@ Usage: t3 teatree e2e external [OPTIONS]
 
  Extra Playwright flags (--config, --timeout, --grep, etc.) can be
  passed via --playwright-args: ``--playwright-args="--config x.ts --timeout
- 120000"``
+ 120000"``.
+ The overlay also contributes per-spec args via
+ ``get_e2e_playwright_args(test_path)`` (e.g. ``-c <config>`` chosen by
+ the spec's lane); overlay args go first, an explicit ``--playwright-args``
+ follows so a caller can override.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --test-path                                   TEXT                           │
