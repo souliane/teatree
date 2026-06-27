@@ -1,0 +1,1567 @@
+From 53a19bbbdbd65a69683b48e1683dd8e67abffba0 Mon Sep 17 00:00:00 2001
+From: souliane <21343492+souliane@users.noreply.github.com>
+Date: Thu, 25 Jun 2026 15:25:38 +0200
+Subject: [PATCH 1/3] fix(merge): substrate pings the owner and holds under
+ autonomy=full
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Under maximal merge-autonomy a SUBSTRATE clear must PING-and-HOLD (DM the
+owner, leave the merge for their sign-off) instead of auto-merging silently.
+Reuses the existing notifier — no new model, notifier, or autonomy tier.
+
+3.1 — Wire the substrate hold to the existing notify_with_fallback at the
+loop edge (pr_sweep _merge blocked branch), pinging ONCE per held diff with
+the per-diff idempotency key substrate-hold:slug#pr:sha (the BotPing ledger
+dedupes a re-tick). Thread escalation_kind through the keystone result
+(MergeKeystoneResult / escalated_merge_result, populated from
+clear.is_substrate()) and the keystone tuple so the loop pings ONLY on
+substrate. merge/authorization.py stays import-clean of notify/messaging.
+
+3.2 — Exclude substrate from the standing grant
+(_overlay_grants_standing_substrate_signoff returns False for any substrate
+clear), so a substrate clear under autonomy=full raises the same
+MergePreconditionError (routed to the 3.1 ping) instead of auto-merging.
+Non-substrate self-merge is unchanged.
+
+3.3 — Add a path-based substrate classifier (diff_paths_are_substrate):
+is_substrate() returns true regardless of the reviewer label when the diff
+touches BLUEPRINT.md, governance docs, or src/teatree/core/merge/. The merge
+gate attaches the live PR diff paths (new fetch_pr_changed_paths on both
+forges) to a non-persisted touched_paths attribute — no migration. Makes the
+guarantee reliable, not dependent on a human passing --blast-class substrate.
+
+The cold-review floor and every existing merge gate (reviewer != maker,
+SHA-bind, CI-green, not-draft, never-lockout, privacy scan) are untouched.
+---
+ src/teatree/backends/forge_merge_rpc.py       |  27 ++
+ src/teatree/backends/github/client.py         |   3 +
+ src/teatree/backends/gitlab/client.py         |   3 +
+ src/teatree/core/backend_protocols.py         |   2 +
+ src/teatree/core/gates/owned_repo_guard.py    |  20 +-
+ src/teatree/core/merge/authorization.py       |  92 +++----
+ src/teatree/core/merge/ci_rollup.py           |  32 +++
+ src/teatree/core/merge/execution.py           |  33 ++-
+ src/teatree/core/models/merge_clear.py        |  53 +++-
+ src/teatree/loop/scanner_factories.py         |   4 +
+ src/teatree/loop/scanners/pr_sweep.py         |  19 +-
+ .../loop/scanners/pr_sweep_adapters.py        |   7 +-
+ .../loop/scanners/pr_sweep_substrate.py       |  58 ++++
+ src/teatree/loop/substrate_pinger.py          |  23 ++
+ .../test_merge_clear_substrate_paths.py       | 112 ++++++++
+ ...test_clear_issuance_and_human_substrate.py | 257 +++++++++++-------
+ tests/teatree_loop/test_pr_sweep_scanner.py   | 100 ++++++-
+ .../test_scanner_error_signals.py             |   4 +-
+ 18 files changed, 669 insertions(+), 180 deletions(-)
+ create mode 100644 src/teatree/loop/scanners/pr_sweep_substrate.py
+ create mode 100644 src/teatree/loop/substrate_pinger.py
+ create mode 100644 tests/teatree_core/models/test_merge_clear_substrate_paths.py
+
+diff --git a/src/teatree/backends/forge_merge_rpc.py b/src/teatree/backends/forge_merge_rpc.py
+index 2f36810f51..8c9a6de78e 100644
+--- a/src/teatree/backends/forge_merge_rpc.py
++++ b/src/teatree/backends/forge_merge_rpc.py
+@@ -121,6 +121,14 @@ def fetch_required_checks_rollup(self, *, slug: str, pr_id: int) -> list[RawAPID
+             return [ROLLUP_QUERY_FAILED]
+         return [entry for entry in rollup if isinstance(entry, dict)]
+ 
++    def fetch_pr_changed_paths(self, *, slug: str, pr_id: int) -> list[str]:
++        rc, out, _ = self._run(
++            ["pr", "view", str(pr_id), "--repo", slug, "--json", "files", "--jq", ".files[].path"],
++        )
++        if rc != 0:
++            return []
++        return [line.strip() for line in out.splitlines() if line.strip()]
++
+     def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> ForgeMergeResult:
+         endpoint = f"repos/{slug}/pulls/{pr_id}/merge"
+         rc, out, err = self._run(
+@@ -194,6 +202,25 @@ def fetch_required_checks_rollup(self, *, slug: str, pr_id: int) -> list[RawAPID
+             return [ROLLUP_QUERY_FAILED]
+         return [entry for entry in pipelines if isinstance(entry, dict)]
+ 
++    def fetch_pr_changed_paths(self, *, slug: str, pr_id: int) -> list[str]:
++        rc, out, _ = self._run(["api", f"projects/{glab_project_path(slug)}/merge_requests/{pr_id}/diffs"])
++        if rc != 0 or not out.strip():
++            return []
++        try:
++            diffs = json.loads(out)
++        except json.JSONDecodeError:
++            return []
++        if not isinstance(diffs, list):
++            return []
++        paths: list[str] = []
++        for entry in diffs:
++            if not isinstance(entry, dict):
++                continue
++            new_path = str(entry.get("new_path") or entry.get("old_path") or "").strip()
++            if new_path:
++                paths.append(new_path)
++        return paths
++
+     def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> ForgeMergeResult:
+         endpoint = f"projects/{glab_project_path(slug)}/merge_requests/{pr_id}/merge"
+         rc, out, err = self._run(["api", "-X", "PUT", endpoint, "-f", f"sha={expected_head_oid}", "-f", "squash=true"])
+diff --git a/src/teatree/backends/github/client.py b/src/teatree/backends/github/client.py
+index 8e2ec28aad..4b91e50cae 100644
+--- a/src/teatree/backends/github/client.py
++++ b/src/teatree/backends/github/client.py
+@@ -581,5 +581,8 @@ def fetch_pr_is_draft(self, *, slug: str, pr_id: int) -> bool:
+     def fetch_required_checks_rollup(self, *, slug: str, pr_id: int) -> list[RawAPIDict]:
+         return self._merge_rpc().fetch_required_checks_rollup(slug=slug, pr_id=pr_id)
+ 
++    def fetch_pr_changed_paths(self, *, slug: str, pr_id: int) -> list[str]:
++        return self._merge_rpc().fetch_pr_changed_paths(slug=slug, pr_id=pr_id)
++
+     def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> ForgeMergeResult:
+         return self._merge_rpc().merge_pr_squash_bound(slug=slug, pr_id=pr_id, expected_head_oid=expected_head_oid)
+diff --git a/src/teatree/backends/gitlab/client.py b/src/teatree/backends/gitlab/client.py
+index 4621a8b8cf..c483c49605 100644
+--- a/src/teatree/backends/gitlab/client.py
++++ b/src/teatree/backends/gitlab/client.py
+@@ -542,5 +542,8 @@ def fetch_pr_is_draft(self, *, slug: str, pr_id: int) -> bool:
+     def fetch_required_checks_rollup(self, *, slug: str, pr_id: int) -> list[RawAPIDict]:
+         return self._merge_rpc().fetch_required_checks_rollup(slug=slug, pr_id=pr_id)
+ 
++    def fetch_pr_changed_paths(self, *, slug: str, pr_id: int) -> list[str]:
++        return self._merge_rpc().fetch_pr_changed_paths(slug=slug, pr_id=pr_id)
++
+     def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> ForgeMergeResult:
+         return self._merge_rpc().merge_pr_squash_bound(slug=slug, pr_id=pr_id, expected_head_oid=expected_head_oid)
+diff --git a/src/teatree/core/backend_protocols.py b/src/teatree/core/backend_protocols.py
+index 47506c0cc0..e1db278940 100644
+--- a/src/teatree/core/backend_protocols.py
++++ b/src/teatree/core/backend_protocols.py
+@@ -288,6 +288,8 @@ def fetch_pr_is_draft(self, *, slug: str, pr_id: int) -> bool: ...  # pragma: no
+ 
+     def fetch_required_checks_rollup(self, *, slug: str, pr_id: int) -> list[RawAPIDict]: ...  # pragma: no branch
+ 
++    def fetch_pr_changed_paths(self, *, slug: str, pr_id: int) -> list[str]: ...  # pragma: no branch
++
+     def merge_pr_squash_bound(
+         self,
+         *,
+diff --git a/src/teatree/core/gates/owned_repo_guard.py b/src/teatree/core/gates/owned_repo_guard.py
+index aab655651d..5532186952 100644
+--- a/src/teatree/core/gates/owned_repo_guard.py
++++ b/src/teatree/core/gates/owned_repo_guard.py
+@@ -48,13 +48,19 @@ class MergeKeystoneResult(TypedDict, total=False):
+     ticket_state: str
+     error: str
+     escalated: bool
++    # ``"substrate"`` when a substrate-class refusal was escalated (the loop edge
++    # pings the owner once and holds — ping-and-hold). Empty / absent for any
++    # other refusal so the loop pings ONLY on substrate, not every held merge.
++    escalation_kind: str
+ 
+ 
+ class _MergeClearLike(Protocol):
+     slug: str
+     pr_id: int | str
+     ticket: object
+ 
++    def is_substrate(self) -> bool: ...  # pragma: no branch
++
+ 
+ class PushScopeVerdict(StrEnum):
+     ALLOW = "allow"
+@@ -213,9 +219,19 @@ def escalated_merge_result(clear: "_MergeClearLike", error: str) -> MergeKeyston
+     """The canonical "merge held, re-escalate" result for a CLEAR.
+ 
+     Shared by every keystone-merge refusal (scope-gate AND merge-precondition)
+-    so the held-merge result shape stays defined in exactly one place.
++    so the held-merge result shape stays defined in exactly one place. Carries
++    ``escalation_kind = "substrate"`` when the held CLEAR is substrate, so the
++    loop edge pings the owner ONCE and holds (ping-and-hold) — and only on
++    substrate, never on every held merge.
+     """
+-    return {"merged": False, "escalated": True, "pr_id": int(clear.pr_id), "slug": clear.slug, "error": error}
++    return {
++        "merged": False,
++        "escalated": True,
++        "pr_id": int(clear.pr_id),
++        "slug": clear.slug,
++        "error": error,
++        "escalation_kind": "substrate" if clear.is_substrate() else "",
++    }
+ 
+ 
+ def merge_clear_refusal(clear: "_MergeClearLike", *, approved: bool) -> MergeKeystoneResult | None:
+diff --git a/src/teatree/core/merge/authorization.py b/src/teatree/core/merge/authorization.py
+index bd7ce59234..f72fef2985 100644
+--- a/src/teatree/core/merge/authorization.py
++++ b/src/teatree/core/merge/authorization.py
+@@ -123,45 +123,41 @@ def _assert_clear_authorized(
+         )
+         raise MergePreconditionError(msg)
+ 
+-    # 5. blast_class respected — substrate-class PRs are draft-locked and
+-    #    require a recorded human sign-off (invariant 4 / §17.4.3 step 5). Two
+-    #    things satisfy the per-PR sign-off, in this order:
+-    #      a. a per-CLEAR ``human_authorizer`` matching the value re-presented
+-    #         at merge time (the owner approved this exact diff), OR
+-    #      b. the overlay's STANDING merge-approval grant — the owner recorded
+-    #         once, in config, that this overlay merges end-to-end without a
+-    #         per-PR sign-off (invariant 4 carve-out). EITHER equivalent owner
+-    #         statement counts (#2666): ``autonomy = full``, OR an explicit
+-    #         ``require_human_approval_to_merge = false`` on a non-collaborative
+-    #         tier — see ``_overlay_grants_standing_substrate_signoff``.
+-    #    Either way the AGENT executes through this same SHA-bound, audited
+-    #    transition (invariant 8) — never raw ``gh``, never a human-performed
+-    #    merge. The quality/safety floor (independent cold-review, reviewed-SHA
+-    #    bind, CI-green, not-draft, never-lockout, privacy scan) is untouched by
+-    #    the carve-out; the standing grant removes ONLY the per-PR human sign-off.
++    # 5. blast_class respected — substrate-class PRs are draft-locked and require
++    #    a recorded PER-PR human sign-off (invariant 4 / §17.4.3 step 5). Substrate
++    #    is NEVER covered by the overlay's standing grant — not even at
++    #    ``autonomy = full``: the owner's directive is that substrate (merge
++    #    keystone, architecture spec, governance doc) PINGS-and-HOLDS so they
++    #    authorize every such merge. ``_overlay_grants_standing_substrate_signoff``
++    #    therefore returns ``False`` for any substrate clear (the explicit gate
++    #    that the standing grant excludes substrate), so the ONLY thing that unlocks
++    #    a substrate merge here is a per-CLEAR ``human_authorizer`` matching the
++    #    value re-presented at merge time. When unsatisfied the held clear raises
++    #    below, which the loop edge routes to the substrate-hold Slack ping. The
++    #    AGENT still executes the authorized merge through this same SHA-bound,
++    #    audited transition (invariant 8). The quality/safety floor (independent
++    #    cold-review, reviewed-SHA bind, CI-green, not-draft, never-lockout, privacy
++    #    scan) is untouched. NON-substrate changes self-merge unchanged.
+     if (
+         clear.is_substrate()
+         and not clear.human_merge_authorized_by(presented)
+         and not _overlay_grants_standing_substrate_signoff(clear, resolved_slug=slug)
+     ):
+         detail = (
+-            "no human authoriser recorded on the CLEAR and the overlay carries no standing "
+-            "merge-approval grant (autonomy is not full and require_human_approval_to_merge is not false)"
++            "no human authoriser recorded on the CLEAR — substrate is held for the owner, never auto-merged"
+             if not clear.human_authorizer
+             else f"presented authoriser != recorded ({clear.human_authorizer!r})"
+             if presented
+-            else "no --human-authorized presented at merge time and the overlay carries no standing "
+-            "merge-approval grant (autonomy is not full and require_human_approval_to_merge is not false)"
++            else "no --human-authorized presented at merge time"
+         )
+         msg = (
+             f"MergeClear for {slug}#{pr_id} is blast_class=substrate — substrate "
+-            f"changes require a recorded human approval and are draft-locked "
+-            f"(invariant 4); the loop never auto-merges them (§17.4.3 step 5). "
+-            f"{detail.capitalize()}. The sanctioned paths: `t3 <overlay> autonomy "
+-            f"set full` (the standing owner grant), or issue `t3 <overlay> ticket "
++            f"changes are held for the owner and are draft-locked (invariant 4); the "
++            f"loop never auto-merges them, not even at autonomy=full (§17.4.3 step 5). "
++            f"{detail.capitalize()}. The sanctioned path: issue `t3 <overlay> ticket "
+             f"clear … --blast-class substrate --human-authorize <id>` (a per-PR "
+             f"recorded approval), then the agent executes `t3 <overlay> ticket "
+-            f"merge <clear_id> [--human-authorized <id>]`"
++            f"merge <clear_id> --human-authorized <id>`"
+         )
+         raise MergePreconditionError(msg)
+ 
+@@ -217,41 +213,33 @@ def _resolve_clear_overlay_name(clear: "MergeClear", *, resolved_slug: str = "")
+ 
+ 
+ def _overlay_grants_standing_substrate_signoff(clear: "MergeClear", *, resolved_slug: str = "") -> bool:
+-    """Whether the CLEAR's overlay carries a standing substrate sign-off grant (invariant 4 carve-out).
++    """Whether the overlay's standing grant covers this per-PR sign-off (invariant 4 carve-out).
+ 
+-    Resolves the effective settings for the CLEAR's overlay
+-    (:func:`_resolve_clear_overlay_name`) via :func:`get_effective_settings` and
+-    treats the substrate per-PR human sign-off as satisfied when the owner has
+-    recorded EITHER equivalent standing grant (#2666):
++    A SUBSTRATE clear is NEVER covered — it returns ``False`` immediately. The
++    owner's directive is that substrate must PING-and-HOLD, never auto-merge: a
++    substrate change (merge keystone, architecture spec, governance doc) is the
++    one class the owner sees and authorizes every time, so even at
++    ``autonomy = full`` the standing grant does not remove its per-PR human
++    sign-off. The held substrate CLEAR raises the same MergePreconditionError,
++    which the loop edge routes to the substrate-hold Slack ping.
+ 
+-    1.  ``autonomy = full`` — the single switch that collapses every approval
+-        gate, OR
+-    2.  an explicit ``require_human_approval_to_merge = false`` on a
+-        NON-collaborative tier — the canonical documented auto-merge knob
+-        (``mode = auto`` + ``require_human_approval_to_merge = false``). This IS
+-        the owner's standing "no per-PR human merge approval needed" statement,
+-        the same one ``autonomy = full`` makes, so an owner who set it but left
+-        ``autonomy`` at the default ``babysit`` must not have their OWN green,
+-        cold-reviewed substrate CLEAR refused.
+-
+-    The ``notify`` collaborative tier is EXCLUDED: it also collapses
+-    ``require_human_approval_to_merge`` to ``false``, but a notify-tier MR merges
+-    only after a colleague approval, so its ``false`` is a tier side effect, not
+-    a self-owned standing grant — its substrate CLEAR keeps the per-PR human
+-    authoriser mandatory. Any other below-full tier with the merge-approval gate
+-    ON, or an unresolvable overlay, is fail-closed: the per-CLEAR human authoriser
+-    stays mandatory. The carve-out touches ONLY the per-PR sign-off — every other
+-    substrate-merge floor guard (independent cold-review, reviewed-SHA bind,
+-    CI-green, not-draft, never-lockout, privacy scan) runs unchanged.
++    The remaining resolution (the standing grant for a NON-substrate clear —
++    ``autonomy = full`` OR an explicit ``require_human_approval_to_merge = false``
++    on a non-collaborative tier, the ``notify`` tier excluded, #2666) is retained
++    so the gate stays a single named contract; non-substrate clears do not reach
++    this function from the substrate-only call site, so for them it is moot.
+ 
+     *resolved_slug* is the real ``owner/repo`` the merge keystone recovered for
+     this CLEAR (threaded from :func:`assert_merge_preconditions`'s ``slug``
+-    kwarg). It is the recovery source for a ticket-less CLEAR whose stored
+-    ``slug`` is a branch name rather than ``owner/repo`` — see
+-    :func:`_resolve_clear_overlay_name`.
++    kwarg) — see :func:`_resolve_clear_overlay_name`.
+     """
+     from teatree.config import Autonomy, get_effective_settings  # noqa: PLC0415
+ 
++    # Substrate is excluded from the standing grant entirely (the §3.2 gate):
++    # substrate PINGS-and-HOLDS for the owner, so the standing grant never removes
++    # its per-PR human sign-off, not even at ``autonomy = full``.
++    if clear.is_substrate():
++        return False
+     overlay_name = _resolve_clear_overlay_name(clear, resolved_slug=resolved_slug)
+     if not overlay_name:
+         return False
+diff --git a/src/teatree/core/merge/ci_rollup.py b/src/teatree/core/merge/ci_rollup.py
+index eebb09c2b6..f611fbaeb5 100644
+--- a/src/teatree/core/merge/ci_rollup.py
++++ b/src/teatree/core/merge/ci_rollup.py
+@@ -76,6 +76,38 @@ def fetch_pr_is_draft(slug: str, pr_id: int, *, host_kind: str = "github") -> bo
+     return _code_host_for(host_kind).fetch_pr_is_draft(slug=slug, pr_id=pr_id)
+ 
+ 
++def fetch_pr_changed_paths(slug: str, pr_id: int, *, host_kind: str = "github") -> list[str]:
++    """The PR/MR's changed file paths — feeds the path-based substrate detector.
++
++    Delegates to the registry-resolved :class:`CodeHostBackend` (GitHub reads
++    ``gh pr view --json files``; GitLab the MR ``diffs`` API). A forge error
++    degrades to an empty list — the path detector is an ADD-ON to the recorded
++    ``blast_class`` label (it can only widen substrate, never narrow it), so a
++    missing diff never weakens the existing label-based gate.
++    """
++    return _code_host_for(host_kind).fetch_pr_changed_paths(slug=slug, pr_id=pr_id)
++
++
++def attach_touched_paths(clear: object, *, slug: str, pr_id: int, host_kind: str) -> None:
++    """Populate ``clear.touched_paths`` from the forge's live changed-file list.
++
++    Best-effort: a non-``MergeClear`` *clear* (the gate handles that refusal) or a
++    forge error degrades to leaving ``touched_paths`` empty. The path detector can
++    only WIDEN substrate over the recorded ``blast_class``, never narrow it, so a
++    missing diff never weakens the existing label-based substrate gate.
++    """
++    from teatree.core.models import MergeClear  # noqa: PLC0415
++
++    if not isinstance(clear, MergeClear):
++        return
++    try:
++        paths = fetch_pr_changed_paths(slug, pr_id, host_kind=host_kind)
++    except Exception:  # noqa: BLE001 — a diff-fetch failure must never wedge the merge gate.
++        logger.debug("ci_rollup: changed-paths fetch failed for %s#%s — substrate label stands", slug, pr_id)
++        return
++    clear.touched_paths = tuple(paths)
++
++
+ class _RollupEntry(TypedDict, total=False):
+     """One ``gh ... statusCheckRollup`` entry — CheckRun or StatusContext."""
+ 
+diff --git a/src/teatree/core/merge/execution.py b/src/teatree/core/merge/execution.py
+index 8bd5dc33f0..a7187c4c9a 100644
+--- a/src/teatree/core/merge/execution.py
++++ b/src/teatree/core/merge/execution.py
+@@ -33,6 +33,7 @@
+ )
+ from teatree.core.merge.ci_rollup import (
+     _code_host_for,
++    attach_touched_paths,
+     fetch_live_head_sha,
+     fetch_pr_is_draft,
+     fetch_pr_merge_state,
+@@ -180,21 +181,25 @@ def assert_merge_preconditions(  # noqa: PLR0913 — §17.4.3 gate entry-point;
+     runs the post hook idempotently instead of re-issuing the merge — a
+     lost post-hook becomes recoverable rather than a permanent brick.
+ 
+-    The substrate sign-off (step 5) is satisfied by EITHER a matching per-CLEAR
+-    ``human_authorized`` OR the CLEAR's overlay carrying a STANDING merge-approval
+-    grant. ``human_authorized`` unlocks the merge **only** when the CLEAR is
+-    substrate-class AND its recorded ``human_authorizer`` matches; it can never
+-    unlock a non-substrate CLEAR. The standing grant is EITHER equivalent owner
+-    statement (#2666): ``autonomy = full``, OR an explicit
+-    ``require_human_approval_to_merge = false`` on a non-collaborative tier (the
+-    collaborative ``notify`` tier is excluded — it merges only after a colleague
+-    approval; below-full tiers with the gate ON keep the per-CLEAR authoriser
+-    mandatory). Either path runs the identical sanctioned ``t3`` transition
+-    (invariant 8: even an owner-approved merge goes through it, never raw ``gh``).
+-    The carve-out removes ONLY the per-PR sign-off — the quality/safety floor
+-    (independent cold-review, reviewed-SHA bind, CI-green, not-draft,
+-    never-lockout, privacy scan) is untouched.
++    Substrate (step 5) is HELD for the owner — never covered by the standing
++    grant, not even at ``autonomy = full``: it pings-and-holds (the loop edge
++    DMs the owner). The ONLY thing that unlocks a substrate merge is a matching
++    per-CLEAR ``human_authorized`` re-presented at merge time; the AGENT then
++    executes through this same sanctioned transition (invariant 8). A substrate
++    diff is detected by EITHER the ``blast_class`` label OR the live diff paths
++    (:func:`attach_touched_paths`), so a mislabeled substrate change is still
++    held. Non-substrate self-merges through the standing grant unchanged. The
++    quality/safety floor (independent cold-review, reviewed-SHA bind, CI-green,
++    not-draft, never-lockout, privacy scan) is untouched.
+     """
++    # Attach the live diff paths so the substrate authorization guard can detect
++    # a mislabeled substrate diff (path-based classifier — invariant 4). A forge
++    # error degrades to no paths: the path detector only WIDENS substrate over the
++    # recorded ``blast_class``, never narrows it, so a missing diff never weakens
++    # the label-based gate. Set BEFORE the authorize call so the substrate branch
++    # reads it.
++    attach_touched_paths(clear, slug=slug, pr_id=pr_id, host_kind=host_kind)
++
+     authorized_clear = _assert_clear_authorized(
+         clear=clear,
+         executing_loop_identity=executing_loop_identity,
+diff --git a/src/teatree/core/models/merge_clear.py b/src/teatree/core/models/merge_clear.py
+index 1b235afb8c..08e673e1f8 100644
+--- a/src/teatree/core/models/merge_clear.py
++++ b/src/teatree/core/models/merge_clear.py
+@@ -18,14 +18,17 @@
+ 
+ import re
+ from dataclasses import dataclass
+-from typing import ClassVar
++from typing import TYPE_CHECKING, ClassVar
+ 
+ from django.db import models, transaction
+ from django.utils import timezone
+ 
+ from teatree.core.modelkit.db_retry import retry_on_locked
+ from teatree.core.models.ticket import Ticket
+ 
++if TYPE_CHECKING:
++    from collections.abc import Iterable
++
+ # §17.8 clause 3 / §17.6 candidate 13: an independent cold-review attestation
+ # cannot be recorded by the maker/coding-agent/loop side — the author would be
+ # rubber-stamping their own work. The CLEAR-issuer guard (this module) and the
+@@ -51,6 +54,36 @@
+ 
+ _COMPONENT_ROLE_WORDS = frozenset({"maker", "coding", "loop"})
+ 
++# A diff is substrate — independent of the reviewer's ``blast_class`` label —
++# when it touches the merge keystone, the architecture spec, or a governance
++# doc. The label defaults to ``logic`` (the orchestrator's judgment), so a
++# substrate change a human forgot to mark would otherwise auto-merge silently
++# under ``autonomy = full``. This path detector makes the substrate guarantee
++# label-independent (invariant 4): the change is substrate if its diff is.
++_SUBSTRATE_PATH_PREFIXES = ("src/teatree/core/merge/", "docs/blueprint/")
++_SUBSTRATE_FILE_NAMES = frozenset({"BLUEPRINT.md", "CLAUDE.md", "AGENTS.md"})
++
++
++def diff_paths_are_substrate(paths: "Iterable[str]") -> bool:
++    """True iff any of *paths* is a substrate path (merge keystone / spec / governance).
++
++    Substrate paths are: anything under ``src/teatree/core/merge/`` (the merge
++    keystone), the architecture spec (``BLUEPRINT.md`` and ``docs/blueprint/``),
++    and the governance docs (``CLAUDE.md`` / ``AGENTS.md`` at any depth). Matching
++    is on whole path components after stripping a leading ``./`` or ``/`` so a
++    look-alike sibling (``BLUEPRINT.md.bak``, ``src/teatree/core/merger/``) is not
++    misclassified.
++    """
++    for raw in paths:
++        normalized = raw.strip().lstrip("/").removeprefix("./")
++        if not normalized:
++            continue
++        if any(normalized.startswith(prefix) for prefix in _SUBSTRATE_PATH_PREFIXES):
++            return True
++        if normalized.rsplit("/", 1)[-1] in _SUBSTRATE_FILE_NAMES:
++            return True
++    return False
++
+ 
+ def is_non_reviewer_role(identity: str) -> bool:
+     """True iff ``identity`` is a maker/coding-agent/loop role (§17.8 clause 3).
+@@ -152,6 +185,13 @@ class VerifyResult(models.TextChoices):
+     issued_at = models.DateTimeField(default=timezone.now)
+     consumed_at = models.DateTimeField(null=True, blank=True)
+ 
++    # Non-persisted: the diff paths the merge gate fetched live for this CLEAR.
++    # Populated at merge time (``_assert_clear_authorized``) from the forge's
++    # changed-file list so ``is_substrate()`` can detect a mislabeled substrate
++    # diff. Not a DB column — no migration, no compaction-survival concern (it is
++    # re-derived from the live PR each merge attempt).
++    touched_paths: "tuple[str, ...]" = ()
++
+     class Meta:
+         db_table = "teatree_merge_clear"
+         ordering: ClassVar = ["-issued_at"]
+@@ -284,8 +324,15 @@ def is_actionable(self) -> bool:
+         return all(bool(value) for value in required)
+ 
+     def is_substrate(self) -> bool:
+-        """True iff this CLEAR is for a substrate-class change (invariant 4)."""
+-        return self.blast_class == self.BlastClass.SUBSTRATE
++        """True iff this CLEAR is for a substrate-class change (invariant 4).
++
++        Substrate by EITHER the recorded ``blast_class`` label OR the live diff
++        touching a substrate path (:func:`diff_paths_are_substrate` over
++        :attr:`touched_paths`). The path detector makes the guarantee reliable —
++        a substrate diff a human left at the default ``logic`` label is still
++        held, never auto-merged.
++        """
++        return self.blast_class == self.BlastClass.SUBSTRATE or diff_paths_are_substrate(self.touched_paths)
+ 
+     def human_merge_authorized_by(self, presented_authorizer: str) -> bool:
+         """True iff a substrate CLEAR's recorded authoriser matches what the merge call presents.
+diff --git a/src/teatree/loop/scanner_factories.py b/src/teatree/loop/scanner_factories.py
+index 2245d1848f..b38b98842f 100644
+--- a/src/teatree/loop/scanner_factories.py
++++ b/src/teatree/loop/scanner_factories.py
+@@ -40,6 +40,7 @@
+     TicketCompletionScanner,
+     TicketDispositionScanner,
+ )
++from teatree.loop.substrate_pinger import NotifyWithFallbackSubstratePinger
+ from teatree.loop.tick_resolvers import (
+     _allowed_url_prefixes_for_host,
+     _identity_alias_groups_for_overlay,
+@@ -312,6 +313,9 @@ def _pr_sweep_scanner_for(backend: OverlayBackends, *, slack_user_id: str) -> Pr
+         # #2210: scope the review-arm to the operator's own PRs — a colleague's
+         # open PR in a watched repo must never be auto-scheduled for review.
+         self_identities=backend.identities,
++        # Ping-and-hold: a held SUBSTRATE merge DMs the owner once (deduped per
++        # diff via the BotPing ledger) so substrate is never auto-merged silently.
++        substrate_pinger=NotifyWithFallbackSubstratePinger(),
+     )
+ 
+ 
+diff --git a/src/teatree/loop/scanners/pr_sweep.py b/src/teatree/loop/scanners/pr_sweep.py
+index e3dceff502..4ccd21046b 100644
+--- a/src/teatree/loop/scanners/pr_sweep.py
++++ b/src/teatree/loop/scanners/pr_sweep.py
+@@ -59,6 +59,7 @@
+     record_mergeable_notified,
+     red_checks_are_all_repo_state,
+ )
++from teatree.loop.scanners.pr_sweep_substrate import SubstratePinger, ping_substrate_hold
+ from teatree.loop.scanners.pr_sweep_types import (
+     GH_CONFLICT_MERGE_STATE,
+     GH_CONFLICT_MERGEABLE,
+@@ -116,8 +117,13 @@ def merge_pr_squash_bound(
+ class MergeKeystone(Protocol):
+     """Adapter over ``call_command('ticket', 'merge', ...)`` — mockable."""
+ 
+-    def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str]:
+-        """Return ``(merged, merged_sha, error)`` — ``error`` is the rejection reason."""
++    def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str, str]:
++        """Return ``(merged, merged_sha, error, escalation_kind)``.
++
++        ``error`` is the rejection reason; ``escalation_kind`` is ``"substrate"``
++        when the refusal is a substrate sign-off hold (else empty) so the loop
++        pings the owner ONLY on substrate.
++        """
+         ...  # pragma: no branch
+ 
+ 
+@@ -222,6 +228,11 @@ class PrSweepScanner:
+     #: too, and a colleague's PR must never be auto-scheduled for review. Empty
+     #: means no PR is confirmable as ours, so nothing is armed (fail closed).
+     self_identities: tuple[str, ...] = ()
++    #: Bot→user DM seam for a HELD substrate merge (ping-and-hold). ``None`` keeps
++    #: the legacy log-only behaviour; ``scanner_factories`` wires the production
++    #: ``notify_with_fallback`` adapter so the owner is pinged ONCE per held
++    #: substrate diff (deduped via the BotPing ledger on the per-diff key).
++    substrate_pinger: "SubstratePinger | None" = None
+     name: str = "pr_sweep"
+ 
+     def scan(self) -> list[ScanSignal]:
+@@ -505,7 +516,7 @@ def _main_uv_audit_red(self, *, slug: str) -> bool:
+             return False
+ 
+     def _merge(self, *, pr: PrSummary, clear: MergeClear, fallback: bool) -> MergeAttempt:
+-        merged, merged_sha, error = self.keystone.merge_clear(clear_id=int(clear.pk))
++        merged, merged_sha, error, escalation_kind = self.keystone.merge_clear(clear_id=int(clear.pk))
+         if merged:
+             self._announce_merge(slug=pr.slug, pr_id=pr.number, merged_sha=merged_sha, fallback=fallback)
+             return MergeAttempt(
+@@ -532,6 +543,8 @@ def _merge(self, *, pr: PrSummary, clear: MergeClear, fallback: bool) -> MergeAt
+                     merged_sha=fallback_sha,
+                     reason="fallback_uv_audit_gh",
+                 )
++        if escalation_kind == "substrate":
++            ping_substrate_hold(self.substrate_pinger, pr=pr, reviewed_sha=clear.reviewed_sha, error=error)
+         return MergeAttempt(
+             slug=pr.slug,
+             pr_id=pr.number,
+diff --git a/src/teatree/loop/scanners/pr_sweep_adapters.py b/src/teatree/loop/scanners/pr_sweep_adapters.py
+index 642e757680..7c16a47151 100644
+--- a/src/teatree/loop/scanners/pr_sweep_adapters.py
++++ b/src/teatree/loop/scanners/pr_sweep_adapters.py
+@@ -250,16 +250,17 @@ class CallCommandMergeKeystone:
+ 
+     loop_identity: str = "merge-loop"
+ 
+-    def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str]:
++    def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str, str]:
+         from django.core.management import call_command  # noqa: PLC0415
+ 
+         result = call_command("ticket", "merge", str(clear_id), loop_identity=self.loop_identity)
+         if not isinstance(result, dict):
+-            return False, "", "ticket merge returned non-dict"
++            return False, "", "ticket merge returned non-dict", ""
+         merged = bool(result.get("merged"))
+         merged_sha = str(result.get("merged_sha") or "")
+         error = str(result.get("error") or "")
+-        return merged, merged_sha, error
++        escalation_kind = str(result.get("escalation_kind") or "")
++        return merged, merged_sha, error, escalation_kind
+ 
+ 
+ @dataclass(slots=True)
+diff --git a/src/teatree/loop/scanners/pr_sweep_substrate.py b/src/teatree/loop/scanners/pr_sweep_substrate.py
+new file mode 100644
+index 0000000000..885e11d147
+--- /dev/null
++++ b/src/teatree/loop/scanners/pr_sweep_substrate.py
+@@ -0,0 +1,58 @@
++"""Substrate-hold ping seam for the PR sweep (ping-and-hold, #3.1).
++
++A held SUBSTRATE merge DMs the owner once via the injected
++:class:`SubstratePinger` (the concrete ``notify_with_fallback`` egress is wired
++at the loop edge — this domain module stays import-clean of messaging/notify).
++The per-diff idempotency key keeps it to one ping per held diff and re-fires
++only on a new reviewed SHA.
++"""
++
++import logging
++from typing import Protocol, runtime_checkable
++
++from teatree.loop.scanners.pr_sweep_types import PrSummary
++
++logger = logging.getLogger(__name__)
++
++
++@runtime_checkable
++class SubstratePinger(Protocol):
++    """Deliver a bot→user DM when a substrate merge is held (ping-and-hold) — mockable.
++
++    The production adapter wraps :func:`teatree.messaging.notify_with_fallback`,
++    so the per-diff ``idempotency_key`` dedupes across re-ticks via the
++    :class:`teatree.core.models.BotPing` ledger — exactly one ping per held
++    substrate diff, re-firing only on a new reviewed SHA.
++    """
++
++    def ping(self, *, text: str, idempotency_key: str) -> None: ...  # pragma: no branch
++
++
++def substrate_hold_text(pr: PrSummary, *, reviewed_sha: str, error: str) -> str:
++    """The owner-facing DM body for a held substrate merge."""
++    return (
++        f"substrate merge held for your sign-off: [{pr.slug}#{pr.number}]({pr.url}) "
++        f"@ {reviewed_sha[:8]} — {error or 'substrate change, held for the owner'}"
++    )
++
++
++def substrate_hold_key(pr: PrSummary, *, reviewed_sha: str) -> str:
++    """The per-diff idempotency key so the BotPing ledger dedupes re-ticks."""
++    return f"substrate-hold:{pr.slug}#{pr.number}:{reviewed_sha}"
++
++
++def ping_substrate_hold(pinger: "SubstratePinger | None", *, pr: PrSummary, reviewed_sha: str, error: str) -> None:
++    """DM the owner ONCE that a substrate merge is held (ping-and-hold).
++
++    No-op when no pinger is wired. Best-effort: a pinger error never aborts the
++    sweep — the substrate clear is still held; only the DM is missed.
++    """
++    if pinger is None:
++        return
++    try:
++        pinger.ping(
++            text=substrate_hold_text(pr, reviewed_sha=reviewed_sha, error=error),
++            idempotency_key=substrate_hold_key(pr, reviewed_sha=reviewed_sha),
++        )
++    except Exception:
++        logger.exception("pr_sweep failed to ping substrate-hold for %s#%d", pr.slug, pr.number)
+diff --git a/src/teatree/loop/substrate_pinger.py b/src/teatree/loop/substrate_pinger.py
+new file mode 100644
+index 0000000000..8693ba40e5
+--- /dev/null
++++ b/src/teatree/loop/substrate_pinger.py
+@@ -0,0 +1,23 @@
++"""Loop-edge substrate-hold pinger (orchestration layer).
++
++A held SUBSTRATE merge DMs the owner once (ping-and-hold) via the existing
++``notify_with_fallback`` egress. Lives at the ``teatree.loop`` orchestration
++layer — NOT in ``teatree.loop.scanners`` (domain), where the tach boundary
++forbids importing ``teatree.messaging`` / ``teatree.notify`` (integration). The
++scanner depends only on the ``SubstratePinger`` Protocol; this concrete notify
++egress is injected at the loop edge, mirroring ``domain_jobs``'s use.
++"""
++
++from teatree.messaging import notify_with_fallback
++from teatree.notify import NotifyKind
++
++
++class NotifyWithFallbackSubstratePinger:
++    """Production :class:`~teatree.loop.scanners.pr_sweep.SubstratePinger` (ping-and-hold).
++
++    The per-diff idempotency key dedupes across re-ticks through the BotPing
++    ledger, so the owner is pinged exactly once per held substrate diff.
++    """
++
++    def ping(self, *, text: str, idempotency_key: str) -> None:  # noqa: PLR6301 — instance method satisfies the injected SubstratePinger Protocol.
++        notify_with_fallback(text=text, kind=NotifyKind.INFO, idempotency_key=idempotency_key)
+diff --git a/tests/teatree_core/models/test_merge_clear_substrate_paths.py b/tests/teatree_core/models/test_merge_clear_substrate_paths.py
+new file mode 100644
+index 0000000000..4ca2948c21
+--- /dev/null
++++ b/tests/teatree_core/models/test_merge_clear_substrate_paths.py
+@@ -0,0 +1,112 @@
++"""Path-based substrate classifier — label-independent substrate detection.
++
++``blast_class`` is the orchestrator's (or a human's) judgment and defaults to
++``logic``. Under ``autonomy = full`` a substrate diff mislabeled ``logic`` would
++otherwise auto-merge silently. The path classifier makes the substrate guarantee
++reliable: a diff touching a substrate path (``BLUEPRINT.md``, governance docs,
++anything under ``src/teatree/core/merge/``) is substrate regardless of the label.
++
++Pure-logic unit tests for :func:`diff_paths_are_substrate`; the model-method
++integration (``is_substrate()`` consulting ``touched_paths``) is a thin DB test.
++"""
++
++import pytest
++from django.test import TestCase
++
++from teatree.core.models import MergeClear
++from teatree.core.models.merge_clear import diff_paths_are_substrate
++
++# ast-grep-ignore: ac-django-no-pytest-django-db
++pytestmark = pytest.mark.django_db
++
++
++class TestDiffPathsAreSubstrate:
++    """The pure path classifier — no DB, no model instance."""
++
++    def test_blueprint_root_is_substrate(self) -> None:
++        assert diff_paths_are_substrate(["BLUEPRINT.md"]) is True
++
++    def test_blueprint_appendix_is_substrate(self) -> None:
++        assert diff_paths_are_substrate(["docs/blueprint/17-merge.md"]) is True
++
++    def test_core_merge_dir_is_substrate(self) -> None:
++        assert diff_paths_are_substrate(["src/teatree/core/merge/authorization.py"]) is True
++
++    def test_nested_under_core_merge_is_substrate(self) -> None:
++        assert diff_paths_are_substrate(["src/teatree/core/merge/sub/deep.py"]) is True
++
++    def test_governance_claude_md_is_substrate(self) -> None:
++        assert diff_paths_are_substrate(["CLAUDE.md"]) is True
++
++    def test_governance_agents_md_is_substrate(self) -> None:
++        assert diff_paths_are_substrate(["AGENTS.md"]) is True
++
++    def test_nested_governance_doc_is_substrate(self) -> None:
++        assert diff_paths_are_substrate(["src/teatree/core/CLAUDE.md"]) is True
++
++    def test_ordinary_logic_path_is_not_substrate(self) -> None:
++        assert diff_paths_are_substrate(["src/teatree/loop/scanners/pr_sweep.py"]) is False
++
++    def test_ordinary_doc_path_is_not_substrate(self) -> None:
++        assert diff_paths_are_substrate(["README.md", "docs/usage.md"]) is False
++
++    def test_empty_paths_is_not_substrate(self) -> None:
++        assert diff_paths_are_substrate([]) is False
++
++    def test_mixed_diff_with_one_substrate_path_is_substrate(self) -> None:
++        # A single substrate path in an otherwise-logic diff still classifies
++        # the whole change as substrate — the guarantee is "touches substrate".
++        assert diff_paths_are_substrate(["src/teatree/cli/x.py", "src/teatree/core/merge/x.py"]) is True
++
++    def test_leading_slash_and_dotslash_are_normalized(self) -> None:
++        assert diff_paths_are_substrate(["./src/teatree/core/merge/x.py"]) is True
++        assert diff_paths_are_substrate(["/BLUEPRINT.md"]) is True
++
++    def test_substring_lookalike_is_not_substrate(self) -> None:
++        # ``BLUEPRINT.md.bak`` and a sibling dir that merely starts with the
++        # same prefix must not be misclassified — match on path components.
++        assert diff_paths_are_substrate(["docs/BLUEPRINT.md.bak"]) is False
++        assert diff_paths_are_substrate(["src/teatree/core/merger/x.py"]) is False
++
++
++class TestIsSubstrateConsultsTouchedPaths(TestCase):
++    """``MergeClear.is_substrate()`` returns true on a substrate diff regardless of the label."""
++
++    def _logic_clear(self) -> MergeClear:
++        return MergeClear.objects.create(
++            pr_id=4242,
++            slug="souliane/teatree",
++            reviewed_sha="a" * 40,
++            reviewer_identity="cold-reviewer",
++            gh_verify_result=MergeClear.VerifyResult.GREEN,
++            blast_class=MergeClear.BlastClass.LOGIC,
++        )
++
++    def test_logic_clear_with_substrate_path_is_substrate(self) -> None:
++        # The anti-vacuity test (c): blast_class left at the 'logic' default,
++        # but the diff touches src/teatree/core/merge/ -> is_substrate() True.
++        clear = self._logic_clear()
++        assert clear.is_substrate() is False  # no paths attached yet
++        clear.touched_paths = ("src/teatree/core/merge/authorization.py",)
++        assert clear.is_substrate() is True
++
++    def test_logic_clear_with_only_logic_paths_is_not_substrate(self) -> None:
++        clear = self._logic_clear()
++        clear.touched_paths = ("src/teatree/loop/scanners/pr_sweep.py",)
++        assert clear.is_substrate() is False
++
++    def test_substrate_label_is_substrate_even_with_logic_paths(self) -> None:
++        clear = MergeClear.objects.create(
++            pr_id=4243,
++            slug="souliane/teatree",
++            reviewed_sha="a" * 40,
++            reviewer_identity="cold-reviewer",
++            gh_verify_result=MergeClear.VerifyResult.GREEN,
++            blast_class=MergeClear.BlastClass.SUBSTRATE,
++        )
++        clear.touched_paths = ("src/teatree/loop/scanners/pr_sweep.py",)
++        assert clear.is_substrate() is True
++
++    def test_touched_paths_defaults_empty(self) -> None:
++        clear = self._logic_clear()
++        assert clear.touched_paths == ()
+diff --git a/tests/teatree_core/test_clear_issuance_and_human_substrate.py b/tests/teatree_core/test_clear_issuance_and_human_substrate.py
+index 6010b97111..48c98c8901 100644
+--- a/tests/teatree_core/test_clear_issuance_and_human_substrate.py
++++ b/tests/teatree_core/test_clear_issuance_and_human_substrate.py
+@@ -671,26 +671,35 @@ def _assert_preconditions(clear: MergeClear, *, human_authorized: str = "", slug
+         )
+ 
+ 
+-class TestFullAutonomyStandingGrantSatisfiesSubstrateSignoff(TestCase):
+-    """Invariant 4 carve-out: an overlay at ``autonomy = full`` is the standing human approval.
++class TestFullAutonomySubstrateIsHeldAndPingedNotAutoMerged(TestCase):
++    """Under ``autonomy = full`` a SUBSTRATE clear is HELD for the owner, never auto-merged.
+ 
+-    The substrate per-PR sign-off is satisfied by EITHER a per-CLEAR
+-    ``human_authorizer`` OR the CLEAR's overlay standing at ``autonomy = full``.
+-    The quality/safety floor (independent cold-review, reviewed-SHA bind,
+-    CI-green, not-draft, maker≠checker) is never relaxed by this knob — only
+-    the per-PR human sign-off is what ``full`` removes.
++    The owner's directive: substrate (merge keystone, architecture spec,
++    governance doc) must PING-and-HOLD so the owner sees and authorizes every
++    such merge — even at ``autonomy = full``. The standing grant removes the
++    per-PR human sign-off only for NON-substrate changes; a substrate clear under
++    ``full`` raises the same ``MergePreconditionError`` (routed at the loop edge to
++    the substrate-hold Slack ping). The only path that merges a substrate clear is
++    a per-CLEAR ``human_authorizer`` re-presented at merge time. The quality/safety
++    floor (independent cold-review, reviewed-SHA bind, CI-green, not-draft,
++    maker≠checker) is untouched.
+     """
+ 
+-    def test_full_autonomy_substrate_passes_without_human_authorizer(self) -> None:
+-        """MUST-ALLOW: full + substrate + reviewer!=maker + green + not-draft + no authorizer."""
++    def test_full_autonomy_substrate_is_held_without_human_authorizer(self) -> None:
++        """MUST-DENY: full + substrate + no authorizer is HELD (the standing grant excludes substrate)."""
+         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+         clear = _substrate_clear(ticket)
+-        with _overlay_autonomy("t3-teatree", "full"):
+-            precheck = _assert_preconditions(clear)
+-        assert precheck is not None
++        with _overlay_autonomy("t3-teatree", "full"), pytest.raises(MergePreconditionError, match="substrate"):
++            _assert_preconditions(clear)
+ 
+-    def test_full_autonomy_substrate_merges_end_to_end_without_human_authorizer(self) -> None:
+-        """MUST-ALLOW end-to-end: the keystone merge advances the FSM with no per-PR sign-off."""
++    def test_full_autonomy_substrate_is_held_end_to_end_no_auto_merge(self) -> None:
++        """MUST-DENY end-to-end: the keystone merge HOLDS the substrate clear and leaves the FSM untouched.
++
++        Pins the regression the fix closes: before the fix, ``autonomy = full``
++        auto-merged this substrate clear SILENTLY (``merged`` True, FSM advanced,
++        no ping). Now it is held (``merged`` False, escalated) so the loop edge can
++        ping the owner.
++        """
+         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+         clear = _substrate_clear(ticket, pr_id=1731)
+         with (
+@@ -703,9 +712,19 @@ def test_full_autonomy_substrate_merges_end_to_end_without_human_authorizer(self
+             )
+         ticket.refresh_from_db()
+         clear.refresh_from_db()
+-        assert result["merged"]
+-        assert ticket.state == Ticket.State.MERGED
+-        assert clear.consumed_at is not None
++        assert result["merged"] is False
++        assert result["escalated"] is True
++        assert result["escalation_kind"] == "substrate"
++        assert ticket.state == Ticket.State.IN_REVIEW
++        assert clear.consumed_at is None
++
++    def test_full_autonomy_substrate_with_human_authorizer_still_merges(self) -> None:
++        """MUST-ALLOW: a per-CLEAR ``human_authorizer`` re-presented at merge is the unchanged substrate path."""
++        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
++        clear = _substrate_clear(ticket, pr_id=1730, human_authorizer="owner:adrien")
++        with _overlay_autonomy("t3-teatree", "full"):
++            precheck = _assert_preconditions(clear, human_authorized="owner:adrien")
++        assert precheck is not None
+ 
+     def test_notify_autonomy_substrate_without_authorizer_still_refused(self) -> None:
+         """MUST-DENY: notify (not full) keeps the per-PR human authorizer mandatory."""
+@@ -735,12 +754,17 @@ def test_full_autonomy_does_not_relax_maker_checker_floor(self) -> None:
+         ):
+             _assert_preconditions(clear)
+ 
+-    def test_full_autonomy_does_not_relax_sha_bind_floor(self) -> None:
+-        """MUST-DENY: full + head moved off reviewed_sha still refuses — the SHA bind is intact."""
++    def test_human_authorized_substrate_does_not_relax_sha_bind_floor(self) -> None:
++        """MUST-DENY: a human-authorized substrate clear with head moved off reviewed_sha still refuses.
++
++        The SHA-bind floor runs AFTER the substrate sign-off, so it is exercised
++        with the per-CLEAR human authoriser present (the only substrate-merge
++        path); the bind still fails closed on a moved head.
++        """
+         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+-        clear = _substrate_clear(ticket, pr_id=1735, reviewed_sha="d" * 40)
++        clear = _substrate_clear(ticket, pr_id=1735, reviewed_sha="d" * 40, human_authorizer="owner:adrien")
+         with _overlay_autonomy("t3-teatree", "full"), pytest.raises(MergePreconditionError, match="head moved"):
+-            _assert_preconditions(clear)
++            _assert_preconditions(clear, human_authorized="owner:adrien")
+ 
+     def test_full_autonomy_does_not_relax_ci_green_floor(self) -> None:
+         """MUST-DENY: full + non-green recorded verdict still refuses — the CI floor is intact."""
+@@ -795,20 +819,18 @@ def test_per_clear_human_authorizer_still_works_under_babysit(self) -> None:
+             precheck = _assert_preconditions(clear, human_authorized="owner:adrien")
+         assert precheck is not None
+ 
+-    def test_full_autonomy_substrate_passes_for_ticketless_clear_via_slug(self) -> None:
+-        """MUST-ALLOW: a ticket-less CLEAR resolves its overlay from ``slug`` (the loop's common case)."""
++    def test_full_autonomy_substrate_is_held_for_ticketless_clear_via_slug(self) -> None:
++        """MUST-DENY: a ticket-less CLEAR whose slug resolves to the full overlay is STILL held (substrate)."""
+         clear = _substrate_clear(None, pr_id=1740, slug="souliane/teatree")
+-        with _overlay_autonomy("t3-teatree", "full"):
+-            precheck = _assert_preconditions(clear)
+-        assert precheck is not None
++        with _overlay_autonomy("t3-teatree", "full"), pytest.raises(MergePreconditionError, match="substrate"):
++            _assert_preconditions(clear)
+ 
+-    def test_full_autonomy_substrate_passes_when_ticket_overlay_is_canonical_alias(self) -> None:
+-        """MUST-ALLOW: ``ticket.overlay`` short alias resolves the entry-point-keyed override."""
++    def test_full_autonomy_substrate_is_held_when_ticket_overlay_is_canonical_alias(self) -> None:
++        """MUST-DENY: a ``ticket.overlay`` alias resolving to the full overlay is STILL held (substrate)."""
+         ticket = Ticket.objects.create(overlay="teatree", state=Ticket.State.IN_REVIEW)
+         clear = _substrate_clear(ticket, pr_id=1741)
+-        with _overlay_autonomy("t3-teatree", "full"):
+-            precheck = _assert_preconditions(clear)
+-        assert precheck is not None
++        with _overlay_autonomy("t3-teatree", "full"), pytest.raises(MergePreconditionError, match="substrate"):
++            _assert_preconditions(clear)
+ 
+     def test_babysit_autonomy_ticketless_clear_still_refused(self) -> None:
+         """MUST-DENY: a ticket-less CLEAR under a below-full overlay keeps the per-PR sign-off."""
+@@ -824,32 +846,23 @@ def test_full_autonomy_ticketless_clear_unresolvable_slug_refused(self) -> None:
+ 
+ 
+ class TestBranchSlugClearResolvesOverlayFromRecoveredRepo(TestCase):
+-    """A branch-name-slug CLEAR resolves its overlay from the merge's recovered repo.
++    """A branch-name-slug substrate CLEAR is held under ``full`` regardless of recovered repo.
+ 
+     The loop issues ticket-less substrate CLEARs whose stored ``slug`` is a
+     *branch name* (``merge-candidate-working-repos``), not ``owner/repo``. The
+-    merge keystone recovers the real ``owner/repo`` via
+-    ``resolve_pr_repo_slug`` → ``_reconcile_slug_against_reviewed_sha`` and
+-    threads it into ``assert_merge_preconditions`` as the ``slug`` kwarg. The
+-    autonomy carve-out must resolve its overlay from that recovered slug — not
+-    the raw branch-name slug, which maps to no overlay (the global babysit
+-    default) and wrongly refuses a merge the overlay genuinely stands ``full``
+-    for. Fail-closed is preserved: a branch-slug CLEAR whose recovered repo is
+-    NOT full (or unresolvable) still requires the per-PR human authoriser.
++    merge keystone recovers the real ``owner/repo`` and threads it into
++    ``assert_merge_preconditions`` as the ``slug`` kwarg. Substrate is HELD for the
++    owner regardless of how the overlay resolves: even when the recovered repo's
++    overlay stands at ``full``, a substrate CLEAR is held (ping-and-hold), never
++    auto-merged. The recovered-repo overlay resolution still governs the NON-
++    substrate standing grant (exercised elsewhere); for substrate it is moot.
+     """
+ 
+-    def test_full_autonomy_branch_slug_passes_via_recovered_repo(self) -> None:
+-        """MUST-ALLOW: branch-name slug + recovered owner/repo at full satisfies the sign-off.
+-
+-        RED before the fix: the carve-out resolved the overlay from the raw
+-        branch-name ``slug`` (→ no overlay → babysit) and refused with
+-        "the overlay autonomy is not full" despite the recovered repo's overlay
+-        standing at full.
+-        """
++    def test_full_autonomy_branch_slug_substrate_held_via_recovered_repo(self) -> None:
++        """MUST-DENY: a branch-name slug recovered to a full overlay's repo is STILL held (substrate)."""
+         clear = _substrate_clear(None, pr_id=1750, slug="merge-candidate-working-repos")
+-        with _overlay_autonomy("t3-teatree", "full"):
+-            precheck = _assert_preconditions(clear, slug="souliane/teatree")
+-        assert precheck is not None
++        with _overlay_autonomy("t3-teatree", "full"), pytest.raises(MergePreconditionError, match="substrate"):
++            _assert_preconditions(clear, slug="souliane/teatree")
+ 
+     def test_full_autonomy_branch_slug_without_recovered_repo_still_refused(self) -> None:
+         """MUST-DENY: a branch-name slug with no recovered owner/repo fails closed.
+@@ -941,79 +954,111 @@ def test_owned_repo_resolves_to_owning_overlay_despite_mis_stamped_ticket(self)
+             resolved = _resolve_clear_overlay_name(clear, resolved_slug=_OWNED_TOOLING_REPO)
+         assert resolved == "t3-teatree"
+ 
+-    def test_owned_repo_pr_is_not_human_approval_gated(self) -> None:
+-        """A PR on a repo the full overlay owns is NOT human-approval-gated.
++    def test_owned_repo_substrate_pr_is_still_held(self) -> None:
++        """A SUBSTRATE PR on a repo the full overlay owns is STILL held (ping-and-hold).
+ 
+-        The full end-to-end gate: a substrate CLEAR whose ticket carries a
+-        foreign overlay token still PASSES the substrate sign-off, because the
+-        repo's owning overlay stands at ``autonomy = full``.
++        Repo identity resolves to the ``full`` overlay, but substrate is held for
++        the owner regardless — the standing grant excludes substrate. (The
++        repo-identity standing grant still governs NON-substrate changes, pinned by
++        ``test_owned_repo_logic_clear_is_covered_by_standing_grant``.)
+         """
+         ticket = Ticket.objects.create(
+             overlay="some-other-overlay",
+             issue_url=f"https://github.com/{_OWNED_TOOLING_REPO}/pull/6",
+             state=Ticket.State.IN_REVIEW,
+         )
+         clear = _substrate_clear(ticket, pr_id=6, slug=_OWNED_TOOLING_REPO)
+-        with _teatree_owns("souliane/teatree", _OWNED_TOOLING_REPO), _overlay_autonomy("t3-teatree", "full"):
+-            precheck = _assert_preconditions(clear, slug=_OWNED_TOOLING_REPO)
+-        assert precheck is not None
+-
+-    def test_foreign_repo_pr_is_human_approval_gated(self) -> None:
+-        """A PR on a repo NO full overlay owns IS human-approval-gated — no over-relax.
+-
+-        The foreign repo is owned by no registered (full) overlay in this test
+-        environment, so repo identity resolves to no full overlay and the
+-        substrate sign-off stays mandatory. The anti-vacuity twin: the fix must
+-        keep a foreign repo's PR gated even when a ``full`` overlay exists.
+-        """
+-        ticket = Ticket.objects.create(
+-            overlay="some-other-overlay",
+-            issue_url=f"https://gitlab.com/{_FOREIGN_REPO}/-/merge_requests/7",
+-            state=Ticket.State.IN_REVIEW,
+-        )
+-        clear = _substrate_clear(ticket, pr_id=7, slug=_FOREIGN_REPO)
+         with (
+             _teatree_owns("souliane/teatree", _OWNED_TOOLING_REPO),
+             _overlay_autonomy("t3-teatree", "full"),
+             pytest.raises(MergePreconditionError, match="substrate"),
+         ):
+-            _assert_preconditions(clear, slug=_FOREIGN_REPO)
++            _assert_preconditions(clear, slug=_OWNED_TOOLING_REPO)
++
++    def test_owned_repo_logic_clear_is_covered_by_standing_grant(self) -> None:
++        """The NON-substrate standing grant resolves by repo identity (``full`` overlay owns the repo).
++
++        Tests ``_overlay_grants_standing_substrate_signoff`` directly for a LOGIC
++        clear: the repo's owning overlay (resolved from its slug) standing at
++        ``full`` covers the per-PR sign-off. (End-to-end, a logic clear never reaches
++        the substrate branch — this pins the resolution + standing-grant logic.)
++        """
++        from teatree.core.merge.authorization import _overlay_grants_standing_substrate_signoff  # noqa: PLC0415
++
++        ticket = Ticket.objects.create(
++            overlay="some-other-overlay",
++            issue_url=f"https://github.com/{_OWNED_TOOLING_REPO}/pull/6",
++            state=Ticket.State.IN_REVIEW,
++        )
++        clear = _substrate_clear(ticket, pr_id=6, slug=_OWNED_TOOLING_REPO, blast_class=MergeClear.BlastClass.LOGIC)
++        with _teatree_owns("souliane/teatree", _OWNED_TOOLING_REPO), _overlay_autonomy("t3-teatree", "full"):
++            granted = _overlay_grants_standing_substrate_signoff(clear, resolved_slug=_OWNED_TOOLING_REPO)
++        assert granted is True
++
++    def test_foreign_repo_logic_clear_is_not_covered_by_standing_grant(self) -> None:
++        """The NON-substrate standing grant does NOT cover a repo no full overlay owns.
++
++        The anti-vacuity twin: a LOGIC clear on a foreign repo resolves to no full
++        overlay, so ``_overlay_grants_standing_substrate_signoff`` returns False.
++        """
++        from teatree.core.merge.authorization import _overlay_grants_standing_substrate_signoff  # noqa: PLC0415
++
++        ticket = Ticket.objects.create(
++            overlay="some-other-overlay",
++            issue_url=f"https://gitlab.com/{_FOREIGN_REPO}/-/merge_requests/7",
++            state=Ticket.State.IN_REVIEW,
++        )
++        clear = _substrate_clear(ticket, pr_id=7, slug=_FOREIGN_REPO, blast_class=MergeClear.BlastClass.LOGIC)
++        with _teatree_owns("souliane/teatree", _OWNED_TOOLING_REPO), _overlay_autonomy("t3-teatree", "full"):
++            granted = _overlay_grants_standing_substrate_signoff(clear, resolved_slug=_FOREIGN_REPO)
++        assert granted is False
++
++    def test_substrate_clear_is_excluded_from_standing_grant(self) -> None:
++        """A SUBSTRATE clear is never covered by the standing grant, even on a full-owned repo (§3.2)."""
++        from teatree.core.merge.authorization import _overlay_grants_standing_substrate_signoff  # noqa: PLC0415
++
++        ticket = Ticket.objects.create(
++            overlay="some-other-overlay",
++            issue_url=f"https://github.com/{_OWNED_TOOLING_REPO}/pull/8",
++            state=Ticket.State.IN_REVIEW,
++        )
++        clear = _substrate_clear(ticket, pr_id=8, slug=_OWNED_TOOLING_REPO)
++        with _teatree_owns("souliane/teatree", _OWNED_TOOLING_REPO), _overlay_autonomy("t3-teatree", "full"):
++            granted = _overlay_grants_standing_substrate_signoff(clear, resolved_slug=_OWNED_TOOLING_REPO)
++        assert granted is False
+ 
+ 
+-class TestRequireHumanApprovalFalseStandingGrantSatisfiesSubstrateSignoff(TestCase):
++class TestRequireHumanApprovalFalseStandingGrantNonSubstrate(TestCase):
+     """#2666: ``require_human_approval_to_merge = false`` is the SAME standing grant as ``autonomy = full``.
+ 
+-    An owner who turned auto-merge ON via the canonical documented knobs —
+-    ``mode = auto`` + ``require_human_approval_to_merge = false`` — but left
+-    ``autonomy`` at the default ``babysit`` (never flipping the newer single
+-    switch) had their OWN green, cold-reviewed substrate CLEAR refused with "the
+-    overlay autonomy is not full". ``require_human_approval_to_merge = false`` IS
+-    the owner's standing "no per-PR human merge approval needed" statement — the
+-    same one ``autonomy = full`` makes — so the substrate sign-off must honor it.
++    The standing grant (``autonomy = full`` OR ``require_human_approval_to_merge =
++    false`` on a non-collaborative tier) removes the per-PR human sign-off for
++    NON-substrate changes — proven here with a ``logic`` CLEAR. SUBSTRATE is
++    excluded from the standing grant entirely (held for the owner, ping-and-hold),
++    pinned by ``test_require_false_substrate_is_still_held`` below.
+ 
+     The quality/safety floor (independent cold-review, reviewed-SHA bind,
+     CI-green, not-draft, maker≠checker) is never relaxed by this — only the
+     per-PR human sign-off is what the standing grant removes.
+     """
+ 
+-    def test_explicit_require_false_at_babysit_satisfies_substrate_signoff(self) -> None:
+-        """MUST-ALLOW: babysit + require_human_approval_to_merge=false signs off the substrate CLEAR.
++    def test_explicit_require_false_at_babysit_signs_off_non_substrate(self) -> None:
++        """MUST-ALLOW: babysit + require_human_approval_to_merge=false signs off a NON-substrate CLEAR.
+ 
+-        RED before the fix: the standing-grant check keyed solely on
++        RED before the #2666 fix: the standing-grant check keyed solely on
+         ``autonomy = full``, so an explicit ``require_human_approval_to_merge =
+-        false`` at the default ``babysit`` tier was ignored and the merge was
+-        refused with "the overlay autonomy is not full".
++        false`` at the default ``babysit`` tier was ignored.
+         """
+         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+-        clear = _substrate_clear(ticket, pr_id=2660)
++        clear = _substrate_clear(ticket, pr_id=2660, blast_class=MergeClear.BlastClass.LOGIC)
+         with _overlay_standing_signoff("t3-teatree", autonomy="babysit", require_human_approval_to_merge=False):
+             precheck = _assert_preconditions(clear)
+         assert precheck is not None
+ 
+-    def test_explicit_require_false_at_babysit_merges_end_to_end(self) -> None:
+-        """MUST-ALLOW end-to-end: the keystone merge advances the FSM with no per-PR sign-off."""
++    def test_explicit_require_false_at_babysit_merges_non_substrate_end_to_end(self) -> None:
++        """MUST-ALLOW end-to-end: the keystone merge advances the FSM for a NON-substrate CLEAR."""
+         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+-        clear = _substrate_clear(ticket, pr_id=2661)
++        clear = _substrate_clear(ticket, pr_id=2661, blast_class=MergeClear.BlastClass.LOGIC)
+         with (
+             _overlay_standing_signoff("t3-teatree", autonomy="babysit", require_human_approval_to_merge=False),
+             patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub),
+@@ -1028,6 +1073,23 @@ def test_explicit_require_false_at_babysit_merges_end_to_end(self) -> None:
+         assert ticket.state == Ticket.State.MERGED
+         assert clear.consumed_at is not None
+ 
++    def test_require_false_substrate_is_still_held(self) -> None:
++        """MUST-DENY: require_human_approval_to_merge=false does NOT sign off a SUBSTRATE CLEAR.
++
++        Substrate is excluded from the standing grant entirely — even with the
++        owner's explicit ``require_human_approval_to_merge = false`` it is held for
++        the owner (ping-and-hold).
++        """
++        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
++        clear = _substrate_clear(ticket, pr_id=2666)
++        with (
++            _overlay_standing_signoff("t3-teatree", autonomy="babysit", require_human_approval_to_merge=False),
++            pytest.raises(MergePreconditionError, match="substrate"),
++        ):
++            _assert_preconditions(clear)
++        ticket.refresh_from_db()
++        assert ticket.state == Ticket.State.IN_REVIEW
++
+     def test_default_require_true_at_babysit_still_refused(self) -> None:
+         """MUST-DENY: babysit + require_human_approval_to_merge=true keeps the per-PR sign-off.
+ 
+@@ -1076,11 +1138,16 @@ def test_require_false_does_not_relax_maker_checker_floor(self) -> None:
+             _assert_preconditions(clear)
+ 
+     def test_require_false_does_not_relax_sha_bind_floor(self) -> None:
+-        """MUST-DENY: require=false + head moved off reviewed_sha still refuses — SHA bind holds."""
++        """MUST-DENY: a human-authorized substrate clear with head moved still refuses — SHA bind holds.
++
++        The SHA-bind floor runs after the substrate sign-off, so it is exercised
++        with the per-CLEAR human authoriser present (substrate holds first
++        otherwise); the bind still fails closed on a moved head.
++        """
+         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+-        clear = _substrate_clear(ticket, pr_id=2665, reviewed_sha="d" * 40)
++        clear = _substrate_clear(ticket, pr_id=2665, reviewed_sha="d" * 40, human_authorizer="owner:adrien")
+         with (
+             _overlay_standing_signoff("t3-teatree", autonomy="babysit", require_human_approval_to_merge=False),
+             pytest.raises(MergePreconditionError, match="head moved"),
+         ):
+-            _assert_preconditions(clear)
++            _assert_preconditions(clear, human_authorized="owner:adrien")
+diff --git a/tests/teatree_loop/test_pr_sweep_scanner.py b/tests/teatree_loop/test_pr_sweep_scanner.py
+index ce9d953041..66ffd067cf 100644
+--- a/tests/teatree_loop/test_pr_sweep_scanner.py
++++ b/tests/teatree_loop/test_pr_sweep_scanner.py
+@@ -20,10 +20,11 @@
+ """
+ 
+ from dataclasses import dataclass, field, replace
++from unittest.mock import MagicMock, patch
+ 
+ import pytest
+ 
+-from teatree.core.models import AutoReviewDispatch, MergeableNotified, Task
++from teatree.core.models import AutoReviewDispatch, BotPing, MergeableNotified, Task
+ from teatree.core.models.merge_clear import ClearRequest, MergeClear
+ from teatree.core.models.review_verdict import ReviewVerdict
+ from teatree.loop.scanners.base import ScannerError, ScannerErrorClass
+@@ -34,6 +35,7 @@
+     SlackMergeNotifier,
+     _decode_pr,
+ )
++from teatree.loop.substrate_pinger import NotifyWithFallbackSubstratePinger
+ 
+ # ast-grep-ignore: ac-django-no-pytest-django-db
+ pytestmark = pytest.mark.django_db
+@@ -145,11 +147,22 @@ class FakeKeystone:
+     merged: bool = True
+     merged_sha: str = MAIN_SHA
+     error: str = ""
++    escalation_kind: str = ""
+     calls: list[int] = field(default_factory=list)
+ 
+-    def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str]:
++    def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str, str]:
+         self.calls.append(clear_id)
+-        return self.merged, self.merged_sha, self.error
++        return self.merged, self.merged_sha, self.error, self.escalation_kind
++
++
++@dataclass(slots=True)
++class FakeSubstratePinger:
++    """Mock ``SubstratePinger`` — records every (text, idempotency_key) ping."""
++
++    calls: list[tuple[str, str]] = field(default_factory=list)
++
++    def ping(self, *, text: str, idempotency_key: str) -> None:
++        self.calls.append((text, idempotency_key))
+ 
+ 
+ @dataclass(slots=True)
+@@ -175,6 +188,7 @@ def _scanner(  # noqa: PLR0913 — test helper: each kwarg maps 1:1 to a PrSweep
+     auto_review_dispatch: bool = False,
+     dispatcher: FakeReviewDispatcher | None = None,
+     self_identities: tuple[str, ...] = (SELF_LOGIN,),
++    substrate_pinger: FakeSubstratePinger | None = None,
+ ) -> tuple[PrSweepScanner, NullMergeNotifier]:
+     notifier = notifier or NullMergeNotifier()
+     return (
+@@ -188,6 +202,7 @@ def _scanner(  # noqa: PLR0913 — test helper: each kwarg maps 1:1 to a PrSweep
+             auto_review_dispatch=auto_review_dispatch,
+             review_dispatcher=dispatcher,
+             self_identities=self_identities,
++            substrate_pinger=substrate_pinger,
+         ),
+         notifier,
+     )
+@@ -1288,13 +1303,13 @@ def test_evaluate_failure_on_one_pr_does_not_prevent_sibling_from_merging(self)
+         class _BoomFirstKeystone:
+             calls: list[int] = field(default_factory=list)
+ 
+-            def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str]:
++            def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str, str]:
+                 self.calls.append(clear_id)
+                 if not self.calls or (self.calls == [clear_id] and len(self.calls) == 1):
+                     # First call: inject a fault to simulate a merge conflict / DB error
+                     msg = "simulated keystone failure"
+                     raise RuntimeError(msg)
+-                return True, MAIN_SHA, ""  # pragma: no cover
++                return True, MAIN_SHA, "", ""  # pragma: no cover
+ 
+         # Issue a CLEAR for both PRs so _evaluate reaches _merge for each.
+         _issue_clear(pr_id=6230)
+@@ -1315,7 +1330,7 @@ def test_scanner_error_from_evaluate_propagates_out_of_scan(self) -> None:
+ 
+         @dataclass(slots=True)
+         class _AuthErrorKeystone:
+-            def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str]:
++            def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str, str]:
+                 raise ScannerError(
+                     scanner="pr_sweep",
+                     error_class=ScannerErrorClass.AUTH,
+@@ -1411,3 +1426,76 @@ def test_evaluate_one_does_not_merge_without_cold_review(self) -> None:
+         assert attempt.merged is False
+         assert attempt.decision == "flag_no_review"
+         assert api.merge_pr_calls == []
++
++
++class TestSubstrateHoldPing:
++    """A HELD substrate merge pings the owner ONCE per diff (ping-and-hold, #3.1)."""
++
++    def test_substrate_hold_pings_once_with_per_diff_key(self) -> None:
++        # The anti-vacuity test (a): a substrate refusal from the keystone fires
++        # exactly one notify ping with the per-diff idempotency key. Before the
++        # fix the held substrate clear was swallowed silently with no ping.
++        clear = _issue_clear()
++        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
++        keystone = FakeKeystone(merged=False, error="held: substrate change", escalation_kind="substrate")
++        pinger = FakeSubstratePinger()
++        scanner, _ = _scanner(api=api, keystone=keystone, substrate_pinger=pinger)
++
++        signals = scanner.scan()
++
++        assert signals[0].payload["decision"] == "blocked"
++        assert len(pinger.calls) == 1
++        text, key = pinger.calls[0]
++        assert key == f"substrate-hold:{SLUG}#6230:{clear.reviewed_sha}"
++        assert f"{SLUG}#6230" in text
++
++    def test_non_substrate_block_does_not_ping(self) -> None:
++        # The anti-vacuity twin (b-adjacent): a NON-substrate keystone refusal
++        # never pings — the loop pings ONLY on substrate.
++        _issue_clear()
++        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
++        keystone = FakeKeystone(merged=False, error="some other refusal", escalation_kind="")
++        pinger = FakeSubstratePinger()
++        scanner, _ = _scanner(api=api, keystone=keystone, substrate_pinger=pinger)
++
++        scanner.scan()
++
++        assert pinger.calls == []
++
++    def test_substrate_hold_without_pinger_does_not_crash(self) -> None:
++        _issue_clear()
++        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
++        keystone = FakeKeystone(merged=False, error="held", escalation_kind="substrate")
++        scanner, _ = _scanner(api=api, keystone=keystone, substrate_pinger=None)
++
++        signals = scanner.scan()
++
++        assert signals[0].payload["decision"] == "blocked"
++
++    def test_re_tick_does_not_double_ping_real_notify_dedupe(self) -> None:
++        # The anti-vacuity test (d): re-running the sweep on the SAME held head
++        # does not double-ping. Uses the REAL NotifyWithFallbackSubstratePinger so
++        # the BotPing idempotency ledger genuinely dedupes across two ticks; only
++        # the unstoppable Slack HTTP boundary is faked.
++        clear = _issue_clear()
++        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr()]})
++        keystone = FakeKeystone(merged=False, error="held: substrate", escalation_kind="substrate")
++        scanner, _ = _scanner(api=api, keystone=keystone, substrate_pinger=NotifyWithFallbackSubstratePinger())
++
++        backend = MagicMock()
++        backend.open_dm.return_value = "D-USER"
++        backend.post_message.return_value = {"ok": True, "ts": "1700000000.000100"}
++        backend.get_permalink.return_value = "https://x.slack.com/p1"
++        backend.fetch_message.return_value = {"ts": "1700000000.000100", "text": "held"}
++
++        with (
++            patch("teatree.core.notify.messaging_from_overlay", return_value=backend),
++            patch("teatree.core.notify.resolve_user_id", return_value="U_ME"),
++        ):
++            scanner.scan()
++            scanner.scan()
++
++        key = f"substrate-hold:{SLUG}#6230:{clear.reviewed_sha}"
++        assert BotPing.objects.filter(idempotency_key=key, status=BotPing.Status.SENT).count() == 1
++        # Exactly one Slack post landed despite two ticks — the ledger deduped.
++        assert backend.post_message.call_count == 1
+diff --git a/tests/teatree_loop/test_scanner_error_signals.py b/tests/teatree_loop/test_scanner_error_signals.py
+index a7331c5bb0..7a9f3fd96b 100644
+--- a/tests/teatree_loop/test_scanner_error_signals.py
++++ b/tests/teatree_loop/test_scanner_error_signals.py
+@@ -138,9 +138,9 @@ def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str
+                 return False, ""
+ 
+         class _NullKeystone:
+-            def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str]:
++            def merge_clear(self, *, clear_id: int) -> tuple[bool, str, str, str]:
+                 _ = clear_id
+-                return False, "", ""
++                return False, "", "", ""
+ 
+         scanner = PrSweepScanner(
+             repos=("owner/repo",),
+-- 
+2.50.1 (Apple Git-155)
+
+
+From c1150d2598d6d6e45d1072301e0b90451098647c Mon Sep 17 00:00:00 2001
+From: souliane <21343492+souliane@users.noreply.github.com>
+Date: Thu, 25 Jun 2026 15:31:04 +0200
+Subject: [PATCH 2/3] test(backends): keep CodeHostBackend coverage in sync
+ with fetch_pr_changed_paths
+
+The substrate path classifier added fetch_pr_changed_paths to the
+CodeHostBackend Protocol and both forge hosts. Update the protocol-coverage
+fixtures so the runtime_checkable membership + signature fitness tests pin the
+new method: add it to the _FakeCodeHost stub and the _MERGE_RPC_SIGNATURES
+fitness map (both forges must implement it).
+---
+ tests/teatree_backends/test_code_host_protocol_coverage.py | 6 +++++-
+ tests/teatree_backends/test_protocols.py                   | 4 ++++
+ 2 files changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/tests/teatree_backends/test_code_host_protocol_coverage.py b/tests/teatree_backends/test_code_host_protocol_coverage.py
+index 6a31be1c89..5d07827af4 100644
+--- a/tests/teatree_backends/test_code_host_protocol_coverage.py
++++ b/tests/teatree_backends/test_code_host_protocol_coverage.py
+@@ -1,4 +1,4 @@
+-"""Protocol-coverage fitness for the 5 merge-RPC methods (PR 4 / #1985).
++"""Protocol-coverage fitness for the merge-RPC methods (PR 4 / #1985).
+ 
+ ``runtime_checkable`` only checks method NAMES; these tests additionally pin the
+ exact keyword-only signature so a drifted parameter (or a removed method on one
+@@ -34,6 +34,10 @@
+         ("slug", inspect.Parameter.KEYWORD_ONLY),
+         ("pr_id", inspect.Parameter.KEYWORD_ONLY),
+     ],
++    "fetch_pr_changed_paths": [
++        ("slug", inspect.Parameter.KEYWORD_ONLY),
++        ("pr_id", inspect.Parameter.KEYWORD_ONLY),
++    ],
+     "merge_pr_squash_bound": [
+         ("slug", inspect.Parameter.KEYWORD_ONLY),
+         ("pr_id", inspect.Parameter.KEYWORD_ONLY),
+diff --git a/tests/teatree_backends/test_protocols.py b/tests/teatree_backends/test_protocols.py
+index a42b0f24d6..d05e7d4635 100644
+--- a/tests/teatree_backends/test_protocols.py
++++ b/tests/teatree_backends/test_protocols.py
+@@ -174,6 +174,10 @@ def fetch_required_checks_rollup(self, *, slug: str, pr_id: int) -> list[dict[st
+         _ = (slug, pr_id)
+         return []
+ 
++    def fetch_pr_changed_paths(self, *, slug: str, pr_id: int) -> list[str]:
++        _ = (slug, pr_id)
++        return []
++
+     def merge_pr_squash_bound(self, *, slug: str, pr_id: int, expected_head_oid: str) -> ForgeMergeResult:
+         _ = (slug, pr_id, expected_head_oid)
+         return ForgeMergeResult(returncode=0, stdout="", stderr="", merged_sha="")
+-- 
+2.50.1 (Apple Git-155)
+
+
+From 84405c29aa71b0ae3bd5f9b2ca0889a02fd6a781 Mon Sep 17 00:00:00 2001
+From: souliane <21343492+souliane@users.noreply.github.com>
+Date: Thu, 25 Jun 2026 17:07:08 +0200
+Subject: [PATCH 3/3] test(eval): regression corpus pins substrate
+ ping-and-hold under autonomy=full
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The substrate carve-out predicate asserted the OLD behavior (a substrate
+CLEAR auto-clears without a per-PR human sign-off under autonomy=full).
+That is exactly the behavior the ping-and-hold fix removes, so the eval
+must be inverted to pin the new contract: under autonomy=full a substrate
+CLEAR is HELD (the standing grant excludes substrate via
+_overlay_grants_standing_substrate_signoff), so _assert_clear_authorized
+raises and the loop edge pings the owner. Only a per-PR human authorizer
+clears it.
+
+Renames _check_merge_precondition_substrate_full_autonomy ->
+_check_merge_precondition_substrate_full_autonomy_holds across the corpus
+registration, the predicate impl + __all__, and the predicate test, and
+flips expect_cleared_without_human to False. The predicate drives the real
+_assert_clear_authorized guard, so neutralizing the substrate exclusion
+turns it RED (verified locally) — it is anti-vacuous.
+---
+ src/teatree/eval/regression_corpus.py         |  8 ++---
+ .../eval/regression_corpus_predicates.py      | 30 ++++++++++---------
+ .../test_regression_corpus_predicates.py      |  4 +--
+ 3 files changed, 22 insertions(+), 20 deletions(-)
+
+diff --git a/src/teatree/eval/regression_corpus.py b/src/teatree/eval/regression_corpus.py
+index edf0f9b0e3..8fd55b5a4d 100644
+--- a/src/teatree/eval/regression_corpus.py
++++ b/src/teatree/eval/regression_corpus.py
+@@ -40,7 +40,7 @@
+     _check_forge_resolves_by_host_not_token,
+     _check_loop_owner_lease_pid_anchored,
+     _check_merge_precondition_maker_is_not_checker,
+-    _check_merge_precondition_substrate_full_autonomy,
++    _check_merge_precondition_substrate_full_autonomy_holds,
+     _check_merge_precondition_substrate_human_authorize,
+     _check_mr_description_first_line_validated,
+     _check_private_repo_allowlist_path_segment_match,
+@@ -99,10 +99,10 @@ def _check_migration_graph_single_leaf() -> bool:
+         needs_db=True,
+     ),
+     RegressionCheck(
+-        failure_class="substrate-merge full-autonomy carve-out",
++        failure_class="substrate-merge full-autonomy ping-and-hold",
+         origin="https://github.com/souliane/teatree/issues/1748",
+-        invariant="an autonomy=full overlay clears a ticket-less substrate CLEAR without a per-PR human sign-off",
+-        predicate=_check_merge_precondition_substrate_full_autonomy,
++        invariant="an autonomy=full overlay HOLDS a substrate CLEAR with no per-PR human authorizer (ping-and-hold)",
++        predicate=_check_merge_precondition_substrate_full_autonomy_holds,
+         needs_db=True,
+     ),
+     RegressionCheck(
+diff --git a/src/teatree/eval/regression_corpus_predicates.py b/src/teatree/eval/regression_corpus_predicates.py
+index 6bb5316571..f65bd5ebbe 100644
+--- a/src/teatree/eval/regression_corpus_predicates.py
++++ b/src/teatree/eval/regression_corpus_predicates.py
+@@ -98,25 +98,27 @@ def _check_merge_precondition_substrate_human_authorize() -> bool:
+ 
+     The CLEAR's overlay (resolved from its ``slug``) is pinned to ``babysit``
+     via the DB-home autonomy seam (#1775) so the check is deterministic
+-    regardless of the developer's live config. The ``autonomy = full`` carve-out is a
+-    distinct must-allow path verified by
+-    :func:`_check_merge_precondition_substrate_full_autonomy`; this check is the
+-    must-block direction for a below-full overlay.
++    regardless of the developer's live config. Substrate is held under EVERY tier
++    (including ``full`` — verified by
++    :func:`_check_merge_precondition_substrate_full_autonomy_holds`); this check is
++    the must-block direction for a below-full overlay.
+     """
+     return _exercise_substrate_authorize(autonomy="babysit", expect_cleared_without_human=False)
+ 
+ 
+-def _check_merge_precondition_substrate_full_autonomy() -> bool:
+-    """Carve-out: a substrate CLEAR under an ``autonomy = full`` overlay clears without a per-PR sign-off.
++def _check_merge_precondition_substrate_full_autonomy_holds() -> bool:
++    """Ping-and-hold: a substrate CLEAR under an ``autonomy = full`` overlay is HELD, never auto-merged.
+ 
+-    The mirror of :func:`_check_merge_precondition_substrate_human_authorize`:
+-    with the CLEAR's overlay pinned to ``full``, the standing grant satisfies
+-    the substrate sign-off, so presenting no ``--human-authorized`` must NOT
+-    raise. This is the must-allow direction the ticket-less / aliased
+-    overlay-resolution fix restores; without it, a full-autonomy substrate
+-    merge is wrongly blocked (the rest of the floor is unaffected).
++    The owner's directive — substrate (merge keystone, architecture spec,
++    governance doc) PINGS-and-HOLDS so they authorize every such merge. With the
++    CLEAR's overlay pinned to ``full`` and NO ``--human-authorized`` presented, the
++    standing grant does NOT cover substrate, so ``_assert_clear_authorized`` MUST
++    raise (the loop edge then pings the owner). This is the inverse of the prior
++    carve-out: substrate is excluded from the standing grant entirely, so a
++    mislabeled or genuine substrate change can never auto-merge silently under
++    full autonomy. The only path that clears it is a per-PR human authorizer.
+     """
+-    return _exercise_substrate_authorize(autonomy="full", expect_cleared_without_human=True)
++    return _exercise_substrate_authorize(autonomy="full", expect_cleared_without_human=False)
+ 
+ 
+ def _exercise_substrate_authorize(*, autonomy: str, expect_cleared_without_human: bool) -> bool:
+@@ -411,7 +413,7 @@ def _check_mr_description_first_line_validated() -> bool:
+     "_check_forge_resolves_by_host_not_token",
+     "_check_loop_owner_lease_pid_anchored",
+     "_check_merge_precondition_maker_is_not_checker",
+-    "_check_merge_precondition_substrate_full_autonomy",
++    "_check_merge_precondition_substrate_full_autonomy_holds",
+     "_check_merge_precondition_substrate_human_authorize",
+     "_check_mr_description_first_line_validated",
+     "_check_private_repo_allowlist_path_segment_match",
+diff --git a/tests/teatree_eval/test_regression_corpus_predicates.py b/tests/teatree_eval/test_regression_corpus_predicates.py
+index 00d0792738..bc3bd6f6de 100644
+--- a/tests/teatree_eval/test_regression_corpus_predicates.py
++++ b/tests/teatree_eval/test_regression_corpus_predicates.py
+@@ -48,8 +48,8 @@ class TestDbBackedPredicatesHoldOnRealCode(TestCase):
+     def test_substrate_human_authorize_floor(self) -> None:
+         assert predicates._check_merge_precondition_substrate_human_authorize() is True
+ 
+-    def test_substrate_full_autonomy_carveout(self) -> None:
+-        assert predicates._check_merge_precondition_substrate_full_autonomy() is True
++    def test_substrate_full_autonomy_holds(self) -> None:
++        assert predicates._check_merge_precondition_substrate_full_autonomy_holds() is True
+ 
+     def test_maker_is_not_checker(self) -> None:
+         assert predicates._check_merge_precondition_maker_is_not_checker() is True
+-- 
+2.50.1 (Apple Git-155)
+

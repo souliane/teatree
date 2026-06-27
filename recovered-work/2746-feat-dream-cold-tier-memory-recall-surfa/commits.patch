@@ -1,0 +1,1999 @@
+From ea197aed6c875834d8ded7c246ae1a8a12c34bf1 Mon Sep 17 00:00:00 2001
+From: souliane <21343492+souliane@users.noreply.github.com>
+Date: Fri, 26 Jun 2026 15:46:13 +0200
+Subject: [PATCH 1/2] feat(dream): cold-tier memory recall surfaces archived
+ rules on relevant prompts (#2746)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+PR1 (#2723) archived the lowest-signal memories — ~130 BINDING/Non-Negotiable
+rules of a ~693-entry corpus — out of the session-loaded hot MEMORY.md into a
+NOT-loaded cold MEMORY_ARCHIVE.md, so those rules stopped influencing behaviour.
+RECALL closes that gap: when the prompt is topically relevant to a cold rule,
+surface it for that one turn.
+
+- recall.py: DB-free, stdlib-only pure scoring core (RecallHit,
+  recall_cold_memory, render_recall_block). Tokenizes the prompt (ambient
+  system-reminder/command blocks stripped first so injected MEMORY.md text
+  cannot self-match), scores each cold-index entry, applies a 2-match relevance
+  floor before any BINDING(+3)/user_(+2) boost, dedupes against the hot index
+  (pointer name + renamed-file signature-substring guard), ranks, and caps to
+  5 hits / 1500 bytes / 200 chars-per-line. Reuses decay/reindex filename
+  constants as the stable contract.
+- memory_recall.py: thin UserPromptSubmit hook leaf; resolves the project memory
+  dir (transcript sibling memory dir, else the cwd-slug project dir), imports the
+  core without django.setup(), prints the block. Registered LAST in the
+  hook_router UserPromptSubmit chain. Crash-proof and silent on degrade.
+- teatree_settings.py: extracted _teatree_bool_setting out of hook_router (now a
+  shared leaf both import) so the leaf reads its kill-switch without a
+  hook_router-leaf cycle; hook_router nets -22 LOC (shrink-only ratchet).
+- memory management command (memory recall) + DJANGO_GROUPS entry
+  (core_dispatch); off-switch memory_recall_enabled (default TRUE) +
+  gate memory-recall disable/enable/status self-rescue.
+- nit-4 (#2723 review): reindex.signature_text — one frontmatter-aware,
+  description-preferring, uncapped extractor now shared by the hot index,
+  gates._signature_line (cold index), and the retention probe, fixing the weak
+  node-type signature; _summary_for delegates to it then clips.
+- nit-3 (#2723 review): byte-budget archival integration test exercising the
+  multibyte-only byte branch of the decay budget tier.
+
+Docs regenerated (cli-reference, management-commands).
+---
+ BLUEPRINT.md                                  |   2 +-
+ docs/generated/cli-reference.md               |  98 ++++++
+ docs/generated/management-commands.json       |  10 +
+ docs/generated/management-commands.md         |   8 +
+ hooks/scripts/hook_router.py                  |  34 +-
+ hooks/scripts/memory_recall.py                | 117 +++++++
+ hooks/scripts/teatree_settings.py             |  45 +++
+ src/teatree/cli/django_groups.py              |   7 +
+ src/teatree/cli/teatree_gate.py               |  13 +
+ .../core/management/commands/memory.py        |  68 ++++
+ src/teatree/loops/dream/gates.py              |  22 +-
+ src/teatree/loops/dream/recall.py             | 326 ++++++++++++++++++
+ src/teatree/loops/dream/reindex.py            |  72 +++-
+ tests/teatree_cli/test_teatree_gate.py        |  23 ++
+ .../commands/test_memory_command.py           |  68 ++++
+ .../teatree_hooks/test_memory_recall_hook.py  |  92 +++++
+ tests/teatree_loops/dream/test_decay.py       |  53 +++
+ tests/teatree_loops/dream/test_gates.py       |  38 ++
+ tests/teatree_loops/dream/test_recall.py      | 174 ++++++++++
+ tests/teatree_loops/dream/test_reindex.py     |  69 ++++
+ 20 files changed, 1292 insertions(+), 47 deletions(-)
+ create mode 100644 hooks/scripts/memory_recall.py
+ create mode 100644 hooks/scripts/teatree_settings.py
+ create mode 100644 src/teatree/core/management/commands/memory.py
+ create mode 100644 src/teatree/loops/dream/recall.py
+ create mode 100644 tests/teatree_core/management/commands/test_memory_command.py
+ create mode 100644 tests/teatree_hooks/test_memory_recall_hook.py
+ create mode 100644 tests/teatree_loops/dream/test_recall.py
+
+diff --git a/BLUEPRINT.md b/BLUEPRINT.md
+index 57fe7daa12..ab85a0298b 100644
+--- a/BLUEPRINT.md
++++ b/BLUEPRINT.md
+@@ -77,7 +77,7 @@ ## 4. Domain Models
+ 
+ Five core lifecycle models in `teatree.core.models/`, all FSM-driven (`django-fsm`): **Ticket**, **Worktree**, **Session**, **Task**, **TaskAttempt**. Around them, supporting rows under the same package: `BotPing`, `ConsolidatedMemory`/`DreamQaProbe`/`DreamRunMarker`/`InstructionComplianceSnapshot`/`InstructionComplianceRecord` (memory-consolidation, below), `DailyDigestThread`/`DailyDigestMessage`, `DbApproval`, `DeferredQuestion`, `EvalRunRecord`/`EvalScenarioResult` (eval-run ledger), `SessionAuditRecord` (eval audit layer), `HonestyEscalation`, `IncomingEvent`, `IntentClassification`, `LandscapeArtifact` (the intake landscape survey the planner consumes, below), `LivePostApproval`, `LocalStackQueueItem`, `LocalStackReaperMarker`, `Loop` (DB-configured autonomous loop — name, exactly one of prompt-FK/script, run_in_sub_agent/description/overlay, nullable delay, enabled, §5.6), `LoopLease`, `LoopState` (durable per-loop control plane, §5.6), `MergeClear`, `OnBehalfApproval`, `OutboundClaim` (drift verifier), `PendingChatInjection`, `Prompt`/`PromptVersion` (first-class reusable prompt with templated `params` + edit-history snapshots, the `Loop.prompt` FK target and the `/prompts` trigger, §5.6), `PullRequest`, `RedCardSignal`, `ReplyDispatch`, `ReviewAssignment`, `ReviewLoop`/`ReviewLoopRound` (the bounded author↔reviewer ping-pong FSM + its round-leg slot, §5.6), `ReviewRequestPost`, `ReviewVerdict`, `ScannedBroadcast`, `SelfImproveFiring`, `SessionHandover`, `TicketTransition`, `WorktreeEnvOverride`. Every row name above is cited by name from §5.6, §17.1, §17.4, or §4 prose.
+ 
+-**Memory-consolidation data layer ([#1933](https://github.com/souliane/teatree/issues/1933)).** Three durable rows back the idle-time "dreaming" pass that clusters session feedback and distils each cluster into one imperative rule. `ConsolidatedMemory` is the consolidation ledger (the DB row is canonical state + audit trail; a rendered topic file is the output), idempotency-anchored on a sha256 `cluster_key` and owning its status ladder `CANDIDATE → VERIFIED → PROMOTED` (plus `SUPERSEDED`/`EXPIRED`); it refuses an uncited rule, refuses to silently expire a BINDING row, and gates index-line pruning on a terminal status with a recorded durable home. **Pass 2 — memory→fix-and-merge ([#2426](https://github.com/souliane/teatree/issues/2426), [#2663](https://github.com/souliane/teatree/issues/2663)).** A `disposition` ladder (`UNTRIAGED → USER_SPECIFIC_KEEP | (CORE_GAP_NEEDS_TICKET → TICKETED → RESOLVED_RETIRED)`) makes the ledger a queue that DRAINS, not a pile that grows: a generic/teatree-core memory is a confession that core has a workflow gap, so `teatree.loops.dream.promote_memory` triages each untriaged row (injected `MemoryClassifier`, default the `durable_destination`-hint one — a home under teatree's own skills/source/scripts/BLUEPRINT is core-generic, anything else stays user-specific memory). The promote verb no longer files a fresh `needs-triage` issue per gap — those PILED UP because the `IssueImplementerScanner` SKIPs `needs-triage`. Instead each core gap is driven to a MERGED fix via `teatree.loops.dream.umbrella_ledger`: a CHECKBOX is upserted under the standing umbrella issue ([#2663](https://github.com/souliane/teatree/issues/2663) — reused daily, NEVER closed), keyed on an invisible `<!-- dream-gap <cluster_key> -->` marker so the same gap never double-adds (banned-term + bare-reference scanned so the public-repo title never leaks), and the fix is SCHEDULED for a coding agent by reusing `Ticket.schedule_coding()` — the PR merges through the SAME §17.4 keystone gated by the overlay's autonomy. The new `CodeHostBackend.update_issue(issue_url, body)` extension method edits the umbrella body in place (GitHub `PATCH .../issues/<n>`, GitLab `PUT .../issues/<iid>`). When a gap's fix Ticket reaches MERGED, `reconcile_merged_gaps` CHECKS its umbrella checkbox and retires the prose (`RESOLVED_RETIRED`, archived) through the existing `retire_resolved_memories` (driven off the Ticket's authoritative MERGED state via an injected `is_resolved` predicate, not a fragile forge re-read of a `/pull/<n>` URL). **No new model:** an in-flight gap is an existing `Ticket` row (gap/memory/umbrella linkage in `extra.dream_gap_key`/`dream_memory_cluster_key`/`dream_umbrella_url`) + its `ConsolidatedMemory` entry; the #2663 checkbox is the durable cross-night state. A BINDING row is never retired. Pass 2 schedules the fix (durable, reversible) but never hand-implements; it is **default OFF** behind the `[loops.dream] memory_promote` / `T3_DREAM_MEMORY_PROMOTE` toggle, so an unflagged pass never triages, upserts, or schedules. **Phase 3c — the Instruction-Compliance Accountant ([#2663](https://github.com/souliane/teatree/issues/2663)).** Instruction compliance is the root KPI: a rule was PRESENT/AVAILABLE (a durable memory, a loaded-skill rule, a CLAUDE.md clause, a system gate, or an explicit in-session directive) and the agent acted against it. `teatree.loops.dream.compliance` mines one pass's extract (reusing `transcript_extract.looks_like_user_correction` as the ground-truth signal) into typed `ComplianceFinding`s — a correction overlapping a memory-backed rule already on disk is a RECURRENCE (`rule_source=MEMORY`), one with no backing memory a first-occurrence `IN_SESSION` violation — and persists one `InstructionComplianceSnapshot` per pass (`instructions_observed`/`violations`/`compliance_rate`/`recurrences_count`) plus one `InstructionComplianceRecord` audit row per violation. **The binding escalation rule:** a recurrence (a rule that already had a durable memory, violated AGAIN) must escalate to a gate or an eval, NEVER another memory — `escalate_recurrences` drives ONE umbrella checkbox + a scheduled fix per recurring rule (deduped on the `compliance-recurrence-<rule_identity>` gap key) via the same `umbrella_ledger.promote_gap` path Pass 2 uses, the checkbox title prescribing a structural fix (a PreToolUse/Stop gate, a config self-check, or an anti-vacuous `under_load` eval), never more prose and no longer a fresh `needs-triage` issue; and `write_clusters` reclassifies a MEMORY_ONLY cluster whose rule already shows a recurrence off its memory destination to a core-gap home rather than re-promoting another memory. The phase runs under `t3 dream run --full`, **default OFF** behind the `[loops.dream] compliance` / `T3_DREAM_COMPLIANCE` toggle (the Pass-2 posture); `t3 dream compliance show` prints the latest snapshot (rate + recurrence count + open escalations). **Phase 3d — the Automatable-Ask Promoter ([#2663](https://github.com/souliane/teatree/issues/2663)).** The structural "improve-with-new-stuff" sibling of the compliance accountant (the "fix-issues" half): dreaming detects recurring MANUAL user asks t3 could automate and promotes each as a fix-and-merge so the user "gets out of the loop", expressed ENTIRELY within the memory verbs (consolidate → merge → promote → retire), **no new model**. `transcript_extract.looks_like_user_ask` is the keyword-blind keeper (the sibling of `looks_like_user_correction`): a USER turn reading like a directive/request (imperative cues "can you"/"please"/"let's"/"set up", or operational-urgency cues "hotfix"/"asap"/"production"/"rollback"); it rides `high_signal_lines` (and the narrow `user_ask_lines` sibling) so repeated asks reach the distiller and cluster into `ConsolidatedMemory` ask-clusters (same `cluster_key` upsert dedups/merges for free). `teatree.loops.dream.automation_ask` classifies each ask-cluster Bucket A (`EXISTING_GAP` — an existing loop/skill SHOULD have handled it; the injected `AUTOMATION_CATALOG` of loop+skill names lets the classifier name the real mechanism, and the gap prescribes fixing its trigger/coverage/surfacing) or Bucket B (`NEW_WORKFLOW` — no automation exists; prescribe a new loop/skill/gate, canonical example a hotfix lane), via an injected `AskClassifier` seam (default the deterministic catalog classifier, so the phase runs LLM-free). Each GROUNDED ask gap (the verbatim cited snippet must appear in the transcript — reusing `engine.cluster_is_grounded`) routes through the SAME `umbrella_ledger.promote_gap` path Pass 2 / Phase 3c use — a deduped umbrella checkbox + a scheduled coding fix, the title carrying the Bucket-A/B framing and a `dream-automation-gap` lineage tag; retirement reuses `reconcile_merged_gaps` (the ask memory retires off the gap-fix Ticket's MERGED state). The phase runs under `t3 dream run --full`, **default OFF** behind the `[loops.dream] automation_asks` / `T3_DREAM_AUTOMATION_ASKS` toggle; an unflagged pass never promotes an ask. `DreamQaProbe` is the retention/interference/monotonicity QA corpus, now POPULATED and replayed by the **§ 4 acceptance gates** ([#2545](https://github.com/souliane/teatree/issues/2545), `teatree.loops.dream.gates`). The cron snapshots each memory dir BEFORE and AFTER the file-side phases and runs all seven gates: **(a) retention** (every probe answerable pre-pass is still answerable post-pass), **(b) interference** (the prior-session probe pass-rate does not regress), **(c) consolidation-actually-happened** (net size reduced OR schema count grew OR clusters were recorded, AND every pruned index line has a confirmed durable home), **(d) index-budget** (`MEMORY.md` back under the real ~24 KB / ~150-line SESSION-LOAD truncation point, not a 10x regression alarm — so an over-budget index trips gate (d) RED while still recoverable; [#2723](https://github.com/souliane/teatree/issues/2723)), **(e) monotonicity** (two passes over a stable corpus do not lower the pass-rate), **(f) no-loss audit** (every archived entry records a source + a destination that exists), and **(g) compliance-non-regression** ([#2663](https://github.com/souliane/teatree/issues/2663) — a recurrence remediated with another memory instead of a gate/eval FAILS the pass; an escalated recurrence passes). A probe is seeded per memory (keyed on a signature line) and replayed via an injectable, deterministic LLM-free answerer; the probe corpus is persisted (idempotent on `probe_key`, accumulating pass/run counts) so the next pass has a baseline. A **failing gate marks the pass attempted-not-succeeded** (staleness keeps firing) — a lossy / delete-only / no-op consolidation is caught, never stamped success. Each gate has an anti-vacuous test proven in both directions, and the command's gate-gating is mutation-proven (ignoring the verdict turns the wiring tests RED). `DreamRunMarker` is the staleness marker keyed on the success timestamp (a run that keeps failing stays stale). `t3 dream run` (manual) and `t3 dream tick` (cadence-gated cron, ~04:00) take a `dream-tick` `LoopLease` and run the distillation engine (`teatree.loops.dream.engine.run_consolidation`), stamping `DreamRunMarker` only on a clean pass; `--dry-run` writes nothing. Engine v1 covers phases 1–3 (rank a bounded extract → an injected `Distiller` clusters by root cause → upsert by `cluster_key`, rejecting any uncited/hallucinated cluster and never overwriting a BINDING rule); the injected-distiller seam keeps the pass testable, and an SDK failure propagates rather than laundering into a fake success. **Phases 4–6 are LIVE** ([#1933](https://github.com/souliane/teatree/issues/1933) § 6): the cron runs the memory-file phases (cross-link, merge, re-index, decay) over the discovered `~/.claude` memory dirs, each fault-isolated in its own try/except so one phase (or one dir) failing never crashes the tick or stops the others, and each LIVE by default behind its own two-layer kill-switch (`[loops.dream] <phase>` toml / `T3_DREAM_<PHASE>` env, first match wins). The file-side phases run independently of the transcript extract, so they fire even on a 0-transcript-member pass (which stays attempted-not-succeeded for consolidation, but still re-indexes/decays the on-disk memory set; [#2547](https://github.com/souliane/teatree/issues/2547)). **Phase 4** (`teatree.loops.dream.cross_link`) appends symmetric `[[name]]` wiki-links between related memories — related when their significant-token Jaccard clears a deterministic floor (no model) — and is idempotent (a re-run on an unchanged set adds nothing). **Phase 4b** (`teatree.loops.dream.merge`, [#2723](https://github.com/souliane/teatree/issues/2723)) is the on-disk MERGE verb cross-link was missing: it collapses a near-duplicate PAIR (body-token Jaccard ≥ 0.85 AND same frontmatter `type`/`name` family — far above cross-link's floor) into the HIGHER-WEIGHT survivor (a BINDING rule outranks a plain restatement, so binding doctrine is never the side absorbed), appends the absorbed file's distinct lines with a provenance header, and ARCHIVES the absorbed file via `decay._archive_one` (moved, never deleted) so the re-index drops its pointer in the same pass. **Decision-3 (binding):** two BINDING near-duplicates are NEVER auto-merged — they are cross-linked and a deduped `dream-binding-reconcile` ticket is filed via the existing `promote_memory` filer (reusing its banned-term / bare-reference withholding) for human reconciliation. Phase 4b runs AFTER cross-link, BEFORE re-index, LIVE by default behind the `[loops.dream] merge` / `T3_DREAM_MERGE` kill-switch, and is fault-isolated. The whole file-side phase orchestration (4/4b/5/6 + the § 4 gates) is a composed `teatree.loops.dream.phase_runner.MemoryPhaseRunner`. **Phase 5** (`teatree.loops.dream.reindex`) regenerates `MEMORY.md` as one tight line per memory — a single bare `name.md` pointer (no `[name.md](name.md)` href duplication) plus a ≤120-char summary, the WHOLE line capped at 160 chars so it stays under the gate-(d) load budget — deduped, filename-stable, content stays in the topic file, byte-identical on a no-change re-run. **Phase 6** (`teatree.loops.dream.decay`) ages a memory out by ARCHIVING it (moved to `<memory_dir>/archive/` with a provenance header, never deleted) — gated by a NON-VACUOUS retention guard that retains a memory when ANY of: it is fresh (mtime within the window), it is still referenced (another live memory or the index `[[name]]`-links it), OR — the **transfer-before-prune rail** ([#2546](https://github.com/souliane/teatree/issues/2546), #1933 § 2) — its lesson has NO confirmed durable home in the `ConsolidatedMemory` ledger. Only a memory that is old AND unreferenced AND durably homed is archived; a guard-disabled probe proves each guard has teeth. The §2 rail — *"delete an index line only after the fact has a confirmed durable home in a topic file"* — is applied to the topic file itself: an injected `HomeResolver` seam keeps the file-side mechanics DB-free under test, while the production `ledger_durable_home_resolver` reads `ConsolidatedMemory.objects.prunable()` (the index-pruner's terminal-status + recorded-`durable_destination` surface) once per pass and maps a topic file to a row by path membership in `source_files` OR by its name appearing in a `durable_destination`. **Budget RETIRE tier ([#2723](https://github.com/souliane/teatree/issues/2723)).** The `prunable()` home-rail is structurally EMPTY for the hand-authored corpus (0 ledger rows reference on-disk memories), so it can never archive the files that bloat the index. A second, ledger-INDEPENDENT tier (opt-in via `DecayPolicy(budget_tier=BudgetTier())`, enabled in the cron) fires ONLY when `MEMORY.md` is over the gate-(d) load budget and archives files that are (a) older than a 90-day ceiling — by a LOGICAL `lesson_updated` frontmatter clock, NOT raw `st_mtime`, so a cross-link / re-index rewrite does not reset the decay clock — (b) unreferenced, and (c) whose lesson is CAPTURED ELSEWHERE (a near-duplicate survivor exists — a content/duplication check, never the empty `prunable()` join); a genuinely unique lesson is always retained. The cron re-indexes AFTER this decay so `MEMORY.md` falls back under the gate-(d) budget in the SAME pass. All phases accept an explicit `memory_dir` and never touch the real `~/.claude` under test. **Phase 3b** ([#2346](https://github.com/souliane/teatree/issues/2346)) closes the drift → live-eval loop: `teatree.loops.dream.eval_proposer` maps each grounded cluster to an eval CANDIDATE in a JSONL review queue, then `teatree.loops.dream.promote` PROMOTES it to a real `under_load` scenario (`evals/scenarios/promoted_drift.yaml` + `_pass`/`_fail` replay fixtures) — the artifacts the deterministic replay gate and the weekly metered lane run unchanged. The nightly `tick` requests proposals **LIVE by default** (the `[loops.dream] propose_evals` / `T3_DREAM_PROPOSE_EVALS` kill-switch flips it off). Promotion is auto but gated by a **non-bypassable anti-vacuity guard** (`promote.guard_can_fail`): it runs the real grader (`teatree.eval.report.evaluate`) against a synthesised drift-recommitting transcript and promotes only when that verdict is FAIL (the matchers have teeth) AND a compliant transcript grades PASS (not a tautology); a candidate whose grader cannot fail is rejected — no file written. The guard is deterministic; live metered grading of a promoted scenario lands with the weekly Agent-SDK lane. **Phase 3b LLM derivation** ([#2447](https://github.com/souliane/teatree/issues/2447)) is the richer, **default-OFF** follow-up to the fixed-matcher `promote`: `teatree.loops.dream.llm_eval_proposer` runs an injected LLM synthesizer that turns a grounded candidate plus its cited transcript slice into a COMPLETE `under_load` `EvalSpec` — a pollution preamble saturated to the documented ~28k-char envelope floor, discriminating positive + negative matchers, and a judge rubric — parsed through the real loader and gated by a **candidate-derived** teeth check (`teatree.loops.dream._teeth_check.teeth_check_against_candidate`): it synthesises the `_fail`/`_pass` transcripts FROM the candidate's OWN cited drift and compliant tool-call shapes and grades both through the suite's real grader (`teatree.eval.report.evaluate`), DROPPING a spec whose matchers do not reject the candidate's own cited drift (or reject its compliant shape as a tautology) — proving the matchers target the SPECIFIC drift the candidate describes, not `promote`'s fixed session.py-edit transcripts. Even a proven spec is never autonomously committed to `evals/scenarios`: `stage_derived_evals` writes a staging `derived_evals.yaml` a human / standing core-maker ratifies via a PR. The phase is OFF unless the `[loops.dream] derive_evals` / `T3_DREAM_DERIVE_EVALS` toggle is set, so an unflagged pass is byte-identical. The `dream` mini-loop is registered `off_live_tick` (driven only by its own cron); `t3 doctor` surfaces the 48h staleness alarm.
++**Memory-consolidation data layer ([#1933](https://github.com/souliane/teatree/issues/1933)).** Three durable rows back the idle-time "dreaming" pass that clusters session feedback and distils each cluster into one imperative rule. `ConsolidatedMemory` is the consolidation ledger (the DB row is canonical state + audit trail; a rendered topic file is the output), idempotency-anchored on a sha256 `cluster_key` and owning its status ladder `CANDIDATE → VERIFIED → PROMOTED` (plus `SUPERSEDED`/`EXPIRED`); it refuses an uncited rule, refuses to silently expire a BINDING row, and gates index-line pruning on a terminal status with a recorded durable home. **Pass 2 — memory→fix-and-merge ([#2426](https://github.com/souliane/teatree/issues/2426), [#2663](https://github.com/souliane/teatree/issues/2663)).** A `disposition` ladder (`UNTRIAGED → USER_SPECIFIC_KEEP | (CORE_GAP_NEEDS_TICKET → TICKETED → RESOLVED_RETIRED)`) makes the ledger a queue that DRAINS, not a pile that grows: a generic/teatree-core memory is a confession that core has a workflow gap, so `teatree.loops.dream.promote_memory` triages each untriaged row (injected `MemoryClassifier`, default the `durable_destination`-hint one — a home under teatree's own skills/source/scripts/BLUEPRINT is core-generic, anything else stays user-specific memory). The promote verb no longer files a fresh `needs-triage` issue per gap — those PILED UP because the `IssueImplementerScanner` SKIPs `needs-triage`. Instead each core gap is driven to a MERGED fix via `teatree.loops.dream.umbrella_ledger`: a CHECKBOX is upserted under the standing umbrella issue ([#2663](https://github.com/souliane/teatree/issues/2663) — reused daily, NEVER closed), keyed on an invisible `<!-- dream-gap <cluster_key> -->` marker so the same gap never double-adds (banned-term + bare-reference scanned so the public-repo title never leaks), and the fix is SCHEDULED for a coding agent by reusing `Ticket.schedule_coding()` — the PR merges through the SAME §17.4 keystone gated by the overlay's autonomy. The new `CodeHostBackend.update_issue(issue_url, body)` extension method edits the umbrella body in place (GitHub `PATCH .../issues/<n>`, GitLab `PUT .../issues/<iid>`). When a gap's fix Ticket reaches MERGED, `reconcile_merged_gaps` CHECKS its umbrella checkbox and retires the prose (`RESOLVED_RETIRED`, archived) through the existing `retire_resolved_memories` (driven off the Ticket's authoritative MERGED state via an injected `is_resolved` predicate, not a fragile forge re-read of a `/pull/<n>` URL). **No new model:** an in-flight gap is an existing `Ticket` row (gap/memory/umbrella linkage in `extra.dream_gap_key`/`dream_memory_cluster_key`/`dream_umbrella_url`) + its `ConsolidatedMemory` entry; the #2663 checkbox is the durable cross-night state. A BINDING row is never retired. Pass 2 schedules the fix (durable, reversible) but never hand-implements; it is **default OFF** behind the `[loops.dream] memory_promote` / `T3_DREAM_MEMORY_PROMOTE` toggle, so an unflagged pass never triages, upserts, or schedules. **Phase 3c — the Instruction-Compliance Accountant ([#2663](https://github.com/souliane/teatree/issues/2663)).** Instruction compliance is the root KPI: a rule was PRESENT/AVAILABLE (a durable memory, a loaded-skill rule, a CLAUDE.md clause, a system gate, or an explicit in-session directive) and the agent acted against it. `teatree.loops.dream.compliance` mines one pass's extract (reusing `transcript_extract.looks_like_user_correction` as the ground-truth signal) into typed `ComplianceFinding`s — a correction overlapping a memory-backed rule already on disk is a RECURRENCE (`rule_source=MEMORY`), one with no backing memory a first-occurrence `IN_SESSION` violation — and persists one `InstructionComplianceSnapshot` per pass (`instructions_observed`/`violations`/`compliance_rate`/`recurrences_count`) plus one `InstructionComplianceRecord` audit row per violation. **The binding escalation rule:** a recurrence (a rule that already had a durable memory, violated AGAIN) must escalate to a gate or an eval, NEVER another memory — `escalate_recurrences` drives ONE umbrella checkbox + a scheduled fix per recurring rule (deduped on the `compliance-recurrence-<rule_identity>` gap key) via the same `umbrella_ledger.promote_gap` path Pass 2 uses, the checkbox title prescribing a structural fix (a PreToolUse/Stop gate, a config self-check, or an anti-vacuous `under_load` eval), never more prose and no longer a fresh `needs-triage` issue; and `write_clusters` reclassifies a MEMORY_ONLY cluster whose rule already shows a recurrence off its memory destination to a core-gap home rather than re-promoting another memory. The phase runs under `t3 dream run --full`, **default OFF** behind the `[loops.dream] compliance` / `T3_DREAM_COMPLIANCE` toggle (the Pass-2 posture); `t3 dream compliance show` prints the latest snapshot (rate + recurrence count + open escalations). **Phase 3d — the Automatable-Ask Promoter ([#2663](https://github.com/souliane/teatree/issues/2663)).** The structural "improve-with-new-stuff" sibling of the compliance accountant (the "fix-issues" half): dreaming detects recurring MANUAL user asks t3 could automate and promotes each as a fix-and-merge so the user "gets out of the loop", expressed ENTIRELY within the memory verbs (consolidate → merge → promote → retire), **no new model**. `transcript_extract.looks_like_user_ask` is the keyword-blind keeper (the sibling of `looks_like_user_correction`): a USER turn reading like a directive/request (imperative cues "can you"/"please"/"let's"/"set up", or operational-urgency cues "hotfix"/"asap"/"production"/"rollback"); it rides `high_signal_lines` (and the narrow `user_ask_lines` sibling) so repeated asks reach the distiller and cluster into `ConsolidatedMemory` ask-clusters (same `cluster_key` upsert dedups/merges for free). `teatree.loops.dream.automation_ask` classifies each ask-cluster Bucket A (`EXISTING_GAP` — an existing loop/skill SHOULD have handled it; the injected `AUTOMATION_CATALOG` of loop+skill names lets the classifier name the real mechanism, and the gap prescribes fixing its trigger/coverage/surfacing) or Bucket B (`NEW_WORKFLOW` — no automation exists; prescribe a new loop/skill/gate, canonical example a hotfix lane), via an injected `AskClassifier` seam (default the deterministic catalog classifier, so the phase runs LLM-free). Each GROUNDED ask gap (the verbatim cited snippet must appear in the transcript — reusing `engine.cluster_is_grounded`) routes through the SAME `umbrella_ledger.promote_gap` path Pass 2 / Phase 3c use — a deduped umbrella checkbox + a scheduled coding fix, the title carrying the Bucket-A/B framing and a `dream-automation-gap` lineage tag; retirement reuses `reconcile_merged_gaps` (the ask memory retires off the gap-fix Ticket's MERGED state). The phase runs under `t3 dream run --full`, **default OFF** behind the `[loops.dream] automation_asks` / `T3_DREAM_AUTOMATION_ASKS` toggle; an unflagged pass never promotes an ask. `DreamQaProbe` is the retention/interference/monotonicity QA corpus, now POPULATED and replayed by the **§ 4 acceptance gates** ([#2545](https://github.com/souliane/teatree/issues/2545), `teatree.loops.dream.gates`). The cron snapshots each memory dir BEFORE and AFTER the file-side phases and runs all seven gates: **(a) retention** (every probe answerable pre-pass is still answerable post-pass), **(b) interference** (the prior-session probe pass-rate does not regress), **(c) consolidation-actually-happened** (net size reduced OR schema count grew OR clusters were recorded, AND every pruned index line has a confirmed durable home), **(d) index-budget** (`MEMORY.md` back under the real ~24 KB / ~150-line SESSION-LOAD truncation point, not a 10x regression alarm — so an over-budget index trips gate (d) RED while still recoverable; [#2723](https://github.com/souliane/teatree/issues/2723)), **(e) monotonicity** (two passes over a stable corpus do not lower the pass-rate), **(f) no-loss audit** (every archived entry records a source + a destination that exists), and **(g) compliance-non-regression** ([#2663](https://github.com/souliane/teatree/issues/2663) — a recurrence remediated with another memory instead of a gate/eval FAILS the pass; an escalated recurrence passes). A probe is seeded per memory (keyed on a signature line) and replayed via an injectable, deterministic LLM-free answerer; the probe corpus is persisted (idempotent on `probe_key`, accumulating pass/run counts) so the next pass has a baseline. A **failing gate marks the pass attempted-not-succeeded** (staleness keeps firing) — a lossy / delete-only / no-op consolidation is caught, never stamped success. Each gate has an anti-vacuous test proven in both directions, and the command's gate-gating is mutation-proven (ignoring the verdict turns the wiring tests RED). `DreamRunMarker` is the staleness marker keyed on the success timestamp (a run that keeps failing stays stale). `t3 dream run` (manual) and `t3 dream tick` (cadence-gated cron, ~04:00) take a `dream-tick` `LoopLease` and run the distillation engine (`teatree.loops.dream.engine.run_consolidation`), stamping `DreamRunMarker` only on a clean pass; `--dry-run` writes nothing. Engine v1 covers phases 1–3 (rank a bounded extract → an injected `Distiller` clusters by root cause → upsert by `cluster_key`, rejecting any uncited/hallucinated cluster and never overwriting a BINDING rule); the injected-distiller seam keeps the pass testable, and an SDK failure propagates rather than laundering into a fake success. **Phases 4–6 are LIVE** ([#1933](https://github.com/souliane/teatree/issues/1933) § 6): the cron runs the memory-file phases (cross-link, merge, re-index, decay) over the discovered `~/.claude` memory dirs, each fault-isolated in its own try/except so one phase (or one dir) failing never crashes the tick or stops the others, and each LIVE by default behind its own two-layer kill-switch (`[loops.dream] <phase>` toml / `T3_DREAM_<PHASE>` env, first match wins). The file-side phases run independently of the transcript extract, so they fire even on a 0-transcript-member pass (which stays attempted-not-succeeded for consolidation, but still re-indexes/decays the on-disk memory set; [#2547](https://github.com/souliane/teatree/issues/2547)). **Phase 4** (`teatree.loops.dream.cross_link`) appends symmetric `[[name]]` wiki-links between related memories — related when their significant-token Jaccard clears a deterministic floor (no model) — and is idempotent (a re-run on an unchanged set adds nothing). **Phase 4b** (`teatree.loops.dream.merge`, [#2723](https://github.com/souliane/teatree/issues/2723)) is the on-disk MERGE verb cross-link was missing: it collapses a near-duplicate PAIR (body-token Jaccard ≥ 0.85 AND same frontmatter `type`/`name` family — far above cross-link's floor) into the HIGHER-WEIGHT survivor (a BINDING rule outranks a plain restatement, so binding doctrine is never the side absorbed), appends the absorbed file's distinct lines with a provenance header, and ARCHIVES the absorbed file via `decay._archive_one` (moved, never deleted) so the re-index drops its pointer in the same pass. **Decision-3 (binding):** two BINDING near-duplicates are NEVER auto-merged — they are cross-linked and a deduped `dream-binding-reconcile` ticket is filed via the existing `promote_memory` filer (reusing its banned-term / bare-reference withholding) for human reconciliation. Phase 4b runs AFTER cross-link, BEFORE re-index, LIVE by default behind the `[loops.dream] merge` / `T3_DREAM_MERGE` kill-switch, and is fault-isolated. The whole file-side phase orchestration (4/4b/5/6 + the § 4 gates) is a composed `teatree.loops.dream.phase_runner.MemoryPhaseRunner`. **Phase 5** (`teatree.loops.dream.reindex`) regenerates `MEMORY.md` as one tight line per memory — a single bare `name.md` pointer (no `[name.md](name.md)` href duplication) plus a ≤120-char summary, the WHOLE line capped at 160 chars so it stays under the gate-(d) load budget — deduped, filename-stable, content stays in the topic file, byte-identical on a no-change re-run. **Phase 6** (`teatree.loops.dream.decay`) ages a memory out by ARCHIVING it (moved to `<memory_dir>/archive/` with a provenance header, never deleted) — gated by a NON-VACUOUS retention guard that retains a memory when ANY of: it is fresh (mtime within the window), it is still referenced (another live memory or the index `[[name]]`-links it), OR — the **transfer-before-prune rail** ([#2546](https://github.com/souliane/teatree/issues/2546), #1933 § 2) — its lesson has NO confirmed durable home in the `ConsolidatedMemory` ledger. Only a memory that is old AND unreferenced AND durably homed is archived; a guard-disabled probe proves each guard has teeth. The §2 rail — *"delete an index line only after the fact has a confirmed durable home in a topic file"* — is applied to the topic file itself: an injected `HomeResolver` seam keeps the file-side mechanics DB-free under test, while the production `ledger_durable_home_resolver` reads `ConsolidatedMemory.objects.prunable()` (the index-pruner's terminal-status + recorded-`durable_destination` surface) once per pass and maps a topic file to a row by path membership in `source_files` OR by its name appearing in a `durable_destination`. **Budget RETIRE tier ([#2723](https://github.com/souliane/teatree/issues/2723)).** The `prunable()` home-rail is structurally EMPTY for the hand-authored corpus (0 ledger rows reference on-disk memories), so it can never archive the files that bloat the index. A second, ledger-INDEPENDENT tier (opt-in via `DecayPolicy(budget_tier=BudgetTier())`, enabled in the cron) fires ONLY when `MEMORY.md` is over the gate-(d) load budget and archives files that are (a) older than a 90-day ceiling — by a LOGICAL `lesson_updated` frontmatter clock, NOT raw `st_mtime`, so a cross-link / re-index rewrite does not reset the decay clock — (b) unreferenced, and (c) whose lesson is CAPTURED ELSEWHERE (a near-duplicate survivor exists — a content/duplication check, never the empty `prunable()` join); a genuinely unique lesson is always retained. The cron re-indexes AFTER this decay so `MEMORY.md` falls back under the gate-(d) budget in the SAME pass. All phases accept an explicit `memory_dir` and never touch the real `~/.claude` under test. **Cold-tier RECALL ([#2746](https://github.com/souliane/teatree/issues/2746)).** The budget tier moves the lowest-signal memories — ~130 BINDING/Non-Negotiable rules of a ~693-entry corpus — to the NOT-session-loaded cold `MEMORY_ARCHIVE.md`, so they stop influencing behaviour. A `UserPromptSubmit` hook (`hooks/scripts/memory_recall.py`) closes that gap: the DB-free, stdlib-only pure core `teatree.loops.dream.recall` scores each cold-index line against the prompt's tokens (ambient `<system-reminder>`/`<command-*>` blocks stripped FIRST so an injected `MEMORY.md`/`CLAUDE.md` dump can never self-match), applies a 2-match relevance floor BEFORE any BINDING(+3)/`user_`(+2) boost (an irrelevant BINDING rule is never surfaced on one incidental token), dedupes against the hot index (pointer name + a renamed-file signature-substring guard), and injects the top ≤5 hits (≤1500 bytes, each line ≤200 chars) for that one turn; it is registered LAST on `UserPromptSubmit` so it never delays skill-loading, imports the core without `django.setup()`, and is crash-proof/silent on any degrade. Off-switch `[teatree] memory_recall_enabled` (default ON; self-rescue `t3 <overlay> gate memory-recall disable`), and `t3 <overlay> memory recall <query>` is the manual-lookup CLI. The recall quality and the §4 retention probe share ONE frontmatter-aware extractor `reindex.signature_text` ([#2746](https://github.com/souliane/teatree/issues/2746) nit-4) — preferring a memory's frontmatter `description:`/`summary:` over the weak `node_type: memory` body line — routed through by `reindex._summary_for` (hot index) and `gates._signature_line` (cold index + probe), so the hot index, cold index, and retention probe derive the SAME signature. The shared `_teatree_bool_setting` reader is extracted to the `hooks/scripts/teatree_settings.py` leaf so a gate leaf reads its kill-switch without a `hook_router`↔leaf import cycle. **Phase 3b** ([#2346](https://github.com/souliane/teatree/issues/2346)) closes the drift → live-eval loop: `teatree.loops.dream.eval_proposer` maps each grounded cluster to an eval CANDIDATE in a JSONL review queue, then `teatree.loops.dream.promote` PROMOTES it to a real `under_load` scenario (`evals/scenarios/promoted_drift.yaml` + `_pass`/`_fail` replay fixtures) — the artifacts the deterministic replay gate and the weekly metered lane run unchanged. The nightly `tick` requests proposals **LIVE by default** (the `[loops.dream] propose_evals` / `T3_DREAM_PROPOSE_EVALS` kill-switch flips it off). Promotion is auto but gated by a **non-bypassable anti-vacuity guard** (`promote.guard_can_fail`): it runs the real grader (`teatree.eval.report.evaluate`) against a synthesised drift-recommitting transcript and promotes only when that verdict is FAIL (the matchers have teeth) AND a compliant transcript grades PASS (not a tautology); a candidate whose grader cannot fail is rejected — no file written. The guard is deterministic; live metered grading of a promoted scenario lands with the weekly Agent-SDK lane. **Phase 3b LLM derivation** ([#2447](https://github.com/souliane/teatree/issues/2447)) is the richer, **default-OFF** follow-up to the fixed-matcher `promote`: `teatree.loops.dream.llm_eval_proposer` runs an injected LLM synthesizer that turns a grounded candidate plus its cited transcript slice into a COMPLETE `under_load` `EvalSpec` — a pollution preamble saturated to the documented ~28k-char envelope floor, discriminating positive + negative matchers, and a judge rubric — parsed through the real loader and gated by a **candidate-derived** teeth check (`teatree.loops.dream._teeth_check.teeth_check_against_candidate`): it synthesises the `_fail`/`_pass` transcripts FROM the candidate's OWN cited drift and compliant tool-call shapes and grades both through the suite's real grader (`teatree.eval.report.evaluate`), DROPPING a spec whose matchers do not reject the candidate's own cited drift (or reject its compliant shape as a tautology) — proving the matchers target the SPECIFIC drift the candidate describes, not `promote`'s fixed session.py-edit transcripts. Even a proven spec is never autonomously committed to `evals/scenarios`: `stage_derived_evals` writes a staging `derived_evals.yaml` a human / standing core-maker ratifies via a PR. The phase is OFF unless the `[loops.dream] derive_evals` / `T3_DREAM_DERIVE_EVALS` toggle is set, so an unflagged pass is byte-identical. The `dream` mini-loop is registered `off_live_tick` (driven only by its own cron); `t3 doctor` surfaces the 48h staleness alarm.
+ 
+ `Ticket` also carries a `Role` enum (`AUTHOR` / `REVIEWER`) orthogonal to its state. The reviewer role drives the §5.6 `reviewer_prs` scanner (`Ticket(role="reviewer", issue_url=<pr_url>)`) and short-circuits to `delivered` once the review work completes; the author role is the default lifecycle.
+ 
+diff --git a/docs/generated/cli-reference.md b/docs/generated/cli-reference.md
+index 5db1b4ca06..1afccaea82 100644
+--- a/docs/generated/cli-reference.md
++++ b/docs/generated/cli-reference.md
+@@ -4201,6 +4201,7 @@ ### `t3 teatree`
+ │ mr_reminder     Cross-repo "my open MRs" Slack reminder (TODO-276).          │
+ │ retro           Retrospective enforcement tooling (#1573).                   │
+ │ honesty         Situational honesty-critical escalation (#2263).             │
++│ memory          Cold-tier memory recall (#2746).                             │
+ ╰──────────────────────────────────────────────────────────────────────────────╯
+ ```
+ 
+@@ -4333,6 +4334,8 @@ #### `t3 teatree gate`
+ │                   (self-rescue).                                             │
+ │ completion-claim  Completion-claim gate (on-target evidence before done)     │
+ │                   kill-switch (self-rescue).                                 │
++│ memory-recall     Cold-tier memory recall injector kill-switch               │
++│                   (self-rescue).                                             │
+ ╰──────────────────────────────────────────────────────────────────────────────╯
+ ```
+ 
+@@ -4585,6 +4588,59 @@ ###### `t3 teatree gate completion-claim enable`
+ ╰──────────────────────────────────────────────────────────────────────────────╯
+ ```
+ 
++##### `t3 teatree gate memory-recall`
++
++```
++Usage: t3 teatree gate memory-recall [OPTIONS] COMMAND [ARGS]...
++
++ Cold-tier memory recall injector kill-switch (self-rescue).
++
++╭─ Options ────────────────────────────────────────────────────────────────────╮
++│ --help          Show this message and exit.                                  │
++╰──────────────────────────────────────────────────────────────────────────────╯
++╭─ Commands ───────────────────────────────────────────────────────────────────╮
++│ status   Show whether the gate is enabled.                                   │
++│ disable  Disable the gate (self-rescue from a lockout).                      │
++│ enable   Re-enable the gate.                                                 │
++╰──────────────────────────────────────────────────────────────────────────────╯
++```
++
++###### `t3 teatree gate memory-recall status`
++
++```
++Usage: t3 teatree gate memory-recall status [OPTIONS]
++
++ Show whether the gate is enabled.
++
++╭─ Options ────────────────────────────────────────────────────────────────────╮
++│ --help          Show this message and exit.                                  │
++╰──────────────────────────────────────────────────────────────────────────────╯
++```
++
++###### `t3 teatree gate memory-recall disable`
++
++```
++Usage: t3 teatree gate memory-recall disable [OPTIONS]
++
++ Disable the gate (self-rescue from a lockout).
++
++╭─ Options ────────────────────────────────────────────────────────────────────╮
++│ --help          Show this message and exit.                                  │
++╰──────────────────────────────────────────────────────────────────────────────╯
++```
++
++###### `t3 teatree gate memory-recall enable`
++
++```
++Usage: t3 teatree gate memory-recall enable [OPTIONS]
++
++ Re-enable the gate.
++
++╭─ Options ────────────────────────────────────────────────────────────────────╮
++│ --help          Show this message and exit.                                  │
++╰──────────────────────────────────────────────────────────────────────────────╯
++```
++
+ #### `t3 teatree speed`
+ 
+ ```
+@@ -8015,3 +8071,45 @@ ##### `t3 teatree honesty escalate`
+ │ --help                    Show this message and exit.                        │
+ ╰──────────────────────────────────────────────────────────────────────────────╯
+ ```
++
++#### `t3 teatree memory`
++
++```
++Usage: t3 teatree memory [OPTIONS] COMMAND [ARGS]...
++
++ Cold-tier memory recall (#2746).
++
++╭─ Options ────────────────────────────────────────────────────────────────────╮
++│ --help          Show this message and exit.                                  │
++╰──────────────────────────────────────────────────────────────────────────────╯
++╭─ Commands ───────────────────────────────────────────────────────────────────╮
++│ recall  Surface the cold-tier (MEMORY_ARCHIVE.md) rules most relevant to a   │
++│         query (read-only).                                                   │
++╰──────────────────────────────────────────────────────────────────────────────╯
++```
++
++##### `t3 teatree memory recall`
++
++```
++Usage: t3 teatree memory recall [OPTIONS] QUERY
++
++ Print the cold-tier memory rules most relevant to *query* (top *limit*).
++
++ Resolves the memory dir from ``--memory-dir`` else the current project's
++ default, scores the cold index, and echoes one line per hit — or a single
++ "no relevant cold-tier entries" line (exit 0) when nothing clears the
++ relevance floor. A missing memory dir / cold index is reported as an error
++ (exit 1) so a mistyped ``--memory-dir`` is loud, not a silent empty result.
++
++╭─ Arguments ──────────────────────────────────────────────────────────────────╮
++│ *    query      TEXT  The text whose relevant cold-tier rules to surface.    │
++│                       [required]                                             │
++╰──────────────────────────────────────────────────────────────────────────────╯
++╭─ Options ────────────────────────────────────────────────────────────────────╮
++│ --memory-dir        TEXT     Memory dir to search; defaults to the current   │
++│                              project's.                                      │
++│ --limit             INTEGER  Max number of cold-tier rules to surface.       │
++│                              [default: 5]                                    │
++│ --help                       Show this message and exit.                     │
++╰──────────────────────────────────────────────────────────────────────────────╯
++```
+diff --git a/docs/generated/management-commands.json b/docs/generated/management-commands.json
+index 8e1fe8ebb4..52b2f293d3 100644
+--- a/docs/generated/management-commands.json
++++ b/docs/generated/management-commands.json
+@@ -405,6 +405,16 @@
+       "name": "loops_tick",
+       "subcommands": []
+     },
++    {
++      "help": "``t3 <overlay> memory`` group root.",
++      "name": "memory",
++      "subcommands": [
++        {
++          "help": "Print the cold-tier memory rules most relevant to *query* (top *limit*)",
++          "name": "recall"
++        }
++      ]
++    },
+     {
+       "help": "",
+       "name": "mr_reminder",
+diff --git a/docs/generated/management-commands.md b/docs/generated/management-commands.md
+index 5ea6c576de..ebed821080 100644
+--- a/docs/generated/management-commands.md
++++ b/docs/generated/management-commands.md
+@@ -216,6 +216,14 @@ ## `loops_tick`
+ 
+ Run one master tick: run every enabled, due loop (DB-configured); render statusline.
+ 
++## `memory`
++
++``t3 <overlay> memory`` group root.
++
++| Subcommand | Description |
++| --- | --- |
++| `recall` | Print the cold-tier memory rules most relevant to *query* (top *limit*) |
++
+ ## `mr_reminder`
+ 
+ | Subcommand | Description |
+diff --git a/hooks/scripts/hook_router.py b/hooks/scripts/hook_router.py
+index 0ac6cec945..97613a0c49 100755
+--- a/hooks/scripts/hook_router.py
++++ b/hooks/scripts/hook_router.py
+@@ -54,11 +54,13 @@
+ from django_bootstrap import bootstrap_teatree_django
+ from loop_registrations import emit_loop_registrations, is_bare_loop_tick_prompt, loop_name_from_prompt
+ from loop_state_self_pump_gate import db_loop_state_suppresses_self_pump
++from memory_recall import handle_recall_cold_memory
+ from mr_cli_fields import extract_cli_mr_fields, extract_mr_target_repo
+ from no_self_reviewer_assign import handle_block_self_reviewer_assign
+ from question_gates import FENCED_CODE_RE, handle_warn_batched_questions, is_user_directed_question
+ from state_files import append_line, read_lines
+ from subagent_skill_gate import is_file_safe, unreferenced_demand_reason
++from teatree_settings import teatree_bool_setting as _teatree_bool_setting
+ from turn_inspect import current_turn_tool_commands
+ from unknown_repo_push_gate import handle_block_unknown_repo_push
+ 
+@@ -442,35 +444,6 @@ class _BreakerDecision:
+     reason: str
+ 
+ 
+-def _teatree_bool_setting(name: str, *, default: bool = True) -> bool:
+-    """Best-effort read of a ``[teatree] <name>`` boolean flag from ``~/.teatree.toml``.
+-
+-    The single shared shape behind every ``[teatree] <flag>_enabled`` reader:
+-    fails to ``default`` on a missing/broken config, a missing ``[teatree]``
+-    table, a missing key, or a non-boolean value, and returns the configured
+-    value only when it is a bare TOML boolean. So only a bare boolean ``false``
+-    disables a ``default=True`` flag and only a bare boolean ``true`` enables a
+-    ``default=False`` one — a QUOTED ``"false"`` / ``"true"`` (a string, not a
+-    bool) is ignored and the default stands. An explicit bare boolean is the
+-    one-line kill-switch / opt-in, never a code edit (NEVER-LOCKOUT).
+-    """
+-    import tomllib  # noqa: PLC0415
+-
+-    config_path = Path.home() / ".teatree.toml"
+-    if not config_path.is_file():
+-        return default
+-    try:
+-        with config_path.open("rb") as f:
+-            config = tomllib.load(f)
+-    except Exception:  # noqa: BLE001
+-        return default
+-    teatree = config.get("teatree") if isinstance(config, dict) else None
+-    if not isinstance(teatree, dict):
+-        return default
+-    value = teatree.get(name)
+-    return value if isinstance(value, bool) else default
+-
+-
+ def _deny_circuit_breaker_enabled() -> bool:
+     """Whether the repeated-denial circuit breaker is enabled (default True).
+ 
+@@ -8270,6 +8243,9 @@ def handle_subagent_stop_no_commit(data: dict) -> None:
+         handle_inject_pending_questions,
+         handle_inject_pending_chat,
+         handle_user_prompt_submit,
++        # LAST: cold-tier memory recall injection (#2746) — runs after skill
++        # loading so it never delays the load-first suggestion.
++        handle_recall_cold_memory,
+     ],
+     "PreToolUse": [
+         handle_allow_classifier_relax_settings_write,
+diff --git a/hooks/scripts/memory_recall.py b/hooks/scripts/memory_recall.py
+new file mode 100644
+index 0000000000..23b2ccbca1
+--- /dev/null
++++ b/hooks/scripts/memory_recall.py
+@@ -0,0 +1,117 @@
++"""UserPromptSubmit: cold-tier memory recall injection (#2746).
++
++When the user's prompt is topically relevant to a memory rule that PR1 (#2723)
++archived out of the session-loaded hot ``MEMORY.md`` into the cold tier, this thin
++handler surfaces it for that one turn. On ``UserPromptSubmit``, stdout IS
++``additionalContext`` (the same mechanism ``handle_user_prompt_submit`` uses), so a
++non-empty recall block printed here is injected into the agent's context.
++
++The handler is a thin shell: it resolves the project memory dir, defers all scoring to
++the DB-free pure core ``teatree.loops.dream.recall`` (imported with ``src/`` on
++``sys.path`` but NO ``django.setup()`` — the core is stdlib-only), and prints the
++rendered block. Crash-proof and fail-silent: a missing transcript dir, a missing cold
++index, the kill-switch off, or any error all inject NOTHING (silent degrade).
++
++NEVER-LOCKOUT: ``[teatree] memory_recall_enabled = false`` (``t3 <overlay> gate
++memory-recall disable``) disables the injector; it ships default-ON.
++"""
++
++import contextlib
++import sys
++from pathlib import Path
++
++# Alias both identities so the handler the router registers and a test patching a
++# helper here operate on ONE module object (mirrors the other hook leaves).
++sys.modules.setdefault("memory_recall", sys.modules[__name__])
++sys.modules.setdefault("hooks.scripts.memory_recall", sys.modules[__name__])
++
++# Put this script's own dir on sys.path so the bare ``teatree_settings`` import
++# resolves whether this runs as the live hook or is imported as
++# ``hooks.scripts.memory_recall`` in a subprocess/test.
++if str(Path(__file__).resolve().parent) not in sys.path:
++    sys.path.insert(0, str(Path(__file__).resolve().parent))
++
++
++def _memory_recall_enabled() -> bool:
++    """Whether the cold-tier recall injector is enabled (default True).
++
++    Fails OPEN to enabled on a missing/broken config; an explicit ``false``
++    (``[teatree] memory_recall_enabled = false``, flipped by
++    ``t3 <overlay> gate memory-recall disable``) is the one-line kill-switch.
++    """
++    from teatree_settings import teatree_bool_setting  # noqa: PLC0415
++
++    return teatree_bool_setting("memory_recall_enabled", default=True)
++
++
++def _load_recall():  # noqa: ANN202 — the imported module has no stable type to annotate.
++    """Import the pure recall core, bootstrapping the sibling ``src/`` onto the path.
++
++    The hook runs in the user's session shell with no guarantee ``teatree`` is
++    importable, so ``src/`` is added to ``sys.path`` first (mirroring the other
++    leaves). The core is DB-free and stdlib-only at the top level, so NO
++    ``django.setup()`` is needed. Returns the module, or ``None`` on any import
++    failure — the caller then injects nothing (a cold env must never traceback).
++    """
++    src_dir = Path(__file__).resolve().parents[2] / "src"
++    added = False
++    try:
++        if str(src_dir) not in sys.path:
++            sys.path.insert(0, str(src_dir))
++            added = True
++        from teatree.loops.dream import recall  # noqa: PLC0415
++    except Exception:  # noqa: BLE001 — a cold env without teatree injects nothing, never tracebacks.
++        return None
++    finally:
++        if added:
++            with contextlib.suppress(ValueError):
++                sys.path.remove(str(src_dir))
++    return recall
++
++
++def _project_memory_dir(data: dict, cold_index_name: str) -> Path | None:
++    """Resolve the project's memory dir holding the cold index, or ``None``.
++
++    PRIMARY: the transcript's sibling ``memory/`` dir
++    (``Path(transcript_path).parent / "memory"``). FALLBACK: the
++    ``~/.claude/projects/<cwd-slug>/memory`` dir, deriving the slug from ``cwd``
++    (``/`` → ``-``) the way the harness names project dirs. Each candidate is
++    accepted only if it actually holds the cold index file; otherwise ``None``
++    (inject nothing — silent degrade).
++    """
++    transcript_path = data.get("transcript_path", "")
++    if isinstance(transcript_path, str) and transcript_path:
++        candidate = Path(transcript_path).parent / "memory"
++        if (candidate / cold_index_name).is_file():
++            return candidate
++    cwd = data.get("cwd", "")
++    if isinstance(cwd, str) and cwd:
++        candidate = Path.home() / ".claude" / "projects" / cwd.replace("/", "-") / "memory"
++        if (candidate / cold_index_name).is_file():
++            return candidate
++    return None
++
++
++def handle_recall_cold_memory(data: dict) -> None:
++    """Inject the recall block for the prompt's relevant cold-tier rules (if any).
++
++    Fail-silent on every path: a disabled kill-switch, an unimportable core, no
++    resolvable cold-index dir, or any scoring error all inject nothing.
++    """
++    if not isinstance(data, dict):
++        return
++    if not _memory_recall_enabled():
++        return
++    recall = _load_recall()
++    if recall is None:
++        return
++    memory_dir = _project_memory_dir(data, recall.COLD_INDEX_NAME)
++    if memory_dir is None:
++        return
++    try:
++        hits = recall.recall_cold_memory(memory_dir, data.get("prompt", ""))
++        block = recall.render_recall_block(hits)
++    except Exception:  # noqa: BLE001 — UserPromptSubmit hook must be crash-proof.
++        return
++    if block:
++        print(block)  # noqa: T201 — on UserPromptSubmit stdout IS additionalContext.
+diff --git a/hooks/scripts/teatree_settings.py b/hooks/scripts/teatree_settings.py
+new file mode 100644
+index 0000000000..d6270533b8
+--- /dev/null
++++ b/hooks/scripts/teatree_settings.py
+@@ -0,0 +1,45 @@
++"""Shared ``[teatree] <flag>`` boolean-setting reader for the hook leaves (#2746).
++
++Extracted from ``hook_router`` so a leaf gate (e.g. ``memory_recall``) can read its
++own kill-switch WITHOUT importing ``hook_router`` — which would create a
++``hook_router`` ↔ leaf import cycle (``hook_router`` imports the leaf's handler into
++its ``_HANDLERS`` chain). This is a dependency-free leaf: both ``hook_router`` and the
++gate leaves import IT, and it imports nothing first-party.
++"""
++
++import sys
++import tomllib
++from pathlib import Path
++
++# Alias both identities so a bare ``from teatree_settings import ...`` (the live
++# hook, whose dir is on sys.path) and ``hooks.scripts.teatree_settings`` (a
++# subprocess/test import) resolve the SAME module object.
++sys.modules.setdefault("teatree_settings", sys.modules[__name__])
++sys.modules.setdefault("hooks.scripts.teatree_settings", sys.modules[__name__])
++
++
++def teatree_bool_setting(name: str, *, default: bool = True) -> bool:
++    """Best-effort read of a ``[teatree] <name>`` boolean flag from ``~/.teatree.toml``.
++
++    The single shared shape behind every ``[teatree] <flag>_enabled`` reader:
++    fails to ``default`` on a missing/broken config, a missing ``[teatree]``
++    table, a missing key, or a non-boolean value, and returns the configured
++    value only when it is a bare TOML boolean. So only a bare boolean ``false``
++    disables a ``default=True`` flag and only a bare boolean ``true`` enables a
++    ``default=False`` one — a QUOTED ``"false"`` / ``"true"`` (a string, not a
++    bool) is ignored and the default stands. An explicit bare boolean is the
++    one-line kill-switch / opt-in, never a code edit (NEVER-LOCKOUT).
++    """
++    config_path = Path.home() / ".teatree.toml"
++    if not config_path.is_file():
++        return default
++    try:
++        with config_path.open("rb") as f:
++            config = tomllib.load(f)
++    except Exception:  # noqa: BLE001
++        return default
++    teatree = config.get("teatree") if isinstance(config, dict) else None
++    if not isinstance(teatree, dict):
++        return default
++    value = teatree.get(name)
++    return value if isinstance(value, bool) else default
+diff --git a/src/teatree/cli/django_groups.py b/src/teatree/cli/django_groups.py
+index b59479286c..3cc61d0d16 100644
+--- a/src/teatree/cli/django_groups.py
++++ b/src/teatree/cli/django_groups.py
+@@ -326,4 +326,11 @@ def dispatches_to_core(self, sub_name: str) -> bool:
+         ],
+         core_dispatch=True,
+     ),
++    "memory": DjangoGroup(
++        "Cold-tier memory recall (#2746).",
++        [
++            ("recall", "Surface the cold-tier (MEMORY_ARCHIVE.md) rules most relevant to a query (read-only)."),
++        ],
++        core_dispatch=True,
++    ),
+ }
+diff --git a/src/teatree/cli/teatree_gate.py b/src/teatree/cli/teatree_gate.py
+index 70327456b7..e9bd6fd9b7 100644
+--- a/src/teatree/cli/teatree_gate.py
++++ b/src/teatree/cli/teatree_gate.py
+@@ -38,6 +38,7 @@
+ PLAN_GATE_KEY = "plan_edit_gate_enabled"
+ CONFIG_OVERWRITE_GATE_KEY = "config_overwrite_gate_enabled"
+ COMPLETION_CLAIM_GATE_KEY = "completion_claim_gate_enabled"
++MEMORY_RECALL_GATE_KEY = "memory_recall_enabled"
+ # Master fail-open switch (NEVER-LOCKOUT). Unlike the per-gate kill-switches
+ # above (which default ENABLED and read ``is not False``), this is OFF by
+ # default and reads ``is True`` — it must NEVER relax a gate by accident, only
+@@ -99,6 +100,11 @@ def completion_claim_gate_is_enabled() -> bool:
+     return _gate_key_is_enabled(COMPLETION_CLAIM_GATE_KEY)
+ 
+ 
++def memory_recall_gate_is_enabled() -> bool:
++    """Resolve the cold-tier memory recall injector (``MEMORY_RECALL_GATE_KEY``, default True)."""
++    return _gate_key_is_enabled(MEMORY_RECALL_GATE_KEY)
++
++
+ def danger_gate_fail_open_is_enabled() -> bool:
+     """Resolve the master fail-open switch (``DANGER_GATE_FAIL_OPEN_KEY``, default False).
+ 
+@@ -219,6 +225,13 @@ def enable() -> None:
+         label="Completion-claim gate (on-target evidence before done)",
+     )
+ 
++    _register_keyed_gate(
++        gate_group,
++        name="memory-recall",
++        key=MEMORY_RECALL_GATE_KEY,
++        label="Cold-tier memory recall injector",
++    )
++
+     overlay_app.add_typer(gate_group, name="gate")
+ 
+ 
+diff --git a/src/teatree/core/management/commands/memory.py b/src/teatree/core/management/commands/memory.py
+new file mode 100644
+index 0000000000..3d89411934
+--- /dev/null
++++ b/src/teatree/core/management/commands/memory.py
+@@ -0,0 +1,68 @@
++"""``t3 <overlay> memory recall`` — surface cold-tier memory rules relevant to a query (#2746).
++
++The agent-facing read seam for the cold-tier recall mechanism: given a query, it scores
++the project's cold ``MEMORY_ARCHIVE.md`` index (the rules PR1/#2723 archived out of the
++session-loaded hot ``MEMORY.md``) and prints the top relevant entries. The same pure core
++the ``UserPromptSubmit`` hook uses (``teatree.loops.dream.recall``), exposed as a CLI for
++manual lookup and inspection.
++
++Non-zero exits use ``raise SystemExit(N)`` — this runs under Django's ``call_command``;
++``typer.Exit`` is the wrong primitive on that path (see /t3:teatree "Management Command
++Patterns"). Every ``typer.Option``-annotated param carries a default.
++"""
++
++from pathlib import Path
++from typing import Annotated
++
++import typer
++from django_typer.management import TyperCommand, command, initialize
++
++from teatree.loops.dream import recall
++
++
++def _default_memory_dir() -> Path:
++    """The current project's memory dir under ``~/.claude/projects/<cwd-slug>/memory``.
++
++    The harness names a project dir from its cwd with ``/`` → ``-`` (the same slug
++    the hook derives); the memory dir is its ``memory/`` child.
++    """
++    slug = str(Path.cwd()).replace("/", "-")
++    return Path.home() / ".claude" / "projects" / slug / "memory"
++
++
++class Command(TyperCommand):
++    @initialize()
++    def init(self) -> None:
++        """``t3 <overlay> memory`` group root."""
++
++    @command()
++    def recall(
++        self,
++        query: Annotated[str, typer.Argument(help="The text whose relevant cold-tier rules to surface.")],
++        memory_dir: Annotated[
++            str,
++            typer.Option("--memory-dir", help="Memory dir to search; defaults to the current project's."),
++        ] = "",
++        limit: Annotated[
++            int,
++            typer.Option("--limit", help="Max number of cold-tier rules to surface."),
++        ] = recall.RECALL_LIMIT,
++    ) -> None:
++        """Print the cold-tier memory rules most relevant to *query* (top *limit*).
++
++        Resolves the memory dir from ``--memory-dir`` else the current project's
++        default, scores the cold index, and echoes one line per hit — or a single
++        "no relevant cold-tier entries" line (exit 0) when nothing clears the
++        relevance floor. A missing memory dir / cold index is reported as an error
++        (exit 1) so a mistyped ``--memory-dir`` is loud, not a silent empty result.
++        """
++        resolved = Path(memory_dir).expanduser() if memory_dir else _default_memory_dir()
++        if not (resolved / recall.COLD_INDEX_NAME).is_file():
++            self.stderr.write(f"  no cold-tier index ({recall.COLD_INDEX_NAME}) under {resolved}")
++            raise SystemExit(1)
++        hits = recall.recall_cold_memory(resolved, query, limit=limit)
++        if not hits:
++            self.stdout.write("  no relevant cold-tier entries")
++            return
++        for hit in hits:
++            self.stdout.write(f"  - {hit.name} — {hit.signature}" if hit.signature else f"  - {hit.name}")
+diff --git a/src/teatree/loops/dream/gates.py b/src/teatree/loops/dream/gates.py
+index c958f5db84..7ba682d427 100644
+--- a/src/teatree/loops/dream/gates.py
++++ b/src/teatree/loops/dream/gates.py
+@@ -56,7 +56,6 @@
+     from teatree.loops.dream.decay import ArchivedMemory
+ 
+ _INDEX_NAME = "MEMORY.md"
+-_HEADING_RE = re.compile(r"^#{1,6}\s")
+ #: The memory-file an index line POINTS AT — the LEADING filename pointer the
+ #: re-index writes at line start (``- name.md — summary``, or the legacy
+ #: ``- [name.md](name.md) — summary`` markdown-link form). Anchored on the
+@@ -223,15 +222,18 @@ def snapshot_memory_dir(memory_dir: Path) -> MemorySnapshot:
+ 
+ 
+ def _signature_line(text: str) -> str:
+-    """The first substantive prose line of a memory — its retention signature."""
+-    for raw in text.splitlines():
+-        line = raw.strip().lstrip("-*").strip()
+-        if not line or _HEADING_RE.match(raw.strip()):
+-            continue
+-        if line.startswith(("name:", "summary:", "description:", "type:", "metadata:", "---")):
+-            continue
+-        return line
+-    return ""
++    """The memory's retention signature — delegated to the frontmatter-aware extractor.
++
++    Routes through :func:`reindex.signature_text` (#2746 nit-4) so the hot index, the
++    cold ``MEMORY_ARCHIVE.md`` index, and the retention probe share ONE extractor that
++    prefers the frontmatter ``description:`` over the weak ``node_type: memory`` body
++    line. The returned line stays a substring of the memory's text, so
++    ``snapshot.contains(signature)`` remains True (retention/interference stay green).
++    ``reindex`` imports neither ``gates`` nor ``decay``, so this edge adds no cycle.
++    """
++    from teatree.loops.dream import reindex  # noqa: PLC0415
++
++    return reindex.signature_text(text)
+ 
+ 
+ def derive_probes(snapshot: MemorySnapshot) -> list[QaProbe]:
+diff --git a/src/teatree/loops/dream/recall.py b/src/teatree/loops/dream/recall.py
+new file mode 100644
+index 0000000000..a6380165e7
+--- /dev/null
++++ b/src/teatree/loops/dream/recall.py
+@@ -0,0 +1,326 @@
++"""Cold-tier memory RECALL — surface an archived rule when the prompt is relevant (#2746).
++
++PR1 (#2723) moved the lowest-signal memories — including ~130 BINDING / Non-Negotiable
++rules of the ~693-entry corpus — out of the session-loaded hot ``MEMORY.md`` into a
++COLD tier: the full restorable bodies under ``archive/`` plus a one-line-per-entry,
++NOT-session-loaded ``MEMORY_ARCHIVE.md`` cold index. Those cold rules stop influencing
++behaviour. RECALL closes that gap: when the user's prompt is topically relevant to a
++cold rule, this pure core scores the cold index against the prompt and returns the top
++hits so a thin hook can inject them for that one turn.
++
++The scoring is deterministic and reads ONLY the cold index (``MEMORY_ARCHIVE.md``) and
++the hot index (``MEMORY.md``) — never the ~540 archived bodies, because the cold-index
++line carries the lesson signature (stronger after #2746 nit-4). DB-free and stdlib-only
++at the top level (it imports two sibling-module FILENAME constants, both DB-free) so the
++``UserPromptSubmit`` hook can import it without ``django.setup()``.
++
++Relevance floor: a hit needs at least :data:`RECALL_MIN_TOKEN_MATCHES` distinct token
++matches (name + signature) before any BINDING / user boost applies, so an irrelevant
++BINDING rule is never surfaced on a single incidental token. A cold hit already present
++in the hot index (by pointer name OR by its signature being a substring of the hot text)
++is dropped — recall never echoes a rule the session already loaded.
++"""
++
++import re
++from collections.abc import Sequence
++from dataclasses import dataclass
++from pathlib import Path
++
++# The cold/hot index FILENAMES are the stable cross-phase contract: the decay
++# (archive) phase WRITES ``MEMORY_ARCHIVE.md`` and the reindex phase WRITES
++# ``MEMORY.md``. Reference those constants directly so a rename in one place can
++# never silently desync the recall reader. Both modules are DB-free at import
++# (stdlib only), so importing them keeps this core hook-importable without Django.
++from teatree.loops.dream.decay import _ARCHIVE_INDEX_NAME as COLD_INDEX_NAME
++from teatree.loops.dream.reindex import _INDEX_NAME as HOT_INDEX_NAME
++
++#: Max hits surfaced per turn.
++RECALL_LIMIT = 5
++#: Max bytes of the rendered recall block (header + lines).
++RECALL_MAX_BYTES = 1500
++#: Distinct token matches a cold entry needs before it is even a candidate (the
++#: relevance floor — never surface a rule on a single incidental token overlap).
++RECALL_MIN_TOKEN_MATCHES = 2
++#: Per-injected-line character cap (a long cold signature is clipped on inject).
++RECALL_INJECT_LINE_MAX = 200
++
++_RECALL_HEADER = "Relevant archived memory rules (cold tier — full bodies under archive/, Read for detail):"
++
++#: Ported from ``hook_router._AMBIENT_CONTEXT_RE`` into the pure core so injected
++#: MEMORY.md / CLAUDE.md text the harness wraps in ``<system-reminder>`` /
++#: ``<command-*>`` blocks can never self-match against the cold index. An
++#: unterminated opening wrapper (a truncated injection) is dropped tag→EOS too.
++_AMBIENT_CONTEXT_RE = re.compile(
++    r"<(system-reminder|command-message|command-name|command-args|local-command-stdout)\b[^>]*>"
++    r".*?</\1>",
++    re.DOTALL | re.IGNORECASE,
++)
++_AMBIENT_OPEN_RE = re.compile(
++    r"<(system-reminder|command-message|command-name|command-args|local-command-stdout)\b[^>]*>.*",
++    re.DOTALL | re.IGNORECASE,
++)
++#: Bound the ambient-strip / tokenize cost on a huge pasted prompt (mirrors the
++#: 64 KiB cap the hook applies before its own DOTALL regexes).
++_QUERY_MAX_CHARS = 65536
++
++_TOKEN_RE = re.compile(r"[^a-z0-9]+")
++_MIN_TOKEN_LEN = 3
++#: One cold-index body line: ``- <name>.md — <signature>`` (em-dash separator,
++#: matching ``decay._cold_index_line``). The signature group is optional.
++_COLD_LINE_RE = re.compile(r"^-\s+(\S+\.md)(?:\s+—\s+(.*))?$")
++#: The leading filename pointer of a hot ``MEMORY.md`` line (mirrors
++#: ``gates._MEMORY_REF_RE`` — bare or legacy ``[name.md](name.md)`` form).
++_HOT_NAME_RE = re.compile(r"^\s*-\s+\[?([\w.\-/]+\.md)\b")
++_BINDING_MARKERS = ("binding", "non-negotiable")
++
++#: Per-match additive boosts, applied ONLY once a hit clears the relevance floor.
++_BINDING_BOOST = 3
++_USER_BOOST = 2
++
++#: A small high-frequency stopword set dropped from query tokens so common words
++#: never inflate a match. Sub-3-char tokens are dropped separately.
++_STOPWORDS = frozenset(
++    {
++        "the",
++        "and",
++        "for",
++        "are",
++        "but",
++        "not",
++        "you",
++        "all",
++        "any",
++        "can",
++        "was",
++        "our",
++        "out",
++        "use",
++        "with",
++        "this",
++        "that",
++        "from",
++        "they",
++        "them",
++        "then",
++        "than",
++        "have",
++        "has",
++        "had",
++        "his",
++        "her",
++        "its",
++        "into",
++        "what",
++        "when",
++        "your",
++        "why",
++        "who",
++        "which",
++        "will",
++        "would",
++        "should",
++        "could",
++        "about",
++        "after",
++        "before",
++        "where",
++        "while",
++        "their",
++        "there",
++        "these",
++        "those",
++        "been",
++        "were",
++        "such",
++        "only",
++        "also",
++        "must",
++        "never",
++        "always",
++        "via",
++        "per",
++        "etc",
++    }
++)
++
++
++@dataclass(frozen=True, slots=True)
++class RecallHit:
++    """One cold-tier rule worth surfacing for the current turn.
++
++    ``name`` is the ``<name>.md`` pointer; ``signature`` is the cold-index
++    signature line (the real lesson after #2746 nit-4); ``score`` is the
++    relevance score (higher first); ``binding`` flags a BINDING / Non-Negotiable
++    rule (it sorts ahead of a plain rule at equal score).
++    """
++
++    name: str
++    signature: str
++    score: int
++    binding: bool
++
++
++def _strip_ambient(prompt: str) -> str:
++    """Drop harness-injected ``<system-reminder>`` / ``<command-*>`` blocks from *prompt*."""
++    capped = prompt[:_QUERY_MAX_CHARS]
++    stripped = _AMBIENT_CONTEXT_RE.sub(" ", capped)
++    return _AMBIENT_OPEN_RE.sub(" ", stripped)
++
++
++def _tokens(text: str) -> set[str]:
++    """Lowercase, split on non-alphanumerics, drop stopwords + sub-3-char tokens."""
++    return {tok for tok in _TOKEN_RE.split(text.lower()) if len(tok) >= _MIN_TOKEN_LEN and tok not in _STOPWORDS}
++
++
++def _clean_query_tokens(prompt: str) -> set[str]:
++    """The relevance token set for *prompt* — ambient blocks stripped first.
++
++    Stripping the harness wrappers FIRST is load-bearing: a ``<system-reminder>``
++    carrying the MEMORY.md / CLAUDE.md dump must not let injected text self-match
++    the cold index and surface unrelated rules every turn (#2746).
++    """
++    return _tokens(_strip_ambient(prompt))
++
++
++def _parse_cold_index(text: str) -> list[tuple[str, str]]:
++    """Parse ``MEMORY_ARCHIVE.md`` body lines into ``(name, signature)`` pairs.
++
++    Only ``- <name>.md — <signature>`` lines match; the header / preamble lines
++    (which never lead with ``- ``) are skipped. A line with no signature yields
++    an empty-string signature.
++    """
++    entries: list[tuple[str, str]] = []
++    for raw in text.splitlines():
++        match = _COLD_LINE_RE.match(raw.strip())
++        if match:
++            entries.append((match.group(1), (match.group(2) or "").strip()))
++    return entries
++
++
++def _hot_pointer_names(hot_text: str) -> set[str]:
++    """The set of ``<name>.md`` pointers the hot ``MEMORY.md`` lists (line-leading)."""
++    return {match.group(1) for raw in hot_text.splitlines() if (match := _HOT_NAME_RE.match(raw.strip()))}
++
++
++def _is_binding(signature: str) -> bool:
++    lowered = signature.lower()
++    return any(marker in lowered for marker in _BINDING_MARKERS)
++
++
++def _score(query_tokens: set[str], name: str, signature: str) -> tuple[int, bool]:
++    """Score one cold entry against *query_tokens*; return ``(score, binding)``.
++
++    ``base`` = distinct query tokens found in the entry (name union signature)
++    PLUS ``+1`` for each that also hit a NAME token (the filename is a curated topic
++    identifier, so a name overlap weighs double). Only once ``base`` clears
++    :data:`RECALL_MIN_TOKEN_MATCHES` are the boosts added: ``+3`` for a BINDING /
++    Non-Negotiable signature and ``+2`` for a ``user_*`` name. Below the floor the
++    score is ``0`` (dropped) — an irrelevant BINDING rule is never surfaced.
++    """
++    name_tokens = _tokens(name)
++    entry_tokens = name_tokens | _tokens(signature)
++    binding = _is_binding(signature)
++    base = len(query_tokens & entry_tokens) + len(query_tokens & name_tokens)
++    if base < RECALL_MIN_TOKEN_MATCHES:
++        return 0, binding
++    score = base
++    if binding:
++        score += _BINDING_BOOST
++    if name.lower().startswith("user_"):
++        score += _USER_BOOST
++    return score, binding
++
++
++def _normalize(text: str) -> str:
++    return " ".join(text.split()).lower()
++
++
++def _render_hit_line(hit: RecallHit) -> str:
++    """Render one hit as ``- <name>.md — <signature>``, clipped to the per-line cap."""
++    line = f"- {hit.name} — {hit.signature}" if hit.signature else f"- {hit.name}"
++    if len(line) > RECALL_INJECT_LINE_MAX:
++        line = line[: RECALL_INJECT_LINE_MAX - 1].rstrip() + "…"
++    return line
++
++
++def render_recall_block(hits: Sequence[RecallHit]) -> str:
++    """Render the recall block: a 1-line header + one line per hit, or ``""`` when empty."""
++    if not hits:
++        return ""
++    return _RECALL_HEADER + "\n" + "\n".join(_render_hit_line(hit) for hit in hits)
++
++
++def _read_text(path: Path) -> str:
++    try:
++        return path.read_text(encoding="utf-8") if path.is_file() else ""
++    except OSError:
++        return ""
++
++
++def recall_cold_memory(
++    memory_dir: Path,
++    query: str,
++    *,
++    limit: int = RECALL_LIMIT,
++    max_bytes: int = RECALL_MAX_BYTES,
++) -> list[RecallHit]:
++    """Return the cold-tier rules most relevant to *query*, ranked, deduped, capped.
++
++    Reads ``MEMORY_ARCHIVE.md`` once and ``MEMORY.md`` once under *memory_dir* — a
++    missing cold index or an empty / signal-free query yields ``[]`` (silent
++    degrade). Each cold entry is scored (:func:`_score`); entries below the
++    relevance floor are dropped. A cold hit already in the hot index is dropped
++    two ways: (a) its pointer name is listed in ``MEMORY.md``, or (b) its
++    normalized signature is a substring of the normalized hot text (the
++    renamed-file guard) — recall never echoes a session-loaded rule. The survivors
++    are sorted by ``(score desc, binding desc, name asc)``, the top *limit* taken,
++    then greedily accumulated so the rendered block stays within *max_bytes*.
++    """
++    cold_text = _read_text(memory_dir / COLD_INDEX_NAME)
++    if not cold_text:
++        return []
++    query_tokens = _clean_query_tokens(query)
++    if not query_tokens:
++        return []
++
++    hot_text = _read_text(memory_dir / HOT_INDEX_NAME)
++    hot_names = _hot_pointer_names(hot_text)
++    hot_norm = _normalize(hot_text)
++
++    candidates: list[RecallHit] = []
++    for name, signature in _parse_cold_index(cold_text):
++        if name in hot_names:
++            continue  # already in the hot index (by pointer)
++        score, binding = _score(query_tokens, name, signature)
++        if score == 0:
++            continue  # below the relevance floor
++        normalized_sig = _normalize(signature)
++        if normalized_sig and normalized_sig in hot_norm:
++            continue  # renamed-file guard: the lesson already lives in the hot index
++        candidates.append(RecallHit(name=name, signature=signature, score=score, binding=binding))
++
++    candidates.sort(key=lambda hit: (-hit.score, not hit.binding, hit.name))
++    return _within_byte_budget(candidates[:limit], max_bytes)
++
++
++def _within_byte_budget(hits: Sequence[RecallHit], max_bytes: int) -> list[RecallHit]:
++    """Greedily keep the leading hits whose rendered block stays within *max_bytes*."""
++    selected: list[RecallHit] = []
++    for hit in hits:
++        if len(render_recall_block([*selected, hit]).encode("utf-8")) > max_bytes:
++            break
++        selected.append(hit)
++    return selected
++
++
++__all__ = [
++    "COLD_INDEX_NAME",
++    "HOT_INDEX_NAME",
++    "RECALL_INJECT_LINE_MAX",
++    "RECALL_LIMIT",
++    "RECALL_MAX_BYTES",
++    "RECALL_MIN_TOKEN_MATCHES",
++    "RecallHit",
++    "recall_cold_memory",
++    "render_recall_block",
++]
+diff --git a/src/teatree/loops/dream/reindex.py b/src/teatree/loops/dream/reindex.py
+index 90ba346bfe..533da67dab 100644
+--- a/src/teatree/loops/dream/reindex.py
++++ b/src/teatree/loops/dream/reindex.py
+@@ -50,6 +50,14 @@
+ _FRONTMATTER_SUMMARY_RE = re.compile(r"^(?:summary|description):\s*(.+?)\s*$", re.MULTILINE | re.IGNORECASE)
+ _HEADING_RE = re.compile(r"^#{1,6}\s")
+ 
++#: Body lines whose leading ``key:`` is metadata, not a lesson. A node-typed
++#: memory whose body leads with ``node_type: memory`` must NOT have that line
++#: lifted as its signature (#2746 nit-4) — skip these and take the next real
++#: line. ``node_type:`` is included precisely because the bare ``type:`` prefix
++#: does not match it (``node_type`` starts with ``node_``).
++_METADATA_LINE_PREFIXES = ("name:", "summary:", "description:", "type:", "node_type:", "metadata:", "---")
++_BINDING_MARKERS = ("binding", "non-negotiable")
++
+ 
+ @dataclass(frozen=True, slots=True)
+ class ReindexResult:
+@@ -70,19 +78,62 @@ def _strip_frontmatter(text: str) -> tuple[str, str]:
+     return text[3:end], text[end + 3 :]
+ 
+ 
+-def _first_prose_line(body: str) -> str:
++def _first_substantive_line(body: str) -> str:
++    """First non-empty, non-heading, non-metadata body line (whitespace-collapsed).
++
++    Metadata-ish ``key:`` lines (:data:`_METADATA_LINE_PREFIXES`) are skipped so a
++    node-typed memory whose body leads with ``node_type: memory`` yields the real
++    lesson that follows, not the type marker (#2746 nit-4). A genuine lesson never
++    leads with one of those reserved metadata keys.
++    """
+     for raw in body.splitlines():
+         line = raw.strip().lstrip("-*").strip()
+-        if line and not _HEADING_RE.match(raw.strip()):
+-            return line
++        if not line or _HEADING_RE.match(raw.strip()):
++            continue
++        if line.lower().startswith(_METADATA_LINE_PREFIXES):
++            continue
++        return " ".join(line.split())
+     return ""
+ 
+ 
+-def _summary_for(text: str) -> str:
++def _first_binding_line(body: str) -> str:
++    """First BINDING / Non-Negotiable body line (headings allowed), else ``""``.
++
++    The last-resort signature when a memory carries no frontmatter summary and no
++    substantive prose — a body of headings where one declares a BINDING rule still
++    has a recoverable lesson.
++    """
++    for raw in body.splitlines():
++        line = raw.strip().lstrip("#-*").strip()
++        if line and any(marker in line.lower() for marker in _BINDING_MARKERS):
++            return " ".join(line.split())
++    return ""
++
++
++def signature_text(text: str) -> str:
++    """The memory's UNCLIPPED signature — the canonical lesson line (#2746 nit-4).
++
++    The single frontmatter-aware extractor shared by the hot index
++    (:func:`_summary_for`), the cold ``MEMORY_ARCHIVE.md`` index, and the
++    retention probe (both via :func:`gates._signature_line`). Resolution order:
++    the frontmatter ``description:``/``summary:`` value, else the first
++    substantive body prose line (metadata ``key:`` lines skipped), else the first
++    BINDING line, else ``""``. NEVER clipped — the verbatim line is what retention
++    needs to stay findable, and the returned text is always a (whitespace-collapsed)
++    substring of *text* so ``snapshot.contains(signature)`` stays True.
++    """
+     front, body = _strip_frontmatter(text)
+     match = _FRONTMATTER_SUMMARY_RE.search(front)
+-    summary = match.group(1).strip() if match else _first_prose_line(body)
+-    summary = " ".join(summary.split())  # collapse whitespace
++    if match:
++        return " ".join(match.group(1).split())
++    prose = _first_substantive_line(body)
++    if prose:
++        return prose
++    return _first_binding_line(body)
++
++
++def _summary_for(text: str) -> str:
++    summary = signature_text(text)
+     if len(summary) > _SUMMARY_MAX_CHARS:
+         summary = summary[: _SUMMARY_MAX_CHARS - 1].rstrip() + "…"
+     return summary
+@@ -167,4 +218,11 @@ def _count_lines(rendered: str) -> int:
+     return sum(1 for line in rendered.splitlines() if line.startswith("- "))
+ 
+ 
+-__all__ = ["ReindexResult", "index_line_for", "reindex_memory", "render_index", "render_index_lines"]
++__all__ = [
++    "ReindexResult",
++    "index_line_for",
++    "reindex_memory",
++    "render_index",
++    "render_index_lines",
++    "signature_text",
++]
+diff --git a/tests/teatree_cli/test_teatree_gate.py b/tests/teatree_cli/test_teatree_gate.py
+index ca74f11691..cef13dbeea 100644
+--- a/tests/teatree_cli/test_teatree_gate.py
++++ b/tests/teatree_cli/test_teatree_gate.py
+@@ -20,9 +20,11 @@
+     COMPLETION_CLAIM_GATE_KEY,
+     CONFIG_OVERWRITE_GATE_KEY,
+     GATE_KEY,
++    MEMORY_RECALL_GATE_KEY,
+     completion_claim_gate_is_enabled,
+     config_overwrite_gate_is_enabled,
+     gate_is_enabled,
++    memory_recall_gate_is_enabled,
+ )
+ 
+ 
+@@ -129,6 +131,27 @@ def test_round_trips(self, app: typer.Typer, home: Path) -> None:
+         assert completion_claim_gate_is_enabled() is True
+ 
+ 
++class TestMemoryRecallGate:
++    """``t3 <overlay> gate memory-recall disable|enable`` — the #2746 self-rescue."""
++
++    def test_disable_writes_false_and_is_reflected(self, app: typer.Typer, home: Path) -> None:
++        result = CliRunner().invoke(app, ["gate", "memory-recall", "disable"])
++        assert result.exit_code == 0, result.output
++        document = tomlkit.parse((home / ".teatree.toml").read_text(encoding="utf-8"))
++        assert document["teatree"][MEMORY_RECALL_GATE_KEY] is False
++        assert memory_recall_gate_is_enabled() is False
++
++    def test_enabled_by_default_when_config_missing(self, home: Path) -> None:
++        assert memory_recall_gate_is_enabled() is True
++
++    def test_round_trips(self, app: typer.Typer, home: Path) -> None:
++        runner = CliRunner()
++        assert runner.invoke(app, ["gate", "memory-recall", "disable"]).exit_code == 0
++        assert memory_recall_gate_is_enabled() is False
++        assert runner.invoke(app, ["gate", "memory-recall", "enable"]).exit_code == 0
++        assert memory_recall_gate_is_enabled() is True
++
++
+ class TestTomlPreservation:
+     def test_disable_preserves_other_content(self, app: typer.Typer, home: Path) -> None:
+         (home / ".teatree.toml").write_text(
+diff --git a/tests/teatree_core/management/commands/test_memory_command.py b/tests/teatree_core/management/commands/test_memory_command.py
+new file mode 100644
+index 0000000000..4caed0df61
+--- /dev/null
++++ b/tests/teatree_core/management/commands/test_memory_command.py
+@@ -0,0 +1,68 @@
++"""``t3 <overlay> memory recall`` — surface cold-tier rules for a query (#2746).
++
++Drives the command through ``call_command`` against a seeded ``--memory-dir`` cold
++tier under ``tmp_path``. A relevant query prints the top-K rules, an unrelated query
++prints the "no relevant cold-tier entries" line (exit 0), and a missing cold index is
++an error (exit 1).
++"""
++
++from io import StringIO
++from pathlib import Path
++
++import pytest
++from django.core.management import call_command
++
++_COLD_HEADER = "# Auto Memory — Cold Archive Index\n\n> preamble.\n\n"
++
++
++@pytest.fixture
++def memory_dir(tmp_path: Path) -> Path:
++    memory = tmp_path / "memory"
++    memory.mkdir()
++    (memory / "MEMORY_ARCHIVE.md").write_text(
++        _COLD_HEADER
++        + "- feedback_worktree_first.md — always create a worktree before editing project files\n"
++        + "- feedback_slack_routing.md — route bot DMs only to the user's own channel\n",
++        encoding="utf-8",
++    )
++    return memory
++
++
++def _run(*args: str) -> str:
++    out = StringIO()
++    call_command("memory", "recall", *args, stdout=out, stderr=StringIO())
++    return out.getvalue()
++
++
++class TestMemoryRecallCommand:
++    def test_relevant_query_prints_the_matching_rule(self, memory_dir: Path) -> None:
++        out = _run("create a worktree before editing project files", "--memory-dir", str(memory_dir))
++        assert "feedback_worktree_first.md" in out
++        assert "feedback_slack_routing.md" not in out
++
++    def test_unrelated_query_prints_no_entries_line_exit_zero(self, memory_dir: Path) -> None:
++        out = _run("an unrelated question about quantum chromodynamics", "--memory-dir", str(memory_dir))
++        assert "no relevant cold-tier entries" in out
++
++    def test_limit_caps_the_number_of_rules(self, tmp_path: Path) -> None:
++        memory = tmp_path / "memory"
++        memory.mkdir()
++        lines = "\n".join(
++            f"- feedback_worktree_{i}.md — always create a worktree before editing project file {i}" for i in range(10)
++        )
++        (memory / "MEMORY_ARCHIVE.md").write_text(_COLD_HEADER + lines + "\n", encoding="utf-8")
++        out = _run("create a worktree before editing project files", "--memory-dir", str(memory), "--limit", "2")
++        assert sum(1 for line in out.splitlines() if line.strip().startswith("- ")) == 2
++
++    def test_missing_cold_index_is_an_error(self, tmp_path: Path) -> None:
++        with pytest.raises(SystemExit) as exc:
++            call_command(
++                "memory",
++                "recall",
++                "anything",
++                "--memory-dir",
++                str(tmp_path / "absent"),
++                stdout=StringIO(),
++                stderr=StringIO(),
++            )
++        assert exc.value.code == 1
+diff --git a/tests/teatree_hooks/test_memory_recall_hook.py b/tests/teatree_hooks/test_memory_recall_hook.py
+new file mode 100644
+index 0000000000..e72a1cac0f
+--- /dev/null
++++ b/tests/teatree_hooks/test_memory_recall_hook.py
+@@ -0,0 +1,92 @@
++"""UserPromptSubmit cold-tier memory recall hook (#2746).
++
++The thin leaf ``hooks.scripts.memory_recall`` resolves the project memory dir from
++the hook ``data`` and prints the recall block (stdout IS additionalContext on
++UserPromptSubmit). Integration-leaning: a real cold tier under ``tmp_path`` reached
++via a fake ``transcript_path``; the kill-switch path patches the config reader.
++"""
++
++from pathlib import Path
++
++import pytest
++
++from hooks.scripts import memory_recall
++from hooks.scripts.hook_router import _HANDLERS
++from hooks.scripts.memory_recall import handle_recall_cold_memory
++
++_COLD_HEADER = "# Auto Memory — Cold Archive Index\n\n> preamble.\n\n"
++
++
++@pytest.fixture
++def project(tmp_path: Path) -> Path:
++    """A project layout: ``<tmp>/project/<session>.jsonl`` + a sibling ``memory/`` cold tier."""
++    proj = tmp_path / "project"
++    memory = proj / "memory"
++    memory.mkdir(parents=True)
++    (memory / "MEMORY_ARCHIVE.md").write_text(
++        _COLD_HEADER + "- feedback_worktree_first.md — always create a worktree before editing project files\n",
++        encoding="utf-8",
++    )
++    return proj
++
++
++def _data(proj: Path, prompt: str) -> dict:
++    return {"transcript_path": str(proj / "session.jsonl"), "prompt": prompt, "cwd": str(proj)}
++
++
++class TestHandlerInjection:
++    def test_prints_recall_block_for_relevant_prompt(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
++        handle_recall_cold_memory(_data(project, "how do I create a worktree before editing the project files?"))
++        out = capsys.readouterr().out
++        assert "feedback_worktree_first.md" in out
++        assert "Relevant archived memory rules" in out
++
++    def test_prints_nothing_for_unrelated_prompt(self, project: Path, capsys: pytest.CaptureFixture[str]) -> None:
++        handle_recall_cold_memory(_data(project, "an unrelated question about quantum chromodynamics"))
++        assert capsys.readouterr().out == ""
++
++    def test_prints_nothing_when_transcript_path_absent_and_no_cwd_match(
++        self, project: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        # No transcript_path and a cwd whose project-slug dir does not exist under
++        # a tmp HOME -> no resolvable cold index -> inject nothing.
++        monkeypatch.setattr(Path, "home", classmethod(lambda cls: project.parent))
++        data = {"prompt": "create a worktree before editing project files", "cwd": "/no/such/place"}
++        handle_recall_cold_memory(data)
++        assert capsys.readouterr().out == ""
++
++    def test_prints_nothing_when_disabled_via_kill_switch(
++        self, project: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        monkeypatch.setattr(memory_recall, "_memory_recall_enabled", lambda: False)
++        handle_recall_cold_memory(_data(project, "create a worktree before editing project files"))
++        assert capsys.readouterr().out == ""
++
++    def test_non_dict_data_is_a_silent_noop(self, capsys: pytest.CaptureFixture[str]) -> None:
++        handle_recall_cold_memory("not a dict")
++        assert capsys.readouterr().out == ""
++
++
++class TestCwdFallbackResolution:
++    def test_resolves_memory_dir_from_cwd_slug_when_no_transcript(
++        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        # The harness names the project dir from the cwd with `/` -> `-`.
++        cwd = "/Users/dev/workspace/proj"
++        slug = cwd.replace("/", "-")
++        memory = tmp_path / ".claude" / "projects" / slug / "memory"
++        memory.mkdir(parents=True)
++        (memory / "MEMORY_ARCHIVE.md").write_text(
++            _COLD_HEADER + "- feedback_worktree_first.md — always create a worktree before editing project files\n",
++            encoding="utf-8",
++        )
++        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
++        handle_recall_cold_memory({"prompt": "create a worktree before editing project files", "cwd": cwd})
++        assert "feedback_worktree_first.md" in capsys.readouterr().out
++
++
++class TestHandlerRegistration:
++    def test_handler_registered_last_on_user_prompt_submit(self) -> None:
++        handlers = _HANDLERS["UserPromptSubmit"]
++        assert handle_recall_cold_memory in handlers
++        assert handlers[-1] is handle_recall_cold_memory
+diff --git a/tests/teatree_loops/dream/test_decay.py b/tests/teatree_loops/dream/test_decay.py
+index 64cadefe7e..c3ad8ea0b3 100644
+--- a/tests/teatree_loops/dream/test_decay.py
++++ b/tests/teatree_loops/dream/test_decay.py
+@@ -464,6 +464,42 @@ def test_budget_tier_has_teeth(self) -> None:
+         on = self._decay(budget_tier=True)
+         assert on.archived_count > 0, "tier on must archive the lowest-signal files"
+ 
++    def _seed_dense_multibyte(self, count: int, *, age_days: int = 120) -> None:
++        """Seed *count* stale low-signal files whose summaries are DENSE multibyte.
++
++        With ``_LINE_MAX_CHARS = 140`` a pure-ASCII index of ~149 lines is ≈21 KB —
++        under the 24 KB byte budget — so the LINE budget always trips first and the
++        BYTE branch is unreachable by ASCII alone. A summary of 3-byte UTF-8 chars
++        (``—``) makes each clipped 140-char line ≈350 bytes, so a sub-150-line index
++        can still blow the byte budget — the only way to exercise the byte branch.
++        """
++        dense = "—" * 200  # U+2014 em-dash, 3 bytes/char
++        for i in range(count):
++            self._write(f"feedback_mb_{i:04d}", dense, age_days=age_days)
++
++    def test_over_byte_budget_under_line_budget_archives_until_under_byte_budget(self) -> None:
++        # #2723 nit-3: the byte branch of the budget tier, reachable ONLY via
++        # multibyte summaries (an ASCII index of <150 lines is always under 24 KB).
++        self._seed_dense_multibyte(90)
++        self._seed_index()
++        before = reindex.render_index(self.dir)
++        before_lines = sum(1 for line in before.splitlines() if line.strip())
++        before_bytes = len(before.encode("utf-8"))
++        assert before_lines <= gates.INDEX_LINE_BUDGET, "the LINE budget must NOT be the trigger"
++        assert before_bytes > gates.INDEX_BYTE_BUDGET, "the BYTE budget must be exceeded"
++
++        result = self._decay(budget_tier=True)
++        assert result.archived_count > 0
++
++        # Re-render the survivor index the way the re-index phase will write it.
++        after = reindex.render_index(self.dir)
++        after_lines = sum(1 for line in after.splitlines() if line.strip())
++        after_bytes = len(after.encode("utf-8"))
++        assert after_bytes <= gates.INDEX_BYTE_BUDGET, "the byte branch must archive until under the byte budget"
++        assert after_lines < gates.INDEX_LINE_BUDGET, "lines stayed under the line budget throughout"
++        after_snapshot = gates.MemorySnapshot.build(memories={}, index_text=after)
++        assert gates.Gate.index_budget(after_snapshot).passed
++
+     def test_referenced_files_are_never_archived_even_when_budget_cannot_be_met(self) -> None:
+         # A hub links every filler, so the filler are all referenced (inviolable). Even
+         # over budget the tier archives ONLY the unreferenced hub and exhausts its walk
+@@ -545,6 +581,23 @@ def test_cold_index_line_handles_unreadable_and_signatureless(self) -> None:
+         )
+         assert decay._cold_index_line(headings_only) == "- feedback_headings.md"  # no prose -> pointer only
+ 
++    def test_cold_index_line_carries_frontmatter_description_not_node_type(self) -> None:
++        # #2746 nit-4: an archived node-typed memory's cold-index signature is its
++        # real frontmatter description, NOT the body ``node_type: memory`` line.
++        d = Path(self.enterContext(tempfile.TemporaryDirectory()))
++        archived = d / "feedback_kind_marker.md"
++        archived.write_text(
++            "<!-- archived by dream decay 2026-06-16: over-budget; original mtime 2026-01-01 -->\n"
++            "---\nname: feedback_kind_marker\n"
++            "description: the lease guard rejects an empty owner address\n"
++            "metadata:\n  type: feedback\n---\n"
++            "node_type: memory\ntrailing body\n",
++            encoding="utf-8",
++        )
++        line = decay._cold_index_line(archived)
++        assert line == "- feedback_kind_marker.md — the lease guard rejects an empty owner address"
++        assert "node_type" not in line
++
+     def test_rebuild_cold_index_noop_when_archive_absent_or_yields_no_lines(self) -> None:
+         d = Path(self.enterContext(tempfile.TemporaryDirectory()))
+         decay._rebuild_cold_index(d, d / "archive")  # absent
+diff --git a/tests/teatree_loops/dream/test_gates.py b/tests/teatree_loops/dream/test_gates.py
+index 7365d4a392..6eb7f7d67b 100644
+--- a/tests/teatree_loops/dream/test_gates.py
++++ b/tests/teatree_loops/dream/test_gates.py
+@@ -90,6 +90,44 @@ def test_probe_answerable_from_the_index_too(self) -> None:
+         assert probe_answerable(probe, snap) is True
+ 
+ 
++class TestSignatureIsDescriptionAware(SimpleTestCase):
++    """``gates._signature_line`` delegates to the frontmatter-aware extractor (#2746 nit-4).
++
++    The old inline scanner returned the body ``node_type: memory`` line for a
++    node-typed memory, near-vacuating its retention probe. The signature now
++    prefers the frontmatter ``description:`` so the hot index, the cold index, and
++    the probe all carry the SAME real lesson.
++    """
++
++    _NODE_TYPED = (
++        "---\nname: feedback_x\n"
++        "description: the lease guard rejects an empty owner address\n"
++        "metadata:\n  type: feedback\n---\n"
++        "node_type: memory\ntrailing body\n"
++    )
++
++    def test_signature_line_returns_description_not_node_type(self) -> None:
++        signature = gates._signature_line(self._NODE_TYPED)
++        assert signature == "the lease guard rejects an empty owner address"
++        assert "node_type" not in signature
++
++    def test_signature_line_agrees_with_reindex_signature_text(self) -> None:
++        # ONE extractor: hot index (reindex) and cold/probe (gates) must agree.
++        assert gates._signature_line(self._NODE_TYPED) == reindex.signature_text(self._NODE_TYPED)
++
++    def test_derive_probes_expected_answer_is_the_description(self) -> None:
++        snap = _snapshot({"feedback_x.md": self._NODE_TYPED})
++        probes = derive_probes(snap)
++        assert len(probes) == 1
++        assert probes[0].expected_answer == "the lease guard rejects an empty owner address"
++
++    def test_probe_for_node_typed_memory_stays_answerable(self) -> None:
++        # The description is a substring of the body, so retention stays green.
++        snap = _snapshot({"feedback_x.md": self._NODE_TYPED})
++        probes = derive_probes(snap)
++        assert probe_answerable(probes[0], snap) is True
++
++
+ class TestGateA(SimpleTestCase):
+     def test_passes_when_every_pre_answerable_probe_still_answerable(self) -> None:
+         before = _snapshot({"m.md": "name: m\nfact ONE and fact TWO\n"})
+diff --git a/tests/teatree_loops/dream/test_recall.py b/tests/teatree_loops/dream/test_recall.py
+new file mode 100644
+index 0000000000..f4cfdea8fc
+--- /dev/null
++++ b/tests/teatree_loops/dream/test_recall.py
+@@ -0,0 +1,174 @@
++"""Cold-tier memory RECALL — surface an archived rule when relevant (#2746).
++
++Integration-leaning: each test writes a real cold tier (``MEMORY_ARCHIVE.md``, and
++where relevant ``MEMORY.md``) under ``tmp_path`` and drives the pure scoring core.
++The contract is proven in both directions — a relevant prompt surfaces the entry
++top-ranked, an unrelated prompt surfaces nothing, an already-hot rule is deduped, the
++output is capped, BINDING / user rules are boosted only once past the relevance floor,
++and an irrelevant BINDING rule (below the floor) is NEVER surfaced.
++"""
++
++import tempfile
++from pathlib import Path
++
++from django.test import SimpleTestCase
++
++from teatree.loops.dream import recall
++from teatree.loops.dream.recall import (
++    RECALL_INJECT_LINE_MAX,
++    RECALL_LIMIT,
++    RECALL_MAX_BYTES,
++    RecallHit,
++    recall_cold_memory,
++    render_recall_block,
++)
++
++_COLD_HEADER = "# Auto Memory — Cold Archive Index\n\n> preamble line.\n\n"
++
++
++class RecallTestCase(SimpleTestCase):
++    def setUp(self) -> None:
++        self.dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
++
++    def _cold(self, *lines: str) -> None:
++        (self.dir / recall.COLD_INDEX_NAME).write_text(_COLD_HEADER + "\n".join(lines) + "\n", encoding="utf-8")
++
++    def _hot(self, *lines: str) -> None:
++        body = "\n".join(lines)
++        (self.dir / recall.HOT_INDEX_NAME).write_text(f"# Auto Memory — Index\n\n{body}\n", encoding="utf-8")
++
++    def _names(self, hits: list[RecallHit]) -> list[str]:
++        return [hit.name for hit in hits]
++
++
++class TestHit(RecallTestCase):
++    def test_relevant_query_returns_the_entry_top_ranked(self) -> None:
++        self._cold(
++            "- feedback_worktree_first.md — always create a worktree before editing any project file",
++            "- feedback_unrelated_topic.md — a note about slack reaction rendering colors",
++        )
++        hits = recall_cold_memory(self.dir, "how do I set up a worktree before editing project files?")
++        assert hits, "a relevant query must surface the matching cold entry"
++        assert hits[0].name == "feedback_worktree_first.md"
++
++    def test_signature_only_overlap_of_two_tokens_is_a_hit(self) -> None:
++        # Two distinct signature tokens overlap (no name overlap) -> clears the floor.
++        self._cold("- mem_abc.md — the lease guard rejects an empty owner address")
++        hits = recall_cold_memory(self.dir, "the lease guard owner check")
++        assert self._names(hits) == ["mem_abc.md"]
++
++
++class TestMissAndDegrade(RecallTestCase):
++    def test_unrelated_query_returns_empty(self) -> None:
++        self._cold("- feedback_worktree_first.md — always create a worktree before editing any project file")
++        assert recall_cold_memory(self.dir, "completely unrelated quantum chromodynamics lecture") == []
++
++    def test_render_recall_block_empty_for_no_hits(self) -> None:
++        assert render_recall_block([]) == ""
++
++    def test_missing_cold_index_returns_empty(self) -> None:
++        # No MEMORY_ARCHIVE.md written at all.
++        assert recall_cold_memory(self.dir, "anything at all here") == []
++
++    def test_missing_dir_returns_empty(self) -> None:
++        assert recall_cold_memory(self.dir / "absent", "anything at all here") == []
++
++    def test_empty_query_returns_empty(self) -> None:
++        self._cold("- feedback_worktree_first.md — always create a worktree before editing")
++        assert recall_cold_memory(self.dir, "") == []
++
++
++class TestDedupeAgainstHot(RecallTestCase):
++    def test_name_already_in_hot_index_is_excluded(self) -> None:
++        # Same matching tokens, but the entry is ALSO a hot pointer -> excluded.
++        self._cold("- feedback_worktree_first.md — always create a worktree before editing project files")
++        self._hot("- feedback_worktree_first.md — worktree first")
++        assert recall_cold_memory(self.dir, "create a worktree before editing project files") == []
++
++    def test_renamed_file_signature_substring_in_hot_is_excluded(self) -> None:
++        # The cold entry's signature already lives verbatim in the hot index under a
++        # DIFFERENT pointer name (a renamed file) -> the renamed-file guard drops it.
++        self._cold("- feedback_old_name.md — always create a worktree before editing project files")
++        self._hot("- feedback_new_name.md — always create a worktree before editing project files")
++        assert recall_cold_memory(self.dir, "create a worktree before editing project files") == []
++
++
++class TestCap(RecallTestCase):
++    def test_at_most_recall_limit_hits(self) -> None:
++        self._cold(
++            *[f"- feedback_worktree_{i}.md — always create a worktree before editing files {i}" for i in range(20)]
++        )
++        hits = recall_cold_memory(self.dir, "create a worktree before editing project files")
++        assert len(hits) <= RECALL_LIMIT
++
++    def test_block_within_byte_budget_and_lines_clipped(self) -> None:
++        long_sig = "always create a worktree before editing " + "x" * 400
++        self._cold(*[f"- feedback_worktree_{i}.md — {long_sig} variant{i}" for i in range(20)])
++        hits = recall_cold_memory(self.dir, "create a worktree before editing project files")
++        block = render_recall_block(hits)
++        assert len(block.encode("utf-8")) <= RECALL_MAX_BYTES
++        for line in block.splitlines()[1:]:  # skip the header line
++            assert len(line) <= RECALL_INJECT_LINE_MAX
++
++
++class TestBindingAndUserBoost(RecallTestCase):
++    def test_binding_outranks_plain_at_equal_base_match(self) -> None:
++        self._cold(
++            "- feedback_plain_rule.md — review the worktree project layout note",
++            "- feedback_binding_rule.md — BINDING review the worktree project layout always",
++        )
++        hits = recall_cold_memory(self.dir, "review the worktree project layout")
++        assert hits[0].name == "feedback_binding_rule.md"
++        assert hits[0].binding is True
++
++    def test_user_prefixed_entry_is_boosted(self) -> None:
++        self._cold(
++            "- feedback_plain_rule.md — review the worktree project layout note",
++            "- user_editor_choice.md — review the worktree project layout preference",
++        )
++        hits = recall_cold_memory(self.dir, "review the worktree project layout")
++        assert hits[0].name == "user_editor_choice.md"
++
++    def test_irrelevant_binding_below_floor_is_not_surfaced(self) -> None:
++        # A BINDING entry sharing only ONE incidental signature token (below the
++        # floor) is dropped despite the +3 boost — relevance gates the boost.
++        self._cold("- feedback_binding_unrelated.md — BINDING a directive about slack reactions")
++        hits = recall_cold_memory(self.dir, "the slack channel routing question")
++        assert hits == []
++
++
++class TestRelevanceFloor(RecallTestCase):
++    def test_single_incidental_signature_token_is_no_hit(self) -> None:
++        # One shared signature token (no name overlap) -> base 1 < floor -> dropped.
++        self._cold("- feedback_misc.md — a note about reactions and colors and rendering")
++        hits = recall_cold_memory(self.dir, "reactions in an otherwise totally different sentence")
++        assert hits == []
++
++    def test_two_distinct_tokens_clear_the_floor(self) -> None:
++        self._cold("- feedback_misc.md — a note about reactions and colors and rendering")
++        hits = recall_cold_memory(self.dir, "reactions and colors discussion")
++        assert self._names(hits) == ["feedback_misc.md"]
++
++
++class TestAmbientStrip(RecallTestCase):
++    def test_system_reminder_memory_dump_does_not_self_match(self) -> None:
++        # A prompt carrying the cold entry's own signature INSIDE a <system-reminder>
++        # (a MEMORY.md / CLAUDE.md dump) must NOT self-match and surface the entry.
++        self._cold("- feedback_worktree_first.md — always create a worktree before editing project files")
++        prompt = "<system-reminder>\nalways create a worktree before editing project files\n</system-reminder>\nhello"
++        assert recall_cold_memory(self.dir, prompt) == []
++
++    def test_unterminated_system_reminder_is_stripped(self) -> None:
++        self._cold("- feedback_worktree_first.md — always create a worktree before editing project files")
++        prompt = "<system-reminder>\nalways create a worktree before editing project files"
++        assert recall_cold_memory(self.dir, prompt) == []
++
++    def test_genuine_intent_outside_ambient_still_matches(self) -> None:
++        # The real ask sits OUTSIDE the ambient block -> still matched.
++        self._cold("- feedback_worktree_first.md — always create a worktree before editing project files")
++        prompt = (
++            "<system-reminder>unrelated harness noise</system-reminder>\n"
++            "should I create a worktree before editing the project files?"
++        )
++        hits = recall_cold_memory(self.dir, prompt)
++        assert self._names(hits) == ["feedback_worktree_first.md"]
+diff --git a/tests/teatree_loops/dream/test_reindex.py b/tests/teatree_loops/dream/test_reindex.py
+index 47c26a1bb1..2d9626d0b7 100644
+--- a/tests/teatree_loops/dream/test_reindex.py
++++ b/tests/teatree_loops/dream/test_reindex.py
+@@ -162,3 +162,72 @@ def test_unreadable_file_is_skipped(self) -> None:
+         index = render_index(self.dir)
+         assert "mem_a.md" in index
+         assert "broken.md" not in index
++
++
++class SignatureTextTestCase(SimpleTestCase):
++    """The shared frontmatter-aware signature extractor (#2746 nit-4).
++
++    ``signature_text`` is the ONE extractor the hot index, the cold
++    ``MEMORY_ARCHIVE.md`` index, and the retention probe all share. It prefers
++    the frontmatter ``description:``/``summary:`` over a node-type body line, so a
++    node-typed memory no longer yields the near-vacuous ``node_type: memory``
++    signature.
++    """
++
++    _NODE_TYPED = (
++        "---\nname: feedback_example\n"
++        "description: the lease guard rejects an empty owner address\n"
++        "metadata:\n  type: feedback\n---\n"
++        "node_type: memory\nsome trailing body content\n"
++    )
++
++    def test_frontmatter_description_preferred_over_node_type_body(self) -> None:
++        # The bug: the old scanner returned the body ``node_type: memory`` line.
++        assert reindex.signature_text(self._NODE_TYPED) == "the lease guard rejects an empty owner address"
++        assert "node_type" not in reindex.signature_text(self._NODE_TYPED)
++
++    def test_frontmatter_summary_preferred(self) -> None:
++        text = "---\nname: m\nsummary: a tight one-line lesson\n---\n# H\nbody"
++        assert reindex.signature_text(text) == "a tight one-line lesson"
++
++    def test_body_node_type_line_is_skipped_when_no_frontmatter_summary(self) -> None:
++        # No frontmatter description: the metadata ``node_type:`` line is skipped
++        # and the next real lesson line is the signature.
++        text = "---\nname: m\n---\nnode_type: memory\nthe actual recorded lesson\n"
++        assert reindex.signature_text(text) == "the actual recorded lesson"
++
++    def test_loose_metadata_lines_are_skipped(self) -> None:
++        # A file with no fenced frontmatter, leading metadata-ish key lines.
++        text = "name: mem_a\ntype: feedback\nthe load-bearing lesson A\n"
++        assert reindex.signature_text(text) == "the load-bearing lesson A"
++
++    def test_binding_heading_is_the_last_resort_signature(self) -> None:
++        # No frontmatter, no prose — only headings, one declaring a BINDING rule.
++        text = "---\nname: m\n---\n# Context\n## Non-Negotiable: never force-push main\n"
++        assert reindex.signature_text(text) == "Non-Negotiable: never force-push main"
++
++    def test_empty_when_no_signature_anywhere(self) -> None:
++        text = "---\nname: m\n---\n# Only A Heading\n## And Another\n"
++        assert reindex.signature_text(text) == ""
++
++    def test_signature_is_uncapped(self) -> None:
++        # Unlike the hot index line, the signature is never clipped.
++        long = "a long lesson " + "x" * 400
++        text = f"---\nname: m\ndescription: {long}\n---\nbody"
++        assert reindex.signature_text(text) == long
++        assert len(reindex.signature_text(text)) > reindex._LINE_MAX_CHARS
++
++    def test_returned_signature_is_a_substring_of_the_text(self) -> None:
++        # The retention contract: the signature stays findable in the body.
++        sig = reindex.signature_text(self._NODE_TYPED)
++        assert " ".join(sig.split()).lower() in " ".join(self._NODE_TYPED.split()).lower()
++
++    def test_summary_for_shares_signature_text_then_clips(self) -> None:
++        # The hot index summary is signature_text clipped to the per-summary cap.
++        long = "y" * 400
++        text = f"---\nname: m\ndescription: {long}\n---\nbody"
++        summary = reindex._summary_for(text)
++        assert len(summary) <= reindex._SUMMARY_MAX_CHARS
++        assert summary.endswith("…")
++        # The cold signature stays uncapped for the same text.
++        assert len(reindex.signature_text(text)) > reindex._SUMMARY_MAX_CHARS
+-- 
+2.50.1 (Apple Git-155)
+
+
+From b77c96a028ea9633898c4a643c60e62cb1fd6a3d Mon Sep 17 00:00:00 2001
+From: souliane <21343492+souliane@users.noreply.github.com>
+Date: Fri, 26 Jun 2026 16:13:05 +0200
+Subject: [PATCH 2/2] fix(dream): count distinct tokens for the cold-recall
+ relevance floor (#2746)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Adversarial review of the cold-tier RECALL follow-up flagged a relevance-floor
+bug: _score summed the entry-token overlap (which already includes name tokens)
+AND the name-token overlap, so a single filename-token match double-counted to 2
+and fake-cleared the floor of 2 — surfacing an otherwise-irrelevant rule on one
+incidental topic word. The floor now counts DISTINCT matched tokens across the
+entry; the name-token weight is applied only POST-floor for ranking.
+
+Review nits folded in:
+- renamed-file dedup compares a prefix bounded just under the hot summary clip,
+  so a long cold signature clipped in the hot index is still recognised as
+  already loaded (a verbatim substring check missed it)
+- gates._signature_line imports reindex at module level (reindex is stdlib-only,
+  imports neither gates nor decay; no cycle), dropping the lazy-import noqa
+- handle_recall_cold_memory wraps its whole body (kill-switch read and dir
+  resolution included) so a misbehaving reader on a hostile payload can never
+  traceback out of the UserPromptSubmit leaf
+- reindex module docstring now describes the metadata-skip and BINDING fallback
+- ambient-strip carries a comment documenting the unterminated-open-tag
+  truncate-to-end trade-off
+
+Tests: a regression test proves a single name-token-only overlap returns no hit
+(observed RED before the floor fix, GREEN after), plus the clipped-signature
+dedup guard, an exact RECALL_LIMIT cap, and an isolated +3 BINDING-boost ranking
+test where a lower-base BINDING entry outranks a higher-base plain entry.
+---
+ hooks/scripts/memory_recall.py           | 22 ++++++----
+ src/teatree/loops/dream/gates.py         |  7 ++--
+ src/teatree/loops/dream/recall.py        | 53 ++++++++++++++++++------
+ src/teatree/loops/dream/reindex.py       |  7 +++-
+ tests/teatree_loops/dream/test_recall.py | 45 +++++++++++++++++---
+ 5 files changed, 102 insertions(+), 32 deletions(-)
+
+diff --git a/hooks/scripts/memory_recall.py b/hooks/scripts/memory_recall.py
+index 23b2ccbca1..7605309b80 100644
+--- a/hooks/scripts/memory_recall.py
++++ b/hooks/scripts/memory_recall.py
+@@ -96,19 +96,23 @@ def handle_recall_cold_memory(data: dict) -> None:
+     """Inject the recall block for the prompt's relevant cold-tier rules (if any).
+ 
+     Fail-silent on every path: a disabled kill-switch, an unimportable core, no
+-    resolvable cold-index dir, or any scoring error all inject nothing.
++    resolvable cold-index dir, or any scoring error all inject nothing. The WHOLE
++    body — the kill-switch read and the dir resolution included — is wrapped, so a
++    misbehaving config reader or a path resolver on a hostile payload can never
++    traceback out of this UserPromptSubmit leaf.
+     """
+     if not isinstance(data, dict):
+         return
+-    if not _memory_recall_enabled():
+-        return
+-    recall = _load_recall()
+-    if recall is None:
+-        return
+-    memory_dir = _project_memory_dir(data, recall.COLD_INDEX_NAME)
+-    if memory_dir is None:
+-        return
++    block = ""
+     try:
++        if not _memory_recall_enabled():
++            return
++        recall = _load_recall()
++        if recall is None:
++            return
++        memory_dir = _project_memory_dir(data, recall.COLD_INDEX_NAME)
++        if memory_dir is None:
++            return
+         hits = recall.recall_cold_memory(memory_dir, data.get("prompt", ""))
+         block = recall.render_recall_block(hits)
+     except Exception:  # noqa: BLE001 — UserPromptSubmit hook must be crash-proof.
+diff --git a/src/teatree/loops/dream/gates.py b/src/teatree/loops/dream/gates.py
+index 7ba682d427..2d9d5b281c 100644
+--- a/src/teatree/loops/dream/gates.py
++++ b/src/teatree/loops/dream/gates.py
+@@ -52,6 +52,8 @@
+ from pathlib import Path
+ from typing import TYPE_CHECKING
+ 
++from teatree.loops.dream import reindex
++
+ if TYPE_CHECKING:
+     from teatree.loops.dream.decay import ArchivedMemory
+ 
+@@ -229,10 +231,9 @@ def _signature_line(text: str) -> str:
+     prefers the frontmatter ``description:`` over the weak ``node_type: memory`` body
+     line. The returned line stays a substring of the memory's text, so
+     ``snapshot.contains(signature)`` remains True (retention/interference stay green).
+-    ``reindex`` imports neither ``gates`` nor ``decay``, so this edge adds no cycle.
++    ``reindex`` imports neither ``gates`` nor ``decay`` (stdlib only), so the
++    module-level import edge adds no cycle.
+     """
+-    from teatree.loops.dream import reindex  # noqa: PLC0415
+-
+     return reindex.signature_text(text)
+ 
+ 
+diff --git a/src/teatree/loops/dream/recall.py b/src/teatree/loops/dream/recall.py
+index a6380165e7..33cd2839a3 100644
+--- a/src/teatree/loops/dream/recall.py
++++ b/src/teatree/loops/dream/recall.py
+@@ -33,6 +33,7 @@
+ # (stdlib only), so importing them keeps this core hook-importable without Django.
+ from teatree.loops.dream.decay import _ARCHIVE_INDEX_NAME as COLD_INDEX_NAME
+ from teatree.loops.dream.reindex import _INDEX_NAME as HOT_INDEX_NAME
++from teatree.loops.dream.reindex import _SUMMARY_MAX_CHARS as _HOT_SUMMARY_MAX_CHARS
+ 
+ #: Max hits surfaced per turn.
+ RECALL_LIMIT = 5
+@@ -77,6 +78,12 @@
+ _BINDING_BOOST = 3
+ _USER_BOOST = 2
+ 
++#: Dedup-prefix length for the renamed-file guard. The hot index clips a summary to
++#: ``_HOT_SUMMARY_MAX_CHARS`` (then rstrips one trailing space), so a long cold
++#: signature is never a verbatim substring of the hot text — compare a prefix bounded
++#: just under that clip so a clipped, renamed rule is still recognised as already hot.
++_DEDUP_PREFIX_CHARS = _HOT_SUMMARY_MAX_CHARS - 2
++
+ #: A small high-frequency stopword set dropped from query tokens so common words
+ #: never inflate a match. Sub-3-char tokens are dropped separately.
+ _STOPWORDS = frozenset(
+@@ -164,6 +171,10 @@ def _strip_ambient(prompt: str) -> str:
+     """Drop harness-injected ``<system-reminder>`` / ``<command-*>`` blocks from *prompt*."""
+     capped = prompt[:_QUERY_MAX_CHARS]
+     stripped = _AMBIENT_CONTEXT_RE.sub(" ", capped)
++    # An UNTERMINATED open tag drops from the tag to end-of-string — so an unterminated
++    # <system-reminder> mention in a genuine prompt truncates the rest of the query.
++    # Intentional, mirrors hook_router._strip_ambient_context: leaked ambient text must
++    # never reach the matcher, and genuine intent sits early (the harness appends blocks).
+     return _AMBIENT_OPEN_RE.sub(" ", stripped)
+ 
+ 
+@@ -210,20 +221,22 @@ def _is_binding(signature: str) -> bool:
+ def _score(query_tokens: set[str], name: str, signature: str) -> tuple[int, bool]:
+     """Score one cold entry against *query_tokens*; return ``(score, binding)``.
+ 
+-    ``base`` = distinct query tokens found in the entry (name union signature)
+-    PLUS ``+1`` for each that also hit a NAME token (the filename is a curated topic
+-    identifier, so a name overlap weighs double). Only once ``base`` clears
+-    :data:`RECALL_MIN_TOKEN_MATCHES` are the boosts added: ``+3`` for a BINDING /
+-    Non-Negotiable signature and ``+2`` for a ``user_*`` name. Below the floor the
+-    score is ``0`` (dropped) — an irrelevant BINDING rule is never surfaced.
++    The relevance FLOOR counts DISTINCT matched tokens across the entry (name and
++    signature): a hit needs at least :data:`RECALL_MIN_TOKEN_MATCHES` distinct tokens,
++    so a single incidental token — even one that happens to be a filename token — never
++    surfaces a rule. Below the floor the score is ``0`` (dropped). Only POST-floor does a
++    NAME-token match add weight: ``+1`` per matched name token (the filename is a curated
++    topic identifier, so it double-weights for RANKING), then ``+3`` for a BINDING /
++    Non-Negotiable signature and ``+2`` for a ``user_*`` name. The name weight and the
++    boosts affect ranking only — never whether an entry clears the floor.
+     """
+     name_tokens = _tokens(name)
+     entry_tokens = name_tokens | _tokens(signature)
+     binding = _is_binding(signature)
+-    base = len(query_tokens & entry_tokens) + len(query_tokens & name_tokens)
+-    if base < RECALL_MIN_TOKEN_MATCHES:
++    distinct = len(query_tokens & entry_tokens)
++    if distinct < RECALL_MIN_TOKEN_MATCHES:
+         return 0, binding
+-    score = base
++    score = distinct + len(query_tokens & name_tokens)
+     if binding:
+         score += _BINDING_BOOST
+     if name.lower().startswith("user_"):
+@@ -253,10 +266,27 @@ def render_recall_block(hits: Sequence[RecallHit]) -> str:
+ def _read_text(path: Path) -> str:
+     try:
+         return path.read_text(encoding="utf-8") if path.is_file() else ""
+-    except OSError:
++    except (OSError, UnicodeDecodeError):
++        # A corrupt / non-UTF-8 index honors the "returns '' on error" contract —
++        # UnicodeDecodeError is a ValueError, NOT an OSError, so catch it explicitly.
+         return ""
+ 
+ 
++def _signature_in_hot(normalized_sig: str, hot_norm: str) -> bool:
++    """Whether the cold *normalized_sig* is already present in the hot index text.
++
++    The renamed-file guard: a rule moved to a DIFFERENT hot filename. The hot index
++    clips its summary, so a long cold signature is never a verbatim substring of the
++    hot text — compare a :data:`_DEDUP_PREFIX_CHARS` prefix (bounded just under the hot
++    clip) so a clipped, renamed rule is still recognised as already loaded. A short
++    signature compares in full. Empty signatures never match (they would match every
++    hot text).
++    """
++    if not normalized_sig:
++        return False
++    return normalized_sig[:_DEDUP_PREFIX_CHARS] in hot_norm
++
++
+ def recall_cold_memory(
+     memory_dir: Path,
+     query: str,
+@@ -294,8 +324,7 @@ def recall_cold_memory(
+         score, binding = _score(query_tokens, name, signature)
+         if score == 0:
+             continue  # below the relevance floor
+-        normalized_sig = _normalize(signature)
+-        if normalized_sig and normalized_sig in hot_norm:
++        if _signature_in_hot(_normalize(signature), hot_norm):
+             continue  # renamed-file guard: the lesson already lives in the hot index
+         candidates.append(RecallHit(name=name, signature=signature, score=score, binding=binding))
+ 
+diff --git a/src/teatree/loops/dream/reindex.py b/src/teatree/loops/dream/reindex.py
+index 533da67dab..5f590a9a22 100644
+--- a/src/teatree/loops/dream/reindex.py
++++ b/src/teatree/loops/dream/reindex.py
+@@ -14,8 +14,11 @@
+ (#2723).
+ 
+ The regeneration is PURE and idempotent: the summary of each memory is derived
+-deterministically (its frontmatter ``summary``/``description``, else its first
+-non-heading prose line, clipped), lines are deduped by target filename and
++deterministically by the shared :func:`signature_text` extractor — its
++frontmatter ``description``/``summary``, else its first substantive non-heading
++body line (metadata ``key:`` lines such as ``node_type: memory`` are skipped so
++the real lesson is lifted, not the type marker), else its first BINDING /
++Non-Negotiable line — then clipped. Lines are deduped by target filename and
+ stably ordered (filename sort), and a header preamble is preserved. A re-run on
+ an unchanged memory set produces a BYTE-IDENTICAL file — the property the test
+ pins. It NEVER touches the real ``~/.claude``: the caller passes an explicit
+diff --git a/tests/teatree_loops/dream/test_recall.py b/tests/teatree_loops/dream/test_recall.py
+index f4cfdea8fc..e11e560e44 100644
+--- a/tests/teatree_loops/dream/test_recall.py
++++ b/tests/teatree_loops/dream/test_recall.py
+@@ -92,14 +92,28 @@ def test_renamed_file_signature_substring_in_hot_is_excluded(self) -> None:
+         self._hot("- feedback_new_name.md — always create a worktree before editing project files")
+         assert recall_cold_memory(self.dir, "create a worktree before editing project files") == []
+ 
++    def test_long_signature_clipped_in_hot_is_still_deduped(self) -> None:
++        # A cold signature LONGER than the hot summary clip lives in the hot index
++        # under a DIFFERENT name, where the reindex phase clipped it to ~110 chars.
++        # The prefix-bounded renamed-file guard must still recognise it as already
++        # loaded and drop the cold entry (a verbatim substring check would miss it).
++        long_sig = (
++            "always create a worktree before editing any project file and never edit "
++            "on a shared branch under any circumstance whatsoever in this repository today"
++        )
++        assert len(long_sig) > recall._HOT_SUMMARY_MAX_CHARS
++        self._cold(f"- feedback_cold_name.md — {long_sig}")
++        self._hot(f"- feedback_hot_name.md — {long_sig[: recall._HOT_SUMMARY_MAX_CHARS]}")
++        assert recall_cold_memory(self.dir, "create a worktree before editing any project file") == []
++
+ 
+ class TestCap(RecallTestCase):
+     def test_at_most_recall_limit_hits(self) -> None:
+         self._cold(
+             *[f"- feedback_worktree_{i}.md — always create a worktree before editing files {i}" for i in range(20)]
+         )
+         hits = recall_cold_memory(self.dir, "create a worktree before editing project files")
+-        assert len(hits) <= RECALL_LIMIT
++        assert len(hits) == RECALL_LIMIT
+ 
+     def test_block_within_byte_budget_and_lines_clipped(self) -> None:
+         long_sig = "always create a worktree before editing " + "x" * 400
+@@ -112,14 +126,23 @@ def test_block_within_byte_budget_and_lines_clipped(self) -> None:
+ 
+ 
+ class TestBindingAndUserBoost(RecallTestCase):
+-    def test_binding_outranks_plain_at_equal_base_match(self) -> None:
++    def test_binding_boost_lifts_lower_base_above_higher_base_plain(self) -> None:
++        # Isolate the +3 BINDING boost: the plain entry matches MORE query tokens
++        # (strictly higher base) than the BINDING entry, yet the boost lifts the
++        # BINDING entry above it. Names carry no query token, so base == distinct
++        # signature matches only.
+         self._cold(
+-            "- feedback_plain_rule.md — review the worktree project layout note",
+-            "- feedback_binding_rule.md — BINDING review the worktree project layout always",
++            "- feedback_plain.md — review worktree layout note",  # base 3
++            "- feedback_binding.md — BINDING review worktree directive",  # base 2, +3
+         )
+-        hits = recall_cold_memory(self.dir, "review the worktree project layout")
+-        assert hits[0].name == "feedback_binding_rule.md"
++        hits = recall_cold_memory(self.dir, "review worktree layout config")
++        assert hits[0].name == "feedback_binding.md"
+         assert hits[0].binding is True
++        plain = next(hit for hit in hits if hit.name == "feedback_plain.md")
++        # The plain entry has the strictly higher base (3 > 2); only the +3 boost
++        # flips the order, so score == base + 3 for the BINDING winner.
++        assert plain.score == 3
++        assert hits[0].score == 5
+ 
+     def test_user_prefixed_entry_is_boosted(self) -> None:
+         self._cold(
+@@ -144,6 +167,16 @@ def test_single_incidental_signature_token_is_no_hit(self) -> None:
+         hits = recall_cold_memory(self.dir, "reactions in an otherwise totally different sentence")
+         assert hits == []
+ 
++    def test_single_name_token_only_overlap_is_no_hit(self) -> None:
++        # REGRESSION (#2746 blocker): the query's ONLY overlap with the entry is a
++        # single FILENAME token ("review") — the signature shares nothing. The old
++        # scorer double-counted that one name token (entry-overlap PLUS name-overlap)
++        # to fake-clear the floor of 2 and surface the rule. The floor must count
++        # DISTINCT tokens, so a single name token is below it and the entry is dropped.
++        self._cold("- feedback_review_crew.md — slack reaction rendering colors note")
++        hits = recall_cold_memory(self.dir, "review the kubernetes deployment manifest")
++        assert hits == []
++
+     def test_two_distinct_tokens_clear_the_floor(self) -> None:
+         self._cold("- feedback_misc.md — a note about reactions and colors and rendering")
+         hits = recall_cold_memory(self.dir, "reactions and colors discussion")
+-- 
+2.50.1 (Apple Git-155)
+

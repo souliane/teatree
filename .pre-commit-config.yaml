@@ -66,15 +66,21 @@ repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # v6.0.0
     hooks:
+      # recovered-work/ holds verbatim git-format-patch output + captured diffs that
+      # must stay byte-exact for `git am`/`git apply`; never normalize them.
       - id: end-of-file-fixer
+        exclude: ^recovered-work/
       - id: trailing-whitespace
+        exclude: ^recovered-work/
       - id: mixed-line-ending
         args: [--fix=lf]
+        exclude: ^recovered-work/
   - repo: https://github.com/DavidAnson/markdownlint-cli2
     rev: d174eb7a8f35e05d4065c82d375ad84aa0b32352  # v0.17.2
     hooks:
       - id: markdownlint-cli2
         args: [--fix]
+        exclude: ^recovered-work/
   - repo: https://github.com/tox-dev/pyproject-fmt
     rev: 8a22e281b3f6d1bb298aaabfc165a943a943882c  # v2.7.0
     hooks:
@@ -94,6 +100,7 @@ repos:
         args: [--maxkb=600]
       - id: check-json
       - id: check-merge-conflict
+        exclude: ^recovered-work/
       - id: check-toml
       - id: check-yaml
 
@@ -144,10 +151,12 @@ repos:
     hooks:
       - id: codespell
         args: [--write-changes]
+        exclude: ^recovered-work/
   - repo: https://github.com/editorconfig-checker/editorconfig-checker.python
     rev: 61529b21391331d7cfd1f191df6293534a1fd79a  # v3.4.0
     hooks:
       - id: editorconfig-checker
+        exclude: ^recovered-work/
 
   # Phase 5 - Type check
   - repo: local

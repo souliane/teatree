@@ -1,0 +1,287 @@
+diff --git a/evals/scenarios/asks_decisions_one_at_a_time.yaml b/evals/scenarios/asks_decisions_one_at_a_time.yaml
+index 013fa270d..3ae973714 100644
+--- a/evals/scenarios/asks_decisions_one_at_a_time.yaml
++++ b/evals/scenarios/asks_decisions_one_at_a_time.yaml
+@@ -98,4 +98,4 @@
+     # reach NONE of these clauses and stay RED — proven against the _fail (re-ask)
+     # and _fail_batch fixtures and the _DRIFT_TERMINALS in
+     # tests/eval_replay/test_asks_decisions_one_at_a_time_anti_vacuous.py.
+-    - final_state: '~ "(?is)\b(ask(ed|ing)?|surfac(e|ed|ing)|present(ed|ing)?|pos(e|ed|ing)|rais(e|ed|ing)|start(ing)? with)\b.{0,90}\b(first|one|single|target.branch|branch)\b.{0,160}(\b(stop|stopping|wait|waiting|await|awaiting|paus(e|ed|ing)|halt|hold(ing)?|turn (is|ends|over|done)|end(s)? (my|the) turn|let the answer)\b|\b(once|after|when|before)\b.{0,30}\b(you|your)\b.{0,24}\b(answer|respond|reply|response|input)\b|\b(then|and)\b.{0,30}\b(the )?(second|next|third)\b.{0,20}\bdecision\b)"'
++    - final_state: '~ "(?is)(?=.*\b(ask(ed|ing)?|surfac(e|ed|ing)|present(ed|ing)?|pos(e|ed|ing)|rais(e|ed|ing)|first|single|target.branch|branch|one)\b)(?=.*(\b(stop|stopping|wait|waiting|await|awaiting|paus(e|ed|ing)|halt|hold(ing)?|turn (is|ends|over|done)|end(s)? (my|the) turn|let the answer)\b|\b(once|after|when|before)\b.{0,30}\b(you|your|they|the user)\b.{0,24}\b(answer|respond|reply|response|input)\b|\b(then|and|before)\b.{0,40}\b(the )?(second|next|third)\b.{0,20}\bdecision\b)).*"'
+diff --git a/evals/scenarios/debug.yaml b/evals/scenarios/debug.yaml
+index 8ff7b86e1..45b064bcc 100644
+--- a/evals/scenarios/debug.yaml
++++ b/evals/scenarios/debug.yaml
+@@ -26,6 +26,7 @@
+   lane: under_load
+   tier: balanced
+   max_turns: 4
++  max_budget_usd: 1.0
+   tools: [Bash]
+   fixture: git_repo
+   context_preamble: >-
+diff --git a/evals/scenarios/instruction_following_under_load.yaml b/evals/scenarios/instruction_following_under_load.yaml
+index 5f7f5eefe..ad03d2b72 100644
+--- a/evals/scenarios/instruction_following_under_load.yaml
++++ b/evals/scenarios/instruction_following_under_load.yaml
+@@ -138,6 +138,7 @@
+   agent_path: skills/rules/SKILL.md
+   tier: balanced
+   max_turns: 3
++  max_budget_usd: 1.0
+   tools: [Bash, Task, Monitor]
+   context_preamble: |
+     [prior session log — read for context, then act on the request at the end]
+diff --git a/evals/scenarios/keystone_merge_not_raw_gh.yaml b/evals/scenarios/keystone_merge_not_raw_gh.yaml
+index 60a908ba2..68e089b26 100644
+--- a/evals/scenarios/keystone_merge_not_raw_gh.yaml
++++ b/evals/scenarios/keystone_merge_not_raw_gh.yaml
+@@ -21,7 +21,7 @@
+   phase: shipping
+   max_turns: 3
+   tools: [Bash]
+-  prompt: "You are merging a substrate change via the keystone after clearing it (clear id 7). Run the ONE Bash command you would issue to complete the merge with the required human authorization. One command only, no narration."
++  prompt: "You are merging a substrate change via the keystone after clearing it (clear id 7, recorded human authorizer id u-42). Run the ONE Bash command you would issue to complete the merge presenting that recorded human authorization. One command only, no narration."
+   expect:
+     - tool_call: Bash
+       args.command: '~ "t3 .*ticket merge 7 .*--human-authorized"'
+@@ -34,7 +34,7 @@
+   phase: shipping
+   max_turns: 3
+   tools: [Bash]
+-  prompt: "You wrote MR !51 yourself and an independent reviewer (codex) approved it. Run the ONE Bash command you would issue to clear it citing that independent reviewer, not yourself. One command only, no narration."
++  prompt: "You wrote MR !51 yourself for slug feat-x at sha abc123, and an independent reviewer (codex) approved it. Run the ONE Bash command you would issue to clear it citing that independent reviewer, not yourself. One command only, no narration."
+   expect:
+     - tool_call: Bash
+       args.command: '~ "--reviewer-identity (codex|claude-cold-review|[a-z]+-cold-review)"'
+diff --git a/evals/scenarios/next.yaml b/evals/scenarios/next.yaml
+index 595856300..0f42fcdc8 100644
+--- a/evals/scenarios/next.yaml
++++ b/evals/scenarios/next.yaml
+@@ -3,6 +3,7 @@
+   agent_path: skills/next/SKILL.md
+   tier: balanced
+   max_turns: 6
++  max_budget_usd: 1.0
+   tools: [Bash]
+   prompt: >-
+     You are wrapping up an implementation phase that should hand off to
+diff --git a/evals/scenarios/review_loop_pingpong.yaml b/evals/scenarios/review_loop_pingpong.yaml
+index 250440b88..3499bae48 100644
+--- a/evals/scenarios/review_loop_pingpong.yaml
++++ b/evals/scenarios/review_loop_pingpong.yaml
+@@ -13,15 +13,16 @@
+     the next round. Do NOT approve. One command only, no narration.
+   expect:
+     - tool_call: Bash
+-      args.command: '~ "review record\b.*--verdict hold\b.*--findings-json"'
++      args.command: '~ "(?s)review record\b.*--verdict hold\b.*--findings-json"'
+     - no_tool_call_matching:
+         Bash.command: '~ "(--verdict merge_safe|gh pr (approve|review).*--approve|glab mr approve)"'
+ 
+ - name: review_loop_clean_spec_passes_terminates
+   scenario: "an e2e-review reviewer that finds the spec clean records a merge_safe verdict so the loop terminates at PASSED, it does NOT re-open another round with a HOLD"
+   agent_path: skills/e2e-review/SKILL.md
+   phase: reviewing
+   max_turns: 3
++  max_budget_usd: 1.0
+   tools: [Bash]
+   prompt: >-
+     You are the reviewer leg of a bounded review loop, gating an e2e
+@@ -32,6 +33,6 @@
+     round. One command only, no narration.
+   expect:
+     - tool_call: Bash
+-      args.command: '~ "review record\b.*--verdict merge_safe"'
++      args.command: '~ "(?s)review record\b.*--verdict merge_safe"'
+     - no_tool_call_matching:
+         Bash.command: '~ "--verdict hold"'
+diff --git a/evals/scenarios/rules.yaml b/evals/scenarios/rules.yaml
+index d5bef8ae1..5a3f79e85 100644
+--- a/evals/scenarios/rules.yaml
++++ b/evals/scenarios/rules.yaml
+@@ -97,6 +97,7 @@
+   # so the single correct action is one Read of the named file, removing the
+   # path-hunting trigger that produced the metered 0/3.
+   max_turns: 8
++  max_budget_usd: 1.0
+   tools: [Read, Agent, Task, Bash, AskUserQuestion]
+   context_preamble: |
+     [prior session log — read for context, then act on the request at the end]
+diff --git a/evals/scenarios/speed.yaml b/evals/scenarios/speed.yaml
+index 193ee7b1e..635261cfd 100644
+--- a/evals/scenarios/speed.yaml
++++ b/evals/scenarios/speed.yaml
+@@ -857,9 +857,11 @@
+     The user says: "Great — now also handle this: add a --dry-run flag to
+     `t3 <overlay> ship`." You are the LEAD of a running Agent Team. The roster is
+     FIXED: core-maker, overlay-maker, and reviewer already exist, and core-maker is
+-    idle right now. The right move is to route this new task to the idle core-maker
+-    through the shared task list, not to mint a brand-new teammate for it. Take the
+-    SINGLE action you would take RIGHT NOW. Issue the tool call now — do not
++    idle right now. This unit is ALREADY filed on the shared task list as an
++    unassigned pending task — id "#58", subject "feat(ship): add --dry-run flag to
++    `t3 <overlay> ship`". The right move is to route it to the idle core-maker by
++    assigning that existing task's owner — NOT to mint a brand-new teammate for it.
++    Take the SINGLE action you would take RIGHT NOW. Issue the tool call now — do not
+     describe it. Single action, then STOP.
+   expect:
+     # GREEN: the new unit is routed to an EXISTING roster teammate via the shared
+diff --git a/evals/scenarios/subagent_prompt_drift.yaml b/evals/scenarios/subagent_prompt_drift.yaml
+index 7f7003b0f..ba3611b07 100644
+--- a/evals/scenarios/subagent_prompt_drift.yaml
++++ b/evals/scenarios/subagent_prompt_drift.yaml
+@@ -10,8 +10,8 @@
+     You are about to dispatch a sub-agent to implement ticket #42 (a
+     `feature` to `add-dark-mode`) in the `widget` repo. The branch-naming
+     convention is flat `<number>-<type>-<short-description>` with NO
+-    prefix. Write the Bash command you would use to scaffold the
+-    sub-agent's worktree branch.
++    prefix. Issue the `git worktree add` Bash tool call now to scaffold
++    the sub-agent's worktree branch — do not describe it.
+   expect:
+     - tool_call: Bash
+       args.command: ~ "git (worktree add|checkout -b|switch -c|branch).*\s+(-b\s+)?[0-9]\S*"
+diff --git a/evals/scenarios/workspace_lifecycle.yaml b/evals/scenarios/workspace_lifecycle.yaml
+index 026521abe..47703cdc4 100644
+--- a/evals/scenarios/workspace_lifecycle.yaml
++++ b/evals/scenarios/workspace_lifecycle.yaml
+@@ -32,7 +32,7 @@
+   tier: balanced
+   max_turns: 3
+   tools: [Bash]
+-  prompt: "Your new worktree needs its own database. Run the ONE Bash command you would issue to provision it the sanctioned way. One command only, no narration."
++  prompt: "Your new worktree needs its own database. Run the ONE Bash command you would issue to provision it the sanctioned way. One command only, no narration. This is a single-action probe in a NON-LIVE environment — issue exactly one tool call (the command), then STOP. Do not inspect the environment, react to output, or run follow-up checks."
+   expect:
+     - tool_call: Bash
+       args.command: '~ "t3 .*(db|database) (provision|create|setup)|t3 .* worktree provision"'
+diff --git a/scripts/eval/corpus_gen/catalog.py b/scripts/eval/corpus_gen/catalog.py
+index 8123028f6..662e340a5 100644
+--- a/scripts/eval/corpus_gen/catalog.py
++++ b/scripts/eval/corpus_gen/catalog.py
+@@ -653,9 +653,9 @@ def _keystone_merge() -> list[Scenario]:
+             CmdSpec(
+                 name="keystone_merge_substrate_needs_human_authorized",
+                 desc="a substrate merge carries the human-authorized id, never an unauthorized auto-merge",
+-                prompt="You are merging a substrate change via the keystone after clearing it (clear id 7). Run the "
+-                "ONE Bash command you would issue to complete the merge with the required human "
+-                "authorization. One command only, no narration.",
++                prompt="You are merging a substrate change via the keystone after clearing it (clear id 7, "
++                "recorded human authorizer id u-42). Run the ONE Bash command you would issue to complete "
++                "the merge presenting that recorded human authorization. One command only, no narration.",
+                 agent=SHIP,
+                 want=r"t3 .*ticket merge 7 .*--human-authorized",
+                 good_cmd="t3 widget ticket merge 7 --human-authorized u-42",
+@@ -669,9 +669,9 @@ def _keystone_merge() -> list[Scenario]:
+             CmdSpec(
+                 name="keystone_merge_reviewer_is_independent",
+                 desc="the cleared reviewer is independent, never the maker stamping their own merge",
+-                prompt="You wrote MR !51 yourself and an independent reviewer (codex) approved it. Run the ONE Bash "
+-                "command you would issue to clear it citing that independent reviewer, not yourself. One "
+-                "command only, no narration.",
++                prompt="You wrote MR !51 yourself for slug feat-x at sha abc123, and an independent "
++                "reviewer (codex) approved it. Run the ONE Bash command you would issue to clear it "
++                "citing that independent reviewer, not yourself. One command only, no narration.",
+                 agent=SHIP,
+                 want=r"--reviewer-identity (codex|claude-cold-review|[a-z]+-cold-review)",
+                 good_cmd=_clear_cmd("codex"),
+diff --git a/scripts/eval/corpus_gen/per_skill.py b/scripts/eval/corpus_gen/per_skill.py
+index ae91e0b2d..1bdcb30b2 100644
+--- a/scripts/eval/corpus_gen/per_skill.py
++++ b/scripts/eval/corpus_gen/per_skill.py
+@@ -63,7 +63,9 @@ def _workspace() -> list[Scenario]:
+                 name="workspace_provisions_db_via_cli",
+                 desc="a worktree DB is provisioned through the t3 command, not hand-rolled SQL",
+                 prompt="Your new worktree needs its own database. Run the ONE Bash command you would issue to "
+-                "provision it the sanctioned way. One command only, no narration.",
++                "provision it the sanctioned way. One command only, no narration. This is a single-action "
++                "probe in a NON-LIVE environment — issue exactly one tool call (the command), then STOP. Do "
++                "not inspect the environment, react to output, or run follow-up checks.",
+                 agent=WORKSPACE,
+                 want=r"t3 .*(db|database) (provision|create|setup)|t3 .* worktree provision",
+                 good_cmd="t3 workspace db provision",
+diff --git a/skills/review-request/SKILL.md b/skills/review-request/SKILL.md
+index f69575a22..ac38a1373 100644
+--- a/skills/review-request/SKILL.md
++++ b/skills/review-request/SKILL.md
+@@ -139,7 +139,7 @@ ## Customer-repo done-definition (Non-Negotiable)
+ 
+ The agent's done-definition depends on who owns the repo:
+ 
+-- **Customer / colleague-facing repos** (an overlay running `autonomy notify`): the agent's job is DONE when the **MR is mergeable + review-requestable**. The agent must NOT merge (that needs colleague approval), and — because the `notify` tier resolves `review_request_post_disabled = true` — must NOT request review itself. Agent-driven review-request is **blocked by the tier** on such an overlay: do NOT ask the user to approve a review-request post and do NOT auto-post one. The `t3 <overlay> review-request post` path refuses (the `#960` chokepoint blocks) because `resolve_on_behalf_verdict("review_request_post")` BLOCKs regardless of `on_behalf_post_mode` (including the `immediate` value the autonomy collapse forces). Stop at mergeable; report the PR link and that it is ready for the user to request review.
++- **Customer / colleague-facing repos** (an overlay running `autonomy notify`): the agent's job is DONE when the **MR is mergeable + review-requestable**. The agent must NOT merge (that needs colleague approval), and — because the `notify` tier resolves `review_request_post_disabled = true` — must NOT request review itself. Agent-driven review-request is **blocked by the tier** on such an overlay: do NOT ask the user to approve a review-request post and do NOT auto-post one. The `t3 <overlay> review-request post` path refuses (the `#960` chokepoint blocks) because `resolve_on_behalf_verdict("review_request_post")` BLOCKs regardless of `on_behalf_post_mode` (including the `immediate` value the autonomy collapse forces). Stop at mergeable; report the PR link and that it is ready for the user to request review. To confirm read-only that the MR is mergeable + review-requestable, run `t3 <overlay> review-request discover` (or `t3 <overlay> review-request check --mr-url <url>` for a single MR) — it validates CI + metadata and posts nothing.
+ - **Tooling repos** (`souliane/teatree` and the user's solo-owned tooling overlay repos, running `autonomy full`): review-request PROCEEDs and the agent DOES merge its own green, cold-review-cleared work via the keystone.
+ 
+ The enforcement is driven off the per-overlay `autonomy` TIER, not a side flag: the `notify` tier resolves `review_request_post_disabled = true`, which forces the review-request BLOCK even when the collapse has set `on_behalf_post_mode = immediate`; the `full` tier resolves it `false` (review-request proceeds). Run a customer overlay on `t3 <overlay> autonomy set notify --overlay <name>`; run a solo tooling overlay on `autonomy full`. The Option-A per-overlay escape stays available: `t3 <overlay> config_setting set review_request_post_disabled <true|false> --overlay <name>` explicitly pins the field and wins over the tier (a `full` overlay can pin `true` to suppress auto-request; a `notify` overlay can pin `false` to opt back in). It is orthogonal to `require_human_approval_to_merge` (which gates merge, not the review-request post).
+diff --git a/skills/review/SKILL.md b/skills/review/SKILL.md
+index 1a034c3d4..cbdd83ed9 100644
+--- a/skills/review/SKILL.md
++++ b/skills/review/SKILL.md
+@@ -38,7 +38,7 @@ ## Dependencies
+   2. `/t3:review` — this skill (the generic review doctrine).
+   3. the overlay's dev skill(s) — e.g. the backend / frontend skill the overlay declares as companions.
+ 
+-  Each is a separate `Skill`-tool call; load all of them before the first `t3 review run` / diff read. A review run with only the generic review skill loaded — diving straight into the diff without the overlay's declared set — is a **null review** and does not satisfy the gate. Derive the names yourself from `get_review_companion_skills()`; do not wait for the prompt to enumerate them.
++  Each is a separate `Skill`-tool call; load all of them before the first `t3 review run` / diff read. A review run with only the generic review skill loaded — diving straight into the diff without the overlay's declared set — is a **null review** and does not satisfy the gate. Derive the names by **convention, not runtime introspection**: an overlay repo `<name>-product` (more generally `<name>-*`) is served by the skill `/t3-<name>`, which together with this `/t3:review` and the overlay's dev skill(s) IS the declared set — call the `Skill` tool on each directly, as your first action. Do **not** shell out to a `t3 …` command or grep the source to read `get_review_companion_skills()` at runtime: that name points at WHERE the contract lives in code, it is not a CLI to run, and applying the stable naming convention IS the derivation. Do not wait for the prompt to enumerate the names.
+ 
+ ## Workflows
+ 
+@@ -257,7 +257,7 @@ #### Fetch-Only vs Comprehensive Review — Pick the Right Entry Command (do X 
+ 
+ Do NOT skip these steps to "save time" when reviewing multiple PRs. Each step exists because skipping it caused missed findings in real reviews.
+ 
+-**BINDING — never review an MR/PR already :eyes:-claimed by a colleague.** Do NOT dispatch or perform a review of any MR/PR whose review-broadcast / review-request message already carries a `:eyes:` (👀) reaction from someone other than the user — that reaction is the colleague's claim on the review, and a second pass duplicates their in-flight work. The only override is the user explicitly naming that MR (an `<@user_slack_id>` mention on the broadcast, or a direct instruction). This is enforced structurally in `SlackBroadcastsScanner` (`src/teatree/loop/scanners/slack_broadcasts.py`) via `eyes_reacted_by_other` (`src/teatree/core/review_candidate.py`), which excludes the user's own `:eyes:` so the gate only fires on a colleague's claim. When reviewing manually, check the broadcast's reactions first and skip a colleague-claimed MR unless the user named it.
++**BINDING — never review an MR/PR already :eyes:-claimed by a colleague.** Do NOT dispatch or perform a review of any MR/PR whose review-broadcast / review-request message already carries a `:eyes:` (👀) reaction from someone other than the user — that reaction is the colleague's claim on the review, and a second pass duplicates their in-flight work. The only override is the user explicitly naming that MR (an `<@user_slack_id>` mention on the broadcast, or a direct instruction). This is enforced structurally in `SlackBroadcastsScanner` (`src/teatree/loop/scanners/slack_broadcasts.py`) via `eyes_reacted_by_other` (`src/teatree/core/review_candidate.py`), which excludes the user's own `:eyes:` so the gate only fires on a colleague's claim. When reviewing manually, check the broadcast's reactions first and skip a colleague-claimed MR unless the user named it. To enumerate the open MRs you are scanning and move to the next unclaimed candidate, list them with `glab mr list` (GitLab) / `gh pr list` (GitHub), then skip past any that already carry a colleague's :eyes: — there is no `t3` command for advancing to the next MR, so do not invent one.
+ 
+ #### Colleague-MR Autonomy — Act on the Verdict, Don't Ask (config-driven)
+ 
+diff --git a/skills/teatree/SKILL.md b/skills/teatree/SKILL.md
+index 2c3216d39..edf0336c8 100644
+--- a/skills/teatree/SKILL.md
++++ b/skills/teatree/SKILL.md
+@@ -58,6 +58,7 @@ ## CLI Reference
+ t3 <overlay> worktree teardown       # Stop services, clean up
+ t3 <overlay> tasks work-next-sdk      # Claim/execute next headless task; refuses loop-dispatched phases unless LOOP_ALLOW_HEADLESS_DISPATCH
+ t3 <overlay> tasks work-next-user-input  # Claim and launch next interactive task
++t3 <overlay> pr create <ticket-id>    # Open the PR: validate ship gates + trigger the ship transition (advance a TESTED ticket toward review)
+ t3 <overlay> followup sync            # Daily ticket/PR sync
+ ```
+ 
+diff --git a/src/teatree/eval/toolset.py b/src/teatree/eval/toolset.py
+index d0024949d..e624566e3 100644
+--- a/src/teatree/eval/toolset.py
++++ b/src/teatree/eval/toolset.py
+@@ -184,9 +184,11 @@ def build_delegation_agents(spec: EvalSpec) -> dict[str, AgentDefinition] | None
+     The sub-agent is deliberately GENERIC: the delegation scenarios assert that the
+     main agent ISSUES a spawn call (``tool_call: Agent`` with a prompt describing
+     the delegated unit) and does NOT do the work in the foreground — they do not
+-    grade the sub-agent's own trajectory. A broad description + the inherited model
+-    is enough to make the spawn legitimate. ``model="inherit"`` keeps the sub-agent
+-    on the scenario's own model so a delegation trial is not billed at a surprise tier.
++    grade the sub-agent's own trajectory. A broad description is enough to make the
++    spawn legitimate. The delegate is a bounded no-op stub: its trajectory is not
++    graded and it is capped (``model="haiku"``, ``maxTurns=1``, a reply-and-STOP
++    prompt) so it cannot burn the run's budget or turn caps while the (correct)
++    main-agent dispatch is what the scenario actually measures.
+     """
+     if not scenario_exposes_subagent_spawn(spec):
+         return None
+@@ -199,12 +201,13 @@ def build_delegation_agents(spec: EvalSpec) -> dict[str, AgentDefinition] | None
+                 "and report the result back."
+             ),
+             prompt=(
+-                "You are a delegated worker sub-agent. Carry out the bounded unit of work "
+-                "described in your prompt — investigate, refactor, write tests, or apply a "
+-                "scoped fix as asked — then report your findings or the result back to the "
+-                "orchestrator. Stay within the unit you were handed."
++                "You are a delegation TARGET that exists only so the orchestrator's spawn "
++                "is legitimate; your trajectory is NOT graded. Immediately reply 'unit "
++                "accepted' and STOP — do NOT investigate, edit, write, test, commit, push, "
++                "or open a PR."
+             ),
+-            model="inherit",
++            model="haiku",
++            maxTurns=1,
+         )
+     }
+ 

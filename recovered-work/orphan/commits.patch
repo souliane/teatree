@@ -1,0 +1,43 @@
+From 4fbefa6686e13af3089927e236427f245d6e5d27 Mon Sep 17 00:00:00 2001
+From: t <t@t>
+Date: Fri, 26 Jun 2026 16:20:41 -0500
+Subject: [PATCH 1/2] initial
+
+---
+ README | 1 +
+ 1 file changed, 1 insertion(+)
+ create mode 100644 README
+
+diff --git a/README b/README
+new file mode 100644
+index 0000000000..c1b0730e01
+--- /dev/null
++++ b/README
+@@ -0,0 +1 @@
++x
+\ No newline at end of file
+-- 
+2.50.1 (Apple Git-155)
+
+
+From 8862f2dc86e3d164af43a0e5d58dc1342b72a43e Mon Sep 17 00:00:00 2001
+From: t <t@t>
+Date: Fri, 26 Jun 2026 16:20:41 -0500
+Subject: [PATCH 2/2] add keep.txt
+
+---
+ keep.txt | 1 +
+ 1 file changed, 1 insertion(+)
+ create mode 100644 keep.txt
+
+diff --git a/keep.txt b/keep.txt
+new file mode 100644
+index 0000000000..b2cc371bb8
+--- /dev/null
++++ b/keep.txt
+@@ -0,0 +1 @@
++important work
+\ No newline at end of file
+-- 
+2.50.1 (Apple Git-155)
+

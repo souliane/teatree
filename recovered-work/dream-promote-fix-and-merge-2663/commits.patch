@@ -1,0 +1,2279 @@
+From 4049570254d12009faaafb751494e35f6e7339bd Mon Sep 17 00:00:00 2001
+From: souliane <21343492+souliane@users.noreply.github.com>
+Date: Thu, 25 Jun 2026 18:31:47 +0200
+Subject: [PATCH] feat(dream): promote = fix-and-merge under the standing
+ umbrella #2663
+
+The dream PROMOTE verb used to file a fresh needs-triage issue per grounded
+gap. Those piled up because IssueImplementerScanner skips needs-triage. Drive
+each grounded gap to a MERGED fix tracked under one standing umbrella issue
+(souliane/teatree#2663, reused daily, never closed) instead.
+
+- New teatree.loops.dream.umbrella_ledger: upsert a deduped checkbox under the
+  umbrella keyed on a stable gap key (invisible <!-- dream-gap <key> --> marker),
+  schedule the fix via Ticket.schedule_coding() + the existing orchestrator path,
+  and reconcile on merge (check the box + retire the linked ConsolidatedMemory
+  off the fix Ticket's authoritative MERGED state).
+- Remove the create_issue(needs-triage) calls in promote_memory
+  (_file_one_gap/file_core_gap_tickets) and compliance (escalate_recurrences);
+  the binding-reconciliation filer still files a deduped issue for a human.
+- New CodeHostBackend.update_issue(issue_url, body) extension method edits the
+  umbrella body in place (GitHub PATCH .../issues/<n>, GitLab PUT .../issues/<iid>).
+- No new model / no migration: an in-flight gap is an existing Ticket row
+  (gap/memory/umbrella linkage in extra) + its ConsolidatedMemory entry.
+- Fold in two stale :func: doc-refs in llm_eval_proposer (engine -> sdk_distiller).
+
+Also finish the in-flight github backend transport extraction: move the gh CLI
+request helpers (_run_gh / _gh_api_* / _parse_issue_ref) into a new
+teatree.backends.github.api module, mirroring teatree.backends.gitlab.api, so
+github/client.py keeps only the cross-host Protocol surface. Retarget the helper
+patch targets in test_github_backend.py to the new module.
+---
+ BLUEPRINT.md                                  |   2 +-
+ README.md                                     |   2 +-
+ skills/dreaming/SKILL.md                      |  22 +-
+ src/teatree/backends/github/api.py            | 158 +++++++++
+ src/teatree/backends/github/client.py         | 214 +++---------
+ src/teatree/backends/gitlab/client.py         |  26 ++
+ src/teatree/core/backend_protocols.py         |   2 +
+ src/teatree/core/management/commands/dream.py |  32 +-
+ src/teatree/core/models/types.py              |   9 +
+ src/teatree/loops/dream/compliance.py         | 135 +++-----
+ src/teatree/loops/dream/llm_eval_proposer.py  |   4 +-
+ src/teatree/loops/dream/promote_memory.py     | 123 +++----
+ src/teatree/loops/dream/umbrella_ledger.py    | 319 ++++++++++++++++++
+ .../teatree_backends/test_gitlab_code_host.py |  29 ++
+ tests/teatree_backends/test_protocols.py      |   4 +
+ .../management_commands/test_dream.py         |   8 +-
+ tests/teatree_loops/dream/test_compliance.py  |  67 ++--
+ .../dream/test_promote_memory.py              | 105 +++---
+ .../dream/test_umbrella_ledger.py             | 264 +++++++++++++++
+ tests/test_github_backend.py                  |  51 ++-
+ 20 files changed, 1126 insertions(+), 450 deletions(-)
+ create mode 100644 src/teatree/backends/github/api.py
+ create mode 100644 src/teatree/loops/dream/umbrella_ledger.py
+ create mode 100644 tests/teatree_loops/dream/test_umbrella_ledger.py
+
+diff --git a/BLUEPRINT.md b/BLUEPRINT.md
+index 59d1a96fa5..2ea0124693 100644
+--- a/BLUEPRINT.md
++++ b/BLUEPRINT.md
+@@ -77,7 +77,7 @@ ## 4. Domain Models
+ 
+ Five core lifecycle models in `teatree.core.models/`, all FSM-driven (`django-fsm`): **Ticket**, **Worktree**, **Session**, **Task**, **TaskAttempt**. Around them, supporting rows under the same package: `BotPing`, `ConsolidatedMemory`/`DreamQaProbe`/`DreamRunMarker`/`InstructionComplianceSnapshot`/`InstructionComplianceRecord` (memory-consolidation, below), `DailyDigestThread`/`DailyDigestMessage`, `DbApproval`, `DeferredQuestion`, `EvalRunRecord`/`EvalScenarioResult` (eval-run ledger), `SessionAuditRecord` (eval audit layer), `HonestyEscalation`, `IncomingEvent`, `IntentClassification`, `LandscapeArtifact` (the intake landscape survey the planner consumes, below), `LivePostApproval`, `LocalStackQueueItem`, `LocalStackReaperMarker`, `Loop` (DB-configured autonomous loop — name, exactly one of prompt-FK/script, run_in_sub_agent/description/overlay, nullable delay, enabled, §5.6), `LoopLease`, `LoopState` (durable per-loop control plane, §5.6), `MergeClear`, `OnBehalfApproval`, `OutboundClaim` (drift verifier), `PendingChatInjection`, `Prompt`/`PromptVersion` (first-class reusable prompt with templated `params` + edit-history snapshots, the `Loop.prompt` FK target and the `/prompts` trigger, §5.6), `PullRequest`, `RedCardSignal`, `ReplyDispatch`, `ReviewAssignment`, `ReviewLoop`/`ReviewLoopRound` (the bounded author↔reviewer ping-pong FSM + its round-leg slot, §5.6), `ReviewRequestPost`, `ReviewVerdict`, `ScannedBroadcast`, `SelfImproveFiring`, `SessionHandover`, `TicketTransition`, `WorktreeEnvOverride`. Every row name above is cited by name from §5.6, §17.1, §17.4, or §4 prose.
+ 
+-**Memory-consolidation data layer ([#1933](https://github.com/souliane/teatree/issues/1933)).** Three durable rows back the idle-time "dreaming" pass that clusters session feedback and distils each cluster into one imperative rule. `ConsolidatedMemory` is the consolidation ledger (the DB row is canonical state + audit trail; a rendered topic file is the output), idempotency-anchored on a sha256 `cluster_key` and owning its status ladder `CANDIDATE → VERIFIED → PROMOTED` (plus `SUPERSEDED`/`EXPIRED`); it refuses an uncited rule, refuses to silently expire a BINDING row, and gates index-line pruning on a terminal status with a recorded durable home. **Pass 2 — memory→fix ([#2426](https://github.com/souliane/teatree/issues/2426)).** A `disposition` ladder (`UNTRIAGED → USER_SPECIFIC_KEEP | (CORE_GAP_NEEDS_TICKET → TICKETED → RESOLVED_RETIRED)`) makes the ledger a queue that DRAINS, not a pile that grows: a generic/teatree-core memory is a confession that core has a workflow gap, so `teatree.loops.dream.promote_memory` triages each untriaged row (injected `MemoryClassifier`, default the `durable_destination`-hint one — a home under teatree's own skills/source/scripts/BLUEPRINT is core-generic, anything else stays user-specific memory), files a deduped `needs-triage` teatree backlog ticket for each core gap (`cluster_key`-keyed marker; banned-term + bare-reference scanned so the public-repo body never leaks; records `ticket_url`), and retires the prose (`RESOLVED_RETIRED`, archived) once the linked ticket closes. A BINDING row is never retired. Pass 2 auto-files the *ticket* (durable, reversible) but never auto-implements; it is **default OFF** behind the `[loops.dream] memory_promote` / `T3_DREAM_MEMORY_PROMOTE` toggle, so an unflagged pass never triages or files. **Phase 3c — the Instruction-Compliance Accountant ([#2663](https://github.com/souliane/teatree/issues/2663)).** Instruction compliance is the root KPI: a rule was PRESENT/AVAILABLE (a durable memory, a loaded-skill rule, a CLAUDE.md clause, a system gate, or an explicit in-session directive) and the agent acted against it. `teatree.loops.dream.compliance` mines one pass's extract (reusing `transcript_extract.looks_like_user_correction` as the ground-truth signal) into typed `ComplianceFinding`s — a correction overlapping a memory-backed rule already on disk is a RECURRENCE (`rule_source=MEMORY`), one with no backing memory a first-occurrence `IN_SESSION` violation — and persists one `InstructionComplianceSnapshot` per pass (`instructions_observed`/`violations`/`compliance_rate`/`recurrences_count`) plus one `InstructionComplianceRecord` audit row per violation. **The binding escalation rule:** a recurrence (a rule that already had a durable memory, violated AGAIN) must escalate to a gate or an eval, NEVER another memory — `escalate_recurrences` files ONE deduped `needs-triage` enforcement ticket per recurring rule (marker-keyed on rule identity, banned-term/bare-ref scanned) prescribing a structural fix (a PreToolUse/Stop gate, a config self-check, or an anti-vacuous `under_load` eval), never more prose; and `write_clusters` reclassifies a MEMORY_ONLY cluster whose rule already shows a recurrence off its memory destination to a core-gap home rather than re-promoting another memory. The phase runs under `t3 dream run --full`, **default OFF** behind the `[loops.dream] compliance` / `T3_DREAM_COMPLIANCE` toggle (the Pass-2 posture); `t3 dream compliance show` prints the latest snapshot (rate + recurrence count + open escalations). `DreamQaProbe` is the retention/interference/monotonicity QA corpus, now POPULATED and replayed by the **§ 4 acceptance gates** ([#2545](https://github.com/souliane/teatree/issues/2545), `teatree.loops.dream.gates`). The cron snapshots each memory dir BEFORE and AFTER the file-side phases and runs all seven gates: **(a) retention** (every probe answerable pre-pass is still answerable post-pass), **(b) interference** (the prior-session probe pass-rate does not regress), **(c) consolidation-actually-happened** (net size reduced OR schema count grew OR clusters were recorded, AND every pruned index line has a confirmed durable home), **(d) index-budget** (`MEMORY.md` back under the real ~24 KB / ~150-line SESSION-LOAD truncation point, not a 10x regression alarm — so an over-budget index trips gate (d) RED while still recoverable; [#2723](https://github.com/souliane/teatree/issues/2723)), **(e) monotonicity** (two passes over a stable corpus do not lower the pass-rate), **(f) no-loss audit** (every archived entry records a source + a destination that exists), and **(g) compliance-non-regression** ([#2663](https://github.com/souliane/teatree/issues/2663) — a recurrence remediated with another memory instead of a gate/eval FAILS the pass; an escalated recurrence passes). A probe is seeded per memory (keyed on a signature line) and replayed via an injectable, deterministic LLM-free answerer; the probe corpus is persisted (idempotent on `probe_key`, accumulating pass/run counts) so the next pass has a baseline. A **failing gate marks the pass attempted-not-succeeded** (staleness keeps firing) — a lossy / delete-only / no-op consolidation is caught, never stamped success. Each gate has an anti-vacuous test proven in both directions, and the command's gate-gating is mutation-proven (ignoring the verdict turns the wiring tests RED). `DreamRunMarker` is the staleness marker keyed on the success timestamp (a run that keeps failing stays stale). `t3 dream run` (manual) and `t3 dream tick` (cadence-gated cron, ~04:00) take a `dream-tick` `LoopLease` and run the distillation engine (`teatree.loops.dream.engine.run_consolidation`), stamping `DreamRunMarker` only on a clean pass; `--dry-run` writes nothing. Engine v1 covers phases 1–3 (rank a bounded extract → an injected `Distiller` clusters by root cause → upsert by `cluster_key`, rejecting any uncited/hallucinated cluster and never overwriting a BINDING rule); the injected-distiller seam keeps the pass testable, and an SDK failure propagates rather than laundering into a fake success. **Phases 4–6 are LIVE** ([#1933](https://github.com/souliane/teatree/issues/1933) § 6): the cron runs the memory-file phases (cross-link, merge, re-index, decay) over the discovered `~/.claude` memory dirs, each fault-isolated in its own try/except so one phase (or one dir) failing never crashes the tick or stops the others, and each LIVE by default behind its own two-layer kill-switch (`[loops.dream] <phase>` toml / `T3_DREAM_<PHASE>` env, first match wins). The file-side phases run independently of the transcript extract, so they fire even on a 0-transcript-member pass (which stays attempted-not-succeeded for consolidation, but still re-indexes/decays the on-disk memory set; [#2547](https://github.com/souliane/teatree/issues/2547)). **Phase 4** (`teatree.loops.dream.cross_link`) appends symmetric `[[name]]` wiki-links between related memories — related when their significant-token Jaccard clears a deterministic floor (no model) — and is idempotent (a re-run on an unchanged set adds nothing). **Phase 4b** (`teatree.loops.dream.merge`, [#2723](https://github.com/souliane/teatree/issues/2723)) is the on-disk MERGE verb cross-link was missing: it collapses a near-duplicate PAIR (body-token Jaccard ≥ 0.85 AND same frontmatter `type`/`name` family — far above cross-link's floor) into the HIGHER-WEIGHT survivor (a BINDING rule outranks a plain restatement, so binding doctrine is never the side absorbed), appends the absorbed file's distinct lines with a provenance header, and ARCHIVES the absorbed file via `decay._archive_one` (moved, never deleted) so the re-index drops its pointer in the same pass. **Decision-3 (binding):** two BINDING near-duplicates are NEVER auto-merged — they are cross-linked and a deduped `dream-binding-reconcile` ticket is filed via the existing `promote_memory` filer (reusing its banned-term / bare-reference withholding) for human reconciliation. Phase 4b runs AFTER cross-link, BEFORE re-index, LIVE by default behind the `[loops.dream] merge` / `T3_DREAM_MERGE` kill-switch, and is fault-isolated. The whole file-side phase orchestration (4/4b/5/6 + the § 4 gates) is a composed `teatree.loops.dream.phase_runner.MemoryPhaseRunner`. **Phase 5** (`teatree.loops.dream.reindex`) regenerates `MEMORY.md` as one tight line per memory — a single bare `name.md` pointer (no `[name.md](name.md)` href duplication) plus a ≤120-char summary, the WHOLE line capped at 160 chars so it stays under the gate-(d) load budget — deduped, filename-stable, content stays in the topic file, byte-identical on a no-change re-run. **Phase 6** (`teatree.loops.dream.decay`) ages a memory out by ARCHIVING it (moved to `<memory_dir>/archive/` with a provenance header, never deleted) — gated by a NON-VACUOUS retention guard that retains a memory when ANY of: it is fresh (mtime within the window), it is still referenced (another live memory or the index `[[name]]`-links it), OR — the **transfer-before-prune rail** ([#2546](https://github.com/souliane/teatree/issues/2546), #1933 § 2) — its lesson has NO confirmed durable home in the `ConsolidatedMemory` ledger. Only a memory that is old AND unreferenced AND durably homed is archived; a guard-disabled probe proves each guard has teeth. The §2 rail — *"delete an index line only after the fact has a confirmed durable home in a topic file"* — is applied to the topic file itself: an injected `HomeResolver` seam keeps the file-side mechanics DB-free under test, while the production `ledger_durable_home_resolver` reads `ConsolidatedMemory.objects.prunable()` (the index-pruner's terminal-status + recorded-`durable_destination` surface) once per pass and maps a topic file to a row by path membership in `source_files` OR by its name appearing in a `durable_destination`. **Budget RETIRE tier ([#2723](https://github.com/souliane/teatree/issues/2723)).** The `prunable()` home-rail is structurally EMPTY for the hand-authored corpus (0 ledger rows reference on-disk memories), so it can never archive the files that bloat the index. A second, ledger-INDEPENDENT tier (opt-in via `DecayPolicy(budget_tier=BudgetTier())`, enabled in the cron) fires ONLY when `MEMORY.md` is over the gate-(d) load budget and archives files that are (a) older than a 90-day ceiling — by a LOGICAL `lesson_updated` frontmatter clock, NOT raw `st_mtime`, so a cross-link / re-index rewrite does not reset the decay clock — (b) unreferenced, and (c) whose lesson is CAPTURED ELSEWHERE (a near-duplicate survivor exists — a content/duplication check, never the empty `prunable()` join); a genuinely unique lesson is always retained. The cron re-indexes AFTER this decay so `MEMORY.md` falls back under the gate-(d) budget in the SAME pass. All phases accept an explicit `memory_dir` and never touch the real `~/.claude` under test. **Phase 3b** ([#2346](https://github.com/souliane/teatree/issues/2346)) closes the drift → live-eval loop: `teatree.loops.dream.eval_proposer` maps each grounded cluster to an eval CANDIDATE in a JSONL review queue, then `teatree.loops.dream.promote` PROMOTES it to a real `under_load` scenario (`evals/scenarios/promoted_drift.yaml` + `_pass`/`_fail` replay fixtures) — the artifacts the deterministic replay gate and the weekly metered lane run unchanged. The nightly `tick` requests proposals **LIVE by default** (the `[loops.dream] propose_evals` / `T3_DREAM_PROPOSE_EVALS` kill-switch flips it off). Promotion is auto but gated by a **non-bypassable anti-vacuity guard** (`promote.guard_can_fail`): it runs the real grader (`teatree.eval.report.evaluate`) against a synthesised drift-recommitting transcript and promotes only when that verdict is FAIL (the matchers have teeth) AND a compliant transcript grades PASS (not a tautology); a candidate whose grader cannot fail is rejected — no file written. The guard is deterministic; live metered grading of a promoted scenario lands with the weekly Agent-SDK lane. **Phase 3b LLM derivation** ([#2447](https://github.com/souliane/teatree/issues/2447)) is the richer, **default-OFF** follow-up to the fixed-matcher `promote`: `teatree.loops.dream.llm_eval_proposer` runs an injected LLM synthesizer that turns a grounded candidate plus its cited transcript slice into a COMPLETE `under_load` `EvalSpec` — a pollution preamble saturated to the documented ~28k-char envelope floor, discriminating positive + negative matchers, and a judge rubric — parsed through the real loader and gated by a **candidate-derived** teeth check (`teatree.loops.dream._teeth_check.teeth_check_against_candidate`): it synthesises the `_fail`/`_pass` transcripts FROM the candidate's OWN cited drift and compliant tool-call shapes and grades both through the suite's real grader (`teatree.eval.report.evaluate`), DROPPING a spec whose matchers do not reject the candidate's own cited drift (or reject its compliant shape as a tautology) — proving the matchers target the SPECIFIC drift the candidate describes, not `promote`'s fixed session.py-edit transcripts. Even a proven spec is never autonomously committed to `evals/scenarios`: `stage_derived_evals` writes a staging `derived_evals.yaml` a human / standing core-maker ratifies via a PR. The phase is OFF unless the `[loops.dream] derive_evals` / `T3_DREAM_DERIVE_EVALS` toggle is set, so an unflagged pass is byte-identical. The `dream` mini-loop is registered `off_live_tick` (driven only by its own cron); `t3 doctor` surfaces the 48h staleness alarm.
++**Memory-consolidation data layer ([#1933](https://github.com/souliane/teatree/issues/1933)).** Three durable rows back the idle-time "dreaming" pass that clusters session feedback and distils each cluster into one imperative rule. `ConsolidatedMemory` is the consolidation ledger (the DB row is canonical state + audit trail; a rendered topic file is the output), idempotency-anchored on a sha256 `cluster_key` and owning its status ladder `CANDIDATE → VERIFIED → PROMOTED` (plus `SUPERSEDED`/`EXPIRED`); it refuses an uncited rule, refuses to silently expire a BINDING row, and gates index-line pruning on a terminal status with a recorded durable home. **Pass 2 — memory→fix-and-merge ([#2426](https://github.com/souliane/teatree/issues/2426), [#2663](https://github.com/souliane/teatree/issues/2663)).** A `disposition` ladder (`UNTRIAGED → USER_SPECIFIC_KEEP | (CORE_GAP_NEEDS_TICKET → TICKETED → RESOLVED_RETIRED)`) makes the ledger a queue that DRAINS, not a pile that grows: a generic/teatree-core memory is a confession that core has a workflow gap, so `teatree.loops.dream.promote_memory` triages each untriaged row (injected `MemoryClassifier`, default the `durable_destination`-hint one — a home under teatree's own skills/source/scripts/BLUEPRINT is core-generic, anything else stays user-specific memory). The promote verb no longer files a fresh `needs-triage` issue per gap — those PILED UP because the `IssueImplementerScanner` SKIPs `needs-triage`. Instead each core gap is driven to a MERGED fix via `teatree.loops.dream.umbrella_ledger`: a CHECKBOX is upserted under the standing umbrella issue ([#2663](https://github.com/souliane/teatree/issues/2663) — reused daily, NEVER closed), keyed on an invisible `<!-- dream-gap <cluster_key> -->` marker so the same gap never double-adds (banned-term + bare-reference scanned so the public-repo title never leaks), and the fix is SCHEDULED for a coding agent by reusing `Ticket.schedule_coding()` — the PR merges through the SAME §17.4 keystone gated by the overlay's autonomy. The new `CodeHostBackend.update_issue(issue_url, body)` extension method edits the umbrella body in place (GitHub `PATCH .../issues/<n>`, GitLab `PUT .../issues/<iid>`). When a gap's fix Ticket reaches MERGED, `reconcile_merged_gaps` CHECKS its umbrella checkbox and retires the prose (`RESOLVED_RETIRED`, archived) through the existing `retire_resolved_memories` (driven off the Ticket's authoritative MERGED state via an injected `is_resolved` predicate, not a fragile forge re-read of a `/pull/<n>` URL). **No new model:** an in-flight gap is an existing `Ticket` row (gap/memory/umbrella linkage in `extra.dream_gap_key`/`dream_memory_cluster_key`/`dream_umbrella_url`) + its `ConsolidatedMemory` entry; the #2663 checkbox is the durable cross-night state. A BINDING row is never retired. Pass 2 schedules the fix (durable, reversible) but never hand-implements; it is **default OFF** behind the `[loops.dream] memory_promote` / `T3_DREAM_MEMORY_PROMOTE` toggle, so an unflagged pass never triages, upserts, or schedules. **Phase 3c — the Instruction-Compliance Accountant ([#2663](https://github.com/souliane/teatree/issues/2663)).** Instruction compliance is the root KPI: a rule was PRESENT/AVAILABLE (a durable memory, a loaded-skill rule, a CLAUDE.md clause, a system gate, or an explicit in-session directive) and the agent acted against it. `teatree.loops.dream.compliance` mines one pass's extract (reusing `transcript_extract.looks_like_user_correction` as the ground-truth signal) into typed `ComplianceFinding`s — a correction overlapping a memory-backed rule already on disk is a RECURRENCE (`rule_source=MEMORY`), one with no backing memory a first-occurrence `IN_SESSION` violation — and persists one `InstructionComplianceSnapshot` per pass (`instructions_observed`/`violations`/`compliance_rate`/`recurrences_count`) plus one `InstructionComplianceRecord` audit row per violation. **The binding escalation rule:** a recurrence (a rule that already had a durable memory, violated AGAIN) must escalate to a gate or an eval, NEVER another memory — `escalate_recurrences` drives ONE umbrella checkbox + a scheduled fix per recurring rule (deduped on the `compliance-recurrence-<rule_identity>` gap key) via the same `umbrella_ledger.promote_gap` path Pass 2 uses, the checkbox title prescribing a structural fix (a PreToolUse/Stop gate, a config self-check, or an anti-vacuous `under_load` eval), never more prose and no longer a fresh `needs-triage` issue; and `write_clusters` reclassifies a MEMORY_ONLY cluster whose rule already shows a recurrence off its memory destination to a core-gap home rather than re-promoting another memory. The phase runs under `t3 dream run --full`, **default OFF** behind the `[loops.dream] compliance` / `T3_DREAM_COMPLIANCE` toggle (the Pass-2 posture); `t3 dream compliance show` prints the latest snapshot (rate + recurrence count + open escalations). `DreamQaProbe` is the retention/interference/monotonicity QA corpus, now POPULATED and replayed by the **§ 4 acceptance gates** ([#2545](https://github.com/souliane/teatree/issues/2545), `teatree.loops.dream.gates`). The cron snapshots each memory dir BEFORE and AFTER the file-side phases and runs all seven gates: **(a) retention** (every probe answerable pre-pass is still answerable post-pass), **(b) interference** (the prior-session probe pass-rate does not regress), **(c) consolidation-actually-happened** (net size reduced OR schema count grew OR clusters were recorded, AND every pruned index line has a confirmed durable home), **(d) index-budget** (`MEMORY.md` back under the real ~24 KB / ~150-line SESSION-LOAD truncation point, not a 10x regression alarm — so an over-budget index trips gate (d) RED while still recoverable; [#2723](https://github.com/souliane/teatree/issues/2723)), **(e) monotonicity** (two passes over a stable corpus do not lower the pass-rate), **(f) no-loss audit** (every archived entry records a source + a destination that exists), and **(g) compliance-non-regression** ([#2663](https://github.com/souliane/teatree/issues/2663) — a recurrence remediated with another memory instead of a gate/eval FAILS the pass; an escalated recurrence passes). A probe is seeded per memory (keyed on a signature line) and replayed via an injectable, deterministic LLM-free answerer; the probe corpus is persisted (idempotent on `probe_key`, accumulating pass/run counts) so the next pass has a baseline. A **failing gate marks the pass attempted-not-succeeded** (staleness keeps firing) — a lossy / delete-only / no-op consolidation is caught, never stamped success. Each gate has an anti-vacuous test proven in both directions, and the command's gate-gating is mutation-proven (ignoring the verdict turns the wiring tests RED). `DreamRunMarker` is the staleness marker keyed on the success timestamp (a run that keeps failing stays stale). `t3 dream run` (manual) and `t3 dream tick` (cadence-gated cron, ~04:00) take a `dream-tick` `LoopLease` and run the distillation engine (`teatree.loops.dream.engine.run_consolidation`), stamping `DreamRunMarker` only on a clean pass; `--dry-run` writes nothing. Engine v1 covers phases 1–3 (rank a bounded extract → an injected `Distiller` clusters by root cause → upsert by `cluster_key`, rejecting any uncited/hallucinated cluster and never overwriting a BINDING rule); the injected-distiller seam keeps the pass testable, and an SDK failure propagates rather than laundering into a fake success. **Phases 4–6 are LIVE** ([#1933](https://github.com/souliane/teatree/issues/1933) § 6): the cron runs the memory-file phases (cross-link, merge, re-index, decay) over the discovered `~/.claude` memory dirs, each fault-isolated in its own try/except so one phase (or one dir) failing never crashes the tick or stops the others, and each LIVE by default behind its own two-layer kill-switch (`[loops.dream] <phase>` toml / `T3_DREAM_<PHASE>` env, first match wins). The file-side phases run independently of the transcript extract, so they fire even on a 0-transcript-member pass (which stays attempted-not-succeeded for consolidation, but still re-indexes/decays the on-disk memory set; [#2547](https://github.com/souliane/teatree/issues/2547)). **Phase 4** (`teatree.loops.dream.cross_link`) appends symmetric `[[name]]` wiki-links between related memories — related when their significant-token Jaccard clears a deterministic floor (no model) — and is idempotent (a re-run on an unchanged set adds nothing). **Phase 4b** (`teatree.loops.dream.merge`, [#2723](https://github.com/souliane/teatree/issues/2723)) is the on-disk MERGE verb cross-link was missing: it collapses a near-duplicate PAIR (body-token Jaccard ≥ 0.85 AND same frontmatter `type`/`name` family — far above cross-link's floor) into the HIGHER-WEIGHT survivor (a BINDING rule outranks a plain restatement, so binding doctrine is never the side absorbed), appends the absorbed file's distinct lines with a provenance header, and ARCHIVES the absorbed file via `decay._archive_one` (moved, never deleted) so the re-index drops its pointer in the same pass. **Decision-3 (binding):** two BINDING near-duplicates are NEVER auto-merged — they are cross-linked and a deduped `dream-binding-reconcile` ticket is filed via the existing `promote_memory` filer (reusing its banned-term / bare-reference withholding) for human reconciliation. Phase 4b runs AFTER cross-link, BEFORE re-index, LIVE by default behind the `[loops.dream] merge` / `T3_DREAM_MERGE` kill-switch, and is fault-isolated. The whole file-side phase orchestration (4/4b/5/6 + the § 4 gates) is a composed `teatree.loops.dream.phase_runner.MemoryPhaseRunner`. **Phase 5** (`teatree.loops.dream.reindex`) regenerates `MEMORY.md` as one tight line per memory — a single bare `name.md` pointer (no `[name.md](name.md)` href duplication) plus a ≤120-char summary, the WHOLE line capped at 160 chars so it stays under the gate-(d) load budget — deduped, filename-stable, content stays in the topic file, byte-identical on a no-change re-run. **Phase 6** (`teatree.loops.dream.decay`) ages a memory out by ARCHIVING it (moved to `<memory_dir>/archive/` with a provenance header, never deleted) — gated by a NON-VACUOUS retention guard that retains a memory when ANY of: it is fresh (mtime within the window), it is still referenced (another live memory or the index `[[name]]`-links it), OR — the **transfer-before-prune rail** ([#2546](https://github.com/souliane/teatree/issues/2546), #1933 § 2) — its lesson has NO confirmed durable home in the `ConsolidatedMemory` ledger. Only a memory that is old AND unreferenced AND durably homed is archived; a guard-disabled probe proves each guard has teeth. The §2 rail — *"delete an index line only after the fact has a confirmed durable home in a topic file"* — is applied to the topic file itself: an injected `HomeResolver` seam keeps the file-side mechanics DB-free under test, while the production `ledger_durable_home_resolver` reads `ConsolidatedMemory.objects.prunable()` (the index-pruner's terminal-status + recorded-`durable_destination` surface) once per pass and maps a topic file to a row by path membership in `source_files` OR by its name appearing in a `durable_destination`. **Budget RETIRE tier ([#2723](https://github.com/souliane/teatree/issues/2723)).** The `prunable()` home-rail is structurally EMPTY for the hand-authored corpus (0 ledger rows reference on-disk memories), so it can never archive the files that bloat the index. A second, ledger-INDEPENDENT tier (opt-in via `DecayPolicy(budget_tier=BudgetTier())`, enabled in the cron) fires ONLY when `MEMORY.md` is over the gate-(d) load budget and archives files that are (a) older than a 90-day ceiling — by a LOGICAL `lesson_updated` frontmatter clock, NOT raw `st_mtime`, so a cross-link / re-index rewrite does not reset the decay clock — (b) unreferenced, and (c) whose lesson is CAPTURED ELSEWHERE (a near-duplicate survivor exists — a content/duplication check, never the empty `prunable()` join); a genuinely unique lesson is always retained. The cron re-indexes AFTER this decay so `MEMORY.md` falls back under the gate-(d) budget in the SAME pass. All phases accept an explicit `memory_dir` and never touch the real `~/.claude` under test. **Phase 3b** ([#2346](https://github.com/souliane/teatree/issues/2346)) closes the drift → live-eval loop: `teatree.loops.dream.eval_proposer` maps each grounded cluster to an eval CANDIDATE in a JSONL review queue, then `teatree.loops.dream.promote` PROMOTES it to a real `under_load` scenario (`evals/scenarios/promoted_drift.yaml` + `_pass`/`_fail` replay fixtures) — the artifacts the deterministic replay gate and the weekly metered lane run unchanged. The nightly `tick` requests proposals **LIVE by default** (the `[loops.dream] propose_evals` / `T3_DREAM_PROPOSE_EVALS` kill-switch flips it off). Promotion is auto but gated by a **non-bypassable anti-vacuity guard** (`promote.guard_can_fail`): it runs the real grader (`teatree.eval.report.evaluate`) against a synthesised drift-recommitting transcript and promotes only when that verdict is FAIL (the matchers have teeth) AND a compliant transcript grades PASS (not a tautology); a candidate whose grader cannot fail is rejected — no file written. The guard is deterministic; live metered grading of a promoted scenario lands with the weekly Agent-SDK lane. **Phase 3b LLM derivation** ([#2447](https://github.com/souliane/teatree/issues/2447)) is the richer, **default-OFF** follow-up to the fixed-matcher `promote`: `teatree.loops.dream.llm_eval_proposer` runs an injected LLM synthesizer that turns a grounded candidate plus its cited transcript slice into a COMPLETE `under_load` `EvalSpec` — a pollution preamble saturated to the documented ~28k-char envelope floor, discriminating positive + negative matchers, and a judge rubric — parsed through the real loader and gated by a **candidate-derived** teeth check (`teatree.loops.dream._teeth_check.teeth_check_against_candidate`): it synthesises the `_fail`/`_pass` transcripts FROM the candidate's OWN cited drift and compliant tool-call shapes and grades both through the suite's real grader (`teatree.eval.report.evaluate`), DROPPING a spec whose matchers do not reject the candidate's own cited drift (or reject its compliant shape as a tautology) — proving the matchers target the SPECIFIC drift the candidate describes, not `promote`'s fixed session.py-edit transcripts. Even a proven spec is never autonomously committed to `evals/scenarios`: `stage_derived_evals` writes a staging `derived_evals.yaml` a human / standing core-maker ratifies via a PR. The phase is OFF unless the `[loops.dream] derive_evals` / `T3_DREAM_DERIVE_EVALS` toggle is set, so an unflagged pass is byte-identical. The `dream` mini-loop is registered `off_live_tick` (driven only by its own cron); `t3 doctor` surfaces the 48h staleness alarm.
+ 
+ `Ticket` also carries a `Role` enum (`AUTHOR` / `REVIEWER`) orthogonal to its state. The reviewer role drives the §5.6 `reviewer_prs` scanner (`Ticket(role="reviewer", issue_url=<pr_url>)`) and short-circuits to `delivered` once the review work completes; the author role is the default lifecycle.
+ 
+diff --git a/README.md b/README.md
+index 96c7b0972c..8a728226d1 100644
+--- a/README.md
++++ b/README.md
+@@ -454,7 +454,7 @@ ## Skills
+ | `code` | Writing code with TDD methodology |
+ | `contribute` | Push retro improvements to a branch, open a PR, and optionally create upstream issues |
+ | `debug` | Troubleshooting and fixing — something is broken, find and fix it |
+-| `dreaming` | Runs the idle-time "dreaming" memory-consolidation pipeline end to end with one command — replay recent transcripts + curated memories, distil drift into the ConsolidatedMemory ledger, cross-link / re-index / decay the memory files, run the §4 acceptance gates, triage each row into keep-as-memory vs core-gap → file a needs-triage teatree ticket, and promote/stage eval candidates |
++| `dreaming` | Runs the idle-time "dreaming" memory-consolidation pipeline end to end with one command — replay recent transcripts + curated memories, distil drift into the ConsolidatedMemory ledger, cross-link / re-index / decay the memory files, run the §4 acceptance gates, triage each row into keep-as-memory vs core-gap → drive each core gap to a MERGED fix under the standing umbrella issue, and promote/stage eval candidates |
+ | `e2e` | End-to-end testing with Playwright — writing tests, running them, visual snapshots, test-plan posting, and the pre-push visual QA gate |
+ | `e2e-review` | Reviewer-side quality gate for Playwright end-to-end specs. Load when reviewing a new or changed E2E test, deciding whether a spec is ready to land, or adopting an outside Playwright suite. Judges specs against Playwright's published best practices — user-visible behaviour over implementation, resilient role/label/test-id locators, web-first auto-retrying assertions instead of hard waits, per-test isolation, page-object structure, and runnable evidence — and tells the implementer what to fix before approval. |
+ | `followup` | Daily follow-up — batch process new tickets, check/advance ticket statuses, remind about PRs waiting for review |
+diff --git a/skills/dreaming/SKILL.md b/skills/dreaming/SKILL.md
+index 9dcac6a663..9790136fa3 100644
+--- a/skills/dreaming/SKILL.md
++++ b/skills/dreaming/SKILL.md
+@@ -1,7 +1,7 @@
+ ---
+ name: dreaming
+-description: Runs the idle-time "dreaming" memory-consolidation pipeline end to end with one command — replay recent transcripts + curated memories, distil drift into the ConsolidatedMemory ledger, cross-link / re-index / decay the memory files, run the §4 acceptance gates, triage each row into keep-as-memory vs core-gap → file a needs-triage teatree ticket, and promote/stage eval candidates. Use when user says "dream", "dreaming", "consolidate memory", "run the dream pass", "memory consolidation", or wants the full dream pipeline.
+-eval_exempt: thin command-runner skill — its only action is `t3 dream run --full`, whose whole pipeline (durable_destination persistence, triage core-gap vs user-specific, ticket filing, eval promotion/derivation, the §4 acceptance gates) is graded deterministically by the dream engine/command/model tests; downstream fix delivery delegates to the code/ship skills, whose own evals grade that behaviour.
++description: Runs the idle-time "dreaming" memory-consolidation pipeline end to end with one command — replay recent transcripts + curated memories, distil drift into the ConsolidatedMemory ledger, cross-link / re-index / decay the memory files, run the §4 acceptance gates, triage each row into keep-as-memory vs core-gap → drive each core gap to a MERGED fix under the standing umbrella issue, and promote/stage eval candidates. Use when user says "dream", "dreaming", "consolidate memory", "run the dream pass", "memory consolidation", or wants the full dream pipeline.
++eval_exempt: thin command-runner skill — its only action is `t3 dream run --full`, whose whole pipeline (durable_destination persistence, triage core-gap vs user-specific, umbrella-checkbox upsert + schedule_coding, reconcile-on-merge, eval promotion/derivation, the §4 acceptance gates) is graded deterministically by the dream engine/command/model tests; downstream fix delivery delegates to the code/ship skills, whose own evals grade that behaviour.
+ compatibility: macOS/Linux, git, gh CLI.
+ requires:
+   - workspace
+@@ -30,16 +30,24 @@ ## Run the full pass
+ 2. distil drift into the `ConsolidatedMemory` ledger (phases 1-3)
+ 3. cross-link / re-index / decay the memory files (phases 4-6)
+ 4. the §4 acceptance gates — a lossy pass is NOT stamped success
+-5. triage each ledger row: keep-as-memory (user-specific) vs core-gap → file a `needs-triage` teatree backlog ticket
++5. triage each ledger row: keep-as-memory (user-specific) vs core-gap → drive each core gap to a fix-and-merge (§ "promote = fix-and-merge" below)
+ 6. promote grounded eval candidates to live `under_load` scenarios (anti-vacuity guard) and stage LLM-derived ones for review
+ 
+-## Drive the output to merged PRs
++## promote = fix-and-merge (the standing umbrella, [#2663](https://github.com/souliane/teatree/issues/2663))
+ 
+-The pass files core-gap tickets and may stage evals; it never implements. To finish:
++The promote/compliance phases no longer file a fresh `needs-triage` issue per gap (those piled up — the issue scanner SKIPs `needs-triage`). Instead each grounded gap (a core-gap memory, a compliance recurrence) is driven to a MERGED fix tracked under ONE standing umbrella issue ([#2663](https://github.com/souliane/teatree/issues/2663) — reused daily, NEVER closed):
+ 
+-- For each filed `dream-memory-gap` ticket: implement the fix in a worktree (TDD), open a PR, merge per the repo's mode. `/t3:teatree-batch` works the queue one ticket at a time.
++1. **Upsert a checkbox** under #2663, keyed on a stable gap key (an invisible `<!-- dream-gap <key> -->` marker per line) so the same gap never double-adds.
++2. **Schedule the fix** for each NEW gap via the existing `Ticket.schedule_coding()` — a coder implements it TDD in a worktree, opens a PR, and the PR merges through the SAME single keystone flow gated by the overlay's autonomy setting (no per-gap human triage).
++3. **Reconcile on merge**: when a gap's fix Ticket reaches MERGED, the next pass CHECKS its umbrella checkbox and retires the linked `ConsolidatedMemory` (a BINDING memory is never retired). No new model — an in-flight gap is a `Ticket` row + its `ConsolidatedMemory` entry; the #2663 checkbox is the durable cross-night state.
++
++The umbrella-checkbox upsert + `schedule_coding` runs under `t3 dream run --full`, **default OFF** behind `[loops.dream] memory_promote` / `T3_DREAM_MEMORY_PROMOTE` (and `[loops.dream] compliance` / `T3_DREAM_COMPLIANCE` for recurrences).
++
++## Drive the rest of the output
++
++- Core-gap fixes are auto-scheduled and merge via the keystone; you don't hand-work them. Watch #2663 for the checkbox trend (checked = its fix merged).
+ - Commit any auto-promoted eval scenarios (`evals/scenarios/promoted_drift.yaml`) and ratify staged ones via PR.
+-- A retired memory's prose is archived once its linked ticket closes (next pass).
++- A binding-reconciliation conflict still files a deduped `dream-binding-reconcile` issue for a human (distinct from the gap pile-up the umbrella replaces).
+ 
+ ## Trigger surface
+ 
+diff --git a/src/teatree/backends/github/api.py b/src/teatree/backends/github/api.py
+new file mode 100644
+index 0000000000..f4077d2bb3
+--- /dev/null
++++ b/src/teatree/backends/github/api.py
+@@ -0,0 +1,158 @@
++"""GitHub ``gh`` CLI request helpers — the low-level transport concern.
++
++Free functions wrapping ``gh`` / ``gh api`` (GET / paginated GET / search /
++POST / PATCH) plus the issue-URL parse, so :class:`teatree.backends.github.GitHubCodeHost`
++stays focused on the cross-host Protocol surface and under the module-health cap —
++the same split shape as :mod:`teatree.backends.gitlab.api`.
++"""
++
++import json
++import os
++import re
++from typing import cast
++from urllib.parse import urlparse
++
++from teatree.types import RawAPIDict
++from teatree.utils.run import CompletedProcess, run_checked
++
++_ISSUE_URL_RE = re.compile(r"^/(?P<owner>[^/]+)/(?P<repo>[^/]+)/issues/(?P<number>\d+)/?$")
++
++
++def _run_gh(*args: str, token: str = "") -> CompletedProcess[str]:
++    """Run a ``gh`` CLI command and return the result.
++
++    Auth via ``GH_TOKEN`` env, never ``--header``: only ``gh api`` accepts
++    ``--header``; injecting it into ``gh pr create`` fails with
++    ``unknown flag --header``.
++    """
++    env = {**os.environ, "GH_TOKEN": token} if token else None
++    return run_checked(list(args), env=env)
++
++
++def _gh_api_get(endpoint: str, *, token: str = "") -> object:
++    """Call ``gh api`` (GET) and return parsed JSON."""
++    result = _run_gh(
++        "gh",
++        "api",
++        endpoint,
++        "--header",
++        "Accept: application/vnd.github+json",
++        token=token,
++    )
++    return json.loads(result.stdout)
++
++
++def _gh_api_get_paginated(endpoint: str, *, token: str = "") -> list[RawAPIDict]:
++    """Fetch EVERY page of a list endpoint and return one flat list.
++
++    A plain ``gh api`` GET returns only the first page — GitHub's default
++    page size silently caps the result, so a comment older than the most
++    recent page goes unseen and the find-then-update dedup re-posts a
++    duplicate. ``--paginate`` follows the ``Link`` header to the last page;
++    ``--slurp`` wraps each page's JSON array into one outer array
++    (``[[page1…], [page2…]]``), which this flattens into a single list.
++
++    Non-list pages (a single-object body, an error payload) are skipped so
++    a malformed page can never raise. Returns ``[]`` when the outer payload
++    is not an array.
++    """
++    result = _run_gh(
++        "gh",
++        "api",
++        endpoint,
++        "--paginate",
++        "--slurp",
++        "--header",
++        "Accept: application/vnd.github+json",
++        token=token,
++    )
++    pages = json.loads(result.stdout)
++    if not isinstance(pages, list):
++        return []
++    flattened: list[RawAPIDict] = []
++    for page in pages:
++        if isinstance(page, list):
++            flattened.extend(cast("list[RawAPIDict]", page))
++    return flattened
++
++
++def _gh_api_search_paginated(endpoint: str, *, token: str = "") -> list[RawAPIDict]:
++    """Fetch every page of a GitHub search endpoint and return a flat item list.
++
++    Search responses wrap results in ``{"items": [...], "total_count": N}``
++    rather than a bare JSON array, so ``_gh_api_get_paginated`` (which expects
++    bare arrays per page via ``--slurp``) cannot be used here.
++    ``--paginate`` + ``--slurp`` emits each page as a search-object element;
++    this pulls the ``items`` list from each page and flattens them.
++    """
++    result = _run_gh(
++        "gh",
++        "api",
++        endpoint,
++        "--paginate",
++        "--slurp",
++        "--header",
++        "Accept: application/vnd.github+json",
++        token=token,
++    )
++    pages = json.loads(result.stdout)
++    if not isinstance(pages, list):
++        return []
++    items: list[RawAPIDict] = []
++    for page in pages:
++        if not isinstance(page, dict):
++            continue
++        page_items = cast("RawAPIDict", page).get("items")
++        if isinstance(page_items, list):
++            items.extend(cast("list[RawAPIDict]", page_items))
++    return items
++
++
++def _gh_api_post(endpoint: str, payload: RawAPIDict, *, token: str = "") -> object:
++    """Call ``gh api`` (POST) and return parsed JSON."""
++    cmd = [
++        "gh",
++        "api",
++        endpoint,
++        "--method",
++        "POST",
++        "--header",
++        "Accept: application/vnd.github+json",
++        "--input",
++        "-",
++    ]
++    if token:
++        cmd.extend(["--header", f"Authorization: Bearer {token}"])
++    result = run_checked(cmd, stdin_text=json.dumps(payload))
++    return json.loads(result.stdout)
++
++
++def _gh_api_patch(endpoint: str, payload: RawAPIDict, *, token: str = "") -> object:
++    """Call ``gh api`` (PATCH) and return parsed JSON."""
++    cmd = [
++        "gh",
++        "api",
++        endpoint,
++        "--method",
++        "PATCH",
++        "--header",
++        "Accept: application/vnd.github+json",
++        "--input",
++        "-",
++    ]
++    if token:
++        cmd.extend(["--header", f"Authorization: Bearer {token}"])
++    result = run_checked(cmd, stdin_text=json.dumps(payload))
++    return json.loads(result.stdout)
++
++
++def _parse_issue_ref(issue_url: str) -> tuple[str, int] | None:
++    """The ``(owner/repo, number)`` of a GitHub issue URL, or ``None`` when unparsable.
++
++    The single source of truth for the ``urlparse`` + ``_ISSUE_URL_RE`` preamble the
++    issue methods (close/update/get/comment) otherwise each duplicate.
++    """
++    match = _ISSUE_URL_RE.match(urlparse(issue_url).path)
++    if match is None:
++        return None
++    return f"{match['owner']}/{match['repo']}", int(match["number"])
+diff --git a/src/teatree/backends/github/client.py b/src/teatree/backends/github/client.py
+index 8e2ec28aad..9fbbceb8b2 100644
+--- a/src/teatree/backends/github/client.py
++++ b/src/teatree/backends/github/client.py
+@@ -1,13 +1,20 @@
+ """GitHub backend — code host via the ``gh`` CLI."""
+ 
+-import json
+-import os
+ import re
+ from typing import cast
+ from urllib.parse import quote_plus, urlparse
+ 
+ from teatree.backends import forge_merge_rpc as _forge_merge
+ from teatree.backends.errors import IssueNotFoundError
++from teatree.backends.github.api import (
++    _gh_api_get,
++    _gh_api_get_paginated,
++    _gh_api_patch,
++    _gh_api_post,
++    _gh_api_search_paginated,
++    _parse_issue_ref,
++    _run_gh,
++)
+ from teatree.backends.github.claims import record_github_note_claim as _record_github_note_claim
+ from teatree.backends.github.payloads import (
+     _GitHubPullRequestSummary,
+@@ -27,7 +34,7 @@
+ )
+ from teatree.types import RawAPIDict
+ from teatree.utils import git
+-from teatree.utils.run import CommandFailedError, CompletedProcess, run_checked
++from teatree.utils.run import CommandFailedError
+ 
+ _ISSUE_URL_RE = re.compile(r"^/(?P<owner>[^/]+)/(?P<repo>[^/]+)/issues/(?P<number>\d+)/?$")
+ _PR_URL_RE = re.compile(r"^/(?P<owner>[^/]+)/(?P<repo>[^/]+)/pulls?/(?P<number>\d+)/?$")
+@@ -46,134 +53,6 @@ def issue_repo_short(url: str) -> str:
+     return match.group("repo") if match else ""
+ 
+ 
+-def _run_gh(*args: str, token: str = "") -> CompletedProcess[str]:
+-    """Run a ``gh`` CLI command and return the result.
+-
+-    Auth via ``GH_TOKEN`` env, never ``--header``: only ``gh api`` accepts
+-    ``--header``; injecting it into ``gh pr create`` fails with
+-    ``unknown flag --header``.
+-    """
+-    env = {**os.environ, "GH_TOKEN": token} if token else None
+-    return run_checked(list(args), env=env)
+-
+-
+-def _gh_api_get(endpoint: str, *, token: str = "") -> object:
+-    """Call ``gh api`` (GET) and return parsed JSON."""
+-    result = _run_gh(
+-        "gh",
+-        "api",
+-        endpoint,
+-        "--header",
+-        "Accept: application/vnd.github+json",
+-        token=token,
+-    )
+-    return json.loads(result.stdout)
+-
+-
+-def _gh_api_get_paginated(endpoint: str, *, token: str = "") -> list[RawAPIDict]:
+-    """Fetch EVERY page of a list endpoint and return one flat list.
+-
+-    A plain ``gh api`` GET returns only the first page — GitHub's default
+-    page size silently caps the result, so a comment older than the most
+-    recent page goes unseen and the find-then-update dedup re-posts a
+-    duplicate. ``--paginate`` follows the ``Link`` header to the last page;
+-    ``--slurp`` wraps each page's JSON array into one outer array
+-    (``[[page1…], [page2…]]``), which this flattens into a single list.
+-
+-    Non-list pages (a single-object body, an error payload) are skipped so
+-    a malformed page can never raise. Returns ``[]`` when the outer payload
+-    is not an array.
+-    """
+-    result = _run_gh(
+-        "gh",
+-        "api",
+-        endpoint,
+-        "--paginate",
+-        "--slurp",
+-        "--header",
+-        "Accept: application/vnd.github+json",
+-        token=token,
+-    )
+-    pages = json.loads(result.stdout)
+-    if not isinstance(pages, list):
+-        return []
+-    flattened: list[RawAPIDict] = []
+-    for page in pages:
+-        if isinstance(page, list):
+-            flattened.extend(cast("list[RawAPIDict]", page))
+-    return flattened
+-
+-
+-def _gh_api_search_paginated(endpoint: str, *, token: str = "") -> list[RawAPIDict]:
+-    """Fetch every page of a GitHub search endpoint and return a flat item list.
+-
+-    Search responses wrap results in ``{"items": [...], "total_count": N}``
+-    rather than a bare JSON array, so ``_gh_api_get_paginated`` (which expects
+-    bare arrays per page via ``--slurp``) cannot be used here.
+-    ``--paginate`` + ``--slurp`` emits each page as a search-object element;
+-    this pulls the ``items`` list from each page and flattens them.
+-    """
+-    result = _run_gh(
+-        "gh",
+-        "api",
+-        endpoint,
+-        "--paginate",
+-        "--slurp",
+-        "--header",
+-        "Accept: application/vnd.github+json",
+-        token=token,
+-    )
+-    pages = json.loads(result.stdout)
+-    if not isinstance(pages, list):
+-        return []
+-    items: list[RawAPIDict] = []
+-    for page in pages:
+-        if not isinstance(page, dict):
+-            continue
+-        page_items = cast("RawAPIDict", page).get("items")
+-        if isinstance(page_items, list):
+-            items.extend(cast("list[RawAPIDict]", page_items))
+-    return items
+-
+-
+-def _gh_api_post(endpoint: str, payload: dict[str, object], *, token: str = "") -> object:
+-    """Call ``gh api`` (POST) and return parsed JSON."""
+-    cmd = [
+-        "gh",
+-        "api",
+-        endpoint,
+-        "--method",
+-        "POST",
+-        "--header",
+-        "Accept: application/vnd.github+json",
+-        "--input",
+-        "-",
+-    ]
+-    if token:
+-        cmd.extend(["--header", f"Authorization: Bearer {token}"])
+-    result = run_checked(cmd, stdin_text=json.dumps(payload))
+-    return json.loads(result.stdout)
+-
+-
+-def _gh_api_patch(endpoint: str, payload: dict[str, object], *, token: str = "") -> object:
+-    """Call ``gh api`` (PATCH) and return parsed JSON."""
+-    cmd = [
+-        "gh",
+-        "api",
+-        endpoint,
+-        "--method",
+-        "PATCH",
+-        "--header",
+-        "Accept: application/vnd.github+json",
+-        "--input",
+-        "-",
+-    ]
+-    if token:
+-        cmd.extend(["--header", f"Authorization: Bearer {token}"])
+-    result = run_checked(cmd, stdin_text=json.dumps(payload))
+-    return json.loads(result.stdout)
+-
+-
+ # ast-grep-ignore: ac-django-no-complexity-suppressions
+ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBackend Protocol surface, not poor encapsulation.
+     """CodeHost implementation backed by the ``gh`` CLI."""
+@@ -345,22 +224,35 @@ def close_issue(self, *, issue_url: str, comment: str = "") -> RawAPIDict:
+         Idempotent: ``PATCH state=closed`` is a no-op on an already-closed issue.
+         Returns ``{"error": ...}`` when the URL is not a recognised GitHub issue URL.
+         """
+-        path = urlparse(issue_url).path
+-        match = _ISSUE_URL_RE.match(path)
+-        if match is None:
++        ref = _parse_issue_ref(issue_url)
++        if ref is None:
+             return {"error": f"Not a GitHub issue URL: {issue_url}"}
+-
+-        repo = f"{match['owner']}/{match['repo']}"
+-        number = int(match["number"])
++        repo, number = ref
+         if comment:
+             self.post_issue_comment(issue_url=issue_url, body=comment)
+         data = _gh_api_patch(
+             f"repos/{repo}/issues/{number}",
+             {"state": "closed", "state_reason": "not_planned"},
+             token=self._token,
+         )
+         return cast("RawAPIDict", data) if isinstance(data, dict) else {}
+ 
++    def update_issue(self, *, issue_url: str, body: str) -> RawAPIDict:
++        """Replace a GitHub issue's body (description) in place.
++
++        Used to keep ONE auto-managed checkbox ledger in a standing umbrella
++        issue's body: the dream-promote flow re-fetches the body, upserts a
++        gap checkbox keyed on a stable HTML-comment marker, and writes the
++        whole body back. Returns ``{"error": ...}`` when the URL is not a
++        recognised GitHub issue URL.
++        """
++        ref = _parse_issue_ref(issue_url)
++        if ref is None:
++            return {"error": f"Not a GitHub issue URL: {issue_url}"}
++        repo, number = ref
++        data = _gh_api_patch(f"repos/{repo}/issues/{number}", {"body": body}, token=self._token)
++        return cast("RawAPIDict", data) if isinstance(data, dict) else {}
++
+     def upload_file(self, *, repo: str, filepath: str) -> RawAPIDict:
+         msg = f"File upload to {repo} not supported (token={'set' if self._token else 'unset'}, file={filepath})"
+         raise NotImplementedError(msg)
+@@ -382,12 +274,11 @@ def get_issue(self, issue_url: str) -> RawAPIDict:
+                 (5xx, timeout, network error) propagates as the original
+                 ``CommandFailedError`` so the scanner keeps retrying it.
+         """
+-        path = urlparse(issue_url).path
+-        match = _ISSUE_URL_RE.match(path)
+-        if match is None:
++        ref = _parse_issue_ref(issue_url)
++        if ref is None:
+             return {"error": f"Not a GitHub issue URL: {issue_url}"}
+-
+-        endpoint = f"repos/{match['owner']}/{match['repo']}/issues/{match['number']}"
++        repo, number = ref
++        endpoint = f"repos/{repo}/issues/{number}"
+         try:
+             data = _gh_api_get(endpoint, token=self._token)
+         except CommandFailedError as exc:
+@@ -401,19 +292,15 @@ def get_issue(self, issue_url: str) -> RawAPIDict:
+ 
+     def repo_for_issue_url(self, issue_url: str) -> str:  # noqa: PLR6301 — pure URL parse, on the host for the Protocol surface.
+         """Return the ``<owner>/<repo>`` that owns *issue_url*, or ``""`` when unparsable."""
+-        path = urlparse(issue_url).path
+-        match = _ISSUE_URL_RE.match(path)
+-        return f"{match['owner']}/{match['repo']}" if match is not None else ""
++        ref = _parse_issue_ref(issue_url)
++        return ref[0] if ref is not None else ""
+ 
+     def post_issue_comment(self, *, issue_url: str, body: str) -> RawAPIDict:
+         """Post a comment to a GitHub issue; returns ``{"error": ...}`` on a non-issue URL."""
+-        path = urlparse(issue_url).path
+-        match = _ISSUE_URL_RE.match(path)
+-        if match is None:
++        ref = _parse_issue_ref(issue_url)
++        if ref is None:
+             return {"error": f"Not a GitHub issue URL: {issue_url}"}
+-
+-        repo = f"{match['owner']}/{match['repo']}"
+-        target_number = int(match["number"])
++        repo, target_number = ref
+         data = _gh_api_post(
+             f"repos/{repo}/issues/{target_number}/comments",
+             {"body": body},
+@@ -433,38 +320,33 @@ def post_issue_comment(self, *, issue_url: str, body: str) -> RawAPIDict:
+ 
+     def list_issue_comments(self, *, issue_url: str) -> list[RawAPIDict]:
+         """List the comments on a GitHub issue; returns ``[]`` on a non-issue URL."""
+-        path = urlparse(issue_url).path
+-        match = _ISSUE_URL_RE.match(path)
+-        if match is None:
++        ref = _parse_issue_ref(issue_url)
++        if ref is None:
+             return []
+-
+-        repo = f"{match['owner']}/{match['repo']}"
+-        return _gh_api_get_paginated(f"repos/{repo}/issues/{match['number']}/comments?per_page=100", token=self._token)
++        repo, number = ref
++        return _gh_api_get_paginated(f"repos/{repo}/issues/{number}/comments?per_page=100", token=self._token)
+ 
+     def update_issue_comment(self, *, issue_url: str, comment_id: int, body: str) -> RawAPIDict:
+         """Edit a GitHub issue comment in place via /repos/{repo}/issues/comments/{id}.
+ 
+         Returns ``{"error": ...}`` when the URL is not a recognised GitHub issue URL.
+         """
+-        path = urlparse(issue_url).path
+-        match = _ISSUE_URL_RE.match(path)
+-        if match is None:
++        ref = _parse_issue_ref(issue_url)
++        if ref is None:
+             return {"error": f"Not a GitHub issue URL: {issue_url}"}
+-
+-        repo = f"{match['owner']}/{match['repo']}"
++        repo = ref[0]
+         data = _gh_api_patch(
+             f"repos/{repo}/issues/comments/{comment_id}",
+             {"body": body},
+             token=self._token,
+         )
+         return cast("RawAPIDict", data) if isinstance(data, dict) else {}
+ 
+     def delete_issue_comment(self, *, issue_url: str, comment_id: int) -> RawAPIDict:
+-        path = urlparse(issue_url).path
+-        match = _ISSUE_URL_RE.match(path)
+-        if match is None:
++        ref = _parse_issue_ref(issue_url)
++        if ref is None:
+             return {"error": f"Not a GitHub issue URL: {issue_url}"}
+-        repo = f"{match['owner']}/{match['repo']}"
++        repo = ref[0]
+         _run_gh(
+             "gh",
+             "api",
+diff --git a/src/teatree/backends/gitlab/client.py b/src/teatree/backends/gitlab/client.py
+index 4621a8b8cf..ea98623c34 100644
+--- a/src/teatree/backends/gitlab/client.py
++++ b/src/teatree/backends/gitlab/client.py
+@@ -454,6 +454,32 @@ def close_issue(self, *, issue_url: str, comment: str = "") -> RawAPIDict:
+             or {}
+         )
+ 
++    def update_issue(self, *, issue_url: str, body: str) -> RawAPIDict:
++        """Replace a GitLab issue's description in place.
++
++        Mirrors :meth:`GitHubCodeHost.update_issue`: the dream-promote flow
++        re-fetches the description, upserts a gap checkbox keyed on a stable
++        HTML-comment marker, and writes the whole description back. Returns
++        ``{"error": ...}`` when the URL is not a recognised GitLab issue URL or
++        when the project cannot be resolved.
++        """
++        path = urlparse(issue_url).path
++        match = _ISSUE_URL_RE.match(path)
++        if match is None:
++            return {"error": f"Not a GitLab issue URL: {issue_url}"}
++
++        project = self._client.resolve_project(match["path"])
++        if project is None:
++            return {"error": f"Could not resolve project: {match['path']}"}
++
++        return (
++            self._client.put_json(
++                f"projects/{project.project_id}/issues/{int(match['iid'])}",
++                {"description": body},
++            )
++            or {}
++        )
++
+     def repo_for_issue_url(self, issue_url: str) -> str:  # noqa: PLR6301 — pure URL parse, on the host for the Protocol surface.
+         """Return the project slug that OWNS *issue_url* (the note's own project).
+ 
+diff --git a/src/teatree/core/backend_protocols.py b/src/teatree/core/backend_protocols.py
+index 47506c0cc0..43e9e41a25 100644
+--- a/src/teatree/core/backend_protocols.py
++++ b/src/teatree/core/backend_protocols.py
+@@ -272,6 +272,8 @@ def search_open_issues(self, *, repo: str, query: str) -> list[RawAPIDict]: ...
+ 
+     def close_issue(self, *, issue_url: str, comment: str = "") -> RawAPIDict: ...  # pragma: no branch
+ 
++    def update_issue(self, *, issue_url: str, body: str) -> RawAPIDict: ...  # pragma: no branch
++
+     def get_mr_approvals(self, *, repo: str, pr_iid: int) -> ApprovalState: ...  # pragma: no branch
+ 
+     # §17.4.3 merge-RPC surface — raw I/O; ``teatree.core.merge.execution``
+diff --git a/src/teatree/core/management/commands/dream.py b/src/teatree/core/management/commands/dream.py
+index 25434967d5..eab6957668 100644
+--- a/src/teatree/core/management/commands/dream.py
++++ b/src/teatree/core/management/commands/dream.py
+@@ -270,8 +270,8 @@ def _run_compliance_phase(self, *, since: "dt.datetime | None", dry_run: bool, f
+         try:
+             from teatree.loops.dream import compliance  # noqa: PLC0415
+ 
+-            host, repo = self._teatree_backlog_host()
+-            return compliance.run_compliance_phase(since=since, dry_run=dry_run, host=host, repo=repo)
++            host, _repo = self._teatree_backlog_host()
++            return compliance.run_compliance_phase(since=since, dry_run=dry_run, host=host)
+         except Exception as exc:  # noqa: BLE001
+             return f"; WARN compliance phase raised: {type(exc).__name__}: {exc}"
+ 
+@@ -335,32 +335,36 @@ def _derive_evals(self, *, dry_run: bool, force_all_phases: bool = False) -> str
+         return f"; staged {staged} derived eval(s) for review, dropped {len(outcomes) - staged}"
+ 
+     def _run_memory_promotion(self, *, dry_run: bool, force_all_phases: bool = False) -> str:
+-        """Pass 2 — triage the ledger, ticket each core-gap, retire resolved memories (#2426).
++        """Pass 2 — drive each core gap to a fix-and-merge under the umbrella (#2663).
+ 
+         Runs only when the default-OFF ``memory_promote`` toggle is on, because it
+-        FILES backlog tickets. Resolves the teatree backlog code host, triages every
+-        untriaged ``ConsolidatedMemory`` row, files a deduped ``needs-triage`` ticket
+-        for each core-generic gap, and retires any TICKETED memory whose linked ticket
+-        has closed. A failure is reported in the summary line, never crashing the pass.
++        schedules fixes. Resolves the teatree backlog code host, triages every
++        untriaged ``ConsolidatedMemory`` row, and PROMOTES each core-generic gap to a
++        fix: a checkbox is upserted under the standing umbrella issue and a coding task
++        is scheduled (instead of a fresh ``needs-triage`` issue that piles up). Then it
++        RECONCILES — every gap whose fix Ticket merged has its umbrella checkbox checked
++        and its memory retired. A failure is reported in the summary line, never
++        crashing the pass.
+         """
+         from teatree.loops.dream.loop import memory_promote_enabled  # noqa: PLC0415
+ 
+         if not force_all_phases and not memory_promote_enabled():
+             return ""
+         try:
+-            from teatree.loops.dream import promote_memory  # noqa: PLC0415
++            from teatree.loops.dream import promote_memory, umbrella_ledger  # noqa: PLC0415
+ 
+-            host, repo = self._teatree_backlog_host()
++            host, _repo = self._teatree_backlog_host()
+             if host is None:
+                 return "; WARN memory promotion skipped — no teatree code host resolved"
+-            filed = promote_memory.file_core_gap_tickets(host, repo=repo, dry_run=dry_run)
+-            retired = [] if dry_run else promote_memory.retire_resolved_memories(host)
++            umbrella = promote_memory.UMBRELLA_ISSUE_URL
++            promoted = promote_memory.file_core_gap_tickets(host, umbrella_url=umbrella, dry_run=dry_run)
++            reconciled = [] if dry_run else umbrella_ledger.reconcile_merged_gaps(host, umbrella_url=umbrella)
+         except Exception as exc:  # noqa: BLE001
+             return f"; WARN memory promotion raised: {type(exc).__name__}: {exc}"
+-        new_tickets = sum(1 for o in filed if o.filed)
+-        if not filed and not retired:
++        new_fixes = sum(1 for o in promoted if o.filed)
++        if not promoted and not reconciled:
+             return ""
+-        return f"; ticketed {new_tickets} core-gap memory(ies), retired {len(retired)}"
++        return f"; promoted {new_fixes} core-gap fix(es), reconciled {len(reconciled)} merged"
+ 
+     @staticmethod
+     def _teatree_backlog_host() -> "tuple[CodeHostBackend | None, str]":
+diff --git a/src/teatree/core/models/types.py b/src/teatree/core/models/types.py
+index b1dcd184ab..b900230e1f 100644
+--- a/src/teatree/core/models/types.py
++++ b/src/teatree/core/models/types.py
+@@ -117,6 +117,15 @@ class TicketExtra(TypedDict, total=False):
+     # PlanArtifact) and ``execute_provision`` (skips the auto-planner). See
+     # ``TrivialPlanSkip``.
+     trivial_plan_skip: "TrivialPlanSkip"
++    # #2663 dream-promote = fix-and-merge: a Ticket scheduled to fix a grounded
++    # dream gap. ``dream_gap_key`` is the stable gap identity (also the umbrella
++    # checkbox marker); ``dream_memory_cluster_key`` links back to the
++    # ``ConsolidatedMemory`` row to retire on merge; ``dream_umbrella_url`` is the
++    # standing umbrella issue whose checkbox is checked when the fix merges. See
++    # ``teatree.loops.dream.umbrella_ledger``.
++    dream_gap_key: str
++    dream_memory_cluster_key: str
++    dream_umbrella_url: str
+ 
+ 
+ class ReviewSkillRun(TypedDict, total=False):
+diff --git a/src/teatree/loops/dream/compliance.py b/src/teatree/loops/dream/compliance.py
+index 9bc395daf5..7119d30502 100644
+--- a/src/teatree/loops/dream/compliance.py
++++ b/src/teatree/loops/dream/compliance.py
+@@ -39,22 +39,18 @@
+ 
+ from teatree.core.backend_protocols import CodeHostBackend
+ from teatree.core.models import InstructionComplianceRecord, InstructionComplianceSnapshot, RuleSource
+-from teatree.core.models.implemented_issue_marker import NEEDS_TRIAGE_LABEL
+-from teatree.core.review_findings import find_bare_references, neutralize_bare_references
+-from teatree.hooks import banned_terms_scanner
+ from teatree.loops.dream.engine import ConsolidationExtract, DistilledCluster, WeightedSnippet
+-from teatree.loops.dream.promote_memory import _CORE_DESTINATION_PREFIXES
++from teatree.loops.dream.promote_memory import _CORE_DESTINATION_PREFIXES, UMBRELLA_ISSUE_URL
+ from teatree.loops.dream.transcript_extract import looks_like_user_correction
+-from teatree.types import RawAPIDict
+ 
+ #: Where a reclassified recurring MEMORY_ONLY cluster is sent instead of a memory
+ #: file — a teatree-core path, so Pass-2 triage reads it as a core gap and files an
+ #: enforcement ticket rather than re-promoting another memory.
+ _RECURRENCE_CORE_DESTINATION = "src/teatree/loops/dream/compliance.py"
+ 
+-#: The dedup marker the escalation filer embeds (and searches for), keyed on the
+-#: recurring rule's identity, so a re-run never refiles a recurrence that already
+-#: has an open enforcement issue — mirrors the Pass-2 gap marker.
++#: The gap-key namespace for a compliance recurrence on the umbrella ledger, keyed
++#: on the recurring rule's identity, so a re-run upserts the same checkbox / reuses
++#: the same scheduled fix instead of double-adding — mirrors the Pass-2 gap key.
+ _RECURRENCE_MARKER = "compliance-recurrence"
+ 
+ #: Tokens shorter than this carry no topical signal — a correction sharing only
+@@ -330,26 +326,27 @@ def escalate_recurrences(
+     findings: Sequence[ComplianceFinding],
+     host: CodeHostBackend,
+     *,
+-    repo: str,
++    umbrella_url: str = UMBRELLA_ISSUE_URL,
+     snapshot: InstructionComplianceSnapshot | None = None,
+     dry_run: bool = False,
+ ) -> list[EscalationOutcome]:
+-    """File ONE deduped enforcement ticket per recurring rule — never a memory.
++    """Drive ONE umbrella checkbox + scheduled gate/eval fix per recurring rule (#2663).
+ 
+     Only recurrences (a rule that already had a durable memory, violated again)
+-    escalate; a first-occurrence finding files nothing. Two recurrences of the same
+-    rule collapse to one ticket (deduped by ``rule_identity``), and an open issue
+-    already carrying the recurrence marker is reused. The ticket PRESCRIBES the
+-    structural fix — a gate, a config self-check, or an anti-vacuous eval — and
+-    NEVER proposes writing another memory. When *snapshot* is supplied, the matching
+-    audit row is stamped escalated with the filed URL.
++    escalate; a first-occurrence finding does nothing. Two recurrences of the same
++    rule collapse to one gap (deduped by ``rule_identity``). Each recurrence rides the
++    standing umbrella (*umbrella_url*) as a checkbox + a scheduled coding task whose
++    title PRESCRIBES the structural fix — a gate, a config self-check, or an
++    anti-vacuous eval — and NEVER proposes writing another memory; it no longer files a
++    fresh ``needs-triage`` issue that the scanner skips. When *snapshot* is supplied,
++    the matching audit row is stamped escalated with the umbrella URL.
+     """
+     recurring = {f.rule_identity: f for f in findings if f.is_recurrence}
+     outcomes: list[EscalationOutcome] = []
+     for identity, finding in recurring.items():
+         if dry_run:
+             continue
+-        outcome = _file_one_escalation(host, finding, repo=repo)
++        outcome = _escalate_one_recurrence(host, finding, umbrella_url=umbrella_url)
+         outcomes.append(outcome)
+         if snapshot is not None and outcome.ticket_url:
+             _stamp_escalated(snapshot, identity, outcome.ticket_url)
+@@ -361,15 +358,15 @@ def run_compliance_phase(
+     since: datetime | None,
+     dry_run: bool,
+     host: CodeHostBackend | None,
+-    repo: str,
+ ) -> str:
+     """Detect → persist → escalate one pass's instruction-compliance failures.
+ 
+     Builds the same bounded extract the engine distils, detects failures, persists
+-    one snapshot + audit rows, and (unless *dry_run*) escalates each recurrence to
+-    ONE deduped enforcement ticket via *host*. Returns the dream-command summary
+-    clause. A None *host* (no resolved backlog code host) reports a skip rather than
+-    raising. The phase enable/gating decision is the caller's; this runs the work.
++    one snapshot + audit rows, and (unless *dry_run*) drives each recurrence to a
++    fix-and-merge under the standing umbrella via *host* (a checkbox + a scheduled
++    gate/eval coding task). Returns the dream-command summary clause. A None *host*
++    (no resolved backlog code host) reports a skip rather than raising. The phase
++    enable/gating decision is the caller's; this runs the work.
+     """
+     from teatree.loops.dream import engine  # noqa: PLC0415
+ 
+@@ -380,7 +377,7 @@ def run_compliance_phase(
+     if not dry_run:
+         if host is None:
+             return "; WARN compliance escalation skipped — no teatree code host resolved"
+-        outcomes = escalate_recurrences(summary.findings, host, repo=repo, snapshot=snapshot, dry_run=dry_run)
++        outcomes = escalate_recurrences(summary.findings, host, snapshot=snapshot, dry_run=dry_run)
+         filed = sum(1 for o in outcomes if o.filed)
+     if not summary.findings:
+         return ""
+@@ -422,85 +419,39 @@ def _stamp_escalated(snapshot: InstructionComplianceSnapshot, rule_identity: str
+         row.mark_escalated(ticket_url)
+ 
+ 
+-def _file_one_escalation(host: CodeHostBackend, finding: ComplianceFinding, *, repo: str) -> EscalationOutcome:
+-    """File (or reuse) one enforcement ticket for a recurring rule.
++def _escalate_one_recurrence(
++    host: CodeHostBackend, finding: ComplianceFinding, *, umbrella_url: str
++) -> EscalationOutcome:
++    """Drive one recurring rule to a fix-and-merge via the umbrella ledger (#2663).
+ 
+-    Dedup-first: an open issue already carrying this rule's recurrence marker is
+-    reused. A body that would leak a banned term / bare reference is withheld.
+-    Otherwise a ``needs-triage`` issue prescribing the structural fix is filed.
++    Reuses :func:`teatree.loops.dream.umbrella_ledger.promote_gap`: a checkbox is
++    upserted under the umbrella (deduped by this recurrence's gap key) and a coding
++    task is scheduled (deduped by the same key). The checkbox title PRESCRIBES the
++    structural fix — a gate or an eval — never another memory. The banned-term /
++    bare-reference withholding is enforced inside ``promote_gap``.
+     """
+-    existing = _find_existing_escalation(host, repo=repo, rule_identity=finding.rule_identity)
+-    if existing:
+-        return EscalationOutcome(
+-            rule_identity=finding.rule_identity, filed=False, ticket_url=existing, reason="reused open issue"
+-        )
++    from teatree.loops.dream import umbrella_ledger  # noqa: PLC0415
+ 
+-    title = _escalation_title(finding)
+-    body = _escalation_body(finding)
+-    rendered = f"{title}\n{body}"
+-
+-    banned = banned_terms_scanner.scan_text(rendered)
+-    if banned is not None:
+-        return EscalationOutcome(
+-            rule_identity=finding.rule_identity, filed=False, withheld=True, reason=f"contains banned term '{banned}'"
+-        )
+-    leaked = find_bare_references(rendered)
+-    if leaked:
+-        return EscalationOutcome(
+-            rule_identity=finding.rule_identity,
+-            filed=False,
+-            withheld=True,
+-            reason=f"contains bare reference(s): {', '.join(leaked)}",
+-        )
+-
+-    raw = host.create_issue(repo=repo, title=title, body=body, labels=[_RECURRENCE_MARKER, NEEDS_TRIAGE_LABEL])
+-    return EscalationOutcome(
+-        rule_identity=finding.rule_identity, filed=True, ticket_url=_issue_url(raw), reason="filed"
++    gap_key = f"{_RECURRENCE_MARKER}-{finding.rule_identity}"
++    outcome = umbrella_ledger.promote_gap(
++        host,
++        umbrella_url=umbrella_url,
++        gap=umbrella_ledger.GapSpec(gap_key=gap_key, title=_escalation_title(finding), cluster_key=gap_key),
++    )
++    if outcome.withheld:
++        return EscalationOutcome(rule_identity=finding.rule_identity, filed=False, withheld=True, reason=outcome.reason)
++    return EscalationOutcome(
++        rule_identity=finding.rule_identity,
++        filed=outcome.scheduled or outcome.checkbox_added,
++        ticket_url=umbrella_url,
++        reason=outcome.reason,
+     )
+-
+-
+-def _find_existing_escalation(host: CodeHostBackend, *, repo: str, rule_identity: str) -> str:
+-    marker = f"{_RECURRENCE_MARKER} {rule_identity}"
+-    try:
+-        matches = host.search_open_issues(repo=repo, query=marker)
+-    except Exception:  # noqa: BLE001 — a search hiccup must not block filing; refile-once self-corrects.
+-        return ""
+-    for raw in matches:
+-        body = str(raw.get("body") or raw.get("description") or "")
+-        if marker in body:
+-            return _issue_url(raw)
+-    return ""
+ 
+ 
+ def _escalation_title(finding: ComplianceFinding) -> str:
+     return f"Compliance recurrence — enforce `{finding.rule_identity}` with a gate or eval"
+ 
+ 
+-def _escalation_body(finding: ComplianceFinding) -> str:
+-    evidence = neutralize_bare_references(finding.evidence.strip()) or "(no excerpt captured)"
+-    return (
+-        "A rule that ALREADY has a durable memory was violated AGAIN. Per the root-KPI "
+-        "rule, a recurrence-despite-memory must be remediated with a STRUCTURAL forcing "
+-        "function — never another memory (more prose is itself an instruction that will "
+-        "not be followed).\n\n"
+-        f"**Recurring rule:** `{finding.rule_identity}` (source: durable memory)\n\n"
+-        f"**Evidence this pass:** {evidence}\n\n"
+-        "**Prescribed structural fix (pick one):**\n"
+-        "- a PreToolUse/Stop gate that blocks the violating action on the actual write path, or\n"
+-        "- a deterministic config self-check that fails loud, or\n"
+-        "- an anti-vacuous `under_load` eval scenario with a `_fail` fixture that pins the behaviour.\n\n"
+-        f"<!-- {_RECURRENCE_MARKER} {finding.rule_identity} -->\n"
+-    )
+-
+-
+-def _issue_url(raw: RawAPIDict) -> str:
+-    for key in ("html_url", "web_url", "url"):
+-        value = raw.get(key)
+-        if isinstance(value, str) and value:
+-            return value
+-    return ""
+-
+-
+ __all__ = [
+     "ComplianceFinding",
+     "ComplianceSnapshotResult",
+diff --git a/src/teatree/loops/dream/llm_eval_proposer.py b/src/teatree/loops/dream/llm_eval_proposer.py
+index ee56030156..79168a07c0 100644
+--- a/src/teatree/loops/dream/llm_eval_proposer.py
++++ b/src/teatree/loops/dream/llm_eval_proposer.py
+@@ -454,7 +454,7 @@ def _op(matcher: Matcher) -> str:
+ def sdk_spec_synthesizer(candidate: Mapping[str, object], transcript_slice: str) -> SynthesizedSpec:
+     """The real synthesizer: one bounded headless SDK turn → a scenario, parsed defensively.
+ 
+-    Mirrors :func:`teatree.loops.dream.engine._sdk_distiller`'s invocation shape (the
++    Mirrors :func:`teatree.loops.dream.sdk_distiller.sdk_distiller`'s invocation shape (the
+     ``claude_code`` preset, ``bypassPermissions``, a wall-clock watchdog) for a single
+     no-tool turn that transforms the candidate + slice into one scenario JSON object.
+     Raises on an unavailable ``claude`` or a malformed reply, so the caller DROPS the
+@@ -505,7 +505,7 @@ async def _drain() -> list[object]:
+ def _extract_json_object(raw: str) -> Mapping[str, object] | None:
+     """The FIRST balanced JSON object in *raw*, tolerating prose and trailing objects.
+ 
+-    The object analogue of :func:`teatree.loops.dream.engine._extract_json_array`:
++    The object analogue of :func:`teatree.loops.dream.sdk_distiller._extract_json_array`:
+     rather than spanning the first ``{`` to the last ``}`` (which captures multiple
+     objects or a trailing fragment and makes ``json.loads`` raise ``Extra data``), it
+     scans each ``{`` with :meth:`json.JSONDecoder.raw_decode` and returns the first
+diff --git a/src/teatree/loops/dream/promote_memory.py b/src/teatree/loops/dream/promote_memory.py
+index 1e1abcae38..1454245f65 100644
+--- a/src/teatree/loops/dream/promote_memory.py
++++ b/src/teatree/loops/dream/promote_memory.py
+@@ -48,9 +48,14 @@
+ 
+ logger = logging.getLogger(__name__)
+ 
+-#: The dedup marker the filer embeds (and searches for) so a re-run never refiles a
+-#: gap that already has an open tracking issue — mirrors the review-findings
+-#: fingerprint marker, keyed on the row's stable ``cluster_key``.
++#: The standing umbrella issue that tracks every grounded dream gap as a reusable
++#: checkbox ledger — reused daily, never closed (#2663). A core gap rides this
++#: umbrella + a scheduled coding task instead of a fresh ``needs-triage`` issue.
++UMBRELLA_ISSUE_URL = "https://github.com/souliane/teatree/issues/2663"
++
++#: The dedup marker the binding-reconciliation filer embeds (and searches for) so a
++#: re-run never refiles a conflict that already has an open tracking issue — mirrors
++#: the review-findings fingerprint marker.
+ _GAP_MARKER = "dream-memory-gap"
+ 
+ #: A consolidated rule whose durable home points at teatree's own code/skills is a
+@@ -108,20 +113,21 @@ class TicketOutcome:
+ def file_core_gap_tickets(
+     host: CodeHostBackend,
+     *,
+-    repo: str,
++    umbrella_url: str = UMBRELLA_ISSUE_URL,
+     classifier: MemoryClassifier | None = None,
+     dry_run: bool = False,
+ ) -> list[TicketOutcome]:
+-    """Triage every untriaged row; file a deduped teatree ticket for each core gap.
++    """Triage every untriaged row; drive each core gap to a fix-and-merge (#2663).
+ 
+     Each untriaged row is classified (via the injected *classifier*, default the
+     ``durable_destination``-hint one). A user-specific row advances to
+-    ``USER_SPECIFIC_KEEP`` and files nothing. A core-gap row advances to
+-    ``CORE_GAP_NEEDS_TICKET``; then (unless *dry_run*) a deduped ``needs-triage``
+-    backlog issue is filed against *repo* and the row advances to ``TICKETED`` with
+-    the issue URL recorded. A body that would leak a banned term / bare reference is
+-    withheld — never filed. Returns one outcome per core-gap row (user-specific rows
+-    file nothing and yield no outcome).
++    ``USER_SPECIFIC_KEEP`` and does nothing further. A core-gap row advances to
++    ``CORE_GAP_NEEDS_TICKET``; then (unless *dry_run*) it is PROMOTED to a fix —
++    a checkbox is upserted under the standing umbrella issue (*umbrella_url*, deduped
++    by the row's ``cluster_key``) and a coding task is scheduled for the fix. The gap
++    no longer files a fresh ``needs-triage`` issue that the scanner skips. A rendered
++    title that would leak a banned term / bare reference is withheld — never written.
++    Returns one outcome per core-gap row (user-specific rows yield no outcome).
+     """
+     classify = classifier or triage_disposition
+     outcomes: list[TicketOutcome] = []
+@@ -132,48 +138,32 @@ def file_core_gap_tickets(
+         row.classify_core_gap()
+         if dry_run:
+             continue
+-        outcomes.append(_file_one_gap(host, row, repo=repo))
++        outcomes.append(_promote_one_gap(host, row, umbrella_url=umbrella_url))
+     return outcomes
+ 
+ 
+-def _file_one_gap(host: CodeHostBackend, row: ConsolidatedMemory, *, repo: str) -> TicketOutcome:
+-    """File (or reuse) one core-gap backlog ticket and advance the row to TICKETED.
++def _promote_one_gap(host: CodeHostBackend, row: ConsolidatedMemory, *, umbrella_url: str) -> TicketOutcome:
++    """Drive one core-gap row to a fix-and-merge via the umbrella ledger (#2663).
+ 
+-    Dedup-first: an open issue already carrying this row's gap marker is reused. A
+-    rendered body that would leak a banned term or a bare forge reference is withheld
+-    (no issue filed). Otherwise a ``needs-triage`` issue is filed and the row records
+-    its URL.
++    Reuses :func:`teatree.loops.dream.umbrella_ledger.promote_gap`: a checkbox is
++    upserted under the umbrella (deduped by ``cluster_key``) and a coding task is
++    scheduled for the fix (deduped by the same key). The banned-term / bare-reference
++    withholding is enforced inside ``promote_gap`` against the rendered title.
+     """
+-    existing = _find_existing_gap_issue(host, repo=repo, cluster_key=row.cluster_key)
+-    if existing:
+-        row.mark_ticketed(existing)
+-        return TicketOutcome(cluster_key=row.cluster_key, filed=False, ticket_url=existing, reason="reused open issue")
++    from teatree.loops.dream import umbrella_ledger  # noqa: PLC0415
+ 
+-    title = _ticket_title(row)
+-    body = _ticket_body(row)
+-
+-    reason = _withholding_reason(f"{title}\n{body}")
+-    if reason:
+-        return TicketOutcome(cluster_key=row.cluster_key, filed=False, withheld=True, reason=reason)
+-
+-    raw = host.create_issue(repo=repo, title=title, body=body, labels=[_GAP_MARKER, NEEDS_TRIAGE_LABEL])
+-    url = _issue_url(raw)
+-    row.mark_ticketed(url)
+-    return TicketOutcome(cluster_key=row.cluster_key, filed=True, ticket_url=url, reason="filed new issue")
+-
+-
+-def _find_existing_gap_issue(host: CodeHostBackend, *, repo: str, cluster_key: str) -> str:
+-    """Return the URL of an open gap issue already carrying this marker, or ``""``."""
+-    marker = f"{_GAP_MARKER} {cluster_key}"
+-    try:
+-        matches = host.search_open_issues(repo=repo, query=marker)
+-    except Exception:  # noqa: BLE001 — a search hiccup must not block filing; refile-once self-corrects.
+-        return ""
+-    for raw in matches:
+-        body = str(raw.get("body") or raw.get("description") or "")
+-        if marker in body:
+-            return _issue_url(raw)
+-    return ""
++    outcome = umbrella_ledger.promote_gap(
++        host,
++        umbrella_url=umbrella_url,
++        gap=umbrella_ledger.GapSpec(gap_key=row.cluster_key, title=_ticket_title(row), cluster_key=row.cluster_key),
++    )
++    return TicketOutcome(
++        cluster_key=row.cluster_key,
++        filed=outcome.scheduled or outcome.checkbox_added,
++        ticket_url=umbrella_url,
++        withheld=outcome.withheld,
++        reason=outcome.reason,
++    )
+ 
+ 
+ def _withholding_reason(rendered: str) -> str:
+@@ -257,37 +247,30 @@ def _ticket_title(row: ConsolidatedMemory) -> str:
+     return f"Workflow gap (dreaming Pass 2): {snippet}"
+ 
+ 
+-def _ticket_body(row: ConsolidatedMemory) -> str:
+-    rule = neutralize_bare_references(row.rule.strip())
+-    citation = neutralize_bare_references(row.verified_citation.strip())
+-    destination = row.durable_destination.strip() or "(unspecified)"
+-    return (
+-        "A consolidated memory describes a generic teatree workflow gap. Per "
+-        "[#2426](https://github.com/souliane/teatree/issues/2426), a generic memory is a "
+-        "confession that teatree core has a bug — fix it in code (a gate, a hook, a CLI "
+-        "change) and the memory is retired once the fix lands.\n\n"
+-        f"**Rule:** {rule}\n\n"
+-        f"**Cited mistake this would have prevented:** {citation}\n\n"
+-        f"**Suggested home for the fix:** `{destination}`\n\n"
+-        f"<!-- {_GAP_MARKER} {row.cluster_key} -->\n"
+-    )
++def retire_resolved_memories(
++    host: CodeHostBackend, *, is_resolved: "Callable[[str], bool] | None" = None
++) -> list[ConsolidatedMemory]:
++    """Retire each TICKETED memory whose linked teatree ticket is now resolved.
+ 
+-
+-def retire_resolved_memories(host: CodeHostBackend) -> list[ConsolidatedMemory]:
+-    """Retire each TICKETED memory whose linked teatree ticket is now closed.
+-
+-    For every row awaiting ticket-close, the linked issue's state is read from
+-    *host*; a closed issue retires the row (the prose is archived, the gap it
++    For every row awaiting ticket-close, the linked ticket's resolved state is read
++    via *is_resolved* (default: the linked issue's closed/merged state read from
++    *host*); a resolved ticket retires the row (the prose is archived, the gap it
+     confessed is fixed in code). A BINDING row is never retired (binding feedback is
+-    load-bearing user doctrine). An unreadable issue state keeps the memory — a forge
+-    hiccup must never retire a memory whose fix may not have landed. Returns the rows
++    load-bearing user doctrine). An unresolved/unreadable ticket keeps the memory — a
++    forge hiccup must never retire a memory whose fix may not have landed.
++
++    The *is_resolved* seam lets the umbrella reconcile path
++    (:func:`teatree.loops.dream.umbrella_ledger.reconcile_merged_gaps`) retire off the
++    gap-fix Ticket's authoritative MERGED state instead of a fragile forge re-read of
++    a PR URL (a ``/pull/<n>`` URL the issue endpoint does not serve). Returns the rows
+     retired this pass.
+     """
++    resolved = is_resolved or (lambda url: _issue_is_closed(host, url))
+     retired: list[ConsolidatedMemory] = []
+     for row in ConsolidatedMemory.objects.awaiting_ticket_close():
+         if row.is_binding:
+             continue
+-        if not _issue_is_closed(host, row.ticket_url):
++        if not resolved(row.ticket_url):
+             continue
+         row.retire(archive_path=row.ticket_url)
+         retired.append(row)
+diff --git a/src/teatree/loops/dream/umbrella_ledger.py b/src/teatree/loops/dream/umbrella_ledger.py
+new file mode 100644
+index 0000000000..3a87a8beaf
+--- /dev/null
++++ b/src/teatree/loops/dream/umbrella_ledger.py
+@@ -0,0 +1,319 @@
++"""Dream promote = fix-and-merge: drive each grounded gap to a MERGED fix (#2663).
++
++The promote/compliance phases used to file a fresh ``needs-triage`` GitHub issue
++per gap. Those piled up, because the issue scanner SKIPs ``needs-triage``. The new
++behaviour drives each grounded gap to a MERGED fix instead, tracked under ONE
++standing umbrella issue (souliane/teatree#2663) that is reused daily and never
++closed:
++
++1.  **Upsert a checkbox** under the umbrella, keyed on a stable gap key, so the
++    same gap never double-adds (:func:`upsert_gap_checkbox`). The umbrella body is
++    plain markdown — a task-list whose lines each carry an invisible
++    ``<!-- dream-gap <key> -->`` marker for stable dedup, mirroring the
++    fingerprint markers the Pass-2/compliance filers already embed.
++2.  **Schedule the fix** for each NEW gap by reusing the existing
++    :meth:`~teatree.core.models.ticket.Ticket.schedule_coding` + the orchestrator's
++    issue-implementer path (:func:`schedule_gap_fix`): a coder implements the fix
++    TDD in a worktree, opens a PR, and the PR merges through the SAME single
++    keystone flow gated by the overlay's autonomy setting. No new model — an
++    in-flight gap is an existing ``Ticket`` row + its ``ConsolidatedMemory`` ledger
++    entry; the umbrella checkbox is the durable cross-night state.
++3.  **Reconcile on merge** (:func:`reconcile_merged_gaps`): when a gap's fix Ticket
++    reaches MERGED, CHECK its umbrella checkbox and retire the corresponding memory
++    through the existing :func:`~teatree.loops.dream.promote_memory.retire_resolved_memories`.
++
++The forge writes go through a passed-in
++:class:`~teatree.core.backend_protocols.CodeHostBackend`, so the whole flow is
++testable without an LLM and without a live forge. A rendered title that would leak
++a banned term / bare reference is WITHHELD — never written to the umbrella.
++"""
++
++import logging
++import re
++from dataclasses import dataclass
++
++from teatree.core.backend_protocols import CodeHostBackend
++from teatree.core.models import ConsolidatedMemory
++from teatree.core.models.task import Task
++from teatree.core.models.ticket import Ticket
++from teatree.core.review_findings import find_bare_references, neutralize_bare_references
++from teatree.hooks import banned_terms_scanner
++
++logger = logging.getLogger(__name__)
++
++#: The stable marker embedded (invisibly) in each umbrella checkbox line, keyed on
++#: the gap key, so a re-run upserts in place rather than appending a duplicate.
++_GAP_MARKER_PREFIX = "dream-gap"
++
++#: The ticket-``extra`` keys that link an in-flight gap-fix Ticket back to its gap
++#: identity, the memory to retire on merge, and the umbrella to check.
++_GAP_KEY = "dream_gap_key"
++_CLUSTER_KEY = "dream_memory_cluster_key"
++_UMBRELLA_KEY = "dream_umbrella_url"
++
++
++@dataclass(frozen=True, slots=True)
++class GapSpec:
++    """One grounded gap's identity for promotion to a fix-and-merge.
++
++    ``gap_key`` is the stable umbrella-checkbox / scheduling dedup key; ``title`` is
++    the rendered checkbox label (scanned for banned terms / bare refs before any
++    write); ``cluster_key`` links the gap-fix Ticket back to the ``ConsolidatedMemory``
++    row to retire on merge (equal to ``gap_key`` for a core gap; the
++    ``compliance-recurrence-<rule_identity>`` key for a recurrence).
++    """
++
++    gap_key: str
++    title: str
++    cluster_key: str
++
++
++@dataclass(frozen=True, slots=True)
++class PromoteGapOutcome:
++    """The result of promoting one grounded gap to a fix-and-merge.
++
++    ``checkbox_added`` is True only when a NEW checkbox was appended to the
++    umbrella; ``scheduled`` is True only when a NEW coding task was scheduled;
++    ``withheld`` is True when the rendered title would leak a banned term / bare
++    reference and nothing was written or scheduled.
++    """
++
++    gap_key: str
++    checkbox_added: bool
++    scheduled: bool
++    withheld: bool = False
++    reason: str = ""
++
++
++def _marker(gap_key: str) -> str:
++    return f"<!-- {_GAP_MARKER_PREFIX} {gap_key} -->"
++
++
++def render_checkbox_line(*, gap_key: str, title: str, checked: bool, ticket_url: str = "") -> str:
++    """Render one umbrella checkbox line carrying the title and the stable marker.
++
++    The ``<!-- dream-gap <key> -->`` marker is invisible in the rendered issue but
++    is the durable dedup/lookup key. A ``ticket_url`` (the fix PR/issue) is rendered
++    inline when known so a human skimming the umbrella can click through.
++    """
++    box = "[x]" if checked else "[ ]"
++    link = f" ([fix]({ticket_url}))" if ticket_url else ""
++    return f"- {box} {title.strip()}{link} {_marker(gap_key)}"
++
++
++def _line_index(lines: list[str], gap_key: str) -> int:
++    """The index of the umbrella line carrying *gap_key*'s marker, or ``-1``."""
++    marker = _marker(gap_key)
++    for i, line in enumerate(lines):
++        if marker in line:
++            return i
++    return -1
++
++
++def _read_body(host: CodeHostBackend, umbrella_url: str) -> str | None:
++    """Re-read the umbrella body; ``None`` on an unreadable forge state (never raises)."""
++    try:
++        raw = host.get_issue(umbrella_url)
++    except Exception:  # noqa: BLE001 — a forge hiccup must not crash the dream pass; keep, don't write.
++        return None
++    body = raw.get("body") or raw.get("description")
++    return body if isinstance(body, str) else None
++
++
++def upsert_gap_checkbox(
++    host: CodeHostBackend, *, umbrella_url: str, gap_key: str, title: str, ticket_url: str = ""
++) -> bool:
++    """Add an unchecked checkbox for *gap_key* under the umbrella, deduped by key.
++
++    Re-reads the umbrella body, and — only when no line already carries this gap's
++    marker — appends one checkbox line and writes the whole body back. A gap that is
++    already present is a no-op (idempotent; no rewrite). An unreadable body keeps
++    the umbrella untouched (a forge hiccup never crashes the pass). Returns True iff
++    a NEW checkbox was appended.
++    """
++    body = _read_body(host, umbrella_url)
++    if body is None:
++        return False
++    lines = body.splitlines()
++    if _line_index(lines, gap_key) != -1:
++        return False
++    lines.append(render_checkbox_line(gap_key=gap_key, title=title, checked=False, ticket_url=ticket_url))
++    host.update_issue(issue_url=umbrella_url, body="\n".join(lines) + "\n")
++    return True
++
++
++def check_gap_checkbox(host: CodeHostBackend, *, umbrella_url: str, gap_key: str) -> bool:
++    """Flip *gap_key*'s umbrella checkbox from unchecked to checked, idempotently.
++
++    Re-reads the body, flips the ``- [ ]`` of the line carrying this gap's marker to
++    ``- [x]``, and writes the whole body back. An already-checked or absent gap is a
++    no-op (no rewrite). Returns True iff the box was newly checked.
++    """
++    body = _read_body(host, umbrella_url)
++    if body is None:
++        return False
++    lines = body.splitlines()
++    index = _line_index(lines, gap_key)
++    if index == -1:
++        return False
++    flipped = re.sub(r"^- \[ \]", "- [x]", lines[index], count=1)
++    if flipped == lines[index]:
++        return False
++    lines[index] = flipped
++    host.update_issue(issue_url=umbrella_url, body="\n".join(lines) + "\n")
++    return True
++
++
++def _gap_issue_url(umbrella_url: str, gap_key: str) -> str:
++    """A unique, valid synthetic issue URL anchoring this gap's fix Ticket.
++
++    The umbrella URL with a ``#dream-gap=<key>`` fragment is unique per gap (so the
++    Ticket's non-empty-``issue_url`` unique constraint dedups re-runs) and still
++    resolves the ``souliane/teatree`` overlay via ``infer_overlay_for_url``.
++    """
++    return f"{umbrella_url}#{_GAP_MARKER_PREFIX}={gap_key}"
++
++
++def schedule_gap_fix(*, umbrella_url: str, gap_key: str, title: str, cluster_key: str) -> Task | None:
++    """Schedule a headless coding task to fix *gap_key*, reusing ``schedule_coding``.
++
++    Idempotently creates (or finds) an ``AUTHOR`` Ticket anchored on a synthetic
++    per-gap issue URL, records the gap/memory/umbrella linkage in ``extra``, and —
++    only when the gap is NOT already scheduled — calls
++    :meth:`Ticket.schedule_coding`. The resulting PR merges through the SAME keystone
++    flow gated by the overlay's autonomy setting. Returns the scheduled ``Task``, or
++    ``None`` when this gap already has an open/scheduled coding task.
++    """
++    issue_url = _gap_issue_url(umbrella_url, gap_key)
++    ticket, _ = Ticket.objects.get_or_create(
++        issue_url=issue_url,
++        defaults={"role": Ticket.Role.AUTHOR, "short_description": title.strip()[:80]},
++    )
++    extra = dict(ticket.extra or {})
++    extra.update({_GAP_KEY: gap_key, _CLUSTER_KEY: cluster_key, _UMBRELLA_KEY: umbrella_url})
++    if extra != ticket.extra:
++        ticket.extra = extra
++        ticket.save(update_fields=["extra"])
++    if Task.objects.pending_in_phase("coding").filter(ticket=ticket).exists():
++        return None
++    if ticket.state != Ticket.State.NOT_STARTED:
++        return None
++    return ticket.schedule_coding()
++
++
++def promote_gap(host: CodeHostBackend, *, umbrella_url: str, gap: GapSpec, dry_run: bool = False) -> PromoteGapOutcome:
++    """Drive one grounded gap to a fix-and-merge: upsert checkbox + schedule the fix.
++
++    The rendered title is neutralised and re-scanned; a surviving banned term / bare
++    reference WITHHOLDS the gap (nothing written or scheduled). Otherwise the gap's
++    checkbox is upserted under the umbrella (deduped by *gap.gap_key*) and a coding
++    task is scheduled for a NEW gap (reusing ``schedule_coding``). Under *dry_run*
++    nothing is written or scheduled — the gap is reported as it would be promoted.
++    """
++    safe_title = neutralize_bare_references(gap.title.strip())
++    banned = banned_terms_scanner.scan_text(safe_title)
++    if banned is not None:
++        return PromoteGapOutcome(
++            gap_key=gap.gap_key,
++            checkbox_added=False,
++            scheduled=False,
++            withheld=True,
++            reason=f"contains banned term '{banned}'",
++        )
++    leaked = find_bare_references(safe_title)
++    if leaked:
++        return PromoteGapOutcome(
++            gap_key=gap.gap_key,
++            checkbox_added=False,
++            scheduled=False,
++            withheld=True,
++            reason=f"contains bare reference(s): {', '.join(leaked)}",
++        )
++
++    if dry_run:
++        return PromoteGapOutcome(gap_key=gap.gap_key, checkbox_added=False, scheduled=False, reason="DRY (no writes)")
++
++    added = upsert_gap_checkbox(host, umbrella_url=umbrella_url, gap_key=gap.gap_key, title=safe_title)
++    task = schedule_gap_fix(
++        umbrella_url=umbrella_url, gap_key=gap.gap_key, title=safe_title, cluster_key=gap.cluster_key
++    )
++    return PromoteGapOutcome(gap_key=gap.gap_key, checkbox_added=added, scheduled=task is not None, reason="promoted")
++
++
++def _in_flight_gap_tickets() -> list[Ticket]:
++    """Every Ticket scheduled to fix a dream gap (those carrying the gap-key marker)."""
++    return list(Ticket.objects.exclude(extra__dream_gap_key__isnull=True).exclude(extra__dream_gap_key=""))
++
++
++def _merged_pr_url(ticket: Ticket) -> str:
++    """The merged PR URL backing this gap-fix ticket, or ``""`` when none merged."""
++    from teatree.core.models.pull_request import PullRequest  # noqa: PLC0415
++
++    pr = PullRequest.objects.filter(ticket=ticket, state=PullRequest.State.MERGED).first()
++    return pr.url if pr is not None else ""
++
++
++def reconcile_merged_gaps(host: CodeHostBackend, *, umbrella_url: str) -> list[Ticket]:
++    """Check the umbrella checkbox + retire the memory for every MERGED gap-fix Ticket.
++
++    For each in-flight gap whose fix Ticket reached MERGED, CHECK its umbrella
++    checkbox and stamp the linked ``ConsolidatedMemory``'s ``ticket_url`` to the
++    merged PR, then retire the prose through the EXISTING
++    :func:`~teatree.loops.dream.promote_memory.retire_resolved_memories` — driven off
++    the Ticket's authoritative MERGED state (an injected ``is_resolved`` predicate),
++    NOT a fragile forge re-read of a ``/pull/<n>`` URL the issue endpoint does not
++    serve. A BINDING memory is never retired; a gap whose fix has not merged is left
++    alone. Returns the gap-fix tickets reconciled this pass.
++    """
++    from teatree.loops.dream.promote_memory import retire_resolved_memories  # noqa: PLC0415
++
++    reconciled: list[Ticket] = []
++    merged_memory_urls: set[str] = set()
++    for ticket in _in_flight_gap_tickets():
++        if ticket.state != Ticket.State.MERGED:
++            continue
++        gap_key = str((ticket.extra or {}).get(_GAP_KEY) or "")
++        cluster_key = str((ticket.extra or {}).get(_CLUSTER_KEY) or "")
++        merged_url = _merged_pr_url(ticket)
++        check_gap_checkbox(host, umbrella_url=umbrella_url, gap_key=gap_key)
++        if _stamp_memory_merged(cluster_key, merged_url=merged_url):
++            merged_memory_urls.add(merged_url)
++        reconciled.append(ticket)
++    retire_resolved_memories(host, is_resolved=lambda url: url in merged_memory_urls)
++    return reconciled
++
++
++def _stamp_memory_merged(cluster_key: str, *, merged_url: str) -> bool:
++    """Point the gap's memory at its merged fix so the existing retire path fires.
++
++    The memory is advanced to TICKETED with the merged PR as its ``ticket_url`` (the
++    reconcile then drives ``retire_resolved_memories`` off the authoritative MERGED
++    signal). A row already TICKETED/retired or with no merged URL is left untouched.
++    Returns True iff this stamped a row TICKETED with *merged_url*.
++    """
++    if not cluster_key or not merged_url:
++        return False
++    row = ConsolidatedMemory.objects.filter(cluster_key=cluster_key).first()
++    if row is None:
++        return False
++    if row.disposition not in {
++        ConsolidatedMemory.Disposition.UNTRIAGED,
++        ConsolidatedMemory.Disposition.CORE_GAP_NEEDS_TICKET,
++    }:
++        return False
++    if row.disposition == ConsolidatedMemory.Disposition.UNTRIAGED:
++        row.classify_core_gap()
++    row.mark_ticketed(merged_url)
++    return True
++
++
++__all__ = [
++    "GapSpec",
++    "PromoteGapOutcome",
++    "check_gap_checkbox",
++    "promote_gap",
++    "reconcile_merged_gaps",
++    "render_checkbox_line",
++    "schedule_gap_fix",
++    "upsert_gap_checkbox",
++]
+diff --git a/tests/teatree_backends/test_gitlab_code_host.py b/tests/teatree_backends/test_gitlab_code_host.py
+index b4514b9d39..34710ad2fa 100644
+--- a/tests/teatree_backends/test_gitlab_code_host.py
++++ b/tests/teatree_backends/test_gitlab_code_host.py
+@@ -167,6 +167,35 @@ def test_close_issue_returns_error_when_project_not_resolved() -> None:
+     client.put_json.assert_not_called()
+ 
+ 
++def test_update_issue_puts_the_description() -> None:
++    client = MagicMock(spec=GitLabAPI)
++    client.resolve_project.return_value = _project()
++    client.put_json.return_value = {"iid": 3}
++    host = GitLabCodeHost(client=client)
++
++    result = host.update_issue(issue_url="https://gitlab.com/org/repo/-/issues/3", body="new umbrella body")
++
++    assert result == {"iid": 3}
++    client.put_json.assert_called_once_with("projects/42/issues/3", {"description": "new umbrella body"})
++
++
++def test_update_issue_returns_error_when_project_not_resolved() -> None:
++    client = MagicMock(spec=GitLabAPI)
++    client.resolve_project.return_value = None
++    host = GitLabCodeHost(client=client)
++
++    assert "error" in host.update_issue(issue_url="https://gitlab.com/org/unknown/-/issues/3", body="x")
++    client.put_json.assert_not_called()
++
++
++def test_update_issue_rejects_non_issue_url() -> None:
++    client = MagicMock(spec=GitLabAPI)
++    host = GitLabCodeHost(client=client)
++
++    assert "error" in host.update_issue(issue_url="https://example.com/not/an/issue", body="x")
++    client.put_json.assert_not_called()
++
++
+ def test_search_open_issues_searches_project() -> None:
+     client = MagicMock(spec=GitLabAPI)
+     client.resolve_project.return_value = _project()
+diff --git a/tests/teatree_backends/test_protocols.py b/tests/teatree_backends/test_protocols.py
+index a42b0f24d6..5a482e249f 100644
+--- a/tests/teatree_backends/test_protocols.py
++++ b/tests/teatree_backends/test_protocols.py
+@@ -103,6 +103,10 @@ def get_issue(self, issue_url: str) -> dict[str, object]:
+         _ = issue_url
+         return {}
+ 
++    def update_issue(self, *, issue_url: str, body: str) -> dict[str, object]:
++        _ = (issue_url, body)
++        return {}
++
+     def post_issue_comment(self, *, issue_url: str, body: str) -> dict[str, object]:
+         _ = (issue_url, body)
+         return {}
+diff --git a/tests/teatree_core/management_commands/test_dream.py b/tests/teatree_core/management_commands/test_dream.py
+index 7c174a57a0..51ff1d6b2b 100644
+--- a/tests/teatree_core/management_commands/test_dream.py
++++ b/tests/teatree_core/management_commands/test_dream.py
+@@ -785,14 +785,14 @@ def test_promotion_runs_and_reports_when_toggle_on(self) -> None:
+         stdout = StringIO()
+         with (
+             patch("teatree.loops.dream.promote_memory.file_core_gap_tickets", return_value=filed),
+-            patch("teatree.loops.dream.promote_memory.retire_resolved_memories", return_value=[]),
++            patch("teatree.loops.dream.umbrella_ledger.reconcile_merged_gaps", return_value=[]),
+             patch(
+                 "teatree.core.management.commands.dream.Command._teatree_backlog_host",
+                 return_value=(object(), "souliane/teatree"),
+             ),
+         ):
+             self._tick(stdout, env={"T3_DREAM_MEMORY_PROMOTE": "1"})
+-        assert "ticketed 1 core-gap memory(ies), retired 0" in stdout.getvalue()
++        assert "promoted 1 core-gap fix(es), reconciled 0 merged" in stdout.getvalue()
+ 
+     def test_promotion_failure_is_warned_not_crashed(self) -> None:
+         stdout = StringIO()
+@@ -851,7 +851,7 @@ def test_full_runs_memory_promotion_despite_toggle_off(self) -> None:
+             patch("teatree.loops.dream.promote.promote_proposals_file", return_value=[]),
+             patch("teatree.memory_audit.discover_memory_dirs", return_value=[]),
+             patch("teatree.loops.dream.promote_memory.file_core_gap_tickets", return_value=[]) as file_fn,
+-            patch("teatree.loops.dream.promote_memory.retire_resolved_memories", return_value=[]),
++            patch("teatree.loops.dream.umbrella_ledger.reconcile_merged_gaps", return_value=[]),
+             patch(
+                 "teatree.core.management.commands.dream.Command._teatree_backlog_host",
+                 return_value=(object(), "souliane/teatree"),
+@@ -867,7 +867,7 @@ def test_full_runs_eval_derivation_despite_toggle_off(self) -> None:
+             patch("teatree.loops.dream.promote.promote_proposals_file", return_value=[]),
+             patch("teatree.memory_audit.discover_memory_dirs", return_value=[]),
+             patch("teatree.loops.dream.promote_memory.file_core_gap_tickets", return_value=[]),
+-            patch("teatree.loops.dream.promote_memory.retire_resolved_memories", return_value=[]),
++            patch("teatree.loops.dream.umbrella_ledger.reconcile_merged_gaps", return_value=[]),
+             patch("teatree.loops.dream.llm_eval_proposer.stage_proposals_file", return_value=[]) as stage_fn,
+             patch(
+                 "teatree.core.management.commands.dream.Command._teatree_backlog_host",
+diff --git a/tests/teatree_loops/dream/test_compliance.py b/tests/teatree_loops/dream/test_compliance.py
+index 0afd999659..e09984fab6 100644
+--- a/tests/teatree_loops/dream/test_compliance.py
++++ b/tests/teatree_loops/dream/test_compliance.py
+@@ -51,10 +51,14 @@ def _extract(*snippets: WeightedSnippet) -> ConsolidationExtract:
+ _CLEAN_TURN = '{"type": "assistant", "content": "Implemented the feature and ran the tests."}'
+ 
+ 
+-def _fake_host(*, created_url: str = "https://github.com/souliane/teatree/issues/9300") -> CodeHostBackend:
++UMBRELLA = "https://github.com/souliane/teatree/issues/2663"
++
++
++def _fake_host(*, body: str = "## Open gaps\n") -> CodeHostBackend:
+     host = MagicMock(spec=CodeHostBackend)
+     host.search_open_issues.return_value = []
+-    host.create_issue.return_value = {"html_url": created_url}
++    host.get_issue.return_value = {"body": body}
++    host.update_issue.return_value = {"number": 2663}
+     return host
+ 
+ 
+@@ -96,60 +100,60 @@ def test_violation_without_a_backing_memory_is_not_a_recurrence(self) -> None:
+ 
+ 
+ class EscalateRecurrencesTestCase(TestCase):
+-    """A recurrence files exactly one deduped enforcement ticket, never a memory."""
++    """A recurrence rides the umbrella + a scheduled gate/eval fix, never a memory."""
+ 
+     def _recurrence(self, identity: str = "feedback_askuserquestion_overuse") -> ComplianceFinding:
+         return ComplianceFinding(
+             rule_source=RuleSource.MEMORY,
+             rule_identity=identity,
+             evidence="AskUserQuestion fired again despite the memory",
+             is_recurrence=True,
+         )
+ 
+-    def test_one_recurrence_files_one_gate_or_eval_ticket(self) -> None:
++    def test_one_recurrence_upserts_a_checkbox_and_schedules_a_fix(self) -> None:
++        from teatree.core.models.task import Task  # noqa: PLC0415
++        from teatree.core.models.ticket import Ticket  # noqa: PLC0415
++
+         host = _fake_host()
+-        outcomes = escalate_recurrences([self._recurrence()], host, repo="souliane/teatree")
++        outcomes = escalate_recurrences([self._recurrence()], host, umbrella_url=UMBRELLA)
+         assert len(outcomes) == 1
+         assert outcomes[0].filed is True
+-        host.create_issue.assert_called_once()
+-        _, kwargs = host.create_issue.call_args
+-        # The ticket must prescribe a STRUCTURAL fix (a gate or an eval), never "write a memory".
+-        body = kwargs["body"].lower()
+-        assert "gate" in body or "eval" in body
+-        assert "write another memory" not in body
+-        assert "needs-triage" in kwargs["labels"]
++        # No fresh needs-triage issue — the recurrence rides the umbrella + a coding task.
++        host.create_issue.assert_not_called()
++        host.update_issue.assert_called_once()
++        _, kwargs = host.update_issue.call_args
++        # The checkbox title prescribes a STRUCTURAL fix (a gate or an eval).
++        title = kwargs["body"].lower()
++        assert "gate" in title or "eval" in title
++        assert Ticket.objects.filter(extra__dream_gap_key__startswith="compliance-recurrence").exists()
++        assert Task.objects.filter(phase="coding").exists()
+ 
+-    def test_two_recurrences_of_the_same_rule_file_one_ticket(self) -> None:
++    def test_two_recurrences_of_the_same_rule_promote_one_gap(self) -> None:
+         host = _fake_host()
+-        outcomes = escalate_recurrences([self._recurrence(), self._recurrence()], host, repo="souliane/teatree")
++        outcomes = escalate_recurrences([self._recurrence(), self._recurrence()], host, umbrella_url=UMBRELLA)
+         filed = [o for o in outcomes if o.filed]
+         assert len(filed) == 1
+-        host.create_issue.assert_called_once()
+ 
+-    def test_existing_open_escalation_is_reused_not_duplicated(self) -> None:
+-        host = MagicMock(spec=CodeHostBackend)
+-        host.search_open_issues.return_value = [
+-            {
+-                "html_url": "https://github.com/souliane/teatree/issues/55",
+-                "body": "<!-- compliance-recurrence feedback_askuserquestion_overuse -->",
+-            }
+-        ]
+-        outcomes = escalate_recurrences([self._recurrence()], host, repo="souliane/teatree")
+-        assert outcomes[0].filed is False
+-        assert outcomes[0].ticket_url == "https://github.com/souliane/teatree/issues/55"
+-        host.create_issue.assert_not_called()
++    def test_existing_checkbox_is_not_double_added(self) -> None:
++        existing = (
++            "## Open gaps\n- [ ] Compliance recurrence ... "
++            "<!-- dream-gap compliance-recurrence-feedback_askuserquestion_overuse -->\n"
++        )
++        host = _fake_host(body=existing)
++        escalate_recurrences([self._recurrence()], host, umbrella_url=UMBRELLA)
++        host.update_issue.assert_not_called()
+ 
+     def test_non_recurrence_findings_are_never_escalated(self) -> None:
+         first_occurrence = ComplianceFinding(
+             rule_source=RuleSource.IN_SESSION,
+             rule_identity="rename-public-api",
+             evidence="renamed the API again",
+             is_recurrence=False,
+         )
+         host = _fake_host()
+-        outcomes = escalate_recurrences([first_occurrence], host, repo="souliane/teatree")
++        outcomes = escalate_recurrences([first_occurrence], host, umbrella_url=UMBRELLA)
+         assert outcomes == []
+-        host.create_issue.assert_not_called()
++        host.update_issue.assert_not_called()
+ 
+ 
+ class PersistCompliancePassTestCase(TestCase):
+@@ -189,10 +193,11 @@ def test_escalated_recurrence_record_carries_the_escalation_url(self) -> None:
+             is_recurrence=True,
+         )
+         snapshot = persist_compliance_pass([finding], instructions_observed=4)
+-        escalate_recurrences([finding], host, repo="souliane/teatree", snapshot=snapshot)
++        escalate_recurrences([finding], host, umbrella_url=UMBRELLA, snapshot=snapshot)
+         row = InstructionComplianceRecord.objects.get(snapshot=snapshot, rule_identity="feedback_a")
+         assert row.remediation == RemediationKind.ESCALATION
+-        assert row.escalation_url == "https://github.com/souliane/teatree/issues/9300"
++        # The escalation is now the standing umbrella (the recurrence rides it + a coding task).
++        assert row.escalation_url == UMBRELLA
+ 
+ 
+ class BuildComplianceSnapshotTestCase(TestCase):
+diff --git a/tests/teatree_loops/dream/test_promote_memory.py b/tests/teatree_loops/dream/test_promote_memory.py
+index 80cfd0fb49..7cfdd7526c 100644
+--- a/tests/teatree_loops/dream/test_promote_memory.py
++++ b/tests/teatree_loops/dream/test_promote_memory.py
+@@ -48,10 +48,14 @@ def _row(
+     )
+ 
+ 
+-def _fake_host(*, created_url: str = "https://github.com/souliane/teatree/issues/9001") -> CodeHostBackend:
++UMBRELLA = "https://github.com/souliane/teatree/issues/2663"
++
++
++def _fake_host(*, body: str = "## Open gaps\n") -> CodeHostBackend:
+     host = MagicMock(spec=CodeHostBackend)
+     host.search_open_issues.return_value = []
+-    host.create_issue.return_value = {"html_url": created_url}
++    host.get_issue.return_value = {"body": body}
++    host.update_issue.return_value = {"number": 2663}
+     return host
+ 
+ 
+@@ -81,78 +85,74 @@ def test_empty_destination_is_user_specific_conservative(self) -> None:
+ 
+ 
+ class FileCoreGapTicketsTestCase(TestCase):
+-    """Core-gap rows get a deduped teatree ticket and advance to TICKETED."""
++    """Core-gap rows upsert an umbrella checkbox + schedule a fix — never a triage issue."""
++
++    def test_core_gap_row_upserts_a_checkbox_and_schedules_a_fix(self) -> None:
++        from teatree.core.models.task import Task  # noqa: PLC0415
++        from teatree.core.models.ticket import Ticket  # noqa: PLC0415
+ 
+-    def test_core_gap_row_files_a_ticket_and_records_the_url(self) -> None:
+         row = _row(destination="skills/ship/SKILL.md")
+         host = _fake_host()
+-        outcomes = file_core_gap_tickets(host, repo="souliane/teatree")
++        outcomes = file_core_gap_tickets(host, umbrella_url=UMBRELLA)
+         assert len(outcomes) == 1
+         assert outcomes[0].filed is True
++        # No fresh needs-triage issue is filed — the gap rides the umbrella + a coding task.
++        host.create_issue.assert_not_called()
++        host.update_issue.assert_called_once()
++        assert Ticket.objects.filter(extra__dream_gap_key="k1").exists()
++        assert Task.objects.filter(phase="coding").exists()
+         row.refresh_from_db()
+-        assert row.disposition == ConsolidatedMemory.Disposition.TICKETED
+-        assert row.ticket_url == "https://github.com/souliane/teatree/issues/9001"
+-        host.create_issue.assert_called_once()
++        assert row.disposition == ConsolidatedMemory.Disposition.CORE_GAP_NEEDS_TICKET
+ 
+     def test_user_specific_row_is_classified_and_files_nothing(self) -> None:
+         row = _row(destination="feedback/tone.md")
+         host = _fake_host()
+-        file_core_gap_tickets(host, repo="souliane/teatree")
++        file_core_gap_tickets(host, umbrella_url=UMBRELLA)
+         row.refresh_from_db()
+         assert row.disposition == ConsolidatedMemory.Disposition.USER_SPECIFIC_KEEP
+         host.create_issue.assert_not_called()
++        host.update_issue.assert_not_called()
+ 
+-    def test_ticket_body_carries_the_cited_mistake(self) -> None:
+-        _row(destination="skills/ship/SKILL.md", citation="pushed without the gate, CI went red")
++    def test_checkbox_carries_the_gap_marker(self) -> None:
++        _row(destination="skills/ship/SKILL.md")
+         host = _fake_host()
+-        file_core_gap_tickets(host, repo="souliane/teatree")
+-        _, kwargs = host.create_issue.call_args
+-        assert "pushed without the gate" in kwargs["body"]
+-        assert "needs-triage" in kwargs["labels"]
++        file_core_gap_tickets(host, umbrella_url=UMBRELLA)
++        _, kwargs = host.update_issue.call_args
++        assert "<!-- dream-gap k1 -->" in kwargs["body"]
+ 
+-    def test_already_ticketed_row_is_not_refiled(self) -> None:
+-        row = _row(destination="skills/ship/SKILL.md")
+-        row.classify_core_gap()
+-        row.mark_ticketed("https://github.com/souliane/teatree/issues/42")
+-        host = _fake_host()
+-        outcomes = file_core_gap_tickets(host, repo="souliane/teatree")
+-        # The TICKETED row is no longer untriaged — nothing is refiled.
+-        assert outcomes == []
+-        host.create_issue.assert_not_called()
++    def test_already_scheduled_gap_is_not_double_added(self) -> None:
++        existing = "## Open gaps\n- [ ] Workflow gap (dreaming Pass 2): Run the tree-wide ... <!-- dream-gap k1 -->\n"
++        _row(destination="skills/ship/SKILL.md")
++        host = _fake_host(body=existing)
++        file_core_gap_tickets(host, umbrella_url=UMBRELLA)
++        # The checkbox is already present — no rewrite.
++        host.update_issue.assert_not_called()
+ 
+-    def test_existing_open_issue_is_reused_not_duplicated(self) -> None:
+-        row = _row(key="dedup-key", destination="skills/ship/SKILL.md")
+-        host = MagicMock(spec=CodeHostBackend)
+-        host.search_open_issues.return_value = [
+-            {"html_url": "https://github.com/souliane/teatree/issues/77", "body": "<!-- dream-memory-gap dedup-key -->"}
+-        ]
+-        outcomes = file_core_gap_tickets(host, repo="souliane/teatree")
+-        assert outcomes[0].filed is False
+-        assert outcomes[0].ticket_url == "https://github.com/souliane/teatree/issues/77"
+-        row.refresh_from_db()
+-        assert row.disposition == ConsolidatedMemory.Disposition.TICKETED
+-        assert row.ticket_url == "https://github.com/souliane/teatree/issues/77"
+-        host.create_issue.assert_not_called()
+-
+-    def test_banned_term_body_is_withheld_not_filed(self) -> None:
++    def test_banned_term_title_is_withheld_not_promoted(self) -> None:
+         from unittest.mock import patch  # noqa: PLC0415
+ 
++        from teatree.core.models.ticket import Ticket  # noqa: PLC0415
++
+         _row(destination="skills/ship/SKILL.md")
+         host = _fake_host()
+-        with patch("teatree.loops.dream.promote_memory.banned_terms_scanner.scan_text", return_value="customer-name"):
+-            outcomes = file_core_gap_tickets(host, repo="souliane/teatree")
++        with patch("teatree.loops.dream.umbrella_ledger.banned_terms_scanner.scan_text", return_value="customer-name"):
++            outcomes = file_core_gap_tickets(host, umbrella_url=UMBRELLA)
+         assert outcomes[0].filed is False
+         assert outcomes[0].withheld is True
+-        host.create_issue.assert_not_called()
++        host.update_issue.assert_not_called()
++        assert not Ticket.objects.filter(extra__dream_gap_key="k1").exists()
++
++    def test_dry_run_classifies_but_neither_edits_nor_schedules(self) -> None:
++        from teatree.core.models.ticket import Ticket  # noqa: PLC0415
+ 
+-    def test_dry_run_classifies_but_files_nothing(self) -> None:
+         row = _row(destination="skills/ship/SKILL.md")
+         host = _fake_host()
+-        file_core_gap_tickets(host, repo="souliane/teatree", dry_run=True)
++        file_core_gap_tickets(host, umbrella_url=UMBRELLA, dry_run=True)
+         row.refresh_from_db()
+-        # The classification still advances (cheap, reversible), but no ticket is filed.
++        # The classification still advances (cheap, reversible), but nothing is promoted.
+         assert row.disposition == ConsolidatedMemory.Disposition.CORE_GAP_NEEDS_TICKET
+-        host.create_issue.assert_not_called()
++        host.update_issue.assert_not_called()
++        assert not Ticket.objects.filter(extra__dream_gap_key="k1").exists()
+ 
+ 
+ def _conflict(survivor: str = "feedback_bind_one", absorbed: str = "feedback_bind_two") -> BindingConflict:
+@@ -294,3 +294,16 @@ def test_unresolvable_issue_state_keeps_the_memory(self) -> None:
+         assert retired == []
+         row.refresh_from_db()
+         assert row.disposition == ConsolidatedMemory.Disposition.TICKETED
++
++    def test_injected_is_resolved_predicate_drives_retirement(self) -> None:
++        # The umbrella reconcile path retires off the gap-fix Ticket's authoritative
++        # MERGED state, not a fragile forge re-read — via an injected predicate.
++        row = _row(destination="skills/ship/SKILL.md")
++        row.classify_core_gap()
++        row.mark_ticketed("https://github.com/souliane/teatree/pull/9100")
++        host = MagicMock(spec=CodeHostBackend)
++        host.get_issue.side_effect = AssertionError("the injected predicate must not round-trip the forge")
++        retired = retire_resolved_memories(host, is_resolved=lambda _url: True)
++        assert len(retired) == 1
++        row.refresh_from_db()
++        assert row.disposition == ConsolidatedMemory.Disposition.RESOLVED_RETIRED
+diff --git a/tests/teatree_loops/dream/test_umbrella_ledger.py b/tests/teatree_loops/dream/test_umbrella_ledger.py
+new file mode 100644
+index 0000000000..9125363820
+--- /dev/null
++++ b/tests/teatree_loops/dream/test_umbrella_ledger.py
+@@ -0,0 +1,264 @@
++"""Dream promote = fix-and-merge: the standing umbrella-issue ledger (#2663).
++
++The promote/compliance phases no longer pile up ``needs-triage`` triage issues —
++one per gap. Instead each grounded gap becomes a CHECKBOX item under the standing
++umbrella issue (souliane/teatree#2663, reused daily, never closed), keyed on a
++stable gap key so the same gap never double-adds, and its fix is SCHEDULED for a
++coding agent via the existing ``Ticket.schedule_coding()`` path. When the fix
++Ticket reaches MERGED, the checkbox is CHECKED and the linked ``ConsolidatedMemory``
++is retired through the existing ``retire_resolved_memories``.
++
++These tests drive that flow with an INJECTED fake code host and real ``Ticket`` /
++``ConsolidatedMemory`` rows, so the whole flow is testable without an LLM or a
++live forge. The umbrella body is plain markdown — a task-list whose lines each
++carry an invisible ``<!-- dream-gap <key> -->`` marker for stable dedup.
++"""
++
++from unittest.mock import MagicMock
++
++from django.test import TestCase
++
++from teatree.core.backend_protocols import CodeHostBackend
++from teatree.core.models import ConsolidatedMemory
++from teatree.core.models.ticket import Ticket
++from teatree.loops.dream import umbrella_ledger as ul
++
++UMBRELLA = "https://github.com/souliane/teatree/issues/2663"
++REPO = "souliane/teatree"
++
++
++def _fake_host(*, body: str = "## Open gaps\n") -> CodeHostBackend:
++    host = MagicMock(spec=CodeHostBackend)
++    host.get_issue.return_value = {"body": body}
++    host.update_issue.return_value = {"number": 2663}
++    return host
++
++
++def _memory(*, key: str = "gap-1", binding: bool = False) -> ConsolidatedMemory:
++    return ConsolidatedMemory.objects.create(
++        cluster_key=key,
++        rule="Run the tree-wide health gate before any push.",
++        source_files=["feedback_run_gate.md"],
++        durable_destination="skills/ship/SKILL.md",
++        is_binding=binding,
++        member_count=1,
++        max_member_weight=90,
++        verified_citation="pushed without running the gate, CI went red",
++    )
++
++
++class RenderCheckboxLineTestCase(TestCase):
++    """A gap checkbox line carries its title and a stable invisible marker."""
++
++    def test_unchecked_line_has_the_marker_and_title(self) -> None:
++        line = ul.render_checkbox_line(gap_key="gap-1", title="Fix the gate", checked=False)
++        assert line.startswith("- [ ] ")
++        assert "Fix the gate" in line
++        assert "<!-- dream-gap gap-1 -->" in line
++
++    def test_checked_line_uses_an_x(self) -> None:
++        line = ul.render_checkbox_line(gap_key="gap-1", title="Fix the gate", checked=True)
++        assert line.startswith("- [x] ")
++
++    def test_line_carries_the_ticket_link_when_given(self) -> None:
++        line = ul.render_checkbox_line(
++            gap_key="gap-1", title="Fix the gate", checked=False, ticket_url="https://example.com/pr/1"
++        )
++        assert "https://example.com/pr/1" in line
++
++
++class UpsertGapCheckboxTestCase(TestCase):
++    """A gap checkbox is added once and never double-added (deduped by gap key)."""
++
++    def test_a_new_gap_appends_a_checkbox_and_rewrites_the_body(self) -> None:
++        host = _fake_host(body="## Open gaps\n")
++        added = ul.upsert_gap_checkbox(host, umbrella_url=UMBRELLA, gap_key="gap-1", title="Fix the gate")
++        assert added is True
++        host.update_issue.assert_called_once()
++        _, kwargs = host.update_issue.call_args
++        assert "<!-- dream-gap gap-1 -->" in kwargs["body"]
++        assert "Fix the gate" in kwargs["body"]
++
++    def test_an_existing_gap_is_not_double_added(self) -> None:
++        existing = "## Open gaps\n- [ ] Fix the gate <!-- dream-gap gap-1 -->\n"
++        host = _fake_host(body=existing)
++        added = ul.upsert_gap_checkbox(host, umbrella_url=UMBRELLA, gap_key="gap-1", title="Fix the gate")
++        assert added is False
++        # Idempotent: the body is unchanged, so no rewrite is issued.
++        host.update_issue.assert_not_called()
++
++    def test_a_second_distinct_gap_is_appended_alongside_the_first(self) -> None:
++        existing = "## Open gaps\n- [ ] Fix the gate <!-- dream-gap gap-1 -->\n"
++        host = _fake_host(body=existing)
++        added = ul.upsert_gap_checkbox(host, umbrella_url=UMBRELLA, gap_key="gap-2", title="Fix the other")
++        assert added is True
++        _, kwargs = host.update_issue.call_args
++        assert "<!-- dream-gap gap-1 -->" in kwargs["body"]
++        assert "<!-- dream-gap gap-2 -->" in kwargs["body"]
++
++    def test_unreadable_body_does_not_crash_and_files_nothing(self) -> None:
++        host = MagicMock(spec=CodeHostBackend)
++        host.get_issue.side_effect = RuntimeError("forge down")
++        added = ul.upsert_gap_checkbox(host, umbrella_url=UMBRELLA, gap_key="gap-1", title="Fix the gate")
++        assert added is False
++        host.update_issue.assert_not_called()
++
++
++class CheckGapCheckboxTestCase(TestCase):
++    """Checking a gap flips its line from unchecked to checked, idempotently."""
++
++    def test_checking_flips_the_box(self) -> None:
++        existing = "## Open gaps\n- [ ] Fix the gate <!-- dream-gap gap-1 -->\n"
++        host = _fake_host(body=existing)
++        checked = ul.check_gap_checkbox(host, umbrella_url=UMBRELLA, gap_key="gap-1")
++        assert checked is True
++        _, kwargs = host.update_issue.call_args
++        assert "- [x] Fix the gate <!-- dream-gap gap-1 -->" in kwargs["body"]
++
++    def test_checking_an_already_checked_box_is_a_noop(self) -> None:
++        existing = "## Open gaps\n- [x] Fix the gate <!-- dream-gap gap-1 -->\n"
++        host = _fake_host(body=existing)
++        checked = ul.check_gap_checkbox(host, umbrella_url=UMBRELLA, gap_key="gap-1")
++        assert checked is False
++        host.update_issue.assert_not_called()
++
++    def test_checking_an_absent_gap_is_a_noop(self) -> None:
++        host = _fake_host(body="## Open gaps\n- [ ] Other <!-- dream-gap gap-9 -->\n")
++        checked = ul.check_gap_checkbox(host, umbrella_url=UMBRELLA, gap_key="gap-1")
++        assert checked is False
++        host.update_issue.assert_not_called()
++
++
++class ScheduleGapFixTestCase(TestCase):
++    """A new gap schedules a headless coding task; an already-scheduled gap does not."""
++
++    def test_new_gap_creates_an_author_ticket_and_schedules_coding(self) -> None:
++        task = ul.schedule_gap_fix(umbrella_url=UMBRELLA, gap_key="gap-1", title="Fix the gate", cluster_key="gap-1")
++        assert task is not None
++        assert task.phase == "coding"
++        ticket = task.ticket
++        assert ticket.role == Ticket.Role.AUTHOR
++        assert ticket.extra["dream_gap_key"] == "gap-1"
++        assert ticket.extra["dream_memory_cluster_key"] == "gap-1"
++        assert ticket.extra["dream_umbrella_url"] == UMBRELLA
++
++    def test_already_scheduled_gap_is_not_rescheduled(self) -> None:
++        first = ul.schedule_gap_fix(umbrella_url=UMBRELLA, gap_key="gap-1", title="Fix the gate", cluster_key="gap-1")
++        second = ul.schedule_gap_fix(umbrella_url=UMBRELLA, gap_key="gap-1", title="Fix the gate", cluster_key="gap-1")
++        assert first is not None
++        assert second is None
++        assert Ticket.objects.filter(extra__dream_gap_key="gap-1").count() == 1
++
++
++class PromoteGapTestCase(TestCase):
++    """The orchestration: a grounded gap upserts a checkbox AND schedules its fix."""
++
++    def test_grounded_gap_upserts_checkbox_and_schedules_coding(self) -> None:
++        host = _fake_host(body="## Open gaps\n")
++        outcome = ul.promote_gap(
++            host,
++            umbrella_url=UMBRELLA,
++            gap=ul.GapSpec(gap_key="gap-1", title="Fix the gate", cluster_key="gap-1"),
++        )
++        assert outcome.scheduled is True
++        assert outcome.checkbox_added is True
++        host.update_issue.assert_called_once()
++        assert Ticket.objects.filter(extra__dream_gap_key="gap-1").exists()
++
++    def test_dry_run_neither_edits_the_umbrella_nor_schedules(self) -> None:
++        host = _fake_host(body="## Open gaps\n")
++        outcome = ul.promote_gap(
++            host,
++            umbrella_url=UMBRELLA,
++            gap=ul.GapSpec(gap_key="gap-1", title="Fix the gate", cluster_key="gap-1"),
++            dry_run=True,
++        )
++        assert outcome.scheduled is False
++        assert outcome.checkbox_added is False
++        host.update_issue.assert_not_called()
++        assert not Ticket.objects.filter(extra__dream_gap_key="gap-1").exists()
++
++    def test_banned_term_title_is_withheld_not_filed(self) -> None:
++        from unittest.mock import patch  # noqa: PLC0415
++
++        host = _fake_host(body="## Open gaps\n")
++        with patch("teatree.loops.dream.umbrella_ledger.banned_terms_scanner.scan_text", return_value="customer-name"):
++            outcome = ul.promote_gap(
++                host,
++                umbrella_url=UMBRELLA,
++                gap=ul.GapSpec(gap_key="gap-1", title="Fix the gate", cluster_key="gap-1"),
++            )
++        assert outcome.withheld is True
++        assert outcome.scheduled is False
++        host.update_issue.assert_not_called()
++        assert not Ticket.objects.filter(extra__dream_gap_key="gap-1").exists()
++
++    def test_a_re_promoted_gap_neither_double_adds_nor_reschedules(self) -> None:
++        existing = "## Open gaps\n- [ ] Fix the gate <!-- dream-gap gap-1 -->\n"
++        host = _fake_host(body=existing)
++        ul.schedule_gap_fix(umbrella_url=UMBRELLA, gap_key="gap-1", title="Fix the gate", cluster_key="gap-1")
++        outcome = ul.promote_gap(
++            host,
++            umbrella_url=UMBRELLA,
++            gap=ul.GapSpec(gap_key="gap-1", title="Fix the gate", cluster_key="gap-1"),
++        )
++        assert outcome.checkbox_added is False
++        assert outcome.scheduled is False
++        host.update_issue.assert_not_called()
++        assert Ticket.objects.filter(extra__dream_gap_key="gap-1").count() == 1
++
++
++class ReconcileMergedGapsTestCase(TestCase):
++    """A merged gap-fix Ticket checks its checkbox and retires the linked memory."""
++
++    def _scheduled_gap(self, *, key: str = "gap-1", binding: bool = False) -> Ticket:
++        _memory(key=key, binding=binding)
++        task = ul.schedule_gap_fix(umbrella_url=UMBRELLA, gap_key=key, title="Fix the gate", cluster_key=key)
++        assert task is not None
++        return task.ticket
++
++    def test_merged_gap_checks_the_box_and_retires_the_memory(self) -> None:
++        ticket = self._scheduled_gap()
++        ticket.pull_requests.create(
++            url="https://github.com/souliane/teatree/pull/9100", repo=REPO, iid="9100", state="merged"
++        )
++        ticket.state = Ticket.State.MERGED
++        ticket.save()
++        existing = "## Open gaps\n- [ ] Fix the gate <!-- dream-gap gap-1 -->\n"
++        host = _fake_host(body=existing)
++        host.get_issue.return_value = {"body": existing, "state": "merged"}
++
++        reconciled = ul.reconcile_merged_gaps(host, umbrella_url=UMBRELLA)
++
++        assert len(reconciled) == 1
++        # The checkbox is checked on the umbrella.
++        update_bodies = [c.kwargs["body"] for c in host.update_issue.call_args_list]
++        assert any("- [x] Fix the gate <!-- dream-gap gap-1 -->" in b for b in update_bodies)
++        # The linked memory is retired through the existing retire path.
++        memory = ConsolidatedMemory.objects.get(cluster_key="gap-1")
++        assert memory.disposition == ConsolidatedMemory.Disposition.RESOLVED_RETIRED
++
++    def test_unmerged_gap_is_left_alone(self) -> None:
++        self._scheduled_gap()
++        host = _fake_host(body="## Open gaps\n- [ ] Fix the gate <!-- dream-gap gap-1 -->\n")
++        reconciled = ul.reconcile_merged_gaps(host, umbrella_url=UMBRELLA)
++        assert reconciled == []
++        host.update_issue.assert_not_called()
++        memory = ConsolidatedMemory.objects.get(cluster_key="gap-1")
++        assert memory.disposition == ConsolidatedMemory.Disposition.UNTRIAGED
++
++    def test_binding_memory_is_never_retired_even_when_its_gap_merges(self) -> None:
++        ticket = self._scheduled_gap(binding=True)
++        ticket.pull_requests.create(
++            url="https://github.com/souliane/teatree/pull/9100", repo=REPO, iid="9100", state="merged"
++        )
++        ticket.state = Ticket.State.MERGED
++        ticket.save()
++        existing = "## Open gaps\n- [ ] Fix the gate <!-- dream-gap gap-1 -->\n"
++        host = _fake_host(body=existing)
++
++        ul.reconcile_merged_gaps(host, umbrella_url=UMBRELLA)
++
++        # BINDING feedback is load-bearing user doctrine — never silently dropped.
++        memory = ConsolidatedMemory.objects.get(cluster_key="gap-1")
++        assert memory.disposition != ConsolidatedMemory.Disposition.RESOLVED_RETIRED
+diff --git a/tests/test_github_backend.py b/tests/test_github_backend.py
+index 94e2ebc1d9..d8265725c8 100644
+--- a/tests/test_github_backend.py
++++ b/tests/test_github_backend.py
+@@ -6,11 +6,12 @@
+ 
+ import pytest
+ 
++import teatree.backends.github.api as github_api_mod
+ import teatree.backends.github.client as github_mod
+ import teatree.backends.github.projects as github_projects_mod
+ import teatree.utils.run as utils_run_mod
+ from teatree.backends.github import GitHubCodeHost, ProjectItem, fetch_project_items, issue_repo_short
+-from teatree.backends.github.client import _gh_api_get, _gh_api_get_paginated, _gh_api_patch, _gh_api_post, _run_gh
++from teatree.backends.github.api import _gh_api_get, _gh_api_get_paginated, _gh_api_patch, _gh_api_post, _run_gh
+ from teatree.backends.github.projects import _gh_graphql
+ from teatree.core.backend_protocols import PullRequestSpec
+ 
+@@ -60,52 +61,52 @@ def test_no_token_does_not_set_gh_token_env(self) -> None:
+ 
+ class TestGhApiGet:
+     def test_returns_parsed_json(self) -> None:
+-        with patch.object(github_mod, "_run_gh") as mock_run:
++        with patch.object(github_api_mod, "_run_gh") as mock_run:
+             mock_run.return_value = MagicMock(stdout='{"key": "value"}')
+             result = _gh_api_get("/repos/test/issues")
+         assert result == {"key": "value"}
+ 
+     def test_passes_token(self) -> None:
+-        with patch.object(github_mod, "_run_gh") as mock_run:
++        with patch.object(github_api_mod, "_run_gh") as mock_run:
+             mock_run.return_value = MagicMock(stdout="{}")
+             _gh_api_get("/test", token="tok")
+         assert mock_run.call_args[1]["token"] == "tok"
+ 
+ 
+ class TestGhApiGetPaginated:
+     def test_flattens_slurped_pages(self) -> None:
+         pages = [[{"id": 1}, {"id": 2}], [{"id": 3}]]
+-        with patch.object(github_mod, "_run_gh") as mock_run:
++        with patch.object(github_api_mod, "_run_gh") as mock_run:
+             mock_run.return_value = MagicMock(stdout=json.dumps(pages))
+             result = _gh_api_get_paginated("repos/o/r/issues/5/comments?per_page=100")
+         argv = mock_run.call_args.args
+         assert "--paginate" in argv
+         assert "--slurp" in argv
+         assert "repos/o/r/issues/5/comments?per_page=100" in argv
+         assert result == [{"id": 1}, {"id": 2}, {"id": 3}]
+ 
+     def test_passes_token(self) -> None:
+-        with patch.object(github_mod, "_run_gh") as mock_run:
++        with patch.object(github_api_mod, "_run_gh") as mock_run:
+             mock_run.return_value = MagicMock(stdout="[]")
+             _gh_api_get_paginated("repos/o/r/issues/5/comments", token="tok")
+         assert mock_run.call_args.kwargs["token"] == "tok"
+ 
+     def test_empty_pages_return_empty_list(self) -> None:
+-        with patch.object(github_mod, "_run_gh") as mock_run:
++        with patch.object(github_api_mod, "_run_gh") as mock_run:
+             mock_run.return_value = MagicMock(stdout="[]")
+             result = _gh_api_get_paginated("repos/o/r/issues/5/comments")
+         assert result == []
+ 
+     def test_non_array_outer_payload_returns_empty_list(self) -> None:
+         # A single-object endpoint accidentally passed here must not explode;
+         # ``--slurp`` always yields an outer array, but guard defensively.
+-        with patch.object(github_mod, "_run_gh") as mock_run:
++        with patch.object(github_api_mod, "_run_gh") as mock_run:
+             mock_run.return_value = MagicMock(stdout='{"message": "Not Found"}')
+             result = _gh_api_get_paginated("repos/o/r/issues/5/comments")
+         assert result == []
+ 
+     def test_skips_non_list_pages(self) -> None:
+-        with patch.object(github_mod, "_run_gh") as mock_run:
++        with patch.object(github_api_mod, "_run_gh") as mock_run:
+             mock_run.return_value = MagicMock(stdout=json.dumps([[{"id": 1}], {"oops": True}]))
+             result = _gh_api_get_paginated("repos/o/r/issues/5/comments")
+         assert result == [{"id": 1}]
+@@ -514,7 +515,7 @@ def test_list_my_prs_paginates_beyond_first_page(self) -> None:
+         page_one = [{"number": i} for i in range(100)]
+         page_two = [{"number": 100}]
+         slurped = json.dumps([{"items": page_one}, {"items": page_two}])
+-        with patch.object(github_mod, "_run_gh") as mock_run:
++        with patch.object(github_api_mod, "_run_gh") as mock_run:
+             mock_run.return_value = MagicMock(stdout=slurped)
+             host = GitHubCodeHost()
+             result = host.list_my_prs(author="alice")
+@@ -544,7 +545,7 @@ def test_list_review_requested_prs_paginates_beyond_first_page(self) -> None:
+         page_one = [{"number": i} for i in range(100)]
+         page_two = [{"number": 100}]
+         slurped = json.dumps([{"items": page_one}, {"items": page_two}])
+-        with patch.object(github_mod, "_run_gh") as mock_run:
++        with patch.object(github_api_mod, "_run_gh") as mock_run:
+             mock_run.return_value = MagicMock(stdout=slurped)
+             host = GitHubCodeHost()
+             result = host.list_review_requested_prs(reviewer="alice")
+@@ -573,7 +574,7 @@ def test_list_assigned_issues_paginates_beyond_first_page(self) -> None:
+         page_one = [{"number": i} for i in range(100)]
+         page_two = [{"number": 100}]
+         slurped = json.dumps([{"items": page_one}, {"items": page_two}])
+-        with patch.object(github_mod, "_run_gh") as mock_run:
++        with patch.object(github_api_mod, "_run_gh") as mock_run:
+             mock_run.return_value = MagicMock(stdout=slurped)
+             host = GitHubCodeHost()
+             result = host.list_assigned_issues(assignee="alice")
+@@ -617,7 +618,7 @@ def test_search_open_issues_paginates_beyond_first_page(self) -> None:
+         page_one = [{"number": i} for i in range(100)]
+         page_two = [{"number": 100}]
+         slurped = json.dumps([{"items": page_one}, {"items": page_two}])
+-        with patch.object(github_mod, "_run_gh") as mock_run:
++        with patch.object(github_api_mod, "_run_gh") as mock_run:
+             mock_run.return_value = MagicMock(stdout=slurped)
+             host = GitHubCodeHost()
+             result = host.search_open_issues(repo="org/repo", query="fingerprint:abc")
+@@ -654,6 +655,24 @@ def test_close_issue_rejects_non_issue_url(self) -> None:
+         assert "error" in result
+         mock_patch.assert_not_called()
+ 
++    def test_update_issue_patches_the_body(self) -> None:
++        url = "https://github.com/org/repo/issues/9"
++        with patch.object(github_mod, "_gh_api_patch", return_value={"number": 9}) as mock_patch:
++            host = GitHubCodeHost(token="tok")
++            result = host.update_issue(issue_url=url, body="new umbrella body")
++        assert result == {"number": 9}
++        mock_patch.assert_called_once_with(
++            "repos/org/repo/issues/9",
++            {"body": "new umbrella body"},
++            token="tok",
++        )
++
++    def test_update_issue_rejects_non_issue_url(self) -> None:
++        with patch.object(github_mod, "_gh_api_patch") as mock_patch:
++            result = GitHubCodeHost().update_issue(issue_url="https://example.com/not/an/issue", body="x")
++        assert "error" in result
++        mock_patch.assert_not_called()
++
+     def test_post_pr_comment(self) -> None:
+         with patch.object(github_mod, "_gh_api_post", return_value={"id": 42}) as mock_post:
+             host = GitHubCodeHost()
+@@ -709,7 +728,7 @@ def test_list_pr_comments_paginates_beyond_the_first_page(self) -> None:
+         page_one = [{"id": i, "body": f"c{i}"} for i in range(100)]
+         page_two = [{"id": 100, "body": "## Test Plan"}]
+         slurped_pages = json.dumps([page_one, page_two])
+-        with patch.object(github_mod, "_run_gh") as mock_run:
++        with patch.object(github_api_mod, "_run_gh") as mock_run:
+             mock_run.return_value = MagicMock(stdout=slurped_pages)
+             host = GitHubCodeHost()
+             result = host.list_pr_comments(repo="org/repo", pr_iid=5)
+@@ -721,7 +740,7 @@ def test_list_pr_comments_paginates_beyond_the_first_page(self) -> None:
+ 
+     def test_list_pr_comments_returns_empty_when_slurp_yields_no_pages(self) -> None:
+         # No comments → ``--slurp`` emits ``[]`` (zero pages) → empty result.
+-        with patch.object(github_mod, "_run_gh") as mock_run:
++        with patch.object(github_api_mod, "_run_gh") as mock_run:
+             mock_run.return_value = MagicMock(stdout="[]")
+             host = GitHubCodeHost()
+             result = host.list_pr_comments(repo="org/repo", pr_iid=5)
+@@ -747,7 +766,7 @@ def test_list_issue_comments_paginates_beyond_the_first_page(self) -> None:
+         page_one = [{"id": i, "body": f"c{i}"} for i in range(100)]
+         page_two = [{"id": 100, "body": "## Test Plan"}]
+         slurped_pages = json.dumps([page_one, page_two])
+-        with patch.object(github_mod, "_run_gh") as mock_run:
++        with patch.object(github_api_mod, "_run_gh") as mock_run:
+             mock_run.return_value = MagicMock(stdout=slurped_pages)
+             host = GitHubCodeHost()
+             result = host.list_issue_comments(issue_url="https://github.com/souliane/teatree/issues/7")
+@@ -891,7 +910,7 @@ def test_get_review_state_paginates_beyond_first_page(self) -> None:
+         page_one = [{"user": {"login": "alice"}, "state": "APPROVED"}] * 100
+         page_two = [{"user": {"login": "alice"}, "state": "DISMISSED"}]
+         slurped = json.dumps([page_one, page_two])
+-        with patch.object(github_mod, "_run_gh") as mock_run:
++        with patch.object(github_api_mod, "_run_gh") as mock_run:
+             mock_run.return_value = MagicMock(stdout=slurped)
+             host = GitHubCodeHost()
+             result = host.get_review_state(pr_url="https://github.com/o/r/pull/7", reviewer="alice")
+-- 
+2.50.1 (Apple Git-155)
+
