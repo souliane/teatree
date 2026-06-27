@@ -33,7 +33,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.test import TestCase
 
-from teatree.agents import prompt
+from teatree.agents import prompt, skill_injection
 from teatree.agents.skill_bundle import active_overlay_lifecycle_skills, active_overlay_review_skills
 from teatree.core.models import Session, Task, Ticket
 from teatree.core.overlay import OverlayConfig
@@ -59,7 +59,7 @@ def skills_dir(tmp_path: Path) -> Iterator[Path]:
     _seed_skill(sd, "rules", body="# rules")
     _seed_skill(sd, _COMPANION_NAME, body=_SENTINEL)
     _seed_skill(sd, "code-review", body="# code-review companion")
-    with patch.object(prompt, "DEFAULT_SKILLS_DIR", sd):
+    with patch.object(skill_injection, "DEFAULT_SKILLS_DIR", sd):
         yield sd
 
 
