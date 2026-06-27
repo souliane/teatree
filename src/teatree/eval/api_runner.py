@@ -64,6 +64,7 @@ from teatree.eval.toolset import (
     scenario_exposes_subagent_spawn,
 )
 from teatree.eval.under_load import build_system_prompt, build_user_prompt
+from teatree.llm.anthropic_limits import CreditExhaustedError, LimitCause, classify_limit
 
 #: Env var names for the metered lane's GENEROUS, configurable resource caps. A
 #: truncated run measures the cap, not behaviour (the first full metered run lost
@@ -667,7 +668,11 @@ async def _collect(prompt: str, options: ClaudeAgentOptions) -> list[Message]:
     :class:`_TerminalResultError` for the runner to grade; a SUCCESS mislabeled as
     an error result (the CLI exited non-zero on a ``"success"`` subtype) is
     re-raised inside a :class:`_SuccessMislabelResultError` so the runner grades the
-    captured messages AND clears the stray ``is_error``; any other error re-raises
+    captured messages AND clears the stray ``is_error``; a metered-key CREDIT
+    exhaustion (HTTP 400 "credit balance is too low" — the billed
+    ``ANTHROPIC_API_KEY`` at $0) is re-raised as a :class:`CreditExhaustedError`
+    so the batch fails LOUD with the console remediation instead of redding every
+    remaining scenario behind an opaque error result; any other error re-raises
     unchanged so a genuine crash is never swallowed.
     """
     messages: list[Message] = []
@@ -680,6 +685,9 @@ async def _collect(prompt: str, options: ClaudeAgentOptions) -> list[Message]:
     except Exception as exc:
         if is_success_result_error(str(exc)):
             raise _SuccessMislabelResultError(messages=messages, cause=exc) from exc
+        limit = classify_limit(str(exc))
+        if limit is not None and limit.cause is LimitCause.API_CREDIT:
+            raise CreditExhaustedError(limit.remediation) from exc
         reason = classify_terminal_error(str(exc))
         if reason is None:
             raise
