@@ -37,6 +37,7 @@ from teatree.loop.loop_cadences import _LOOP_OWNER_TTL_DEFAULT
 from teatree.loop.loop_cadences import loop_owner_ttl_seconds as _loop_owner_ttl_seconds
 from teatree.loop.loop_cadences import self_improve_cadence_seconds as _self_improve_cadence_seconds
 from teatree.loop.loop_cadences import slack_answer_cadence_seconds as _slack_answer_cadence_seconds
+from teatree.loop.phases.render import self_improve_rerender
 from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
 
 logger = logging.getLogger(__name__)
@@ -73,7 +74,7 @@ def _piggyback_self_improve() -> None:
     owner = f"tickpiggyback-{os.getpid()}-{uuid.uuid4().hex}"
     if not LoopLease.objects.acquire("loop-self-improve", owner=owner, lease_seconds=_self_improve_cadence_seconds()):
         return
-    run_tier(Tier.CHEAP)
+    run_tier(Tier.CHEAP, auto_fix_callable=self_improve_rerender)
 
 
 def run_piggyback_cycles() -> None:

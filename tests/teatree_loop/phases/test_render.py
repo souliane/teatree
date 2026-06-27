@@ -82,6 +82,58 @@ def test_render_phase_idle_omits_scanner_error_line(tmp_path: Path) -> None:
     assert "scanner errors" not in sl.read_text(encoding="utf-8")
 
 
+def test_rerender_statusline_rewrites_a_stale_file(tmp_path: Path) -> None:
+    """The #2625 self-heal seam re-renders the zones file from current state.
+
+    ``StaleStatuslineEntryDetector``'s auto-fix wires its ``rerender`` callable
+    to this seam: a merged-PR / terminal-ticket URL the detector flags must drop
+    out of the rendered file when the seam runs — the retired ``_default_rerender``
+    no-op left the stale URL in place.
+    """
+    from teatree.loop.phases.render import rerender_statusline  # noqa: PLC0415
+
+    sl = tmp_path / "statusline.txt"
+    sl.write_text("stale merged-PR https://github.com/acme/repo/pull/1\n", encoding="utf-8")
+
+    out = rerender_statusline(sl, colorize=False)
+
+    assert out == sl
+    assert "stale merged-PR" not in sl.read_text(encoding="utf-8")
+
+
+def test_self_improve_rerender_adapter_invokes_the_render_seam(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The action-ladder ``auto_fix_callable`` adapter bridges to ``rerender_statusline``.
+
+    Both live orchestration entry points (the dedicated ``loop_self_improve`` slot
+    and the tick piggyback) inject this as the ladder's ``auto_fix_callable``.
+    """
+    from teatree.loop.phases import render as render_module  # noqa: PLC0415
+
+    calls: list[object] = []
+    monkeypatch.setattr(render_module, "rerender_statusline", lambda *a, **k: calls.append((a, k)))
+
+    render_module.self_improve_rerender(object())
+
+    assert len(calls) == 1
+
+
+def test_rerender_statusline_defaults_target_to_the_canonical_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With no target the seam writes the canonical statusline path (idle render)."""
+    from teatree.loop.phases import render as render_module  # noqa: PLC0415
+
+    written: dict[str, object] = {}
+
+    def _fake_render(zones: object, *, target: Path | None = None, colorize: bool | None = None) -> Path:
+        written["target"] = target
+        return Path("/tmp/sentinel-statusline.txt")
+
+    monkeypatch.setattr(render_module, "render", _fake_render)
+    out = render_module.rerender_statusline()
+
+    assert out == Path("/tmp/sentinel-statusline.txt")
+    assert written["target"] is None
+
+
 def test_identity_aliases_for_request_unions_across_backends(monkeypatch: pytest.MonkeyPatch) -> None:
     from unittest.mock import MagicMock  # noqa: PLC0415
 
