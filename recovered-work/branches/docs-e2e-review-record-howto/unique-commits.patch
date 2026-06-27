@@ -1,0 +1,76 @@
+From b405fa8cb613d237c45585c5251b1402f358c603 Mon Sep 17 00:00:00 2001
+From: adrien-oper <258769440+adrien-oper@users.noreply.github.com>
+Date: Tue, 16 Jun 2026 13:53:28 +0200
+Subject: [PATCH] docs(e2e-review): add canonical t3 command blocks (eval
+ greening)
+
+Add a 'Recording Your Verdict' section with copy-pasteable
+t3 <overlay> review record ... --verdict {merge_safe|hold} --findings-json
+command blocks next to the threshold/verdict prose. A clean spec records
+merge_safe and terminates the loop at PASSED; a hold records the punch-list
+via --findings-json and feeds it back to the author leg, never an approval.
+
+Targets evals: review_loop_clean_spec_passes_terminates,
+review_loop_hold_feeds_back_punch_list_not_approve.
+---
+ skills/e2e-review/SKILL.md | 44 ++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 44 insertions(+)
+
+diff --git a/skills/e2e-review/SKILL.md b/skills/e2e-review/SKILL.md
+index c9eefe4eee..568604c8b2 100644
+--- a/skills/e2e-review/SKILL.md
++++ b/skills/e2e-review/SKILL.md
+@@ -129,6 +129,50 @@ ### Threshold and verdict
+ 
+ The threshold is configurable — `[teatree] e2e_confidence_threshold`, default **90**, per-overlay overridable (see `/t3:e2e` § "Verify–Review Loop to Threshold" → Configuration). A stricter overlay raises it; the rubric and the loop read the same knob.
+ 
++### Recording Your Verdict
++
++A verdict you only narrated is inert — the review loop reads the **recorded** verdict, never your prose, so the one action that advances or terminates the loop is the `review record` CLI call. Do not stop at writing findings: run it.
++
++The canonical command (generic placeholders — substitute your real overlay, PR id, slug, head SHA, and a findings file):
++
++```bash
++# Reached a verdict? RECORD it — bind to the EXACT 40-char reviewed head SHA.
++HEAD_SHA="$(git rev-parse HEAD)"   # the full hex commit you reviewed; never a short SHA
++```
++
++**Clean spec → `merge_safe` (terminates the loop).** When the spec clears both hard gates and `score ≥ threshold`, record a `merge_safe` verdict. This is what drives the `ReviewLoop` to **PASSED** and lets the sweep merge; it does NOT re-open another author round:
++
++```bash
++t3 <overlay> review record <pr_id> <slug> \
++  --reviewed-sha "$HEAD_SHA" \
++  --verdict merge_safe \
++  --reviewer-identity "<your-reviewer-id>" \
++  --gh-verify-result green
++```
++
++**Real defect → `hold` with the punch-list (feeds back, is NOT an approval).** When a hard gate failed or the score is below threshold, record a `hold` and pass the findings as JSON via `--findings-json`. A HOLD re-arms a fresh author leg carrying your punch-list for the next round. The contrast that keeps a HOLD honest:
++
++- The findings written to a JSON file and passed via `--findings-json <path>` ARE the punch-list the author leg works through — that file is the whole point of a HOLD.
++- A HOLD is the opposite of an approval, so an approving call (`gh pr approve`, `gh pr review --approve`, `glab mr approve`) is wrong here — it merges an unverified spec. The only action a HOLD takes is the `review record --verdict hold` below.
++- A `--verdict merge_safe` recorded while any hard gate failed or the score is below threshold is a faked pass that skips the fix — the verdict must be `hold` until the punch-list is cleared and the spec re-scored.
++
++```bash
++cat > /tmp/findings.json <<'JSON'
++[
++  {"severity": "blocker", "summary": "fixed waitForTimeout(3000) instead of a condition wait", "file": "specs/foo.spec.ts", "line": 42},
++  {"severity": "should-fix", "summary": "brittle getByText locator where a getByRole handle exists", "file": "specs/foo.spec.ts", "line": 51}
++]
++JSON
++
++t3 <overlay> review record <pr_id> <slug> \
++  --reviewed-sha "$HEAD_SHA" \
++  --verdict hold \
++  --reviewer-identity "<your-reviewer-id>" \
++  --findings-json /tmp/findings.json
++```
++
++`--verdict` accepts exactly `merge_safe` or `hold`. A `BLOCKED(<named-gate>)` is not a recordable CLI verdict — it terminates the loop and surfaces the named gate to the user (next subsection); record neither `merge_safe` nor `hold` for a genuine BLOCKED.
++
+ ### BLOCKED — when 100% confidence is genuinely unreachable
+ 
+ Some features cannot reach a high score by construction, and forcing one would loop forever:
+-- 
+2.50.1 (Apple Git-155)
+
