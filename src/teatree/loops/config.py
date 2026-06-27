@@ -13,8 +13,8 @@ Loop-disabled state is DB-only: :meth:`LoopsConfig.is_enabled` resolves
 purely through the durable DB ``LoopState`` control tier (#1913) — a
 ``PAUSED`` / ``DISABLED`` row skips the loop, an absent / ``ENABLED`` row
 leaves it running. There is no env kill-switch and no ``[loops]`` toml
-disabled-state fallback: loop control is ``/loops`` (``t3 loop
-enable/disable/pause/resume``) + the DB only.
+disabled-state fallback: loop control is ``/loops``
+(``t3 loop enable``/``disable``/``pause``/``resume``) + the DB only.
 """
 
 import dataclasses
@@ -136,9 +136,9 @@ class LoopsConfig:
         authority: a ``PAUSED`` / ``DISABLED`` row forces a skip, while no row
         (or an ``ENABLED`` row) leaves the loop running, so an empty table is a
         provable no-op. There is no env kill-switch and no ``[loops]`` toml
-        disabled-state fallback — loop control is ``t3 loop enable/disable/
-        pause/resume`` + the DB only. The decision reads no config field, so it
-        is a static method.
+        disabled-state fallback — loop control is ``t3 loop enable`` /
+        ``disable`` / ``pause`` / ``resume`` + the DB only. The decision reads no
+        config field, so it is a static method.
         """
         return not loop_held_in_db(loop.name)
 

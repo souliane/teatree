@@ -7,7 +7,7 @@ canonical control tier, mirroring :class:`teatree.core.models.config_setting.Con
 ("the canonical tier is the DB", #1775 / §17.4): an **absent row resolves to
 ``ENABLED``**, so an empty table leaves every loop running exactly as it does
 today. This is the SINGLE disable authority — loop control is ``/loops``
-(``t3 loop enable/disable/pause/resume``) + the DB only; there is no env
+(``t3 loop enable``/``disable``/``pause``/``resume``) + the DB only; there is no env
 kill-switch and no ``[loops]`` toml disabled-state fallback.
 
 The motivation is the 2026-06-03 'pause everything' incident: there was no
