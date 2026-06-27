@@ -136,7 +136,6 @@ def test_db_helpers_cover_env_exists_and_psql_fallback(monkeypatch: pytest.Monke
     assert db.pg_env().get("PGPASSWORD") is None
     assert db.pg_host() == "db.internal"
     assert db.pg_user() == "worker"
-    assert db.worktree_db_name("42", "") == "wt_42"
     db.db_restore("wt_42", "/tmp/dump.sql")
     assert db.db_exists("wt_42") is True
     assert commands[3][0] == "psql"

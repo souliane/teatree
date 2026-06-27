@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, cast, override
 
 from django.core.cache import cache
 
-from teatree.core.cleanup import cleanup_worktree
+from teatree.core.cleanup import WorktreeBusyError, cleanup_worktree
 from teatree.types import PENDING_REVIEWS_CACHE_KEY, RawAPIDict, SyncBackend, SyncResult
 from teatree.utils.run import run_allowed_to_fail
 
@@ -150,6 +150,8 @@ class GitHubSyncBackend(SyncBackend):
                 cleanup_result = cleanup_worktree(worktree)
                 result.worktrees_cleaned += 1
                 result.errors.extend(cleanup_result.errors)
+            except WorktreeBusyError as exc:
+                logger.info("Keeping worktree %s (live work): %s", worktree.repo_path, exc)
             except RuntimeError as exc:
                 logger.info("Keeping worktree %s (unpushed work): %s", worktree.repo_path, exc)
             except Exception as exc:

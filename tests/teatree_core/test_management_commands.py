@@ -863,7 +863,7 @@ class TestUpdateTicketVariant(TestCase):
             overlay="test",
             repo_path="backend",
             branch="feature",
-            db_name=f"wt_{ticket.ticket_number}_old",
+            db_name=f"wt_{ticket.pk}_old",
         )
 
         _update_ticket_variant(ticket, "new")
@@ -871,7 +871,7 @@ class TestUpdateTicketVariant(TestCase):
         ticket.refresh_from_db()
         wt.refresh_from_db()
         assert ticket.variant == "new"
-        assert wt.db_name == f"wt_{ticket.ticket_number}_new"
+        assert wt.db_name == f"wt_{ticket.pk}_new"
 
     def test_skips_save_when_db_name_unchanged(self) -> None:
         from teatree.core.management.commands.worktree import _update_ticket_variant  # noqa: PLC0415
@@ -886,7 +886,7 @@ class TestUpdateTicketVariant(TestCase):
             overlay="test",
             repo_path="backend",
             branch="feature",
-            db_name=f"wt_{ticket.ticket_number}",
+            db_name=f"wt_{ticket.pk}",
         )
         original_db_name = wt.db_name
 
@@ -895,7 +895,7 @@ class TestUpdateTicketVariant(TestCase):
 
         wt.refresh_from_db()
         assert wt.db_name != original_db_name
-        assert wt.db_name == f"wt_{ticket.ticket_number}_acme"
+        assert wt.db_name == f"wt_{ticket.pk}_acme"
 
 
 class TestFollowupCommands(TestCase):

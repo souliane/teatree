@@ -12,9 +12,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from django.test import TestCase
+from django.utils import timezone
 
-from teatree.core.cleanup import cleanup_worktree
-from teatree.core.models import Ticket, Worktree
+from teatree.core.cleanup import WorktreeBusyError, cleanup_worktree
+from teatree.core.models import Session, Task, Ticket, Worktree
+from teatree.core.models.external_delivery import mark_external_delivery
 from teatree.core.overlay import OverlayBase, ProvisionStep, RunCommands
 from teatree.utils.run import CommandFailedError
 from tests.teatree_core._provision_timebox_stub import provision_timebox_unimportable
@@ -250,10 +252,10 @@ class TestCleanupWorktree(TestCase):
         mock_overlay.return_value.config.teardown_removes_pass_entries = True
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
-        ticket_number = wt.ticket.ticket_number
         with patch("teatree.core.cleanup.remove_postgres_pass_entry") as mock_remove:
             cleanup_worktree(wt)
-        mock_remove.assert_called_once_with(ticket_number)
+        # Pass key is ticket-pk-scoped (canonical, unique), not ticket_number.
+        mock_remove.assert_called_once_with(wt.ticket_id)
 
     @_patch_overlay
     @_patch_git
@@ -823,7 +825,7 @@ class TestCleanupWorktreeLoudTeardown(TestCase):
 
         wt = self._make_worktree(db_name="wt_99")
         wt_id = wt.pk
-        ticket_number = wt.ticket.ticket_number
+        ticket_id = wt.ticket_id
 
         with (
             patch(
@@ -838,8 +840,9 @@ class TestCleanupWorktreeLoudTeardown(TestCase):
         assert result.clean is False
         assert any("wt_99" in e for e in result.errors)
         assert any("connection refused" in e for e in result.errors)
-        # Other resources STILL reaped despite the DB-drop failure
-        mock_remove.assert_called_once_with(ticket_number)
+        # Other resources STILL reaped despite the DB-drop failure.
+        # Pass key is ticket-pk-scoped (canonical, unique), not ticket_number.
+        mock_remove.assert_called_once_with(ticket_id)
         mock_git.worktree_remove.assert_called_once()
         assert not Worktree.objects.filter(pk=wt_id).exists()
 
@@ -1057,3 +1060,109 @@ class TestCleanupWorktreeMultiOverlay(TestCase):
 
         assert b_called, "overlay-B's cleanup steps were not invoked"
         assert not a_called, "overlay-A's cleanup steps were invoked but should not have been"
+
+
+class TestCleanupWorktreeLivenessGuard(TestCase):
+    """The funnel liveness guard: an opportunistic teardown never reaps live work.
+
+    ``cleanup_worktree`` is the single seam every teardown caller routes through.
+    With ``respect_liveness`` (default on), a worktree under live work — a live
+    session, an active/claimed task, an external-delivery lease, a recent E2E
+    run, or an explicit pin — raises :class:`WorktreeBusyError` before any
+    destructive step. ``force=True`` (abandon) and ``respect_liveness=False``
+    (FSM-driven teardown) bypass it. The IRREVERSIBLE teardown therefore never
+    protects LESS than the REVERSIBLE idle-stack reaper (#291/#2243).
+    """
+
+    def _make_worktree(self) -> Worktree:
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://gitlab.com/org/repo/-/issues/2243",
+            state=Ticket.State.MERGED,
+        )
+        return Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="org/repo",
+            branch="fix-2243",
+            extra={"worktree_path": "/tmp/wt/org/repo"},
+        )
+
+    def _tear_down(self, wt: Worktree, **kwargs: object) -> None:
+        """Run cleanup_worktree with the git layer mocked so a non-busy teardown completes."""
+        with _patch_config as mock_config, _patch_git as mock_git, _patch_overlay as mock_overlay:
+            _mock_workspace(mock_config)
+            _no_unpushed(mock_git)
+            mock_git.status_porcelain.return_value = ""
+            mock_overlay.return_value.get_cleanup_steps.return_value = []
+            mock_overlay.return_value.reap_worktree_external_resources.return_value = []
+            cleanup_worktree(wt, **kwargs)
+
+    def test_live_session_keeps_worktree_by_default(self) -> None:
+        wt = self._make_worktree()
+        Session.objects.create(ticket=wt.ticket, overlay="test")  # live: ended_at is null
+
+        with pytest.raises(WorktreeBusyError, match="live work"):
+            cleanup_worktree(wt)
+
+        assert Worktree.objects.filter(pk=wt.pk).exists(), "DATA LOSS: busy worktree reaped"
+
+    def test_claimed_task_keeps_worktree_by_default(self) -> None:
+        wt = self._make_worktree()
+        session = Session.objects.create(ticket=wt.ticket, overlay="test")
+        session.ended_at = timezone.now()
+        session.save(update_fields=["ended_at"])
+        Task.objects.create(ticket=wt.ticket, session=session, status=Task.Status.CLAIMED)
+
+        with pytest.raises(WorktreeBusyError, match="live work"):
+            cleanup_worktree(wt)
+
+    def test_external_delivery_lease_keeps_worktree(self) -> None:
+        """A worktree under a live external-delivery lease is KEPT — the wider predicate (#2227)."""
+        wt = self._make_worktree()
+        mark_external_delivery(wt.ticket)
+
+        with pytest.raises(WorktreeBusyError, match="live work"):
+            cleanup_worktree(wt)
+
+    def test_recent_e2e_run_keeps_worktree(self) -> None:
+        wt = self._make_worktree()
+        wt.last_e2e_run = timezone.now()
+        wt.save(update_fields=["last_e2e_run"])
+
+        with pytest.raises(WorktreeBusyError, match="live work"):
+            cleanup_worktree(wt)
+
+    def test_reaper_pinned_keeps_worktree(self) -> None:
+        wt = self._make_worktree()
+        wt.extra = {**wt.extra, "reaper_pinned": True}
+        wt.save(update_fields=["extra"])
+
+        with pytest.raises(WorktreeBusyError, match="live work"):
+            cleanup_worktree(wt)
+
+    def test_force_tears_down_busy_worktree(self) -> None:
+        """Explicit abandon (force=True) overrides the liveness guard."""
+        wt = self._make_worktree()
+        Session.objects.create(ticket=wt.ticket, overlay="test")
+
+        self._tear_down(wt, force=True)
+
+        assert not Worktree.objects.filter(pk=wt.pk).exists(), "force=True must still tear down"
+
+    def test_respect_liveness_false_tears_down_busy_worktree(self) -> None:
+        """FSM-driven teardown (respect_liveness=False) bypasses the guard — no leak regression."""
+        wt = self._make_worktree()
+        Session.objects.create(ticket=wt.ticket, overlay="test")
+
+        self._tear_down(wt, respect_liveness=False)
+
+        assert not Worktree.objects.filter(pk=wt.pk).exists(), "FSM teardown of a merged ticket must proceed"
+
+    def test_idle_worktree_is_torn_down(self) -> None:
+        """Safe-reap preserved: a worktree with no live work tears down as before."""
+        wt = self._make_worktree()
+
+        self._tear_down(wt)
+
+        assert not Worktree.objects.filter(pk=wt.pk).exists(), "idle worktree should still reap"
