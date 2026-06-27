@@ -21,6 +21,10 @@
       "summary": "A SHORT \"what did I miss\" report when the user checks in mid-loop \u2014 terse, grouped, clickable; then answer the pending deferred questions in-band"
     },
     {
+      "name": "cleanup-sweep",
+      "summary": "Use when sweeping stale, lost, or abandoned worktrees, branches, or stashes that are NOT actively being worked \u2014 deciding per item whether to salvage unmerged work to a fresh PR, delete a shipped/superseded/redundant item, push post-merge commits to a new PR, or keep an uncertain one. The judgment layer over `t3 <overlay> workspace emit` / `salvage` / `clean-all` (the mechanical reaper is `/t3:workspace`)"
+    },
+    {
       "name": "code",
       "summary": "Writing code with TDD methodology"
     },

@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-cleanup_sweep_post_merge_goes_to_new_pr_never_deletes-pass", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "thinking, no command yet."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 example workspace salvage feat-y", "description": "step"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
