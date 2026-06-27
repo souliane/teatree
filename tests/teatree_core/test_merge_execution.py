@@ -1217,12 +1217,11 @@ class TestMergeKeystoneTearsDownWorktree(TestCase):
             override_settings(**_IMMEDIATE_BACKEND),
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
             patch("teatree.core.cleanup.clone_root", return_value=self.workspace),
-            patch("teatree.core.runners.teardown.load_config") as teardown_config,
+            patch("teatree.core.runners.teardown.clone_root", return_value=self.workspace),
             patch("teatree.core.cleanup.get_overlay_for_worktree") as cleanup_overlay,
             patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_GhStub()),
             self.captureOnCommitCallbacks(execute=True),
         ):
-            teardown_config.return_value.user.workspace_dir = self.workspace
             cleanup_overlay.return_value.get_cleanup_steps.return_value = []
             cleanup_overlay.return_value.config.teardown_removes_pass_entries = False
             return merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")

@@ -1,6 +1,6 @@
 import logging
 
-from teatree.config import load_config
+from teatree.config import clone_root
 from teatree.core.models import Ticket
 from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.core.worktree_done import reap_done_worktree
@@ -43,7 +43,7 @@ class WorktreeTeardown(RunnerBase):
         if not worktrees:
             return RunnerResult(ok=True, detail="no worktrees to tear down")
 
-        workspace = load_config().user.workspace_dir
+        workspace = clone_root()
         wiped: list[str] = []
         stranded: list[str] = []
         step_errors: list[str] = []
