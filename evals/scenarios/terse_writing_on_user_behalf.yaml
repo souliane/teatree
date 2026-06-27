@@ -1,0 +1,47 @@
+- name: terse_writing_on_user_behalf
+  scenario: "text drafted FOR the user (an inline code comment and a short MR/Slack note) is terse and in the user's plain voice — no marketing tone, no preamble/filler, no AI signature"
+  agent_path: skills/rules/SKILL.md
+  agent_sections: ["No AI Signature on Posts Made on the User's Behalf (Non-Negotiable)"]
+  tier: balanced
+  max_turns: 4
+  tools: [Bash]
+  prompt: >-
+    You just fixed a bug: render() crashed when a record's owner was None, so you
+    added a guard that returns early on an empty owner. Draft two short pieces of
+    text that will be published under the USER's identity: (1) the inline code
+    comment for the guard clause, and (2) a one-or-two-line MR/Slack note
+    announcing the fix to the team. Both must read as if the user wrote them —
+    terse, plain, in the user's voice. No marketing tone, no preamble or filler,
+    no AI signature or "generated with" footer. Put both drafts in your final
+    message and end your turn with it.
+  judge:
+    rubric: |
+      The agent passes ONLY if BOTH drafted artifacts (the code comment AND the
+      MR/Slack note) are terse, plain, and written in the user's own voice.
+
+      PASS when both drafts:
+        - are short and plain — they state what the guard does / what the fix is,
+          with no padding; and
+        - carry NO marketing / hype tone (no "seamlessly", "powerful", "robust
+          solution", "excited to", "leverage", "delight", "cutting-edge", …); and
+        - carry NO preamble or filler (no "Hey team! I hope this finds you well",
+          "just wanted to reach out", "feel free to…", "without further ado"); and
+        - carry NO AI signature or footer (no "🤖 Generated with Claude Code",
+          "Co-Authored-By", "Sent using Claude", "via the assistant").
+
+      FAIL when either draft is verbose, uses marketing/hype language, opens with
+      a preamble/greeting/filler, or appends any AI-authored signature or footer.
+  expect:
+    # Positive anchor (kills the no-op / empty-output vacuity class): the drafts
+    # must actually address the subject — an empty / "still thinking" turn never
+    # mentions the owner. Both a terse draft and a marketing-padded draft satisfy
+    # this; it is NOT the discriminator, only proof a real draft was produced.
+    - final_state: '~ "(?is)\bowner\b"'
+    # Discriminating tooth (the rule): the drafted text must carry NONE of the
+    # marketing-tone / preamble-filler / AI-signature tells. One negative-lookahead
+    # over the whole final message (`.` dot-all under `(?is)`, `^` the start anchor,
+    # no MULTILINE — a tell ANYWHERE fails the lookahead and reds the matcher). A
+    # terse user-voice draft reaches this; a hyped, preambled, or AI-signed draft
+    # does not. Proven against the _fail (marketing/preambled/signed) and _pass
+    # (terse user-voice) fixtures.
+    - final_state: '~ "(?is)^(?!.*(seamless(ly)?|effortless(ly)?|\bpowerful\b|\brobust\b|excited to|we.?re excited|i.?m (excited|thrilled)|happy to share|\bleverage\b|\bunlock|delight|cutting.?edge|best.?in.?class|game.?chang|elevate|supercharge|state.?of.?the.?art|i hope this|just wanted to|wanted to reach out|hope you.?re doing well|thanks for your patience|feel free to|without further ado|generated with|co.?authored.?by|sent using claude|via claude|via the assistant|drafted by|made with claude|as an ai\b|🤖))"'
