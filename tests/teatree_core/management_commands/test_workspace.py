@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.core.management import call_command
 from django.test import TestCase, override_settings
+from django.utils import timezone
 from django.utils.module_loading import import_string
 
 import teatree.core.branch_classification as bc_mod
@@ -32,7 +33,7 @@ import teatree.utils.run as utils_run_mod
 from teatree.config import load_config
 from teatree.core.management.commands._workspace_ticket_intake import build_branch_name
 from teatree.core.management.commands.workspace import _branch_prefix, _workspace_dir
-from teatree.core.models import Ticket, Worktree
+from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.overlay import OverlayBase, ProvisionStep
 from teatree.core.runners import RunnerResult
 from tests.teatree_core.management_commands._overlays import (
@@ -2037,6 +2038,31 @@ class TestWorkspaceCleanMerged(TestCase):
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
+    def test_keeps_busy_merged_worktree(self) -> None:
+        """A MERGED ticket whose worktree has live work is KEPT, not torn down (#2243).
+
+        ``clean-merged`` is the daily opportunistic sweep — it must not reap a
+        merged-but-still-worked-in worktree out from under a mid-task agent. The
+        funnel liveness guard in ``cleanup_worktree`` fires first, so the sweep
+        records a SKIPPED-kept line and the row survives, distinct from the FAILED
+        line a genuine teardown error produces.
+        """
+        merged = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/2243m",
+            state=Ticket.State.MERGED,
+        )
+        wt = Worktree.objects.create(overlay="test", ticket=merged, repo_path="repo", branch="ac-repo-2243m")
+        Session.objects.create(ticket=merged, overlay="test")  # live: ended_at is null
+
+        cleaned = cast("list[str]", call_command("workspace", "clean-merged"))
+
+        assert Worktree.objects.filter(pk=wt.pk).exists(), f"DATA LOSS: busy merged worktree reaped; got: {cleaned!r}"
+        assert any("SKIPPED" in c and "live work" in c for c in cleaned), f"expected a live-work skip, got: {cleaned!r}"
+        assert not any("FAILED" in c for c in cleaned), f"a kept-live worktree must not be a FAILURE; got: {cleaned!r}"
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
     def test_surfaces_cleanup_failures(self) -> None:
         merged = Ticket.objects.create(
             overlay="test",
@@ -3755,6 +3781,60 @@ class TestCleanAllReapsAndSurvivesForeignOverlay(TestCase):
             assert wt_path.is_dir(), "DATA LOSS: worktree dir was removed"
             assert "feature" in _git(work, "branch", "--format=%(refname:short)").split()
             assert any("feature" in c and "Skipped" in c for c in cleaned), f"expected a skip line, got: {cleaned!r}"
+
+    def test_keeps_busy_squash_merged_worktree(self) -> None:
+        """A squash-merged worktree whose ticket has live work is KEPT, not reaped (#2243).
+
+        ``test_reaps_merged_worktree_fully`` proves the same row IS reaped when
+        idle, so a live :class:`Session` flipping it to KEEP is a non-vacuous
+        red-first guard: clean-all must never tear down a squash-merged
+        follow-up worktree an agent is mid-task in.
+        """
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            wt = _make_squash_merged_worktree(tmp)
+            wt_path = Path(wt.extra["worktree_path"])
+            Session.objects.create(ticket=wt.ticket, overlay="test")  # live: ended_at is null
+
+            cleaned, _docker, _dropped = self._run_clean_all(tmp)
+
+            assert Worktree.objects.filter(pk=wt.pk).exists(), f"DATA LOSS: busy merged row reaped; got: {cleaned!r}"
+            assert wt_path.is_dir(), "DATA LOSS: busy worktree dir removed"
+            assert any("live work" in c for c in cleaned), f"expected a live-work skip line, got: {cleaned!r}"
+
+    def test_keeps_busy_created_worktree(self) -> None:
+        """The CREATED-state loop keeps a worktree whose ticket has live work (#2243).
+
+        The funnel liveness guard in ``cleanup_worktree`` fires first (before any
+        path/git resolution), so a busy CREATED row survives clean-all with a KEEP
+        line — never handed to teardown. The safe-reap of an IDLE worktree is
+        covered by ``test_reaps_merged_worktree_fully`` and the cleanup-level
+        ``TestCleanupWorktreeLivenessGuard.test_idle_worktree_is_torn_down``.
+        """
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            workspace = tmp / "workspace"
+            workspace.mkdir()
+
+            busy_ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/2243a")
+            busy = Worktree.objects.create(
+                overlay="test",
+                ticket=busy_ticket,
+                repo_path="backend",
+                branch="busy",
+                state=Worktree.State.CREATED,
+                extra={"worktree_path": str(workspace / "busy" / "backend")},
+            )
+            session = Session.objects.create(ticket=busy_ticket, overlay="test")
+            session.ended_at = timezone.now()
+            session.save(update_fields=["ended_at"])
+            Task.objects.create(ticket=busy_ticket, session=session, status=Task.Status.CLAIMED)
+
+            with patch.object(workspace_mod, "_workspace_dir", return_value=workspace):
+                cleaned = cast("list[str]", call_command("workspace", "clean-all"))
+
+            assert Worktree.objects.filter(pk=busy.pk).exists(), "DATA LOSS: busy CREATED worktree reaped"
+            assert any("live work" in c for c in cleaned), f"expected a live-work skip line, got: {cleaned!r}"
 
     def test_foreign_overlay_merged_row_is_reaped_overlay_free_not_skipped(self) -> None:
         """A merged row whose overlay is unregistered is REAPED overlay-free, not skipped.

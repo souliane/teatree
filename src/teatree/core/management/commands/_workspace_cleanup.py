@@ -14,6 +14,7 @@ from django.core.exceptions import ImproperlyConfigured
 
 from teatree.config import get_effective_settings
 from teatree.core.cleanup import (
+    WorktreeBusyError,
     _branch_tree_matches_squash,
     _ref_captured_by_merge,
     _remote_tracking_ref_exists,
@@ -570,10 +571,17 @@ def _fix_drift(drift: "Drift") -> list[str]:
 def clean_merged_worktrees() -> list[str]:
     """Tear down every worktree whose ticket is already MERGED.
 
+    An OPPORTUNISTIC sweep (the daily followup sync runs it), so it routes through
+    :func:`cleanup_worktree`'s liveness guard: a merged ticket whose worktree has
+    live work — a live session, an active/claimed task, an external-delivery
+    lease, a recent E2E run, or an explicit pin — is KEPT, never torn down
+    mid-task (#291/#2243). A targeted FSM teardown of a freshly-merged ticket is a
+    separate path that bypasses liveness.
+
     Fails open per row: a worktree whose overlay is not installed in this
     environment is SKIPPED (recorded) rather than aborting the whole sweep
-    (#2472); a teardown ``RuntimeError`` is reported as FAILED. Errors are
-    surfaced inline — no suppression.
+    (#2472); live work is SKIPPED (kept); any other teardown ``RuntimeError`` is
+    reported as FAILED. Errors are surfaced inline — no suppression.
     """
     cleaned: list[str] = []
     for ticket in Ticket.objects.filter(state=Ticket.State.MERGED):
@@ -582,6 +590,8 @@ def clean_merged_worktrees() -> list[str]:
                 cleaned.append(str(cleanup_worktree(wt, strict_hygiene=False)))
             except ImproperlyConfigured as exc:
                 cleaned.append(f"SKIPPED {wt.repo_path} ({wt.branch}): overlay not installed here — {exc}")
+            except WorktreeBusyError as exc:
+                cleaned.append(f"SKIPPED {wt.repo_path} ({wt.branch}): {exc}")
             except RuntimeError as exc:
                 cleaned.append(f"FAILED {wt.repo_path} ({wt.branch}): {exc}")
     if not cleaned:
