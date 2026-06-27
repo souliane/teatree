@@ -106,10 +106,12 @@ class BannedTermsUnsetError(RuntimeError):
 
     @classmethod
     def for_key(cls, key: str, env_var: str | None = None) -> "BannedTermsUnsetError":
+        item_noun = key.rsplit("_", 1)[-1]
+        list_label = key.replace("_", "-")
         env_hint = f" (or supply the ${env_var} secret)" if env_var else ""
         return cls(
             f"{key} is unset — set it explicitly (use `{key} = []` if you intend "
-            f"no terms){env_hint}; refusing to run with an unloadable banned-terms list."
+            f"no {item_noun}){env_hint}; refusing to run with an unloadable {list_label} list."
         )
 
 

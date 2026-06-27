@@ -48,9 +48,10 @@ def scan_tree(
     require_brands: bool = typer.Option(
         False,
         "--require-brands",
-        help="HARD-FAIL (exit 2) when no brands are configured, instead of warning and "
-        "exiting 0. CI passes this so a missing TEATREE_BANNED_BRANDS secret reds the "
-        "job loudly; local dev omits it and stays green.",
+        help="HARD-FAIL (exit 2) on an explicit-empty brand list (`banned_brands = []`), "
+        "instead of warning and exiting 0. A genuinely-unset list always fails loud "
+        "regardless of this flag; --require-brands additionally rejects the deliberate "
+        "empty list. CI passes it; local dev omits it.",
     ),
 ) -> None:
     """Scan every git-tracked file for committed banned terms."""

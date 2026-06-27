@@ -19,6 +19,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from typer.main import get_command
 from typer.testing import CliRunner
 
 from teatree.cli.banned_terms import banned_terms_app
@@ -299,6 +300,31 @@ class TestLoadBrandTerms:
             banned_terms_tree_scan.load_brand_terms(cfg)
 
 
+class TestBannedTermsUnsetErrorMessageIsKeyAware:
+    """``for_key`` phrases the message for the actual key it is raised for.
+
+    The same class serves both the ``banned_brands`` and ``banned_terms``
+    keys, so a brands failure must read in brand vocabulary ("no brands",
+    "banned-brands list") instead of the generic "terms" wording, while the
+    terms failure keeps its original phrasing.
+    """
+
+    def test_brands_key_reads_in_brand_vocabulary(self) -> None:
+        message = str(banned_terms_tree_scan.BannedTermsUnsetError.for_key("banned_brands", "TEATREE_BANNED_BRANDS"))
+        assert "banned_brands is unset" in message
+        assert "if you intend no brands" in message
+        assert "unloadable banned-brands list" in message
+        assert "$TEATREE_BANNED_BRANDS" in message
+        assert "no terms" not in message
+
+    def test_terms_key_keeps_term_vocabulary(self) -> None:
+        message = str(banned_terms_tree_scan.BannedTermsUnsetError.for_key("banned_terms"))
+        assert "banned_terms is unset" in message
+        assert "if you intend no terms" in message
+        assert "unloadable banned-terms list" in message
+        assert "secret" not in message
+
+
 class TestCommonWordIsNotSubstringMatched:
     def test_common_word_in_brand_scan_does_not_substring_match(self, tmp_path: Path) -> None:
         # If a common word like "ship" were ever fed to the brand scanner,
@@ -499,6 +525,17 @@ class TestScanTreeRequireBrandsHardFail:
         )
         assert result.exit_code == 1
         assert "src/app.py" in result.stdout
+
+    def test_help_text_describes_explicit_empty_governance_not_unset(self) -> None:
+        # The flag governs ONLY the explicit-empty list; a genuinely-unset list
+        # fails loud regardless. The help must reflect that — not the stale
+        # framing that tied the flag to a missing TEATREE_BANNED_BRANDS secret.
+        scan_tree = get_command(banned_terms_app).commands["scan-tree"]
+        option = next(p for p in scan_tree.params if "--require-brands" in p.opts)
+        help_text = option.help or ""
+        assert "banned_brands = []" in help_text
+        assert "regardless" in help_text
+        assert "missing TEATREE_BANNED_BRANDS secret reds" not in help_text
 
 
 class TestBannedTermsTreeCiPassesRequireBrands:
