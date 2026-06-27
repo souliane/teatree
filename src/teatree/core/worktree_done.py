@@ -18,8 +18,9 @@ redundant — content-equivalent on a remote / ``origin/main`` by **patch-id**
 (not subject) on the CURRENT tip, or the tip's tree equals the squash/merge
 commit's tree. A merged-PR signal alone is NOT proof — post-merge commits are
 kept. Any change NOT proven redundant marks the worktree potentially-needed: it
-is KEPT and reported, never wiped (salvage — push-to-PR via ``t3 pr create`` — is
-a separate action). The analysis fails CLOSED: an inconclusive git probe keeps it.
+is KEPT and reported, never wiped (salvage — push-to-PR via ``t3 <overlay> pr
+create`` — is a separate action). The analysis fails CLOSED: an inconclusive git
+probe keeps it.
 
 :func:`reap_done_worktree` (one row) and :func:`reap_done_worktrees` (a workspace
 sweep) are the single consolidated pass that replaces the three former clean-all
@@ -67,6 +68,26 @@ _DONE_TICKET_STATES = frozenset(
 _REGENERABLE_WORKTREE_PATHS = (CACHE_FILENAME, f"{CACHE_DIRNAME}/")
 _PORCELAIN_STATUS_PREFIX_WIDTH = 3
 _PREVIEW_LIMIT = 3
+_FALLBACK_DEFAULT_TARGET = "origin/main"
+
+
+def _effective_default_target(repo: Path) -> str:
+    """Resolve ``repo``'s REAL default branch as an ``origin/<default>`` ref.
+
+    Done-detection (:func:`_branch_squash_merged`) and the orphan/branch-prune
+    passes already resolve the repo's real default via :func:`git.default_branch`;
+    the redundancy/emit probes must compare against that SAME base, not a hardcoded
+    ``origin/main``, so a ``master``/``develop``-default repo is not measured
+    against a base it does not have. Fail-safe to ``origin/main`` on an
+    unresolvable default — the downstream content gate fails CLOSED (an
+    unresolvable target makes ``git cherry`` inconclusive), so a wrong/missing
+    base keeps the worktree rather than wiping it.
+    """
+    try:
+        default = git.default_branch(str(repo))
+    except (RuntimeError, CommandFailedError):
+        return _FALLBACK_DEFAULT_TARGET
+    return f"origin/{default}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,10 +188,11 @@ def analyze_worktree_changes(worktree: Worktree, *, workspace: Path) -> ChangeAn
     wt_path = _resolve_worktree_path(workspace, worktree)
     repo_main = resolve_clone_path(workspace, worktree) or workspace / worktree.repo_path
     target = _effective_target(str(repo_main), wt_path, worktree)
+    default_target = _effective_default_target(Path(repo_main))
 
     reasons: list[str] = []
     reasons.extend(_uncommitted_reasons(wt_path))
-    reasons.extend(_unpushed_commit_reasons(Path(repo_main), target))
+    reasons.extend(_unpushed_commit_reasons(Path(repo_main), target, default_target=default_target))
     return ChangeAnalysis(proven_redundant=not reasons, kept_reasons=reasons)
 
 
@@ -204,42 +226,47 @@ def _uncommitted_reasons(wt_path: str) -> list[str]:
     return [f"{len(dirty)} uncommitted change(s) not on any remote: {preview}"]
 
 
-def _unpushed_commit_reasons(repo_main: Path, target: _EffectiveTarget) -> list[str]:
+def _unpushed_commit_reasons(
+    repo_main: Path, target: _EffectiveTarget, *, default_target: str = _FALLBACK_DEFAULT_TARGET
+) -> list[str]:
     """Kept-reasons for unpushed commits not proven redundant; empty when all redundant.
 
     Redundancy is decided by the CONTENT of the CURRENT tip, never by a "the branch
     once merged a PR" signal: people keep committing on a branch AFTER its PR merged,
     and those post-merge commits are NEW work bound for a fresh PR. So only two
     content-on-current-tip proofs authorise a wipe — every unique commit is patch-id
-    present on ``origin/main`` (``git cherry``), or the tip's whole tree equals the
-    squash/merge commit's tree. A merged PR whose source branch has since grown
-    unique content is NOT sufficient (it would destroy the post-merge delta), so it
-    is no longer consulted here — the worktree is kept and reported for salvage.
+    present on ``default_target`` (the repo's REAL default, ``git cherry``), or the
+    tip's whole tree equals the squash/merge commit's tree. A merged PR whose source
+    branch has since grown unique content is NOT sufficient (it would destroy the
+    post-merge delta), so it is no longer consulted here — the worktree is kept and
+    reported for salvage.
     """
     try:
         unpushed = git.commits_absent_from_all_remotes(target.probe_repo, target.ref)
     except CommandFailedError as exc:
-        return _branch_ref_gone_reasons(target, exc)
+        return _branch_ref_gone_reasons(target, exc, default_target=default_target)
     if not unpushed:
         return []
     branch = target.branch_to_delete
     content_ref = branch if branch is not None else target.ref
     content_repo = str(repo_main) if branch is not None else target.probe_repo
-    if not content_equivalence_blockers(content_repo, content_ref):
+    if not content_equivalence_blockers(content_repo, content_ref, default_target):
         return []
     if branch is not None and _branch_tree_matches_squash(str(repo_main), branch):
         return []
     preview = ", ".join(unpushed[:_PREVIEW_LIMIT]) + (", …" if len(unpushed) > _PREVIEW_LIMIT else "")
-    return [f"{len(unpushed)} commit(s) not provably on origin/main (content not upstream): {preview}"]
+    return [f"{len(unpushed)} commit(s) not provably on {default_target} (content not upstream): {preview}"]
 
 
-def _branch_ref_gone_reasons(target: _EffectiveTarget, exc: CommandFailedError) -> list[str]:
+def _branch_ref_gone_reasons(
+    target: _EffectiveTarget, exc: CommandFailedError, *, default_target: str = _FALLBACK_DEFAULT_TARGET
+) -> list[str]:
     """Decide the rc=128 (branch-ref-gone) case from the recovered HEAD — fail closed.
 
     A forge post-merge branch deletion leaves the worktree HEAD a dangling symref,
     so ``git log HEAD --not --remotes`` exits 128. The recovered HEAD SHA decides:
     contained in a remote (positive proof the work shipped) or patch-id-equivalent
-    to ``origin/main`` (a squash captured it) is redundant; a recovered SHA on no
+    to ``default_target`` (a squash captured it) is redundant; a recovered SHA on no
     remote with content NOT upstream is genuinely-ahead work (keep); an
     unrecoverable HEAD keeps the conservative "could not verify" refusal.
     """
@@ -248,7 +275,7 @@ def _branch_ref_gone_reasons(target: _EffectiveTarget, exc: CommandFailedError) 
         return []
     if decision.recovered_sha is None:
         return [f"could not verify the branch is pushed (git probe failed: {exc}) — keeping"]
-    if not content_equivalence_blockers(target.probe_repo, decision.recovered_sha):
+    if not content_equivalence_blockers(target.probe_repo, decision.recovered_sha, default_target):
         return []
     count = len(decision.unsynced) or 1
     preview = ", ".join(decision.unsynced[:_PREVIEW_LIMIT]) or decision.recovered_sha[:7]
@@ -268,11 +295,12 @@ def _build_emit_record(worktree: Worktree, *, workspace: Path, liveness: str) ->
     target = _effective_target(str(repo_main), wt_path, worktree)
     ref = target.branch_to_delete or worktree.branch
     probe_repo = str(repo_main)
-    verdict = branch_redundancy(probe_repo, ref)
+    default_target = _effective_default_target(Path(repo_main))
+    verdict = branch_redundancy(probe_repo, ref, default_target)
     try:
         texts = [
-            git.run(repo=probe_repo, args=["log", f"origin/main..{ref}", "--format=%B"]),
-            git.run(repo=probe_repo, args=["diff", f"origin/main...{ref}"]),
+            git.run(repo=probe_repo, args=["log", f"{default_target}..{ref}", "--format=%B"]),
+            git.run(repo=probe_repo, args=["diff", f"{default_target}...{ref}"]),
         ]
     except CommandFailedError:
         texts = []
@@ -293,13 +321,15 @@ def _build_emit_record(worktree: Worktree, *, workspace: Path, liveness: str) ->
     )
 
 
-def _ownership_liveness_skip(worktree: Worktree, *, workspace: Path) -> ReapOutcome | None:
+def _ownership_liveness_skip(worktree: Worktree, *, workspace: Path, fsm_terminal: bool = False) -> ReapOutcome | None:
     """The OWNERSHIP then LIVENESS pre-gate: a skip :class:`ReapOutcome`, or ``None`` to proceed.
 
     A colleague's work on a product repo is EXCLUDED up front; an actively-worked
     item is skipped-as-ACTIVE. Both carry a structured emit record so the skill
     sees them. ``None`` means neither gate fired and the reaper may continue to
-    done-detection.
+    done-detection. ``fsm_terminal`` is threaded to :func:`worktree_liveness` so
+    the post-merge teardown bypasses the FSM-ceremony false positives (the merge
+    that just landed mints the phase session and the merge commit).
     """
     wt_path = _resolve_worktree_path(workspace, worktree)
     repo_main = resolve_clone_path(workspace, worktree) or workspace / worktree.repo_path
@@ -316,7 +346,7 @@ def _ownership_liveness_skip(worktree: Worktree, *, workspace: Path) -> ReapOutc
             f"EXCLUDED '{worktree.branch}': {ownership.reason}",
             emit=_build_emit_record(worktree, workspace=workspace, liveness=""),
         )
-    liveness = worktree_liveness(worktree, wt_path=Path(wt_path))
+    liveness = worktree_liveness(worktree, wt_path=Path(wt_path), fsm_terminal=fsm_terminal)
     if liveness.active:
         return ReapOutcome(
             "active",
@@ -331,6 +361,7 @@ def reap_done_worktree(
     *,
     workspace: Path,
     dry_run: bool,
+    fsm_terminal: bool = False,
 ) -> ReapOutcome:
     """Wipe one worktree only when owned, not live, done AND every change proven redundant.
 
@@ -342,11 +373,19 @@ def reap_done_worktree(
     item NOT auto-deleted carries a structured ``emit`` record for the judgment
     skill; only a provably-redundant item is wiped (``force=True`` —  the analysis
     IS the data-loss gate — ``strict_hygiene=False``).
+
+    ``fsm_terminal`` marks the post-merge FSM-immediate teardown (``WorktreeTeardown``
+    on the merge transition): the LIVENESS guard then bypasses the two signals the
+    merge ceremony itself trips (busy-ticket from the new phase session, recent-commit
+    from the merge commit) so a just-merged worktree is actually reaped. The
+    data-loss gate (:func:`analyze_worktree_changes`) is unchanged — a dirty or
+    genuinely-ahead worktree is still KEPT on the FSM path. The ad-hoc ``clean-all``
+    sweep leaves ``fsm_terminal`` off, preserving the full live-work protection.
     """
     if is_clean_ignored(worktree.branch, overlay=worktree.overlay):
         return ReapOutcome("skipped", f"SKIPPED '{worktree.branch}': matches clean_ignore — keeping")
 
-    pre_gate = _ownership_liveness_skip(worktree, workspace=workspace)
+    pre_gate = _ownership_liveness_skip(worktree, workspace=workspace, fsm_terminal=fsm_terminal)
     if pre_gate is not None:
         return pre_gate
 

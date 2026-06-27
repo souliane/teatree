@@ -23,6 +23,7 @@ from teatree.core.cleanup_liveness import LivenessVerdict
 from teatree.core.models import Ticket, Worktree
 from teatree.core.runners import worktree_start
 from teatree.core.worktree_done import (
+    _effective_default_target,
     analyze_worktree_changes,
     reap_done_worktree,
     reap_done_worktrees,
@@ -395,3 +396,84 @@ class TestSnapshotModulesRemoved:
     def test_worktree_recovery_module_is_removed(self) -> None:
         with pytest.raises(ModuleNotFoundError):
             __import__("teatree.core.worktree_recovery")
+
+
+class TestNonMainDefaultThreading(TestCase):
+    """N1: analyze resolves the repo's REAL default branch, never a hardcoded origin/main.
+
+    Anti-vacuous: the worktree lives on a ``master``-default repo with a unique
+    unpushed commit. The kept-reason must name ``origin/master`` — if the probe
+    still compared against a hardcoded ``origin/main`` (a ref this repo does not
+    have) the content gate would be inconclusive and the message would read
+    ``origin/main``, so the assertion distinguishes the fix from the bug.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _master_repo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.workspace = tmp_path / "workspace"
+        self.workspace.mkdir()
+        self.remote = tmp_path / "remote.git"
+        subprocess.run(
+            [_GIT, "init", "-q", "--bare", "-b", "master", str(self.remote)],
+            check=True,
+            capture_output=True,
+            env=_clean_env(),
+        )
+        self.repo_main = self.workspace / "myrepo"
+        self.repo_main.mkdir()
+        _run_git("init", "-q", "-b", "master", cwd=self.repo_main)
+        _run_git("config", "user.email", "t@t", cwd=self.repo_main)
+        _run_git("config", "user.name", "t", cwd=self.repo_main)
+        _run_git("remote", "add", "origin", str(self.remote), cwd=self.repo_main)
+        (self.repo_main / "base.txt").write_text("base\n", encoding="utf-8")
+        _run_git("add", "-A", cwd=self.repo_main)
+        _run_git("commit", "-q", "-m", "initial", cwd=self.repo_main)
+        _run_git("push", "-q", "origin", "master", cwd=self.repo_main)
+        _run_git("fetch", "-q", "origin", cwd=self.repo_main)
+
+        self.wt_path = self.workspace / "feat" / "myrepo"
+        _run_git("worktree", "add", "-q", "-b", "feat", str(self.wt_path), cwd=self.repo_main)
+        _run_git("config", "user.email", "t@t", cwd=self.wt_path)
+        _run_git("config", "user.name", "t", cwd=self.wt_path)
+        (self.wt_path / "feat.txt").write_text("unique work\n", encoding="utf-8")
+        _run_git("add", "-A", cwd=self.wt_path)
+        _run_git("commit", "-q", "-m", "feat: unique unpushed work", cwd=self.wt_path)
+
+        monkeypatch.setattr("teatree.core.worktree_done.load_config", self._config)
+        monkeypatch.setattr("teatree.core.branch_classification.probe_host_cli", lambda *_a, **_k: "")
+
+    def _config(self) -> object:
+        class _Cfg:
+            class user:  # noqa: N801 — mirrors load_config().user.workspace_dir
+                workspace_dir = self.workspace
+
+        return _Cfg()
+
+    def _worktree(self) -> Worktree:
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/n1", state=Ticket.State.MERGED)
+        return Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="myrepo",
+            branch="feat",
+            extra={"worktree_path": str(self.wt_path), "clone_path": str(self.repo_main)},
+        )
+
+    def test_effective_default_target_resolves_the_real_default(self) -> None:
+        assert _effective_default_target(self.repo_main) == "origin/master"
+
+    def test_unpushed_keep_reason_names_the_real_default_branch(self) -> None:
+        analysis = analyze_worktree_changes(self._worktree(), workspace=self.workspace)
+        assert analysis.proven_redundant is False
+        assert any("origin/master" in r for r in analysis.kept_reasons), analysis.kept_reasons
+        assert not any("origin/main" in r for r in analysis.kept_reasons), analysis.kept_reasons
+
+
+def test_effective_default_target_failsafe_to_main_on_unresolvable(tmp_path: Path) -> None:
+    """An unresolvable default (the path is not a git repo) fails safe to origin/main.
+
+    The downstream content gate fails CLOSED on a missing target (``git cherry``
+    is inconclusive), so a wrong/missing base keeps the worktree rather than
+    wiping it.
+    """
+    assert _effective_default_target(tmp_path / "not-a-repo") == "origin/main"

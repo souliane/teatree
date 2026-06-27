@@ -73,6 +73,8 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
                 "Reclaim disk via zero-data-loss docker prunes (builder + dangling images + unreferenced volumes).",
             ),
             ("stamp-identity", "Stamp the repo's local git identity to the GitHub noreply form (public-push safety)."),
+            ("emit", "Print the JSON handoff for every NOT-auto-deleted worktree (the judgment skill's input)."),
+            ("salvage", "Capture a branch's unique content to a PR, verify it landed, then delete the branch."),
         ],
     ),
     "run": DjangoGroup(

@@ -4967,6 +4967,10 @@ Usage: t3 teatree workspace [OPTIONS] COMMAND [ARGS]...
 │                 dangling images + unreferenced volumes).                     │
 │ stamp-identity  Stamp the repo's local git identity to the GitHub noreply    │
 │                 form (public-push safety).                                   │
+│ emit            Print the JSON handoff for every NOT-auto-deleted worktree   │
+│                 (the judgment skill's input).                                │
+│ salvage         Capture a branch's unique content to a PR, verify it landed, │
+│                 then delete the branch.                                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -5286,6 +5290,57 @@ Usage: t3 teatree workspace stamp-identity [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --repo        TEXT  [default: .]                                             │
 │ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree workspace emit`
+
+```
+Usage: t3 teatree workspace emit [OPTIONS]
+
+ Print the machine-readable JSON handoff for every NOT-auto-deleted item
+ (#2763).
+
+ The read-only structured EMIT the judgment skill consumes: a JSON array of
+ records (path, branch, kind, unique_commit_shas, merged_with_post_merge_work,
+ banned_terms_status, liveness, last_commit_date, owner — schema in
+ ``teatree.core.cleanup_emit``). Removes nothing — ``clean-all`` does the
+ auto-deletion of provably-redundant items; this surfaces the rest for the
+ skill to route (superseded / salvage-to-fresh-PR / defer-live).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree workspace salvage`
+
+```
+Usage: t3 teatree workspace salvage [OPTIONS] SOURCE_REF
+
+ Capture a branch's unique content to a PR, verify it landed, then delete the
+ branch (#2763).
+
+ The salvage primitive the judgment skill calls once it has decided an
+ emitted item is worth keeping and cleaned any banned terms. Fail-safe: the
+ source branch is deleted ONLY after the forge confirms the PR — a failed
+ push / open / verify leaves it intact. Operates on the current repo (cwd).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    source_ref      TEXT  [required]                                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --salvage-branch                         TEXT  Fresh branch to capture onto  │
+│                                                (default:                     │
+│                                                salvage/<source_ref>).        │
+│ --target                                 TEXT  Base the salvage PR opens     │
+│                                                against.                      │
+│                                                [default: origin/main]        │
+│ --allow-banned      --no-allow-banned          Skip the final banned-terms   │
+│                                                safety gate (the skill        │
+│                                                cleaned the content).         │
+│                                                [default: no-allow-banned]    │
+│ --help                                         Show this message and exit.   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

@@ -96,3 +96,40 @@ class TestLiveSignals(_LivenessFixture):
         verdict = worktree_liveness(worktree, wt_path=self.wt_path, now=recent, recent_minutes=120)
         assert verdict.active is True
         assert "HEAD commit" in verdict.reason
+
+
+class TestFsmTerminalBypass(_LivenessFixture):
+    """The post-merge FSM teardown bypasses the two FSM-ceremony false positives (#2763).
+
+    The merge transition itself mints the canonical phase session (busy-ticket) and
+    writes the merge commit (recent-commit), so both fire spuriously the instant a
+    ticket is done. ``fsm_terminal`` bypasses exactly those two; the genuine
+    in-flight-operation guards (CWD, git index.lock) still fire.
+    """
+
+    def test_live_session_is_bypassed_on_fsm_terminal(self) -> None:
+        worktree = self._worktree()
+        Session.objects.create(overlay="test", ticket=worktree.ticket)  # the merge's own phase session
+        assert worktree_liveness(worktree, wt_path=self.wt_path).active is True
+        assert worktree_liveness(worktree, wt_path=self.wt_path, fsm_terminal=True).active is False
+
+    def test_recent_commit_is_bypassed_on_fsm_terminal(self) -> None:
+        worktree = self._worktree()
+        recent = self.commit_instant + timedelta(minutes=30)  # within the 120m window
+        assert worktree_liveness(worktree, wt_path=self.wt_path, now=recent, recent_minutes=120).active is True
+        bypassed = worktree_liveness(worktree, wt_path=self.wt_path, now=recent, recent_minutes=120, fsm_terminal=True)
+        assert bypassed.active is False
+
+    def test_git_index_lock_still_fires_on_fsm_terminal(self) -> None:
+        worktree = self._worktree()
+        git_dir = subprocess.run(
+            [_GIT, "-C", str(self.wt_path), "rev-parse", "--absolute-git-dir"],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=_clean_env(),
+        ).stdout.strip()
+        (Path(git_dir) / "index.lock").write_text("", encoding="utf-8")
+        verdict = worktree_liveness(worktree, wt_path=self.wt_path, fsm_terminal=True)
+        assert verdict.active is True
+        assert "index.lock" in verdict.reason

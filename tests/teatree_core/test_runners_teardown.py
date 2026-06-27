@@ -52,8 +52,8 @@ class TestWorktreeTeardown(TestCase):
 
         cleaned: list[str] = []
 
-        def fake_reap(worktree: Worktree, *, workspace: Path, dry_run: bool) -> ReapOutcome:
-            del workspace, dry_run
+        def fake_reap(worktree: Worktree, *, workspace: Path, dry_run: bool, fsm_terminal: bool) -> ReapOutcome:
+            del workspace, dry_run, fsm_terminal
             cleaned.append(worktree.repo_path)
             worktree.delete()
             return ReapOutcome("wiped", f"Wiped '{worktree.branch}': Cleaned: {worktree.repo_path}")
@@ -72,8 +72,8 @@ class TestWorktreeTeardown(TestCase):
         """A kept (not-proven-redundant) worktree makes teardown ok=False, but the rest wipe."""
         ticket = self._ticket_with_worktrees(count=2)
 
-        def fake_reap(worktree: Worktree, *, workspace: Path, dry_run: bool) -> ReapOutcome:
-            del workspace, dry_run
+        def fake_reap(worktree: Worktree, *, workspace: Path, dry_run: bool, fsm_terminal: bool) -> ReapOutcome:
+            del workspace, dry_run, fsm_terminal
             if worktree.repo_path == "repo-0":
                 return ReapOutcome("kept", f"KEPT '{worktree.branch}': branch ahead of main — do not wipe")
             worktree.delete()
@@ -90,6 +90,30 @@ class TestWorktreeTeardown(TestCase):
         assert "branch ahead of main" in result.detail
         # repo-1 wiped even though repo-0 was kept
         assert ticket.worktrees.filter(repo_path="repo-1").count() == 0
+
+    def test_stranded_non_wiped_outcome_surfaces_as_failure(self) -> None:
+        """A non-wiped, non-kept outcome (excluded/active/skipped) must surface, not read as success.
+
+        B2: the teardown previously mapped only kept→ok=False / wiped→ok=True, so an
+        EXCLUDED/ACTIVE/SKIPPED/WOULD-WIPE worktree the reaper left standing fell
+        through to ``ok=True`` "tore down 0 worktree(s)" — success while tearing
+        nothing down. Any surviving worktree on the FSM path is now ``ok=False``.
+        """
+        ticket = self._ticket_with_worktrees(count=1)
+
+        def fake_reap(worktree: Worktree, *, workspace: Path, dry_run: bool, fsm_terminal: bool) -> ReapOutcome:
+            del workspace, dry_run, fsm_terminal
+            return ReapOutcome("excluded", f"EXCLUDED '{worktree.branch}': colleague-authored on a product repo")
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.teardown.reap_done_worktree", side_effect=fake_reap),
+        ):
+            result = WorktreeTeardown(ticket).run()
+
+        assert result.ok is False, result.detail
+        assert "EXCLUDED" in result.detail
+        assert ticket.worktrees.count() == 1, "a stranded worktree is left intact, never silently dropped"
 
 
 def _run_git(*args: str, cwd: Path) -> None:

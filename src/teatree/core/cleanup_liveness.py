@@ -17,6 +17,16 @@ the env cache into every worktree, touching the dir, so a settled worktree would
 falsely read as recently-modified — the meaningful content-modification signal is
 the last COMMIT. The verdict is a fail-safe phrase the reaper logs so a skip is
 never silent.
+
+The ``fsm_terminal`` carve-out (#2763 follow-up): the post-merge FSM-immediate
+teardown fires the instant a ticket reaches a terminal state, and the terminal
+transition itself trips two of these signals as STRUCTURAL false positives — the
+merge ceremony mints the canonical phase session (busy-ticket) and writes the
+merge commit (recent-commit). On that path those two are bypassed; the genuine
+in-flight-operation guards (CWD, git index.lock) still fire, and the real
+data-loss safety is ``analyze_worktree_changes`` (every uncommitted/unpushed
+change PROVEN redundant) regardless. The ad-hoc ``clean-all`` sweep — where a
+live agent really may be mid-task — keeps every signal (``fsm_terminal`` off).
 """
 
 import logging
@@ -94,15 +104,24 @@ def _last_commit_at(wt_path: Path) -> datetime | None:
 
 
 def worktree_liveness(
-    worktree: Worktree, *, wt_path: Path, now: datetime | None = None, recent_minutes: int = _RECENT_ACTIVITY_MINUTES
+    worktree: Worktree,
+    *,
+    wt_path: Path,
+    now: datetime | None = None,
+    recent_minutes: int = _RECENT_ACTIVITY_MINUTES,
+    fsm_terminal: bool = False,
 ) -> LivenessVerdict:
     """Whether ``worktree`` is actively worked — fail-safe to LIVE on any signal.
 
     Checked in cheap-to-expensive order: busy ticket → CWD → git lock → recent
     HEAD commit. The first signal short-circuits with its reason. A not-live
     verdict means none fired, so the reaper may proceed to done-detection.
+
+    ``fsm_terminal`` bypasses the two FSM-ceremony false positives (busy-ticket
+    and recent-commit) for the post-merge teardown — see the module docstring.
+    CWD and git index.lock still fire on that path.
     """
-    if _ticket_is_busy(worktree):
+    if not fsm_terminal and _ticket_is_busy(worktree):
         return LivenessVerdict(active=True, reason="ticket has a live session or active/claimed task")
     if _is_cwd(wt_path):
         return LivenessVerdict(active=True, reason="the worktree dir is the current process CWD")
@@ -110,9 +129,10 @@ def worktree_liveness(
         return LivenessVerdict(active=False)
     if _git_lock_present(wt_path):
         return LivenessVerdict(active=True, reason="a git index.lock is present (git mid-operation)")
-    moment = now or dj_timezone.now()
-    cutoff = moment - timedelta(minutes=recent_minutes)
-    last_commit = _last_commit_at(wt_path)
-    if last_commit is not None and last_commit > cutoff:
-        return LivenessVerdict(active=True, reason=f"HEAD commit within the last {recent_minutes}m")
+    if not fsm_terminal:
+        moment = now or dj_timezone.now()
+        cutoff = moment - timedelta(minutes=recent_minutes)
+        last_commit = _last_commit_at(wt_path)
+        if last_commit is not None and last_commit > cutoff:
+            return LivenessVerdict(active=True, reason=f"HEAD commit within the last {recent_minutes}m")
     return LivenessVerdict(active=False)
