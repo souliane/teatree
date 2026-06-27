@@ -14,7 +14,7 @@ entry every ``Loop`` row references via ``run.py``, but it never read
 still dispatched. The scoped registry now intersects its members with the
 ``enabled`` ``Loop`` rows BEFORE handing them to the orchestrator, so a scoped
 tick reaches the same row-level verdict the master does. The orchestrator's
-existing :class:`LoopsConfig` gate still layers the env → ``LoopState`` → default
+existing :class:`LoopsConfig` gate still layers the ``LoopState`` → default
 control tier on top of the surviving members (#2702 removed the toml tier).
 """
 
@@ -69,7 +69,7 @@ def run_scoped_tick(
     # #2584: honour ``Loop.enabled`` — the inverse of the master gap. A member
     # whose Loop row is disabled (or has no enabled row) is excluded here, so a
     # scoped tick reaches the same row-level verdict the master does. The
-    # orchestrator's LoopsConfig gate below still applies the env → LoopState →
+    # orchestrator's LoopsConfig gate below still applies the LoopState →
     # default control tier to the surviving members (#2702 removed the toml tier).
     enabled_members = members & frozenset(
         Loop.objects.filter(name__in=members, enabled=True).values_list("name", flat=True)

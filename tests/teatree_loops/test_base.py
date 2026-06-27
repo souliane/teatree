@@ -1,4 +1,4 @@
-"""MiniLoop contract — immutable, callable build_jobs, optional always_on."""
+"""MiniLoop contract — immutable, callable build_jobs, optional off_live_tick."""
 
 import dataclasses
 
@@ -16,16 +16,16 @@ class TestMiniLoopContract:
         loop = MiniLoop(name="inbox", default_cadence_seconds=60, build_jobs=_build_jobs)
         assert loop.name == "inbox"
         assert loop.default_cadence_seconds == 60
-        assert loop.always_on is False
+        assert loop.off_live_tick is False
 
-    def test_always_on_is_optional(self) -> None:
+    def test_off_live_tick_is_optional(self) -> None:
         loop = MiniLoop(
-            name="dispatch",
+            name="dream",
             default_cadence_seconds=300,
             build_jobs=_build_jobs,
-            always_on=True,
+            off_live_tick=True,
         )
-        assert loop.always_on is True
+        assert loop.off_live_tick is True
 
     def test_is_frozen(self) -> None:
         loop = MiniLoop(name="x", default_cadence_seconds=60, build_jobs=_build_jobs)

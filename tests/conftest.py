@@ -260,14 +260,7 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.delenv("TICKET_DIR", raising=False)
     monkeypatch.delenv("WT_VARIANT", raising=False)
     monkeypatch.delenv("COMPOSE_PROJECT_NAME", raising=False)
-    # The mini-loop env kill-switch is read at call time by ``review_loop_enabled``
-    # via ``loop_enabled_by_name`` (``T3_LOOPS_DISABLED``). A value containing
-    # ``review`` or ``all`` leaked from the host shell — or from another test
-    # whose own restore was bypassed — makes ``filter_review_intent_signals``
-    # drop every broadcast review-intent signal, failing the discovery-time
-    # scanner tests under a full-suite collection order while they pass in
-    # isolation (souliane/teatree#2359 Class B). Clearing it here makes the
-    # review-loop env state hermetic per test; since #2702 this env var is the
-    # ONLY loop-disabled source ``loop_enabled_by_name`` reads (the ``[loops]``
-    # toml fallback is gone), so this delenv is the whole isolation it needs.
-    monkeypatch.delenv("T3_LOOPS_DISABLED", raising=False)
+    # Loop control is DB-only: ``review_loop_enabled`` reads the DB ``LoopState``
+    # tier and no env var, so ``T3_LOOPS_DISABLED`` is inert — there is nothing
+    # to isolate here (the env-inertness is pinned by
+    # ``tests/teatree_loop/test_review_loop_db_only_control.py``).

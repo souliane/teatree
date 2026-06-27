@@ -66,11 +66,12 @@ if [ -n "$session_id" ] && [ ! -f "${state_dir}/${session_id}.teatree-active" ];
 fi
 
 # Session-start loop/statusline auto-load is OPT-IN (#256): default OFF so a
-# colleague who merely clones the repo never sees the loop statusline. Mirrors
-# hook_router._loops_auto_load_enabled — env T3_LOOPS_AUTO_LOAD first, then
-# [loops] auto_load in ~/.teatree.toml; fails closed (silent) on absence.
-loops_auto_load_enabled() {
-    local env_val="${T3_LOOPS_AUTO_LOAD:-}"
+# colleague who merely clones the repo never sees the loop statusline. ``autoload``
+# is the ONE owner flag (it engages the session AND arms its loops). Mirrors
+# hook_router._autoload_enabled — env T3_AUTOLOAD first, then [teatree] autoload
+# in ~/.teatree.toml; fails closed (silent) on absence.
+autoload_enabled() {
+    local env_val="${T3_AUTOLOAD:-}"
     if [ -n "$env_val" ]; then
         case "$(printf '%s' "$env_val" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')" in
             1|true|yes|on) return 0 ;;
@@ -79,21 +80,21 @@ loops_auto_load_enabled() {
     fi
     local toml="$HOME/.teatree.toml"
     [ -r "$toml" ] || return 1
-    local in_loops=false
+    local in_teatree=false
     local line
     while IFS= read -r line; do
         case "$line" in
-            "["*) [[ "$line" =~ ^\[loops\] ]] && in_loops=true || in_loops=false; continue ;;
+            "["*) [[ "$line" =~ ^\[teatree\] ]] && in_teatree=true || in_teatree=false; continue ;;
         esac
-        $in_loops || continue
-        if [[ "$line" =~ ^[[:space:]]*auto_load[[:space:]]*=[[:space:]]*true ]]; then
+        $in_teatree || continue
+        if [[ "$line" =~ ^[[:space:]]*autoload[[:space:]]*=[[:space:]]*true ]]; then
             return 0
         fi
     done < "$toml"
     return 1
 }
 
-if [ -n "$session_id" ] && ! loops_auto_load_enabled; then
+if [ -n "$session_id" ] && ! autoload_enabled; then
     exit 0
 fi
 

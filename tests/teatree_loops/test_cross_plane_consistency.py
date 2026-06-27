@@ -9,10 +9,11 @@ and ``run_scoped_tick``); (3) **review-claim chokepoint**:
 review-claim gate).
 
 This is the anti-vacuity guard the prior 'fixed' verdict lacked: under each of
-{``Loop.enabled=False``, ``LoopState`` paused, ``T3_LOOPS_DISABLED=<name>``} all
-three must agree the loop does NOT run, and with no hold all three must agree it
-DOES. Before the unification the ``build_loop_table_jobs`` arm disagreed under a
-LoopState/env hold (it gated on ``Loop.enabled`` only) — the planes diverged.
+{``Loop.enabled=False``, ``LoopState`` paused} all three must agree the loop does
+NOT run, and with no hold all three must agree it DOES. A set ``T3_LOOPS_DISABLED``
+env var is INERT across all three planes (loop control is DB-only). Before the
+unification the ``build_loop_table_jobs`` arm disagreed under a ``LoopState`` hold
+(it gated on ``Loop.enabled`` only) — the planes diverged.
 """
 
 from unittest.mock import patch
@@ -80,10 +81,12 @@ class TestCrossPlaneConsistency(django.test.TestCase):
         LoopState.objects.pause(_REVIEW)
         self._assert_all_planes_agree(_REVIEW, expected=False)
 
-    def test_all_planes_agree_env_disable_stops_it(self) -> None:
+    def test_all_planes_agree_env_kill_switch_is_inert(self) -> None:
+        # ``T3_LOOPS_DISABLED`` is removed — a set env var is inert across all
+        # three planes; the loop still runs (a DB hold is the control outcome).
         _ensure_loop(_REVIEW)
         with patch.dict("os.environ", {"T3_LOOPS_DISABLED": _REVIEW}):
-            self._assert_all_planes_agree(_REVIEW, expected=False)
+            self._assert_all_planes_agree(_REVIEW, expected=True)
 
     def test_all_planes_agree_loop_enabled_false_stops_master_and_config(self) -> None:
         # When the Loop row itself is disabled, the master and the scoped path

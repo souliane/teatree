@@ -376,11 +376,6 @@ depends_on = [
 ]
 
 [[modules]]
-path = "teatree.loop_enabled"
-layer = "platform"
-depends_on = ["teatree.config"]
-
-[[modules]]
 path = "teatree.loop"
 layer = "orchestration"
 depends_on = [
@@ -397,7 +392,6 @@ depends_on = [
   "teatree.backends.slack",
   "teatree.notify",
   "teatree.messaging",
-  "teatree.loop_enabled",
   "teatree.teams",
   "teatree.loop.loop_cadences",
   "teatree.loop.session_identity",

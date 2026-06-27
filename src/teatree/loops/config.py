@@ -9,18 +9,16 @@ sub-minute cadences turn the tick into a fetch storm. Bad values
 silently fall back to the default + one ERROR log; never raise (a
 broken cadence string must not take down the loop).
 
-Loop-disabled state (#2702 — the last #2697 config-toml→DB audit bypass
-reader, B6) is resolved by :meth:`LoopsConfig.is_enabled` as **env → DB
-``LoopState`` → default**, with NO ``[loops]`` toml fallback. The env
-``T3_LOOPS_DISABLED`` kill-switch (settled by #2359) and the durable DB
-``LoopState`` control tier (#1913) are the only disable sources; the
-former ``[loops] enabled`` / ``[loops.<name>] enabled`` toml keys are no
-longer read for the disabled decision.
+Loop-disabled state is DB-only: :meth:`LoopsConfig.is_enabled` resolves
+purely through the durable DB ``LoopState`` control tier (#1913) — a
+``PAUSED`` / ``DISABLED`` row skips the loop, an absent / ``ENABLED`` row
+leaves it running. There is no env kill-switch and no ``[loops]`` toml
+disabled-state fallback: loop control is ``/loops``
+(``t3 loop enable``/``disable``/``pause``/``resume``) + the DB only.
 """
 
 import dataclasses
 import logging
-import os
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -72,8 +70,9 @@ class LoopOverride:
     """Per-loop cadence override under ``[loops.<name>]``.
 
     ``None`` means "no override; fall back to the loop's own default
-    cadence". The disabled decision is NOT a per-loop toml override
-    anymore (#2702): it resolves env → DB ``LoopState`` → default.
+    cadence". The disabled decision is NOT a per-loop toml override: it
+    resolves through the DB ``LoopState`` tier only (see
+    :meth:`LoopsConfig.is_enabled`).
     """
 
     cadence_seconds: int | None = None
@@ -95,7 +94,7 @@ class LoopsConfig:
         *path* override is for tests. Missing file, missing tables, or
         unreadable toml all degrade to defaults — never raise. Only
         cadence/parallel/summary settings are read; loop-disabled state
-        is resolved by :meth:`is_enabled` (env → DB → default), not here.
+        is resolved by :meth:`is_enabled` (DB → default), not here.
         """
         toml_path = path if path is not None else Path.home() / ".teatree.toml"
         try:
@@ -131,29 +130,17 @@ class LoopsConfig:
 
     @staticmethod
     def is_enabled(loop: MiniLoop) -> bool:
-        """Resolve enable/disable for *loop* as **env → DB ``LoopState`` → default** (#2702).
+        """Resolve enable/disable for *loop* through the DB ``LoopState`` tier only (#1913).
 
-        The DB-backed ``LoopState`` control tier (#1913) is consulted FIRST: an
-        explicit ``PAUSED`` / ``DISABLED`` row forces a skip, even for an
-        ``always_on`` loop (the 2026-06-03 'pause everything' incident — the
-        env layer below cannot stop an always-on loop). No row / an ``ENABLED``
-        row defers to the env layer, so an empty table is a provable no-op.
-
-        Below that, the env kill-switch is resolved against the same
-        ``T3_LOOPS_DISABLED`` parsing the platform-leaf
-        :func:`teatree.loop_enabled.loop_enabled_by_name` uses
-        (``_env_disabled_names`` keeps the case-insensitive ``all`` sentinel),
-        ignored only by an ``always_on`` loop. With neither a DB hold nor an env
-        match, the loop defaults to enabled — the former ``[loops]`` toml
-        disabled-state fallback was removed in #2702 (it is no longer read). The
-        decision reads no config field, so it is a static method: disabled-state
-        is env + DB only, never the cadence/parallel/summary config instance.
+        The durable DB-backed ``LoopState`` control tier is the single disable
+        authority: a ``PAUSED`` / ``DISABLED`` row forces a skip, while no row
+        (or an ``ENABLED`` row) leaves the loop running, so an empty table is a
+        provable no-op. There is no env kill-switch and no ``[loops]`` toml
+        disabled-state fallback — loop control is ``t3 loop enable`` /
+        ``disable`` / ``pause`` / ``resume`` + the DB only. The decision reads no
+        config field, so it is a static method.
         """
-        if loop_held_in_db(loop.name):
-            return False
-        env_disabled = _env_disabled_names()
-        env_kills = env_disabled == _ENV_DISABLE_ALL or loop.name in env_disabled
-        return not (env_kills and not loop.always_on)
+        return not loop_held_in_db(loop.name)
 
     def cadence_for(self, loop: MiniLoop) -> int:
         """Resolve effective cadence (seconds) for *loop*."""
@@ -161,24 +148,6 @@ class LoopsConfig:
         if override is not None and override.cadence_seconds is not None:
             return override.cadence_seconds
         return loop.default_cadence_seconds
-
-
-_ENV_DISABLE_ALL = frozenset({"all"})
-
-
-def _env_disabled_names() -> frozenset[str]:
-    """Parse ``T3_LOOPS_DISABLED`` → frozenset of names.
-
-    ``"all"`` is a single sentinel that means "every non-always-on loop
-    is disabled". Whitespace tolerant; case-insensitive on the sentinel.
-    """
-    raw = os.environ.get("T3_LOOPS_DISABLED", "").strip()
-    if not raw:
-        return frozenset()
-    parts = {p.strip() for p in raw.split(",") if p.strip()}
-    if "all" in {p.lower() for p in parts}:
-        return _ENV_DISABLE_ALL
-    return frozenset(parts)
 
 
 def _parse_per_loop_cadence(raw: object) -> int | None:
