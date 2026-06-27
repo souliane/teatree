@@ -66,15 +66,16 @@ class TestBuildPaneOptions(TestCase):
         task = _pending_task()
         with (
             patch("teatree.teams.pane_spawn._get_resume_session_id", return_value="resume-uuid") as resume,
-            patch("teatree.teams.pane_spawn.resolve_spawn_model", return_value="sonnet") as model,
+            patch("teatree.teams.pane_spawn.resolve_spawn_model", return_value="opus") as model,
         ):
             options = build_pane_options(task, role=TeamRole.CORE_MAKER)
 
         # resume= threads the pane's resumable session so it re-attaches across claims.
         resume.assert_called_once_with(task)
         assert options.resume == "resume-uuid"
-        # The floor-merged spawn model is applied.
-        assert options.model == "sonnet"
+        # An at-or-above-opus resolved model is threaded through unchanged; the
+        # team-mate floor is a no-op here (its raising behaviour is pinned below).
+        assert options.model == "opus"
         assert model.called
         # APPEND to the claude_code preset, never REPLACE it. SystemPromptPreset
         # is a TypedDict (a dict at runtime); narrow off the str | None union
@@ -90,6 +91,47 @@ class TestBuildPaneOptions(TestCase):
         with patch("teatree.teams.pane_spawn._get_resume_session_id", return_value=""):
             options = build_pane_options(task, role=TeamRole.OVERLAY_MAKER)
         assert options.resume is None
+
+
+class TestTeammateModelFloor(TestCase):
+    """A maker pane is never spawned below opus — a sub-opus mate auto-compacts mid-task.
+
+    ``build_pane_options`` runs the ``coding`` phase, which inherits the user's
+    default and can be pinned to a cheap tier — either of which would put a
+    long-lived team-mate pane on a model that auto-compacts mid-task and loses its
+    working context. The opus floor closes both holes: an inherited (``None``) or
+    below-opus resolution is raised to opus; an at-or-above-opus model is kept.
+    """
+
+    def _pane_model(self, resolved: str | None) -> str | None:
+        task = _pending_task()
+        with patch("teatree.teams.pane_spawn.resolve_spawn_model", return_value=resolved):
+            return build_pane_options(task, role=TeamRole.CORE_MAKER).model
+
+    def test_sonnet_resolution_is_floored_to_opus(self) -> None:
+        assert self._pane_model("sonnet") == "opus"
+
+    def test_haiku_resolution_is_floored_to_opus(self) -> None:
+        assert self._pane_model("haiku") == "opus"
+
+    def test_inherited_none_resolution_is_pinned_to_opus(self) -> None:
+        # The inherit hole: tier_rank(None) == tier_rank("opus"), so a plain
+        # most-capable-wins floor would leave None untouched and the pane would
+        # inherit a possibly-sub-opus user default. The floor must pin opus.
+        assert self._pane_model(None) == "opus"
+
+    def test_empty_resolution_is_pinned_to_opus(self) -> None:
+        # resolve_spawn_model can return "" (an inherit sentinel); the floor
+        # treats it like None and pins opus, so the pane never spawns model-less.
+        assert self._pane_model("") == "opus"
+
+    def test_opus_resolution_passes_through(self) -> None:
+        assert self._pane_model("opus") == "opus"
+
+    def test_more_capable_model_is_not_downgraded(self) -> None:
+        # Fable ranks above opus (the most-honest tier) and does not auto-compact;
+        # the floor only raises, never lowers, so it is kept.
+        assert self._pane_model("claude-fable-5") == "claude-fable-5"
 
 
 class TestMakerClaimOverlaySeamRouting(TestCase):
