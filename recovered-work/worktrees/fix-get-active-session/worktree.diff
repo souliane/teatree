@@ -1,0 +1,51 @@
+diff --git src/teatree/core/session.py src/teatree/core/session.py
+new file mode 100644
+index 0000000000..5054dc2a51
+--- /dev/null
++++ src/teatree/core/session.py
+@@ -0,0 +1,12 @@
++from teatree.core.models.session import Session
++
++
++class SessionNotFound(Exception):  # noqa: N818
++    pass
++
++
++def get_active_session(agent_id: str) -> Session:
++    session = Session.objects.filter(agent_id=agent_id, ended_at__isnull=True).first()
++    if session is None:
++        raise SessionNotFound(agent_id)
++    return session
+diff --git tests/teatree_core/test_session.py tests/teatree_core/test_session.py
+new file mode 100644
+index 0000000000..f042b4e49c
+--- /dev/null
++++ tests/teatree_core/test_session.py
+@@ -0,0 +1,27 @@
++import pytest
++from django.test import TestCase
++
++from teatree.core.models import Session, Ticket
++from teatree.core.session import SessionNotFound, get_active_session
++
++
++class TestGetActiveSession(TestCase):
++    def test_raises_session_not_found_when_no_active_session_exists(self) -> None:
++        with pytest.raises(SessionNotFound):
++            get_active_session("agent-with-no-session")
++
++    def test_returns_active_session_when_one_exists(self) -> None:
++        ticket = Ticket.objects.create()
++        session = Session.objects.create(ticket=ticket, agent_id="agent-1")
++
++        result = get_active_session("agent-1")
++
++        assert result.pk == session.pk
++
++    def test_ignores_ended_sessions(self) -> None:
++        ticket = Ticket.objects.create()
++        session = Session.objects.create(ticket=ticket, agent_id="agent-2")
++        session.begin_manual_handoff()
++
++        with pytest.raises(SessionNotFound):
++            get_active_session("agent-2")

@@ -1,0 +1,325 @@
+From c6af3f71b0b98bc2af039c17b223762ad74f65c3 Mon Sep 17 00:00:00 2001
+From: souliane <21343492+souliane@users.noreply.github.com>
+Date: Mon, 15 Jun 2026 22:41:04 +0200
+Subject: [PATCH] feat(teams): floor team-mate spawns to opus + anti-vacuous
+ eval
+
+A team mate runs a long-lived, multi-task session; spawned below opus it
+auto-compacts mid-task and loses its working context (the loaded skills,
+the diff in flight, the unit it was handed). Enforce a team mate is opus
+or stronger in the two places that must agree:
+
+- build_pane_options floors the maker-pane spawn model up to opus via
+  _floor_teammate_model: an inherited (None) or below-opus resolution pins
+  opus, an at-or-above-opus model (opus, or the more-capable fable) passes
+  through unchanged. Closes the inherit hole a plain most-capable-wins merge
+  leaves open (tier_rank(None) == tier_rank(opus)).
+- a declarative speed-skill eval, team_mate_spawns_on_opus_not_sonnet, whose
+  _fail fixture spawns the teammate via the Agent tool on model sonnet (RED)
+  and _pass uses opus (GREEN); a dedicated anti-vacuity proof pins fail->RED,
+  pass->GREEN, and matcher-removal->GREEN.
+
+The speed skill fixed-roster section and BLUEPRINT Track-B state the rule
+with its rationale.
+---
+ BLUEPRINT.md                                  |  2 +-
+ skills/speed/SKILL.md                         |  2 +
+ skills/speed/evals.yaml                       | 20 ++++++
+ src/teatree/teams/pane_spawn.py               | 41 +++++++++---
+ .../test_team_mate_opus_model_anti_vacuous.py | 65 +++++++++++++++++++
+ ...pawns_on_opus_not_sonnet_fail.stream.jsonl |  4 ++
+ ...pawns_on_opus_not_sonnet_pass.stream.jsonl |  4 ++
+ tests/teatree_teams/test_pane_spawn.py        | 43 +++++++++++-
+ 8 files changed, 169 insertions(+), 12 deletions(-)
+ create mode 100644 tests/eval_lanes/deterministic/test_team_mate_opus_model_anti_vacuous.py
+ create mode 100644 tests/eval_lanes/fixtures/team_mate_spawns_on_opus_not_sonnet_fail.stream.jsonl
+ create mode 100644 tests/eval_lanes/fixtures/team_mate_spawns_on_opus_not_sonnet_pass.stream.jsonl
+
+diff --git a/BLUEPRINT.md b/BLUEPRINT.md
+index ef63a3b576..a257a728d6 100644
+--- a/BLUEPRINT.md
++++ b/BLUEPRINT.md
+@@ -169,7 +169,7 @@ ### 5.6 Loop Topology
+ 
+ TeaTree drives the day from a single long-lived Claude Code session running a fat `/loop` (the `dedicated_loops = false` default of Track A above). The loop fires on a fixed cadence (default 12 minutes via `[teatree] loop_cadence_seconds`). The tick body is `teatree.loop.tick.run_tick` — code, not prose, so it is tested, typed, and version-controlled. `run_tick` composes named single-responsibility phases from `teatree.loop.phases` ([#1796](https://github.com/souliane/teatree/issues/1796)): `scan_phase` (parallel world-scan), `sweep_phase` (split the maintenance scanners — `pr_sweep`/`self_update`/`pull_main_clone` — out of the scan), `act_phase` (dispatch + mechanical + persist), and `orchestrate_phase` (the speed-driven autonomous fan-out — a no-op at the default `medium` speed; `slow` admits at most one, `full`/`boost` clamp a claimed manifest to the per-overlay `max_concurrent_auto_starts` budget via the existing claim-next CAS, computing + returning the manifest only — spawning stays in the session/self-pump half). `run_tick` wires `orchestrate_phase` as a **read-only budget PLANNER** — it computes the clamped fan-out cap but never claims a `Task` row (`claim=False` always on the tick path). The reconciled fan-out ([#1796](https://github.com/souliane/teatree/issues/1796) WI-1) keeps exactly ONE claim point, the live `claim_next` CAS, so the tick can never orphan a claim the live claimer also takes (the prior `claim=True` arm could). When the opt-in, default-OFF `[teatree] orchestrate_claim_enabled` toggle (per-overlay overridable, `T3_ORCHESTRATE_CLAIM_ENABLED` env override; the tick read degrades to OFF on any settings-read error) is ON **and** the speed clamps (`full`/`boost`/`slow`), the tick persists the computed cap as an admit-budget ceiling to the `tick-meta.json` sidecar (`teatree.loop.admit_budget`, beside the freshness/open-PR sidecars). The live claimer (`loop_dispatch claim-next`) reads that budget and refuses the marginal claim once the standing in-flight CLAIMED dispatchable WIP (`Task.objects.in_flight_claimed_count`) hits the ceiling — so claimed ≡ spawned. At `medium` OR with the toggle OFF, **no budget key is written** (any prior one is cleared): absence = unclamped = today's throughput, byte-identical. The reader carries a `written_at` TTL (~2× cadence) and fails open to unclamped on an absent/stale/corrupt budget, so a dead loop never wrongly throttles live dispatch ([#1838](https://github.com/souliane/teatree/issues/1838) agent-teams Track-A; [#1917](https://github.com/souliane/teatree/issues/1917) parent).
+ 
+-**Agent-teams Track-B — the inert maker-only pane layer ([#1838](https://github.com/souliane/teatree/issues/1838)).** A maker pane is a long-lived `team:<role>` claim (the PR#6 team-role registry, `teatree.teams.roles`) of the existing `Task` + lease — no new model, no migration. `teatree.teams` houses the lifecycle FSM (`panes.py`: `spawn → active → idle → stopped`, state DERIVED from the live `Task` claim + lease + the ticket's live `Session`), the idle-pane reaper (`pane_reaper.py`: demote any pane with no live `Session` past `[teams] idle_minutes` to stopped, fail-safe KEEP on uncertainty), and the loop-owner collision guardrails (`guardrails.py`: a hard claim-boundary guard that a pane claims ONLY `team:<role>` and can never claim `loop-owner` or a `loop:` slot — the proven disjoint key spaces are the backbone; plus a pre-work live-owner check that skips a pane while a live foreign `loop-owner` drives the loop). The pane budget is `[teams] max_panes` (default 1) and `[teams] idle_minutes` (default 30) on `UserSettings` — read from the `[teams]` table, per-overlay overridable, env-overridable via `T3_TEAMS_MAX_PANES` / `T3_TEAMS_IDLE_MINUTES`, each fail-safe to its default at every tier so the safety bound cannot be configured away. A pane heartbeats via the existing `Task.renew_lease`, so `reclaim_orphaned_claims` / `reap_stale_claims` still recover a dead pane's claim — the DB stays the source of truth. **Default-OFF**: `teams_enabled` defaults false, so the maker claim path and the pane reaper are no-ops and nothing spawns. The only live-path module that imports `teatree.teams` is the sanctioned pane-reaper scanner (`teatree.loop.scanners.pane_reaper`), which the pane-reaper mini-loop dispatches and which is itself gated `None`-when-off; the narrowed [#2320](https://github.com/souliane/teatree/issues/2320) AST scan pins that no OTHER live-path module wires the registry in. The lead's `SessionStart(source=compact)` ORPHANS the stale `loop-owner` lease (`session_id=""`, via `evict_stale_owner`) synchronously before any tick, so the lead's next `t3 loop tick` re-anchors `loop-owner` uncontested and no pane can win the compaction-window CAS race. The maker consumer (the SDK spawn helper `teatree.teams.pane_spawn` + the maker claim path + the pane-reaper mini-loop) lands here; REVIEWER panes are never spawnable (a code-level raise pinned by a fitness test), and reviewing stays on the fresh-spawn-per-head_sha AutoReviewDispatch path. **Pane DISPLAY layer (WI-5, presentation-only).** `teatree.teams.pane_display` is the optional half that renders a maker pane's in-process SDK session in a visible terminal pane — `spawn_pane` issues `tmux split-window -- claude --resume <session_id> --model <model> --permission-mode bypassPermissions` (the resumed id is `build_pane_options`'s resolved SDK session — the SAME session, the single source of truth) and titles the pane `team:<role>`. teatree only ever issues plain `tmux split-window` / `select-pane` / `kill-pane`; the NATIVE iTerm2 split rendering is purely a property of how the USER attached (`tmux -CC` control mode), so the same commands degrade to plain tmux panes elsewhere (mirroring Claude Code's own `teammateMode`). The display NEVER replaces the SDK run: no tmux / no TTY / any spawn failure falls back to the in-process path (`detect_multiplexer` is the probe; `spawn_pane` returns `None` on any failure). The in-pane `claude` child is plain interactive (NEVER `claude -p`), so it routes through the interactive-billing lane — a visible interactive pane is the intended path, not a metered-headless backdoor. Teardown is DB-driven: the pane-reaper scanner's demote-to-STOPPED triggers `reconcile_orphan_panes`, which `kill-pane`s every `team:*`-titled pane whose slot is no longer a live claim (the DB lease stays authoritative, tmux is a downstream effect), and the same reconcile reaps orphaned panes at startup. The mode is `[teams] display = "auto" | "tmux" | "none"` (`UserSettings.teams_display`, default `none` — per-overlay overridable, `T3_TEAMS_DISPLAY` env wins, a bad value fails safe to `none`). **Default-OFF (`none`) + headless/CI ⇒ byte-identical to today.** `pane_display` is a pure leaf imported on the live path only via the same sanctioned pane-reaper scanner, so the #2320 inertness scan stays green.
++**Agent-teams Track-B — the inert maker-only pane layer ([#1838](https://github.com/souliane/teatree/issues/1838)).** A maker pane is a long-lived `team:<role>` claim (the PR#6 team-role registry, `teatree.teams.roles`) of the existing `Task` + lease — no new model, no migration. `teatree.teams` houses the lifecycle FSM (`panes.py`: `spawn → active → idle → stopped`, state DERIVED from the live `Task` claim + lease + the ticket's live `Session`), the idle-pane reaper (`pane_reaper.py`: demote any pane with no live `Session` past `[teams] idle_minutes` to stopped, fail-safe KEEP on uncertainty), and the loop-owner collision guardrails (`guardrails.py`: a hard claim-boundary guard that a pane claims ONLY `team:<role>` and can never claim `loop-owner` or a `loop:` slot — the proven disjoint key spaces are the backbone; plus a pre-work live-owner check that skips a pane while a live foreign `loop-owner` drives the loop). The pane budget is `[teams] max_panes` (default 1) and `[teams] idle_minutes` (default 30) on `UserSettings` — read from the `[teams]` table, per-overlay overridable, env-overridable via `T3_TEAMS_MAX_PANES` / `T3_TEAMS_IDLE_MINUTES`, each fail-safe to its default at every tier so the safety bound cannot be configured away. A pane heartbeats via the existing `Task.renew_lease`, so `reclaim_orphaned_claims` / `reap_stale_claims` still recover a dead pane's claim — the DB stays the source of truth. **Default-OFF**: `teams_enabled` defaults false, so the maker claim path and the pane reaper are no-ops and nothing spawns. The only live-path module that imports `teatree.teams` is the sanctioned pane-reaper scanner (`teatree.loop.scanners.pane_reaper`), which the pane-reaper mini-loop dispatches and which is itself gated `None`-when-off; the narrowed [#2320](https://github.com/souliane/teatree/issues/2320) AST scan pins that no OTHER live-path module wires the registry in. The lead's `SessionStart(source=compact)` ORPHANS the stale `loop-owner` lease (`session_id=""`, via `evict_stale_owner`) synchronously before any tick, so the lead's next `t3 loop tick` re-anchors `loop-owner` uncontested and no pane can win the compaction-window CAS race. The maker consumer (the SDK spawn helper `teatree.teams.pane_spawn` + the maker claim path + the pane-reaper mini-loop) lands here; REVIEWER panes are never spawnable (a code-level raise pinned by a fitness test), and reviewing stays on the fresh-spawn-per-head_sha AutoReviewDispatch path. **Opus floor on a team-mate spawn.** `build_pane_options` runs the `coding` phase (which inherits the user's default and can be pinned cheap), then `_floor_teammate_model` RAISES the resolved model up to `opus`: a team mate runs a long-lived, multi-task session and a sub-opus mate auto-compacts mid-task and loses its working context. The floor pins `opus` when the resolution is inherited (`None`) or below-opus, and leaves an at-or-above-opus model (opus, or the more-capable fable) untouched — closing the inherit hole a plain most-capable-wins merge leaves open (`tier_rank(None) == tier_rank("opus")`). The native Agent-Teams roster carries the same rule in prose (`skills/speed` § "Fixed roster in Agent-Team mode") with the co-located eval `team_mate_spawns_on_opus_not_sonnet`. **Pane DISPLAY layer (WI-5, presentation-only).** `teatree.teams.pane_display` is the optional half that renders a maker pane's in-process SDK session in a visible terminal pane — `spawn_pane` issues `tmux split-window -- claude --resume <session_id> --model <model> --permission-mode bypassPermissions` (the resumed id is `build_pane_options`'s resolved SDK session — the SAME session, the single source of truth) and titles the pane `team:<role>`. teatree only ever issues plain `tmux split-window` / `select-pane` / `kill-pane`; the NATIVE iTerm2 split rendering is purely a property of how the USER attached (`tmux -CC` control mode), so the same commands degrade to plain tmux panes elsewhere (mirroring Claude Code's own `teammateMode`). The display NEVER replaces the SDK run: no tmux / no TTY / any spawn failure falls back to the in-process path (`detect_multiplexer` is the probe; `spawn_pane` returns `None` on any failure). The in-pane `claude` child is plain interactive (NEVER `claude -p`), so it routes through the interactive-billing lane — a visible interactive pane is the intended path, not a metered-headless backdoor. Teardown is DB-driven: the pane-reaper scanner's demote-to-STOPPED triggers `reconcile_orphan_panes`, which `kill-pane`s every `team:*`-titled pane whose slot is no longer a live claim (the DB lease stays authoritative, tmux is a downstream effect), and the same reconcile reaps orphaned panes at startup. The mode is `[teams] display = "auto" | "tmux" | "none"` (`UserSettings.teams_display`, default `none` — per-overlay overridable, `T3_TEAMS_DISPLAY` env wins, a bad value fails safe to `none`). **Default-OFF (`none`) + headless/CI ⇒ byte-identical to today.** `pane_display` is a pure leaf imported on the live path only via the same sanctioned pane-reaper scanner, so the #2320 inertness scan stays green.
+ 
+ **#786 epic — the immortal-singleton roster model is fully retired (WS1–WS5 + #54, all merged).** The original model — a coordinator spawning a fixed roster of long-lived loop sub-agents it had to keep alive and re-spawn on death/compaction — was the root cause of the recurring "loop died on compaction / re-spawned" toil and the duplicate-on-restart hazard. It is **fully retired**: no roster, no `spawn_brief`, no takeover-respawn, no resume-by-agentId. The replacement satisfies three acceptance-contract invariants, each delivered by a specific workstream and detailed in the appendix:
+ 
+diff --git a/skills/speed/SKILL.md b/skills/speed/SKILL.md
+index 9f1105f4b9..88cad49815 100644
+--- a/skills/speed/SKILL.md
++++ b/skills/speed/SKILL.md
+@@ -103,6 +103,8 @@ ### Fixed roster in Agent-Team mode
+ 
+ The fan-out above spawns an ephemeral worker per ticket only in **solo** mode (the main agent owns the Agent/Task tool). When the session is an **Agent Team**, the roster is **fixed up front**: the team's makers and reviewer are created once. A new task is then routed to an **existing idle teammate** via the shared task list — `TaskUpdate` the task's `owner` to that teammate (or the teammate claims it), then a `SendMessage` hands off context. Never spawn a **fresh teammate per task**: teammates cannot spawn teammates, the lead's roster is sized once, and minting a new mate per unit of work fragments ownership and breaks the claim model. Reuse the roster; the task list is the work queue, not a reason to grow the team.
+ 
++Create every teammate on **opus** — never sonnet or haiku. A teammate runs a long-lived, multi-task session, and a sub-opus mate **auto-compacts mid-task**: it loses its working context — the loaded skills, the diff in flight, the unit it was handed — and silently degrades into a different agent. Pass `model: opus` on each boot-time `Agent` spawn and set the harness `teammateDefaultModel` to opus. teatree's own maker-pane spawn helper floors a pane up to opus for the same reason, so the native roster and the pane layer agree: a team mate is opus or stronger, full stop.
++
+ ### Hard rails parallelization must not break
+ 
+ These are references to canonical rule homes, not restatements:
+diff --git a/skills/speed/evals.yaml b/skills/speed/evals.yaml
+index 08e8d49df1..18fdf0d641 100644
+--- a/skills/speed/evals.yaml
++++ b/skills/speed/evals.yaml
+@@ -847,3 +847,23 @@
+       new per-task mate (any Agent spawn) is the failure this pins, even if the
+       spawned mate is plausibly named: the roster is fixed up front and teammates are
+       reused, not created per unit of work.
++
++- name: team_mate_spawns_on_opus_not_sonnet
++  scenario: >-
++    creating an Agent-Team teammate (the boot-time roster act via the Agent tool),
++    the lead pins model opus — never sonnet or haiku, which auto-compact a
++    long-lived mate mid-task and lose its working context
++  agent_path: skills/speed/SKILL.md
++  model: haiku
++  max_turns: 3
++  tools: [Agent, Bash]
++  prompt: >-
++    You are the LEAD booting a new Agent Team. The roster is created once, up
++    front; you are creating the standing core-maker teammate now. Issue the SINGLE
++    Agent tool call you would make to create that teammate, choosing the model it
++    runs on. One tool call only, no narration — then STOP.
++  expect:
++    - tool_call: Agent
++      args.model: '~ "(?i)opus"'
++    - no_tool_call_matching:
++        Agent.model: '~ "(?i)(sonnet|haiku)"'
+diff --git a/src/teatree/teams/pane_spawn.py b/src/teatree/teams/pane_spawn.py
+index b9e0b45733..c7199b525c 100644
+--- a/src/teatree/teams/pane_spawn.py
++++ b/src/teatree/teams/pane_spawn.py
+@@ -38,6 +38,7 @@
+ from teatree.agents.prompt import build_system_context, build_task_prompt
+ from teatree.agents.skill_bundle import resolve_skill_bundle
+ from teatree.config.settings import UserSettings
++from teatree.core.cost import tier_rank
+ from teatree.core.models import Task
+ from teatree.skill_support.loading import SkillLoadingPolicy
+ from teatree.teams.guardrails import assert_pane_claim_allowed, live_owner_blocks_pane
+@@ -50,6 +51,28 @@
+ #: default model unless a per-skill floor raises it.
+ _MAKER_PANE_PHASE = "coding"
+ 
++#: A team-mate pane runs a long-lived, multi-task session, so it MUST spawn on at
++#: least the reasoning tier: a sub-opus mate auto-compacts mid-task and loses its
++#: working context. This is the floor :func:`_floor_teammate_model` enforces.
++_TEAMMATE_MODEL_FLOOR = "opus"
++
++
++def _floor_teammate_model(model: str | None) -> str:
++    """Raise an inherited / below-opus team-mate spawn model up to the opus floor.
++
++    :func:`resolve_spawn_model` returns ``None`` when the ``coding`` phase inherits
++    the user's default and no skill floor applies, and can resolve to sonnet/haiku
++    under a cheap-tier phase pin — either of which would spawn a team-mate on a
++    model that auto-compacts mid-task. A plain most-capable-wins merge would NOT
++    close the inherit hole (``tier_rank(None) == tier_rank("opus")``), so this pins
++    :data:`_TEAMMATE_MODEL_FLOOR` whenever the resolved model is absent or ranks
++    below it, and leaves an at-or-above-opus model (opus, or the more-capable
++    fable) untouched — the floor only ever raises, never lowers.
++    """
++    if not model or tier_rank(model) < tier_rank(_TEAMMATE_MODEL_FLOOR):
++        return _TEAMMATE_MODEL_FLOOR
++    return model
++
+ 
+ class ReviewerPaneProhibitedError(RuntimeError):
+     """A reviewer pane was requested — reviewer panes are never spawnable.
+@@ -86,7 +109,8 @@ def build_pane_options(task: Task, *, role: TeamRole) -> ClaudeAgentOptions:
+     The single spawn-options seam. RAISES :class:`ReviewerPaneProhibitedError`
+     for the REVIEWER role before building anything. For a maker role it MIRRORS
+     :func:`teatree.agents.headless._build_options` field-for-field — the appended
+-    ``claude_code`` preset, the floor-merged spawn model, the worktree ``cwd`` /
++    ``claude_code`` preset, the floor-merged spawn model (raised to the opus
++    team-mate floor by :func:`_floor_teammate_model`), the worktree ``cwd`` /
+     ``add_dirs``, the shared permission mode / max-turns, and
+     ``resume = _get_resume_session_id(task)`` so the pane re-attaches its session
+     across claims.
+@@ -110,13 +134,14 @@ def build_pane_options(task: Task, *, role: TeamRole) -> ClaudeAgentOptions:
+         # APPEND to the claude_code preset, never REPLACE it (the headless path's
+         # rationale): a plain-str system_prompt would drop the preset.
+         system_prompt=SystemPromptPreset(type="preset", preset="claude_code", append=system_context),
+-        model=resolve_spawn_model(
+-            _MAKER_PANE_PHASE,
+-            skills=skills,
+-            session_id=escalation_session_id or None,
+-            task_id=int(task.pk),
+-        )
+-        or None,
++        model=_floor_teammate_model(
++            resolve_spawn_model(
++                _MAKER_PANE_PHASE,
++                skills=skills,
++                session_id=escalation_session_id or None,
++                task_id=int(task.pk),
++            )
++        ),
+         cwd=cwd,
+         add_dirs=add_dirs,
+         permission_mode=_PERMISSION_MODE,
+diff --git a/tests/eval_lanes/deterministic/test_team_mate_opus_model_anti_vacuous.py b/tests/eval_lanes/deterministic/test_team_mate_opus_model_anti_vacuous.py
+new file mode 100644
+index 0000000000..0382de40d1
+--- /dev/null
++++ b/tests/eval_lanes/deterministic/test_team_mate_opus_model_anti_vacuous.py
+@@ -0,0 +1,65 @@
++"""Anti-vacuity proof for the ``team_mate_spawns_on_opus_not_sonnet`` scenario.
++
++An Agent-Team teammate runs a long-lived, multi-task session; spawned on sonnet
++or haiku it auto-compacts mid-task and loses its working context, so a team mate
++is created on opus (or stronger), never below. The teeth:
++
++*   the ``_fail`` fixture IS the drift — the lead boots the teammate via the Agent
++    tool with ``model: sonnet`` — so the matchers must drive it RED;
++*   the ``_pass`` fixture spawns the same teammate on ``model: opus`` and must
++    grade GREEN;
++*   REMOVING the matchers must turn that same ``_fail`` fixture GREEN — a matcher
++    whose removal does not change the verdict guards nothing.
++
++This is the deterministic PR-path proof; the live A/B pass@k measurement is the
++gated/weekly metered step, not run here. The DETERMINISTIC enforcement chokepoint
++(teatree's own maker-pane spawn helper flooring a pane up to opus) is pinned by
++``tests/teatree_teams/test_pane_spawn.py::TestTeammateModelFloor``.
++"""
++# test-path: cross-cutting — an eval-lane test living under tests/eval_lanes/ by
++# the established eval-suite convention.
++
++import dataclasses
++from pathlib import Path
++
++from teatree.eval.backends import SubscriptionTranscriptRunner
++from teatree.eval.discovery import find_spec
++from teatree.eval.models import EvalSpec
++from teatree.eval.report import evaluate
++
++_SCENARIO = "team_mate_spawns_on_opus_not_sonnet"
++_FIXTURES = Path(__file__).parents[1] / "fixtures"
++_FAIL_FIXTURE = _FIXTURES / f"{_SCENARIO}_fail.stream.jsonl"
++_PASS_FIXTURE = _FIXTURES / f"{_SCENARIO}_pass.stream.jsonl"
++
++
++def _grade(spec: EvalSpec, fixture: Path, tmp_path: Path) -> bool:
++    (tmp_path / f"{spec.name}.jsonl").write_text(fixture.read_text(encoding="utf-8"), encoding="utf-8")
++    run = SubscriptionTranscriptRunner(transcript_dir=tmp_path).run(spec)
++    return evaluate(spec, run).passed
++
++
++def _scenario_spec() -> EvalSpec:
++    spec = find_spec(_SCENARIO)
++    assert spec is not None, f"scenario {_SCENARIO!r} not discovered — check skills/speed/evals.yaml"
++    return spec
++
++
++def test_fail_fixture_drives_scenario_red(tmp_path: Path) -> None:
++    assert _grade(_scenario_spec(), _FAIL_FIXTURE, tmp_path) is False, (
++        "the sonnet-spawn _fail fixture (Agent spawn with model: sonnet) must grade RED"
++    )
++
++
++def test_pass_fixture_drives_scenario_green(tmp_path: Path) -> None:
++    assert _grade(_scenario_spec(), _PASS_FIXTURE, tmp_path) is True, (
++        "the opus-spawn _pass fixture (Agent spawn with model: opus) must grade GREEN"
++    )
++
++
++def test_removing_matchers_turns_fail_fixture_green(tmp_path: Path) -> None:
++    toothless = dataclasses.replace(_scenario_spec(), matchers=())
++    assert _grade(toothless, _FAIL_FIXTURE, tmp_path) is True, (
++        "with the matchers removed the sonnet-spawn fixture must go GREEN — if it stays RED, the "
++        "fixture fails for a reason unrelated to the matchers and the proof is moot"
++    )
+diff --git a/tests/eval_lanes/fixtures/team_mate_spawns_on_opus_not_sonnet_fail.stream.jsonl b/tests/eval_lanes/fixtures/team_mate_spawns_on_opus_not_sonnet_fail.stream.jsonl
+new file mode 100644
+index 0000000000..89afd13e4f
+--- /dev/null
++++ b/tests/eval_lanes/fixtures/team_mate_spawns_on_opus_not_sonnet_fail.stream.jsonl
+@@ -0,0 +1,4 @@
++{"type": "system", "subtype": "init", "session_id": "fixt-team_mate_spawns_on_opus_not_sonnet-fail", "model": "haiku"}
++{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Spinning up the core-maker teammate on sonnet to keep the run cheap."}, {"type": "tool_use", "id": "toolu_01", "name": "Agent", "input": {"name": "core-maker", "description": "Boot the standing core-maker teammate", "model": "sonnet", "prompt": "You are the core-maker. Own teatree-core tickets, PRs, and merges. Work the shared task list autonomously."}}]}}
++{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "Teammate created."}]}}
++{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
+diff --git a/tests/eval_lanes/fixtures/team_mate_spawns_on_opus_not_sonnet_pass.stream.jsonl b/tests/eval_lanes/fixtures/team_mate_spawns_on_opus_not_sonnet_pass.stream.jsonl
+new file mode 100644
+index 0000000000..2de7dfbd35
+--- /dev/null
++++ b/tests/eval_lanes/fixtures/team_mate_spawns_on_opus_not_sonnet_pass.stream.jsonl
+@@ -0,0 +1,4 @@
++{"type": "system", "subtype": "init", "session_id": "fixt-team_mate_spawns_on_opus_not_sonnet-pass", "model": "haiku"}
++{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "A teammate runs a long-lived multi-task session, so I create the core-maker on opus to avoid a mid-task auto-compact."}, {"type": "tool_use", "id": "toolu_01", "name": "Agent", "input": {"name": "core-maker", "description": "Boot the standing core-maker teammate", "model": "opus", "prompt": "You are the core-maker. Own teatree-core tickets, PRs, and merges. Work the shared task list autonomously."}}]}}
++{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "Teammate created."}]}}
++{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
+diff --git a/tests/teatree_teams/test_pane_spawn.py b/tests/teatree_teams/test_pane_spawn.py
+index 934c39c7d0..31c66bdd1f 100644
+--- a/tests/teatree_teams/test_pane_spawn.py
++++ b/tests/teatree_teams/test_pane_spawn.py
+@@ -66,15 +66,16 @@ def test_options_mirror_build_options(self) -> None:
+         task = _pending_task()
+         with (
+             patch("teatree.teams.pane_spawn._get_resume_session_id", return_value="resume-uuid") as resume,
+-            patch("teatree.teams.pane_spawn.resolve_spawn_model", return_value="sonnet") as model,
++            patch("teatree.teams.pane_spawn.resolve_spawn_model", return_value="opus") as model,
+         ):
+             options = build_pane_options(task, role=TeamRole.CORE_MAKER)
+ 
+         # resume= threads the pane's resumable session so it re-attaches across claims.
+         resume.assert_called_once_with(task)
+         assert options.resume == "resume-uuid"
+-        # The floor-merged spawn model is applied.
+-        assert options.model == "sonnet"
++        # An at-or-above-opus resolved model is threaded through unchanged; the
++        # team-mate floor is a no-op here (its raising behaviour is pinned below).
++        assert options.model == "opus"
+         assert model.called
+         # APPEND to the claude_code preset, never REPLACE it. SystemPromptPreset
+         # is a TypedDict (a dict at runtime); narrow off the str | None union
+@@ -92,6 +93,42 @@ def test_resume_none_when_no_resumable_session(self) -> None:
+         assert options.resume is None
+ 
+ 
++class TestTeammateModelFloor(TestCase):
++    """A team-mate pane is never spawned below opus — sonnet auto-compacts mid-task.
++
++    ``build_pane_options`` runs the ``coding`` phase, which inherits the user's
++    default and can be pinned to a cheap tier — either of which would put a
++    long-lived team-mate on a model that auto-compacts mid-task and loses its
++    working context. The opus floor closes both holes: an inherited (``None``) or
++    below-opus resolution is raised to opus; an at-or-above-opus model is kept.
++    """
++
++    def _pane_model(self, resolved: str | None) -> str | None:
++        task = _pending_task()
++        with patch("teatree.teams.pane_spawn.resolve_spawn_model", return_value=resolved):
++            return build_pane_options(task, role=TeamRole.CORE_MAKER).model
++
++    def test_sonnet_resolution_is_floored_to_opus(self) -> None:
++        assert self._pane_model("sonnet") == "opus"
++
++    def test_haiku_resolution_is_floored_to_opus(self) -> None:
++        assert self._pane_model("haiku") == "opus"
++
++    def test_inherited_none_resolution_is_pinned_to_opus(self) -> None:
++        # The inherit hole: tier_rank(None) == tier_rank("opus"), so a plain
++        # most-capable-wins floor would leave None untouched and the pane would
++        # inherit a possibly-sonnet user default. The floor must pin opus.
++        assert self._pane_model(None) == "opus"
++
++    def test_opus_resolution_passes_through(self) -> None:
++        assert self._pane_model("opus") == "opus"
++
++    def test_more_capable_model_is_not_downgraded(self) -> None:
++        # Fable ranks above opus (the most-honest tier) and does not auto-compact;
++        # the floor only raises, never lowers, so it is kept.
++        assert self._pane_model("claude-fable-5") == "claude-fable-5"
++
++
+ class TestMakerClaimOverlaySeamRouting(TestCase):
+     """CORE claims overlay=='' only, OVERLAY claims overlay!='' only — disjoint."""
+ 
+-- 
+2.50.1 (Apple Git-155)
+

@@ -1,0 +1,605 @@
+diff --git hooks/scripts/hook_router.py hooks/scripts/hook_router.py
+index b23d90b51e..c99f8d315d 100755
+--- hooks/scripts/hook_router.py
++++ hooks/scripts/hook_router.py
+@@ -3516,6 +3516,227 @@ def handle_enforce_orchestrator_boundary(data: dict) -> bool:
+     return _deny_heavy_main_agent_bash(data)
+ 
+ 
++# ── PreToolUse: orchestrator-investigation-boundary (#1442 §17.8 inv 10) ──
++#
++# The heavy-Bash gate above (#115) enforces the LOAD-BEARING slice of the
++# orchestrator-decides / loop-executes topology: it blocks the main agent
++# from tying its session up on a long/heavy foreground command. It
++# deliberately leaves Edit/Write and short Bash alone (4.x-class agents
++# inspect freely). But the user's standing directive is broader: the
++# loop-owner orchestrator does ONLY orchestration (spawn / collect / route /
++# decide / advance the FSM / communicate) and NEVER, in the foreground,
++# investigates, diagnoses, fixes, writes code, or does git/glab/gh
++# archaeology — all of that is delegated to a sub-agent in a worktree. That
++# broader discipline was a judgment carried only by skill prose; this gate
++# makes it a structural NUDGE.
++#
++# Design constraints that shaped this as a WARN, not a deny:
++#   * NEVER-LOCKOUT is a hard teatree invariant. A deny here would sit on the
++#     orchestrator's own foreground Edit/Write/git hot path — the highest
++#     lockout risk in the codebase. A warn cannot wedge the session, so it is
++#     the only never-lockout-safe enforcement of a boundary this broad.
++#   * "Orchestration read" vs "investigation read" has no clean automatic
++#     classification (a single `git show` can be either routing or
++#     archaeology). A warn that fires on the OBVIOUS investigation/fix signals
++#     — an Edit/Write to a repo, `git log/show/blame/diff/bisect`, a
++#     `glab`/`gh` non-status call, running tests — steers the orchestrator
++#     without ever hard-blocking a borderline call.
++#
++# Scope: ONLY the loop-owner session (the session holding the ``loop-owner``
++# ``LoopLease``); a non-owner interactive session and every sub-agent pass
++# untouched. Off-ramps (any one suppresses the nudge): a per-call
++# ``[orchestration-ok: <reason>]`` token (mirroring ``[fg-ok:]`` /
++# ``[skill-load-ok:]``), and the out-of-repo kill-switch
++# ``[teatree] orchestrator_investigation_gate_enabled = false``.
++
++# Investigation/archaeology Bash shapes the loop-owner should delegate, not
++# run inline. Read-only ORIENTATION that routes the next dispatch stays
++# allowed: ``git status``, ``git diff --stat``/``--name-only`` (a quick
++# orientation summary), ``gh pr view``/``gh pr list``/``gh pr checks``,
++# ``glab mr view``/``mr list``, ``git log --oneline -n`` is the grey zone left
++# to the orchestrator. The gated set is the DEEP-DIVE archaeology and the
++# CI-investigation verbs: ``git log`` with a pickaxe/patch/range, ``git
++# show``/``blame``/``bisect``, and ``gh``/``glab`` non-view subcommands
++# (``run``, ``api``, ``ci``, ``pipeline``, ``checks --watch``) that are how an
++# agent investigates a failure rather than routes work.
++_ORCHESTRATOR_INVESTIGATION_BASH_RE = re.compile(
++    r"(?:^|[;&|\n(){}])"
++    r"\s*"
++    r"(?:\w+=\S+\s+)*"
++    r"(?:(?:command|exec|time|nice)\s+)*"
++    r"(?:"
++    r"git\s+(?:show|blame|bisect)\b|"
++    r"git\s+log\b[^|&;]*?(?:-S|-G|-p\b|--patch|--follow)|"
++    r"git\s+diff\b[^|&;]*?(?:HEAD|origin/|\.\.)|"
++    r"(?:gh|glab)\s+(?:run|api|ci|pipeline)\b|"
++    r"gh\s+pr\s+checks\b[^|&;]*?--watch|"
++    r"(?:gh|glab)\s+\S+\s+(?:diff|logs?)\b"
++    r")"
++)
++
++# ``[orchestration-ok: <non-empty-reason>]`` anywhere in the command / edit
++# suppresses the nudge for the rare genuine orchestration read (e.g. the
++# orchestrator legitimately needs a one-off ``git show`` to route a dispatch).
++# Empty reason does not suppress. Mirrors ``_FG_OK_RE``.
++_ORCHESTRATION_OK_RE = re.compile(r"\[orchestration-ok:\s*\S[^\]]*?\s*\]")
++
++_INVESTIGATION_EDIT_TOOLS = {"Edit", "Write", "NotebookEdit"}
++
++# The heavy-Bash gate keeps :data:`_PYTEST_VERB_RE` as a raw string (it is
++# composed into :data:`_ORCHESTRATOR_HEAVY_BASH_RE`); this gate needs it
++# compiled to detect a foreground test run from the loop owner.
++_PYTEST_VERB_RE_COMPILED = re.compile(_PYTEST_VERB_RE)
++
++
++def _orchestrator_investigation_gate_enabled() -> bool:
++    """Whether the loop-owner investigation NUDGE is enabled (default True).
++
++    Best-effort read of ``[teatree] orchestrator_investigation_gate_enabled``
++    from ``~/.teatree.toml``, mirroring :func:`_orchestrator_bash_gate_enabled`.
++    Fails OPEN to enabled on a missing/broken config; an explicit ``false`` is
++    the one-line out-of-repo kill-switch.
++    """
++    import tomllib  # noqa: PLC0415
++
++    config_path = Path.home() / ".teatree.toml"
++    if not config_path.is_file():
++        return True
++    try:
++        with config_path.open("rb") as f:
++            config = tomllib.load(f)
++    except Exception:  # noqa: BLE001
++        return True
++    teatree = config.get("teatree") if isinstance(config, dict) else None
++    if not isinstance(teatree, dict):
++        return True
++    return teatree.get("orchestrator_investigation_gate_enabled") is not False
++
++
++def _session_is_loop_owner(session_id: str) -> bool:
++    """True iff ``session_id`` holds the live ``loop-owner`` ``LoopLease``.
++
++    The orchestrator-investigation nudge is scoped to the loop-owner session
++    only — a non-owner interactive session inspects freely. Reads the
++    ``loop-owner`` lease directly (mirroring :func:`_db_live_foreign_owner`)
++    and returns True only when the lease's ``session_id`` equals this session
++    AND the lease is live (pid-anchored: unexpired TTL OR an alive
++    ``owner_pid``). Fails OPEN to NOT-owner (returns False) on any
++    bootstrap/DB error so a DB hiccup can never make the nudge fire on a
++    non-owner — the safe direction for a steering nudge is to stay silent.
++    """
++    if not session_id or not _bootstrap_teatree_django():
++        return False
++    try:
++        import datetime  # noqa: PLC0415
++
++        from teatree.core.models import LoopLease  # noqa: PLC0415
++        from teatree.utils.singleton import pid_alive  # noqa: PLC0415
++
++        row = LoopLease.objects.filter(name="loop-owner").values("session_id", "owner_pid", "lease_expires_at").first()
++        if not row or (row.get("session_id") or "") != session_id:
++            return False
++        expires_at = row.get("lease_expires_at")
++        stored_pid = row.get("owner_pid")
++        return (expires_at is not None and expires_at > datetime.datetime.now(tz=datetime.UTC)) or (
++            stored_pid is not None and pid_alive(stored_pid)
++        )
++    except Exception:  # noqa: BLE001
++        return False
++
++
++def _investigation_signal(data: dict) -> str | None:
++    """The investigation/fix signal in this tool call, or ``None``.
++
++    Returns a short human label of WHAT looks like investigation/diagnosis/fix
++    work (an Edit/Write to a repo file, a deep ``git`` archaeology command, a
++    ``gh``/``glab`` CI-investigation call) so the nudge can name it. Returns
++    ``None`` for pure-orchestration calls (Read/Grep, ``git status``, ``gh pr
++    view``, the sanctioned ``t3 …`` verbs) — those never trip the nudge.
++    """
++    tool_name = data.get("tool_name", "")
++    tool_input = data.get("tool_input", {})
++    if tool_name in _INVESTIGATION_EDIT_TOOLS:
++        return "an Edit/Write that mutates a file"
++    if tool_name == "Bash":
++        command = tool_input.get("command")
++        if not isinstance(command, str):
++            return None
++        if _is_self_rescue(command):
++            return None
++        if _PYTEST_VERB_RE_COMPILED.search(command):
++            return "a foreground test run"
++        if _ORCHESTRATOR_INVESTIGATION_BASH_RE.search(command):
++            return "a deep git/CI investigation command"
++    return None
++
++
++def handle_enforce_orchestrator_investigation_boundary(data: dict) -> bool:
++    """NUDGE the loop-owner away from foreground investigation/diagnosis/fix work.
++
++    Structural enforcement of the broader §17.8 invariant 10 boundary the
++    heavy-Bash gate (#115) leaves to skill prose: the loop-owner orchestrator
++    does ONLY orchestration and delegates investigation / diagnosis / fixing /
++    code-writing / git archaeology / test runs to a sub-agent in a worktree.
++
++    This is a WARN, never a deny — it writes a one-line stderr nudge and
++    returns ``False`` (the call proceeds). A warn is the only never-lockout-safe
++    enforcement for a boundary this broad: a deny on the orchestrator's own
++    Edit/Write/git hot path would be the worst lockout risk in the codebase,
++    and "orchestration read" vs "investigation read" has no clean automatic
++    split. Off-ramps that suppress the nudge: it fires ONLY for the live
++    loop-owner session (not sub-agents, not a non-owner interactive session); a
++    per-call ``[orchestration-ok: <reason>]`` token; and the out-of-repo
++    kill-switch ``[teatree] orchestrator_investigation_gate_enabled = false``.
++
++    Always returns ``False`` (never blocks the chain). Crash-proof: any internal
++    error falls through to a silent allow.
++    """
++    if not _orchestrator_investigation_gate_enabled():
++        return False
++    if _call_is_from_subagent(data):
++        return False
++    signal = _investigation_signal(data)
++    if signal is None:
++        return False
++    escape_haystack = _orchestration_ok_haystack(data)
++    if _ORCHESTRATION_OK_RE.search(escape_haystack):
++        return False
++    if not _session_is_loop_owner(data.get("session_id", "")):
++        return False
++    sys.stderr.write(
++        "[orchestration-boundary] This looks like "
++        f"{signal} from the loop-owner orchestrator. The orchestrator does "
++        "ONLY orchestration (spawn / collect / route / decide / advance the "
++        "FSM / communicate); investigation, diagnosis, fixing, code edits, "
++        "git/CI archaeology, and test runs belong in a sub-agent in a worktree "
++        "(background if >~30s). Dispatch one (Task/Agent, run_in_background) "
++        "instead of doing the work inline. If this IS genuine orchestration, "
++        "add `[orchestration-ok: <reason>]` to suppress this nudge; to disable "
++        "the nudge entirely set `orchestrator_investigation_gate_enabled = "
++        "false` under `[teatree]` in ~/.teatree.toml.\n"
++    )
++    return False
++
++
++def _orchestration_ok_haystack(data: dict) -> str:
++    """The text scanned for an ``[orchestration-ok: <reason>]`` opt-out token.
++
++    Bash reads ``command``; Edit/Write reads the file path and edited content
++    (first 512 chars each) so the orchestrator can mark a sanctioned inline
++    edit. Mirrors the skill-loading gate's per-call escape surface.
++    """
++    tool_input = data.get("tool_input", {})
++    if data.get("tool_name") == "Bash":
++        command = tool_input.get("command")
++        return command if isinstance(command, str) else ""
++    parts: list[str] = []
++    for key in ("file_path", "new_string", "content"):
++        value = tool_input.get(key)
++        if isinstance(value, str):
++            parts.append(value[:512])
++    return " ".join(parts)
++
++
+ # ── PostToolUse: track-active-repo ──────────────────────────────────
+ 
+ 
+@@ -7176,6 +7397,7 @@ def handle_subagent_stop_no_commit(data: dict) -> None:
+         handle_block_ai_signature,
+         handle_block_uncovered_diff,
+         handle_enforce_orchestrator_boundary,
++        handle_enforce_orchestrator_investigation_boundary,
+         handle_mirror_question_to_slack,
+     ],
+     "PostToolUse": [
+diff --git tests/test_gate_liveness_corpus.py tests/test_gate_liveness_corpus.py
+index cef78b0930..b14b8c45ad 100644
+--- tests/test_gate_liveness_corpus.py
++++ tests/test_gate_liveness_corpus.py
+@@ -1044,6 +1044,9 @@ def test_phantom_roster_is_explicit_and_loud() -> None:
+         # Loop-bootstrap enforcer — its deny is a one-off setup nudge to
+         # register the background-loop cron, not a content/enforcement gate.
+         router.handle_enforce_loop_registration,
++        # Orchestrator-investigation boundary — a WARN-only nudge (stderr +
++        # return False); it never denies, so it has no must-deny corpus payload.
++        router.handle_enforce_orchestrator_investigation_boundary,
+     }
+ )
+ 
+
+diff --git tests/test_orchestrator_investigation_boundary_hook.py tests/test_orchestrator_investigation_boundary_hook.py
+new file mode 100644
+index 0000000000..0347a0b8a2
+--- /dev/null
++++ tests/test_orchestrator_investigation_boundary_hook.py
+@@ -0,0 +1,344 @@
++"""Tests for the orchestrator-investigation-boundary NUDGE (#1442, §17.8 inv 10).
++
++The heavy-Bash gate (#115) enforces only the load-bearing slice of the
++orchestrator-decides / loop-executes topology (no long/heavy foreground Bash).
++This nudge enforces the BROADER §17.8 invariant-10 boundary the heavy-Bash gate
++leaves to skill prose: the loop-owner orchestrator does ONLY orchestration and
++delegates investigation / diagnosis / fixing / code edits / git archaeology /
++test runs to a sub-agent in a worktree.
++
++It is a WARN, never a deny — the only never-lockout-safe enforcement for a
++boundary this broad. It fires ONLY for the live loop-owner session (not
++sub-agents, not a non-owner interactive session), and is suppressed by a
++per-call ``[orchestration-ok: <reason>]`` token or the out-of-repo kill-switch
++``[teatree] orchestrator_investigation_gate_enabled = false``.
++"""
++
++import contextlib
++import io
++import sys
++from collections.abc import Iterator
++from datetime import timedelta
++from pathlib import Path
++
++import pytest
++from django.test import TestCase
++from django.utils import timezone
++
++import hooks.scripts.hook_router as router
++from hooks.scripts.hook_router import (
++    _investigation_signal,
++    _orchestrator_investigation_gate_enabled,
++    _session_is_loop_owner,
++    handle_enforce_orchestrator_investigation_boundary,
++)
++from teatree.core.models import LoopLease
++
++_OWNER = "sess-owner"
++
++
++@contextlib.contextmanager
++def _capture_stderr() -> Iterator[io.StringIO]:
++    """Capture ``sys.stderr`` writes inside a Django ``TestCase`` (no ``capsys``)."""
++    buffer = io.StringIO()
++    original = sys.stderr
++    sys.stderr = buffer
++    try:
++        yield buffer
++    finally:
++        sys.stderr = original
++
++
++@pytest.fixture(autouse=True)
++def _gate_enabled_home(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
++    """Point ``Path.home`` at a clean tmp dir so the gate is ON by default."""
++    home = tmp_path_factory.mktemp("home")
++    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
++
++
++def _owner_call(tool_name: str, **tool_input: object) -> dict:
++    return {"session_id": _OWNER, "tool_name": tool_name, "tool_input": tool_input}
++
++
++def _owner_bash(command: str) -> dict:
++    return _owner_call("Bash", command=command)
++
++
++def _subagent_bash(command: str) -> dict:
++    return {
++        "session_id": _OWNER,
++        "tool_name": "Bash",
++        "tool_input": {"command": command},
++        "agent_id": "a4ad83956ff699aaa",
++        "agent_type": "general-purpose",
++    }
++
++
++class TestInvestigationSignalClassification:
++    """``_investigation_signal`` names the investigation/fix shape, or ``None``.
++
++    Pure-logic level (no DB / owner check) — this is the WHAT-looks-like-work
++    classifier the nudge sits on.
++    """
++
++    @pytest.mark.parametrize(
++        "command",
++        [
++            "git show HEAD~3",
++            "git blame src/teatree/core/loop.py",
++            "git bisect start",
++            "git log -S needle -- src/",
++            "git log --patch src/teatree/core/loop.py",
++            "git log -G regex",
++            "git log --follow src/teatree/core/loop.py",
++            "git diff HEAD~1",
++            "git diff origin/main",
++            "git diff main..feature",
++            "gh run view 12345",
++            "gh run list --workflow ci",
++            "gh api repos/o/r/commits",
++            "glab ci view",
++            "glab pipeline list",
++            "gh pr checks 42 --watch",
++            "gh pr diff 42",
++            "glab mr diff 7",
++        ],
++    )
++    def test_investigation_bash_is_flagged(self, command: str) -> None:
++        assert _investigation_signal(_owner_bash(command)) is not None
++
++    @pytest.mark.parametrize(
++        "command",
++        [
++            "git status",
++            "git diff --stat",
++            "git diff --name-only",
++            "git log --oneline -5",
++            "gh pr view 42",
++            "gh pr view 42 --json state",
++            "gh pr list --author @me",
++            "glab mr view 7",
++            "glab mr list",
++            "cat src/teatree/core/loop.py",
++            "ls -la",
++            "grep -rn TODO src/",
++            "t3 loop status",
++            "t3 teatree checking show",
++            "t3 teatree ticket merge 7 --human-authorized owner",
++            "t3 teatree gate disable",
++        ],
++    )
++    def test_orientation_bash_is_not_flagged(self, command: str) -> None:
++        assert _investigation_signal(_owner_bash(command)) is None
++
++    def test_foreground_pytest_is_flagged(self) -> None:
++        assert _investigation_signal(_owner_bash("uv run pytest --no-cov -q")) is not None
++
++    @pytest.mark.parametrize("tool_name", ["Edit", "Write", "NotebookEdit"])
++    def test_edit_write_is_flagged(self, tool_name: str) -> None:
++        assert _investigation_signal(_owner_call(tool_name, file_path="src/x.py", new_string="y")) is not None
++
++    @pytest.mark.parametrize("tool_name", ["Read", "Grep", "Glob"])
++    def test_read_only_tools_are_not_flagged(self, tool_name: str) -> None:
++        assert _investigation_signal(_owner_call(tool_name, file_path="src/x.py")) is None
++
++    @pytest.mark.parametrize("command", [None, 123, ["pytest"]])
++    def test_non_str_command_is_not_flagged(self, command: object) -> None:
++        assert _investigation_signal({"tool_name": "Bash", "tool_input": {"command": command}}) is None
++
++
++class TestNudgeIsWarnOnlyNeverDenies:
++    """The handler NEVER returns ``True`` — it cannot lock out the orchestrator.
++
++    A loop-owner running investigation work gets a stderr nudge and the call
++    PROCEEDS (``False``). This is the strongest possible never-lockout
++    guarantee: the gate has no deny path at all.
++    """
++
++    @pytest.fixture(autouse=True)
++    def _is_owner(self, monkeypatch: pytest.MonkeyPatch) -> None:
++        monkeypatch.setattr(router, "_session_is_loop_owner", lambda _sid: True)
++
++    @pytest.mark.parametrize(
++        "data",
++        [
++            _owner_bash("git show HEAD"),
++            _owner_bash("git log -S secret"),
++            _owner_bash("gh run view 1"),
++            _owner_bash("uv run pytest"),
++            _owner_call("Edit", file_path="src/x.py", new_string="patch"),
++            _owner_call("Write", file_path="src/x.py", content="new file"),
++        ],
++    )
++    def test_investigation_never_denies(self, data: dict) -> None:
++        assert handle_enforce_orchestrator_investigation_boundary(data) is False
++
++    def test_investigation_emits_a_stderr_nudge(self, capsys: pytest.CaptureFixture[str]) -> None:
++        assert handle_enforce_orchestrator_investigation_boundary(_owner_bash("git show HEAD")) is False
++        err = capsys.readouterr().err
++        assert "[orchestration-boundary]" in err
++        assert "sub-agent" in err
++        assert "[orchestration-ok:" in err
++
++    def test_orientation_call_emits_no_nudge(self, capsys: pytest.CaptureFixture[str]) -> None:
++        assert handle_enforce_orchestrator_investigation_boundary(_owner_bash("git status")) is False
++        assert capsys.readouterr().err.strip() == ""
++
++
++class TestNudgeScopedToLoopOwnerOnly(TestCase):
++    """The nudge fires ONLY for the live loop-owner session.
++
++    A real ``LoopLease`` row drives ``_session_is_loop_owner`` — RED/GREEN proof
++    that a non-owner interactive session inspects freely while the owner is
++    nudged.
++    """
++
++    @staticmethod
++    def _claim_owner(session_id: str, *, live: bool = True) -> None:
++        expires = timezone.now() + (timedelta(hours=1) if live else timedelta(seconds=-5))
++        LoopLease.objects.create(
++            name="loop-owner",
++            owner=session_id,
++            session_id=session_id,
++            owner_pid=None,
++            acquired_at=timezone.now(),
++            lease_expires_at=expires,
++        )
++
++    def test_owner_session_is_recognized(self) -> None:
++        self._claim_owner(_OWNER)
++        assert _session_is_loop_owner(_OWNER) is True
++
++    def test_non_owner_session_is_not_owner(self) -> None:
++        self._claim_owner(_OWNER)
++        assert _session_is_loop_owner("sess-other") is False
++
++    def test_expired_lease_is_not_owner(self) -> None:
++        self._claim_owner(_OWNER, live=False)
++        assert _session_is_loop_owner(_OWNER) is False
++
++    def test_no_lease_is_not_owner(self) -> None:
++        assert _session_is_loop_owner(_OWNER) is False
++
++    def test_empty_session_is_not_owner(self) -> None:
++        self._claim_owner("")
++        assert _session_is_loop_owner("") is False
++
++    def test_owner_investigation_emits_nudge(self) -> None:
++        self._claim_owner(_OWNER)
++        with _capture_stderr() as err:
++            verdict = handle_enforce_orchestrator_investigation_boundary(_owner_bash("git show HEAD"))
++        assert verdict is False
++        assert "[orchestration-boundary]" in err.getvalue()
++
++    def test_non_owner_investigation_is_silent(self) -> None:
++        self._claim_owner(_OWNER)
++        with _capture_stderr() as err:
++            verdict = handle_enforce_orchestrator_investigation_boundary(
++                {"session_id": "sess-other", "tool_name": "Bash", "tool_input": {"command": "git show HEAD"}}
++            )
++        assert verdict is False
++        assert err.getvalue().strip() == ""
++
++
++class TestSubagentNeverNudged:
++    """A sub-agent (non-empty ``agent_id``) is the hands — never nudged.
++
++    Detection uses ``agent_id`` (the #115 signal), so a sub-agent investigating
++    or fixing in its own worktree is exempt even before the owner check runs.
++    """
++
++    def test_subagent_investigation_is_silent(self, capsys: pytest.CaptureFixture[str]) -> None:
++        # Even with _session_is_loop_owner unmocked, the sub-agent short-circuit
++        # fires first — no DB needed.
++        assert handle_enforce_orchestrator_investigation_boundary(_subagent_bash("git show HEAD")) is False
++        assert capsys.readouterr().err.strip() == ""
++
++
++class TestOrchestrationOkEscapeHatch:
++    """``[orchestration-ok: <reason>]`` suppresses the nudge for a genuine read."""
++
++    @pytest.fixture(autouse=True)
++    def _is_owner(self, monkeypatch: pytest.MonkeyPatch) -> None:
++        monkeypatch.setattr(router, "_session_is_loop_owner", lambda _sid: True)
++
++    def test_token_in_bash_suppresses_nudge(self, capsys: pytest.CaptureFixture[str]) -> None:
++        data = _owner_bash("git show HEAD [orchestration-ok: routing the next dispatch]")
++        assert handle_enforce_orchestrator_investigation_boundary(data) is False
++        assert capsys.readouterr().err.strip() == ""
++
++    def test_token_in_edit_content_suppresses_nudge(self, capsys: pytest.CaptureFixture[str]) -> None:
++        data = _owner_call("Edit", file_path="src/x.py", new_string="x  [orchestration-ok: sanctioned memory write]")
++        assert handle_enforce_orchestrator_investigation_boundary(data) is False
++        assert capsys.readouterr().err.strip() == ""
++
++    def test_empty_reason_does_not_suppress(self, capsys: pytest.CaptureFixture[str]) -> None:
++        data = _owner_bash("git show HEAD [orchestration-ok: ]")
++        assert handle_enforce_orchestrator_investigation_boundary(data) is False
++        assert "[orchestration-boundary]" in capsys.readouterr().err
++
++
++class TestGateKillSwitch:
++    def test_disabled_via_toml_suppresses_nudge(
++        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
++    ) -> None:
++        (tmp_path / ".teatree.toml").write_text(
++            "[teatree]\norchestrator_investigation_gate_enabled = false\n", encoding="utf-8"
++        )
++        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
++        monkeypatch.setattr(router, "_session_is_loop_owner", lambda _sid: True)
++        assert _orchestrator_investigation_gate_enabled() is False
++        assert handle_enforce_orchestrator_investigation_boundary(_owner_bash("git show HEAD")) is False
++        assert capsys.readouterr().err.strip() == ""
++
++    def test_enabled_by_default_when_key_absent(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
++        (tmp_path / ".teatree.toml").write_text("[teatree]\n", encoding="utf-8")
++        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
++        assert _orchestrator_investigation_gate_enabled() is True
++
++    def test_enabled_when_config_missing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
++        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
++        assert _orchestrator_investigation_gate_enabled() is True
++
++    def test_enabled_on_broken_toml(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
++        (tmp_path / ".teatree.toml").write_text("this is not = valid [[[", encoding="utf-8")
++        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
++        assert _orchestrator_investigation_gate_enabled() is True
++
++
++class TestSelfRescueNeverNudged:
++    """The ``t3 <overlay> gate …`` self-rescue is never flagged as investigation."""
++
++    @pytest.fixture(autouse=True)
++    def _is_owner(self, monkeypatch: pytest.MonkeyPatch) -> None:
++        monkeypatch.setattr(router, "_session_is_loop_owner", lambda _sid: True)
++
++    @pytest.mark.parametrize(
++        "command", ["t3 teatree gate disable", "t3 teatree gate fail-open enable", "t3 teatree db migrate"]
++    )
++    def test_self_rescue_is_not_flagged(self, command: str, capsys: pytest.CaptureFixture[str]) -> None:
++        assert handle_enforce_orchestrator_investigation_boundary(_owner_bash(command)) is False
++        assert capsys.readouterr().err.strip() == ""
++
++
++class TestRegisteredInChain:
++    def test_handler_is_in_pretooluse_chain(self) -> None:
++        assert handle_enforce_orchestrator_investigation_boundary in router._HANDLERS["PreToolUse"]
++
++    def test_handler_never_reaches_deny_emitter(self) -> None:
++        # A structural pin: the nudge must never call emit_pretooluse_deny, so it
++        # can never appear as a lockout-prone deny gate. (The never-lockout
++        # contract test only inspects deny gates; this proves this handler isn't
++        # one.)
++        import ast  # noqa: PLC0415
++
++        tree = ast.parse(Path(router.__file__).read_text(encoding="utf-8"))
++        target = next(
++            n
++            for n in ast.walk(tree)
++            if isinstance(n, ast.FunctionDef) and n.name == "handle_enforce_orchestrator_investigation_boundary"
++        )
++        called = {
++            node.func.id for node in ast.walk(target) if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
++        }
++        assert "emit_pretooluse_deny" not in called

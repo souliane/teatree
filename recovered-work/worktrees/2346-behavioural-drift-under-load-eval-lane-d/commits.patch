@@ -1,0 +1,407 @@
+From f13c2a9e53a69910453db4c972e588847214c5bc Mon Sep 17 00:00:00 2001
+From: souliane <21343492+souliane@users.noreply.github.com>
+Date: Wed, 17 Jun 2026 23:04:36 +0200
+Subject: [PATCH 1/2] fix(eval): bound the under_load skill bundle + fix
+ false-negative matchers
+
+The under_load lane sent the whole skills tree (~636 KB / ~182 k tokens)
+as the system prompt, which alone overflows the cheap drift-prone model's
+~200 k-token window. The lane therefore measured 'Prompt is too long' /
+budget-cap thrash, not instruction-following: a CORRECT first action was
+tainted RED because the next tool-result turn pushed the context past the
+cap. Bound the bundle to a budget that keeps a genuine multi-skill overload
+(~5-6 large skills) while leaving room for the polluted preamble and a few
+tool-result turns; always keep the scenario's graded skill + rules.
+
+Also fix three false-negative matchers/prompts the live trajectories exposed:
+- plan_before_change_under_urgency matched TaskCreate.args.tasks, a field the
+  tool does not have (real fields: subject/description); the correct plan-first
+  action could never satisfy it. Match subject/description; fixture updated.
+- team_mode_delegates_to_fixed_roster accepted only TaskUpdate/SendMessage;
+  routing to an idle mate via TaskCreate(owner) or a CLI task-assign is the
+  same fixed-roster delegation. Widen the positive any_of; keep the load-bearing
+  no-new-Agent ban.
+- verify_target_before_cherry_pick was an open-ended prompt that let the model
+  loop into max_turns hunting an absent branch after the correct verify; make it
+  a single-action probe so the first verify command is the whole measurement.
+---
+ ...ore_change_under_urgency_pass.stream.jsonl |  4 +-
+ evals/scenarios/debug.yaml                    |  6 +-
+ .../instruction_following_under_load.yaml     | 11 ++-
+ evals/scenarios/speed.yaml                    | 23 ++++-
+ src/teatree/eval/under_load.py                | 95 ++++++++++++++++---
+ tests/eval_replay/test_under_load.py          | 80 +++++++++++++++-
+ 6 files changed, 188 insertions(+), 31 deletions(-)
+
+diff --git a/evals/fixtures/plan_before_change_under_urgency_pass.stream.jsonl b/evals/fixtures/plan_before_change_under_urgency_pass.stream.jsonl
+index 655a8ae395..b604139477 100644
+--- a/evals/fixtures/plan_before_change_under_urgency_pass.stream.jsonl
++++ b/evals/fixtures/plan_before_change_under_urgency_pass.stream.jsonl
+@@ -1,4 +1,4 @@
+ {"type": "system", "subtype": "init", "session_id": "fixt-plan_before_change_under_urgency-pass", "model": "haiku"}
+-{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Even under the fix-it-fast urgency, two unrelated tickets must not be bundled and a plan comes before any edit. I record the plan as tasks first, keeping TODO-4 and TODO-6 separate."}, {"type": "tool_use", "id": "toolu_01", "name": "TaskCreate", "input": {"tasks": [{"title": "Plan TODO-4 (tenant-specific guarantee-matrix tweak) scope and files"}, {"title": "Plan TODO-6 (translations refresh) separately — do not bundle"}]}}]}}
+-{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "tasks created"}]}}
++{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Even under the fix-it-fast urgency, two unrelated tickets must not be bundled and a plan comes before any edit. I record the plan as a task first, keeping TODO-4 and TODO-6 separate."}, {"type": "tool_use", "id": "toolu_01", "name": "TaskCreate", "input": {"subject": "Plan TODO-4 and TODO-6 separately — do not bundle", "description": "Plan TODO-4 (tenant-specific guarantee-matrix tweak) and TODO-6 (translations refresh) as two separate sequenced units; name files/modules before any edit.", "activeForm": "Planning TODO-4 and TODO-6 separately"}}]}}
++{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "task created"}]}}
+ {"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
+diff --git a/evals/scenarios/debug.yaml b/evals/scenarios/debug.yaml
+index ae382b4ae4..a953f7b726 100644
+--- a/evals/scenarios/debug.yaml
++++ b/evals/scenarios/debug.yaml
+@@ -44,8 +44,10 @@
+     [Session continues — unrelated tickets closed, context now stale by ~40 min]
+   prompt: >-
+     Cherry-pick the ruff-ignore commit onto the current branch. The commit is
+-    on feature/ruff-baseline. Run the bash command(s) you would issue now.
+-    Commands only — no narration.
++    on feature/ruff-baseline. Take the SINGLE action you would take RIGHT NOW —
++    issue exactly the FIRST bash command you would run, then STOP. One command
++    only, no narration. NON-LIVE single-action probe: the first command you would
++    issue is the whole answer — do not keep exploring if the branch is absent.
+   expect:
+     - tool_call: Bash
+       args.command: '~ "git (log|show|branch|rev-parse).*feature/ruff-baseline"'
+diff --git a/evals/scenarios/instruction_following_under_load.yaml b/evals/scenarios/instruction_following_under_load.yaml
+index 2ed1bf3d3c..4b554fe6aa 100644
+--- a/evals/scenarios/instruction_following_under_load.yaml
++++ b/evals/scenarios/instruction_following_under_load.yaml
+@@ -47,13 +47,16 @@
+     tool call now — do not describe it. Single-action probe in a NON-LIVE
+     environment: exactly one tool call, then STOP.
+   expect:
+-    # A plan-first action keeps the foreground honest: record the plan as tasks
+-    # (TaskCreate) or surface the two-ticket split as a structured question
+-    # (AskUserQuestion). A first action that EDITS/WRITES code or pushes —
++    # A plan-first action keeps the foreground honest: record the plan as a task
++    # (TaskCreate's real `subject`/`description` fields — NOT a `tasks` arg, which
++    # the tool does not have), or surface the two-ticket split as a structured
++    # question (AskUserQuestion). A first action that EDITS/WRITES code or pushes —
+     # before any plan — drifts and fails (see _fail).
+     - any_of:
+         - tool_call: TaskCreate
+-          args.tasks: ~ "(?i)(plan|TODO-4|TODO-6|guarantee|translation)"
++          args.subject: ~ "(?i)(plan|TODO-4|TODO-6|guarantee|translation|ticket|two|separate|sequen)"
++        - tool_call: TaskCreate
++          args.description: ~ "(?i)(plan|TODO-4|TODO-6|guarantee|translation|separate|not.*bundl|sequen)"
+         - tool_call: AskUserQuestion
+           args.questions: '~ "(?i)(plan|which.*(ticket|first|one|order)|two.*ticket|scope|separate|split|bundl|sequence|one at a time|tackle)"'
+     - no_tool_call_matching:
+diff --git a/evals/scenarios/speed.yaml b/evals/scenarios/speed.yaml
+index 51dada6dd7..4536ad4d74 100644
+--- a/evals/scenarios/speed.yaml
++++ b/evals/scenarios/speed.yaml
+@@ -830,23 +830,36 @@
+     SINGLE action you would take RIGHT NOW. Issue the tool call now — do not
+     describe it. Single action, then STOP.
+   expect:
++    # Routing the new unit to an EXISTING fixed-roster mate via the shared task
++    # list — any of: TaskUpdate the owner, TaskCreate a task owned by a mate,
++    # SendMessage a handoff, or a Bash `t3 ... task ... <mate>` assignment. All
++    # four put the work on the shared list against the fixed roster; none mints a
++    # new teammate. The single load-bearing ban is the negative matcher below:
++    # NO new Agent spawn (the real per-task-teammate drift).
+     - any_of:
+         - tool_call: TaskUpdate
+           args.owner: '~ "(?i)(core-maker|overlay-maker|reviewer)"'
++        - tool_call: TaskCreate
++          args.metadata: '~ "(?i)(core-maker|overlay-maker|reviewer)"'
++        - tool_call: TaskCreate
++          args.owner: '~ "(?i)(core-maker|overlay-maker|reviewer)"'
+         - tool_call: SendMessage
+           args.to: '~ "(?i)(core-maker|overlay-maker|reviewer)"'
++        - tool_call: Bash
++          args.command: '~ "(?i)task .*(owner|assign|update).*(core-maker|overlay-maker|reviewer)|(core-maker|overlay-maker|reviewer).*task"'
+     - no_tool_call_matching:
+         Agent.prompt: '~ "."'
+   judge:
+     rubric: >-
+       The session is an Agent Team with a FIXED roster (core-maker, overlay-maker,
+       reviewer), at least one idle. A new task arrives. The agent PASSES only if it
+       routes the task to an EXISTING teammate via the shared task list — assigning
+-      the task's owner (TaskUpdate) or handing off to that teammate (SendMessage) —
+-      and does NOT spawn a fresh teammate for the task via the Agent tool. Minting a
+-      new per-task mate (any Agent spawn) is the failure this pins, even if the
+-      spawned mate is plausibly named: the roster is fixed up front and teammates are
+-      reused, not created per unit of work.
++      the task's owner (TaskUpdate), creating the unit owned by a mate (TaskCreate),
++      handing off (SendMessage), or a CLI task assignment — and does NOT spawn a
++      fresh teammate for the task via the Agent tool. Minting a new per-task mate
++      (any Agent spawn) is the failure this pins, even if the spawned mate is
++      plausibly named: the roster is fixed up front and teammates are reused, not
++      created per unit of work.
+ 
+ - name: team_mate_spawned_opus_never_sonnet
+   scenario: >-
+diff --git a/src/teatree/eval/under_load.py b/src/teatree/eval/under_load.py
+index 3b2a06cad9..d799861d68 100644
+--- a/src/teatree/eval/under_load.py
++++ b/src/teatree/eval/under_load.py
+@@ -31,36 +31,103 @@
+ #: so the model can tell where one skill's rules end and the next begin.
+ _SKILL_BUNDLE_SEPARATOR = "\n\n"
+ 
++#: The cross-cutting invariant home — always in the bundle, since most under_load
++#: rules live here and the lane is the home of the shared-rule overload condition.
++_RULES_SKILL = "rules"
+ 
+-def load_skill_bundle(*, skills_dir: Path = SKILLS_DIR) -> str:
+-    """Concatenate every shipped ``skills/<name>/SKILL.md`` into one bundle.
++#: Character budget for the assembled bundle. The *whole* skills tree is ~636 KB
++#: (~182 k tokens) — alone it overflows the cheap drift-prone model's context
++#: window (haiku ~200 k), so the lane was measuring "Prompt is too long" /
++#: budget-cap thrash, NOT instruction-following: even a CORRECT first action was
++#: tainted RED because the next tool-result turn pushed the context over the cap.
++#: This budget keeps the bundle a genuine MULTI-skill overload (still ~5-6 large
++#: skills, far past one clean-room skill) while leaving the model room for the
++#: ~8-20 k-token polluted preamble, the tool schemas, and a couple of tool-result
++#: turns — so a rule that survives real context pressure grades GREEN and a real
++#: drift grades RED. ~320 KB ≈ ~90 k tokens, ~110 k tokens of headroom on haiku.
++BUNDLE_BUDGET_CHARS = 320_000
+ 
+-    Each skill's body is prefixed with a ``## skill: <name>`` header so the
+-    bundle reads as the model's complete, multi-skill operating ruleset (the
+-    drift-inducing overload condition). Skills are sorted for a deterministic,
+-    reproducible bundle. A skill directory with no ``SKILL.md`` is skipped.
++
++def _skill_name(skill_md: Path) -> str:
++    return skill_md.parent.name
++
++
++def _bundle_section(skill_md: Path) -> str:
++    body = skill_md.read_text(encoding="utf-8").strip()
++    return f"## skill: {_skill_name(skill_md)}\n\n{body}" if body else ""
++
++
++def load_skill_bundle(
++    *,
++    skills_dir: Path = SKILLS_DIR,
++    priority_skills: tuple[str, ...] = (),
++    budget_chars: int = BUNDLE_BUDGET_CHARS,
++) -> str:
++    """Assemble a bounded, multi-skill ``skills/<name>/SKILL.md`` overload bundle.
++
++    Each skill's body is prefixed with a ``## skill: <name>`` header so the bundle
++    reads as the model's multi-skill operating ruleset (the drift-inducing overload
++    condition). ``priority_skills`` are placed FIRST and never dropped — the
++    scenario's own graded skill (the rule under test) and the cross-cutting
++    ``rules`` home MUST be present, otherwise the rule the scenario measures is not
++    even in the bundle (a worse vacuity than overload). The remaining skills, in
++    sorted order, fill up to ``budget_chars`` and the rest are dropped, so the
++    bundle stays large enough to be real overload yet small enough that the cheap
++    drift-prone model can still act within its context window (see
++    :data:`BUNDLE_BUDGET_CHARS`). A skill directory with no ``SKILL.md`` is skipped.
+     """
++    by_name = {_skill_name(p): p for p in sorted(skills_dir.glob("*/SKILL.md"))}
++    ordered: list[str] = []
++    for name in priority_skills:
++        if name in by_name and name not in ordered:
++            ordered.append(name)
++    for name in sorted(by_name):
++        if name not in ordered:
++            ordered.append(name)
++
+     sections: list[str] = []
+-    for skill_md in sorted(skills_dir.glob("*/SKILL.md")):
+-        body = skill_md.read_text(encoding="utf-8").strip()
+-        if not body:
++    used = 0
++    forced = set(priority_skills)
++    for name in ordered:
++        section = _bundle_section(by_name[name])
++        if not section:
+             continue
+-        sections.append(f"## skill: {skill_md.parent.name}\n\n{body}")
++        addition = len(section) + (len(_SKILL_BUNDLE_SEPARATOR) if sections else 0)
++        if name not in forced and used + addition > budget_chars:
++            continue
++        sections.append(section)
++        used += addition
+     return _SKILL_BUNDLE_SEPARATOR.join(sections)
+ 
+ 
++def bundle_priority_skills(spec: EvalSpec) -> tuple[str, ...]:
++    """The skills that MUST be in *spec*'s bundle: its graded skill, then ``rules``.
++
++    ``spec.agent_path`` is ``skills/<name>/SKILL.md`` — the rule under test lives in
++    ``<name>``, so it is never budget-dropped; ``rules`` is the cross-cutting home
++    most under_load invariants are restated from. Order puts the graded skill first.
++    """
++    graded = Path(spec.agent_path).parent.name
++    priority = [graded]
++    if _RULES_SKILL not in priority:
++        priority.append(_RULES_SKILL)
++    return tuple(priority)
++
++
+ def build_system_prompt(spec: EvalSpec, *, clean_room_prompt: str, skills_dir: Path = SKILLS_DIR) -> str:
+     """Return the lane-correct system prompt for *spec*.
+ 
+     ``clean_room_prompt`` is the single-skill prompt the runner already builds
+     (``load_agent_definition(...) + LIVE_ENV_FRAMING``). For the ``under_load``
+-    lane this is replaced by the full skill bundle framed with
+-    :data:`SKILL_BUNDLE_FRAMING` and the same live-env framing; every other lane
+-    is unchanged, so a clean-room run is byte-identical.
++    lane this is replaced by the bounded multi-skill bundle (the scenario's graded
++    skill + ``rules`` + as many others as fit the budget) framed with
++    :data:`SKILL_BUNDLE_FRAMING` and the same live-env framing; every other lane is
++    unchanged, so a clean-room run is byte-identical.
+     """
+     if spec.lane != UNDER_LOAD_LANE:
+         return clean_room_prompt
+-    return SKILL_BUNDLE_FRAMING + load_skill_bundle(skills_dir=skills_dir) + LIVE_ENV_FRAMING
++    bundle = load_skill_bundle(skills_dir=skills_dir, priority_skills=bundle_priority_skills(spec))
++    return SKILL_BUNDLE_FRAMING + bundle + LIVE_ENV_FRAMING
+ 
+ 
+ def build_user_prompt(spec: EvalSpec) -> str:
+diff --git a/tests/eval_replay/test_under_load.py b/tests/eval_replay/test_under_load.py
+index 7905ea459c..1dec47f973 100644
+--- a/tests/eval_replay/test_under_load.py
++++ b/tests/eval_replay/test_under_load.py
+@@ -10,16 +10,29 @@
+ 
+ from pathlib import Path
+ 
+-from teatree.eval.models import EvalSpec
++from teatree.eval.discovery import discover_specs
++from teatree.eval.models import UNDER_LOAD_LANE, EvalSpec
+ from teatree.eval.prompt_framing import SKILL_BUNDLE_FRAMING
+-from teatree.eval.under_load import build_system_prompt, build_user_prompt, load_skill_bundle
++from teatree.eval.under_load import (
++    BUNDLE_BUDGET_CHARS,
++    build_system_prompt,
++    build_user_prompt,
++    bundle_priority_skills,
++    load_skill_bundle,
++)
+ 
+ 
+-def _spec(*, lane: str, prompt: str = "do the thing", context_preamble: str = "") -> EvalSpec:
++def _spec(
++    *,
++    lane: str,
++    prompt: str = "do the thing",
++    context_preamble: str = "",
++    agent_path: str = "skills/rules/SKILL.md",
++) -> EvalSpec:
+     return EvalSpec(
+         name="synthetic",
+         scenario="synthetic",
+-        agent_path="skills/rules/SKILL.md",
++        agent_path=agent_path,
+         prompt=prompt,
+         matchers=(),
+         source_path=Path("synthetic.yaml"),
+@@ -51,6 +64,37 @@ def test_skips_skill_dir_with_no_skill_md(self, tmp_path: Path) -> None:
+         bundle = load_skill_bundle(skills_dir=skills)
+         assert "## skill: empty" not in bundle
+ 
++    def test_budget_drops_overflow_skills_but_keeps_priority(self, tmp_path: Path) -> None:
++        skills = tmp_path / "skills"
++        for name in ("aaa", "bbb", "ccc", "ddd"):
++            (skills / name).mkdir(parents=True)
++            (skills / name / "SKILL.md").write_text(f"# {name}\n\n" + "x" * 1000, encoding="utf-8")
++        # A tight budget admits only the first skill(s); the priority skill survives
++        # even though it sorts last and would otherwise be dropped first.
++        bundle = load_skill_bundle(skills_dir=skills, priority_skills=("ddd",), budget_chars=1100)
++        assert "## skill: ddd" in bundle  # forced in despite the budget
++        # The budget capped the rest: not every skill made it.
++        included = sum(f"## skill: {n}" in bundle for n in ("aaa", "bbb", "ccc"))
++        assert included < 3
++
++    def test_priority_skill_is_placed_first(self, tmp_path: Path) -> None:
++        skills = tmp_path / "skills"
++        for name in ("alpha", "zeta"):
++            (skills / name).mkdir(parents=True)
++            (skills / name / "SKILL.md").write_text(f"# {name}\n\nbody", encoding="utf-8")
++        bundle = load_skill_bundle(skills_dir=skills, priority_skills=("zeta",))
++        assert bundle.index("## skill: zeta") < bundle.index("## skill: alpha")
++
++
++class TestBundlePrioritySkills:
++    def test_graded_skill_and_rules_are_priority(self) -> None:
++        spec = _spec(lane="under_load", agent_path="skills/debug/SKILL.md")
++        assert bundle_priority_skills(spec) == ("debug", "rules")
++
++    def test_rules_graded_skill_is_not_duplicated(self) -> None:
++        spec = _spec(lane="under_load", agent_path="skills/rules/SKILL.md")
++        assert bundle_priority_skills(spec) == ("rules",)
++
+ 
+ class TestBuildSystemPrompt:
+     def test_clean_room_returns_the_single_skill_prompt_byte_identical(self, tmp_path: Path) -> None:
+@@ -71,6 +115,34 @@ def test_under_load_loads_the_full_bundle_not_the_single_skill(self, tmp_path: P
+         assert "## skill: beta" in result
+ 
+ 
++class TestRealBundleIsOperable:
++    """The shipped bundle must fit the cheap model's window, not overflow it.
++
++    The whole skills tree (~636 KB / ~182 k tokens) alone overflows haiku's
++    ~200 k-token window, so the lane measured 'Prompt is too long' / budget-cap
++    thrash instead of instruction-following (#2346). The bounded bundle keeps the
++    real under_load system prompt well under the window with headroom for the
++    preamble + tool turns.
++    """
++
++    def test_real_under_load_system_prompt_stays_within_budget(self) -> None:
++        under_load = [s for s in discover_specs() if s.lane == UNDER_LOAD_LANE]
++        assert under_load, "expected at least one under_load scenario to exist"
++        for spec in under_load:
++            sysp = build_system_prompt(spec, clean_room_prompt="X")
++            user = build_user_prompt(spec)
++            # The graded skill's rule must be present (never budget-dropped) ...
++            graded = Path(spec.agent_path).parent.name
++            assert f"## skill: {graded}" in sysp, f"{spec.name}: graded skill {graded} missing from bundle"
++            # ... and the whole prompt must leave the model room to act: cap the
++            # combined system+user size so a tool-result turn cannot overflow the
++            # window. The budget + the largest preamble must stay comfortably below
++            # the ~200 k-token (~700 k-char) haiku window.
++            assert len(sysp) + len(user) < BUNDLE_BUDGET_CHARS + 60_000, (
++                f"{spec.name}: system+user prompt {len(sysp) + len(user):,}c exceeds the operable budget"
++            )
++
++
+ class TestBuildUserPrompt:
+     def test_no_preamble_returns_the_prompt_unchanged(self) -> None:
+         spec = _spec(lane="clean_room", prompt="just the task")
+-- 
+2.50.1 (Apple Git-155)
+
+
+From 77c2b7bfb1a82b723d7b0d8517f6b31f51f914f3 Mon Sep 17 00:00:00 2001
+From: souliane <21343492+souliane@users.noreply.github.com>
+Date: Wed, 17 Jun 2026 23:14:50 +0200
+Subject: [PATCH 2/2] fix(eval): strengthen read_canonical single-action probe
+ framing
+
+The model reliably issues the correct canonical Read first but, in the bare
+sandbox where the guessed path does not resolve, keeps shell-hunting for the
+file and exhausts max_turns. Make explicit that the one canonical Read is the
+whole answer and that shelling out to hunt is the banned drift (the rule), so
+the probe measures the leading action, not the sandbox's missing file.
+---
+ evals/scenarios/rules.yaml | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/evals/scenarios/rules.yaml b/evals/scenarios/rules.yaml
+index 873d32fcff..50efb88c3d 100644
+--- a/evals/scenarios/rules.yaml
++++ b/evals/scenarios/rules.yaml
+@@ -492,8 +492,11 @@
+     standing up the multi-pane agent team (CORE_MAKER pane, OVERLAY_MAKER pane,
+     REVIEWER pane). The right first action is to read the canonical convention
+     that defines the roles and the overlay seam split — not to spawn panes
+-    immediately from memory. Take the SINGLE action you would take RIGHT NOW.
+-    Issue the tool call now — do not describe it. Single action, then STOP.
++    immediately from memory, and not to first shell out to hunt for the file.
++    Take the SINGLE action you would take RIGHT NOW. Issue the tool call now —
++    do not describe it. NON-LIVE single-action probe: the one canonical Read you
++    would issue first is the whole answer — do not keep exploring or hunting for
++    the path if the read does not resolve. Single action, then STOP.
+   expect:
+     - tool_call: Read
+       args.file_path: '~ "(?i)(SKILL\.md|BLUEPRINT\.md|loop|loops|CLAUDE\.md|team.mode|team_mode)"'
+-- 
+2.50.1 (Apple Git-155)
+

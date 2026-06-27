@@ -1,0 +1,516 @@
+diff --git BLUEPRINT.md BLUEPRINT.md
+index 9a4c0be49e..1d8dcf53db 100644
+--- BLUEPRINT.md
++++ BLUEPRINT.md
+@@ -421,7 +421,7 @@ ## 14. Django Project Workflows
+ - **Migration retry with selective faking** for known-stuck migrations, declared per overlay
+ - **Post-DB steps** run after import (password reset, fixtures, …) — declared per overlay
+ - **State reconciler** (`t3 workspace doctor`) reconciles DB ↔ disk ↔ docker drift on demand
+-- **Shared Redis, one DB slot per ticket** — overlays that `uses_redis()` share a single `teatree-redis` container; each ticket claims one Redis DB index from a pool sized by `redis_db_count` (default 64). `ensure_running` recreates a live container started with a smaller `--databases` so a raised pool actually takes effect. Slots are released on teardown, lazily reclaimed before exhaustion, proactively swept by `workspace clean-all` (orphaned slots whose worktree dirs are gone but rows persist), and freed per-ticket via `t3 <overlay> worktree release-slot <ticket>`. `worktree start` heals a `provisioned` worktree whose DB was never created (interrupted provision), and `ServiceLauncher` is single-flight per `(worktree, service)` so concurrent frontend rebuilds never race the output dir
++- **Shared Redis, one DB slot per ticket** — overlays that `uses_redis()` share a single `teatree-redis` container; each ticket claims one Redis DB index from a pool sized by `redis_db_count` (default 64). `ensure_running` recreates a live container started with a smaller `--databases` so a raised pool actually takes effect — but that recreate is **destructive** (stop + rm + create) and would drop the cache + Celery broker state of **every** worktree sharing the container. Because `worktree provision` calls `ensure_running` for every new ticket, the per-ticket path passes `allow_resize_recreate=False` whenever any worktree is live (`services_up`/`ready`, via `Worktree.objects.has_live_stacks()`): a raised pool then degrades gracefully — the new stack uses the slots the container already has and a log line points at the explicit upgrade — rather than silently nuking a concurrent worktree's shared state (#2577). The destructive resize is applied deliberately by `t3 infra redis upgrade`, which refuses while a live stack exists. The publish heal (#1373, a missing `-p 6379:6379`) is *not* a resize — an unpublished container is already broken for everyone — so it recreates regardless of the guard. Slots are released on teardown, lazily reclaimed before exhaustion, proactively swept by `workspace clean-all` (orphaned slots whose worktree dirs are gone but rows persist), and freed per-ticket via `t3 <overlay> worktree release-slot <ticket>`. `worktree start` heals a `provisioned` worktree whose DB was never created (interrupted provision), and `ServiceLauncher` is single-flight per `(worktree, service)` so concurrent frontend rebuilds never race the output dir
+ 
+ ---
+ 
+diff --git src/teatree/cli/infra.py src/teatree/cli/infra.py
+index 1e7906b7b7..612358c083 100644
+--- src/teatree/cli/infra.py
++++ src/teatree/cli/infra.py
+@@ -13,8 +13,48 @@
+ 
+ @redis_app.command(name="up")
+ def redis_up() -> None:
+-    """Start the shared Redis container (idempotent)."""
+-    redis_container.ensure_running(db_count=load_config().user.redis_db_count)
++    """Start the shared Redis container (idempotent, never resizes a live container).
++
++    Heals a missing host publish (#1373) but refuses the destructive db-count
++    resize-recreate while any worktree is live (``services_up``/``ready``) —
++    that would drop its cache + Celery broker state (#2577). Use
++    ``t3 infra redis upgrade`` to apply a raised ``redis_db_count`` once no live
++    stack is running.
++    """
++    from teatree.core.models import Worktree  # noqa: PLC0415
++
++    redis_container.ensure_running(
++        db_count=load_config().user.redis_db_count,
++        allow_resize_recreate=not Worktree.objects.has_live_stacks(),
++    )
++    typer.echo(f"{redis_container.CONTAINER_NAME}: {redis_container.status()}")
++
++
++@redis_app.command(name="upgrade")
++def redis_upgrade() -> None:
++    """Recreate the shared Redis container to apply a raised ``redis_db_count``.
++
++    This is the **destructive** resize path: it stops + removes + recreates the
++    container with the configured pool, dropping the cache + Celery broker state
++    of every worktree. Refuses while a worktree is live (``services_up``/``ready``)
++    so shared state is never nuked out from under a running stack — tear those
++    down first (``t3 <overlay> worktree teardown <path>``) and re-run.
++    """
++    from teatree.core.models import Worktree  # noqa: PLC0415
++
++    blockers = list(Worktree.objects.live_stacks())
++    if blockers:
++        names = ", ".join(f"{w.repo_path} ({w.branch})" for w in blockers)
++        typer.echo(
++            "Refusing to recreate teatree-redis: live worktree(s) would lose "
++            f"cache/broker state: {names}. Tear them down and re-run.",
++            err=True,
++        )
++        raise typer.Exit(code=1)
++    redis_container.ensure_running(
++        db_count=load_config().user.redis_db_count,
++        allow_resize_recreate=True,
++    )
+     typer.echo(f"{redis_container.CONTAINER_NAME}: {redis_container.status()}")
+ 
+ 
+diff --git src/teatree/core/management/commands/worktree.py src/teatree/core/management/commands/worktree.py
+index c77b197d4f..72cd691092 100644
+--- src/teatree/core/management/commands/worktree.py
++++ src/teatree/core/management/commands/worktree.py
+@@ -165,7 +165,17 @@ def provision(
+         worktree.refresh_from_db()
+         resolved_overlay = get_overlay()
+         if resolved_overlay.uses_redis():
+-            redis_container.ensure_running(db_count=load_config().user.redis_db_count)
++            # #2577: a destructive Redis resize-recreate (stop+rm+create to apply
++            # a raised `redis_db_count`) drops the cache + Celery broker state of
++            # every live worktree. Never do that from the per-ticket provision
++            # path while another worktree is up — leave the container at its size
++            # and degrade onto the slots it has. `t3 infra redis upgrade` applies
++            # the resize explicitly once no live stack is running.
++            allow_resize = not Worktree.objects.exclude(pk=worktree.pk).has_live_stacks()
++            redis_container.ensure_running(
++                db_count=load_config().user.redis_db_count,
++                allow_resize_recreate=allow_resize,
++            )
+             Ticket.objects.allocate_redis_slot(ticket_obj)
+         validate_docker_service_contract(resolved_overlay, worktree)
+         _build_base_images(resolved_overlay, worktree, writer=self.stdout.write)
+diff --git src/teatree/core/managers.py src/teatree/core/managers.py
+index 934677a833..d078d7c989 100644
+--- src/teatree/core/managers.py
++++ src/teatree/core/managers.py
+@@ -208,6 +208,26 @@ def active(self, overlay: str | None = None) -> models.QuerySet:
+             .order_by("pk")
+         )
+ 
++    def live_stacks(self) -> models.QuerySet:
++        """Worktrees holding a running local stack (``services_up`` / ``ready``).
++
++        These are the worktrees the shared ``teatree-redis`` container must not be
++        torn out from under (#2577): a stop + rm + create resize drops their cache
++        + Celery broker state. ``created`` / ``provisioned`` worktrees hold no
++        running stack, so they are excluded.
++        """
++        worktree_model = cast("type[Worktree]", apps.get_model("core", "Worktree"))
++
++        return self.filter(state__in=[worktree_model.State.SERVICES_UP, worktree_model.State.READY])
++
++    def has_live_stacks(self) -> bool:
++        """True when any worktree is in ``services_up`` / ``ready`` (#2577).
++
++        Used by ``worktree provision`` to decide whether a destructive Redis
++        resize-recreate would lose another worktree's shared cache/broker state.
++        """
++        return self.live_stacks().exists()
++
+     def stamp_e2e_run(self, ticket_pk: int, *, now: datetime | None = None) -> int:
+         """Stamp ``last_e2e_run`` on the running worktrees of *ticket_pk* (#2227).
+ 
+diff --git src/teatree/utils/redis_container.py src/teatree/utils/redis_container.py
+index f3a91f385c..bdf384a804 100644
+--- src/teatree/utils/redis_container.py
++++ src/teatree/utils/redis_container.py
+@@ -12,6 +12,14 @@
+ reconciles the live container's ``databases`` against the requested count and
+ recreates it when it falls short — without that, raising ``redis_db_count``
+ silently has no effect until the operator manually removes the container.
++
++That recreate is **destructive** (stop + rm + create), so it drops the cache +
++Celery broker state of every worktree sharing the container. The per-ticket
++``worktree provision`` path therefore passes ``allow_resize_recreate=False`` so a
++new ticket never nukes a live worktree's shared state behind a raised pool; the
++resize is applied explicitly by ``t3 infra redis upgrade`` once no live stack is
++running (#2577). The publish heal (#1373) is *not* a resize — an unpublished
++container is already broken for everyone — so it fires regardless of that flag.
+ """
+ 
+ import logging
+@@ -208,54 +216,107 @@ def _recreate(db_count: int, reason: str) -> None:
+     _create(db_count)
+ 
+ 
+-def _needs_recreate(db_count: int) -> str:
+-    """Reason a *running* container must be recreated, or ``""`` when it's fine.
++def _publish_heal_reason() -> str:
++    """Reason the running container must be recreated to heal the host publish, else ``""``.
+ 
+-    Two reconciliations share one recreate path: the missing ``-p 6379:6379``
+-    host publish (#1373) and a ``databases`` count below the requested pool. The
+-    db-count check is fail-safe — an inconclusive probe (``None``, docker hiccup)
+-    reports "no recreate" so a transient error never churns the shared container.
++    A container missing ``-p 6379:6379`` (#1373) is *already* unreachable — every
++    worktree's cache/broker traffic 500s — so recreating it can only improve
++    things. This recreate is therefore **always safe** and is never suppressed by
++    the resize guard.
+     """
+     if not _host_port_published():
+         return f"lacks the :{HOST_PORT} host publish"
++    return ""
++
++
++def _resize_reason(db_count: int) -> str:
++    """Reason the running container needs a *destructive* resize-recreate, else ``""``.
++
++    Redis bakes ``--databases N`` in at boot, so a container started with a
++    smaller pool never picks up a raised ``redis_db_count``. Reconciling it means
++    stop + rm + create, which **drops the cache + Celery broker state of every
++    live worktree** — so this recreate is gated on ``allow_resize_recreate`` by
++    :func:`ensure_running`. Fail-safe: an inconclusive probe (``None``, docker
++    hiccup) reports "no resize" so a transient error never churns the container.
++    """
+     configured = _configured_db_count()
+     if configured is not None and configured < db_count:
+         return f"has only {configured} Redis DBs (want {db_count})"
+     return ""
+ 
+ 
+-def ensure_running(db_count: int = DEFAULT_DB_COUNT) -> None:
++def _reconcile_running(db_count: int, *, allow_resize_recreate: bool) -> None:
++    """Reconcile a *running* container: always heal a missing publish; resize only when allowed.
++
++    The publish heal (#1373) fires unconditionally — an unpublished container is
++    already broken for everyone. The destructive db-count resize (#2577) tears the
++    shared container down and drops every live worktree's cache/broker state, so it
++    fires only when ``allow_resize_recreate`` is set (no live stack would lose
++    state, or the operator ran the explicit upgrade). When a resize is needed but
++    disallowed, the too-small container is **left running** and a clear, actionable
++    message points at the explicit upgrade step.
++    """
++    publish_reason = _publish_heal_reason()
++    if publish_reason:
++        _recreate(db_count, publish_reason)
++        return
++    resize_reason = _resize_reason(db_count)
++    if not resize_reason:
++        return
++    if allow_resize_recreate:
++        _recreate(db_count, resize_reason)
++        return
++    logger.warning(
++        "%s %s, but a live worktree depends on it — skipping the destructive "
++        "resize to preserve shared cache/broker state. New tickets degrade onto "
++        "the slots it has. Run `t3 infra redis upgrade` when no live stack is "
++        "running to apply the larger pool.",
++        CONTAINER_NAME,
++        resize_reason,
++    )
++
++
++def ensure_running(db_count: int = DEFAULT_DB_COUNT, *, allow_resize_recreate: bool = True) -> None:
+     """Start the shared Redis container, self-healing publish and DB-count drift.
+ 
+     Idempotent. A *running* container is reconciled (recreated) when it lacks the
+     ``-p 6379:6379`` publish (#1373) OR was started with fewer ``databases`` than
+     the requested pool — Redis bakes ``--databases N`` in at boot, so a container
+     created by an older teatree (``--databases 16``) never picks up a raised
+     ``redis_db_count`` and slot allocation keeps failing with
+-    ``RedisSlotsExhaustedError`` until the operator manually removes it. A
+-    non-``teatree-redis`` container squatting on host port 6379 is evicted before
+-    any create/recreate so ``docker run -p 6379:6379`` doesn't fail with
++    ``RedisSlotsExhaustedError`` until the operator manually removes it.
++
++    ``allow_resize_recreate`` guards the **destructive** db-count resize only.
++    The resize is stop + rm + create, which drops the cache + Celery broker state
++    of every concurrently-running worktree (#2577). The per-ticket ``worktree
++    provision`` path passes ``allow_resize_recreate=False`` whenever a live
++    worktree (``services_up``/``ready``) depends on the running container, so a
++    new ticket never silently nukes shared state — the too-small container is left
++    running and the new stack degrades onto the slots it has, with a message
++    pointing at ``t3 infra redis upgrade`` (which passes ``True`` to apply the
++    resize once no live stack is running). The publish heal is *not* a resize —
++    an unpublished container is already broken for everyone — so it fires
++    regardless of this flag.
++
++    A non-``teatree-redis`` container squatting on host port 6379 is evicted
++    before any create/recreate so ``docker run -p 6379:6379`` doesn't fail with
+     ``address already in use``. A *native* (non-Docker) ``redis-server`` holding
+     the port cannot be safely evicted, so it raises
+     :class:`NativeRedisSquatterError` naming the process instead of letting
+     ``docker run`` fail with a cryptic bind error.
+     """
+     current = status()
+     if current == "running":
+-        reason = _needs_recreate(db_count)
+-        if reason:
+-            _recreate(db_count, reason)
++        _reconcile_running(db_count, allow_resize_recreate=allow_resize_recreate)
+         return
+     if current == "missing":
+         _evict_squatters()
+         _guard_native_squatter()
+         _create(db_count)
+         return
+     logger.info("Starting existing %s container (status=%s)", CONTAINER_NAME, current)
+     _docker_checked("start", CONTAINER_NAME)
+-    reason = _needs_recreate(db_count)
+-    if reason:
+-        _recreate(db_count, reason)
++    _reconcile_running(db_count, allow_resize_recreate=allow_resize_recreate)
+ 
+ 
+ def stop() -> None:
+diff --git tests/teatree_cli/test_cli_infra.py tests/teatree_cli/test_cli_infra.py
+index 27cf4b4797..03d13e7cf5 100644
+--- tests/teatree_cli/test_cli_infra.py
++++ tests/teatree_cli/test_cli_infra.py
+@@ -1,4 +1,4 @@
+-"""Tests for `t3 infra redis {up,down,status}` CLI."""
++"""Tests for `t3 infra redis {up,upgrade,down,status}` CLI."""
+ 
+ from unittest.mock import ANY, patch
+ 
+@@ -22,14 +22,57 @@ def test_prints_status(self, runner: CliRunner) -> None:
+ 
+ 
+ class TestInfraRedisUp:
+-    def test_calls_ensure_running(self, runner: CliRunner) -> None:
++    @pytest.mark.django_db
++    def test_allows_resize_when_no_live_stack(self, runner: CliRunner) -> None:
++        # No worktree is in services_up/ready, so `redis up` may apply a resize.
+         with (
+             patch("teatree.cli.infra.redis_container.ensure_running") as mock_up,
+             patch("teatree.cli.infra.redis_container.status", return_value="running"),
+         ):
+             result = runner.invoke(infra_app, ["redis", "up"])
+         assert result.exit_code == 0
+-        mock_up.assert_called_once_with(db_count=ANY)
++        mock_up.assert_called_once_with(db_count=ANY, allow_resize_recreate=True)
++
++    def test_forbids_resize_when_a_live_stack_exists(self, runner: CliRunner) -> None:
++        # #2577: `redis up` must NOT destroy a running container a live worktree
++        # depends on — it heals the publish but refuses the destructive resize.
++        with (
++            patch("teatree.cli.infra.redis_container.ensure_running") as mock_up,
++            patch("teatree.cli.infra.redis_container.status", return_value="running"),
++            patch("teatree.core.models.Worktree.objects.has_live_stacks", return_value=True),
++        ):
++            result = runner.invoke(infra_app, ["redis", "up"])
++        assert result.exit_code == 0
++        mock_up.assert_called_once_with(db_count=ANY, allow_resize_recreate=False)
++
++
++class TestInfraRedisUpgrade:
++    def test_refuses_when_a_live_stack_exists(self, runner: CliRunner) -> None:
++        # #2577: the explicit destructive resize must refuse while a worktree is
++        # live so shared cache/broker state is never nuked out from under it.
++        class _FakeWorktree:
++            repo_path = "/tmp/be"
++            branch = "feature"
++
++        with (
++            patch("teatree.cli.infra.redis_container.ensure_running") as mock_up,
++            patch("teatree.core.models.Worktree.objects.live_stacks", return_value=[_FakeWorktree()]),
++        ):
++            result = runner.invoke(infra_app, ["redis", "upgrade"])
++        assert result.exit_code == 1
++        assert "Refusing" in result.output
++        assert "feature" in result.output
++        mock_up.assert_not_called()
++
++    def test_recreates_when_no_live_stack(self, runner: CliRunner) -> None:
++        with (
++            patch("teatree.cli.infra.redis_container.ensure_running") as mock_up,
++            patch("teatree.cli.infra.redis_container.status", return_value="running"),
++            patch("teatree.core.models.Worktree.objects.live_stacks", return_value=[]),
++        ):
++            result = runner.invoke(infra_app, ["redis", "upgrade"])
++        assert result.exit_code == 0
++        mock_up.assert_called_once_with(db_count=ANY, allow_resize_recreate=True)
+ 
+ 
+ class TestInfraRedisDown:
+diff --git tests/teatree_core/test_management_commands.py tests/teatree_core/test_management_commands.py
+index 2ced57ac33..b431c6ea23 100644
+--- tests/teatree_core/test_management_commands.py
++++ tests/teatree_core/test_management_commands.py
+@@ -93,10 +93,58 @@ def test_setup_ensures_shared_redis_and_allocates_slot(self) -> None:
+                 mock_sp.run.return_value = MagicMock(returncode=0)
+                 call_command("worktree", "provision")
+ 
+-            mock_ensure.assert_called_once_with(db_count=ANY)
++            # No OTHER worktree is live, so the resize is permitted (#2577).
++            mock_ensure.assert_called_once_with(db_count=ANY, allow_resize_recreate=True)
+             ticket.refresh_from_db()
+             assert ticket.redis_db_index == 0
+ 
++    @override_settings(**COMMAND_SETTINGS)
++    def test_provision_forbids_redis_resize_when_another_worktree_is_live(self) -> None:
++        """#2577: provisioning a new ticket must NOT recreate the shared Redis
++        container while another worktree is live (``services_up``/``ready``) —
++        that would drop its cache + Celery broker state. The destructive resize
++        is suppressed via ``allow_resize_recreate=False``.
++        """
++        with tempfile.TemporaryDirectory() as tmp:
++            tmp_path = Path(tmp)
++            wt_path = str(tmp_path / "wt-backend")
++            Path(wt_path).mkdir()
++
++            # An unrelated worktree already running its stack.
++            live_ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/200")
++            Worktree.objects.create(
++                ticket=live_ticket,
++                overlay="test",
++                repo_path="/tmp/live",
++                branch="live",
++                state=Worktree.State.READY,
++                extra={"worktree_path": str(tmp_path / "live")},
++            )
++
++            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/201")
++            Worktree.objects.create(
++                ticket=ticket,
++                overlay="test",
++                repo_path="/tmp/backend",
++                branch="feature",
++                extra={"worktree_path": wt_path},
++            )
++
++            mock_config = MagicMock()
++            mock_config.user.workspace_dir = tmp_path
++
++            with (
++                patch.dict("os.environ", {"T3_ORIG_CWD": wt_path}),
++                patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
++                patch.object(utils_run_mod, "subprocess") as mock_sp,
++                patch("teatree.utils.redis_container.ensure_running") as mock_ensure,
++                patch("teatree.config.load_config", return_value=mock_config),
++            ):
++                mock_sp.run.return_value = MagicMock(returncode=0)
++                call_command("worktree", "provision")
++
++            mock_ensure.assert_called_once_with(db_count=ANY, allow_resize_recreate=False)
++
+     @override_settings(**COMMAND_SETTINGS)
+     def test_provision_skips_redis_when_overlay_does_not_use_it(self) -> None:
+         """Single-service overlays declaring ``uses_redis() -> False`` skip redis allocation."""
+diff --git tests/teatree_core/test_managers.py tests/teatree_core/test_managers.py
+index c8dfb54878..9217da741f 100644
+--- tests/teatree_core/test_managers.py
++++ tests/teatree_core/test_managers.py
+@@ -50,6 +50,34 @@ def test_active_excludes_delivered_and_ignored_tickets(self) -> None:
+ 
+         assert list(Worktree.objects.active()) == [active, also_active]
+ 
++    def test_live_stacks_counts_only_services_up_and_ready(self) -> None:
++        """A live stack is one in ``services_up`` / ``ready`` (#2577).
++
++        The shared Redis container must not be torn out from under such a
++        worktree. ``created`` / ``provisioned`` worktrees hold no running stack,
++        so they don't count.
++        """
++        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
++        ready = Worktree.objects.create(
++            ticket=ticket, repo_path="/tmp/ready", branch="ready", state=Worktree.State.READY
++        )
++        services_up = Worktree.objects.create(
++            ticket=ticket, repo_path="/tmp/up", branch="up", state=Worktree.State.SERVICES_UP
++        )
++        Worktree.objects.create(ticket=ticket, repo_path="/tmp/created", branch="created", state=Worktree.State.CREATED)
++        Worktree.objects.create(ticket=ticket, repo_path="/tmp/prov", branch="prov", state=Worktree.State.PROVISIONED)
++
++        assert set(Worktree.objects.live_stacks()) == {ready, services_up}
++        assert Worktree.objects.has_live_stacks() is True
++
++    def test_has_live_stacks_false_when_none_running(self) -> None:
++        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
++        Worktree.objects.create(ticket=ticket, repo_path="/tmp/created", branch="created", state=Worktree.State.CREATED)
++        Worktree.objects.create(ticket=ticket, repo_path="/tmp/prov", branch="prov", state=Worktree.State.PROVISIONED)
++
++        assert list(Worktree.objects.live_stacks()) == []
++        assert Worktree.objects.has_live_stacks() is False
++
+ 
+ class TestIncomingEventQuerySet(TestCase):
+     def _slack(self, *, channel: str, thread_ref: str, key: str) -> IncomingEvent:
+diff --git tests/teatree_utils/test_redis_container.py tests/teatree_utils/test_redis_container.py
+index 525e8d27e0..70128fe9d7 100644
+--- tests/teatree_utils/test_redis_container.py
++++ tests/teatree_utils/test_redis_container.py
+@@ -167,7 +167,7 @@ def test_recreates_running_container_with_too_few_databases(self) -> None:
+         # with `--databases 16` never picks up a raised `redis_db_count`, so
+         # slot allocation keeps failing once 16 are held. Reconciliation must
+         # recreate it with the larger pool. Anti-vacuity: drop the db-count
+-        # branch from `_needs_recreate` and this goes RED (no recreate fires).
++        # branch from `_resize_reason` and this goes RED (no recreate fires).
+         calls: list[tuple[str, ...]] = []
+         with (
+             patch.object(redis_container, "status", return_value="running"),
+@@ -207,6 +207,64 @@ def test_no_recreate_when_db_count_probe_inconclusive(self) -> None:
+             redis_container.ensure_running(db_count=64)
+         mock.assert_not_called()
+ 
++    def test_does_not_resize_recreate_when_resize_disallowed(self) -> None:
++        # Destructive-side-effect guard (#2577): the db-count resize tears the
++        # shared container down (stop+rm+create), dropping the cache + Celery
++        # broker state of every live worktree. When the caller forbids the
++        # resize (a live worktree depends on the running container), the
++        # too-small container is LEFT RUNNING — the worktree degrades onto the
++        # slots it has rather than losing shared state. Anti-vacuity: drop the
++        # `allow_resize_recreate` gate and this goes RED (stop/rm/run fire).
++        calls: list[tuple[str, ...]] = []
++        with (
++            patch.object(redis_container, "status", return_value="running"),
++            patch.object(redis_container, "_host_port_published", return_value=True),
++            patch.object(redis_container, "_configured_db_count", return_value=16),
++            patch.object(redis_container, "_docker_tolerant", side_effect=lambda *a: calls.append(a) or _completed()),
++            patch.object(redis_container, "_docker_checked", side_effect=lambda *a: calls.append(a) or _completed()),
++        ):
++            redis_container.ensure_running(db_count=64, allow_resize_recreate=False)
++        assert ("stop", "teatree-redis") not in calls
++        assert ("rm", "teatree-redis") not in calls
++        assert not any(c and c[0] == "run" for c in calls)
++
++    def test_resizes_when_resize_allowed_even_if_explicitly_true(self) -> None:
++        # The explicit upgrade path (`t3 infra redis upgrade`) passes
++        # allow_resize_recreate=True and DOES recreate — the operator has
++        # decided no live stack would lose state, so the wider pool takes effect.
++        calls: list[tuple[str, ...]] = []
++        with (
++            patch.object(redis_container, "status", return_value="running"),
++            patch.object(redis_container, "_host_port_published", return_value=True),
++            patch.object(redis_container, "_configured_db_count", return_value=16),
++            patch.object(redis_container, "_docker_tolerant", side_effect=lambda *a: calls.append(a) or _completed()),
++            patch.object(redis_container, "_docker_checked", side_effect=lambda *a: calls.append(a) or _completed()),
++        ):
++            redis_container.ensure_running(db_count=64, allow_resize_recreate=True)
++        assert ("stop", "teatree-redis") in calls
++        assert ("rm", "teatree-redis") in calls
++        run_call = next(c for c in calls if c and c[0] == "run")
++        assert "64" in run_call
++
++    def test_publish_heal_recreate_fires_even_when_resize_disallowed(self) -> None:
++        # The #1373 publish-missing recreate is NOT a resize — an unpublished
++        # container is already unreachable, so every worktree's cache/broker
++        # traffic is ALREADY broken. Healing it can only improve things, so the
++        # resize guard must NOT suppress the publish heal: it recreates even
++        # when allow_resize_recreate=False.
++        calls: list[tuple[str, ...]] = []
++        with (
++            patch.object(redis_container, "status", return_value="running"),
++            patch.object(redis_container, "_host_port_published", return_value=False),
++            patch.object(redis_container, "_docker_tolerant", side_effect=lambda *a: calls.append(a) or _completed()),
++            patch.object(redis_container, "_docker_checked", side_effect=lambda *a: calls.append(a) or _completed()),
++        ):
++            redis_container.ensure_running(db_count=64, allow_resize_recreate=False)
++        assert ("stop", "teatree-redis") in calls
++        assert ("rm", "teatree-redis") in calls
++        run_call = next(c for c in calls if c and c[0] == "run")
++        assert "6379:6379" in run_call
++
+ 
+ class TestConfiguredDbCount:
+     def test_parses_databases_value_from_config_get(self) -> None:

@@ -1,0 +1,335 @@
+From 2a2f0162322cee21b66a809363f2def5da4a59e0 Mon Sep 17 00:00:00 2001
+From: souliane <21343492+souliane@users.noreply.github.com>
+Date: Tue, 23 Jun 2026 13:26:45 +0200
+Subject: [PATCH] feat(e2e): add OverlayBase.get_e2e_playwright_args hook for
+ per-spec config selection
+
+The external runner builds the npx playwright command with no way for an
+overlay to inject per-spec Playwright flags. A multi-config Playwright suite
+(one config per lane, api-flow vs contrib vs portal) needs the right
+-c config chosen by the spec, which the overlay knows and core does not.
+
+Add get_e2e_playwright_args(spec_path) -> list[str] (default empty, the
+args-sibling of get_e2e_env_extras) and thread it into the external runner
+command ahead of any explicit --playwright-args (caller override still wins).
+The empty default preserves every existing overlay/run unchanged.
+
+## Configuration
+No config. New overlay hook defaults to an empty list; overlays opt in by
+overriding it.
+---
+ BLUEPRINT.md                                  |  2 +-
+ .../core/management/commands/_e2e_runners.py  | 24 ++++++-
+ src/teatree/core/management/commands/e2e.py   | 36 +++--------
+ src/teatree/core/overlay.py                   | 14 +++++
+ .../management_commands/_overlays.py          | 20 ++++++
+ .../management_commands/test_e2e.py           | 63 ++++++++++++++++++-
+ tests/test_overlay_base.py                    |  7 +++
+ 7 files changed, 137 insertions(+), 29 deletions(-)
+
+diff --git a/BLUEPRINT.md b/BLUEPRINT.md
+index 254eed941e..79c12cacff 100644
+--- a/BLUEPRINT.md
++++ b/BLUEPRINT.md
+@@ -394,7 +394,7 @@ ## 12. Testing
+ - `conftest.py` monkeypatches `HOME`/`XDG_*` to `tmp_path`, strips `GIT_*`, isolates overlay env, resets backend + overlay caches between tests
+ - Tests mirror `src/` paths under `tests/teatree_core/`, `tests/teatree_agents/`, `tests/teatree_backends/`, `tests/teatree_loop/`, plus top-level cross-cutting suites
+ - New tests lean integration / E2E / functional (Django test client, `call_command`, real `git` under `tmp_path`); unit tests are reserved for pure logic, and only unstoppable externals are mocked
+-- Core has no Playwright suite (no UI). Overlays declare their own via `get_e2e_config()`; `t3 <overlay> e2e {run,external,project}` runs them. The `external` runner resolves its Playwright working dir in order ([#2620](https://github.com/souliane/teatree/issues/2620)): an explicit `--repo` (a `[e2e_repos.<name>]` clone) wins; else, when `get_e2e_config()` supplies BOTH a `url` and a `ref` (`overlay_e2e_repo` lifts them into an `E2ERepo`, `e2e_dir` default `e2e`), the overlay's own repo is cloned at that ref (a `--branch`/`--ref` override wins) — so a migrated suite on an unmerged branch runs without a separate `T3_PRIVATE_TESTS` checkout; else the legacy `T3_PRIVATE_TESTS` directory. A green/red `e2e run` records run provenance on the durable recipe (`Ticket.extra['e2e_recipe'].last_run`, `core/e2e_workitem.record_run`): result + per-repo SHAs + env, plus (for vanilla-spec suites whose specs live in another repo, [#272](https://github.com/souliane/teatree/issues/272)) the exact `spec_path` and the overlay-resolved `manifest_entry` id (its CI lane) via the `get_e2e_run_provenance(spec_path)` overlay hook — so a run is reproducible from the DB alone. Core stays overlay-agnostic (default hook returns `""`; empty provenance fields are omitted). `t3 <overlay> e2e post-test-plan --manifest` ([#1409](https://github.com/souliane/teatree/issues/1409)) maintains ONE structured test-plan note per **ticket** (never the MR), idempotent on a hidden marker carrying a JSON state blob (the merge SOT); each run merges its manifest's env(s) over the prior state, freezing the side it omits. The note renders a test plan — a multi-repo header with clickable commit-provenance and a `Dev ± Local` reconciliation, then per-workflow bodies in one of three templates (`capture-matrix` default side-by-side table, `browser-click-first` screenshots, `link-api` links + code; [#2304](https://github.com/souliane/teatree/issues/2304)). `--body-file` posts a pre-authored body verbatim (mutually exclusive with `--manifest`). Pure render/merge lives in `_test_plan_render`, host orchestration in `_test_plan`.
++- Core has no Playwright suite (no UI). Overlays declare their own via `get_e2e_config()`; `t3 <overlay> e2e {run,external,project}` runs them. The `external` runner resolves its Playwright working dir in order ([#2620](https://github.com/souliane/teatree/issues/2620)): an explicit `--repo` (a `[e2e_repos.<name>]` clone) wins; else, when `get_e2e_config()` supplies BOTH a `url` and a `ref` (`overlay_e2e_repo` lifts them into an `E2ERepo`, `e2e_dir` default `e2e`), the overlay's own repo is cloned at that ref (a `--branch`/`--ref` override wins) — so a migrated suite on an unmerged branch runs without a separate `T3_PRIVATE_TESTS` checkout; else the legacy `T3_PRIVATE_TESTS` directory. A green/red `e2e run` records run provenance on the durable recipe (`Ticket.extra['e2e_recipe'].last_run`, `core/e2e_workitem.record_run`): result + per-repo SHAs + env, plus (for vanilla-spec suites whose specs live in another repo, [#272](https://github.com/souliane/teatree/issues/272)) the exact `spec_path` and the overlay-resolved `manifest_entry` id (its CI lane) via the `get_e2e_run_provenance(spec_path)` overlay hook — so a run is reproducible from the DB alone. Core stays overlay-agnostic (default hook returns `""`; empty provenance fields are omitted). For a multi-config Playwright suite (one config per lane — api-flow vs contrib vs portal), the overlay maps a spec to its `-c <config>` (and any other per-spec Playwright flags) via the `get_e2e_playwright_args(spec_path)` overlay hook; the `external` runner threads those into the `npx playwright test` command ahead of any explicit `--playwright-args` (default `[]` — no flags, prior command shape preserved). `t3 <overlay> e2e post-test-plan --manifest` ([#1409](https://github.com/souliane/teatree/issues/1409)) maintains ONE structured test-plan note per **ticket** (never the MR), idempotent on a hidden marker carrying a JSON state blob (the merge SOT); each run merges its manifest's env(s) over the prior state, freezing the side it omits. The note renders a test plan — a multi-repo header with clickable commit-provenance and a `Dev ± Local` reconciliation, then per-workflow bodies in one of three templates (`capture-matrix` default side-by-side table, `browser-click-first` screenshots, `link-api` links + code; [#2304](https://github.com/souliane/teatree/issues/2304)). `--body-file` posts a pre-authored body verbatim (mutually exclusive with `--manifest`). Pure render/merge lives in `_test_plan_render`, host orchestration in `_test_plan`.
+   - **Upload integrity.** Artifacts embed the relative `/uploads/<secret>/<file>` GitLab claims on save and upload to the project that owns the note's issue URL; a post-upload `verify_upload` gate re-fetches each via the token-authed API and magic-byte-checks it, so "posted" means "verified renderable" (`TestPlanMediaError` refuses otherwise).
+   - **Image preflight** (`core/test_plan_validation`, before any upload): every image must carry a `highlightAndShoot` red box, none may be byte-identical (md5 dedup), and a manifest with no media is refused (`TestPlanValidationError`); `--skip-validation` is the user-only bypass.
+   - **Honesty gates.** A colleague-repo body gate (`core/test_plan_blocked_gate`) refuses a `--body-file` post whose free text signals incomplete verification when the issue URL matches `colleague_repo_url_pattern` (`BlockedTestPlanPostError`); the structured `--manifest` render is exempt because its `**Blocked:** <reason>` disclosure is the honest channel. Self-evidence on the user's own ticket is un-gated by default (`post_e2e_evidence` in `on_behalf_auto_actions`, #960). `t3 <overlay> e2e retract-evidence` withdraws the note. A sibling field-context evidence probe (`core/doc_evidence`, [#2296](https://github.com/souliane/teatree/issues/2296)) asserts a generated-doc term in its expected structured field/column, never a page-wide substring — an available primitive, not yet a globally-wired gate.
+diff --git a/src/teatree/core/management/commands/_e2e_runners.py b/src/teatree/core/management/commands/_e2e_runners.py
+index 95a59ebaff..e51015ca58 100644
+--- a/src/teatree/core/management/commands/_e2e_runners.py
++++ b/src/teatree/core/management/commands/_e2e_runners.py
+@@ -9,7 +9,7 @@
+ 
+ import os
+ from collections.abc import Mapping
+-from dataclasses import dataclass
++from dataclasses import dataclass, field
+ from pathlib import Path
+ 
+ import typer
+@@ -24,6 +24,28 @@
+ BRANCH_OPTION = typer.Option("", "--branch", "--ref", help=_BRANCH_HELP)
+ 
+ 
++@dataclass
++class PlaywrightOptions:
++    """Flags forwarded to the Playwright CLI."""
++
++    test_path: str = ""
++    update_snapshots: bool = False
++    headed: bool = False
++    extra: list[str] = field(default_factory=list)
++
++    def to_args(self) -> list[str]:
++        args: list[str] = []
++        if self.test_path:
++            args.append(self.test_path)
++        args.append("--reporter=list")
++        if self.update_snapshots:
++            args.append("--update-snapshots")
++        if self.headed:
++            args.append("--headed")
++        args.extend(self.extra)
++        return args
++
++
+ class E2eBranchNotFoundError(RuntimeError):
+     """The requested E2E specs ref does not exist on the remote."""
+ 
+diff --git a/src/teatree/core/management/commands/e2e.py b/src/teatree/core/management/commands/e2e.py
+index ab923d758f..6aa96b41f6 100644
+--- a/src/teatree/core/management/commands/e2e.py
++++ b/src/teatree/core/management/commands/e2e.py
+@@ -1,7 +1,7 @@
+ """E2E test commands: trigger CI, run from external repo, run from project."""
+ 
+ import os
+-from dataclasses import dataclass, field
++from dataclasses import dataclass
+ from pathlib import Path
+ from typing import Annotated
+ 
+@@ -27,6 +27,7 @@
+ _clone_or_update_e2e_repo = _runners.clone_or_update_e2e_repo
+ _build_e2e_env = _runners.build_e2e_env
+ E2eBranchNotFoundError = _runners.E2eBranchNotFoundError
++PlaywrightOptions = _runners.PlaywrightOptions
+ 
+ 
+ # Shared typer.Option declarations for ``post-test-plan`` and its deprecated alias.
+@@ -57,28 +58,6 @@ class DispatchOptions:
+     branch: str = ""
+ 
+ 
+-@dataclass
+-class PlaywrightOptions:
+-    """Flags forwarded to the Playwright CLI."""
+-
+-    test_path: str = ""
+-    update_snapshots: bool = False
+-    headed: bool = False
+-    extra: list[str] = field(default_factory=list)
+-
+-    def to_args(self) -> list[str]:
+-        args: list[str] = []
+-        if self.test_path:
+-            args.append(self.test_path)
+-        args.append("--reporter=list")
+-        if self.update_snapshots:
+-            args.append("--update-snapshots")
+-        if self.headed:
+-            args.append("--headed")
+-        args.extend(self.extra)
+-        return args
+-
+-
+ class Command(TyperCommand):
+     @command()
+     # ast-grep-ignore: ac-django-no-complexity-suppressions
+@@ -377,7 +356,11 @@ def external(  # noqa: PLR0913
+         "no link" (default — back-compat with the resolved-worktree path).
+ 
+         Extra Playwright flags (--config, --timeout, --grep, etc.) can be
+-        passed via --playwright-args: ``--playwright-args="--config x.ts --timeout 120000"``
++        passed via --playwright-args: ``--playwright-args="--config x.ts --timeout 120000"``.
++        The overlay also contributes per-spec args via
++        ``get_e2e_playwright_args(test_path)`` (e.g. ``-c <config>`` chosen by
++        the spec's lane); overlay args go first, an explicit ``--playwright-args``
++        follows so a caller can override.
+         """
+         overlay_repo = _runners.overlay_e2e_repo(get_overlay().metadata.get_e2e_config())
+         try:
+@@ -393,12 +376,13 @@ def external(  # noqa: PLR0913
+             linked_ticket,
+         )
+ 
+-        extra = playwright_args.split() if playwright_args else []
++        overlay_args = get_overlay().get_e2e_playwright_args(test_path)
++        caller_args = playwright_args.split() if playwright_args else []
+         opts = PlaywrightOptions(
+             test_path=test_path,
+             update_snapshots=update_snapshots,
+             headed=headed,
+-            extra=extra,
++            extra=[*overlay_args, *caller_args],
+         )
+         env = _build_e2e_env(
+             frontend_url,
+diff --git a/src/teatree/core/overlay.py b/src/teatree/core/overlay.py
+index 9a786e4a3c..acd84a4921 100644
+--- a/src/teatree/core/overlay.py
++++ b/src/teatree/core/overlay.py
+@@ -496,6 +496,20 @@ def get_e2e_run_provenance(self, spec_path: str) -> str:
+         """Manifest entry id (e.g. CI lane) for *spec_path*, recorded on the run (#272); ``""`` default."""
+         return ""
+ 
++    def get_e2e_playwright_args(self, spec_path: str) -> list[str]:
++        """Extra ``npx playwright test`` CLI args for *spec_path* (e.g. ``-c <config>``).
++
++        The args-sibling of :meth:`get_e2e_env_extras`: where that hook
++        contributes environment variables, this contributes Playwright CLI
++        flags the overlay derives from the spec. A multi-config Playwright
++        suite (one config per lane — api-flow vs contrib vs portal) needs the
++        runner to pass the right ``-c <config>`` per spec; the overlay knows
++        the lane→config mapping, core does not. Default ``[]`` — no flags, so
++        every overlay that does not override keeps the exact prior behaviour.
++        """
++        _ = spec_path
++        return []
++
+     def get_e2e_preflight(self, *, customer: str | None, base_url: str | None) -> list[Callable[[], None]]:
+         _ = customer, base_url
+         return []
+diff --git a/tests/teatree_core/management_commands/_overlays.py b/tests/teatree_core/management_commands/_overlays.py
+index c59185d114..0ee3120e0a 100644
+--- a/tests/teatree_core/management_commands/_overlays.py
++++ b/tests/teatree_core/management_commands/_overlays.py
+@@ -446,6 +446,23 @@ class _ExternalRunnerOverlay(FullOverlay):
+     metadata = _ExternalRunnerMetadata()
+ 
+ 
++class _PlaywrightArgsOverlay(FullOverlay):
++    """External runner that selects a Playwright config per spec lane.
++
++    Mirrors a multi-config Playwright suite (one config per lane): an
++    ``api-flow`` spec needs ``-c api.config.ts``, everything else its
++    default. Proves the external runner threads the overlay-supplied args
++    into the ``npx playwright test`` command.
++    """
++
++    metadata = _ExternalRunnerMetadata()
++
++    def get_e2e_playwright_args(self, spec_path: str) -> list[str]:
++        if "api-flow/" in spec_path:
++            return ["-c", "api.config.ts"]
++        return []
++
++
+ class _ProjectRunnerOverlay(FullOverlay):
+     metadata = _ProjectRunnerMetadata()
+ 
+@@ -465,6 +482,9 @@ class _UnconfiguredOverlay(FullOverlay):
+ _EXTERNAL_RUNNER_OVERLAY = "tests.teatree_core.management_commands._overlays._ExternalRunnerOverlay"
+ 
+ 
++_PLAYWRIGHT_ARGS_OVERLAY = "tests.teatree_core.management_commands._overlays._PlaywrightArgsOverlay"
++
++
+ _PROJECT_RUNNER_OVERLAY = "tests.teatree_core.management_commands._overlays._ProjectRunnerOverlay"
+ 
+ 
+diff --git a/tests/teatree_core/management_commands/test_e2e.py b/tests/teatree_core/management_commands/test_e2e.py
+index bb32cde62e..de8df37d63 100644
+--- a/tests/teatree_core/management_commands/test_e2e.py
++++ b/tests/teatree_core/management_commands/test_e2e.py
+@@ -4,7 +4,8 @@
+ import shutil
+ import subprocess
+ import tempfile
+-from collections.abc import Callable
++from collections.abc import Callable, Iterator
++from contextlib import contextmanager
+ from pathlib import Path
+ from typing import cast
+ from unittest.mock import MagicMock, patch
+@@ -26,6 +27,7 @@
+     _INFER_EXTERNAL_OVERLAY,
+     _INFER_PROJECT_OVERLAY,
+     _OVERLAY_REPO_OVERLAY,
++    _PLAYWRIGHT_ARGS_OVERLAY,
+     _PROJECT_RUNNER_OVERLAY,
+     _UNCONFIGURED_OVERLAY,
+     FULL_OVERLAY,
+@@ -546,6 +548,65 @@ def test_runs_external_tests_with_variant(self) -> None:
+             assert env["CUSTOMER"] == "acme"
+             assert env["CI"] == "1"
+ 
++    @_patch_overlays(_PLAYWRIGHT_ARGS_OVERLAY)
++    @override_settings(**SETTINGS)
++    def test_overlay_playwright_args_select_config_per_spec(self) -> None:
++        """An overlay maps a spec lane to its Playwright config (``-c <config>``).
++
++        A multi-config Playwright suite needs the right ``-c`` per lane; the
++        overlay knows the lane→config mapping. The external runner must thread
++        ``get_e2e_playwright_args(spec)`` into the ``npx playwright test``
++        command — without it, an api-flow spec runs under the wrong default
++        config (the UI-login one) and fails.
++        """
++        spec = "playwright/api-flow/agent-portal/tests/api-tests/acme.spec.ts"
++        with self._external_run(spec) as mock_run:
++            cmd = mock_run.call_args[0][0]
++        assert cmd[:3] == ["npx", "playwright", "test"]
++        assert "-c" in cmd
++        assert cmd[cmd.index("-c") + 1] == "api.config.ts"
++        assert spec in cmd
++
++    @_patch_overlays(_PLAYWRIGHT_ARGS_OVERLAY)
++    @override_settings(**SETTINGS)
++    def test_overlay_playwright_args_empty_for_other_lanes(self) -> None:
++        """A spec the overlay does not map adds no Playwright args (default-empty)."""
++        spec = "playwright/contrib/acme/loan-request/child-allowance.spec.ts"
++        with self._external_run(spec) as mock_run:
++            cmd = mock_run.call_args[0][0]
++        assert "-c" not in cmd
++        assert spec in cmd
++
++    @contextmanager
++    def _external_run(self, spec: str) -> Iterator[MagicMock]:
++        """Run ``e2e external <spec> --target local`` against a provisioned worktree.
++
++        Yields the ``Popen`` mock so the caller can assert the built command.
++        """
++        with tempfile.TemporaryDirectory() as tmp:
++            tmp_path = Path(tmp)
++            wt_dir = tmp_path / "worktree"
++            wt_dir.mkdir()
++            private_dir = tmp_path / "private"
++            private_dir.mkdir()
++            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/pwargs")
++            Worktree.objects.create(
++                overlay="test",
++                ticket=ticket,
++                repo_path="backend",
++                branch="feature",
++                extra={"worktree_path": str(wt_dir)},
++                state=Worktree.State.SERVICES_UP,
++            )
++            mock_result = MagicMock(returncode=0)
++            with (
++                patch.dict("os.environ", {"T3_PRIVATE_TESTS": str(private_dir), "T3_ORIG_CWD": str(wt_dir)}),
++                patch.object(e2e_disc_mod, "get_service_port", return_value=5555),
++                patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
++            ):
++                call_command("e2e", "external", test_path=spec, target="local")
++                yield mock_run
++
+     @_patch_overlays(FULL_OVERLAY)
+     @override_settings(**SETTINGS)
+     def test_local_target_exports_compose_project_name(self) -> None:
+diff --git a/tests/test_overlay_base.py b/tests/test_overlay_base.py
+index 5299892fa2..95b5c69b15 100644
+--- a/tests/test_overlay_base.py
++++ b/tests/test_overlay_base.py
+@@ -107,6 +107,13 @@ def test_get_e2e_env_extras_returns_empty_dict_by_default():
+     assert overlay.get_e2e_env_extras({"WT_VARIANT": "acme"}) == {}
+ 
+ 
++def test_get_e2e_playwright_args_returns_empty_list_by_default():
++    """No overlay adds Playwright args unless it opts in — keeps the prior command shape."""
++    overlay = _MinimalOverlay()
++    assert overlay.get_e2e_playwright_args("") == []
++    assert overlay.get_e2e_playwright_args("playwright/api-flow/foo.spec.ts") == []
++
++
+ def test_get_db_import_strategy_returns_none():
+     overlay = _MinimalOverlay()
+     assert overlay.get_db_import_strategy(_make_worktree()) is None
+-- 
+2.50.1 (Apple Git-155)
+

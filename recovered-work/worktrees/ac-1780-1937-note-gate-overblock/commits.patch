@@ -1,0 +1,664 @@
+From 7ba366a11dbe1f472ada0b84625efd56091938be Mon Sep 17 00:00:00 2001
+From: souliane <21343492+souliane@users.noreply.github.com>
+Date: Mon, 15 Jun 2026 22:36:30 +0200
+Subject: [PATCH] fix(hooks): resolve t3-review note indirection + tier its
+ destination
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The colleague-review note path `t3 review post-comment <repo> <mr> <note>`
+carries its body as the positional NOTE and posts to a GitLab project path.
+Two over-blocks of legitimate colleague-review posts are closed.
+
+#1780 — the positional NOTE's `$(cat <path>)` / `$VAR` indirection now resolves
+to its real content exactly like a `--body` flag value. `resolve_inline_body_value`
+gains an in-command heredoc / printf-redirect body fallback (the referenced file
+is not on disk at PreToolUse), threaded through `append_t3_review_note_payload`.
+A `t3` publish segment is also recognised as a parseable leader so a `$(cat …)`
+note body is no longer misread as an opaque hidden forge transport; an
+unresolvable indirection still fails closed.
+
+#1937 — the NOTE's positional `<repo>` is now resolved as a destination and
+classified PUBLIC vs INTERNAL the same way a `gh`/`glab` `--repo` target is, so
+an overlay-infra brand word native to a private internal namespace stops
+false-positiving on an internal remote while the same word toward a public
+surface still blocks.
+
+The generic `[teatree]` list reader moves to `_repo_visibility` so the over-cap
+`publish_destination` keeps shrinking.
+
+Closes #1780
+Closes #1937
+---
+ src/teatree/hooks/_body_file_resolution.py    |   9 +-
+ src/teatree/hooks/_command_parser.py          |   2 +-
+ src/teatree/hooks/_publish_detection.py       |  16 +-
+ src/teatree/hooks/_repo_visibility.py         |  28 ++++
+ src/teatree/hooks/_t3_review_post.py          |  72 +++++----
+ src/teatree/hooks/publish_destination.py      |  51 ++----
+ tests/teatree_hooks/test_banned_terms_hook.py | 147 ++++++++++++++++++
+ .../teatree_hooks/test_publish_destination.py |  39 +++++
+ tests/teatree_hooks/test_quote_scanner.py     |  45 ++++++
+ 9 files changed, 340 insertions(+), 69 deletions(-)
+
+diff --git a/src/teatree/hooks/_body_file_resolution.py b/src/teatree/hooks/_body_file_resolution.py
+index 1b92fe82fd..60d8fbb757 100644
+--- a/src/teatree/hooks/_body_file_resolution.py
++++ b/src/teatree/hooks/_body_file_resolution.py
+@@ -59,14 +59,17 @@
+ _VAR_REF_RE: Final[re.Pattern[str]] = re.compile(r"^\$\{?(?P<name>[A-Za-z_][A-Za-z0-9_]*)\}?$")
+ 
+ 
+-def resolve_inline_body_value(value: str, base: Path | None) -> str:
++def resolve_inline_body_value(value: str, base: Path | None, heredoc_files: dict[str, str] | None = None) -> str:
+     """Resolve a ``--description``/``--body`` value's indirection to the real body.
+ 
+     Three forms are resolved so the banned-terms / quote scan runs against the
+     ACTUAL published body rather than an unexpanded shell token:
+ 
+     - ``$(cat <path>)`` -- the file content (read via :func:`read_file_arg`,
+-        ``base``-relative fallback for the cold-hook reset cwd). An unreadable
++        ``base``-relative fallback for the cold-hook reset cwd), falling back to
++        ``heredoc_files`` when the path was written by a heredoc / ``printf`` /
++        ``echo`` redirect EARLIER in the same command (the file is not on disk
++        at PreToolUse, so the in-command body is the only source). An unreadable
+         path yields the fail-closed sentinel.
+     - ``$VAR`` / ``${VAR}`` -- the environment variable's value when present in
+         the hook subprocess env; absent yields the UNAVAILABLE-body-source
+@@ -93,6 +96,8 @@ def resolve_inline_body_value(value: str, base: Path | None) -> str:
+     if cat_match is not None:
+         path = cat_match.group("path").strip("'\"")
+         content = read_file_arg(path, base)
++        if content is None and heredoc_files is not None:
++            content = heredoc_files.get(path)
+         return content if content is not None else FAIL_CLOSED_SENTINEL
+     var_match = _VAR_REF_RE.match(value)
+     if var_match is not None:
+diff --git a/src/teatree/hooks/_command_parser.py b/src/teatree/hooks/_command_parser.py
+index 12824a3056..c29b37bae2 100644
+--- a/src/teatree/hooks/_command_parser.py
++++ b/src/teatree/hooks/_command_parser.py
+@@ -458,7 +458,7 @@ def _walk_command_segment(segment: list[Token], payloads: list[str], ctx: "BodyF
+     # ``t3 review`` posts carry the body as the positional NOTE and use
+     # ``--file`` as a diff ANCHOR, not a body-file — extract the NOTE and SKIP
+     # the body-file walker so the anchored source is never scanned (#2278/#2270).
+-    if append_t3_review_note_payload(words, payloads):
++    if append_t3_review_note_payload(words, payloads, ctx.base, ctx.heredoc_files):
+         return
+     walk_body_file_flags(words, payloads, leader=first, ctx=ctx)
+     # ``gh api`` / ``glab api`` field assignments.
+diff --git a/src/teatree/hooks/_publish_detection.py b/src/teatree/hooks/_publish_detection.py
+index 73645a8c38..5385359165 100644
+--- a/src/teatree/hooks/_publish_detection.py
++++ b/src/teatree/hooks/_publish_detection.py
+@@ -52,12 +52,16 @@
+ _GIT_COMMIT_BODY_FLAGS: Final[frozenset[str]] = frozenset({"-m", "--message", "-F", "--file"})
+ _GIT_COMMIT_BODY_ATTACHED: Final[tuple[str, ...]] = ("-m", "-F", "--message=", "--file=")
+ 
+-# Forge-tool command words the body-extracting walkers can parse a body out of.
+-# A segment whose LEADING executable (after cd/env) is one of these is parseable;
+-# a forge token appearing only NESTED (a ``sh -c "gh ... --body X"`` interpreter
+-# arg, an ``eval``/``ssh``/``xargs`` wrapper) is an OPAQUE forge transport the
+-# walkers cannot reach -- so the body the post carries is unscannable.
+-_PARSEABLE_FORGE_LEADERS: Final[frozenset[str]] = frozenset({"gh", "glab", "git", "curl"})
++# Command words the body-extracting walkers can parse a body out of. A segment
++# whose LEADING executable (after cd/env) is one of these is parseable; a forge
++# token appearing only NESTED (a ``sh -c "gh ... --body X"`` interpreter arg, an
++# ``eval``/``ssh``/``xargs`` wrapper) is an OPAQUE forge transport the walkers
++# cannot reach -- so the body the post carries is unscannable. ``t3`` belongs
++# here because a ``t3`` publish verb's body is extracted by the body-flag walker
++# (``--body``/``-m``) or the positional review-note walker, and an unresolvable
++# ``$(...)`` / ``$VAR`` in that body already fails closed at the body level -- so
++# a ``t3 review post-comment ... "$(cat <path>)"`` is NOT a hidden transport.
++_PARSEABLE_FORGE_LEADERS: Final[frozenset[str]] = frozenset({"gh", "glab", "git", "curl", "t3"})
+ 
+ # Contiguous-substring publish spellings, keyed by the LEADING executable that
+ # owns each (the first word of the substring -- ``chat.postMessage`` is a Slack
+diff --git a/src/teatree/hooks/_repo_visibility.py b/src/teatree/hooks/_repo_visibility.py
+index 985913ae92..12190facd3 100644
+--- a/src/teatree/hooks/_repo_visibility.py
++++ b/src/teatree/hooks/_repo_visibility.py
+@@ -17,6 +17,7 @@
+ 
+ import json
+ import os
++import re
+ import shutil
+ import time
+ from pathlib import Path
+@@ -96,6 +97,33 @@ def _private_repo_allowlist(config_path: Path | None = None) -> list[str]:
+     return [str(e).strip().lower() for e in entries if str(e).strip()]
+ 
+ 
++def teatree_list_setting(key: str, env_var: str, config_path: Path | None) -> list[str]:
++    """Return a ``[teatree] <key>`` list unioned with ``<env_var>`` (lower-cased).
++
++    The env var (comma- or space-separated) supplements the TOML list, mirroring
++    the established ``internal_publish_namespaces`` / ``T3_INTERNAL_PUBLISH_NAMESPACES``
++    shape. Reads the TOML directly (no Django/config import) to stay importable
++    from the hook process.
++    """
++    env_raw = os.environ.get(env_var, "")
++    env_entries = [e.strip().lower() for e in re.split(r"[,\s]+", env_raw) if e.strip()]
++
++    import tomllib  # noqa: PLC0415
++
++    target = config_path if config_path is not None else _config_path()
++    toml_entries: list[str] = []
++    if target.is_file():
++        try:
++            raw = tomllib.loads(target.read_text(encoding="utf-8"))
++        except (OSError, ValueError):
++            raw = {}
++        teatree = raw.get("teatree", {}) if isinstance(raw, dict) else {}
++        entries = teatree.get(key, []) if isinstance(teatree, dict) else []
++        if isinstance(entries, list):
++            toml_entries = [str(e).strip().lower() for e in entries if str(e).strip()]
++    return env_entries + toml_entries
++
++
+ def slug_for_cwd(cwd: Path) -> str:
+     """Return the ``origin`` slug (``host/owner/repo``) for ``cwd``, or ``""``.
+ 
+diff --git a/src/teatree/hooks/_t3_review_post.py b/src/teatree/hooks/_t3_review_post.py
+index 8099b0c044..96ab95b23e 100644
+--- a/src/teatree/hooks/_t3_review_post.py
++++ b/src/teatree/hooks/_t3_review_post.py
+@@ -13,25 +13,28 @@
+ the inline ``--file`` anchor — a SOURCE path, not a body-file — was treated as
+ the body-file and the anchored source was scanned instead of the note (#2278).
+ :func:`_t3_review_post_verb_index` recognises the segment and
+-:func:`_t3_review_note_body` extracts the NOTE; the caller then suppresses the
+-body-file walker for the segment so the anchor is never read.
++:func:`_t3_review_positional` extracts a positional argument by index — the NOTE
++body (:func:`append_t3_review_note_payload`) and the ``<repo>`` destination
++(:func:`t3_review_repo_arg`); the caller then suppresses the body-file walker
++for the segment so the anchor is never read.
+ 
+ The leader is canonicalised up to the ``t3`` executable before recognition, so
+ an env-prefixed (``FOO=bar t3 …``) or path-form (``./t3``, ``/usr/local/bin/t3``)
+ invocation gets the same scanning as a bare ``t3`` leader, consistent with how
+ the surrounding parser normalises a segment's leader.
+ """
+ 
+ import re
+-from pathlib import PurePosixPath
++from pathlib import Path, PurePosixPath
+ from typing import Final
+ 
+ # The ``t3 review`` posting verbs whose BODY is the positional ``NOTE``
+ # argument rather than a ``--body``/``--message`` flag.
+ _T3_REVIEW_POST_VERBS: Final[frozenset[str]] = frozenset({"post-comment", "post-draft-note"})
+ 
+-# Positional count consumed before the ``NOTE`` body of a ``t3 ... review
+-# <verb> REPO MR NOTE`` invocation: REPO and MR precede it.
++# Positional indices of a ``t3 ... review <verb> REPO MR NOTE`` invocation: the
++# REPO destination is first, the NOTE body third (MR sits between them).
++_T3_REVIEW_REPO_POSITIONAL_INDEX: Final[int] = 0
+ _T3_REVIEW_NOTE_POSITIONAL_INDEX: Final[int] = 2
+ 
+ # Value-taking options on the ``t3 review`` post verbs whose next token is a
+@@ -84,22 +87,16 @@ def _t3_review_post_verb_index(words: list[str]) -> int | None:
+     return None
+ 
+ 
+-def _t3_review_note_body(words: list[str], verb_index: int) -> str | None:
+-    """Return the positional ``NOTE`` body of a ``t3 review`` post, or ``None``.
++def _t3_review_positional(words: list[str], verb_index: int, index: int) -> str | None:
++    """Return the ``index``-th positional AFTER the verb, or ``None`` if absent.
+ 
+-    Walks the tokens AFTER the verb, skipping flags (and the value of a
+-    value-taking flag), and returns the third positional argument — the
+-    ``NOTE`` body of ``review <verb> REPO MR NOTE``. A standalone ``--``
+-    end-of-options marker is consumed; every token after it is a positional,
+-    so a dash-leading note (which Typer requires ``--`` to pass) is captured
+-    as the NOTE body rather than mistaken for a flag. ``None`` when fewer than
+-    three positionals are present. The body is passed through
+-    :func:`resolve_inline_body_value` so a ``$(cat <path>)`` / ``$VAR`` note
+-    resolves to its real content, consistent with the inline body flags; an
+-    unresolvable indirection fails closed.
++    Walks the tokens after the verb, skipping flags (and the value of a
++    value-taking flag). A standalone ``--`` end-of-options marker is consumed;
++    every token after it is a positional, so a dash-leading positional (which
++    Typer requires ``--`` to pass) is captured rather than mistaken for a flag.
++    The REPO destination is positional ``0`` and the NOTE body positional ``2``
++    of ``review <verb> REPO MR NOTE``.
+     """
+-    from teatree.hooks._body_file_resolution import resolve_inline_body_value  # noqa: PLC0415
+-
+     positionals: list[str] = []
+     i = verb_index + 1
+     n = len(words)
+@@ -117,26 +114,49 @@ def _t3_review_note_body(words: list[str], verb_index: int) -> str | None:
+             i += 1
+             continue
+         positionals.append(word)
+-        if len(positionals) > _T3_REVIEW_NOTE_POSITIONAL_INDEX:
+-            return resolve_inline_body_value(positionals[_T3_REVIEW_NOTE_POSITIONAL_INDEX], None)
++        if len(positionals) > index:
++            return positionals[index]
+         i += 1
+     return None
+ 
+ 
+-def append_t3_review_note_payload(words: list[str], payloads: list[str]) -> bool:
++def t3_review_repo_arg(words: list[str]) -> str | None:
++    """Return the destination ``<repo>`` of a ``t3 review`` post, or ``None``.
++
++    The REPO is the first positional of ``review <verb> REPO MR NOTE`` — a
++    GitLab project path (``ns/repo``). ``None`` for a non-review segment. The
++    destination-aware publish gate resolves this slug's PUBLIC/INTERNAL tier the
++    same way it resolves a ``gh``/``glab`` ``--repo`` target (#1937).
++    """
++    verb_index = _t3_review_post_verb_index(words)
++    if verb_index is None:
++        return None
++    return _t3_review_positional(words, verb_index, _T3_REVIEW_REPO_POSITIONAL_INDEX)
++
++
++def append_t3_review_note_payload(
++    words: list[str], payloads: list[str], base: Path | None, heredoc_files: dict[str, str]
++) -> bool:
+     """Append a ``t3 review`` post's positional NOTE body and report handling.
+ 
+     Returns ``True`` when ``words`` is a ``t3 review post-comment`` /
+     ``post-draft-note`` segment — the caller then SKIPS the generic body-flag
+     and body-file walkers so the segment's inline ``--file`` anchor is never
+     scanned as the published body (#2278/#2270). The extracted NOTE (when
+-    present) is appended to ``payloads``. Returns ``False`` for a non-review
+-    segment, leaving ``payloads`` untouched.
++    present) is passed through :func:`resolve_inline_body_value` so a
++    ``$(cat <path>)`` / ``$VAR`` note — including a path a heredoc / ``printf``
++    redirect wrote earlier in the same command (resolved via ``heredoc_files``,
++    ``base`` the cold-hook cwd fallback) — resolves to its real content, exactly
++    like the inline ``--body`` flag path; an unresolvable indirection fails
++    closed (#1780). Returns ``False`` for a non-review segment, leaving
++    ``payloads`` untouched.
+     """
++    from teatree.hooks._body_file_resolution import resolve_inline_body_value  # noqa: PLC0415
++
+     verb_index = _t3_review_post_verb_index(words)
+     if verb_index is None:
+         return False
+-    note = _t3_review_note_body(words, verb_index)
++    note = _t3_review_positional(words, verb_index, _T3_REVIEW_NOTE_POSITIONAL_INDEX)
+     if note is not None:
+-        payloads.append(note)
++        payloads.append(resolve_inline_body_value(note, base, heredoc_files))
+     return True
+diff --git a/src/teatree/hooks/publish_destination.py b/src/teatree/hooks/publish_destination.py
+index b34c1aaa5b..919c1df750 100644
+--- a/src/teatree/hooks/publish_destination.py
++++ b/src/teatree/hooks/publish_destination.py
+@@ -8,7 +8,8 @@
+ 
+ :func:`resolve_publish_destination` extracts the target repo/namespace
+ from the COMMAND ITSELF (the ``--repo``/``-R`` flag, the ``api`` URL path,
+-or the cwd git remote) and :func:`is_public_destination` classifies THAT
++the cwd git remote, or the positional ``<repo>`` of a ``t3 review`` post) and
++:func:`is_public_destination` classifies THAT
+ resolved target FAIL-CLOSED against an INTERNAL DENYLIST: a destination is
+ PUBLIC (gate scans/blocks) UNLESS it is PROVABLY internal -- its namespace
+ matches the config-driven ``[teatree] internal_publish_namespaces`` allowlist
+@@ -29,7 +30,7 @@
+ The hook process is overlay-agnostic and cannot import ``OverlayConfig``; it
+ reads the internal denylist from ``~/.teatree.toml`` DIRECTLY (the
+ ``internal_publish_namespaces`` / ``private_repos`` readers in
+-:mod:`teatree.hooks._repo_visibility` and this module). The canonical public
++:mod:`teatree.hooks._repo_visibility`). The canonical public
+ teatree repo needs no entry -- it is public, so the fail-closed default already
+ scans it.
+ 
+@@ -52,13 +53,14 @@
+ from teatree.hooks._publish_detection import segment_is_api_read as _segment_is_api_read
+ from teatree.hooks._publish_detection import segment_is_api_write as _segment_is_api_write
+ from teatree.hooks._repo_visibility import (
+-    _config_path,
+     forge_qualified_slug,
+     slug_for_cwd,
+     slug_is_allowlisted_private,
+     slug_is_private,
+     slug_namespace_matches,
++    teatree_list_setting,
+ )
++from teatree.hooks._t3_review_post import t3_review_repo_arg
+ from teatree.hooks.publish_surface import (
+     _GH_ELIGIBLE_VERBS,
+     _GLAB_ELIGIBLE_VERBS,
+@@ -76,8 +78,9 @@ class Destination:
+     (``owner/repo``, ``host/owner/repo``, or ``ns/sub/repo``). ``via``
+     records how it was resolved (``flag`` for ``--repo``/``-R``, ``api`` for
+     a ``gh``/``glab api`` URL path, ``url`` for a forge URL positional, ``env``
+-    for ``GH_REPO``, ``cwd`` for the current-repo fallback) so a caller can log
+-    the provenance without re-parsing.
++    for ``GH_REPO``, ``cwd`` for the current-repo fallback, ``t3-review`` for
++    the positional ``<repo>`` of a ``t3 review`` post) so a caller can log the
++    provenance without re-parsing.
+ 
+     ``forge`` records which forge the PUBLISH TOOL targets (``github`` for a
+     ``gh`` command, ``gitlab`` for a ``glab`` command, ``""`` when unknown). A
+@@ -280,8 +283,15 @@ def _destination_from_words(words: list[str], cwd: Path | None) -> Destination |
+     The visibility-independent half of :func:`resolve_publish_destination`,
+     factored out so :func:`gate_skips_destination` can resolve a destination
+     PER top-level segment (the ALL-SEGMENTS invariant) rather than only from
+-    the first segment.
++    the first segment. A ``t3 review post-comment`` / ``post-draft-note``
++    segment carries its target as the positional ``<repo>`` GitLab project path
++    (resolved by :func:`_t3_review_post.t3_review_repo_arg`), so its
++    PUBLIC/INTERNAL tier is classified the same way a ``gh``/``glab`` target is
++    (#1937).
+     """
++    t3_repo = t3_review_repo_arg(words)
++    if t3_repo is not None:
++        return Destination(slug=t3_repo, via="t3-review", forge="gitlab")
+     if not words or words[0] not in {"gh", "glab"}:
+         return None
+     explicit = _extract_repo_flag(words)
+@@ -353,33 +363,6 @@ def _segment_is_skip_inert(words: list[str]) -> bool:
+     return rest[0] in _SKIP_INERT_LEADERS and _segment_is_publish_inert(words)
+ 
+ 
+-def _teatree_list_setting(key: str, env_var: str, config_path: Path | None) -> list[str]:
+-    """Return a ``[teatree] <key>`` list unioned with ``<env_var>`` (lower-cased).
+-
+-    The env var (comma- or space-separated) supplements the TOML list, mirroring
+-    the established ``internal_publish_namespaces`` / ``T3_INTERNAL_PUBLISH_NAMESPACES``
+-    shape. Reads the TOML directly (no Django/config import) to stay importable
+-    from the hook process.
+-    """
+-    env_raw = os.environ.get(env_var, "")
+-    env_entries = [e.strip().lower() for e in re.split(r"[,\s]+", env_raw) if e.strip()]
+-
+-    import tomllib  # noqa: PLC0415
+-
+-    target = config_path if config_path is not None else _config_path()
+-    toml_entries: list[str] = []
+-    if target.is_file():
+-        try:
+-            raw = tomllib.loads(target.read_text(encoding="utf-8"))
+-        except (OSError, ValueError):
+-            raw = {}
+-        teatree = raw.get("teatree", {}) if isinstance(raw, dict) else {}
+-        entries = teatree.get(key, []) if isinstance(teatree, dict) else []
+-        if isinstance(entries, list):
+-            toml_entries = [str(e).strip().lower() for e in entries if str(e).strip()]
+-    return env_entries + toml_entries
+-
+-
+ def _internal_publish_namespaces(config_path: Path | None = None) -> list[str]:
+     """Return the ``[teatree] internal_publish_namespaces`` denylist (lower-cased).
+ 
+@@ -393,7 +376,7 @@ def _internal_publish_namespaces(config_path: Path | None = None) -> list[str]:
+     No real company/customer namespace is hardcoded here; the denylist lives
+     only in the user's private config / env.
+     """
+-    return _teatree_list_setting("internal_publish_namespaces", "T3_INTERNAL_PUBLISH_NAMESPACES", config_path)
++    return teatree_list_setting("internal_publish_namespaces", "T3_INTERNAL_PUBLISH_NAMESPACES", config_path)
+ 
+ 
+ def is_public_destination(dest: Destination | None, *, config_path: Path | None = None) -> bool:
+diff --git a/tests/teatree_hooks/test_banned_terms_hook.py b/tests/teatree_hooks/test_banned_terms_hook.py
+index 96d64736c4..9bbaaf6c5e 100644
+--- a/tests/teatree_hooks/test_banned_terms_hook.py
++++ b/tests/teatree_hooks/test_banned_terms_hook.py
+@@ -964,3 +964,150 @@ def test_live_hook_scans_unresolvable_target_failsafe(
+     assert blocked is True
+     decision = json.loads(captured.out)
+     assert decision["permissionDecision"] == "deny"
++
++
++# ── t3 review post-comment: positional NOTE body + destination tier ──────────
++#
++# The colleague-review note path (``t3 review post-comment <repo> <mr> <note>``)
++# carries its body as the positional NOTE and posts to a GitLab project path.
++# Two over-blocks fixed here: the positional NOTE's ``$(cat <path>)`` / ``$VAR``
++# indirection now resolves like a ``--body`` flag value (#1780), and the NOTE's
++# destination ``<repo>`` now classifies PUBLIC vs INTERNAL the same way a
++# ``gh``/``glab`` ``--repo`` target does, so an overlay-infra brand word native
++# to a private internal GitLab namespace stops false-positiving (#1937).
++
++_T3_REVIEW_BRAND_CONFIG = '[teatree]\nbanned_terms = ["acmeoverlay"]\ninternal_publish_namespaces = ["internal-eng"]\n'
++
++
++def test_t3_review_positional_note_from_in_command_heredoc_is_allowed(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
++) -> None:
++    # MUST-NOT-BLOCK (#1780): the positional NOTE is ``$(cat <path>)`` where the
++    # path is written by a heredoc EARLIER in the SAME command. At PreToolUse the
++    # file is not on disk yet, so the NOTE resolves from the in-command heredoc
++    # body and the clean note scans clean toward the PUBLIC repo -> allowed.
++    home = Path(os.environ["HOME"])
++    _write_home_config(home, _T3_REVIEW_BRAND_CONFIG, monkeypatch, tmp_path)
++    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
++
++    body_path = tmp_path / "note-body.txt"
++    command = (
++        f"cat > {body_path} <<'EOF'\n"
++        "a perfectly clean colleague review note\n"
++        "EOF\n"
++        f't3 teatree review post-comment public-org/some-svc 7 "$(cat {body_path})"'
++    )
++    data = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(_public_clone(tmp_path))}
++    blocked = handle_banned_terms_pretool(data)
++    captured = capsys.readouterr()
++
++    assert blocked is False
++    assert captured.out == ""  # no deny JSON
++
++
++def test_t3_review_positional_note_from_heredoc_carrying_a_term_is_blocked(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
++) -> None:
++    # ANTI-VACUITY for the resolution above: the SAME heredoc-resolved NOTE that
++    # CARRIES the banned term toward the PUBLIC repo IS scanned and blocked, so
++    # the allow path proves real resolution, not a silent unscanned bypass.
++    home = Path(os.environ["HOME"])
++    _write_home_config(home, _T3_REVIEW_BRAND_CONFIG, monkeypatch, tmp_path)
++    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
++
++    body_path = tmp_path / "note-body.txt"
++    command = (
++        f"cat > {body_path} <<'EOF'\n"
++        "documenting the acmeoverlay module here\n"
++        "EOF\n"
++        f't3 teatree review post-comment public-org/some-svc 7 "$(cat {body_path})"'
++    )
++    data = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(_public_clone(tmp_path))}
++    blocked = handle_banned_terms_pretool(data)
++    captured = capsys.readouterr()
++
++    assert blocked is True
++    decision = json.loads(captured.out)
++    assert decision["permissionDecision"] == "deny"
++
++
++def test_t3_review_positional_note_from_env_var_is_allowed(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
++) -> None:
++    # MUST-NOT-BLOCK (#1780): the positional NOTE is a single ``$VAR`` reference
++    # resolved from the hook subprocess env (the same channel the ALLOW override
++    # arrives on). The clean resolved body scans clean toward the PUBLIC repo.
++    home = Path(os.environ["HOME"])
++    _write_home_config(home, _T3_REVIEW_BRAND_CONFIG, monkeypatch, tmp_path)
++    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
++    monkeypatch.setenv("NOTE_BODY", "a perfectly clean colleague review note")
++
++    command = 't3 teatree review post-comment public-org/some-svc 7 "$NOTE_BODY"'
++    data = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(_public_clone(tmp_path))}
++    blocked = handle_banned_terms_pretool(data)
++    captured = capsys.readouterr()
++
++    assert blocked is False
++    assert captured.out == ""  # no deny JSON
++
++
++def test_t3_review_positional_note_unreadable_source_fails_closed(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
++) -> None:
++    # MUST-BLOCK (anti-vacuity / fail-closed): a positional NOTE whose
++    # ``$(cat <path>)`` source exists NOWHERE -- no file on disk, no in-command
++    # heredoc, no env var -- cannot be scanned, so the gate fails closed toward
++    # the PUBLIC repo rather than letting an unread body publish.
++    home = Path(os.environ["HOME"])
++    _write_home_config(home, _T3_REVIEW_BRAND_CONFIG, monkeypatch, tmp_path)
++    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
++
++    missing = tmp_path / "does-not-exist.txt"
++    command = f't3 teatree review post-comment public-org/some-svc 7 "$(cat {missing})"'
++    data = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(_public_clone(tmp_path))}
++    blocked = handle_banned_terms_pretool(data)
++    captured = capsys.readouterr()
++
++    assert blocked is True
++    decision = json.loads(captured.out)
++    assert decision["permissionDecision"] == "deny"
++
++
++def test_t3_review_brand_word_to_internal_namespace_is_allowed(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
++) -> None:
++    # MUST-NOT-BLOCK (#1937): an overlay-infra brand word in a colleague-review
++    # NOTE toward a PRIVATE internal GitLab namespace (named in
++    # ``internal_publish_namespaces``) is native there and allowed -- the
++    # NOTE's ``<repo>`` destination resolves internal, so the gate skips it.
++    home = Path(os.environ["HOME"])
++    _write_home_config(home, _T3_REVIEW_BRAND_CONFIG, monkeypatch, tmp_path)
++    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
++
++    command = 't3 teatree review post-comment internal-eng/some-svc 7 "documenting the acmeoverlay module"'
++    data = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(_public_clone(tmp_path))}
++    blocked = handle_banned_terms_pretool(data)
++    captured = capsys.readouterr()
++
++    assert blocked is False
++    assert captured.out == ""  # no deny JSON
++
++
++def test_t3_review_brand_word_to_public_repo_is_blocked(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
++) -> None:
++    # MUST-BLOCK (#1937 anti-vacuity): the SAME brand word in a NOTE toward a
++    # PUBLIC GitLab project path is a leak and blocks -- the destination tier
++    # exempts only the provably-internal namespace, never a public surface.
++    home = Path(os.environ["HOME"])
++    _write_home_config(home, _T3_REVIEW_BRAND_CONFIG, monkeypatch, tmp_path)
++    monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
++
++    command = 't3 teatree review post-comment public-org/some-svc 7 "documenting the acmeoverlay module"'
++    data = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(_public_clone(tmp_path))}
++    blocked = handle_banned_terms_pretool(data)
++    captured = capsys.readouterr()
++
++    assert blocked is True
++    decision = json.loads(captured.out)
++    assert decision["permissionDecision"] == "deny"
+diff --git a/tests/teatree_hooks/test_publish_destination.py b/tests/teatree_hooks/test_publish_destination.py
+index 4a49386a29..d24b0c3765 100644
+--- a/tests/teatree_hooks/test_publish_destination.py
++++ b/tests/teatree_hooks/test_publish_destination.py
+@@ -163,6 +163,45 @@ def test_non_posting_gh_verb_is_none(self) -> None:
+         assert publish_destination.resolve_publish_destination("glab mr list") is None
+ 
+ 
++class TestT3ReviewDestination:
++    """A ``t3 review`` post's positional ``<repo>`` resolves as a GitLab target (#1937)."""
++
++    def test_post_comment_repo_resolves_gitlab_destination(self) -> None:
++        dest = publish_destination.resolve_publish_destination(
++            "t3 teatree review post-comment acme-internal/svc 7 note"
++        )
++        assert dest is not None
++        assert dest.slug == "acme-internal/svc"
++        assert dest.via == "t3-review"
++        assert dest.forge == "gitlab"
++
++    def test_post_draft_note_repo_resolves_gitlab_destination(self) -> None:
++        dest = publish_destination.resolve_publish_destination(
++            "t3 teatree review post-draft-note acme-internal/svc 7 note"
++        )
++        assert dest is not None
++        assert dest.slug == "acme-internal/svc"
++
++    def test_repo_resolves_past_diff_anchor_value_flags(self) -> None:
++        # The ``--file``/``--line`` diff anchor takes a VALUE; the repo is still
++        # the first POSITIONAL, not a flag value.
++        dest = publish_destination.resolve_publish_destination(
++            "t3 teatree review post-comment acme-internal/svc 7 note --file src/x.py --line 9"
++        )
++        assert dest is not None
++        assert dest.slug == "acme-internal/svc"
++
++    def test_internal_namespace_target_is_skipped(self, tmp_path: Path) -> None:
++        cfg = _config(tmp_path, ["acme-internal"])
++        cmd = 't3 teatree review post-comment acme-internal/svc 7 "rolling out the overlay"'
++        assert publish_destination.gate_skips_destination(cmd, None, config_path=cfg) is True
++
++    def test_public_repo_target_is_not_skipped(self, tmp_path: Path) -> None:
++        cfg = _config(tmp_path, ["acme-internal"])
++        cmd = 't3 teatree review post-comment public-org/svc 7 "rolling out the overlay"'
++        assert publish_destination.gate_skips_destination(cmd, None, config_path=cfg) is False
++
++
+ class TestIsPublicDestination:
+     """FAIL-CLOSED: PUBLIC unless the slug provably matches the internal allowlist."""
+ 
+diff --git a/tests/teatree_hooks/test_quote_scanner.py b/tests/teatree_hooks/test_quote_scanner.py
+index 5792b4fc85..c22e26f72e 100644
+--- a/tests/teatree_hooks/test_quote_scanner.py
++++ b/tests/teatree_hooks/test_quote_scanner.py
+@@ -1075,6 +1075,51 @@ def test_dash_f_quoted_redirect_path_matches_bare_reference(self) -> None:
+         assert "tidy the parser" in payload
+ 
+ 
++class TestT3ReviewPositionalNoteResolution:
++    """The ``t3 review`` positional NOTE resolves its indirection like a flag (#1780)."""
++
++    def test_positional_note_resolves_in_command_heredoc(self) -> None:
++        # At PreToolUse the file is not on disk; the NOTE ``$(cat <path>)``
++        # resolves from the heredoc that wrote that path earlier in the command.
++        cmd = (
++            "cat > /tmp/t3-note-1780.txt <<'EOF'\n"
++            "refactor: tidy the parser surface\n"
++            "EOF\n"
++            't3 teatree review post-comment some-org/some-svc 7 "$(cat /tmp/t3-note-1780.txt)"'
++        )
++        payload = extract_publish_payload("Bash", {"command": cmd})
++        assert payload is not None
++        assert "tidy the parser surface" in payload
++        assert not is_fail_closed_sentinel(payload)
++
++    def test_positional_note_var_ref_resolves_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
++        monkeypatch.setenv("T3_NOTE_1780", "a clean colleague review note")
++        cmd = 't3 teatree review post-comment some-org/some-svc 7 "$T3_NOTE_1780"'
++        payload = extract_publish_payload("Bash", {"command": cmd})
++        assert payload is not None
++        assert "a clean colleague review note" in payload
++        assert not is_fail_closed_sentinel(payload)
++
++    def test_positional_note_resolved_heredoc_body_is_still_scanned(self) -> None:
++        # The resolved NOTE is SCANNED: a verbatim user quote in the
++        # heredoc-written note still trips the gate (no silent unscanned bypass).
++        cmd = (
++            "cat > /tmp/t3-note-1780b.txt <<'EOF'\n"
++            "the user said: ship it now\n"
++            "EOF\n"
++            't3 teatree review post-comment some-org/some-svc 7 "$(cat /tmp/t3-note-1780b.txt)"'
++        )
++        payload = extract_publish_payload("Bash", {"command": cmd})
++        assert payload is not None
++        assert scan_text(payload).has_high
++
++    def test_positional_note_unreadable_cat_source_fails_closed(self) -> None:
++        cmd = 't3 teatree review post-comment some-org/some-svc 7 "$(cat /no/such/t3-note.txt)"'
++        payload = extract_publish_payload("Bash", {"command": cmd})
++        assert payload is not None
++        assert is_fail_closed_sentinel(payload)
++
++
+ class TestHeredocBodyPairing:
+     """A file-redirected heredoc is scanned only when its path is posted."""
+ 
+-- 
+2.50.1 (Apple Git-155)
+

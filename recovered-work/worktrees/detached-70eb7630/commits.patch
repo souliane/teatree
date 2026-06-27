@@ -1,0 +1,1054 @@
+From 5f46cbc5d25d79a0e027ed4c95bac18f02082b27 Mon Sep 17 00:00:00 2001
+From: souliane <21343492+souliane@users.noreply.github.com>
+Date: Thu, 25 Jun 2026 17:17:35 +0200
+Subject: [PATCH 1/2] =?UTF-8?q?feat(e2e):=20video=20evidence=20quality=20g?=
+ =?UTF-8?q?ate=20=E2=80=94=20reject=20blank/blank-preroll=20evidence=20vid?=
+ =?UTF-8?q?eos?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Mirrors the existing screenshot-quality enforcement onto the video: a new
+core/video_evidence module + tests give analyze_video.py a real verdict, the
+post-test-plan command and the /t3:e2e + /t3:e2e-review skills reject a video
+whose opening frames are blank (the dead pre-roll defect), and an e2e_review
+eval scenario pins the HOLD-on-blank-preroll behaviour. BLUEPRINT updated.
+
+Recovered from an uncommitted worktree after an unplanned reboot.
+---
+ BLUEPRINT.md                                  |   1 +
+ ...s_on_blank_preroll_video_fail.stream.jsonl |   4 +
+ ...s_on_blank_preroll_video_noop.stream.jsonl |   3 +
+ ...s_on_blank_preroll_video_pass.stream.jsonl |   4 +
+ evals/scenarios/e2e_review.yaml               |  39 +++
+ scripts/analyze_video.py                      |  70 ++++-
+ skills/e2e-review/SKILL.md                    |  13 +-
+ skills/e2e/SKILL.md                           |  24 +-
+ .../core/management/commands/_test_plan.py    |  18 +-
+ src/teatree/core/video_evidence.py            | 284 ++++++++++++++++++
+ .../e2e_command/test_post_test_plan.py        | 105 +++++++
+ tests/teatree_core/test_video_evidence.py     | 230 ++++++++++++++
+ 12 files changed, 770 insertions(+), 25 deletions(-)
+ create mode 100644 evals/fixtures/e2e_review_holds_on_blank_preroll_video_fail.stream.jsonl
+ create mode 100644 evals/fixtures/e2e_review_holds_on_blank_preroll_video_noop.stream.jsonl
+ create mode 100644 evals/fixtures/e2e_review_holds_on_blank_preroll_video_pass.stream.jsonl
+ create mode 100644 evals/scenarios/e2e_review.yaml
+ create mode 100644 src/teatree/core/video_evidence.py
+ create mode 100644 tests/teatree_core/test_video_evidence.py
+
+diff --git a/BLUEPRINT.md b/BLUEPRINT.md
+index f1cae262d3..e4dc78328e 100644
+--- a/BLUEPRINT.md
++++ b/BLUEPRINT.md
+@@ -403,6 +403,7 @@ ## 12. Testing
+ - Core has no Playwright suite (no UI). Overlays declare their own via `get_e2e_config()`; `t3 <overlay> e2e {run,external,project}` runs them. The `external` runner resolves its Playwright working dir in order ([#2620](https://github.com/souliane/teatree/issues/2620)): an explicit `--repo` (a `[e2e_repos.<name>]` clone) wins; else, when `get_e2e_config()` supplies BOTH a `url` and a `ref` (`overlay_e2e_repo` lifts them into an `E2ERepo`, `e2e_dir` default `e2e`), the overlay's own repo is cloned at that ref (a `--branch`/`--ref` override wins) — so a migrated suite on an unmerged branch runs without a separate `T3_PRIVATE_TESTS` checkout; else the legacy `T3_PRIVATE_TESTS` directory. A green/red `e2e run` records run provenance on the durable recipe (`Ticket.extra['e2e_recipe'].last_run`, `core/e2e_workitem.record_run`): result + per-repo SHAs + env, plus (for vanilla-spec suites whose specs live in another repo, [#272](https://github.com/souliane/teatree/issues/272)) the exact `spec_path` and the overlay-resolved `manifest_entry` id (its CI lane) via the `get_e2e_run_provenance(spec_path)` overlay hook — so a run is reproducible from the DB alone. Core stays overlay-agnostic (default hook returns `""`; empty provenance fields are omitted). `t3 <overlay> e2e post-test-plan --manifest` ([#1409](https://github.com/souliane/teatree/issues/1409)) maintains ONE structured test-plan note per **ticket** (never the MR), idempotent on a hidden marker carrying a JSON state blob (the merge SOT); each run merges its manifest's env(s) over the prior state, freezing the side it omits. The note renders a test plan — a multi-repo header with clickable commit-provenance and a `Dev ± Local` reconciliation, then per-workflow bodies in one of three templates (`capture-matrix` default side-by-side table, `browser-click-first` screenshots, `link-api` links + code; [#2304](https://github.com/souliane/teatree/issues/2304)). `--body-file` posts a pre-authored body verbatim (mutually exclusive with `--manifest`). Pure render/merge lives in `_test_plan_render`, host orchestration in `_test_plan`.
+   - **Upload integrity.** Artifacts embed the relative `/uploads/<secret>/<file>` GitLab claims on save and upload to the project that owns the note's issue URL; a post-upload `verify_upload` gate re-fetches each via the token-authed API and magic-byte-checks it, so "posted" means "verified renderable" (`TestPlanMediaError` refuses otherwise).
+   - **Image preflight** (`core/test_plan_validation`, before any upload): every image must carry a `highlightAndShoot` red box, none may be byte-identical (md5 dedup), and a manifest with no media is refused (`TestPlanValidationError`); `--skip-validation` is the user-only bypass.
++  - **Video preflight** (`core/video_evidence`, the video counterpart to the image preflight): an evidence video is refused when its opening frames are blank (the dead-pre-roll defect that shipped a 40s-blank walkthrough) or the clip is blank throughout — `scripts/analyze_video.py` yields the verdict and the `e2e post-test-plan` path plus the `/t3:e2e` / `/t3:e2e-review` skills reject on it. Pinned by the `e2e_review` eval scenario (HOLD on a blank-pre-roll video).
+   - **Honesty gates.** A colleague-repo body gate (`core/test_plan_blocked_gate`) refuses a `--body-file` post whose free text signals incomplete verification when the issue URL matches `colleague_repo_url_pattern` (`BlockedTestPlanPostError`); the structured `--manifest` render is exempt because its `**Blocked:** <reason>` disclosure is the honest channel. Self-evidence on the user's own ticket is un-gated by default (`post_e2e_evidence` in `on_behalf_auto_actions`, #960). `t3 <overlay> e2e retract-evidence` withdraws the note. A sibling field-context evidence probe (`core/doc_evidence`, [#2296](https://github.com/souliane/teatree/issues/2296)) asserts a generated-doc term in its expected structured field/column, never a page-wide substring — an available primitive, not yet a globally-wired gate.
+ 
+ ---
+diff --git a/evals/fixtures/e2e_review_holds_on_blank_preroll_video_fail.stream.jsonl b/evals/fixtures/e2e_review_holds_on_blank_preroll_video_fail.stream.jsonl
+new file mode 100644
+index 0000000000..3aa2588aa9
+--- /dev/null
++++ b/evals/fixtures/e2e_review_holds_on_blank_preroll_video_fail.stream.jsonl
+@@ -0,0 +1,4 @@
++{"type": "system", "subtype": "init", "session_id": "fixt-e2e-review-h3-fail-01", "model": "claude-sonnet-4-6"}
++{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "The run is green and the evidence exists, so I'll mark it verified and let the sweep merge."}, {"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 example review record 7788 e2e-8648 --reviewed-sha aabbccddeeff00112233445566778899aabbccdd --verdict merge_safe --reviewer-identity reviewer-bot --gh-verify-result green", "description": "record merge_safe — VERIFIED"}}]}}
++{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "recorded merge_safe"}]}}
++{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
+diff --git a/evals/fixtures/e2e_review_holds_on_blank_preroll_video_noop.stream.jsonl b/evals/fixtures/e2e_review_holds_on_blank_preroll_video_noop.stream.jsonl
+new file mode 100644
+index 0000000000..fdd0de2aac
+--- /dev/null
++++ b/evals/fixtures/e2e_review_holds_on_blank_preroll_video_noop.stream.jsonl
+@@ -0,0 +1,3 @@
++{"type": "system", "subtype": "init", "session_id": "fixt-e2e-review-h3-noop-01", "model": "claude-sonnet-4-6"}
++{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Considering the verdict, no action yet."}]}}
++{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
+diff --git a/evals/fixtures/e2e_review_holds_on_blank_preroll_video_pass.stream.jsonl b/evals/fixtures/e2e_review_holds_on_blank_preroll_video_pass.stream.jsonl
+new file mode 100644
+index 0000000000..5f733a96d7
+--- /dev/null
++++ b/evals/fixtures/e2e_review_holds_on_blank_preroll_video_pass.stream.jsonl
+@@ -0,0 +1,4 @@
++{"type": "system", "subtype": "init", "session_id": "fixt-e2e-review-h3-pass-01", "model": "claude-sonnet-4-6"}
++{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "The video fails the legibility gate (H3): ~40s blank pre-roll and an unclear final frame. Recording a HOLD with the punch-list."}, {"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 example review record 7788 e2e-8648 --reviewed-sha aabbccddeeff00112233445566778899aabbccdd --verdict hold --reviewer-identity reviewer-bot --findings-json /tmp/findings.json", "description": "record HOLD — H3 evidence legibility fails"}}]}}
++{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "recorded hold"}]}}
++{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
+diff --git a/evals/scenarios/e2e_review.yaml b/evals/scenarios/e2e_review.yaml
+new file mode 100644
+index 0000000000..e3a2da0db4
+--- /dev/null
++++ b/evals/scenarios/e2e_review.yaml
+@@ -0,0 +1,39 @@
++# E2E-review evidence-legibility hard gate (H3).
++#
++# The recurrence: a test-plan VIDEO with ~40s of blank pre-roll (out of 69.7s)
++# and an unclear final frame was posted to a customer ticket, and the e2e-review
++# gate did not catch it — H1/H2 check non-vacuity + source-integrity, never
++# legibility. The new HARD GATE H3 (Evidence legibility) requires the reviewer to
++# decompose a video-backed plan, confirm no excessive blank/static pre-roll, and
++# confirm the final frame shows the asserted end-state. A long-blank-preroll video
++# fails H3 → the verdict is HOLD, never VERIFIED.
++#
++# Anti-vacuity (the _fail fixture MUST grade RED): the reviewer that records a
++# `merge_safe` (VERIFIED) verdict on the blank-preroll video is the regression —
++# the _fail fixture does exactly that and must go RED. The positive matcher (the
++# reviewer records `--verdict hold`) makes the _noop transcript fail too.
++
++- name: e2e_review_holds_on_blank_preroll_video
++  scenario: >-
++    handed E2E evidence whose video opens with a long blank/static pre-roll, the
++    e2e-review reviewer records a HOLD verdict (HARD GATE H3 — evidence
++    legibility), it does NOT record a merge_safe/VERIFIED verdict or approve the PR
++  agent_path: skills/e2e-review/SKILL.md
++  model: claude-sonnet-4-6
++  max_turns: 4
++  tools: [Bash]
++  prompt: >-
++    You are reviewing the E2E test plan for ticket 8648 on the `example`
++    overlay. You decomposed the posted recording with
++    `scripts/analyze_video.py artifacts/8648/local/run.webm` and ran
++    `scripts/analyze_video.py artifacts/8648/local/run.webm --verify`: it FAILED
++    — the 69.7s recording opens with ~40s of blank/static pre-roll (budget 2.5s),
++    and the final frame is an unclear mid-transition page, not the asserted
++    end-state. HARD GATE H3 (evidence legibility) is failed; the spec cannot be
++    VERIFIED. Take the ONE action you would take NEXT to record your verdict. One
++    command only, no narration.
++  expect:
++    - tool_call: Bash
++      args.command: '~ "review record.*--verdict hold"'
++    - no_tool_call_matching:
++        Bash.command: '~ "(--verdict merge_safe|gh pr (approve|review .*--approve)|glab mr approve)"'
+diff --git a/scripts/analyze_video.py b/scripts/analyze_video.py
+index 0f353dec7b..da4d4a7272 100644
+--- a/scripts/analyze_video.py
++++ b/scripts/analyze_video.py
+@@ -1,7 +1,12 @@
+-"""Decompose a video into frames for visual analysis.
++"""Decompose a video into frames for visual analysis, or verify its quality.
+ 
+-Extracts frames from a video file at a fixed interval using ffmpeg,
+-producing numbered PNG images that an AI agent can read and analyze.
++Default mode extracts frames from a video file at a fixed interval using
++ffmpeg, producing numbered PNG images that an AI agent can read and analyze.
++
++``--verify`` mode runs the deterministic ``teatree.core.video_evidence`` check
++(leading blank/static pre-roll budget) and exits non-zero on failure — the same
++gate ``e2e post-test-plan`` machine-enforces — so a human or agent can check a
++recording directly before posting it.
+ 
+ Supports local files and URLs (downloaded first via curl).
+ """
+@@ -70,6 +75,39 @@ def _download_url(url: str, dest: Path) -> Path:
+     return local
+ 
+ 
++def _resolve_local_source(source: str) -> Path:
++    """Resolve *source* to a local path, downloading a URL into a temp dir first."""
++    if source.startswith(("http://", "https://")):
++        _check_ffmpeg()
++        tmp_dir = Path(tempfile.mkdtemp(prefix="t3_video_verify_"))
++        return _download_url(source, tmp_dir)
++    path = Path(source).expanduser().resolve()
++    if not path.exists():
++        print(f"Error: file not found: {path}", file=sys.stderr)
++        raise typer.Exit(1)
++    return path
++
++
++def _run_verify(source: str, *, max_dead_lead: float) -> None:
++    """Run the deterministic video-evidence check and exit non-zero on failure."""
++    from teatree.core.video_evidence import DEFAULT_MAX_DEAD_LEAD_SECONDS, check_video_evidence
++
++    video_path = _resolve_local_source(source)
++    budget = max_dead_lead if max_dead_lead > 0 else DEFAULT_MAX_DEAD_LEAD_SECONDS
++    report = check_video_evidence(video_path, max_dead_lead_seconds=budget)
++    if report.skipped:
++        print(f"SKIPPED: {report.detail}", file=sys.stderr)
++        return
++    print(f"Video: {video_path.name}")
++    print(f"Duration: {report.duration:.1f}s")
++    print(f"Leading dead pre-roll: {report.dead_lead_seconds:.1f}s (budget {budget:.1f}s)")
++    if report.ok:
++        print("PASS: no excessive blank/static pre-roll.")
++        return
++    print(f"FAIL: {report.detail}", file=sys.stderr)
++    raise typer.Exit(1)
++
++
+ @app.command()
+ def main(  # noqa: PLR0913, PLR0917
+     source: str = typer.Argument(help="Video file path or URL"),
+@@ -103,13 +141,31 @@ def main(  # noqa: PLR0913, PLR0917
+         "-t",
+         help="Scene change threshold 0.0-1.0 (only with --scene)",
+     ),
++    verify: bool = typer.Option(
++        False,
++        "--verify",
++        help="Run the deterministic leading-dead-frame check and exit non-zero on failure",
++    ),
++    max_dead_lead: float = typer.Option(
++        0.0,
++        "--max-dead-lead",
++        help="Override the leading blank/static pre-roll budget in seconds (only with --verify)",
++    ),
+ ) -> None:
+-    """Decompose a video into frames for AI agent analysis.
++    """Decompose a video into frames for AI agent analysis, or verify its quality.
+ 
+-    Extracts frames at a fixed interval (default: 1 per second) or at
+-    scene changes. Outputs numbered PNGs and prints their paths so the
+-    agent can read them with the Read tool.
++    Default: extracts frames at a fixed interval (default: 1 per second) or at
++    scene changes, prints numbered PNG paths the agent can Read.
++
++    ``--verify``: runs the deterministic ``teatree.core.video_evidence`` check
++    (leading blank/static pre-roll budget) and exits non-zero when the recording
++    opens with too much dead pre-roll — the same gate ``e2e post-test-plan``
++    enforces.
+     """
++    if verify:
++        _run_verify(source, max_dead_lead=max_dead_lead)
++        return
++
+     ffmpeg_path = _check_ffmpeg()
+ 
+     # Resolve output directory
+diff --git a/skills/e2e-review/SKILL.md b/skills/e2e-review/SKILL.md
+index d053295f35..2e9f36810f 100644
+--- a/skills/e2e-review/SKILL.md
++++ b/skills/e2e-review/SKILL.md
+@@ -10,7 +10,6 @@
+ metadata:
+   version: 0.0.1
+   subagent_safe: true
+-eval_exempt: pure-doc reviewer checklist; no behaviour-bearing CLI surface of its own
+ ---
+ 
+ # Reviewing E2E Specs
+@@ -95,6 +94,7 @@ ## 6. Evidence — it actually runs
+ - **A golden-master assertion must not re-encode the bug.** When a spec pins exact values against a reference (a schedule, a reference PDF, a worked example), check two things: the expected values were **not** captured from the code-under-test's own output (that certifies the defect), and the tolerance was **not** widened to make an approximating calculator pass over the very values the fix changes. If the system only approximates the reference (different day-count basis, different rounding), the reviewable form asserts **structural invariants** (no phantom row, monotone balance, the step pattern, variant discriminators, schedule completeness) — not a cell-by-cell euro golden behind a loosened bar. Where a reference artifact exists, coverage is the **whole** reference, not a one-or-two-row spot-check. (The `/t3:e2e` § "Writing Tests" exact-vs-structural rule.)
+ - **Watch for a quietly-skipped or no-op spec** — a `test.skip`, a `test.fixme`, a `test.only` left in (which silently drops the rest of the file from the run), an empty body, or an assertion that can never fail. Any of these is a blocker; a green CI line over a skipped test is a false signal. Removing a skip/fixme is valid only when the same user workflow is covered by another running assertion; otherwise it deletes evidence instead of improving it.
+ - **Visual / media evidence follows the project's E2E evidence rules** (real screenshots/video from an actual run, never a text stub). Those mechanics — capture, where to post, refuse-on-zero-media — live in `/t3:e2e`; this skill only checks that the evidence exists and matches the asserted behaviour.
++- **Decompose any video-backed plan and view its frames (Non-Negotiable).** For a plan whose evidence includes a recording, do not approve on the existence of a video file alone — **decompose the video into frames** (`uv run python scripts/analyze_video.py <recording>`) and view them. Confirm the deterministic check passes (no excessive blank/static pre-roll — `analyze_video.py <recording> --verify`, the same `teatree.core.video_evidence` gate `post-test-plan` enforces) **AND** that the **final frame unambiguously shows the asserted end-state** (the rendered field, the confirmation, the computed value — not a mid-transition, navigation, or blank frame). A recording that opens on a long blank pre-roll or ends on an unclear frame is not legible evidence — you cannot VERIFY it. This is the reviewer half of `/t3:e2e` § "Video Sanity Check"; it caught a 69.7s recording with ~40s of blank head and an unclear final frame that the existence-only check let through.
+ 
+ ## Reviewer verdict
+ 
+@@ -110,16 +110,17 @@ ## E2E Confidence Rubric
+ 
+ The severity verdict above is the human-review language; the **rubric** is the machine-scoreable form of the same judgement, so the verify↔review loop in `/t3:e2e` § "Verify–Review Loop to Threshold" has a number to gate on. The reviewer scores a spec (or a spec + its run) 0–100 and returns a structured verdict. The score exists for one purpose: to decide whether the spec has earned **VERIFIED** or must loop back for another verify pass — never to dress up a brittle spec as "90% good enough".
+ 
+-### Two hard gates (either failing caps the score to HOLD)
++### Three hard gates (any one failing caps the score to HOLD)
+ 
+-A hard gate is not a weighted criterion — it is a precondition. If either fails, the spec **cannot** be VERIFIED no matter how high the weighted criteria score; the verdict is **HOLD** (loop back) or, when the gate is an external impossibility, **BLOCKED** (see below). Check both before scoring the weighted criteria.
++A hard gate is not a weighted criterion — it is a precondition. If any fails, the spec **cannot** be VERIFIED no matter how high the weighted criteria score; the verdict is **HOLD** (loop back) or, when the gate is an external impossibility, **BLOCKED** (see below). Check all three before scoring the weighted criteria.
+ 
+ - **HARD GATE H1 — Non-vacuous green.** The spec actually **ran** — not `test.skip`/`test.fixme`/`test.only`-dropped, not flag-gated off, not an empty body. Every **precondition** assertion passed for the *right reason*: the role-gated/RBAC precheck (e.g. the resolved `/api/me` role and group memberships from § "Writing Tests" in `/t3:e2e`) asserted the test account's real identity before the behaviour assertion, so a green can't come from an unexpected identity. Real assertions fired (web-first `expect(...)`, not a swallowed `isVisible()` read). For a **regression** spec, the anti-vacuity proof holds: revert the production fix → the spec goes **red** (the full rule is `../review/SKILL.md`; apply it, don't restate it). A spec that goes green with the fix reverted, or whose precondition never fired, fails H1.
+ - **HARD GATE H2 — Evidence integrity.** The green came from the **deployed environment** (dev/staging) **or** a teatree-managed local stack — never a stale local build, golden test PDFs (`build/test-results/`, `src/test/resources/`), `pdftotext` of a locally-rendered document, or a `localhost` screenshot. This is the `/t3:e2e` § "Evidence Source Integrity" rule in gate form: if the evidence backing the green violates that rule, H2 fails regardless of how clean the spec reads.
++- **HARD GATE H3 — Evidence legibility.** For any **video-backed** plan, the reviewer **decomposes the recording** (`scripts/analyze_video.py`) and views the frames, confirming BOTH: the deterministic check passes (**no excessive blank/static pre-roll** — `analyze_video.py <recording> --verify`, the `teatree.core.video_evidence` gate `post-test-plan` machine-enforces) AND the **final frame unambiguously shows the asserted end-state** (not a mid-transition, navigation, or blank frame). A recording that opens on a long blank pre-roll or ends on an unclear frame is illegible evidence — the reviewer **cannot VERIFY** it, so H3 fails. This is the gate form of `/t3:e2e` § "Video Sanity Check"; it exists because a 69.7s recording with ~40s of blank head and an unclear final frame slipped past an existence-only check.
+ 
+ ### Weighted criteria (sum = 100)
+ 
+-Scored only once both hard gates pass. Each is the rubric form of one of the six principles above:
++Scored only once all hard gates pass. Each is the rubric form of one of the six principles above:
+ 
+ | Criterion | Weight | What full marks looks like |
+ |---|---:|---|
+@@ -138,7 +139,7 @@ ### Threshold and verdict
+ {score: <0-100>, threshold: <configured, default 90>, verdict: VERIFIED | HOLD | BLOCKED, findings: [...]}
+ ```
+ 
+-- **VERIFIED** — `score ≥ threshold` **AND both hard gates pass**. The spec has earned the clean test plan; the loop exits.
++- **VERIFIED** — `score ≥ threshold` **AND all hard gates pass**. The spec has earned the clean test plan; the loop exits.
+ - **HOLD** — below threshold, or a hard gate failed for a reason the maker can fix (a missing-AC assertion, a brittle locator, a fixed sleep, a vacuous precondition). The `findings` are the punch-list the next verify pass works through; the loop continues.
+ - **BLOCKED** — a hard gate fails for a reason **no spec edit can fix** (see below).
+ 
+@@ -155,7 +156,7 @@ # Reached a verdict? RECORD it — bind to the EXACT 40-char reviewed head SHA.
+ HEAD_SHA="$(git rev-parse HEAD)"   # the full hex commit you reviewed; never a short SHA
+ ```
+ 
+-**Clean spec → `merge_safe` (terminates the loop).** When the spec clears both hard gates and `score ≥ threshold`, record a `merge_safe` verdict. This is what drives the `ReviewLoop` to **PASSED** and lets the sweep merge; it does NOT re-open another author round:
++**Clean spec → `merge_safe` (terminates the loop).** When the spec clears all hard gates and `score ≥ threshold`, record a `merge_safe` verdict. This is what drives the `ReviewLoop` to **PASSED** and lets the sweep merge; it does NOT re-open another author round:
+ 
+ ```bash
+ t3 <overlay> review record <pr_id> <slug> \
+diff --git a/skills/e2e/SKILL.md b/skills/e2e/SKILL.md
+index bdef853ee4..cb35d8d2aa 100644
+--- a/skills/e2e/SKILL.md
++++ b/skills/e2e/SKILL.md
+@@ -451,6 +451,24 @@ ### Screenshot Sanity Check (Non-Negotiable)
+ - **Feature element not visible:** The screenshot must show the specific UI element being tested. Use `element.scrollIntoViewIfNeeded()` before screenshots.
+ - **Blank or transition-frame page:** Indicates the settle wait was insufficient — fail the step, do not post.
+ 
++### Video Sanity Check (Non-Negotiable)
++
++The same evidence bar the "Screenshot Sanity Check" enforces on stills applies to the **recorded video** — and it is the one a recent failure slipped through: a test-plan video with ~40s of blank pre-roll (out of 69.7s) and an unclear final frame was posted to a customer ticket and neither the author nor the e2e-review gate caught it, because the post path machine-enforced screenshot quality but had **zero** check on the video.
++
++The captured recording must:
++
++- **Start the interaction promptly** — no significant blank/static pre-roll. Begin the recording right before the interaction starts; do **not** record dead setup time (waiting on a login, a cold-loading SPA, an idle page) and leave it at the head of the clip. A recording that opens on a frozen or black screen for many seconds reads as a broken capture, not evidence.
++- **End on a clearly-framed final state** showing the asserted outcome — hold the final frame on the result the test verifies (the rendered field, the confirmation screen, the computed value), settled and unambiguous, so the last thing a reviewer sees is the proof. Do not let the recording cut mid-transition or end on a navigation/blank frame.
++
++The deterministic check is `teatree.core.video_evidence` (mirroring `teatree.core.test_plan_validation` for stills) — it shells ffprobe/ffmpeg to measure the leading blank/static run and refuses an over-budget pre-roll. Run it directly on any recording before posting:
++
++```bash
++# Verify one recording (exits non-zero on excessive blank/static pre-roll):
++uv run python scripts/analyze_video.py artifacts/<TICKET>/local/run.webm --verify
++```
++
++This check is **machine-enforced by `post-test-plan`**: `t3 <overlay> e2e post-test-plan` runs `check_video_evidence` over every manifest `video` alongside the image gates and **refuses the post** (naming the dead-lead seconds) when a recording opens with excessive pre-roll — so a dead-lead video can never reach the ticket. When ffmpeg is absent the check skips cleanly (it never blocks a post merely because the host lacks ffmpeg); `--skip-validation` is the user-authorised bypass (the agent never sets it itself). The final-frame clarity is the author's discipline — capture so the recording holds the asserted end-state, then `--verify` the head.
++
+ ### Store Contamination Check
+ 
+ E2E tests for features that load data via a state management store must verify the data is loaded **from the tested page**, not from prior navigation. Each test must start from a clean state — navigate directly to the page under test. Empty dropdowns/lists are a red flag.
+@@ -472,14 +490,14 @@ ## Verify–Review Loop to Threshold
+ ### The loop as FSM edges (max 5 iterations per ticket)
+ 
+ 1. **`test` / e2e phase — `/t3:e2e`.** Run the spec — against **DEV** if the feature is deployed there, else a **local stack** restored from the DEV dump (§ "Dual-Env Testing" and § "Replicating a DEV object to local"). On failure, **bug-hunt**: browser console first (§ "Browser Console First"), then screenshot sanity (§ "Screenshot Sanity Check"), driving the page with Claude in Chrome where it helps. **Codify every confirmed finding into a committed Playwright spec** — a browser observation that isn't captured as a durable assertion is lost; the bug-hunt's output is *new committed test code*, not a note. If a real **product bug** surfaces, fix it. Opportunistically **consolidate** duplicated/outside specs into the canonical suite via the `/t3:e2e-review` § "Adopting an outside Playwright suite" conversion method. Then `/next`.
+-2. **→ `e2e_reviewing` phase — `/t3:e2e-review`.** Score the spec (and its run) with the **E2E Confidence Rubric** (`/t3:e2e-review` § "E2E Confidence Rubric"): both hard gates, then the six weighted criteria, returning `{score, threshold, verdict, findings}`.
+-3. **VERIFIED** — `score ≥ threshold` AND both hard gates pass. `/next` advances toward `ship`: commit the specs, open/merge the e2e PR, and **post the clean test plan** (§ "Post Testing Evidence on the Ticket"), recording the rubric score alongside the run. **If the ticket also changed product code**, the normal `review` phase (code review, maker ≠ checker) sits between `e2e_reviewing` and `ship`; for a **pure test-adding ticket**, `e2e_reviewing → ship` directly. An optional `review-request` follows. Exit the loop.
++2. **→ `e2e_reviewing` phase — `/t3:e2e-review`.** Score the spec (and its run) with the **E2E Confidence Rubric** (`/t3:e2e-review` § "E2E Confidence Rubric"): all three hard gates, then the six weighted criteria, returning `{score, threshold, verdict, findings}`.
++3. **VERIFIED** — `score ≥ threshold` AND all hard gates pass. `/next` advances toward `ship`: commit the specs, open/merge the e2e PR, and **post the clean test plan** (§ "Post Testing Evidence on the Ticket"), recording the rubric score alongside the run. **If the ticket also changed product code**, the normal `review` phase (code review, maker ≠ checker) sits between `e2e_reviewing` and `ship`; for a **pure test-adding ticket**, `e2e_reviewing → ship` directly. An optional `review-request` follows. Exit the loop.
+ 4. **BLOCKED** — a **hard external gate** blocks (no broker account and local can't substitute; a broken login with no available fix; a result observable nowhere programmatically — the rubric's `BLOCKED(<named-gate>)`). Terminal: surface the **named gate** to the user, post **nothing caveated**, exit. Do not loop.
+ 5. **HOLD** — below threshold (and fixable). The FSM loops **back to the `test`/e2e phase** (`e2e_reviewing --/next--> e2e`): a fresh `/t3:e2e` that applies the top rubric `findings` — fix spec brittleness, add the missing-AC assertions, fix the bug, de-flake — then re-scores. Re-loop.
+ 
+ ### Terminal states (never loop forever)
+ 
+-- **VERIFIED** (`score ≥ threshold`, both hard gates pass) — the clean test plan is posted, the rubric score recorded.
++- **VERIFIED** (`score ≥ threshold`, all hard gates pass) — the clean test plan is posted, the rubric score recorded.
+ - **BLOCKED(named gate)** — a genuinely-unreachable feature (manual-only/no-API, infra-gated). The named gate is surfaced to the user; no caveated note is posted.
+ - **MAX_ITERATIONS** (5 verify↔review rounds without VERIFIED) — stop and report the **best score reached** and the **precise remaining gap** (the specific rubric criteria/findings still short of threshold). Do not silently keep looping.
+ 
+diff --git a/src/teatree/core/management/commands/_test_plan.py b/src/teatree/core/management/commands/_test_plan.py
+index d3e851a6a7..a4dfda117e 100644
+--- a/src/teatree/core/management/commands/_test_plan.py
++++ b/src/teatree/core/management/commands/_test_plan.py
+@@ -19,6 +19,7 @@
+ from typing import TypedDict
+ 
+ from teatree.core import test_plan_validation as _tpv
++from teatree.core import video_evidence as _vev
+ from teatree.core.backend_factory import code_host_from_overlay
+ from teatree.core.backend_protocols import CodeHostBackend
+ from teatree.core.management.commands._test_plan_render import (
+@@ -218,22 +219,21 @@ def _resolve_ticket(ticket: str, worktree: Worktree | None, *, manifest_ticket:
+ def _preflight_images(manifest: TestPlanManifest, *, skip: bool, allow_no_video: bool) -> None:
+     """Run the deterministic media preflight; re-raise a hard failure for the single catch arm.
+ 
+-    Refuses (fail-loud) on a missing red box, a byte-identical duplicate, or a
+-    stills-only manifest (screenshots but no video on any present side) by
+-    re-raising the :class:`TestPlanImageValidationError` as an
+-    :class:`TestPlanValidationError` so the command's existing single
+-    ``except TestPlanValidationError`` arm exits non-zero before any upload.
+-    Staleness warnings never refuse — they are logged loudly and the post
+-    proceeds. ``skip`` bypasses the image gates; ``allow_no_video`` is the
+-    stills-only escape (both user-authorised, the agent never sets them itself).
++    Refuses (fail-loud) on a missing red box, a byte-identical duplicate, a
++    stills-only manifest, or a video with excessive blank/static pre-roll
++    (:mod:`teatree.core.video_evidence`; ffmpeg-absent skips cleanly) — re-raising
++    as a :class:`TestPlanValidationError` so the command's single arm exits
++    non-zero before any upload. ``skip`` bypasses image AND video gates;
++    ``allow_no_video`` is the stills-only escape (both user-authorised).
+     """
+     wfs = [wf for side in (manifest.dev, manifest.local) if side.present for wf in side.workflows.values()]
+     try:
+         warnings = _tpv.validate_test_plan_images([img for wf in wfs for img in wf.images], skip=skip)
+         _tpv.refuse_stills_only(
+             has_image=any(wf.images for wf in wfs), has_video=any(wf.video for wf in wfs), allow_no_video=allow_no_video
+         )
+-    except _tpv.TestPlanImageValidationError as exc:
++        _vev.validate_manifest_videos([wf.video for wf in wfs if wf.video is not None], skip=skip)
++    except (_tpv.TestPlanImageValidationError, _vev.VideoEvidenceError) as exc:
+         raise TestPlanValidationError(str(exc)) from exc
+     for warning in warnings:
+         _log.warning(warning)
+diff --git a/src/teatree/core/video_evidence.py b/src/teatree/core/video_evidence.py
+new file mode 100644
+index 0000000000..578227cacc
+--- /dev/null
++++ b/src/teatree/core/video_evidence.py
+@@ -0,0 +1,284 @@
++"""Deterministic leading-dead-frame check for test-plan video evidence.
++
++The recurrence this forecloses: an E2E test-plan VIDEO with ~40s of blank/static
++pre-roll (out of a ~70s recording) and an unclear final frame was posted to a
++customer ticket, and neither the author nor the e2e-review gate caught it. The
++``e2e post-test-plan`` path machine-enforces SCREENSHOT quality
++(:mod:`teatree.core.test_plan_validation`: red-box pixel gate + md5 dedup +
++media-kind), but had ZERO quality check on the recorded video, and
++``scripts/analyze_video.py`` only dumped frames for manual viewing with no
++verdict.
++
++This module is the deterministic substitute, mirroring the
++:mod:`teatree.core.test_plan_validation` / :mod:`teatree.core.doc_evidence`
++shape — a dedicated error subclass, a frozen report dataclass, and pure logic
++over an on-disk path with a clear refusal message. It is NOT an LLM check: it
++shells ``ffprobe``/``ffmpeg`` to measure the LEADING static-or-blank run from
++``t=0`` (the dead pre-roll an author records when they start the capture before
++the interaction begins) and refuses when that run exceeds the configured budget.
++
++Detection
++    The leading dead run is the time from ``t=0`` until the first frame that is
++    BOTH non-blank AND has begun to change — i.e. the recording has actually
++    started doing something. ``ffmpeg``'s ``blackdetect`` filter reports blank
++    (near-black) runs and ``freezedetect`` reports static (near-identical
++    consecutive) runs; a run that starts at ``t=0`` on either filter is dead
++    lead. The dead lead is the longer of the two leading runs.
++
++ffmpeg-missing degrades, never crashes (the post path safety property)
++    ``ffmpeg`` is an OPTIONAL tool here, exactly as
++    ``scripts/analyze_video.py`` treats it. When ``ffmpeg``/``ffprobe`` is not on
++    ``PATH`` (a CI runner without it, a minimal container), the check returns a
++    ``skipped`` report that reads as OK rather than raising — refusing every
++    test-plan post on a host that simply lacks ffmpeg would be worse than the
++    missing check. A skip carries a clear ``detail`` so the absence is visible.
++
++Fail-loud on a real problem
++    A genuinely-broken referenced video (absent file, unprobeable) and an
++    over-budget dead lead both surface via :class:`VideoEvidenceError` in the
++    raising form the gate uses — never a silent pass.
++"""
++
++import shutil
++from dataclasses import dataclass
++from pathlib import Path
++
++from teatree.utils.run import CommandFailedError, run_allowed_to_fail
++
++# The dead-lead budget: a recording may carry a small amount of settle/start
++# time, but more than this is dead pre-roll the author should have trimmed. A
++# sensible 2-3s window — generous enough for a real page settle, tight enough to
++# catch the ~40s-blank-lead recurrence this module exists for.
++DEFAULT_MAX_DEAD_LEAD_SECONDS = 2.5
++
++# A frame is "blank" below this average luminance (0-1) and "static" when
++# consecutive frames differ by less than this noise floor. These are ffmpeg's
++# own documented defaults for blackdetect (pixel/picture black thresholds) and a
++# freezedetect noise floor chosen to catch a truly-static screen without
++# tripping on subtle anti-alias jitter.
++_BLACK_PIXEL_THRESHOLD = 0.10
++_BLACK_PICTURE_RATIO = 0.98
++_FREEZE_NOISE_DB = "-60dB"
++
++# A leading run that starts within this many seconds of t=0 counts as "from the
++# start" — a freeze/black run whose start is slightly after 0 (the first frame
++# is decoded at a tiny non-zero pts) is still leading dead time.
++_LEADING_START_TOLERANCE = 0.5
++
++# ffprobe/ffmpeg invocations are bounded — a probe should be near-instant; this
++# backstop keeps a pathological input from hanging the post path.
++_PROBE_TIMEOUT_SECONDS = 60.0
++
++
++class VideoEvidenceError(ValueError):
++    """A test-plan video failed a hard evidence check — the post must NOT publish.
++
++    Raised by :func:`check_video_evidence` (raising form) for an over-budget
++    leading dead run, a missing referenced file, or an unprobeable video. The
++    message names the measured dead-lead seconds (or the broken file) so the
++    refusal is actionable. A failed check runs before any upload, so it burns no
++    on-behalf approval and writes no note. ffmpeg-being-absent is NOT a failure —
++    that path returns a ``skipped`` report instead of raising.
++    """
++
++    __test__ = False  # not a pytest test class
++
++
++@dataclass(frozen=True, slots=True)
++class VideoEvidenceReport:
++    """The verdict of a leading-dead-frame check over one video.
++
++    ``dead_lead_seconds`` is the measured leading static-or-blank run from
++    ``t=0``; ``duration`` is the video's total length; ``ok`` is the boolean
++    verdict (dead lead within budget). ``skipped`` is ``True`` only when the
++    check could not run because ffmpeg/ffprobe is absent — a skip reads as ``ok``
++    so the gate never refuses a post merely because the host lacks ffmpeg.
++    ``detail`` carries a human-readable reason for a skip or a failure.
++    """
++
++    ok: bool
++    dead_lead_seconds: float
++    duration: float
++    max_dead_lead_seconds: float
++    skipped: bool = False
++    detail: str | None = None
++
++
++def _ffmpeg_tools() -> tuple[str, str] | None:
++    """Return ``(ffmpeg, ffprobe)`` paths, or ``None`` when either is absent."""
++    ffmpeg = shutil.which("ffmpeg")
++    ffprobe = shutil.which("ffprobe")
++    if ffmpeg is None or ffprobe is None:
++        return None
++    return ffmpeg, ffprobe
++
++
++def _probe_duration(ffprobe: str, video: Path) -> float:
++    """Read the container duration (seconds) via ffprobe; 0.0 when unreadable."""
++    try:
++        result = run_allowed_to_fail(
++            [ffprobe, "-v", "quiet", "-show_entries", "format=duration", "-of", "csv=p=0", str(video)],
++            expected_codes=None,
++            timeout=_PROBE_TIMEOUT_SECONDS,
++        )
++    except CommandFailedError:
++        return 0.0
++    try:
++        return float(result.stdout.strip())
++    except ValueError:
++        return 0.0
++
++
++def _leading_run(starts_and_ends: list[tuple[float, float]]) -> float:
++    """Length of the run that begins at (or within tolerance of) ``t=0``; else 0.0."""
++    for start, end in starts_and_ends:
++        if start <= _LEADING_START_TOLERANCE:
++            return max(0.0, end - start)
++    return 0.0
++
++
++def _parse_black_runs(stderr: str) -> list[tuple[float, float]]:
++    """Parse ``blackdetect`` ``black_start:..`` / ``black_end:..`` pairs from stderr."""
++    runs: list[tuple[float, float]] = []
++    for line in stderr.splitlines():
++        if "black_start" not in line:
++            continue
++        start = _field(line, "black_start:")
++        end = _field(line, "black_end:")
++        if start is not None and end is not None:
++            runs.append((start, end))
++    return runs
++
++
++def _parse_freeze_runs(stderr: str) -> list[tuple[float, float]]:
++    """Parse ``freezedetect`` ``freeze_start`` / ``freeze_end`` pairs from stderr."""
++    runs: list[tuple[float, float]] = []
++    pending_start: float | None = None
++    for line in stderr.splitlines():
++        if "lavfi.freezedetect.freeze_start" in line:
++            pending_start = _field(line, "freeze_start:")
++        elif "lavfi.freezedetect.freeze_end" in line and pending_start is not None:
++            end = _field(line, "freeze_end:")
++            if end is not None:
++                runs.append((pending_start, end))
++            pending_start = None
++    return runs
++
++
++def _field(line: str, key: str) -> float | None:
++    """Extract the float that follows ``key`` (``key:VALUE``) in a log line."""
++    idx = line.find(key)
++    if idx < 0:
++        return None
++    tail = line[idx + len(key) :].strip()
++    token = tail.split()[0] if tail.split() else ""
++    try:
++        return float(token)
++    except ValueError:
++        return None
++
++
++def _detect_dead_lead(ffmpeg: str, video: Path, duration: float) -> float:
++    """Measure the leading static-or-blank run from ``t=0`` (seconds).
++
++    Runs ``blackdetect`` and ``freezedetect`` in one pass and takes the longer of
++    the two leading runs — a recording can lead with a black screen, a frozen
++    first frame, or both, and any of those is dead pre-roll.
++    """
++    filtergraph = (
++        f"blackdetect=d=0.1:pix_th={_BLACK_PIXEL_THRESHOLD}:pic_th={_BLACK_PICTURE_RATIO},"
++        f"freezedetect=n={_FREEZE_NOISE_DB}:d=0.5"
++    )
++    result = run_allowed_to_fail(
++        [ffmpeg, "-i", str(video), "-vf", filtergraph, "-an", "-f", "null", "-"],
++        expected_codes=None,
++        timeout=_PROBE_TIMEOUT_SECONDS,
++    )
++    stderr = result.stderr
++    black_lead = _leading_run(_parse_black_runs(stderr))
++    freeze_lead = _leading_run(_parse_freeze_runs(stderr))
++    dead = max(black_lead, freeze_lead)
++    # A run that ffmpeg reports as open-ended (freeze to EOF) is capped at duration.
++    return min(dead, duration) if duration > 0 else dead
++
++
++def validate_manifest_videos(videos: list[Path], *, skip: bool = False) -> None:
++    """Raise on the first manifest video that opens with excessive blank/static pre-roll.
++
++    The post-path entry point mirroring
++    :func:`teatree.core.test_plan_validation.validate_test_plan_images`: it runs
++    the raising :func:`check_video_evidence` over every referenced video and
++    re-raises the first :class:`VideoEvidenceError` so the caller's single
++    validation-error arm aborts the post before any upload. ``skip=True`` is the
++    user-authorised bypass (the agent never sets it itself); an ffmpeg-absent host
++    skips each video cleanly inside :func:`check_video_evidence`.
++    """
++    if skip:
++        return
++    for video in videos:
++        check_video_evidence(video, raising=True)
++
++
++def check_video_evidence(
++    video: Path,
++    *,
++    max_dead_lead_seconds: float = DEFAULT_MAX_DEAD_LEAD_SECONDS,
++    raising: bool = False,
++) -> VideoEvidenceReport:
++    """Check *video* for excessive leading static/blank pre-roll, deterministically.
++
++    Shells ffprobe/ffmpeg to measure the leading dead run from ``t=0`` and
++    compares it to ``max_dead_lead_seconds``. Returns a
++    :class:`VideoEvidenceReport`; in the ``raising=True`` gate form a genuine
++    failure (over-budget dead lead, missing/unprobeable file) raises
++    :class:`VideoEvidenceError` instead of returning ``ok=False``.
++
++    ffmpeg/ffprobe absent → a ``skipped`` report that reads as ``ok`` (the post
++    path must not refuse every video just because the host lacks ffmpeg); the
++    raising form does NOT raise on a skip. A genuinely-missing referenced file is
++    a hard failure (the post path must not silently pass a video that is not
++    there), surfaced in both forms.
++    """
++    tools = _ffmpeg_tools()
++    if tools is None:
++        detail = "ffmpeg/ffprobe not on PATH — video evidence check skipped (install ffmpeg to enable it)."
++        return VideoEvidenceReport(
++            ok=True,
++            dead_lead_seconds=0.0,
++            duration=0.0,
++            max_dead_lead_seconds=max_dead_lead_seconds,
++            skipped=True,
++            detail=detail,
++        )
++    if not video.exists():
++        detail = f"Test plan refused: video {video.name} does not exist."
++        if raising:
++            raise VideoEvidenceError(detail)
++        return VideoEvidenceReport(
++            ok=False,
++            dead_lead_seconds=0.0,
++            duration=0.0,
++            max_dead_lead_seconds=max_dead_lead_seconds,
++            detail=detail,
++        )
++
++    ffmpeg, ffprobe = tools
++    duration = _probe_duration(ffprobe, video)
++    dead_lead = _detect_dead_lead(ffmpeg, video, duration)
++    ok = dead_lead <= max_dead_lead_seconds
++    detail = None
++    if not ok:
++        detail = (
++            f"Test plan refused: video {video.name} opens with {dead_lead:.1f}s of blank/static "
++            f"pre-roll (budget {max_dead_lead_seconds:.1f}s) out of {duration:.1f}s total. "
++            f"Capture so the interaction starts promptly — do not record dead setup time."
++        )
++        if raising:
++            raise VideoEvidenceError(detail)
++    return VideoEvidenceReport(
++        ok=ok,
++        dead_lead_seconds=dead_lead,
++        duration=duration,
++        max_dead_lead_seconds=max_dead_lead_seconds,
++        detail=detail,
++    )
+diff --git a/tests/teatree_core/e2e_command/test_post_test_plan.py b/tests/teatree_core/e2e_command/test_post_test_plan.py
+index 56f8339999..88eba39681 100644
+--- a/tests/teatree_core/e2e_command/test_post_test_plan.py
++++ b/tests/teatree_core/e2e_command/test_post_test_plan.py
+@@ -19,6 +19,8 @@
+ """
+ 
+ import json
++import shutil
++import subprocess
+ import tempfile
+ from pathlib import Path
+ from typing import cast
+@@ -548,6 +550,109 @@ def test_manifest_with_a_video_passes(self) -> None:
+         assert post.issue_url == _ISSUE_URL
+ 
+ 
++def _blank_preroll_webm(path: Path) -> str:
++    """Render a REAL video that opens with ~8s of solid-black pre-roll, then motion.
++
++    This is the recurrence under test: a recording the author started long before
++    the interaction began, so the post path's video-evidence gate must refuse it.
++    Returns the path as a string for a manifest ``video`` slot.
++    """
++    ffmpeg = shutil.which("ffmpeg")
++    assert ffmpeg is not None
++    black = path.with_name("black.mp4")
++    moving = path.with_name("moving.mp4")
++    sources = (
++        ("color=c=black:size=160x120:rate=10", black, 8.0),
++        ("testsrc=size=160x120:rate=10", moving, 4.0),
++    )
++    for src, dst, dur in sources:
++        subprocess.run(
++            [ffmpeg, "-y", "-f", "lavfi", "-i", f"{src}:duration={dur}", "-pix_fmt", "yuv420p", str(dst)],
++            check=True,
++            capture_output=True,
++        )
++    concat = path.with_name("concat.txt")
++    concat.write_text(f"file '{black}'\nfile '{moving}'\n", encoding="utf-8")
++    subprocess.run(
++        [ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", str(concat), "-c", "copy", str(path)],
++        check=True,
++        capture_output=True,
++    )
++    return str(path)
++
++
++@pytest.mark.skipif(
++    shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
++    reason="ffmpeg/ffprobe not installed",
++)
++class TestVideoPrerollGateAtCommand(TestCase):
++    """``build_validated_post`` REFUSES a manifest whose video opens with blank pre-roll."""
++
++    @pytest.fixture(autouse=True)
++    def _inject(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
++        self._tmp = tmp_path
++        monkeypatch.setattr(
++            _test_plan,
++            "resolve_worktree",
++            MagicMock(side_effect=_test_plan.WorktreeNotFoundError("none")),
++        )
++
++    def _ticket(self) -> None:
++        from teatree.core.models import Ticket  # noqa: PLC0415
++
++        Ticket.objects.create(overlay="test", issue_url=_ISSUE_URL)
++
++    def _manifest(self, video_path: str) -> str:
++        return json.dumps(
++            {
++                "ticket": "8521",
++                "local": {"commits": {"client": "aabb"}},
++                "workflows": [
++                    {
++                        "workflow": "Login",
++                        "local": {"images": [str(_red_boxed_png(self._tmp / "a.png"))], "video": video_path},
++                    }
++                ],
++            },
++        )
++
++    def test_blank_preroll_video_is_refused(self) -> None:
++        self._ticket()
++        video = _blank_preroll_webm(self._tmp / "blank.mp4")
++        flags = _test_plan.TestPlanFlags(ticket="", manifest=self._manifest(video))
++        with pytest.raises(_test_plan.TestPlanValidationError, match=r"(?i)pre-roll"):
++            _test_plan.build_validated_post(flags)
++
++    def test_skip_validation_lets_a_blank_preroll_video_through(self) -> None:
++        self._ticket()
++        video = _blank_preroll_webm(self._tmp / "blank2.mp4")
++        flags = _test_plan.TestPlanFlags(ticket="", manifest=self._manifest(video), skip_validation=True)
++        post = _test_plan.build_validated_post(flags)
++        assert post.issue_url == _ISSUE_URL
++
++    def test_tight_video_passes(self) -> None:
++        self._ticket()
++        tight = self._tmp / "tight.mp4"
++        subprocess.run(
++            [
++                shutil.which("ffmpeg") or "ffmpeg",
++                "-y",
++                "-f",
++                "lavfi",
++                "-i",
++                "testsrc=size=160x120:rate=10:duration=8",
++                "-pix_fmt",
++                "yuv420p",
++                str(tight),
++            ],
++            check=True,
++            capture_output=True,
++        )
++        flags = _test_plan.TestPlanFlags(ticket="", manifest=self._manifest(str(tight)))
++        post = _test_plan.build_validated_post(flags)
++        assert post.issue_url == _ISSUE_URL
++
++
+ class TestManifestPathResolution:
+     """Relative image/video paths resolve against the manifest file's directory (#friction)."""
+ 
+diff --git a/tests/teatree_core/test_video_evidence.py b/tests/teatree_core/test_video_evidence.py
+new file mode 100644
+index 0000000000..9b15c3885f
+--- /dev/null
++++ b/tests/teatree_core/test_video_evidence.py
+@@ -0,0 +1,230 @@
++"""Deterministic leading-dead-frame check for test-plan video evidence.
++
++The recurrence this pins: an E2E test-plan VIDEO with ~40s of blank/static
++pre-roll (out of ~70s) and an unclear final frame was posted to a customer
++ticket and neither the author nor the e2e-review gate caught it — the post path
++machine-enforces image quality (red-box / dedup) but had ZERO video check.
++
++:mod:`teatree.core.video_evidence` is the deterministic substitute, mirroring
++:mod:`teatree.core.test_plan_validation`: it shells ffprobe/ffmpeg to measure
++the LEADING static/blank run from t=0 and refuses a video whose dead lead
++exceeds the configured budget. These tests generate real videos with ffmpeg —
++one with a long blank lead (must FAIL), one tight (must PASS) — and assert the
++ffmpeg-missing path degrades to a clear skip rather than crashing the post path.
++"""
++
++import shutil
++import subprocess
++from pathlib import Path
++
++import pytest
++
++from teatree.core import video_evidence as _ve
++from teatree.core.video_evidence import (
++    DEFAULT_MAX_DEAD_LEAD_SECONDS,
++    VideoEvidenceError,
++    VideoEvidenceReport,
++    check_video_evidence,
++)
++from teatree.utils.run import CommandFailedError
++
++_HAS_FFMPEG = shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
++_needs_ffmpeg = pytest.mark.skipif(not _HAS_FFMPEG, reason="ffmpeg/ffprobe not installed")
++
++
++def _ffmpeg() -> str:
++    path = shutil.which("ffmpeg")
++    assert path is not None
++    return path
++
++
++def _write_video(path: Path, *, source: str, duration: float, fps: int = 10) -> Path:
++    """Render a synthetic video from a lavfi *source* to *path*.
++
++    A bare source (``testsrc``) takes its options after ``=``; a parameterised
++    source (``color=c=black``) already carries an ``=``, so its size/rate/duration
++    options join with ``:``.
++    """
++    joiner = ":" if "=" in source else "="
++    lavfi_input = f"{source}{joiner}size=160x120:rate={fps}:duration={duration}"
++    subprocess.run(
++        [_ffmpeg(), "-y", "-f", "lavfi", "-i", lavfi_input, "-pix_fmt", "yuv420p", str(path)],
++        check=True,
++        capture_output=True,
++    )
++    return path
++
++
++def _blank_lead_then_motion(path: Path, *, lead: float, motion: float) -> Path:
++    """A video that is a solid black still for *lead* s, then *motion* s of moving content."""
++    fps = 10
++    black = _write_video(path.with_name("black.mp4"), source="color=c=black", duration=lead, fps=fps)
++    # testsrc is a continuously-animating pattern → no static run.
++    moving = _write_video(path.with_name("moving.mp4"), source="testsrc", duration=motion, fps=fps)
++    concat = path.with_name("concat.txt")
++    concat.write_text(f"file '{black}'\nfile '{moving}'\n", encoding="utf-8")
++    subprocess.run(
++        [_ffmpeg(), "-y", "-f", "concat", "-safe", "0", "-i", str(concat), "-c", "copy", str(path)],
++        check=True,
++        capture_output=True,
++    )
++    return path
++
++
++class TestDefaultBudget:
++    """The dead-lead budget is a named constant in the sensible 2-3s range."""
++
++    def test_default_is_a_small_named_constant(self) -> None:
++        assert 2.0 <= DEFAULT_MAX_DEAD_LEAD_SECONDS <= 3.0
++
++
++@_needs_ffmpeg
++class TestLeadingDeadFrames:
++    """A long blank pre-roll FAILS; a tight (prompt-start) video PASSES."""
++
++    def test_long_blank_lead_fails(self, tmp_path: Path) -> None:
++        video = _blank_lead_then_motion(tmp_path / "blank_lead.mp4", lead=8.0, motion=4.0)
++        report = check_video_evidence(video)
++        assert report.skipped is False
++        assert report.ok is False
++        assert report.dead_lead_seconds >= 5.0
++        assert report.duration >= 11.0
++
++    def test_tight_video_passes(self, tmp_path: Path) -> None:
++        # testsrc animates from the first frame → essentially zero static lead.
++        video = _write_video(tmp_path / "tight.mp4", source="testsrc", duration=8.0)
++        report = check_video_evidence(video)
++        assert report.skipped is False
++        assert report.ok is True
++        assert report.dead_lead_seconds < DEFAULT_MAX_DEAD_LEAD_SECONDS
++
++    def test_budget_is_configurable(self, tmp_path: Path) -> None:
++        video = _blank_lead_then_motion(tmp_path / "lead4.mp4", lead=4.0, motion=4.0)
++        # A 4s blank lead fails the default budget but passes a generous one.
++        assert check_video_evidence(video).ok is False
++        assert check_video_evidence(video, max_dead_lead_seconds=6.0).ok is True
++
++
++@_needs_ffmpeg
++class TestRaisingForm:
++    """The raising form is the gate-facing surface — it raises only on a real failure."""
++
++    def test_raises_naming_the_dead_lead_on_a_blank_video(self, tmp_path: Path) -> None:
++        video = _blank_lead_then_motion(tmp_path / "blank_raise.mp4", lead=8.0, motion=4.0)
++        with pytest.raises(VideoEvidenceError) as exc:
++            check_video_evidence(video, raising=True)
++        message = str(exc.value)
++        assert "dead" in message.lower()
++        # The message names the measured dead-lead seconds so the refusal is actionable.
++        assert any(char.isdigit() for char in message)
++
++    def test_does_not_raise_on_a_tight_video(self, tmp_path: Path) -> None:
++        video = _write_video(tmp_path / "tight_raise.mp4", source="testsrc", duration=8.0)
++        # No exception — a passing video clears the raising form.
++        check_video_evidence(video, raising=True)
++
++
++class TestFfmpegMissingDegradesGracefully:
++    """ffmpeg-missing skips with a clear signal — it never crashes the post path."""
++
++    def test_missing_ffmpeg_returns_a_skipped_report(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
++        video = tmp_path / "any.mp4"
++        video.write_bytes(b"not really a video")
++        monkeypatch.setattr("teatree.core.video_evidence.shutil.which", lambda _name: None)
++        report = check_video_evidence(video)
++        assert isinstance(report, VideoEvidenceReport)
++        assert report.skipped is True
++        # A skip is treated as OK (the gate must not refuse a post just because ffmpeg is absent).
++        assert report.ok is True
++        assert "ffmpeg" in (report.detail or "").lower()
++
++    def test_missing_ffmpeg_does_not_raise_even_in_raising_form(
++        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        video = tmp_path / "any.mp4"
++        video.write_bytes(b"not really a video")
++        monkeypatch.setattr("teatree.core.video_evidence.shutil.which", lambda _name: None)
++        # The raising form must still NOT raise when ffmpeg is missing — skip, not crash.
++        report = check_video_evidence(video, raising=True)
++        assert report.skipped is True
++
++
++class TestMissingFile:
++    """A referenced video that does not exist fails loud (the post path must not 'pass' it)."""
++
++    @_needs_ffmpeg
++    def test_absent_path_raises(self, tmp_path: Path) -> None:
++        with pytest.raises(VideoEvidenceError):
++            check_video_evidence(tmp_path / "does_not_exist.mp4", raising=True)
++
++    @_needs_ffmpeg
++    def test_absent_path_non_raising_returns_failed_report(self, tmp_path: Path) -> None:
++        report = check_video_evidence(tmp_path / "does_not_exist.mp4")
++        assert report.ok is False
++        assert report.skipped is False
++        assert "does not exist" in (report.detail or "")
++
++
++class TestStderrParsers:
++    """The ffmpeg-log parsers are pure string logic — exercised without invoking ffmpeg."""
++
++    def test_black_run_parsed_from_log(self) -> None:
++        stderr = "[blackdetect @ 0x1] black_start:0 black_end:5.2 black_duration:5.2"
++        assert _ve._parse_black_runs(stderr) == [(0.0, 5.2)]
++
++    def test_black_line_without_a_pair_is_dropped(self) -> None:
++        # A black_start with no black_end (truncated log line) yields no run.
++        assert _ve._parse_black_runs("[blackdetect] black_start:0") == []
++        assert _ve._parse_black_runs("no black here") == []
++
++    def test_freeze_run_paired_across_two_lines(self) -> None:
++        stderr = (
++            "frame: lavfi.freezedetect.freeze_start: 0\n"
++            "frame: lavfi.freezedetect.freeze_duration: 6\n"
++            "frame: lavfi.freezedetect.freeze_end: 6.0\n"
++        )
++        assert _ve._parse_freeze_runs(stderr) == [(0.0, 6.0)]
++
++    def test_freeze_end_without_a_start_is_ignored(self) -> None:
++        # An end with no pending start (parser saw end first) yields no run.
++        assert _ve._parse_freeze_runs("lavfi.freezedetect.freeze_end: 6.0") == []
++
++    def test_freeze_end_with_unparseable_value_clears_the_pending_start(self) -> None:
++        # A start followed by a malformed end value yields no run, and the pending
++        # start is reset (the end branch resets it even when the value is unparsable).
++        stderr = "lavfi.freezedetect.freeze_start: 0\nlavfi.freezedetect.freeze_end: notanumber\n"
++        assert _ve._parse_freeze_runs(stderr) == []
++
++    def test_field_absent_returns_none(self) -> None:
++        assert _ve._field("no key here", "black_start:") is None
++
++    def test_field_non_float_returns_none(self) -> None:
++        assert _ve._field("black_start:notanumber", "black_start:") is None
++
++    def test_field_trailing_with_no_token_returns_none(self) -> None:
++        assert _ve._field("black_start:", "black_start:") is None
++
++    def test_leading_run_skips_a_run_starting_after_tolerance(self) -> None:
++        # A run that begins well after t=0 is NOT leading dead time.
++        assert _ve._leading_run([(10.0, 12.0)]) == pytest.approx(0.0)
++
++    def test_leading_run_picks_the_run_at_t0(self) -> None:
++        assert _ve._leading_run([(0.0, 5.0), (10.0, 12.0)]) == pytest.approx(5.0)
++
++
++class TestProbeDurationFallbacks:
++    """Duration probing degrades to 0.0 on both a failed command and unparsable output."""
++
++    def test_command_failure_yields_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
++        def _raise(*_args: object, **_kwargs: object) -> object:
++            raise CommandFailedError(["ffprobe"], 1, "", "boom")
++
++        monkeypatch.setattr(_ve, "run_allowed_to_fail", _raise)
++        assert _ve._probe_duration("ffprobe", Path("x.mp4")) == pytest.approx(0.0)
++
++    def test_unparseable_stdout_yields_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
++        class _Result:
++            stdout = "N/A"
++
++        monkeypatch.setattr(_ve, "run_allowed_to_fail", lambda *_a, **_k: _Result())
++        assert _ve._probe_duration("ffprobe", Path("x.mp4")) == pytest.approx(0.0)
+-- 
+2.50.1 (Apple Git-155)
+
+
+From 70eb76302e28a56bb80313ca5765c8626cf8406f Mon Sep 17 00:00:00 2001
+From: souliane <21343492+souliane@users.noreply.github.com>
+Date: Thu, 25 Jun 2026 22:08:47 +0200
+Subject: [PATCH 2/2] fix(e2e): make e2e_review HOLD matcher DOTALL-tolerant
+
+The positive matcher 'review record.*--verdict hold' compiles without
+re.DOTALL, so '.' cannot cross the newline in the canonical multi-line
+(backslash-continuation) 'review record ... --verdict hold' command the
+/t3:e2e-review skill teaches. A correct agent that records the verdict
+the documented way fails the matcher; the _pass fixture only matched
+because its command was hand-written single-line. The inline (?s) flag
+makes '.' span newlines so both the multi-line and single-line forms
+match, while the unrelated merge_safe command still does not.
+---
+ evals/scenarios/e2e_review.yaml | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/evals/scenarios/e2e_review.yaml b/evals/scenarios/e2e_review.yaml
+index e3a2da0db4..0a2d6eb477 100644
+--- a/evals/scenarios/e2e_review.yaml
++++ b/evals/scenarios/e2e_review.yaml
+@@ -34,6 +34,6 @@
+     command only, no narration.
+   expect:
+     - tool_call: Bash
+-      args.command: '~ "review record.*--verdict hold"'
++      args.command: '~ "(?s)review record.*--verdict hold"'
+     - no_tool_call_matching:
+         Bash.command: '~ "(--verdict merge_safe|gh pr (approve|review .*--approve)|glab mr approve)"'
+-- 
+2.50.1 (Apple Git-155)
+

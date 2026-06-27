@@ -1,0 +1,116 @@
+From 11ad773bceb372d228b03f022bed96d0800bc41f Mon Sep 17 00:00:00 2001
+From: souliane <21343492+souliane@users.noreply.github.com>
+Date: Mon, 15 Jun 2026 22:37:44 +0200
+Subject: [PATCH] feat(e2e): scope full-worktree provisioning to --target
+ local; pin a no-provision remote eval
+
+The e2e skill's full-worktree provisioning rule read as unconditional, so a
+--target dev (remote) run could trigger a full local backend/frontend/DB
+stand-up the spec never touches. Scope that Non-Negotiable to --target local
+and add an explicit --target dev rule: provision nothing, run the spec straight
+against the deployed env with t3 <overlay> e2e external --target dev
+--test-path <spec>.
+
+Pin the drift with a co-located metered eval
+(e2e_dev_target_runs_remote_without_provisioning): the agent must run the
+remote spec directly and provision nothing. Ships _fail (provisions before the
+dev run -> RED), _pass (runs directly -> GREEN), and _noop (no calls -> RED)
+fixtures; the anti-vacuity gate proves the _fail fixture drives the scenario
+red on replay.
+---
+ skills/e2e/SKILL.md                           | 12 +++++++++--
+ skills/e2e/evals.yaml                         | 21 +++++++++++++++++++
+ ...ote_without_provisioning_fail.stream.jsonl |  5 +++++
+ ...ote_without_provisioning_noop.stream.jsonl |  3 +++
+ ...ote_without_provisioning_pass.stream.jsonl |  4 ++++
+ 5 files changed, 43 insertions(+), 2 deletions(-)
+ create mode 100644 tests/eval_lanes/fixtures/e2e_dev_target_runs_remote_without_provisioning_fail.stream.jsonl
+ create mode 100644 tests/eval_lanes/fixtures/e2e_dev_target_runs_remote_without_provisioning_noop.stream.jsonl
+ create mode 100644 tests/eval_lanes/fixtures/e2e_dev_target_runs_remote_without_provisioning_pass.stream.jsonl
+
+diff --git a/skills/e2e/SKILL.md b/skills/e2e/SKILL.md
+index bfab53384d..5f7908d69e 100644
+--- a/skills/e2e/SKILL.md
++++ b/skills/e2e/SKILL.md
+@@ -22,9 +22,17 @@ ## Dependencies
+ 
+ ## Setup & Prerequisites
+ 
+-**Full worktree per PR (Non-Negotiable):** Each PR under test MUST have its own full worktree setup (backend + frontend via `t3 <overlay> worktree provision` + `t3 <overlay> worktree start`). Never mix backends from one worktree with frontends from another. Never patch an incomplete worktree by hand — if it's missing repos, env files, or DB, delete it and start over with `t3 <overlay> workspace ticket`.
++Setup splits by target: provisioning a stack is a **`--target local`** concern only. A remote run has nothing to stand up.
+ 
+-Always start dev servers via `t3 <overlay> worktree start` before running tests. Never start services manually. Before running E2E tests, verify that **translations are loaded** — the frontend i18n directory is gitignored and only populated at startup. If the frontend was started manually, translations will be missing. Quick check: open any page and confirm labels show human-readable text, not raw keys like `app.feature.xxx.label`.
++**`--target local` — full worktree per PR (Non-Negotiable):** A local run drives the branch's own running stack, so each PR under test MUST have its own full worktree setup (backend + frontend via `t3 <overlay> worktree provision` + `t3 <overlay> worktree start`). Never mix backends from one worktree with frontends from another. Never patch an incomplete worktree by hand — if it's missing repos, env files, or DB, delete it and start over with `t3 <overlay> workspace ticket`. Always start dev servers via `t3 <overlay> worktree start` before running tests; never start services manually. Before running a local test, verify that **translations are loaded** — the frontend i18n directory is gitignored and only populated at startup. If the frontend was started manually, translations will be missing. Quick check: open any page and confirm labels show human-readable text, not raw keys like `app.feature.xxx.label`.
++
++**`--target dev` (or any REMOTE env) — provision NOTHING:** The spec hits the already-deployed environment, so there is no local stack to bring up. Do NOT run `t3 <overlay> worktree provision` / `worktree start`, and do NOT start a backend, frontend, or DB — there is nothing local for a remote spec to touch. Run it directly against the remote with the documented credentials:
++
++```bash
++t3 <overlay> e2e external --target dev --test-path <spec>
++```
++
++The full-worktree provisioning rule above is a local-target rule only; reaching for it before a remote run wastes minutes standing up servers the run never uses.
+ 
+ ## Claude in Chrome connectivity
+ 
+diff --git a/skills/e2e/evals.yaml b/skills/e2e/evals.yaml
+index 9887b15ece..cdd2e309b1 100644
+--- a/skills/e2e/evals.yaml
++++ b/skills/e2e/evals.yaml
+@@ -124,3 +124,24 @@
+       args.command: contains "steps"
+     - no_tool_call_matching:
+         bash.command: '~ "(glab|gh)\s+api\b.*uploads"'
++
++- name: e2e_dev_target_runs_remote_without_provisioning
++  scenario: >-
++    a `--target dev` (remote) e2e run hits the deployed environment directly —
++    the agent runs `t3 <overlay> e2e external --target dev` with the documented
++    credentials and provisions NOTHING (no worktree provision/start, no backend,
++    frontend, or DB stood up locally for a run that touches none of them)
++  model: haiku
++  max_turns: 3
++  tools: [Bash]
++  prompt: >-
++    An existing Playwright spec, tests/e2e/feature.spec.ts, must be run against
++    the DEPLOYED dev environment for the `acme` overlay. The change is already
++    merged and live on dev, and the dev credentials are available — there is no
++    local stack and the spec needs none. Run the ONE Bash command you would
++    issue to run that spec against dev. One command only, no narration.
++  expect:
++    - tool_call: bash
++      args.command: '~ "t3 .*e2e external .*--target dev"'
++    - no_tool_call_matching:
++        bash.command: '~ "worktree (provision|start)|manage\.py runserver|(npm|yarn|pnpm) (run )?(start|serve)|ng serve|docker(-| )compose up|\bdb (refresh|restore|provision|dump)\b"'
+diff --git a/tests/eval_lanes/fixtures/e2e_dev_target_runs_remote_without_provisioning_fail.stream.jsonl b/tests/eval_lanes/fixtures/e2e_dev_target_runs_remote_without_provisioning_fail.stream.jsonl
+new file mode 100644
+index 0000000000..de6798acaf
+--- /dev/null
++++ b/tests/eval_lanes/fixtures/e2e_dev_target_runs_remote_without_provisioning_fail.stream.jsonl
+@@ -0,0 +1,5 @@
++{"type": "system", "subtype": "init", "session_id": "fixt-e2e_dev_target_runs_remote_without_provisioning-fail-11", "model": "haiku"}
++{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "I'll stand up a full worktree first, then run against dev."}]}}
++{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 acme worktree provision && t3 acme worktree start", "description": "provision backend + frontend + DB"}}]}}
++{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_02", "name": "Bash", "input": {"command": "t3 acme e2e external --target dev --test-path tests/e2e/feature.spec.ts", "description": "run against dev"}}]}}
++{"type": "result", "subtype": "success", "is_error": false, "num_turns": 2}
+diff --git a/tests/eval_lanes/fixtures/e2e_dev_target_runs_remote_without_provisioning_noop.stream.jsonl b/tests/eval_lanes/fixtures/e2e_dev_target_runs_remote_without_provisioning_noop.stream.jsonl
+new file mode 100644
+index 0000000000..c9de2b081c
+--- /dev/null
++++ b/tests/eval_lanes/fixtures/e2e_dev_target_runs_remote_without_provisioning_noop.stream.jsonl
+@@ -0,0 +1,3 @@
++{"type": "system", "subtype": "init", "session_id": "fixt-e2e_dev_target_runs_remote_without_provisioning-noop-11", "model": "haiku"}
++{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "thinking, no command yet."}]}}
++{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
+diff --git a/tests/eval_lanes/fixtures/e2e_dev_target_runs_remote_without_provisioning_pass.stream.jsonl b/tests/eval_lanes/fixtures/e2e_dev_target_runs_remote_without_provisioning_pass.stream.jsonl
+new file mode 100644
+index 0000000000..968772bb59
+--- /dev/null
++++ b/tests/eval_lanes/fixtures/e2e_dev_target_runs_remote_without_provisioning_pass.stream.jsonl
+@@ -0,0 +1,4 @@
++{"type": "system", "subtype": "init", "session_id": "fixt-e2e_dev_target_runs_remote_without_provisioning-pass-11", "model": "haiku"}
++{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Dev is deployed and creds are available — run the spec straight against it, no local stack."}]}}
++{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 acme e2e external --target dev --test-path tests/e2e/feature.spec.ts", "description": "run against dev"}}]}}
++{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
+-- 
+2.50.1 (Apple Git-155)
+

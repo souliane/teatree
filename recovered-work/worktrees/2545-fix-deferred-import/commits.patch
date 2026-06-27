@@ -1,0 +1,1275 @@
+From 943f7da3ffff16691f98fc123d3fde80275d5ca0 Mon Sep 17 00:00:00 2001
+From: souliane <21343492+souliane@users.noreply.github.com>
+Date: Sat, 20 Jun 2026 11:57:12 +0200
+Subject: [PATCH 1/2] =?UTF-8?q?feat(dream):=20wire=20the=20=C2=A74=20accep?=
+ =?UTF-8?q?tance=20gates=20(a)-(f)=20+=20populate=20DreamQaProbe=20(#2545)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The dreaming pass shipped phases 1-6 but the §4 acceptance gates that make a
+pass anti-vacuous were never implemented, and DreamQaProbe was a dead model:
+migrated, but never instantiated, populated, or replayed. A lossy / delete-only
+/ no-op consolidation was never caught.
+
+New module teatree.loops.dream.gates implements the six gates, each with an
+anti-vacuous test proven in both directions:
+
+- (a) retention: every probe answerable before the pass is still answerable
+  after it (a delete-only pass that drops an answer fails).
+- (b) interference: the prior-session probe pass-rate must not regress.
+- (c) consolidation-actually-happened: net size reduced OR schema count grew OR
+  clusters were recorded, AND every pruned index line has a confirmed durable
+  home (a no-op pass fails; an unhomed prune fails).
+- (d) index-budget: MEMORY.md back under its line/byte load-warning threshold.
+- (e) monotonicity: two passes over a stable corpus must not lower the
+  retention pass-rate.
+- (f) no-loss audit: every archived entry records a source + a destination that
+  actually exists (restorable).
+
+DreamQaProbe is now POPULATED: persist_probe_results seeds one probe per memory
+(keyed on a signature line), replays it via an injectable, deterministic
+LLM-free answerer, and records each outcome idempotently on probe_key,
+accumulating pass/run counts and marking re-recorded probes is_prior_session so
+the next pass has a baseline.
+
+Wired into the dream command: the cron snapshots each memory dir BEFORE and
+AFTER the file-side phases, runs run_acceptance_pass per dir, and gates the
+DreamRunMarker on the report. A failing gate marks the pass
+attempted-not-succeeded (staleness keeps firing) rather than stamping success.
+The command gate-gating is mutation-proven: ignoring the verdict turns the
+wiring tests RED.
+
+Open questions and assumptions:
+- Probe answerability is a deterministic signature-line substring match against
+  the memory set + index (assumed; the answerer is injectable so an LLM answerer
+  can replace it without touching the gates).
+- Gate (c) treats clusters_recorded > 0 as a consolidation-happened signal so a
+  cross-link/reindex-only maintenance pass (which grows the on-disk file set) is
+  not failed when distillation landed rules in the DB ledger (assumed).
+- Index budget thresholds: 900 lines / 256KB (assumed load-warning floors;
+  generous regression alarms, not hard caps).
+---
+ BLUEPRINT.md                                  |   2 +-
+ src/teatree/core/management/commands/dream.py | 113 +++-
+ src/teatree/loops/dream/engine.py             |  10 +-
+ src/teatree/loops/dream/gates.py              | 484 ++++++++++++++++++
+ .../management_commands/test_dream.py         |  97 +++-
+ tests/teatree_loops/dream/test_gates.py       | 353 +++++++++++++
+ 6 files changed, 1051 insertions(+), 8 deletions(-)
+ create mode 100644 src/teatree/loops/dream/gates.py
+ create mode 100644 tests/teatree_loops/dream/test_gates.py
+
+diff --git a/BLUEPRINT.md b/BLUEPRINT.md
+index 7b672db71f..2e9b8275fe 100644
+--- a/BLUEPRINT.md
++++ b/BLUEPRINT.md
+@@ -77,7 +77,7 @@ ## 4. Domain Models
+ 
+ Five core lifecycle models in `teatree.core.models/`, all FSM-driven (`django-fsm`): **Ticket**, **Worktree**, **Session**, **Task**, **TaskAttempt**. Around them, supporting rows under the same package: `BotPing`, `ConsolidatedMemory`/`DreamQaProbe`/`DreamRunMarker` (memory-consolidation, below), `DailyDigestThread`/`DailyDigestMessage`, `DbApproval`, `DeferredQuestion`, `EvalRunRecord`/`EvalScenarioResult` (eval-run ledger), `SessionAuditRecord` (eval audit layer), `HonestyEscalation`, `IncomingEvent`, `IntentClassification`, `LandscapeArtifact` (the intake landscape survey the planner consumes, below), `LivePostApproval`, `LocalStackQueueItem`, `LocalStackReaperMarker`, `Loop` (DB-configured autonomous loop — name, exactly one of prompt-FK/script, run_in_sub_agent/description/overlay, nullable delay, enabled, §5.6), `LoopLease`, `LoopState` (durable per-loop control plane, §5.6), `MergeClear`, `OnBehalfApproval`, `OutboundClaim` (drift verifier), `PendingChatInjection`, `Prompt`/`PromptVersion` (first-class reusable prompt with templated `params` + edit-history snapshots, the `Loop.prompt` FK target and the `/prompts` trigger, §5.6), `PullRequest`, `RedCardSignal`, `ReplyDispatch`, `ReviewAssignment`, `ReviewLoop`/`ReviewLoopRound` (the bounded author↔reviewer ping-pong FSM + its round-leg slot, §5.6), `ReviewRequestPost`, `ReviewVerdict`, `ScannedBroadcast`, `SelfImproveFiring`, `SessionHandover`, `TicketTransition`, `WorktreeEnvOverride`. Every row name above is cited by name from §5.6, §17.1, §17.4, or §4 prose.
+ 
+-**Memory-consolidation data layer ([#1933](https://github.com/souliane/teatree/issues/1933)).** Three durable rows back the idle-time "dreaming" pass that clusters session feedback and distils each cluster into one imperative rule. `ConsolidatedMemory` is the consolidation ledger (the DB row is canonical state + audit trail; a rendered topic file is the output), idempotency-anchored on a sha256 `cluster_key` and owning its status ladder `CANDIDATE → VERIFIED → PROMOTED` (plus `SUPERSEDED`/`EXPIRED`); it refuses an uncited rule, refuses to silently expire a BINDING row, and gates index-line pruning on a terminal status with a recorded durable home. **Pass 2 — memory→fix ([#2426](https://github.com/souliane/teatree/issues/2426)).** A `disposition` ladder (`UNTRIAGED → USER_SPECIFIC_KEEP | (CORE_GAP_NEEDS_TICKET → TICKETED → RESOLVED_RETIRED)`) makes the ledger a queue that DRAINS, not a pile that grows: a generic/teatree-core memory is a confession that core has a workflow gap, so `teatree.loops.dream.promote_memory` triages each untriaged row (injected `MemoryClassifier`, default the `durable_destination`-hint one — a home under teatree's own skills/source/scripts/BLUEPRINT is core-generic, anything else stays user-specific memory), files a deduped `needs-triage` teatree backlog ticket for each core gap (`cluster_key`-keyed marker; banned-term + bare-reference scanned so the public-repo body never leaks; records `ticket_url`), and retires the prose (`RESOLVED_RETIRED`, archived) once the linked ticket closes. A BINDING row is never retired. Pass 2 auto-files the *ticket* (durable, reversible) but never auto-implements; it is **default OFF** behind the `[loops.dream] memory_promote` / `T3_DREAM_MEMORY_PROMOTE` toggle, so an unflagged pass never triages or files. `DreamQaProbe` is the schema for the retention/interference/monotonicity QA corpus, but the § 4 acceptance gates that would populate and replay it are **not yet wired** — the model is migrated and unused, so no gate runs during a pass today ([#2545](https://github.com/souliane/teatree/issues/2545)). `DreamRunMarker` is the staleness marker keyed on the success timestamp (a run that keeps failing stays stale). `t3 dream run` (manual) and `t3 dream tick` (cadence-gated cron, ~04:00) take a `dream-tick` `LoopLease` and run the distillation engine (`teatree.loops.dream.engine.run_consolidation`), stamping `DreamRunMarker` only on a clean pass; `--dry-run` writes nothing. Engine v1 covers phases 1–3 (rank a bounded extract → an injected `Distiller` clusters by root cause → upsert by `cluster_key`, rejecting any uncited/hallucinated cluster and never overwriting a BINDING rule); the injected-distiller seam keeps the pass testable, and an SDK failure propagates rather than laundering into a fake success. **Phases 4–6 are LIVE** ([#1933](https://github.com/souliane/teatree/issues/1933) § 6): the cron runs three memory-file phases over the discovered `~/.claude` memory dirs, each fault-isolated in its own try/except so one phase (or one dir) failing never crashes the tick or stops the others, and each LIVE by default behind its own two-layer kill-switch (`[loops.dream] <phase>` toml / `T3_DREAM_<PHASE>` env, first match wins). The file-side phases run independently of the transcript extract, so they fire even on a 0-transcript-member pass (which stays attempted-not-succeeded for consolidation, but still re-indexes/decays the on-disk memory set; [#2547](https://github.com/souliane/teatree/issues/2547)). **Phase 4** (`teatree.loops.dream.cross_link`) appends symmetric `[[name]]` wiki-links between related memories — related when their significant-token Jaccard clears a deterministic floor (no model) — and is idempotent (a re-run on an unchanged set adds nothing). **Phase 5** (`teatree.loops.dream.reindex`) regenerates `MEMORY.md` as one ≤200-char line per memory (deduped, filename-stable, content stays in the topic file), byte-identical on a no-change re-run. **Phase 6** (`teatree.loops.dream.decay`) ages a memory out by ARCHIVING it (moved to `<memory_dir>/archive/` with a provenance header, never deleted) — gated by a NON-VACUOUS retention guard that retains a memory that is EITHER fresh (mtime within the window) OR still referenced (another live memory or the index `[[name]]`-links it); only a memory that is BOTH old AND unreferenced is archived, and a guard-disabled probe proves the guard has teeth. All three accept an explicit `memory_dir` and never touch the real `~/.claude` under test. **Phase 3b** ([#2346](https://github.com/souliane/teatree/issues/2346)) closes the drift → live-eval loop: `teatree.loops.dream.eval_proposer` maps each grounded cluster to an eval CANDIDATE in a JSONL review queue, then `teatree.loops.dream.promote` PROMOTES it to a real `under_load` scenario (`evals/scenarios/promoted_drift.yaml` + `_pass`/`_fail` replay fixtures) — the artifacts the deterministic replay gate and the weekly metered lane run unchanged. The nightly `tick` requests proposals **LIVE by default** (the `[loops.dream] propose_evals` / `T3_DREAM_PROPOSE_EVALS` kill-switch flips it off). Promotion is auto but gated by a **non-bypassable anti-vacuity guard** (`promote.guard_can_fail`): it runs the real grader (`teatree.eval.report.evaluate`) against a synthesised drift-recommitting transcript and promotes only when that verdict is FAIL (the matchers have teeth) AND a compliant transcript grades PASS (not a tautology); a candidate whose grader cannot fail is rejected — no file written. The guard is deterministic; live metered grading of a promoted scenario lands with the weekly Agent-SDK lane. **Phase 3b LLM derivation** ([#2447](https://github.com/souliane/teatree/issues/2447)) is the richer, **default-OFF** follow-up to the fixed-matcher `promote`: `teatree.loops.dream.llm_eval_proposer` runs an injected LLM synthesizer that turns a grounded candidate plus its cited transcript slice into a COMPLETE `under_load` `EvalSpec` — a pollution preamble saturated to the documented ~28k-char envelope floor, discriminating positive + negative matchers, and a judge rubric — parsed through the real loader and gated by a **candidate-derived** teeth check (`teatree.loops.dream._teeth_check.teeth_check_against_candidate`): it synthesises the `_fail`/`_pass` transcripts FROM the candidate's OWN cited drift and compliant tool-call shapes and grades both through the suite's real grader (`teatree.eval.report.evaluate`), DROPPING a spec whose matchers do not reject the candidate's own cited drift (or reject its compliant shape as a tautology) — proving the matchers target the SPECIFIC drift the candidate describes, not `promote`'s fixed session.py-edit transcripts. Even a proven spec is never autonomously committed to `evals/scenarios`: `stage_derived_evals` writes a staging `derived_evals.yaml` a human / standing core-maker ratifies via a PR. The phase is OFF unless the `[loops.dream] derive_evals` / `T3_DREAM_DERIVE_EVALS` toggle is set, so an unflagged pass is byte-identical. The `dream` mini-loop is registered `off_live_tick` (driven only by its own cron); `t3 doctor` surfaces the 48h staleness alarm.
++**Memory-consolidation data layer ([#1933](https://github.com/souliane/teatree/issues/1933)).** Three durable rows back the idle-time "dreaming" pass that clusters session feedback and distils each cluster into one imperative rule. `ConsolidatedMemory` is the consolidation ledger (the DB row is canonical state + audit trail; a rendered topic file is the output), idempotency-anchored on a sha256 `cluster_key` and owning its status ladder `CANDIDATE → VERIFIED → PROMOTED` (plus `SUPERSEDED`/`EXPIRED`); it refuses an uncited rule, refuses to silently expire a BINDING row, and gates index-line pruning on a terminal status with a recorded durable home. **Pass 2 — memory→fix ([#2426](https://github.com/souliane/teatree/issues/2426)).** A `disposition` ladder (`UNTRIAGED → USER_SPECIFIC_KEEP | (CORE_GAP_NEEDS_TICKET → TICKETED → RESOLVED_RETIRED)`) makes the ledger a queue that DRAINS, not a pile that grows: a generic/teatree-core memory is a confession that core has a workflow gap, so `teatree.loops.dream.promote_memory` triages each untriaged row (injected `MemoryClassifier`, default the `durable_destination`-hint one — a home under teatree's own skills/source/scripts/BLUEPRINT is core-generic, anything else stays user-specific memory), files a deduped `needs-triage` teatree backlog ticket for each core gap (`cluster_key`-keyed marker; banned-term + bare-reference scanned so the public-repo body never leaks; records `ticket_url`), and retires the prose (`RESOLVED_RETIRED`, archived) once the linked ticket closes. A BINDING row is never retired. Pass 2 auto-files the *ticket* (durable, reversible) but never auto-implements; it is **default OFF** behind the `[loops.dream] memory_promote` / `T3_DREAM_MEMORY_PROMOTE` toggle, so an unflagged pass never triages or files. `DreamQaProbe` is the retention/interference/monotonicity QA corpus, now POPULATED and replayed by the **§ 4 acceptance gates** ([#2545](https://github.com/souliane/teatree/issues/2545), `teatree.loops.dream.gates`). The cron snapshots each memory dir BEFORE and AFTER the file-side phases and runs all six gates: **(a) retention** (every probe answerable pre-pass is still answerable post-pass), **(b) interference** (the prior-session probe pass-rate does not regress), **(c) consolidation-actually-happened** (net size reduced OR schema count grew OR clusters were recorded, AND every pruned index line has a confirmed durable home), **(d) index-budget** (`MEMORY.md` back under its line/byte load-warning threshold), **(e) monotonicity** (two passes over a stable corpus do not lower the pass-rate), and **(f) no-loss audit** (every archived entry records a source + a destination that exists). A probe is seeded per memory (keyed on a signature line) and replayed via an injectable, deterministic LLM-free answerer; the probe corpus is persisted (idempotent on `probe_key`, accumulating pass/run counts) so the next pass has a baseline. A **failing gate marks the pass attempted-not-succeeded** (staleness keeps firing) — a lossy / delete-only / no-op consolidation is caught, never stamped success. Each gate has an anti-vacuous test proven in both directions, and the command's gate-gating is mutation-proven (ignoring the verdict turns the wiring tests RED). `DreamRunMarker` is the staleness marker keyed on the success timestamp (a run that keeps failing stays stale). `t3 dream run` (manual) and `t3 dream tick` (cadence-gated cron, ~04:00) take a `dream-tick` `LoopLease` and run the distillation engine (`teatree.loops.dream.engine.run_consolidation`), stamping `DreamRunMarker` only on a clean pass; `--dry-run` writes nothing. Engine v1 covers phases 1–3 (rank a bounded extract → an injected `Distiller` clusters by root cause → upsert by `cluster_key`, rejecting any uncited/hallucinated cluster and never overwriting a BINDING rule); the injected-distiller seam keeps the pass testable, and an SDK failure propagates rather than laundering into a fake success. **Phases 4–6 are LIVE** ([#1933](https://github.com/souliane/teatree/issues/1933) § 6): the cron runs three memory-file phases over the discovered `~/.claude` memory dirs, each fault-isolated in its own try/except so one phase (or one dir) failing never crashes the tick or stops the others, and each LIVE by default behind its own two-layer kill-switch (`[loops.dream] <phase>` toml / `T3_DREAM_<PHASE>` env, first match wins). The file-side phases run independently of the transcript extract, so they fire even on a 0-transcript-member pass (which stays attempted-not-succeeded for consolidation, but still re-indexes/decays the on-disk memory set; [#2547](https://github.com/souliane/teatree/issues/2547)). **Phase 4** (`teatree.loops.dream.cross_link`) appends symmetric `[[name]]` wiki-links between related memories — related when their significant-token Jaccard clears a deterministic floor (no model) — and is idempotent (a re-run on an unchanged set adds nothing). **Phase 5** (`teatree.loops.dream.reindex`) regenerates `MEMORY.md` as one ≤200-char line per memory (deduped, filename-stable, content stays in the topic file), byte-identical on a no-change re-run. **Phase 6** (`teatree.loops.dream.decay`) ages a memory out by ARCHIVING it (moved to `<memory_dir>/archive/` with a provenance header, never deleted) — gated by a NON-VACUOUS retention guard that retains a memory that is EITHER fresh (mtime within the window) OR still referenced (another live memory or the index `[[name]]`-links it); only a memory that is BOTH old AND unreferenced is archived, and a guard-disabled probe proves the guard has teeth. All three accept an explicit `memory_dir` and never touch the real `~/.claude` under test. **Phase 3b** ([#2346](https://github.com/souliane/teatree/issues/2346)) closes the drift → live-eval loop: `teatree.loops.dream.eval_proposer` maps each grounded cluster to an eval CANDIDATE in a JSONL review queue, then `teatree.loops.dream.promote` PROMOTES it to a real `under_load` scenario (`evals/scenarios/promoted_drift.yaml` + `_pass`/`_fail` replay fixtures) — the artifacts the deterministic replay gate and the weekly metered lane run unchanged. The nightly `tick` requests proposals **LIVE by default** (the `[loops.dream] propose_evals` / `T3_DREAM_PROPOSE_EVALS` kill-switch flips it off). Promotion is auto but gated by a **non-bypassable anti-vacuity guard** (`promote.guard_can_fail`): it runs the real grader (`teatree.eval.report.evaluate`) against a synthesised drift-recommitting transcript and promotes only when that verdict is FAIL (the matchers have teeth) AND a compliant transcript grades PASS (not a tautology); a candidate whose grader cannot fail is rejected — no file written. The guard is deterministic; live metered grading of a promoted scenario lands with the weekly Agent-SDK lane. **Phase 3b LLM derivation** ([#2447](https://github.com/souliane/teatree/issues/2447)) is the richer, **default-OFF** follow-up to the fixed-matcher `promote`: `teatree.loops.dream.llm_eval_proposer` runs an injected LLM synthesizer that turns a grounded candidate plus its cited transcript slice into a COMPLETE `under_load` `EvalSpec` — a pollution preamble saturated to the documented ~28k-char envelope floor, discriminating positive + negative matchers, and a judge rubric — parsed through the real loader and gated by a **candidate-derived** teeth check (`teatree.loops.dream._teeth_check.teeth_check_against_candidate`): it synthesises the `_fail`/`_pass` transcripts FROM the candidate's OWN cited drift and compliant tool-call shapes and grades both through the suite's real grader (`teatree.eval.report.evaluate`), DROPPING a spec whose matchers do not reject the candidate's own cited drift (or reject its compliant shape as a tautology) — proving the matchers target the SPECIFIC drift the candidate describes, not `promote`'s fixed session.py-edit transcripts. Even a proven spec is never autonomously committed to `evals/scenarios`: `stage_derived_evals` writes a staging `derived_evals.yaml` a human / standing core-maker ratifies via a PR. The phase is OFF unless the `[loops.dream] derive_evals` / `T3_DREAM_DERIVE_EVALS` toggle is set, so an unflagged pass is byte-identical. The `dream` mini-loop is registered `off_live_tick` (driven only by its own cron); `t3 doctor` surfaces the 48h staleness alarm.
+ 
+ `Ticket` also carries a `Role` enum (`AUTHOR` / `REVIEWER`) orthogonal to its state. The reviewer role drives the §5.6 `reviewer_prs` scanner (`Ticket(role="reviewer", issue_url=<pr_url>)`) and short-circuits to `delivered` once the review work completes; the author role is the default lifecycle.
+ 
+diff --git a/src/teatree/core/management/commands/dream.py b/src/teatree/core/management/commands/dream.py
+index 4eca56d7d7..ce0acf0471 100644
+--- a/src/teatree/core/management/commands/dream.py
++++ b/src/teatree/core/management/commands/dream.py
+@@ -34,6 +34,7 @@
+     from collections.abc import Callable
+ 
+     from teatree.core.backend_protocols import CodeHostBackend
++    from teatree.loops.dream.decay import ArchivedMemory
+ 
+ 
+ class Command(TyperCommand):
+@@ -158,13 +159,29 @@ def _consolidate_and_mark(
+             )
+             return False
+ 
+-        DreamRunMarker.objects.mark_succeeded(now)
+         promoted = self._promote_candidates(propose_evals=propose_evals, dry_run=dry_run)
+-        memory_phases = self._run_memory_phases(dry_run=dry_run)
++        memory_phases, gates_passed, gates_summary = self._run_memory_phases_and_gates(
++            clusters_recorded=result.clusters_recorded, dry_run=dry_run
++        )
+         memory_promote = self._run_memory_promotion(dry_run=dry_run)
++
++        # The §4 acceptance gates make the pass anti-vacuous: a lossy / delete-only
++        # / no-op consolidation FAILS a gate, and a failing gate must NOT stamp
++        # success — staleness keeps firing until a faithful pass lands (#2545).
++        if not gates_passed:
++            DreamRunMarker.objects.mark_attempted(now)
++            self.stdout.write(
++                f"WARN  dream pass — {result.clusters_recorded} cluster(s) recorded "
++                f"from {result.members_replayed} member(s){evals}{empty}{promoted}{memory_phases}"
++                f"{memory_promote}{gates_summary}; acceptance gate(s) FAILED — marker NOT stamped succeeded.",
++            )
++            return False
++
++        DreamRunMarker.objects.mark_succeeded(now)
+         self.stdout.write(
+             f"OK    dream pass — {result.clusters_recorded} cluster(s) recorded "
+-            f"from {result.members_replayed} member(s){evals}{empty}{promoted}{memory_phases}{memory_promote}.",
++            f"from {result.members_replayed} member(s){evals}{empty}{promoted}{memory_phases}"
++            f"{memory_promote}{gates_summary}.",
+         )
+         return True
+ 
+@@ -280,6 +297,96 @@ def _run_memory_phases(self, *, dry_run: bool) -> str:
+         parts = [self._phase_summary(label, runner, memory_dirs, dry_run=dry_run) for label, runner in phases]
+         return "".join(part for part in parts if part)
+ 
++    def _run_memory_phases_and_gates(self, *, clusters_recorded: int, dry_run: bool) -> "tuple[str, bool, str]":
++        """Run phases 4-6 then the §4 acceptance gates, gating success on the gates (#2545).
++
++        Snapshots every discovered memory dir BEFORE the phases mutate it, runs the
++        phases (capturing what decay archived per dir), snapshots AFTER, then runs the
++        six acceptance gates per dir (:func:`teatree.loops.dream.gates.run_acceptance_pass`),
++        which also populates the ``DreamQaProbe`` corpus. Returns
++        ``(phase_summary, all_gates_passed, gate_summary)`` — a failing gate makes the
++        caller stamp the pass attempted-not-succeeded (staleness keeps firing) rather
++        than laundering a lossy consolidation into a success.
++
++        Fault-isolated: a gate-evaluation failure for one dir is reported in the
++        summary, defaults that dir's verdict to PASS (the gate machinery, not the
++        consolidation, broke), and never crashes the tick.
++        """
++        from teatree.loops.dream import gates  # noqa: PLC0415
++        from teatree.memory_audit import discover_memory_dirs  # noqa: PLC0415
++
++        memory_dirs = discover_memory_dirs()
++        if not memory_dirs:
++            return "", True, ""
++
++        before = {d: gates.snapshot_memory_dir(d) for d in memory_dirs}
++        schema_before = self._ledger_schema_count()
++        phase_summary, archived_by_dir = self._run_phases(memory_dirs, dry_run=dry_run)
++        schema_after = self._ledger_schema_count()
++
++        all_passed = True
++        clauses: list[str] = []
++        for d in memory_dirs:
++            try:
++                report = gates.run_acceptance_pass(
++                    before[d],
++                    gates.snapshot_memory_dir(d),
++                    overlay="",
++                    archived=archived_by_dir.get(d, ()),
++                    schema_before=schema_before,
++                    schema_after=schema_after,
++                    clusters_recorded=clusters_recorded,
++                    persist=not dry_run,
++                )
++            except Exception as exc:  # noqa: BLE001
++                clauses.append(f"WARN gates raised: {type(exc).__name__}: {exc}")
++                continue
++            all_passed = all_passed and report.passed
++            if not report.passed:
++                failed = ", ".join(g.name for g in report.gate_results if not g.passed)
++                clauses.append(f"gates FAILED ({failed})")
++        gate_summary = f"; {'; '.join(clauses)}" if clauses else "; all acceptance gates passed"
++        return phase_summary, all_passed, gate_summary
++
++    def _run_phases(
++        self, memory_dirs: list[Path], *, dry_run: bool
++    ) -> "tuple[str, dict[Path, tuple[ArchivedMemory, ...]]]":
++        """Run phases 4 (cross-link) + 5 (re-index) then decay, returning decay's archives per dir."""
++        parts = [
++            self._phase_summary("cross-link", self._cross_link_dirs, memory_dirs, dry_run=dry_run),
++            self._phase_summary("re-index", self._reindex_dirs, memory_dirs, dry_run=dry_run),
++        ]
++        decay_summary, archived_by_dir = self._decay_dirs_with_archives(memory_dirs, dry_run=dry_run)
++        parts.append(decay_summary)
++        return "".join(part for part in parts if part), archived_by_dir
++
++    @staticmethod
++    def _ledger_schema_count() -> int:
++        """Total ConsolidatedMemory rows — the schema/cluster count for gate (c)."""
++        from teatree.core.models import ConsolidatedMemory  # noqa: PLC0415
++
++        return ConsolidatedMemory.objects.count()
++
++    def _decay_dirs_with_archives(
++        self, memory_dirs: list[Path], *, dry_run: bool
++    ) -> "tuple[str, dict[Path, tuple[ArchivedMemory, ...]]]":
++        """Run phase-6 decay per dir under fault isolation, returning its summary + archives."""
++        from teatree.loops.dream import decay  # noqa: PLC0415
++        from teatree.loops.dream.loop import decay_enabled  # noqa: PLC0415
++
++        archived_by_dir: dict[Path, tuple[ArchivedMemory, ...]] = {}
++        if not decay_enabled():
++            return "", archived_by_dir
++        total = 0
++        for d in memory_dirs:
++            try:
++                result = decay.decay_memories(d, dry_run=dry_run)
++            except Exception as exc:  # noqa: BLE001
++                return f"; WARN decay raised: {type(exc).__name__}: {exc}", archived_by_dir
++            archived_by_dir[d] = result.archived
++            total += result.archived_count
++        return (f"; archived {total} stale memory(ies)" if total else ""), archived_by_dir
++
+     def _phase_summary(
+         self,
+         label: str,
+diff --git a/src/teatree/loops/dream/engine.py b/src/teatree/loops/dream/engine.py
+index e44a85588c..5b095e70db 100644
+--- a/src/teatree/loops/dream/engine.py
++++ b/src/teatree/loops/dream/engine.py
+@@ -58,9 +58,13 @@
+ ``teatree.core.management.commands.dream``, not by this engine, which owns only
+ the transcript-side replay → cluster → distill → ledger pipeline (phases 1-3).
+ 
+-Still deferred (#2545): the § 4 acceptance gates (``DreamQaProbe``
+-retention/interference/monotonicity). ``DreamQaProbe`` is migrated but is not yet
+-populated or replayed — no gate runs during a pass today.
++The § 4 acceptance gates (a)-(f) are LIVE (#2545, :mod:`teatree.loops.dream.gates`):
++the cron snapshots each memory dir BEFORE and AFTER the file-side phases, runs the
++six gates (retention / interference / consolidation-happened / index-budget /
++monotonicity / no-loss-audit) and POPULATES the ``DreamQaProbe`` corpus (formerly
++a dead model) by replaying a probe derived from each memory's signature line. A
++failing gate marks the pass attempted-not-succeeded (staleness keeps firing), so a
++lossy / delete-only / no-op consolidation is caught rather than stamped success.
+ """
+ 
+ import json
+diff --git a/src/teatree/loops/dream/gates.py b/src/teatree/loops/dream/gates.py
+new file mode 100644
+index 0000000000..58e3e8cd90
+--- /dev/null
++++ b/src/teatree/loops/dream/gates.py
+@@ -0,0 +1,484 @@
++"""§4 acceptance gates (a)-(f) for the dream consolidation pass (#2545, #1933 § 4).
++
++The gates are what make a consolidation pass ANTI-VACUOUS. Phases 1-6 cluster,
++distil, cross-link, re-index, and decay; the gates assert the pass actually
++PRESERVED the lessons and ACTUALLY consolidated — so a do-nothing, delete-only,
++or over-compressing pass is CAUGHT rather than silently stamped success.
++
++The six gates (#1933 § 4):
++
++*   (a) **retention** — every QA pair answerable BEFORE the pass is still
++    answerable AFTER it. A delete-only pass that drops an answer fails.
++*   (b) **interference** — the prior-session probe pass-rate must not regress —
++    a new cluster must not corrupt an old answer.
++*   (c) **consolidation-actually-happened** — net memory size REDUCED *or* the
++    schema/cluster count INCREASED, AND every pruned index line has a confirmed
++    durable home. A no-op pass (size unchanged, schema unchanged) fails; a prune
++    with no durable home fails.
++*   (d) **index-budget** — the rendered ``MEMORY.md`` is back under its line /
++    byte load-warning threshold.
++*   (e) **monotonicity** — two passes over a stable corpus must not LOWER the
++    retention pass-rate.
++*   (f) **no-loss audit trail** — every archived/pruned entry is recorded with a
++    source + a durable destination, and the archived artifact actually exists
++    (restorable).
++
++The probe corpus is SEEDED from the memory set: one :class:`QaProbe` per memory
++file, whose ``expected_answer`` is a signature line lifted from the file. A probe
++is *answerable* against a :class:`MemorySnapshot` when that signature is still
++findable (in any memory body OR the index — a lesson transferred into the index
++still counts). This is the deterministic, LLM-free replay the gates run on; the
++answerer is injectable so a richer (LLM) answerer can replace it later without
++touching the gates.
++
++:func:`persist_probe_results` writes the corpus to the migrated-but-formerly-dead
++:class:`teatree.core.models.DreamQaProbe` (idempotent on ``probe_key``,
++accumulating pass/run counts and marking a re-recorded probe ``is_prior_session``)
++so the model is now live.
++
++PURE w.r.t. the real ``~/.claude``: every gate takes explicit snapshots; tests
++pass in-memory snapshots and a tmp archive dir. The command computes the
++before/after snapshots around the pass and surfaces a failing report by marking
++the run attempted-not-succeeded (staleness keeps firing).
++"""
++
++import hashlib
++import re
++from collections.abc import Callable, Mapping, Sequence
++from dataclasses import dataclass, field
++from pathlib import Path
++from typing import TYPE_CHECKING
++
++if TYPE_CHECKING:
++    from teatree.loops.dream.decay import ArchivedMemory
++
++_INDEX_NAME = "MEMORY.md"
++_HEADING_RE = re.compile(r"^#{1,6}\s")
++
++#: Load-warning thresholds for the rendered ``MEMORY.md`` index (gate d). The
++#: index is one short line per memory; past these the index has stopped being a
++#: scannable pointer list and the consolidation pass has failed to keep it small.
++#: Generous on purpose — they are a regression alarm, not a hard size cap.
++INDEX_LINE_BUDGET = 900
++INDEX_BYTE_BUDGET = 256 * 1024
++
++
++#: How a probe is checked against a snapshot — injectable so a future LLM answerer
++#: can replace the deterministic signature-match without touching the gates.
++ProbeAnswerer = Callable[["QaProbe", "MemorySnapshot"], bool]
++
++
++@dataclass(frozen=True, slots=True)
++class MemorySnapshot:
++    """An immutable view of a memory dir at one instant — the gate input.
++
++    ``memories`` maps each memory file NAME (e.g. ``feedback_x.md``) to its full
++    text; ``index_text`` is the rendered ``MEMORY.md``. The size accessors are
++    pure derivations used by the consolidation + budget gates.
++    """
++
++    memories: Mapping[str, str]
++    index_text: str
++
++    @classmethod
++    def build(cls, *, memories: Mapping[str, str], index_text: str = "") -> "MemorySnapshot":
++        return cls(memories=dict(memories), index_text=index_text)
++
++    @property
++    def byte_size(self) -> int:
++        """Total bytes across every memory body (the corpus weight)."""
++        return sum(len(text.encode("utf-8")) for text in self.memories.values())
++
++    @property
++    def index_byte_size(self) -> int:
++        return len(self.index_text.encode("utf-8"))
++
++    @property
++    def index_line_count(self) -> int:
++        return sum(1 for line in self.index_text.splitlines() if line.strip())
++
++    @property
++    def index_lines(self) -> frozenset[str]:
++        """The non-blank index lines (used to diff what a pass pruned)."""
++        return frozenset(line.strip() for line in self.index_text.splitlines() if line.strip())
++
++    def contains(self, needle: str) -> bool:
++        """True iff *needle* (normalized) is findable in any memory body OR the index."""
++        target = _normalize(needle)
++        if not target:
++            return False
++        if target in _normalize(self.index_text):
++            return True
++        return any(target in _normalize(text) for text in self.memories.values())
++
++
++@dataclass(frozen=True, slots=True)
++class QaProbe:
++    """One question / expected-answer pair replayed around a pass.
++
++    ``expected_answer`` is a signature lifted from the source memory; the probe is
++    *answerable* when that signature is still findable in a snapshot.
++    """
++
++    question: str
++    expected_answer: str
++    source_name: str
++
++    @property
++    def probe_key(self) -> str:
++        """sha256 of the question — the idempotency anchor matching ``DreamQaProbe``."""
++        return hashlib.sha256(self.question.encode("utf-8")).hexdigest()
++
++
++@dataclass(frozen=True, slots=True)
++class GateResult:
++    """One gate's verdict — its name, pass/fail, a human detail, and any regressions."""
++
++    name: str
++    passed: bool
++    detail: str
++    regressions: tuple[str, ...] = ()
++
++
++@dataclass(frozen=True, slots=True)
++class DreamQaReport:
++    """The aggregate of all six gates — passes iff every gate passes."""
++
++    gate_results: tuple[GateResult, ...] = field(default_factory=tuple)
++
++    @property
++    def passed(self) -> bool:
++        return all(g.passed for g in self.gate_results)
++
++    def render(self) -> str:
++        return "; ".join(f"{g.name} {'PASS' if g.passed else 'FAIL'} ({g.detail})" for g in self.gate_results)
++
++
++def _normalize(text: str) -> str:
++    return " ".join(text.split()).lower()
++
++
++def snapshot_memory_dir(memory_dir: Path) -> MemorySnapshot:
++    """Read a memory dir into an immutable :class:`MemorySnapshot`.
++
++    Reads every ``*.md`` (excluding ``MEMORY.md``, captured separately as the
++    index). A missing dir is a clean empty snapshot. NEVER touches the real
++    ``~/.claude`` beyond the explicit *memory_dir* the caller passes.
++    """
++    if not memory_dir.is_dir():
++        return MemorySnapshot.build(memories={}, index_text="")
++    memories: dict[str, str] = {}
++    index_text = ""
++    for md in sorted(memory_dir.glob("*.md")):
++        try:
++            text = md.read_text(encoding="utf-8")
++        except OSError:
++            continue
++        if md.name == _INDEX_NAME:
++            index_text = text
++        else:
++            memories[md.name] = text
++    return MemorySnapshot.build(memories=memories, index_text=index_text)
++
++
++def _signature_line(text: str) -> str:
++    """The first substantive prose line of a memory — its retention signature."""
++    for raw in text.splitlines():
++        line = raw.strip().lstrip("-*").strip()
++        if not line or _HEADING_RE.match(raw.strip()):
++            continue
++        if line.startswith(("name:", "summary:", "description:", "type:", "metadata:", "---")):
++            continue
++        return line
++    return ""
++
++
++def derive_probes(snapshot: MemorySnapshot) -> list[QaProbe]:
++    """Seed one :class:`QaProbe` per memory, keyed on a signature line.
++
++    The signature is the memory's first substantive prose line; the probe is
++    answerable while that line is still findable in a snapshot. A memory with no
++    substantive line yields no probe (nothing to retain).
++    """
++    probes: list[QaProbe] = []
++    for name, text in sorted(snapshot.memories.items()):
++        signature = _signature_line(text)
++        if not signature:
++            continue
++        probes.append(
++            QaProbe(question=f"What is the lesson recorded in {name}?", expected_answer=signature, source_name=name)
++        )
++    return probes
++
++
++def probe_answerable(probe: QaProbe, snapshot: MemorySnapshot, answerer: ProbeAnswerer | None = None) -> bool:
++    """Whether *probe* is answerable against *snapshot* (default: signature findable)."""
++    if answerer is not None:
++        return answerer(probe, snapshot)
++    return snapshot.contains(probe.expected_answer)
++
++
++def _pass_rate(probes: Sequence[QaProbe], snapshot: MemorySnapshot, answerer: ProbeAnswerer | None) -> float:
++    if not probes:
++        return 1.0
++    answered = sum(1 for probe in probes if probe_answerable(probe, snapshot, answerer))
++    return answered / len(probes)
++
++
++class Gate:
++    """The six §4 acceptance gates, grouped — each a pure verdict over snapshots.
++
++    Static methods so a caller computes one gate in isolation (the tests do) while
++    the suite reads as one cohesive contract. :func:`evaluate_gates` runs all six.
++    """
++
++    @staticmethod
++    def retention(
++        probes: Sequence[QaProbe],
++        snapshot_before: MemorySnapshot,
++        snapshot_after: MemorySnapshot,
++        answerer: ProbeAnswerer | None = None,
++    ) -> GateResult:
++        """(a) Every probe answerable BEFORE the pass must still be answerable AFTER it."""
++        pre_answerable = [p for p in probes if probe_answerable(p, snapshot_before, answerer)]
++        lost = [p.source_name for p in pre_answerable if not probe_answerable(p, snapshot_after, answerer)]
++        passed = not lost
++        detail = "all pre-answerable probes retained" if passed else f"{len(lost)} probe(s) no longer answerable"
++        return GateResult(name="retention", passed=passed, detail=detail, regressions=tuple(sorted(set(lost))))
++
++    @staticmethod
++    def interference(
++        prior_probes: Sequence[QaProbe],
++        snapshot_after: MemorySnapshot,
++        *,
++        prior_pass_rate: float,
++        answerer: ProbeAnswerer | None = None,
++    ) -> GateResult:
++        """(b) The prior-session probe pass-rate must not regress below its recorded value."""
++        now_rate = _pass_rate(prior_probes, snapshot_after, answerer)
++        passed = now_rate >= prior_pass_rate
++        detail = f"prior pass-rate {now_rate:.2f} vs recorded {prior_pass_rate:.2f}"
++        return GateResult(name="interference", passed=passed, detail=detail)
++
++    @staticmethod
++    # ast-grep-ignore: ac-django-no-complexity-suppressions
++    def consolidation_happened(  # noqa: PLR0913 — each kwarg is one documented §4 gate-(c) input.
++        snapshot_before: MemorySnapshot,
++        snapshot_after: MemorySnapshot,
++        *,
++        schema_before: int,
++        schema_after: int,
++        homed_index_lines: set[str],
++        clusters_recorded: int = 0,
++    ) -> GateResult:
++        """(c) Consolidation actually happened, AND every pruned index line is homed.
++
++        Consolidation "happened" when ANY of: the memory set's net byte size
++        REDUCED, the ledger schema/cluster count INCREASED, or this pass RECORDED
++        clusters (``clusters_recorded > 0`` — distillation landed rules in the DB
++        ledger even when the on-disk file set did not shrink). A do-nothing pass (no
++        size drop, no schema growth, no clusters) fails. Independently, any index
++        line the pass PRUNED must have a confirmed durable home — a prune with no
++        home fails.
++        """
++        size_reduced = snapshot_after.byte_size < snapshot_before.byte_size
++        schema_grew = schema_after > schema_before
++        distilled = clusters_recorded > 0
++        pruned_lines = snapshot_before.index_lines - snapshot_after.index_lines
++        unhomed = sorted(line for line in pruned_lines if line not in homed_index_lines)
++        consolidated = size_reduced or schema_grew or distilled
++        passed = consolidated and not unhomed
++        if not consolidated:
++            detail = "no consolidation: no size reduction, no schema growth, no clusters recorded"
++        elif unhomed:
++            detail = f"{len(unhomed)} pruned index line(s) have no confirmed durable home"
++        else:
++            detail = "consolidation happened; all pruned lines homed"
++        return GateResult(name="consolidation", passed=passed, detail=detail, regressions=tuple(unhomed))
++
++    @staticmethod
++    def index_budget(snapshot_after: MemorySnapshot) -> GateResult:
++        """(d) The rendered ``MEMORY.md`` is back under its line + byte load-warning budget."""
++        over_lines = snapshot_after.index_line_count > INDEX_LINE_BUDGET
++        over_bytes = snapshot_after.index_byte_size > INDEX_BYTE_BUDGET
++        passed = not (over_lines or over_bytes)
++        detail = (
++            f"index {snapshot_after.index_line_count} line(s) / {snapshot_after.index_byte_size} byte(s) "
++            f"(budget {INDEX_LINE_BUDGET} / {INDEX_BYTE_BUDGET})"
++        )
++        return GateResult(name="index_budget", passed=passed, detail=detail)
++
++    @staticmethod
++    def monotonicity(*, pass_rate_first: float, pass_rate_second: float) -> GateResult:
++        """(e) Two passes over a stable corpus must not LOWER the retention pass-rate."""
++        passed = pass_rate_second >= pass_rate_first
++        detail = f"run-1 {pass_rate_first:.2f} -> run-2 {pass_rate_second:.2f}"
++        return GateResult(name="monotonicity", passed=passed, detail=detail)
++
++    @staticmethod
++    def no_loss_audit(archived: "Sequence[ArchivedMemory]") -> GateResult:
++        """(f) Every archived entry records a source + a destination that actually exists."""
++        broken = sorted(a.name for a in archived if not a.source or not a.destination or not a.destination.is_file())
++        passed = not broken
++        detail = "all archived entries restorable" if passed else f"{len(broken)} archived entry(ies) not restorable"
++        return GateResult(name="no_loss_audit", passed=passed, detail=detail, regressions=tuple(broken))
++
++
++# ast-grep-ignore: ac-django-no-complexity-suppressions
++def evaluate_gates(  # noqa: PLR0913 — each kwarg is one documented §4 gate input, kwargs-only.
++    *,
++    snapshot_before: MemorySnapshot,
++    snapshot_after: MemorySnapshot,
++    schema_before: int,
++    schema_after: int,
++    homed_index_lines: set[str],
++    prior_pass_rate: float,
++    pass_rate_first: float,
++    pass_rate_second: float,
++    archived: "Sequence[ArchivedMemory]",
++    clusters_recorded: int = 0,
++    probes: Sequence[QaProbe] | None = None,
++    prior_probes: Sequence[QaProbe] | None = None,
++    answerer: ProbeAnswerer | None = None,
++) -> DreamQaReport:
++    """Run all six §4 gates and aggregate them into a :class:`DreamQaReport`.
++
++    When *probes* / *prior_probes* are not supplied they are derived from the
++    BEFORE snapshot (retention) and the prior corpus is taken as the same set —
++    the caller wires the persisted prior-session corpus when one exists.
++    """
++    derived = probes if probes is not None else derive_probes(snapshot_before)
++    prior = prior_probes if prior_probes is not None else derived
++    return DreamQaReport(
++        gate_results=(
++            Gate.retention(derived, snapshot_before, snapshot_after, answerer),
++            Gate.interference(prior, snapshot_after, prior_pass_rate=prior_pass_rate, answerer=answerer),
++            Gate.consolidation_happened(
++                snapshot_before,
++                snapshot_after,
++                schema_before=schema_before,
++                schema_after=schema_after,
++                homed_index_lines=homed_index_lines,
++                clusters_recorded=clusters_recorded,
++            ),
++            Gate.index_budget(snapshot_after),
++            Gate.monotonicity(pass_rate_first=pass_rate_first, pass_rate_second=pass_rate_second),
++            Gate.no_loss_audit(archived),
++        )
++    )
++
++
++def persist_probe_results(
++    probes: Sequence[QaProbe],
++    snapshot: MemorySnapshot,
++    *,
++    overlay: str,
++    answerer: ProbeAnswerer | None = None,
++) -> int:
++    """Record each probe's replay outcome to the ``DreamQaProbe`` corpus, idempotently.
++
++    Idempotent on ``probe_key`` (sha256 of the question): a probe re-recorded on a
++    later run finds its existing row and ACCUMULATES pass/run counts via
++    :meth:`DreamQaProbe.record_result`, and is marked ``is_prior_session`` from the
++    second recording on (it now carries over from an earlier run). Returns the
++    number of probes that PASSED this replay.
++    """
++    from teatree.core.models import DreamQaProbe  # noqa: PLC0415
++
++    passed = 0
++    for probe in probes:
++        answerable = probe_answerable(probe, snapshot, answerer)
++        passed += int(answerable)
++        row, created = DreamQaProbe.objects.get_or_create(
++            probe_key=probe.probe_key,
++            defaults={
++                "question": probe.question,
++                "expected_answer": probe.expected_answer,
++                "source_memory_path": probe.source_name,
++                "overlay": overlay,
++            },
++        )
++        if not created and not row.is_prior_session:
++            row.is_prior_session = True
++            row.save(update_fields=["is_prior_session"])
++        row.record_result(passed=answerable)
++    return passed
++
++
++def _prior_pass_rate(overlay: str) -> tuple[float, bool]:
++    """Recorded prior-session pass-rate for *overlay* and whether a prior run exists.
++
++    Averages ``last_pass_rate`` over the persisted prior-session probes. A fresh
++    overlay (no prior probes) returns ``(1.0, False)`` — gate (b)/(e) cannot
++    regress against a non-existent baseline, so the first run is never failed by
++    interference/monotonicity.
++    """
++    from teatree.core.models import DreamQaProbe  # noqa: PLC0415
++
++    prior = list(DreamQaProbe.objects.prior_session_probes(overlay))
++    if not prior:
++        return 1.0, False
++    return sum(p.last_pass_rate for p in prior) / len(prior), True
++
++
++# ast-grep-ignore: ac-django-no-complexity-suppressions
++def run_acceptance_pass(  # noqa: PLR0913 — kwargs-only §4 pass inputs; the command's per-dir gate entry point.
++    snapshot_before: MemorySnapshot,
++    snapshot_after: MemorySnapshot,
++    *,
++    overlay: str,
++    archived: "Sequence[ArchivedMemory]",
++    schema_before: int,
++    schema_after: int,
++    clusters_recorded: int = 0,
++    persist: bool = True,
++) -> DreamQaReport:
++    """Run the §4 acceptance gates for one memory dir and persist the probe corpus.
++
++    Wiring entry point for the dream command (#2545): derives probes from the
++    BEFORE snapshot, reads the recorded prior-session pass-rate as the monotonicity
++    / interference baseline, computes the durable-home set for the consolidation
++    gate as the pruned index lines whose lesson is still findable in the AFTER
++    snapshot (transfer-before-prune), runs all six gates, and — unless *persist* is
++    off (dry-run) — records each probe's outcome to :class:`DreamQaProbe` (so the
++    formerly-dead model is populated and the next pass has a prior baseline).
++    """
++    probes = derive_probes(snapshot_before)
++    prior_rate, had_prior = _prior_pass_rate(overlay)
++    now_rate = _pass_rate(probes, snapshot_after, None)
++    pruned_lines = snapshot_before.index_lines - snapshot_after.index_lines
++    homed_index_lines = {line for line in pruned_lines if snapshot_after.contains(line)}
++    report = evaluate_gates(
++        snapshot_before=snapshot_before,
++        snapshot_after=snapshot_after,
++        schema_before=schema_before,
++        schema_after=schema_after,
++        homed_index_lines=homed_index_lines,
++        prior_pass_rate=prior_rate if had_prior else now_rate,
++        pass_rate_first=prior_rate if had_prior else now_rate,
++        pass_rate_second=now_rate,
++        archived=archived,
++        clusters_recorded=clusters_recorded,
++        probes=probes,
++    )
++    if persist:
++        persist_probe_results(probes, snapshot_after, overlay=overlay)
++    return report
++
++
++__all__ = [
++    "INDEX_BYTE_BUDGET",
++    "INDEX_LINE_BUDGET",
++    "DreamQaReport",
++    "Gate",
++    "GateResult",
++    "MemorySnapshot",
++    "ProbeAnswerer",
++    "QaProbe",
++    "derive_probes",
++    "evaluate_gates",
++    "persist_probe_results",
++    "probe_answerable",
++    "run_acceptance_pass",
++    "snapshot_memory_dir",
++]
+diff --git a/tests/teatree_core/management_commands/test_dream.py b/tests/teatree_core/management_commands/test_dream.py
+index 5ce517a570..5909afffa8 100644
+--- a/tests/teatree_core/management_commands/test_dream.py
++++ b/tests/teatree_core/management_commands/test_dream.py
+@@ -9,7 +9,7 @@
+ 
+ import datetime as dt
+ from io import StringIO
+-from typing import ClassVar
++from typing import TYPE_CHECKING, ClassVar
+ from unittest.mock import patch
+ 
+ import pytest
+@@ -22,6 +22,9 @@
+ from teatree.loops.dream.engine import DreamRunResult
+ from teatree.loops.dream.loop import DREAM_LEASE_NAME, DREAM_LEASE_SECONDS, DREAM_LOOP_NAME
+ 
++if TYPE_CHECKING:
++    from teatree.loops.dream.gates import DreamQaReport
++
+ 
+ def _ok_result(*, dry_run: bool = False) -> DreamRunResult:
+     return DreamRunResult(clusters_recorded=1, members_replayed=3, dry_run=dry_run)
+@@ -351,6 +354,98 @@ def test_no_memory_dirs_is_clean_noop(self) -> None:
+         assert "OK    dream pass" in out
+ 
+ 
++class DreamAcceptanceGateWiringTestCase(TestCase):
++    """A failing §4 acceptance gate must NOT stamp the pass succeeded (#2545).
++
++    The gates make the pass anti-vacuous: a lossy / delete-only / no-op
++    consolidation FAILS a gate, and the command must keep staleness firing
++    rather than launder it into a success. The memory dir is a TMP fixture.
++    """
++
++    def setUp(self) -> None:
++        import tempfile  # noqa: PLC0415
++        from pathlib import Path  # noqa: PLC0415
++
++        self.memdir = Path(self.enterContext(tempfile.TemporaryDirectory()))
++        topic = "the worktree provision lease pid claim guard owner liveness anchored"
++        (self.memdir / "mem_a.md").write_text(f"name: mem_a\n{topic}\n", encoding="utf-8")
++        (self.memdir / "mem_b.md").write_text(f"name: mem_b\n{topic} session\n", encoding="utf-8")
++
++    def _run(self, stdout: StringIO, *, report: "DreamQaReport") -> None:
++        with (
++            patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()),
++            patch("teatree.loops.dream.promote.promote_proposals_file", return_value=[]),
++            patch("teatree.memory_audit.discover_memory_dirs", return_value=[self.memdir]),
++            patch("teatree.loops.dream.gates.run_acceptance_pass", return_value=report),
++            patch.dict(
++                "os.environ",
++                {
++                    "T3_DREAM_PROPOSE_EVALS": "",
++                    "T3_DREAM_CROSS_LINK": "0",
++                    "T3_DREAM_REINDEX": "0",
++                    "T3_DREAM_DECAY": "0",
++                },
++                clear=False,
++            ),
++        ):
++            call_command("dream", "run", stdout=stdout)
++
++    def test_failing_gate_does_not_stamp_succeeded(self) -> None:
++        from teatree.loops.dream.gates import DreamQaReport, GateResult  # noqa: PLC0415
++
++        failing = DreamQaReport(gate_results=(GateResult(name="retention", passed=False, detail="lost mem_a"),))
++        stdout = StringIO()
++        self._run(stdout, report=failing)
++        marker = DreamRunMarker.objects.filter(name=DreamRunMarker.NAME).first()
++        assert marker is None or marker.last_succeeded_at is None
++        out = stdout.getvalue()
++        assert "acceptance gate(s) FAILED" in out
++        assert "retention" in out
++
++    def test_failing_gate_keeps_staleness_active(self) -> None:
++        from teatree.loops.dream.gates import DreamQaReport, GateResult  # noqa: PLC0415
++
++        failing = DreamQaReport(gate_results=(GateResult(name="consolidation", passed=False, detail="no-op pass"),))
++        self._run(StringIO(), report=failing)
++        assert DreamRunMarker.objects.is_stale(timezone.now()) is True
++
++    def test_passing_gates_stamp_succeeded(self) -> None:
++        from teatree.loops.dream.gates import DreamQaReport, GateResult  # noqa: PLC0415
++
++        passing = DreamQaReport(gate_results=(GateResult(name="retention", passed=True, detail="ok"),))
++        stdout = StringIO()
++        self._run(stdout, report=passing)
++        marker = DreamRunMarker.objects.get(name=DreamRunMarker.NAME)
++        assert marker.last_succeeded_at is not None
++        assert "all acceptance gates passed" in stdout.getvalue()
++
++    def test_real_gates_populate_the_dream_qa_probe_corpus(self) -> None:
++        # No gate patch — the REAL gates run over the tmp memory dir and POPULATE
++        # the formerly-dead DreamQaProbe model (the #2545 core acceptance).
++        from teatree.core.models import DreamQaProbe  # noqa: PLC0415
++
++        stdout = StringIO()
++        with (
++            patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()),
++            patch("teatree.loops.dream.promote.promote_proposals_file", return_value=[]),
++            patch("teatree.memory_audit.discover_memory_dirs", return_value=[self.memdir]),
++            patch.dict(
++                "os.environ",
++                {
++                    "T3_DREAM_PROPOSE_EVALS": "",
++                    "T3_DREAM_CROSS_LINK": "0",
++                    "T3_DREAM_REINDEX": "0",
++                    "T3_DREAM_DECAY": "0",
++                },
++                clear=False,
++            ),
++        ):
++            call_command("dream", "run", stdout=stdout)
++        # One probe per memory file, recorded against the corpus.
++        assert DreamQaProbe.objects.count() == 2
++        assert DreamRunMarker.objects.get(name=DreamRunMarker.NAME).last_succeeded_at is not None
++
++
+ class DreamMemoryPromotionWiringTestCase(TestCase):
+     """Pass-2 memory promotion only runs when its default-OFF toggle is on (#2426)."""
+ 
+diff --git a/tests/teatree_loops/dream/test_gates.py b/tests/teatree_loops/dream/test_gates.py
+new file mode 100644
+index 0000000000..821f525333
+--- /dev/null
++++ b/tests/teatree_loops/dream/test_gates.py
+@@ -0,0 +1,353 @@
++"""§4 acceptance gates (a)-(f) for the dream consolidation pass (#2545, #1933 § 4).
++
++The gates make a pass ANTI-VACUOUS: a do-nothing, delete-only, or over-compressing
++consolidation must FAIL at least one gate, while a faithful pass PASSES all six.
++Each gate is proven in both directions — a faithful snapshot PASSES, and a
++degenerate one (lost answer, regressed pass-rate, no consolidation, blown index
++budget, lost audit trail) FAILS — so a vacuous gate that always passed would be
++caught.
++
++The probe corpus is seeded from the memory set (one probe per file, keyed on a
++signature line) and replayed against a before/after :class:`MemorySnapshot`. The
++``DreamQaProbe`` persistence layer is exercised by ``TestPersistProbeResults``
++so the model is no longer dead — a recorded run accumulates pass/run counts.
++
++Fixture-only with explicit snapshots: no LLM, no real ``~/.claude``, no wall clock.
++"""
++
++import tempfile
++from pathlib import Path
++
++from django.test import SimpleTestCase, TestCase
++
++from teatree.core.models import DreamQaProbe
++from teatree.loops.dream import gates
++from teatree.loops.dream.decay import ArchivedMemory
++from teatree.loops.dream.gates import (
++    DreamQaReport,
++    Gate,
++    MemorySnapshot,
++    QaProbe,
++    derive_probes,
++    evaluate_gates,
++    persist_probe_results,
++    probe_answerable,
++    run_acceptance_pass,
++    snapshot_memory_dir,
++)
++
++
++def _snapshot(memories: dict[str, str], index: str = "") -> MemorySnapshot:
++    return MemorySnapshot.build(memories=memories, index_text=index)
++
++
++class TestSnapshot(SimpleTestCase):
++    def setUp(self) -> None:
++        self.dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
++
++    def test_snapshot_reads_memory_set_and_index(self) -> None:
++        (self.dir / "mem_a.md").write_text("name: mem_a\nlesson A body\n", encoding="utf-8")
++        (self.dir / "mem_b.md").write_text("name: mem_b\nlesson B body\n", encoding="utf-8")
++        (self.dir / "MEMORY.md").write_text("# index\n- a\n- b\n", encoding="utf-8")
++
++        snap = snapshot_memory_dir(self.dir)
++
++        assert set(snap.memories) == {"mem_a.md", "mem_b.md"}
++        assert "lesson A body" in snap.memories["mem_a.md"]
++        assert "# index" in snap.index_text
++        assert snap.byte_size > 0
++        assert snap.index_line_count == 3
++
++    def test_missing_dir_is_empty_snapshot(self) -> None:
++        snap = snapshot_memory_dir(self.dir / "absent")
++        assert snap.memories == {}
++        assert snap.index_text == ""
++
++
++class TestDeriveAndReplay(SimpleTestCase):
++    def test_derive_one_probe_per_memory_keyed_on_signature(self) -> None:
++        snap = _snapshot({"mem_a.md": "name: mem_a\nthe load-bearing lesson A\n"})
++        probes = derive_probes(snap)
++        assert len(probes) == 1
++        assert probes[0].source_name == "mem_a.md"
++        assert "load-bearing lesson A" in probes[0].expected_answer
++
++    def test_probe_answerable_when_signature_present(self) -> None:
++        probe = QaProbe(question="q", expected_answer="the load-bearing lesson A", source_name="mem_a.md")
++        snap = _snapshot({"mem_a.md": "name: mem_a\nthe load-bearing lesson A is still here\n"})
++        assert probe_answerable(probe, snap) is True
++
++    def test_probe_unanswerable_when_signature_gone(self) -> None:
++        probe = QaProbe(question="q", expected_answer="the load-bearing lesson A", source_name="mem_a.md")
++        snap = _snapshot({"mem_b.md": "name: mem_b\nan unrelated body\n"})
++        assert probe_answerable(probe, snap) is False
++
++    def test_probe_answerable_from_the_index_too(self) -> None:
++        # A lesson transferred into the index line still counts as answerable.
++        probe = QaProbe(question="q", expected_answer="the load-bearing lesson A", source_name="mem_a.md")
++        snap = _snapshot({}, index="- the load-bearing lesson A — see topic file")
++        assert probe_answerable(probe, snap) is True
++
++
++class TestGateA(SimpleTestCase):
++    def test_passes_when_every_pre_answerable_probe_still_answerable(self) -> None:
++        before = _snapshot({"m.md": "name: m\nfact ONE and fact TWO\n"})
++        after = _snapshot({"m.md": "name: m\nfact ONE and fact TWO consolidated\n"})
++        probes = [
++            QaProbe(question="q1", expected_answer="fact ONE", source_name="m.md"),
++            QaProbe(question="q2", expected_answer="fact TWO", source_name="m.md"),
++        ]
++        result = Gate.retention(probes, before, after)
++        assert result.passed
++
++    def test_fails_a_delete_only_pass_that_drops_an_answer(self) -> None:
++        before = _snapshot({"m.md": "name: m\nfact ONE and fact TWO\n"})
++        after = _snapshot({})  # delete-only: the memory (and its answers) are gone
++        probes = [
++            QaProbe(question="q1", expected_answer="fact ONE", source_name="m.md"),
++            QaProbe(question="q2", expected_answer="fact TWO", source_name="m.md"),
++        ]
++        result = Gate.retention(probes, before, after)
++        assert not result.passed
++        assert result.regressions  # the lost probes are named
++
++
++class TestGateB(SimpleTestCase):
++    def test_passes_when_prior_session_score_does_not_regress(self) -> None:
++        after = _snapshot({"m.md": "name: m\nprior fact still recalled\n"})
++        prior = [QaProbe(question="q", expected_answer="prior fact still recalled", source_name="m.md")]
++        result = Gate.interference(prior, after, prior_pass_rate=1.0)
++        assert result.passed
++
++    def test_fails_when_a_new_rule_corrupts_a_prior_answer(self) -> None:
++        after = _snapshot({"m.md": "name: m\nthe answer was overwritten by a new cluster\n"})
++        prior = [QaProbe(question="q", expected_answer="prior fact still recalled", source_name="m.md")]
++        result = Gate.interference(prior, after, prior_pass_rate=1.0)
++        assert not result.passed
++
++
++class TestGateC(SimpleTestCase):
++    def test_passes_when_net_size_reduced_and_pruned_lines_homed(self) -> None:
++        before = _snapshot({"a.md": "x" * 1000, "b.md": "y" * 1000}, index="- a\n- b\n")
++        after = _snapshot({"a.md": "x" * 200}, index="- a\n")
++        # the pruned index line ("b") has a confirmed durable home
++        result = Gate.consolidation_happened(before, after, schema_before=0, schema_after=2, homed_index_lines={"- b"})
++        assert result.passed
++
++    def test_fails_a_do_nothing_pass(self) -> None:
++        same = _snapshot({"a.md": "x" * 1000}, index="- a\n")
++        result = Gate.consolidation_happened(same, same, schema_before=2, schema_after=2, homed_index_lines=set())
++        assert not result.passed
++
++    def test_passes_when_schema_count_increased_even_if_size_grew(self) -> None:
++        before = _snapshot({"a.md": "x" * 100}, index="- a\n")
++        after = _snapshot({"a.md": "x" * 100, "b.md": "y" * 100}, index="- a\n- b\n")
++        result = Gate.consolidation_happened(before, after, schema_before=0, schema_after=3, homed_index_lines=set())
++        assert result.passed
++
++    def test_fails_when_a_pruned_line_has_no_durable_home(self) -> None:
++        before = _snapshot({"a.md": "x" * 1000}, index="- a\n- b\n")
++        after = _snapshot({"a.md": "x" * 100}, index="- a\n")  # 'b' line vanished
++        result = Gate.consolidation_happened(before, after, schema_before=0, schema_after=1, homed_index_lines=set())
++        assert not result.passed  # pruned '- b' has no confirmed durable home
++
++    def test_passes_when_clusters_recorded_even_if_files_grew(self) -> None:
++        # A real distillation pass lands rules in the DB ledger; the on-disk file
++        # set may grow (cross-link links appended) yet consolidation DID happen.
++        before = _snapshot({"a.md": "x" * 100}, index="- a\n")
++        after = _snapshot({"a.md": "x" * 150}, index="- a\n")  # grew (links appended)
++        result = Gate.consolidation_happened(
++            before, after, schema_before=0, schema_after=0, homed_index_lines=set(), clusters_recorded=2
++        )
++        assert result.passed
++
++    def test_clusters_recorded_does_not_excuse_an_unhomed_prune(self) -> None:
++        before = _snapshot({"a.md": "x" * 100}, index="- a\n- b\n")
++        after = _snapshot({"a.md": "x" * 100}, index="- a\n")  # 'b' pruned, no home
++        result = Gate.consolidation_happened(
++            before, after, schema_before=0, schema_after=0, homed_index_lines=set(), clusters_recorded=2
++        )
++        assert not result.passed  # consolidation happened but a pruned line is orphaned
++
++
++class TestGateD(SimpleTestCase):
++    def test_passes_under_budget(self) -> None:
++        after = _snapshot({}, index="- one line\n- two line\n")
++        result = Gate.index_budget(after)
++        assert result.passed
++
++    def test_fails_over_line_budget(self) -> None:
++        big_index = "\n".join(f"- line {i}" for i in range(gates.INDEX_LINE_BUDGET + 5))
++        after = _snapshot({}, index=big_index)
++        result = Gate.index_budget(after)
++        assert not result.passed
++
++    def test_fails_over_byte_budget(self) -> None:
++        after = _snapshot({}, index="- " + "x" * (gates.INDEX_BYTE_BUDGET + 10))
++        result = Gate.index_budget(after)
++        assert not result.passed
++
++
++class TestGateE(SimpleTestCase):
++    def test_passes_when_second_pass_rate_not_lower(self) -> None:
++        assert Gate.monotonicity(pass_rate_first=0.8, pass_rate_second=0.8).passed
++        assert Gate.monotonicity(pass_rate_first=0.8, pass_rate_second=0.9).passed
++
++    def test_fails_when_second_pass_rate_lower(self) -> None:
++        assert not Gate.monotonicity(pass_rate_first=0.9, pass_rate_second=0.7).passed
++
++
++class TestGateF(SimpleTestCase):
++    def setUp(self) -> None:
++        self.dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
++
++    def _archived(self, name: str, *, write: bool) -> ArchivedMemory:
++        dest = self.dir / "archive" / f"{name}.md"
++        if write:
++            dest.parent.mkdir(parents=True, exist_ok=True)
++            dest.write_text("archived body", encoding="utf-8")
++        return ArchivedMemory(
++            name=name, source=self.dir / f"{name}.md", destination=dest, reason="stale, unreferenced, durably homed"
++        )
++
++    def test_passes_when_every_archived_entry_is_restorable(self) -> None:
++        archived = [self._archived("mem_a", write=True), self._archived("mem_b", write=True)]
++        result = Gate.no_loss_audit(archived)
++        assert result.passed
++
++    def test_fails_when_an_archived_entry_is_missing_its_destination(self) -> None:
++        archived = [self._archived("mem_a", write=True), self._archived("mem_b", write=False)]  # b never landed
++        result = Gate.no_loss_audit(archived)
++        assert not result.passed
++
++    def test_empty_archive_is_a_clean_pass(self) -> None:
++        assert Gate.no_loss_audit([]).passed
++
++
++class TestEvaluateGates(SimpleTestCase):
++    def setUp(self) -> None:
++        self.dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
++
++    def test_faithful_pass_passes_every_gate(self) -> None:
++        before = _snapshot({"a.md": "name: a\nfact ONE\n", "b.md": "name: b\nfact TWO\n"}, index="- a\n- b\n")
++        after = _snapshot({"a.md": "name: a\nfact ONE and fact TWO consolidated\n"}, index="- a\n")
++        report = evaluate_gates(
++            snapshot_before=before,
++            snapshot_after=after,
++            schema_before=0,
++            schema_after=2,
++            homed_index_lines={"- b"},
++            prior_pass_rate=1.0,
++            pass_rate_first=1.0,
++            pass_rate_second=1.0,
++            archived=[],
++        )
++        assert report.passed
++        assert all(g.passed for g in report.gate_results)
++
++    def test_delete_only_pass_fails_overall(self) -> None:
++        before = _snapshot({"a.md": "name: a\nfact ONE\n"}, index="- a\n")
++        after = _snapshot({}, index="")  # everything deleted, nothing homed
++        report = evaluate_gates(
++            snapshot_before=before,
++            snapshot_after=after,
++            schema_before=0,
++            schema_after=0,
++            homed_index_lines=set(),
++            prior_pass_rate=1.0,
++            pass_rate_first=1.0,
++            pass_rate_second=0.0,
++            archived=[],
++        )
++        assert not report.passed
++        failed = {g.name for g in report.gate_results if not g.passed}
++        assert "retention" in failed  # gate (a) catches the dropped answer
++
++
++class TestPersistProbeResults(TestCase):
++    """The DreamQaProbe model is now POPULATED — no longer a dead model (#2545)."""
++
++    def test_records_one_result_per_probe_accumulating_counts(self) -> None:
++        after = _snapshot({"m.md": "name: m\nfact ONE present\n"})
++        probes = [
++            QaProbe(question="q1", expected_answer="fact ONE", source_name="m.md"),
++            QaProbe(question="q2", expected_answer="fact MISSING", source_name="m.md"),
++        ]
++        persist_probe_results(probes, after, overlay="acme")
++
++        assert DreamQaProbe.objects.current_corpus("acme").count() == 2
++        q1 = DreamQaProbe.objects.get(question="q1")
++        q2 = DreamQaProbe.objects.get(question="q2")
++        assert q1.pass_count == 1
++        assert q2.pass_count == 0
++
++    def test_idempotent_on_probe_key_accumulates_across_runs(self) -> None:
++        after = _snapshot({"m.md": "name: m\nfact ONE present\n"})
++        probes = [QaProbe(question="q1", expected_answer="fact ONE", source_name="m.md")]
++
++        persist_probe_results(probes, after, overlay="acme")
++        persist_probe_results(probes, after, overlay="acme")
++
++        assert DreamQaProbe.objects.count() == 1
++        row = DreamQaProbe.objects.get(question="q1")
++        assert row.run_count == 2
++        assert row.pass_count == 2
++
++    def test_marks_prior_session_on_re_record(self) -> None:
++        after = _snapshot({"m.md": "name: m\nfact ONE present\n"})
++        probes = [QaProbe(question="q1", expected_answer="fact ONE", source_name="m.md")]
++        persist_probe_results(probes, after, overlay="acme")
++        persist_probe_results(probes, after, overlay="acme")
++        assert DreamQaProbe.objects.prior_session_probes("acme").count() == 1
++
++
++class TestRunAcceptancePass(TestCase):
++    """The command's per-dir entry point: gates + DreamQaProbe population (#2545)."""
++
++    def test_faithful_pass_passes_and_populates_the_corpus(self) -> None:
++        before = _snapshot(
++            {"a.md": "name: a\nfact ONE\n", "b.md": "name: b\nfact TWO\n"}, index="- fact ONE\n- fact TWO\n"
++        )
++        after = _snapshot({"a.md": "name: a\nfact ONE and fact TWO consolidated\n"}, index="- fact ONE\n- fact TWO\n")
++        report = run_acceptance_pass(before, after, overlay="acme", archived=[], schema_before=0, schema_after=2)
++        assert report.passed
++        # The formerly-dead model is now populated.
++        assert DreamQaProbe.objects.current_corpus("acme").count() == 2
++
++    def test_delete_only_pass_fails_the_retention_gate(self) -> None:
++        before = _snapshot({"a.md": "name: a\nfact ONE\n"}, index="- fact ONE\n")
++        after = _snapshot({}, index="")  # delete-only
++        report = run_acceptance_pass(before, after, overlay="acme", archived=[], schema_before=0, schema_after=0)
++        assert not report.passed
++        assert "retention" in {g.name for g in report.gate_results if not g.passed}
++
++    def test_second_run_uses_the_recorded_prior_baseline(self) -> None:
++        # First run records a 100% prior baseline (the prior corpus is keyed on the
++        # 'a.md' question, expected_answer 'a recalled fact').
++        snap = _snapshot({"a.md": "name: a\na recalled fact\n"}, index="- a recalled fact\n")
++        run_acceptance_pass(snap, snap, overlay="acme", archived=[], schema_before=0, schema_after=1)
++        # A second pass where the prior fact is now entirely gone regresses the
++        # prior-session pass-rate -> interference (and retention) fail against the
++        # recorded 100% baseline.
++        regressed = _snapshot({"a.md": "name: a\nan unrelated replacement\n"}, index="- unrelated\n")
++        report = run_acceptance_pass(snap, regressed, overlay="acme", archived=[], schema_before=1, schema_after=1)
++        failed = {g.name for g in report.gate_results if not g.passed}
++        assert "interference" in failed or "retention" in failed
++
++    def test_dry_run_does_not_persist(self) -> None:
++        snap = _snapshot({"a.md": "name: a\nfact ONE\n"}, index="- fact ONE\n")
++        run_acceptance_pass(snap, snap, overlay="acme", archived=[], schema_before=0, schema_after=1, persist=False)
++        assert DreamQaProbe.objects.count() == 0
++
++
++class TestReportRender(SimpleTestCase):
++    def test_render_names_each_failing_gate(self) -> None:
++        report = DreamQaReport(
++            gate_results=(
++                gates.GateResult(name="retention", passed=False, detail="lost q1"),
++                gates.GateResult(name="index_budget", passed=True, detail="ok"),
++            )
++        )
++        rendered = report.render()
++        assert "retention" in rendered
++        assert "FAIL" in rendered
+-- 
+2.50.1 (Apple Git-155)
+
+
+From 8aec53bdf8763c1601c4df1cf4c2e5f7452e4efb Mon Sep 17 00:00:00 2001
+From: souliane <21343492+souliane@users.noreply.github.com>
+Date: Sat, 20 Jun 2026 12:23:48 +0200
+Subject: [PATCH 2/2] fix(dream): use apps.get_model for ConsolidatedMemory
+ count (no deferred core import)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The new _ledger_schema_count helper used a function-scoped
+`from teatree.core.models import ConsolidatedMemory`, which pushed the
+intra-core deferred-import ratchet from 188 to 189 and failed
+test_count_does_not_exceed_frozen. Switch to the AppRegistry-safe
+apps.get_model("core", "ConsolidatedMemory") lookup — the same
+tach-invisible pattern managers.py uses — so the edge stops hiding an
+intra-core cycle from tach and the count returns to the frozen 188.
+The §4 acceptance gates and DreamQaProbe population are untouched.
+---
+ src/teatree/core/management/commands/dream.py | 9 +++++----
+ 1 file changed, 5 insertions(+), 4 deletions(-)
+
+diff --git a/src/teatree/core/management/commands/dream.py b/src/teatree/core/management/commands/dream.py
+index ce0acf0471..f4fb66f57a 100644
+--- a/src/teatree/core/management/commands/dream.py
++++ b/src/teatree/core/management/commands/dream.py
+@@ -22,18 +22,20 @@
+ 
+ import datetime as dt
+ from pathlib import Path
+-from typing import TYPE_CHECKING, Annotated
++from typing import TYPE_CHECKING, Annotated, cast
+ 
+ import typer
++from django.apps import apps
+ from django_typer.management import TyperCommand, command
+ 
+ from teatree.core.backend_registry import get_backend_provider
+ from teatree.core.overlay_loader import get_all_overlays
+ 
+ if TYPE_CHECKING:
+     from collections.abc import Callable
+ 
+     from teatree.core.backend_protocols import CodeHostBackend
++    from teatree.core.models import ConsolidatedMemory
+     from teatree.loops.dream.decay import ArchivedMemory
+ 
+ 
+@@ -363,9 +365,8 @@ def _run_phases(
+     @staticmethod
+     def _ledger_schema_count() -> int:
+         """Total ConsolidatedMemory rows — the schema/cluster count for gate (c)."""
+-        from teatree.core.models import ConsolidatedMemory  # noqa: PLC0415
+-
+-        return ConsolidatedMemory.objects.count()
++        consolidated_memory_model = cast("type[ConsolidatedMemory]", apps.get_model("core", "ConsolidatedMemory"))
++        return consolidated_memory_model.objects.count()
+ 
+     def _decay_dirs_with_archives(
+         self, memory_dirs: list[Path], *, dry_run: bool
+-- 
+2.50.1 (Apple Git-155)
+

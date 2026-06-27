@@ -1,0 +1,659 @@
+From b67d6052b37213b3414b6a2f6678857a15a5074b Mon Sep 17 00:00:00 2001
+From: souliane <21343492+souliane@users.noreply.github.com>
+Date: Tue, 23 Jun 2026 11:54:16 +0200
+Subject: [PATCH] fix(loop): add read-path staleness gate + real statusline
+ self-heal (#2625)
+
+The statusline file is regenerated only by a tick's render_phase, and both
+readers (hooks/scripts/statusline.sh and `t3 loop status`) display it verbatim,
+so a dead or long-not-ticked loop renders a confident, frozen loop line with no
+warning. Three fixes:
+
+- Freshness banner on the read path. The tick now records `rendered_at` in
+  tick-meta.json; both readers compute now - rendered_at (falling back to the
+  meta file's mtime) and, past max(2*cadence, 300s), prepend a RED
+  stale-statusline line naming how long ago the last tick ran. The cutoff and
+  wording live in one place, teatree.loop.statusline_staleness, so the shell
+  hook and the CLI agree; the hook mirrors the arithmetic inline to stay a
+  fast, dependency-free read. Degrades silently on missing/broken meta.
+
+- Real detector self-heal. StaleStatuslineEntryDetector's auto_fix was a no-op
+  stub. Add the idle render seam teatree.loop.phases.render.rerender_statusline
+  (orchestration layer) and inject it as the action-ladder auto_fix_callable
+  from the tick piggyback, so a merged-PR / terminal-ticket URL actually drops
+  out of the file. The detector stays in the domain layer and never reaches up
+  (tach-enforced); the schedule's _detector_auto_fix routes each detector's own
+  rerender. Whole-render age (a dead loop) is covered by the read-path banner,
+  not the detector, since the detector cannot fire when the loop is not ticking.
+
+Anti-vacuous regression tests, each observed RED before the fix: shell-hook
+banner (stale shows it with the right minutes, fresh hides it, missing meta is
+silent), CLI status banner (same age-gating), the shared staleness_banner helper
+across the cutoff boundary, the rerender_statusline seam rewriting a stale file,
+and the schedule adapter routing the detector's own rerender. Docs updated:
+BLUEPRINT and loop-topology.md.
+---
+ BLUEPRINT.md                                  |  2 +-
+ docs/blueprint/loop-topology.md               |  2 +
+ hooks/scripts/statusline.sh                   | 33 ++++++++
+ src/teatree/cli/loop.py                       |  7 ++
+ src/teatree/loop/phases/render.py             | 17 ++++
+ .../detectors/stale_statusline.py             | 16 ++--
+ src/teatree/loop/self_improve/schedule.py     | 16 +++-
+ src/teatree/loop/statusline_staleness.py      | 63 +++++++++++++++
+ src/teatree/loop/tick_freshness.py            | 13 +++-
+ src/teatree/loop/tick_piggyback.py            | 15 +++-
+ tests/teatree_cli/test_cli_loop.py            | 34 ++++++++
+ tests/teatree_loop/phases/test_render.py      | 17 ++++
+ .../self_improve/test_stale_statusline.py     | 38 +++++++++
+ .../teatree_loop/test_statusline_staleness.py | 69 +++++++++++++++++
+ tests/test_claude_statusline.py               | 77 +++++++++++++++++++
+ 15 files changed, 408 insertions(+), 11 deletions(-)
+ create mode 100644 src/teatree/loop/statusline_staleness.py
+ create mode 100644 tests/teatree_loop/test_statusline_staleness.py
+
+diff --git a/BLUEPRINT.md b/BLUEPRINT.md
+index 254eed941e..651f8946d8 100644
+--- a/BLUEPRINT.md
++++ b/BLUEPRINT.md
+@@ -196,7 +196,7 @@ ### 5.6 Loop Topology
+ 
+ ### 5.7 Self-Improving Monitor
+ 
+-A detector swarm that rides the same tick the regular `/loop` runs. It watches for smells the rest of the loop cannot self-report — dispatcher silently skipping a phase, a `MergeClear` issued but never reconciled, a statusline entry whose evidence has gone stale — and converts each into a `SelfImproveFiring` row plus a graduated action (`log → statusline → slack → ticket → auto_fix`, monotonic ladder). It is the legibility substrate §§17.4–17.8 relies on. Auto-fix is whitelisted: today only `StaleStatuslineEntryDetector` carries `auto_fix = True`. The shipped detector set (`detectors/registry.py`) is `DispatchGapDetector`, `ForgottenMergeDetector`, `StaleStatuslineEntryDetector`; additional `auto_fix` slots land with their own structural whitelist test.
++A detector swarm that rides the same tick the regular `/loop` runs. It watches for smells the rest of the loop cannot self-report — dispatcher silently skipping a phase, a `MergeClear` issued but never reconciled, a statusline entry whose evidence has gone stale — and converts each into a `SelfImproveFiring` row plus a graduated action (`log → statusline → slack → ticket → auto_fix`, monotonic ladder). It is the legibility substrate §§17.4–17.8 relies on. Auto-fix is whitelisted: today only `StaleStatuslineEntryDetector` carries `auto_fix = True`, and its self-heal is real — the detector's `rerender` re-renders the zones file via the idle render seam `teatree.loop.phases.render.rerender_statusline` (#2625, retiring the prior `_default_rerender` no-op), so a merged-PR / terminal-ticket URL actually drops out when the detector fires. The schedule wires each whitelisted detector's own `rerender` as the action-ladder `auto_fix_callable`. This covers stale *entries*; whole-render *age* (a dead loop, when no tick runs at all) is caught instead by the read-path freshness banner (§5.6.1) since the detector cannot fire when the loop is not ticking. The shipped detector set (`detectors/registry.py`) is `DispatchGapDetector`, `ForgottenMergeDetector`, `StaleStatuslineEntryDetector`; additional `auto_fix` slots land with their own structural whitelist test.
+ 
+ Sibling loop scanners (under `loop/scanners/`, not `SelfImprove` detectors) close the gaps the detectors only surface:
+ 
+diff --git a/docs/blueprint/loop-topology.md b/docs/blueprint/loop-topology.md
+index df7e8983d3..1fb5b5aebe 100644
+--- a/docs/blueprint/loop-topology.md
++++ b/docs/blueprint/loop-topology.md
+@@ -94,6 +94,8 @@ ## 5.6.1 Statusline rendering
+ 
+ **Header line segments:** `model=Opus 4.8 · ctx=42% │ 5h=18% (until 14:30) · 7d=63% │ t3=0(30m) acme=3(2h) │ ram=71% 51/64G · disk=22% 410G free │ skills: code review`. Segments are grouped (context · usage · freshness · resource · skills) and color-coded (green < 80%, yellow 80–94%, red ≥ 95% for percentages; light-grey for labels). Repo freshness is derived from `tick-meta.json` (`freshness`): commits behind `origin/main` and fetch age for `$T3_REPO` and each overlay with a `path` in `~/.teatree.toml` (green = 0, yellow = 1–5, red = 6+).
+ 
++**Read-path freshness banner (#2625).** Because both readers — the hook and `t3 loop status` — display the pre-rendered zones file verbatim, a dead or long-not-ticked loop would render a confident, frozen loop line with no warning. The render age is the gate: the tick writes a `rendered_at` epoch into `tick-meta.json` (`teatree.loop.tick_freshness._write_tick_meta`), and both readers compute `now - rendered_at` (falling back to the meta file's mtime so the gate works before the field exists). Past the cutoff `max(2 * cadence, 300s)` they prepend a RED `⚠ statusline stale — last tick <N>m ago (run \`t3 loop tick\`)` line. The cutoff and wording live in one place — `teatree.loop.statusline_staleness.staleness_banner` — so the shell hook and the CLI agree; the hook mirrors the same arithmetic inline to stay a fast, dependency-free read. Fail-open by construction: a missing file, missing field, or unreadable meta yields no banner.
++
+ **Zones (three, fixed order):**
+ 
+ 1. **Anchors** — always shown: active overlay, current ticket (if any), branch, context-window usage.
+diff --git a/hooks/scripts/statusline.sh b/hooks/scripts/statusline.sh
+index 352c6e4359..e4b0bfc40d 100755
+--- a/hooks/scripts/statusline.sh
++++ b/hooks/scripts/statusline.sh
+@@ -471,6 +471,36 @@ effort_from_settings() {
+ 
+ g_updates="$_freshness_segment"
+ 
++# Read-path freshness gate (#2625): the zones file is regenerated only by a
++# tick's render_phase, so a dead or long-not-ticked loop renders a confident,
++# frozen loop line. Compute the render age from tick-meta.json's `rendered_at`
++# (falling back to the meta file's mtime so it works before that field exists)
++# and prepend a RED stale banner past the cutoff. The cutoff and wording match
++# teatree.loop.statusline_staleness so the hook and `t3 loop status` agree.
++# Fail-open by construction: missing jq, field, or unreadable meta → no banner.
++_stale_banner=""
++if [ -r "$_tick_meta" ]; then
++    _now=${_now:-$(date +%s)}
++    _meta_cadence=""
++    _meta_rendered=""
++    if command -v jq >/dev/null 2>&1; then
++        _meta_cadence=$(jq -r '.cadence // empty' "$_tick_meta" 2>/dev/null)
++        _meta_rendered=$(jq -r '.rendered_at // empty' "$_tick_meta" 2>/dev/null)
++    fi
++    [ -n "$_meta_cadence" ] && [ "$_meta_cadence" -gt 0 ] 2>/dev/null || _meta_cadence=720
++    if [ -z "$_meta_rendered" ] || ! [ "$_meta_rendered" -gt 0 ] 2>/dev/null; then
++        _meta_rendered=$(stat -c %Y "$_tick_meta" 2>/dev/null || stat -f %m "$_tick_meta" 2>/dev/null || echo 0)
++    fi
++    if [ "$_meta_rendered" -gt 0 ] 2>/dev/null; then
++        _cutoff=$(( 2 * _meta_cadence ))
++        [ "$_cutoff" -lt 300 ] && _cutoff=300
++        _age=$(( _now - _meta_rendered ))
++        if [ "$_age" -gt "$_cutoff" ] 2>/dev/null; then
++            _stale_banner="${_RED}⚠ statusline stale — last tick $(( _age / 60 ))m ago (run \`t3 loop tick\`)${_RST}"
++        fi
++    fi
++fi
++
+ # Agent-Teams roster: the live mates of the team THIS session leads, rendered
+ # compactly so the lead sees who is on the bench without the harness's inline
+ # ``@mate · shift+↑/↓`` switcher being the only surface. The team config lives
+@@ -570,6 +600,9 @@ effort_from_settings() {
+     fi
+ fi
+ 
++# The read-path freshness banner (#2625) leads every line so a dead loop is
++# never mistaken for a fresh render; silent on a fresh / missing / unreadable meta.
++[ -n "$_stale_banner" ] && printf '%s\n' "$_stale_banner"
+ [ -n "$header" ] && printf '%s\n' "$header"
+ [ "$_skills_on_own_line" = "1" ] && printf '%s\n' "$_skills_segment"
+ 
+diff --git a/src/teatree/cli/loop.py b/src/teatree/cli/loop.py
+index c9b72b01e6..6cef1f78c3 100644
+--- a/src/teatree/cli/loop.py
++++ b/src/teatree/cli/loop.py
+@@ -106,10 +106,17 @@ def tick_command(
+ @loop_app.command("status")
+ def status_command() -> None:
+     """Show the loop's last-rendered statusline."""
++    import time  # noqa: PLC0415
++
++    from teatree.loop.statusline_staleness import staleness_banner  # noqa: PLC0415
++
+     target = default_path()
+     if not target.is_file():
+         typer.echo("No statusline rendered yet — run `t3 loop tick` first.")
+         raise typer.Exit(code=1)
++    banner = staleness_banner(target.with_name("tick-meta.json"), now=int(time.time()))
++    if banner:
++        typer.echo(banner)
+     typer.echo(target.read_text(encoding="utf-8"))
+ 
+ 
+diff --git a/src/teatree/loop/phases/render.py b/src/teatree/loop/phases/render.py
+index 900b1f8855..bafd8157d2 100644
+--- a/src/teatree/loop/phases/render.py
++++ b/src/teatree/loop/phases/render.py
+@@ -225,3 +225,20 @@ def _populate_loop_owner_anchor(zones: StatuslineZones) -> None:
+         return
+     if line:
+         getattr(zones, zone).append(line)
++
++
++def rerender_statusline(target: Path | None = None, *, colorize: bool | None = None) -> Path:
++    """Re-render the statusline from current state without a full tick (#2625).
++
++    Runs the idle (no-jobs) render path — the live-loop, open-PR, and
++    loop-owner anchors with an empty zone set — so a stale merged-PR /
++    terminal-ticket URL drops out of the rendered file. This is the
++    idempotent self-heal seam ``StaleStatuslineEntryDetector`` wires its
++    ``rerender`` callable to, closing the ``auto_fix=True`` promise.
++    """
++    zones = StatuslineZones()
++    _populate_live_loops_in_anchors(zones, colorize=colorize)
++    _write_open_prs_cache([], target=target)
++    _populate_open_prs_in_anchors(zones, target=target, colorize=colorize)
++    _populate_loop_owner_anchor(zones)
++    return render(zones, target=target, colorize=colorize)
+diff --git a/src/teatree/loop/self_improve/detectors/stale_statusline.py b/src/teatree/loop/self_improve/detectors/stale_statusline.py
+index 72c446aade..8fbdcfb861 100644
+--- a/src/teatree/loop/self_improve/detectors/stale_statusline.py
++++ b/src/teatree/loop/self_improve/detectors/stale_statusline.py
+@@ -46,13 +46,17 @@ def _default_statusline_reader() -> str:
+ 
+ 
+ def _default_rerender() -> None:
+-    """Trigger a fresh statusline render.
++    """Sentinel default — the real self-heal is injected by the orchestration tick.
+ 
+-    Phase 1 keeps this a no-op stub: the render is wired to the next
+-    ``loop_tick`` call, and the test suite injects its own callable to
+-    assert the auto-fix fired.  The real wiring is documented in the
+-    BLUEPRINT subsection so a future change can swap it in without
+-    touching detector code.
++    The detector lives in the ``domain`` layer; an actual re-render composes the
++    live-loop / open-PR / loop-owner anchors, which live in the ``orchestration``
++    layer (``teatree.loop.phases.render.rerender_statusline``). Reaching up to it
++    from here would invert the dependency DAG (tach-enforced). So the orchestration
++    caller injects the real callable as the action-ladder ``auto_fix_callable``
++    (``teatree.loop.tick_piggyback._self_improve_rerender``); the default stays a
++    no-op so a directly-constructed detector never crashes. The whole-render-age
++    case (a dead loop, no tick at all) is covered by the read-path freshness
++    banner (#2625), since the detector cannot fire when the loop is not ticking.
+     """
+     return
+ 
+diff --git a/src/teatree/loop/self_improve/schedule.py b/src/teatree/loop/self_improve/schedule.py
+index 348d9b0f2a..b1794c4c71 100644
+--- a/src/teatree/loop/self_improve/schedule.py
++++ b/src/teatree/loop/self_improve/schedule.py
+@@ -102,13 +102,27 @@ def run_tier(
+     reports: list[DetectorReport] = []
+     actions: list[ActionResult] = []
+     for detector in detector_list:
++        fix = auto_fix_callable if auto_fix_callable is not None else _detector_auto_fix(detector)
+         for report in detector.detect():
+             reports.append(report)
+             result = run_action_ladder(
+                 report,
+                 messaging=messaging,
+-                auto_fix_callable=auto_fix_callable,
++                auto_fix_callable=fix,
+             )
+             if result is not None:
+                 actions.append(result)
+     return TierResult(tier=tier, budget=verdict, reports=reports, actions=actions)
++
++
++def _detector_auto_fix(detector: SelfImproveDetector) -> Callable[[DetectorReport], None] | None:
++    """Adapt a detector's own ``rerender`` self-heal into the ladder callable.
++
++    Only the whitelisted ``auto_fix=True`` detectors carry a ``rerender``; the
++    action ladder still refuses to execute it unless the report opted in
++    (``report.auto_fix``). Detectors without ``rerender`` contribute no callable.
++    """
++    rerender = getattr(detector, "rerender", None)
++    if rerender is None:
++        return None
++    return lambda _report: rerender()
+diff --git a/src/teatree/loop/statusline_staleness.py b/src/teatree/loop/statusline_staleness.py
+new file mode 100644
+index 0000000000..533c16a602
+--- /dev/null
++++ b/src/teatree/loop/statusline_staleness.py
+@@ -0,0 +1,63 @@
++"""Read-path freshness gate for the statusline (souliane/teatree#2625).
++
++The statusline file is regenerated only by a tick's ``render_phase``. Both
++readers — ``hooks/scripts/statusline.sh`` and ``t3 loop status`` — display the
++pre-rendered file verbatim, so a dead or long-not-ticked loop renders a
++confident but frozen loop line with no warning. This helper is the single home
++for the stale cutoff and the banner wording both readers prepend, so the shell
++hook and the CLI agree.
++
++The cutoff is ``max(2 * cadence, STALE_FLOOR_SECONDS)``: two missed ticks, or a
++floor so a tiny cadence cannot make every render look stale. The age comes from
++``tick-meta.json``'s ``rendered_at`` field, falling back to the file's mtime so
++the gate works even before that field exists in an older sidecar.
++
++Fail-open by construction: a missing file, missing field, or unreadable JSON
++yields no banner — the hook's crash-proof-and-fast contract (``hooks/CLAUDE.md``)
++must never be broken by this read.
++"""
++
++import json
++from pathlib import Path
++
++STALE_FLOOR_SECONDS = 300
++
++
++def _stale_cutoff(cadence: int) -> int:
++    return max(2 * cadence, STALE_FLOOR_SECONDS)
++
++
++def _age_minutes(seconds: int) -> int:
++    return seconds // 60
++
++
++def staleness_banner(meta_path: Path, *, now: int) -> str:
++    """Return a RED stale-statusline banner line, or ``""`` when fresh/unknown.
++
++    *meta_path* is the ``tick-meta.json`` sidecar. *now* is the current epoch
++    second. The banner fires when ``now - rendered_at`` exceeds the cutoff for
++    the recorded cadence; ``rendered_at`` falls back to the file's mtime when
++    the field is absent. Any read/parse error degrades to ``""`` (fail-open).
++    """
++    try:
++        stat = meta_path.stat()
++    except OSError:
++        return ""
++    cadence = 720
++    rendered_at: float = stat.st_mtime
++    try:
++        data = json.loads(meta_path.read_text(encoding="utf-8"))
++    except (OSError, ValueError):
++        data = {}
++    if isinstance(data, dict):
++        raw_cadence = data.get("cadence")
++        if isinstance(raw_cadence, int) and raw_cadence > 0:
++            cadence = raw_cadence
++        raw_rendered = data.get("rendered_at")
++        if isinstance(raw_rendered, int):
++            rendered_at = raw_rendered
++
++    age = now - int(rendered_at)
++    if age <= _stale_cutoff(cadence):
++        return ""
++    return f"\033[1;31m⚠ statusline stale — last tick {_age_minutes(age)}m ago (run `t3 loop tick`)\033[0m"
+diff --git a/src/teatree/loop/tick_freshness.py b/src/teatree/loop/tick_freshness.py
+index 822fb56349..0057dbc39b 100644
+--- a/src/teatree/loop/tick_freshness.py
++++ b/src/teatree/loop/tick_freshness.py
+@@ -144,10 +144,19 @@ def _write_tick_meta(started_at: dt.datetime, *, target: Path | None = None) ->
+     # #1036: share the slot's cadence resolver so the displayed next-tick
+     # countdown can never diverge from the real loop cadence.
+     cadence = cadence_seconds()
+-    next_epoch = int(started_at.timestamp()) + cadence
++    rendered_at = int(started_at.timestamp())
++    next_epoch = rendered_at + cadence
+     freshness = _collect_repo_freshness()
+     meta_path.write_text(
+-        json.dumps({"next_epoch": next_epoch, "cadence": cadence, "freshness": freshness, "cost_chip": _cost_chip()})
++        json.dumps(
++            {
++                "rendered_at": rendered_at,
++                "next_epoch": next_epoch,
++                "cadence": cadence,
++                "freshness": freshness,
++                "cost_chip": _cost_chip(),
++            }
++        )
+         + "\n",
+         encoding="utf-8",
+     )
+diff --git a/src/teatree/loop/tick_piggyback.py b/src/teatree/loop/tick_piggyback.py
+index af9de2688e..377986a938 100644
+--- a/src/teatree/loop/tick_piggyback.py
++++ b/src/teatree/loop/tick_piggyback.py
+@@ -65,15 +65,28 @@ def _piggyback_slack_answer() -> None:
+     run_slack_answer_cycle()
+ 
+ 
++def _self_improve_rerender(_report: object) -> None:
++    """Idle-render the statusline so a stale auto-fix firing self-heals (#2625).
++
++    The orchestration-layer seam injected as the action-ladder ``auto_fix_callable``
++    so a domain-layer detector (``StaleStatuslineEntryDetector``) never reaches up
++    into ``teatree.loop.phases.render`` itself. Fails open — a broken re-render
++    must never fail the tick the piggyback rides.
++    """
++    from teatree.loop.phases.render import rerender_statusline  # noqa: PLC0415
++
++    rerender_statusline()
++
++
+ def _piggyback_self_improve() -> None:
+     """Drive one cheap-tier self-improve cycle behind the dedicated lease CAS."""
+     from teatree.core.models import LoopLease  # noqa: PLC0415
+     from teatree.loop.self_improve.schedule import Tier, run_tier  # noqa: PLC0415
+ 
+     owner = f"tickpiggyback-{os.getpid()}-{uuid.uuid4().hex}"
+     if not LoopLease.objects.acquire("loop-self-improve", owner=owner, lease_seconds=_self_improve_cadence_seconds()):
+         return
+-    run_tier(Tier.CHEAP)
++    run_tier(Tier.CHEAP, auto_fix_callable=_self_improve_rerender)
+ 
+ 
+ def run_piggyback_cycles() -> None:
+diff --git a/tests/teatree_cli/test_cli_loop.py b/tests/teatree_cli/test_cli_loop.py
+index d72f1d0e3d..2e5d9125b4 100644
+--- a/tests/teatree_cli/test_cli_loop.py
++++ b/tests/teatree_cli/test_cli_loop.py
+@@ -107,6 +107,40 @@ def test_emits_file_contents_when_present(self, tmp_path: Path) -> None:
+         assert "running 0.0.1" in result.stdout
+         assert "check 1" in result.stdout
+ 
++    def _meta(self, tmp_path: Path, *, rendered_at: int, cadence: int = 720) -> None:
++        import json  # noqa: PLC0415
++
++        (tmp_path / "tick-meta.json").write_text(
++            json.dumps({"rendered_at": rendered_at, "cadence": cadence}), encoding="utf-8"
++        )
++
++    def test_fresh_meta_shows_no_stale_banner(self, tmp_path: Path) -> None:
++        import time  # noqa: PLC0415
++
++        statusline_file = tmp_path / "statusline.txt"
++        statusline_file.write_text("running 0.0.1\n", encoding="utf-8")
++        self._meta(tmp_path, rendered_at=int(time.time()))
++        with patch("teatree.cli.loop.default_path", return_value=statusline_file):
++            result = runner.invoke(loop_app, ["status"])
++
++        assert result.exit_code == 0
++        assert "statusline stale" not in result.stdout
++        assert "running 0.0.1" in result.stdout
++
++    def test_stale_meta_prepends_banner_but_still_shows_file(self, tmp_path: Path) -> None:
++        import time  # noqa: PLC0415
++
++        statusline_file = tmp_path / "statusline.txt"
++        statusline_file.write_text("running 0.0.1\n", encoding="utf-8")
++        self._meta(tmp_path, rendered_at=int(time.time()) - 3 * 720)
++        with patch("teatree.cli.loop.default_path", return_value=statusline_file):
++            result = runner.invoke(loop_app, ["status"])
++
++        assert result.exit_code == 0
++        assert "statusline stale" in result.stdout
++        # The file contents are still shown — the banner is additive, not a replacement.
++        assert "running 0.0.1" in result.stdout
++
+ 
+ class TestCadenceParser:
+     @pytest.mark.parametrize(
+diff --git a/tests/teatree_loop/phases/test_render.py b/tests/teatree_loop/phases/test_render.py
+index 2dd00e427a..f585912004 100644
+--- a/tests/teatree_loop/phases/test_render.py
++++ b/tests/teatree_loop/phases/test_render.py
+@@ -82,6 +82,23 @@ def test_render_phase_idle_omits_scanner_error_line(tmp_path: Path) -> None:
+     assert "scanner errors" not in sl.read_text(encoding="utf-8")
+ 
+ 
++def test_rerender_statusline_rewrites_a_stale_file(tmp_path: Path) -> None:
++    """The #2625 self-heal seam re-renders the zones file from current state.
++
++    A merged-PR / terminal URL the detector flags must drop out of the file when
++    the seam runs — the prior ``_default_rerender`` no-op left it untouched.
++    """
++    from teatree.loop.phases.render import rerender_statusline  # noqa: PLC0415
++
++    sl = tmp_path / "statusline.txt"
++    sl.write_text("stale merged-PR https://github.com/acme/repo/pull/1\n", encoding="utf-8")
++
++    out = rerender_statusline(sl, colorize=False)
++
++    assert out == sl
++    assert "stale merged-PR" not in sl.read_text(encoding="utf-8")
++
++
+ def test_identity_aliases_for_request_unions_across_backends(monkeypatch: pytest.MonkeyPatch) -> None:
+     from unittest.mock import MagicMock  # noqa: PLC0415
+ 
+diff --git a/tests/teatree_loop/self_improve/test_stale_statusline.py b/tests/teatree_loop/self_improve/test_stale_statusline.py
+index 19a8779e3c..96874ade16 100644
+--- a/tests/teatree_loop/self_improve/test_stale_statusline.py
++++ b/tests/teatree_loop/self_improve/test_stale_statusline.py
+@@ -1,5 +1,6 @@
+ """``StaleStatuslineEntryDetector`` per-detector tests (BLUEPRINT § 5.7 / plan §8)."""
+ 
++from tempfile import TemporaryDirectory
+ from unittest.mock import MagicMock
+ 
+ from django.test import TestCase
+@@ -85,3 +86,40 @@ def test_auto_fix_executes_rerender_callable(self) -> None:
+         # callable; verify the wiring works when invoked.
+         detector.rerender()
+         rerender.assert_called_once()
++
++    def test_orchestration_rerender_seam_actually_rewrites_the_zones_file(self) -> None:
++        """The injected (orchestration) rerender re-renders the file, not a no-op (#2625).
++
++        The detector lives in the domain layer and cannot reach the render seam
++        itself; the orchestration tick injects ``rerender_statusline`` as the
++        auto-fix callable. This pins that the injected seam genuinely rewrites
++        the file (the prior ``_default_rerender`` no-op left a stale URL in place).
++        """
++        from pathlib import Path  # noqa: PLC0415
++
++        from teatree.loop.phases.render import rerender_statusline  # noqa: PLC0415
++
++        with TemporaryDirectory() as tmp:
++            target = Path(tmp) / "statusline.txt"
++            target.write_text("stale merged-PR line\n", encoding="utf-8")
++            rerender_statusline(target)
++            assert target.is_file()
++            assert "stale merged-PR line" not in target.read_text(encoding="utf-8")
++
++    def test_schedule_adapter_routes_each_detectors_own_rerender(self) -> None:
++        """``run_tier`` adapts a detector's own ``rerender`` into the ladder callable (#2625).
++
++        With no global ``auto_fix_callable`` injected, the schedule's
++        ``_detector_auto_fix`` adapter must hand each detector's own ``rerender``
++        to the ladder so the whitelisted self-heal is reachable — not silently
++        dropped. Guards against the schedule passing ``None`` and the self-heal
++        never being wired.
++        """
++        from teatree.loop.self_improve.schedule import _detector_auto_fix  # noqa: PLC0415
++
++        rerender = MagicMock()
++        detector = StaleStatuslineEntryDetector(rerender=rerender)
++        adapted = _detector_auto_fix(detector)
++        assert adapted is not None
++        adapted(object())
++        rerender.assert_called_once()
+diff --git a/tests/teatree_loop/test_statusline_staleness.py b/tests/teatree_loop/test_statusline_staleness.py
+new file mode 100644
+index 0000000000..96054f2270
+--- /dev/null
++++ b/tests/teatree_loop/test_statusline_staleness.py
+@@ -0,0 +1,69 @@
++"""``staleness_banner`` — the shared read-path freshness gate (souliane/teatree#2625).
++
++The hook (``hooks/scripts/statusline.sh``) and ``t3 loop status`` both prepend
++this banner when the last-rendered statusline is older than the stale cutoff, so
++a dead-or-long-not-ticked loop never renders a confident, frozen loop line with
++no warning. The helper is the single home for the cutoff and the wording.
++"""
++
++import json
++from pathlib import Path
++
++from teatree.loop.statusline_staleness import STALE_FLOOR_SECONDS, staleness_banner
++
++
++def _write_meta(path: Path, *, rendered_at: int, cadence: int = 720) -> Path:
++    meta = path / "tick-meta.json"
++    meta.write_text(json.dumps({"rendered_at": rendered_at, "cadence": cadence}), encoding="utf-8")
++    return meta
++
++
++class TestStalenessBanner:
++    def test_fresh_render_yields_no_banner(self, tmp_path: Path) -> None:
++        meta = _write_meta(tmp_path, rendered_at=1000, cadence=720)
++        assert staleness_banner(meta, now=1030) == ""
++
++    def test_stale_render_yields_banner_with_minutes(self, tmp_path: Path) -> None:
++        # 3 * cadence (2160s) old → 36 minutes.
++        meta = _write_meta(tmp_path, rendered_at=1000, cadence=720)
++        banner = staleness_banner(meta, now=1000 + 2160)
++        assert "statusline stale" in banner
++        assert "36m" in banner
++        assert "t3 loop tick" in banner
++
++    def test_just_under_cutoff_is_not_stale(self, tmp_path: Path) -> None:
++        # Cutoff is max(2*cadence, STALE_FLOOR_SECONDS). cadence 720 → 1440s.
++        meta = _write_meta(tmp_path, rendered_at=1000, cadence=720)
++        assert staleness_banner(meta, now=1000 + 1439) == ""
++
++    def test_just_over_cutoff_is_stale(self, tmp_path: Path) -> None:
++        meta = _write_meta(tmp_path, rendered_at=1000, cadence=720)
++        assert "statusline stale" in staleness_banner(meta, now=1000 + 1441)
++
++    def test_cutoff_floor_applies_for_tiny_cadence(self, tmp_path: Path) -> None:
++        # 2*cadence (120s) is below the floor, so the floor governs.
++        meta = _write_meta(tmp_path, rendered_at=1000, cadence=60)
++        assert staleness_banner(meta, now=1000 + (STALE_FLOOR_SECONDS - 1)) == ""
++        assert "statusline stale" in staleness_banner(meta, now=1000 + (STALE_FLOOR_SECONDS + 1))
++
++    def test_missing_rendered_at_falls_back_to_file_mtime(self, tmp_path: Path) -> None:
++        meta = tmp_path / "tick-meta.json"
++        meta.write_text(json.dumps({"cadence": 720}), encoding="utf-8")
++        import os  # noqa: PLC0415
++
++        old = 1_000_000
++        os.utime(meta, (old, old))
++        assert "statusline stale" in staleness_banner(meta, now=old + 4000)
++        assert staleness_banner(meta, now=old + 30) == ""
++
++    def test_missing_file_fails_open_silent(self, tmp_path: Path) -> None:
++        assert staleness_banner(tmp_path / "absent.json", now=9999) == ""
++
++    def test_unreadable_json_fails_open_silent(self, tmp_path: Path) -> None:
++        meta = tmp_path / "tick-meta.json"
++        meta.write_text("{not json", encoding="utf-8")
++        # With a fresh mtime the broken JSON cannot prove staleness → silent.
++        import os  # noqa: PLC0415
++
++        os.utime(meta, None)
++        assert staleness_banner(meta, now=int(meta.stat().st_mtime) + 10) == ""
+diff --git a/tests/test_claude_statusline.py b/tests/test_claude_statusline.py
+index a4a844d916..3d4eb002b9 100644
+--- a/tests/test_claude_statusline.py
++++ b/tests/test_claude_statusline.py
+@@ -302,6 +302,83 @@ def test_no_session_id_emits_no_skills_section(self, tmp_path: Path) -> None:
+         assert "rogue" not in plain
+ 
+ 
++class TestStaleStatuslineBanner:
++    """A stale read-path freshness banner when the last tick is too old (#2625).
++
++    The hook displays the pre-rendered zones file verbatim, so a dead or
++    long-not-ticked loop renders a confident, frozen loop line with no warning.
++    The banner reads ``tick-meta.json``'s ``rendered_at`` (cutoff =
++    ``max(2*cadence, 300s)``) and prepends a RED ``⚠ statusline stale`` line —
++    age-gated so a fresh render shows nothing, fail-open on a missing/broken meta.
++    """
++
++    def test_stale_meta_prepends_banner_with_minutes(self, tmp_path: Path) -> None:
++        state_dir = tmp_path / "state"
++        state_dir.mkdir()
++        statusline_file = tmp_path / "statusline.txt"
++        statusline_file.write_text("tick 11m\n", encoding="utf-8")
++        # 3 * cadence old → 36m, well past the max(2*cadence, 300) cutoff.
++        rendered_at = int(time.time()) - 3 * 720
++        (tmp_path / "tick-meta.json").write_text(
++            json.dumps({"rendered_at": rendered_at, "cadence": 720}), encoding="utf-8"
++        )
++
++        result = _run(
++            {"session_id": "s-stale", "model": {"display_name": "Claude Opus"}},
++            state_dir=state_dir,
++            statusline_file=statusline_file,
++        )
++
++        assert result.returncode == 0, result.stderr
++        plain = _strip_ansi(result.stdout)
++        assert "statusline stale" in plain, plain
++        assert "36m" in plain, plain
++        assert "t3 loop tick" in plain, plain
++        # The frozen loop line is still shown — the banner is additive.
++        assert "tick 11m" in plain, plain
++        # Painted RED so a dead loop is impossible to mistake for a fresh one.
++        assert "\033[1;31m" in result.stdout, "expected red SGR for the stale banner"
++
++    def test_fresh_meta_shows_no_banner(self, tmp_path: Path) -> None:
++        state_dir = tmp_path / "state"
++        state_dir.mkdir()
++        statusline_file = tmp_path / "statusline.txt"
++        statusline_file.write_text("tick 11m\n", encoding="utf-8")
++        # 30s old → far under the cutoff: proves the banner is age-gated, not always-on.
++        (tmp_path / "tick-meta.json").write_text(
++            json.dumps({"rendered_at": int(time.time()) - 30, "cadence": 720}), encoding="utf-8"
++        )
++
++        result = _run(
++            {"session_id": "s-fresh", "model": {"display_name": "Claude Opus"}},
++            state_dir=state_dir,
++            statusline_file=statusline_file,
++        )
++
++        assert result.returncode == 0, result.stderr
++        plain = _strip_ansi(result.stdout)
++        assert "statusline stale" not in plain, plain
++        assert "tick 11m" in plain, plain
++
++    def test_missing_meta_fails_open_silent(self, tmp_path: Path) -> None:
++        state_dir = tmp_path / "state"
++        state_dir.mkdir()
++        statusline_file = tmp_path / "statusline.txt"
++        statusline_file.write_text("tick 11m\n", encoding="utf-8")
++        # No tick-meta.json at all → fail open, no banner, rest still renders.
++
++        result = _run(
++            {"session_id": "s-nometa", "model": {"display_name": "Claude Opus"}},
++            state_dir=state_dir,
++            statusline_file=statusline_file,
++        )
++
++        assert result.returncode == 0, result.stderr
++        plain = _strip_ansi(result.stdout)
++        assert "statusline stale" not in plain, plain
++        assert "model=Claude Opus" in plain, plain
++
++
+ class TestEffortSegment:
+     """The session's effort level (`/effort`) renders next to the model (#2214).
+ 
+-- 
+2.50.1 (Apple Git-155)
+

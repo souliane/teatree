@@ -1,0 +1,436 @@
+diff --git src/teatree/core/managers.py src/teatree/core/managers.py
+index 934677a833..a95b94e809 100644
+--- src/teatree/core/managers.py
++++ src/teatree/core/managers.py
+@@ -100,98 +100,44 @@ def in_flight(self, overlay: str | None = None) -> models.QuerySet:
+             .order_by("pk")
+         )
+ 
+-    def allocate_redis_slot(self, ticket: "Ticket") -> int:
+-        """Claim the lowest free Redis DB index for the ticket, atomically.
++    def clear_orphaned_redis_namespaces(self, *, using: str = "default") -> list[tuple[int, str]]:
++        """Clear the cache namespace of every ticket whose worktrees are all gone.
+ 
+-        Idempotent: returns the existing index if the ticket already has one.
+-        Raises RedisSlotsExhaustedError when every non-ghost slot is in use.
++        A namespace is orphaned (a "ghost") when the ticket has at least one
++        Worktree row and every row either has no on-disk path recorded or has a
++        path that no longer exists as a directory — the dirs are gone but the
++        rows persist, so stale cache keys from a removed worktree linger on the
++        shared DB. Tickets with no Worktree rows are not reclaimed — they may be
++        mid-provision. Each orphaned ticket's keyspace is cleared by
++        :meth:`Ticket.clear_redis_namespace` (SCAN+DEL by prefix), best-effort:
++        when redis/docker is unavailable (``RuntimeError`` because the docker CLI
++        is absent, e.g. CI) the warning is logged and the sweep continues.
+ 
+-        Ghost reclaim: before raising, scans for tickets that have at least
+-        one Worktree row where every row's ``worktree_path`` no longer exists
+-        on disk. Ghost slots are cleared and the allocation is retried once;
+-        a non-ghost slot (any Worktree with a live on-disk path) is never
+-        reclaimed. Tickets with no Worktree rows are not treated as ghosts
+-        (they may be mid-provision).
+-
+-        The CAS shape is unchanged: ``redis_db_index`` carries a unique
+-        constraint, so the read-taken-set → pick-lowest-free → ``save()``
+-        loop lets two concurrent provisions race, the loser's ``save()``
+-        raises a caught ``IntegrityError``, and exactly one writer wins each
+-        slot. SQLite ``IMMEDIATE`` transaction mode serialises the write
+-        window; ``select_for_update`` is a documented no-op on SQLite (#804).
+-        """
+-        if ticket.redis_db_index is not None:
+-            return int(ticket.redis_db_index)
+-        count = load_config().user.redis_db_count
+-        ghost_reclaim_attempted = False
+-        for _ in range(count):
+-            taken = set(self.filter(redis_db_index__isnull=False).values_list("redis_db_index", flat=True))
+-            index = next((i for i in range(count) if i not in taken), None)
+-            if index is None:
+-                if ghost_reclaim_attempted:
+-                    break
+-                ghost_reclaim_attempted = True
+-                self.release_orphaned_redis_slots(using=self.db)
+-                continue
+-            try:
+-                with transaction.atomic(using=self.db):
+-                    ticket.redis_db_index = index
+-                    ticket.save(update_fields=["redis_db_index"], using=self.db)
+-            except IntegrityError:
+-                ticket.redis_db_index = None
+-                continue
+-            return index
+-        msg = f"All {count} Redis DB slots are in use — release a ticket's slot first"
+-        raise RedisSlotsExhaustedError(msg)
+-
+-    def release_orphaned_redis_slots(self, *, using: str = "default") -> list[tuple[int, int]]:
+-        """Flush + clear ``redis_db_index`` on tickets whose backing worktrees are all gone.
+-
+-        A slot is orphaned (a "ghost") when the ticket has at least one Worktree
+-        row and every row either has no on-disk path recorded or has a path that
+-        no longer exists as a directory — the dirs are gone but the rows (and the
+-        slot) persist, which is the dominant local-stack exhaustion source: prior
+-        sessions' worktrees were removed without releasing the slot. Tickets with
+-        no Worktree rows are not reclaimed — they may be mid-provision (slot
+-        allocated, Worktree row not yet written). Each orphaned slot's Redis DB is
+-        flushed before the field is cleared, matching ``Ticket.release_redis_slot``'s
+-        contract so the next ticket assigned the reclaimed slot starts with a clean
+-        cache/queue. The flush is best-effort: when redis/docker is unavailable
+-        (``flushdb`` raises ``RuntimeError`` because the docker CLI is absent, e.g.
+-        CI) the DB row is still reclaimed so allocation never fails on a missing
+-        cache backend.
+-
+-        Two callers share this: ``allocate_redis_slot`` calls it lazily before
+-        raising exhaustion, and ``workspace clean-all`` runs it proactively so the
+-        pool is freed without waiting for the next allocation to fail (#1038).
+-        Returns the ``(ticket_pk, released_index)`` pairs reclaimed, so callers can
+-        report exactly which slots were freed.
++        Unlike the old slot reclaim, there is nothing finite to free — this is a
++        pure hygiene pass so dead worktrees' cache keys don't accumulate.
++        ``workspace clean-all`` runs it proactively (#1038). Returns the
++        ``(ticket_pk, prefix)`` pairs cleared so callers can report them.
+         """
+         from pathlib import Path  # noqa: PLC0415
+ 
+-        candidates = list(self.using(using).filter(redis_db_index__isnull=False).prefetch_related("worktrees"))
+-        reclaimed: list[tuple[int, int]] = []
++        candidates = list(self.using(using).prefetch_related("worktrees"))
++        cleared: list[tuple[int, str]] = []
+         for candidate in candidates:
+             worktrees = list(candidate.worktrees.all())
+             if not worktrees:
+-                is_ghost = False
+-            else:
+-                is_ghost = all(not wt.worktree_path or not Path(wt.worktree_path).exists() for wt in worktrees)
+-            if is_ghost:
+-                released_index = candidate.redis_db_index
+-                try:
+-                    redis_container.flushdb(released_index, db_count=load_config().user.redis_db_count)
+-                except RuntimeError as exc:
+-                    logger.warning(
+-                        "ghost slot %s flush skipped (%s); reclaiming DB row anyway",
+-                        released_index,
+-                        exc,
+-                    )
+-                candidate.redis_db_index = None
+-                candidate.save(update_fields=["redis_db_index"], using=using)
+-                reclaimed.append((candidate.pk, released_index))
+-                logger.info("reclaimed orphaned redis slot %s from ticket pk=%s", released_index, candidate.pk)
+-        return reclaimed
++                continue
++            is_ghost = all(not wt.worktree_path or not Path(wt.worktree_path).exists() for wt in worktrees)
++            if not is_ghost:
++                continue
++            prefix = candidate.redis_key_prefix
++            try:
++                candidate.clear_redis_namespace()
++            except RuntimeError as exc:
++                logger.warning("ghost namespace %r clear skipped (%s)", prefix, exc)
++                continue
++            cleared.append((candidate.pk, prefix))
++            logger.info("cleared orphaned redis namespace %r from ticket pk=%s", prefix, candidate.pk)
++        return cleared
+ 
+ 
+ class WorktreeQuerySet(_OverlayFilterMixin, models.QuerySet):
+diff --git src/teatree/core/models/ticket.py src/teatree/core/models/ticket.py
+index b2f9ffa41b..a28e9b4135 100644
+--- src/teatree/core/models/ticket.py
++++ src/teatree/core/models/ticket.py
+@@ -8,7 +8,7 @@
+ from django.utils import timezone
+ from django_fsm import FSMField, TransitionNotAllowed, transition
+ 
+-from teatree.config import Mode, get_effective_settings, load_config
++from teatree.config import Mode, get_effective_settings
+ from teatree.core.managers import TicketManager
+ from teatree.core.modelkit.gate_registry import get_gate, get_resolver
+ from teatree.core.modelkit.review_state import ReviewState
+@@ -126,7 +126,6 @@ class Kind(models.TextChoices):
+     extra = models.JSONField(default=dict, blank=True)
+     context = models.TextField(blank=True, default="")
+     short_description = models.CharField(max_length=80, blank=True, default="")
+-    redis_db_index = models.IntegerField(null=True, blank=True, unique=True)
+     # Set to True when the remote forge returns HTTP 404; the disposition scanner
+     # then excludes this ticket from future fetches (#1875).
+     remote_missing = models.BooleanField(default=False)
+@@ -191,6 +190,19 @@ def ticket_number(self) -> str:
+             return match.group(1)
+         return str(self.pk)
+ 
++    @property
++    def redis_key_prefix(self) -> str:
++        """The per-ticket cache-key namespace on the shared Redis DB.
++
++        Every worktree of this ticket prefixes its Redis cache keys with this
++        string so two tickets' keyspaces never collide on the one shared DB —
++        the replacement for the old per-ticket ``redis_db_index`` (#1038). It is
++        derived from :attr:`ticket_number` (stable and unique per ticket), so no
++        allocation or finite pool is involved. The trailing ``:`` makes it a
++        clean namespace boundary for ``clear_redis_namespace`` SCAN matching.
++        """
++        return f"wt{self.ticket_number}:"
++
+     @transition(field=state, source=State.NOT_STARTED, target=State.SCOPED)
+     def scope(
+         self,
+@@ -782,14 +794,16 @@ def unignore(self) -> None:
+         self.extra = extra
+         self.state = str(previous)
+ 
+-    def release_redis_slot(self) -> None:
+-        """FLUSHDB on the ticket's Redis DB index and clear the field."""
+-        if self.redis_db_index is None:
+-            return
+-        index = self.redis_db_index
+-        redis_container.flushdb(index, db_count=load_config().user.redis_db_count)
+-        self.redis_db_index = None
+-        self.save(update_fields=["redis_db_index"])
++    def clear_redis_namespace(self) -> None:
++        """Delete only this ticket's cache keys from the shared Redis DB.
++
++        Called on teardown so the ticket's keyspace does not linger after its
++        worktrees are gone. Scoped to :attr:`redis_key_prefix` via SCAN+DEL — a
++        sibling ticket's keys on the same shared DB are never touched, unlike the
++        old per-slot ``FLUSHDB`` (#1038). Idempotent and safe to call when redis
++        is down.
++        """
++        redis_container.clear_namespace(self.redis_key_prefix)
+ 
+     def _cancel_pending_tasks(self) -> None:
+         """Fail all pending/claimed tasks when reworking."""
+diff --git src/teatree/utils/redis_container.py src/teatree/utils/redis_container.py
+index f3a91f385c..a91135a95b 100644
+--- src/teatree/utils/redis_container.py
++++ src/teatree/utils/redis_container.py
+@@ -1,17 +1,13 @@
+ """Shared Redis container managed by teatree.
+ 
+ Teatree runs a single Redis container (`teatree-redis`) on localhost:6379.
+-Each ticket gets its own Redis DB index for isolation. Slot count is
+-`teatree.redis_db_count` in `~/.teatree.toml` (default 64). Slots are
+-allocated by `Ticket.objects.allocate_redis_slot()` and released (with
+-`FLUSHDB`) on teardown.
+-
+-Redis's ``databases`` is a *fixed* per-container setting baked in at
+-``redis-server --databases N``; a running container created with a smaller
+-``N`` does NOT pick up a raised config. :func:`ensure_running` therefore
+-reconciles the live container's ``databases`` against the requested count and
+-recreates it when it falls short — without that, raising ``redis_db_count``
+-silently has no effect until the operator manually removes the container.
++Every worktree shares **one** Redis DB (index 0). Isolation is by *key
++namespace*, not by DB index: each worktree namespaces its cache keys with a
++per-worktree prefix and consumes only its own per-worktree Celery queue (the
++broker runs on the shared DB). There is therefore no finite pool of slots to
++exhaust, so :func:`ensure_running` only ever *starts* the shared container — it
++never stops, removes, or recreates it. Teardown clears only the worktree's own
++namespace via :func:`clear_namespace` (SCAN + DEL by prefix), never ``FLUSHDB``.
+ """
+ 
+ import logging
+@@ -26,17 +22,15 @@
+ IMAGE = "redis:7-alpine"
+ HOST_PORT = 6379
+ 
++# The single shared logical DB every worktree connects to. Isolation is by key
++# prefix + per-worktree queue, so one DB suffices for all local stacks.
++SHARED_DB_INDEX = 0
++
+ 
+ class NativeRedisSquatterError(RuntimeError):
+     """A non-Docker process holds host 6379, so ``teatree-redis`` cannot bind it."""
+ 
+ 
+-DEFAULT_DB_COUNT = 64
+-
+-# `redis-cli CONFIG GET <key>` replies with two lines: the key, then its value.
+-_CONFIG_GET_REPLY_LINES = 2
+-
+-
+ def _docker() -> str:
+     path = shutil.which("docker")
+     if not path:
+@@ -68,39 +62,16 @@ def _host_port_published() -> bool:
+     without ``-p 6379:6379`` answers ``docker port`` with no mapping. Such a
+     container is "running" but every worktree's web service reaches Redis via
+     ``host.docker.internal:6379`` — unpublished, that connection is refused
+-    and every request that touches the cache/broker 500s (Error 111).
++    and every request that touches the cache/broker 500s (Error 111). When the
++    publish is missing the operator must remove the container by hand; teatree
++    never tears down the shared container on its own.
+     """
+     result = _docker_tolerant("port", CONTAINER_NAME, "6379")
+     if result.returncode != 0:
+         return False
+     return bool(result.stdout.strip())
+ 
+ 
+-def _configured_db_count() -> int | None:
+-    """Return the live container's ``databases`` setting, or ``None`` if unknown.
+-
+-    ``redis-server --databases N`` fixes the number of selectable DBs for the
+-    container's whole lifetime — a config reload cannot raise it. ``CONFIG GET
+-    databases`` reports the value the running server was started with, so a
+-    container created by an older teatree (``--databases 16``) reports ``16``
+-    even after ``redis_db_count`` is raised. The probe returns ``None`` when the
+-    container is unreachable or the reply is unparsable, so the caller treats an
+-    inconclusive probe as "do not recreate" (fail-safe — never churn the shared
+-    container on a transient docker hiccup).
+-    """
+-    result = _docker_tolerant("exec", CONTAINER_NAME, "redis-cli", "CONFIG", "GET", "databases")
+-    if result.returncode != 0:
+-        return None
+-    # `redis-cli CONFIG GET databases` prints two lines: the key then the value.
+-    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+-    if len(lines) < _CONFIG_GET_REPLY_LINES:
+-        return None
+-    try:
+-        return int(lines[1])
+-    except ValueError:
+-        return None
+-
+-
+ def _non_teatree_squatters_on_host_port() -> list[str]:
+     """Return names of non-``teatree-redis`` containers publishing host 6379.
+ 
+@@ -181,7 +152,7 @@ def _guard_native_squatter() -> None:
+         raise NativeRedisSquatterError(msg)
+ 
+ 
+-def _create(db_count: int) -> None:
++def _create() -> None:
+     logger.info("Creating %s container on :%d", CONTAINER_NAME, HOST_PORT)
+     _docker_checked(
+         "run",
+@@ -193,89 +164,73 @@ def _create(db_count: int) -> None:
+         "--restart",
+         "unless-stopped",
+         IMAGE,
+-        "redis-server",
+-        "--databases",
+-        str(db_count),
+     )
+ 
+ 
+-def _recreate(db_count: int, reason: str) -> None:
+-    logger.info("%s %s — recreating to reconcile it", CONTAINER_NAME, reason)
+-    _docker_tolerant("stop", CONTAINER_NAME)
+-    _docker_tolerant("rm", CONTAINER_NAME)
+-    _evict_squatters()
+-    _guard_native_squatter()
+-    _create(db_count)
++def ensure_running() -> None:
++    """Start the shared Redis container — never stop, remove, or recreate it.
+ 
+-
+-def _needs_recreate(db_count: int) -> str:
+-    """Reason a *running* container must be recreated, or ``""`` when it's fine.
+-
+-    Two reconciliations share one recreate path: the missing ``-p 6379:6379``
+-    host publish (#1373) and a ``databases`` count below the requested pool. The
+-    db-count check is fail-safe — an inconclusive probe (``None``, docker hiccup)
+-    reports "no recreate" so a transient error never churns the shared container.
+-    """
+-    if not _host_port_published():
+-        return f"lacks the :{HOST_PORT} host publish"
+-    configured = _configured_db_count()
+-    if configured is not None and configured < db_count:
+-        return f"has only {configured} Redis DBs (want {db_count})"
+-    return ""
+-
+-
+-def ensure_running(db_count: int = DEFAULT_DB_COUNT) -> None:
+-    """Start the shared Redis container, self-healing publish and DB-count drift.
+-
+-    Idempotent. A *running* container is reconciled (recreated) when it lacks the
+-    ``-p 6379:6379`` publish (#1373) OR was started with fewer ``databases`` than
+-    the requested pool — Redis bakes ``--databases N`` in at boot, so a container
+-    created by an older teatree (``--databases 16``) never picks up a raised
+-    ``redis_db_count`` and slot allocation keeps failing with
+-    ``RedisSlotsExhaustedError`` until the operator manually removes it. A
+-    non-``teatree-redis`` container squatting on host port 6379 is evicted before
+-    any create/recreate so ``docker run -p 6379:6379`` doesn't fail with
+-    ``address already in use``. A *native* (non-Docker) ``redis-server`` holding
+-    the port cannot be safely evicted, so it raises
+-    :class:`NativeRedisSquatterError` naming the process instead of letting
+-    ``docker run`` fail with a cryptic bind error.
++    Idempotent. A *running* container is left exactly as-is: with key-namespace
++    isolation there are no finite slots to reconcile, so the destructive
++    stop+rm+create recreate the slot design once needed is gone. A *missing*
++    container is created (after evicting a non-``teatree-redis`` squatter and
++    guarding against a native ``redis-server`` holding the port); a *stopped*
++    one is started. A running container that lacks the ``-p 6379:6379`` publish
++    is reported, not recreated — the operator removes it by hand and re-runs,
++    so teatree never tears down the shared container another worktree may be
++    using.
+     """
+     current = status()
+     if current == "running":
+-        reason = _needs_recreate(db_count)
+-        if reason:
+-            _recreate(db_count, reason)
++        if not _host_port_published():
++            logger.warning(
++                "%s is running without the :%d host publish — web→redis traffic will 500. "
++                "Remove it (`docker rm -f %s`) and re-run to recreate it with the publish.",
++                CONTAINER_NAME,
++                HOST_PORT,
++                CONTAINER_NAME,
++            )
+         return
+     if current == "missing":
+         _evict_squatters()
+         _guard_native_squatter()
+-        _create(db_count)
++        _create()
+         return
+     logger.info("Starting existing %s container (status=%s)", CONTAINER_NAME, current)
+     _docker_checked("start", CONTAINER_NAME)
+-    reason = _needs_recreate(db_count)
+-    if reason:
+-        _recreate(db_count, reason)
+ 
+ 
+ def stop() -> None:
+     """Stop the shared Redis container (no-op if missing)."""
+     if status() == "missing":
+         return
+     _docker_tolerant("stop", CONTAINER_NAME)
+ 
+ 
+-def flushdb(index: int, db_count: int = DEFAULT_DB_COUNT) -> None:
+-    """FLUSHDB on the given Redis DB index.
++def clear_namespace(prefix: str) -> None:
++    """Delete every key under *prefix* on the shared DB (SCAN + DEL).
+ 
+-    Called when a ticket releases its slot so the next ticket to grab the
+-    slot starts with a clean cache/queue.
++    Called when a worktree is torn down so its cache keys do not linger or
++    collide with the next worktree assigned the same prefix. Only keys matching
++    ``<prefix>*`` are removed — another worktree's namespace is untouched, which
++    is the whole point of replacing the per-ticket ``FLUSHDB`` (#1038). Uses
++    ``redis-cli --scan --pattern`` piped into ``DEL`` so a large keyspace is
++    walked incrementally rather than blocking the server. No-op when the
++    container is not running or the prefix is empty (a missing prefix must never
++    degrade into clearing the whole DB).
+     """
+-    count = db_count
+-    if not 0 <= index < count:
+-        msg = f"redis db index {index} out of range 0..{count - 1}"
+-        raise ValueError(msg)
+-    if status() != "running":
+-        logger.debug("Skipping flushdb(%d): %s not running", index, CONTAINER_NAME)
++    if not prefix:
++        logger.debug("clear_namespace called with empty prefix — refusing to clear shared DB")
+         return
+-    _docker_tolerant("exec", CONTAINER_NAME, "redis-cli", "-n", str(index), "FLUSHDB")
++    if status() != "running":
++        logger.debug("Skipping clear_namespace(%r): %s not running", prefix, CONTAINER_NAME)
++        return
++    # `redis-cli --scan --pattern <prefix>*` lists matching keys without a
++    # blocking KEYS; `xargs redis-cli DEL` removes them. `-r` keeps xargs a
++    # no-op when SCAN returns nothing (an empty namespace is not an error).
++    pattern = f"{prefix}*"
++    script = (
++        f"redis-cli -n {SHARED_DB_INDEX} --scan --pattern '{pattern}' "
++        f"| xargs -r redis-cli -n {SHARED_DB_INDEX} DEL"
++    )
++    _docker_tolerant("exec", CONTAINER_NAME, "sh", "-c", script)

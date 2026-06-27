@@ -1,0 +1,602 @@
+diff --git pyproject.toml pyproject.toml
+index 4ebf0c2ccc..a9da647bd7 100644
+--- pyproject.toml
++++ pyproject.toml
+@@ -34,6 +34,7 @@ dependencies = [
+   # detect the highlightAndShoot red box before ``e2e post-test-plan`` uploads.
+   # A RUNTIME command path, so it must be in the installed tool env, not only
+   # the dev group — same class as the ``coverage`` / ``pyyaml`` runtime deps.
++  "openai-codex>=0.1.0b2",
+   "pillow>=11",
+   # ``teatree.eval.loader`` imports ``yaml`` at module load, and that module
+   # is reached from ``teatree.cli.__init__`` — so a missing ``pyyaml`` crashes
+diff --git src/teatree/eval/sdk_runner.py src/teatree/eval/sdk_runner.py
+index 00ce489a76..9b179a7db1 100644
+--- src/teatree/eval/sdk_runner.py
++++ src/teatree/eval/sdk_runner.py
+@@ -57,6 +57,7 @@
+ 
+ from teatree.eval.context_budget import extract_sections
+ from teatree.eval.isolation import isolated_claude_env
++from teatree.eval.local_sdk_backend import LocalHarnessSDKBackend
+ from teatree.eval.model_variant import parse_model_variant
+ from teatree.eval.models import EvalRun, EvalSpec
+ from teatree.eval.prompt_framing import LIVE_ENV_FRAMING
+@@ -383,7 +384,7 @@ def load_agent_definition(agent_path: str, agent_sections: tuple[str, ...] = ())
+     return text
+ 
+ 
+-class SdkInProcessRunner:
++class SdkInProcessRunner(LocalHarnessSDKBackend):
+     """Run an :class:`EvalSpec` via the in-process Agent SDK and capture tool calls."""
+ 
+     def __init__(
+diff --git tests/eval_harness/test_backends.py tests/eval_harness/test_backends.py
+index 1dae8f1c5a..78d1b732d2 100644
+--- tests/eval_harness/test_backends.py
++++ tests/eval_harness/test_backends.py
+@@ -7,7 +7,8 @@
+ import pytest
+ 
+ from teatree.eval.auth import OAUTH_TOKEN_ENV
+-from teatree.eval.backends import SDK_BACKEND, TRANSCRIPT_BACKEND, TranscriptRunner, UnknownBackendError, make_runner
++from teatree.eval.backends import CODEX_BACKEND, SDK_BACKEND, TRANSCRIPT_BACKEND, TranscriptRunner, UnknownBackendError, make_runner
++from teatree.eval.codex_runner import CodexSdkRunner
+ from teatree.eval.models import EvalSpec, Matcher
+ from teatree.eval.sdk_runner import MAX_BUDGET_USD, SdkInProcessRunner
+ 
+@@ -50,6 +51,10 @@ def test_transcript_backend_builds_transcript_runner(self, tmp_path: Path) -> No
+         runner = make_runner(TRANSCRIPT_BACKEND, transcript_dir=tmp_path)
+         assert isinstance(runner, TranscriptRunner)
+ 
++    def test_codex_backend_builds_codex_sdk_runner(self) -> None:
++        runner = make_runner(CODEX_BACKEND)
++        assert isinstance(runner, CodexSdkRunner)
++
+     def test_unknown_backend_raises(self) -> None:
+         with pytest.raises(UnknownBackendError):
+             make_runner("magic")
+@@ -76,6 +81,15 @@ def test_transcript_backend_does_not_touch_pass(self) -> None:
+             make_runner(TRANSCRIPT_BACKEND)
+             read_pass.assert_not_called()
+ 
++    def test_codex_backend_does_not_touch_claude_oauth_pass(self) -> None:
++        with (
++            patch.dict(os.environ, {}, clear=False),
++            patch("teatree.eval.auth.read_pass") as read_pass,
++        ):
++            os.environ.pop(OAUTH_TOKEN_ENV, None)
++            make_runner(CODEX_BACKEND)
++            read_pass.assert_not_called()
++
+ 
+ class TestTranscriptRunner:
+     def test_grades_a_subscription_produced_transcript(self, tmp_path: Path) -> None:
+diff --git uv.lock uv.lock
+index 2bde7facee..e1a9768d66 100644
+--- uv.lock
++++ uv.lock
+@@ -1556,6 +1556,32 @@ wheels = [
+     { url = "https://files.pythonhosted.org/packages/14/56/fd990ca222cef4f9f4a9400567b9a15b220dee2eafffb16b2adbc55c8281/onnxruntime-1.20.1-cp313-cp313t-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:0df6f2df83d61f46e842dbcde610ede27218947c33e994545a22333491e72a3b", size = 13337040, upload-time = "2024-11-21T00:49:37.271Z" },
+ ]
+ 
++[[package]]
++name = "openai-codex"
++version = "0.1.0b2"
++source = { registry = "https://pypi.org/simple" }
++dependencies = [
++    { name = "openai-codex-cli-bin" },
++    { name = "pydantic" },
++]
++sdist = { url = "https://files.pythonhosted.org/packages/6f/b7/216fa0e7725c33791fe97621c663a9ec0e6e98c2240bffae89661de55602/openai_codex-0.1.0b2.tar.gz", hash = "sha256:44dd51f004ce2ed51cf7b9f34e8b2e6a207ab06e8739b45d5a0cfe338e460587", size = 57665, upload-time = "2026-05-28T06:28:00.461Z" }
++wheels = [
++    { url = "https://files.pythonhosted.org/packages/b6/38/59e86bc20bdd4390faa979d2a0235d7be60ae895cd3ac6a92a49bfe080a7/openai_codex-0.1.0b2-py3-none-any.whl", hash = "sha256:9edf0871e9e0d6e3951cd6c3b9b187641e6247d9413402dfc66ac3a5f6ba66ff", size = 64285, upload-time = "2026-05-28T06:27:58.949Z" },
++]
++
++[[package]]
++name = "openai-codex-cli-bin"
++version = "0.132.0"
++source = { registry = "https://pypi.org/simple" }
++wheels = [
++    { url = "https://files.pythonhosted.org/packages/be/a1/b92b7a1b73a83785d2e1dcd0faecd1b7f886a38cf02a30abe1c35f42f0f7/openai_codex_cli_bin-0.132.0-py3-none-macosx_10_9_x86_64.whl", hash = "sha256:1c22b51dbd679413f84f00b9d8fd4e5cf8a1c0d1c7cc8c42bcb3f9f1b33e2334", size = 89403211, upload-time = "2026-05-20T02:37:22.311Z" },
++    { url = "https://files.pythonhosted.org/packages/5f/68/163272e582de55a7f460e2329281267908d75d0fbcbbbb2c6749a6329e6b/openai_codex_cli_bin-0.132.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:56217495e6635c8a5d96df820cc0da5f46cd9b6ec6f3a5f67f1607d69ef74256", size = 79058685, upload-time = "2026-05-20T02:37:27.165Z" },
++    { url = "https://files.pythonhosted.org/packages/0b/18/a60c6b137e7cd3959cae16ba757f57ca5702979b0ea107a21f516ba15d98/openai_codex_cli_bin-0.132.0-py3-none-musllinux_1_1_aarch64.whl", hash = "sha256:09642e7578a3078bfccc82af4077b085d42b0022b529e4b5c645e0a0af3397a4", size = 78689038, upload-time = "2026-05-20T02:37:31.548Z" },
++    { url = "https://files.pythonhosted.org/packages/f8/eb/1b184307a67c1006d59b61636bcfcea73a89aa95271f6516ed28dce554ca/openai_codex_cli_bin-0.132.0-py3-none-musllinux_1_1_x86_64.whl", hash = "sha256:85aec095f9d144d7a2d1aff39fce77b7240f42014580c35801ba74b9317aa5f7", size = 85528820, upload-time = "2026-05-20T02:37:36.559Z" },
++    { url = "https://files.pythonhosted.org/packages/0e/e8/1b823a8bf7b96d1513905ad79b16a146d797f81a19a6bc350a2f95a16661/openai_codex_cli_bin-0.132.0-py3-none-win_amd64.whl", hash = "sha256:3cb5c90c55baa39bd5ddc890d2068d3e1322a57a54d1d0e623819009a205c7f5", size = 86916218, upload-time = "2026-05-20T02:37:41.886Z" },
++    { url = "https://files.pythonhosted.org/packages/6b/e6/bb8634bd4f3adaea299c95d7b03105ac417e32dd6d8bc2af5dda141d6f28/openai_codex_cli_bin-0.132.0-py3-none-win_arm64.whl", hash = "sha256:74ef93d3deef7cb83c71d19fc667defe749cdab337ec331f59a23511561b6f6a", size = 79892931, upload-time = "2026-05-20T02:37:46.828Z" },
++]
++
+ [[package]]
+ name = "openpyxl"
+ version = "3.1.5"
+@@ -2729,6 +2755,7 @@ dependencies = [
+     { name = "django-tasks-db" },
+     { name = "django-typer" },
+     { name = "httpx" },
++    { name = "openai-codex" },
+     { name = "pillow" },
+     { name = "pyyaml" },
+     { name = "tomlkit" },
+@@ -2795,6 +2822,7 @@ requires-dist = [
+     { name = "django-typer", specifier = ">=3.3" },
+     { name = "httpx", specifier = ">=0.27" },
+     { name = "markitdown", extras = ["docx", "pdf", "pptx", "xlsx"], marker = "extra == 'markdown'", specifier = ">=0.1.6" },
++    { name = "openai-codex", specifier = ">=0.1.0b2" },
+     { name = "pillow", specifier = ">=11" },
+     { name = "pyyaml", specifier = ">=6" },
+     { name = "slack-sdk", marker = "extra == 'slack'", specifier = ">=3.35" },
+
+diff --git src/teatree/eval/codex_runner.py src/teatree/eval/codex_runner.py
+new file mode 100644
+index 0000000000..9d54a1bcc6
+--- /dev/null
++++ src/teatree/eval/codex_runner.py
+@@ -0,0 +1,234 @@
++"""OpenAI Codex SDK runner for behavioral evals."""
++
++import dataclasses
++import json
++from pathlib import Path
++from typing import Any
++
++from openai_codex import ApprovalMode, Codex, CodexConfig, Sandbox
++from openai_codex.generated.v2_all import (
++    AgentMessageThreadItem,
++    CollabAgentToolCallThreadItem,
++    CommandExecutionThreadItem,
++    DynamicToolCallThreadItem,
++    McpToolCallThreadItem,
++    MessagePhase,
++    ReasoningEffort,
++    ThreadItem,
++    ThreadTokenUsage,
++    TurnStatus,
++    WebSearchThreadItem,
++)
++
++from teatree.eval.local_sdk_backend import LocalHarnessSDKBackend
++from teatree.eval.model_variant import parse_model_variant
++from teatree.eval.models import EvalRun, EvalSpec, TokenUsage
++from teatree.eval.prompt_framing import LIVE_ENV_FRAMING
++from teatree.eval.sdk_runner import load_agent_definition
++from teatree.eval.transcript import extract_text_blocks, extract_tool_calls, parse_stream_json
++from teatree.eval.under_load import build_system_prompt, build_user_prompt
++
++_CODEX_EFFORTS: dict[str, ReasoningEffort] = {
++    "low": ReasoningEffort.low,
++    "medium": ReasoningEffort.medium,
++    "high": ReasoningEffort.high,
++    "xhigh": ReasoningEffort.xhigh,
++    "max": ReasoningEffort.xhigh,
++}
++
++
++class CodexSdkRunner(LocalHarnessSDKBackend):
++    """Run an :class:`EvalSpec` through the local ``openai-codex`` SDK."""
++
++    def __init__(
++        self,
++        *,
++        workspace: Path | None = None,
++        max_turns_override: int | None = None,
++        require_executed: bool = False,
++        max_budget_usd: float = 0.0,
++        effort: str | None = None,
++    ) -> None:
++        self._workspace = workspace or Path.cwd()
++        self._max_turns_override = max_turns_override
++        self._require_executed = require_executed
++        self._max_budget_usd = max_budget_usd
++        self._effort = effort
++
++    def run(self, spec: EvalSpec) -> EvalRun:
++        clean_room_prompt = load_agent_definition(spec.agent_path, spec.agent_sections) + LIVE_ENV_FRAMING
++        system_prompt = build_system_prompt(spec, clean_room_prompt=clean_room_prompt)
++        variant = parse_model_variant(spec.model)
++        effort = _codex_effort(variant.effort or self._effort)
++        config = CodexConfig(
++            cwd=str(self._workspace),
++            client_name="teatree_eval_codex",
++            client_title="TeaTree Eval Codex",
++        )
++        try:
++            with Codex(config) as codex:
++                thread = codex.thread_start(
++                    approval_mode=ApprovalMode.auto_review,
++                    cwd=str(self._workspace),
++                    developer_instructions=system_prompt,
++                    ephemeral=True,
++                    model=variant.model,
++                    sandbox=Sandbox.full_access,
++                )
++                result = thread.run(
++                    build_user_prompt(spec),
++                    approval_mode=ApprovalMode.auto_review,
++                    cwd=str(self._workspace),
++                    effort=effort,
++                    model=variant.model,
++                    sandbox=Sandbox.full_access,
++                )
++        except Exception as exc:
++            if self._require_executed:
++                raise
++            return _terminal_run(spec, terminal_reason=f"skipped: codex sdk unavailable: {exc}", is_error=False)
++        return _eval_run_from_codex_result(spec, result)
++
++
++def _codex_effort(effort: str | None) -> ReasoningEffort | None:
++    if effort is None:
++        return None
++    return _CODEX_EFFORTS.get(effort)
++
++
++def _eval_run_from_codex_result(spec: EvalSpec, result: Any) -> EvalRun:
++    raw_stdout = _synthesize_stream_json(result)
++    events = parse_stream_json(raw_stdout)
++    terminal_reason, is_error = _terminal_state(result)
++    return EvalRun(
++        spec_name=spec.name,
++        tool_calls=tuple(extract_tool_calls(events)),
++        text_blocks=tuple(extract_text_blocks(events)),
++        terminal_reason=terminal_reason,
++        is_error=is_error,
++        raw_stdout=raw_stdout,
++        raw_stderr="",
++        usage=_usage_from_result(result),
++    )
++
++
++def _terminal_state(result: Any) -> tuple[str, bool]:
++    status = getattr(result, "status", None)
++    if status == TurnStatus.completed:
++        return "success", False
++    if status == TurnStatus.interrupted:
++        return "interrupted", True
++    if status == TurnStatus.failed:
++        error = getattr(result, "error", None)
++        message = getattr(error, "message", None)
++        return message if isinstance(message, str) and message else "failed", True
++    return "aborted", True
++
++
++def _usage_from_result(result: Any) -> TokenUsage:
++    usage = getattr(result, "usage", None)
++    if not isinstance(usage, ThreadTokenUsage):
++        return TokenUsage()
++    total = usage.total
++    return TokenUsage(
++        input=total.input_tokens,
++        cache_read=total.cached_input_tokens,
++        output=total.output_tokens + total.reasoning_output_tokens,
++    )
++
++
++def _synthesize_stream_json(result: Any) -> str:
++    lines: list[str] = []
++    for item in getattr(result, "items", []):
++        event = _item_to_event(item)
++        if event is not None:
++            lines.append(_json_line(event))
++    lines.append(
++        _json_line(
++            {
++                "type": "result",
++                "subtype": _terminal_state(result)[0],
++                "is_error": _terminal_state(result)[1],
++                "usage": _usage_event(getattr(result, "usage", None)),
++                "codex_items": [_model_dump(item) for item in getattr(result, "items", [])],
++            }
++        )
++    )
++    return "\n".join(lines) + "\n"
++
++
++def _item_to_event(item: Any) -> dict[str, Any] | None:
++    unwrapped = _unwrap_item(item)
++    if isinstance(unwrapped, AgentMessageThreadItem):
++        return _agent_message_event(unwrapped)
++    block = _tool_block(unwrapped)
++    if block is None:
++        return None
++    return {"type": "assistant", "message": {"content": [block]}}
++
++
++def _agent_message_event(item: AgentMessageThreadItem) -> dict[str, Any] | None:
++    if item.phase not in (None, MessagePhase.final_answer):
++        return None
++    return {"type": "assistant", "message": {"content": [{"type": "text", "text": item.text}]}}
++
++
++def _tool_block(item: Any) -> dict[str, Any] | None:
++    if isinstance(item, CommandExecutionThreadItem):
++        return {"type": "tool_use", "name": "Bash", "input": {"command": item.command}}
++    if isinstance(item, McpToolCallThreadItem):
++        return {"type": "tool_use", "name": f"mcp__{item.server}__{item.tool}", "input": _dict_or_empty(item.arguments)}
++    if isinstance(item, DynamicToolCallThreadItem):
++        name = f"{item.namespace}__{item.tool}" if item.namespace else item.tool
++        return {"type": "tool_use", "name": name, "input": _dict_or_empty(item.arguments)}
++    if isinstance(item, CollabAgentToolCallThreadItem):
++        return {"type": "tool_use", "name": "Agent", "input": {"prompt": item.prompt or "", "model": item.model or ""}}
++    if isinstance(item, WebSearchThreadItem):
++        return {"type": "tool_use", "name": "WebSearch", "input": {"query": item.query}}
++    return None
++
++
++def _dict_or_empty(value: Any) -> dict[str, Any]:
++    return dict(value) if isinstance(value, dict) else {}
++
++
++def _usage_event(usage: Any) -> dict[str, int] | None:
++    if not isinstance(usage, ThreadTokenUsage):
++        return None
++    total = usage.total
++    return {
++        "input_tokens": total.input_tokens,
++        "cache_creation_input_tokens": 0,
++        "cache_read_input_tokens": total.cached_input_tokens,
++        "output_tokens": total.output_tokens + total.reasoning_output_tokens,
++    }
++
++
++def _unwrap_item(item: Any) -> Any:
++    if isinstance(item, ThreadItem):
++        return item.root
++    return getattr(item, "root", item)
++
++
++def _model_dump(value: Any) -> Any:
++    if hasattr(value, "model_dump"):
++        return value.model_dump(by_alias=True, exclude_none=True, mode="json")
++    if dataclasses.is_dataclass(value):
++        return dataclasses.asdict(value)
++    return value
++
++
++def _json_line(value: dict[str, Any]) -> str:
++    return json.dumps(value, separators=(",", ":"))
++
++
++def _terminal_run(spec: EvalSpec, *, terminal_reason: str, is_error: bool) -> EvalRun:
++    return EvalRun(
++        spec_name=spec.name,
++        tool_calls=(),
++        text_blocks=(),
++        terminal_reason=terminal_reason,
++        is_error=is_error,
++        raw_stdout="",
++        raw_stderr="",
++    )
+
+diff --git src/teatree/eval/local_sdk_backend.py src/teatree/eval/local_sdk_backend.py
+new file mode 100644
+index 0000000000..e267a2ba38
+--- /dev/null
++++ src/teatree/eval/local_sdk_backend.py
+@@ -0,0 +1,12 @@
++"""Shared contract for local SDK-backed eval runners."""
++
++from abc import ABC, abstractmethod
++
++from teatree.eval.models import EvalRun, EvalSpec
++
++
++class LocalHarnessSDKBackend(ABC):
++    """Local model runner that executes one eval scenario and returns grader input."""
++
++    @abstractmethod
++    def run(self, spec: EvalSpec) -> EvalRun: ...
+
+diff --git tests/teatree_eval/test_codex_runner.py tests/teatree_eval/test_codex_runner.py
+new file mode 100644
+index 0000000000..b003d24403
+--- /dev/null
++++ tests/teatree_eval/test_codex_runner.py
+@@ -0,0 +1,208 @@
++"""OpenAI Codex SDK eval runner.
++
++The SDK boundary is mocked here; these tests pin how Codex thread items are
++rendered into the existing TeaTree stream-json extractor shape.
++"""
++
++from pathlib import Path
++from typing import Any
++from unittest.mock import patch
++
++import pytest
++from openai_codex import TurnResult
++from openai_codex.generated.v2_all import (
++    AbsolutePathBuf,
++    AgentMessageThreadItem,
++    CommandExecutionStatus,
++    CommandExecutionThreadItem,
++    DynamicToolCallStatus,
++    DynamicToolCallThreadItem,
++    McpToolCallStatus,
++    McpToolCallThreadItem,
++    MessagePhase,
++    ThreadItem,
++    ThreadTokenUsage,
++    TokenUsageBreakdown,
++    TurnStatus,
++)
++
++from teatree.eval.codex_runner import CodexSdkRunner
++from teatree.eval.models import EvalSpec, Matcher, TokenUsage
++
++
++def _spec(tmp_path: Path, *, model: str = "gpt-5.5@high") -> EvalSpec:
++    agent = tmp_path / "agent.md"
++    agent.write_text("# fake skill\n\nbody\n", encoding="utf-8")
++    return EvalSpec(
++        name="worktree_first",
++        scenario="agent must create a worktree first",
++        agent_path=str(agent),
++        prompt="Fix README.md typo.",
++        matchers=(
++            Matcher(kind="positive", tool="Bash", arg_path="command", operator="contains", value="git worktree add"),
++        ),
++        source_path=tmp_path / "spec.yaml",
++        model=model,
++        max_turns=3,
++        tools=("Bash",),
++    )
++
++
++def _usage() -> ThreadTokenUsage:
++    return ThreadTokenUsage(
++        last=TokenUsageBreakdown(
++            inputTokens=10,
++            cachedInputTokens=2,
++            outputTokens=3,
++            reasoningOutputTokens=4,
++            totalTokens=19,
++        ),
++        total=TokenUsageBreakdown(
++            inputTokens=100,
++            cachedInputTokens=20,
++            outputTokens=30,
++            reasoningOutputTokens=40,
++            totalTokens=190,
++        ),
++    )
++
++
++def _completed_result(items: list[ThreadItem]) -> TurnResult:
++    return TurnResult(
++        id="turn-1",
++        status=TurnStatus.completed,
++        error=None,
++        started_at=None,
++        completed_at=None,
++        duration_ms=1,
++        final_response="done",
++        items=items,
++        usage=_usage(),
++    )
++
++
++class _FakeCodex:
++    captured: dict[str, Any]
++    result: TurnResult
++
++    def __init__(self, config: Any = None) -> None:
++        self.captured = {"config": config}
++        type(self).captured = self.captured
++
++    def __enter__(self) -> "_FakeCodex":
++        return self
++
++    def __exit__(self, _exc_type: object, _exc: object, _tb: object) -> None:
++        return None
++
++    def thread_start(self, **kwargs: Any) -> "_FakeThread":
++        self.captured["thread_start"] = kwargs
++        return _FakeThread(self)
++
++
++class _FakeThread:
++    def __init__(self, codex: _FakeCodex) -> None:
++        self._codex = codex
++
++    def run(self, input: str, **kwargs: Any) -> TurnResult:
++        self._codex.captured["run_input"] = input
++        self._codex.captured["run_kwargs"] = kwargs
++        return _FakeCodex.result
++
++
++class TestCodexSdkRunner:
++    def _run(self, spec: EvalSpec, result: TurnResult) -> tuple[Any, dict[str, Any]]:
++        _FakeCodex.result = result
++        with patch("teatree.eval.codex_runner.Codex", _FakeCodex):
++            run = CodexSdkRunner(workspace=spec.source_path.parent).run(spec)
++        return run, _FakeCodex.captured
++
++    def test_captures_codex_messages_commands_tools_terminal_and_usage(self, tmp_path: Path) -> None:
++        spec = _spec(tmp_path)
++        items = [
++            ThreadItem(
++                AgentMessageThreadItem(
++                    id="msg-1",
++                    phase=MessagePhase.final_answer,
++                    text="Creating a worktree first.",
++                    type="agentMessage",
++                )
++            ),
++            ThreadItem(
++                CommandExecutionThreadItem(
++                    id="cmd-1",
++                    command="git worktree add ../wt HEAD",
++                    commandActions=[],
++                    cwd=AbsolutePathBuf(str(tmp_path)),
++                    status=CommandExecutionStatus.completed,
++                    type="commandExecution",
++                )
++            ),
++            ThreadItem(
++                McpToolCallThreadItem(
++                    id="mcp-1",
++                    arguments={"query": "issue"},
++                    server="github",
++                    status=McpToolCallStatus.completed,
++                    tool="search_issues",
++                    type="mcpToolCall",
++                )
++            ),
++            ThreadItem(
++                DynamicToolCallThreadItem(
++                    id="dyn-1",
++                    arguments={"path": "README.md"},
++                    namespace="fs",
++                    status=DynamicToolCallStatus.completed,
++                    tool="read",
++                    type="dynamicToolCall",
++                )
++            ),
++        ]
++
++        run, _captured = self._run(spec, _completed_result(items))
++
++        assert run.terminal_reason == "success"
++        assert run.is_error is False
++        assert run.text_blocks == ("Creating a worktree first.",)
++        assert [call.name for call in run.tool_calls] == ["Bash", "mcp__github__search_issues", "fs__read"]
++        assert run.tool_calls[0].input == {"command": "git worktree add ../wt HEAD"}
++        assert run.tool_calls[1].input == {"query": "issue"}
++        assert run.usage == TokenUsage(input=100, cache_read=20, output=70)
++        assert run.cost_usd == pytest.approx(0.0)
++        assert '"command":"git worktree add ../wt HEAD"' in run.raw_stdout
++
++    def test_threads_prompt_model_effort_and_unsandboxed_profile_to_codex(self, tmp_path: Path) -> None:
++        spec = _spec(tmp_path)
++
++        _run, captured = self._run(spec, _completed_result([]))
++
++        assert captured["config"].cwd == str(tmp_path)
++        assert captured["thread_start"]["model"] == "gpt-5.5"
++        assert captured["thread_start"]["cwd"] == str(tmp_path)
++        assert "fake skill" in captured["thread_start"]["developer_instructions"]
++        assert captured["run_input"] == "Fix README.md typo."
++        assert captured["run_kwargs"]["model"] == "gpt-5.5"
++        assert captured["run_kwargs"]["effort"].value == "high"
++        assert captured["run_kwargs"]["cwd"] == str(tmp_path)
++        assert captured["run_kwargs"]["sandbox"].value == "full-access"
++
++    def test_failed_codex_turn_returns_error_run(self, tmp_path: Path) -> None:
++        spec = _spec(tmp_path)
++        result = TurnResult(
++            id="turn-1",
++            status=TurnStatus.failed,
++            error=None,
++            started_at=None,
++            completed_at=None,
++            duration_ms=1,
++            final_response=None,
++            items=[],
++            usage=None,
++        )
++
++        run, _captured = self._run(spec, result)
++
++        assert run.terminal_reason == "failed"
++        assert run.is_error is True
++        assert run.tool_calls == ()

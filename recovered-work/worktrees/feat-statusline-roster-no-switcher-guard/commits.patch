@@ -1,0 +1,63 @@
+From faa91d38ca4e4cf3064a7647152d3d47b8fcff97 Mon Sep 17 00:00:00 2001
+From: souliane <21343492+souliane@users.noreply.github.com>
+Date: Mon, 15 Jun 2026 22:18:41 +0200
+Subject: [PATCH] test(statusline): lock the mates roster as plain names, never
+ an inline switcher
+
+The Agent-Teams header roster (#2449) lists mates as plain names; the
+user's ask was to surface the bench without reproducing the harness
+inline switcher. Pin that contract: with an active team the header shows
+the roster and carries none of the switcher's markers (the @-prefixed
+name, the shift+ hint, the arrow glyphs). Observed RED when the roster
+zone is blanked.
+---
+ tests/test_claude_statusline.py | 33 +++++++++++++++++++++++++++++++++
+ 1 file changed, 33 insertions(+)
+
+diff --git a/tests/test_claude_statusline.py b/tests/test_claude_statusline.py
+index a4a844d916..f620f1d99e 100644
+--- a/tests/test_claude_statusline.py
++++ b/tests/test_claude_statusline.py
+@@ -1080,6 +1080,39 @@ def test_lists_active_mates_for_lead_session(self, tmp_path: Path) -> None:
+         assert "team-lead" not in header, header
+         assert "carol" not in header, header
+ 
++    def test_roster_is_plain_names_not_an_inline_switcher(self, tmp_path: Path) -> None:
++        """The roster lists mates as plain names — never the harness inline switcher.
++
++        The header surfaces ``mates: alice · bob`` and carries none of the
++        harness ``@mate · shift+↑/↓`` switcher's markers (the ``@``-prefixed
++        name, the ``shift+`` key hint, or the ``↑``/``↓`` arrow glyphs), so the
++        roster reads as a bench, not a control widget.
++        """
++        state_dir = tmp_path / "state"
++        state_dir.mkdir()
++        self._write_team(
++            state_dir,
++            team="my-team",
++            lead_session_id="lead-sess",
++            lead_agent_id="lead@my-team",
++            members=[
++                {"agentId": "lead@my-team", "name": "lead", "isActive": None},
++                {"agentId": "alice@my-team", "name": "alice", "color": "blue", "isActive": True},
++                {"agentId": "bob@my-team", "name": "bob", "color": "magenta", "isActive": True},
++            ],
++        )
++
++        result = _run(
++            {"session_id": "lead-sess", "model": {"display_name": "Claude Opus"}},
++            state_dir=state_dir,
++        )
++
++        assert result.returncode == 0, result.stderr
++        plain = _strip_ansi(result.stdout)
++        assert "mates: alice · bob" in plain.splitlines()[0], plain
++        for switcher_marker in ("@alice", "@bob", "shift+", "↑", "↓"):
++            assert switcher_marker not in result.stdout, result.stdout
++
+     def test_mate_painted_in_its_color(self, tmp_path: Path) -> None:
+         """A mate's ``color`` drives its SGR — blue for alice."""
+         state_dir = tmp_path / "state"
+-- 
+2.50.1 (Apple Git-155)
+

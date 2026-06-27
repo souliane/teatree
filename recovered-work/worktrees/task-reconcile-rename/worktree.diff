@@ -1,0 +1,197 @@
+diff --git src/teatree/config/__init__.py src/teatree/config/__init__.py
+index 86add73b42..125bf5ce9c 100644
+--- src/teatree/config/__init__.py
++++ src/teatree/config/__init__.py
+@@ -45,6 +45,7 @@
+ from teatree.config.settings import (
+     BOOTSTRAP_FILE_ONLY_SETTINGS,
+     ENV_SETTING_OVERRIDES,
++    LEGACY_SETTING_KEY_ALIASES,
+     OVERLAY_OVERRIDABLE_SETTINGS,
+     TOML_OVERLAY_OVERRIDABLE_SETTINGS,
+     E2ERepo,
+@@ -56,6 +57,7 @@
+     _parse_env_bool,
+     _parse_str_list,
+     _parse_user_identity_aliases,
++    canonical_setting_key,
+ )
+ from teatree.config_mr_reminder import MrReminderConfig, mr_reminder_from_table, resolve_mr_reminder
+ from teatree.config_speak import resolve_speak, speak_from_subtable
+@@ -67,6 +69,7 @@
+     "DATA_DIR",
+     "DERIVED_FIELDS",
+     "ENV_SETTING_OVERRIDES",
++    "LEGACY_SETTING_KEY_ALIASES",
+     "OVERLAY_OVERRIDABLE_SETTINGS",
+     "SETTING_HOMES",
+     "TOML_OVERLAY_OVERRIDABLE_SETTINGS",
+@@ -100,6 +103,7 @@
+     "_parse_user_identity_aliases",
+     "_resolve_ep_project_path",
+     "cadence_seconds",
++    "canonical_setting_key",
+     "check_for_updates",
+     "default_logging",
+     "discover_active_overlay",
+diff --git src/teatree/config/resolution.py src/teatree/config/resolution.py
+index 911258fc4d..c2c6ee12b9 100644
+--- src/teatree/config/resolution.py
++++ src/teatree/config/resolution.py
+@@ -30,6 +30,7 @@
+     OverlayEntry,
+     TeaTreeConfig,
+     UserSettings,
++    canonical_setting_key,
+ )
+ from teatree.config_speak import speak_from_subtable
+ from teatree.types import SpeakConfig
+@@ -250,23 +251,27 @@ def _coerce_db_rows(rows: dict[str, Any]) -> dict[str, Any]:
+ 
+     Returns ``{field: coerced}`` for every row whose key is a registered
+     ``OVERLAY_OVERRIDABLE_SETTINGS`` (= DB-home) field; rows for unknown / non-DB
+-    keys are dropped so a stray row never mutates the resolved settings.
++    keys are dropped so a stray row never mutates the resolved settings. A row
++    stored under a pre-rename legacy key (``LEGACY_SETTING_KEY_ALIASES``) is
++    resolved UP to its current canonical name first, so an old-named value still
++    resolves into the new field instead of being dropped as unknown.
+ 
+     A per-row parser failure means a stored value is invalid for its setting's
+     type (an out-of-enum ``mode``, a quoted ``"false"`` for a bool). Write-time
+     validation (``config_setting set``, #258) means such a row can only exist via
+     out-of-band corruption — so it is raised LOUD with the offending key named,
+     never swallowed back to the default with no signal.
+     """
+     overrides: dict[str, Any] = {}
+-    for key, value in rows.items():
++    for raw_key, value in rows.items():
++        key = canonical_setting_key(raw_key)
+         parser = OVERLAY_OVERRIDABLE_SETTINGS.get(key)
+         if parser is None:
+             continue
+         try:
+             overrides[key] = parser(value)
+         except (ValueError, TypeError, AttributeError) as exc:
+-            msg = f"Invalid stored ConfigSetting value for {key!r}: {exc}"
++            msg = f"Invalid stored ConfigSetting value for {raw_key!r}: {exc}"
+             raise ValueError(msg) from exc
+     return overrides
+ 
+diff --git src/teatree/config/settings.py src/teatree/config/settings.py
+index a20e9630e3..8f559fcf65 100644
+--- src/teatree/config/settings.py
++++ src/teatree/config/settings.py
+@@ -349,8 +349,8 @@ def _parse_user_identity_aliases(raw: object) -> list[str]:
+     "max_worktree_gc_per_tick": _parse_strict_int,
+     "allow_destructive_ram": _parse_strict_bool,
+     "ram_kill_allowlist": _parse_str_list,
+-    "todo_sweep_disabled": _parse_strict_bool,
+-    "todo_sweep_recheck_interval_hours": _parse_strict_int,
++    "task_sweep_disabled": _parse_strict_bool,
++    "task_sweep_recheck_interval_hours": _parse_strict_int,
+     "max_concurrent_local_stacks": _parse_strict_int,
+     "provision_step_timeout_seconds": _parse_strict_int,
+     "idle_stack_reaper_disabled": _parse_strict_bool,
+@@ -382,6 +382,33 @@ def _parse_user_identity_aliases(raw: object) -> list[str]:
+     "sdk_monthly_credit_usd": _parse_strict_float,
+ }
+ 
++# Pre-rename setting keys that map UP to their current canonical name on read, so
++# a value persisted under the old name (a stored ``ConfigSetting`` row, a
++# ``[teatree]`` / ``[overlays.<name>]`` TOML key being migrated) is never silently
++# dropped after a rename. The canonical form is always the NEW (value) name — the
++# alias is read-only and one-directional (old -> new), per the "normalize UP to the
++# fully-qualified/canonical key" principle (architecture-design § 8). #129's
++# task-sweep scanner renamed ``todo_sweep_*`` -> ``task_sweep_*`` (the keys named
++# teatree ``Task`` rows, never the harness TODO list — the forbidden conflation).
++LEGACY_SETTING_KEY_ALIASES: dict[str, str] = {
++    "todo_sweep_disabled": "task_sweep_disabled",
++    "todo_sweep_recheck_interval_hours": "task_sweep_recheck_interval_hours",
++}
++
++
++def canonical_setting_key(key: str) -> str:
++    """Resolve a setting key to its canonical name, mapping any legacy alias UP.
++
++    A key registered under its current name returns unchanged; a pre-rename
++    alias in :data:`LEGACY_SETTING_KEY_ALIASES` resolves to the current
++    canonical name. The single home for the read-time key migration, applied at
++    every boundary that reads a persisted key (the DB-row resolver and the
++    TOML -> DB import), so an old-named value resolves into the new field
++    instead of being dropped as unknown.
++    """
++    return LEGACY_SETTING_KEY_ALIASES.get(key, key)
++
++
+ # TOML-home keys that ALSO support a per-overlay ``[overlays.<name>]`` override.
+ # A TOML-home field's authoritative tier is the TOML tables + env (never the DB),
+ # but a subset of them is per-overlay overridable in TOML. ``speak`` is omitted —
+@@ -833,15 +860,18 @@ class UserSettings:
+     # process is ever killed even when ``allow_destructive_ram = true``.
+     allow_destructive_ram: bool = False
+     ram_kill_allowlist: list[str] = field(default_factory=list)
+-    # #129 TODO-sweep scanner — per-overlay; verifies open Task rows against
+-    # their artifact's terminal state (issue closed / PR merged) and completes
+-    # only on durable proof, never in bulk and never on a stale read. On by
+-    # default; ``todo_sweep_disabled = true`` is the escape hatch.
+-    # ``todo_sweep_recheck_interval_hours`` is the per-task anti-thrash window
++    # #129 task-sweep scanner — per-overlay; verifies open teatree ``Task`` rows
++    # against their artifact's terminal state (issue closed / PR merged) and
++    # completes only on durable proof, never in bulk and never on a stale read.
++    # On by default; ``task_sweep_disabled = true`` is the escape hatch.
++    # ``task_sweep_recheck_interval_hours`` is the per-task anti-thrash window
+     # (a task swept within it is skipped this tick) and the idempotency window
+-    # for the atomic ``last_sweep_check_ts`` stamp.
+-    todo_sweep_disabled: bool = False
+-    todo_sweep_recheck_interval_hours: int = 1
++    # for the atomic ``last_sweep_check_ts`` stamp. The pre-rename keys
++    # ``todo_sweep_disabled`` / ``todo_sweep_recheck_interval_hours`` still
++    # resolve via ``LEGACY_SETTING_KEY_ALIASES`` (a stored DB/TOML value under
++    # the old name is read into the new field).
++    task_sweep_disabled: bool = False
++    task_sweep_recheck_interval_hours: int = 1
+     # #1397 Cap on concurrent locally-running stacks for a single overlay.
+     # Each running worktree (``services_up``/``ready``) holds docker
+     # containers, browsers, language servers, and CI processes — on a
+diff --git src/teatree/core/config_migration.py src/teatree/core/config_migration.py
+index e70f1d144b..e9a1af331b 100644
+--- src/teatree/core/config_migration.py
++++ src/teatree/core/config_migration.py
+@@ -26,7 +26,7 @@
+ 
+ from dataclasses import dataclass, field
+ 
+-from teatree.config import OVERLAY_OVERRIDABLE_SETTINGS
++from teatree.config import OVERLAY_OVERRIDABLE_SETTINGS, canonical_setting_key
+ from teatree.core.models import ConfigSetting
+ 
+ GLOBAL_SCOPE = ""
+@@ -99,20 +99,24 @@ def _import_table(table: dict, scope: str, *, clobber: bool, result: ConfigImpor
+ 
+     A key registered in ``OVERLAY_OVERRIDABLE_SETTINGS`` is coerced through its
+     registry parser and (per *clobber*) written or preserved; every other key is
+-    skipped. An invalid value is recorded loud and skipped — never fatal — so one
+-    bad key cannot abort the migration of the rest.
++    skipped. A pre-rename legacy key (``LEGACY_SETTING_KEY_ALIASES``) is migrated
++    UP to its current canonical name, so a TOML value under the old name lands in
++    the renamed store row instead of being skipped as unknown. An invalid value
++    is recorded loud and skipped — never fatal — so one bad key cannot abort the
++    migration of the rest.
+     """
+-    for key, raw_value in table.items():
++    for raw_key, raw_value in table.items():
++        key = canonical_setting_key(raw_key)
+         parser = OVERLAY_OVERRIDABLE_SETTINGS.get(key)
+         if parser is None:
+             result.skipped += 1
+             continue
+         try:
+             canonical = parser(raw_value)
+         except (ValueError, TypeError, AttributeError) as exc:
+             result.skipped += 1
+             result.skipped_reasons.append(
+-                f"skipped {key!r} [{_scope_label(scope)}]: invalid value {raw_value!r}: {exc}"
++                f"skipped {raw_key!r} [{_scope_label(scope)}]: invalid value {raw_value!r}: {exc}"
+             )
+             continue
+         existed = ConfigSetting.objects.get_effective(key, scope=scope) is not None

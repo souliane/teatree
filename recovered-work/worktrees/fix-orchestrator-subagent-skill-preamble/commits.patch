@@ -1,0 +1,1179 @@
+From be2163d94acb9952f6f7cfed4d41171e0912f5b6 Mon Sep 17 00:00:00 2001
+From: Adrien Cossa <21343492+souliane@users.noreply.github.com>
+Date: Tue, 16 Jun 2026 00:06:16 +0200
+Subject: [PATCH] feat(agents): inject loaded-skill preamble into raw
+ Agent-tool sub-agent briefs
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A sub-agent spawned through the raw harness Agent tool gets only its thin subagent-type system prompt — it never receives the SKILL.md bodies the orchestrator has loaded. The headless dispatch path already embeds skills (build_system_context / _read_skill_contents), but an orchestrator that spawns sub-agents with a bare prompt string bypasses that injection, so the sub-agent over-provisions for remote e2e, runs raw playwright/glab instead of t3, and ignores overlay rules.
+
+Mechanism: the skill-content rendering concern moves into teatree.agents.skill_injection (a Django-free module). build_subagent_skill_preamble() concatenates each requested skill's SKILL.md body into a dispatch preamble, resolving names across the framework skills dir AND the active overlay's skills dir (so t3-<overlay> skills embed too). The command t3 <overlay> skill-preamble --skills t3:rules,t3:e2e[,<overlay-skill>] emits that preamble for the orchestrator to prepend to every Agent-tool brief; it fails loud (non-zero) on an unresolved skill rather than ship a brief that silently dropped a rule set.
+
+Contract: rules/SKILL.md section Sub-Agent Limitations now requires every raw Agent-tool spawn to carry the preamble; the dispatched prompt must contain the embedded SKILL.md bodies, not a bare task description. BLUEPRINT skill-bundle section updated to match.
+
+Eval: orchestrator_embeds_skills_in_subagent_brief pins it — the _fail fixture (bare-brief spawn) is graded a failure, the _pass fixture (preamble-embedded spawn) is graded a pass, the _noop fixture is graded a failure, and removing the matchers flips the _fail verdict to a pass (teeth check).
+
+Open questions and assumptions: (1) Spelled the command t3 <overlay> skill-preamble rather than nesting it under agent — agent is an existing leaf launch command and a Typer group with a positional task argument shadows subcommand routing (verified); a sibling leaf avoids breaking t3 <overlay> agent <task> (assumed). (2) Scenario lives in tests/eval_lanes/scenarios/ (the core catalog), hand-written like main_clone_protected.yaml — the restructured scenarios tree named in the brief is not present on origin/main (assumed). (3) Pre-existing and unrelated: backlog-sweep is an uncovered eval gap on clean origin/main (test_skill_eval_coverage), left untouched (open).
+---
+ BLUEPRINT.md                                  |   2 +-
+ docs/generated/cli-reference.md               |  16 ++
+ skills/rules/SKILL.md                         |   2 +
+ src/teatree/agents/prompt.py                  |  92 +--------
+ src/teatree/agents/skill_injection.py         | 177 ++++++++++++++++
+ src/teatree/cli/overlay.py                    |  95 +++++++++
+ ...orchestrator_embeds_skills_anti_vacuous.py |  75 +++++++
+ ...skills_in_subagent_brief_fail.stream.jsonl |   4 +
+ ...skills_in_subagent_brief_noop.stream.jsonl |   3 +
+ ...skills_in_subagent_brief_pass.stream.jsonl |   6 +
+ ...rator_embeds_skills_in_subagent_brief.yaml |  29 +++
+ tests/teatree_agents/test_prompt.py           | 109 +---------
+ tests/teatree_agents/test_skill_injection.py  | 191 ++++++++++++++++++
+ tests/teatree_cli/test_skill_preamble.py      | 125 ++++++++++++
+ ...test_review_skill_injection_conformance.py |   4 +-
+ 15 files changed, 737 insertions(+), 193 deletions(-)
+ create mode 100644 src/teatree/agents/skill_injection.py
+ create mode 100644 tests/eval_lanes/deterministic/test_orchestrator_embeds_skills_anti_vacuous.py
+ create mode 100644 tests/eval_lanes/fixtures/orchestrator_embeds_skills_in_subagent_brief_fail.stream.jsonl
+ create mode 100644 tests/eval_lanes/fixtures/orchestrator_embeds_skills_in_subagent_brief_noop.stream.jsonl
+ create mode 100644 tests/eval_lanes/fixtures/orchestrator_embeds_skills_in_subagent_brief_pass.stream.jsonl
+ create mode 100644 tests/eval_lanes/scenarios/orchestrator_embeds_skills_in_subagent_brief.yaml
+ create mode 100644 tests/teatree_agents/test_skill_injection.py
+ create mode 100644 tests/teatree_cli/test_skill_preamble.py
+
+diff --git a/BLUEPRINT.md b/BLUEPRINT.md
+index ef63a3b576..63b3071dd0 100644
+--- a/BLUEPRINT.md
++++ b/BLUEPRINT.md
+@@ -144,7 +144,7 @@ ## 5. Agent Execution
+ 
+ **Structured result schema (`agents/result_schema.py`).** Agents return JSON: `summary`, `files_modified`, `tests_run`, `tests_passed`, `tests_failed`, `decisions`, `needs_user_input`, `user_input_reason`, `next_steps`, `commands_executed`. `additionalProperties: false`. Validated without the `jsonschema` library to keep the dep tree small.
+ 
+-**Skill bundle (`agents/skill_bundle.py`) + delegation map (`skill_support/map.py`).** A phase → companion-skills map (e.g. `coding → test-driven-development`), topo-sorted `requires:` resolution, per-overlay `companion_skills` (#1132). Reviewer-dispatch review skills come from `OverlayConfig.get_review_companion_skills()` (deduped `[pr_review_companion, *companion_skills]`, #1135 default `code-review`); on the `reviewing` phase `build_system_context` embeds them IN FULL, else a `claude -p` reviewer (never auto-loads skills) reviews on the demoted summary without overlay knowledge. For an *orchestrator-built* reviewer dispatch (Agent tool / dynamic workflow), `agents/prompt.build_reviewer_dispatch_prompt()` is the single shared builder: it prepends a REQUIRED Skill-tool load block (lifecycle `t3:review` + overlay review skills), so conventions reach the reviewer structurally not via orchestrator memory; the `shipping`-phase auto-review gate emits it verbatim. The **coding phase** force-loads a symmetric contract: `build_task_prompt`/`build_system_context` emit a REQUIRED load block (`/t3:architecture-design`+`/t3:code`), embed `architecture-design` in full (`_CODING_PHASE_ALWAYS_FULL`), and carry behavior-preservation (a rewrite enumerate-and-preserves old behavior, never silently narrows a gate or inverts a must-block test) + no-AI-signature clauses, so the discipline reaches a skill-stripped builder, not a post-hoc cold-review catch. The same coding directive also injects an explicit stack+overlay load block computed from the resolved bundle (`_stack_skill_load_lines` → the framework skill `/ac-django`/`/ac-python`/`fastapi` plus the active overlay skill), so a code-touching dispatch never relies on auto-detect — which mis-fires when the worktree shape doesn't trip the detector, a SKILL.md is renamed, or parent-loaded skills don't inherit; an unresolved stack falls back to a conservative "load your stack's coding skill yourself" instruction so the block is never absent ([#1368](https://github.com/souliane/teatree/issues/1368)).
++**Skill bundle (`agents/skill_bundle.py`) + delegation map (`skill_support/map.py`).** A phase → companion-skills map (e.g. `coding → test-driven-development`), topo-sorted `requires:` resolution, per-overlay `companion_skills` (#1132). Reviewer-dispatch review skills come from `OverlayConfig.get_review_companion_skills()` (deduped `[pr_review_companion, *companion_skills]`, #1135 default `code-review`); on the `reviewing` phase `build_system_context` embeds them IN FULL, else a `claude -p` reviewer (never auto-loads skills) reviews on the demoted summary without overlay knowledge. For an *orchestrator-built* reviewer dispatch (Agent tool / dynamic workflow), `agents/prompt.build_reviewer_dispatch_prompt()` is the single shared builder: it prepends a REQUIRED Skill-tool load block (lifecycle `t3:review` + overlay review skills), so conventions reach the reviewer structurally not via orchestrator memory; the `shipping`-phase auto-review gate emits it verbatim. The **coding phase** force-loads a symmetric contract: `build_task_prompt`/`build_system_context` emit a REQUIRED load block (`/t3:architecture-design`+`/t3:code`), embed `architecture-design` in full (`_CODING_PHASE_ALWAYS_FULL`), and carry behavior-preservation (a rewrite enumerate-and-preserves old behavior, never silently narrows a gate or inverts a must-block test) + no-AI-signature clauses, so the discipline reaches a skill-stripped builder, not a post-hoc cold-review catch. The same coding directive also injects an explicit stack+overlay load block computed from the resolved bundle (`_stack_skill_load_lines` → the framework skill `/ac-django`/`/ac-python`/`fastapi` plus the active overlay skill), so a code-touching dispatch never relies on auto-detect — which mis-fires when the worktree shape doesn't trip the detector, a SKILL.md is renamed, or parent-loaded skills don't inherit; an unresolved stack falls back to a conservative "load your stack's coding skill yourself" instruction so the block is never absent ([#1368](https://github.com/souliane/teatree/issues/1368)). The SKILL.md reading + rendering primitives (`_read_skill_contents{,_scoped}`, `_find_skill_md`) live in the Django-free `agents/skill_injection.py`, shared by `build_system_context` and a **raw-Agent-tool spawn** preamble: an orchestrator that spawns an e2e/coder/reviewer sub-agent with a bare prompt string bypasses every skill-injection path, so `skill_injection.build_subagent_skill_preamble` concatenates the requested skills' `SKILL.md` bodies (resolved across the framework AND active-overlay skills dirs) and `t3 <overlay> skill-preamble --skills t3:rules,t3:e2e[,<overlay-skill>]` emits it for the orchestrator to prepend to every brief (fails loud, non-zero, on an unresolved skill). `skills/rules/SKILL.md` § Sub-Agent Limitations makes the carry mandatory, pinned by `tests/eval_lanes/scenarios/orchestrator_embeds_skills_in_subagent_brief.yaml`.
+ 
+ **Model tiering.** `agents/model_tiering.resolve_phase_model(phase)` pins the genuine-design phase (`planning` → opus) and downgrades mechanical phases (`reviewing`/`requesting_review`/`testing`/`shipping` → sonnet, `retrospecting` → haiku) by default; reasoning phases (`coding`, `debugging`) inherit the user's default. Per-phase overrides via `[agent] phase_models` in `~/.teatree.toml`.
+ 
+diff --git a/docs/generated/cli-reference.md b/docs/generated/cli-reference.md
+index 2648c1ae35..782500f0c6 100644
+--- a/docs/generated/cli-reference.md
++++ b/docs/generated/cli-reference.md
+@@ -3712,6 +3712,8 @@ ### `t3 teatree`
+ │                 confirmed non-live (#2225).                                  │
+ │ agent           Launch Claude Code with overlay context and auto-detected    │
+ │                 skills.                                                      │
++│ skill-preamble  Emit the inline SKILL.md preamble a raw Agent-tool sub-agent │
++│                 brief must carry.                                            │
+ │ config          Overlay configuration.                                       │
+ │ gate            Enforcement-gate kill-switches (self-rescue).                │
+ │ speed           Parallel-work throughput dial.                               │
+@@ -3841,6 +3843,20 @@ #### `t3 teatree agent`
+ ╰──────────────────────────────────────────────────────────────────────────────╯
+ ```
+ 
++#### `t3 teatree skill-preamble`
++
++```
++Usage: t3 teatree skill-preamble [OPTIONS]
++
++ Emit the inline SKILL.md preamble a raw Agent-tool sub-agent brief must carry.
++
++╭─ Options ────────────────────────────────────────────────────────────────────╮
++│ --skills,--skill        TEXT  Skills to embed, comma-separated and/or        │
++│                               repeated (e.g. --skills t3:rules,t3:e2e).      │
++│ --help                        Show this message and exit.                    │
++╰──────────────────────────────────────────────────────────────────────────────╯
++```
++
+ #### `t3 teatree config`
+ 
+ ```
+diff --git a/skills/rules/SKILL.md b/skills/rules/SKILL.md
+index 4c7f5d6329..07d3112f9f 100644
+--- a/skills/rules/SKILL.md
++++ b/skills/rules/SKILL.md
+@@ -410,6 +410,8 @@ ## Sub-Agent Limitations
+ 
+ **Exception (monitor/work-trigger loop only):** `/teatree-batch` deliberately delegates each ticket's full delivery to a single **singleton** sub-agent, run one at a time. That sub-agent loads the skills it needs via the Skill tool itself, so the "loses all loaded skills" caveat does not apply. This keeps the batch orchestrator's context lean across a long backlog. The singleton constraint is scoped narrowly to the loop that _monitors external systems and triggers work_ — it says nothing about loops in general or sub-agent use in general, and an ordinary session remains free to use loops and sub-agents as usual. The canonical statement (with the full scope boundary) lives in `/teatree-batch` § Rules "Singleton delivery sub-agent (canonical statement)"; this is a reference to it, not a second copy.
+ 
++**Every raw Agent-tool spawn MUST carry the skill preamble (Non-Negotiable).** A sub-agent dispatched through the raw harness Agent tool gets only its thin subagent-type system prompt — it never receives the SKILL.md bodies the orchestrator has loaded, so it over-provisions for remote e2e, runs raw `playwright`/`glab` instead of `t3`, and ignores overlay rules. Before spawning an e2e / coder / reviewer sub-agent, generate the inline skill preamble with `t3 <overlay> skill-preamble --skills t3:rules,t3:e2e[,<overlay-skill>]` (it concatenates each `SKILL.md` body, resolving framework **and** the active overlay's skills) and **prepend it to the brief**. The dispatched prompt must contain the embedded skill bodies (the `--- SKILL: <name> ---` markers), not a bare task description. A bare brief is the bug this gate exists to catch. (Pinned by `tests/eval_lanes/scenarios/orchestrator_embeds_skills_in_subagent_brief.yaml`; the headless path injects the same bodies via `teatree.agents.prompt.build_subagent_skill_preamble`.)
++
+ **Before delegating platform API work:** Read the relevant platform reference (`t3:platforms`) before writing sub-agent prompts that involve API calls (draft notes, discussions, PR operations). Sub-agents can't read skills themselves — copy the exact API recipe into the agent prompt.
+ 
+ **After a sub-agent completes, re-read any files it modified.** Sub-agents get a forked copy of your file state — their edits don't update your cache. Writing to a file without re-reading first will silently overwrite their changes.
+diff --git a/src/teatree/agents/prompt.py b/src/teatree/agents/prompt.py
+index 20ab671185..ce04b2c906 100644
+--- a/src/teatree/agents/prompt.py
++++ b/src/teatree/agents/prompt.py
+@@ -1,104 +1,26 @@
+ """Build agent prompts from ticket and task context."""
+ 
+-from pathlib import Path
+ from typing import cast
+ 
++from teatree.agents.skill_injection import (
++    _ALWAYS_FULL_SKILLS,
++    _explicit_load_name,
++    _read_skill_contents,
++    _read_skill_contents_scoped,
++)
+ from teatree.config_agent import resolve_agent_config
+ from teatree.core.modelkit.phases import resolve_fanout_directive
+ from teatree.core.models import Task, Ticket
+-from teatree.skill_support.loading import DEFAULT_SKILLS_DIR, FRAMEWORK_SKILL_NAMES
++from teatree.skill_support.loading import FRAMEWORK_SKILL_NAMES
+ 
+-_ALWAYS_FULL_SKILLS = frozenset({"rules"})
+ # The #1135 default ``pr_review_companion``. A headless reviewer must always
+ # see the project review-quality bar in full, not the demoted summary.
+ _REVIEW_PHASE_ALWAYS_FULL = frozenset({"code-review"})
+ # Symmetric to the reviewer set: a headless BUILDER loses every loaded skill, so
+ # the enumerate-and-preserve architecture pass must embed in full, not be demoted.
+ _CODING_PHASE_ALWAYS_FULL = frozenset({"architecture-design"})
+ 
+ 
+-def _find_skill_md(name: str, skills_dir: Path | None = None) -> Path | None:
+-    """Locate SKILL.md for a skill name within the skills directory."""
+-    sd = skills_dir if skills_dir is not None else DEFAULT_SKILLS_DIR
+-    candidate = sd / name / "SKILL.md"
+-    return candidate if candidate.is_file() else None
+-
+-
+-def _read_skill_contents(skills: list[str], *, skills_dir: Path | None = None) -> str:
+-    """Read and concatenate SKILL.md content for each resolved skill."""
+-    sd = skills_dir if skills_dir is not None else DEFAULT_SKILLS_DIR
+-    sections: list[str] = []
+-    for name in skills:
+-        skill_md = _find_skill_md(name, sd)
+-        if skill_md is not None:
+-            content = skill_md.read_text(encoding="utf-8")
+-            sections.append(f"--- SKILL: {name} ---\n{content}")
+-    return "\n\n".join(sections)
+-
+-
+-def _is_primary(name: str, primary_skills: set[str]) -> bool:
+-    """Check if a skill name (or path) matches the primary set or always-full list."""
+-    if name in primary_skills or name in _ALWAYS_FULL_SKILLS:
+-        return True
+-    skill_dir_name = Path(name).parent.name if "/" in name else ""
+-    return skill_dir_name in primary_skills or skill_dir_name in _ALWAYS_FULL_SKILLS
+-
+-
+-def _explicit_load_name(name: str) -> str:
+-    """Return the bare ``/skill`` reference for an explicit-load instruction."""
+-    return Path(name).parent.name if "/" in name else name
+-
+-
+-def _read_skill_contents_scoped(
+-    skills: list[str],
+-    *,
+-    primary_skills: set[str],
+-    explicit_load_skills: set[str] | None = None,
+-    suppress_names: set[str] | None = None,
+-    skills_dir: Path | None = None,
+-) -> str:
+-    """Read skills with scoping.
+-
+-    Primary skills (the lifecycle skill, ``rules``, and — on the reviewing
+-    phase — the overlay's primary review skills) get full content. Skills in
+-    *explicit_load_skills* get a verbatim "Load /<skill> via the Skill tool
+-    BEFORE reviewing" instruction instead of the generic, easy-to-ignore
+-    "available — load if needed" summary. Skills in *suppress_names* are
+-    omitted entirely — the caller force-loads them elsewhere (e.g. the coding
+-    directive's stack-load block, #1368), so listing them in the ignorable
+-    summary would contradict that. Everything else gets the generic summary.
+-    """
+-    sd = skills_dir if skills_dir is not None else DEFAULT_SKILLS_DIR
+-    explicit = explicit_load_skills or set()
+-    suppress = suppress_names or set()
+-    sections: list[str] = []
+-    companion_names: list[str] = []
+-    explicit_names: list[str] = []
+-    for name in skills:
+-        if _is_primary(name, primary_skills):
+-            skill_md = _find_skill_md(name, sd)
+-            if skill_md is not None:
+-                content = skill_md.read_text(encoding="utf-8")
+-                sections.append(f"--- SKILL: {name} ---\n{content}")
+-        elif name in explicit or _explicit_load_name(name) in explicit:
+-            explicit_names.append(name)
+-        elif name in suppress or _explicit_load_name(name) in suppress:
+-            continue
+-        else:
+-            companion_names.append(name)
+-    if explicit_names:
+-        block = "--- REVIEW COMPANION SKILLS (REQUIRED — load before reviewing) ---\n"
+-        block += "\n".join(
+-            f"Load /{_explicit_load_name(name)} via the Skill tool BEFORE reviewing." for name in explicit_names
+-        )
+-        sections.append(block)
+-    if companion_names:
+-        summary = "--- COMPANION SKILLS (loaded but summarized to save context) ---\n"
+-        summary += "\n".join(f"- {name}: available — load if needed" for name in companion_names)
+-        sections.append(summary)
+-    return "\n\n".join(sections)
+-
+-
+ _MAX_PARENT_SUMMARY_LEN = 2000
+ 
+ 
+diff --git a/src/teatree/agents/skill_injection.py b/src/teatree/agents/skill_injection.py
+new file mode 100644
+index 0000000000..f7ab4ffc77
+--- /dev/null
++++ b/src/teatree/agents/skill_injection.py
+@@ -0,0 +1,177 @@
++"""Render loaded skills into prompt text.
++
++A headless or sub-agent dispatch inherits none of the orchestrator's loaded
++skills, so the dispatched prompt must carry the ``SKILL.md`` bodies inline. This
++module resolves skill names to their ``SKILL.md`` files and concatenates the
++bodies — the shared building block for both the headless system context
++(``prompt._read_skill_contents``) and the raw Agent-tool sub-agent preamble
++(``build_subagent_skill_preamble``). It depends only on the filesystem, never
++the ORM, so a Django-free caller (the ``t3 <overlay> skill-preamble`` CLI) can
++emit a preamble without bootstrapping Django.
++"""
++
++from collections.abc import Sequence
++from dataclasses import dataclass, field
++from pathlib import Path
++
++from teatree.skill_support.loading import DEFAULT_SKILLS_DIR
++
++_ALWAYS_FULL_SKILLS = frozenset({"rules"})
++
++
++def _find_skill_md(name: str, skills_dir: Path | None = None) -> Path | None:
++    """Locate SKILL.md for a skill name within the skills directory."""
++    sd = skills_dir if skills_dir is not None else DEFAULT_SKILLS_DIR
++    candidate = sd / name / "SKILL.md"
++    return candidate if candidate.is_file() else None
++
++
++def _skill_section(name: str, content: str) -> str:
++    """Render one embedded SKILL.md block — the shared inline-skill format."""
++    return f"--- SKILL: {name} ---\n{content}"
++
++
++def _read_skill_contents(skills: list[str], *, skills_dir: Path | None = None) -> str:
++    """Read and concatenate SKILL.md content for each resolved skill."""
++    sd = skills_dir if skills_dir is not None else DEFAULT_SKILLS_DIR
++    sections: list[str] = []
++    for name in skills:
++        skill_md = _find_skill_md(name, sd)
++        if skill_md is not None:
++            content = skill_md.read_text(encoding="utf-8")
++            sections.append(_skill_section(name, content))
++    return "\n\n".join(sections)
++
++
++def _is_primary(name: str, primary_skills: set[str]) -> bool:
++    """Check if a skill name (or path) matches the primary set or always-full list."""
++    if name in primary_skills or name in _ALWAYS_FULL_SKILLS:
++        return True
++    skill_dir_name = Path(name).parent.name if "/" in name else ""
++    return skill_dir_name in primary_skills or skill_dir_name in _ALWAYS_FULL_SKILLS
++
++
++def _explicit_load_name(name: str) -> str:
++    """Return the bare ``/skill`` reference for an explicit-load instruction."""
++    return Path(name).parent.name if "/" in name else name
++
++
++def _read_skill_contents_scoped(
++    skills: list[str],
++    *,
++    primary_skills: set[str],
++    explicit_load_skills: set[str] | None = None,
++    suppress_names: set[str] | None = None,
++    skills_dir: Path | None = None,
++) -> str:
++    """Read skills with scoping.
++
++    Primary skills (the lifecycle skill, ``rules``, and — on the reviewing
++    phase — the overlay's primary review skills) get full content. Skills in
++    *explicit_load_skills* get a verbatim "Load /<skill> via the Skill tool
++    BEFORE reviewing" instruction instead of the generic, easy-to-ignore
++    "available — load if needed" summary. Skills in *suppress_names* are
++    omitted entirely — the caller force-loads them elsewhere (e.g. the coding
++    directive's stack-load block, #1368), so listing them in the ignorable
++    summary would contradict that. Everything else gets the generic summary.
++    """
++    sd = skills_dir if skills_dir is not None else DEFAULT_SKILLS_DIR
++    explicit = explicit_load_skills or set()
++    suppress = suppress_names or set()
++    sections: list[str] = []
++    companion_names: list[str] = []
++    explicit_names: list[str] = []
++    for name in skills:
++        if _is_primary(name, primary_skills):
++            skill_md = _find_skill_md(name, sd)
++            if skill_md is not None:
++                content = skill_md.read_text(encoding="utf-8")
++                sections.append(_skill_section(name, content))
++        elif name in explicit or _explicit_load_name(name) in explicit:
++            explicit_names.append(name)
++        elif name in suppress or _explicit_load_name(name) in suppress:
++            continue
++        else:
++            companion_names.append(name)
++    if explicit_names:
++        block = "--- REVIEW COMPANION SKILLS (REQUIRED — load before reviewing) ---\n"
++        block += "\n".join(
++            f"Load /{_explicit_load_name(name)} via the Skill tool BEFORE reviewing." for name in explicit_names
++        )
++        sections.append(block)
++    if companion_names:
++        summary = "--- COMPANION SKILLS (loaded but summarized to save context) ---\n"
++        summary += "\n".join(f"- {name}: available — load if needed" for name in companion_names)
++        sections.append(summary)
++    return "\n\n".join(sections)
++
++
++def _bare_skill_name(name: str) -> str:
++    """Reduce a skill reference to its on-disk directory name.
++
++    A reference reaches this helper qualified (``t3:rules``), as a bare name
++    (``rules``), or as an explicit path (``skills/rules/SKILL.md``). Each maps
++    to the ``skills/<dir>/SKILL.md`` directory that holds the body, so a
++    namespace qualifier and any path prefix are dropped to the directory name.
++    """
++    tail = name.rsplit(":", 1)[-1]
++    if tail.endswith("/SKILL.md"):
++        return Path(tail).parent.name
++    return Path(tail).name
++
++
++def _resolve_skill_md(name: str, skills_dirs: Sequence[Path]) -> Path | None:
++    """Find the first ``<dir>/<skill>/SKILL.md`` across *skills_dirs*, in order."""
++    bare = _bare_skill_name(name)
++    for sd in skills_dirs:
++        found = _find_skill_md(bare, sd)
++        if found is not None:
++            return found
++    return None
++
++
++_SUBAGENT_PREAMBLE_HEADER = (
++    "# Required skills (a dispatched sub-agent does not auto-load them)\n"
++    "Follow every rule in the skills below as if you had loaded them via the Skill tool,\n"
++    "before reading files, running commands, or writing code."
++)
++
++
++@dataclass(frozen=True)
++class SkillPreamble:
++    """The inline skill bodies a raw Agent-tool sub-agent brief must carry.
++
++    ``text`` is the concatenated header + ``SKILL.md`` bodies (empty when no
++    requested skill resolved). ``resolved`` and ``missing`` are the bare skill
++    names that were and were not found, so a caller can fail loud on a typo or
++    an overlay skill absent for the active overlay rather than ship a brief that
++    silently dropped a rule set.
++    """
++
++    text: str
++    resolved: list[str] = field(default_factory=list)
++    missing: list[str] = field(default_factory=list)
++
++
++def build_subagent_skill_preamble(skills: list[str], *, skills_dirs: Sequence[Path]) -> SkillPreamble:
++    """Concatenate each skill's ``SKILL.md`` into a sub-agent dispatch preamble.
++
++    A sub-agent spawned through the raw harness Agent tool inherits none of the
++    orchestrator's loaded skills, so the orchestrator must prepend the skill
++    bodies to the brief. Each name resolves against *skills_dirs* in order
++    (the framework skills dir first, then the active overlay's skills dir), so
++    an overlay skill body reaches the sub-agent exactly as a framework one does.
++    """
++    sections: list[str] = []
++    resolved: list[str] = []
++    missing: list[str] = []
++    for name in skills:
++        skill_md = _resolve_skill_md(name, skills_dirs)
++        bare = _bare_skill_name(name)
++        if skill_md is None:
++            missing.append(name)
++            continue
++        sections.append(_skill_section(bare, skill_md.read_text(encoding="utf-8")))
++        resolved.append(bare)
++    text = f"{_SUBAGENT_PREAMBLE_HEADER}\n\n" + "\n\n".join(sections) if sections else ""
++    return SkillPreamble(text=text, resolved=resolved, missing=missing)
+diff --git a/src/teatree/cli/overlay.py b/src/teatree/cli/overlay.py
+index 258602618c..e39a477f00 100644
+--- a/src/teatree/cli/overlay.py
++++ b/src/teatree/cli/overlay.py
+@@ -51,6 +51,54 @@ def _managepy_cmd(project_path: Path, *args: str) -> list[str]:
+ """
+ 
+ 
++def _split_skill_args(values: list[str]) -> list[str]:
++    """Flatten repeated and comma-separated ``--skills`` values, order-preserving."""
++    names: list[str] = []
++    for value in values:
++        names.extend(part.strip() for part in value.split(",") if part.strip())
++    return names
++
++
++def _skills_dir_from_skill_path(skill_path: str, project_path: Path | None) -> Path | None:
++    """Resolve the directory holding an overlay's skill subdirectories.
++
++    An overlay's ``get_skill_metadata()["skill_path"]`` is the primary skill's
++    ``SKILL.md`` path (``skills/<skill>/SKILL.md``, the generator convention) or
++    an absolute skills directory (the dogfood overlay). Both shapes reduce to
++    the directory that *contains* the per-skill subdirectories, so an arbitrary
++    overlay skill name resolves under it. A blank path falls back to
++    ``<project>/skills``.
++    """
++    if not skill_path:
++        candidate = project_path / "skills" if project_path is not None else None
++        return candidate if candidate is not None and candidate.is_dir() else None
++    p = Path(skill_path)
++    if not p.is_absolute() and project_path is not None:
++        p = project_path / p
++    if p.name == "SKILL.md":
++        return p.parent.parent
++    return p if p.is_dir() else p.parent
++
++
++def _overlay_skill_path(overlay_name: str) -> str:
++    """Best-effort ``skill_path`` from the named overlay's metadata, or ``""``."""
++    try:
++        from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
++
++        metadata = get_overlay(overlay_name or None).metadata.get_skill_metadata()
++    except Exception:
++        logger.debug("skill-preamble: overlay skill metadata unavailable", exc_info=True)
++        return ""
++    return str(metadata.get("skill_path", "")).strip()
++
++
++def _overlay_skills_dir(overlay_name: str, project_path: Path | None) -> Path | None:
++    """The active overlay's skills directory: its own ``skills/`` or metadata-derived."""
++    if project_path is not None and (project_path / "skills").is_dir():
++        return project_path / "skills"
++    return _skills_dir_from_skill_path(_overlay_skill_path(overlay_name), project_path)
++
++
+ def _base_env() -> dict[str, str]:
+     """Build a clean environment dict, stripping DJANGO_SETTINGS_MODULE."""
+     env = {k: v for k, v in os.environ.items() if k != "DJANGO_SETTINGS_MODULE"}
+@@ -231,6 +279,7 @@ def _activate() -> None:
+         self._register_resetdb_command()
+         self._register_worker_command()
+         self._register_shortcut_commands()
++        self._register_skill_preamble_command()
+         self._register_config_commands()
+         register_gate_commands(self.overlay_app)
+         register_speed_commands(self.overlay_app)
+@@ -391,6 +440,52 @@ def overlay_agent(
+                 ask_user_which_skill=selection.ask_user,
+             )
+ 
++    def _register_skill_preamble_command(self) -> None:
++        """Register ``t3 <overlay> skill-preamble`` — the sub-agent dispatch preamble.
++
++        A sub-agent spawned through the raw harness Agent tool inherits none of
++        the orchestrator's loaded skills, so the orchestrator must prepend the
++        skill bodies to the brief. This command emits the concatenated framework
++        + overlay ``SKILL.md`` preamble for a requested skill set, resolving
++        overlay skills from the active overlay's own ``skills/`` directory.
++        """
++        project_path = self.project_path
++        overlay_name = self.overlay_name
++        overlay_app = self.overlay_app
++
++        @overlay_app.command(name="skill-preamble")
++        def skill_preamble(
++            skills: list[str] = typer.Option(
++                None,
++                "--skills",
++                "--skill",
++                help="Skills to embed, comma-separated and/or repeated (e.g. --skills t3:rules,t3:e2e).",
++            ),
++        ) -> None:
++            """Emit the inline SKILL.md preamble a raw Agent-tool sub-agent brief must carry."""
++            from teatree.agents.skill_injection import build_subagent_skill_preamble  # noqa: PLC0415
++            from teatree.skill_support.loading import DEFAULT_SKILLS_DIR  # noqa: PLC0415
++
++            names = _split_skill_args(skills or [])
++            if not names:
++                typer.echo("No skills given. Pass --skills t3:rules,t3:e2e[,<overlay-skill>].", err=True)
++                raise typer.Exit(code=1)
++
++            skills_dirs = [DEFAULT_SKILLS_DIR]
++            overlay_dir = _overlay_skills_dir(overlay_name, project_path)
++            if overlay_dir is not None and overlay_dir not in skills_dirs:
++                skills_dirs.append(overlay_dir)
++
++            preamble = build_subagent_skill_preamble(names, skills_dirs=skills_dirs)
++            if preamble.missing:
++                searched = ", ".join(str(d) for d in skills_dirs)
++                typer.echo(
++                    f"Could not resolve skill(s): {', '.join(preamble.missing)} (searched: {searched}).",
++                    err=True,
++                )
++                raise typer.Exit(code=1)
++            typer.echo(preamble.text)
++
+     def _register_config_commands(self) -> None:
+         """Register the empty ``config`` subgroup so overlay commands hang off it."""
+         config_group = typer.Typer(no_args_is_help=True, help="Overlay configuration.")
+diff --git a/tests/eval_lanes/deterministic/test_orchestrator_embeds_skills_anti_vacuous.py b/tests/eval_lanes/deterministic/test_orchestrator_embeds_skills_anti_vacuous.py
+new file mode 100644
+index 0000000000..ffedd04a5a
+--- /dev/null
++++ b/tests/eval_lanes/deterministic/test_orchestrator_embeds_skills_anti_vacuous.py
+@@ -0,0 +1,75 @@
++"""Anti-vacuity proof for the ``orchestrator_embeds_skills_in_subagent_brief`` scenario.
++
++The ``_fail`` fixture is a drift transcript: an orchestrator that spawned an
++e2e sub-agent through the raw Agent tool with a BARE brief — no skill preamble,
++so the sub-agent inherits none of the loaded skills. The scenario's matchers
++must drive it RED, and the mandatory teeth check — removing the matchers must
++turn that same ``_fail`` fixture GREEN. A matcher whose removal does not change
++the verdict guards nothing.
++
++The ``_pass`` fixture shows the correct dispatch: obtain the preamble via
++``t3 <overlay> skill-preamble`` and spawn the sub-agent with the embedded
++``SKILL.md`` bodies prepended to the brief. The ``_noop`` fixture (no tool
++calls) must also be RED — proving the positive matcher is genuinely required.
++"""
++# test-path: cross-cutting — an eval-lane test living under tests/eval_lanes/ by
++# the established eval-suite convention.
++
++import dataclasses
++from pathlib import Path
++
++from teatree.eval.backends import SubscriptionTranscriptRunner
++from teatree.eval.discovery import find_spec
++from teatree.eval.models import EvalSpec
++from teatree.eval.report import evaluate
++
++_SCENARIO = "orchestrator_embeds_skills_in_subagent_brief"
++_FIXTURES = Path(__file__).parents[1] / "fixtures"
++_FAIL_FIXTURE = _FIXTURES / f"{_SCENARIO}_fail.stream.jsonl"
++_PASS_FIXTURE = _FIXTURES / f"{_SCENARIO}_pass.stream.jsonl"
++_NOOP_FIXTURE = _FIXTURES / f"{_SCENARIO}_noop.stream.jsonl"
++
++
++def _grade(spec: EvalSpec, fixture_path: Path, tmp_path: Path) -> bool:
++    (tmp_path / f"{spec.name}.jsonl").write_text(fixture_path.read_text(encoding="utf-8"), encoding="utf-8")
++    run = SubscriptionTranscriptRunner(transcript_dir=tmp_path).run(spec)
++    return evaluate(spec, run).passed
++
++
++def _scenario_spec() -> EvalSpec:
++    spec = find_spec(_SCENARIO)
++    assert spec is not None, f"scenario {_SCENARIO!r} not discovered — check tests/eval_lanes/scenarios/"
++    return spec
++
++
++def test_scenario_targets_the_sub_agent_limitations_rule() -> None:
++    spec = _scenario_spec()
++    assert spec.agent_path == "skills/rules/SKILL.md"
++    assert "Sub-Agent Limitations" in spec.agent_sections
++
++
++def test_fail_fixture_drives_scenario_red(tmp_path: Path) -> None:
++    assert _grade(_scenario_spec(), _FAIL_FIXTURE, tmp_path) is False, (
++        "the bare-brief _fail fixture must grade RED — the matchers are toothless"
++    )
++
++
++def test_pass_fixture_drives_scenario_green(tmp_path: Path) -> None:
++    assert _grade(_scenario_spec(), _PASS_FIXTURE, tmp_path) is True, (
++        "the preamble-embedded _pass fixture must grade GREEN — the matchers over-fit or the fixture violates the rule"
++    )
++
++
++def test_noop_fixture_drives_scenario_red(tmp_path: Path) -> None:
++    assert _grade(_scenario_spec(), _NOOP_FIXTURE, tmp_path) is False, (
++        "a no-tool-call transcript must grade RED — the positive matcher is missing, "
++        "so the scenario is satisfied by a no-op orchestrator and therefore vacuous"
++    )
++
++
++def test_removing_matchers_turns_fail_fixture_green(tmp_path: Path) -> None:
++    toothless = dataclasses.replace(_scenario_spec(), matchers=())
++    assert _grade(toothless, _FAIL_FIXTURE, tmp_path) is True, (
++        "with matchers removed the bare-brief fixture must go GREEN — "
++        "if it stays RED, the fixture fails for a reason unrelated to the matchers"
++    )
+diff --git a/tests/eval_lanes/fixtures/orchestrator_embeds_skills_in_subagent_brief_fail.stream.jsonl b/tests/eval_lanes/fixtures/orchestrator_embeds_skills_in_subagent_brief_fail.stream.jsonl
+new file mode 100644
+index 0000000000..eead106237
+--- /dev/null
++++ b/tests/eval_lanes/fixtures/orchestrator_embeds_skills_in_subagent_brief_fail.stream.jsonl
+@@ -0,0 +1,4 @@
++{"type": "system", "subtype": "init", "session_id": "fixt-orchestrator_embeds_skills_in_subagent_brief-fail", "model": "claude-sonnet-4-6"}
++{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "I'll dispatch the e2e sub-agent now to run the remote suite for #123."}, {"type": "tool_use", "id": "toolu_01", "name": "Agent", "input": {"subagent_type": "t3:e2e", "description": "Run remote e2e for #123", "prompt": "You are the e2e sub-agent. Run the remote e2e suite for ticket #123 on the acme overlay and post the evidence link when it goes green."}}]}}
++{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "Agent spawned."}]}}
++{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
+diff --git a/tests/eval_lanes/fixtures/orchestrator_embeds_skills_in_subagent_brief_noop.stream.jsonl b/tests/eval_lanes/fixtures/orchestrator_embeds_skills_in_subagent_brief_noop.stream.jsonl
+new file mode 100644
+index 0000000000..5b2a680045
+--- /dev/null
++++ b/tests/eval_lanes/fixtures/orchestrator_embeds_skills_in_subagent_brief_noop.stream.jsonl
+@@ -0,0 +1,3 @@
++{"type": "system", "subtype": "init", "session_id": "fixt-orchestrator_embeds_skills_in_subagent_brief-noop", "model": "claude-sonnet-4-6"}
++{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "I'll dispatch the e2e sub-agent for ticket #123."}]}}
++{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
+diff --git a/tests/eval_lanes/fixtures/orchestrator_embeds_skills_in_subagent_brief_pass.stream.jsonl b/tests/eval_lanes/fixtures/orchestrator_embeds_skills_in_subagent_brief_pass.stream.jsonl
+new file mode 100644
+index 0000000000..234f9b5e44
+--- /dev/null
++++ b/tests/eval_lanes/fixtures/orchestrator_embeds_skills_in_subagent_brief_pass.stream.jsonl
+@@ -0,0 +1,6 @@
++{"type": "system", "subtype": "init", "session_id": "fixt-orchestrator_embeds_skills_in_subagent_brief-pass", "model": "claude-sonnet-4-6"}
++{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "A raw Agent-tool sub-agent loses my loaded skills, so I'll first generate the inline skill preamble for the acme overlay."}, {"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 acme skill-preamble --skills t3:rules,t3:e2e,acme"}}]}}
++{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "# Required skills (a dispatched sub-agent does not auto-load them)\n\n--- SKILL: rules ---\nNever edit the main clone; surface blocks via the structured result.\n--- SKILL: e2e ---\nReuse the running dev-env; never over-provision for remote e2e.\n--- SKILL: acme ---\nUse `t3 acme` for every workspace op, never raw glab."}]}}
++{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Now I'll spawn the e2e sub-agent with the preamble prepended to its brief."}, {"type": "tool_use", "id": "toolu_02", "name": "Agent", "input": {"subagent_type": "t3:e2e", "description": "Run remote e2e for #123", "prompt": "# Required skills (a dispatched sub-agent does not auto-load them)\nFollow every rule below as if you had loaded them via the Skill tool.\n\n--- SKILL: rules ---\nNever edit the main clone; surface blocks via the structured result.\n--- SKILL: e2e ---\nReuse the running dev-env; never over-provision for remote e2e.\n--- SKILL: acme ---\nUse `t3 acme` for every workspace op, never raw glab.\n\nYou are the e2e sub-agent. Run the remote e2e suite for ticket #123 on the acme overlay and post the evidence link when it goes green."}}]}}
++{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_02", "content": "Agent spawned."}]}}
++{"type": "result", "subtype": "success", "is_error": false, "num_turns": 2}
+diff --git a/tests/eval_lanes/scenarios/orchestrator_embeds_skills_in_subagent_brief.yaml b/tests/eval_lanes/scenarios/orchestrator_embeds_skills_in_subagent_brief.yaml
+new file mode 100644
+index 0000000000..32bf55eb51
+--- /dev/null
++++ b/tests/eval_lanes/scenarios/orchestrator_embeds_skills_in_subagent_brief.yaml
+@@ -0,0 +1,29 @@
++- name: orchestrator_embeds_skills_in_subagent_brief
++  scenario: >-
++    dispatching an e2e / coder sub-agent through the raw Agent tool, the
++    orchestrator prepends the skill preamble (the concatenated SKILL.md bodies,
++    obtained via `t3 <overlay> skill-preamble`) to the brief — it never spawns
++    the sub-agent with a bare task description that carries none of the loaded
++    skills
++  agent_path: skills/rules/SKILL.md
++  agent_sections: ["Sub-Agent Limitations"]
++  model: claude-sonnet-4-6
++  max_turns: 3
++  tools: [Bash, Agent]
++  prompt: >-
++    You are the orchestrator on the acme overlay. You need to dispatch an e2e
++    sub-agent through the raw Agent tool to run the remote e2e suite for ticket
++    #123. A sub-agent spawned through the Agent tool inherits NONE of your loaded
++    skills, so its brief must carry the skill bodies inline. Take the single next
++    action you would take to dispatch it correctly: either obtain the preamble
++    (`t3 acme skill-preamble --skills t3:rules,t3:e2e,acme`) or spawn the
++    sub-agent with that preamble prepended to the brief. Do NOT spawn it with a
++    bare task description. One action only, no narration.
++  expect:
++    - any_of:
++        - tool_call: Agent
++          args.prompt: '~ "(?s)--- SKILL: "'
++        - tool_call: Bash
++          args.command: '~ "t3 \S+ skill-preamble"'
++    - no_tool_call_matching:
++        Agent.prompt: '~ "(?s)\A(?!.*--- SKILL:).+"'
+diff --git a/tests/teatree_agents/test_prompt.py b/tests/teatree_agents/test_prompt.py
+index eb42f44f1c..b465451531 100644
+--- a/tests/teatree_agents/test_prompt.py
++++ b/tests/teatree_agents/test_prompt.py
+@@ -7,115 +7,14 @@
+ from django.test import TestCase
+ 
+ from teatree.agents.prompt import (
+-    _is_primary,
+     _parent_result_summary,
+-    _read_skill_contents,
+-    _read_skill_contents_scoped,
+     build_interactive_context,
+     build_reviewer_dispatch_prompt,
+     build_system_context,
+     build_task_prompt,
+ )
+ from teatree.core.models import Session, Task, TaskAttempt, Ticket
+ 
+-# --- _read_skill_contents ---
+-
+-
+-def test_read_skill_contents_reads_existing_skill(tmp_path: Path) -> None:
+-    skill_dir = tmp_path / "my-skill"
+-    skill_dir.mkdir()
+-    (skill_dir / "SKILL.md").write_text("# My Skill\nDo stuff.", encoding="utf-8")
+-
+-    result = _read_skill_contents(["my-skill"], skills_dir=tmp_path)
+-    assert "--- SKILL: my-skill ---" in result
+-    assert "# My Skill" in result
+-
+-
+-def test_read_skill_contents_skips_missing_skill(tmp_path: Path) -> None:
+-    result = _read_skill_contents(["nonexistent"], skills_dir=tmp_path)
+-    assert result == ""
+-
+-
+-def test_read_skill_contents_multiple_skills(tmp_path: Path) -> None:
+-    for name in ("skill-a", "skill-b"):
+-        d = tmp_path / name
+-        d.mkdir()
+-        (d / "SKILL.md").write_text(f"# {name}", encoding="utf-8")
+-
+-    result = _read_skill_contents(["skill-a", "skill-b"], skills_dir=tmp_path)
+-    assert "--- SKILL: skill-a ---" in result
+-    assert "--- SKILL: skill-b ---" in result
+-
+-
+-# --- _is_primary ---
+-
+-
+-def test_is_primary_matches_short_name() -> None:
+-    assert _is_primary("test", {"test"})
+-    assert not _is_primary("code", {"test"})
+-
+-
+-def test_is_primary_matches_always_full() -> None:
+-    assert _is_primary("rules", set())
+-
+-
+-def test_is_primary_matches_absolute_path() -> None:
+-    assert _is_primary("/tmp/skills/test/SKILL.md", {"test"})
+-    assert _is_primary("/tmp/skills/rules/SKILL.md", set())
+-    assert not _is_primary("/tmp/skills/ac-django/SKILL.md", {"test"})
+-
+-
+-# --- _read_skill_contents_scoped ---
+-
+-
+-def test_read_scoped_embeds_primary_and_summarizes_companions(tmp_path: Path) -> None:
+-    for name in ("rules", "test", "ac-django", "workspace"):
+-        d = tmp_path / name
+-        d.mkdir()
+-        (d / "SKILL.md").write_text(f"# {name} full content", encoding="utf-8")
+-
+-    result = _read_skill_contents_scoped(
+-        ["ac-django", "workspace", "rules", "test"],
+-        primary_skills={"test"},
+-        skills_dir=tmp_path,
+-    )
+-    # Primary skills get full content
+-    assert "--- SKILL: test ---" in result
+-    assert "# test full content" in result
+-    # rules is always fully loaded
+-    assert "--- SKILL: rules ---" in result
+-    assert "# rules full content" in result
+-    # Companion skills get summary only
+-    assert "COMPANION SKILLS" in result
+-    assert "- ac-django:" in result
+-    assert "- workspace:" in result
+-    assert "# ac-django full content" not in result
+-    assert "# workspace full content" not in result
+-
+-
+-def test_read_scoped_all_primary(tmp_path: Path) -> None:
+-    d = tmp_path / "only-skill"
+-    d.mkdir()
+-    (d / "SKILL.md").write_text("# Only", encoding="utf-8")
+-
+-    result = _read_skill_contents_scoped(
+-        ["only-skill"],
+-        primary_skills={"only-skill"},
+-        skills_dir=tmp_path,
+-    )
+-    assert "--- SKILL: only-skill ---" in result
+-    assert "COMPANION" not in result
+-
+-
+-def test_read_scoped_missing_skill(tmp_path: Path) -> None:
+-    result = _read_skill_contents_scoped(
+-        ["nonexistent"],
+-        primary_skills={"nonexistent"},
+-        skills_dir=tmp_path,
+-    )
+-    assert result == ""
+-
+-
+ # --- build_task_prompt ---
+ 
+ 
+@@ -277,7 +176,7 @@ def test_skills_with_content(self) -> None:
+         session = Session.objects.create(ticket=ticket)
+         task = Task.objects.create(ticket=ticket, session=session)
+ 
+-        with patch("teatree.agents.prompt.DEFAULT_SKILLS_DIR", tmp_dir):
++        with patch("teatree.agents.skill_injection.DEFAULT_SKILLS_DIR", tmp_dir):
+             ctx = build_system_context(task, skills=["my-skill"])
+         assert "# Loaded Skills" in ctx
+         assert "# Loaded Skill" in ctx
+@@ -294,7 +193,7 @@ def test_with_lifecycle_skill_scopes_loading(self) -> None:
+         session = Session.objects.create(ticket=ticket)
+         task = Task.objects.create(ticket=ticket, session=session, phase="testing")
+ 
+-        with patch("teatree.agents.prompt.DEFAULT_SKILLS_DIR", tmp_dir):
++        with patch("teatree.agents.skill_injection.DEFAULT_SKILLS_DIR", tmp_dir):
+             ctx = build_system_context(
+                 task,
+                 skills=["ac-django", "rules", "test"],
+@@ -644,7 +543,7 @@ def test_system_context_coding_phase_embeds_architecture_design_in_full(self) ->
+         ticket = Ticket.objects.create()
+         session = Session.objects.create(ticket=ticket)
+         task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+-        with patch("teatree.agents.prompt.DEFAULT_SKILLS_DIR", tmp_dir):
++        with patch("teatree.agents.skill_injection.DEFAULT_SKILLS_DIR", tmp_dir):
+             ctx = build_system_context(
+                 task,
+                 skills=["code", "rules", "architecture-design"],
+@@ -737,7 +636,7 @@ def test_summary_does_not_contradict_directive(self) -> None:
+             d = tmp_dir / name
+             d.mkdir()
+             (d / "SKILL.md").write_text(f"# {name} BODY", encoding="utf-8")
+-        with patch("teatree.agents.prompt.DEFAULT_SKILLS_DIR", tmp_dir):
++        with patch("teatree.agents.skill_injection.DEFAULT_SKILLS_DIR", tmp_dir):
+             ctx = build_system_context(
+                 self._coding_task(),
+                 skills=["ac-django", "t3:demo-overlay", "code", "rules", "architecture-design"],
+diff --git a/tests/teatree_agents/test_skill_injection.py b/tests/teatree_agents/test_skill_injection.py
+new file mode 100644
+index 0000000000..ffa6d0a56a
+--- /dev/null
++++ b/tests/teatree_agents/test_skill_injection.py
+@@ -0,0 +1,191 @@
++"""Tests for teatree.agents.skill_injection — rendering loaded skills into prompt text."""
++
++from pathlib import Path
++
++from teatree.agents.skill_injection import (
++    _is_primary,
++    _read_skill_contents,
++    _read_skill_contents_scoped,
++    build_subagent_skill_preamble,
++)
++
++# --- _read_skill_contents ---
++
++
++def test_read_skill_contents_reads_existing_skill(tmp_path: Path) -> None:
++    skill_dir = tmp_path / "my-skill"
++    skill_dir.mkdir()
++    (skill_dir / "SKILL.md").write_text("# My Skill\nDo stuff.", encoding="utf-8")
++
++    result = _read_skill_contents(["my-skill"], skills_dir=tmp_path)
++    assert "--- SKILL: my-skill ---" in result
++    assert "# My Skill" in result
++
++
++def test_read_skill_contents_skips_missing_skill(tmp_path: Path) -> None:
++    result = _read_skill_contents(["nonexistent"], skills_dir=tmp_path)
++    assert result == ""
++
++
++def test_read_skill_contents_multiple_skills(tmp_path: Path) -> None:
++    for name in ("skill-a", "skill-b"):
++        d = tmp_path / name
++        d.mkdir()
++        (d / "SKILL.md").write_text(f"# {name}", encoding="utf-8")
++
++    result = _read_skill_contents(["skill-a", "skill-b"], skills_dir=tmp_path)
++    assert "--- SKILL: skill-a ---" in result
++    assert "--- SKILL: skill-b ---" in result
++
++
++# --- _is_primary ---
++
++
++def test_is_primary_matches_short_name() -> None:
++    assert _is_primary("test", {"test"})
++    assert not _is_primary("code", {"test"})
++
++
++def test_is_primary_matches_always_full() -> None:
++    assert _is_primary("rules", set())
++
++
++def test_is_primary_matches_absolute_path() -> None:
++    assert _is_primary("/tmp/skills/test/SKILL.md", {"test"})
++    assert _is_primary("/tmp/skills/rules/SKILL.md", set())
++    assert not _is_primary("/tmp/skills/ac-django/SKILL.md", {"test"})
++
++
++# --- _read_skill_contents_scoped ---
++
++
++def test_read_scoped_embeds_primary_and_summarizes_companions(tmp_path: Path) -> None:
++    for name in ("rules", "test", "ac-django", "workspace"):
++        d = tmp_path / name
++        d.mkdir()
++        (d / "SKILL.md").write_text(f"# {name} full content", encoding="utf-8")
++
++    result = _read_skill_contents_scoped(
++        ["ac-django", "workspace", "rules", "test"],
++        primary_skills={"test"},
++        skills_dir=tmp_path,
++    )
++    # Primary skills get full content
++    assert "--- SKILL: test ---" in result
++    assert "# test full content" in result
++    # rules is always fully loaded
++    assert "--- SKILL: rules ---" in result
++    assert "# rules full content" in result
++    # Companion skills get summary only
++    assert "COMPANION SKILLS" in result
++    assert "- ac-django:" in result
++    assert "- workspace:" in result
++    assert "# ac-django full content" not in result
++    assert "# workspace full content" not in result
++
++
++def test_read_scoped_all_primary(tmp_path: Path) -> None:
++    d = tmp_path / "only-skill"
++    d.mkdir()
++    (d / "SKILL.md").write_text("# Only", encoding="utf-8")
++
++    result = _read_skill_contents_scoped(
++        ["only-skill"],
++        primary_skills={"only-skill"},
++        skills_dir=tmp_path,
++    )
++    assert "--- SKILL: only-skill ---" in result
++    assert "COMPANION" not in result
++
++
++def test_read_scoped_missing_skill(tmp_path: Path) -> None:
++    result = _read_skill_contents_scoped(
++        ["nonexistent"],
++        primary_skills={"nonexistent"},
++        skills_dir=tmp_path,
++    )
++    assert result == ""
++
++
++# --- build_subagent_skill_preamble ---
++
++
++def _write_skill(skills_dir: Path, name: str, body: str) -> None:
++    d = skills_dir / name
++    d.mkdir(parents=True)
++    (d / "SKILL.md").write_text(body, encoding="utf-8")
++
++
++def test_subagent_preamble_embeds_framework_skill_body(tmp_path: Path) -> None:
++    framework = tmp_path / "framework"
++    _write_skill(framework, "rules", "# Rules\nNever edit the main clone.")
++
++    preamble = build_subagent_skill_preamble(["rules"], skills_dirs=[framework])
++
++    assert "--- SKILL: rules ---" in preamble.text
++    assert "Never edit the main clone." in preamble.text
++    assert preamble.resolved == ["rules"]
++    assert preamble.missing == []
++
++
++def test_subagent_preamble_resolves_overlay_skill_from_second_dir(tmp_path: Path) -> None:
++    framework = tmp_path / "framework"
++    overlay = tmp_path / "overlay"
++    _write_skill(framework, "rules", "# Rules body")
++    _write_skill(overlay, "acme", "# Acme overlay\nUse the t3 acme CLI, never raw glab.")
++
++    preamble = build_subagent_skill_preamble(["rules", "acme"], skills_dirs=[framework, overlay])
++
++    assert "Use the t3 acme CLI, never raw glab." in preamble.text
++    assert preamble.resolved == ["rules", "acme"]
++    assert preamble.missing == []
++
++
++def test_subagent_preamble_strips_namespace_qualifier(tmp_path: Path) -> None:
++    framework = tmp_path / "framework"
++    _write_skill(framework, "e2e", "# E2E\nReuse the dev-env, do not over-provision.")
++
++    preamble = build_subagent_skill_preamble(["t3:e2e"], skills_dirs=[framework])
++
++    assert "--- SKILL: e2e ---" in preamble.text
++    assert "do not over-provision." in preamble.text
++    assert preamble.resolved == ["e2e"]
++
++
++def test_subagent_preamble_reports_missing_without_silently_dropping(tmp_path: Path) -> None:
++    framework = tmp_path / "framework"
++    _write_skill(framework, "rules", "# Rules body")
++
++    preamble = build_subagent_skill_preamble(["rules", "nope"], skills_dirs=[framework])
++
++    assert preamble.resolved == ["rules"]
++    assert preamble.missing == ["nope"]
++    assert "nope" not in preamble.text
++
++
++def test_subagent_preamble_preserves_order(tmp_path: Path) -> None:
++    framework = tmp_path / "framework"
++    for name in ("rules", "e2e", "code"):
++        _write_skill(framework, name, f"# {name} body")
++
++    preamble = build_subagent_skill_preamble(["e2e", "rules", "code"], skills_dirs=[framework])
++
++    assert preamble.text.index("SKILL: e2e") < preamble.text.index("SKILL: rules") < preamble.text.index("SKILL: code")
++
++
++def test_subagent_preamble_empty_when_nothing_resolves(tmp_path: Path) -> None:
++    preamble = build_subagent_skill_preamble(["ghost"], skills_dirs=[tmp_path])
++
++    assert preamble.text == ""
++    assert preamble.resolved == []
++    assert preamble.missing == ["ghost"]
++
++
++def test_subagent_preamble_resolves_explicit_skill_md_path_form(tmp_path: Path) -> None:
++    framework = tmp_path / "framework"
++    _write_skill(framework, "rules", "# Rules body")
++
++    preamble = build_subagent_skill_preamble(["skills/rules/SKILL.md"], skills_dirs=[framework])
++
++    assert "--- SKILL: rules ---" in preamble.text
++    assert preamble.resolved == ["rules"]
+diff --git a/tests/teatree_cli/test_skill_preamble.py b/tests/teatree_cli/test_skill_preamble.py
+new file mode 100644
+index 0000000000..6a78487077
+--- /dev/null
++++ b/tests/teatree_cli/test_skill_preamble.py
+@@ -0,0 +1,125 @@
++"""``t3 <overlay> skill-preamble`` — the orchestrator's sub-agent dispatch preamble.
++
++A raw Agent-tool sub-agent inherits none of the orchestrator's loaded skills, so
++the orchestrator prepends this command's output (the concatenated ``SKILL.md``
++bodies) to every brief. These tests drive the command through the real overlay
++Typer app and assert the emitted preamble carries both framework and overlay
++skill bodies, and fails loud when a requested skill cannot be resolved.
++"""
++
++from pathlib import Path
++from unittest.mock import MagicMock, patch
++
++import pytest
++import typer
++from typer.testing import CliRunner
++
++import teatree.core.overlay_loader as overlay_loader_mod
++from teatree.cli.overlay import OverlayAppBuilder, _overlay_skill_path, _overlay_skills_dir, _skills_dir_from_skill_path
++
++
++def _write_skill(skills_dir: Path, name: str, body: str) -> None:
++    d = skills_dir / name
++    d.mkdir(parents=True)
++    (d / "SKILL.md").write_text(body, encoding="utf-8")
++
++
++@pytest.fixture
++def overlay_project(tmp_path: Path) -> Path:
++    skills = tmp_path / "skills"
++    _write_skill(skills, "acme", "# Acme overlay\nUse `t3 acme` for every workspace op, never raw glab.")
++    _write_skill(skills, "acme-e2e", "# Acme e2e\nReuse the running dev-env; do not over-provision for remote e2e.")
++    return tmp_path
++
++
++@pytest.fixture
++def app(overlay_project: Path) -> typer.Typer:
++    return OverlayAppBuilder(overlay_name="acme", project_path=overlay_project).build()
++
++
++class TestSkillPreambleEmission:
++    def test_emits_overlay_skill_body(self, app: typer.Typer) -> None:
++        result = CliRunner().invoke(app, ["skill-preamble", "--skills", "acme"])
++        assert result.exit_code == 0, result.output
++        assert "--- SKILL: acme ---" in result.output
++        assert "Use `t3 acme` for every workspace op, never raw glab." in result.output
++
++    def test_embeds_framework_and_overlay_bodies_together(self, app: typer.Typer) -> None:
++        result = CliRunner().invoke(app, ["skill-preamble", "--skills", "t3:rules,acme"])
++        assert result.exit_code == 0, result.output
++        assert "--- SKILL: rules ---" in result.output
++        assert "--- SKILL: acme ---" in result.output
++
++    def test_comma_separated_skills_each_resolve(self, app: typer.Typer) -> None:
++        result = CliRunner().invoke(app, ["skill-preamble", "--skills", "acme,acme-e2e"])
++        assert result.exit_code == 0, result.output
++        assert "--- SKILL: acme ---" in result.output
++        assert "--- SKILL: acme-e2e ---" in result.output
++
++    def test_carries_the_follow_directive(self, app: typer.Typer) -> None:
++        result = CliRunner().invoke(app, ["skill-preamble", "--skills", "acme"])
++        assert "does not auto-load" in result.output
++
++
++class TestSkillPreambleWithoutOverlaySkillsDir:
++    def test_framework_skill_resolves_when_no_overlay_skills_dir(self) -> None:
++        app = OverlayAppBuilder(overlay_name="acme", project_path=None).build()
++        result = CliRunner().invoke(app, ["skill-preamble", "--skills", "t3:rules"])
++        assert result.exit_code == 0, result.output
++        assert "--- SKILL: rules ---" in result.output
++
++
++class TestSkillPreambleFailsLoud:
++    def test_missing_skill_exits_nonzero_and_names_it(self, app: typer.Typer) -> None:
++        result = CliRunner().invoke(app, ["skill-preamble", "--skills", "acme,ghost-skill"])
++        assert result.exit_code == 1
++        assert "ghost-skill" in result.output
++        assert "--- SKILL: acme ---" not in result.output
++
++    def test_no_skills_given_exits_nonzero(self, app: typer.Typer) -> None:
++        result = CliRunner().invoke(app, ["skill-preamble"])
++        assert result.exit_code == 1
++
++
++class TestSkillsDirFromSkillPath:
++    def test_relative_skill_md_resolves_to_skills_dir(self, tmp_path: Path) -> None:
++        (tmp_path / "skills" / "acme").mkdir(parents=True)
++        resolved = _skills_dir_from_skill_path("skills/acme/SKILL.md", tmp_path)
++        assert resolved == tmp_path / "skills"
++
++    def test_absolute_directory_is_returned_as_is(self, tmp_path: Path) -> None:
++        skills = tmp_path / "skills"
++        skills.mkdir()
++        resolved = _skills_dir_from_skill_path(str(skills), None)
++        assert resolved == skills
++
++    def test_blank_skill_path_falls_back_to_project_skills(self, tmp_path: Path) -> None:
++        (tmp_path / "skills").mkdir()
++        resolved = _skills_dir_from_skill_path("", tmp_path)
++        assert resolved == tmp_path / "skills"
++
++    def test_blank_skill_path_no_project_is_none(self) -> None:
++        assert _skills_dir_from_skill_path("", None) is None
++
++    def test_dir_form_path_without_skill_md_suffix_returns_parent(self, tmp_path: Path) -> None:
++        resolved = _skills_dir_from_skill_path("skills/acme", tmp_path)
++        assert resolved == tmp_path / "skills"
++
++
++class TestOverlaySkillsDirResolution:
++    def test_overlay_skill_path_reads_metadata(self) -> None:
++        overlay = MagicMock()
++        overlay.metadata.get_skill_metadata.return_value = {"skill_path": "skills/acme/SKILL.md"}
++        with patch.object(overlay_loader_mod, "get_overlay", return_value=overlay):
++            assert _overlay_skill_path("acme") == "skills/acme/SKILL.md"
++
++    def test_overlay_skill_path_is_blank_when_overlay_unavailable(self) -> None:
++        with patch.object(overlay_loader_mod, "get_overlay", side_effect=RuntimeError("no overlay")):
++            assert _overlay_skill_path("acme") == ""
++
++    def test_falls_back_to_metadata_when_project_has_no_skills_dir(self, tmp_path: Path) -> None:
++        overlay_skills = tmp_path / "pkg" / "skills"
++        (overlay_skills / "acme").mkdir(parents=True)
++        with patch("teatree.cli.overlay._overlay_skill_path", return_value=str(overlay_skills / "acme" / "SKILL.md")):
++            resolved = _overlay_skills_dir("acme", tmp_path / "no-skills-here")
++        assert resolved == overlay_skills
+diff --git a/tests/teatree_core/test_review_skill_injection_conformance.py b/tests/teatree_core/test_review_skill_injection_conformance.py
+index 1a109e9be6..a9bed5bf8c 100644
+--- a/tests/teatree_core/test_review_skill_injection_conformance.py
++++ b/tests/teatree_core/test_review_skill_injection_conformance.py
+@@ -30,7 +30,7 @@
+ import pytest
+ from django.test import TestCase
+ 
+-from teatree.agents import prompt
++from teatree.agents import prompt, skill_injection
+ from teatree.agents.skill_bundle import active_overlay_review_skills
+ from teatree.core.models import Session, Task, Ticket
+ from teatree.core.overlay import OverlayConfig
+@@ -56,7 +56,7 @@ def skills_dir(tmp_path: Path) -> Iterator[Path]:
+     _seed_skill(sd, "rules", body="# rules")
+     _seed_skill(sd, _COMPANION_NAME, body=_SENTINEL)
+     _seed_skill(sd, "code-review", body="# code-review companion")
+-    with patch.object(prompt, "DEFAULT_SKILLS_DIR", sd):
++    with patch.object(skill_injection, "DEFAULT_SKILLS_DIR", sd):
+         yield sd
+ 
+ 
+-- 
+2.50.1 (Apple Git-155)
+

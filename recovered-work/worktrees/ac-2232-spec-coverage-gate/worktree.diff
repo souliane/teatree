@@ -1,0 +1,324 @@
+diff --git src/teatree/config/loader.py src/teatree/config/loader.py
+index 7b6ac12f66..c28271c1d1 100644
+--- src/teatree/config/loader.py
++++ src/teatree/config/loader.py
+@@ -156,6 +156,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
+         review_skill=str(teatree.get("review_skill", "")),
+         require_review_context=bool(teatree.get("require_review_context", False)),
+         require_anti_vacuity_attestation=bool(teatree.get("require_anti_vacuity_attestation", False)),
++        require_spec_coverage=bool(teatree.get("require_spec_coverage", False)),
+         scanning_news_disabled=bool(teatree.get("scanning_news_disabled", False)),
+         scanning_news_skill=str(teatree.get("scanning_news_skill", "scanning-news")),
+         scanning_news_cadence_hours=int(teatree.get("scanning_news_cadence_hours", 24)),
+diff --git src/teatree/config/settings.py src/teatree/config/settings.py
+index 0ab72f1168..386c491a67 100644
+--- src/teatree/config/settings.py
++++ src/teatree/config/settings.py
+@@ -107,6 +107,7 @@ def _parse_user_identity_aliases(raw: object) -> list[str]:
+     "require_review_context": bool,
+     "e2e_mandatory_gate_enabled": bool,
+     "require_anti_vacuity_attestation": bool,
++    "require_spec_coverage": bool,
+     "scanning_news_disabled": bool,
+     "scanning_news_skill": str,
+     "scanning_news_cadence_hours": int,
+@@ -360,6 +361,12 @@ class UserSettings:
+     # #1829 Opt-in SHA-bound anti-vacuity gate on review-request/merge
+     # (``anti_vacuity_gate``); default false = NO-OP. Per-overlay overridable.
+     require_anti_vacuity_attestation: bool = False
++    # #2232 Opt-in feature-ticket spec-coverage done-gate (``spec_coverage_gate``).
++    # When on, a ``kind=feature`` ticket cannot reach DELIVERED unless its
++    # ``extra['spec_coverage']`` manifest backs every acceptance criterion with a
++    # test (or an audited override is recorded). Default false = NO-OP, so
++    # existing feature work is never silently blocked. Per-overlay overridable.
++    require_spec_coverage: bool = False
+     # #1191 Periodic scanning-news scanner — CORE always-on with a daily
+     # cadence (24h). Companion to the `scanning-news` skill (#1190): the
+     # loop fires a `scanning_news` task daily so the news-scan workflow
+diff --git src/teatree/core/models/types.py src/teatree/core/models/types.py
+index 2497dc7c36..e9ec4511f0 100644
+--- src/teatree/core/models/types.py
++++ src/teatree/core/models/types.py
+@@ -76,6 +76,14 @@ class TicketExtra(TypedDict, total=False):
+     # exempt or genuinely non-UI ticket the heuristic mis-flags). When present
+     # with a non-empty ``reason`` the gate passes and logs it.
+     dod_e2e_override: "DodE2EOverride"
++    # #2232 per-ticket spec-coverage manifest: a list of {ac, test} items
++    # mapping each acceptance criterion to its backing test. The spec-coverage
++    # done-gate (``teatree.core.gates.spec_coverage_gate``) reads this at
++    # ``mark_delivered`` to refuse a feature whose ACs are not all test-backed.
++    spec_coverage: "list[SpecCoverageItem]"
++    # #2232 spec-coverage done-gate escape hatch: an explicit operator override
++    # recording WHY a feature may be DELIVERED without a complete manifest.
++    spec_coverage_override: "SpecCoverageOverride"
+     # #1426 durable audit marker: a sync writer advanced the ticket to a
+     # TERMINAL state (MERGED/DELIVERED) reflecting a real external merge/deploy
+     # while the DoD local-E2E gate was unmet. The terminal state is kept (it
+@@ -244,6 +252,36 @@ class DodE2EOverride(TypedDict, total=False):
+     at: str
+ 
+ 
++class SpecCoverageItem(TypedDict, total=False):
++    """One acceptance-criterion -> backing-test mapping (#2232).
++
++    An item of the ticket's ``extra['spec_coverage']`` manifest. ``ac`` is the
++    human-readable acceptance criterion; ``test`` is the reference to the test
++    that backs it (a ``path::node-id``, an eval scenario, a golden-master file).
++    The spec-coverage done-gate (``teatree.core.gates.spec_coverage_gate``)
++    treats an item with a blank ``test`` as an uncovered AC and refuses
++    DELIVERED when the gate is required.
++    """
++
++    ac: str
++    test: str
++
++
++class SpecCoverageOverride(TypedDict, total=False):
++    """Operator escape hatch for the spec-coverage done-gate (#2232).
++
++    Records the human-supplied justification for delivering a feature ticket
++    whose acceptance criteria are not all test-backed via the manifest (a
++    genuinely exempt ticket, or one whose spec is tracked outside teatree),
++    plus who recorded it and when, so the bypass is auditable rather than
++    silent.
++    """
++
++    reason: str
++    by: str
++    at: str
++
++
+ class DodE2EViolation(TypedDict, total=False):
+     """Durable audit marker for a terminal-state DoD violation (#1426).
+ 
+
+diff --git tests/teatree_core/test_spec_coverage_gate.py tests/teatree_core/test_spec_coverage_gate.py
+new file mode 100644
+index 0000000000..2f29e7fee1
+--- /dev/null
++++ tests/teatree_core/test_spec_coverage_gate.py
+@@ -0,0 +1,224 @@
++"""Tests for teatree.core.gates.spec_coverage_gate — the feature-ticket
++spec-coverage done-gate (#2232).
++
++The gate's pure helpers (``spec_coverage_required``, ``manifest_items``,
++``uncovered_acs``, ``override_reason``, ``check_spec_coverage_dod``) are
++exercised directly; the FSM wiring is exercised through
++``Ticket.mark_delivered`` so a feature whose acceptance criteria are not all
++test-backed cannot reach DELIVERED while the gate is required.
++
++The gate is the feature-class sibling of ``fix_dod_gate`` (which governs
++``kind=fix``). It is opt-in via ``require_spec_coverage`` (default off), so
++the default-off tests prove existing feature work is never silently blocked.
++"""
++
++import pytest
++from django.test import TestCase, override_settings
++
++from teatree.core.gates.spec_coverage_gate import (
++    SpecCoverageDodError,
++    check_spec_coverage_dod,
++    manifest_items,
++    override_reason,
++    spec_coverage_required,
++    uncovered_acs,
++)
++from teatree.core.models import Ticket
++
++_COVERED_MANIFEST = [
++    {"ac": "uncovered AC cannot deliver", "test": "tests/teatree_core/test_spec_coverage_gate.py::test_uncovered_refused"},
++    {"ac": "fully covered feature delivers", "test": "tests/teatree_core/test_spec_coverage_gate.py::test_covered_delivers"},
++]
++
++
++def _feature_ticket(**extra: object) -> Ticket:
++    return Ticket.objects.create(overlay="acme", kind=Ticket.Kind.FEATURE, extra=dict(extra))
++
++
++class TestSpecCoverageRequired(TestCase):
++    def test_off_by_default(self) -> None:
++        assert spec_coverage_required() is False
++
++    @override_settings()
++    def test_on_when_setting_set(self) -> None:
++        from teatree.config import get_effective_settings  # noqa: PLC0415
++
++        with patched_require_spec_coverage(True):
++            assert spec_coverage_required() is True
++        # restore implicit via the context manager
++        assert get_effective_settings().require_spec_coverage in (True, False)
++
++
++class TestManifestItems(TestCase):
++    def test_no_manifest_is_empty(self) -> None:
++        assert manifest_items(_feature_ticket()) == []
++
++    def test_non_list_manifest_is_empty(self) -> None:
++        assert manifest_items(_feature_ticket(spec_coverage="not-a-list")) == []
++
++    def test_well_formed_manifest_is_returned(self) -> None:
++        items = manifest_items(_feature_ticket(spec_coverage=_COVERED_MANIFEST))
++        assert len(items) == 2
++        assert items[0]["ac"] == "uncovered AC cannot deliver"
++
++
++class TestUncoveredAcs(TestCase):
++    def test_empty_manifest_has_no_named_uncovered(self) -> None:
++        # An empty manifest is the can't-determine case handled by the gate
++        # (fail-loud), not enumerated here as named uncovered ACs.
++        assert uncovered_acs(_feature_ticket()) == []
++
++    def test_ac_with_blank_test_is_uncovered(self) -> None:
++        manifest = [{"ac": "first AC", "test": "   "}, {"ac": "second AC", "test": "x::y"}]
++        assert uncovered_acs(_feature_ticket(spec_coverage=manifest)) == ["first AC"]
++
++    def test_ac_with_missing_test_key_is_uncovered(self) -> None:
++        manifest = [{"ac": "first AC"}, {"ac": "second AC", "test": "x::y"}]
++        assert uncovered_acs(_feature_ticket(spec_coverage=manifest)) == ["first AC"]
++
++    def test_item_with_blank_ac_is_named_unnamed(self) -> None:
++        manifest = [{"ac": "  ", "test": "  "}]
++        assert uncovered_acs(_feature_ticket(spec_coverage=manifest)) == ["<unnamed AC>"]
++
++    def test_fully_covered_manifest_has_none_uncovered(self) -> None:
++        assert uncovered_acs(_feature_ticket(spec_coverage=_COVERED_MANIFEST)) == []
++
++
++class TestOverrideReason(TestCase):
++    def test_absent_override_is_empty(self) -> None:
++        assert override_reason(_feature_ticket()) == ""
++
++    def test_recorded_reason_is_returned(self) -> None:
++        ticket = _feature_ticket(spec_coverage_override={"reason": "spec lives in a design doc, tracked separately"})
++        assert override_reason(ticket) == "spec lives in a design doc, tracked separately"
++
++
++class TestCheckSpecCoverageDod(TestCase):
++    def test_noop_when_gate_off(self) -> None:
++        # Default-off: even an uncovered feature passes — existing work is never
++        # silently blocked.
++        check_spec_coverage_dod(_feature_ticket())  # does not raise
++
++    def test_fix_ticket_unaffected_even_when_required(self) -> None:
++        with patched_require_spec_coverage(True):
++            ticket = Ticket.objects.create(overlay="acme", kind=Ticket.Kind.FIX)
++            check_spec_coverage_dod(ticket)  # does not raise — the FixRecord gate owns fixes
++
++    def test_covered_feature_passes_when_required(self) -> None:
++        with patched_require_spec_coverage(True):
++            check_spec_coverage_dod(_feature_ticket(spec_coverage=_COVERED_MANIFEST))
++
++    def test_override_passes_when_required(self) -> None:
++        with patched_require_spec_coverage(True):
++            check_spec_coverage_dod(_feature_ticket(spec_coverage_override={"reason": "exempt — no user-visible AC"}))
++
++    def test_empty_manifest_is_refused_when_required(self) -> None:
++        # Fail-loud: the gate is on but no manifest exists -> it cannot prove
++        # coverage, so it BLOCKS (never skip-as-pass).
++        with patched_require_spec_coverage(True), pytest.raises(SpecCoverageDodError):
++            check_spec_coverage_dod(_feature_ticket())
++
++    def test_uncovered_ac_is_refused_when_required(self) -> None:
++        manifest = [{"ac": "first AC", "test": ""}, {"ac": "second AC", "test": "x::y"}]
++        with patched_require_spec_coverage(True), pytest.raises(SpecCoverageDodError):
++            check_spec_coverage_dod(_feature_ticket(spec_coverage=manifest))
++
++    def test_refusal_names_the_uncovered_acs(self) -> None:
++        manifest = [{"ac": "the uncovered one", "test": ""}, {"ac": "covered", "test": "x::y"}]
++        with patched_require_spec_coverage(True), pytest.raises(SpecCoverageDodError) as exc:
++            check_spec_coverage_dod(_feature_ticket(spec_coverage=manifest))
++        assert "the uncovered one" in str(exc.value)
++
++    def test_empty_manifest_refusal_explains_missing(self) -> None:
++        with patched_require_spec_coverage(True), pytest.raises(SpecCoverageDodError) as exc:
++            check_spec_coverage_dod(_feature_ticket())
++        assert "no spec_coverage manifest" in str(exc.value)
++
++
++class TestMarkDeliveredFsmGate(TestCase):
++    def _retrospected(self, **kwargs: object) -> Ticket:
++        return Ticket.objects.create(overlay="acme", state=Ticket.State.RETROSPECTED, **kwargs)
++
++    def test_feature_delivers_when_gate_off(self) -> None:
++        ticket = self._retrospected(kind=Ticket.Kind.FEATURE)
++        ticket.mark_delivered()
++        assert ticket.state == Ticket.State.DELIVERED
++
++    def test_covered_feature_delivers_when_required(self) -> None:
++        with patched_require_spec_coverage(True):
++            ticket = self._retrospected(kind=Ticket.Kind.FEATURE, extra={"spec_coverage": _COVERED_MANIFEST})
++            ticket.mark_delivered()
++            assert ticket.state == Ticket.State.DELIVERED
++
++    def test_uncovered_feature_cannot_deliver_when_required(self) -> None:
++        with patched_require_spec_coverage(True):
++            ticket = self._retrospected(
++                kind=Ticket.Kind.FEATURE,
++                extra={"spec_coverage": [{"ac": "uncovered", "test": ""}]},
++            )
++            with pytest.raises(SpecCoverageDodError):
++                ticket.mark_delivered()
++            ticket.refresh_from_db()
++            assert ticket.state == Ticket.State.RETROSPECTED
++
++    def test_empty_manifest_feature_cannot_deliver_when_required(self) -> None:
++        with patched_require_spec_coverage(True):
++            ticket = self._retrospected(kind=Ticket.Kind.FEATURE)
++            with pytest.raises(SpecCoverageDodError):
++                ticket.mark_delivered()
++            ticket.refresh_from_db()
++            assert ticket.state == Ticket.State.RETROSPECTED
++
++    def test_override_feature_delivers_when_required(self) -> None:
++        with patched_require_spec_coverage(True):
++            ticket = self._retrospected(
++                kind=Ticket.Kind.FEATURE,
++                extra={"spec_coverage_override": {"reason": "exempt"}},
++            )
++            ticket.mark_delivered()
++            assert ticket.state == Ticket.State.DELIVERED
++
++    def test_fix_ticket_unaffected_when_required(self) -> None:
++        # A fix with a complete FixRecord still delivers; the spec-coverage gate
++        # never fires for kind=fix.
++        complete_fix_record = {
++            "root_cause": "x",
++            "evidence": "y",
++            "regression_test": "t::z",
++            "observed_red": "ran pre-fix, FAILED",
++            "recurrence_fingerprint": "fp",
++        }
++        with patched_require_spec_coverage(True):
++            ticket = self._retrospected(kind=Ticket.Kind.FIX, extra={"fix_record": complete_fix_record})
++            ticket.mark_delivered()
++            assert ticket.state == Ticket.State.DELIVERED
++
++
++class patched_require_spec_coverage:  # noqa: N801 — context-manager helper, lowercase reads as a `with` keyword
++    """Force ``require_spec_coverage`` on/off by patching the effective settings.
++
++    The gate reads ``get_effective_settings().require_spec_coverage``; the
++    effective settings are assembled from the TOML config which the test env
++    does not carry, so the cleanest seam is to patch the resolved object.
++    """
++
++    def __init__(self, value: bool) -> None:
++        self._value = value
++        self._patcher = None
++
++    def __enter__(self) -> "patched_require_spec_coverage":
++        from unittest.mock import patch  # noqa: PLC0415
++
++        from teatree.config import get_effective_settings  # noqa: PLC0415
++
++        base = get_effective_settings()
++        import dataclasses  # noqa: PLC0415
++
++        forced = dataclasses.replace(base, require_spec_coverage=self._value)
++        self._patcher = patch("teatree.core.gates.spec_coverage_gate.get_effective_settings", return_value=forced)
++        self._patcher.start()
++        return self
++
++    def __exit__(self, *exc: object) -> None:
++        if self._patcher is not None:
++            self._patcher.stop()

@@ -1,0 +1,797 @@
+From f04d5078a01a8d5d5476d17a2fb7d9fc87e07910 Mon Sep 17 00:00:00 2001
+From: souliane <21343492+souliane@users.noreply.github.com>
+Date: Tue, 23 Jun 2026 11:45:33 +0200
+Subject: [PATCH] feat(comment-density): flag restating comments and
+ signature-echo docstrings
+
+The advisory comment-density gate was line-count only: it counted
+comment-only lines (ratio + consecutive run) but never inspected whether a
+comment carried a non-obvious why or merely restated the code, and it
+exempted docstring bodies entirely. So a single inline comment restating the
+next code line, and a verbose docstring that just echoes the signature (the
+data-migration style), both slipped through below the consecutive threshold.
+
+Add content-aware detection to teatree.hooks.privacy_diff_comment_density:
+a comment whose meaningful words merely restate the following code line's
+identifier tokens (narration verb + tokens already in the code) flags on a
+single line, and a docstring opening that merely echoes the function/class
+name flags. A genuine non-obvious-why comment (words the code does not
+contain) and a justified multi-line docstring stay allowed - abuse is
+flagged, multi-line is not forced to single-line.
+
+All three surfaces (pre-push hook, CI job, t3 tool comment-density) and the
+golden corpus share report_diff, so one change strengthens them together.
+
+Wire comments-as-code (names + types are the docs; a long comment is a code
+smell -> refactor) crisply into the t3:code skill and the coder agent brief,
+and pin the two real abuse patterns in the golden corpus plus a new
+anti-vacuous behavioral eval (comment_density_no_restating_docstring_or_inline).
+---
+ BLUEPRINT.md                                  |   2 +-
+ agents/coder.md                               |   9 +
+ ...ting_docstring_or_inline_fail.stream.jsonl |   4 +
+ ...ting_docstring_or_inline_noop.stream.jsonl |   3 +
+ ...ting_docstring_or_inline_pass.stream.jsonl |   4 +
+ evals/scenarios/code.yaml                     |  30 ++
+ skills/code/SKILL.md                          |  13 +-
+ src/teatree/cli/comment_density_tools.py      |   1 +
+ .../hooks/privacy_diff_comment_density.py     | 284 ++++++++++++++----
+ .../test_privacy_scan_comment_density.py      | 122 ++++++++
+ tests/test_comment_density_gate.py            |  60 +++-
+ 11 files changed, 467 insertions(+), 65 deletions(-)
+ create mode 100644 evals/fixtures/comment_density_no_restating_docstring_or_inline_fail.stream.jsonl
+ create mode 100644 evals/fixtures/comment_density_no_restating_docstring_or_inline_noop.stream.jsonl
+ create mode 100644 evals/fixtures/comment_density_no_restating_docstring_or_inline_pass.stream.jsonl
+
+diff --git a/BLUEPRINT.md b/BLUEPRINT.md
+index 254eed941e..58b91b8cca 100644
+--- a/BLUEPRINT.md
++++ b/BLUEPRINT.md
+@@ -354,7 +354,7 @@ ## 9. Code Host Sync
+ - **Foreign-open-MR push guard** (#2211): pre-push hook `refuse-push-to-foreign-mr.sh` — a collaboration-safety sibling (not a leak gate). For each pushed ref it resolves the branch's backing OPEN PR via `gh pr list --head <branch> --state open` and BLOCKS, naming the author + PR number, when the PR's author login != our `gh api user` login — a teammate's open MR our changes would silently modify (our work belongs on our own branch; a worktree opened to INSPECT a colleague's MR is read-only). Our own open MR, a branch with no open MR, and a foreign CLOSED/merged MR (which `--state open` excludes) all pass; an explicit `[push-to-foreign-mr-ok: <reason>]` commit-message token allows a genuine co-authoring push. Fails OPEN on a `gh` failure / gh-unavailable / unresolved login so a transient forge-API error never bricks a legitimate push.
+ - **Banned-terms posting gate** (#1415, `teatree.hooks.banned_terms_scanner`): the `PreToolUse` non-commit sibling. It and the #1213 quote-scanner share `extract_bash_payload` and a per-segment override (#2031/#2034): the `--allow-banned-term`/`--quote-ok` flag token OR a leading `ALLOW_BANNED_TERM=1`/`QUOTE_OK=1` env-prefix clears only on the publish segment, so a chained-segment decoy cannot vouch. The deny message names the **env-prefix** form (`ALLOW_BANNED_TERM=1 <command>` / `QUOTE_OK=1 <command>`), not the `--…` flag: the flag is consumed by the gate's parser, never the posting command, so a `t3 review post-comment` subcommand would reject it as an unknown option — the env prefix is the spelling that actually works on every command. A `> path <<EOF` heredoc is scanned only when its path is posted via a body-file flag; a stdin `--body-file -` heredoc always is. A `t3 review post-comment`/`post-draft-note` segment carries the published body in any of three sources — the positional `NOTE`, `-m`/`--body`, or `--body-file <path>` (#32) — all of which are scanned, while the `--file` argument (a diff ANCHOR, a SOURCE path, not a body-file) is deliberately skipped (`teatree.hooks._t3_review_post`). An inline `--body`/`-m`/positional-NOTE body whose `$(...)` command-substitution sits inside a SINGLE-quoted span is inert literal text bash passes verbatim, so `resolve_inline_body_value` reads the value token's source span (`raw`) and SCANS such a body rather than fail-closing on "publish body could not be read" — a body bash WOULD expand (unquoted / double-quoted `$(...)`) still fails closed since its real content is unknown before the command runs (#1415); the raw-aware `command_has_opaque_forge_transport` mirrors this so a non-forge segment that merely mentions a single-quoted `$(...)` is not treated as a hidden forge transport. The gate delegates matching to `check-banned-terms.sh`, whose exit-code contract is 0=clean / 1=banned-term-found / 2=scanner-could-not-run; when the shell fallback resolves to an old system `python3` (below the >= 3.13 floor) the matcher import crashes, so the fallback probe-imports the module first and exits 2 (fail CLOSED, loud) rather than letting the crash exit 1 (which collides with "found") become ALLOW. `scan_text` mirrors this: a crash, timeout, unexpected exit, or exit-1-with-no-report returns `SCANNER_UNAVAILABLE_MARKER` and BLOCKS — a security gate that fails open on a crash is the bug class (#1954).
+ - **Pre-dispatch quote-scanner** (#1401, `handle_dispatch_prompt_quote_scanner`): the dispatch-boundary companion to #1213 — denies only a HIGH user-voice/PII match in an `Agent`/`Task` prompt, with a `[quote-ok: <reason>]` opt-out, so a verbatim quote cannot leak downstream.
+-- **Diff comment detectors** (added-lines-only): `code_comment_self_reference` (#1465) is a **blocking** `privacy_scan.py` diff detector (**fail-open per detector**, #1536) for bookkeeping self-references. `code_comment_density` (#1538) is the commit-side half of the near-zero-comments rule (#1532); it is **advisory** — the standalone check (#1369, `t3 tool comment-density`), the pre-push hook, and the `comment-density-warning` CI job warn and **exit 0**, and it is NOT a `privacy_scan.py` blocking detector (#1844 — no content-blind "overly long prose" heuristic that would flag legit long comments). A golden corpus (`tests/test_comment_density_gate.py`) + an eval pin must-DENY symmetric with must-ALLOW. The push-stage gates (`doc-update-gate`, `ensure-pr`, the leak gate) are `stages: [push]` — skipped by a bare `prek run --all-files` but re-run by CI — so `t3 tool verify-gates` runs both stages and returns the combined exit code, so local green == CI green.
++- **Diff comment detectors** (added-lines-only): `code_comment_self_reference` (#1465) is a **blocking** `privacy_scan.py` diff detector (**fail-open per detector**, #1536) for bookkeeping self-references. `code_comment_density` (#1538) is the commit-side half of the comments-as-code rule (#1532; names + types are the docs, a long comment is a code smell → refactor); it is **content-aware** — beyond the line-count ratio / consecutive-run passes it flags a comment whose words merely **restate** the next code line and a docstring opening that merely **echoes the signature** (a single such line suffices), while leaving a genuine non-obvious-why comment and a justified multi-line docstring ALLOWED. It is **advisory** — the standalone check (#1369, `t3 tool comment-density`), the pre-push hook, and the `comment-density-warning` CI job warn and **exit 0**, and it is NOT a `privacy_scan.py` blocking detector (#1844 — no content-blind "overly long prose" heuristic that would flag legit long comments). A golden corpus (`tests/test_comment_density_gate.py`) + an eval pin must-DENY (restatement + signature-echo) symmetric with must-ALLOW (a docstring carrying a real why). The push-stage gates (`doc-update-gate`, `ensure-pr`, the leak gate) are `stages: [push]` — skipped by a bare `prek run --all-files` but re-run by CI — so `t3 tool verify-gates` runs both stages and returns the combined exit code, so local green == CI green.
+ - **Full-tree banned-brand backstop** (#1570/#1591, `core.banned_terms_tree`, CLI `t3 banned-terms scan-tree`, CI job `banned-terms-tree`): catches what the diff/payload gates structurally cannot — a brand ALREADY committed, invisible to any post-landing diff — by scanning every tracked file's **committed blob** (`git show HEAD:<path>`, working-tree fallback only for an uncommitted file) with the shared whole-token matcher (`teatree.hooks.term_match`, pinned by the parity test). The brand list (`[teatree].banned_brands`) is a curated high-confidence subset distinct from the egress `banned_terms`; unpopulated, the scan is INERT and says so loudly rather than returning a silent clean 0. The CI step passes `--require-brands`, upgrading that inert state to a hard MISCONFIGURED failure (exit 2, distinct from exit 1 = findings) so a missing secret reds the job loudly instead of a fake-green no-op. Local dev omits the flag.
+ 
+ ---
+diff --git a/agents/coder.md b/agents/coder.md
+index 344be48928..a4623fd5d3 100644
+--- a/agents/coder.md
++++ b/agents/coder.md
+@@ -24,3 +24,12 @@ # Coder Agent
+ 
+ Follow the loaded skills for coding methodology, workspace
+ conventions, and cross-cutting rules.
++
++COMMENTS ARE CODE: names + types are the documentation. Comment ONLY the
++non-obvious WHY. Never restate the code (`# divide by 100` above `/ 100`),
++never write a signature-echo docstring (`"""Add the feature flag."""` on
++`def add_feature_flag`). A long comment is a code smell — refactor or rename
++instead of explaining. Multi-line comments are legit only when carrying a
++genuine non-obvious why; narrating the code is abuse. Rationale and
++ticket/MR refs belong in the commit message, never inline. (`/t3:code`
++§ "Comments Are Code".)
+diff --git a/evals/fixtures/comment_density_no_restating_docstring_or_inline_fail.stream.jsonl b/evals/fixtures/comment_density_no_restating_docstring_or_inline_fail.stream.jsonl
+new file mode 100644
+index 0000000000..12cd578568
+--- /dev/null
++++ b/evals/fixtures/comment_density_no_restating_docstring_or_inline_fail.stream.jsonl
+@@ -0,0 +1,4 @@
++{"type": "system", "subtype": "init", "session_id": "fixt-comment_density_no_restating_docstring_or_inline-fail", "model": "haiku"}
++{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "I will document the migration with a docstring and inline comments."}]}}
++{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Write", "input": {"file_path": "src/myapp/migrations/0002_add_flag.py", "content": "FLAG = \"platform_messages\"\n\n\ndef add_feature_flag(apps, schema_editor):\n    \"\"\"Add the feature flag.\n\n    Creates the feature flag row in the database.\n    Back-fills the feature flag metadata for every customer.\n    \"\"\"\n    model = apps.get_model(\"myapp\", \"FeatureFlag\")\n    # create the feature flag row with default off\n    model.objects.get_or_create(definition=FLAG, defaults={\"value\": False})\n    # update the rows with the documentation metadata\n    model.objects.filter(definition=FLAG).update(**metadata())\n"}}]}}
++{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
+diff --git a/evals/fixtures/comment_density_no_restating_docstring_or_inline_noop.stream.jsonl b/evals/fixtures/comment_density_no_restating_docstring_or_inline_noop.stream.jsonl
+new file mode 100644
+index 0000000000..797fccacb4
+--- /dev/null
++++ b/evals/fixtures/comment_density_no_restating_docstring_or_inline_noop.stream.jsonl
+@@ -0,0 +1,3 @@
++{"type": "system", "subtype": "init", "session_id": "fixt-comment_density_no_restating_docstring_or_inline-noop", "model": "haiku"}
++{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "thinking, no command yet."}]}}
++{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
+diff --git a/evals/fixtures/comment_density_no_restating_docstring_or_inline_pass.stream.jsonl b/evals/fixtures/comment_density_no_restating_docstring_or_inline_pass.stream.jsonl
+new file mode 100644
+index 0000000000..6715586638
+--- /dev/null
++++ b/evals/fixtures/comment_density_no_restating_docstring_or_inline_pass.stream.jsonl
+@@ -0,0 +1,4 @@
++{"type": "system", "subtype": "init", "session_id": "fixt-comment_density_no_restating_docstring_or_inline-pass", "model": "haiku"}
++{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Names carry the intent; no docstring echo, no restating comments."}]}}
++{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Write", "input": {"file_path": "src/myapp/migrations/0002_add_flag.py", "content": "FLAG = \"platform_messages\"\n\n\ndef add_feature_flag(apps, schema_editor):\n    model = apps.get_model(\"myapp\", \"FeatureFlag\")\n    model.objects.get_or_create(definition=FLAG, defaults={\"value\": False})\n    model.objects.filter(definition=FLAG).update(**metadata())\n"}}]}}
++{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
+diff --git a/evals/scenarios/code.yaml b/evals/scenarios/code.yaml
+index 59e469b8f5..3cc736a9d9 100644
+--- a/evals/scenarios/code.yaml
++++ b/evals/scenarios/code.yaml
+@@ -46,6 +46,36 @@
+     - no_tool_call_matching:
+         Edit.new_string: '~ "(?m)^\s*#\s*(convert|divide|format|return|multiply|loop over|iterate|this (function|method|line|will)|now (we|format)|first,|then,|step \d)"'
+ 
++- name: comment_density_no_restating_docstring_or_inline
++  agent_path: skills/code/SKILL.md
++  scenario: "the agent does not write a docstring that merely echoes the signature, nor inline comments that restate the code — the verbose-docstring + restating-inline style; a long comment is a code smell, refactor instead of explain"
++  model: haiku
++  max_turns: 3
++  tools: [Write, Edit, Bash]
++  prompt: >-
++    Implement a Django data migration in a new file
++    `src/myapp/migrations/0002_add_flag.py` with an `add_feature_flag(apps,
++    schema_editor)` function that gets-or-creates a feature-flag row (default
++    OFF) and back-fills documentation metadata. Following the /t3:code
++    comments-as-code rule (names + types are the documentation; a long comment
++    is a code smell — refactor instead of explain; no docstring that echoes the
++    signature; no inline comment that restates the code), write the file with
++    the ONE Write tool call you would issue now. Code only.
++  expect:
++    - any_of:
++        - tool_call: Write
++          args.file_path: '~ "0002_add_flag\.py"'
++        - tool_call: Edit
++          args.file_path: '~ "0002_add_flag\.py"'
++    - no_tool_call_matching:
++        Write.content: '~ "(?mi)^\s*\"{3}\s*(add|create|remove|seed|set|update)s?\s+(the\s+)?feature[ _]?flag"'
++    - no_tool_call_matching:
++        Edit.new_string: '~ "(?mi)^\s*\"{3}\s*(add|create|remove|seed|set|update)s?\s+(the\s+)?feature[ _]?flag"'
++    - no_tool_call_matching:
++        Write.content: '~ "(?mi)^\s*#\s*(create|update|get|seed|set|add|remove|back-?fill)s?\s+(the\s+)?(feature[ _]?flag|rows?|metadata)\b"'
++    - no_tool_call_matching:
++        Edit.new_string: '~ "(?mi)^\s*#\s*(create|update|get|seed|set|add|remove|back-?fill)s?\s+(the\s+)?(feature[ _]?flag|rows?|metadata)\b"'
++
+ - name: regression_test_run_before_push_not_pushed_to_find_out
+   scenario: "the agent runs a freshly-written golden-master regression test locally (and confirms its output matches the authoritative reference) before committing/pushing it — it never pushes to CI to find out whether the test passes while claiming the test is correct/likely-correct/done"
+   agent_path: skills/code/SKILL.md
+diff --git a/skills/code/SKILL.md b/skills/code/SKILL.md
+index 32ff1d24c2..fce46d9585 100644
+--- a/skills/code/SKILL.md
++++ b/skills/code/SKILL.md
+@@ -44,6 +44,17 @@ ## TDD Discipline
+ 
+ Misleading names are bugs — rename the symbol instead of explaining it with a comment.
+ 
++## Comments Are Code — Minimal, Self-Documenting (Non-Negotiable)
++
++**Names + types ARE the documentation. A long comment is a code smell — refactor instead of explain.** Comment ONLY the non-obvious WHY (a threat-model note, a workaround for an external bug, a counter-intuitive invariant). Never restate WHAT the code already says.
++
++- **Do not restate the code.** `# divide the cents by one hundred` above `return cents / 100`, `# update the rows with the metadata` above `.update(**metadata)` — delete it. The line below already says it.
++- **No signature-echo docstrings.** `"""Add the feature flag."""` on `def add_feature_flag(...)` adds nothing — drop it. A docstring earns its place only by carrying a non-obvious why the signature does not.
++- **A long comment is a refactor signal, not a license.** When you feel the urge to write a multi-line block explaining a function, the function name / structure is wrong — rename or split it. Multi-line comments are legit when they carry a genuine non-obvious why (and that's rare); they are abuse when they narrate the code. Length is the smell: if it's long, refactor; don't explain.
++- **Rationale lives in the commit message, not inline.** Why a change was made, which ticket/MR it relates to, what was tried — all of that goes in the commit body. Never an inline `# per review` / `# consolidated into !NNNN` / `# TODO(W20)` tracker note.
++
++The deterministic backstop is the advisory `comment-density` gate (`teatree.hooks.privacy_diff_comment_density` → the pre-push hook, the CI job, and `t3 tool comment-density`). It is content-aware: it flags a comment whose words merely restate the next code line, and a docstring opening that merely echoes the signature — a single such line is enough. Genuine non-obvious-why comments and justified multi-line blocks are NOT flagged. The gate is advisory (it never blocks); the discipline is yours to keep — the gate is the safety net, not the author.
++
+ ## Workflow
+ 
+ ### 0b. Worktree-First — Never Edit a Main Clone (Non-Negotiable)
+@@ -287,7 +298,7 @@ ### Delegating Code to Sub-Agents
+ When launching parallel agents to write code (especially tests), the dispatch prompt MUST open with this verbatim block — it is not optional and not a "remember to add it" note. Skill prose does not propagate into a spawned agent's context, so the near-zero-comments rule is lost unless it is inline in the prompt itself:
+ 
+ ```text
+-NEAR-ZERO COMMENTS: names + types are the documentation. Do NOT add comments that restate the code. NO comments referencing MRs/tickets/workstreams/Slack threads. Rationale belongs in the commit message, never inline.
++COMMENTS ARE CODE: names + types are the documentation. Comment ONLY the non-obvious WHY. Do NOT restate the code, do NOT write a signature-echo docstring. A long comment is a code smell — refactor or rename instead of explaining; multi-line comments are legit only for a genuine non-obvious why. NO comments referencing MRs/tickets/workstreams/Slack threads — rationale belongs in the commit message, never inline.
+ ```
+ 
+ Then include these requirements in every prompt:
+diff --git a/src/teatree/cli/comment_density_tools.py b/src/teatree/cli/comment_density_tools.py
+index d0e2d60feb..06ea5ae8a3 100644
+--- a/src/teatree/cli/comment_density_tools.py
++++ b/src/teatree/cli/comment_density_tools.py
+@@ -106,6 +106,7 @@ def comment_density(
+                         "comment_lines": f.comment_lines,
+                         "code_lines": f.code_lines,
+                         "max_consecutive": f.max_consecutive,
++                        "restatements": f.restatements,
+                         "ratio": round(f.ratio, 3),
+                         "reason": f.reason,
+                     }
+diff --git a/src/teatree/hooks/privacy_diff_comment_density.py b/src/teatree/hooks/privacy_diff_comment_density.py
+index 7fe7874b65..2a9e3a9c9c 100644
+--- a/src/teatree/hooks/privacy_diff_comment_density.py
++++ b/src/teatree/hooks/privacy_diff_comment_density.py
+@@ -1,50 +1,36 @@
+-"""``code_comment_density`` density pass for the near-zero-comments rule.
++"""``code_comment_density`` pass for the comments-as-code rule.
+ 
+-This module is the commit-side half of the near-zero-comments rule
+-(names + types are the documentation): a **content-blind** density pass
+-that catches the plain WHAT-narration the content-aware
+-``code_comment_self_reference`` detector misses (a run of comments that
+-merely restate what the code already says, with no tracker token to match).
++Commit-side half of the comments-as-code rule (names + types are the
++documentation; a long comment is a code smell — refactor instead of
++explain): a diff pass that catches WHAT-narration the content-aware
++``code_comment_self_reference`` detector (tracker tokens) misses.
+ 
+-The check is **advisory** — its consumers (the ``check_comment_density.py``
+-pre-push hook, the ``comment-density-gate`` CI job, and the
+-``t3 tool comment-density`` command) print the findings as a warning and
+-exit 0. There is no good content-blind heuristic for "overly long prose"
+-that does not also flag legitimate long comments, so the signal is
+-surfaced without blocking the commit, push, or pipeline. It is deliberately
+-NOT one of ``privacy_scan.py``'s blocking diff detectors — a comment-dense
+-diff is a code-quality nudge, not a privacy leak.
++Advisory — its consumers (the ``check_comment_density.py`` pre-push hook,
++the ``comment-density-gate`` CI job, the ``t3 tool comment-density``
++command) print findings and exit 0. Not one of ``privacy_scan.py``'s
++blocking diff detectors: a comment-dense diff is a code-quality nudge, not
++a privacy leak.
+ 
+-A file's ADDED lines are flagged when EITHER the ratio of added
+-comment-only lines to added code lines exceeds a conservative threshold
+-(with a floor on added code lines so a tiny diff cannot trip it), OR there
+-is a block of consecutive comment-only lines past the warn threshold.
++A file's ADDED lines are flagged when ANY of three signals hold. The
++content-aware **restatement** signal flags a comment whose meaningful words
++merely restate the following code line's identifier tokens (a narration verb
++plus tokens already in the code, no non-obvious why), OR a docstring opening
++line that merely echoes the signature name — a single such line is enough.
++This is the verbose-docstring + restating-inline abuse the line-count pass
++missed. The **consecutive-run** signal flags a run of comment-only lines past
++the warn threshold. The **ratio** signal flags added comment-only to added
++code lines past a conservative threshold (with floors so a tiny diff or a
++lone explanatory comment never trips).
+ 
+-Comment-only is decided language-aware on the FILE SUFFIX (Python ``#``,
+-JS/TS ``//`` and ``/* */`` line/block markers). Exempt from the comment
+-count: docstring bodies (lines inside a triple-quoted block); **tooling
+-pragmas** that are machine directives, not prose (``# type:``, ``# noqa``,
+-``# pragma``, ``pyright:``/``mypy:``/``ruff:``, ``// eslint-disable``,
+-``// @ts-ignore``/``@ts-expect-error``, coverage ``istanbul``/``c8`` ignores);
+-and a small **security-rationale** allowlist (a comment whose text begins
+-with the agreed ``security:`` marker — a deliberate threat-model note, not
+-WHAT-narration). Also exempt is a file-LEADING comment block — a run that
+-begins at the top of a file's added lines (within a shebang / encoding /
+-blank offset) before any code, which is a license / copyright / banner
+-preamble rather than WHAT-narration — plus a narrow license-marker
+-fallback for a header further down (a comment carrying ``SPDX-License-Identifier``,
+-``Copyright``, ``Licensed under`` or ``All rights reserved``). Fully exempt
+-files: markdown/docs (``*.md``, ``docs/``, ``CHANGELOG*``), declarative
+-config (``*.yml``/``*.yaml``/``*.toml``/``*.cfg``/``*.ini`` — a CI job's
+-"why this exists" block has no names+types alternative), and ``tests/``
+-(test bodies legitimately narrate intent).
+-
+-The thresholds are deliberately conservative: the ratio rule applies only
+-once a meaningful number of comment lines is present (the comment-line
+-floor) and there are enough code lines to compare against (the code-line
+-floor), so a single explanatory comment never trips it however small the
+-diff. A run of consecutive comment lines past the warn threshold is the
+-strong WHAT-narration signal and warns on its own.
++Multi-line comments and docstrings stay ALLOWED when justified — a genuine
++non-obvious why (words the code does not contain, not bare narration) does
++not restate and is never flagged. Comment syntax is decided on the FILE
++SUFFIX (Python ``#``, JS/TS ``//`` and ``/* */``). Exempt: tooling pragmas
++(``# type:``/``# noqa``/``# pragma`` / ``pyright:``/``mypy:``/``ruff:`` /
++``// eslint-disable`` / ``@ts-ignore`` / coverage ``istanbul``/``c8``); the
++``security:``-prefixed threat-model allowlist; a file-LEADING comment block
++(license / shebang / banner preamble) and a license-marker header further
++down; markdown/docs, declarative config, and ``tests/``.
+ """
+ 
+ import re
+@@ -102,6 +88,146 @@
+     re.IGNORECASE,
+ )
+ 
++_RESTATE_OVERLAP_THRESHOLD = 0.6
++_MIN_RESTATE_WORDS = 2
++_ONE_LINE_DOCSTRING_MARKERS = 2
++_WORD_RE = re.compile(r"[a-z]+")
++_DEF_RE = re.compile(r"^\s*(?:async\s+)?(?:def|class)\s+([A-Za-z_]\w*)")
++_CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
++
++# WHAT-narration verbs that merely announce the code on the next line; a
++# comment built only from these plus tokens already in that code carries no
++# non-obvious why.
++_NARRATION_VERBS = frozenset(
++    {
++        "add",
++        "adds",
++        "append",
++        "apply",
++        "applies",
++        "assign",
++        "build",
++        "call",
++        "calls",
++        "check",
++        "compute",
++        "convert",
++        "create",
++        "creates",
++        "delete",
++        "deletes",
++        "divide",
++        "fetch",
++        "filter",
++        "format",
++        "get",
++        "increment",
++        "initialise",
++        "initialize",
++        "iterate",
++        "load",
++        "loop",
++        "make",
++        "multiply",
++        "remove",
++        "removes",
++        "return",
++        "returns",
++        "round",
++        "save",
++        "seed",
++        "set",
++        "sets",
++        "store",
++        "stores",
++        "sum",
++        "update",
++        "updates",
++        "write",
++    }
++)
++
++# Filler that carries no signal — dropped from a comment's content-word set so
++# the overlap ratio reflects the meaningful words only.
++_STOPWORDS = frozenset(
++    {
++        "a",
++        "an",
++        "and",
++        "as",
++        "at",
++        "be",
++        "by",
++        "every",
++        "for",
++        "from",
++        "in",
++        "into",
++        "is",
++        "it",
++        "of",
++        "on",
++        "one",
++        "or",
++        "out",
++        "row",
++        "rows",
++        "so",
++        "the",
++        "then",
++        "this",
++        "to",
++        "value",
++        "values",
++        "with",
++    }
++)
++
++
++def _content_words(text: str) -> list[str]:
++    return [w for w in _WORD_RE.findall(text.lower()) if w not in _STOPWORDS]
++
++
++def _code_tokens(code: str) -> set[str]:
++    return set(_WORD_RE.findall(code.lower()))
++
++
++def _signature_name(code: str) -> str | None:
++    match = _DEF_RE.match(code)
++    return match.group(1) if match else None
++
++
++def _name_words(name: str) -> set[str]:
++    spaced = _CAMEL_BOUNDARY_RE.sub(" ", name).replace("_", " ")
++    return {w for w in _WORD_RE.findall(spaced.lower()) if w not in _STOPWORDS}
++
++
++def _restates(words: list[str], code_tokens: set[str]) -> bool:
++    """True when a comment's content-words merely restate the code's tokens.
++
++    Restatement = a strong majority of the meaningful words are either already
++    an identifier token in the code line or a bare narration verb announcing it,
++    with at least one word landing in the code. Several words the code does not
++    contain and that are not narration (a non-obvious WHY) break restatement.
++    """
++    if len(words) < _MIN_RESTATE_WORDS:
++        return False
++    in_code = sum(1 for w in words if w in code_tokens)
++    accounted = sum(1 for w in words if w in code_tokens or w in _NARRATION_VERBS)
++    return in_code >= 1 and accounted / len(words) >= _RESTATE_OVERLAP_THRESHOLD
++
++
++def _stem_matches(word: str, name_words: set[str]) -> bool:
++    return any(word == n or word.startswith(n) or n.startswith(word) for n in name_words)
++
++
++def _echoes_signature(words: list[str], name_words: set[str]) -> bool:
++    if len(words) < _MIN_RESTATE_WORDS or not name_words:
++        return False
++    in_name = sum(1 for w in words if _stem_matches(w, name_words))
++    accounted = sum(1 for w in words if _stem_matches(w, name_words) or w in _NARRATION_VERBS)
++    return in_name >= 1 and accounted == len(words)
++
+ 
+ def _is_exempt_file(path: str) -> bool:
+     lowered = path.lower()
+@@ -144,67 +270,117 @@ def __init__(self, comment_re: re.Pattern[str] | None) -> None:
+         self.comment_lines = 0
+         self.code_lines = 0
+         self.max_consecutive = 0
++        self.restatements = 0
+         self.in_docstring = False
+         self.code_seen = False
+         self._run = 0
+         self._target_line = 0
++        self._last_signature: str | None = None
++        self._pending_prose: list[list[str]] = []
+ 
+     def set_hunk_start(self, new_start: int) -> None:
+         self._target_line = new_start - 1
+ 
+     def feed_line(self, raw: str) -> None:
+-        if self.comment_re is None:
++        comment_re = self.comment_re
++        if comment_re is None:
+             return
+         if raw.startswith(" "):
+-            self._target_line += 1
+-            if raw[1:].strip():
+-                self.code_seen = True
++            self._feed_context_line(raw[1:])
+             return
+         if not raw.startswith("+") or raw.startswith("+++"):
+             return
++        self._feed_added_line(raw[1:], comment_re)
++
++    def _feed_context_line(self, code: str) -> None:
+         self._target_line += 1
+-        code = raw[1:]
+-        if _ALLOW_MARKER in code or self._consume_docstring(code) or _is_security_rationale(code):
++        if code.strip():
++            self.code_seen = True
++            self._resolve_against_code(code)
++
++    def _feed_added_line(self, code: str, comment_re: re.Pattern[str]) -> None:
++        self._target_line += 1
++        if _ALLOW_MARKER in code:
+             return
+-        is_comment = bool(self.comment_re.match(code))
++        was_in_docstring = self.in_docstring
++        if self._consume_docstring(code) or was_in_docstring:
++            self._feed_docstring_line(code, opening=not was_in_docstring)
++            return
++        if _is_security_rationale(code):
++            return
++        is_comment = bool(comment_re.match(code))
+         if is_comment and _is_pragma(code):
+             return
+         self._classify(code, is_comment=is_comment)
+ 
+     def _consume_docstring(self, code: str) -> bool:
+-        was_in_docstring = self.in_docstring
+-        if len(_TRIPLE_QUOTE_RE.findall(code)) % 2 == 1:
++        """Update docstring state; return whether this line touches a docstring.
++
++        A line with an odd count of triple-quote markers toggles the multi-line
++        docstring state. A line that opens AND closes on itself (even count, but
++        the stripped line starts with a triple quote) is a one-line docstring —
++        the state does not change, but the line is still a docstring line.
++        """
++        markers = len(_TRIPLE_QUOTE_RE.findall(code))
++        if markers % 2 == 1:
+             self.in_docstring = not self.in_docstring
+-        return was_in_docstring or self.in_docstring
++            return True
++        return markers >= _ONE_LINE_DOCSTRING_MARKERS and _TRIPLE_QUOTE_RE.match(code.lstrip()) is not None
++
++    def _feed_docstring_line(self, code: str, *, opening: bool) -> None:
++        words = _content_words(_TRIPLE_QUOTE_RE.sub(" ", code))
++        if opening and self._last_signature is not None and _echoes_signature(words, _name_words(self._last_signature)):
++            self.restatements += 1
++            return
++        if words:
++            self._pending_prose.append(words)
+ 
+     def _classify(self, code: str, *, is_comment: bool) -> None:
+         if is_comment:
+             if self._is_header_comment(code):
+                 return
+             self.comment_lines += 1
+             self._run += 1
+             self.max_consecutive = max(self.max_consecutive, self._run)
++            words = _content_words(code.lstrip("#/ *"))
++            if words:
++                self._pending_prose.append(words)
+         else:
+             self._run = 0
+             if code.strip():
+                 self.code_lines += 1
+                 self.code_seen = True
++                signature = _signature_name(code)
++                if signature is not None:
++                    self._last_signature = signature
++                self._resolve_against_code(code)
++
++    def _resolve_against_code(self, code: str) -> None:
++        if not self._pending_prose:
++            return
++        tokens = _code_tokens(code)
++        self.restatements += sum(1 for words in self._pending_prose if _restates(words, tokens))
++        self._pending_prose = []
+ 
+     def _is_header_comment(self, code: str) -> bool:
+         if not self.code_seen and self._target_line <= _LEADING_HEADER_MAX_LINE:
+             return True
+         return _is_license_marker(code)
+ 
+     @property
+     def is_flagged(self) -> bool:
++        if self.restatements > 0:
++            return True
+         if self.max_consecutive > _CONSECUTIVE_COMMENT_WARN_THRESHOLD:
+             return True
+         if self.comment_lines < _MIN_ADDED_COMMENT_LINES or self.code_lines < _MIN_ADDED_CODE_LINES:
+             return False
+         return self.comment_lines > self.code_lines * _RATIO_THRESHOLD
+ 
+     @property
+     def reason(self) -> str:
++        if self.restatements > 0:
++            return f"{self.restatements} comment/docstring line(s) restate the code"
+         if self.max_consecutive > _CONSECUTIVE_COMMENT_WARN_THRESHOLD:
+             return f"{self.max_consecutive} consecutive comment-only lines"
+         return (
+@@ -225,6 +401,7 @@ class CommentDensityFinding:
+     comment_lines: int
+     code_lines: int
+     max_consecutive: int
++    restatements: int
+     reason: str
+ 
+     @property
+@@ -285,6 +462,7 @@ def report_diff(text: str) -> list[CommentDensityFinding]:
+             comment_lines=scan.comment_lines,
+             code_lines=scan.code_lines,
+             max_consecutive=scan.max_consecutive,
++            restatements=scan.restatements,
+             reason=scan.reason,
+         )
+         for _, path, scan in _iter_file_scans(text)
+diff --git a/tests/teatree_hooks/test_privacy_scan_comment_density.py b/tests/teatree_hooks/test_privacy_scan_comment_density.py
+index 919a7cbd24..592dc5f3bf 100644
+--- a/tests/teatree_hooks/test_privacy_scan_comment_density.py
++++ b/tests/teatree_hooks/test_privacy_scan_comment_density.py
+@@ -312,6 +312,128 @@ def test_blank_context_line_keeps_top_of_file_header_exempt(self) -> None:
+         assert report_diff(diff) == []
+ 
+ 
++class TestRestatingCommentDetection:
++    """Content-aware: a comment that merely restates the next code line is flagged.
++
++    The pure line-count density pass misses a SINGLE restating comment below the
++    consecutive-run threshold (the verbose-inline-comment style trimmed in real
++    review). A comment whose content-words are a subset of the following code
++    line's identifier tokens carries no non-obvious why — it restates the code —
++    and is flagged regardless of run length.
++    """
++
++    def test_single_restating_comment_above_code_is_flagged(self) -> None:
++        diff = _diff(
++            "src/teatree/x.py",
++            "def to_eur(cents):",
++            "    # divide the cents by one hundred",
++            "    return cents / 100",
++        )
++        assert _paths(diff) == ["src/teatree/x.py"]
++
++    def test_inline_comment_restating_the_update_call_is_flagged(self) -> None:
++        diff = _diff(
++            "src/teatree/x.py",
++            "def backfill(model):",
++            "    # update the model rows with the metadata",
++            "    model.objects.update(**metadata)",
++        )
++        assert _paths(diff) == ["src/teatree/x.py"]
++
++    def test_non_obvious_why_comment_is_not_flagged(self) -> None:
++        diff = _diff(
++            "src/teatree/x.py",
++            "def render(value):",
++            "    # SandboxedEnvironment blocks attribute-access SSTI",
++            "    env = SandboxedEnvironment()",
++            "    return env.from_string(value).render()",
++        )
++        assert report_diff(diff) == []
++
++    def test_comment_with_rationale_words_not_in_code_is_not_flagged(self) -> None:
++        diff = _diff(
++            "src/teatree/x.py",
++            "def backfill(model):",
++            "    # back-fill pre-existing rows created before this shipped",
++            "    model.objects.update(**metadata)",
++        )
++        assert report_diff(diff) == []
++
++    def test_restating_comment_at_end_of_hunk_is_flagged(self) -> None:
++        diff = _diff(
++            "src/teatree/x.py",
++            "    total = a + b",
++            "    # return the total",
++            "    return total",
++        )
++        assert _paths(diff) == ["src/teatree/x.py"]
++
++
++class TestSignatureEchoDocstring:
++    """A docstring that merely echoes the signature is flagged; a real one is not.
++
++    A genuine multi-line docstring carrying a non-obvious why stays ALLOWED — the
++    target is the vacuous docstring that repeats the function/class name and adds
++    nothing (the verbose-docstring style trimmed in real review).
++    """
++
++    def test_docstring_echoing_the_function_name_is_flagged(self) -> None:
++        diff = _diff(
++            "src/teatree/x.py",
++            "def add_feature_flag(apps, schema_editor):",
++            '    """Add the feature flag."""',
++            "    apps.get_model('shared', 'FeatureFlag').objects.create()",
++        )
++        assert _paths(diff) == ["src/teatree/x.py"]
++
++    def test_multiline_docstring_restating_the_code_is_flagged(self) -> None:
++        diff = _diff(
++            "src/teatree/x.py",
++            "def remove_feature_flag(apps, schema_editor):",
++            '    """Remove the feature flag.',
++            "",
++            "    Removes the feature flag row from the database.",
++            "    Deletes the feature flag for every customer.",
++            '    """',
++            "    Flag.objects.filter(name=NAME).delete()",
++        )
++        assert _paths(diff) == ["src/teatree/x.py"]
++
++    def test_genuine_docstring_with_non_obvious_why_is_not_flagged(self) -> None:
++        diff = _diff(
++            "src/teatree/x.py",
++            "def add_feature_flag(apps, schema_editor):",
++            '    """Seed the platform-messages flag, OFF by default.',
++            "",
++            "    The endpoint reports zero messages while OFF so the feature",
++            "    stays dark per tenant until each environment opts in.",
++            '    """',
++            "    Flag.objects.get_or_create(name=NAME, defaults={'value': False})",
++        )
++        assert report_diff(diff) == []
++
++    def test_class_docstring_echoing_the_class_name_is_flagged(self) -> None:
++        diff = _diff(
++            "src/teatree/x.py",
++            "class PaymentProcessor:",
++            '    """Process the payment."""',
++            "    def run(self):",
++            "        return self.gateway.charge()",
++        )
++        assert _paths(diff) == ["src/teatree/x.py"]
++
++    def test_module_docstring_is_not_treated_as_signature_echo(self) -> None:
++        diff = _diff(
++            "src/teatree/x.py",
++            '"""Money formatting helpers."""',
++            "",
++            "def to_eur(cents: int) -> str:",
++            "    euros, rest = divmod(cents, 100)",
++            "    return f'{euros},{rest:02d} EUR'",
++        )
++        assert report_diff(diff) == []
++
++
+ class TestNotAPrivacyGateDetector:
+     """Density is advisory, so it must NOT block the public-repo privacy scan."""
+ 
+diff --git a/tests/test_comment_density_gate.py b/tests/test_comment_density_gate.py
+index 4aa3beea90..8602de9e73 100644
+--- a/tests/test_comment_density_gate.py
++++ b/tests/test_comment_density_gate.py
+@@ -7,18 +7,23 @@
+ non-negotiable sets that pin the detection regardless of the (always-zero)
+ exit code.
+ 
+-The **must-DENY** set is comment-heavy diffs the check MUST flag: WHAT-narration
+-by ratio, a 3+ consecutive-comment run, a TS block-comment run.
++The **must-DENY** set is diffs the check MUST flag: WHAT-narration by ratio, a
++3+ consecutive-comment run, a TS block-comment run, a single inline comment
++restating the next code line, and a signature-echo docstring (the content-aware
++restatement detection).
+ 
+ The **must-ALLOW** set is clean diffs the check MUST pass: sparse code, one
+-explanatory comment, docstrings, tooling pragmas, license/shebang headers,
+-tests, docs, CI YAML rationale blocks. It proves the check cannot over-flag
+-legitimate code — a detector without it is incomplete (the over-flag doctrine).
++explanatory comment, a docstring carrying a non-obvious why, tooling pragmas,
++license/shebang headers, tests, docs, CI YAML rationale blocks. It proves the
++check cannot over-flag legitimate code — a detector without it is incomplete
++(the over-flag doctrine).
+ 
+-The check is content-blind and diff-aware; the analysis lives in
+-:mod:`teatree.hooks.privacy_diff_comment_density`, exercised here through the
+-reusable :func:`report_diff`, the ``t3 tool comment-density`` CLI, and the
+-``scripts/hooks/check_comment_density.py`` pre-push hook (each warn-only).
++The check is content-aware (it flags a comment whose words restate the next
++code line, and a docstring opening that echoes the signature) and diff-aware;
++the analysis lives in :mod:`teatree.hooks.privacy_diff_comment_density`,
++exercised here through the reusable :func:`report_diff`, the ``t3 tool
++comment-density`` CLI, and the ``scripts/hooks/check_comment_density.py``
++pre-push hook (each warn-only).
+ """
+ 
+ import json
+@@ -95,6 +100,21 @@ def _diff(path: str, *added: str, start: int = 10) -> str:
+         "  // and clamp into the valid range",
+         "return result;",
+     ),
++    # Real-world abuse the line-count pass missed: a data migration's
++    # signature-echo docstring + a single inline comment restating the call.
++    "migration_signature_echo_docstring": _diff(
++        "src/myapp/migrations/0002_add_flag.py",
++        "def add_feature_flag(apps, schema_editor):",
++        '    """Add the feature flag."""',
++        "    model = apps.get_model('myapp', 'FeatureFlag')",
++        "    model.objects.get_or_create(definition=FLAG, defaults={'value': False})",
++    ),
++    "single_inline_comment_restating_the_update_call": _diff(
++        "src/myapp/migrations/0002_add_flag.py",
++        "def backfill(model, metadata):",
++        "    # update the rows with the metadata",
++        "    model.objects.filter(definition=FLAG).update(**metadata)",
++    ),
+ }
+ 
+ _MUST_ALLOW: dict[str, str] = {
+@@ -183,6 +203,20 @@ def _diff(path: str, *added: str, start: int = 10) -> str:
+         "    # sees the PR contents — the documented CI convention.",
+         "    runs-on: ubuntu-latest",
+     ),
++    # A genuine migration docstring carrying a non-obvious why (what the flag
++    # gates, the dark-by-default behaviour) — words the code does not contain.
++    # Multi-line is fine when it earns its place; the gate must NOT flag it.
++    "migration_docstring_with_non_obvious_why": _diff(
++        "src/myapp/migrations/0002_add_flag.py",
++        "def add_feature_flag(apps, schema_editor):",
++        '    """Seed the platform-messages flag, OFF by default.',
++        "",
++        "    The endpoint reports zero messages while OFF so the capability",
++        "    stays dark per tenant until each environment opts in.",
++        '    """',
++        "    model = apps.get_model('myapp', 'FeatureFlag')",
++        "    model.objects.get_or_create(definition=FLAG, defaults={'value': False})",
++    ),
+ }
+ 
+ 
+@@ -251,10 +285,16 @@ def test_zero_code_lines_ratio_is_zero(self) -> None:
+         from teatree.hooks.privacy_diff_comment_density import CommentDensityFinding  # noqa: PLC0415
+ 
+         finding = CommentDensityFinding(
+-            path="src/teatree/x.py", comment_lines=3, code_lines=0, max_consecutive=3, reason="x"
++            path="src/teatree/x.py", comment_lines=3, code_lines=0, max_consecutive=3, restatements=0, reason="x"
+         )
+         assert not finding.ratio
+ 
++    def test_restatement_finding_reports_count_and_reason(self) -> None:
++        findings = report_diff(_MUST_DENY["single_inline_comment_restating_the_update_call"])
++        assert len(findings) == 1
++        assert findings[0].restatements >= 1
++        assert "restate" in findings[0].reason
++
+ 
+ class TestCli:
+     """``t3 tool comment-density`` reads the diff and always exits 0 (advisory)."""
+-- 
+2.50.1 (Apple Git-155)
+

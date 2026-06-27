@@ -1,0 +1,81 @@
+diff --git src/teatree/loops/seed.py src/teatree/loops/seed.py
+index e0ff07e601..0ae6cc0f48 100644
+--- src/teatree/loops/seed.py
++++ src/teatree/loops/seed.py
+@@ -51,9 +51,15 @@ def is_prompt_backed(self) -> bool:
+         return self.prompt_body is not None
+ 
+ 
+-# Mirror of migrations 0078/0080: one autonomous loop per row, each on its own
+-# cadence. ``arch_review`` is the single prompt-backed default; the rest are
+-# script-backed at the shared per-loop runner.
++# One autonomous loop per row, each on its own cadence. An interval loop's
++# ``delay_seconds`` is the firing interval and MUST equal its registry
++# ``MiniLoop.default_cadence_seconds`` (the cadence source of truth) — pinned by
++# ``test_interval_seed_delay_matches_registry_cadence_for_every_loop``. The frozen
++# migrations 0078/0080 still carry the pre-#2513 cadences; they are append-only
++# history, so the registry-aligned values live here, not in the migrations.
++# ``arch_review`` is the single prompt-backed default; the rest are script-backed
++# at the shared per-loop runner. ``news``/``dream`` are ``daily_at``-scheduled, so
++# their ``delay_seconds`` is a nominal placeholder, not the effective cadence.
+ DEFAULT_LOOPS: tuple[LoopSeedSpec, ...] = (
+     LoopSeedSpec("inbox", 60),
+     LoopSeedSpec("idle_stack_reaper", 60),
+@@ -67,13 +73,13 @@ def is_prompt_backed(self) -> bool:
+     LoopSeedSpec("review", 300),
+     LoopSeedSpec("ship", 300),
+     LoopSeedSpec("pane_reaper", 300),
+-    LoopSeedSpec("audit", 1800),
+-    LoopSeedSpec("followup", 1800),
++    LoopSeedSpec("audit", 600),
++    LoopSeedSpec("followup", 600),
+     LoopSeedSpec("issue_implementer", 3600),
+     LoopSeedSpec("housekeeping", 3600),
+-    LoopSeedSpec("arch_review", 10800, prompt_body="Run a sub-agent to run the arch_review loop."),
+-    LoopSeedSpec("dogfood", 86400),
+-    LoopSeedSpec("eval_local", 86400),
++    LoopSeedSpec("arch_review", 3600, prompt_body="Run a sub-agent to run the arch_review loop."),
++    LoopSeedSpec("dogfood", 3600),
++    LoopSeedSpec("eval_local", 3600),
+     LoopSeedSpec("news", 86400, daily_at=dt.time(8, 0)),
+     LoopSeedSpec("dream", 86400, daily_at=dt.time(3, 0)),
+ )
+diff --git tests/teatree_loops/test_seed.py tests/teatree_loops/test_seed.py
+index c95578d79b..1475c82ee1 100644
+--- tests/teatree_loops/test_seed.py
++++ tests/teatree_loops/test_seed.py
+@@ -43,6 +43,34 @@ def test_seeded_loop_table_matches_iter_loops(self) -> None:
+             f"seed/registry mismatch: seed-only={seeded - registry}, registry-only={registry - seeded}"
+         )
+ 
++    def test_interval_seed_delay_matches_registry_cadence_for_every_loop(self) -> None:
++        # For every INTERVAL-cadence loop (a seed spec with no ``daily_at``), the
++        # registry ``MiniLoop.default_cadence_seconds`` is the source of truth and
++        # the seed's ``delay_seconds`` is the value installed into the ``Loop``
++        # row — ``Loop.is_due`` uses ``delay_seconds`` as the firing interval. The
++        # two MUST agree or a fresh install ticks the loop at a cadence that
++        # contradicts its own registry default (the pre-#2513 orchestration model
++        # left five seeds stale: audit/followup/arch_review/dogfood/eval_local).
++        #
++        # A ``daily_at``-scheduled seed (``news``, ``dream``) is excluded by
++        # design: ``Loop.is_due`` ignores ``delay_seconds`` entirely when
++        # ``daily_at`` is set (see ``Loop._daily_due``), so its ``delay_seconds``
++        # is a nominal placeholder, not the effective cadence — equating it to the
++        # registry interval would assert a constraint the model never enforces.
++        #
++        # This guard makes interval seed/registry cadence drift impossible to land
++        # silently again.
++        registry_cadence = {loop.name: loop.default_cadence_seconds for loop in iter_loops()}
++        interval_seed_delay = {spec.name: spec.delay_seconds for spec in DEFAULT_LOOPS if spec.daily_at is None}
++        missing = interval_seed_delay.keys() - registry_cadence.keys()
++        assert not missing, f"interval seed loops absent from the registry: {missing}"
++        drift = {
++            name: (delay, registry_cadence[name])
++            for name, delay in interval_seed_delay.items()
++            if delay != registry_cadence[name]
++        }
++        assert not drift, f"seed delay_seconds != registry default_cadence_seconds for {drift}"
++
+     def test_seed_is_idempotent_no_duplicate_rows(self) -> None:
+         seed_default_loops_and_prompts()
+         first = Loop.objects.count()

@@ -1,0 +1,342 @@
+From 1acdf3b28c916614b5cc6a929bb4efa146ff340c Mon Sep 17 00:00:00 2001
+From: souliane <21343492+souliane@users.noreply.github.com>
+Date: Tue, 23 Jun 2026 11:49:58 +0200
+Subject: [PATCH] fix(identity): make the public-github identity gate
+ host-aware
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The proactive noreply-identity gate (#762/#785) stripped the host from a
+remote before resolving visibility, so a non-github remote (e.g. a
+gitlab.com SSH URL) collapsed to a bare owner/repo slug that gh repo
+view then resolved against github.com. If a public github.com repo
+existed at that owner/repo, a non-github clone could be stamped with the
+public GitHub noreply identity instead of its inherited identity.
+
+- Add is_github_host()/_host_from() and gate is_public_github_remote on a
+  github.com (or github.com-<ssh-alias>) host BEFORE any gh call.
+- Pass the full remote URL (host intact) from both call sites
+  (WorktreeProvisioner, workspace stamp-identity) — never the
+  host-stripped slug.
+- Tests: a gitlab/bitbucket host short-circuits to False with no gh call;
+  a non-github worktree keeps its inherited identity even when gh would
+  answer PUBLIC for the host-stripped slug; github + ssh-alias hosts still
+  stamp.
+---
+ .../core/management/commands/workspace.py     | 12 +++-
+ src/teatree/core/public_identity.py           | 59 +++++++++++++++--
+ src/teatree/core/runners/provision.py         |  8 ++-
+ tests/teatree_core/test_public_identity.py    | 57 ++++++++++++++++
+ tests/teatree_core/test_runners_provision.py  | 65 +++++++++++++++++--
+ 5 files changed, 187 insertions(+), 14 deletions(-)
+
+diff --git a/src/teatree/core/management/commands/workspace.py b/src/teatree/core/management/commands/workspace.py
+index 564b60bdbd..51705d1b50 100644
+--- a/src/teatree/core/management/commands/workspace.py
++++ b/src/teatree/core/management/commands/workspace.py
+@@ -489,11 +489,17 @@ def stamp_identity(self, repo: str = ".") -> StampResult:
+ 
+         Fixes public souliane/* clones/worktrees created before the
+         provisioner source-fix (new worktrees are stamped at creation).
+-        Idempotent. Refuses non-souliane / private remotes so the private overlay's
+-        legitimate real-identity attribution is never touched.
++        Idempotent. Refuses non-github / private remotes so a private
++        overlay's (or a GitLab clone's) legitimate real-identity
++        attribution is never touched.
+         """
++        # #2655: the visibility gate must see the FULL remote URL (host
++        # intact) — a host-stripped slug would resolve a GitLab clone's
++        # bare ``owner/repo`` against github.com. ``slug`` is kept only
++        # for the human-readable result.
++        url = git.remote_url(repo)
+         slug = git.remote_slug(repo)
+-        if not is_public_github_remote(slug):
++        if not is_public_github_remote(url):
+             return StampResult(
+                 stamped=False,
+                 reason=f"not a public GitHub remote (slug={slug!r}) — noreply-identity stamping not required",
+diff --git a/src/teatree/core/public_identity.py b/src/teatree/core/public_identity.py
+index 48941ee4a3..6ecc66f7cf 100644
+--- a/src/teatree/core/public_identity.py
++++ b/src/teatree/core/public_identity.py
+@@ -2,10 +2,15 @@
+ 
+ Single source of truth: commits on PUBLIC ``souliane/*`` repos use a
+ GitHub ``users.noreply.github.com`` author identity rather than the
+-machine's inherited git identity. Strictly scoped by remote slug —
+-non-souliane / private remotes are excluded so their own configured
+-identity is left as-is. Reused by the worktree provisioner and the
+-merge author-verification helper.
++machine's inherited git identity. Strictly scoped by remote host AND
++visibility — non-github (e.g. GitLab) and private remotes are excluded
++so their own configured identity is left as-is. Reused by the worktree
++provisioner and the merge author-verification helper.
++
++The gate is HOST-AWARE (#2655): callers pass the full remote URL (host
++intact), never the host-stripped slug — a bare ``owner/repo`` from a
++GitLab remote would otherwise be resolved against github.com and a
++GitLab clone could be stamped with the github identity.
+ """
+ 
+ import re
+@@ -62,6 +67,40 @@ def _slug_from(remote: str) -> str:
+     return cleaned
+ 
+ 
++def _host_from(remote: str) -> str:
++    """Extract the bare host of a git remote URL (no user/port).
++
++    Handles the three shapes git remotes take. A
++    ``scheme://[user@]host[:port]/owner/repo`` URL and a scp-like
++    ``user@host:owner/repo`` URL both yield ``host``; a bare
++    ``owner/repo`` slug (no host) yields ``""``. A ``user@`` prefix and a
++    ``:port`` suffix are dropped so only the hostname remains.
++    """
++    cleaned = remote.strip()
++    if "://" in cleaned:
++        authority = cleaned.split("://", 1)[1].split("/", 1)[0]
++    elif "@" in cleaned and ":" in cleaned:
++        authority = cleaned.split("@", 1)[1].split(":", 1)[0]
++    else:
++        return ""
++    authority = authority.split("@")[-1]  # drop any user@ that slipped through
++    return authority.split(":", 1)[0]  # drop :port
++
++
++def is_github_host(remote: str) -> bool:
++    """True iff ``remote``'s host is github.com (incl. an ssh-alias host).
++
++    A GitHub ssh alias such as ``git@github.com-work:owner/repo``
++    (configured in ``~/.ssh/config`` to disambiguate accounts) resolves
++    to github.com, so a ``github.com-<alias>`` host counts as github too.
++    A non-github host (``gitlab.com``, ``bitbucket.org``, a self-hosted
++    GitLab) is NOT github — its bare ``owner/repo`` slug must never be
++    resolved against github.com (the host-blind-slug footgun, #2655).
++    """
++    host = _host_from(remote)
++    return host == "github.com" or host.startswith("github.com-")
++
++
+ def is_public_github_remote(remote: str) -> bool:
+     """True iff ``remote``'s GitHub repo is PUBLIC (visibility-based, #785).
+ 
+@@ -80,9 +119,21 @@ def is_public_github_remote(remote: str) -> bool:
+     proactive setter then leaves the inherited identity untouched. That
+     matches the reactive hook's "unknown ⇒ pass" stance (it does not
+     block on unknown either), so no hard-fail asymmetry is introduced.
++
++    Host-aware (#2655): the slug parser strips the host, so a GitLab
++    remote (``git@gitlab.com:acme-eng/widget.git``) collapses to a bare
++    ``acme-eng/widget`` that ``gh repo view`` would then resolve against
++    **github.com**. If a public github.com repo happened to exist at that
++    owner/repo, a GitLab clone would be stamped with the public GitHub
++    noreply identity rather than its inherited identity. The host guard
++    short-circuits any non-github host to ``False`` BEFORE the ``gh``
++    call, so a gitlab/bitbucket remote is never queried — nor stamped —
++    as github.
+     """
+     if not remote:
+         return False
++    if not is_github_host(remote):
++        return False
+     slug = _slug_from(remote)
+     parts = slug.split("/")
+     if len(parts) != _OWNER_REPO_PARTS or not parts[0] or not parts[1]:
+diff --git a/src/teatree/core/runners/provision.py b/src/teatree/core/runners/provision.py
+index b6078adf0b..cb843cb06d 100644
+--- a/src/teatree/core/runners/provision.py
++++ b/src/teatree/core/runners/provision.py
+@@ -148,8 +148,12 @@ def _create(workspace: Path, repo_name: str, ticket_dir: Path, branch: str) -> t
+         # #762: a worktree off a PUBLIC souliane/* clone gets the
+         # configured noreply git identity set clone-local, so every
+         # commit path uses it instead of the inherited identity. Scoped
+-        # by remote slug — non-souliane / private clones are left as-is.
+-        if is_public_github_remote(git.remote_slug(str(repo_path))):
++        # by remote — non-github / private clones are left as-is.
++        # #2655: pass the full remote URL (host intact), NOT the
++        # host-stripped slug — ``is_public_github_remote`` must see the
++        # host to refuse a non-github (e.g. gitlab) remote whose bare
++        # ``owner/repo`` would otherwise be resolved against github.com.
++        if is_public_github_remote(git.remote_url(str(repo_path))):
+             try:
+                 set_local_noreply_identity(str(wt_path))
+             except Exception:
+diff --git a/tests/teatree_core/test_public_identity.py b/tests/teatree_core/test_public_identity.py
+index bd75801d16..52660b68e2 100644
+--- a/tests/teatree_core/test_public_identity.py
++++ b/tests/teatree_core/test_public_identity.py
+@@ -106,6 +106,63 @@ def test_malformed_slug_is_not_public_without_calling_gh(self, remote: str) -> N
+             gh.assert_not_called()
+ 
+ 
++class TestNonGithubHostNeverPublic:
++    """A non-github.com remote is NEVER treated as a public GitHub repo.
++
++    The slug parser strips the host, collapsing a non-github URL such as
++    ``git@gitlab.com:acme-eng/widget.git`` to the bare ``acme-eng/widget``
++    — which ``gh repo view`` would then resolve against **github.com**. If
++    a public github.com repo happened to exist at that owner/repo, a
++    non-github clone would be stamped with the public GitHub noreply
++    identity instead of its inherited identity. The host guard must
++    short-circuit a non-github host to ``False`` BEFORE any ``gh`` call,
++    so a gitlab/bitbucket remote can never be queried — or stamped — as
++    github.
++    """
++
++    @staticmethod
++    def _gh_public(_cmd: list[str], **_kw: object) -> object:
++        return type("R", (), {"stdout": "PUBLIC\n", "returncode": 0})()
++
++    @pytest.mark.parametrize(
++        "remote",
++        [
++            "git@gitlab.com:acme-eng/widget.git",
++            "https://gitlab.com/acme-eng/sidecar.git",
++            "git@bitbucket.org:team/repo.git",
++            "https://gitlab.example.com/group/proj.git",
++        ],
++    )
++    def test_non_github_host_is_not_public_without_calling_gh(self, remote: str) -> None:
++        # Even if gh WOULD answer PUBLIC for the host-stripped slug, a
++        # non-github host must never reach gh — it is not a GitHub repo.
++        with patch(
++            "teatree.core.public_identity.run_allowed_to_fail",
++            side_effect=self._gh_public,
++        ) as gh:
++            assert is_public_github_remote(remote) is False
++            gh.assert_not_called()
++
++    @pytest.mark.parametrize(
++        "remote",
++        [
++            "git@github.com:souliane/teatree.git",
++            "git@github.com-work:souliane/teatree.git",  # ssh-alias host
++            "https://github.com/souliane/teatree.git",
++            "ssh://git@github.com/souliane/teatree.git",
++        ],
++    )
++    def test_github_host_variants_still_reach_gh(self, remote: str) -> None:
++        # github.com (and a github.com-<alias> ssh host) must still be
++        # recognised so public github repos keep getting the source-fix.
++        with patch(
++            "teatree.core.public_identity.run_allowed_to_fail",
++            side_effect=self._gh_public,
++        ) as gh:
++            assert is_public_github_remote(remote) is True
++            gh.assert_called_once()
++
++
+ class TestCanonicalIdentity:
+     def test_canonical_identity_is_noreply(self) -> None:
+         name, email = canonical_noreply_identity()
+diff --git a/tests/teatree_core/test_runners_provision.py b/tests/teatree_core/test_runners_provision.py
+index ce45976585..5bb644a166 100644
+--- a/tests/teatree_core/test_runners_provision.py
++++ b/tests/teatree_core/test_runners_provision.py
+@@ -365,8 +365,13 @@ class TestWorktreeProvisionerStampsScopedIdentity(TestCase):
+ 
+     A worktree created off a PUBLIC souliane/* clone must get a
+     worktree-local noreply git identity (so no path can author with the
+-    inherited identity). Non-souliane / private clones must NOT be stamped
++    inherited identity). Non-github / private clones must NOT be stamped
+     — their legitimate real-identity attribution is untouched.
++
++    #2655: the gate sees the FULL remote URL (host intact), not the
++    host-stripped slug, so a GitLab clone whose bare ``owner/repo`` might
++    collide with a public github.com repo is never queried — nor stamped
++    — as github. The provisioner now passes ``git.remote_url``.
+     """
+ 
+     @pytest.fixture(autouse=True)
+@@ -414,7 +419,9 @@ def fake_gh_visibility(cmd: list[str], **_kw: object) -> object:
+             patch("teatree.core.runners.provision._workspace_dir", return_value=self.workspace),
+             patch("teatree.core.runners.provision.git.worktree_add", side_effect=fake_worktree_add),
+             patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
+-            patch("teatree.core.runners.provision.git.remote_slug", return_value=remote_url),
++            # #2655: the call site now reads the FULL remote URL (host
++            # intact); the gate refuses a non-github host before any gh call.
++            patch("teatree.core.runners.provision.git.remote_url", return_value=remote_url),
+             patch("teatree.core.public_identity.run_allowed_to_fail", side_effect=fake_gh_visibility),
+             patch(
+                 "teatree.core.runners.provision.set_local_noreply_identity",
+@@ -427,7 +434,7 @@ def fake_gh_visibility(cmd: list[str], **_kw: object) -> object:
+     def test_public_souliane_clone_worktree_is_stamped_noreply(self) -> None:
+         from teatree.core.public_identity import is_noreply_email  # noqa: PLC0415
+ 
+-        stamped = self._run("teatree", "ac-teatree-77-x", "souliane/teatree", visibility="PUBLIC")
++        stamped = self._run("teatree", "ac-teatree-77-x", "git@github.com:souliane/teatree.git", visibility="PUBLIC")
+ 
+         assert len(stamped) == 1, "public souliane worktree was not identity-stamped (#762 source-fix)"
+         wt_path, name, email = stamped[0]
+@@ -441,17 +448,65 @@ def test_public_non_souliane_clone_worktree_is_stamped_noreply(self) -> None:
+         # it, then the reactive hook hard-failed at push).
+         from teatree.core.public_identity import is_noreply_email  # noqa: PLC0415
+ 
+-        stamped = self._run("sample-repo", "ac-sample-repo-77-x", "octo-contrib/sample-repo", visibility="PUBLIC")
++        stamped = self._run(
++            "sample-repo",
++            "ac-sample-repo-77-x",
++            "git@github.com:octo-contrib/sample-repo.git",
++            visibility="PUBLIC",
++        )
+ 
+         assert len(stamped) == 1, "public non-souliane worktree was not identity-stamped (#785)"
+         _, _, email = stamped[0]
+         assert is_noreply_email(email), email
+ 
++    def test_github_ssh_alias_host_worktree_is_stamped_noreply(self) -> None:
++        # The souliane/teatree clone on this machine uses an ssh-alias
++        # host (``github.com-work``) so the github identity is still
++        # recognised and the public souliane noreply is stamped.
++        from teatree.core.public_identity import is_noreply_email  # noqa: PLC0415
++
++        stamped = self._run(
++            "teatree",
++            "ac-teatree-alias-x",
++            "git@github.com-work:souliane/teatree.git",
++            visibility="PUBLIC",
++        )
++
++        assert len(stamped) == 1, "ssh-alias github host worktree was not stamped (#2655)"
++        _, _, email = stamped[0]
++        assert is_noreply_email(email), email
++
+     def test_private_clone_worktree_is_not_stamped(self) -> None:
+-        stamped = self._run("internal-svc", "ac-internal-svc-77-x", "acme-private/internal-svc", visibility="PRIVATE")
++        stamped = self._run(
++            "internal-svc",
++            "ac-internal-svc-77-x",
++            "git@github.com:acme-private/internal-svc.git",
++            visibility="PRIVATE",
++        )
+ 
+         assert stamped == [], "private clone must NOT be identity-stamped — visibility scope error (#785)"
+ 
++    def test_gitlab_clone_worktree_keeps_inherited_identity(self) -> None:
++        # #2655 — the reported bug class: a GitLab clone
++        # (``gitlab.com/<owner>/*``) must NEVER be stamped with the github
++        # noreply identity, EVEN IF a public github.com repo happened to
++        # exist at the same host-stripped ``owner/repo`` slug. The gh mock
++        # answers PUBLIC, but the non-github host short-circuits the gate
++        # to False BEFORE any gh call, so the GitLab worktree keeps its
++        # inherited (real, deliverable-domain) identity.
++        stamped = self._run(
++            "widget",
++            "2655-widget",
++            "git@gitlab.com:acme-eng/widget.git",
++            visibility="PUBLIC",
++        )
++
++        assert stamped == [], (
++            "GitLab worktree was stamped with the github identity — "
++            "host-blind slug footgun (#2655). It must keep the inherited "
++            "real-domain identity."
++        )
++
+ 
+ class TestWorktreeProvisionerGuardsWrongRepo(TestCase):
+     """#2276: provisioning a worktree against the WRONG repo must fail loud.
+-- 
+2.50.1 (Apple Git-155)
+

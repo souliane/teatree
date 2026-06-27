@@ -1,0 +1,1578 @@
+diff --git BLUEPRINT.md BLUEPRINT.md
+index eb09c5175b..d0d65be610 100644
+--- BLUEPRINT.md
++++ BLUEPRINT.md
+@@ -80,7 +80,7 @@ ## 4. Domain Models
+ 
+ | Model | States |
+ |---|---|
+-| `Ticket` | `not_started → scoped → started → coded → tested → reviewed → shipped → in_review → merged → retrospected → delivered` (plus terminal `ignored`) |
++| `Ticket` | `not_started → scoped → started → planned → coded → tested → reviewed → shipped → in_review → merged → retrospected → delivered` (plus terminal `ignored`) |
+ | `Worktree` | `created → provisioned → services_up → ready → torn_down` |
+ | `Session` | per-phase quality-gate tracker keyed `(ticket, phase, agent_id)` |
+ | `Task` | `pending → claimed → in_progress → completed / failed` |
+@@ -93,9 +93,9 @@ ## 4. Domain Models
+ - At-least-once delivery is safe because the state guard makes redelivery a no-op.
+ - `post_transition` signals are reserved for lossy cross-cutting side effects (audit log, Slack reactions) — never for the main work of the transition.
+ 
+-Auto-scheduling chains the phases: `start → provision worker → schedule_coding`, `code → schedule_testing`, `test → schedule_review`, `review → schedule_shipping` (gated on `has_shippable_diff()`). The runner classes live in `core/runners/`; the workers in `core/tasks.py` and `core/worktree_tasks.py`.
++Auto-scheduling chains the phases: `start → provision worker → schedule_planning`, `plan → schedule_coding`, `code → schedule_testing`, `test → schedule_review`, `review → schedule_shipping` (gated on `has_shippable_diff()`). Planning ([#1640](https://github.com/souliane/teatree/issues/1640)) is the first scheduled phase: the FSM auto-spawns a `t3:planner` sub-agent on `start` so an implementation plan exists before coding — the orchestrator never plans inline. The planner records the plan artifact (`lifecycle record-plan-artifact`), which fires `plan()` (STARTED → PLANNED) and schedules coding. The runner classes live in `core/runners/`; the workers in `core/tasks.py` and `core/worktree_tasks.py`.
+ 
+-**Clean-worktree preflight (#884).** `code()`, `test()`, `review()`, `ship()` refuse the transition if any worktree has tracked uncommitted changes. The refusal raises a `DirtyWorktreeError` (an `InvalidTransitionError` subclass, **not** `TransitionNotAllowed`) inside the caller's outer atomic block, so the FSM state change is rolled back and the lease reaper returns the CLAIMED task to PENDING on the next tick. No auto-stash — worktrees share one `.git`, so a stash is repo-global and could clobber an unrelated branch's work.
++**Clean-worktree preflight (#884).** `plan()`, `code()`, `test()`, `review()`, `ship()` refuse the transition if any worktree has tracked uncommitted changes. The refusal raises a `DirtyWorktreeError` (an `InvalidTransitionError` subclass, **not** `TransitionNotAllowed`) inside the caller's outer atomic block, so the FSM state change is rolled back and the lease reaper returns the CLAIMED task to PENDING on the next tick. No auto-stash — worktrees share one `.git`, so a stash is repo-global and could clobber an unrelated branch's work.
+ 
+ **DoD local-E2E preflight ([#88](https://github.com/souliane/teatree/issues/88)).** `ship()` runs a second preflight (`core/dod_gate.check_local_e2e_dod`) right after the clean-worktree one: a **UI-visible** ticket — one whose scoped `repos` intersect the active overlay's configured `frontend_repos` — must have a green **local-stack** E2E artifact before it can leave the implementation lifecycle. The deterministic artifact is `Ticket.extra['e2e_recipe'].last_run` with `result == "green"` AND `env == "local"`; `record_run` stamps `env` (default `local`, since `e2e run` resolves an on-disk workspace). A `dev` run records provenance but does **not** satisfy the gate — the point is to catch missing scope before merge, not defer it to dev-after-merge. The refusal raises `DodLocalE2EError` (also an `InvalidTransitionError` subclass) so it rolls back identically. Escape hatch: an explicit `Ticket.extra['dod_e2e_override']` with a non-empty `reason` (set via `t3 <overlay> ticket dod-override <id> --reason …`) makes the gate pass and logs it, so a genuinely non-UI/exempt ticket the heuristic mis-flags is never hard-trapped. An overlay with no `frontend_repos` configured has no UI-visible tickets, so the gate is silent for backend-only overlays. **Fail-closed UI-visibility ([#1426](https://github.com/souliane/teatree/issues/1426)).** When the overlay (hence its `frontend_repos`) cannot be resolved, `is_ui_visible` fails **closed** — it presumes UI-visible and logs loudly, so a misconfigured instance cannot silently skip the safety gate; the override and green-artifact escape hatches keep this from becoming a hard lockout.
+ 
+@@ -258,7 +258,7 @@ ## 11. Skills & Plugin Architecture
+ 
+ Skills declare dependencies via YAML frontmatter `requires:` (transitive, topo-sorted) and optional `companions:` (best-effort, warn on miss). Third-party skill frameworks (e.g. superpowers) are absorbed into the `rules` skill rather than delegated, to avoid context duplication.
+ 
+-**Sub-agents (`agents/`).** Eight phase agents wrap skill bundles: `orchestrator`, `coder`, `tester`, `e2e`, `reviewer`, `shipper`, `debugger`, `followup`. Each is a YAML+description wrapper that references skills via `skills:` frontmatter — no content duplication. Phase agents are invoked by lifecycle skills, by the headless executor (§5.2) when a phase task is claimed, and by the loop tick (§5.6) when a scanner signal calls for agent judgment. Interactive-only skills (no agent): `retro`, `next`, `contribute`, `setup`.
++**Sub-agents (`agents/`).** Nine phase agents wrap skill bundles: `orchestrator`, `planner`, `coder`, `tester`, `e2e`, `reviewer`, `shipper`, `debugger`, `followup`. The `planner` ([#1640](https://github.com/souliane/teatree/issues/1640)) wraps `architecture-design` + `writing-plans` and is auto-spawned on `start→planning` so the orchestrator never plans inline. Each is a YAML+description wrapper that references skills via `skills:` frontmatter — no content duplication. Phase agents are invoked by lifecycle skills, by the headless executor (§5.2) when a phase task is claimed, and by the loop tick (§5.6) when a scanner signal calls for agent judgment. Interactive-only skills (no agent): `retro`, `next`, `contribute`, `setup`.
+ 
+ **Distribution.** Two install paths, one source of truth:
+ 
+diff --git MAP.md MAP.md
+index 6778f2bd95..ae2ee2789f 100644
+--- MAP.md
++++ MAP.md
+@@ -44,7 +44,7 @@ ## Top-level directories
+ | Directory | Purpose |
+ |---|---|
+ | `skills/` | Workflow skills loaded as `/t3:*` (`SKILL.md` + `references/`) — `code`, `ship`, `review`, `workspace`, `rules`, ... |
+-| `agents/` | Phase sub-agent definitions (`orchestrator`, `coder`, `reviewer`, `tester`, `shipper`, `debugger`, `e2e`, `followup`) |
++| `agents/` | Phase sub-agent definitions (`orchestrator`, `planner`, `coder`, `reviewer`, `tester`, `shipper`, `debugger`, `e2e`, `followup`) |
+ | `hooks/` | Plugin hooks: `hooks.json` event→script mapping and the `scripts/` hook router (UserPromptSubmit, PreToolUse, PreCompact, Stop) |
+ | `.claude-plugin/` | Plugin manifest — `plugin.json` (identity) and `marketplace.json` |
+ | `tests/` | Pytest suite, mirroring the `src/` module path (`teatree_core/`, `teatree_cli/`, `integration/`, ...). E2E lives here, not in a separate top-level dir |
+diff --git agents/orchestrator.md agents/orchestrator.md
+index d7023995b1..cbd72c5d47 100644
+--- agents/orchestrator.md
++++ agents/orchestrator.md
+@@ -43,7 +43,8 @@ ### 2. Determine phase
+  | Status | Phase | Agent |
+    |--------|-------|-------|
+  | not_started, scoped | intake | (handle directly — create worktree) |
+- | started | coding | @coder |
++ | started | planning | @planner |
++ | planned | coding | @coder |
+  | coded | testing | @tester |
+  | tested | reviewing | @reviewer |
+  | reviewed | shipping | @shipper |
+@@ -112,7 +113,9 @@ ### 7. Auto-start mode
+ 1. Run § 6 steps 1–4 to set up the worktree.
+ 2. Mark the ticket as auto-started so the scanner counts it against the budget:
+    `t3 <overlay> ticket update <ID> --extra auto_started=true`
+-3. Spawn `@coder`, then `@tester`, then `@reviewer`, then `@shipper` in order.
++3. Spawn `@planner`, then `@coder`, then `@tester`, then `@reviewer`, then
++   `@shipper` in order. The planner runs BEFORE coding and records the plan
++   artifact, which advances the ticket to `planned` and schedules coding.
+    After each sub-agent returns, run `t3 <overlay> pr check-gates`. Advance the
+    ticket only when the gate passes.
+ 4. Stop after `@shipper` opens the PR. The PR-merge step is the configured
+diff --git agents/planner.md agents/planner.md
+new file mode 100644
+index 0000000000..3752f18a29
+--- /dev/null
++++ agents/planner.md
+@@ -0,0 +1,38 @@
++---
++name: planner
++description: >
++  Produces an implementation plan before coding starts. Spawned by the
++  FSM on start→planning so the orchestrator never plans inline. Wraps
++  architecture-design + writing-plans and records the plan artifact.
++tools:
++  - Read
++  - Write
++  - Grep
++  - Glob
++  - Bash
++skills:
++  - rules
++  - workspace
++  - architecture-design
++---
++
++# Planner Agent
++
++You are a TeaTree planner agent. Produce an implementation plan for the
++ticket BEFORE any code is written — the orchestrator never plans inline.
++
++Follow the loaded skills: `architecture-design` drives the eight-check
++architecture pass and its `writing-plans` companion drives the plan
++structure. Write the plan to a file in the worktree (e.g.
++`ARCHITECTURE.md`).
++
++On success, record the plan artifact so the implementation-intent plan
++gate's satisfied-signal is set:
++
++```bash
++t3 <overlay> lifecycle record-plan-artifact <ticket> architecture-design <plan-path>
++```
++
++Recording the artifact fires the FSM `plan()` transition (STARTED →
++PLANNED), which auto-schedules the coding task. Do NOT write production
++code yourself — hand off to the coder.
+diff --git docs/blueprint/loop-topology.md docs/blueprint/loop-topology.md
+index 3d9b9407a2..bdfd127261 100644
+--- docs/blueprint/loop-topology.md
++++ docs/blueprint/loop-topology.md
+@@ -24,7 +24,7 @@ # BLUEPRINT Appendix — Loop Topology (deep)
+ | `red_card` | `:red_circle:` / `:no_entry_sign:` reaction events from the user (drained via the backend's in-memory `fetch_reactions`, sharing the JSONL drain `slack_review_intent` already owns) and DM messages whose text matches `\bred[\s\-]card\b` (case-insensitive). | RED CARD corrective-action signal (#1130). Each fresh trigger creates one `RedCardSignal` row keyed `unique(overlay, channel, slack_ts)`, posts `:eyes:` on the user's signal so they see the ack, and emits one `red_card.signal` event the dispatcher dual-dispatches to `t3:orchestrator` AND the `action_needed` statusline zone. The orchestrator's corrective workflow identifies the upstream teatree gap, files the corrective enforcement issue, and stamps the URL back onto the row via `RedCardSignal.link_issue`. The row stays open (`state=pending`/`eyes_added`) until the issue URL is linked — the corrective workflow is gated, not advisory. Embodies the escalate-to-enforcement doctrine: a repeated user RED CARD is the trigger for structural enforcement (a scanner, hook, gate, or CLI deny), not another memory file. |
+ | `outbound_audit` | `OutboundClaim` rows older than a per-kind settling window that are neither verified nor flagged. For each, asks the third-party system whether the artifact actually exists (#1019). Recognised kinds: `slack_dm`, `slack_reaction`, `gitlab_note`, `gitlab_approve`, `github_note` (#1198), `notion_comment`, `notion_edit`. | On match: stamp `verified_at = now()`. On mismatch: flip `drift_detected = True`, DM the user via the injected `notifier`, and set `drift_alerted_at` so the same drift does not re-alert. Verifier callables are injected; missing credentials degrade gracefully (skip without alerting). |
+ | `notion_view` | Notion items assigned to me with no code-host reference field set. | Trigger the existing n8n webhook so the code-host issue is created with project routing + templating. Read-only with respect to Notion. |
+-| `assigned_issues` | Open issues assigned to me on a configured code host that have reached "ready to work" state. | Create the `Ticket` + worktrees; the ticket FSM's `start()` transition then handles the rest (the orchestrator phase agent picks up coding when the worktrees are provisioned). |
++| `assigned_issues` | Open issues assigned to me on a configured code host that have reached "ready to work" state. | Create the `Ticket` + worktrees; the ticket FSM's `start()` transition then handles the rest (the provision worker schedules the planning task, so a `t3:planner` sub-agent produces an implementation plan before coding — #1640). |
+ | `pending_tasks` | `Task` rows in `pending` state. | Run via the headless executor (§ 5.2), which dispatches to the appropriate phase agent. The Django `Task` model is resolved lazily through `apps.get_model("core", "Task")` so the scanner module is importable before `django.setup()` runs (the CLI imports the loop subapp at startup). |
+ | `ticket_dispositions` | Active pre-PR `Ticket` rows whose remote issue has drifted (closed externally, reassigned away, ready-label removed). | Detection-only: emit `ticket.disposition_candidate` signals to the statusline `action_needed` zone — never auto-transition. The user reviews and decides whether to mark the ticket `IGNORED`, run `worktree teardown`, reassign back, etc. Tickets past `REVIEWED` are skipped: once a PR exists, `MyPrsScanner` covers downstream state. |
+ | `stale_tickets` | Non-terminal `Ticket` rows (states `scoped..in_review`) with no `TaskAttempt`/`TicketTransition` activity for longer than `OverlayConfig.stale_threshold_days` (default 3). | Detection-only: emit `ticket.stale` signals to the statusline `action_needed` zone — never auto-transition. Staleness is measured on *activity* (last `TaskAttempt.started_at`, falling back to `TicketTransition.created_at`), not phase duration: a ticket worked on daily stays fresh. `not_started` and terminal states are excluded. |
+@@ -36,7 +36,7 @@ # BLUEPRINT Appendix — Loop Topology (deep)
+ | `architectural_review` | Tick-rate cadence check on each overlay's review history. teatree-CORE always-on (#1136 / #1152) — runs uniformly for every registered overlay, NOT a per-overlay opt-in, because the architectural-review cadence is a teatree-platform behaviour applied to all overlays' worktrees. Cadence + skill live in teatree-core config (`[teatree]` in `~/.teatree.toml`, per-overlay overridable via `[overlays.<name>]`). Two independent triggers: time elapsed since last review (`architectural_review_cadence_hours`, default 168h / 7d) and ticket merges since last review (`architectural_review_after_merge_count`, default 25). The skill that runs the review is configurable (`architectural_review_skill`, default `ac-reviewing-codebase`). Set `architectural_review_disabled = true` (globally or per-overlay) as an escape hatch. | Queue exactly one `Task(phase="architectural_review")` row per overlay when either trigger fires, anchored on a stable per-overlay placeholder `Ticket` (`issue_url="architectural-review://<overlay>"`). Dupe suppression: an in-flight (pending/claimed) review task blocks new queueing. The pending-task pipeline picks the task up via the normal dispatcher route; the configured skill is carried in `Task.execution_reason`. Fail-safe (#1136): cadence elapsed + no in-flight task always queues — absence is the bug. |
+ | `scanning_news` | Single 24h cadence check, anchored on the `teatree` overlay placeholder ticket (#1191). Companion to the `scanning-news` skill (#1190); the scanner is attached globally, not per-overlay. | Queue one `Task(phase="scanning_news")` per cadence window. Same dedup contract as `architectural_review` — a pending or claimed task locks the next window. `Session.started_at` of the most recent task is the "last run" timestamp. The task's `execution_reason` carries an `ASK-GATE` directive when `ask_before_creating_news_tickets` is on (default): the skill records each candidate as a `PendingArticleSuggestion` for user approval and never auto-creates issues (#1391). Escape hatch: `scanning_news_disabled = true`. |
+ 
+-**Agent dispatch via DB (not stdout, not files).** Every ``DispatchAction(kind="agent", …)`` produced by the dispatcher is persisted as a ``Ticket`` + initial ``Task`` row by ``teatree.loop.persistence.persist_agent_actions``. ``t3:reviewer`` agent actions create a ``Ticket(role="reviewer", issue_url=<pr_url>)`` plus a ``Task(phase="reviewing")``; ``t3:orchestrator`` auto-start actions create a ``Ticket(role="author")`` plus a ``Task(phase="coding")``. The ``/loop`` slot drains pending Tasks via ``t3 loop claim-next`` (Django queryset, no file IO): each call **atomically claims** the oldest pending dispatchable Task and only then emits its dispatch payload, so the claim boundary IS the spawn boundary — the slot spawns the sub-agent in-session via its ``Agent`` tool for the already-claimed entry. Atomicity is a single conditional ``UPDATE ... WHERE status='pending'`` (compare-and-swap on the status column), **not** ``select_for_update(skip_locked=True)`` — teatree's production DB is SQLite, where ``has_select_for_update_skip_locked`` is ``False`` and that clause is silently dropped; the CAS is correct on SQLite and Postgres, so two concurrent ticks can never double-dispatch one Task (#786 N4/B1). (The older ``pending-spawn``/``spawn-claim`` pair — list-all-then-claim-after — is retained for compatibility but is the spawn-then-claim race ``claim-next`` replaces.) The statusline file is **display-only** and never an orchestration channel; tick stdout is also not used to ferry dispatches. When the reviewing task completes, ``Ticket.mark_reviewed_externally`` short-circuits the reviewer-role ticket to ``DELIVERED`` and writes the reviewed SHA back to ``ReviewerPrsScanner``'s cache, preventing re-spawn at the same SHA.
++**Agent dispatch via DB (not stdout, not files).** Every ``DispatchAction(kind="agent", …)`` produced by the dispatcher is persisted as a ``Ticket`` + initial ``Task`` row by ``teatree.loop.persistence.persist_agent_actions``. ``t3:reviewer`` agent actions create a ``Ticket(role="reviewer", issue_url=<pr_url>)`` plus a ``Task(phase="reviewing")``; ``t3:orchestrator`` auto-start actions create a ``Ticket(role="author")`` whose ``start()`` provision worker schedules a ``Task(phase="planning")`` dispatched to ``t3:planner`` (#1640 — planning precedes coding so the orchestrator never plans inline). The ``/loop`` slot drains pending Tasks via ``t3 loop claim-next`` (Django queryset, no file IO): each call **atomically claims** the oldest pending dispatchable Task and only then emits its dispatch payload, so the claim boundary IS the spawn boundary — the slot spawns the sub-agent in-session via its ``Agent`` tool for the already-claimed entry. Atomicity is a single conditional ``UPDATE ... WHERE status='pending'`` (compare-and-swap on the status column), **not** ``select_for_update(skip_locked=True)`` — teatree's production DB is SQLite, where ``has_select_for_update_skip_locked`` is ``False`` and that clause is silently dropped; the CAS is correct on SQLite and Postgres, so two concurrent ticks can never double-dispatch one Task (#786 N4/B1). (The older ``pending-spawn``/``spawn-claim`` pair — list-all-then-claim-after — is retained for compatibility but is the spawn-then-claim race ``claim-next`` replaces.) The statusline file is **display-only** and never an orchestration channel; tick stdout is also not used to ferry dispatches. When the reviewing task completes, ``Ticket.mark_reviewed_externally`` short-circuits the reviewer-role ticket to ``DELIVERED`` and writes the reviewed SHA back to ``ReviewerPrsScanner``'s cache, preventing re-spawn at the same SHA.
+ 
+ **Why pure-Python scanners (not subagents):** the scan stage is deterministic I/O — fetch PR statuses, fetch mentions, query the DB. Modeling it as a Claude agent would burn tokens for work a typed Python function does cheaper, more reliably, and with reproducible tests. Claude is invoked only when judgment is needed (review the diff, decide the fix, draft a reply); for that, the loop calls the existing phase agents.
+ 
+diff --git hooks/scripts/hook_router.py hooks/scripts/hook_router.py
+index 75770ea58a..9db34c5c8c 100755
+--- hooks/scripts/hook_router.py
++++ hooks/scripts/hook_router.py
+@@ -1563,54 +1563,70 @@ def _task_text_plan_skip_token(text: str) -> str | None:
+ 
+ 
+ def handle_enforce_plan_gate_on_task_create(data: dict) -> bool:
+-    """Deny a fanned-out ``Task`` lacking a fresh ``/plan`` or a skip token.
++    """Deny an IMPLEMENTATION-INTENT fanned-out ``Task`` lacking a fresh plan artifact.
+ 
+     Closes the fan-out loophole in :func:`handle_enforce_agent_plan_gate`:
+     the ``PreToolUse`` Agent/Task plan-gate is skipped on the Workflow/Task
+-    fan-out path, so this ``TaskCreated`` handler enforces the same
+-    freshness proof there. It reuses the wall-clock machinery
+-    (:func:`_plan_gate_window_minutes`, :func:`_plan_skill_recently_invoked`,
+-    the ``last-plan-skill-ts`` marker), so a single up-front
+-    ``t3:teatree-plan`` authorises a whole fan-out.
++    fan-out path, so this ``TaskCreated`` handler enforces a plan proof there.
++
++    #1640: the satisfied-signal is the plan ARTIFACT
++    (:func:`_plan_artifact_recently_recorded`, the ``last-plan-artifact-ts``
++    marker written by ``lifecycle record-plan-artifact``), NOT the
++    ``teatree-plan`` skill timestamp — that skill is interactive
++    backlog-prioritization (``subagent_safe: false``), the wrong signal for
++    "this implementation change was planned" and unearnable unattended (the
++    #1640 bug). Only IMPLEMENTATION-INTENT dispatches are gated: a cold-review
++    / read-only / cleanup / merge dispatch is exempt
++    (:func:`_is_plan_gate_exempt_dispatch`) — those are not implementation
++    changes and never need a plan artifact.
+ 
+     NEVER-LOCKOUT: this deliberately mirrors
+     :func:`handle_enforce_skill_loading_on_task_create` — it does NOT route
+     through ``_fail_open_or_deny`` / ``_is_self_rescue`` (those are
+     PreToolUse/Bash-command-shaped; a ``TaskCreated`` event carries no
+     command). The gate ships default-OFF (opt-in via ``[teatree]
+-    agent_plan_gate_on_task_create_enabled = true``) pending the
+-    correct-signal design in #1640, so by default it is inert. When enabled,
+-    the off-ramps that keep the operator from being locked out are: the
+-    opt-in flag itself (set it back to ``false`` / unset to disable), the
+-    ``window == 0`` sentinel, the ``[skip-plan-gate: <reason>]`` token, a
+-    missing session id (fail-open), a broken ``~/.teatree.toml``
+-    (fail-disabled), and ``main``'s per-handler exception swallow. The master
+-    ``gate_fail_open`` switch still protects the operator because rescue
+-    commands run as ``Bash``, never as fanned-out ``Task``s.
++    agent_plan_gate_on_task_create_enabled = true``), so by default it is
++    inert. When enabled, the off-ramps that keep the operator from being
++    locked out are: the opt-in flag itself (set it back to ``false`` / unset
++    to disable), the ``window == 0`` sentinel, the exempt-intent classifier,
++    the ``[skip-plan-gate: <reason>]`` token, a missing session id
++    (fail-open), a broken ``~/.teatree.toml`` (fail-disabled), and ``main``'s
++    per-handler exception swallow. The master ``gate_fail_open`` switch still
++    protects the operator because rescue commands run as ``Bash``, never as
++    fanned-out ``Task``s.
+     """
+     session_id = data.get("session_id", "")
+     if not session_id or not _agent_plan_gate_on_task_create_enabled():
+         return False
+ 
+     window = _plan_gate_window_minutes()
+-    # Sentinel 0 disables the freshness window — a single up-front /plan
++    # Sentinel 0 disables the freshness window — a single up-front plan
+     # authorises the whole fan-out without re-planning each wave (#1488).
+     if window == 0:
+         return False
+ 
+     subject = data.get("task_subject", "") or ""
+     description = data.get("task_description", "") or ""
+-    if _task_text_plan_skip_token(f"{subject}\n{description}"):
++    task_text = f"{subject}\n{description}"
++
++    # Exempt cold-review / read-only / cleanup / merge dispatches — they are
++    # not implementation changes, so they never need a plan artifact (#1640).
++    if _is_plan_gate_exempt_dispatch(task_text):
+         return False
+ 
+-    if _plan_skill_recently_invoked():
++    if _task_text_plan_skip_token(task_text):
++        return False
++
++    if _plan_artifact_recently_recorded():
+         return False
+ 
+     reason = (
+-        "PLAN-GATE ENFORCEMENT (TaskCreated): this fanned-out task requires a "
+-        f"recent `/plan` invocation (within the last {window} minutes). Unblock "
+-        "paths: (a) call the Skill tool with skill=`t3:teatree-plan` to plan "
+-        "first, (b) prefix the task subject/description with "
++        "PLAN-GATE ENFORCEMENT (TaskCreated): this implementation-intent "
++        "fanned-out task requires a recent plan artifact (within the last "
++        f"{window} minutes), recorded by `t3 <overlay> lifecycle "
++        "record-plan-artifact <ticket> <skill> <path>` (the planner sub-agent "
++        "stamps it on success). Unblock paths: (a) produce + record a plan "
++        "artifact first, (b) prefix the task subject/description with "
+         "`[skip-plan-gate: <reason>]` (reason mandatory), or (c) disable this "
+         "opt-in gate by removing/clearing "
+         "`[teatree] agent_plan_gate_on_task_create_enabled` in "
+@@ -1839,6 +1855,55 @@ def _plan_skill_timestamp_file() -> Path:
+     return base / "teatree" / "last-plan-skill-ts"
+ 
+ 
++# #1640: the implementation-intent plan gate's satisfied-signal is the plan
++# ARTIFACT, not the ``teatree-plan`` backlog-prioritization skill timestamp
++# (``subagent_safe: false``, unearnable unattended — the #1640 bug). The
++# artifact marker is written by ``lifecycle record-plan-artifact`` (which also
++# stamps ``ticket.extra['plan_artifact']``). Path mirrors
++# ``teatree.core.plan_artifact_marker`` (mirrored, not imported, so the hook
++# stays independent of the core package — same convention as the skill marker).
++_PLAN_ARTIFACT_MARKER_NAME = "last-plan-artifact-ts"
++
++# Intent keywords that EXEMPT a fanned-out task from the implementation-intent
++# plan gate: a cold-review / read-only / cleanup / merge dispatch is not an
++# implementation change, so it does not need a plan artifact (#1640).
++_PLAN_GATE_EXEMPT_INTENT_RE = re.compile(
++    r"\b(?:cold[- ]?review|review(?:ing|er)?|read[- ]?only|cleanup|clean[- ]?all|"
++    r"prune|merge|merging|sweep|triage|investigat\w*|audit)\b",
++    re.IGNORECASE,
++)
++
++
++def _plan_artifact_marker_file() -> Path:
++    xdg = os.environ.get("XDG_DATA_HOME", "").strip()
++    base = Path(xdg) if xdg else Path.home() / ".local" / "share"
++    return base / "teatree" / _PLAN_ARTIFACT_MARKER_NAME
++
++
++def _plan_artifact_recently_recorded() -> bool:
++    """True iff a plan artifact was recorded within the freshness window (#1640)."""
++    marker = _plan_artifact_marker_file()
++    if not marker.is_file():
++        return False
++    try:
++        recorded = int(marker.read_text(encoding="utf-8").strip())
++    except (OSError, ValueError):
++        return False
++    import time  # noqa: PLC0415
++
++    age = int(time.time()) - recorded
++    return 0 <= age <= _plan_gate_window_minutes() * 60
++
++
++def _is_plan_gate_exempt_dispatch(text: str) -> bool:
++    """True iff *text* describes a cold-review / read-only / cleanup / merge dispatch.
++
++    These are not implementation changes, so the implementation-intent plan
++    gate exempts them — they never need a plan artifact (#1640).
++    """
++    return bool(_PLAN_GATE_EXEMPT_INTENT_RE.search(text))
++
++
+ def _plan_skill_recently_invoked() -> bool:
+     """True iff the gate's timestamp file is fresh within the cooldown window."""
+     ts_file = _plan_skill_timestamp_file()
+diff --git src/teatree/core/management/commands/lifecycle.py src/teatree/core/management/commands/lifecycle.py
+index 5250b99741..07d8bf2482 100644
+--- src/teatree/core/management/commands/lifecycle.py
++++ src/teatree/core/management/commands/lifecycle.py
+@@ -13,6 +13,7 @@
+ from teatree.core.models.errors import InvalidTransitionError
+ from teatree.core.models.merge_clear import is_non_reviewer_role
+ from teatree.core.phases import normalize_phase, phase_transition
++from teatree.core.plan_artifact_marker import touch_plan_artifact_marker
+ from teatree.core.review_skill_gate import ReviewSkillEvidenceError, check_review_skill_evidence
+ 
+ logger = logging.getLogger(__name__)
+@@ -156,6 +157,23 @@ def record_review_skill_run(self, ticket_id: str, skill: str) -> str:
+         ticket.record_review_skill_run(skill)
+         return f"Recorded review-skill run {skill!r} for ticket {ticket.pk}"
+ 
++    @command(name="record-plan-artifact")
++    def record_plan_artifact(self, ticket_id: str, skill: str, plan_path: str) -> str:
++        """Record durable evidence an implementation plan was produced (#1640).
++
++        Stamps ``ticket.extra['plan_artifact']`` (skill name + path + UTC ISO
++        timestamp) — the correct 'planned' signal the implementation-intent
++        plan gate reads, replacing the ``teatree-plan`` backlog-prioritization
++        skill timestamp (#1640 bug). Also touches the hook-readable wall-clock
++        marker so the ``TaskCreated`` plan gate's freshness check is satisfied
++        by an actual plan, never by the backlog skill.
++        """
++        ticket = Ticket.objects.resolve(ticket_id)
++        assert_lifecycle_db_is_canonical(ticket)
++        ticket.record_plan_artifact(skill, plan_path)
++        touch_plan_artifact_marker()
++        return f"Recorded plan artifact ({skill!r} → {plan_path}) for ticket {ticket.pk}"
++
+ 
+ def _assert_reviewer_attestation(ticket: Ticket, agent_id: str) -> None:
+     """Refuse a ``reviewing`` visit without an explicit, non-maker reviewer id.
+diff --git src/teatree/core/management/commands/loop_dispatch.py src/teatree/core/management/commands/loop_dispatch.py
+index d8bbdbe000..824bd4b8c0 100644
+--- src/teatree/core/management/commands/loop_dispatch.py
++++ src/teatree/core/management/commands/loop_dispatch.py
+@@ -26,6 +26,11 @@
+ # bounded answerer sub-agent; no new spawn path, no double-dispatch).
+ _SUBAGENT_BY_PHASE: dict[tuple[str, str], str] = {
+     (Ticket.Role.REVIEWER, "reviewing"): "t3:reviewer",
++    # #1640 planning is the first scheduled phase: the FSM auto-spawns the
++    # planner on start→provision so an implementation plan exists before
++    # coding (the orchestrator never plans inline). Completing the planning
++    # task fires plan() (STARTED → PLANNED), which schedules the coding task.
++    (Ticket.Role.AUTHOR, "planning"): "t3:planner",
+     (Ticket.Role.AUTHOR, "coding"): "t3:orchestrator",
+     (Ticket.Role.AUTHOR, "answering"): "t3:answerer",
+     # #1191 scanning-news scanner queues author+scanning_news tasks; the
+diff --git src/teatree/core/migrations/0045_alter_ticket_state.py src/teatree/core/migrations/0045_alter_ticket_state.py
+new file mode 100644
+index 0000000000..ac3331ed53
+--- /dev/null
++++ src/teatree/core/migrations/0045_alter_ticket_state.py
+@@ -0,0 +1,36 @@
++# Generated by Django 6.0.5 on 2026-06-01 04:56
++
++import django_fsm
++from django.db import migrations
++
++
++class Migration(migrations.Migration):
++    dependencies = [
++        ("core", "0044_looplease_owner_pid"),
++    ]
++
++    operations = [
++        migrations.AlterField(
++            model_name="ticket",
++            name="state",
++            field=django_fsm.FSMField(
++                choices=[
++                    ("not_started", "Not started"),
++                    ("scoped", "Scoped"),
++                    ("started", "Started"),
++                    ("planned", "Planned"),
++                    ("coded", "Coded"),
++                    ("tested", "Tested"),
++                    ("reviewed", "Reviewed"),
++                    ("shipped", "Shipped"),
++                    ("in_review", "In review"),
++                    ("merged", "Merged"),
++                    ("retrospected", "Retrospected"),
++                    ("delivered", "Delivered"),
++                    ("ignored", "Ignored"),
++                ],
++                default="not_started",
++                max_length=32,
++            ),
++        ),
++    ]
+diff --git src/teatree/core/models/task.py src/teatree/core/models/task.py
+index deb1d546d9..f293fe7df6 100644
+--- src/teatree/core/models/task.py
++++ src/teatree/core/models/task.py
+@@ -218,7 +218,10 @@ def _apply_phase_transition(self) -> bool:
+             elif phase == "scoping" and ticket.state == Ticket.State.SCOPED:
+                 ticket.start()
+                 ticket.save()
+-            elif phase == "coding" and ticket.state == Ticket.State.STARTED:
++            elif phase == "planning" and ticket.state == Ticket.State.STARTED:
++                ticket.plan()
++                ticket.save()
++            elif phase == "coding" and ticket.state == Ticket.State.PLANNED:
+                 ticket.code()
+                 ticket.save()
+             elif phase == "testing" and ticket.state == Ticket.State.CODED:
+diff --git src/teatree/core/models/ticket.py src/teatree/core/models/ticket.py
+index dc94a391e0..72356bfb70 100644
+--- src/teatree/core/models/ticket.py
++++ src/teatree/core/models/ticket.py
+@@ -27,15 +27,16 @@ def _auto_ship_enabled() -> bool:
+ if TYPE_CHECKING:
+     from teatree.core.models.session import Session
+     from teatree.core.models.task import Task
+-    from teatree.core.models.types import ReviewSkillRun, TicketExtra, TicketSiblingFields
++    from teatree.core.models.types import PlanArtifact, ReviewSkillRun, TicketExtra, TicketSiblingFields
+     from teatree.core.models.worktree import Worktree
+ 
+ 
+ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method count reflects the lifecycle state graph, not poor encapsulation.
+     class State(models.TextChoices):
+         NOT_STARTED = "not_started", "Not started"
+         SCOPED = "scoped", "Scoped"
+         STARTED = "started", "Started"
++        PLANNED = "planned", "Planned"
+         CODED = "coded", "Coded"
+         TESTED = "tested", "Tested"
+         REVIEWED = "reviewed", "Reviewed"
+@@ -70,6 +71,7 @@ class Role(models.TextChoices):
+         State.NOT_STARTED,
+         State.SCOPED,
+         State.STARTED,
++        State.PLANNED,
+         State.CODED,
+         State.TESTED,
+         State.REVIEWED,
+@@ -87,6 +89,7 @@ class Role(models.TextChoices):
+         State.NOT_STARTED,
+         State.SCOPED,
+         State.STARTED,
++        State.PLANNED,
+         State.CODED,
+         State.TESTED,
+         State.REVIEWED,
+@@ -193,7 +196,22 @@ def start(self) -> None:
+         ticket_pk = int(self.pk)
+         transaction.on_commit(lambda: execute_provision.enqueue(ticket_pk))
+ 
+-    @transition(field=state, source=State.STARTED, target=State.CODED)
++    @transition(field=state, source=State.STARTED, target=State.PLANNED)
++    def plan(self) -> None:
++        """Record that an implementation plan was produced, then schedule coding.
++
++        The planning phase (#1640) runs BEFORE coding: a planner sub-agent
++        wraps ``architecture-design`` + ``writing-plans`` and stamps the
++        plan artifact on success. Completing the planning task fires this
++        transition, which schedules the coding task — so the orchestrator
++        never plans inline; the FSM auto-spawns the planner on ``start`` and
++        the coder on ``plan``.
++        """
++        self._refuse_if_worktree_dirty("planning")
++        self._consume_pending_phase_tasks("planning")
++        self.schedule_coding()
++
++    @transition(field=state, source=[State.PLANNED, State.STARTED], target=State.CODED)
+     def code(self) -> None:
+         self._refuse_if_worktree_dirty("coding")
+         self._consume_pending_phase_tasks("coding")
+@@ -361,8 +379,32 @@ def has_shippable_diff(self) -> bool:
+         worktree_model = apps.get_model("core", "Worktree")
+         return any(_worktree_has_commits_ahead(wt) for wt in worktree_model.objects.filter(ticket=self))
+ 
++    def schedule_planning(self, *, parent_task: "Task | None" = None) -> "Task":
++        """Create a fresh headless planning task once worktrees are provisioned.
++
++        The first scheduled phase (#1640): the FSM auto-spawns a planner
++        sub-agent on ``start`` (via the provision worker) so an implementation
++        plan exists before coding. Completing it fires ``plan()`` (STARTED →
++        PLANNED), which schedules the coding task.
++        """
++        from teatree.core.models.session import Session  # noqa: PLC0415
++        from teatree.core.models.task import Task  # noqa: PLC0415
++
++        if self.role != self.Role.AUTHOR:
++            msg = f"schedule_planning requires role=author (got role={self.role!r})"
++            raise InvalidTransitionError(msg)
++        session = Session.objects.create(ticket=self, agent_id="planning")
++        return Task.objects.create(
++            ticket=self,
++            session=session,
++            phase="planning",
++            execution_target=Task.ExecutionTarget.HEADLESS,
++            execution_reason="Auto-scheduled planning — produce an implementation plan before coding",
++            parent_task=parent_task,
++        )
++
+     def schedule_coding(self, *, parent_task: "Task | None" = None) -> "Task":
+-        """Create a fresh headless coding task after scoping completes."""
++        """Create a fresh headless coding task after planning completes."""
+         from teatree.core.models.session import Session  # noqa: PLC0415
+         from teatree.core.models.task import Task  # noqa: PLC0415
+ 
+@@ -874,6 +916,22 @@ def record_review_skill_run(self, skill: str) -> None:
+         run: ReviewSkillRun = {"skill": skill, "at": timezone.now().isoformat()}
+         self.merge_extra(set_keys={"review_skill_run": run})
+ 
++    def record_plan_artifact(self, skill_name: str, plan_path: str) -> None:
++        """Stamp durable evidence an implementation plan was produced (#1640).
++
++        Written through the canonical locked ``merge_extra`` primitive so a
++        concurrent ``extra`` writer's key survives. The timestamp is UTC ISO
++        so the implementation-intent plan gate's audit trail is
++        timezone-unambiguous. This is the correct 'planned' signal — replacing
++        the ``teatree-plan`` backlog-prioritization skill timestamp (#1640 bug).
++        """
++        artifact: PlanArtifact = {
++            "skill": skill_name,
++            "path": plan_path,
++            "recorded_at": timezone.now().isoformat(),
++        }
++        self.merge_extra(set_keys={"plan_artifact": artifact})
++
+     def append_context(self, entry: str) -> str:
+         r"""Append a timestamped block to the durable per-ticket knowledge store (#627).
+ 
+diff --git src/teatree/core/models/types.py src/teatree/core/models/types.py
+index a2e124ddc2..a0e4765583 100644
+--- src/teatree/core/models/types.py
++++ src/teatree/core/models/types.py
+@@ -86,6 +86,25 @@ class TicketExtra(TypedDict, total=False):
+     # reviewing-phase gate reads this to refuse a ``reviewing`` attestation
+     # that no review-skill execution backs.
+     review_skill_run: "ReviewSkillRun"
++    # #1640 the 'planned' signal: durable evidence an implementation plan was
++    # produced for this ticket. The implementation-intent plan gate reads this
++    # instead of the ``teatree-plan`` backlog-prioritization skill timestamp.
++    plan_artifact: "PlanArtifact"
++
++
++class PlanArtifact(TypedDict, total=False):
++    """Durable evidence an implementation plan was produced (#1640).
++
++    Recorded by ``Ticket.record_plan_artifact`` when the planning phase
++    produces a plan (the planner sub-agent wraps ``architecture-design`` +
++    ``writing-plans`` and stamps this on success). The implementation-intent
++    plan gate consumes it as the satisfied-signal — the correct 'planned'
++    signal, replacing the ``teatree-plan`` skill timestamp (#1640 bug).
++    """
++
++    skill: str
++    path: str
++    recorded_at: str
+ 
+ 
+ class ReviewSkillRun(TypedDict, total=False):
+diff --git src/teatree/core/phases.py src/teatree/core/phases.py
+index f1a28f2d6f..3237a6e32b 100644
+--- src/teatree/core/phases.py
++++ src/teatree/core/phases.py
+@@ -15,6 +15,7 @@
+ # Canonical token -> every accepted alias (including the canonical itself).
+ _PHASE_ALIASES: dict[str, tuple[str, ...]] = {
+     "scoping": ("scope", "scoping"),
++    "planning": ("plan", "planning"),
+     "coding": ("code", "coding"),
+     "testing": ("test", "testing"),
+     "reviewing": ("review", "reviewing"),
+@@ -35,6 +36,7 @@
+ # Canonical phase -> the ``Ticket`` FSM transition method that records it.
+ _CANONICAL_TO_TRANSITION: dict[str, str] = {
+     "scoping": "scope",
++    "planning": "plan",
+     "coding": "code",
+     "testing": "test",
+     "reviewing": "review",
+diff --git src/teatree/core/plan_artifact_marker.py src/teatree/core/plan_artifact_marker.py
+new file mode 100644
+index 0000000000..308c7353e7
+--- /dev/null
++++ src/teatree/core/plan_artifact_marker.py
+@@ -0,0 +1,29 @@
++"""The plan-artifact wall-clock marker the implementation-intent gate reads (#1640).
++
++``lifecycle record-plan-artifact`` writes a POSIX timestamp here when a plan is
++produced; the ``TaskCreated`` plan gate (``hook_router``) reads it as the
++satisfied-signal for implementation-intent dispatches, replacing the
++``teatree-plan`` backlog-prioritization skill timestamp (#1640 bug). The hook
++mirrors this path resolution rather than importing it, to stay independent of
++the core package (same convention as the ``last-plan-skill-ts`` marker).
++"""
++
++import os
++import time
++from pathlib import Path
++
++_MARKER_NAME = "last-plan-artifact-ts"
++
++
++def plan_artifact_marker_path() -> Path:
++    """Resolve the marker: ``XDG_DATA_HOME/teatree`` → ``~/.local/share/teatree``."""
++    xdg = os.environ.get("XDG_DATA_HOME", "").strip()
++    base = Path(xdg) if xdg else Path.home() / ".local" / "share"
++    return base / "teatree" / _MARKER_NAME
++
++
++def touch_plan_artifact_marker() -> None:
++    """Write the current POSIX time so the freshness window sees a fresh plan."""
++    path = plan_artifact_marker_path()
++    path.parent.mkdir(parents=True, exist_ok=True)
++    path.write_text(str(int(time.time())), encoding="utf-8")
+diff --git src/teatree/core/tasks.py src/teatree/core/tasks.py
+index e0736e0f5a..916423ebcb 100644
+--- src/teatree/core/tasks.py
++++ src/teatree/core/tasks.py
+@@ -144,14 +144,17 @@ def execute_teardown(ticket_id: int) -> TransitionResult:
+ 
+ @task()
+ def execute_provision(ticket_id: int) -> TransitionResult:
+-    """Provision worktrees for a STARTED ticket and schedule the coding task.
++    """Provision worktrees for a STARTED ticket and schedule the planning task.
+ 
+     Idempotency: the worker takes a row lock and re-checks state before running.
+     At-least-once delivery from django-tasks means this can fire more than once
+     for the same transition — a lost update or a redelivered job must be safe.
+ 
+     On success, the runner has materialised every git worktree; we then call
+-    ``schedule_coding()`` so the FSM proceeds toward CODED.
++    ``schedule_planning()`` (#1640) so the FSM proceeds toward PLANNED. The
++    planner sub-agent produces an implementation plan, then completing its task
++    fires ``plan()`` which schedules coding — the orchestrator never plans
++    inline.
+     """
+     with transaction.atomic():
+         ticket = Ticket.objects.select_for_update().get(pk=ticket_id)
+@@ -168,7 +171,7 @@ def execute_provision(ticket_id: int) -> TransitionResult:
+             logger.warning("Provision failed for ticket %s: %s", ticket_id, result.detail)
+             return {"ticket_id": ticket_id, "ok": False, "detail": result.detail}
+ 
+-        ticket.schedule_coding()
++        ticket.schedule_planning()
+ 
+     return {"ticket_id": ticket_id, "ok": True, "detail": result.detail}
+ 
+diff --git src/teatree/eval/README.md src/teatree/eval/README.md
+index 85cdb7acdd..408ec64331 100644
+--- src/teatree/eval/README.md
++++ src/teatree/eval/README.md
+@@ -156,9 +156,10 @@ ## Transcript-replay conformance (the other half)
+ (`confidence="deterministic"`, low false-positive) invariants ship live —
+ `no_edit_in_main_clone`, `no_raw_out_of_band_merge`, `no_raw_review_post`,
+ `no_raw_slack_overlay_post`. The plan-conformance invariant
+-(`plan_gate_fired_or_skipped`) ships **deferred**, not live: it keys on the
+-`teatree-plan` skill, which is the interactive backlog-prioritization skill —
+-the wrong signal for "this implementation change was planned"
++(`plan_gate_fired_or_skipped`) ships **deferred**, not live. #1640 repointed it
++onto the correct 'planned' signal — the plan ARTIFACT (a `lifecycle
++record-plan-artifact` Bash command, or the `architecture-design` planning skill
++the planner wraps), NOT the `teatree-plan` backlog-prioritization skill
+ ([#1640](https://github.com/souliane/teatree/issues/1640)). Its predicate stays
+ (trivially re-enabled) but the live eval never evaluates it.
+ 
+diff --git src/teatree/eval/transcript_conformance.py src/teatree/eval/transcript_conformance.py
+index b6f94ab569..a1c23a0199 100644
+--- src/teatree/eval/transcript_conformance.py
++++ src/teatree/eval/transcript_conformance.py
+@@ -13,11 +13,12 @@
+ ship live in :data:`INVARIANT_REGISTRY`; AMBER/RED tiers are deferred.
+ 
+ The plan-conformance invariant (:func:`_check_plan_gate_fired_or_skipped`)
+-ships DEFERRED in :data:`DEFERRED_INVARIANTS`, not live: it keys on the
+-``teatree-plan`` skill, which is the interactive backlog-prioritization skill —
+-the wrong signal for "this implementation change was planned". Running it live
+-would emit false violations; it stays here (trivially re-enabled) pending the
+-correct 'planned' signal tracked by #1640.
++ships DEFERRED in :data:`DEFERRED_INVARIANTS`, not live. #1640 repointed it onto
++the correct 'planned' signal: the plan ARTIFACT (a ``lifecycle
++record-plan-artifact`` Bash command, or the ``architecture-design`` planning
++skill the planner wraps) — NOT the ``teatree-plan`` backlog-prioritization
++skill, which was the wrong signal. It stays deferred (trivially re-enabled)
++because the gate it mirrors is itself still opt-in default-OFF.
+ 
+ The command-shape regexes and the plan-skill recognition predicate are MIRRORED
+ from ``hooks.scripts.hook_router`` rather than imported, to keep this module
+@@ -46,7 +47,11 @@
+ # Each constant below is asserted equal to its hook_router source value by
+ # tests/test_transcript_replay_conformance.py. Update both together.
+ 
+-_PLAN_SKILL_FINAL_SEGMENT = "teatree-plan"
++# #1640: the 'planned' signal is the plan ARTIFACT, not the teatree-plan
++# backlog-prioritization skill. The planner wraps the ``architecture-design``
++# skill and records the artifact via ``lifecycle record-plan-artifact``.
++_PLAN_SKILL_FINAL_SEGMENT = "architecture-design"
++_RECORD_PLAN_ARTIFACT_RE = re.compile(r"\blifecycle\s+record-plan-artifact\b")
+ _SKIP_PLAN_GATE_RE = re.compile(r"\[skip-plan-gate:\s*(\S[^\]]*?)\s*\]")
+ _OUT_OF_BAND_MERGE_RE = re.compile(r"\b(?:gh\s+pr\s+merge|glab\s+mr\s+merge)\b")
+ _MERGE_ENDPOINT_RE = re.compile(r"(?:merge_requests|pulls)/\d+/merge\b")
+@@ -131,18 +136,22 @@ def _check_plan_gate_fired_or_skipped(events: list[SessionEvent]) -> InvariantRe
+     """An ``Edit``/``Write`` under the workspace is preceded by a plan-or-read.
+ 
+     PASSES when every workspace-scoped ``Edit``/``Write`` is, earlier in the
+-    session, preceded by ANY of: a plan-skill invocation, a prior ``Read`` of
+-    that file, a ``[skip-plan-gate: …]`` token in the touched tool input, or a
+-    PreToolUse hook that denied an earlier tool call. Workspace scoping is by
+-    the ``/workspace/`` path segment — the replay is offline and cannot resolve
++    session, preceded by ANY of: a plan ARTIFACT signal (#1640 — the
++    ``architecture-design`` planning skill, or a ``lifecycle
++    record-plan-artifact`` Bash command), a prior ``Read`` of that file, a
++    ``[skip-plan-gate: …]`` token in the touched tool input, or a PreToolUse
++    hook that denied an earlier tool call. Workspace scoping is by the
++    ``/workspace/`` path segment — the replay is offline and cannot resolve
+     ``$T3_WORKSPACE_DIR``, so it uses the conventional segment as the marker.
+     """
+     plan_seen = False
+     reads: set[str] = set()
+     deny_seen = False
+     for index, event in enumerate(events):
+         if event.skill is not None and _is_plan_skill(event.skill):
+             plan_seen = True
++        if _RECORD_PLAN_ARTIFACT_RE.search(_bash_command(event)):
++            plan_seen = True
+         if event.hook_event == "PreToolUse" and event.hook_exit_code not in {None, 0}:
+             deny_seen = True
+         if event.tool_name == "Read":
+diff --git src/teatree/skill_map.py src/teatree/skill_map.py
+index daefc7e6ac..aa20718e10 100644
+--- src/teatree/skill_map.py
++++ src/teatree/skill_map.py
+@@ -3,6 +3,7 @@
+ 
+ DEFAULT_SKILL_MAP = Path("references/skill-delegation.md")
+ DEFAULT_SKILL_DELEGATION: dict[str, tuple[str, ...]] = {
++    "planning": ("architecture-design", "writing-plans"),
+     "coding": ("test-driven-development", "verification-before-completion"),
+     "debugging": ("systematic-debugging", "verification-before-completion"),
+     "reviewing": ("requesting-code-review", "verification-before-completion"),
+diff --git tests/fixtures/transcripts/all_pass.session.jsonl tests/fixtures/transcripts/all_pass.session.jsonl
+index a050a6d823..8deba03b33 100644
+--- tests/fixtures/transcripts/all_pass.session.jsonl
++++ tests/fixtures/transcripts/all_pass.session.jsonl
+@@ -1,5 +1,5 @@
+ {"type":"user","uuid":"u1","parentUuid":null,"isSidechain":false,"timestamp":"2026-05-31T10:00:00Z","sessionId":"s-pass","cwd":"/private/tmp/wt-acme","gitBranch":"1-feat-acme","message":{"role":"user","content":"work the acme ticket"}}
+-{"type":"assistant","uuid":"a1","parentUuid":"u1","isSidechain":false,"timestamp":"2026-05-31T10:00:01Z","sessionId":"s-pass","cwd":"/private/tmp/wt-acme","gitBranch":"1-feat-acme","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Skill","caller":{"type":"direct"},"input":{"skill":"t3:teatree-plan"}}]}}
++{"type":"assistant","uuid":"a1","parentUuid":"u1","isSidechain":false,"timestamp":"2026-05-31T10:00:01Z","sessionId":"s-pass","cwd":"/private/tmp/wt-acme","gitBranch":"1-feat-acme","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Skill","caller":{"type":"direct"},"input":{"skill":"t3:architecture-design"}}]}}
+ {"type":"assistant","uuid":"a2","parentUuid":"a1","isSidechain":false,"timestamp":"2026-05-31T10:00:02Z","sessionId":"s-pass","cwd":"/private/tmp/wt-acme","gitBranch":"1-feat-acme","message":{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Edit","caller":{"type":"direct"},"input":{"file_path":"/private/home/widget-user/workspace/acme/module.py","old_string":"x = 1","new_string":"x = 2"}}]}}
+ {"type":"assistant","uuid":"a3","parentUuid":"a2","isSidechain":false,"timestamp":"2026-05-31T10:00:03Z","sessionId":"s-pass","cwd":"/private/tmp/wt-acme","gitBranch":"1-feat-acme","message":{"role":"assistant","content":[{"type":"tool_use","id":"t3","name":"Write","caller":{"type":"direct"},"input":{"file_path":"/private/home/widget-user/worktrees/teatree/wt-acme/src/mod.py","content":"y = 1"}}]}}
+ {"type":"assistant","uuid":"a4","parentUuid":"a3","isSidechain":false,"timestamp":"2026-05-31T10:00:04Z","sessionId":"s-pass","cwd":"/private/tmp/wt-acme","gitBranch":"1-feat-acme","message":{"role":"assistant","content":[{"type":"tool_use","id":"t4","name":"Bash","caller":{"type":"direct"},"input":{"command":"t3 acme ticket merge 12 --human-authorized widget-user"}}]}}
+diff --git tests/teatree_core/models/_shared.py tests/teatree_core/models/_shared.py
+index 677ffddd7e..2f40590bd4 100644
+--- tests/teatree_core/models/_shared.py
++++ tests/teatree_core/models/_shared.py
+@@ -15,20 +15,22 @@
+ 
+ 
+ def _start_with_provision(test_case: TestCase, ticket: Ticket) -> None:
+-    """Drive ``ticket.start()`` and let the worker schedule the coding task.
++    """Drive ``ticket.start()`` and let the worker schedule the planning task.
+ 
+     Stage 3 of #140 made provisioning a worker side effect; tests that need
+-    the coding task materialised swap the worker for an inline stub so the
+-    side effect runs synchronously without touching real git.
++    the planning task materialised swap the worker for an inline stub so the
++    side effect runs synchronously without touching real git. Mirrors the real
++    ``execute_provision`` worker, which schedules planning (#1640) — the first
++    phase before coding.
+     """
+     from unittest.mock import MagicMock  # noqa: PLC0415
+ 
+     from teatree.core import tasks as tasks_mod  # noqa: PLC0415
+ 
+     def fake_enqueue(ticket_id: int) -> None:
+         target = Ticket.objects.get(pk=ticket_id)
+         if target.state == Ticket.State.STARTED:
+-            target.schedule_coding()
++            target.schedule_planning()
+ 
+     fake_task = MagicMock()
+     fake_task.enqueue.side_effect = fake_enqueue
+diff --git tests/teatree_core/models/test_phase_dispatch.py tests/teatree_core/models/test_phase_dispatch.py
+index ef836d15b3..d6cd00bd22 100644
+--- tests/teatree_core/models/test_phase_dispatch.py
++++ tests/teatree_core/models/test_phase_dispatch.py
+@@ -22,17 +22,17 @@ class TestPhaseAutoDispatch(TestCase):
+     def _inject_tmp_path(self, tmp_path: Path) -> None:
+         self._tmp_path = tmp_path
+ 
+-    def test_start_provisions_then_schedules_coding_task(self) -> None:
++    def test_start_provisions_then_schedules_planning_task(self) -> None:
+         ticket = Ticket.objects.create()
+         ticket.scope()
+         ticket.save()
+ 
+         _start_with_provision(self, ticket)
+ 
+         ticket.refresh_from_db()
+-        task = ticket.tasks.get(phase="coding")
++        task = ticket.tasks.get(phase="planning")
+         assert task.execution_target == Task.ExecutionTarget.HEADLESS
+-        assert task.session.agent_id == "coding"
++        assert task.session.agent_id == "planning"
+         assert ticket.state == Ticket.State.STARTED
+ 
+     def test_code_auto_schedules_testing_task(self) -> None:
+@@ -79,11 +79,25 @@ def fake_enqueue(ticket_id: int) -> None:
+         # execute_provision (worker side effect of start()) scheduled the coding task
+         assert ticket.tasks.filter(phase="coding", status=Task.Status.PENDING).exists()
+ 
++    def test_planning_task_completion_advances_to_planned(self) -> None:
++        ticket = Ticket.objects.create()
++        ticket.scope()
++        ticket.save()
++        _start_with_provision(self, ticket)
++
++        _complete_phase_task(ticket, "planning")
++
++        ticket.refresh_from_db()
++        assert ticket.state == Ticket.State.PLANNED
++        # plan() auto-scheduled a coding task
++        assert ticket.tasks.filter(phase="coding", status=Task.Status.PENDING).exists()
++
+     def test_coding_task_completion_advances_to_coded(self) -> None:
+         ticket = Ticket.objects.create()
+         ticket.scope()
+         ticket.save()
+         _start_with_provision(self, ticket)
++        _complete_phase_task(ticket, "planning")
+ 
+         _complete_phase_task(ticket, "coding")
+ 
+@@ -97,6 +111,8 @@ def test_testing_task_completion_advances_to_tested(self) -> None:
+         ticket.scope()
+         ticket.save()
+         _start_with_provision(self, ticket)
++        ticket.plan()
++        ticket.save()
+         ticket.code()
+         ticket.save()
+ 
+diff --git tests/teatree_core/models/test_ticket_dirty_worktree_preflight.py tests/teatree_core/models/test_ticket_dirty_worktree_preflight.py
+index cc88cd18f9..9971b5e24a 100644
+--- tests/teatree_core/models/test_ticket_dirty_worktree_preflight.py
++++ tests/teatree_core/models/test_ticket_dirty_worktree_preflight.py
+@@ -109,6 +109,10 @@ def test_refusal_through_real_loop_path_rolls_back_and_task_is_reclaimable(self)
+         ticket.save()
+         ticket.start()
+         ticket.save()
++        # #1640: the loop coding arm guards on PLANNED — advance through the
++        # planning phase so the real-loop coding completion fires code().
++        ticket.plan()
++        ticket.save()
+         coding_task = Task.objects.create(
+             ticket=ticket,
+             session=ticket.sessions.create(agent_id="coding"),
+@@ -128,7 +132,7 @@ def test_refusal_through_real_loop_path_rolls_back_and_task_is_reclaimable(self)
+         ticket.refresh_from_db()
+         coding_task.refresh_from_db()
+         # FSM did NOT advance — the outer atomic rolled the code() advance back.
+-        assert ticket.state == Ticket.State.STARTED
++        assert ticket.state == Ticket.State.PLANNED
+         # The task reverted to its pre-complete() state: CLAIMED (the outer
+         # atomic rolled back the status=COMPLETED + _clear_claim writes too).
+         assert coding_task.status == Task.Status.CLAIMED
+diff --git tests/teatree_core/test_management_commands.py tests/teatree_core/test_management_commands.py
+index 9e7823d216..cee11000a5 100644
+--- tests/teatree_core/test_management_commands.py
++++ tests/teatree_core/test_management_commands.py
+@@ -662,7 +662,9 @@ class TestTasksCompleteCommand(TestCase):
+     """
+ 
+     def _claimed_task(self) -> Task:
+-        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
++        # #1640: a coding task's loop arm advances from PLANNED (planning is
++        # the phase before coding), so the pre-coding state is PLANNED.
++        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.PLANNED)
+         session = Session.objects.create(ticket=ticket, overlay="test")
+         task = Task.objects.create(
+             ticket=ticket,
+diff --git tests/teatree_core/test_managers.py tests/teatree_core/test_managers.py
+index b7050b38e6..2d4bbb2b66 100644
+--- tests/teatree_core/test_managers.py
++++ tests/teatree_core/test_managers.py
+@@ -557,9 +557,10 @@ def test_backend_is_sqlite(self) -> None:
+ 
+     def test_completed_task_with_unapplied_phase_transition_is_replayed(self) -> None:
+         # Simulate the half-advanced state a mid-transition crash leaves:
+-        # the coding task is COMPLETED but the ticket is still STARTED
+-        # (the FSM ``code()`` transition never landed).
+-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
++        # the coding task is COMPLETED but the ticket is still PLANNED
++        # (the FSM ``code()`` transition never landed). #1640: planning is the
++        # phase before coding, so the pre-coding state is PLANNED.
++        ticket = Ticket.objects.create(state=Ticket.State.PLANNED)
+         session = Session.objects.create(ticket=ticket, agent_id="a")
+         Task.objects.create(
+             ticket=ticket,
+@@ -692,10 +693,11 @@ def test_only_latest_completed_task_per_ticket_is_replayed(self) -> None:
+         # would all no-op on the guards anyway, but the dedup keeps the
+         # sweep O(tickets) not O(all completed tasks) and proves the
+         # latest-per-ticket selection is exercised.
+-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
++        # #1640: a coding task advances from PLANNED (planning precedes coding).
++        ticket = Ticket.objects.create(state=Ticket.State.PLANNED)
+         session = Session.objects.create(ticket=ticket, agent_id="a")
+         # Older completed coding task, then the latest is also coding
+-        # (e.g. a re-run). Both COMPLETED on the same STARTED ticket.
++        # (e.g. a re-run). Both COMPLETED on the same PLANNED ticket.
+         Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.COMPLETED)
+         Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.COMPLETED)
+ 
+@@ -764,13 +766,14 @@ def test_completed_task_without_needs_user_input_still_replays(self) -> None:
+         # task (last attempt did NOT request user input) must still be
+         # replay-advanced, exactly as before — the recovery sweep is
+         # not over-blocked into uselessness.
+-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
++        # #1640: a coding task advances from PLANNED (planning precedes coding).
++        ticket = Ticket.objects.create(state=Ticket.State.PLANNED)
+         session = Session.objects.create(ticket=ticket, agent_id="a")
+         task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+         task.complete_with_attempt(exit_code=0, result={"summary": "done"})
+         # Simulate the half-advanced orphan: complete() advanced the
+-        # ticket; reset it to STARTED so the sweep has work to replay.
+-        ticket.state = Ticket.State.STARTED
++        # ticket; reset it to PLANNED so the sweep has work to replay.
++        ticket.state = Ticket.State.PLANNED
+         ticket.save(update_fields=["state"])
+ 
+         replayed = Task.objects.replay_orphaned_transitions()
+@@ -802,7 +805,8 @@ def test_complete_rolls_back_task_save_when_advance_fails(self) -> None:
+ 
+         import pytest  # noqa: PLC0415
+ 
+-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
++        # #1640: a coding task advances from PLANNED (planning precedes coding).
++        ticket = Ticket.objects.create(state=Ticket.State.PLANNED)
+         session = Session.objects.create(ticket=ticket, agent_id="a")
+         task = Task.objects.create(
+             ticket=ticket,
+@@ -823,8 +827,8 @@ def test_complete_rolls_back_task_save_when_advance_fails(self) -> None:
+         # Atomic: the task save is rolled back together with the failed
+         # FSM transition. Pre-fix the task was COMPLETED here (its save
+         # had committed on a separate boundary) while the ticket stayed
+-        # STARTED — the unrecoverable half-advance #883 is about.
++        # PLANNED — the unrecoverable half-advance #883 is about.
+         assert task.status == Task.Status.CLAIMED, (
+             f"task.complete() was not atomic — task is {task.status!r} but the FSM transition failed"
+         )
+-        assert ticket.state == Ticket.State.STARTED
++        assert ticket.state == Ticket.State.PLANNED
+diff --git tests/teatree_core/test_phases.py tests/teatree_core/test_phases.py
+index 8c085bfee8..47335177da 100644
+--- tests/teatree_core/test_phases.py
++++ tests/teatree_core/test_phases.py
+@@ -11,6 +11,8 @@ class TestNormalizePhase:
+         [
+             ("scope", "scoping"),
+             ("scoping", "scoping"),
++            ("plan", "planning"),
++            ("planning", "planning"),
+             ("code", "coding"),
+             ("coding", "coding"),
+             ("test", "testing"),
+@@ -44,6 +46,8 @@ class TestPhaseTransition:
+         [
+             ("scope", "scope"),
+             ("scoping", "scope"),
++            ("plan", "plan"),
++            ("planning", "plan"),
+             ("code", "code"),
+             ("coding", "code"),
+             ("test", "test"),
+diff --git tests/teatree_core/test_plan_artifact.py tests/teatree_core/test_plan_artifact.py
+new file mode 100644
+index 0000000000..bc3f945338
+--- /dev/null
++++ tests/teatree_core/test_plan_artifact.py
+@@ -0,0 +1,40 @@
++"""The plan-artifact 'planned' signal (#1640 Phase 0).
++
++``record_plan_artifact`` stamps ``ticket.extra['plan_artifact']`` (skill name +
++path + UTC ISO timestamp) so the implementation-intent plan gate can attest that
++an implementation plan was produced — replacing the ``teatree-plan`` skill
++timestamp, which was backlog-prioritization (the #1640 bug). Mirrors
++``record_review_skill_run`` exactly.
++"""
++
++from django.core.management import call_command
++from django.test import TestCase
++
++from teatree.core.models import Ticket
++
++
++class TestRecordPlanArtifact(TestCase):
++    def test_stores_skill_path_and_iso_timestamp_on_extra(self) -> None:
++        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.STARTED)
++        ticket.record_plan_artifact("architecture-design", "/tmp/plan-7.md")
++        ticket.refresh_from_db()
++        artifact = ticket.extra["plan_artifact"]
++        assert artifact["skill"] == "architecture-design"
++        assert artifact["path"] == "/tmp/plan-7.md"
++        assert artifact["recorded_at"].endswith("+00:00") or artifact["recorded_at"].endswith("Z")
++
++    def test_record_plan_artifact_command_stamps_extra(self) -> None:
++        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.STARTED)
++        call_command("lifecycle", "record-plan-artifact", str(ticket.pk), "writing-plans", "/tmp/plan.md")
++        ticket.refresh_from_db()
++        artifact = ticket.extra["plan_artifact"]
++        assert artifact["skill"] == "writing-plans"
++        assert artifact["path"] == "/tmp/plan.md"
++
++    def test_record_plan_artifact_round_trips_through_validated_extra(self) -> None:
++        # The stamp must survive the validated_ticket_extra allow-list filter
++        # (the key must be a recognised TicketExtra field).
++        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.STARTED)
++        ticket.record_plan_artifact("architecture-design", "/tmp/p.md")
++        ticket.refresh_from_db()
++        assert ticket._extra().get("plan_artifact", {}).get("skill") == "architecture-design"
+diff --git tests/teatree_core/test_planning_phase.py tests/teatree_core/test_planning_phase.py
+new file mode 100644
+index 0000000000..2413a55bea
+--- /dev/null
++++ tests/teatree_core/test_planning_phase.py
+@@ -0,0 +1,188 @@
++"""Planning as an FSM phase with spawn-on-transition (#1640).
++
++Drives the loop dispatch / claim path and the per-phase auto-dispatch chain to
++assert the planning phase is woven into the existing
++``Ticket.<transition>() → schedule_<phase>() → claim-next → Task.complete()``
++chain:
++
++a) starting a ticket (provision worker) schedules a PENDING planning Task,
++b) ``claim-next`` emits it with the planner subagent,
++c) completing the planning Task advances STARTED→PLANNED and schedules coding,
++d) the code→test→review→ship chain still works unchanged afterward.
++"""
++
++import json
++from io import StringIO
++from pathlib import Path
++from unittest.mock import MagicMock, patch
++
++import pytest
++from django.core.management import call_command
++from django.test import TestCase
++
++from teatree.core import tasks as tasks_mod
++from teatree.core.models import Session, Task, Ticket
++from tests.teatree_core.models._shared import _attach_shippable_worktree, _complete_phase_task
++
++
++def _start_with_provision_scheduling_planning(test_case: TestCase, ticket: Ticket) -> None:
++    """Drive ``start()`` and let the worker schedule the planning task."""
++
++    def fake_enqueue(ticket_id: int) -> None:
++        target = Ticket.objects.get(pk=ticket_id)
++        if target.state == Ticket.State.STARTED:
++            target.schedule_planning()
++
++    fake_task = MagicMock()
++    fake_task.enqueue.side_effect = fake_enqueue
++    with (
++        patch.object(tasks_mod, "execute_provision", fake_task),
++        test_case.captureOnCommitCallbacks(execute=True),
++    ):
++        ticket.start()
++        ticket.save()
++
++
++class TestStartSchedulesPlanning(TestCase):
++    @pytest.fixture(autouse=True)
++    def _inject_tmp_path(self, tmp_path: Path) -> None:
++        self._tmp_path = tmp_path
++
++    def test_start_provisions_then_schedules_planning_task(self) -> None:
++        ticket = Ticket.objects.create(issue_url="https://example.com/issues/1")
++        ticket.scope()
++        ticket.save()
++
++        _start_with_provision_scheduling_planning(self, ticket)
++
++        ticket.refresh_from_db()
++        task = ticket.tasks.get(phase="planning")
++        assert task.execution_target == Task.ExecutionTarget.HEADLESS
++        assert task.session.agent_id == "planning"
++        assert task.status == Task.Status.PENDING
++        assert ticket.state == Ticket.State.STARTED
++        # No coding task yet — coding is scheduled by plan(), not by start().
++        assert not ticket.tasks.filter(phase="coding").exists()
++
++    def test_claim_next_emits_planning_task_with_planner_subagent(self) -> None:
++        ticket = Ticket.objects.create(issue_url="https://example.com/issues/2")
++        ticket.scope()
++        ticket.save()
++        _start_with_provision_scheduling_planning(self, ticket)
++
++        out = StringIO()
++        call_command("loop_dispatch", "claim-next", "--json", stdout=out)
++        payload = json.loads(out.getvalue())
++
++        assert len(payload) == 1
++        entry = payload[0]
++        assert entry["phase"] == "planning"
++        assert entry["subagent"] == "t3:planner"
++        assert entry["issue_url"] == "https://example.com/issues/2"
++
++    def test_completing_planning_task_advances_to_planned_and_schedules_coding(self) -> None:
++        ticket = Ticket.objects.create(issue_url="https://example.com/issues/3")
++        ticket.scope()
++        ticket.save()
++        _start_with_provision_scheduling_planning(self, ticket)
++
++        _complete_phase_task(ticket, "planning")
++
++        ticket.refresh_from_db()
++        assert ticket.state == Ticket.State.PLANNED
++        coding = ticket.tasks.get(phase="coding")
++        assert coding.status == Task.Status.PENDING
++        assert coding.session.agent_id == "coding"
++
++    def test_full_chain_planning_through_shipping_still_works(self) -> None:
++        ticket = Ticket.objects.create(issue_url="https://example.com/issues/4")
++        _attach_shippable_worktree(ticket, self._tmp_path)
++        ticket.scope()
++        ticket.save()
++        _start_with_provision_scheduling_planning(self, ticket)
++
++        _complete_phase_task(ticket, "planning")
++        ticket.refresh_from_db()
++        assert ticket.state == Ticket.State.PLANNED
++
++        _complete_phase_task(ticket, "coding")
++        ticket.refresh_from_db()
++        assert ticket.state == Ticket.State.CODED
++
++        _complete_phase_task(ticket, "testing")
++        ticket.refresh_from_db()
++        assert ticket.state == Ticket.State.TESTED
++
++        _complete_phase_task(ticket, "reviewing")
++        ticket.refresh_from_db()
++        assert ticket.state == Ticket.State.REVIEWED
++
++        _complete_phase_task(ticket, "shipping")
++        ticket.refresh_from_db()
++        assert ticket.state == Ticket.State.SHIPPED
++
++
++class TestPlanTransition(TestCase):
++    def test_plan_advances_started_to_planned_and_schedules_coding(self) -> None:
++        ticket = Ticket.objects.create(issue_url="https://example.com/issues/5")
++        ticket.scope()
++        ticket.save()
++        ticket.start()
++        ticket.save()
++
++        ticket.plan()
++        ticket.save()
++
++        assert ticket.state == Ticket.State.PLANNED
++        assert ticket.tasks.filter(phase="coding", status=Task.Status.PENDING).exists()
++
++    def test_schedule_planning_creates_headless_task_on_fresh_session(self) -> None:
++        ticket = Ticket.objects.create(issue_url="https://example.com/issues/6")
++        task = ticket.schedule_planning()
++
++        assert task.phase == "planning"
++        assert task.execution_target == Task.ExecutionTarget.HEADLESS
++        assert "implementation plan" in task.execution_reason.lower()
++        assert task.session.agent_id == "planning"
++
++    def test_apply_phase_transition_fires_plan_from_started(self) -> None:
++        ticket = Ticket.objects.create(issue_url="https://example.com/issues/7")
++        ticket.scope()
++        ticket.save()
++        ticket.start()
++        ticket.save()
++        session = Session.objects.create(ticket=ticket, agent_id="planning")
++        task = Task.objects.create(
++            ticket=ticket,
++            session=session,
++            phase="planning",
++            status=Task.Status.COMPLETED,
++        )
++
++        fired = task._apply_phase_transition()
++
++        ticket.refresh_from_db()
++        assert fired is True
++        assert ticket.state == Ticket.State.PLANNED
++
++    def test_coding_arm_requires_planned_state(self) -> None:
++        # A coding task completing on a STARTED ticket (planning skipped) must
++        # NOT advance — the loop coding arm guards on PLANNED.
++        ticket = Ticket.objects.create(issue_url="https://example.com/issues/8")
++        ticket.scope()
++        ticket.save()
++        ticket.start()
++        ticket.save()
++        session = Session.objects.create(ticket=ticket, agent_id="coding")
++        task = Task.objects.create(
++            ticket=ticket,
++            session=session,
++            phase="coding",
++            status=Task.Status.COMPLETED,
++        )
++
++        fired = task._apply_phase_transition()
++
++        ticket.refresh_from_db()
++        assert fired is False
++        assert ticket.state == Ticket.State.STARTED
+diff --git tests/teatree_core/test_tasks.py tests/teatree_core/test_tasks.py
+index 50c8f6546d..686e8d5a83 100644
+--- tests/teatree_core/test_tasks.py
++++ tests/teatree_core/test_tasks.py
+@@ -209,7 +209,9 @@ def _ticket_in_started(self) -> Ticket:
+         return ticket
+ 
+     @override_settings(**IMMEDIATE_BACKEND)
+-    def test_provisions_then_schedules_coding(self) -> None:
++    def test_provisions_then_schedules_planning(self) -> None:
++        # #1640: provision schedules the PLANNING task (the first phase),
++        # not coding — coding is scheduled by plan() once the plan exists.
+         from teatree.core.runners.base import RunnerResult  # noqa: PLC0415
+ 
+         ticket = self._ticket_in_started()
+@@ -220,7 +222,8 @@ def test_provisions_then_schedules_coding(self) -> None:
+ 
+         ticket.refresh_from_db()
+         assert ticket.state == Ticket.State.STARTED
+-        assert ticket.tasks.filter(phase="coding").exists()
++        assert ticket.tasks.filter(phase="planning").exists()
++        assert not ticket.tasks.filter(phase="coding").exists()
+         assert result.return_value == {
+             "ticket_id": ticket.pk,
+             "ok": True,
+@@ -235,7 +238,7 @@ def test_skips_when_state_does_not_match(self) -> None:
+ 
+         ticket.refresh_from_db()
+         assert ticket.state == Ticket.State.SCOPED
+-        assert not ticket.tasks.filter(phase="coding").exists()
++        assert not ticket.tasks.filter(phase="planning").exists()
+         assert result.return_value == {
+             "ticket_id": ticket.pk,
+             "skipped": True,
+@@ -254,7 +257,7 @@ def test_keeps_state_when_runner_fails(self) -> None:
+ 
+         ticket.refresh_from_db()
+         assert ticket.state == Ticket.State.STARTED
+-        assert not ticket.tasks.filter(phase="coding").exists()
++        assert not ticket.tasks.filter(phase="planning").exists()
+         assert result.return_value == {"ticket_id": ticket.pk, "ok": False, "detail": "repo missing"}
+ 
+ 
+@@ -465,8 +468,9 @@ def test_short_verb_review_advances_tested_to_reviewed(self) -> None:
+         # The session record agrees (already normalized by _record_phase_visit).
+         assert "reviewing" in (session.visited_phases or [])
+ 
+-    def test_short_verb_code_advances_started_to_coded(self) -> None:
+-        ticket, session = self._ticket_with_session(Ticket.State.STARTED)
++    def test_short_verb_code_advances_planned_to_coded(self) -> None:
++        # #1640: the coding arm advances from PLANNED (planning precedes coding).
++        ticket, session = self._ticket_with_session(Ticket.State.PLANNED)
+         task = Task.objects.create(ticket=ticket, session=session, phase="code")
+ 
+         task._advance_ticket()
+diff --git tests/teatree_loop/test_tick.py tests/teatree_loop/test_tick.py
+index 6c9a75e07c..d95c091c27 100644
+--- tests/teatree_loop/test_tick.py
++++ tests/teatree_loop/test_tick.py
+@@ -790,17 +790,18 @@ def test_run_tick_replays_a_half_advanced_ticket(self) -> None:
+         """#883: a tick recovers a ticket left half-advanced by a crash.
+ 
+         A coding task COMPLETED but the FSM ``code()`` transition was
+-        lost to a mid-transition crash, so the ticket is still STARTED.
+-        The task is COMPLETED (not CLAIMED) — the claim sweeps cannot see
+-        it. A fresh tick must run ``replay_orphaned_transitions`` from
+-        the same boot/tick recovery hook and advance the ticket so the
+-        loop continues instead of stalling forever.
++        lost to a mid-transition crash, so the ticket is still PLANNED
++        (#1640: planning precedes coding). The task is COMPLETED (not
++        CLAIMED) — the claim sweeps cannot see it. A fresh tick must run
++        ``replay_orphaned_transitions`` from the same boot/tick recovery
++        hook and advance the ticket so the loop continues instead of
++        stalling forever.
+         """
+         import tempfile  # noqa: PLC0415
+ 
+         from teatree.core.models import Session, Task, Ticket  # noqa: PLC0415
+ 
+-        ticket = Ticket.objects.create(state=Ticket.State.STARTED)
++        ticket = Ticket.objects.create(state=Ticket.State.PLANNED)
+         session = Session.objects.create(ticket=ticket, agent_id="agent")
+         Task.objects.create(
+             ticket=ticket,
+@@ -850,7 +851,8 @@ def test_valueerror_in_one_ticket_does_not_abort_sweep_or_tick(self) -> None:
+         )
+ 
+         # Healthy ticket: half-advanced coding task that replay should recover.
+-        healthy_ticket = Ticket.objects.create(state=Ticket.State.STARTED)
++        # #1640: a coding task advances from PLANNED (planning precedes coding).
++        healthy_ticket = Ticket.objects.create(state=Ticket.State.PLANNED)
+         healthy_session = Session.objects.create(ticket=healthy_ticket, agent_id="code-agent")
+         Task.objects.create(
+             ticket=healthy_ticket,
+diff --git tests/test_gate_liveness_corpus.py tests/test_gate_liveness_corpus.py
+index cef78b0930..c8757a7ca2 100644
+--- tests/test_gate_liveness_corpus.py
++++ tests/test_gate_liveness_corpus.py
+@@ -46,6 +46,7 @@
+ import json
+ import re
+ import subprocess
++import time
+ from collections.abc import Callable, Iterator
+ from dataclasses import dataclass, field
+ from pathlib import Path
+@@ -292,15 +293,15 @@ def _agent_plan_allow(ctx: GateContext) -> dict:
+     return _agent("implement the acme feature", run_in_background=True)
+ 
+ 
+-# plan gate (TaskCreated): the fan-out path. A fanned-out Task with no recent
+-# /plan must block; a real t3:teatree-plan or a [skip-plan-gate] token clears it.
++# plan gate (TaskCreated): the fan-out path. An implementation-intent fanned-out
++# Task with no recorded plan artifact must block; a recorded plan artifact (#1640)
++# or a [skip-plan-gate] token clears it.
+ 
+ 
+ def _arrange_task_created_plan_gate(ctx: GateContext) -> None:
+-    # The TaskCreated plan-gate ships default-OFF (opt-in, pending the
+-    # correct-signal design in #1640), so the corpus must explicitly enable it
+-    # to prove it CAN fire when on: reachable + denies a missing-plan fan-out +
+-    # allows a planned one.
++    # The TaskCreated plan-gate ships default-OFF (opt-in), so the corpus must
++    # explicitly enable it to prove it CAN fire when on: reachable + denies a
++    # missing-artifact implementation-intent fan-out + allows a planned one.
+     _arrange_agent_plan_gate(ctx)
+     ctx.write_teatree_toml("[teatree]\nagent_plan_gate_on_task_create_enabled = true\n")
+ 
+@@ -315,9 +316,11 @@ def _task_created_plan(*, skip: bool) -> dict:
+ 
+ 
+ def _task_created_plan_allow(ctx: GateContext) -> dict:
+-    router.handle_track_plan_skill_timestamp(
+-        {"tool_name": "Skill", "tool_input": {"skill": _REAL_PLAN_SKILL_INVOCATION}}
+-    )
++    # #1640: the satisfied-signal is the recorded plan ARTIFACT, not the
++    # teatree-plan skill timestamp.
++    marker = router._plan_artifact_marker_file()
++    marker.parent.mkdir(parents=True, exist_ok=True)
++    marker.write_text(str(int(time.time())), encoding="utf-8")
+     return _task_created_plan(skip=False)
+ 
+ 
+diff --git tests/test_hook_router_agent_plan_gate.py tests/test_hook_router_agent_plan_gate.py
+index 733e51763f..fcecb3bbc4 100644
+--- tests/test_hook_router_agent_plan_gate.py
++++ tests/test_hook_router_agent_plan_gate.py
+@@ -251,33 +251,40 @@ def test_prefix_fiction_and_unrelated_names_do_not_match(self, skill: str) -> No
+         assert _is_plan_skill(skill) is False
+ 
+ 
+-# ── TaskCreated plan-gate: default-OFF opt-in (#1640) ─────────────────────
++# ── TaskCreated plan-gate: default-OFF opt-in, plan-artifact signal (#1640) ──
+ 
+ 
+ def _seed_teatree_toml(body: str) -> None:
+     """Write ``~/.teatree.toml`` (HOME is temp-isolated by conftest)."""
+     home = Path.home()
+     home.mkdir(parents=True, exist_ok=True)
+     (home / ".teatree.toml").write_text(body, encoding="utf-8")
+ 
+ 
+-def _task_create(subject: str = "build foo", description: str = "") -> dict:
++def _task_create(subject: str = "implement foo", description: str = "") -> dict:
+     return {"session_id": "sess-1", "task_subject": subject, "task_description": description}
+ 
+ 
++def _write_artifact_ts(ts: float) -> None:
++    """Write the plan-artifact marker the #1640-repointed gate reads."""
++    marker = router._plan_artifact_marker_file()
++    marker.parent.mkdir(parents=True, exist_ok=True)
++    marker.write_text(str(int(ts)), encoding="utf-8")
++
++
+ class TestTaskCreatePlanGateDefaultOff:
+     """``handle_enforce_plan_gate_on_task_create`` ships inert (opt-in).
+ 
+-    The TaskCreated plan-gate keys on the interactive ``teatree-plan`` skill —
+-    the wrong signal and unsatisfiable unattended (#1640) — so it must default
+-    OFF: with no config (or the flag unset/broken) a fan-out with no recent
+-    ``/plan`` is ALLOWED. Only an explicit ``= true`` arms it.
++    The TaskCreated plan-gate reads the plan-ARTIFACT signal (#1640), not the
++    ``teatree-plan`` skill timestamp. It must default OFF: with no config (or
++    the flag unset/broken) an implementation-intent fan-out with no recorded
++    artifact is ALLOWED. Only an explicit ``= true`` arms it.
+     """
+ 
+     def test_plan_gate_on_task_create_default_off(self, gate_env: Path) -> None:
+         # No ~/.teatree.toml at all: missing config ⇒ disabled ⇒ allow even
+-        # with no recent plan timestamp.
+-        assert not gate_env.is_file()
++        # with no recorded plan artifact.
++        assert not router._plan_artifact_marker_file().is_file()
+         assert handle_enforce_plan_gate_on_task_create(_task_create()) is False
+ 
+     def test_flag_unset_is_allow(self, gate_env: Path) -> None:
+@@ -298,7 +305,7 @@ def test_explicit_true_arms_the_gate_and_denies(self, gate_env: Path, capsys) ->
+         assert out["continue"] is False
+         assert "PLAN-GATE ENFORCEMENT (TaskCreated)" in out["stopReason"]
+ 
+-    def test_explicit_true_with_recent_plan_allows(self, gate_env: Path) -> None:
++    def test_explicit_true_with_recorded_artifact_allows(self, gate_env: Path) -> None:
+         _seed_teatree_toml("[teatree]\nagent_plan_gate_on_task_create_enabled = true\n")
+-        _write_ts(gate_env, time.time() - 5 * 60)  # fresh /plan, 5 min ago
++        _write_artifact_ts(time.time() - 5 * 60)  # fresh plan artifact, 5 min ago
+         assert handle_enforce_plan_gate_on_task_create(_task_create()) is False
+diff --git tests/test_hook_router_plan_artifact_gate.py tests/test_hook_router_plan_artifact_gate.py
+new file mode 100644
+index 0000000000..b3eba0192b
+--- /dev/null
++++ tests/test_hook_router_plan_artifact_gate.py
+@@ -0,0 +1,128 @@
++"""The implementation-intent plan gate reads the plan-artifact signal (#1640).
++
++Phase 0 of #1640 repoints ``handle_enforce_plan_gate_on_task_create`` so its
++satisfied-signal is the plan artifact (written by ``lifecycle
++record-plan-artifact``), NOT the ``teatree-plan`` backlog-prioritization skill
++timestamp (the #1640 bug — ``subagent_safe: false``, unearnable unattended).
++
++The gate stays default-OFF (opt-in via ``[teatree]
++agent_plan_gate_on_task_create_enabled = true``). When armed it fires only for
++IMPLEMENTATION-INTENT dispatches; cold-review / read-only / cleanup / merge
++dispatches are exempt.
++"""
++
++import json
++import time
++from pathlib import Path
++
++import pytest
++
++import hooks.scripts.hook_router as router
++from hooks.scripts.hook_router import handle_enforce_plan_gate_on_task_create
++
++
++@pytest.fixture
++def gate_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
++    xdg = tmp_path / "xdg-data"
++    xdg.mkdir(parents=True, exist_ok=True)
++    monkeypatch.setenv("XDG_DATA_HOME", str(xdg))
++    monkeypatch.delenv("TEATREE_PLAN_GATE_WINDOW_MINUTES", raising=False)
++    return xdg / "teatree" / "last-plan-artifact-ts"
++
++
++def _seed_teatree_toml(body: str) -> None:
++    home = Path.home()
++    home.mkdir(parents=True, exist_ok=True)
++    (home / ".teatree.toml").write_text(body, encoding="utf-8")
++
++
++def _arm_gate() -> None:
++    _seed_teatree_toml("[teatree]\nagent_plan_gate_on_task_create_enabled = true\n")
++
++
++def _task_create(subject: str = "implement feature foo", description: str = "") -> dict:
++    return {"session_id": "sess-1", "task_subject": subject, "task_description": description}
++
++
++def _write_artifact_ts(ts_file: Path, ts: float) -> None:
++    ts_file.parent.mkdir(parents=True, exist_ok=True)
++    ts_file.write_text(str(int(ts)), encoding="utf-8")
++
++
++class TestDefaultOff:
++    def test_no_config_allows(self, gate_env: Path) -> None:
++        assert not gate_env.is_file()
++        assert handle_enforce_plan_gate_on_task_create(_task_create()) is False
++
++    def test_flag_unset_allows(self, gate_env: Path) -> None:
++        _seed_teatree_toml("[teatree]\nskill_loading_gate_enabled = true\n")
++        assert handle_enforce_plan_gate_on_task_create(_task_create()) is False
++
++    def test_broken_config_disabled(self, gate_env: Path) -> None:
++        _seed_teatree_toml("this is not = valid toml [[[\n")
++        assert handle_enforce_plan_gate_on_task_create(_task_create()) is False
++
++
++class TestArmedReadsPlanArtifact:
++    def test_armed_implementation_intent_denies_without_artifact(self, gate_env: Path, capsys) -> None:
++        _arm_gate()
++        assert not gate_env.is_file()
++        blocked = handle_enforce_plan_gate_on_task_create(_task_create("implement the new exporter"))
++        assert blocked is True
++        out = json.loads(capsys.readouterr().out)
++        assert out["continue"] is False
++        assert "PLAN-GATE ENFORCEMENT (TaskCreated)" in out["stopReason"]
++        # The reason must point at the artifact signal, not the teatree-plan skill.
++        assert "plan artifact" in out["stopReason"].lower()
++        assert "teatree-plan" not in out["stopReason"]
++
++    def test_armed_implementation_intent_allows_with_fresh_artifact(self, gate_env: Path) -> None:
++        _arm_gate()
++        _write_artifact_ts(gate_env, time.time() - 5 * 60)
++        assert handle_enforce_plan_gate_on_task_create(_task_create("implement the new exporter")) is False
++
++    def test_stale_artifact_blocks(self, gate_env: Path, capsys) -> None:
++        _arm_gate()
++        _write_artifact_ts(gate_env, time.time() - 35 * 60)
++        assert handle_enforce_plan_gate_on_task_create(_task_create("implement feature")) is True
++        capsys.readouterr()
++
++    def test_teatree_plan_skill_timestamp_does_not_satisfy(self, gate_env: Path, capsys) -> None:
++        # The #1640 bug: the teatree-plan skill marker must NOT satisfy the
++        # implementation-intent gate. Write the OLD skill-timestamp marker and
++        # confirm the gate still blocks (it reads only the plan-artifact marker).
++        _arm_gate()
++        skill_ts = router._plan_skill_timestamp_file()
++        skill_ts.parent.mkdir(parents=True, exist_ok=True)
++        skill_ts.write_text(str(int(time.time())), encoding="utf-8")
++        assert handle_enforce_plan_gate_on_task_create(_task_create("implement feature")) is True
++        capsys.readouterr()
++
++
++class TestExemptDispatches:
++    @pytest.mark.parametrize(
++        "subject",
++        [
++            "cold-review PR 42",
++            "review the code on the open MR",
++            "read-only investigation of the loop scanner",
++            "cleanup merged worktrees and stale branches",
++            "merge the green PR via the keystone",
++        ],
++    )
++    def test_exempt_dispatch_allows_without_artifact(self, gate_env: Path, subject: str) -> None:
++        _arm_gate()
++        assert not gate_env.is_file()
++        assert handle_enforce_plan_gate_on_task_create(_task_create(subject)) is False
++
++
++class TestSkipToken:
++    def test_skip_token_allows(self, gate_env: Path) -> None:
++        _arm_gate()
++        data = _task_create("[skip-plan-gate: trivial] implement the tiny fix")
++        assert handle_enforce_plan_gate_on_task_create(data) is False
++
++    def test_window_zero_disables_freshness(self, gate_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
++        _arm_gate()
++        monkeypatch.setenv("TEATREE_PLAN_GATE_WINDOW_MINUTES", "0")
++        assert handle_enforce_plan_gate_on_task_create(_task_create("implement feature")) is False
+diff --git tests/test_transcript_replay_conformance.py tests/test_transcript_replay_conformance.py
+index 64db85b0bb..001fc111d4 100644
+--- tests/test_transcript_replay_conformance.py
++++ tests/test_transcript_replay_conformance.py
+@@ -209,16 +209,19 @@ def test_mirrored_constants_match_hook_router() -> None:
+     assert tc._GLAB_GH_API_RE.pattern == router._GLAB_GH_API_RE.pattern
+ 
+ 
+-def test_plan_skill_final_segment_matches_router_recognition() -> None:
+-    """The mirrored plan-skill predicate recognises exactly what the router records.
++def test_plan_signal_is_the_plan_artifact_not_teatree_plan() -> None:
++    """#1640: the eval's 'planned' signal is the plan ARTIFACT, not teatree-plan.
+ 
+-    The router records a plan invocation iff the skill's final segment is the
+-    real plan skill; the #167 bug was a ``startswith('plan')`` test that never
+-    matched ``teatree-plan``. This asserts the eval uses the final-segment
+-    semantics and recognises the real invocation form ``t3:teatree-plan``.
++    The artifact signal is the ``architecture-design`` planning skill the
++    planner wraps (recognised by final segment, preserving the #167
++    final-segment semantics), or a ``lifecycle record-plan-artifact`` Bash
++    command. The interactive ``teatree-plan`` backlog-prioritization skill is
++    NO LONGER the signal — that was the #1640 bug.
+     """
+-    assert tc._is_plan_skill("t3:teatree-plan")
+-    assert tc._is_plan_skill("teatree-plan")
+-    assert tc._is_plan_skill("skills/teatree-plan/SKILL.md".replace("/SKILL.md", ""))
++    assert tc._is_plan_skill("t3:architecture-design")
++    assert tc._is_plan_skill("architecture-design")
++    assert tc._is_plan_skill("skills/architecture-design/SKILL.md".replace("/SKILL.md", ""))
++    assert not tc._is_plan_skill("t3:teatree-plan")
+     assert not tc._is_plan_skill("t3:teatree-batch")
+-    assert not tc._is_plan_skill("plan")
++    assert tc._RECORD_PLAN_ARTIFACT_RE.search("t3 acme lifecycle record-plan-artifact 7 architecture-design /tmp/p.md")
++    assert not tc._RECORD_PLAN_ARTIFACT_RE.search("t3 acme lifecycle record-review-skill-run 7 ac-reviewing-codebase")

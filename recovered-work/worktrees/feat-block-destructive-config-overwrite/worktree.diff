@@ -1,0 +1,835 @@
+diff --git hooks/scripts/config_overwrite_guard.py hooks/scripts/config_overwrite_guard.py
+new file mode 100644
+index 0000000000..4b8365df19
+--- /dev/null
++++ hooks/scripts/config_overwrite_guard.py
+@@ -0,0 +1,203 @@
++"""PreToolUse: block a destructive overwrite/restore of a dirty tracked config.
++
++Guards a tracked config/dotfile carrying UNCOMMITTED working-tree changes
++against a data-loss overwrite/restore. Two surfaces, one rule (``/t3:rules``
++§ "Read Before Overwriting a Tracked Config/Dotfile"):
++
++1.  **Bash** — a working-tree-destroying git op (``git checkout -- <path>`` /
++    ``git restore <path>`` / ``git reset --hard`` / ``git stash``) that would
++    clobber a tracked config/dotfile with uncommitted changes. Detection +
++    git-state logic lives in the pure core module
++    :mod:`teatree.core.gates.config_overwrite_guard`.
++2.  **Write** — a full-file ``Write`` over a tracked config/dotfile that has
++    uncommitted changes (whole-file replacement, the form that caused the
++    real data loss). A surgical ``Edit`` is NOT in scope — only a wholesale
++    ``Write`` that discards the current content.
++
++Scope is deliberately narrow (``.claude/*``, ``.teatree.toml``, dotfiles, known
++config basenames) so normal source-file git ops and source-file writes are
++never blocked.
++
++Never-lockout: a per-call ``[config-overwrite-ok: <reason>]`` token ALLOWS that
++one call; the ``[teatree] config_overwrite_gate_enabled = false`` kill-switch
++disables it globally (default on, fails OPEN); the deny routes through
++``_fail_open_or_deny`` so the self-rescue allowlist + master fail-open switch +
++circuit breaker all apply. An unresolvable cwd, an untracked file, a clean
++config file, or any internal exception all fail OPEN.
++
++The helpers that resolve the cwd and emit the deny (``_resolve_cwd_repo``,
++``_fail_open_or_deny``, ``_teatree_bool_setting``) live in ``hook_router`` and
++are imported lazily at call time — ``hook_router`` imports this module at top
++level, so importing it back at top level here would be a cycle.
++"""
++
++import re
++import sys
++from pathlib import Path
++
++# Alias the bare and ``hooks.scripts.`` identities so the handler the router
++# registers and a test patching a helper here operate on ONE module object
++# (mirrors unknown_repo_push_gate).
++sys.modules.setdefault("config_overwrite_guard", sys.modules[__name__])
++sys.modules.setdefault("hooks.scripts.config_overwrite_guard", sys.modules[__name__])
++
++_OVERWRITE_OK_RE = re.compile(r"\[config-overwrite-ok:\s*(\S[^\]]*?)\s*\]")
++# The tools this gate evaluates: a Bash git op or a full-file Write. A surgical
++# Edit is deliberately NOT in scope — only a wholesale Write discards content.
++_IN_SCOPE_TOOLS = frozenset({"Bash", "Write"})
++
++
++def _gate_enabled() -> bool:
++    """Whether the config-overwrite gate is enabled (default True).
++
++    Fails OPEN to enabled on a missing/broken config; an explicit bare
++    ``[teatree] config_overwrite_gate_enabled = false`` is the one-line
++    kill-switch (never a code edit).
++    """
++    from hook_router import _teatree_bool_setting  # noqa: PLC0415, PLC2701
++
++    return _teatree_bool_setting("config_overwrite_gate_enabled", default=True)
++
++
++def _overwrite_ok_token(text: str) -> str | None:
++    """Return the reason from a ``[config-overwrite-ok: <reason>]`` token, else None.
++
++    Scanned within the first 512 chars (mirroring the other per-call escapes);
++    an empty reason returns None so a bare token cannot disarm the gate.
++    """
++    match = _OVERWRITE_OK_RE.search(text[:512])
++    if not match:
++        return None
++    reason = match.group(1).strip()
++    return reason or None
++
++
++def _bootstrap() -> bool:
++    """Bootstrap Django so the core gate's imports resolve in the hook subprocess.
++
++    The core module imports only ``teatree.utils.run`` (no ORM), but importing
++    through the ``teatree`` package still benefits from the shared bootstrap's
++    ``sys.path`` setup. Fails OPEN (returns False → caller allows) on any error.
++    """
++    try:
++        from django_bootstrap import bootstrap_teatree_django  # noqa: PLC0415
++
++        return bool(bootstrap_teatree_django())
++    except Exception:  # noqa: BLE001 — a broken bootstrap must never wedge a tool call.
++        return False
++
++
++def _write_overwrites_dirty_config(repo: Path, file_path: str) -> bool:
++    """Whether a full-file ``Write`` to *file_path* clobbers a dirty tracked config.
++
++    True only when *file_path* is a config/dotfile AND is tracked in *repo* AND
++    has uncommitted working-tree changes. Any internal error fails OPEN.
++    """
++    try:
++        from teatree.core.gates import config_overwrite_guard as core  # noqa: PLC0415
++
++        if not core.is_config_path(file_path):
++            return False
++        toplevel = core._toplevel(repo)  # noqa: SLF001 — intra-gate helper reuse.
++        if toplevel is None:
++            return False
++        return core.is_tracked(toplevel, file_path) and core.has_uncommitted_changes(toplevel, file_path)
++    except Exception:  # noqa: BLE001 — fail OPEN; a resolver bug must not brick a Write.
++        return False
++
++
++def _evaluate_bash(repo: Path, command: str) -> str | None:
++    """Return the block reason if *command* would clobber a dirty config, else None.
++
++    Delegates to the pure core evaluator. Any internal error fails OPEN.
++    """
++    try:
++        from teatree.core.gates import config_overwrite_guard as core  # noqa: PLC0415
++
++        verdict = core.evaluate(command, repo)
++    except Exception:  # noqa: BLE001 — fail OPEN; a resolver bug must not brick a git op.
++        return None
++    return verdict.reason if verdict.blocked else None
++
++
++def _write_block_reason(file_path: str) -> str:
++    return (
++        f"BLOCKED: this `Write` replaces the WHOLE content of a tracked config/dotfile "
++        f"(`{file_path}`) that has UNCOMMITTED working-tree changes. A live dotfile's uncommitted "
++        f"edits are almost always newer than the committed version — overwriting the whole file "
++        f"drops them with no recovery. Read the current content first, then make a SURGICAL `Edit` "
++        f"of only the lines you mean to change. If a full overwrite is genuinely intended, snapshot "
++        f"the file aside first and append `[config-overwrite-ok: <reason>]` to the content."
++    )
++
++
++def _bash_block_reason(cwd: Path, tool_input: dict) -> str | None:
++    """Block reason for a ``Bash`` git op, or ``None`` to allow.
++
++    Allows on an empty command, a present per-call token, a failed bootstrap,
++    or a non-destructive / out-of-scope command.
++    """
++    command = tool_input.get("command", "")
++    if not command:
++        return None
++    if reason_token := _overwrite_ok_token(command):
++        sys.stderr.write(f"NOTE: config-overwrite gate skipped via [config-overwrite-ok: {reason_token}].\n")
++        return None
++    if not _bootstrap():
++        return None
++    return _evaluate_bash(cwd, command)
++
++
++def _write_block_reason_or_none(cwd: Path, tool_input: dict) -> str | None:
++    """Block reason for a full-file ``Write`` over a dirty tracked config, or ``None``.
++
++    Allows on a missing path, a present per-call token, a failed bootstrap, or
++    a file that is not a dirty tracked config/dotfile.
++    """
++    file_path = tool_input.get("file_path", "")
++    if not file_path:
++        return None
++    if _overwrite_ok_token(tool_input.get("content", "")) or _overwrite_ok_token(file_path):
++        sys.stderr.write("NOTE: config-overwrite gate skipped via [config-overwrite-ok: ...].\n")
++        return None
++    if not _bootstrap():
++        return None
++    if not _write_overwrites_dirty_config(cwd, file_path):
++        return None
++    return _write_block_reason(file_path)
++
++
++def handle_block_config_overwrite(data: dict) -> bool:
++    """Block a destructive overwrite/restore of a dirty tracked config/dotfile.
++
++    Fires for:
++
++    *   ``Bash`` running a working-tree-destroying git op (``git checkout`` /
++        ``restore`` with a config path, ``git reset --hard``, ``git stash``)
++        that would clobber a tracked config/dotfile with uncommitted changes;
++    *   ``Write`` replacing the whole content of such a file.
++
++    Every other case ALLOWS: a non-destructive command, an op on a source
++    file, a clean or untracked config file, a surgical ``Edit``, the gate
++    disabled, a present ``[config-overwrite-ok: <reason>]`` token, an
++    unresolvable cwd, or any internal error. The deny routes through
++    :func:`_fail_open_or_deny` (self-rescue allowlist + master fail-open +
++    circuit breaker — never-lockout).
++    """
++    from hook_router import _fail_open_or_deny, _resolve_cwd_repo  # noqa: PLC0415, PLC2701
++
++    tool_name = data.get("tool_name", "")
++    if tool_name not in _IN_SCOPE_TOOLS or not _gate_enabled():
++        return False
++    cwd = _resolve_cwd_repo(data)
++    if cwd is None:
++        return False
++
++    tool_input = data.get("tool_input", {})
++    if tool_name == "Bash":
++        reason = _bash_block_reason(cwd, tool_input)
++    else:
++        reason = _write_block_reason_or_none(cwd, tool_input)
++    if reason is None:
++        return False
++    return _fail_open_or_deny(data, reason)
+diff --git hooks/scripts/hook_router.py hooks/scripts/hook_router.py
+index eeac879fec..fd288a2104 100755
+--- hooks/scripts/hook_router.py
++++ hooks/scripts/hook_router.py
+@@ -41,6 +41,7 @@
+ 
+ from availability_away_probe import resolved_away_mode as resolved_away_mode_stdlib
+ from banned_terms_marker import resolve_marker as _resolve_banned_terms_marker
++from config_overwrite_guard import handle_block_config_overwrite
+ from django_bootstrap import bootstrap_teatree_django
+ from loop_registrations import emit_loop_registrations, is_bare_loop_tick_prompt, loop_name_from_prompt
+ from loop_state_self_pump_gate import db_loop_state_suppresses_self_pump
+@@ -8374,6 +8375,7 @@ def handle_subagent_stop_no_commit(data: dict) -> None:
+         handle_enforce_loop_registration,
+         handle_block_edit_before_planned,
+         handle_protect_default_branch,
++        handle_block_config_overwrite,
+         handle_block_self_dm_via_mcp,
+         handle_quote_scanner_pretool,
+         handle_dispatch_prompt_quote_scanner,
+diff --git skills/rules/SKILL.md skills/rules/SKILL.md
+index 7340dec8fa..610f1b0eca 100644
+--- skills/rules/SKILL.md
++++ skills/rules/SKILL.md
+@@ -96,7 +96,9 @@ ## Index
+ 41. [Session Scope Management](#session-scope-management)
+ 42. [Skill Auto-Loading Must Work](#skill-auto-loading-must-work)
+ 43. [Escalate Honesty-Critical Verification to the Most-Honest Model](#escalate-honesty-critical-verification-to-the-most-honest-model)
+-44. [Re-Validate a Reused Guard in a New Destructive Context](#re-validate-a-reused-guard-in-a-new-destructive-context)
++44. [Read Before Overwriting a Tracked Config/Dotfile](#read-before-overwriting-a-tracked-configdotfile-non-negotiable)
++45. [On an Ambiguous Directive, Take the Non-Destructive Reading](#on-an-ambiguous-directive-take-the-non-destructive-reading-non-negotiable)
++46. [Re-Validate a Reused Guard in a New Destructive Context](#re-validate-a-reused-guard-in-a-new-destructive-context)
+ 
+ ## Invoke Skills Before ANY Response
+ 
+@@ -571,6 +573,17 @@ # never: AskUserQuestion("should I create the worktree?") on obviously in-scope
+ 
+ **When in doubt, do the work.** A tiny PR adding the fix alongside the main change is always preferable to a stand-alone ticket that lives in the backlog for weeks.
+ 
++**Never punt resolvable work back to the user as a "decision/data you must provide" (Non-Negotiable).** "It needs X" is almost never a reason to ask — it is a to-do list for the agent. Finding or creating a test fixture, pinning an id, checking or enabling a feature flag, doing a write in a DEV/test environment, querying a database, locating config, deciding a trade-off by running CI — that is the agent's job to ABSORB, not to surface. Before writing "this needs your decision/data," ask: _can I get it myself_ (query, search, create the fixture, check the flag, read the config, run the test)? If yes — do it; do not ask.
++
++Escalate to the user ONLY for something **genuinely user-only**, and only with evidence you already tried:
++
++- a **fact you cannot obtain** — a private URL/endpoint, the intended audience, a credential, a value that lives only in the user's head;
++- **authorization for an irreversible or outward-facing action** — a publish, a customer-facing MR merge, a money movement, a destructive op (per the always-gated rules);
++- a real access/deploy wall hit AFTER actually trying, proven (e.g. "verified branch X not deployed to env Y via Z");
++- a true product/judgment call that is the maintainer's to make.
++
++Distrust a sub-agent's "needs user decision" framing — re-test whether it is actually resolvable before relaying it. Punting resolvable work reads as helplessness; the user pays the agent to absorb the work, not to surface it.
++
+ **Bundle Bugs Found Mid-Session into the Current PR (Non-Negotiable when in `auto` mode).**
+ 
+ When you encounter a bug, broken behavior, or rough edge during any session — fix it on the spot, in the current PR if at all reasonable. Do not narrate the finding as a deferral, do not propose filing tickets, do not ask "should I fix this in a separate PR?" before doing the obvious work. Work unattended.
+@@ -629,6 +642,8 @@ ## Ask About Auth Before External Service Integrations
+ 
+ When implementing features that require an external service (Notion, Slack, CI, etc.), ask "how do you authenticate with this service?" BEFORE writing any code. The answer (direct API token, CLI auth, MCP tool, OAuth, etc.) determines the entire architecture. Skipping this question leads to multiple implementation pivots.
+ 
++**Zero user effort when the user says "I do nothing."** "I do nothing" / "do it yourself" / "the skill should handle it by itself" is a hard constraint on the SOLUTION SHAPE, not a preference. Acceptable user effort is **zero** — no app registration, no authorizing in a browser, no pasting client IDs/secrets/codes, no config edits. A solution that offloads setup onto the user violates the constraint even when it is technically "better" (e.g. OAuth refresh tokens). Favour mechanisms the agent can drive autonomously end to end — browser automation against an already-logged-in session, credentials cached in the secret store, auto-refresh on a 401 — and absorb the complexity rather than handing it back. Only if genuinely no zero-effort path exists, say so plainly and ask; never silently pick a high-effort path.
++
+ ## Never Change PR Base Branch or Dependencies (Non-Negotiable)
+ 
+ When a PR targets a non-default branch, that is intentional — it means the PR is part of a dependency chain. **Never** change a PR's target branch, rebase it onto a different base, or remove PR dependencies without explicit user instruction.
+@@ -1002,6 +1017,25 @@ ## Escalate Honesty-Critical Verification to the Most-Honest Model
+ 
+ The escalation is **situational and auto-clears** — it is NOT a standing reviewer-model change. It is session-scoped, idempotent (re-firing the same trigger is a no-op), and bounded by a 6-hour safety-net TTL; the primary clear is an honest, verified-complete landing (a fully-passed rubric grade). Rationale: models learn honesty over time, so the most-honest model is the right one to _verify_ a moment the agent's own honesty is in question. The firing is yours to judge (it is prompt-level, SDK-portable — not a CLI-only flag); the consequence (raise → kill-switch → auto-clear) is deterministic. Trigger #4 also has a deterministic backstop: when the rubric done-gate refuses a merge, it records the `shipped_incomplete` escalation for you.
+ 
++## Read Before Overwriting a Tracked Config/Dotfile (Non-Negotiable)
++
++A config/dotfile under git (`.claude/settings.json`, `.teatree.toml`, a shell rc, any dotfile) almost always carries uncommitted working-tree edits that are MORE current than `HEAD` — that is the normal state of a live dotfiles repo. Restoring the committed version over those edits is silent data loss with no recovery unless they were staged.
++
++- Treat **uncommitted > committed** by default for a config/dotfile. Never assume `HEAD` is the source of truth for a live config file.
++- Before ANY operation that replaces a tracked config/dotfile's whole content — `git checkout <path>`, `git restore <path>`, `git reset --hard`, `git stash` (it shelves the working tree), or a full-file `Write` that rewrites the file — **read the current working-tree content first**, diff it against what you are about to write, and confirm the loss is intended.
++- Prefer a **surgical `Edit`** (change only the lines you mean to) over a whole-file rewrite. Whole-file replacement is what destroys data; targeted edits do not.
++- If you must restore from git, snapshot the current content aside first (`cp <file> <file>.bak`) so the working-tree version is recoverable.
++
++This is hook-enforced, not a remembered preference. The `PreToolUse` gate `handle_block_config_overwrite` (bare sibling module `hooks/scripts/config_overwrite_guard.py`, pure logic in `teatree.core.gates.config_overwrite_guard`) BLOCKS a `git checkout`/`restore`/`reset --hard`/`stash` or a full-file `Write` that would clobber a tracked config/dotfile with uncommitted changes. Scope is narrow (`.claude/*`, `.teatree.toml`, dotfiles, known config basenames) so normal source-file git ops are untouched. Never-lockout: a per-call `[config-overwrite-ok: <reason>]` token and the `[teatree] config_overwrite_gate_enabled = false` kill-switch both ALLOW; the deny routes through `_fail_open_or_deny`.
++
++## On an Ambiguous Directive, Take the Non-Destructive Reading (Non-Negotiable)
++
++When a directive could mean two things and one reading triggers a destructive or irreversible action — killing in-flight work, deleting, overwriting, restoring from git, a destructive DB op — default to the **non-destructive** reading, or ask a neutral clarifying question that does NOT bake in the destructive option.
++
++- Never frame an `AskUserQuestion` whose every option presupposes the destructive interpretation. Always offer "do nothing / let it continue" as a real option.
++- Speed on reversible work, caution on irreversible work. Under a burst of simultaneous requests, batch-acknowledge but DELAY irreversible actions until the intent is certain — "act fast" must never resolve an ambiguous term toward the interpretation that destroys work.
++- A wrong guess on an irreversible action cannot be cheaply undone; the cost of one clarifying round-trip is far lower than the cost of recovering destroyed work.
++
+ ## Re-Validate a Reused Guard in a New Destructive Context
+ 
+ A guard or classifier that is safe for gating one action is not automatically safe for authorizing another. Before reusing an existing guard to authorize a NEW destructive operation (`git reset --hard`, force-delete, force-push, `DROP`/`DELETE`), re-validate that the guard's safety property actually holds for THIS operation — e.g. subject-matching is sufficient to clean up a forge-merged branch, but only content-equivalence (patch-id) is safe before resetting a branch. In a sub-agent brief, never assert a safety property you have not verified; require the implementer to prove the property holds in the new context, and route any change that introduces a destructive operation through an adversarial review that specifically attacks the data-loss path.
+diff --git src/teatree/core/gates/config_overwrite_guard.py src/teatree/core/gates/config_overwrite_guard.py
+new file mode 100644
+index 0000000000..621b128701
+--- /dev/null
++++ src/teatree/core/gates/config_overwrite_guard.py
+@@ -0,0 +1,314 @@
++"""Block a destructive overwrite/restore of a dirty tracked config/dotfile.
++
++Targets a tracked config/dotfile carrying UNCOMMITTED working-tree changes.
++
++A live config/dotfile under git (``.claude/settings.json``, ``.teatree.toml``,
++a shell rc, any dotfile) almost always carries working-tree edits that are
++MORE current than ``HEAD`` — that is the normal state of a dotfiles repo. An
++operation that replaces the file's whole content with the committed version —
++``git checkout -- <path>`` / ``git restore <path>`` / ``git reset --hard`` /
++``git stash`` (which shelves the working tree), or a full-file ``Write`` over
++the tracked dotfile — silently discards exactly those edits with no recovery
++path unless they were staged. "Found a version in git and restored it" is the
++classic data-loss move.
++
++This gate is the deterministic enforcement of ``/t3:rules`` § "Read Before
++Overwriting a Tracked Config/Dotfile". It refuses such an operation when the
++target is a tracked config/dotfile with uncommitted changes, unless the
++operation is explicitly confirmed (a per-call token the hook layer honours).
++
++**Scope is deliberately narrow.** It fires ONLY for config/dotfiles — paths
++matching :data:`_CONFIG_PATH_PATTERNS` (``.claude/*``, ``.teatree*``, a
++dotfile, or a known config basename). A normal source file (``models.py``,
++``views.ts``) is never in scope, so everyday ``git checkout -- src/foo.py`` to
++discard an unwanted edit is untouched. The pure logic lives here in
++``teatree.core``; the thin ``PreToolUse`` adapter is the sibling hook module
++``hooks/scripts/config_overwrite_guard.py``.
++"""
++
++import re
++from dataclasses import dataclass, field
++from pathlib import Path, PurePosixPath
++
++from teatree.utils.run import run_allowed_to_fail
++
++# --------------------------------------------------------------------------- #
++# Config / dotfile scope
++# --------------------------------------------------------------------------- #
++
++# A path is in scope when ANY of its segments / its basename matches one of
++# these. The intent is "agent/user configuration and dotfiles", NOT source.
++_CONFIG_DIR_SEGMENTS: frozenset[str] = frozenset({".claude", ".config", ".teatree"})
++_CONFIG_BASENAMES: frozenset[str] = frozenset(
++    {
++        ".teatree.toml",
++        "settings.json",
++        "settings.local.json",
++        ".cursorrules",
++        ".env",
++        "claude.md",  # matched case-insensitively below
++        "agents.md",
++        ".gitconfig",
++        ".zshrc",
++        ".bashrc",
++        ".bash_profile",
++        ".profile",
++        ".tmux.conf",
++        ".vimrc",
++    },
++)
++# A bare dotfile basename (``.foorc``, ``.teatree.toml``, ``.zshrc``) is in
++# scope; a ``.py`` / ``.ts`` / ``.md`` source file is not (those are matched by
++# extension below and explicitly excluded).
++_SOURCE_SUFFIXES: frozenset[str] = frozenset(
++    {".py", ".ts", ".tsx", ".js", ".jsx", ".html", ".css", ".scss", ".java", ".go", ".rs", ".c", ".cpp", ".h"},
++)
++
++
++def is_config_path(path: str) -> bool:
++    """Whether *path* names a config/dotfile this gate protects.
++
++    In scope: anything under a ``.claude`` / ``.config`` / ``.teatree``
++    directory, a known config basename (``settings.json``, ``.teatree.toml``,
++    ``CLAUDE.md``, …), or a leading-dot dotfile that is not a recognised
++    source file. Out of scope: ordinary source files, so normal source-file
++    git operations are never blocked.
++    """
++    if not path:
++        return False
++    posix = PurePosixPath(path.strip())
++    parts = posix.parts
++    name = posix.name
++    lower_name = name.lower()
++
++    if any(segment in _CONFIG_DIR_SEGMENTS for segment in parts):
++        return True
++    if lower_name in _CONFIG_BASENAMES:
++        return True
++    # A leading-dot dotfile (``.zshrc``, ``.teatree.toml``, ``.foorc``) that is
++    # not a source file by extension. ``.gitignore``-style dotfiles count.
++    return name.startswith(".") and posix.suffix.lower() not in _SOURCE_SUFFIXES
++
++
++# --------------------------------------------------------------------------- #
++# git working-tree state
++# --------------------------------------------------------------------------- #
++
++
++def _git(repo: Path, *args: str) -> tuple[int, str]:
++    """Return ``(returncode, stdout)`` for ``git -C <repo> <args>``.
++
++    Uses :func:`run_allowed_to_fail` so a non-zero exit (not a repo, bad ref)
++    yields a probe-style result the caller interprets, never a crash.
++    """
++    result = run_allowed_to_fail(["git", "-C", str(repo), *args], expected_codes=None)
++    return result.returncode, result.stdout.strip()
++
++
++def _toplevel(repo: Path) -> Path | None:
++    rc, out = _git(repo, "rev-parse", "--show-toplevel")
++    if rc != 0 or not out:
++        return None
++    return Path(out)
++
++
++def is_tracked(repo: Path, path: str) -> bool:
++    """Whether *path* is a file git tracks in *repo*.
++
++    An UNtracked file (a brand-new dotfile, or one in ``.gitignore``) carries
++    no committed version to be clobbered by a restore, so it is out of scope.
++    """
++    rc, _ = _git(repo, "ls-files", "--error-unmatch", "--", path)
++    return rc == 0
++
++
++def has_uncommitted_changes(repo: Path, path: str) -> bool:
++    """Whether the tracked *path* differs from ``HEAD`` in the working tree or index.
++
++    ``git status --porcelain -- <path>`` emits a line for any unstaged OR
++    staged modification; an empty result means the working tree matches
++    ``HEAD`` (nothing would be lost by a restore). This is the load-bearing
++    safety predicate: a restore only destroys data when uncommitted edits
++    exist.
++    """
++    rc, out = _git(repo, "status", "--porcelain", "--", path)
++    if rc != 0:
++        # Can't determine state — fail closed at the predicate level so the
++        # caller treats the file as dirty (safer to over-warn on a config file
++        # than to silently allow a clobber). The hook adapter still owns the
++        # never-lockout escapes.
++        return True
++    return bool(out.strip())
++
++
++# --------------------------------------------------------------------------- #
++# Destructive-command detection
++# --------------------------------------------------------------------------- #
++
++# ``git checkout -- <path>`` / ``git checkout <path>`` / ``git restore <path>``
++# all overwrite the working-tree file with the committed (or staged) content.
++_GIT_CHECKOUT_RE = re.compile(r"\bgit\s+checkout\b")
++_GIT_RESTORE_RE = re.compile(r"\bgit\s+restore\b")
++# ``git reset --hard`` discards ALL working-tree changes (path-scoped or not).
++_GIT_RESET_HARD_RE = re.compile(r"\bgit\s+reset\b[^\n;|&]*?--hard\b")
++# ``git stash`` (push, the default) shelves the working tree away — a config
++# file's edits vanish from the tree, and a later ``stash drop`` loses them.
++_GIT_STASH_RE = re.compile(r"\bgit\s+stash\b(?!\s+(?:list|show|branch))")
++# Switching branches with a path is not destructive; ``git checkout <branch>``
++# without a path is out of scope (handled by path extraction below).
++
++
++@dataclass(frozen=True, slots=True)
++class DestructiveOp:
++    """A parsed destructive working-tree git op and the paths it names."""
++
++    verb: str  # "checkout" | "restore" | "reset --hard" | "stash"
++    paths: tuple[str, ...]  # explicit path arguments (may be empty for reset --hard / stash)
++    sweeps_whole_tree: bool  # True for ``reset --hard`` / ``stash`` (no path needed to hit a config file)
++
++
++def _split_args(command: str) -> list[str]:
++    """Tokenise *command* loosely on whitespace, stripping surrounding quotes.
++
++    Good enough for pulling path-shaped positionals out of a ``git`` invocation
++    in a PreToolUse hook; the gate does not need a full shell parser, and a
++    quoted span it cannot resolve simply yields fewer path tokens (the
++    whole-tree verbs do not depend on path extraction at all).
++    """
++    return [tok.strip("'\"") for tok in command.split()]
++
++
++def _extract_path_args(command: str) -> tuple[str, ...]:
++    """Return the path-shaped positionals after the ``git <verb>``.
++
++    Everything after a literal ``--`` is a path. Without an explicit ``--``,
++    a trailing non-flag token that is not a bare branch ref heuristically
++    counts (``git checkout -- f`` is unambiguous; ``git checkout f`` is
++    treated as a path too, since this gate only matters once that token names
++    a config file). Flags and their inline values are skipped.
++    """
++    tokens = _split_args(command)
++    try:
++        start = tokens.index("git") + 2  # skip "git" and the verb
++    except ValueError:
++        start = 0
++    rest = tokens[start:]
++    if "--" in rest:
++        return tuple(p for p in rest[rest.index("--") + 1 :] if p)
++    # No explicit ``--``: take trailing non-flag tokens as candidate paths.
++    return tuple(tok for tok in rest if tok and not tok.startswith("-"))
++
++
++def parse_destructive_op(command: str) -> DestructiveOp | None:
++    """Parse a Bash *command* into a :class:`DestructiveOp`, or ``None``.
++
++    Recognises the four working-tree-destroying git forms named in the rule:
++    ``git checkout`` (with a path), ``git restore`` (with a path),
++    ``git reset --hard``, and ``git stash`` (push). ``reset --hard`` and
++    ``stash`` sweep the whole tree, so they need no path argument to endanger a
++    config file. A read-only ``git stash list/show`` is excluded.
++    """
++    if _GIT_RESET_HARD_RE.search(command):
++        return DestructiveOp(verb="reset --hard", paths=(), sweeps_whole_tree=True)
++    if _GIT_STASH_RE.search(command):
++        return DestructiveOp(verb="stash", paths=(), sweeps_whole_tree=True)
++    if _GIT_CHECKOUT_RE.search(command):
++        paths = _extract_path_args(command)
++        # A bare ``git checkout <branch>`` (no path that looks like a file) is
++        # not in scope; only a path argument can overwrite a working file.
++        return DestructiveOp(verb="checkout", paths=paths, sweeps_whole_tree=False) if paths else None
++    if _GIT_RESTORE_RE.search(command):
++        paths = _extract_path_args(command)
++        return DestructiveOp(verb="restore", paths=paths, sweeps_whole_tree=False) if paths else None
++    return None
++
++
++# --------------------------------------------------------------------------- #
++# Verdict
++# --------------------------------------------------------------------------- #
++
++
++@dataclass(frozen=True, slots=True)
++class OverwriteVerdict:
++    """Whether a destructive op would clobber a dirty tracked config/dotfile."""
++
++    blocked: bool
++    verb: str = ""
++    config_paths: tuple[str, ...] = field(default=())
++    reason: str = ""
++
++
++def _config_paths_at_risk(repo: Path, candidate_paths: tuple[str, ...]) -> list[str]:
++    """Subset of *candidate_paths* that are tracked, dirty config/dotfiles."""
++    at_risk: list[str] = []
++    for path in candidate_paths:
++        if not is_config_path(path):
++            continue
++        if not is_tracked(repo, path):
++            continue
++        if has_uncommitted_changes(repo, path):
++            at_risk.append(path)
++    return at_risk
++
++
++def _dirty_tracked_config_files(repo: Path) -> list[str]:
++    """Every tracked config/dotfile in *repo* with uncommitted changes.
++
++    Used for the whole-tree verbs (``reset --hard`` / ``stash``) that name no
++    path: any dirty tracked config file in the repo is at risk.
++    """
++    rc, out = _git(repo, "status", "--porcelain")
++    if rc != 0 or not out:
++        return []
++    at_risk: list[str] = []
++    for line in out.splitlines():
++        # Porcelain v1: "XY <path>" (rename "XY <old> -> <new>").
++        rest = line[3:].strip()
++        path = rest.split(" -> ")[-1].strip().strip('"')
++        if path and is_config_path(path):
++            at_risk.append(path)
++    return at_risk
++
++
++def evaluate(command: str, repo: Path) -> OverwriteVerdict:
++    """Decide whether *command* would destroy a dirty tracked config/dotfile in *repo*.
++
++    Returns a blocking :class:`OverwriteVerdict` when the parsed destructive op
++    would overwrite at least one tracked config/dotfile that has uncommitted
++    working-tree changes. Everything else — a non-destructive command, a
++    destructive op on a source file, a config file with no uncommitted changes,
++    or an untracked file — returns ``blocked=False``.
++    """
++    op = parse_destructive_op(command)
++    if op is None:
++        return OverwriteVerdict(blocked=False)
++    toplevel = _toplevel(repo)
++    if toplevel is None:
++        return OverwriteVerdict(blocked=False)
++
++    if op.sweeps_whole_tree:
++        at_risk = _dirty_tracked_config_files(toplevel)
++    else:
++        at_risk = _config_paths_at_risk(toplevel, op.paths)
++
++    if not at_risk:
++        return OverwriteVerdict(blocked=False)
++    return OverwriteVerdict(
++        blocked=True,
++        verb=op.verb,
++        config_paths=tuple(at_risk),
++        reason=format_block_reason(op.verb, at_risk),
++    )
++
++
++def format_block_reason(verb: str, config_paths: list[str]) -> str:
++    """Render the actionable refusal message for the hook layer."""
++    files = ", ".join(f"`{p}`" for p in config_paths)
++    return (
++        f"BLOCKED: `git {verb}` would discard UNCOMMITTED working-tree changes to a tracked "
++        f"config/dotfile ({files}). A live dotfile's uncommitted edits are almost always newer "
++        f"than the committed version — restoring HEAD over them is silent data loss with no "
++        f"recovery unless the edits were staged. Read the current content first and confirm the "
++        f"loss is intended. If it genuinely is, snapshot the file aside (`cp <file> <file>.bak`) "
++        f"then append `[config-overwrite-ok: <reason>]` to the command to proceed."
++    )
+diff --git tests/test_hook_router_config_overwrite.py tests/test_hook_router_config_overwrite.py
+new file mode 100644
+index 0000000000..1d263b0ab3
+--- /dev/null
++++ tests/test_hook_router_config_overwrite.py
+@@ -0,0 +1,212 @@
++# test-path: cross-cutting — tests hook_router.py (hooks/) + teatree.core.gates.config_overwrite_guard.
++"""Tests for the config-overwrite data-loss gate.
++
++A working-tree-destroying git op (``git checkout -- <path>`` / ``git restore``
++/ ``git reset --hard`` / ``git stash``) — or a full-file ``Write`` — that would
++clobber a TRACKED config/dotfile carrying UNCOMMITTED changes is denied. The
++classic data-loss move: "found a version in git and restored it" over a live
++dotfile whose working-tree edits were newer than ``HEAD``.
++
++Anti-vacuity: the core fixture is a real ``git init`` repo with a COMMITTED
++tracked ``.claude/settings.json`` and an uncommitted edit on top. The gate
++BLOCKS ``git checkout -- .claude/settings.json`` (red without the gate). The
++companion allow-tests prove the block is SCOPED: a clean config file, a source
++file, an untracked file, a surgical ``Edit``, and the never-lockout escapes all
++proceed.
++"""
++
++import json
++import os
++import subprocess
++from pathlib import Path
++
++import pytest
++
++import hooks.scripts.config_overwrite_guard as gate
++import hooks.scripts.hook_router as router
++from teatree.core.gates import config_overwrite_guard as core
++
++
++def _git(cwd: Path, *args: str) -> None:
++    subprocess.run(
++        ["git", *args],  # noqa: S607
++        cwd=cwd,
++        check=True,
++        capture_output=True,
++        env={
++            **os.environ,
++            "GIT_CONFIG_GLOBAL": "/dev/null",
++            "GIT_CONFIG_SYSTEM": "/dev/null",
++            "GIT_AUTHOR_NAME": "t",
++            "GIT_AUTHOR_EMAIL": "t@t",
++            "GIT_COMMITTER_NAME": "t",
++            "GIT_COMMITTER_EMAIL": "t@t",
++        },
++    )
++
++
++def _repo_with_committed_config(tmp_path: Path) -> Path:
++    """A git repo with a COMMITTED tracked ``.claude/settings.json``."""
++    repo = tmp_path / "dotfiles"
++    repo.mkdir()
++    _git(repo, "init", "-b", "main")
++    cfg = repo / ".claude" / "settings.json"
++    cfg.parent.mkdir()
++    cfg.write_text('{"committed": true}\n')
++    _git(repo, "add", "-A")
++    _git(repo, "commit", "-m", "initial config")
++    return repo
++
++
++def _bash_event(command: str, cwd: Path) -> dict:
++    return {"session_id": "sess-cfg", "tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(cwd)}
++
++
++def _write_event(file_path: str, cwd: Path, content: str = "{}") -> dict:
++    return {
++        "session_id": "sess-cfg",
++        "tool_name": "Write",
++        "tool_input": {"file_path": file_path, "content": content},
++        "cwd": str(cwd),
++    }
++
++
++def _parse_deny(capsys: pytest.CaptureFixture[str]) -> dict | None:
++    out = capsys.readouterr().out.strip()
++    return json.loads(out) if out else None
++
++
++@pytest.fixture(autouse=True)
++def _gate_on(monkeypatch: pytest.MonkeyPatch) -> None:
++    """Force the gate ENABLED and bootstrap a no-op so the env's config never disables it."""
++    monkeypatch.setattr(gate, "_gate_enabled", lambda: True)
++    monkeypatch.setattr(gate, "_bootstrap", lambda: True)
++
++
++class TestBlocksDirtyConfigRestore:
++    """The data-loss path: a destructive op over a dirty tracked config/dotfile."""
++
++    def test_git_checkout_over_dirty_config_is_blocked(
++        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
++    ) -> None:
++        repo = _repo_with_committed_config(tmp_path)
++        # Uncommitted working-tree edit — the experimental config the restore would destroy.
++        (repo / ".claude" / "settings.json").write_text('{"experimental": "agent-team"}\n')
++
++        verdict = router.handle_block_config_overwrite(_bash_event("git checkout -- .claude/settings.json", repo))
++
++        assert verdict is True
++        deny = _parse_deny(capsys)
++        assert deny is not None
++        assert deny["permissionDecision"] == "deny"
++        assert ".claude/settings.json" in deny["permissionDecisionReason"]
++        assert "UNCOMMITTED" in deny["permissionDecisionReason"]
++
++    def test_git_restore_over_dirty_config_is_blocked(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
++        repo = _repo_with_committed_config(tmp_path)
++        (repo / ".claude" / "settings.json").write_text('{"edited": true}\n')
++        assert router.handle_block_config_overwrite(_bash_event("git restore .claude/settings.json", repo)) is True
++        assert _parse_deny(capsys)["permissionDecision"] == "deny"  # type: ignore[index]
++
++    def test_git_reset_hard_with_dirty_config_is_blocked(
++        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
++    ) -> None:
++        repo = _repo_with_committed_config(tmp_path)
++        (repo / ".claude" / "settings.json").write_text('{"edited": true}\n')
++        # reset --hard names no path but sweeps the whole tree → the dirty config is at risk.
++        assert router.handle_block_config_overwrite(_bash_event("git reset --hard HEAD", repo)) is True
++        assert _parse_deny(capsys)["permissionDecision"] == "deny"  # type: ignore[index]
++
++    def test_git_stash_with_dirty_config_is_blocked(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
++        repo = _repo_with_committed_config(tmp_path)
++        (repo / ".claude" / "settings.json").write_text('{"edited": true}\n')
++        assert router.handle_block_config_overwrite(_bash_event("git stash", repo)) is True
++        assert _parse_deny(capsys)["permissionDecision"] == "deny"  # type: ignore[index]
++
++    def test_full_file_write_over_dirty_config_is_blocked(
++        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
++    ) -> None:
++        repo = _repo_with_committed_config(tmp_path)
++        (repo / ".claude" / "settings.json").write_text('{"edited": true}\n')
++        event = _write_event(str(repo / ".claude" / "settings.json"), repo, content='{"from": "git"}')
++        assert router.handle_block_config_overwrite(event) is True
++        assert _parse_deny(capsys)["permissionDecision"] == "deny"  # type: ignore[index]
++
++
++class TestAllowsSafeAndOutOfScope:
++    """The block is SCOPED — these proceed (verdict False, no deny written)."""
++
++    def test_clean_config_restore_is_allowed(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
++        repo = _repo_with_committed_config(tmp_path)  # no uncommitted edit → nothing to lose
++        assert router.handle_block_config_overwrite(_bash_event("git checkout -- .claude/settings.json", repo)) is False
++        assert _parse_deny(capsys) is None
++
++    def test_source_file_restore_is_allowed(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
++        repo = _repo_with_committed_config(tmp_path)
++        src = repo / "models.py"
++        src.write_text("x = 1\n")
++        _git(repo, "add", "-A")
++        _git(repo, "commit", "-m", "src")
++        src.write_text("x = 2\n")  # dirty, but a SOURCE file — out of scope
++        assert router.handle_block_config_overwrite(_bash_event("git checkout -- models.py", repo)) is False
++        assert _parse_deny(capsys) is None
++
++    def test_untracked_config_write_is_allowed(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
++        repo = _repo_with_committed_config(tmp_path)
++        new_cfg = repo / ".claude" / "new.json"  # not tracked → no committed version to clobber
++        new_cfg.write_text("{}\n")
++        assert router.handle_block_config_overwrite(_write_event(str(new_cfg), repo)) is False
++        assert _parse_deny(capsys) is None
++
++    def test_branch_switch_without_path_is_allowed(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
++        repo = _repo_with_committed_config(tmp_path)
++        (repo / ".claude" / "settings.json").write_text('{"edited": true}\n')
++        # ``git checkout main`` names a branch, not a path — out of scope.
++        assert router.handle_block_config_overwrite(_bash_event("git checkout main", repo)) is False
++        assert _parse_deny(capsys) is None
++
++    def test_non_destructive_git_command_is_allowed(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
++        repo = _repo_with_committed_config(tmp_path)
++        (repo / ".claude" / "settings.json").write_text('{"edited": true}\n')
++        assert router.handle_block_config_overwrite(_bash_event("git status", repo)) is False
++        assert _parse_deny(capsys) is None
++
++
++class TestNeverLockout:
++    """Escapes: per-call token, kill-switch, unresolvable cwd."""
++
++    def test_per_call_token_allows(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
++        repo = _repo_with_committed_config(tmp_path)
++        (repo / ".claude" / "settings.json").write_text('{"edited": true}\n')
++        cmd = "git checkout -- .claude/settings.json  # [config-overwrite-ok: intentional revert]"
++        assert router.handle_block_config_overwrite(_bash_event(cmd, repo)) is False
++        assert _parse_deny(capsys) is None
++
++    def test_kill_switch_disables(
++        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
++    ) -> None:
++        monkeypatch.setattr(gate, "_gate_enabled", lambda: False)
++        repo = _repo_with_committed_config(tmp_path)
++        (repo / ".claude" / "settings.json").write_text('{"edited": true}\n')
++        assert router.handle_block_config_overwrite(_bash_event("git checkout -- .claude/settings.json", repo)) is False
++        assert _parse_deny(capsys) is None
++
++    def test_unresolvable_cwd_allows(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
++        event = {"session_id": "s", "tool_name": "Bash", "tool_input": {"command": "git reset --hard"}, "cwd": ""}
++        assert router.handle_block_config_overwrite(event) is False
++        assert _parse_deny(capsys) is None
++
++
++class TestCoreScopeClassifier:
++    """Pure-logic unit coverage for the config/dotfile scope classifier."""
++
++    @pytest.mark.parametrize(
++        "path",
++        [".claude/settings.json", ".teatree.toml", "CLAUDE.md", ".zshrc", "home/.config/foo/bar.conf", ".gitconfig"],
++    )
++    def test_in_scope(self, path: str) -> None:
++        assert core.is_config_path(path) is True
++
++    @pytest.mark.parametrize("path", ["src/models.py", "app/views.ts", "README.md", "lib/util.go", ""])
++    def test_out_of_scope(self, path: str) -> None:
++        assert core.is_config_path(path) is False

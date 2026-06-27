@@ -1,0 +1,550 @@
+diff --git src/teatree/core/managers.py src/teatree/core/managers.py
+index 35e3d1f88d..651b0fbdf0 100644
+--- src/teatree/core/managers.py
++++ src/teatree/core/managers.py
+@@ -311,6 +311,63 @@ def replay_orphaned_transitions(self) -> int:
+                 logger.warning("replay skip task=%s ticket=%s %s: %s", task.pk, task.ticket_id, type(exc).__name__, exc)
+         return replayed
+ 
++    def prune_obsolete(self) -> int:
++        """Fail open tasks whose work item is already closed. Returns the count.
++
++        An open (PENDING or CLAIMED) task whose ``Ticket`` has reached a
++        terminal state (delivered or ignored) is obsolete: the work it was
++        queued for is done or abandoned, but nothing else completes it, so
++        ``PendingTasksScanner`` re-surfaces it on every tick and the loop's
++        task list grows without bound. This sweep transitions those rows to
++        FAILED so the pending list cannot accumulate orphaned work. Terminal
++        tasks (already COMPLETED / FAILED) are untouched; an active ticket's
++        open tasks are left to run.
++        """
++        from teatree.core.models.task import Task  # noqa: PLC0415
++        from teatree.core.models.ticket import Ticket  # noqa: PLC0415
++
++        with transaction.atomic():
++            return self.filter(
++                status__in=[Task.Status.PENDING, Task.Status.CLAIMED],
++                ticket__state__in=[Ticket.State.DELIVERED, Ticket.State.IGNORED],
++            ).update(
++                status=Task.Status.FAILED,
++                claimed_at=None,
++                claimed_by="",
++                lease_expires_at=None,
++                heartbeat_at=None,
++            )
++
++    def reap_stale_pending(self, *, max_age_hours: int = 24) -> int:
++        """Fail headless PENDING tasks no executor ever drained. Returns the count.
++
++        A headless task auto-enqueues to the django-tasks backend on
++        creation; a ``db_worker`` drains it. With no worker running (the
++        session-bound loop carries no daemon by design), those rows sit
++        PENDING indefinitely and ``PendingTasksScanner`` re-surfaces every
++        one each tick — the unbounded pending list the operator sees.
++        Beyond ``max_age_hours`` a never-drained PENDING headless task is
++        treated as failed-to-run and reaped, the PENDING twin of
++        ``reap_stale_claims``. The generous default deadline leaves a
++        slow-but-present worker ample time. Loop-dispatched and interactive
++        tasks are not auto-drained, so they are out of scope here.
++        """
++        from teatree.core.models.task import Task  # noqa: PLC0415
++
++        cutoff = timezone.now() - timedelta(hours=max_age_hours)
++        with transaction.atomic():
++            return self.filter(
++                status=Task.Status.PENDING,
++                execution_target=Task.ExecutionTarget.HEADLESS,
++                created_at__lt=cutoff,
++            ).update(
++                status=Task.Status.FAILED,
++                claimed_at=None,
++                claimed_by="",
++                lease_expires_at=None,
++                heartbeat_at=None,
++            )
++
+     def reap_stale_claims(self) -> int:
+         """Fail CLAIMED tasks whose lease is *still* expired. Returns the count.
+ 
+diff --git src/teatree/core/models/task.py src/teatree/core/models/task.py
+index deb1d546d9..f7242c5cb2 100644
+--- src/teatree/core/models/task.py
++++ src/teatree/core/models/task.py
+@@ -30,6 +30,8 @@ class Status(models.TextChoices):
+         blank=True,
+         related_name="child_tasks",
+     )
++    subject = models.CharField(max_length=120, blank=True)
++    created_at = models.DateTimeField(auto_now_add=True, null=True)
+     phase = models.CharField(max_length=64, blank=True)
+     execution_target = models.CharField(
+         max_length=32,
+@@ -57,6 +59,30 @@ class Meta:
+     def __str__(self) -> str:
+         return f"task-{self.pk}-{self.execution_target!s}"
+ 
++    def display_subject(self) -> str:
++        """A human-readable one-line description of the work this task is about.
++
++        Prefers an explicitly stored ``subject``, then the work item the task
++        targets (the ticket's terminal-friendly summary or its cached tracker
++        title), and last the ``#N phase`` shape. Never returns the bare phase
++        token alone — that is the unreadable ``Task NN (short_describe)`` the
++        statusline used to show when nothing populated this field.
++        """
++        if self.subject.strip():
++            return self.subject.strip()
++        title = self.ticket.short_description or self._ticket_issue_title()
++        number = self.ticket.ticket_number
++        if title.strip():
++            return f"#{number} {title.strip()}"
++        if self.phase:
++            return f"#{number} {self.phase}"
++        return f"#{number}"
++
++    def _ticket_issue_title(self) -> str:
++        extra = self.ticket.extra if isinstance(self.ticket.extra, dict) else {}
++        title = extra.get("issue_title", "")
++        return title if isinstance(title, str) else ""
++
+     def claim(self, *, claimed_by: str, lease_seconds: int = 300) -> None:
+         now = timezone.now()
+         with transaction.atomic():
+diff --git src/teatree/loop/scanners/active_tickets.py src/teatree/loop/scanners/active_tickets.py
+index bf4482c448..c3b350f521 100644
+--- src/teatree/loop/scanners/active_tickets.py
++++ src/teatree/loop/scanners/active_tickets.py
+@@ -102,5 +102,6 @@ def _enqueue_short_describe(ticket: "Ticket") -> None:
+         session=session,
+         phase="short_describe",
+         execution_target=Task.ExecutionTarget.HEADLESS,
++        subject=f"Summarize #{ticket.ticket_number}",
+         execution_reason="Auto-scheduled short_describe — generate terminal-friendly ticket summary",
+     )
+diff --git src/teatree/loop/scanners/architectural_review.py src/teatree/loop/scanners/architectural_review.py
+index 8678cfeff4..d38572381e 100644
+--- src/teatree/loop/scanners/architectural_review.py
++++ src/teatree/loop/scanners/architectural_review.py
+@@ -235,6 +235,7 @@ def _queue_task(self, *, trigger: str) -> "_Task | None":
+                     session=session,
+                     phase=ARCHITECTURAL_REVIEW_PHASE,
+                     execution_target=task_model.ExecutionTarget.HEADLESS,
++                    subject=f"Architectural review: {self.overlay_name}",
+                     execution_reason=(f"Periodic architectural review ({trigger}) via skill: {self.skill}"),
+                 )
+         except Exception:
+diff --git src/teatree/loop/scanners/pending_tasks.py src/teatree/loop/scanners/pending_tasks.py
+index 52c2a212e5..1a67aff00f 100644
+--- src/teatree/loop/scanners/pending_tasks.py
++++ src/teatree/loop/scanners/pending_tasks.py
+@@ -42,10 +42,11 @@ def scan(self) -> list[ScanSignal]:
+         return [
+             ScanSignal(
+                 kind="pending_task",
+-                summary=f"Task {task.id} ({task.phase}) pending",
++                summary=f"Task {task.id} {task.display_subject()} pending",
+                 payload={
+                     "task_id": task.id,
+                     "phase": task.phase,
++                    "subject": task.display_subject(),
+                     "ticket_id": task.ticket_id,
+                     "ticket_role": task.ticket.role,
+                 },
+diff --git src/teatree/loop/scanners/provision_smoke.py src/teatree/loop/scanners/provision_smoke.py
+index b0da17e954..bd2c211ea1 100644
+--- src/teatree/loop/scanners/provision_smoke.py
++++ src/teatree/loop/scanners/provision_smoke.py
+@@ -142,6 +142,7 @@ def _queue_task(self, *, trigger: str) -> "_Task | None":
+                     session=session,
+                     phase=DOGFOOD_SMOKE_PHASE,
+                     execution_target=task_model.ExecutionTarget.HEADLESS,
++                    subject=f"Provision smoke: {self.overlay_name}",
+                     execution_reason=(f"Periodic provision smoke ({trigger}) via skill: {self.skill}"),
+                 )
+         except Exception:
+diff --git src/teatree/loop/scanners/scanning_news.py src/teatree/loop/scanners/scanning_news.py
+index 912c800eb7..c8bb887b08 100644
+--- src/teatree/loop/scanners/scanning_news.py
++++ src/teatree/loop/scanners/scanning_news.py
+@@ -188,6 +188,7 @@ def _queue_task(self, *, trigger: str) -> "_Task | None":
+                     session=session,
+                     phase=SCANNING_NEWS_PHASE,
+                     execution_target=task_model.ExecutionTarget.HEADLESS,
++                    subject=f"Scan AI news: {self.overlay_name}",
+                     execution_reason=self._execution_reason(trigger),
+                 )
+         except Exception:
+diff --git src/teatree/loop/tick_recovery.py src/teatree/loop/tick_recovery.py
+index 10e66b0647..ba82ce6949 100644
+--- src/teatree/loop/tick_recovery.py
++++ src/teatree/loop/tick_recovery.py
+@@ -19,7 +19,7 @@
+ def _reap_stale_task_claims() -> None:
+     """Recover orphaned ticket state, take over orphaned claims, reap stale ones.
+ 
+-    Three boot/tick recovery sweeps, ordered so a recoverable row is
++    Four boot/tick recovery sweeps, ordered so a recoverable row is
+     rescued before a harsher sweep can fail it. First,
+     ``replay_orphaned_transitions`` (#883): a task that COMPLETED but
+     whose FSM transition was lost to a mid-transition crash leaves the
+@@ -30,8 +30,14 @@ def _reap_stale_task_claims() -> None:
+     expired because its owning session exited mid-task is recoverable —
+     returned to PENDING so another still-open session resumes it
+     ("fastest open session takes over") rather than being failed.
+-    Finally ``reap_stale_claims``: any residual stale CLAIMED row is
+-    failed.
++    Then ``reap_stale_claims``: any residual stale CLAIMED row is
++    failed. Then ``prune_obsolete``: an open task whose ticket already
++    reached a terminal state is failed so the pending list can't grow
++    unbounded with work whose item is closed. Finally
++    ``reap_stale_pending``: a headless PENDING task no executor ever
++    drained (no ``db_worker`` running) is failed past a generous
++    deadline, the PENDING twin of ``reap_stale_claims`` — without it the
++    auto-enqueued scanner tasks pile up forever and flood the task list.
+ 
+     Best-effort: if the test harness blocks DB access (pytest-django
+     without a ``db`` marker), the loop tick should still render scanners
+@@ -45,6 +51,8 @@ def _reap_stale_task_claims() -> None:
+         Task.objects.replay_orphaned_transitions()
+         Task.objects.reclaim_orphaned_claims()
+         Task.objects.reap_stale_claims()
++        Task.objects.prune_obsolete()
++        Task.objects.reap_stale_pending()
+ 
+ 
+ def _persist_agent_dispatches(report: "TickReport") -> None:
+diff --git tests/teatree_loop/test_pending_tasks.py tests/teatree_loop/test_pending_tasks.py
+index 900094189f..a320cb2320 100644
+--- tests/teatree_loop/test_pending_tasks.py
++++ tests/teatree_loop/test_pending_tasks.py
+@@ -32,3 +32,18 @@ def test_respects_limit(self) -> None:
+             Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.PENDING)
+         signals = PendingTasksScanner(limit=2).scan()
+         assert len(signals) == 2
++
++    def test_summary_uses_human_subject_not_bare_phase(self) -> None:
++        ticket = self._ticket("https://example.com/issues/3")
++        session = self._session(ticket)
++        Task.objects.create(
++            ticket=ticket,
++            session=session,
++            phase="short_describe",
++            subject="Provision smoke: t3-teatree",
++            status=Task.Status.PENDING,
++        )
++        signals = PendingTasksScanner().scan()
++        assert signals[0].payload["subject"] == "Provision smoke: t3-teatree"
++        assert "(short_describe)" not in signals[0].summary
++        assert "Provision smoke: t3-teatree" in signals[0].summary
+
+diff --git src/teatree/core/migrations/0045_task_created_at_task_subject.py src/teatree/core/migrations/0045_task_created_at_task_subject.py
+new file mode 100644
+index 0000000000..f21b4481ed
+--- /dev/null
++++ src/teatree/core/migrations/0045_task_created_at_task_subject.py
+@@ -0,0 +1,22 @@
++# Generated by Django 6.0.5 on 2026-06-01 09:23
++
++from django.db import migrations, models
++
++
++class Migration(migrations.Migration):
++    dependencies = [
++        ("core", "0044_looplease_owner_pid"),
++    ]
++
++    operations = [
++        migrations.AddField(
++            model_name="task",
++            name="created_at",
++            field=models.DateTimeField(auto_now_add=True, null=True),
++        ),
++        migrations.AddField(
++            model_name="task",
++            name="subject",
++            field=models.CharField(blank=True, max_length=120),
++        ),
++    ]
+
+diff --git src/teatree/core/migrations/0046_backfill_task_subject.py src/teatree/core/migrations/0046_backfill_task_subject.py
+new file mode 100644
+index 0000000000..883e224593
+--- /dev/null
++++ src/teatree/core/migrations/0046_backfill_task_subject.py
+@@ -0,0 +1,45 @@
++import re
++
++from django.db import migrations
++
++
++def _ticket_number(issue_url: str, pk: int) -> str:
++    match = re.search(r"(\d+)$", issue_url or "")
++    if match and match.group(1) != "0":
++        return match.group(1)
++    return str(pk)
++
++
++def _derive_subject(task) -> str:
++    ticket = task.ticket
++    extra = ticket.extra if isinstance(ticket.extra, dict) else {}
++    issue_title = extra.get("issue_title", "")
++    issue_title = issue_title if isinstance(issue_title, str) else ""
++    title = (ticket.short_description or issue_title).strip()
++    number = _ticket_number(ticket.issue_url, ticket.pk)
++    if title:
++        return f"#{number} {title}"[:120]
++    if task.phase:
++        return f"#{number} {task.phase}"[:120]
++    return f"#{number}"
++
++
++def backfill_subject(apps, schema_editor):
++    Task = apps.get_model("core", "Task")
++    for task in Task.objects.filter(subject="").select_related("ticket").iterator():
++        task.subject = _derive_subject(task)
++        task.save(update_fields=["subject"])
++
++
++def noop_reverse(apps, schema_editor):
++    pass
++
++
++class Migration(migrations.Migration):
++    dependencies = [
++        ("core", "0045_task_created_at_task_subject"),
++    ]
++
++    operations = [
++        migrations.RunPython(backfill_subject, noop_reverse),
++    ]
+
+diff --git tests/teatree_core/test_task_lifecycle.py tests/teatree_core/test_task_lifecycle.py
+new file mode 100644
+index 0000000000..1cd2085b0d
+--- /dev/null
++++ tests/teatree_core/test_task_lifecycle.py
+@@ -0,0 +1,148 @@
++"""Task data + lifecycle regressions: open tasks drain, carry a subject, and prune.
++
++Guards the "loop task list totally broken" failure: scanner-created
++headless Tasks (``short_describe`` / ``dogfood_smoke`` /
++``architectural_review``) accumulated PENDING forever because no
++``db_worker`` drained the auto-enqueue queue in the session-bound loop,
++they carried no human description, and nothing pruned the ones whose work
++item was already closed.
++"""
++
++from datetime import timedelta
++
++from django.test import TestCase
++from django.utils import timezone
++
++from teatree.core.models import Session, Task, Ticket
++from teatree.loop.tick_recovery import _reap_stale_task_claims
++
++
++class TestTaskCarriesSubject(TestCase):
++    def test_created_task_has_non_empty_subject(self) -> None:
++        ticket = Ticket.objects.create(
++            overlay="acme",
++            issue_url="https://example.com/issues/42",
++            extra={"issue_title": "Improve the export pipeline"},
++        )
++        session = Session.objects.create(ticket=ticket, agent_id="agent")
++        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
++
++        assert task.display_subject().strip()
++        assert task.display_subject() != "coding"
++
++    def test_explicit_subject_wins_over_derived(self) -> None:
++        ticket = Ticket.objects.create(overlay="acme", issue_url="https://example.com/issues/7")
++        session = Session.objects.create(ticket=ticket, agent_id="agent")
++        task = Task.objects.create(ticket=ticket, session=session, phase="coding", subject="Hand-written summary")
++
++        assert task.display_subject() == "Hand-written summary"
++
++
++class TestPruneObsolete(TestCase):
++    def test_prunes_pending_task_whose_ticket_is_terminal(self) -> None:
++        ticket = Ticket.objects.create(overlay="acme", state=Ticket.State.DELIVERED)
++        session = Session.objects.create(ticket=ticket, agent_id="agent")
++        stale = Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.PENDING)
++
++        pruned = Task.objects.prune_obsolete()
++
++        stale.refresh_from_db()
++        assert pruned == 1
++        assert stale.status == Task.Status.FAILED
++
++    def test_keeps_pending_task_whose_ticket_is_active(self) -> None:
++        ticket = Ticket.objects.create(overlay="acme", state=Ticket.State.STARTED)
++        session = Session.objects.create(ticket=ticket, agent_id="agent")
++        live = Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.PENDING)
++
++        pruned = Task.objects.prune_obsolete()
++
++        live.refresh_from_db()
++        assert pruned == 0
++        assert live.status == Task.Status.PENDING
++
++    def test_leaves_completed_tasks_alone(self) -> None:
++        ticket = Ticket.objects.create(overlay="acme", state=Ticket.State.DELIVERED)
++        session = Session.objects.create(ticket=ticket, agent_id="agent")
++        done = Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.COMPLETED)
++
++        pruned = Task.objects.prune_obsolete()
++
++        done.refresh_from_db()
++        assert pruned == 0
++        assert done.status == Task.Status.COMPLETED
++
++    def test_tick_recovery_runs_prune(self) -> None:
++        ticket = Ticket.objects.create(overlay="acme", state=Ticket.State.IGNORED)
++        session = Session.objects.create(ticket=ticket, agent_id="agent")
++        stale = Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.PENDING)
++
++        _reap_stale_task_claims()
++
++        stale.refresh_from_db()
++        assert stale.status == Task.Status.FAILED
++
++
++class TestReapStalePending(TestCase):
++    """A headless PENDING task no executor ever drained is reaped past its deadline."""
++
++    def _aged_pending_task(self, *, hours: int, phase: str = "dogfood_smoke") -> Task:
++        ticket = Ticket.objects.create(overlay="acme", issue_url=f"x://{phase}", state=Ticket.State.STARTED)
++        session = Session.objects.create(ticket=ticket, agent_id="agent")
++        task = Task.objects.create(
++            ticket=ticket,
++            session=session,
++            phase=phase,
++            execution_target=Task.ExecutionTarget.HEADLESS,
++            status=Task.Status.PENDING,
++        )
++        Task.objects.filter(pk=task.pk).update(created_at=timezone.now() - timedelta(hours=hours))
++        return task
++
++    def test_reaps_undrained_headless_pending_task(self) -> None:
++        task = self._aged_pending_task(hours=48)
++
++        reaped = Task.objects.reap_stale_pending(max_age_hours=24)
++
++        task.refresh_from_db()
++        assert reaped == 1
++        assert task.status == Task.Status.FAILED
++
++    def test_keeps_recent_pending_task(self) -> None:
++        task = self._aged_pending_task(hours=1)
++
++        reaped = Task.objects.reap_stale_pending(max_age_hours=24)
++
++        task.refresh_from_db()
++        assert reaped == 0
++        assert task.status == Task.Status.PENDING
++
++    def test_leaves_interactive_pending_task_alone(self) -> None:
++        ticket = Ticket.objects.create(overlay="acme", state=Ticket.State.STARTED)
++        session = Session.objects.create(ticket=ticket, agent_id="agent")
++        task = Task.objects.create(
++            ticket=ticket,
++            session=session,
++            phase="coding",
++            execution_target=Task.ExecutionTarget.INTERACTIVE,
++            status=Task.Status.PENDING,
++        )
++        Task.objects.filter(pk=task.pk).update(created_at=timezone.now() - timedelta(hours=48))
++
++        reaped = Task.objects.reap_stale_pending(max_age_hours=24)
++
++        task.refresh_from_db()
++        assert reaped == 0
++        assert task.status == Task.Status.PENDING
++
++
++class TestCompletedWorkUnitAdvancesTask(TestCase):
++    def test_complete_transitions_claimed_task_to_completed(self) -> None:
++        ticket = Ticket.objects.create(overlay="acme", state=Ticket.State.STARTED)
++        session = Session.objects.create(ticket=ticket, agent_id="agent")
++        task = Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.CLAIMED)
++
++        task.complete(result_artifact_path="/tmp/artifact")
++
++        task.refresh_from_db()
++        assert task.status == Task.Status.COMPLETED
+
+diff --git tests/test_migration_0046_backfill_task_subject.py tests/test_migration_0046_backfill_task_subject.py
+new file mode 100644
+index 0000000000..e0cdb91a42
+--- /dev/null
++++ tests/test_migration_0046_backfill_task_subject.py
+@@ -0,0 +1,69 @@
++"""Regression test for ``core.0046_backfill_task_subject``.
++
++A Task created before the ``subject`` field existed has a blank subject;
++the statusline then fell back to the bare phase token (the unreadable
++``Task NN (short_describe)`` the operator reported). 0046 backfills a
++human-readable subject derived from the work item.
++"""
++
++import importlib
++
++from django.db import connection
++from django.db.migrations.executor import MigrationExecutor
++from django.test import TransactionTestCase
++
++_migration_module = importlib.import_module("teatree.core.migrations.0046_backfill_task_subject")
++
++
++class BackfillTaskSubjectMigrationTest(TransactionTestCase):
++    _BEFORE = ("core", "0045_task_created_at_task_subject")
++
++    def _migrate(self, target: tuple[str, str]) -> object:
++        executor = MigrationExecutor(connection)
++        executor.migrate([target])
++        executor.loader.build_graph()
++        return executor.loader.project_state([target]).apps
++
++    def _restore_head(self) -> None:
++        executor = MigrationExecutor(connection)
++        executor.loader.build_graph()
++        core_leaves = [node for node in executor.loader.graph.leaf_nodes() if node[0] == "core"]
++        executor.migrate(core_leaves)
++
++    def test_blank_subject_is_backfilled_from_ticket_title(self) -> None:
++        apps = self._migrate(self._BEFORE)
++        Ticket = apps.get_model("core", "Ticket")
++        Session = apps.get_model("core", "Session")
++        Task = apps.get_model("core", "Task")
++
++        ticket = Ticket.objects.create(
++            overlay="acme",
++            issue_url="https://example.com/issues/77",
++            extra={"issue_title": "Export pipeline rework"},
++        )
++        session = Session.objects.create(ticket=ticket, agent_id="agent")
++        task = Task.objects.create(ticket=ticket, session=session, phase="short_describe", subject="")
++
++        _migration_module.backfill_subject(apps, connection.schema_editor())
++
++        task.refresh_from_db()
++        assert task.subject == "#77 Export pipeline rework"
++
++        self._restore_head()
++
++    def test_falls_back_to_phase_when_no_title(self) -> None:
++        apps = self._migrate(self._BEFORE)
++        Ticket = apps.get_model("core", "Ticket")
++        Session = apps.get_model("core", "Session")
++        Task = apps.get_model("core", "Task")
++
++        ticket = Ticket.objects.create(overlay="acme", issue_url="dogfood-smoke://acme")
++        session = Session.objects.create(ticket=ticket, agent_id="agent")
++        task = Task.objects.create(ticket=ticket, session=session, phase="dogfood_smoke", subject="")
++
++        _migration_module.backfill_subject(apps, connection.schema_editor())
++
++        task.refresh_from_db()
++        assert task.subject == f"#{ticket.pk} dogfood_smoke"
++
++        self._restore_head()

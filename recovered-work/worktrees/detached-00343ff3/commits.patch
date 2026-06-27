@@ -1,0 +1,558 @@
+From 00343ff3b2d7104afa2c7273e7362588742f19c8 Mon Sep 17 00:00:00 2001
+From: souliane <21343492+souliane@users.noreply.github.com>
+Date: Thu, 25 Jun 2026 11:03:39 +0200
+Subject: [PATCH] feat(test-plan): add scenario-plan render template (#272)
+
+Add a fourth scenario-plan body template to the pure render layer, reproducing the hand-authored exemplar shape: optional intro then per-scenario blocks (Preconditions / numbered Steps / Expected / a pass marker or a blocked-or-omitted note / captioned inline screenshots, or a contract-check block for the non-screenshot modality), horizontal-rule separators, and an Environment footer.
+
+Purely additive behaviour: registers scenario-plan in KNOWN_TEMPLATES and dispatches to a new render_scenario_plan. The scenario shape (Scenario / ScenarioImage / ScenarioSection TypedDicts, coerce, render) lives in a new _test_plan_scenario module; TestPlanState composes ScenarioSection and round-trips the new keys via coerce_state. The three existing templates are unchanged in behaviour. BLUEPRINT updated to document the fourth template.
+
+To keep each module under the module-health cap, the two non-default workflow renderers (browser-click-first, link-api) move verbatim into a new _test_plan_workflow_templates module, reusing the render layer's workflow-enumeration and how-to-test helpers via injected callables (one-directional dependency). 105 tests in test_post_test_plan pass, proving the relocated templates are behaviour-identical.
+---
+ BLUEPRINT.md                                  |   2 +-
+ .../management/commands/_test_plan_render.py  |  71 +++----
+ .../commands/_test_plan_scenario.py           | 177 ++++++++++++++++++
+ .../commands/_test_plan_workflow_templates.py |  61 ++++++
+ .../e2e_command/test_post_test_plan.py        | 122 ++++++++++++
+ 5 files changed, 387 insertions(+), 46 deletions(-)
+ create mode 100644 src/teatree/core/management/commands/_test_plan_scenario.py
+ create mode 100644 src/teatree/core/management/commands/_test_plan_workflow_templates.py
+
+diff --git a/BLUEPRINT.md b/BLUEPRINT.md
+index 1dc1b3f6ca..523767319f 100644
+--- a/BLUEPRINT.md
++++ b/BLUEPRINT.md
+@@ -400,7 +400,7 @@ ## 12. Testing
+ - `conftest.py` monkeypatches `HOME`/`XDG_*` to `tmp_path`, strips `GIT_*`, isolates overlay env, resets backend + overlay caches between tests
+ - Tests mirror `src/` paths under `tests/teatree_core/`, `tests/teatree_agents/`, `tests/teatree_backends/`, `tests/teatree_loop/`, plus top-level cross-cutting suites
+ - New tests lean integration / E2E / functional (Django test client, `call_command`, real `git` under `tmp_path`); unit tests are reserved for pure logic, and only unstoppable externals are mocked
+-- Core has no Playwright suite (no UI). Overlays declare their own via `get_e2e_config()`; `t3 <overlay> e2e {run,external,project}` runs them. The `external` runner resolves its Playwright working dir in order ([#2620](https://github.com/souliane/teatree/issues/2620)): an explicit `--repo` (a `[e2e_repos.<name>]` clone) wins; else, when `get_e2e_config()` supplies BOTH a `url` and a `ref` (`overlay_e2e_repo` lifts them into an `E2ERepo`, `e2e_dir` default `e2e`), the overlay's own repo is cloned at that ref (a `--branch`/`--ref` override wins) — so a migrated suite on an unmerged branch runs without a separate `T3_PRIVATE_TESTS` checkout; else the legacy `T3_PRIVATE_TESTS` directory. A green/red `e2e run` records run provenance on the durable recipe (`Ticket.extra['e2e_recipe'].last_run`, `core/e2e_workitem.record_run`): result + per-repo SHAs + env, plus (for vanilla-spec suites whose specs live in another repo, [#272](https://github.com/souliane/teatree/issues/272)) the exact `spec_path` and the overlay-resolved `manifest_entry` id (its CI lane) via the `get_e2e_run_provenance(spec_path)` overlay hook — so a run is reproducible from the DB alone. Core stays overlay-agnostic (default hook returns `""`; empty provenance fields are omitted). `t3 <overlay> e2e post-test-plan --manifest` ([#1409](https://github.com/souliane/teatree/issues/1409)) maintains ONE structured test-plan note per **ticket** (never the MR), idempotent on a hidden marker carrying a JSON state blob (the merge SOT); each run merges its manifest's env(s) over the prior state, freezing the side it omits. The note renders a test plan — a multi-repo header with clickable commit-provenance and a `Dev ± Local` reconciliation, then per-workflow bodies in one of three templates (`capture-matrix` default side-by-side table, `browser-click-first` screenshots, `link-api` links + code; [#2304](https://github.com/souliane/teatree/issues/2304)). `--body-file` posts a pre-authored body verbatim (mutually exclusive with `--manifest`). Pure render/merge lives in `_test_plan_render`, host orchestration in `_test_plan`.
++- Core has no Playwright suite (no UI). Overlays declare their own via `get_e2e_config()`; `t3 <overlay> e2e {run,external,project}` runs them. The `external` runner resolves its Playwright working dir in order ([#2620](https://github.com/souliane/teatree/issues/2620)): an explicit `--repo` (a `[e2e_repos.<name>]` clone) wins; else, when `get_e2e_config()` supplies BOTH a `url` and a `ref` (`overlay_e2e_repo` lifts them into an `E2ERepo`, `e2e_dir` default `e2e`), the overlay's own repo is cloned at that ref (a `--branch`/`--ref` override wins) — so a migrated suite on an unmerged branch runs without a separate `T3_PRIVATE_TESTS` checkout; else the legacy `T3_PRIVATE_TESTS` directory. A green/red `e2e run` records run provenance on the durable recipe (`Ticket.extra['e2e_recipe'].last_run`, `core/e2e_workitem.record_run`): result + per-repo SHAs + env, plus (for vanilla-spec suites whose specs live in another repo, [#272](https://github.com/souliane/teatree/issues/272)) the exact `spec_path` and the overlay-resolved `manifest_entry` id (its CI lane) via the `get_e2e_run_provenance(spec_path)` overlay hook — so a run is reproducible from the DB alone. Core stays overlay-agnostic (default hook returns `""`; empty provenance fields are omitted). `t3 <overlay> e2e post-test-plan --manifest` ([#1409](https://github.com/souliane/teatree/issues/1409)) maintains ONE structured test-plan note per **ticket** (never the MR), idempotent on a hidden marker carrying a JSON state blob (the merge SOT); each run merges its manifest's env(s) over the prior state, freezing the side it omits. The note renders a test plan — a multi-repo header with clickable commit-provenance and a `Dev ± Local` reconciliation, then bodies in one of four templates ([#2304](https://github.com/souliane/teatree/issues/2304)): the three workflow-shaped ones (`capture-matrix` default side-by-side table, `browser-click-first` screenshots, `link-api` links + code) and `scenario-plan`, which renders ordered acceptance scenarios — each a `### Scenario N — <surface>` block with Preconditions / numbered Steps / Expected / Actual (a ✅ pass marker or a blocked-or-omitted note) and either captioned inline screenshots (`ui` modality) or a contract-check marker (`api` modality) — separated by `---` rules with an `**Environment:**` footer. `--body-file` posts a pre-authored body verbatim (mutually exclusive with `--manifest`). Pure render/merge lives in `_test_plan_render`; the `scenario-plan` shape in `_test_plan_scenario`; the two non-default workflow renderers in `_test_plan_workflow_templates`; host orchestration in `_test_plan`.
+   - **Upload integrity.** Artifacts embed the relative `/uploads/<secret>/<file>` GitLab claims on save and upload to the project that owns the note's issue URL; a post-upload `verify_upload` gate re-fetches each via the token-authed API and magic-byte-checks it, so "posted" means "verified renderable" (`TestPlanMediaError` refuses otherwise).
+   - **Image preflight** (`core/test_plan_validation`, before any upload): every image must carry a `highlightAndShoot` red box, none may be byte-identical (md5 dedup), and a manifest with no media is refused (`TestPlanValidationError`); `--skip-validation` is the user-only bypass.
+   - **Honesty gates.** A colleague-repo body gate (`core/test_plan_blocked_gate`) refuses a `--body-file` post whose free text signals incomplete verification when the issue URL matches `colleague_repo_url_pattern` (`BlockedTestPlanPostError`); the structured `--manifest` render is exempt because its `**Blocked:** <reason>` disclosure is the honest channel. Self-evidence on the user's own ticket is un-gated by default (`post_e2e_evidence` in `on_behalf_auto_actions`, #960). `t3 <overlay> e2e retract-evidence` withdraws the note. A sibling field-context evidence probe (`core/doc_evidence`, [#2296](https://github.com/souliane/teatree/issues/2296)) asserts a generated-doc term in its expected structured field/column, never a page-wide substring — an available primitive, not yet a globally-wired gate.
+diff --git a/src/teatree/core/management/commands/_test_plan_render.py b/src/teatree/core/management/commands/_test_plan_render.py
+index 95945dcb15..61272757c4 100644
+--- a/src/teatree/core/management/commands/_test_plan_render.py
++++ b/src/teatree/core/management/commands/_test_plan_render.py
+@@ -20,16 +20,22 @@
+ from typing import NotRequired, TypedDict
+ from urllib.parse import urlparse
+ 
++from teatree.core.management.commands._test_plan_scenario import (
++    ScenarioSection,
++    coerce_scenario_section,
++    render_scenario_plan,
++)
++from teatree.core.management.commands._test_plan_workflow_templates import render_browser_click_first, render_link_api
+ from teatree.utils.media import MediaKind, media_kind
+ from teatree.utils.url_slug import pr_ref_from_url
+ 
+ # The two columns of every workflow table. Dev on the LEFT, Local on the RIGHT.
+ _ENVS = ("dev", "local")
+ _EMPTY_CELL = "—"
+ 
+ # The known body templates; the default is the side-by-side capture matrix.
+ DEFAULT_TEMPLATE = "capture-matrix"
+-KNOWN_TEMPLATES = (DEFAULT_TEMPLATE, "browser-click-first", "link-api")
++KNOWN_TEMPLATES = (DEFAULT_TEMPLATE, "browser-click-first", "link-api", "scenario-plan")
+ 
+ # The hidden idempotency marker — keyed on the TICKET (its number, e.g. 8521),
+ # so a ticket carries exactly ONE test-plan note across all environments.
+@@ -78,12 +84,15 @@ class SideState(TypedDict):
+     missing_on_dev: NotRequired[list[str]]
+ 
+ 
+-class TestPlanState(TypedDict):
++class TestPlanState(ScenarioSection):
+     """The full persisted note state — serialised into the hidden ``t3-e2e-data`` blob.
+ 
+-    ``template``: ``"capture-matrix"`` (default), ``"browser-click-first"``, or
+-    ``"link-api"``. ``steps``: workflow → ordered step list (shared across sides,
+-    persisted across re-runs). ``blocked_workflows``: workflow → reason string.
++    ``template``: ``"capture-matrix"`` (default), ``"browser-click-first"``,
++    ``"link-api"``, or ``"scenario-plan"``. ``steps``: workflow → ordered step
++    list (shared across sides, persisted across re-runs). ``blocked_workflows``:
++    workflow → reason string. The ``scenario-plan`` keys
++    (``scenarios``/``scenario_intro``/``environment``) come from
++    :class:`ScenarioSection`.
+     """
+ 
+     ticket: str
+@@ -148,6 +157,7 @@ def coerce_state(raw: object) -> TestPlanState:
+     blocked = _coerce_blocked_workflows(raw_dict.get("blocked_workflows"))
+     if blocked:
+         state["blocked_workflows"] = blocked
++    state.update(coerce_scenario_section(raw_dict))
+     return state
+ 
+ 
+@@ -545,64 +555,35 @@ def _blocked_lines(state: TestPlanState) -> list[str]:
+     return lines
+ 
+ 
+-def _render_browser_click_first(state: TestPlanState) -> list[str]:
+-    """``browser-click-first`` template: numbered steps then inline screenshots."""
+-    lines: list[str] = []
+-    for workflow in _workflow_names(state):
+-        lines.extend((f"### {workflow}", ""))
+-        steps = state.get("steps", {}).get(workflow, [])
+-        if steps:
+-            lines.extend(("**How to test:**", ""))
+-            lines.extend(f"{i}. {step}" for i, step in enumerate(steps, start=1))
+-            lines.append("")
+-        for side in (state["dev"], state["local"]):
+-            lines.extend(side.get("workflows", {}).get(workflow, {}).get("image_md", []))
+-        lines.append("")
+-    return lines
+-
+-
+-def _render_link_api(state: TestPlanState) -> list[str]:
+-    """``link-api`` template: How-to-test steps then link_md + code_md per workflow, no table, no images."""
+-    lines: list[str] = []
+-    for workflow in _workflow_names(state):
+-        lines.extend((f"### {workflow}", ""))
+-        lines.extend(_test_plan_block(state, workflow))
+-        for side in (state["dev"], state["local"]):
+-            embed = side.get("workflows", {}).get(workflow, {})
+-            link_md = embed.get("link_md", "") if embed else ""
+-            code_md = embed.get("code_md", "") if embed else ""
+-            if link_md:
+-                lines.append(link_md)
+-            if code_md:
+-                lines.append(code_md)
+-        lines.append("")
+-    return lines
+-
+-
+ def render_body(state: TestPlanState) -> str:
+     """Render the full note body from the merged state.
+ 
+     Dispatches on ``state["template"]``: ``"browser-click-first"`` →
+     numbered steps + inline screenshots; ``"link-api"`` → links + code
+-    blocks; default ``"capture-matrix"`` → side-by-side Dev | Local table.
+-    The blocked-workflow placeholders render on every template (shared tail).
+-    Raises :class:`TestPlanValidationError` when nothing to post.
++    blocks; ``"scenario-plan"`` → per-scenario Preconditions/Steps/Expected/
++    Actual blocks with ``---`` separators and an Environment footer; default
++    ``"capture-matrix"`` → side-by-side Dev | Local table. The blocked-workflow
++    placeholders render on every template (shared tail). Raises
++    :class:`TestPlanValidationError` when nothing to post.
+     """
+     template = state.get("template") or DEFAULT_TEMPLATE
+     if template == "browser-click-first":
+-        workflow_lines = _render_browser_click_first(state)
++        workflow_lines = render_browser_click_first(state, workflow_names=_workflow_names)
+     elif template == "link-api":
+-        workflow_lines = _render_link_api(state)
++        workflow_lines = render_link_api(state, workflow_names=_workflow_names, test_plan_block=_test_plan_block)
++    elif template == "scenario-plan":
++        workflow_lines = render_scenario_plan(state)
+     else:
+         workflow_lines = []
+         for workflow in _workflow_names(state):
+             workflow_lines.extend(_workflow_table(state, workflow))
+ 
+     blocked = state.get("blocked_workflows") or {}
+     dev_commits = bool(state["dev"].get("commits"))
+     local_commits = bool(state["local"].get("commits"))
+     mrs = bool(state.get("mrs"))
+-    has_content = bool(_workflow_names(state)) or bool(blocked) or dev_commits or local_commits or mrs
++    scenarios = bool(state.get("scenarios"))
++    has_content = bool(_workflow_names(state)) or bool(blocked) or dev_commits or local_commits or mrs or scenarios
+     if not has_content:
+         msg = "empty: the test-plan state has no workflows and no blocked workflows — nothing to post."
+         raise TestPlanValidationError(msg)
+diff --git a/src/teatree/core/management/commands/_test_plan_scenario.py b/src/teatree/core/management/commands/_test_plan_scenario.py
+new file mode 100644
+index 0000000000..435b32e47e
+--- /dev/null
++++ b/src/teatree/core/management/commands/_test_plan_scenario.py
+@@ -0,0 +1,177 @@
++"""The ``scenario-plan`` section of the test-plan render layer (teatree #272).
++
++The acceptance-scenario shape — a ``### Scenario N — <surface>`` block with
++Preconditions / numbered Steps / Expected / Actual and either captioned inline
++screenshots or an API-contract marker — split out of :mod:`._test_plan_render`
++so each module stays a single concern under the module-health cap. Everything
++here is a pure transform over the persisted scenario data; nothing touches the
++ORM, the code host, or the CLI.
++
++The dependency is one-directional: ``_test_plan_render`` imports these types and
++:func:`render_scenario_plan`; this module imports nothing from the render layer.
++"""
++
++from collections.abc import Mapping
++from typing import NotRequired, TypedDict
++
++
++def _as_dict(value: object) -> Mapping[str, object]:
++    """``value`` as a read-only mapping when it is a dict, else ``{}``."""
++    return {str(k): v for k, v in value.items()} if isinstance(value, dict) else {}
++
++
++def _as_list(value: object) -> list[object]:
++    """Return *value* as a ``list[object]`` when it is a list, else ``[]``."""
++    return list(value) if isinstance(value, list) else []
++
++
++class ScenarioImage(TypedDict):
++    """One captioned inline screenshot for a ``scenario-plan`` scenario."""
++
++    slot: str
++    caption: str
++    image_md: str
++
++
++class Scenario(TypedDict):
++    """One acceptance scenario in the ``scenario-plan`` template.
++
++    ``modality`` is ``"ui"`` (captioned screenshots) or ``"api"`` (a contract
++    check with no screenshot). ``actual_pass`` renders the ``✅ Pass.`` marker;
++    when False, ``actual_note`` carries the blocked/omitted reason instead.
++    """
++
++    surface: str
++    title: str
++    preconditions: str
++    steps: list[str]
++    expected: str
++    modality: str
++    actual_pass: bool
++    images: list[ScenarioImage]
++    actual_note: NotRequired[str]
++
++
++def _coerce_scenario_image(raw: object) -> ScenarioImage:
++    raw_dict = _as_dict(raw)
++    return {
++        "slot": str(raw_dict.get("slot") or ""),
++        "caption": str(raw_dict.get("caption") or ""),
++        "image_md": str(raw_dict.get("image_md") or ""),
++    }
++
++
++def _coerce_scenario(raw: object) -> Scenario:
++    raw_dict = _as_dict(raw)
++    scenario: Scenario = {
++        "surface": str(raw_dict.get("surface") or ""),
++        "title": str(raw_dict.get("title") or ""),
++        "preconditions": str(raw_dict.get("preconditions") or ""),
++        "steps": [str(s) for s in _as_list(raw_dict.get("steps"))],
++        "expected": str(raw_dict.get("expected") or ""),
++        "modality": "api" if str(raw_dict.get("modality") or "").strip() == "api" else "ui",
++        "actual_pass": bool(raw_dict.get("actual_pass")),
++        "images": [_coerce_scenario_image(i) for i in _as_list(raw_dict.get("images"))],
++    }
++    note = str(raw_dict.get("actual_note") or "").strip()
++    if note:
++        scenario["actual_note"] = note
++    return scenario
++
++
++def coerce_scenarios(raw: object) -> list[Scenario]:
++    """Rebuild the ordered scenario list, dropping entries with no surface."""
++    return [scenario for scenario in (_coerce_scenario(s) for s in _as_list(raw)) if scenario["surface"]]
++
++
++class ScenarioSection(TypedDict):
++    """The recovered ``scenario-plan`` keys, each present only when non-empty."""
++
++    scenarios: NotRequired[list[Scenario]]
++    scenario_intro: NotRequired[str]
++    environment: NotRequired[str]
++
++
++def coerce_scenario_section(raw_dict: Mapping[str, object]) -> ScenarioSection:
++    """The ``scenarios``/``scenario_intro``/``environment`` keys recovered from a state blob.
++
++    Each key is included only when it carries content, so a non-scenario state
++    round-trips with no empty scenario fields.
++    """
++    section: ScenarioSection = {}
++    scenarios = coerce_scenarios(raw_dict.get("scenarios"))
++    if scenarios:
++        section["scenarios"] = scenarios
++    intro = str(raw_dict.get("scenario_intro") or "").strip()
++    if intro:
++        section["scenario_intro"] = intro
++    environment = str(raw_dict.get("environment") or "").strip()
++    if environment:
++        section["environment"] = environment
++    return section
++
++
++def _scenario_actual_lines(scenario: Scenario) -> list[str]:
++    """The ``**Actual:**`` line: a ``✅ Pass.`` marker, or the blocked/omitted note."""
++    if scenario.get("actual_pass"):
++        return ["**Actual:** ✅ Pass.", ""]
++    note = scenario.get("actual_note") or "Not verified."
++    return [f"**Actual:** {note}", ""]
++
++
++def _scenario_evidence_lines(scenario: Scenario) -> list[str]:
++    """Captioned inline screenshots for a UI scenario, or the API-contract block."""
++    if scenario.get("modality") == "api":
++        return ["_API contract check — no screenshot._", ""]
++    lines: list[str] = []
++    for image in scenario.get("images", []):
++        caption = image.get("caption", "")
++        if caption:
++            lines.append(f"*{caption}*")
++        if image.get("image_md"):
++            lines.append(image["image_md"])
++        lines.append("")
++    return lines
++
++
++def _scenario_block(scenario: Scenario, *, index: int) -> list[str]:
++    """One ``### Scenario N — <surface>`` block: preconditions, steps, expected, actual, evidence."""
++    lines = [f"### Scenario {index} — {scenario.get('surface', '')}", ""]
++    title = scenario.get("title", "")
++    if title:
++        lines.extend((f"**{title}**", ""))
++    preconditions = scenario.get("preconditions", "")
++    if preconditions:
++        lines.extend((f"**Preconditions:** {preconditions}", ""))
++    steps = scenario.get("steps", [])
++    if steps:
++        lines.extend(("**Steps:**", ""))
++        lines.extend(f"{i}. {step}" for i, step in enumerate(steps, start=1))
++        lines.append("")
++    expected = scenario.get("expected", "")
++    if expected:
++        lines.extend((f"**Expected:** {expected}", ""))
++    lines.extend(_scenario_actual_lines(scenario))
++    lines.extend(_scenario_evidence_lines(scenario))
++    return lines
++
++
++def render_scenario_plan(state: Mapping[str, object]) -> list[str]:
++    """``scenario-plan`` body lines: optional intro, per-scenario blocks, ``---`` separators, env footer.
++
++    Reads its own keys off the persisted state mapping (``scenarios``,
++    ``scenario_intro``, ``environment``) so the render layer dispatches with a
++    single argument and this module needs no back-reference to ``TestPlanState``.
++    """
++    lines: list[str] = []
++    intro = str(state.get("scenario_intro") or "")
++    if intro:
++        lines.extend((intro, ""))
++    for index, scenario in enumerate(coerce_scenarios(state.get("scenarios")), start=1):
++        if index > 1:
++            lines.extend(("---", ""))
++        lines.extend(_scenario_block(scenario, index=index))
++    environment = str(state.get("environment") or "")
++    if environment:
++        lines.extend(("---", "", f"**Environment:** {environment}", ""))
++    return lines
+diff --git a/src/teatree/core/management/commands/_test_plan_workflow_templates.py b/src/teatree/core/management/commands/_test_plan_workflow_templates.py
+new file mode 100644
+index 0000000000..cc16e95e67
+--- /dev/null
++++ b/src/teatree/core/management/commands/_test_plan_workflow_templates.py
+@@ -0,0 +1,61 @@
++"""The non-default workflow-shaped body templates (``browser-click-first`` / ``link-api``).
++
++Split out of :mod:`._test_plan_render` so the render layer stays a single
++concern under the module-health cap, mirroring the ``scenario-plan`` split in
++:mod:`._test_plan_scenario`. Both alternate renderers iterate the merged state's
++workflows the same way the default capture-matrix table does; they reuse the
++render layer's two shared helpers — workflow enumeration and the numbered
++``How to test`` block — passed in as callables so the runtime dependency stays
++one-directional (render imports these renderers; this module imports the state
++types only under ``TYPE_CHECKING``).
++"""
++
++from typing import TYPE_CHECKING
++
++if TYPE_CHECKING:
++    from collections.abc import Callable
++
++    from teatree.core.management.commands._test_plan_render import TestPlanState
++
++
++def render_browser_click_first(
++    state: "TestPlanState",
++    *,
++    workflow_names: "Callable[[TestPlanState], list[str]]",
++) -> list[str]:
++    """``browser-click-first`` template: numbered steps then inline screenshots."""
++    lines: list[str] = []
++    for workflow in workflow_names(state):
++        lines.extend((f"### {workflow}", ""))
++        steps = state.get("steps", {}).get(workflow, [])
++        if steps:
++            lines.extend(("**How to test:**", ""))
++            lines.extend(f"{i}. {step}" for i, step in enumerate(steps, start=1))
++            lines.append("")
++        for side in (state["dev"], state["local"]):
++            lines.extend(side.get("workflows", {}).get(workflow, {}).get("image_md", []))
++        lines.append("")
++    return lines
++
++
++def render_link_api(
++    state: "TestPlanState",
++    *,
++    workflow_names: "Callable[[TestPlanState], list[str]]",
++    test_plan_block: "Callable[[TestPlanState, str], list[str]]",
++) -> list[str]:
++    """``link-api`` template: How-to-test steps then link_md + code_md per workflow, no table, no images."""
++    lines: list[str] = []
++    for workflow in workflow_names(state):
++        lines.extend((f"### {workflow}", ""))
++        lines.extend(test_plan_block(state, workflow))
++        for side in (state["dev"], state["local"]):
++            embed = side.get("workflows", {}).get(workflow, {})
++            link_md = embed.get("link_md", "") if embed else ""
++            code_md = embed.get("code_md", "") if embed else ""
++            if link_md:
++                lines.append(link_md)
++            if code_md:
++                lines.append(code_md)
++        lines.append("")
++    return lines
+diff --git a/tests/teatree_core/e2e_command/test_post_test_plan.py b/tests/teatree_core/e2e_command/test_post_test_plan.py
+index 56f8339999..ea4f84222b 100644
+--- a/tests/teatree_core/e2e_command/test_post_test_plan.py
++++ b/tests/teatree_core/e2e_command/test_post_test_plan.py
+@@ -32,6 +32,7 @@
+ from teatree.core.backend_protocols import UploadVerification
+ from teatree.core.management.commands import _test_plan
+ from teatree.core.management.commands import _test_plan_render as _render
++from teatree.core.management.commands import _test_plan_scenario as _scenario
+ from teatree.core.overlay import OverlayMetadata
+ from tests.teatree_core.conftest import CommandOverlay
+ 
+@@ -1425,6 +1426,127 @@ def test_renders_steps_alongside_link_and_code(self) -> None:
+         assert "```json" in visible
+ 
+ 
++class TestScenarioPlanTemplate(TestCase):
++    """The ``scenario-plan`` template renders the hand-authored exemplar shape.
++
++    Each scenario is a Preconditions / numbered Steps / Expected / Actual block
++    (with a ``✅`` pass marker), captioned inline screenshots for a UI scenario
++    or an API-contract block for an ``api`` scenario, ``---`` separators between
++    scenarios, and an ``**Environment:**`` footer.
++    """
++
++    def _ui_scenario(self, **over: object) -> _scenario.Scenario:
++        scenario: _scenario.Scenario = {
++            "surface": "Settings page",
++            "title": "Toggle dark mode",
++            "preconditions": "Logged in as a verified user.",
++            "steps": ["Open the settings page", "Click Dark mode", "Confirm"],
++            "expected": "The theme switches to dark.",
++            "modality": "ui",
++            "actual_pass": True,
++            "images": [{"slot": "settings", "caption": "Dark theme applied", "image_md": "![](/uploads/s/a.png)"}],
++        }
++        scenario.update(over)
++        return scenario
++
++    def _state(
++        self, *, scenarios: list[_scenario.Scenario], intro: str = "", environment: str = ""
++    ) -> _render.TestPlanState:
++        state: _render.TestPlanState = {
++            "ticket": "1025",
++            "title": "Dark mode toggle",
++            "mrs": [],
++            "dev": _empty_side(env="dev"),
++            "local": _empty_side(env="local"),
++            "steps": {},
++            "template": "scenario-plan",
++            "scenarios": scenarios,
++        }
++        if intro:
++            state["scenario_intro"] = intro
++        if environment:
++            state["environment"] = environment
++        return state
++
++    def test_renders_scenario_heading_with_surface(self) -> None:
++        body = _render.render_body(self._state(scenarios=[self._ui_scenario()]))
++        assert "### Scenario 1 — Settings page" in body
++
++    def test_renders_preconditions_steps_expected_blocks(self) -> None:
++        body = _render.render_body(self._state(scenarios=[self._ui_scenario()]))
++        visible = body.split("-->")[-1]
++        assert "**Preconditions:** Logged in as a verified user." in visible
++        assert "**Steps:**" in visible
++        assert "1. Open the settings page" in visible
++        assert "2. Click Dark mode" in visible
++        assert "3. Confirm" in visible
++        assert "**Expected:** The theme switches to dark." in visible
++
++    def test_passing_actual_renders_check_pass(self) -> None:
++        body = _render.render_body(self._state(scenarios=[self._ui_scenario()]))
++        assert "**Actual:** ✅ Pass." in body
++
++    def test_non_passing_actual_renders_blocked_marker(self) -> None:
++        scenario = self._ui_scenario(actual_pass=False, actual_note="Blocked: feature flag off on dev.")
++        body = _render.render_body(self._state(scenarios=[scenario]))
++        visible = body.split("-->")[-1]
++        assert "✅ Pass." not in visible
++        assert "Blocked: feature flag off on dev." in visible
++
++    def test_captioned_inline_images_render(self) -> None:
++        body = _render.render_body(self._state(scenarios=[self._ui_scenario()]))
++        visible = body.split("-->")[-1]
++        assert "*Dark theme applied*" in visible
++        assert "![](/uploads/s/a.png)" in visible
++
++    def test_api_scenario_renders_no_screenshot_block(self) -> None:
++        contract = self._ui_scenario(modality="api", images=[])
++        body = _render.render_body(self._state(scenarios=[contract]))
++        visible = body.split("-->")[-1]
++        assert "contract check — no screenshot" in visible
++
++    def test_scenarios_separated_by_horizontal_rule(self) -> None:
++        body = _render.render_body(
++            self._state(scenarios=[self._ui_scenario(), self._ui_scenario(surface="Profile page")])
++        )
++        assert "### Scenario 2 — Profile page" in body
++        # One `---` separates the two scenarios.
++        assert body.count("\n---\n") >= 1
++
++    def test_environment_footer_renders(self) -> None:
++        body = _render.render_body(
++            self._state(scenarios=[self._ui_scenario()], environment="dev.example.com @ commit abcd1234")
++        )
++        assert "**Environment:** dev.example.com @ commit abcd1234" in body
++
++    def test_optional_intro_renders_above_first_scenario(self) -> None:
++        body = _render.render_body(
++            self._state(scenarios=[self._ui_scenario()], intro="Verified the toggle flow end to end.")
++        )
++        visible = body.split("-->")[-1]
++        intro_at = visible.index("Verified the toggle flow end to end.")
++        first_scenario_at = visible.index("### Scenario 1")
++        assert intro_at < first_scenario_at
++
++    def test_header_marker_and_title_still_render(self) -> None:
++        body = _render.render_body(self._state(scenarios=[self._ui_scenario()]))
++        assert "<!-- t3-e2e-evidence ticket=1025 -->" in body
++        assert "## Test Plan — Dark mode toggle" in body
++
++    def test_state_round_trips_scenarios_through_coerce(self) -> None:
++        state = self._state(scenarios=[self._ui_scenario()], intro="Intro line.", environment="dev.example.com")
++        recovered = _render.coerce_state(json.loads(json.dumps(state)))
++        assert recovered["template"] == "scenario-plan"
++        assert recovered["scenarios"][0]["surface"] == "Settings page"
++        assert recovered["scenarios"][0]["steps"] == ["Open the settings page", "Click Dark mode", "Confirm"]
++        assert recovered["scenarios"][0]["images"][0]["caption"] == "Dark theme applied"
++        assert recovered["scenario_intro"] == "Intro line."
++        assert recovered["environment"] == "dev.example.com"
++
++    def test_known_templates_includes_scenario_plan(self) -> None:
++        assert "scenario-plan" in _render.KNOWN_TEMPLATES
++
++
+ class TestNeverEmptyRender(TestCase):
+     def test_raises_on_empty_state(self) -> None:
+         state: _render.TestPlanState = {
+-- 
+2.50.1 (Apple Git-155)
+

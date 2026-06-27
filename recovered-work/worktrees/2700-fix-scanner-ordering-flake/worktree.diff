@@ -1,0 +1,175 @@
+diff --git tests/teatree_core/test_on_behalf_egress_unknown_surface_closed.py tests/teatree_core/test_on_behalf_egress_unknown_surface_closed.py
+new file mode 100644
+index 0000000000..ca65e25681
+--- /dev/null
++++ tests/teatree_core/test_on_behalf_egress_unknown_surface_closed.py
+@@ -0,0 +1,169 @@
++"""Unknown-surface route classification fails CLOSED to the self-DM path (#960/#1750).
++
++The on-behalf egress routes every colleague-surface post/react through one
++chokepoint. The route classifier had a gap: a surface it could not classify
++as either the user's own DM (self) or a colleague/channel fell through to the
++colleague branch and attempted a post under the user's identity — a leak.
++
++Fail-closed default for a safety-critical egress: an unknown surface routes to
++the bot->user self-DM path (delivered via the shared DM chokepoint, ungated and
++unaudited), never a colleague post attempt. The positive case (a known Slack
++channel) must still route to the gated colleague path.
++"""
++
++from dataclasses import dataclass, field
++from pathlib import Path
++
++import pytest
++from django.test import TestCase
++
++from teatree.core.models import BotPing, OnBehalfApproval
++from teatree.core.on_behalf_egress import OnBehalfSlackEgress
++from teatree.types import RawAPIDict
++
++_DM_CHANNEL = "D_SELF"
++_USER_ID = "U_OPERATOR"
++_COLLEAGUE = "C_REVIEW"
++_TARGET = "https://github.com/o/r/pull/1"
++_APPROVER = "U-OPERATOR"
++
++
++@dataclass
++class _UnknownSurfaceFake:
++    """``route_token`` returns a credential that is neither self (xoxb) nor colleague (xoxp)."""
++
++    routed_response: RawAPIDict = field(default_factory=lambda: {"ok": True})
++    react_routed_calls: list[tuple[str, str, str]] = field(default_factory=list)
++    post_routed_calls: list[tuple[str, str, str]] = field(default_factory=list)
++    post_message_calls: list[tuple[str, str, str]] = field(default_factory=list)
++
++    def _is_self_dm(self, channel: str) -> bool:
++        return False
++
++    def route_token(self, channel: str) -> str:
++        return "mystery-token"
++
++    def react_routed(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict:
++        self.react_routed_calls.append((channel, ts, emoji))
++        return dict(self.routed_response)
++
++    def post_routed(self, *, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
++        self.post_routed_calls.append((channel, text, thread_ts))
++        return dict(self.routed_response)
++
++    def open_dm(self, user_id: str) -> str:
++        return _DM_CHANNEL
++
++    def post_message(self, *, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
++        self.post_message_calls.append((channel, text, thread_ts))
++        return {"ok": True, "ts": "1700000000.0001"}
++
++    def get_permalink(self, *, channel: str, ts: str) -> str:
++        return "https://slack.example/p1"
++
++
++@dataclass
++class _ColleagueChannelFake:
++    """``route_token`` classifies a Slack channel as a colleague surface (xoxp)."""
++
++    routed_response: RawAPIDict = field(default_factory=lambda: {"ok": True})
++    react_routed_calls: list[tuple[str, str, str]] = field(default_factory=list)
++    post_routed_calls: list[tuple[str, str, str]] = field(default_factory=list)
++
++    def _is_self_dm(self, channel: str) -> bool:
++        return False
++
++    def route_token(self, channel: str) -> str:
++        return "xoxp-user"
++
++    def react_routed(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict:
++        self.react_routed_calls.append((channel, ts, emoji))
++        return dict(self.routed_response)
++
++    def post_routed(self, *, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
++        self.post_routed_calls.append((channel, text, thread_ts))
++        return dict(self.routed_response)
++
++    def open_dm(self, user_id: str) -> str:
++        return _DM_CHANNEL
++
++    def post_message(self, *, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
++        return {"ok": True, "ts": "1700000000.0001"}
++
++    def get_permalink(self, *, channel: str, ts: str) -> str:
++        return "https://slack.example/p1"
++
++
++def _write_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
++    cfg = tmp_path / ".teatree.toml"
++    cfg.write_text(f'[teatree]\nslack_user_id = "{_USER_ID}"\n', encoding="utf-8")
++    monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
++    monkeypatch.setenv("T3_ON_BEHALF_POST_MODE", mode)
++
++
++class TestUnknownSurfaceFailsClosedToSelfDm(TestCase):
++    @pytest.fixture(autouse=True)
++    def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
++        _write_mode(tmp_path, monkeypatch, "ask")
++        monkeypatch.setattr(
++            "teatree.core.notify.messaging_from_overlay",
++            lambda _o=None: _UnknownSurfaceFake(),
++        )
++
++    def test_post_routes_to_self_dm_not_colleague(self) -> None:
++        fake = _UnknownSurfaceFake()
++        OnBehalfSlackEgress(fake).post(
++            channel="X_MYSTERY",
++            text="leak attempt",
++            target="X_MYSTERY",
++            action="cli_notify_post",
++        )
++        assert fake.post_routed_calls == []
++        assert fake.post_message_calls == [("X_MYSTERY", "leak attempt", "")]
++        assert not BotPing.objects.filter(idempotency_key__startswith="on_behalf_post:").exists()
++
++    def test_react_routes_to_self_dm_not_colleague(self) -> None:
++        fake = _UnknownSurfaceFake()
++        OnBehalfSlackEgress(fake).react(
++            channel="X_MYSTERY",
++            ts="1.1",
++            emoji="eyes",
++            target="X_MYSTERY",
++            action="adhoc_slack_react",
++        )
++        assert fake.react_routed_calls == [("X_MYSTERY", "1.1", "eyes")]
++        assert not BotPing.objects.filter(idempotency_key__startswith="on_behalf_post:").exists()
++
++    def test_unknown_surface_does_not_consume_approval(self) -> None:
++        OnBehalfApproval.record(target="X_MYSTERY", action="cli_notify_post", approver_id=_APPROVER)
++        OnBehalfSlackEgress(_UnknownSurfaceFake()).post(
++            channel="X_MYSTERY",
++            text="leak attempt",
++            target="X_MYSTERY",
++            action="cli_notify_post",
++        )
++        assert OnBehalfApproval.objects.get(target="X_MYSTERY", action="cli_notify_post").consumed_at is None
++
++
++class TestKnownColleagueSurfaceStillRoutesToColleague(TestCase):
++    @pytest.fixture(autouse=True)
++    def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
++        _write_mode(tmp_path, monkeypatch, "ask")
++        monkeypatch.setattr(
++            "teatree.core.notify.messaging_from_overlay",
++            lambda _o=None: _ColleagueChannelFake(),
++        )
++
++    def test_known_channel_with_approval_posts_to_colleague(self) -> None:
++        OnBehalfApproval.record(target=_TARGET, action="review_nag_post", approver_id=_APPROVER)
++        fake = _ColleagueChannelFake()
++        OnBehalfSlackEgress(fake).post(
++            channel=_COLLEAGUE,
++            text="day-1 nag",
++            target=_TARGET,
++            action="review_nag_post",
++        )
++        assert fake.post_routed_calls == [(_COLLEAGUE, "day-1 nag", "")]
++        assert BotPing.objects.filter(
++            idempotency_key=f"on_behalf_post:{_TARGET}:review_nag_post",
++        ).exists()
