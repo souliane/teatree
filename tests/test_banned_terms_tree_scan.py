@@ -236,6 +236,16 @@ class TestScanTreeReadsCommittedBlob:
 
 
 class TestLoadBrandTerms:
+    """``load_brand_terms`` separates UNSET from explicit-empty.
+
+    A genuinely-absent brand list — no config, an unloadable config, a missing
+    ``banned_brands`` key, or a wrong-typed value — is refused LOUD with
+    ``BannedTermsUnsetError`` so a load bug can never masquerade as "the
+    operator chose no brands". An explicit ``banned_brands = []`` is the
+    deliberate no-brands choice and is allowed. ``$TEATREE_BANNED_BRANDS``
+    keeps precedence and short-circuits the raise.
+    """
+
     def test_reads_high_confidence_brands(self, tmp_path: Path) -> None:
         cfg = _config(tmp_path, brands=[SYNTH_BRAND])
         assert banned_terms_tree_scan.load_brand_terms(cfg) == (SYNTH_BRAND,)
@@ -246,8 +256,26 @@ class TestLoadBrandTerms:
         cfg = _config(tmp_path, brands=[SYNTH_BRAND], banned_terms=["ship"])
         assert banned_terms_tree_scan.load_brand_terms(cfg) == (SYNTH_BRAND,)
 
-    def test_missing_config_is_empty(self, tmp_path: Path) -> None:
-        assert banned_terms_tree_scan.load_brand_terms(tmp_path / "absent.toml") == ()
+    def test_explicit_empty_brands_list_is_allowed(self, tmp_path: Path) -> None:
+        # The deliberate no-brands choice: an explicit empty list is NOT unset.
+        cfg = _config(tmp_path, brands=[])
+        assert banned_terms_tree_scan.load_brand_terms(cfg) == ()
+
+    def test_missing_config_with_no_env_raises(self, tmp_path: Path) -> None:
+        with pytest.raises(banned_terms_tree_scan.BannedTermsUnsetError):
+            banned_terms_tree_scan.load_brand_terms(tmp_path / "absent.toml")
+
+    def test_missing_banned_brands_key_raises(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        cfg.write_text('[teatree]\nbanned_terms = ["ship"]\n', encoding="utf-8")
+        with pytest.raises(banned_terms_tree_scan.BannedTermsUnsetError):
+            banned_terms_tree_scan.load_brand_terms(cfg)
+
+    def test_no_teatree_section_raises(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        cfg.write_text("[other]\nx = 1\n", encoding="utf-8")
+        with pytest.raises(banned_terms_tree_scan.BannedTermsUnsetError):
+            banned_terms_tree_scan.load_brand_terms(cfg)
 
     def test_env_var_takes_precedence_over_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         cfg = _config(tmp_path, brands=["fromconfig"])
@@ -258,15 +286,17 @@ class TestLoadBrandTerms:
         monkeypatch.setenv("TEATREE_BANNED_BRANDS", SYNTH_BRAND)
         assert banned_terms_tree_scan.load_brand_terms(tmp_path / "absent.toml") == (SYNTH_BRAND,)
 
-    def test_malformed_toml_is_empty(self, tmp_path: Path) -> None:
+    def test_malformed_toml_raises(self, tmp_path: Path) -> None:
         cfg = tmp_path / ".teatree.toml"
         cfg.write_text("not = valid = toml", encoding="utf-8")
-        assert banned_terms_tree_scan.load_brand_terms(cfg) == ()
+        with pytest.raises(banned_terms_tree_scan.BannedTermsUnsetError):
+            banned_terms_tree_scan.load_brand_terms(cfg)
 
-    def test_non_list_brands_key_is_empty(self, tmp_path: Path) -> None:
+    def test_non_list_brands_key_raises(self, tmp_path: Path) -> None:
         cfg = tmp_path / ".teatree.toml"
         cfg.write_text('[teatree]\nbanned_brands = "not-a-list"\n', encoding="utf-8")
-        assert banned_terms_tree_scan.load_brand_terms(cfg) == ()
+        with pytest.raises(banned_terms_tree_scan.BannedTermsUnsetError):
+            banned_terms_tree_scan.load_brand_terms(cfg)
 
 
 class TestCommonWordIsNotSubstringMatched:
@@ -295,12 +325,20 @@ class TestScanCommittedTree:
         assert len(result.findings) == 1
         assert result.brands_configured is True
 
-    def test_no_brands_anywhere_reports_inert(self, tmp_path: Path) -> None:
-        # The brand backstop is INERT when no brands are configured: the
-        # result carries findings (terminology only) AND the loud inert flag,
-        # never a silent clean result that hides the unpopulated key.
+    def test_no_brands_anywhere_raises(self, tmp_path: Path) -> None:
+        # Genuinely unset (no config, no env) is refused LOUD by the loader and
+        # propagated by the coordinator, never a silent inert scan that hides a
+        # load bug.
         repo = _repo_with(tmp_path, "src/app.py", f"x = '{SYNTH_BRAND}'\n")
-        result = banned_terms_tree.scan_committed_tree(repo, config_path=tmp_path / "absent.toml")
+        with pytest.raises(banned_terms_tree.BannedTermsUnsetError):
+            banned_terms_tree.scan_committed_tree(repo, config_path=tmp_path / "absent.toml")
+
+    def test_explicit_empty_brands_is_inert_not_raise(self, tmp_path: Path) -> None:
+        # An explicit empty banned_brands is the deliberate no-brands choice:
+        # the scan is INERT (brands_configured False), never a raise.
+        cfg = _config(tmp_path, brands=[], banned_terms=["ship"])
+        repo = _repo_with(tmp_path, "src/app.py", "clean = True\n")
+        result = banned_terms_tree.scan_committed_tree(repo, config_path=cfg)
         assert result.findings == []
         assert result.brands_configured is False
 
@@ -337,45 +375,43 @@ class TestScanTreeCli:
         assert result.exit_code == 1
         assert "src/app.py" in result.stdout
 
-    def test_no_config_exits_zero(self, tmp_path: Path) -> None:
+    def test_no_config_with_no_env_exits_misconfigured(self, tmp_path: Path) -> None:
         repo = _repo_with(tmp_path, "src/app.py", f"x = '{SYNTH_BRAND}'\n")
         result = CliRunner().invoke(
             banned_terms_app,
             ["scan-tree", "--repo-root", str(repo), "--config", str(tmp_path / "absent.toml")],
         )
-        # An absent config file yields an empty brand list — a legitimate
-        # no-op for the public repo, but the inert state must be LOUD, never
-        # a silent clean green.
-        assert result.exit_code == 0
-        assert "INERT" in result.stdout
-        assert "banned_brands" in result.stdout
+        # Genuinely-unset brands (no config, no env) FAIL LOUD (exit 2): an
+        # unset list is too dangerous to scan as empty — a load bug would look
+        # identical to a deliberate no-brands choice.
+        assert result.exit_code == 2
+        assert "MISCONFIGURED" in result.stdout
+        assert "unset" in result.stdout.lower()
 
 
 class TestScanTreeCliInertSignal:
-    """The brand backstop announces when it is INERT (#1591).
+    """Unset brands FAIL LOUD; an explicit empty list stays INERT.
 
-    An unpopulated ``banned_brands`` key is the defect #1591 fixes: the
-    full-tree brand scan silently returned 0, hiding that the backstop did
-    nothing. The CLI must emit a LOUD inert warning instead of a silent
-    clean line, while still exiting 0 (the no-brands state is legitimate
-    for the public repo).
+    The #1591 design announced an INERT backstop but still exited 0 for BOTH
+    a genuinely-absent ``banned_brands`` and a deliberate empty list — the
+    exact conflation this rule forbids. Genuinely-unset now hard-fails (exit 2),
+    while an explicit ``banned_brands = []`` keeps the loud INERT warning at
+    exit 0 (the operator's deliberate no-brands choice).
     """
 
-    def test_no_brands_emits_loud_inert_warning(self, tmp_path: Path) -> None:
+    def test_unset_brands_exits_misconfigured(self, tmp_path: Path) -> None:
         repo = _repo_with(tmp_path, "src/app.py", "clean = True\n")
         result = CliRunner().invoke(
             banned_terms_app,
             ["scan-tree", "--repo-root", str(repo), "--config", str(tmp_path / "absent.toml")],
         )
-        assert result.exit_code == 0
-        assert "INERT" in result.stdout
-        assert "banned_brands" in result.stdout
-        # The silent-success phrasing must NOT be the whole story.
-        assert "clean (0 findings)" not in result.stdout
+        assert result.exit_code == 2
+        assert "MISCONFIGURED" in result.stdout
+        assert "unset" in result.stdout.lower()
 
     def test_empty_brands_list_in_config_is_inert(self, tmp_path: Path) -> None:
-        # A config that declares banned_terms but leaves banned_brands empty
-        # is exactly the #1591 scenario: the populated key is the wrong one.
+        # An explicit empty banned_brands is the deliberate no-brands choice:
+        # a loud INERT warning, exit 0 — NOT a hard fail and NOT a raise.
         cfg = _config(tmp_path, brands=[], banned_terms=["ship", "delivery"])
         repo = _repo_with(tmp_path, "src/app.py", "clean = True\n")
         result = CliRunner().invoke(
@@ -426,13 +462,16 @@ class TestScanTreeRequireBrandsHardFail:
         assert result.exit_code == 2
         assert "MISCONFIGURED" in result.stdout
 
-    def test_without_flag_no_brands_stays_green(self, tmp_path: Path) -> None:
-        # Anti-vacuity: the SAME no-brands repo that exits 2 under --require-brands
-        # must exit 0 without it, proving the hard-fail is the flag's doing.
+    def test_without_flag_explicit_empty_brands_stays_green(self, tmp_path: Path) -> None:
+        # Anti-vacuity for the flag: the SAME explicit-empty config that exits 2
+        # under --require-brands must exit 0 without it, proving the hard-fail is
+        # the flag's doing. (Genuinely-unset brands now fail LOUD regardless of
+        # the flag — see TestScanTreeCliInertSignal.)
+        cfg = _config(tmp_path, brands=[], banned_terms=["ship"])
         repo = _repo_with(tmp_path, "src/app.py", "clean = True\n")
         result = CliRunner().invoke(
             banned_terms_app,
-            ["scan-tree", "--repo-root", str(repo), "--config", str(tmp_path / "absent.toml")],
+            ["scan-tree", "--repo-root", str(repo), "--config", str(cfg)],
         )
         assert result.exit_code == 0
         assert "INERT" in result.stdout

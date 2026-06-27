@@ -51,6 +51,7 @@ from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to
 # gate so the public repo can enforce the backstop from a CI secret
 # without committing any brand name. Takes precedence over the config.
 _BRANDS_ENV = "TEATREE_BANNED_BRANDS"
+_BRANDS_KEY = "banned_brands"
 
 _GIT_LS_TIMEOUT_S = 30
 _GIT_SHOW_TIMEOUT_S = 30
@@ -91,6 +92,27 @@ _TEXT_SUFFIXES: frozenset[str] = frozenset(
 )
 
 
+class BannedTermsUnsetError(RuntimeError):
+    """The configured banned-terms/brands list is genuinely UNSET.
+
+    Separates a genuinely-absent list — a missing config, an unloadable
+    config, a missing key, or a wrong-typed value — from a DELIBERATE empty
+    list (``key = []``). An unset list is refused LOUD so a load bug that
+    silently returns nothing can never be mistaken for "the operator chose no
+    terms"; an explicit empty list is allowed and returns an empty tuple. The
+    message names the offending key and the deliberate-empty escape hatch so
+    the fix is actionable.
+    """
+
+    @classmethod
+    def for_key(cls, key: str, env_var: str | None = None) -> "BannedTermsUnsetError":
+        env_hint = f" (or supply the ${env_var} secret)" if env_var else ""
+        return cls(
+            f"{key} is unset — set it explicitly (use `{key} = []` if you intend "
+            f"no terms){env_hint}; refusing to run with an unloadable banned-terms list."
+        )
+
+
 @dataclass(frozen=True)
 class TreeFinding:
     """A single banned-brand hit in a committed file."""
@@ -105,28 +127,32 @@ class TreeFinding:
 
 
 def load_brand_terms(config_path: Path) -> tuple[str, ...]:
-    """Load the high-confidence brand list.
+    """Load the high-confidence brand list, FAILING LOUD when it is unset.
 
     ``$TEATREE_BANNED_BRANDS`` (comma-separated) takes precedence so CI —
-    where ``~/.teatree.toml`` does not exist — feeds the list from a
-    secret. Otherwise reads ``[teatree].banned_brands`` from *config_path*.
-    Returns an empty tuple when neither source declares any brand — the
-    scan is then a clean no-op, matching the public repo's tenant-agnostic
-    default.
+    where ``~/.teatree.toml`` does not exist — feeds the list from a secret;
+    a set env var short-circuits before any raise. Otherwise reads
+    ``[teatree].banned_brands`` from *config_path*. An explicit
+    ``banned_brands = []`` is the operator's deliberate no-brands choice and
+    returns an empty tuple. A genuinely-unset list — no config, an unloadable
+    config, a missing key, or a wrong-typed value — raises
+    :class:`BannedTermsUnsetError`: an unset list is too dangerous to
+    scan as empty because a load bug would look identical to a deliberate
+    no-brands choice.
     """
     env = os.environ.get(_BRANDS_ENV, "")
     if env.strip():
         return tuple(t.strip() for t in env.split(",") if t.strip())
     if not config_path.is_file():
-        return ()
+        raise BannedTermsUnsetError.for_key(_BRANDS_KEY, _BRANDS_ENV)
     try:
         data = tomllib.loads(config_path.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError):
-        return ()
-    section = data.get("teatree", {})
-    brands = section.get("banned_brands", []) if isinstance(section, dict) else []
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise BannedTermsUnsetError.for_key(_BRANDS_KEY, _BRANDS_ENV) from exc
+    section = data.get("teatree")
+    brands = section.get("banned_brands") if isinstance(section, dict) else None
     if not isinstance(brands, list):
-        return ()
+        raise BannedTermsUnsetError.for_key(_BRANDS_KEY, _BRANDS_ENV)
     return tuple(str(t).strip() for t in brands if isinstance(t, str) and t.strip())
 
 

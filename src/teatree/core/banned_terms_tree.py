@@ -13,9 +13,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from teatree.hooks import banned_terms_scanner
-from teatree.hooks.banned_terms_tree_scan import TreeFinding, load_brand_terms, scan_tree
+from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError, TreeFinding, load_brand_terms, scan_tree
 
-__all__ = ["TreeFinding", "TreeScanResult", "scan_committed_tree"]
+__all__ = ["BannedTermsUnsetError", "TreeFinding", "TreeScanResult", "scan_committed_tree"]
 
 
 @dataclass(frozen=True)
@@ -38,10 +38,13 @@ def scan_committed_tree(repo_root: Path, *, config_path: Path | None = None) -> 
     """Scan *repo_root*'s committed tree for high-confidence brand names.
 
     *config_path* overrides the resolved ``~/.teatree.toml``; when omitted
-    the gate's own resolution is used. A missing config is fine — the
-    ``$TEATREE_BANNED_BRANDS`` env var may still supply the brand list. With
-    no brands from either source the brand backstop is INERT
-    (``brands_configured=False``); the always-on terminology gate still runs.
+    the gate's own resolution is used. The ``$TEATREE_BANNED_BRANDS`` env var
+    may supply the brand list when no config exists. A genuinely-unset brand
+    list (no config, no env, a missing key) propagates
+    :class:`BannedTermsUnsetError` — the caller surfaces it LOUD rather
+    than scanning as empty. An explicit ``banned_brands = []`` is the
+    deliberate no-brands choice: the brand backstop is INERT
+    (``brands_configured=False``) and the always-on terminology gate still runs.
     """
     resolved = config_path if config_path is not None else banned_terms_scanner.resolve_config()
     terms = load_brand_terms(resolved or Path("/nonexistent/.teatree.toml"))
