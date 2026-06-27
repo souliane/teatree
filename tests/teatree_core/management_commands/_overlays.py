@@ -446,6 +446,23 @@ class _ExternalRunnerOverlay(FullOverlay):
     metadata = _ExternalRunnerMetadata()
 
 
+class _PlaywrightArgsOverlay(FullOverlay):
+    """External runner that selects a Playwright config per spec lane.
+
+    Mirrors a multi-config Playwright suite (one config per lane): an
+    ``api-flow`` spec needs ``-c api.config.ts``, everything else its
+    default. Proves the external runner threads the overlay-supplied args
+    into the ``npx playwright test`` command.
+    """
+
+    metadata = _ExternalRunnerMetadata()
+
+    def get_e2e_playwright_args(self, spec_path: str) -> list[str]:
+        if "api-flow/" in spec_path:
+            return ["-c", "api.config.ts"]
+        return []
+
+
 class _ProjectRunnerOverlay(FullOverlay):
     metadata = _ProjectRunnerMetadata()
 
@@ -463,6 +480,9 @@ class _UnconfiguredOverlay(FullOverlay):
 
 
 _EXTERNAL_RUNNER_OVERLAY = "tests.teatree_core.management_commands._overlays._ExternalRunnerOverlay"
+
+
+_PLAYWRIGHT_ARGS_OVERLAY = "tests.teatree_core.management_commands._overlays._PlaywrightArgsOverlay"
 
 
 _PROJECT_RUNNER_OVERLAY = "tests.teatree_core.management_commands._overlays._ProjectRunnerOverlay"

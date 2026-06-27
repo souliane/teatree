@@ -71,7 +71,8 @@ from teatree.core.models.self_improve_firing import SelfImproveFiring
 from teatree.core.models.self_update_marker import SelfUpdateMarker
 from teatree.core.models.session import Session
 from teatree.core.models.session_handover import SessionHandover
-from teatree.core.models.task import Task, TaskAttempt
+from teatree.core.models.task import Task
+from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.ticket_artifacts import (
     E2eRunRef,

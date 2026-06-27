@@ -102,6 +102,7 @@ class Command(TyperCommand):
         ] = False,
     ) -> None:
         from teatree.core.models import LoopLease  # noqa: PLC0415
+        from teatree.loop.phases.render import self_improve_rerender  # noqa: PLC0415
         from teatree.loop.self_improve.schedule import run_tier  # noqa: PLC0415
 
         session_id = _non_owner_session_id()
@@ -142,7 +143,7 @@ class Command(TyperCommand):
                 self.stdout.write("SKIP  loop-self-improve lease held — another cycle is running.")
             return
         try:
-            result = run_tier(tier)
+            result = run_tier(tier, auto_fix_callable=self_improve_rerender)
         finally:
             LoopLease.objects.release("loop-self-improve", owner=owner)
 

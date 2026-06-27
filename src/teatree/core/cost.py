@@ -3,7 +3,7 @@
 From 2026-06-15 the Agent SDK bills headless usage against a monthly credit
 (Max 20x = $200) at standard API rates, no rollover, no longer covered by the
 subscription. This module turns the usage captured on each
-:class:`~teatree.core.models.task.TaskAttempt` into the dollar figure that
+:class:`~teatree.core.models.task_attempt.TaskAttempt` into the dollar figure that
 billing model would charge, so the user can see what teatree's loop would cost.
 
 Two layers. :class:`ModelPrice` / :data:`PRICE_TABLE` hold the per-model list

@@ -46,13 +46,16 @@ def _default_statusline_reader() -> str:
 
 
 def _default_rerender() -> None:
-    """Trigger a fresh statusline render.
+    """Sentinel default for a directly-constructed detector — never the real heal.
 
-    Phase 1 keeps this a no-op stub: the render is wired to the next
-    ``loop_tick`` call, and the test suite injects its own callable to
-    assert the auto-fix fired.  The real wiring is documented in the
-    BLUEPRINT subsection so a future change can swap it in without
-    touching detector code.
+    The detector lives in the ``domain`` layer; an actual re-render composes the
+    live-loop / open-PR / loop-owner anchors, which live in the ``orchestration``
+    layer (``teatree.loop.phases.render.rerender_statusline``). Reaching up to it
+    from here would invert the tach-enforced dependency DAG, so the orchestration
+    caller injects the real seam as the action-ladder ``auto_fix_callable``
+    (``teatree.loop.phases.render.self_improve_rerender``) — retiring the prior
+    no-op stub (#2625). This sentinel keeps a directly-constructed detector from
+    crashing when nothing injected a callable.
     """
     return
 
@@ -64,7 +67,7 @@ class StaleStatuslineEntryDetector:
     name: ClassVar[str] = "stale_statusline_entry"
     tier: ClassVar[str] = "cheap"
     severity: ClassVar[str] = "info"
-    max_rung: ClassVar[str] = ActionRung.STATUSLINE
+    max_rung: ClassVar[str] = ActionRung.AUTO_FIX
     auto_fix: ClassVar[bool] = True
 
     statusline_reader: Callable[[], str] = field(default=_default_statusline_reader)

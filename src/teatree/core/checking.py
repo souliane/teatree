@@ -40,7 +40,7 @@ from teatree.core._checking_gather import (
     motion_for_overlay,
     ticket_url,
 )
-from teatree.core.models.task import TaskAttempt
+from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.transition import TicketTransition
 
 #: Per-group item cap; beyond it the renderer appends "…and X more".

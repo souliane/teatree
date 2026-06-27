@@ -5270,8 +5270,9 @@ Usage: t3 teatree workspace stamp-identity [OPTIONS]
 
  Fixes public souliane/* clones/worktrees created before the
  provisioner source-fix (new worktrees are stamped at creation).
- Idempotent. Refuses non-souliane / private remotes so the private overlay's
- legitimate real-identity attribution is never touched.
+ Idempotent. Refuses non-github / private remotes so a private
+ overlay's (or a GitLab clone's) legitimate real-identity
+ attribution is never touched.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --repo        TEXT  [default: .]                                             │
@@ -5536,7 +5537,11 @@ Usage: t3 teatree e2e external [OPTIONS]
 
  Extra Playwright flags (--config, --timeout, --grep, etc.) can be
  passed via --playwright-args: ``--playwright-args="--config x.ts --timeout
- 120000"``
+ 120000"``.
+ The overlay also contributes per-spec args via
+ ``get_e2e_playwright_args(test_path)`` (e.g. ``-c <config>`` chosen by
+ the spec's lane); overlay args go first, an explicit ``--playwright-args``
+ follows so a caller can override.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --test-path                                   TEXT                           │

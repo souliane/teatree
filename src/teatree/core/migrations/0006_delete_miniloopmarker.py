@@ -10,7 +10,7 @@ from django.db import migrations
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0003_instructioncompliancesnapshot_and_more"),
+        ("core", "0005_backfill_task_subject"),
     ]
 
     operations = [
