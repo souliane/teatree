@@ -73,6 +73,51 @@ class TestBranchPrefix(TestCase):
             assert _branch_prefix() == "dev"
 
 
+class TestStampIdentity(TestCase):
+    """#2655: ``stamp-identity`` is host-aware — it gates on the full remote URL.
+
+    The proactive provisioner stamps new worktrees; ``stamp-identity``
+    retroactively fixes a public souliane clone created before that fix.
+    Both must refuse a non-github (e.g. GitLab) remote so its legitimate
+    inherited identity is never overwritten with the github noreply — even
+    when a public github.com repo happens to exist at the same
+    host-stripped ``owner/repo`` slug.
+    """
+
+    @staticmethod
+    def _gh_public(_cmd: list[str], **_kw: object) -> object:
+        return type("R", (), {"stdout": "PUBLIC\n", "returncode": 0})()
+
+    def _stamp(self, url: str, slug: str) -> tuple[object, list[str]]:
+        set_calls: list[str] = []
+        with (
+            patch.object(workspace_mod.git, "remote_url", return_value=url),
+            patch.object(workspace_mod.git, "remote_slug", return_value=slug),
+            patch("teatree.core.public_identity.run_allowed_to_fail", side_effect=self._gh_public),
+            patch.object(workspace_mod, "set_local_noreply_identity", side_effect=set_calls.append),
+        ):
+            result = workspace_mod.Command().stamp_identity(repo=".")
+        return result, set_calls
+
+    def test_public_github_remote_is_stamped(self) -> None:
+        result, set_calls = self._stamp("git@github.com:souliane/teatree.git", "souliane/teatree")
+        assert result.get("stamped") is True, result
+        assert set_calls == ["."], "the clone-local noreply identity must be stamped"
+
+    def test_github_ssh_alias_host_is_stamped(self) -> None:
+        result, set_calls = self._stamp("git@github.com-work:souliane/teatree.git", "souliane/teatree")
+        assert result.get("stamped") is True, result
+        assert set_calls == ["."]
+
+    def test_gitlab_remote_is_not_stamped(self) -> None:
+        # gh WOULD answer PUBLIC for the host-stripped ``acme-eng/widget``
+        # slug, but the non-github host short-circuits the gate to False
+        # BEFORE any gh call — the GitLab clone keeps its inherited identity.
+        result, set_calls = self._stamp("git@gitlab.com:acme-eng/widget.git", "acme-eng/widget")
+        assert result.get("stamped") is False, result
+        assert set_calls == [], "a GitLab clone must NEVER be stamped with the github noreply identity (#2655)"
+
+
 class TestBuildBranchName(TestCase):
     """#1323: branch names follow the flat ``<number>-<description>`` shape.
 

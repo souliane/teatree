@@ -182,8 +182,12 @@ class WorktreeProvisioner(RunnerBase):
         # #762: a worktree off a PUBLIC souliane/* clone gets the
         # configured noreply git identity set clone-local, so every
         # commit path uses it instead of the inherited identity. Scoped
-        # by remote slug — non-souliane / private clones are left as-is.
-        if is_public_github_remote(git.remote_slug(str(repo_path))):
+        # by remote — non-github / private clones are left as-is.
+        # #2655: pass the full remote URL (host intact), NOT the
+        # host-stripped slug — ``is_public_github_remote`` must see the
+        # host to refuse a non-github (e.g. gitlab) remote whose bare
+        # ``owner/repo`` would otherwise be resolved against github.com.
+        if is_public_github_remote(git.remote_url(str(repo_path))):
             try:
                 set_local_noreply_identity(str(wt_path))
             except Exception:

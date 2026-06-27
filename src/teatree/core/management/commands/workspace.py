@@ -489,11 +489,17 @@ class Command(TyperCommand):
 
         Fixes public souliane/* clones/worktrees created before the
         provisioner source-fix (new worktrees are stamped at creation).
-        Idempotent. Refuses non-souliane / private remotes so the private overlay's
-        legitimate real-identity attribution is never touched.
+        Idempotent. Refuses non-github / private remotes so a private
+        overlay's (or a GitLab clone's) legitimate real-identity
+        attribution is never touched.
         """
+        # #2655: the visibility gate must see the FULL remote URL (host
+        # intact) — a host-stripped slug would resolve a GitLab clone's
+        # bare ``owner/repo`` against github.com. ``slug`` is kept only
+        # for the human-readable result.
+        url = git.remote_url(repo)
         slug = git.remote_slug(repo)
-        if not is_public_github_remote(slug):
+        if not is_public_github_remote(url):
             return StampResult(
                 stamped=False,
                 reason=f"not a public GitHub remote (slug={slug!r}) — noreply-identity stamping not required",

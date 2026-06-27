@@ -5287,8 +5287,9 @@ Usage: t3 teatree workspace stamp-identity [OPTIONS]
 
  Fixes public souliane/* clones/worktrees created before the
  provisioner source-fix (new worktrees are stamped at creation).
- Idempotent. Refuses non-souliane / private remotes so the private overlay's
- legitimate real-identity attribution is never touched.
+ Idempotent. Refuses non-github / private remotes so a private
+ overlay's (or a GitLab clone's) legitimate real-identity
+ attribution is never touched.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --repo        TEXT  [default: .]                                             │
