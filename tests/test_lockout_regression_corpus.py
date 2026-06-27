@@ -40,6 +40,7 @@ from hooks.scripts.hook_router import (
     handle_enforce_orchestrator_boundary,
     handle_enforce_skill_loading,
     handle_quote_scanner_pretool,
+    handle_user_prompt_submit,
     handle_validate_mr_metadata,
 )
 
@@ -489,6 +490,43 @@ class TestSkillLoadingGateExemptDuringLoopBootstrap:
             "DEADLOCK regression (#1918) — code work during a loop-registration bootstrap turn "
             "(loop-pending marker present) was blocked demanding an unrelated skill load."
         )
+
+
+class TestDefaultOffSessionNeverHardBlocks:
+    """#256: a default-off (not-engaged) session never hard-blocks Bash/Edit/Write.
+
+    With ``[teatree] autoload`` unset and no teatree/``t3:`` skill loaded,
+    ``handle_user_prompt_submit`` suppresses the suggester and writes an EMPTY
+    ``<session>.pending``. The PreToolUse skill-loading gate then has nothing to
+    demand, so a plain ``.py`` Edit and a Python-tooling Bash both pass. A
+    regression that wrote a non-empty pending for a default-off session — or that
+    blocked here — would brick a fresh install on its first code-touching call.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _state(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        state = tmp_path / "state"
+        state.mkdir()
+        monkeypatch.setattr(router, "STATE_DIR", state)
+        # Hermetic, default-OFF: clean HOME (no [teatree] autoload) and no env opt-in.
+        home = tmp_path / "home"
+        home.mkdir(exist_ok=True)
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.delenv("T3_AUTOLOAD", raising=False)
+
+    def test_default_off_prompt_then_py_edit_not_blocked(self, tmp_path: Path) -> None:
+        handle_user_prompt_submit({"session_id": "off-edit", "prompt": "fix the bug in foo.py and run ruff check"})
+        blocked = handle_enforce_skill_loading(
+            {"session_id": "off-edit", "tool_name": "Edit", "tool_input": {"file_path": str(tmp_path / "wk" / "x.py")}}
+        )
+        assert blocked is False, "LOCKOUT regression (#256) — a default-off session hard-blocked a .py Edit."
+
+    def test_default_off_prompt_then_bash_not_blocked(self) -> None:
+        handle_user_prompt_submit({"session_id": "off-bash", "prompt": "please run the test suite"})
+        blocked = handle_enforce_skill_loading(
+            {"session_id": "off-bash", "tool_name": "Bash", "tool_input": {"command": "uv run pytest -q"}}
+        )
+        assert blocked is False, "LOCKOUT regression (#256) — a default-off session hard-blocked a Bash command."
 
 
 class TestMustDenyMerge:

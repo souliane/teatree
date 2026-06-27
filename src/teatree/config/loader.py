@@ -272,6 +272,7 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         worktrees_dir=worktrees_dir,
         privacy=teatree.get("privacy", ""),
         check_updates=teatree.get("check_updates", True),
+        autoload=bool(teatree.get("autoload", False)),
         timezone=teatree.get("timezone", ""),
         speak=resolve_speak(teatree),
         mr_reminder=resolve_mr_reminder(raw),

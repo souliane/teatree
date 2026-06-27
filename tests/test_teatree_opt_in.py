@@ -13,6 +13,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -24,12 +25,23 @@ from hooks.scripts.hook_router import (
     _loop_registration_exempt,
     _loops_auto_load_enabled,
     _read_loop_registry,
+    _t3_engaged,
     _teatree_active,
+    _teatree_engaged,
     _write_loop_registry,
     handle_enforce_loop_on_prompt,
+    handle_enforce_skill_loading,
     handle_session_start_bootstrap,
     handle_track_skill_usage,
+    handle_user_prompt_submit,
 )
+from hooks.scripts.teatree_settings import autoload_enabled
+
+_SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+
+from lib import skill_loader as skill_loader_mod  # noqa: E402
 
 # ── Fixtures ──────────────────────────────────────────────────────────
 
@@ -46,6 +58,14 @@ def _isolation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(router, "_TTY_PATH", str(tmp_path / "fake-tty"))
     monkeypatch.setenv("TEATREE_BASH_ENV_FILE", str(tmp_path / "no-bash-env"))
+    # Hermetic HOME: ``_autoload_enabled`` / ``_loops_auto_load_enabled`` read
+    # ``~/.teatree.toml``; a clean home keeps the default-OFF (#256) path
+    # deterministic regardless of the developer's own config. T3_AUTOLOAD off by
+    # default so autoload is exercised only where a test sets it explicitly.
+    clean_home = tmp_path / "home"
+    clean_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HOME", str(clean_home))
+    monkeypatch.delenv("T3_AUTOLOAD", raising=False)
     # Model the opted-in loop OWNER for the marker-mechanism tests below — the
     # session-start auto-load opt-in (#256) is exercised on its own in
     # ``TestLoopAutoLoadOptInGate``. Default OFF would otherwise gate every
@@ -88,9 +108,16 @@ class TestTeatreeActiveHelper:
 
 
 class TestSessionStartBootstrapGating:
-    def test_fresh_session_without_marker_emits_nothing(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_fresh_session_without_marker_emits_how_to_advisory(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # #256 default-OFF: a fresh, not-engaged session no longer returns
+        # silently — it surfaces the one-line how-to-start advisory and never the
+        # loop bootstrap directive.
         handle_session_start_bootstrap({"session_id": "no-teatree"})
-        assert capsys.readouterr().out == ""
+        out = capsys.readouterr().out
+        assert out != ""
+        ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        assert "run /teatree" in ctx
+        assert "t3 loop tick" not in ctx
 
     def test_fresh_session_without_marker_does_not_claim_ownership(self) -> None:
         handle_session_start_bootstrap({"session_id": "no-teatree"})
@@ -617,3 +644,216 @@ class TestStatuslineGating:
         (home / ".teatree.toml").write_text("[loops]\nauto_load = true\n", encoding="utf-8")
         out = self._run_statusline("teatree-sess", state_dir, home=home)
         assert out != ""
+
+
+# ── #256: default-off teatree autoload + engagement seam ──────────────────
+
+
+class TestAutoloadEnabledHelper:
+    """``autoload_enabled`` — env-first, then ``[teatree] autoload``, default OFF, fail-closed."""
+
+    @pytest.fixture(autouse=True)
+    def _no_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_AUTOLOAD", raising=False)
+
+    def test_default_off_with_no_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("HOME", str(tmp_path / "no-config-home"))
+        assert autoload_enabled() is False
+
+    def test_env_truthy_enables(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_AUTOLOAD", "1")
+        assert autoload_enabled() is True
+
+    def test_env_falsey_disables_over_toml_true(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        home = tmp_path / "h"
+        home.mkdir()
+        (home / ".teatree.toml").write_text("[teatree]\nautoload = true\n", encoding="utf-8")
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("T3_AUTOLOAD", "false")
+        assert autoload_enabled() is False
+
+    def test_toml_true_enables(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        home = tmp_path / "h"
+        home.mkdir()
+        (home / ".teatree.toml").write_text("[teatree]\nautoload = true\n", encoding="utf-8")
+        monkeypatch.setenv("HOME", str(home))
+        assert autoload_enabled() is True
+
+    def test_broken_config_fails_closed_off(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        home = tmp_path / "h"
+        home.mkdir()
+        (home / ".teatree.toml").write_text("not = = valid toml\n", encoding="utf-8")
+        monkeypatch.setenv("HOME", str(home))
+        assert autoload_enabled() is False
+
+    def test_quoted_string_true_is_ignored(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A quoted "true" (a string, not a bare bool) must not enable autoload.
+        home = tmp_path / "h"
+        home.mkdir()
+        (home / ".teatree.toml").write_text('[teatree]\nautoload = "true"\n', encoding="utf-8")
+        monkeypatch.setenv("HOME", str(home))
+        assert autoload_enabled() is False
+
+
+class TestTeatreeEngagedSeam:
+    """``_teatree_engaged`` = autoload OR ``.teatree-active`` OR ``.t3-engaged`` (#256)."""
+
+    def test_not_engaged_by_default(self) -> None:
+        assert _teatree_engaged("fresh") is False
+
+    def test_engaged_via_autoload(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_AUTOLOAD", "1")
+        assert _teatree_engaged("fresh") is True
+
+    def test_engaged_via_teatree_active_marker(self) -> None:
+        _mark_active("tt-eng")
+        assert _teatree_engaged("tt-eng") is True
+
+    def test_engaged_via_t3_engaged_marker(self) -> None:
+        (router.STATE_DIR / "marker-sess.t3-engaged").touch()
+        assert _t3_engaged("marker-sess") is True
+        assert _teatree_engaged("marker-sess") is True
+
+    def test_empty_session_id_is_not_engaged(self) -> None:
+        assert _t3_engaged("") is False
+        assert _teatree_engaged("") is False
+
+
+class TestAutoloadSessionStart:
+    """#256 (a): autoload ON flips ``.teatree-active`` + fires the loop bootstrap, not the how-to."""
+
+    def test_autoload_on_touches_teatree_active_and_emits_tick_directive(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # T3_LOOPS_AUTO_LOAD=1 from the isolation fixture; autoload supplies the
+        # teatree-active half so the existing loop bootstrap fires unchanged.
+        monkeypatch.setenv("T3_AUTOLOAD", "1")
+        handle_session_start_bootstrap({"session_id": "owner-default"})
+        assert _is_marked_active("owner-default")
+        ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+        assert "t3 loop tick" in ctx
+        assert "run /teatree" not in ctx
+
+    def test_autoload_on_claims_ownership(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_AUTOLOAD", "1")
+        handle_session_start_bootstrap({"session_id": "owner-default"})
+        assert _read_loop_registry().get(_OWNER_LOOP, {}).get("session_id") == "owner-default"
+
+    def test_default_off_emits_how_to_and_does_not_claim(self, capsys: pytest.CaptureFixture[str]) -> None:
+        handle_session_start_bootstrap({"session_id": "off-sess"})
+        ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+        assert "run /teatree" in ctx
+        assert "autoload = true" in ctx
+        assert "t3 loop tick" not in ctx
+        assert _read_loop_registry() == {}
+
+    def test_compact_resume_default_off_skips_how_to(self, capsys: pytest.CaptureFixture[str]) -> None:
+        # On a compact/resume of a not-engaged session the how-to is suppressed,
+        # but the merge still runs so snapshot-recovery / hand-off is never dropped.
+        handle_session_start_bootstrap({"session_id": "off-compact", "source": "compact"})
+        assert "run /teatree" not in capsys.readouterr().out
+
+
+class TestDefaultOffUserPromptSubmit:
+    """#256: UserPromptSubmit suppresses the suggester + reminder + .pending write until engaged."""
+
+    @pytest.fixture(autouse=True)
+    def suggester_calls(self, monkeypatch: pytest.MonkeyPatch) -> list:
+        calls: list = []
+
+        def _stub(loader_input: dict) -> dict:
+            calls.append(loader_input)
+            return {"suggestions": ["code"], "advisory": [], "intent": "code"}
+
+        monkeypatch.setattr(skill_loader_mod, "suggest_skills", _stub)
+        return calls
+
+    def _pending(self, session_id: str) -> str | None:
+        path = router.STATE_DIR / f"{session_id}.pending"
+        return path.read_text(encoding="utf-8") if path.is_file() else None
+
+    def test_default_off_writes_empty_pending_prints_nothing_and_skips_suggester(
+        self, capsys: pytest.CaptureFixture[str], suggester_calls: list
+    ) -> None:
+        handle_user_prompt_submit({"session_id": "ups-off", "prompt": "fix the bug in foo.py and run ruff"})
+        assert capsys.readouterr().out == ""
+        # Empty .pending → the PreToolUse skill-loading gate never blocks (never-lockout).
+        assert self._pending("ups-off") == ""
+        # Anti-vacuous: the suggester that WOULD have produced output was never called.
+        assert suggester_calls == []
+
+    def test_engaged_via_autoload_runs_suggester(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, suggester_calls: list
+    ) -> None:
+        monkeypatch.setenv("T3_AUTOLOAD", "1")
+        handle_user_prompt_submit({"session_id": "ups-on", "prompt": "fix the bug"})
+        out = capsys.readouterr().out
+        assert "LOAD THESE SKILLS NOW" in out
+        assert suggester_calls != []
+
+    def test_engaged_via_t3_marker_runs_suggester(
+        self, capsys: pytest.CaptureFixture[str], suggester_calls: list
+    ) -> None:
+        (router.STATE_DIR / "ups-t3.t3-engaged").touch()
+        handle_user_prompt_submit({"session_id": "ups-t3", "prompt": "fix the bug"})
+        assert "LOAD THESE SKILLS NOW" in capsys.readouterr().out
+        assert suggester_calls != []
+
+
+class TestOption1T3EngagedMarker:
+    """#256 Option-1: any ``t3:`` skill engages the SUGGESTER (``.t3-engaged``); loops stay off."""
+
+    @pytest.fixture(autouse=True)
+    def _identity_closure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(router, "_resolve_skill_closure", lambda skills: skills)
+
+    def test_t3_code_sets_t3_engaged_not_teatree_active(self) -> None:
+        handle_track_skill_usage({"session_id": "o1", "tool_name": "Skill", "tool_input": {"skill": "t3:code"}})
+        assert (router.STATE_DIR / "o1.t3-engaged").is_file()
+        # Loops are reserved for teatree-requiring skills — never armed by a plain
+        # lifecycle skill (keeps TestRealClosureMarkerActivation's contract).
+        assert not _is_marked_active("o1")
+
+    def test_t3_code_engages_session_but_loops_stay_off(self) -> None:
+        handle_track_skill_usage({"session_id": "o1b", "tool_name": "Skill", "tool_input": {"skill": "t3:code"}})
+        assert _teatree_engaged("o1b") is True
+        assert _loop_auto_load_active("o1b") is False
+
+    def test_instructions_loaded_t3_skill_sets_t3_engaged(self) -> None:
+        handle_track_skill_usage({"session_id": "o1c", "skills": [{"name": "t3:review"}]})
+        assert (router.STATE_DIR / "o1c.t3-engaged").is_file()
+        assert not _is_marked_active("o1c")
+
+
+class TestExplicitTeatreeEngages:
+    """#256: explicitly loading ``/teatree`` while OFF sets the marker and engages."""
+
+    @pytest.fixture(autouse=True)
+    def _identity_closure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(router, "_resolve_skill_closure", lambda skills: skills)
+
+    def test_teatree_skill_engages_session(self) -> None:
+        assert _teatree_engaged("tt-explicit") is False
+        handle_track_skill_usage(
+            {"session_id": "tt-explicit", "tool_name": "Skill", "tool_input": {"skill": "t3:teatree"}}
+        )
+        assert _is_marked_active("tt-explicit")
+        assert _teatree_engaged("tt-explicit") is True
+
+
+class TestDefaultOffNeverLockout:
+    """#256: a default-off, not-engaged session never hard-blocks a .py Edit or a Bash command."""
+
+    def test_py_edit_not_blocked_after_default_off_prompt(self, tmp_path: Path) -> None:
+        handle_user_prompt_submit({"session_id": "ll-edit", "prompt": "fix the bug in foo.py and run ruff"})
+        blocked = handle_enforce_skill_loading(
+            {"session_id": "ll-edit", "tool_name": "Edit", "tool_input": {"file_path": str(tmp_path / "work" / "x.py")}}
+        )
+        assert blocked is False
+
+    def test_bash_not_blocked_after_default_off_prompt(self) -> None:
+        handle_user_prompt_submit({"session_id": "ll-bash", "prompt": "run the test suite please"})
+        blocked = handle_enforce_skill_loading(
+            {"session_id": "ll-bash", "tool_name": "Bash", "tool_input": {"command": "uv run pytest -q"}}
+        )
+        assert blocked is False

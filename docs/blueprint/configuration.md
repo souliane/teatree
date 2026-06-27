@@ -22,6 +22,7 @@ workspace_dir = "~/workspace"
 privacy = "strict"
 statusline_chain = []                      # extra statusline scripts (glob patterns) chained after the loop's zones (read by the bash statusline hook)
 orchestrator_bash_gate_enabled = true      # #115 kill-switch, read directly by the hook layer (pre-Django)
+autoload = false                           # #256 default-OFF teatree engagement; true = auto-engage every session (pre-Django cold-hook read)
 
 [overlays.myproject]
 path = "~/workspace/myproject"
@@ -122,11 +123,13 @@ a field that CAN live in the DB is **DB-home**, and only the irreducible carve-o
 stays **TOML-home**. The two homes are disjoint (a fitness function asserts it) — a
 setting is never read from both tiers. A DB-home field resolves from `ConfigSetting`
 (global + overlay rows) + env only; a TOML-home field resolves from `[teatree]` +
-`[overlays.<name>]` + env only. The TOML carve-out is the ten fields a non-Django
+`[overlays.<name>]` + env only. The TOML carve-out is the eleven fields a non-Django
 or pre-Django reader needs (`orchestrator_bash_gate_enabled`, `speak` — the Stop
 hook re-reads the `[teatree.speak]` sub-table with tomllib and cannot reach the
 DB — `handover_mirror_path` — the SessionStart bootstrap path read precisely when
-the DB is unreachable — `check_updates`, and `statusline_chain` — read
+the DB is unreachable — `check_updates`, `autoload` — the cold SessionStart /
+UserPromptSubmit hooks read `[teatree] autoload` with tomllib to decide default-off
+engagement before any Django bootstrap (#256) — and `statusline_chain` — read
 straight from `~/.teatree.toml` by the **bash** statusline hook, which has no path
 to the DB), path/infra bootstrap (`workspace_dir`, `worktrees_dir`,
 `timezone`, `privacy`), and the nested structured `mr_reminder`
