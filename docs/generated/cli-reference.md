@@ -2435,7 +2435,7 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │ notion-download      Download a Notion file attachment using the Brave       │
 │                      browser session.                                        │
 │ comment-density      Warn on added comments that merely restate the code     │
-│                      (near-zero-comments rule).                              │
+│                      (comments-as-code rule).                                │
 │ ai-sig-scan          Refuse a PR body / commit message carrying an           │
 │                      AI-signature trailer.                                   │
 │ diff-coverage        Per-diff coverage + mutation/revert gate (BLUEPRINT     │
@@ -2677,9 +2677,9 @@ Usage: t3 tool notion-download [OPTIONS] URL
 ```
 Usage: t3 tool comment-density [OPTIONS]
 
- Warn on added comments that merely restate the code (near-zero-comments rule).
+ Warn on added comments that merely restate the code (comments-as-code rule).
 
- Content-blind density pass over a unified diff. Reusable by any overlay:
+ Content-aware diff pass over a unified diff. Reusable by any overlay:
  the dedicated prek hook and the CI job both call this command. The check
  is **advisory** — it prints the findings as a warning but **always exits
  0**, so it never blocks a commit, push, or pipeline, and it is never a
@@ -4172,6 +4172,8 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │                 confirmed non-live (#2225).                                  │
 │ agent           Launch Claude Code with overlay context and auto-detected    │
 │                 skills.                                                      │
+│ skill-preamble  Emit the inline SKILL.md preamble a raw Agent-tool sub-agent │
+│                 brief must carry.                                            │
 │ config          Overlay configuration.                                       │
 │ gate            Enforcement-gate kill-switches (self-rescue).                │
 │ speed           Parallel-work throughput dial.                               │
@@ -4300,6 +4302,20 @@ Usage: t3 teatree agent [OPTIONS] [TASK]
 │ --skill        TEXT  Explicit skill override. Repeat to load multiple        │
 │                      skills.                                                 │
 │ --help               Show this message and exit.                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree skill-preamble`
+
+```
+Usage: t3 teatree skill-preamble [OPTIONS]
+
+ Emit the inline SKILL.md preamble a raw Agent-tool sub-agent brief must carry.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --skills,--skill        TEXT  Skills to embed, comma-separated and/or        │
+│                               repeated (e.g. --skills t3:rules,t3:e2e).      │
+│ --help                        Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
