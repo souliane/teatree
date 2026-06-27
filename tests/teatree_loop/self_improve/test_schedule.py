@@ -215,8 +215,10 @@ class SchedulerAutoFixAdapterTests(TestCase):
     def test_run_tier_routes_per_detector_rerender_when_no_global_callable(self) -> None:
         """Without a global ``auto_fix_callable``, the ladder gets the detector's own rerender.
 
-        Guards against the schedule passing ``None`` and the whitelisted self-heal
-        never being wired (the dedicated ``loop_self_improve`` slot path).
+        The fallback for a directly-constructed detector with no injected seam.
+        Both live orchestration entry points (the dedicated ``loop_self_improve``
+        slot and the tick piggyback) inject the real seam as the global callable
+        instead — covered by ``test_explicit_global_callable_wins_over_per_detector``.
         """
         from teatree.loop.self_improve import schedule  # noqa: PLC0415
 

@@ -37,7 +37,7 @@ from teatree.loop.loop_cadences import _LOOP_OWNER_TTL_DEFAULT
 from teatree.loop.loop_cadences import loop_owner_ttl_seconds as _loop_owner_ttl_seconds
 from teatree.loop.loop_cadences import self_improve_cadence_seconds as _self_improve_cadence_seconds
 from teatree.loop.loop_cadences import slack_answer_cadence_seconds as _slack_answer_cadence_seconds
-from teatree.loop.phases.render import rerender_statusline
+from teatree.loop.phases.render import self_improve_rerender
 from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
 
 logger = logging.getLogger(__name__)
@@ -66,17 +66,6 @@ def _piggyback_slack_answer() -> None:
     run_slack_answer_cycle()
 
 
-def _self_improve_rerender(_report: object) -> None:
-    """Idle-render the statusline so a stale auto-fix firing self-heals (#2625).
-
-    The orchestration-layer seam injected as the action-ladder ``auto_fix_callable``
-    so the domain-layer ``StaleStatuslineEntryDetector`` never reaches up into
-    ``teatree.loop.phases.render`` itself. The detector's report carries the
-    ladder gate (``report.auto_fix``); this just re-renders the file.
-    """
-    rerender_statusline()
-
-
 def _piggyback_self_improve() -> None:
     """Drive one cheap-tier self-improve cycle behind the dedicated lease CAS."""
     from teatree.core.models import LoopLease  # noqa: PLC0415
@@ -85,7 +74,7 @@ def _piggyback_self_improve() -> None:
     owner = f"tickpiggyback-{os.getpid()}-{uuid.uuid4().hex}"
     if not LoopLease.objects.acquire("loop-self-improve", owner=owner, lease_seconds=_self_improve_cadence_seconds()):
         return
-    run_tier(Tier.CHEAP, auto_fix_callable=_self_improve_rerender)
+    run_tier(Tier.CHEAP, auto_fix_callable=self_improve_rerender)
 
 
 def run_piggyback_cycles() -> None:

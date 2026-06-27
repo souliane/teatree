@@ -190,17 +190,42 @@ class TestTickPiggybackSelfImprove:
 
         assert SelfImproveFiring.objects.filter(detector="stale_statusline_entry").exists()
 
+    def test_tick_self_heal_actually_invokes_the_rerender_seam(self, tmp_path: Path) -> None:
+        """Anti-vacuous: a stale statusline self-heals — the REAL render seam fires.
+
+        Recording a ``SelfImproveFiring`` row (the sibling test above) proves the
+        smell was detected, NOT that the heal ran. This drives the same full
+        ``loop_tick`` -> piggyback -> action-ladder path and asserts the injected
+        ``self_improve_rerender`` seam is actually invoked. On the wired-but-
+        unreachable code (ceiling == ``statusline``) the ladder never reaches the
+        ``auto_fix`` rung, so the seam is never called and this fails RED.
+        """
+        url = "https://github.com/o/r/pull/4343"
+        ticket = Ticket.objects.create(overlay="acme", issue_url=url + "/issues")
+        pr = PullRequest.objects.create(ticket=ticket, overlay="acme", url=url, repo="o/r", iid="4343")
+        pr.mark_merged()
+        pr.save()
+
+        teatree_dir = tmp_path / "teatree"
+        teatree_dir.mkdir()
+        (teatree_dir / "statusline.txt").write_text(f"in flight: {url}", encoding="utf-8")
+        tick_statusline = tmp_path / "tick-statusline.txt"
+
+        out = io.StringIO()
+        with (
+            patch.dict("os.environ", {**_no_session_env(), "XDG_DATA_HOME": str(tmp_path)}, clear=True),
+            patch("teatree.core.connector_preflight.run_connector_preflight"),
+            patch("teatree.core.management.commands.loop_tick._registry_jobs_builder", return_value=[]),
+            patch("teatree.loop.self_improve.budget._read_ram_used_percent", return_value=0.0),
+            patch("teatree.loop.tick_piggyback.self_improve_rerender") as seam,
+        ):
+            call_command("loop_tick", "--statusline-file", str(tick_statusline), stdout=out)
+
+        seam.assert_called_once()
+
 
 class TestTickPiggybackSelfHealInjection:
     """The piggyback injects the real orchestration render seam as the auto-fix self-heal (#2625)."""
-
-    def test_self_improve_rerender_invokes_the_render_seam(self) -> None:
-        from teatree.loop import tick_piggyback  # noqa: PLC0415
-
-        with patch.object(tick_piggyback, "rerender_statusline") as seam:
-            tick_piggyback._self_improve_rerender(object())
-
-        seam.assert_called_once()
 
     def test_piggyback_self_improve_passes_the_rerender_seam_to_run_tier(self) -> None:
         from teatree.loop import tick_piggyback  # noqa: PLC0415
@@ -215,7 +240,7 @@ class TestTickPiggybackSelfHealInjection:
             tick_piggyback._piggyback_self_improve()
 
         assert captured["tier"] == "cheap"
-        assert captured["callable"] is tick_piggyback._self_improve_rerender
+        assert captured["callable"] is tick_piggyback.self_improve_rerender
 
 
 class TestTickPiggybackOwnerGate:

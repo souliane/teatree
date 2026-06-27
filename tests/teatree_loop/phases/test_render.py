@@ -101,6 +101,22 @@ def test_rerender_statusline_rewrites_a_stale_file(tmp_path: Path) -> None:
     assert "stale merged-PR" not in sl.read_text(encoding="utf-8")
 
 
+def test_self_improve_rerender_adapter_invokes_the_render_seam(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The action-ladder ``auto_fix_callable`` adapter bridges to ``rerender_statusline``.
+
+    Both live orchestration entry points (the dedicated ``loop_self_improve`` slot
+    and the tick piggyback) inject this as the ladder's ``auto_fix_callable``.
+    """
+    from teatree.loop.phases import render as render_module  # noqa: PLC0415
+
+    calls: list[object] = []
+    monkeypatch.setattr(render_module, "rerender_statusline", lambda *a, **k: calls.append((a, k)))
+
+    render_module.self_improve_rerender(object())
+
+    assert len(calls) == 1
+
+
 def test_rerender_statusline_defaults_target_to_the_canonical_path(monkeypatch: pytest.MonkeyPatch) -> None:
     """With no target the seam writes the canonical statusline path (idle render)."""
     from teatree.loop.phases import render as render_module  # noqa: PLC0415
