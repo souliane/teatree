@@ -5,10 +5,10 @@ run on — or re-arm — the live 12-minute loop (issue #1933 § 3). It is its o
 low-frequency cron (``t3 dream tick``) that reuses the MiniLoop cadence /
 config / in-flight-lock primitives. The structural contract: the ``dream``
 loop is registered (so its cadence is configured and the statusline can show
-its countdown) yet excluded from both the live tick (#2513 cutover — the live
-tick is now the DB-``Loop``-table ``build_loop_table_jobs`` path, and dream's
-``build_jobs`` emits nothing) and the orchestrator's normal dispatch (via the
-``off_live_tick`` flag, which the Track-A orchestrator still honours).
+its countdown) yet excluded from the live tick (#2513 cutover — the live tick is
+now the DB-``Loop``-table ``build_loop_table_jobs`` path; an ``off_live_tick``
+row is skipped before its ``build_jobs`` runs or its ``last_run_at`` is bumped, so
+the dream cron owns its ONE cadence ledger alone).
 """
 
 import datetime as dt
@@ -20,9 +20,8 @@ from django.test import TestCase, override_settings
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.loop_lease_manager import LoopLeaseManager
-from teatree.core.models import Loop, MiniLoopMarker, Prompt
+from teatree.core.models import Loop, Prompt
 from teatree.loops.base import MiniLoop
-from teatree.loops.config import LoopsConfig
 from teatree.loops.dream.loop import (
     DREAM_LEASE_SECONDS,
     DREAM_LOOP_NAME,
@@ -38,8 +37,6 @@ from teatree.loops.dream.loop import (
     reindex_enabled,
 )
 from teatree.loops.master import build_loop_table_jobs
-from teatree.loops.orchestrator import Orchestrator
-from teatree.loops.orchestrator import TickRequest as OrchestratorTickRequest
 from teatree.loops.registry import iter_loops
 
 NOW = dt.datetime(2026, 6, 11, 4, tzinfo=dt.UTC)
@@ -110,25 +107,25 @@ class DreamLoopRegistrationTestCase(TestCase):
         # The dream row's build_jobs (registry MINI_LOOP) emits nothing.
         assert MINI_LOOP.build_jobs(**_context()) == []
 
-    def test_dream_excluded_from_orchestrator_dispatch(self) -> None:
-        MiniLoopMarker.objects.all().delete()
-        captured: list[object] = []
-
-        def _dispatch(jobs: list[object]) -> list[object]:
-            captured.extend(jobs)
-            return list(jobs)
-
-        outcome = Orchestrator(
-            config=LoopsConfig(),
-            registry_fn=iter_loops,
-            clock=lambda: NOW,
-            dispatch_fn=_dispatch,
-        ).tick(OrchestratorTickRequest(backends=_backends()))
-        # The off-live-tick loop is skipped before build/dispatch, so its
-        # marker is never bumped by the orchestrator and it is not dispatched.
-        assert not MiniLoopMarker.objects.filter(name="dream").exists()
-        assert "dream" not in outcome.dispatched_loops
-        assert outcome.skipped_loops.get("dream") == "off_live_tick"
+    @override_settings(USE_TZ=True)
+    def test_dream_off_live_tick_is_not_cadence_bumped_by_master(self) -> None:
+        # off_live_tick: the master must never invoke dream's build_jobs or bump its
+        # last_run_at — the dream cron owns the ONE cadence ledger (Loop.last_run_at).
+        # Anti-vacuous: the row is enabled, un-held, and due (interval, never run), so
+        # WITHOUT the off_live_tick skip the master would bump last_run_at here.
+        Loop.objects.update_or_create(
+            name="dream",
+            defaults={
+                "script": "src/teatree/loops/dream/loop.py",
+                "prompt": None,
+                "delay_seconds": 86400,
+                "daily_at": None,
+                "enabled": True,
+                "last_run_at": None,
+            },
+        )
+        build_loop_table_jobs(_context(), now=NOW)
+        assert Loop.objects.get(name="dream").last_run_at is None
 
 
 class OffLiveTickFieldTestCase(TestCase):

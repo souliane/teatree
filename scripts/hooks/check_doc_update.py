@@ -3,7 +3,7 @@
 Background: souliane/teatree#1461 — README and BLUEPRINT drift silently
 when source-code changes that introduce new user-visible surface (a top-level
 ``t3`` command, a new ``Ticket.State`` enum value, a new ``SKILL.md``, a new
-``LoopLease``/``MiniLoopMarker`` row name) ship without the matching doc edit.
+``LoopLease`` row name) ship without the matching doc edit.
 
 The hook catches only HIGH-CONFIDENCE triggers — no judgment, no false
 positives. Soft cases (renamed flag defaults, user-observable error-message
@@ -28,7 +28,6 @@ _ADD_TYPER_RE = re.compile(r"""app\.add_typer\(\s*[A-Za-z_][A-Za-z0-9_]*\s*,\s*n
 _APP_COMMAND_RE = re.compile(r"""app\.command\(\s*\)\s*\(""")
 _TEXTCHOICE_ROW_RE = re.compile(r"""^\s*[A-Z][A-Z0-9_]*\s*=\s*['"][a-z0-9_-]+['"]\s*,""")
 _LOOP_LEASE_RE = re.compile(r"""LoopLease\.objects\.(?:acquire|filter|get|get_or_create)\(\s*['"][a-z0-9_-]+['"]""")
-_MINI_LOOP_MARKER_RE = re.compile(r"""MiniLoopMarker\.objects\.[A-Za-z_]+\(\s*['"][a-z0-9_-]+['"]""")
 
 
 @dataclass(frozen=True)
@@ -106,11 +105,6 @@ def detect_loop_lease_added(diff: str) -> bool:
     return _scan_added_lines_under(diff, _LOOP_LEASE_RE, ("src/teatree/",))
 
 
-def detect_mini_loop_marker_added(diff: str) -> bool:
-    """Detect a new ``MiniLoopMarker`` name literal in any staged source file."""
-    return _scan_added_lines_under(diff, _MINI_LOOP_MARKER_RE, ("src/teatree/",))
-
-
 def detect_new_skill_md(staged_files: list[str], added_files: list[str]) -> bool:
     """Detect a brand-new ``SKILL.md`` file added to the tree."""
     added_set = set(added_files)
@@ -155,9 +149,6 @@ def find_missing_docs(
 
     if detect_loop_lease_added(diff) and not blueprint_changed:
         findings.append(Finding(trigger="New LoopLease row name", required_doc="BLUEPRINT.md"))
-
-    if detect_mini_loop_marker_added(diff) and not blueprint_changed:
-        findings.append(Finding(trigger="New MiniLoopMarker name", required_doc="BLUEPRINT.md"))
 
     return findings
 

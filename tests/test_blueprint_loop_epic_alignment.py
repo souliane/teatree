@@ -111,7 +111,7 @@ class TestTrackABOverviewPresent:
 
     def test_track_a_described_as_no_panes_loop_restructure(self, loop_topology: str) -> None:
         assert _any_window_has(loop_topology, "Track A", "no panes", "orchestrate")
-        assert _any_window_has(loop_topology, "Track A", "dedicated_loops")
+        assert _any_window_has(loop_topology, "Track A", "per-loop ownership")
 
     def test_track_b_described_as_pane_backed_teammates(self, loop_topology: str) -> None:
         assert _any_window_has(loop_topology, "Track B", "pane", "separate long-lived")
@@ -121,8 +121,12 @@ class TestTrackABOverviewPresent:
         assert _any_window_has(loop_topology, "teams", "enabled = false", "off switch")
         assert _any_window_has(loop_topology, "teams", "classic", "sub-agent")
 
-    def test_fat_loop_reframed_as_default_off_toggle_default(self, loop_topology: str) -> None:
-        assert _any_window_has(loop_topology, "dedicated_loops = false", "default", "not the only")
+    def test_dedicated_loops_toggle_retired_for_per_loop_default(self, loop_topology: str) -> None:
+        # LOOP-PR-A deleted the dedicated_loops setting; #2650's one-`/loop`-per-
+        # enabled-row model superseded the fat-`/loop`-vs-dedicated-slots toggle.
+        # The vocabulary may now appear only retirement-framed (mirrors the
+        # roster-retirement rule below), attributed to #2650.
+        assert _any_window_has(loop_topology, "dedicated_loops", "retired", "#2650")
 
 
 class TestSubsumedIssuesDocumented:

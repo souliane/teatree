@@ -1,16 +1,18 @@
 """The live ``t3 loop tick`` is cut over to the DB ``Loop`` table (#2513, D1).
 
 After the #1796 cutover the LIVE fat tick (``loop_tick`` management command) selects
-its scanner jobs from the ``Loop`` table via ``build_loop_table_jobs`` — NOT from the
-retired code-cadence path gated by ``LoopsConfig``/``MiniLoopMarker``/
-``elapsed_and_enabled``. These tests pin that the live builder routes through the Loop
-table and that the retired code-cadence gate no longer suppresses an enabled Loop row.
+its scanner jobs from the ``Loop`` table via ``build_loop_table_jobs`` — NOT from a
+code-cadence ledger. LOOP-PR-A then DELETED that retired ledger + gate entirely.
+These tests pin that the live builder routes through the Loop table and that the
+retired code-cadence modules are gone (so they can never be consulted again).
 """
 
 import datetime as dt
+import importlib
 from unittest.mock import patch
 
 import django.test
+import pytest
 from django.utils import timezone
 
 from teatree.core.management.commands.loop_tick import _registry_jobs_builder
@@ -58,22 +60,13 @@ class TestLiveTickReadsLoopTable(django.test.TestCase):
         canonical.assert_called_once()
         assert "job-ct-only" in jobs
 
-    def test_live_builder_does_not_consult_the_legacy_cadence_gate(self) -> None:
-        # The retired ``LoopsConfig``/``MiniLoopMarker``/``elapsed_and_enabled``
-        # code-cadence gate must NOT be consulted on the live path — the Loop
-        # row is the single source of truth.
-        now = timezone.now()
-        Loop.objects.create(name="ct-legacy", delay_seconds=60, prompt=_prompt())
-        request = TickRequest()
-        with (
-            patch("teatree.loops.master.iter_loops", return_value=(_mini("ct-legacy"),)),
-            patch("teatree.loops.gating.elapsed_and_enabled") as legacy_gate,
-            patch("teatree.loops.cadence_ledger.MiniLoopMarker.objects.mark_fired") as legacy_marker,
-        ):
-            jobs = _registry_jobs_builder(request, now)
-        legacy_gate.assert_not_called()
-        legacy_marker.assert_not_called()
-        assert "job-ct-legacy" in jobs
+    def test_legacy_code_cadence_modules_are_deleted(self) -> None:
+        # LOOP-PR-A removed the retired code-cadence ledger + its gate + the
+        # duplicate tick engine. They no longer exist, so the live path can never
+        # consult them again — the Loop row is the single source of truth.
+        for mod in ("teatree.loops.gating", "teatree.loops.cadence_ledger", "teatree.loops.orchestrator"):
+            with pytest.raises(ModuleNotFoundError):
+                importlib.import_module(mod)
 
     def test_live_builder_bumps_last_run_for_dispatched_row(self) -> None:
         now = timezone.now()

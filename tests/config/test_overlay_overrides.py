@@ -97,7 +97,6 @@ class TestOverlayDbHomeOverrides(TestCase):
             "T3_OVERLAY_NAME",
             "T3_ISSUE_IMPLEMENTER_ENABLED",
             "T3_ORCHESTRATE_CLAIM_ENABLED",
-            "T3_DEDICATED_LOOPS",
             "T3_TEAMS_ENABLED",
             "T3_TEAMS_MAX_PANES",
             "T3_TEAMS_IDLE_MINUTES",
@@ -202,17 +201,6 @@ class TestOverlayDbHomeOverrides(TestCase):
         self.monkeypatch.setenv("T3_ISSUE_IMPLEMENTER_ENABLED", "false")
         self._activate()
         assert get_effective_settings().issue_implementer_enabled is False
-
-    def test_overlay_can_override_dedicated_loops(self) -> None:
-        ConfigSetting.objects.set_value("dedicated_loops", value=True, scope="my-overlay")
-        self._activate()
-        assert get_effective_settings().dedicated_loops is True
-
-    def test_env_dedicated_loops_beats_overlay_db_override(self) -> None:
-        ConfigSetting.objects.set_value("dedicated_loops", value=True, scope="my-overlay")
-        self.monkeypatch.setenv("T3_DEDICATED_LOOPS", "false")
-        self._activate()
-        assert get_effective_settings().dedicated_loops is False
 
     def test_overlay_can_override_teams_enabled(self) -> None:
         ConfigSetting.objects.set_value("teams_enabled", value=True, scope="my-overlay")

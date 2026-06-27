@@ -422,16 +422,6 @@ class TestIssueImplementerSettings:
         assert get_effective_settings().issue_implementer_enabled is True
 
 
-class TestDedicatedLoopsSetting:
-    """``dedicated_loops`` is DB-home (#1775): default OFF, env wins."""
-
-    def test_default_is_off(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("T3_DEDICATED_LOOPS", raising=False)
-        cfg = tmp_path / ".teatree.toml"
-        cfg.write_text("[teatree]\n", encoding="utf-8")
-        assert load_config(cfg).user.dedicated_loops is False
-
-
 class TestOrchestrateClaimEnabledSetting:
     """``orchestrate_claim_enabled`` is DB-home (#1796/#1775): default OFF, env wins."""
 
