@@ -86,7 +86,6 @@ class _ReaperFixture(TestCase):
             lambda project, **kw: self.docker_calls.append((project, bool(kw.get("remove_volumes")))),
         )
         # Neutralise the forge so the patch-id / FSM signals are the only deciders.
-        monkeypatch.setattr("teatree.core.branch_classification._run_host_cli", lambda *_a, **_k: None)
         monkeypatch.setattr("teatree.core.branch_classification.probe_host_cli", lambda *_a, **_k: "")
 
     def _config(self) -> object:

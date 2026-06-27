@@ -1494,73 +1494,12 @@ class TestWorkspaceCleanMerged(TestCase):
         assert cleaned == ["Wiped 'ac-repo-70'"]
 
 
-def _subprocess_side_effect(gh_stdout: str, glab_stdout: str):
-    """Return a side_effect function that dispatches mock stdout based on the CLI command."""
-
-    def _side_effect(args, **kwargs):
-        cmd = args[0] if args else ""
-        stdout = gh_stdout if cmd == "gh" else glab_stdout
-        return subprocess.CompletedProcess([], 0, stdout=stdout)
-
-    return _side_effect
-
-
-_gh_no_pr = patch(
-    "teatree.utils.run.subprocess.run",
-    side_effect=_subprocess_side_effect(gh_stdout="[]", glab_stdout=""),
-)
-
-
-_gh_merged_pr = patch(
-    "teatree.utils.run.subprocess.run",
-    return_value=subprocess.CompletedProcess([], 0, stdout='[{"number":1}]'),
-)
-
-
-_glab_merged_mr = patch(
-    "teatree.utils.run.subprocess.run",
-    side_effect=_subprocess_side_effect(gh_stdout="[]", glab_stdout="!5\tMR title\t(feature)\t1 hour ago"),
-)
-
-
 class TestPruneBranches(TestCase):
-    def test_squash_merged_detected_via_gh_api(self) -> None:
-        with _gh_merged_pr:
-            assert ws_cleanup_mod.is_squash_merged("/repo", "feature", "main") is True
-
-    def test_squash_merged_detected_via_glab_api(self) -> None:
-        with _glab_merged_mr:
-            assert ws_cleanup_mod.is_squash_merged("/repo", "feature", "main") is True
-
-    def test_squash_merged_fallback_via_cherry_all_equivalent(self) -> None:
-        # git cherry marks every unique commit "- <sha>" when its patch is
-        # already upstream (the squash captured it) -> branch is merged.
-        with _gh_no_pr, patch.object(git_mod, "run", return_value="- abc123\n- def456"):
-            assert ws_cleanup_mod.is_squash_merged("/repo", "feature", "main") is True
-
-    def test_squash_merged_fallback_via_cherry_no_unique_commits(self) -> None:
-        with _gh_no_pr, patch.object(git_mod, "run", return_value=""):
-            assert ws_cleanup_mod.is_squash_merged("/repo", "feature", "main") is True
-
-    def test_non_merged_detected_via_cherry_plus_line(self) -> None:
-        # A "+ <sha>" line is a unique commit NOT upstream -> not merged.
-        with _gh_no_pr, patch.object(git_mod, "run", return_value="- abc123\n+ def456"):
-            assert ws_cleanup_mod.is_squash_merged("/repo", "feature", "main") is False
-
-    def test_falls_back_to_cherry_when_host_cli_is_blocked(self) -> None:
-        # A blocked/missing gh/glab raises OSError (PermissionError in a sandbox,
-        # FileNotFoundError when absent) — clean-all must not crash, it falls
-        # back to the git cherry check rather than propagating the error.
-        with (
-            patch("teatree.utils.run.subprocess.run", side_effect=PermissionError("blocked")),
-            patch.object(git_mod, "run", return_value="- abc123"),
-        ):
-            assert ws_cleanup_mod.is_squash_merged("/repo", "feature", "main") is True
-        with (
-            patch("teatree.utils.run.subprocess.run", side_effect=FileNotFoundError("gh")),
-            patch.object(git_mod, "run", return_value="+ def456"),
-        ):
-            assert ws_cleanup_mod.is_squash_merged("/repo", "feature", "main") is False
+    # The canonical layered ``is_squash_merged`` / ``branch_redundancy`` detection
+    # (cherry-zero / synthetic-squash / ``--merged`` / forge-corroborating-only) is
+    # exercised end-to-end against real git in ``tests/teatree_core/cleanup/
+    # test_branch_redundancy.py`` and ``TestIsSquashMergedRealGit`` — a mocked
+    # ``git.run`` cannot model the multi-command layered detector.
 
     def test_worktree_map_parses_porcelain(self) -> None:
         porcelain = (
@@ -1604,6 +1543,9 @@ class TestPruneBranches(TestCase):
             patch.object(provision_mod, "_workspace_dir", return_value=Path("/tmp/ws")),
             patch.object(ws_cleanup_mod, "worktree_map", return_value=wt_map),
             patch.object(ws_cleanup_mod, "worktree_branches", return_value={"gone-branch"}),
+            # The layered detection is real-git-tested in test_branch_redundancy.py; here
+            # the branch IS classified squash-merged so the Pass-3 reap/block path is exercised.
+            patch.object(ws_cleanup_mod, "is_squash_merged", return_value=True),
             patch.object(git_mod, "run", side_effect=fake_run),
             patch.object(git_commit_mod, "run", side_effect=fake_run),
             patch.object(git_mod, "current_branch", return_value="main"),
@@ -1640,6 +1582,9 @@ class TestPruneBranches(TestCase):
             patch.object(provision_mod, "_workspace_dir", return_value=Path("/tmp/ws")),
             patch.object(ws_cleanup_mod, "worktree_map", return_value=wt_map),
             patch.object(ws_cleanup_mod, "worktree_branches", return_value={"gone-branch"}),
+            # The layered detection is real-git-tested in test_branch_redundancy.py; here
+            # the branch IS classified squash-merged so the Pass-3 reap/block path is exercised.
+            patch.object(ws_cleanup_mod, "is_squash_merged", return_value=True),
             patch.object(git_mod, "run", side_effect=fake_run),
             patch.object(git_mod, "current_branch", return_value="main"),
             patch.object(git_mod, "default_branch", return_value="main"),
@@ -1674,6 +1619,9 @@ class TestPruneBranches(TestCase):
             patch.object(provision_mod, "_workspace_dir", return_value=Path("/tmp/ws")),
             patch.object(ws_cleanup_mod, "worktree_map", return_value=wt_map),
             patch.object(ws_cleanup_mod, "worktree_branches", return_value={"gone-branch"}),
+            # The layered detection is real-git-tested in test_branch_redundancy.py; here
+            # the branch IS classified squash-merged so the Pass-3 reap/block path is exercised.
+            patch.object(ws_cleanup_mod, "is_squash_merged", return_value=True),
             patch.object(git_mod, "run", side_effect=fake_run),
             patch.object(git_mod, "current_branch", return_value="main"),
             patch.object(git_mod, "default_branch", return_value="main"),
@@ -3147,7 +3095,9 @@ class TestIsSquashMergedRealGit(TestCase):
 
     @staticmethod
     def _no_host_cli() -> AbstractContextManager[object]:
-        return patch.object(bc_mod, "_run_host_cli", return_value=None)
+        # Forge absent: the corroborating forge probe yields nothing, so only the
+        # deterministic git content layers (cherry / synthetic-squash / --merged) decide.
+        return patch.object(bc_mod, "probe_host_cli", return_value="")
 
     def test_squash_merged_branch_is_detected_despite_non_ancestor(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_s:
@@ -3201,12 +3151,16 @@ class TestCleanAllUnattendedReapMatrix(TestCase):
             msg = "unattended clean-all blocked on stdin (#2361)"
             raise AssertionError(msg)
 
+        forge_merged = forge is not None
         with (
             patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
             patch.object(provision_mod, "_workspace_dir", return_value=workspace),
             patch.object(cleanup_mod, "load_config") as mock_config,
-            patch.object(bc_mod, "_run_host_cli", return_value=forge),
-            patch.object(cleanup_mod, "_branch_pr_is_merged", return_value=forge is not None),
+            # The forge is corroborating-only now: stub both its probe (so no real
+            # gh/glab subprocess runs) and the merged report. It never alone reaps.
+            patch.object(bc_mod, "probe_host_cli", return_value="42" if forge_merged else ""),
+            patch.object(bc_mod, "_branch_pr_is_merged", return_value=forge_merged),
+            patch.object(cleanup_mod, "_branch_pr_is_merged", return_value=forge_merged),
             patch("teatree.core.runners.worktree_start.docker_compose_down"),
             patch.object(cleanup_mod, "drop_db", side_effect=lambda name, **_kw: dropped.append(name)),
             patch("builtins.input", side_effect=_input_must_not_be_called),
@@ -3243,12 +3197,14 @@ class TestCleanAllUnattendedReapMatrix(TestCase):
             assert not wt_path.exists()
             assert "feature" not in _git(work, "branch", "--format=%(refname:short)").split()
 
-    def test_forge_confirmed_merged_branch_is_reaped(self) -> None:
-        """When git signals are ambiguous but the forge reports MERGED, the row is reaped.
+    def test_forge_merged_but_tip_not_on_target_is_kept_not_reaped(self) -> None:
+        """A forge-merged branch whose CURRENT tip is NOT on origin/main is KEPT (#2763).
 
         The branch is pushed and genuinely ahead of origin/main (no empty diff, no
-        cherry-equivalence), so ONLY the forge MR/PR record (retained after branch
-        deletion) confirms it shipped — the forge-fallback path.
+        cherry-equivalence, no squash on main), so the forge MR/PR record is the
+        ONLY merged signal. Under the canonical layered detection the forge signal
+        is corroborating-only and NEVER alone authorises deletion: the row is kept
+        for salvage to a fresh PR, never reaped on the stale merged signal.
         """
         with tempfile.TemporaryDirectory() as tmp_s:
             tmp = Path(tmp_s)
@@ -3266,8 +3222,10 @@ class TestCleanAllUnattendedReapMatrix(TestCase):
             forge_merged = subprocess.CompletedProcess([], 0, '[{"number": 42}]', "")
             cleaned = self._run(tmp, forge=forge_merged)
 
-            assert not Worktree.objects.filter(pk=wt.pk).exists(), f"forge-merged row should be reaped: {cleaned!r}"
-            assert not wt_path.exists()
+            assert Worktree.objects.filter(pk=wt.pk).exists(), (
+                f"forge-merged alone must NOT reap a tip not on origin/main (#2763): {cleaned!r}"
+            )
+            assert wt_path.is_dir()
 
     def test_dirty_live_worktree_is_kept(self) -> None:
         """#2243 / #835: a worktree with uncommitted changes is KEPT, never reaped.
