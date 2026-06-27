@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, cast
 from teatree.core.models import Ticket, Worktree, WorktreeEnvOverride
 from teatree.core.models.types import WorktreeExtra, validated_worktree_extra
 from teatree.core.overlay_loader import get_overlay_for_worktree
-from teatree.utils.postgres_secret import PASS_KEY_ENV, postgres_pass_key
+from teatree.utils.postgres_secret import PASS_KEY_ENV
 
 if TYPE_CHECKING:
     from teatree.core.overlay import OverlayBase
@@ -89,7 +89,7 @@ def _core_env_pairs(worktree: Worktree) -> list[tuple[str, str]]:
         ("TICKET_URL", ticket.issue_url),
         ("WT_DB_NAME", worktree.db_name),
         ("COMPOSE_PROJECT_NAME", compose_project(worktree)),
-        (PASS_KEY_ENV, postgres_pass_key(ticket.ticket_number)),
+        (PASS_KEY_ENV, worktree.pass_key),
     ]
 
 
