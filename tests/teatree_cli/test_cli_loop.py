@@ -9,12 +9,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from django.test import TestCase
 from typer.testing import CliRunner
 
-from teatree.cli.loop import _cadence_for_loop_slot, loop_app
+from teatree.cli.loop import loop_app
 from teatree.cli.loop_slack_answer import _slack_answer_cadence_for_loop_slot
-from teatree.core.models import ConfigSetting
 
 runner = CliRunner()
 
@@ -136,71 +134,26 @@ class TestStatusCommand:
         assert "next tick 4m" in result.stdout
 
 
-class TestCadenceParser:
-    @pytest.mark.parametrize(
-        ("env_value", "expected"),
-        [
-            ("720", "12m"),
-            ("600", "10m"),
-            ("90", "90s"),
-            ("", "12m"),
-            ("garbage", "12m"),
-            ("30", "1m"),  # clamped to 60s minimum, formatted as 1m
-        ],
-    )
-    def test_parses_t3_loop_cadence(self, env_value: str, expected: str, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("T3_LOOP_CADENCE", env_value)
-        assert _cadence_for_loop_slot() == expected
-
-    def test_default_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("T3_LOOP_CADENCE", raising=False)
-        assert _cadence_for_loop_slot() == "12m"
-
-
-class TestCadenceParserDbHome(TestCase):
-    """``loop_cadence_seconds`` is DB-home (#1775): the slot cadence reads the store."""
-
-    @pytest.fixture(autouse=True)
-    def _monkeypatch(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        self.monkeypatch = monkeypatch
-
-    def test_uses_db_cadence_when_env_unset(self) -> None:
-        # #1036: with no T3_LOOP_CADENCE env, the slot cadence falls back to
-        # the resolved ``loop_cadence_seconds``, not the hardcoded 720 default.
-        self.monkeypatch.delenv("T3_LOOP_CADENCE", raising=False)
-        ConfigSetting.objects.set_value("loop_cadence_seconds", 60)
-        assert _cadence_for_loop_slot() == "1m"
-
-    def test_env_overrides_db_cadence(self) -> None:
-        # #1036: env wins over the resolved DB value (established precedence).
-        ConfigSetting.objects.set_value("loop_cadence_seconds", 60)
-        self.monkeypatch.setenv("T3_LOOP_CADENCE", "600")
-        assert _cadence_for_loop_slot() == "10m"
-
-
 class TestStartCommand:
-    def test_print_only_emits_slash_command(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("T3_LOOP_CADENCE", "720")
+    def test_print_only_emits_per_loop_registration_guidance(self, monkeypatch: pytest.MonkeyPatch) -> None:
         result = runner.invoke(loop_app, ["start", "--print-only"])
 
         assert result.exit_code == 0
-        # #786 WS3/WS1: the registration prompt drives the tick + atomic
-        # claim-then-spawn flow (claim-next), NOT the retired
-        # pending-spawn/spawn-claim race.
-        assert "/loop 12m " in result.stdout
-        assert "t3 loop tick" in result.stdout
-        assert "t3 loop claim-next" in result.stdout
-        assert "spawn-claim" not in result.stdout
-        assert "T3_LOOP_CADENCE" in result.stdout
+        # #2650: per-loop registration via the claude-spec path + the /t3:loops skill,
+        # NOT a single fat `/loop` slot.
+        assert "t3 loop claude-spec" in result.stdout
+        assert "t3 loops tick --loop" in result.stdout
+        assert "/t3:loops" in result.stdout
+        assert "--slot" not in result.stdout
 
     def test_inside_claude_session_falls_back_to_print(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("CLAUDECODE", "1")
         result = runner.invoke(loop_app, ["start"])
 
         assert result.exit_code == 0
-        assert "/loop" in result.stdout
+        assert "t3 loop claude-spec" in result.stdout
 
-    def test_missing_claude_binary_exits_with_instructions(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_missing_claude_binary_exits_with_guidance(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("CLAUDECODE", raising=False)
         with (
             patch("teatree.cli.loop._stdin_is_terminal", return_value=True),
@@ -210,11 +163,10 @@ class TestStartCommand:
 
         assert result.exit_code == 1
         assert "claude` not found" in result.stdout
-        assert "/loop" in result.stdout
+        assert "t3 loop claude-spec" in result.stdout
 
-    def test_spawns_claude_with_register_prompt(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_spawns_claude_without_a_fat_slot(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("CLAUDECODE", raising=False)
-        monkeypatch.setenv("T3_LOOP_CADENCE", "600")
         with (
             patch("teatree.cli.loop._stdin_is_terminal", return_value=True),
             patch("teatree.cli.loop.shutil.which", return_value="/usr/bin/claude"),
@@ -225,76 +177,8 @@ class TestStartCommand:
         assert execv_mock.call_count == 1
         argv = execv_mock.call_args.args[1]
         assert argv[0] == "/usr/bin/claude"
-        assert argv[1].startswith("/loop 10m ")
-        assert "t3 loop tick" in argv[1]
-        assert "t3 loop claim-next" in argv[1]
-
-
-class TestDedicatedLoopSlots:
-    """`t3 loop start --print-slots` — the dedicated-loop slot generator (#1838).
-
-    Toggle OFF (default) ⇒ the single fat slot (byte-identical to today).
-    Toggle ON ⇒ N dedicated slots, one per dedicated loop, each driving a
-    scoped `t3 loop tick --slot <name>` at the group's cadence.
-    """
-
-    def test_print_slots_off_emits_single_fat_slot(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from teatree.loops.dedicated import DEDICATED_LOOPS  # noqa: PLC0415
-
-        monkeypatch.setenv("T3_DEDICATED_LOOPS", "false")
-        result = runner.invoke(loop_app, ["start", "--print-slots"])
-
-        assert result.exit_code == 0
-        # Exactly one `/loop` slot line, the fat one.
-        slot_lines = [line for line in result.stdout.splitlines() if line.strip().startswith("/loop ")]
-        assert len(slot_lines) == 1
-        assert "t3 loop tick" in slot_lines[0]
-        assert "--slot" not in slot_lines[0]
-        # No dedicated group's scoped tick is emitted in fat mode.
-        for dl in DEDICATED_LOOPS:
-            assert f"--slot {dl.name}" not in result.stdout
-
-    def test_print_slots_on_emits_one_slot_per_dedicated_loop(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from teatree.loops.dedicated import DEDICATED_LOOPS  # noqa: PLC0415
-
-        monkeypatch.setenv("T3_DEDICATED_LOOPS", "true")
-        result = runner.invoke(loop_app, ["start", "--print-slots"])
-
-        assert result.exit_code == 0
-        slot_lines = [line for line in result.stdout.splitlines() if line.strip().startswith("/loop ")]
-        assert len(slot_lines) == len(DEDICATED_LOOPS)
-        # Every dedicated loop has its own scoped-tick slot.
-        for dl in DEDICATED_LOOPS:
-            assert f"t3 loop tick --slot {dl.name}" in result.stdout
-
-    def test_print_slots_on_uses_each_group_cadence(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from teatree.loops.dedicated import dedicated_loop_by_name  # noqa: PLC0415
-
-        monkeypatch.setenv("T3_DEDICATED_LOOPS", "true")
-        result = runner.invoke(loop_app, ["start", "--print-slots"])
-
-        assert result.exit_code == 0
-        # dispatch=300s → "5m", inbox=60s → "1m", housekeeping=3600s → "1h".
-        assert "/loop 5m Run `t3 loop tick --slot dispatch`" in result.stdout
-        assert "/loop 1m Run `t3 loop tick --slot inbox`" in result.stdout
-        assert "/loop 1h Run `t3 loop tick --slot housekeeping`" in result.stdout
-        # The 600s followup group renders as "10m".
-        followup = dedicated_loop_by_name("followup")
-        assert followup is not None
-        assert followup.cadence_seconds == 600
-        assert "/loop 10m Run `t3 loop tick --slot followup`" in result.stdout
-
-    def test_print_slots_default_off_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("T3_DEDICATED_LOOPS", raising=False)
-        with patch("teatree.config.resolution.get_effective_settings") as settings_mock:
-            settings_mock.return_value.dedicated_loops = False
-            settings_mock.return_value.loop_cadence_seconds = 720
-            result = runner.invoke(loop_app, ["start", "--print-slots"])
-
-        assert result.exit_code == 0
-        slot_lines = [line for line in result.stdout.splitlines() if line.strip().startswith("/loop ")]
-        assert len(slot_lines) == 1
-        assert "--slot" not in result.stdout
+        # #2650: no single fat `/loop` slot is passed — the owner hook registers per-loop.
+        assert not any(str(a).startswith("/loop") for a in argv)
 
 
 class TestStartCommandSessionPins:
@@ -330,8 +214,8 @@ class TestStartCommandSessionPins:
         assert argv[argv.index("--model") + 1] == "fable"
         assert "--effort" in argv
         assert argv[argv.index("--effort") + 1] == "xhigh"
-        # The flags precede the /loop register prompt (claude parses flags first).
-        assert argv[-1].startswith("/loop ")
+        # #2650: no fat `/loop` slot — just the binary + pins.
+        assert not any(str(a).startswith("/loop") for a in argv)
 
     def test_only_effort_injected_when_only_effort_set(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         argv = self._spawn_argv(monkeypatch, tmp_path, '[agent]\nsession_effort = "max"\n')
@@ -349,9 +233,8 @@ class TestStartCommandSessionPins:
         argv = self._spawn_argv(monkeypatch, tmp_path, '[teatree]\nmode = "interactive"\n')
         assert "--model" not in argv
         assert "--effort" not in argv
-        # Byte-for-byte today: just the binary + the register prompt.
-        assert len(argv) == 2
-        assert argv[-1].startswith("/loop ")
+        # #2650: no pins, no fat `/loop` slot — just the binary.
+        assert argv == ["/usr/bin/claude"]
 
     def test_fable_session_model_downgrades_to_opus_when_disabled(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

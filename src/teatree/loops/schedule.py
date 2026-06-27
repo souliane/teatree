@@ -13,10 +13,11 @@ module owns the read and is wired into the statusline via the
 ``jobs_builder`` seam :func:`teatree.loop.tick.run_tick` already uses.
 
 The next-fire instant comes from :func:`teatree.loops.live.build_report` — the
-same live snapshot ``t3 loop list`` renders (#1744) — so the statusline
-countdown, ``t3 loop list``, and the orchestrator's own cadence gate
-(:func:`teatree.loops.gating.elapsed_and_enabled`) all read one source of
-truth: a loop reads ``due`` exactly when the gate would fire it.
+same live snapshot ``t3 loop list`` renders (#1744), computed from the ``Loop``
+table's ``last_run_at`` cadence anchor — so the statusline countdown,
+``t3 loop list``, and the master tick gate
+(:func:`teatree.loops.master.build_loop_table_jobs` via ``Loop.is_due``) all read
+one source of truth: a loop reads ``due`` exactly when the gate would fire it.
 """
 
 import datetime as dt

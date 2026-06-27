@@ -38,4 +38,31 @@ def loop_held_in_db(name: str) -> bool:
         return False
 
 
-__all__ = ["loop_held_in_db"]
+def loop_enabled(name: str) -> bool:
+    """The single enable verdict over the DB: ``Loop.enabled`` AND not ``LoopState``-held.
+
+    The ONE function every enable-decision site routes through — the master tick,
+    the dream cron gate, the review-claim chokepoint, and the #2650 cron mirror —
+    so the four can never drift back into a tier-subset verdict (one site keying on
+    ``Loop.enabled`` alone, another on ``LoopState`` alone). A loop is enabled iff
+    its durable ``Loop`` row carries ``enabled=True`` AND no ``LoopState``
+    pause/disable holds it.
+
+    A missing row or ``enabled=False`` is a real, deterministic disable (``False``).
+    FAIL SAFE: a genuine read error (DB unavailable, Django not configured) resolves
+    to ``True`` so a hiccup never silently disables a loop — symmetric with
+    :func:`loop_held_in_db`.
+    """
+    try:
+        from teatree.core.models import Loop  # noqa: PLC0415
+
+        row = Loop.objects.filter(name=name).only("enabled").first()
+    except Exception:
+        logger.debug("Loop.enabled read failed for %r — failing safe to enabled", name, exc_info=True)
+        return True
+    if row is None or not row.enabled:
+        return False
+    return not loop_held_in_db(name)
+
+
+__all__ = ["loop_enabled", "loop_held_in_db"]

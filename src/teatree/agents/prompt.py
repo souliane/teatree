@@ -1,103 +1,25 @@
 """Build agent prompts from ticket and task context."""
 
 import json
-from pathlib import Path
 from typing import cast
 
+from teatree.agents.skill_injection import (
+    _ALWAYS_FULL_SKILLS,
+    _explicit_load_name,
+    _read_skill_contents,
+    _read_skill_contents_scoped,
+)
 from teatree.config_agent import resolve_agent_config
 from teatree.core.modelkit.phases import resolve_fanout_directive
 from teatree.core.models import Task, Ticket
-from teatree.skill_support.loading import DEFAULT_SKILLS_DIR, FRAMEWORK_SKILL_NAMES
+from teatree.skill_support.loading import FRAMEWORK_SKILL_NAMES
 
-_ALWAYS_FULL_SKILLS = frozenset({"rules"})
 # The #1135 default ``pr_review_companion``. A headless reviewer must always
 # see the project review-quality bar in full, not the demoted summary.
 _REVIEW_PHASE_ALWAYS_FULL = frozenset({"code-review"})
 # Symmetric to the reviewer set: a headless BUILDER loses every loaded skill, so
 # the enumerate-and-preserve architecture pass must embed in full, not be demoted.
 _CODING_PHASE_ALWAYS_FULL = frozenset({"architecture-design"})
-
-
-def _find_skill_md(name: str, skills_dir: Path | None = None) -> Path | None:
-    """Locate SKILL.md for a skill name within the skills directory."""
-    sd = skills_dir if skills_dir is not None else DEFAULT_SKILLS_DIR
-    candidate = sd / name / "SKILL.md"
-    return candidate if candidate.is_file() else None
-
-
-def _read_skill_contents(skills: list[str], *, skills_dir: Path | None = None) -> str:
-    """Read and concatenate SKILL.md content for each resolved skill."""
-    sd = skills_dir if skills_dir is not None else DEFAULT_SKILLS_DIR
-    sections: list[str] = []
-    for name in skills:
-        skill_md = _find_skill_md(name, sd)
-        if skill_md is not None:
-            content = skill_md.read_text(encoding="utf-8")
-            sections.append(f"--- SKILL: {name} ---\n{content}")
-    return "\n\n".join(sections)
-
-
-def _is_primary(name: str, primary_skills: set[str]) -> bool:
-    """Check if a skill name (or path) matches the primary set or always-full list."""
-    if name in primary_skills or name in _ALWAYS_FULL_SKILLS:
-        return True
-    skill_dir_name = Path(name).parent.name if "/" in name else ""
-    return skill_dir_name in primary_skills or skill_dir_name in _ALWAYS_FULL_SKILLS
-
-
-def _explicit_load_name(name: str) -> str:
-    """Return the bare ``/skill`` reference for an explicit-load instruction."""
-    return Path(name).parent.name if "/" in name else name
-
-
-def _read_skill_contents_scoped(
-    skills: list[str],
-    *,
-    primary_skills: set[str],
-    explicit_load_skills: set[str] | None = None,
-    suppress_names: set[str] | None = None,
-    skills_dir: Path | None = None,
-) -> str:
-    """Read skills with scoping.
-
-    Primary skills (the lifecycle skill, ``rules``, and — on the reviewing
-    phase — the overlay's primary review skills) get full content. Skills in
-    *explicit_load_skills* get a verbatim "Load /<skill> via the Skill tool
-    BEFORE reviewing" instruction instead of the generic, easy-to-ignore
-    "available — load if needed" summary. Skills in *suppress_names* are
-    omitted entirely — the caller force-loads them elsewhere (e.g. the coding
-    directive's stack-load block, #1368), so listing them in the ignorable
-    summary would contradict that. Everything else gets the generic summary.
-    """
-    sd = skills_dir if skills_dir is not None else DEFAULT_SKILLS_DIR
-    explicit = explicit_load_skills or set()
-    suppress = suppress_names or set()
-    sections: list[str] = []
-    companion_names: list[str] = []
-    explicit_names: list[str] = []
-    for name in skills:
-        if _is_primary(name, primary_skills):
-            skill_md = _find_skill_md(name, sd)
-            if skill_md is not None:
-                content = skill_md.read_text(encoding="utf-8")
-                sections.append(f"--- SKILL: {name} ---\n{content}")
-        elif name in explicit or _explicit_load_name(name) in explicit:
-            explicit_names.append(name)
-        elif name in suppress or _explicit_load_name(name) in suppress:
-            continue
-        else:
-            companion_names.append(name)
-    if explicit_names:
-        block = "--- REVIEW COMPANION SKILLS (REQUIRED — load before reviewing) ---\n"
-        block += "\n".join(
-            f"Load /{_explicit_load_name(name)} via the Skill tool BEFORE reviewing." for name in explicit_names
-        )
-        sections.append(block)
-    if companion_names:
-        summary = "--- COMPANION SKILLS (loaded but summarized to save context) ---\n"
-        summary += "\n".join(f"- {name}: available — load if needed" for name in companion_names)
-        sections.append(summary)
-    return "\n\n".join(sections)
 
 
 _MAX_PARENT_SUMMARY_LEN = 2000

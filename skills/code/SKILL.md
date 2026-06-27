@@ -44,6 +44,17 @@ Write the **failing test first**, then the implementation that makes it pass. Th
 
 Misleading names are bugs — rename the symbol instead of explaining it with a comment.
 
+## Comments Are Code — Minimal, Self-Documenting (Non-Negotiable)
+
+**Names + types ARE the documentation. A long comment is a code smell — refactor instead of explain.** Comment ONLY the non-obvious WHY (a threat-model note, a workaround for an external bug, a counter-intuitive invariant). Never restate WHAT the code already says.
+
+- **Do not restate the code.** `# divide the cents by one hundred` above `return cents / 100`, `# update the rows with the metadata` above `.update(**metadata)` — delete it. The line below already says it.
+- **No signature-echo docstrings.** `"""Add the feature flag."""` on `def add_feature_flag(...)` adds nothing — drop it. A docstring earns its place only by carrying a non-obvious why the signature does not.
+- **A long comment is a refactor signal, not a license.** When you feel the urge to write a multi-line block explaining a function, the function name / structure is wrong — rename or split it. Multi-line comments are legit when they carry a genuine non-obvious why (and that's rare); they are abuse when they narrate the code. Length is the smell: if it's long, refactor; don't explain.
+- **Rationale lives in the commit message, not inline.** Why a change was made, which ticket/MR it relates to, what was tried — all of that goes in the commit body. Never an inline `# per review` / `# consolidated into !NNNN` / `# TODO(W20)` tracker note.
+
+The deterministic backstop is the advisory `comment-density` gate (`teatree.hooks.privacy_diff_comment_density` → the pre-push hook, the CI job, and `t3 tool comment-density`). It is content-aware: it flags a comment whose words merely restate the next code line, and a docstring opening that merely echoes the signature — a single such line is enough. Genuine non-obvious-why comments and justified multi-line blocks are NOT flagged. The gate is advisory (it never blocks); the discipline is yours to keep — the gate is the safety net, not the author.
+
 ## Workflow
 
 ### 0b. Worktree-First — Never Edit a Main Clone (Non-Negotiable)

@@ -5,9 +5,9 @@ its countdowns are stale — it can still show a live-looking loop line while
 the loop has been dead for hours. This module computes the same state LIVE from
 the DB on every call. The #2513 cutover: the mini-loop rows now come from the
 DB ``Loop`` table (each row's ``enabled``/cadence/``last_run_at``/next-due) —
-the single source of truth, replacing the legacy ``MiniLoopMarker`` cadence
-ledger + ``[loops]``-toml ``LoopsConfig``. Infra-slot leases
-(:class:`LoopLease`) with PID-anchored owner liveness are read alongside.
+the single source of truth and the one cadence ledger, replacing the retired
+code-cadence ledger. Infra-slot leases (:class:`LoopLease`) with PID-anchored
+owner liveness are read alongside.
 
 Strictly read-only: it issues ORM reads only — never ticks, claims, acquires,
 marks fired, or mutates a row. :func:`teatree.loops.schedule.mini_loop_schedules`
@@ -172,8 +172,8 @@ def _mini_entries() -> tuple[LoopStatusEntry, ...]:
     """Live mini-loop status from the DB ``Loop`` table (#2513 cutover).
 
     The cutover SOT: each enabled/disabled state, cadence, last-run anchor, and
-    next-due instant comes from the ``Loop`` row (was ``LoopsConfig`` +
-    ``MiniLoopMarker``). One read here re-points BOTH the statusline and
+    next-due instant comes from the ``Loop`` row (was the retired ``LoopsConfig``
+    + code-cadence ledger). One read here re-points BOTH the statusline and
     ``t3 loop list`` since both consume :func:`build_report`.
     """
     from teatree.core.models import Loop  # noqa: PLC0415

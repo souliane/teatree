@@ -101,7 +101,15 @@ def claude_loop_spec(loop: "Loop") -> ClaudeLoopSpec:
 
 
 def enabled_loop_specs() -> list[ClaudeLoopSpec]:
-    """One spec per ENABLED ``Loop`` row, name-ordered — the live ``/loop`` set to mirror."""
-    from teatree.core.models import Loop  # noqa: PLC0415
+    """One spec per loop the single enable verdict admits, name-ordered — the live ``/loop`` set to mirror.
 
-    return [claude_loop_spec(loop) for loop in Loop.objects.enabled()]
+    Routes through :func:`teatree.loop.loop_state_db.loop_enabled` (``Loop.enabled``
+    AND not ``LoopState``-held) so a ``t3 loop pause`` / ``disable`` loop is NOT
+    mirrored as a firing no-op cron — the registered cron set never drifts from the
+    enabled-and-un-held set the master actually dispatches (#2584). Keying on
+    ``Loop.enabled`` alone (the prior bug) left a paused loop firing every cadence.
+    """
+    from teatree.core.models import Loop  # noqa: PLC0415
+    from teatree.loop.loop_state_db import loop_enabled  # noqa: PLC0415
+
+    return [claude_loop_spec(loop) for loop in Loop.objects.enabled() if loop_enabled(loop.name)]

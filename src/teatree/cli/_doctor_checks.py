@@ -382,8 +382,7 @@ def _check_dream_staleness() -> bool:
     keeps firing, and bootstrap (never succeeded) is stale by construction. A
     fresh successful pass clears it; the remedy points at scheduling
     ``t3 dream tick`` (which advances the cadence ledger) rather than a one-off
-    ``t3 dream run``. Mirrors the SelfUpdateMarker/MiniLoopMarker-style
-    marker-staleness alarms.
+    ``t3 dream run``. Mirrors the SelfUpdateMarker-style marker-staleness alarms.
 
     Crash-proof: any error (DB offline, unmigrated self-DB) degrades to OK so a
     doctor run never aborts on this check — same posture as the other
