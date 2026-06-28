@@ -792,7 +792,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         """Fail all pending/claimed tasks when reworking."""
         from teatree.core.models.task import Task  # noqa: PLC0415
 
-        for task in self.tasks.filter(status__in=[Task.Status.PENDING, Task.Status.CLAIMED]):  # type: ignore[attr-defined]  # Django reverse FK
+        for task in self.tasks.filter(status__in=Task.Status.active()):  # type: ignore[attr-defined]  # Django reverse FK
             task.fail()
 
     def _retire_phase_ledger(self) -> None:

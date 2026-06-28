@@ -7,7 +7,7 @@ from ._filters import _overlay_q
 from ._helpers import _humanize_duration
 from ._types import DashboardTaskRow
 
-_HIDDEN_STATUSES = (Task.Status.COMPLETED, Task.Status.FAILED)
+_HIDDEN_STATUSES = Task.Status.terminal()
 
 
 def _last_error_for_tasks(task_ids: list[int]) -> dict[int, str]:

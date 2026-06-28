@@ -214,7 +214,7 @@ class TaskQuerySet(models.QuerySet):
 
         return self.filter(
             phase__in=phase_spellings(phase),
-            status__in=[task_model.Status.PENDING, task_model.Status.CLAIMED],
+            status__in=task_model.Status.active(),
         )
 
     def claimable_for_headless(self, overlay: str | None = None) -> models.QuerySet:
@@ -485,7 +485,7 @@ class TaskQuerySet(models.QuerySet):
         qs = (
             self.filter(
                 execution_target=target,
-                status__in=[task_model.Status.PENDING, task_model.Status.CLAIMED],
+                status__in=task_model.Status.active(),
             )
             .filter(Q(lease_expires_at__isnull=True) | Q(lease_expires_at__lte=now))
             .order_by("pk")

@@ -121,7 +121,7 @@ class Command(TyperCommand):
                 self.stderr.write(f"Task {task_id} is currently claimed. Pass --confirm to cancel it.")
                 raise SystemExit(1)
 
-            if task.status in {Task.Status.COMPLETED, Task.Status.FAILED}:
+            if task.status in Task.Status.terminal():
                 self.stderr.write(f"Task {task_id} already finished ({task.status}).")
                 raise SystemExit(1)
 
@@ -279,7 +279,7 @@ class Command(TyperCommand):
             self.stderr.write(f"Task {task_id} not found.")
             raise SystemExit(1) from None
 
-        if task.status in {Task.Status.COMPLETED, Task.Status.FAILED}:
+        if task.status in Task.Status.terminal():
             self.stderr.write(f"Task {task_id} is already '{task.status}'; cannot record an attempt.")
             raise SystemExit(1)
         if task.status != Task.Status.CLAIMED:
@@ -375,9 +375,7 @@ class Command(TyperCommand):
         Task.objects.reap_stale_claims()
         session_id = current_session_id()
         qs = (
-            Task.objects.for_claude_session(session_id)
-            .filter(status__in=(Task.Status.PENDING, Task.Status.CLAIMED))
-            .select_related("ticket")
+            Task.objects.for_claude_session(session_id).filter(status__in=Task.Status.active()).select_related("ticket")
         )
         rows = [_task_row(task) for task in qs]
         render_reconcile_checklist(
