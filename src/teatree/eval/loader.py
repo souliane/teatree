@@ -91,6 +91,7 @@ def _parse_spec(entry: object, path: Path, default_agent_path: str | None) -> Ev
         phase=_parse_phase(spec_map, name, path),
         max_turns=max_turns,
         tools=tools,
+        fixture=str(spec_map.get("fixture") or ""),
         judge=judge,
         agent_sections=agent_sections,
         lane=_parse_lane(spec_map, name, path),

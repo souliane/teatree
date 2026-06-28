@@ -1841,7 +1841,7 @@ class TestDelegationAgentsProvisioning:
 
     def test_build_delegation_agents_for_delegation_scenario(self, tmp_path: Path) -> None:
         # A scenario exposing the spawn tool gets a single generic delegate sub-agent
-        # keyed by DELEGATION_SUBAGENT_NAME, on the inherited model.
+        # keyed by DELEGATION_SUBAGENT_NAME, capped on the bounded haiku stub model.
         spec = _spec_with(
             tmp_path,
             tools=("Bash", "Task"),
@@ -1850,7 +1850,7 @@ class TestDelegationAgentsProvisioning:
         agents = build_delegation_agents(spec)
         assert agents is not None
         assert set(agents) == {DELEGATION_SUBAGENT_NAME}
-        assert agents[DELEGATION_SUBAGENT_NAME].model == "inherit"
+        assert agents[DELEGATION_SUBAGENT_NAME].model == "haiku"
 
     def test_build_delegation_agents_none_for_non_delegation_scenario(self, tmp_path: Path) -> None:
         spec = _spec_with(

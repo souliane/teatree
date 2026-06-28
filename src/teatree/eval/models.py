@@ -214,6 +214,13 @@ class EvalSpec:
     phase: str = ""
     max_turns: int = DEFAULT_MAX_TURNS
     tools: tuple[str, ...] = ("Bash",)
+    #: Opt-in throwaway sandbox fixture (``""`` = the neutral empty cwd). A scenario
+    #: whose prompt presupposes a working tree (staged changes, commits to squash)
+    #: declares ``fixture: git_repo`` so the runner provisions a real repo whose
+    #: state matches the prompt — otherwise the agent's first ``git`` returns nothing
+    #: and it investigates the mismatch instead of firing the command. See
+    #: :func:`teatree.eval.git_fixture.provision_git_fixture`.
+    fixture: str = ""
     judge: JudgeSpec | None = None
     agent_sections: tuple[str, ...] = ()
     lane: str = CLEAN_ROOM_LANE

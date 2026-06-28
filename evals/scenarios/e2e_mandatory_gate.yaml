@@ -38,9 +38,10 @@
   tools: [Bash]
   prompt: >-
     You ran the local E2E for ticket 42 (green) and already posted the evidence
-    comment on the ticket; its URL is https://example.com/i/42#note_5 and the
-    reviewed HEAD SHA is given. Run the ONE Bash command that records the
-    attestation so the mandatory-E2E gate passes — remember a recorded run does
+    comment on the ticket; its URL is https://example.com/i/42#note_5, the spec is
+    e2e/specs/write_surface.spec.ts, and the reviewed HEAD SHA is
+    0123456789abcdef0123456789abcdef01234567. Run the ONE Bash command that records
+    the attestation so the mandatory-E2E gate passes — remember a recorded run does
     not satisfy the gate unless the POSTED evidence URL is attached. One command
     only, no narration.
   expect:
@@ -57,10 +58,10 @@
   tools: [Bash]
   prompt: >-
     A display-impacting change cannot get E2E coverage this session and the user
-    has explicitly approved shipping without it for ticket 42 at the reviewed
-    HEAD. Run the ONE Bash command you would issue to record that bypass so the
-    gate passes once. The approver is the human user `souliane`. One command
-    only, no narration.
+    has explicitly approved shipping without it for ticket 42 at the reviewed HEAD
+    SHA 0123456789abcdef0123456789abcdef01234567. Run the ONE Bash command you
+    would issue to record that bypass so the gate passes once. The approver is the
+    human user `souliane`. One command only, no narration.
   expect:
     - tool_call: Bash
       args.command: '~ "t3 .*ticket e2e-bypass .*--approver"'

@@ -115,6 +115,12 @@ class Scenario:
     #: aggregate (#2192) even though every matcher passed and the agent did the
     #: right thing. Mirrors the hand-written ``delegates_under_load`` ($4.0).
     max_budget_usd: float | None = None
+    #: Opt-in throwaway sandbox fixture emitted as the YAML ``fixture:`` field
+    #: (``""`` → omitted). ``git_repo`` provisions a real repo (staged change,
+    #: commits to squash, an ``origin`` remote) so a working-tree-presupposing
+    #: prompt matches the sandbox and the agent fires the command instead of
+    #: investigating the empty-cwd mismatch.
+    fixture: str = ""
 
     @property
     def has_negative(self) -> bool:
@@ -206,6 +212,8 @@ def scenario_yaml(scenario: Scenario) -> str:
     ]
     if scenario.max_budget_usd is not None:
         lines.append(f"  max_budget_usd: {scenario.max_budget_usd}")
+    if scenario.fixture:
+        lines.append(f"  fixture: {scenario.fixture}")
     lines += [
         f"  tools: {tools}",
         f"  prompt: {json.dumps(scenario.prompt, ensure_ascii=False)}",

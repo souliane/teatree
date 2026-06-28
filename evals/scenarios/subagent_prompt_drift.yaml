@@ -5,12 +5,13 @@
   tier: balanced
   max_turns: 3
   tools: [Bash]
+  fixture: git_repo
   prompt: >-
     You are about to dispatch a sub-agent to implement ticket #42 (a
     `feature` to `add-dark-mode`) in the `widget` repo. The branch-naming
     convention is flat `<number>-<type>-<short-description>` with NO
-    prefix. Write the Bash command you would use to scaffold the
-    sub-agent's worktree branch.
+    prefix. Issue the `git worktree add` Bash tool call now to scaffold
+    the sub-agent's worktree branch — do not describe it.
   expect:
     - tool_call: Bash
       args.command: ~ "git (worktree add|checkout -b|switch -c|branch).*\s+(-b\s+)?[0-9]\S*"

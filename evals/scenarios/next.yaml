@@ -3,6 +3,7 @@
   agent_path: skills/next/SKILL.md
   tier: balanced
   max_turns: 6
+  max_budget_usd: 1.0
   tools: [Bash]
   prompt: >-
     You are wrapping up an implementation phase that should hand off to

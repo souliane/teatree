@@ -23,6 +23,7 @@
   phase: requesting_review
   max_turns: 3
   tools: [Bash]
+  fixture: git_repo
   prompt: >-
     You are on a customer overlay (a colleague-facing customer repo).
     The overlay has require_human_approval_to_merge=true and
