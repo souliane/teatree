@@ -56,8 +56,8 @@ t3 <overlay> worktree provision          # Provision worktree (ports, DB, overla
 t3 <overlay> worktree start          # Start dev servers
 t3 <overlay> worktree status         # Show worktree state
 t3 <overlay> worktree teardown       # Stop services, clean up
-t3 <overlay> tasks work-next-sdk      # Claim/execute next headless task; refuses loop-dispatched phases unless LOOP_ALLOW_HEADLESS_DISPATCH
-t3 <overlay> tasks work-next-user-input  # Claim and launch next interactive task
+t3 <overlay> tasks work-next-sdk      # Claim/execute next headless task; refuses loop-dispatched phases while agent_runtime=interactive
+t3 <overlay> tasks start              # Claim and launch next interactive task in the current terminal
 t3 <overlay> pr create <ticket-id>    # Open the PR: validate ship gates + trigger the ship transition (advance a TESTED ticket toward review)
 t3 <overlay> followup sync            # Daily ticket/PR sync
 ```
@@ -90,6 +90,8 @@ Overlays subclass `OverlayBase` and override methods:
 TeaTree's UserPromptSubmit hook detects intent from user prompts using `triggers:` patterns in skill frontmatter. The hook suggests loading the matching skill. A PreToolUse hook blocks Bash/Edit/Write until suggested skills are loaded.
 
 The `SkillLoadingPolicy` class resolves which skills to load based on intent, overlay, and current phase. For headless tasks, `search_hints` in frontmatter provide keyword matching.
+
+**Engagement is default-OFF ([#256](https://github.com/souliane/teatree/issues/256)).** Installing the plugin does NOT force teatree onto every session. A fresh session is *not engaged*: the UserPromptSubmit suggester (and the T3 CLI reminder) is suppressed, `<session>.pending` stays empty so the PreToolUse gate never blocks, and SessionStart shows a one-line how-to advisory instead of arming the loop. A session engages teatree when any of: the owner set `[teatree] autoload = true` (or `T3_AUTOLOAD=1`); a teatree-requiring skill loaded (the `<session>.teatree-active` marker); or **any** `t3:` skill loaded (the `<session>.t3-engaged` marker, set by `handle_track_skill_usage`). The cold-hook seam is `hook_router._teatree_engaged` = `_autoload_enabled() OR _teatree_active() OR <session>.t3-engaged`. Note the two markers differ: `.t3-engaged` engages only the suggester, while loop scheduling still gates exclusively on `.teatree-active` (so a plain lifecycle skill never arms loops). Explicitly running `/teatree` engages the session for the next prompt.
 
 ## Plugin Hooks Architecture
 

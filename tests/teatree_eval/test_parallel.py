@@ -4,8 +4,11 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
+
 from teatree.eval.models import EvalRun, EvalSpec, Matcher
 from teatree.eval.parallel import DEFAULT_PARALLEL, run_specs
+from teatree.llm.anthropic_limits import CreditExhaustedError
 
 
 def _spec(tmp_path: Path, *, name: str) -> EvalSpec:
@@ -115,3 +118,53 @@ class TestRunSpecs:
         assert errored.is_error
         assert "boom" in errored.terminal_reason or "RuntimeError" in errored.terminal_reason
         assert all(not r.is_error for r in runs if r.spec_name != "s2")
+
+
+class _CreditExhaustedRunner:
+    """A runner whose every ``run`` raises ``CreditExhaustedError`` (a $0 metered key).
+
+    Records how many runs it serviced so a test can prove the suite ABORTED early
+    rather than redding every scenario on the dead key.
+    """
+
+    def __init__(self, *, work_seconds: float = 0.0) -> None:
+        self._work_seconds = work_seconds
+        self._lock = threading.Lock()
+        self.ran = 0
+
+    def run(self, spec: EvalSpec) -> EvalRun:
+        with self._lock:
+            self.ran += 1
+        if self._work_seconds:
+            time.sleep(self._work_seconds)
+        msg = "API credits exhausted — add credits at console.anthropic.com"
+        raise CreditExhaustedError(msg)
+
+
+class TestCreditExhaustedAbortsTheSuite:
+    """A $0 metered key is terminal for the WHOLE suite — it must NOT become N reds.
+
+    On the UNFIXED code ``_safe_run``'s broad ``except Exception`` swallowed the
+    ``CreditExhaustedError`` into a per-scenario errored ``EvalRun``, so the batch
+    kept running against the dead key and red'd every remaining scenario
+    identically. These assert the opposite: the error PROPAGATES (aborts) and
+    fewer than all scenarios run.
+    """
+
+    def test_serial_credit_exhaustion_aborts_and_does_not_red_every_scenario(self, tmp_path: Path) -> None:
+        specs = [_spec(tmp_path, name=f"s{i}") for i in range(5)]
+        runner = _CreditExhaustedRunner()
+        with pytest.raises(CreditExhaustedError, match=r"console\.anthropic\.com"):
+            run_specs(runner, specs, parallel=1)
+        # Aborted on the FIRST scenario — never red'd the remaining four.
+        assert runner.ran == 1
+
+    def test_parallel_credit_exhaustion_aborts_and_cancels_pending_scenarios(self, tmp_path: Path) -> None:
+        specs = [_spec(tmp_path, name=f"s{i}") for i in range(8)]
+        # A small per-run delay so the pool's first wave hits the dead key and the
+        # abort cancels the not-yet-started futures before they are dispatched.
+        runner = _CreditExhaustedRunner(work_seconds=0.02)
+        with pytest.raises(CreditExhaustedError):
+            run_specs(runner, specs, parallel=4)
+        # Pending scenarios were cancelled, so NOT all eight ran on the dead key.
+        assert runner.ran < len(specs)

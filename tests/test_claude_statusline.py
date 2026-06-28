@@ -52,7 +52,7 @@ def _run(
     if session_id:
         (state_dir / f"{session_id}.teatree-active").touch()
     env = os.environ.copy()
-    env["T3_LOOPS_AUTO_LOAD"] = "1"
+    env["T3_AUTOLOAD"] = "1"
     env["TEATREE_CLAUDE_STATUSLINE_STATE_DIR"] = str(state_dir)
     # Isolate the harness config dir onto the test's state dir so the developer's
     # real ~/.claude/settings.json effortLevel never bleeds into these tests; the

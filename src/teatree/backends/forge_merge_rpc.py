@@ -121,6 +121,51 @@ class GhMergeRpc:
             return [ROLLUP_QUERY_FAILED]
         return [entry for entry in rollup if isinstance(entry, dict)]
 
+    def fetch_required_status_check_contexts(self, *, slug: str, pr_id: int) -> list[RawAPIDict]:
+        """Branch-protection required-status-check contexts for the PR's base branch.
+
+        The AUTHORITATIVE required set for §17.4.3 step 3: only a context the
+        repo's branch protection lists as a required status check may block the
+        merge. A check NOT in this set (``eval``, advisory lanes, …) never blocks
+        regardless of its conclusion.
+
+        Returns ``[ROLLUP_QUERY_FAILED]`` (fail CLOSED) when the base branch or
+        the ``branches/<base>/protection/required_status_checks`` endpoint cannot
+        be read — an indeterminate required set must refuse the merge, never fall
+        open. Returns ``[]`` when the base branch genuinely has no required-status-
+        check protection (the determinate "no required gate" 404 the forge raises
+        with a ``Branch not protected`` / ``Required status checks not enabled``
+        body — no gate → green). Otherwise one ``{"context": <name>}`` entry per
+        required context, the UNION of the legacy ``contexts`` array and the newer
+        ``checks[].context`` array (GitHub returns both; either may carry a name).
+        """
+        rc, out, _ = self._run(
+            ["pr", "view", str(pr_id), "--repo", slug, "--json", "baseRefName", "--jq", ".baseRefName"],
+        )
+        base = out.strip()
+        if rc != 0 or not base:
+            return [ROLLUP_QUERY_FAILED]
+        rc, out, err = self._run(["api", f"repos/{slug}/branches/{base}/protection/required_status_checks"])
+        if rc != 0:
+            body = f"{out}\n{err}".lower()
+            if "branch not protected" in body or "required status checks not enabled" in body:
+                return []
+            return [ROLLUP_QUERY_FAILED]
+        try:
+            data = json.loads(out) if out.strip() else {}
+        except json.JSONDecodeError:
+            return [ROLLUP_QUERY_FAILED]
+        if not isinstance(data, dict):
+            return [ROLLUP_QUERY_FAILED]
+        contexts: set[str] = set()
+        for ctx in data.get("contexts") or []:
+            if isinstance(ctx, str) and ctx:
+                contexts.add(ctx)
+        for check in data.get("checks") or []:
+            if isinstance(check, dict) and isinstance(check.get("context"), str) and check["context"]:
+                contexts.add(check["context"])
+        return [{"context": ctx} for ctx in sorted(contexts)]
+
     def fetch_pr_changed_paths(self, *, slug: str, pr_id: int) -> list[str]:
         rc, out, _ = self._run(
             ["pr", "view", str(pr_id), "--repo", slug, "--json", "files", "--jq", ".files[].path"],
@@ -201,6 +246,19 @@ class GlabMergeRpc:
         if not isinstance(pipelines, list):
             return [ROLLUP_QUERY_FAILED]
         return [entry for entry in pipelines if isinstance(entry, dict)]
+
+    @staticmethod
+    def fetch_required_status_check_contexts(*, slug: str, pr_id: int) -> list[RawAPIDict]:
+        """GitLab has no branch-protection-required-status-checks gate on this path.
+
+        The GitLab §17.4.3 verdict is the head pipeline's overall status (see
+        :func:`core.merge.ci_rollup._classify_gitlab_pipeline`), which already
+        aggregates the required jobs server-side. Core never calls this on the
+        GitLab path; the method exists only to satisfy the ``CodeHostBackend``
+        Protocol surface. Returns ``[]`` (no separate required-context gate).
+        """
+        del slug, pr_id
+        return []
 
     def fetch_pr_changed_paths(self, *, slug: str, pr_id: int) -> list[str]:
         rc, out, _ = self._run(["api", f"projects/{glab_project_path(slug)}/merge_requests/{pr_id}/diffs"])

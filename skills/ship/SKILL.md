@@ -142,7 +142,7 @@ Common triggers (not exhaustive):
 
 - New `t3` command, flag, or env var
 - Renamed or removed public symbol, command, or setting
-- New FSM state, lifecycle phase, or BLUEPRINT-keyed concept (e.g. a new `Ticket.State`, a new `LoopLease` row name, a new `MiniLoopMarker` name)
+- New FSM state, lifecycle phase, or BLUEPRINT-keyed concept (e.g. a new `Ticket.State`, a new `LoopLease` row name)
 - New `SKILL.md` added, or one removed
 - User-observable behaviour change (default flips, UI flow, error message shape, response payload)
 - New feature flag
@@ -152,7 +152,7 @@ Common triggers (not exhaustive):
 | Trigger | Doc to update |
 |---|---|
 | New `t3` command / flag / env var | `README.md` (user-facing usage) |
-| New `Ticket.State` / FSM phase / `LoopLease` / `MiniLoopMarker` name | `BLUEPRINT.md` |
+| New `Ticket.State` / FSM phase / `LoopLease` name | `BLUEPRINT.md` |
 | New `SKILL.md` added (or one removed) | the top-level `README.md` skills catalogue |
 | Skill behaviour change | the relevant `SKILL.md` |
 
@@ -182,7 +182,7 @@ Examples:
 
 The line is the friction-free attestation. Reviewers read it; if the reason looks wrong they push back on the specific reason, not on a generic "did you update docs?" prompt.
 
-**How the deterministic gate divides the work.** The unambiguous triggers (new top-level `t3` command, new `SKILL.md`, new `Ticket.State` value, new `LoopLease` / `MiniLoopMarker` name) are caught by `scripts/hooks/check_doc_update.py` automatically — the pre-push prek hook and the `doc-update-gate` CI job fail the push when the matching README/BLUEPRINT diff is missing. The skill prose above handles the soft cases the hook cannot safely judge.
+**How the deterministic gate divides the work.** The unambiguous triggers (new top-level `t3` command, new `SKILL.md`, new `Ticket.State` value, new `LoopLease` name) are caught by `scripts/hooks/check_doc_update.py` automatically — the pre-push prek hook and the `doc-update-gate` CI job fail the push when the matching README/BLUEPRINT diff is missing. The skill prose above handles the soft cases the hook cannot safely judge.
 
 Both layers (the gate and the attestation) run on every PR — the gate runs deterministically, the attestation is the reader's signal that the agent considered docs and made a deliberate call.
 

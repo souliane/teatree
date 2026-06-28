@@ -1,4 +1,4 @@
-"""TeaTree config enums — operating mode, throughput dial, autonomy, on-behalf gate."""
+"""TeaTree config enums — operating mode, throughput dial, autonomy, on-behalf gate, agent runtime."""
 
 from enum import StrEnum
 
@@ -333,3 +333,66 @@ class MissingIssuePolicy(StrEnum):
             valid = ", ".join(m.value for m in cls)
             msg = f"Invalid missing_issue_ref_policy {value!r}; valid values: {valid}"
             raise ValueError(msg) from exc
+
+
+class AgentRuntime(StrEnum):
+    """How a loop-dispatched phase agent EXECUTES — the single runtime selector.
+
+    A loop-dispatched phase task is one whose ``(role, phase)`` has a registered
+    phase sub-agent (``t3:coder`` / ``t3:reviewer`` / …, see
+    ``SUBAGENT_BY_PHASE``). This setting decides the ONE runtime such a task runs
+    in. :attr:`INTERACTIVE` is the in-session Agent-tool runner; the other three
+    are headless runners driven by ``agents/headless.py``. The four are mutually
+    exclusive — there is no valid "interactive + a headless credential" pair, so a
+    single enum (not two flags) is the honest shape.
+
+    Tiers (default :attr:`INTERACTIVE`, today's behaviour):
+
+    *   :attr:`INTERACTIVE` (default) — the in-session ``/loop`` slot claims the
+        task (``loop_dispatch claim-next``) and spawns the phase sub-agent via the
+        ``Agent`` tool, in the live Claude Code session (subscription-covered,
+        visible in the agent view). No behaviour change from before this setting.
+    *   :attr:`SDK_OAUTH` — headless ``run_headless`` (``claude-agent-sdk``
+        in-process: a full autonomous agent loop, not a one-shot prompt),
+        authenticated with the subscription OAuth token
+        (:class:`~teatree.llm.credentials.AnthropicSubscriptionCredential`,
+        ``CLAUDE_CODE_OAUTH_TOKEN``). Rides the plan, not metered.
+    *   :attr:`SDK_APIKEY` — the SAME ``run_headless`` harness, authenticated with
+        the metered API key
+        (:class:`~teatree.llm.credentials.AnthropicApiKeyCredential`,
+        ``ANTHROPIC_API_KEY``). Billed per token; no ``claude`` subscription draw.
+    *   :attr:`API` — a future runner over the raw Anthropic Messages API with its
+        own agent loop and tool runtime (no ``claude`` CLI dependency). Not yet
+        implemented — ``run_headless`` refuses it with a clear error.
+
+    ``agent_runtime`` is a DB-home setting: opt in via ``t3 <overlay>
+    config_setting set agent_runtime sdk_oauth`` (per-overlay overridable with
+    ``--overlay <name>``) or the ``T3_AGENT_RUNTIME`` environment variable — a
+    ``[teatree] agent_runtime`` TOML value is ignored on read.
+    """
+
+    INTERACTIVE = "interactive"
+    SDK_OAUTH = "sdk_oauth"
+    SDK_APIKEY = "sdk_apikey"
+    API = "api"
+
+    @classmethod
+    def parse(cls, value: str) -> "AgentRuntime":
+        """Parse an agent-runtime string; invalid values raise ``ValueError``.
+
+        Mirrors :meth:`Mode.parse`: the conservative default
+        (:attr:`INTERACTIVE`) is applied by the caller when the setting is
+        absent, so a typo never silently switches the runtime.
+        """
+        normalised = value.strip().lower()
+        try:
+            return cls(normalised)
+        except ValueError as exc:
+            valid = ", ".join(m.value for m in cls)
+            msg = f"Invalid agent_runtime {value!r}; valid values: {valid}"
+            raise ValueError(msg) from exc
+
+    @property
+    def is_headless(self) -> bool:
+        """True for every runtime except :attr:`INTERACTIVE` (the headless lane)."""
+        return self is not AgentRuntime.INTERACTIVE

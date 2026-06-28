@@ -15,30 +15,38 @@ process registry, no platform autostart.
 import asyncio
 import json
 import logging
+import os
 import re
 import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
 
-from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient, ResultMessage, TextBlock
-from claude_agent_sdk.types import SystemPromptPreset
+from claude_agent_sdk import (
+    AssistantMessage,
+    ClaudeAgentOptions,
+    ClaudeSDKClient,
+    RateLimitEvent,
+    ResultMessage,
+    TextBlock,
+)
+from claude_agent_sdk.types import RateLimitInfo, SystemPromptPreset
 from django.conf import settings
 from django.db import close_old_connections
 from django.db.models import Sum
 from django.utils import timezone
 
+from teatree.agents.headless_usage import _attempt_usage
 from teatree.agents.model_tiering import resolve_spawn_model
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA
 from teatree.agents.skill_bundle import resolve_skill_bundle
+from teatree.config import AgentRuntime, get_effective_settings
 from teatree.core.models import Task, TaskAttempt, Ticket
 from teatree.core.models.worktree import Worktree
+from teatree.llm.anthropic_limits import LimitMatch, classify_limit, classify_rate_limit_type
+from teatree.llm.credentials import AnthropicApiKeyCredential, AnthropicSubscriptionCredential, CredentialError
 from teatree.skill_support.loading import SkillLoadingPolicy
 from teatree.types import SkillMetadata
-
-if TYPE_CHECKING:
-    from teatree.agents.attempt_recorder import AttemptUsage
 
 logger = logging.getLogger(__name__)
 
@@ -168,42 +176,9 @@ class TicketBudget:
         return None
 
 
-def _safe_int(value: object) -> int | None:
-    if value is None:
-        return None
-    try:
-        return int(float(value))  # ty: ignore[invalid-argument-type]
-    except (ValueError, TypeError):
-        return None
-
-
-def _safe_float(value: object) -> float | None:
-    if value is None:
-        return None
-    try:
-        return float(value)  # ty: ignore[invalid-argument-type]
-    except (ValueError, TypeError):
-        return None
-
-
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 _STUCK_LOOP_PREFIX = "stuck_loop: "
-_USAGE_LIMIT_PREFIX = "usage_limit: "
-
-# Phrases the SDK surfaces on a subscription quota / weekly-limit exhaustion
-# (dogfood-surfaced). A ``ResultMessage(is_error=True)`` carrying any of these
-# is a limit condition the operator must wait out — not a generic crash and not
-# a silent success.
-_USAGE_LIMIT_PHRASES = (
-    "usage limit",
-    "weekly limit",
-    "rate limit",
-    "out of credits",
-    "quota exceeded",
-)
-
-
 _RESULT_ERROR_PREFIX = "result_error: "
 
 
@@ -215,7 +190,7 @@ def _error_result_reason(message: ResultMessage | None) -> str | None:
     are both genuine FAILED runs (#1764 class): they must record a failed attempt
     carrying the CLI's own ``result`` / ``errors`` / ``api_error_status``, never
     be laundered into a completion that advances the ticket FSM over a failed run.
-    Called only AFTER :func:`_limit_signature` has already claimed a limit error,
+    Called only AFTER :func:`_limit_match` has already claimed a limit error,
     so a limit message never reaches here.
     """
     if message is None:
@@ -234,20 +209,26 @@ def _error_result_reason(message: ResultMessage | None) -> str | None:
     return _RESULT_ERROR_PREFIX + " — ".join(parts)
 
 
-def _limit_signature(message: ResultMessage | None) -> str:
-    """Return the matched usage-limit phrase, or ``""`` when not a limit error.
+def _limit_match(message: ResultMessage | None, rate_limit_info: RateLimitInfo | None = None) -> LimitMatch | None:
+    """Return the classified :class:`LimitMatch`, or ``None`` when not a limit error.
 
     Keyed on ``is_error`` so a healthy result whose text merely discusses limits
-    is never flagged. The agent's final ``result`` string is the haystack — the
-    SDK puts the limit message there on a quota-exhausted run.
+    is never flagged. When the run IS an error and the stream carried a rejected
+    :class:`~claude_agent_sdk.types.RateLimitInfo`, classify from its TYPED
+    ``rate_limit_type`` window (unambiguous structured data — a ``seven_day_opus``
+    is the WEEKLY cause, never a 5-hour one); otherwise fall back to phrase-matching
+    the agent's final ``result`` string. Either way
+    :func:`~teatree.llm.anthropic_limits.classify_limit` sorts it into its distinct
+    cause (API-credit / subscription-session / subscription-weekly / rate-limit),
+    so a credit-empty key is never reported as a subscription quota.
     """
     if message is None or not message.is_error:
-        return ""
-    haystack = str(message.result or "").casefold()
-    for phrase in _USAGE_LIMIT_PHRASES:
-        if phrase in haystack:
-            return phrase
-    return ""
+        return None
+    if rate_limit_info is not None and rate_limit_info.status == "rejected":
+        typed = classify_rate_limit_type(rate_limit_info.rate_limit_type)
+        if typed is not None:
+            return typed
+    return classify_limit(str(message.result or ""))
 
 
 @dataclass(frozen=True)
@@ -263,6 +244,11 @@ class _SdkOutcome:
     agent_text: str
     result_message: ResultMessage | None
     stuck_reason: str | None
+    #: The last REJECTED rate-limit window the stream carried (a ``RateLimitEvent``
+    #: with ``status == "rejected"``), used to classify a limit failure from the
+    #: SDK's unambiguous typed field. ``None`` when the stream named no rejected
+    #: window — the classifier then falls back to phrase-matching the result text.
+    rate_limit_info: RateLimitInfo | None = None
 
 
 def run_headless(
@@ -274,12 +260,26 @@ def run_headless(
     """Run a headless task in-process via ``claude-agent-sdk``."""
     from teatree.agents.prompt import build_system_context, build_task_prompt  # noqa: PLC0415
 
+    runtime = get_effective_settings().agent_runtime
+    if runtime is AgentRuntime.API:
+        return _record_failure(
+            task,
+            error="agent_runtime=api (raw Anthropic Messages API runner) is not implemented yet; "
+            "use sdk_oauth or sdk_apikey",
+        )
+
     skills = resolve_skill_bundle(phase=phase, overlay_skill_metadata=overlay_skill_metadata)
 
     # The SDK spawns the ``claude`` CLI child; keep the same provisioning gate
     # the ``claude -p`` runner used.
     if shutil.which("claude") is None:
         return _record_failure(task, error="claude is not installed")
+
+    try:
+        child_env = _runtime_child_env(runtime)
+    except CredentialError as exc:
+        logger.warning("Refusing dispatch for task %s: %s", task.pk, exc)
+        return _record_failure(task, error=str(exc))
 
     budget_breach = TicketBudget.from_settings().breach_reason(task.ticket)
     if budget_breach is not None:
@@ -289,25 +289,63 @@ def run_headless(
     prompt = build_task_prompt(task, skills=skills)
     lifecycle_skill = SkillLoadingPolicy.lifecycle_for_phase(phase)
     system_context = build_system_context(task, skills=skills, lifecycle_skill=lifecycle_skill)
-    options = _build_options(task, system_context, phase=phase, skills=skills)
+    options = _build_options(task, system_context, phase=phase, skills=skills, env=child_env)
 
     outcome = asyncio.run(_drive_with_heartbeat(task, prompt, options))
 
+    failure = _outcome_failure(task, outcome)
+    if failure is not None:
+        return failure
+    return _record_success(task, outcome, phase=phase)
+
+
+def _outcome_failure(task: Task, outcome: _SdkOutcome) -> TaskAttempt | None:
+    """Fold a non-success drive outcome into a recorded failure, or ``None``.
+
+    Collapses the stuck-loop / usage-limit / error-result terminal cases into a
+    single return so ``run_headless`` stays within its early-return budget.
+    """
     if outcome.stuck_reason is not None:
         return _record_failure(task, error=f"{_STUCK_LOOP_PREFIX}{outcome.stuck_reason}")
-    limit = _limit_signature(outcome.result_message)
-    if limit:
-        reason = f"{_USAGE_LIMIT_PREFIX}{limit} — subscription quota exhausted; retry after the limit resets"
-        logger.warning("Task %s hit a usage limit: %s", task.pk, reason)
+    limit = _limit_match(outcome.result_message, outcome.rate_limit_info)
+    if limit is not None:
+        reason = limit.as_reason()
+        logger.warning("Task %s hit a model-access limit (%s): %s", task.pk, limit.cause.value, reason)
         return _record_failure(task, error=reason)
     error_reason = _error_result_reason(outcome.result_message)
     if error_reason is not None:
         logger.warning("Task %s ended in a failed run: %s", task.pk, error_reason)
         return _record_failure(task, error=error_reason)
-    return _record_success(task, outcome, phase=phase)
+    return None
 
 
-def _build_options(task: Task, system_context: str, *, phase: str, skills: list[str]) -> ClaudeAgentOptions:
+def _runtime_child_env(runtime: AgentRuntime) -> dict[str, str] | None:
+    """The child-process env that pins the credential for a headless ``runtime``.
+
+    ``sdk_apikey`` forces the metered ``ANTHROPIC_API_KEY`` (stripping the
+    subscription token); ``sdk_oauth`` forces the subscription
+    ``CLAUDE_CODE_OAUTH_TOKEN`` (stripping the API key) so the spawned ``claude``
+    CLI rides the plan, not the meter. Any other runtime returns ``None`` — the
+    ambient env is used unchanged (``interactive`` is dispatched in-session and
+    ``api`` is refused upstream, so the runner only sees a headless runtime here).
+    Raises :class:`CredentialError` when the selected token resolves from neither
+    the env nor the ``pass`` store, so a misconfigured headless run fails loud.
+    """
+    if runtime is AgentRuntime.SDK_APIKEY:
+        return AnthropicApiKeyCredential().child_env(os.environ)
+    if runtime is AgentRuntime.SDK_OAUTH:
+        return AnthropicSubscriptionCredential().child_env(os.environ)
+    return None
+
+
+def _build_options(
+    task: Task,
+    system_context: str,
+    *,
+    phase: str,
+    skills: list[str],
+    env: dict[str, str] | None = None,
+) -> ClaudeAgentOptions:
     """Build the REAL-environment SDK options for a headless task.
 
     Mirrors what the deleted ``_build_headless_command`` passed: the appended
@@ -316,6 +354,10 @@ def _build_options(task: Task, system_context: str, *, phase: str, skills: list[
     else the user's default), the worktree as ``cwd`` / ``add_dirs``, and the
     parent session to resume. NO clean-room isolation — a headless run executes
     a real task and needs the real environment, skills, and project context.
+
+    ``env`` (when supplied by :func:`_runtime_child_env`) pins the credential for
+    the chosen ``agent_runtime`` on the spawned ``claude`` child; ``None`` leaves
+    the SDK default (inherit the ambient env), byte-identical to before.
     """
     cwd = _resolve_task_cwd(task)
     add_dirs = [cwd] if cwd else []
@@ -324,7 +366,7 @@ def _build_options(task: Task, system_context: str, *, phase: str, skills: list[
     # escalation (teatree#2263) can raise a verification spawn to the most-honest
     # model; both default absent → byte-identical to today when none is active.
     escalation_session_id = resume_session_id or (task.session.agent_id if task.session_id else "")  # ty: ignore[unresolved-attribute]
-    return ClaudeAgentOptions(
+    options = ClaudeAgentOptions(
         # APPEND to the claude_code preset, never REPLACE it: a plain-str
         # system_prompt maps to --system-prompt (the deleted ``claude -p`` path
         # used --append-system-prompt), which would drop the Claude Code preset
@@ -343,6 +385,9 @@ def _build_options(task: Task, system_context: str, *, phase: str, skills: list[
         max_turns=_MAX_TURNS,
         resume=resume_session_id or None,
     )
+    if env is not None:
+        options.env = env
+    return options
 
 
 def _resolve_task_cwd(task: Task) -> str | None:
@@ -442,21 +487,40 @@ async def _drive_with_heartbeat(
             heartbeat_task.cancel()
 
     if breach:
-        return _SdkOutcome(agent_text=outcome.agent_text, result_message=outcome.result_message, stuck_reason=breach[0])
+        return _SdkOutcome(
+            agent_text=outcome.agent_text,
+            result_message=outcome.result_message,
+            stuck_reason=breach[0],
+            rate_limit_info=outcome.rate_limit_info,
+        )
     return outcome
 
 
 async def _collect(client: ClaudeSDKClient, prompt: str) -> _SdkOutcome:
-    """Send *prompt* and collect the agent's text + terminal ``ResultMessage``."""
+    """Send *prompt* and collect the agent's text + terminal ``ResultMessage`` + rejected window.
+
+    A ``RateLimitEvent`` with ``status == "rejected"`` carries the SDK's typed
+    ``rate_limit_type`` window — the unambiguous source the limit classifier
+    prefers over prose-grep. The LAST rejected one is kept so a hard limit hit at
+    the end of the stream classifies the failure precisely.
+    """
     await client.query(prompt)
     text_parts: list[str] = []
     result_message: ResultMessage | None = None
+    rate_limit_info: RateLimitInfo | None = None
     async for message in client.receive_response():
         if isinstance(message, AssistantMessage):
             text_parts.extend(block.text for block in message.content if isinstance(block, TextBlock))
         elif isinstance(message, ResultMessage):
             result_message = message
-    return _SdkOutcome(agent_text="\n".join(text_parts), result_message=result_message, stuck_reason=None)
+        elif isinstance(message, RateLimitEvent) and message.rate_limit_info.status == "rejected":
+            rate_limit_info = message.rate_limit_info
+    return _SdkOutcome(
+        agent_text="\n".join(text_parts),
+        result_message=result_message,
+        stuck_reason=None,
+        rate_limit_info=rate_limit_info,
+    )
 
 
 def _record_success(task: Task, outcome: _SdkOutcome, *, phase: str = "") -> TaskAttempt:
@@ -474,71 +538,6 @@ def _record_success(task: Task, outcome: _SdkOutcome, *, phase: str = "") -> Tas
         result = {"summary": outcome.agent_text[:1000]}
 
     return record_result_envelope(task, result, phase=phase, usage=_attempt_usage(outcome.result_message))
-
-
-def _attempt_usage(message: ResultMessage | None) -> "AttemptUsage":
-    """Map a :class:`~claude_agent_sdk.ResultMessage` to ``AttemptUsage``.
-
-    Token counts come from the nested ``usage`` dict (``input_tokens`` /
-    ``output_tokens`` / ``cache_creation_input_tokens`` /
-    ``cache_read_input_tokens``), the billed model from the single key of
-    ``model_usage`` (e.g. ``claude-opus-4-8[1m]``), the cost from
-    ``total_cost_usd`` (else the price-table estimate).
-    """
-    from teatree.agents.attempt_recorder import AttemptUsage  # noqa: PLC0415
-
-    if message is None:
-        return AttemptUsage()
-    usage = message.usage if isinstance(message.usage, dict) else {}
-    model = _billed_model(message.model_usage)
-    return AttemptUsage(
-        agent_session_id=message.session_id or "",
-        model=model,
-        input_tokens=_safe_int(usage.get("input_tokens")),
-        output_tokens=_safe_int(usage.get("output_tokens")),
-        cache_read_tokens=_safe_int(usage.get("cache_read_input_tokens")),
-        cache_write_tokens=_safe_int(usage.get("cache_creation_input_tokens")),
-        cost_usd=_resolve_cost_usd(message, usage=usage, model=model),
-        num_turns=message.num_turns,
-    )
-
-
-def _billed_model(model_usage: dict[str, Any] | None) -> str:
-    """Return the billed model id from ``model_usage`` (single-model run), or ``""``.
-
-    ``model_usage`` is the SDK's untyped ``ResultMessage.model_usage`` dict.
-    """
-    if isinstance(model_usage, dict) and model_usage:
-        return str(next(iter(model_usage)))
-    return ""
-
-
-def _resolve_cost_usd(message: ResultMessage, *, usage: dict[str, Any], model: str) -> float | None:
-    """Persist the SDK-reported cost when present, else the price-table estimate.
-
-    Persisting an estimate at capture time means a row's ``cost_usd`` is never
-    NULL once any token count was captured — the ``t3 cost`` report and the
-    watchdog both read a real number rather than re-deriving it each query.
-    Returns ``None`` only when nothing at all was captured.
-    """
-    reported = _safe_float(message.total_cost_usd)
-    if reported is not None:
-        return reported
-    token_keys = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
-    if all(usage.get(key) is None for key in token_keys):
-        return None
-    from teatree.core.cost import AttemptUsage, price_table_cost_usd  # noqa: PLC0415
-
-    return price_table_cost_usd(
-        AttemptUsage(
-            model=model or None,
-            reported_cost_usd=None,
-            input_tokens=_safe_int(usage.get("input_tokens")) or 0,
-            output_tokens=_safe_int(usage.get("output_tokens")) or 0,
-            cache_read_tokens=_safe_int(usage.get("cache_read_input_tokens")) or 0,
-            cache_write_tokens=_safe_int(usage.get("cache_creation_input_tokens")) or 0,
-        ),
-    )
 
 
 def _get_resume_session_id(task: Task) -> str:

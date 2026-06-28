@@ -9,17 +9,24 @@ from django.test import TestCase
 from teatree.core import resolve as resolve_module
 from teatree.core.models import Ticket, Worktree
 from teatree.core.resolve import (
+    TicketIdentityCollisionError,
+    WorkspaceOwnerCollisionError,
     WorktreeNotFoundError,
+    WorktreePathConflictError,
     _auto_register_from_git,
     _find_env_cache,
     _parse_env_file,
+    _refresh_reused_row,
+    _ticket_by_number,
     _ticket_number_from_branch,
     _ticket_owning_branch,
     _warn_cwd_mismatch,
     _workspace_owner_ticket,
     match_worktree_by_path,
     resolve_worktree,
+    tickets_owning_workspace_dir,
 )
+from tests._git_repo import make_git_repo, run_git
 
 
 class TestParseEnvFile:
@@ -584,7 +591,7 @@ class TestAutoRegisterReusesExistingWorktree(TestCase):
         """Owner is found even when the stored path is the unresolved (symlinked) form.
 
         Provision records ``worktree_path`` verbatim from
-        ``config.workspace_dir()`` (no ``.resolve()``), while resolution
+        ``config.worktree_root()`` (no ``.resolve()``), while resolution
         ``.resolve()``-s cwd. On a symlinked workspace root (macOS
         ``/tmp`` → ``/private/tmp``) the two forms differ; the match must
         still succeed via ``_candidate_paths``.
@@ -788,27 +795,21 @@ class TestResolveWorktreeTicketHint(TestCase):
         assert result.ticket_id == real_ticket.pk
 
 
-class TestWorkspaceOwnerTicketIsDeterministic(TestCase):
+class TestWorkspaceOwnerFailsLoudOnCollision(TestCase):
+    """Multi-owner workspace dir fails loud, never picks an arbitrary ticket (#WT-PR-D finding 11)."""
+
     @pytest.fixture(autouse=True)
     def _inject_fixtures(self, tmp_path: Path) -> None:
         self._tmp_path = tmp_path
 
-    def test_lowest_pk_wins_when_multiple_siblings_share_workspace(self) -> None:
-        """Resolution stays deterministic if the invariant is violated.
-
-        The one-ticket-per-workspace invariant being violated, the
-        lowest-``pk`` worktree's ticket wins. Without ``.order_by("pk")``
-        the "first match wins" comment is a lie — the unordered queryset's
-        iteration order is backend-dependent.
-        """
+    def _seed_two_owners(self) -> tuple[Ticket, Ticket]:
         repo_a = self._tmp_path / "repo-a"
         repo_b = self._tmp_path / "repo-b"
         repo_a.mkdir()
         repo_b.mkdir()
-
         first_ticket = Ticket.objects.create(issue_url="https://gitlab.com/org/repo/-/issues/1")
         second_ticket = Ticket.objects.create(issue_url="https://gitlab.com/org/repo/-/issues/2")
-        first_wt = Worktree.objects.create(
+        Worktree.objects.create(
             ticket=first_ticket,
             repo_path="repo-a",
             branch="ac/first",
@@ -820,14 +821,120 @@ class TestWorkspaceOwnerTicketIsDeterministic(TestCase):
             branch="ac/second",
             extra={"worktree_path": str(repo_b)},
         )
+        return first_ticket, second_ticket
 
-        # Resolving a third sibling under the same workspace dir: cwd's
-        # parent is tmp_path, matching both stored worktree_path parents.
+    def test_workspace_owner_ticket_raises_on_multiple_owners(self) -> None:
+        """A workspace dir holding two tickets' worktrees raises, not an arbitrary pick.
+
+        The pre-fix code returned the lowest-pk owner silently; that
+        arbitrary selection is exactly what mis-attributes a sibling worktree.
+        """
+        self._seed_two_owners()
+
+        with pytest.raises(WorkspaceOwnerCollisionError):
+            _workspace_owner_ticket((self._tmp_path / "repo-c").resolve())
+
+    def test_tickets_owning_workspace_dir_lists_all_owners(self) -> None:
+        first_ticket, second_ticket = self._seed_two_owners()
+
+        owners = tickets_owning_workspace_dir(self._tmp_path.resolve())
+
+        assert {t.pk for t in owners} == {first_ticket.pk, second_ticket.pk}
+
+    def test_single_owner_resolves_without_raising(self) -> None:
+        repo_a = self._tmp_path / "repo-a"
+        repo_a.mkdir()
+        ticket = Ticket.objects.create(issue_url="https://gitlab.com/org/repo/-/issues/1")
+        Worktree.objects.create(
+            ticket=ticket,
+            repo_path="repo-a",
+            branch="ac/first",
+            extra={"worktree_path": str(repo_a)},
+        )
+
         owner = _workspace_owner_ticket((self._tmp_path / "repo-c").resolve())
 
         assert owner is not None
-        assert owner.pk == first_ticket.pk
-        assert owner.pk == first_wt.ticket.pk
+        assert owner.pk == ticket.pk
+
+
+class TestTicketByNumberFailsLoudOnCollision(TestCase):
+    """A non-unique ``ticket_number`` fails loud, never resolves an arbitrary ticket (#WT-PR-D finding 9)."""
+
+    def test_raises_when_two_tickets_share_number(self) -> None:
+        Ticket.objects.create(issue_url="https://a.example.com/x/issues/5")
+        Ticket.objects.create(issue_url="https://b.example.com/y/issues/5")
+
+        with pytest.raises(TicketIdentityCollisionError):
+            _ticket_by_number("5")
+
+    def test_returns_single_match(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://a.example.com/x/issues/5")
+
+        assert _ticket_by_number("5") == ticket
+
+    def test_returns_none_when_no_match(self) -> None:
+        Ticket.objects.create(issue_url="https://a.example.com/x/issues/42")
+
+        assert _ticket_by_number("5") is None
+
+    def test_overlay_scope_disambiguates_cross_overlay_collision(self) -> None:
+        Ticket.objects.create(issue_url="https://a.example.com/x/issues/5", overlay="ov-a")
+        ticket_b = Ticket.objects.create(issue_url="https://b.example.com/y/issues/5", overlay="ov-b")
+
+        assert _ticket_by_number("5", overlay="ov-b") == ticket_b
+
+    def test_branch_lookup_raises_on_collision(self) -> None:
+        Ticket.objects.create(issue_url="https://a.example.com/x/issues/5")
+        Ticket.objects.create(issue_url="https://b.example.com/y/issues/5")
+
+        with pytest.raises(TicketIdentityCollisionError):
+            _ticket_owning_branch("5-fix-the-thing")
+
+
+class TestRefreshReusedRowRefusesPathSteal(TestCase):
+    """A reused row must never be repointed onto a path another row owns (#WT-PR-D finding 8)."""
+
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, tmp_path: Path) -> None:
+        self._tmp_path = tmp_path
+
+    def test_raises_when_target_path_owned_by_another_row(self) -> None:
+        owned_path = str(self._tmp_path / "shared-dir")
+        ticket_a = Ticket.objects.create(issue_url="https://a.example.com/x/issues/1")
+        ticket_b = Ticket.objects.create(issue_url="https://b.example.com/y/issues/2")
+        Worktree.objects.create(
+            ticket=ticket_a,
+            repo_path="repo",
+            branch="1-x",
+            extra={"worktree_path": owned_path},
+        )
+        row_b = Worktree.objects.create(
+            ticket=ticket_b,
+            repo_path="repo",
+            branch="2-x",
+            extra={"worktree_path": str(self._tmp_path / "b-dir")},
+        )
+
+        with pytest.raises(WorktreePathConflictError):
+            _refresh_reused_row(row_b, "2-x", Path(owned_path))
+
+    def test_refreshes_freely_when_target_path_unowned(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://a.example.com/x/issues/1")
+        row = Worktree.objects.create(
+            ticket=ticket,
+            repo_path="repo",
+            branch="1-old",
+            extra={"worktree_path": str(self._tmp_path / "old-dir"), "keep": "me"},
+        )
+        new_dir = self._tmp_path / "new-dir"
+
+        _refresh_reused_row(row, "1-new", new_dir)
+
+        row.refresh_from_db()
+        assert row.branch == "1-new"
+        assert row.extra["worktree_path"] == str(new_dir)
+        assert row.extra["keep"] == "me"
 
 
 class TestResolveModuleDocstringMatchesCopyShape:
@@ -875,3 +982,70 @@ class TestResolveModuleDocstringMatchesCopyShape:
             f"'symlink'; since #1316 the in-worktree env cache is a "
             f"regular file copy. Offending block:\n{block}"
         )
+
+
+class TestProvisionResolveAttributionRoundTrip(TestCase):
+    """Real git worktrees under a symlinked workspace root resolve to the right ticket.
+
+    The headline integration net for the cross-attach bug class (#WT-PR-D): a
+    REAL ``git worktree add`` under a workspace root reached via a symlink
+    (mimicking macOS ``/tmp`` → ``/private/tmp``) must attribute to the ticket
+    its branch encodes — never to a FOREIGN merged ticket whose lingering row
+    merely shares the branch + repo basename. A second sibling worktree under
+    the same ticket dir must attach to that same ticket through the symlink,
+    not fork a fresh ``auto:<branch>`` ticket.
+
+    RED before the fix: the auto-register reuse arm ran BEFORE attribution, so
+    both worktrees bound to the foreign merged ticket #999.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _inject_fixtures(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        self._monkeypatch = monkeypatch
+        self._tmp_path = tmp_path
+
+    def test_real_worktrees_attribute_to_provisioned_ticket_not_foreign_merged(self) -> None:
+        real_root = self._tmp_path / "real"
+        real_root.mkdir()
+        repo_a_clone = make_git_repo(real_root / "repo-a")
+        repo_b_clone = make_git_repo(real_root / "repo-b")
+
+        # Workspace root reached through a symlink (macOS /tmp → /private/tmp).
+        link_root = self._tmp_path / "wslink"
+        link_root.symlink_to(real_root)
+
+        provisioned = Ticket.objects.create(issue_url="https://github.com/org/repo/issues/123")
+        foreign_merged = Ticket.objects.create(issue_url="https://github.com/org/repo/issues/999")
+        # The lingering merged-ticket row that shares the branch + repo basename
+        # — the cross-attach source. Its stored path is unrelated/stale.
+        foreign_row = Worktree.objects.create(
+            ticket=foreign_merged,
+            repo_path="repo-a",
+            branch="123-feature",
+            extra={"worktree_path": "/stale/merged/repo-a"},
+        )
+
+        ticket_dir = link_root / "123-feature"
+        ticket_dir.mkdir()
+        run_git(repo_a_clone, "worktree", "add", "-b", "123-feature", str(ticket_dir / "repo-a"))
+        run_git(repo_b_clone, "worktree", "add", "-b", "feat/sibling", str(ticket_dir / "repo-b"))
+
+        resolved_cwd_a = str((ticket_dir / "repo-a").resolve())
+        self._monkeypatch.setenv("T3_ORIG_CWD", resolved_cwd_a)
+        wt_a = resolve_worktree()
+
+        # Branch-encoded number 123 wins over the foreign #999 row.
+        assert wt_a.ticket_id == provisioned.pk
+        # The foreign merged row is never stolen / repointed.
+        foreign_row.refresh_from_db()
+        assert foreign_row.extra["worktree_path"] == "/stale/merged/repo-a"
+
+        resolved_cwd_b = str((ticket_dir / "repo-b").resolve())
+        self._monkeypatch.setenv("T3_ORIG_CWD", resolved_cwd_b)
+        wt_b = resolve_worktree()
+
+        # The non-numbered sibling attaches to the SAME ticket via the
+        # symlink-tolerant workspace-owner resolver, not a fresh auto: ticket.
+        assert wt_b.ticket_id == provisioned.pk
+        assert wt_b.repo_path == "repo-b"
+        assert not Ticket.objects.filter(issue_url="auto:feat/sibling").exists()

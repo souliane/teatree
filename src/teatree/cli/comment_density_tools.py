@@ -3,24 +3,25 @@
 Registers onto the shared ``tool_app`` (side-effect import from
 ``cli/__init__``, mirroring ``test_shape_tools`` / ``skill_ref_tools``). The
 analysis lives in :mod:`teatree.hooks.privacy_diff_comment_density` (a
-content-blind density pass); this module is the reusable surface that the
+content-aware diff pass); this module is the reusable surface that the
 dedicated prek hook and the CI job both call, so any overlay can adopt the
 check with one command.
 
-The check is content-blind: it flags a file whose ADDED diff lines either
-exceed a conservative comment:code ratio (with floors so a tiny diff or a
-single explanatory comment never trips) OR carry a run of consecutive
-comment-only lines past the warn threshold. Tooling pragmas
+The check is content-aware: beyond a conservative comment:code ratio and a
+consecutive comment-only run, it flags a comment whose words merely restate
+the next code line and a docstring opening that merely echoes the signature
+(a single such line is enough), with floors so a tiny diff or a lone
+explanatory comment never trips. Tooling pragmas
 (``# type:``/``# noqa``/``# pragma`` / ``// eslint-disable`` / ``@ts-ignore`` …),
-docstrings, license/shebang headers, ``tests/`` and ``docs`` are exempt — the
-target is WHAT-narration comments that merely restate the code.
+docstrings carrying a genuine non-obvious why, license/shebang headers,
+``tests/`` and ``docs`` are exempt — the target is WHAT-narration comments
+that merely restate the code.
 
 Diff sources (first match wins): ``--diff <file>``, ``--staged``
 (``git diff --cached``), ``--base-ref <ref>`` (the PR diff vs a base, used by
 CI), else stdin. The check is **advisory**: it prints the findings as a
 warning but **always exits 0**, so it never blocks a commit, push, or
-pipeline. There is no content-blind heuristic for "overly long prose" that
-does not also flag legitimate long comments.
+pipeline.
 """
 
 import json
@@ -86,9 +87,9 @@ def comment_density(
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
 ) -> None:
-    """Warn on added comments that merely restate the code (near-zero-comments rule).
+    """Warn on added comments that merely restate the code (comments-as-code rule).
 
-    Content-blind density pass over a unified diff. Reusable by any overlay:
+    Content-aware diff pass over a unified diff. Reusable by any overlay:
     the dedicated prek hook and the CI job both call this command. The check
     is **advisory** — it prints the findings as a warning but **always exits
     0**, so it never blocks a commit, push, or pipeline, and it is never a
@@ -106,6 +107,7 @@ def comment_density(
                         "comment_lines": f.comment_lines,
                         "code_lines": f.code_lines,
                         "max_consecutive": f.max_consecutive,
+                        "restatements": f.restatements,
                         "ratio": round(f.ratio, 3),
                         "reason": f.reason,
                     }

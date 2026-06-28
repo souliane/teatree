@@ -24,21 +24,25 @@ def _compose_files(compose_file: str) -> list[str]:
     return flags
 
 
-def docker_compose_down(project: str, *, timeout: int | None = 30) -> None:
+def docker_compose_down(project: str, *, timeout: int | None = 30, remove_volumes: bool = False) -> None:
     """Stop and remove containers for the compose project.
+
+    ``remove_volumes`` adds ``--volumes`` so the project's named/anonymous volumes
+    are torn down too — the done-worktree wipe passes it (a reaped worktree owns
+    its docker volumes, and leaving them behind is a slow disk leak). The
+    start-time reset leaves it off, so a restart never wipes a volume holding the
+    worktree's state.
 
     Tolerant of an unavailable docker binary (CI sandboxes, hermetic test
     environments): a ``FileNotFoundError`` / ``PermissionError`` from
-    ``subprocess.run`` is logged and swallowed so cleanup paths that
-    funnel through here (#1306) don't break when there's no docker to
-    talk to in the first place.
+    ``subprocess.run`` is logged and swallowed so cleanup paths that funnel
+    through here (#1306) don't break when there's no docker to talk to.
     """
+    cmd = ["docker", "compose", "-p", project, "down", "--remove-orphans"]
+    if remove_volumes:
+        cmd.append("--volumes")
     try:
-        result = run_allowed_to_fail(
-            ["docker", "compose", "-p", project, "down", "--remove-orphans"],
-            expected_codes=None,
-            timeout=timeout,
-        )
+        result = run_allowed_to_fail(cmd, expected_codes=None, timeout=timeout)
         if result.returncode != 0:
             logger.warning("docker compose down: %s", result.stderr.strip()[:300])
     except TimeoutExpired:

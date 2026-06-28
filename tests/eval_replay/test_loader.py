@@ -3,7 +3,8 @@ from pathlib import Path
 import pytest
 
 from teatree.eval.loader import EvalSpecError, load_eval_yaml
-from teatree.eval.models import DEFAULT_MAX_TURNS, AnyOf, FinalStateMatcher
+from teatree.eval.models import DEFAULT_MAX_TURNS, AnyOf, EvalRun, EvalToolCall, FinalStateMatcher
+from teatree.eval.report import evaluate
 
 _MINIMAL = (
     "- name: example\n"
@@ -19,6 +20,18 @@ def _write(tmp_path: Path, body: str) -> Path:
     target = tmp_path / "spec.yaml"
     target.write_text(body, encoding="utf-8")
     return target
+
+
+def _run(*calls: EvalToolCall) -> EvalRun:
+    return EvalRun(
+        spec_name="neg_contains",
+        tool_calls=calls,
+        text_blocks=(),
+        terminal_reason="success",
+        is_error=False,
+        raw_stdout="",
+        raw_stderr="",
+    )
 
 
 class TestLoadEvalYaml:
@@ -280,6 +293,38 @@ class TestLoadEvalYaml:
         assert matcher.arg_path == "command"
         assert matcher.operator == "~"
         assert matcher.value == "rm -rf"
+
+    def test_negative_contains_yaml_round_trips_through_grader(self, tmp_path: Path) -> None:
+        # Regression seam (loader -> dispatch): the loader accepts `contains` for a
+        # `no_tool_call_matching` line, producing Matcher(kind="negative",
+        # operator="contains"); the grader's _dispatch had no branch for that combo
+        # and fell through to NotImplementedError, crashing the dream `--full` eval
+        # derivation. The matcher-level and dispatch-level halves are covered
+        # separately; this exercises a LOADER-produced matcher (not a hand-built
+        # one) through report.evaluate in a single load -> grade round-trip.
+        body = (
+            "- name: neg_contains\n"
+            "  scenario: forbid a drift substring\n"
+            "  prompt: do the thing\n"
+            "  expect:\n"
+            "    - no_tool_call_matching:\n"
+            '        bash.command: contains "--no-verify"\n'
+        )
+        spec = load_eval_yaml(_write(tmp_path, body))[0]
+        matcher = spec.matchers[0]
+        assert matcher.kind == "negative"
+        assert matcher.operator == "contains"
+        assert matcher.tool == "bash"
+        assert matcher.arg_path == "command"
+        assert matcher.value == "--no-verify"
+
+        # FAIL when a matching tool call CONTAINS the forbidden substring...
+        present = _run(EvalToolCall(name="Bash", input={"command": "git commit --no-verify -m x"}, turn=1))
+        assert evaluate(spec, present).passed is False
+
+        # ...PASS when it is absent. The present/absent pair proves teeth.
+        absent = _run(EvalToolCall(name="Bash", input={"command": "git commit -m x"}, turn=1))
+        assert evaluate(spec, absent).passed is True
 
     def test_rejects_empty_expect(self, tmp_path: Path) -> None:
         body = "- name: bad\n  scenario: bad\n  prompt: do the thing\n  expect: []\n"

@@ -5,17 +5,18 @@ Postgres DBs, docker containers, env cache files — and returns
 a ``Drift`` bundle enumerating what's out of sync.
 
 Drift objects are typed (per-finding dataclass) so callers can inspect and
-act without string-parsing a log.  ``t3 teatree workspace doctor`` is the primary
-consumer; ``worktree start`` calls ``reconcile_ticket`` before provisioning
-and refuses when drift is present.
+act without string-parsing a log.  ``t3 teatree workspace doctor`` is the
+primary consumer; ``recover`` surfaces the drifted ticket pks via
+``reconcile_all``.
 """
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from django.core.exceptions import ImproperlyConfigured
 
-from teatree.config import load_config
+from teatree.config import clone_root
 from teatree.core.clone_paths import resolve_clone_path
 from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree_env import compose_project, detect_drift, render_env_cache, worktree_pg_connection
@@ -233,21 +234,24 @@ def _collect_stale_worktree_dirs(drift: Drift, worktrees: list[Worktree], ticket
         for wt in worktrees
         if (wt.extra or {}).get("worktree_path")
     }
+    # Anchor the ticket-number match on path segments so ``/9`` no longer
+    # matches ``/90``: the number must be a whole segment, bounded by ``/`` or
+    # ``-`` (or the string ends), never a substring of a longer number.
+    ticket_anchor = re.compile(rf"(?:^|[/-]){re.escape(ticket.ticket_number)}(?:[-/]|$)")
     for wt in worktrees:
         repo_main = resolve_clone_path(workspace, wt) or workspace / wt.repo_path
         for path_str in _find_worktree_paths_on_disk(repo_main):
             resolved = Path(path_str).resolve().as_posix()
             if resolved == str(repo_main.resolve()):
                 continue
-            matches_ticket = f"/{ticket.ticket_number}" in path_str or f"-{ticket.ticket_number}-" in path_str
-            if matches_ticket and resolved not in seen_paths:
+            if ticket_anchor.search(path_str) and resolved not in seen_paths:
                 drift.stale_worktree_dirs.append(StaleWorktreeDir(path=Path(path_str)))
 
 
 def reconcile_ticket(ticket: Ticket) -> Drift:
     """Walk every state store and return a typed ``Drift`` for *ticket*."""
     drift = Drift(ticket_pk=ticket.pk)
-    workspace = load_config().user.workspace_dir
+    workspace = clone_root()
     worktrees = list(Worktree.objects.filter(ticket=ticket))
 
     for wt in worktrees:

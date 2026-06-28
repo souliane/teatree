@@ -1,23 +1,25 @@
 """Master tick fan-out — dispatch each row via its OWN load-bearing column (#1796, #2513, #2584).
 
-The cutover from the fat code-cadence tick: the master no longer asks
-``MiniLoopMarker`` whether a mini-loop should fire on its code cadence — the DB
-``Loop`` row carries cadence + the enable toggle. #2584 closes the gap the
-#2513 cutover opened: a loop runs this tick iff it is NOT ``off_live_tick`` AND
-its ``Loop`` row is ``enabled`` and ``is_due(now)`` (its own ``delay_seconds``
-interval, or its ``daily_at`` wall-clock schedule) AND ``LoopsConfig.is_enabled``
-agrees. ``LoopsConfig.is_enabled`` composes the durable ``LoopState`` control
-tier (``t3 loop pause`` / ``disable``, #1913), the ``T3_LOOPS_DISABLED`` env
-kill-switch (respecting ``always_on`` only via its flag), and the per-loop /
-global ``[loops]`` toml. Routing the master through it makes the live tick, the
-orchestrator / scoped path, and the review-claim chokepoint reach the SAME
-verdict for a given loop name — the levers the cutover dropped now bind here.
+The cutover from the fat code-cadence tick: the master no longer consults a
+code-cadence ledger to decide whether a mini-loop should fire — the DB ``Loop``
+row carries cadence + the enable toggle, and ``Loop.last_run_at`` is the single
+cadence ledger. #2584 closes the gap the #2513 cutover opened: a loop runs this
+tick iff it is NOT ``off_live_tick`` AND its ``Loop`` row is ``enabled`` and
+``is_due(now)`` (its own ``delay_seconds`` interval, or its ``daily_at``
+wall-clock schedule) AND ``LoopsConfig.is_enabled`` agrees. ``LoopsConfig.is_enabled``
+resolves through the durable ``LoopState`` control tier only (``t3 loop pause`` /
+``disable``, #1913) — there is no env kill-switch and no ``[loops]`` toml
+disabled-state tier. ``row.enabled`` AND ``LoopsConfig.is_enabled`` together are
+the single enable verdict (``Loop.enabled`` + ``loop_held_in_db``) — the same
+verdict the dream cron gate, the review-claim chokepoint, and the #2650 cron
+mirror resolve through ``teatree.loop.loop_state_db.loop_enabled``, so no
+enable-decision site drifts into a tier-subset.
 
 **The ``script``/``prompt`` column is LOAD-BEARING (#2513 regression fix).** The
 master no longer selects an admitted row's behaviour by a name-only registry
 lookup (the regression that left the DB ``script`` column dead). For each admitted
 row it READS the column: a **script** row's ``script`` is resolved to the loop's
-OWN name (:func:`teatree.loops.run.script_path_to_loop_name`) and THAT loop's
+OWN name (:func:`teatree.loops.run.parse_script_loop_name`) and THAT loop's
 ``build_jobs`` fans out — a row whose ``script`` does not resolve to a real
 registered loop module raises and is logged + skipped (never a silent no-op); a
 **prompt** row dispatches its own loop's ``build_jobs`` (its scanner queues the
@@ -79,10 +81,9 @@ def build_loop_table_jobs(
     first, before any DB work — the live tick must never invoke its ``build_jobs``
     or bump its ``last_run_at``. A registry mini-loop with no ``Loop`` row is
     skipped (its config was never seeded). A loop whose row is disabled or
-    not-due is skipped, AND a loop the unified :meth:`LoopsConfig.is_enabled`
-    verdict holds — a ``LoopState`` PAUSED/DISABLED row or the
-    ``T3_LOOPS_DISABLED`` env kill-switch (#1913, #2584) — is skipped too, BEFORE
-    ``mark_run``, so a held loop's cadence anchor is preserved.
+    not-due is skipped, AND a loop the :meth:`LoopsConfig.is_enabled` verdict
+    holds — a ``LoopState`` PAUSED/DISABLED row (#1913, #2584) — is skipped too,
+    BEFORE ``mark_run``, so a held loop's cadence anchor is preserved.
 
     ``only`` (#2650) scopes the build to a SINGLE named loop — the per-loop
     ``/loop`` fires ``t3 loops tick --loop <name>``, so exactly that one row is

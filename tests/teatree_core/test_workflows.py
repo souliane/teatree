@@ -213,7 +213,8 @@ class TestLifecycleProvision(TestCase):
         wt_frontend.refresh_from_db()
         assert wt_backend.state == Worktree.State.PROVISIONED
         assert wt_frontend.state == Worktree.State.PROVISIONED
-        assert wt_backend.db_name == "wt_42_testclient"
+        # db_name is keyed on the unique Ticket pk, not the derived ticket_number.
+        assert wt_backend.db_name == f"wt_{wt_backend.ticket_id}_testclient"
         assert wt_backend.extra.get("provisioned_by_overlay") is True
         assert wt_frontend.extra.get("provisioned_by_overlay") is True
 
@@ -221,7 +222,7 @@ class TestLifecycleProvision(TestCase):
         assert envfile.is_file(), "env cache should be generated during setup"
         env_content = envfile.read_text()
         assert "WT_VARIANT=testclient" in env_content
-        assert "WT_DB_NAME=wt_42_testclient" in env_content
+        assert f"WT_DB_NAME=wt_{wt_backend.ticket_id}_testclient" in env_content
         assert "DJANGO_SETTINGS_MODULE=" in env_content
         # Per-repo copies are regular files, not symlinks (#1313) — a
         # host-absolute symlink would dangle inside a bind-mounted container.
@@ -326,8 +327,10 @@ class TestLifecycleProvision(TestCase):
         wt1.refresh_from_db()
         wt2.refresh_from_db()
 
-        assert wt1.db_name == "wt_100_alpha"
-        assert wt2.db_name == "wt_200_beta"
+        # db_name keys on the unique Ticket pk, not the derived ticket_number.
+        assert wt1.db_name == f"wt_{wt1.ticket_id}_alpha"
+        assert wt2.db_name == f"wt_{wt2.ticket_id}_beta"
+        assert wt1.db_name != wt2.db_name
 
     @override_settings(**WORKFLOW_SETTINGS)
     def test_password_reset_runs_automatically(self) -> None:
@@ -618,8 +621,9 @@ class TestRunBackend(TestCase):
                 "run",
                 side_effect=fake_subprocess_run,
             ),
-            patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-            patch("teatree.core.runners.provision._workspace_dir", return_value=workspace),
+            patch.object(workspace_mod, "_worktree_root", return_value=workspace),
+            patch("teatree.core.runners.provision.clone_root", return_value=workspace),
+            patch("teatree.core.runners.provision.worktree_root", return_value=workspace),
         ):
             ticket_id = cast(
                 "int",
@@ -668,7 +672,7 @@ class TestRunBackend(TestCase):
 
         backend_wt.refresh_from_db()
         assert backend_wt.state == Worktree.State.PROVISIONED
-        assert backend_wt.db_name == "wt_999_testclient"
+        assert backend_wt.db_name == f"wt_{backend_wt.ticket_id}_testclient"
 
         # --- Step 3: run backend (docker compose) ---
         mock_config = MagicMock()
@@ -722,8 +726,15 @@ class TestToolAndCleanCommands(TestCase):
         assert "check_translations" in mock_popen.call_args.args[0]
 
     @override_settings(**WORKFLOW_SETTINGS)
-    def test_clean_only_removes_created_worktrees(self) -> None:
-        """Verify clean-all only removes worktrees in CREATED state."""
+    def test_clean_all_keeps_not_done_worktrees(self) -> None:
+        """clean-all no longer reaps non-done worktrees — only done+redundant ones are wiped.
+
+        Both worktrees belong to a not-done (NOT_STARTED) ticket, so the
+        consolidated done-reaper KEEPS them with a reported reason rather than
+        destroying a provisioned/abandoned row on a state guess. Done-worktree
+        reaping itself is covered against real git by ``test_worktree_done.py`` and
+        ``TestCleanAllReapsAndSurvivesForeignOverlay``.
+        """
         ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/30")
 
         created_wt = Worktree.objects.create(ticket=ticket, overlay="test", repo_path="stale", branch="old")
@@ -741,9 +752,9 @@ class TestToolAndCleanCommands(TestCase):
         ):
             result = cast("list[str]", call_command("workspace", "clean-all"))
 
-        assert len(result) == 1
-        assert "stale" in result[0]
-        assert Worktree.objects.filter(pk=created_wt.pk).count() == 0
+        assert any("KEPT" in line and "old" in line for line in result), result
+        assert any("KEPT" in line and "current" in line for line in result), result
+        assert Worktree.objects.filter(pk=created_wt.pk).count() == 1
         assert Worktree.objects.filter(pk=active_wt.pk).count() == 1
 
 

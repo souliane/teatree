@@ -144,6 +144,24 @@ class ActionLadderBehaviourTests(TestCase):
         assert result.auto_fix_executed is False
         callable_.assert_not_called()
 
+    def test_auto_fix_report_jumps_straight_to_auto_fix_on_first_firing(self) -> None:
+        """An idempotent self-heal must fire on FIRST observation — no graduated climb.
+
+        A persistent stale smell hashes to the same ``state_hash`` every tick, so the
+        old one-rung climb (statusline → … ) was suppressed by cool-down at rung 1 and
+        could never reach ``auto_fix``. The auto-fix report now targets its ceiling at
+        once (#2625 Part B).
+        """
+        callable_ = MagicMock()
+        result = run_action_ladder(
+            _report(max_rung=ActionRung.AUTO_FIX, auto_fix=True, state_hash_value="h1"),
+            auto_fix_callable=callable_,
+        )
+        assert result is not None
+        assert result.rung == ActionRung.AUTO_FIX
+        assert result.auto_fix_executed is True
+        callable_.assert_called_once()
+
     def test_auto_fix_runs_callable_when_whitelisted(self) -> None:
         # Start at AUTO_FIX rung for a whitelisted detector.
         report = _report(max_rung=ActionRung.AUTO_FIX, auto_fix=True, state_hash_value="h1")

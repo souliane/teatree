@@ -7,8 +7,7 @@ and the non-terminal row count (``in_flight_count``) is the max-concurrent
 budget the loop checks before dispatching the next issue.
 
 Mirrors :class:`teatree.core.models.red_mr_fix_attempt.RedMrFixAttempt`
-(idempotent ``claim()`` keyed on a natural identity) crossed with the
-single-identity :class:`teatree.core.models.mini_loop_marker.MiniLoopMarker`.
+(idempotent ``claim()`` keyed on a natural identity).
 """
 
 from typing import ClassVar

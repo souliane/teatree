@@ -20,6 +20,7 @@ from teatree.eval.report import (
 _TASK_BRANCH = Matcher(kind="positive", tool="Task", arg_path="prompt", operator="~", value="pytest")
 _BG_BASH_BRANCH = Matcher(kind="positive", tool="Bash", arg_path="run_in_background", operator="~", value="(?i)true")
 _ANY_OF = AnyOf(alternatives=(_TASK_BRANCH, _BG_BASH_BRANCH))
+_NEG_CONTAINS = Matcher(kind="negative", tool="Bash", arg_path="command", operator="contains", value="--no-verify")
 
 
 def _spec(
@@ -214,6 +215,47 @@ class TestVerdict:
         run = _run(
             tool_calls=(EvalToolCall(name="Bash", input={"command": "x"}, turn=1),),
         )
+        with pytest.raises(NotImplementedError):
+            evaluate(spec, run)
+
+
+class TestNegativeContainsMatcherDispatch:
+    """A negative+contains matcher grades through ``_dispatch`` (was NotImplementedError).
+
+    The loader accepts ``contains`` for a ``no_tool_call_matching`` line, so a
+    negative+contains matcher is loadable; but ``_dispatch`` had no branch for it
+    and fell through to ``NotImplementedError``, crashing the grader (and the
+    ``llm_eval_proposer`` teeth_check on any synthesized spec using one). The pair
+    below proves teeth: FAIL when the forbidden drift is present, PASS when absent.
+    """
+
+    def test_fails_when_forbidden_substring_present(self) -> None:
+        spec = _spec(matchers=(_NEG_CONTAINS,))
+        run = _run(tool_calls=(EvalToolCall(name="Bash", input={"command": "git commit --no-verify -m x"}, turn=1),))
+        result = evaluate(spec, run)
+        assert result.passed is False
+        assert "--no-verify" in result.matcher_results[0].message
+
+    def test_passes_when_forbidden_substring_absent(self) -> None:
+        spec = _spec(matchers=(_NEG_CONTAINS,))
+        run = _run(tool_calls=(EvalToolCall(name="Bash", input={"command": "git commit -m x"}, turn=1),))
+        result = evaluate(spec, run)
+        assert result.passed is True
+
+    def test_does_not_raise_not_implemented_error(self) -> None:
+        # The regression: negative+contains used to fall through to
+        # NotImplementedError. ``evaluate`` only catches ``AssertionError``, so an
+        # ungraded combo would propagate here rather than grade.
+        spec = _spec(matchers=(_NEG_CONTAINS,))
+        run = _run(tool_calls=(EvalToolCall(name="Bash", input={"command": "ls"}, turn=1),))
+        assert evaluate(spec, run).passed is True
+
+    def test_unsupported_negative_operator_still_raises_not_implemented(self) -> None:
+        # The fallback for a genuinely-unsupported combo is intact (not removed).
+        spec = _spec(
+            matchers=(Matcher(kind="negative", tool="Bash", arg_path="command", operator="??", value="x"),),
+        )
+        run = _run(tool_calls=(EvalToolCall(name="Bash", input={"command": "x"}, turn=1),))
         with pytest.raises(NotImplementedError):
             evaluate(spec, run)
 

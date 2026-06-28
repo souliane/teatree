@@ -114,12 +114,12 @@ class TestFindOrphansInWorkspace(TestCase):
             branch=branch,
         )
 
-    @patch("teatree.core.gates.orphan_guard.load_config")
+    @patch("teatree.core.gates.orphan_guard.clone_root")
     @patch("teatree.core.gates.orphan_guard.classify_branch")
     def test_returns_only_orphans(
         self,
         mock_classify: MagicMock,
-        mock_config: MagicMock,
+        mock_clone_root: MagicMock,
     ) -> None:
         fake_workspace = MagicMock()
 
@@ -127,7 +127,7 @@ class TestFindOrphansInWorkspace(TestCase):
             return MagicMock(spec=Path, is_dir=lambda: True, __str__=lambda _s: f"/ws/{x}")
 
         fake_workspace.__truediv__ = _fake_div
-        mock_config.return_value.user.workspace_dir = fake_workspace
+        mock_clone_root.return_value = fake_workspace
 
         self._make_worktree("org/alpha", "feat-1")
         self._make_worktree("org/beta", "feat-2")
@@ -151,12 +151,12 @@ class TestFindOrphansInWorkspace(TestCase):
         assert "feat-3" in branches
         assert len(orphans) == 2
 
-    @patch("teatree.core.gates.orphan_guard.load_config")
+    @patch("teatree.core.gates.orphan_guard.clone_root")
     @patch("teatree.core.gates.orphan_guard.classify_branch")
     def test_deduplicates_by_repo_and_branch(
         self,
         mock_classify: MagicMock,
-        mock_config: MagicMock,
+        mock_clone_root: MagicMock,
     ) -> None:
         fake_workspace = MagicMock()
 
@@ -164,7 +164,7 @@ class TestFindOrphansInWorkspace(TestCase):
             return MagicMock(spec=Path, is_dir=lambda: True, __str__=lambda _s: f"/ws/{x}")
 
         fake_workspace.__truediv__ = _fake_div
-        mock_config.return_value.user.workspace_dir = fake_workspace
+        mock_clone_root.return_value = fake_workspace
 
         self._make_worktree("org/alpha", "feat-1")
         # Same repo+branch across tickets

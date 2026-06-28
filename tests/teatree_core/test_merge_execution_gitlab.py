@@ -244,6 +244,14 @@ class TestFetchRequiredChecksGitLab(TestCase):
         with patch("teatree.backends.forge_merge_rpc.glab_runner", return_value=_boom):
             assert fetch_required_checks_status(_GITLAB_SLUG, _PR_IID, host_kind="gitlab") == "failed"
 
+    def test_required_status_check_contexts_is_empty_no_separate_gate(self) -> None:
+        # GitLab gates on the pipeline-status verdict, not branch-protection
+        # required-status-check contexts — the host method returns [] (no gate).
+        from teatree.backends.gitlab import GitLabCodeHost  # noqa: PLC0415
+
+        host = GitLabCodeHost(token="x", base_url="https://gitlab.com/api/v4")
+        assert host.fetch_required_status_check_contexts(slug=_GITLAB_SLUG, pr_id=_PR_IID) == []
+
     def test_selects_head_sha_pipeline_ignoring_canceled_merge_train(self) -> None:
         # The pipelines endpoint interleaves a canceled merge-train pipeline
         # ahead of the real head-branch pipeline; selecting pipelines[0] would

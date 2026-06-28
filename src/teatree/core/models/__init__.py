@@ -47,7 +47,6 @@ from teatree.core.models.loop_lease import LoopLease
 from teatree.core.models.loop_state import LoopState, LoopStateManager, LoopStatus
 from teatree.core.models.merge_clear import ClearIssuanceError, ClearRequest, MergeAudit, MergeClear
 from teatree.core.models.mergeable_notified import MergeableNotified
-from teatree.core.models.mini_loop_marker import MiniLoopMarker
 from teatree.core.models.on_behalf_approval import OnBehalfApproval, OnBehalfApprovalError, OnBehalfAudit
 from teatree.core.models.outbound_claim import OutboundClaim
 from teatree.core.models.pending_article_suggestion import PendingArticleSuggestion
@@ -72,7 +71,8 @@ from teatree.core.models.self_improve_firing import SelfImproveFiring
 from teatree.core.models.self_update_marker import SelfUpdateMarker
 from teatree.core.models.session import Session
 from teatree.core.models.session_handover import SessionHandover
-from teatree.core.models.task import Task, TaskAttempt
+from teatree.core.models.task import Task
+from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.ticket_artifacts import (
     E2eRunRef,
@@ -146,7 +146,6 @@ __all__ = [
     "MergeAudit",
     "MergeClear",
     "MergeableNotified",
-    "MiniLoopMarker",
     "NoPlanArtifactError",
     "OnBehalfApproval",
     "OnBehalfApprovalError",

@@ -1,11 +1,11 @@
 """The core → agents headless-runner inversion registry (#1922)."""
 
 import pytest
-from django.test import TestCase, override_settings
+from django.test import TestCase
 
 from teatree.core import headless_dispatch
 from teatree.core.headless_dispatch import loop_dispatch_refusal
-from teatree.core.models import Session, Task, Ticket
+from teatree.core.models import ConfigSetting, Session, Task, Ticket
 
 
 class TestLoopDispatchRefusal(TestCase):
@@ -20,21 +20,21 @@ class TestLoopDispatchRefusal(TestCase):
         task.route_to_headless(reason="forced headless for the test")
         return task
 
-    @override_settings(LOOP_ALLOW_HEADLESS_DISPATCH=False)
     def test_free_form_phase_is_not_refused(self) -> None:
+        ConfigSetting.objects.set_value("agent_runtime", "interactive")
         task = self._make_task(phase="free-form-phase")
         assert loop_dispatch_refusal(task) is None
 
-    @override_settings(LOOP_ALLOW_HEADLESS_DISPATCH=False)
-    def test_registered_phase_is_refused(self) -> None:
+    def test_registered_phase_is_refused_under_interactive(self) -> None:
+        ConfigSetting.objects.set_value("agent_runtime", "interactive")
         task = self._make_task(phase="answering")
         reason = loop_dispatch_refusal(task)
         assert reason is not None
         assert "answering" in reason
-        assert "LOOP_ALLOW_HEADLESS_DISPATCH" in reason
+        assert "agent_runtime" in reason
 
-    @override_settings(LOOP_ALLOW_HEADLESS_DISPATCH=True)
-    def test_registered_phase_allowed_when_override_on(self) -> None:
+    def test_registered_phase_allowed_under_headless_runtime(self) -> None:
+        ConfigSetting.objects.set_value("agent_runtime", "sdk_oauth")
         task = self._make_task(phase="answering")
         assert loop_dispatch_refusal(task) is None
 

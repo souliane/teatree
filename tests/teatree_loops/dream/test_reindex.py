@@ -1,8 +1,9 @@
 """Phase 5 — regenerate the ``MEMORY.md`` index from the memory set (#1933 § 6).
 
 Fixture-only: tmp dir, never the real ``~/.claude``. The contract: one line per
-memory (clickable link + a ≤200-char summary), deduped, stably ordered, no
-content moved into the index, and BYTE-IDENTICAL on a re-run with no changes.
+memory (a bare ``name.md`` pointer + a brief ≤45-char hook), deduped, stably
+ordered, no content moved into the index, and BYTE-IDENTICAL on a re-run with no
+changes.
 """
 
 import tempfile
@@ -42,16 +43,39 @@ class ReindexTestCase(SimpleTestCase):
         assert "[mem_a.md]" not in index
         assert index.count("mem_a.md") == 1
 
-    def test_summary_is_clipped_to_120_chars(self) -> None:
-        # #2723: the summary clip is shortened to ~120 chars to keep lines tight.
+    def test_hook_is_clipped_to_45_chars(self) -> None:
+        # #2755: the hook is clipped to a SHORT 45 chars (was 110) so many more bare
+        # pointers fit the ~24 KB byte budget.
         long = "x" * 500
         self._write("mem_long", f"---\nname: mem_long\nsummary: {long}\n---\nbody")
         index = render_index(self.dir)
         line = next(line for line in index.splitlines() if "mem_long.md" in line)
         summary = line.split(" — ", 1)[1]
+        assert reindex._SUMMARY_MAX_CHARS == 45
         assert len(summary) <= reindex._SUMMARY_MAX_CHARS
-        assert reindex._SUMMARY_MAX_CHARS <= 120
         assert summary.endswith("…")
+
+    def test_line_max_chars_pinned_to_130_and_hot_lines_capped(self) -> None:
+        # #2755: the hot per-line cap is 130 (was 140) so `- <name>.md — <hook>` stays
+        # tight. The cold MEMORY_ARCHIVE.md is uncapped — that is decay's concern, pinned
+        # in test_decay.py::...::test_cold_index_signature_is_uncapped.
+        assert reindex._LINE_MAX_CHARS == 130
+        self._write("mem_long", f"---\nname: mem_long\nsummary: {'z' * 400}\n---\nbody")
+        index = render_index(self.dir)
+        hot_lines = [line for line in index.splitlines() if line.startswith("- ")]
+        assert hot_lines
+        for line in hot_lines:
+            assert len(line) <= 130
+
+    def test_archive_index_is_not_re_indexed_into_the_hot_index(self) -> None:
+        # #2723: MEMORY_ARCHIVE.md lives in the memory dir but must never appear as a
+        # hot index line (it is the cold index, excluded exactly like MEMORY.md).
+        self._write("mem_a", "---\nname: mem_a\nsummary: a\n---\nbody")
+        (self.dir / "MEMORY_ARCHIVE.md").write_text("# cold\n- archived_x.md — a signature\n", encoding="utf-8")
+        index = render_index(self.dir)
+        assert "MEMORY_ARCHIVE.md" not in index
+        assert "archived_x.md" not in index
+        assert "mem_a.md" in index
 
     def test_whole_line_is_capped(self) -> None:
         # #2723: the WHOLE line (filename + summary) is capped, so a long filename
@@ -140,3 +164,72 @@ class ReindexTestCase(SimpleTestCase):
         index = render_index(self.dir)
         assert "mem_a.md" in index
         assert "broken.md" not in index
+
+
+class SignatureTextTestCase(SimpleTestCase):
+    """The shared frontmatter-aware signature extractor (#2746 nit-4).
+
+    ``signature_text`` is the ONE extractor the hot index, the cold
+    ``MEMORY_ARCHIVE.md`` index, and the retention probe all share. It prefers
+    the frontmatter ``description:``/``summary:`` over a node-type body line, so a
+    node-typed memory no longer yields the near-vacuous ``node_type: memory``
+    signature.
+    """
+
+    _NODE_TYPED = (
+        "---\nname: feedback_example\n"
+        "description: the lease guard rejects an empty owner address\n"
+        "metadata:\n  type: feedback\n---\n"
+        "node_type: memory\nsome trailing body content\n"
+    )
+
+    def test_frontmatter_description_preferred_over_node_type_body(self) -> None:
+        # The bug: the old scanner returned the body ``node_type: memory`` line.
+        assert reindex.signature_text(self._NODE_TYPED) == "the lease guard rejects an empty owner address"
+        assert "node_type" not in reindex.signature_text(self._NODE_TYPED)
+
+    def test_frontmatter_summary_preferred(self) -> None:
+        text = "---\nname: m\nsummary: a tight one-line lesson\n---\n# H\nbody"
+        assert reindex.signature_text(text) == "a tight one-line lesson"
+
+    def test_body_node_type_line_is_skipped_when_no_frontmatter_summary(self) -> None:
+        # No frontmatter description: the metadata ``node_type:`` line is skipped
+        # and the next real lesson line is the signature.
+        text = "---\nname: m\n---\nnode_type: memory\nthe actual recorded lesson\n"
+        assert reindex.signature_text(text) == "the actual recorded lesson"
+
+    def test_loose_metadata_lines_are_skipped(self) -> None:
+        # A file with no fenced frontmatter, leading metadata-ish key lines.
+        text = "name: mem_a\ntype: feedback\nthe load-bearing lesson A\n"
+        assert reindex.signature_text(text) == "the load-bearing lesson A"
+
+    def test_binding_heading_is_the_last_resort_signature(self) -> None:
+        # No frontmatter, no prose — only headings, one declaring a BINDING rule.
+        text = "---\nname: m\n---\n# Context\n## Non-Negotiable: never force-push main\n"
+        assert reindex.signature_text(text) == "Non-Negotiable: never force-push main"
+
+    def test_empty_when_no_signature_anywhere(self) -> None:
+        text = "---\nname: m\n---\n# Only A Heading\n## And Another\n"
+        assert reindex.signature_text(text) == ""
+
+    def test_signature_is_uncapped(self) -> None:
+        # Unlike the hot index line, the signature is never clipped.
+        long = "a long lesson " + "x" * 400
+        text = f"---\nname: m\ndescription: {long}\n---\nbody"
+        assert reindex.signature_text(text) == long
+        assert len(reindex.signature_text(text)) > reindex._LINE_MAX_CHARS
+
+    def test_returned_signature_is_a_substring_of_the_text(self) -> None:
+        # The retention contract: the signature stays findable in the body.
+        sig = reindex.signature_text(self._NODE_TYPED)
+        assert " ".join(sig.split()).lower() in " ".join(self._NODE_TYPED.split()).lower()
+
+    def test_summary_for_shares_signature_text_then_clips(self) -> None:
+        # The hot index summary is signature_text clipped to the per-summary cap.
+        long = "y" * 400
+        text = f"---\nname: m\ndescription: {long}\n---\nbody"
+        summary = reindex._summary_for(text)
+        assert len(summary) <= reindex._SUMMARY_MAX_CHARS
+        assert summary.endswith("…")
+        # The cold signature stays uncapped for the same text.
+        assert len(reindex.signature_text(text)) > reindex._SUMMARY_MAX_CHARS

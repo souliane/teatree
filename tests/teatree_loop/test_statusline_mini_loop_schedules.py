@@ -4,10 +4,10 @@ After the #2513 cutover :func:`teatree.loops.schedule.mini_loop_schedules`
 derives its ``(name, next_fire_at, cadence_seconds)`` tuples from the DB
 ``Loop`` table (each row's ``enabled`` / cadence / ``last_run_at`` →
 ``next_run_at``) — the SAME live snapshot ``t3 loop list`` renders — so the
-statusline's next-fire numbers stay in lockstep with the orchestrator's own
-cadence gate (:func:`teatree.loops.gating.elapsed_and_enabled`). Also covers
-the injection seam that bridges this up-stack reader into the statusline
-without violating the tach module graph.
+statusline's next-fire numbers stay in lockstep with the master tick's own
+cadence gate (:meth:`teatree.core.models.Loop.is_due`). Also covers the
+injection seam that bridges this up-stack reader into the statusline without
+violating the tach module graph.
 
 The seeded production loops (migration 0078) live in the test DB, so the tests
 that assert an exact schedule / chunk set clear the table first and create only
@@ -105,37 +105,27 @@ class TestSeamRendersMiniLoopsOnStatusline(django.test.TestCase):
 
 
 @django.test.override_settings(USE_TZ=True)
-class TestMiniLoopCadenceMatchesGate(django.test.TestCase):
-    """The statusline next-fire stays in lockstep with the orchestrator gate.
+class TestMiniLoopCadenceMatchesMasterGate(django.test.TestCase):
+    """The statusline next-fire stays in lockstep with the master tick gate.
 
-    The same ``last_run + cadence`` boundary the orchestrator gate uses to
-    decide ``should_fire`` is the boundary the statusline counts down to: when
-    the gate would fire (boundary in the past) the statusline reads ``due``.
-    The orchestrator gate still reads the :class:`MiniLoopMarker` ledger; the
-    statusline now reads the ``Loop`` row — so this seeds the same
-    ``last_fired + cadence`` boundary in both to prove they agree.
+    The same ``last_run + cadence`` boundary :meth:`Loop.is_due` uses to decide
+    whether the master fires a loop is the boundary the statusline counts down to:
+    when the master would fire (boundary in the past) the statusline reads ``due``.
+    Both read the ONE ledger — the ``Loop`` row's ``last_run_at`` — so they agree
+    by construction.
     """
 
     def setUp(self) -> None:
         self.addCleanup(set_mini_loop_schedules_reader, None)
 
-    def test_due_when_gate_would_fire(self) -> None:
-        from teatree.core.models.mini_loop_marker import MiniLoopMarker  # noqa: PLC0415
-        from teatree.loops.base import MiniLoop  # noqa: PLC0415
-        from teatree.loops.gating import elapsed_and_enabled  # noqa: PLC0415
-
+    def test_due_when_master_gate_would_fire(self) -> None:
         Loop.objects.all().delete()
-        loop = MiniLoop(name="ship", default_cadence_seconds=300, build_jobs=lambda **_: [])
         now = timezone.now()
         fired_at = now - dt.timedelta(seconds=400)
-        # Orchestrator-gate side: the cadence ledger boundary the gate reads.
-        MiniLoopMarker.objects.mark_fired("ship", fired_at)
-        decision = elapsed_and_enabled(LoopsConfig(), loop, now)
-        # Statusline side: the same boundary expressed as the Loop row anchor.
-        _make_loop("ship", 300, last_run_at=fired_at)
+        row = _make_loop("ship", 300, last_run_at=fired_at)
         set_mini_loop_schedules_reader(mini_loop_schedules)
         chunks = mini_loops_anchor()
-        assert decision.should_fire is True
+        assert row.is_due(now) is True
         assert chunks == ["ship due"], chunks
 
 

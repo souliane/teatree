@@ -36,6 +36,7 @@ from teatree.eval.backends import (
 from teatree.eval.models import EvalSpec
 from teatree.eval.parallel import run_specs
 from teatree.eval.report import JudgeGrader, ScenarioResult, evaluate, render_html, render_json, render_text
+from teatree.llm.anthropic_limits import CreditExhaustedError
 
 __all__ = ["EscalationConfig", "SingleTrialGates", "make_escalation_runner", "run_single_trial"]
 
@@ -107,7 +108,11 @@ def run_single_trial(  # noqa: PLR0913 — each kwarg threads one resolved `eval
     except UnknownBackendError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=2) from None
-    runs = run_specs(runner, specs, parallel=parallel)
+    try:
+        runs = run_specs(runner, specs, parallel=parallel)
+    except CreditExhaustedError as exc:
+        typer.echo(f"ABORTED: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
     results = [evaluate(spec, run, judge=grader) for spec, run in zip(specs, runs, strict=True)]
     renderers = {"json": render_json, "html": render_html}
     typer.echo(renderers.get(output_format, render_text)(results))

@@ -32,6 +32,26 @@ mechanics stay pure and DB-free under test; the production default is
 ledger row by path membership in ``source_files`` OR by its name appearing in a
 ``durable_destination``.
 
+The SECOND tier — the BUDGET tier (#2723) — exists because the curated corpus has
+~294 must-preserve (user / BINDING) entries, whose rendered index can exceed the ~24 KB
+hot-index session-load BYTE budget, and the ledger home-rail is structurally empty for
+hand-authored memories (it can never archive them). When the hot ``MEMORY.md`` is over
+budget the budget tier scores every file by :func:`_signal_score` (user / BINDING /
+inbound links / recency / type) and archives the LOWEST-signal first — only as many as it
+takes to bring the projected hot index back under the BYTE budget — so the highest-signal
+entries that fit ~24 KB stay HOT and the rest move to a COLD tier: ``archive/`` holds the
+full restorable body and the cold
+``MEMORY_ARCHIVE.md`` index holds one signature line per archived entry. The cold index
+lives in the main memory dir (so the gate snapshot still finds the signature — retention
+stays green) but is NEVER re-indexed into the hot ``MEMORY.md``. Referenced entries are
+NOT hard-retained by the budget tier (#2753): the cross-link phase runs before decay and
+references most of the corpus, so a hard skip floored the tier above budget and it could
+never converge. Instead ``_signal_score`` adds +40 per inbound ``[[name]]`` link, so
+referenced entries rank HIGHER and are archived LAST — only when the budget genuinely
+forces it — staying restorable in ``archive/`` and recall-able via the cold
+``MEMORY_ARCHIVE.md``. (The conservative stale/ledger tier keeps its reference skip; only
+the budget tier drops it.)
+
 PURE w.r.t. the real ``~/.claude``: the caller passes an explicit ``memory_dir``
 and a ``now``/``retention`` policy; tests pass a tmp fixture and a fixed clock.
 Fault-isolated: the command runs it in a try/except so a phase-6 failure never
@@ -49,33 +69,54 @@ from typing import cast
 #: regardless of references (a fresh lesson is never stale). Generous on purpose.
 DEFAULT_RETENTION_DAYS = 30
 
-#: Hard age ceiling for the BUDGET decay tier (#2723, Decision-2). When the index
-#: exceeds the load budget, a file older than this AND unreferenced AND whose
-#: lesson is captured by a near-duplicate survivor is archivable — INDEPENDENT of
-#: the (structurally-empty for the curated corpus) ledger home-rail.
-BUDGET_AGE_CEILING_DAYS = 90
-
 _ARCHIVE_DIRNAME = "archive"
 _INDEX_NAME = "MEMORY.md"
+#: The COLD archive index (#2723), written by this phase in the MAIN memory dir so the
+#: gate snapshot globs it as a memory body (an archived entry's signature stays findable
+#: there, keeping retention green) while it is NEVER re-indexed, cross-linked, or
+#: itself archived/merged — excluded alongside ``MEMORY.md`` in every loader.
+_ARCHIVE_INDEX_NAME = "MEMORY_ARCHIVE.md"
 _WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
 _FRONTMATTER_NAME_RE = re.compile(r"^name:\s*(\S+)\s*$", re.MULTILINE)
 #: A logical "lesson last-touched" frontmatter date — the age clock the budget tier
 #: reads so a cross-link / re-index rewrite (which bumps ``st_mtime``) does NOT reset
 #: the decay clock. Absent the field, the budget tier falls back to ``st_mtime``.
 _LESSON_UPDATED_RE = re.compile(r"^lesson_updated:\s*(\S+)\s*$", re.MULTILINE)
+#: Frontmatter ``type:`` (top-level or nested under ``metadata:``) — the memory's
+#: declared kind, used for the type-weight signal. ``node_type:`` never matches.
+_TYPE_LINE_RE = re.compile(r"^\s*type:\s*(\S+)\s*$", re.MULTILINE)
+
+#: The recognised memory types (filename prefix or frontmatter ``metadata.type``).
+_KNOWN_TYPES = frozenset({"user", "feedback", "retro", "reference", "project"})
+
+#: Additive signal weights for :func:`_signal_score` — higher means keep HOT. ``user``
+#: and BINDING dominate so they are archived only if the budget forces it; inbound
+#: ``[[name]]`` wikilinks and recency add the rest; a per-type floor breaks ties.
+_SIGNAL_USER = 1000
+_SIGNAL_BINDING = 500
+_SIGNAL_PER_INBOUND_LINK = 40
+_SIGNAL_RECENT = 200
+_TYPE_WEIGHTS = {"feedback": 90, "retro": 70, "reference": 30, "project": 20, "user": 10, "other": 10}
+
+#: Preamble of the cold ``MEMORY_ARCHIVE.md`` — kept machine-readable (one
+#: ``- <name>.md — <original signature>`` line per entry) for a future recall pass.
+_COLD_HEADER = (
+    "# Auto Memory — Cold Archive Index\n\n"
+    "> Low-signal memories archived out of the hot MEMORY.md to keep it under the "
+    "session-load budget. NOT loaded at session start; searchable here, full bodies "
+    "in archive/ (restorable). One line per entry: `- <name>.md — <original signature>`.\n\n"
+)
 
 
 @dataclass(frozen=True, slots=True)
 class BudgetTier:
-    """The on-disk RETIRE tier config (#2723) — opt in via :class:`DecayPolicy`.
+    """The on-disk RETIRE tier marker (#2723) — opt in via :class:`DecayPolicy`.
 
-    Bundles the budget tier's knobs. When supplied AND the index is over the load
-    budget, decay archives files older than ``age_ceiling_days`` (by the logical
-    lesson clock) that are unreferenced and whose lesson a near-duplicate survivor
-    captures.
+    When supplied AND the hot ``MEMORY.md`` is over the load budget, decay archives the
+    LOWEST-:func:`_signal_score` files first — just enough to bring the projected hot
+    index back under budget. The tier needs no knobs of its own: the freshness window
+    is :attr:`DecayPolicy.retention_days` and the budget is the gate-(d) constants.
     """
-
-    age_ceiling_days: int = BUDGET_AGE_CEILING_DAYS
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,7 +251,7 @@ def _memory_name(path: Path, text: str) -> str:
 def _load_memory_files(memory_dir: Path) -> list[_MemoryFile]:
     files: list[_MemoryFile] = []
     for md in sorted(memory_dir.glob("*.md")):
-        if md.name == _INDEX_NAME:
+        if md.name in {_INDEX_NAME, _ARCHIVE_INDEX_NAME}:  # never load an index as a memory (#2723)
             continue
         try:
             text = md.read_text(encoding="utf-8")
@@ -271,63 +312,196 @@ def _stale_candidates(
         yield memory
 
 
+def _over_budget(byte_size: int) -> bool:
+    """Whether an index of *byte_size* bytes is over the gate-(d) BYTE budget.
+
+    The one place the §4 gate-(d) byte budget is compared, so the decay-pressure
+    trigger and the gate that grades the result agree on "over budget" (#2723). Bytes
+    are the only constraint — the harness truncates ``MEMORY.md`` by BYTES at session
+    load, so line count is irrelevant to what reaches the agent (#2755).
+    """
+    from teatree.loops.dream.gates import INDEX_BYTE_BUDGET  # noqa: PLC0415
+
+    return byte_size > INDEX_BYTE_BUDGET
+
+
 def _index_over_budget(index_text: str) -> bool:
-    """Whether the rendered ``MEMORY.md`` exceeds the gate-(d) session-load budget.
+    """Whether the rendered ``MEMORY.md`` exceeds the gate-(d) session-load byte budget."""
+    return _over_budget(len(index_text.encode("utf-8")))
 
-    Reuses the §4 budget constants so the decay-pressure trigger and the gate that
-    grades the result agree on what "over budget" means (#2723).
+
+def _resolved_type(memory: _MemoryFile) -> str:
+    """The memory's type for the type-weight signal.
+
+    Frontmatter ``metadata.type`` when present and recognised, else the filename prefix
+    (``feedback_x`` -> ``feedback``), else ``other``. The ~96 older files with no
+    parseable ``metadata.type`` fall back to the prefix; deterministic and DB-free.
     """
-    from teatree.loops.dream.gates import INDEX_BYTE_BUDGET, INDEX_LINE_BUDGET  # noqa: PLC0415
+    match = _TYPE_LINE_RE.search(memory.text)
+    if match:
+        candidate = match.group(1).strip().lower()
+        if candidate in _KNOWN_TYPES:
+            return candidate
+    prefix = memory.path.stem.split("_", 1)[0].lower()
+    return prefix if prefix in _KNOWN_TYPES else "other"
 
-    line_count = sum(1 for line in index_text.splitlines() if line.strip())
-    return len(index_text.encode("utf-8")) > INDEX_BYTE_BUDGET or line_count > INDEX_LINE_BUDGET
+
+def _is_user_memory(memory: _MemoryFile) -> bool:
+    """True for a user-authored memory — frontmatter ``metadata.type: user`` OR a ``user_*`` filename."""
+    return _resolved_type(memory) == "user" or memory.path.name.lower().startswith("user_")
 
 
-def _captured_elsewhere(memory: _MemoryFile, others: Sequence[_MemoryFile]) -> bool:
-    """Whether *memory*'s lesson is captured by a near-duplicate SURVIVOR.
+def _is_binding_text(text: str) -> bool:
+    """True when the memory carries BINDING / Non-Negotiable doctrine (mirrors the engine weight)."""
+    lowered = text.lower()
+    return "binding" in lowered or "non-negotiable" in lowered
 
-    The budget tier's safety rail: a file is only archivable when another file
-    (which is NOT itself being archived this pass) records the same lesson — a
-    body-token near-duplicate above the merge floor. A genuinely UNIQUE lesson with
-    no twin is retained, even over budget. This is the content/duplication check the
-    plan mandates in place of the structurally-empty ``prunable()`` ledger join.
+
+def _inbound_link_counts(files: Sequence[_MemoryFile], index_text: str) -> dict[str, int]:
+    """Map each memory NAME to the number of distinct documents that ``[[name]]``-link it.
+
+    Counted in ONE pass (the index counts as one source, each other memory as one) so
+    the per-file inbound-wikilink signal is O(N), not an O(N²) rescan per memory.
     """
-    from teatree.loops.dream.cross_link import _jaccard  # noqa: PLC0415
-    from teatree.loops.dream.merge import _NEAR_DUPLICATE_FLOOR, _body_tokens  # noqa: PLC0415
+    counts: dict[str, int] = {}
+    for name in set(_WIKILINK_RE.findall(index_text)):
+        counts[name] = counts.get(name, 0) + 1
+    for source in files:
+        for name in set(_WIKILINK_RE.findall(source.text)):
+            if name == source.name:
+                continue  # a memory linking itself is not an inbound reference
+            counts[name] = counts.get(name, 0) + 1
+    return counts
 
-    mine = _body_tokens(memory)
-    if not mine:
-        return False
-    return any(
-        other.path != memory.path and _jaccard(mine, _body_tokens(other)) >= _NEAR_DUPLICATE_FLOOR for other in others
-    )
+
+def _recency_score(memory: _MemoryFile, now: datetime, retention: timedelta) -> int:
+    """Recency signal — +200 within the retention window, decaying linearly past it.
+
+    Floored at 0. Reads the logical ``lesson_touched`` clock so a cross-link / re-index
+    rewrite (which bumps ``st_mtime``) does not reset recency.
+    """
+    age = now - memory.lesson_touched
+    if age <= retention:
+        return _SIGNAL_RECENT
+    return max(0, _SIGNAL_RECENT - (age - retention).days)
+
+
+def _signal_score(memory: _MemoryFile, *, inbound_links: int, now: datetime, retention: timedelta) -> int:
+    """The keep-HOT signal of a memory — higher means more worth keeping in ``MEMORY.md``.
+
+    Composed ADDITIVELY (never short-circuits) from the signals that mark a lesson
+    load-bearing: a user-authored memory (+1000), BINDING / Non-Negotiable doctrine
+    (+500), each inbound ``[[name]]`` wikilink (+40, *inbound_links* precomputed by the
+    caller via :func:`_inbound_link_counts` so scoring the whole set stays O(N)), recency
+    by the logical ``lesson_touched`` clock (+200 within *retention*, decaying linearly
+    with age beyond it), and a per-type floor (feedback 90 / retro 70 / reference 30 /
+    project 20 / other 10). The budget tier archives LOWEST score first, so the
+    highest-signal memories stay hot and user / BINDING entries are archived only if the
+    budget forces it. DB-free and deterministic — usable under ``SimpleTestCase``.
+    """
+    score = _SIGNAL_USER if _is_user_memory(memory) else 0
+    if _is_binding_text(memory.text):
+        score += _SIGNAL_BINDING
+    score += _SIGNAL_PER_INBOUND_LINK * inbound_links
+    score += _recency_score(memory, now, retention)
+    score += _TYPE_WEIGHTS.get(_resolved_type(memory), _TYPE_WEIGHTS["other"])
+    return score
 
 
 def _budget_tier_candidates(
-    files: Sequence[_MemoryFile], index_text: str, now: datetime, ceiling: timedelta
+    files: Sequence[_MemoryFile], index_text: str, now: datetime, retention: timedelta
 ) -> Iterable[_MemoryFile]:
-    """Yield budget-tier archival candidates: old AND unreferenced AND captured elsewhere.
+    """Yield budget-tier archival candidates lowest-signal first, just enough to fit budget.
 
-    Fires ONLY when the index is over budget. A candidate's lesson age reads the
-    logical ``lesson_touched`` clock (not ``st_mtime``), it must be unreferenced, and
-    its lesson must be captured by a near-duplicate survivor — never a unique lesson.
-    Candidates are removed from the survivor pool greedily so two twins do not both
-    archive each other away (one always survives).
+    Fires only when the live ``MEMORY.md`` is over budget. Each file is scored by
+    :func:`_signal_score` and the lowest-signal files are archived first. A referenced
+    file (a live consumer still ``[[link]]``s it) is NOT hard-retained here (#2753): the
+    cross-link phase runs before decay and references most of the corpus, so a hard skip
+    floored the tier above the referenced count and the index could never reach budget.
+    Instead ``_signal_score`` adds +40 per inbound ``[[name]]`` link, so referenced
+    entries rank HIGHER and are archived LAST — only when the budget genuinely forces it.
+    After each removal the survivor set's PROJECTED index — rendered exactly as the
+    re-index will render it — is re-measured, and the walk STOPS as soon as it is under
+    the BYTE budget, so the MINIMUM number of (lowest-signal) files is
+    archived and as much high-signal memory as fits stays hot. user / BINDING entries
+    score highest and are archived only if the budget forces it. Every archived entry
+    stays restorable (full body in ``archive/`` with provenance) and recall-able (its
+    signature in the cold ``MEMORY_ARCHIVE.md``); a now-dangling ``[[link]]`` in a
+    surviving body is cosmetic, not data loss — the hot index uses bare ``- name.md``
+    pointers, which never dangle. The conservative stale/ledger tier
+    (:func:`_stale_candidates`) keeps its reference skip — only the budget tier drops it.
     """
     if not _index_over_budget(index_text):
         return
-    cutoff = now - ceiling
-    survivors = list(files)
-    for memory in sorted(files, key=lambda m: m.lesson_touched):
-        if memory.lesson_touched >= cutoff:
-            continue  # lesson recently touched — retained
-        if _is_referenced(memory, files, index_text):
-            continue  # referenced — retained
-        remaining = [m for m in survivors if m.path != memory.path]
-        if not _captured_elsewhere(memory, remaining):
-            continue  # unique lesson with no twin — retained (captured-elsewhere rail)
-        survivors = remaining
+    from teatree.loops.dream import reindex  # noqa: PLC0415
+
+    inbound = _inbound_link_counts(files, index_text)
+    ordered = sorted(
+        files, key=lambda m: _signal_score(m, inbound_links=inbound.get(m.name, 0), now=now, retention=retention)
+    )
+    line_bytes = {m.path: len(reindex.index_line_for(m.path.name, m.text).encode("utf-8")) for m in files}
+    header = reindex.render_index_lines([])
+    header_bytes = len(header.encode("utf-8"))
+    survivor_count = len(files)
+    survivor_bytes = sum(line_bytes.values())
+    for memory in ordered:
+        # projected_bytes == len(render_index_lines(survivor lines).encode()) — exact for any
+        # count (the per-line "\n" join + trailing newline total ``survivor_count`` bytes).
+        projected_bytes = header_bytes + survivor_bytes + survivor_count
+        if not _over_budget(projected_bytes):
+            break  # projected survivor index is back under the byte budget — archive no more
+        survivor_count -= 1
+        survivor_bytes -= line_bytes[memory.path]
         yield memory
+
+
+def _strip_provenance(text: str) -> str:
+    """Drop the leading ``<!-- archived by dream decay ... -->`` provenance line.
+
+    So the cold-index signature is computed from the ORIGINAL body (matching the
+    retention probe, which lifts its signature from the pre-archival text).
+    """
+    if text.startswith("<!--"):
+        _comment, marker, rest = text.partition("-->\n")
+        if marker:
+            return rest
+    return text
+
+
+def _cold_index_line(archived_md: Path) -> str:
+    """One ``- <name>.md — <original signature>`` cold-index line for an archived file.
+
+    The signature is computed from the original body (provenance header stripped) with
+    the SAME helper the retention gate uses, so ``snapshot.contains(signature)`` is True
+    for the archived entry — its lesson stays answerable from the cold index. Uncapped:
+    the verbatim signature is what retention needs.
+    """
+    from teatree.loops.dream.gates import _signature_line  # noqa: PLC0415
+
+    try:
+        text = archived_md.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    signature = _signature_line(_strip_provenance(text))
+    return f"- {archived_md.name} — {signature}" if signature else f"- {archived_md.name}"
+
+
+def _rebuild_cold_index(memory_dir: Path, archive_dir: Path) -> None:
+    """Rebuild the cold ``MEMORY_ARCHIVE.md`` from EVERY file under ``archive/``.
+
+    One line per archived entry, carrying its full unclipped original signature. Rebuilt
+    wholesale each pass (idempotent) so the cold tier accumulates across passes and a
+    second pass rewrites it byte-identically. Written in the MAIN memory dir so the gate
+    snapshot globs it as a memory body, keeping the retention / interference gates green
+    for archived entries; it is excluded from every re-index / cross-link / decay loader,
+    so it never re-bloats the hot index. A no-op when nothing has been archived.
+    """
+    if not archive_dir.is_dir():
+        return
+    lines = [line for md in sorted(archive_dir.glob("*.md")) if (line := _cold_index_line(md))]
+    if not lines:
+        return
+    (memory_dir / _ARCHIVE_INDEX_NAME).write_text(_COLD_HEADER + "\n".join(lines) + "\n", encoding="utf-8")
 
 
 def decay_memories(
@@ -355,11 +529,14 @@ def decay_memories(
     *policy* bundles the freshness window and the optional budget tier. A
     :class:`DecayPolicy` with a :class:`BudgetTier` opts into a SECOND,
     ledger-INDEPENDENT decay tier (#2723) for the hand-authored corpus the empty
-    ``prunable()`` join can never reach: when the index is over the load budget,
-    decay ALSO archives files older than the tier's ``age_ceiling_days`` (by the
-    logical ``lesson_touched`` clock) that are unreferenced AND whose lesson a
-    near-duplicate survivor captures. The default policy (no budget tier) leaves the
-    ledger-home tier alone — byte-identical to before.
+    ``prunable()`` join can never reach: when the hot ``MEMORY.md`` is over the load
+    budget, decay ALSO archives the LOWEST-:func:`_signal_score` files first — just
+    enough to bring the projected hot index back under budget. The default policy (no
+    budget tier) leaves the ledger-home tier alone — byte-identical to before.
+
+    Whichever tier fires, the cold ``MEMORY_ARCHIVE.md`` is rebuilt from ``archive/`` so
+    every archived entry's signature stays findable (retention-safe) while its full body
+    remains in ``archive/`` (restorable).
     """
     settings = policy or DecayPolicy()
     moment = now or datetime.now(tz=UTC)
@@ -380,17 +557,12 @@ def decay_memories(
     if settings.budget_tier is not None:
         homed_paths = {m.path for m in home_tier}
         remaining = [m for m in files if m.path not in homed_paths]
-        ceiling = timedelta(days=settings.budget_tier.age_ceiling_days)
         archived.extend(
-            _archive_one(
-                memory,
-                archive_dir,
-                moment,
-                reason="over-budget, stale, unreferenced, captured elsewhere",
-                dry_run=dry_run,
-            )
-            for memory in _budget_tier_candidates(remaining, index_text, moment, ceiling)
+            _archive_one(memory, archive_dir, moment, reason="over-budget, lowest-signal", dry_run=dry_run)
+            for memory in _budget_tier_candidates(remaining, index_text, moment, retention)
         )
+    if not dry_run:
+        _rebuild_cold_index(memory_dir, archive_dir)
     return DecayResult(
         seen=len(files),
         archived=tuple(archived),
@@ -400,7 +572,6 @@ def decay_memories(
 
 
 __all__ = [
-    "BUDGET_AGE_CEILING_DAYS",
     "DEFAULT_RETENTION_DAYS",
     "ArchivedMemory",
     "BudgetTier",

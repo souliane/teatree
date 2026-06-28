@@ -1,16 +1,15 @@
-"""The tick gate honours the DB-backed LoopState as the disable authority (#1913, #2702).
+"""The tick gate resolves enable/disable through the DB-backed LoopState only (#1913).
 
-``LoopsConfig.is_enabled`` is the single enable/disable decision the live tick
-and the orchestrator both call (via ``gating.elapsed_and_enabled``). #1913 makes
-the DB ``LoopState`` the canonical control tier; #2702 removes the former
-``[loops]`` toml disabled-state fallback, so the resolution is now env → DB
-``LoopState`` → default:
+``LoopsConfig.is_enabled`` is the ``LoopState`` arm of the live tick's enable
+decision — the master fan-out (``build_loop_table_jobs``) consults it as the
+durable control tier of the unified verdict (#2584). The DB ``LoopState`` tier
+is the canonical (and only) control authority — there is no env kill-switch and
+no ``[loops]`` toml disabled-state fallback:
 
     An empty ``LoopState`` table leaves every loop running (the default). A
-    ``PAUSED`` / ``DISABLED`` row skips the loop in the tick — EVEN for an
-    ``always_on`` loop, which the env layer cannot stop (the whole point of the
-    2026-06-03 'pause everything' incident). An ``ENABLED`` row (or no row)
-    defers to the env layer, which defaults to enabled.
+    ``PAUSED`` / ``DISABLED`` row skips the loop in the tick — including the
+    core ``dispatch`` loop (the whole point of the 2026-06-03 'pause
+    everything' incident). An ``ENABLED`` row (or no row) defaults to enabled.
 """
 
 from django.test import TestCase
@@ -24,8 +23,8 @@ def _build(**_: object) -> list[object]:
     return []
 
 
-def _loop(name: str, *, always_on: bool = False) -> MiniLoop:
-    return MiniLoop(name=name, default_cadence_seconds=60, build_jobs=_build, always_on=always_on)
+def _loop(name: str) -> MiniLoop:
+    return MiniLoop(name=name, default_cadence_seconds=60, build_jobs=_build)
 
 
 class TestEmptyTableIsNoRegression(TestCase):
@@ -33,9 +32,9 @@ class TestEmptyTableIsNoRegression(TestCase):
         config = LoopsConfig()
         assert config.is_enabled(_loop("review")) is True
 
-    def test_empty_table_keeps_always_on_loop_enabled(self) -> None:
+    def test_empty_table_keeps_dispatch_loop_enabled(self) -> None:
         config = LoopsConfig()
-        assert config.is_enabled(_loop("dispatch", always_on=True)) is True
+        assert config.is_enabled(_loop("dispatch")) is True
 
 
 class TestDbPauseDisableWinsOverDefault(TestCase):
@@ -49,17 +48,16 @@ class TestDbPauseDisableWinsOverDefault(TestCase):
         config = LoopsConfig()
         assert config.is_enabled(_loop("review")) is False
 
-    def test_db_pause_skips_an_always_on_loop(self) -> None:
-        # The incident: the env layer cannot stop an always_on loop, but an
-        # explicit DB pause MUST.
+    def test_db_pause_skips_the_dispatch_loop(self) -> None:
+        # An explicit DB pause MUST stop even the core ``dispatch`` loop.
         LoopState.objects.pause("dispatch")
         config = LoopsConfig()
-        assert config.is_enabled(_loop("dispatch", always_on=True)) is False
+        assert config.is_enabled(_loop("dispatch")) is False
 
-    def test_db_disable_skips_an_always_on_loop(self) -> None:
+    def test_db_disable_skips_the_dispatch_loop(self) -> None:
         LoopState.objects.disable("dispatch")
         config = LoopsConfig()
-        assert config.is_enabled(_loop("dispatch", always_on=True)) is False
+        assert config.is_enabled(_loop("dispatch")) is False
 
 
 class TestDbEnabledRowDefersToDefault(TestCase):
@@ -67,12 +65,11 @@ class TestDbEnabledRowDefersToDefault(TestCase):
         LoopState.objects.pause("review")
         LoopState.objects.resume("review")
         config = LoopsConfig()
-        # Back to ENABLED in the DB → the env/default layer is authoritative
-        # again, which defaults to enabled.
+        # Back to ENABLED in the DB → defaults to enabled.
         assert config.is_enabled(_loop("review")) is True
 
-    def test_db_resume_re_runs_a_previously_paused_always_on_loop(self) -> None:
+    def test_db_resume_re_runs_a_previously_paused_dispatch_loop(self) -> None:
         LoopState.objects.pause("dispatch")
         LoopState.objects.resume("dispatch")
         config = LoopsConfig()
-        assert config.is_enabled(_loop("dispatch", always_on=True)) is True
+        assert config.is_enabled(_loop("dispatch")) is True

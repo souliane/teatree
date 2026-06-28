@@ -216,6 +216,14 @@ List DB-configured autonomous loops (read-only; #1796).
 
 Run one master tick: run every enabled, due loop (DB-configured); render statusline.
 
+## `memory`
+
+``t3 <overlay> memory`` group root.
+
+| Subcommand | Description |
+| --- | --- |
+| `recall` | Print the cold-tier memory rules most relevant to *query* (top *limit*) |
+
 ## `mr_reminder`
 
 | Subcommand | Description |
@@ -413,12 +421,15 @@ Generate Ticket.short_description (#1156).
 | `finalize` | Squash worktree commits into one, then rebase on the default branch |
 | `doctor` | Detect state drift across every store; optionally fix it |
 | `landscape` | Survey what is already in flight or settled before planning (#2541) |
-| `clean-merged` | Tear down every worktree whose ticket is already MERGED |
+| `relocate` | Move this overlay's teatree-managed worktrees under the per-overlay dir (regroup) |
+| `emit` | Print the machine-readable JSON handoff for every NOT-auto-deleted item (#2763) |
+| `salvage` | Capture a branch's unique content to a PR, verify it landed, then delete the branch (#2763) |
+| `clean-merged` | Tear down every done worktree (analyze-then-wipe) on demand |
 | `stamp-identity` | Stamp the scoped noreply git identity onto an existing souliane clone (#762) |
 | `list-orphans` | List orphan branches (commits ahead of origin/main AND no open PR) across the workspace |
 | `reap-stale` | Tear down ABANDONED docker stacks no live worktree owns (age-guarded, #2207) |
 | `reclaim-disk` | Free disk via the three safe Docker prunes, then STOP — engine: ``teatree.docker.reclaim`` (#2246) |
-| `clean-all` | Prune merged worktrees/branches/stashes, orphan databases + docker + env roots, and DSLR snapshots |
+| `clean-all` | Reap every done+redundant worktree, then prune branches/stashes, orphan DBs/docker/env-roots, DSLR |
 
 ## `worktree`
 

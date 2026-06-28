@@ -15,7 +15,6 @@ The binding rules, each pinned by a symmetric must-fire / must-NOT-fire pair:
     author DM.
 """
 
-import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -23,7 +22,7 @@ from dataclasses import dataclass, field
 import pytest
 from django.test import TestCase
 
-from teatree.core.models import OutboundClaim, ReviewRequestPost, ReviewVerdict
+from teatree.core.models import LoopState, OutboundClaim, ReviewRequestPost, ReviewVerdict
 from teatree.loop.dispatch import dispatch
 from teatree.loop.review_claim import (
     emit_review_done_reactions,
@@ -83,16 +82,16 @@ class _FakeMessaging:
 
 @contextmanager
 def _review_loop_disabled() -> Iterator[None]:
-    """Disable the review mini-loop via the env kill-switch for the block."""
-    previous = os.environ.get("T3_LOOPS_DISABLED")
-    os.environ["T3_LOOPS_DISABLED"] = "review"
+    """Disable the review mini-loop via the durable DB ``LoopState`` for the block.
+
+    Loop control is DB-only — ``t3 loop disable review`` (a ``DISABLED``
+    ``LoopState`` row) is what stops review claims; there is no env kill-switch.
+    """
+    LoopState.objects.disable("review")
     try:
         yield
     finally:
-        if previous is None:
-            del os.environ["T3_LOOPS_DISABLED"]
-        else:
-            os.environ["T3_LOOPS_DISABLED"] = previous
+        LoopState.objects.resume("review")
 
 
 def _fetcher(messages_by_channel: dict[str, list[RawAPIDict]]):

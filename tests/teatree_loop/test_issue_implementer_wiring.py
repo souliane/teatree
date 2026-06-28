@@ -168,7 +168,7 @@ class IssueImplementerMiniLoopTests(TestCase):
 
     def test_mini_loop_identity(self) -> None:
         assert MINI_LOOP.name == "issue_implementer"
-        assert MINI_LOOP.always_on is False
+        assert MINI_LOOP.off_live_tick is False
 
     def test_disabled_loop_is_inert(self) -> None:
         host = _labelled_host("https://github.com/souliane/teatree/issues/100")

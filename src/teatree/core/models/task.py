@@ -1,19 +1,18 @@
 from datetime import timedelta
 from typing import TYPE_CHECKING, cast
 
+from django.apps import apps
 from django.db import models, transaction
 from django.utils import timezone
 from django_fsm import FSMField
 
 from teatree.core.managers import TaskManager
-from teatree.core.modelkit.gate_registry import get
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.session import Session
 from teatree.core.models.ticket import Ticket
-from teatree.core.repair_loop import terminal_reason_fingerprint
 
 if TYPE_CHECKING:
-    from teatree.core.cost import AttemptUsage, CostBreakdown
+    from teatree.core.models.task_attempt import TaskAttempt
 
 
 class Task(models.Model):
@@ -36,6 +35,8 @@ class Task(models.Model):
         blank=True,
         related_name="child_tasks",
     )
+    subject = models.CharField(max_length=120, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, null=True)
     phase = models.CharField(max_length=64, blank=True)
     execution_target = models.CharField(
         max_length=32,
@@ -69,16 +70,41 @@ class Task(models.Model):
             self._default_loop_dispatched_to_interactive()
         super().save(*args, **kwargs)  # type: ignore[arg-type]
 
+    def display_subject(self) -> str:
+        """A human-readable one-line description of the work this task is about.
+
+        Prefers an explicitly stored ``subject``, then the work item the task
+        targets (the ticket's terminal-friendly summary or its cached tracker
+        title), and last the ``#N phase`` shape. Never returns the bare phase
+        token alone — that is the unreadable ``Task NN (short_describe)`` the
+        statusline used to show when nothing populated this field.
+        """
+        if self.subject.strip():
+            return self.subject.strip()
+        title = self.ticket.short_description or self._ticket_issue_title()
+        number = self.ticket.ticket_number
+        if title.strip():
+            return f"#{number} {title.strip()}"
+        if self.phase:
+            return f"#{number} {self.phase}"
+        return f"#{number}"
+
+    def _ticket_issue_title(self) -> str:
+        extra = self.ticket.extra if isinstance(self.ticket.extra, dict) else {}
+        title = extra.get("issue_title", "")
+        return title if isinstance(title, str) else ""
+
     @classmethod
     def loop_dispatched(cls, *, role: str, phase: str) -> bool:
         """True iff ``(role, phase)`` has a registered phase sub-agent.
 
-        Such a task is dispatched per-phase by the in-session ``/loop`` slot
-        (``loop_dispatch claim-next`` → the ``Agent`` tool), never via a
-        detached headless-SDK run. Post the 2026-06-15 billing change
-        a detached headless-SDK dispatch is metered, so a loop-dispatched phase
-        task must run INTERACTIVE (subscription-covered). A pair with no
-        registered agent is free-form headless work and is left HEADLESS.
+        Pure registry membership (``SUBAGENT_BY_PHASE``). Whether such a task
+        runs in-session or headless is the ``agent_runtime`` setting's call,
+        resolved by ``headless_dispatch.runs_in_session``: under ``interactive``
+        (default) it is dispatched per-phase by the in-session ``/loop`` slot
+        (``loop_dispatch claim-next`` → the ``Agent`` tool); under a headless
+        runtime it runs via ``agents/headless.py``. A pair with no registered
+        agent is free-form headless work and always runs headless.
         """
         from teatree.core.modelkit.phases import subagent_for_phase  # noqa: PLC0415
 
@@ -87,22 +113,34 @@ class Task(models.Model):
     def _default_loop_dispatched_to_interactive(self) -> None:
         """Route a freshly-created loop-dispatched phase task to INTERACTIVE.
 
-        The single chokepoint for "phase tasks default to interactive": the
-        loop is their sole dispatcher, so every ``schedule_*`` / scanner / CLI
-        creation site inherits the rule here without each having to know it.
-        Only an insert-time HEADLESS row is touched; an explicit
-        ``route_to_interactive`` / ``route_to_headless`` after creation goes
-        through ``_route`` (not an insert) and is never overridden here.
+        The single chokepoint for "phase tasks default to interactive": when the
+        ``agent_runtime`` setting selects ``interactive`` (the default) the loop
+        is their sole dispatcher, so every ``schedule_*`` / scanner / CLI creation
+        site inherits the rule here without each having to know it. Under a
+        headless ``agent_runtime`` (``sdk_oauth`` / ``sdk_apikey`` / ``api``) the
+        row is left HEADLESS so the headless lane takes it. Only an insert-time
+        HEADLESS row is touched; an explicit ``route_to_interactive`` /
+        ``route_to_headless`` after creation goes through ``_route`` (not an insert)
+        and is never overridden here.
+
+        Mirrors ``headless_dispatch.runs_in_session`` (the predicate the signal /
+        drain / refusal gates share). It is inlined here rather than called because
+        ``core.models`` may not depend on the parent ``teatree.core`` node where
+        ``headless_dispatch`` lives (tach); the ``teatree.config`` edge is allowed.
         """
+        from teatree.config import AgentRuntime, get_effective_settings  # noqa: PLC0415
+
         try:
             role = self.ticket.role
         except Task.ticket.RelatedObjectDoesNotExist:
+            return
+        if get_effective_settings().agent_runtime is not AgentRuntime.INTERACTIVE:
             return
         if not self.loop_dispatched(role=role, phase=self.phase):
             return
         self.execution_target = self.ExecutionTarget.INTERACTIVE
         if not self.execution_reason:
-            self.execution_reason = "Loop-dispatched phase — in-session sub-agent (subscription-covered)"
+            self.execution_reason = "Loop-dispatched phase — in-session sub-agent (agent_runtime=interactive)"
 
     def claim(self, *, claimed_by: str, lease_seconds: int = 300) -> None:
         now = timezone.now()
@@ -403,7 +441,9 @@ class Task(models.Model):
         error: str = "",
         result: dict[str, object] | None = None,
     ) -> "TaskAttempt":
-        attempt = TaskAttempt.objects.create(
+        task_attempt_model = cast("type[TaskAttempt]", apps.get_model("core", "TaskAttempt"))
+
+        attempt = task_attempt_model.objects.create(
             task=self,
             execution_target=self.execution_target,
             ended_at=timezone.now(),
@@ -485,96 +525,3 @@ class Task(models.Model):
         self.claimed_by_session = ""
         self.lease_expires_at = None
         self.heartbeat_at = None
-
-
-class TaskAttemptQuerySet(models.QuerySet):
-    def headless(self) -> "TaskAttemptQuerySet":
-        """Only the attempts that ran a billed detached headless-SDK run.
-
-        SDK-equivalent billing covers headless usage only — interactive turns
-        run inside the user's own session, not against the credit.
-        """
-        return self.filter(execution_target=Task.ExecutionTarget.HEADLESS)
-
-    def usages(self) -> "list[AttemptUsage]":
-        """Map each attempt to the :class:`AttemptUsage` the cost layer reads."""
-        AttemptUsage = cast("type[AttemptUsage]", get("cost", "AttemptUsage"))  # noqa: N806
-
-        return [
-            AttemptUsage(
-                model=row.model or None,
-                reported_cost_usd=row.cost_usd,
-                input_tokens=row.input_tokens or 0,
-                output_tokens=row.output_tokens or 0,
-                cache_read_tokens=row.cache_read_tokens or 0,
-                cache_write_tokens=row.cache_write_tokens or 0,
-            )
-            for row in self.only(
-                "model",
-                "cost_usd",
-                "input_tokens",
-                "output_tokens",
-                "cache_read_tokens",
-                "cache_write_tokens",
-            )
-        ]
-
-    def cost_breakdown(self) -> "CostBreakdown":
-        """SDK-equivalent spend across the attempts in this queryset."""
-        CostBreakdown = cast("type[CostBreakdown]", get("cost", "CostBreakdown"))  # noqa: N806
-
-        return CostBreakdown.from_usages(self.usages())
-
-
-class TaskAttempt(models.Model):
-    task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name="attempts")
-    started_at = models.DateTimeField(auto_now_add=True)
-    ended_at = models.DateTimeField(null=True, blank=True)
-    execution_target = models.CharField(max_length=32, choices=Task.ExecutionTarget.choices)
-    error = models.TextField(blank=True)
-    exit_code = models.IntegerField(null=True, blank=True)
-    artifact_path = models.CharField(max_length=500, blank=True)
-    result = models.JSONField(default=dict, blank=True)
-    model = models.CharField(max_length=128, blank=True)
-    input_tokens = models.IntegerField(null=True, blank=True)
-    output_tokens = models.IntegerField(null=True, blank=True)
-    cache_read_tokens = models.IntegerField(null=True, blank=True)
-    cache_write_tokens = models.IntegerField(null=True, blank=True)
-    cost_usd = models.FloatField(null=True, blank=True)
-    num_turns = models.IntegerField(null=True, blank=True)
-    launch_url = models.URLField(max_length=500, blank=True)
-    agent_session_id = models.CharField(max_length=255, blank=True)
-    # #2009 repair-loop budget: 1-based attempt number for this attempt's
-    # (ticket, normalized-phase), spanning re-queued Task rows. Auto-stamped on
-    # insert; 0 only on a transient unsaved instance.
-    iteration = models.PositiveIntegerField(default=0)
-    # #2009 stall detection: stable hash of this attempt's terminal reason
-    # (its ``error``), normalized so transient noise does not defeat the
-    # identical-failure check. Empty for a clean (non-failing) attempt.
-    error_fingerprint = models.CharField(max_length=64, blank=True, default="")
-
-    objects = TaskAttemptQuerySet.as_manager()
-
-    class Meta:
-        db_table = "teatree_taskattempt"
-
-    def __str__(self) -> str:
-        return f"attempt-{self.pk or 'new'!s}"
-
-    def save(self, *args: object, **kwargs: object) -> None:
-        if self._state.adding:
-            self._stamp_repair_loop_fields()
-        super().save(*args, **kwargs)  # type: ignore[arg-type]
-
-    def _stamp_repair_loop_fields(self) -> None:
-        """Stamp the iteration counter + error fingerprint on insert (#2009).
-
-        The single chokepoint every attempt-creation site funnels through, so the
-        budget fields cannot drift between the headless recorder, the in-session
-        recorder, and the operator out-of-band paths. Each is stamped only when
-        unset, so an explicit value (a backfill or a test) is never clobbered.
-        """
-        if not self.error_fingerprint:
-            self.error_fingerprint = terminal_reason_fingerprint(self.error)
-        if not self.iteration and self.task_id:  # ty: ignore[unresolved-attribute]
-            self.iteration = self.task.phase_iteration_count() + 1

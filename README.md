@@ -390,6 +390,12 @@ t3 startoverlay my-overlay ~/workspace/my-overlay
 `uv tool install` puts `t3` in `~/.local/bin/`. If that directory is not on your
 `PATH`, add `export PATH="$HOME/.local/bin:$PATH"` to your shell rc.
 
+Installing the plugin does **not** force teatree on. By default a fresh Claude
+session does not auto-engage teatree — no skill auto-suggest, no load-block, no
+loop scheduling — and just shows a one-line how-to. Run `/teatree` (or load any
+`t3:` skill) to engage teatree for that session, or set `[teatree] autoload =
+true` in `~/.teatree.toml` (env `T3_AUTOLOAD=1`) to auto-engage every session.
+
 ### For contributors
 
 [Fork the repo](https://github.com/souliane/teatree/fork), then:
@@ -451,6 +457,7 @@ graph LR
 | `availability` | 24/7 dual question-mode — switch between asking the user now (present) and capturing questions as durable `DeferredQuestion` rows (away) |
 | `backlog-sweep` | Periodic evidence-gated triage of the issue backlog — for each open issue, classify it against current `main` as superseded / stale / regressive / still-valid, then propose close-with-citation. The retire counterpart to teatree-plan's prioritize, reusing its GitHub Projects board layer and one-decision-per-question walkthrough. Dry-run first; close only on user approval (or auto-close ONLY the high-confidence "superseded by merged PR #X" class), posting a one-line reason on every close |
 | `checking` | A SHORT "what did I miss" report when the user checks in mid-loop — terse, grouped, clickable; then answer the pending deferred questions in-band |
+| `cleanup-sweep` | Use when sweeping stale, lost, or abandoned worktrees, branches, or stashes that are NOT actively being worked — deciding per item whether to salvage unmerged work to a fresh PR, delete a shipped/superseded/redundant item, push post-merge commits to a new PR, or keep an uncertain one. The judgment layer over `t3 <overlay> workspace emit` / `salvage` / `clean-all` (the mechanical reaper is `/t3:workspace`) |
 | `code` | Writing code with TDD methodology |
 | `contribute` | Push retro improvements to a branch, open a PR, and optionally create upstream issues |
 | `debug` | Troubleshooting and fixing — something is broken, find and fix it |

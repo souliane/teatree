@@ -1,17 +1,17 @@
 """The Stop self-pump honours the durable DB LoopState 'pause everything' (#1913).
 
 The 2026-06-03 'pause everything' incident: there was no restart-surviving
-paused state for the loop control plane. ``T3_LOOPS_DISABLED=all`` is an env
-kill-switch (process / file scoped); #1913 added a DURABLE DB equivalent — a
-``LoopState`` row that pauses/disables the ``dispatch`` always-on loop, the loop
-the in-session Stop self-pump exists to drive.
+paused state for the loop control plane. The DB ``LoopState`` tier (#1913) is the
+single control plane — a ``LoopState`` row that pauses/disables the ``dispatch``
+core loop (the loop the in-session Stop self-pump exists to drive) is the only
+way to stop the pump's loop (loop control is ``/loops`` + the DB only; there is
+no env kill-switch).
 
 When that durable state says PAUSED or DISABLED the self-pump must suppress (a
-clean no-op) so a paused loop stays paused across a session restart, exactly as
-the env kill-switch suppresses it within a process. An ENABLED / absent state
-leaves the self-pump behaviour unchanged (no regression), and an unreadable
-control plane fails OPEN (the env/availability/ownership gates still decide) so
-the Stop hook can never crash.
+clean no-op) so a paused loop stays paused across a session restart. An ENABLED /
+absent state leaves the self-pump behaviour unchanged (no regression), and an
+unreadable control plane fails OPEN (the availability/ownership gates still
+decide) so the Stop hook can never crash.
 
 #2559 changed the READ MECHANISM: the bare-``python3`` Stop hook cannot
 ``django.setup()``, so the gate no longer reads the ``LoopState`` row through the

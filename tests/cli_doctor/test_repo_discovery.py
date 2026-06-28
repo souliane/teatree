@@ -50,10 +50,10 @@ class TestFindTeatreeRepo:
 class TestFindOverlayRepo:
     def test_finds_overlay_in_workspace(self, tmp_path, monkeypatch):
         _stage_home(tmp_path, monkeypatch)
-        _write_teatree_toml(
-            tmp_path / ".teatree.toml",
-            f'[teatree]\nworkspace_dir = "{tmp_path}"\n',
-        )
+        _write_teatree_toml(tmp_path / ".teatree.toml", "[teatree]\n")
+        # find_overlay_repo scans config.clone_root(), resolved from
+        # T3_WORKSPACE_DIR — not the retired [teatree] workspace_dir TOML key.
+        monkeypatch.setenv("T3_WORKSPACE_DIR", str(tmp_path))
         overlay_dir = tmp_path / "my-overlay"
         overlay_dir.mkdir()
         (overlay_dir / "pyproject.toml").write_text('[project]\nname = "my-overlay"\n')
@@ -62,9 +62,9 @@ class TestFindOverlayRepo:
 
     def test_returns_none_when_overlay_absent(self, tmp_path, monkeypatch):
         _stage_home(tmp_path, monkeypatch)
-        _write_teatree_toml(
-            tmp_path / ".teatree.toml",
-            f'[teatree]\nworkspace_dir = "{tmp_path}"\n',
-        )
+        _write_teatree_toml(tmp_path / ".teatree.toml", "[teatree]\n")
+        # find_overlay_repo scans config.clone_root(), resolved from
+        # T3_WORKSPACE_DIR — not the retired [teatree] workspace_dir TOML key.
+        monkeypatch.setenv("T3_WORKSPACE_DIR", str(tmp_path))
 
         assert DoctorService.find_overlay_repo("nonexistent") is None

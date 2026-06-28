@@ -33,7 +33,7 @@ from pathlib import Path
 
 from django.utils import timezone
 
-from teatree.config import workspace_dir
+from teatree.config import worktree_root
 from teatree.loop.dispatch import ActionPayload
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail
 
@@ -242,8 +242,8 @@ def _gc_worktrees(payload: ActionPayload) -> float:
 
 
 def _list_workspace_worktrees() -> list[Path]:
-    """Enumerate git worktrees under the workspace via ``git worktree list``."""
-    workspace = workspace_dir()
+    """Enumerate git worktrees under the per-overlay WORKTREE root via ``git worktree list``."""
+    workspace = worktree_root()
     if not workspace.is_dir():
         return []
     result = _git(workspace, "worktree", "list", "--porcelain")

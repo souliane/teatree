@@ -4,7 +4,7 @@ from typing import TypedDict
 from django.db import transaction
 from django.tasks import task
 
-from teatree.config import workspace_dir
+from teatree.config import worktree_root
 from teatree.core.landscape_gather import run_landscape
 from teatree.core.models import LandscapeArtifact, Task, Ticket
 from teatree.core.models.external_delivery import under_external_delivery
@@ -27,7 +27,7 @@ def _persist_intake_landscape(ticket: Ticket) -> None:
     leaves no artifact.
     """
     try:
-        survey = run_landscape(workspace_dir())
+        survey = run_landscape(worktree_root())
     except Exception:
         logger.warning("Intake landscape gather failed for ticket %s; skipping artifact", ticket.pk, exc_info=True)
         return
@@ -107,11 +107,12 @@ def execute_headless_task(task_id: int, phase: str) -> dict[str, object]:
 def drain_headless_queue() -> dict[str, list[int]]:
     """Auto-enqueue pending headless tasks for execution (safety net), failing poison rows.
 
-    Loop-dispatched phase tasks (those whose ``(ticket.role, phase)`` has a
-    registered phase agent) are skipped — the loop is their sole dispatcher,
-    so draining them here would double-run them (the same guard the
-    ``_auto_enqueue_headless_task`` post_save applies). Only genuinely
-    headless tasks with no registered phase agent are drained.
+    Tasks the in-session ``/loop`` owns (``runs_in_session`` — a loop-dispatched
+    phase pair under ``agent_runtime=interactive``) are skipped, so draining them
+    here never double-runs work the loop is dispatching (the same guard the
+    ``_auto_enqueue_headless_task`` post_save applies). Under a headless
+    ``agent_runtime`` those phase tasks are headless and ``runs_in_session`` is
+    ``False``, so they drain like any other headless work.
 
     A task whose ticket names a non-empty unknown overlay is failed permanently
     rather than re-enqueued (souliane/teatree#1959): re-enqueuing it would crash
@@ -119,7 +120,7 @@ def drain_headless_queue() -> dict[str, list[int]]:
     must not keep feeding. A blank overlay is the ambient single-overlay default
     and stays dispatchable.
     """
-    from teatree.core.modelkit.phases import subagent_for_phase  # noqa: PLC0415
+    from teatree.core.headless_dispatch import runs_in_session  # noqa: PLC0415
 
     pending = (
         Task.objects.filter(
@@ -132,7 +133,7 @@ def drain_headless_queue() -> dict[str, list[int]]:
     enqueued: list[int] = []
     failed_unknown_overlay: list[int] = []
     for task_obj in pending:
-        if subagent_for_phase(task_obj.ticket.role, task_obj.phase):
+        if runs_in_session(role=task_obj.ticket.role, phase=task_obj.phase):
             continue
         if not task_obj.ticket.has_dispatchable_overlay():
             reason = f"unknown overlay {task_obj.ticket.overlay!r}: ticket {task_obj.ticket_id} cannot be dispatched"
@@ -201,8 +202,8 @@ def execute_retrospect(ticket_id: int) -> TransitionResult:
 
 
 @task()
-def execute_teardown(ticket_id: int, *, force: bool = False) -> TransitionResult:
-    """Tear down worktrees for a MERGED ticket.
+def execute_teardown(ticket_id: int) -> TransitionResult:
+    """Tear down worktrees for a MERGED ticket via the analyze-then-wipe reaper.
 
     Idempotency: the worker takes a row lock and re-checks state before running.
     At-least-once delivery from django-tasks means this can fire more than once
@@ -213,17 +214,12 @@ def execute_teardown(ticket_id: int, *, force: bool = False) -> TransitionResult
     the operator either fixes the underlying issue and re-enqueues, or moves
     on with ``retrospect()`` once the residual state is acceptable.
 
-    ``force`` controls the #706 unsynced-commit data-loss guard. The default
-    ``False`` keeps the guard on for the ``mark_merged`` path — the FSM can read
-    MERGED there without a confirmed forge merge (a manual advance, or async ship
-    that never drained #707/#708), so a branch with commits on no remote must not
-    be destroyed. The merge keystone fires this with ``force=True`` (from
-    ``reconcile_merged``): the PR merge is provably confirmed on the forge before
-    the FSM reaches MERGED, so a squash-merge that landed a new SHA on main and
-    deleted the source ref — leaving the local branch reading as "on no remote" —
-    must not block cleanup. The #835/#1506 recovery-capture backstop still runs
-    under force, so even the bypass captures a restorable bundle before the
-    destructive remove.
+    There is no force-bypass (CORRECTION 1): :class:`WorktreeTeardown` routes every
+    worktree through the analyze-before-wipe reaper, which proves each unpushed
+    commit and uncommitted change redundant before wiping. A squash-merge that
+    landed a new SHA and deleted the source ref is proven redundant by patch-id and
+    wiped; a branch with genuinely-unsynced work (an async ship that never drained,
+    #707/#708) is KEPT and surfaced, never force-destroyed.
     """
     with transaction.atomic():
         ticket = Ticket.objects.select_for_update().get(pk=ticket_id)
@@ -235,7 +231,7 @@ def execute_teardown(ticket_id: int, *, force: bool = False) -> TransitionResult
             )
             return {"ticket_id": ticket_id, "skipped": True, "state": str(ticket.state)}
 
-        result = WorktreeTeardown(ticket, force=force).run()
+        result = WorktreeTeardown(ticket).run()
         if not result.ok:
             logger.warning("Teardown reported errors for ticket %s: %s", ticket_id, result.detail)
             return {"ticket_id": ticket_id, "ok": False, "detail": result.detail}

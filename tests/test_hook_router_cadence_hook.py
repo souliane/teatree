@@ -31,7 +31,7 @@ def _teatree_engaged(monkeypatch: pytest.MonkeyPatch) -> None:
     per-session opt-in gates (covered by ``test_teatree_opt_in.py``).
     """
     monkeypatch.setattr(router, "_teatree_active", lambda session_id: True)
-    monkeypatch.setattr(router, "_loops_auto_load_enabled", lambda: True)
+    monkeypatch.setattr(router, "_autoload_enabled", lambda: True)
 
 
 class TestCadenceResolvesFromDb(TestCase):

@@ -240,7 +240,7 @@ Headless tasks run `claude -p <prompt> --append-system-prompt <context> --output
 
 ### Interactive Sessions (`core/management/commands/tasks.py`)
 
-Interactive tasks (`tasks work-next-user-input`) launch `claude` inline in
+Interactive tasks (`tasks start`) launch `claude` inline in
 the invoking terminal — no ttyd, no terminal-mode strategies. The argv is
 built by `_build_claude_command`:
 

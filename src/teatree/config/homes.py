@@ -16,9 +16,10 @@ set`` refuses to write one.
 
 The TOML-home set is the irreducible carve-out: settings a NON-DJANGO or
 PRE-DJANGO reader needs (so the DB is unreachable — ``orchestrator_bash_gate_enabled``,
-``speak``, ``handover_mirror_path``, ``check_updates``, and ``statusline_chain``,
-which the bash statusline hook reads straight from ``~/.teatree.toml`` and can
-never reach the DB), path/infra bootstrap that the settings module itself needs
+``speak``, ``handover_mirror_path``, ``check_updates``, ``autoload`` (the cold
+SessionStart / UserPromptSubmit hooks read it pre-Django to decide engagement),
+and ``statusline_chain``, which the bash statusline hook reads straight from
+``~/.teatree.toml`` and can never reach the DB), path/infra bootstrap that the settings module itself needs
 (``workspace_dir``, ``worktrees_dir``, ``timezone``,
 ``privacy``), and nested structured tables that have no flat scalar shape for a
 ``ConfigSetting`` row (``mr_reminder``). Every other field is DB-home — it resolves
@@ -54,13 +55,22 @@ DERIVED_FIELDS: frozenset[str] = frozenset({"notify_on_behalf"})
 #   ``orchestrator_bash_gate_enabled``, ``speak`` (the Stop hook re-reads the
 #   ``[teatree.speak]`` sub-table with tomllib — it cannot reach the Django DB),
 #   ``handover_mirror_path`` (the SessionStart bootstrap path read precisely when
-#   the DB is unreachable), ``check_updates``, and ``statusline_chain`` (the bash
-#   statusline hook reads ``[teatree] statusline_chain`` straight from
-#   ``~/.teatree.toml`` — it has no path to the Django DB, so a DB row for it
-#   would be silently unread)
+#   the DB is unreachable), ``check_updates``, ``autoload`` (the cold SessionStart
+#   / UserPromptSubmit hooks read ``[teatree] autoload`` with tomllib to decide
+#   default-off engagement, before any Django bootstrap — #256), and
+#   ``statusline_chain`` (the bash statusline hook reads ``[teatree]
+#   statusline_chain`` straight from ``~/.teatree.toml`` — it has no path to the
+#   Django DB, so a DB row for it would be silently unread)
 # - path / infra bootstrap the settings module needs to even open the DB:
-#   ``workspace_dir``, ``worktrees_dir``, ``timezone``, ``privacy``
+#   ``worktrees_dir``, ``timezone``, ``privacy``
 # - nested structured table with no flat ConfigSetting shape: ``mr_reminder``
+#
+# ``workspace_dir`` is DB-home (per-overlay overridable via the ``ConfigSetting``
+# store): worktrees regroup under a per-overlay default
+# ``~/workspace/t3-workspaces/<overlay>/``, resolved by ``config.worktree_root()``
+# (env → DB overlay-scope → DB global-scope → default). It is read only after
+# Django is up, so it carries no bootstrap need. It is distinct from the CLONE
+# root ``config.clone_root()`` (``~/workspace``, where main repo clones live).
 _TOML_HOME: frozenset[str] = frozenset(
     {
         "orchestrator_bash_gate_enabled",
@@ -68,8 +78,8 @@ _TOML_HOME: frozenset[str] = frozenset(
         "mr_reminder",
         "handover_mirror_path",
         "check_updates",
+        "autoload",
         "statusline_chain",
-        "workspace_dir",
         "worktrees_dir",
         "timezone",
         "privacy",

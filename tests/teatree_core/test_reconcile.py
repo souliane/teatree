@@ -17,6 +17,7 @@ from teatree.core.reconcile import (
     MissingEnvCache,
     MissingWorktreeDir,
     UnresolvableOverlay,
+    _collect_stale_worktree_dirs,
     reconcile_all,
     reconcile_ticket,
 )
@@ -261,3 +262,46 @@ class TestReconcileUnresolvableOverlay(TestCase):
         assert ghost_ticket.pk in drifts
         assert ok_ticket.pk in drifts
         assert len(drifts[ok_ticket.pk].missing_worktree_dirs) == 1
+
+
+class TestStaleWorktreeDirAttributionIsSegmentAnchored(TestCase):
+    """Stale-dir attribution anchors the ticket-number on path segments (#WT-PR-D finding 17).
+
+    ``/9`` must not match ``/90``: the pre-fix raw substring (``f"/{n}" in path``)
+    mis-attributed an unrelated ticket-90 dir to ticket 9.
+    """
+
+    def _ticket9_with_wt(self) -> tuple[Ticket, Worktree]:
+        ticket = Ticket.objects.create(issue_url="https://github.com/org/repo/issues/9")
+        wt = Worktree.objects.create(
+            ticket=ticket,
+            repo_path="repo",
+            branch="9-fix",
+            extra={"worktree_path": "/ws/9-fix/repo"},
+        )
+        return ticket, wt
+
+    def test_ticket90_dir_not_attributed_to_ticket9(self) -> None:
+        ticket, wt = self._ticket9_with_wt()
+        drift = Drift(ticket_pk=ticket.pk)
+        foreign = "/ws/90-other/repo"  # belongs to ticket 90, not 9
+        with (
+            patch("teatree.core.reconcile._find_worktree_paths_on_disk", return_value={foreign}),
+            patch("teatree.core.reconcile.resolve_clone_path", return_value=Path("/ws/repo")),
+        ):
+            _collect_stale_worktree_dirs(drift, [wt], ticket, Path("/ws"))
+
+        assert drift.stale_worktree_dirs == []
+
+    def test_genuine_ticket9_dir_is_attributed(self) -> None:
+        ticket, wt = self._ticket9_with_wt()
+        drift = Drift(ticket_pk=ticket.pk)
+        genuine = "/ws/9-elsewhere/repo"  # a stale dir genuinely for ticket 9
+        with (
+            patch("teatree.core.reconcile._find_worktree_paths_on_disk", return_value={genuine}),
+            patch("teatree.core.reconcile.resolve_clone_path", return_value=Path("/ws/repo")),
+        ):
+            _collect_stale_worktree_dirs(drift, [wt], ticket, Path("/ws"))
+
+        assert len(drift.stale_worktree_dirs) == 1
+        assert str(drift.stale_worktree_dirs[0].path) == genuine

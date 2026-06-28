@@ -363,10 +363,10 @@ class DoctorService:
     @staticmethod
     def find_overlay_repo(dist_name: str) -> Path | None:
         """Find the overlay repo in the workspace directory."""
-        from teatree.config import load_config  # noqa: PLC0415
+        from teatree.config import clone_root, load_config  # noqa: PLC0415
 
         config = load_config()
-        workspace = Path(config.user.workspace_dir).expanduser()
+        workspace = clone_root()
 
         # Check TOML overlay paths first — they're explicit and authoritative.
         for overlay_cfg in (config.raw.get("overlays") or {}).values():

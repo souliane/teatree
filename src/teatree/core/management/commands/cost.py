@@ -2,7 +2,7 @@
 
 From 2026-06-15 the Agent SDK bills headless usage against a monthly credit
 (Max 20x = $200) at standard API rates. This command totals the cost captured
-on each :class:`~teatree.core.models.task.TaskAttempt` for the current billing
+on each :class:`~teatree.core.models.task_attempt.TaskAttempt` for the current billing
 cycle and shows it against the credit, broken down per model, with a linear
 end-of-cycle projection.
 
@@ -33,7 +33,7 @@ class Command(TyperCommand):
         """Print cycle-to-date SDK-equivalent spend vs the monthly credit."""
         from teatree.config import get_effective_settings  # noqa: PLC0415
         from teatree.core.cost import CostReport, cycle_start, cycle_start_datetime  # noqa: PLC0415
-        from teatree.core.models.task import TaskAttempt  # noqa: PLC0415
+        from teatree.core.models.task_attempt import TaskAttempt  # noqa: PLC0415
 
         settings = get_effective_settings()
         anchor = settings.billing_cycle_anchor_day or None

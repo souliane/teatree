@@ -55,6 +55,18 @@ _MOVED = "b" * 40
 _GREEN = '[{"status": "COMPLETED", "conclusion": "SUCCESS"}]'
 
 
+def _branch_protection_probe(joined: str, *, required: list[str]) -> tuple[int, str, str] | None:
+    """Answer the §17.4.3 base-branch + branch-protection required-context probes.
+
+    Returns ``None`` when *joined* is neither probe so the caller falls through.
+    """
+    if "baseRefName" in joined:
+        return (0, "main", "")
+    if "required_status_checks" in joined:
+        return (0, json.dumps({"contexts": required}), "")
+    return None
+
+
 def _clear(ticket: Ticket, **overrides: object) -> MergeClear:
     defaults: dict[str, object] = {
         "ticket": ticket,
@@ -70,18 +82,36 @@ def _clear(ticket: Ticket, **overrides: object) -> MergeClear:
 
 
 class _GhStub:
-    """Records argv and returns scripted ``gh`` responses keyed by subcommand."""
+    """Records argv and returns scripted ``gh`` responses keyed by subcommand.
 
-    def __init__(self, *, head: str = _SHA, draft: str = "false", checks: str = _GREEN, merge_rc: int = 0) -> None:
+    ``required`` is the branch-protection ``required_status_checks`` context set
+    the repo reports (§17.4.3 step 3). It defaults to ``[]`` (no required-context
+    gate), so a default green ``checks`` rollup yields a green verdict and the
+    merge proceeds — the required-set filtering itself is pinned in
+    ``test_ci_rollup.py``.
+    """
+
+    def __init__(
+        self,
+        *,
+        head: str = _SHA,
+        draft: str = "false",
+        checks: str = _GREEN,
+        merge_rc: int = 0,
+        required: list[str] | None = None,
+    ) -> None:
         self.head = head
         self.draft = draft
         self.checks = checks
         self.merge_rc = merge_rc
+        self.required = required or []
         self.calls: list[list[str]] = []
 
     def __call__(self, argv: list[str]) -> tuple[int, str, str]:
         self.calls.append(argv)
         joined = " ".join(argv)
+        if (meta := _branch_protection_probe(joined, required=self.required)) is not None:
+            return meta
         if "headRefOid" in joined:
             return (0, self.head, "")
         if "isDraft" in joined:
@@ -89,9 +119,8 @@ class _GhStub:
         if "statusCheckRollup" in joined:
             return (0, self.checks, "")
         if "pulls" in joined and "merge" in joined:
-            if self.merge_rc != 0:
-                return (1, "", "Head branch was modified. Review and try the merge again. (409)")
-            return (0, '{"sha": "merged0deadbeef"}', "")
+            moved = "Head branch was modified. Review and try the merge again. (409)"
+            return (1, "", moved) if self.merge_rc != 0 else (0, '{"sha": "merged0deadbeef"}', "")
         return (0, "", "")
 
 
@@ -213,12 +242,13 @@ class TestMergeKeystonePreconditions(TestCase):
         with pytest.raises(MergePreconditionError, match="draft"):
             _run(clear, _GhStub(draft="true"))
 
-    def test_non_green_checks_refused(self) -> None:
+    def test_non_green_required_check_refused(self) -> None:
+        # A branch-protection-REQUIRED context that concluded FAILURE refuses the merge.
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
         clear = _clear(ticket)
-        failing = '[{"status": "COMPLETED", "conclusion": "FAILURE"}]'
+        failing = '[{"name": "lint", "status": "COMPLETED", "conclusion": "FAILURE"}]'
         with pytest.raises(MergePreconditionError, match="not green"):
-            _run(clear, _GhStub(checks=failing))
+            _run(clear, _GhStub(checks=failing, required=["lint"]))
 
     def test_consumed_clear_not_actionable(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
@@ -281,12 +311,8 @@ class TestMergeExecutionEdgeCases(TestCase):
 
         def _merge_500(argv: list[str]) -> tuple[int, str, str]:
             joined = " ".join(argv)
-            if "headRefOid" in joined:
-                return (0, _SHA, "")
-            if "isDraft" in joined:
-                return (0, "false", "")
-            if "statusCheckRollup" in joined:
-                return (0, _GREEN, "")
+            if (probe := _green_probe_response(joined)) is not None:
+                return probe
             if "pulls" in joined and "merge" in joined:
                 return (1, "", "500 Internal Server Error")
             return (0, "", "")
@@ -309,19 +335,20 @@ class TestMergeExecutionEdgeCases(TestCase):
         with pytest.raises(MergePreconditionError, match="not green"):
             _run(clear, _GhStub(checks='{"a": 1}'))
 
-    def test_pending_check_is_not_green(self) -> None:
+    def test_pending_required_check_is_not_green(self) -> None:
+        # A branch-protection-REQUIRED context still running refuses the merge.
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
         clear = _clear(ticket)
-        pending = '[{"status": "IN_PROGRESS"}]'
+        pending = '[{"name": "lint", "status": "IN_PROGRESS"}]'
         with pytest.raises(MergePreconditionError, match="not green"):
-            _run(clear, _GhStub(checks=pending))
+            _run(clear, _GhStub(checks=pending, required=["lint"]))
 
     def test_legacy_status_context_pending_state_is_not_green(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
         clear = _clear(ticket)
-        legacy_pending = '[{"state": "PENDING"}]'
+        legacy_pending = '[{"context": "legacy-ci", "state": "PENDING"}]'
         with pytest.raises(MergePreconditionError, match="not green"):
-            _run(clear, _GhStub(checks=legacy_pending))
+            _run(clear, _GhStub(checks=legacy_pending, required=["legacy-ci"]))
 
     def test_non_dict_rollup_entry_is_ignored(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
@@ -462,12 +489,8 @@ class TestMergeExecutionEdgeCases(TestCase):
 
         def _bad_merge_json(argv: list[str]) -> tuple[int, str, str]:
             joined = " ".join(argv)
-            if "headRefOid" in joined:
-                return (0, _SHA, "")
-            if "isDraft" in joined:
-                return (0, "false", "")
-            if "statusCheckRollup" in joined:
-                return (0, _GREEN, "")
+            if (probe := _green_probe_response(joined)) is not None:
+                return probe
             if "pulls" in joined and "merge" in joined:
                 return (0, "not-json-at-all", "")
             return (0, "", "")
@@ -530,13 +553,10 @@ class _LostPostHookGhStub:
     def __call__(self, argv: list[str]) -> tuple[int, str, str]:
         self.calls.append(argv)
         joined = " ".join(argv)
-        if "headRefOid" in joined:
-            # GitHub keeps reporting the squashed tip as headRefOid.
-            return (0, self.reviewed_sha, "")
-        if "isDraft" in joined:
-            return (0, "false", "")
-        if "statusCheckRollup" in joined:
-            return (0, _GREEN, "")
+        # GitHub keeps reporting the squashed tip as headRefOid; the branch-
+        # protection probes answer empty (no required-context gate → green).
+        if (probe := _green_probe_response(joined, head=self.reviewed_sha)) is not None:
+            return probe
         if "state,mergeCommit" in joined:
             return (0, self._merge_state_payload(), "")
         if "pulls" in joined and "merge" in joined:
@@ -633,12 +653,8 @@ class TestLostPostHookRecoverable(TestCase):
 
         def _merged_no_commit(argv: list[str]) -> tuple[int, str, str]:
             joined = " ".join(argv)
-            if "headRefOid" in joined:
-                return (0, _SHA, "")
-            if "isDraft" in joined:
-                return (0, "false", "")
-            if "statusCheckRollup" in joined:
-                return (0, _GREEN, "")
+            if (probe := _green_probe_response(joined)) is not None:
+                return probe
             if "state,mergeCommit" in joined:
                 return (0, '{"state": "MERGED", "mergeCommit": null}', "")
             return (0, "", "")
@@ -907,11 +923,13 @@ class TestIsTransientMergeResponse(TestCase):
 
 
 def _green_probe_response(joined: str, *, head: str = _SHA) -> tuple[int, str, str] | None:
-    """The constant §17.4.3 GET-probe responses (head / draft / checks all healthy).
+    """The constant §17.4.3 GET-probe responses (head / draft / checks / branch-protection).
 
-    Returns ``None`` when *joined* is not one of the three read-only probes, so
-    a stub can fall through to its own merge / merge-state branches without
-    repeating these three identical conditionals.
+    Returns ``None`` when *joined* is not one of the read-only probes, so a stub
+    can fall through to its own merge / merge-state branches without repeating
+    these identical conditionals. The branch-protection ``required_status_checks``
+    set is reported EMPTY (no required-context gate) so a green rollup stays green
+    — the required-set filtering itself is pinned in ``test_ci_rollup.py``.
     """
     if "headRefOid" in joined:
         return (0, head, "")
@@ -919,7 +937,7 @@ def _green_probe_response(joined: str, *, head: str = _SHA) -> tuple[int, str, s
         return (0, "false", "")
     if "statusCheckRollup" in joined:
         return (0, _GREEN, "")
-    return None
+    return _branch_protection_probe(joined, required=[])
 
 
 class _TransientThenSuccessGhStub:
@@ -1017,12 +1035,8 @@ class TestTransientMergeRetry(TestCase):
 
         def _policy_refusal(argv: list[str]) -> tuple[int, str, str]:
             joined = " ".join(argv)
-            if "headRefOid" in joined:
-                return (0, _SHA, "")
-            if "isDraft" in joined:
-                return (0, "false", "")
-            if "statusCheckRollup" in joined:
-                return (0, _GREEN, "")
+            if (probe := _green_probe_response(joined)) is not None:
+                return probe
             if "pulls" in joined and "merge" in joined:
                 attempts["merge"] += 1
                 return (1, "", "Pull Request is not mergeable (405)")
@@ -1048,12 +1062,8 @@ class TestTransientMergeRetry(TestCase):
 
         def _head_moved(argv: list[str]) -> tuple[int, str, str]:
             joined = " ".join(argv)
-            if "headRefOid" in joined:
-                return (0, _SHA, "")
-            if "isDraft" in joined:
-                return (0, "false", "")
-            if "statusCheckRollup" in joined:
-                return (0, _GREEN, "")
+            if (probe := _green_probe_response(joined)) is not None:
+                return probe
             if "pulls" in joined and "merge" in joined:
                 attempts["merge"] += 1
                 return (1, "", "Head branch was modified. Review and try the merge again. (409)")
@@ -1141,14 +1151,13 @@ class TestMergeKeystoneTearsDownWorktree(TestCase):
     ``execute_teardown`` which removes the git worktree, deletes the branch,
     drops the per-worktree DB, and reaps the Worktree row.
 
-    The shape modelled here is the real post-squash-merge state: the source
-    branch carries commits on NO remote (a squash-merge lands a new SHA on main
-    and the forge deletes the source ref), so the #706 data-loss guard would
-    refuse a plain teardown. Because the work is provably merged at this point,
-    the keystone tears down with the force-equivalent bypass so the
-    squash-merged/deleted-remote branch never blocks cleanup. Best-effort: a
-    teardown that errors must never fail or roll back the already-successful
-    merge.
+    The shape modelled here is the real post-squash-merge state: the branch's
+    work is landed on origin/main as a new squash SHA (the forge squash-merge),
+    while the source ref is never pushed. The analyze-before-wipe step proves the
+    branch redundant by patch-id against origin/main and tears it down — no force
+    bypass (CORRECTION 1): teardown wipes only because redundancy is PROVEN, never
+    because a transition demanded it. Best-effort: a teardown that errors must
+    never fail or roll back the already-successful merge.
 
     Only the ``gh`` merge subprocess is stubbed; the git worktree, the FSM, the
     signal wiring, and the teardown worker are all real.
@@ -1185,6 +1194,15 @@ class TestMergeKeystoneTearsDownWorktree(TestCase):
         _run_git("config", "user.email", "t@t", cwd=self.wt_path)
         _run_git("config", "user.name", "t", cwd=self.wt_path)
         _run_git("commit", "-q", "-m", "merged work", cwd=self.wt_path)
+        # Land the same content on origin/main as a distinct squash SHA (the forge
+        # squash-merge), then leave the source ref unpushed: the branch's commit is
+        # on NO remote, yet patch-id-equivalent to origin/main, so analyze-before-wipe
+        # proves it redundant and the keystone tears it down without any force bypass.
+        _run_git("checkout", "-q", "main", cwd=self.repo_main)
+        _run_git("merge", "-q", "--squash", self.branch, cwd=self.repo_main)
+        _run_git("commit", "-q", "-m", "squash: merged work (#859)", cwd=self.repo_main)
+        _run_git("push", "-q", "origin", "main", cwd=self.repo_main)
+        _run_git("fetch", "-q", "origin", cwd=self.repo_main)
 
     def _merged_ticket_with_worktree(self) -> Ticket:
         ticket = Ticket.objects.create(
@@ -1208,12 +1226,12 @@ class TestMergeKeystoneTearsDownWorktree(TestCase):
         with (
             override_settings(**_IMMEDIATE_BACKEND),
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch("teatree.core.cleanup.load_config") as cleanup_config,
+            patch("teatree.core.cleanup.clone_root", return_value=self.workspace),
+            patch("teatree.core.runners.teardown.clone_root", return_value=self.workspace),
             patch("teatree.core.cleanup.get_overlay_for_worktree") as cleanup_overlay,
             patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_GhStub()),
             self.captureOnCommitCallbacks(execute=True),
         ):
-            cleanup_config.return_value.user.workspace_dir = self.workspace
             cleanup_overlay.return_value.get_cleanup_steps.return_value = []
             cleanup_overlay.return_value.config.teardown_removes_pass_entries = False
             return merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")

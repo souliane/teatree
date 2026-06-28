@@ -54,11 +54,18 @@ from config_overwrite_guard import handle_block_config_overwrite
 from django_bootstrap import bootstrap_teatree_django
 from loop_registrations import emit_loop_registrations, is_bare_loop_tick_prompt, loop_name_from_prompt
 from loop_state_self_pump_gate import db_loop_state_suppresses_self_pump
+from memory_recall import handle_recall_cold_memory
 from mr_cli_fields import extract_cli_mr_fields, extract_mr_target_repo
 from no_self_reviewer_assign import handle_block_self_reviewer_assign
+from orchestration_boundary_signals import PYTEST_VERB_FINDER as _PYTEST_VERB_FINDER
+from orchestration_boundary_signals import PYTEST_VERB_RE as _PYTEST_VERB_RE
+from orchestration_boundary_signals import call_is_from_subagent as _call_is_from_subagent
+from orchestrator_investigation_gate import handle_enforce_orchestrator_investigation_boundary
 from question_gates import FENCED_CODE_RE, handle_warn_batched_questions, is_user_directed_question
 from state_files import append_line, read_lines
 from subagent_skill_gate import is_file_safe, unreferenced_demand_reason
+from teatree_settings import autoload_enabled as _autoload_enabled
+from teatree_settings import teatree_bool_setting as _teatree_bool_setting
 from turn_inspect import current_turn_tool_commands
 from unknown_repo_push_gate import handle_block_unknown_repo_push
 
@@ -442,35 +449,6 @@ class _BreakerDecision:
     reason: str
 
 
-def _teatree_bool_setting(name: str, *, default: bool = True) -> bool:
-    """Best-effort read of a ``[teatree] <name>`` boolean flag from ``~/.teatree.toml``.
-
-    The single shared shape behind every ``[teatree] <flag>_enabled`` reader:
-    fails to ``default`` on a missing/broken config, a missing ``[teatree]``
-    table, a missing key, or a non-boolean value, and returns the configured
-    value only when it is a bare TOML boolean. So only a bare boolean ``false``
-    disables a ``default=True`` flag and only a bare boolean ``true`` enables a
-    ``default=False`` one — a QUOTED ``"false"`` / ``"true"`` (a string, not a
-    bool) is ignored and the default stands. An explicit bare boolean is the
-    one-line kill-switch / opt-in, never a code edit (NEVER-LOCKOUT).
-    """
-    import tomllib  # noqa: PLC0415
-
-    config_path = Path.home() / ".teatree.toml"
-    if not config_path.is_file():
-        return default
-    try:
-        with config_path.open("rb") as f:
-            config = tomllib.load(f)
-    except Exception:  # noqa: BLE001
-        return default
-    teatree = config.get("teatree") if isinstance(config, dict) else None
-    if not isinstance(teatree, dict):
-        return default
-    value = teatree.get(name)
-    return value if isinstance(value, bool) else default
-
-
 def _deny_circuit_breaker_enabled() -> bool:
     """Whether the repeated-denial circuit breaker is enabled (default True).
 
@@ -772,6 +750,21 @@ def _teatree_active(session_id: str) -> bool:
     return _state_file(session_id, "teatree-active").is_file()
 
 
+def _t3_engaged(session_id: str) -> bool:
+    # #256 Option-1 marker: any ``t3:`` skill loaded this session engages the
+    # SUGGESTER (set by :func:`handle_track_skill_usage`). Distinct from
+    # ``.teatree-active`` — the loop machinery still consults only that one, so a
+    # plain lifecycle skill never arms loops.
+    return bool(session_id) and _state_file(session_id, "t3-engaged").is_file()
+
+
+def _teatree_engaged(session_id: str) -> bool:
+    # #256 engagement seam: teatree is engaged when the owner enabled autoload,
+    # a teatree-requiring skill was loaded (``.teatree-active``), OR any ``t3:``
+    # skill was loaded (``.t3-engaged``). Gates the suggester + T3 CLI reminder.
+    return _autoload_enabled() or _teatree_active(session_id) or _t3_engaged(session_id)
+
+
 def _loop_auto_load_active(session_id: str) -> bool:
     """Whether this session may auto-arm the loop/statusline machinery (#256).
 
@@ -782,15 +775,15 @@ def _loop_auto_load_active(session_id: str) -> bool:
 
     - the session opted into teatree (:func:`_teatree_active` — a teatree
         skill was loaded), AND
-    - the operator explicitly enabled auto-load (:func:`_loops_auto_load_enabled`).
+    - the operator enabled autoload (:func:`_autoload_enabled`).
 
-    The second condition defaults OFF so a colleague who merely clones the
-    repo (and even loads a teatree skill) is never nagged to register a cron
-    or shown the loop statusline. The loop owner opts in once via
-    ``[loops] auto_load = true`` in ``~/.teatree.toml`` (or
-    ``T3_LOOPS_AUTO_LOAD=1``) and keeps the existing behaviour intact.
+    ``autoload`` is the ONE owner flag (``[teatree] autoload = true``, or the
+    ``T3_AUTOLOAD`` env): it both ENGAGES the session and ARMS its loops. It
+    defaults OFF so a colleague who merely clones the repo (and even loads a
+    teatree skill) is never nagged to register a cron or shown the loop
+    statusline.
     """
-    return _teatree_active(session_id) and _loops_auto_load_enabled()
+    return _teatree_active(session_id) and _autoload_enabled()
 
 
 def _is_teatree_skill(name: str) -> bool:
@@ -909,6 +902,14 @@ def handle_user_prompt_submit(data: dict) -> None:
     pending = _state_file(session_id, "pending")
     pending.write_text("", encoding="utf-8")
 
+    # #256 default-OFF: a session that has not engaged teatree (no autoload, no
+    # teatree/t3: skill loaded) gets NO skill suggestion, NO ``.pending`` write,
+    # and NO T3 CLI reminder. ``.pending`` stays empty above, so the PreToolUse
+    # skill-loading gate never blocks (never-lockout). The owner opts in via
+    # ``/teatree`` (or any ``t3:`` skill), or ``[teatree] autoload = true``.
+    if not _teatree_engaged(session_id):
+        return
+
     scripts_dir = Path(__file__).resolve().parent.parent.parent / "scripts"
     if not (scripts_dir / "lib" / "skill_loader.py").is_file():
         return
@@ -1017,62 +1018,6 @@ def handle_record_presence(data: dict) -> None:
 _LOOP_CADENCE_DEFAULT = 720
 
 
-def _loops_toml_enabled() -> bool:
-    """Whether ``[loops] enabled`` is true in ``~/.teatree.toml`` (default True).
-
-    Fails open (True) on a missing or broken config — only an explicit
-    ``false`` suppresses loop behavior.
-    """
-    import tomllib  # noqa: PLC0415
-
-    config_path = Path.home() / ".teatree.toml"
-    if not config_path.is_file():
-        return True
-    try:
-        with config_path.open("rb") as f:
-            config = tomllib.load(f)
-    except Exception:  # noqa: BLE001
-        return True
-    loops = config.get("loops") if isinstance(config, dict) else None
-    if not isinstance(loops, dict):
-        return True
-    return loops.get("enabled") is not False
-
-
-_AUTO_LOAD_TRUTHY: frozenset[str] = frozenset({"1", "true", "yes", "on"})
-
-
-def _loops_auto_load_enabled() -> bool:
-    """Whether the operator opted into session-start loop/statusline auto-load (#256).
-
-    The opt-in knob the loop OWNER sets; default OFF so a colleague cloning
-    the repo is never nagged. Resolved env-first (``T3_LOOPS_AUTO_LOAD`` via
-    :func:`_resolve_loop_env`, so the ``~/.teatree`` bash env file the
-    unsourced hook misses is still honoured), then ``[loops] auto_load`` in
-    ``~/.teatree.toml``. Unlike :func:`_loops_toml_enabled` (a fail-OPEN
-    kill-switch), this fails CLOSED (OFF) on a missing/broken config: a fresh
-    clone has neither the env var nor the flag, so it stays silent.
-    """
-    import tomllib  # noqa: PLC0415
-
-    env = _resolve_loop_env("T3_LOOPS_AUTO_LOAD").strip().lower()
-    if env:
-        return env in _AUTO_LOAD_TRUTHY
-
-    config_path = Path.home() / ".teatree.toml"
-    if not config_path.is_file():
-        return False
-    try:
-        with config_path.open("rb") as f:
-            config = tomllib.load(f)
-    except Exception:  # noqa: BLE001
-        return False
-    loops = config.get("loops") if isinstance(config, dict) else None
-    if not isinstance(loops, dict):
-        return False
-    return loops.get("auto_load") is True
-
-
 _LOOP_PROMPT = "Run `t3 loop tick` in Bash, then briefly report the tick summary."
 
 
@@ -1139,16 +1084,14 @@ def _claim_loop_ownership(session_id: str) -> None:
     gated out), the ownership-claim logic in
     :func:`handle_session_start_bootstrap` never ran.  The first
     UserPromptSubmit after the marker is set calls this to fill the gap.
-    No-ops if a live foreign owner already holds the record, or if any of
-    the loop kill-switches are engaged: ``[loops] enabled = false`` in
-    ``~/.teatree.toml``, ``T3_LOOPS_DISABLED=all``, or ``T3_LOOP_DISOWN``
-    truthy.  Re-arming a paused loop here would resurrect the very
-    machinery the pause surface exists to silence.
+    No-ops if a live foreign owner already holds the record, or if the
+    ``T3_LOOP_DISOWN`` immediate-mitigation knob is truthy.  Durable per-loop
+    pause/disable lives in the DB ``LoopState`` tier (``t3 loop pause`` /
+    ``disable``); there is no ``[loops] enabled`` toml kill-switch (the dead cold
+    arm was dropped — loop control is ``/loops`` + the DB only).  The in-process
+    ``T3_LOOP_DISOWN`` knob is the orthogonal immediate-mitigation lever, not a
+    loops kill-switch.
     """
-    if not _loops_toml_enabled():
-        return
-    if _all_loops_disabled():
-        return
     if _resolve_loop_env("T3_LOOP_DISOWN").strip() not in _DISOWN_FALSEY:
         return
     current_pid = os.getppid()
@@ -1220,7 +1163,7 @@ def _loop_registration_exempt(data: dict) -> bool:
         (``_loop_auto_load_active`` False — no teatree marker OR auto-load not
         enabled, #256), so a colleague who merely cloned the repo is never
         nagged to register a cron; default OFF until the owner opts in via
-        ``[loops] auto_load = true``;
+        ``[teatree] autoload = true``;
     - the tool is a cron-management / skill tool the agent uses to register the
         loop (no point blocking the very tools that satisfy the gate);
     - the call comes from a sub-agent (non-empty ``agent_id``) — a sub-agent has
@@ -3410,16 +3353,9 @@ def handle_block_uncovered_diff(data: dict) -> bool:
 # (#115): 4.x-class agents need to inspect freely, so the gate now flags
 # the narrow set of commands that actually hurt — never every Bash.
 #
-# Main-vs-sub-agent signal (#115 root cause). The PreToolUse payload's
-# ``transcript_path`` ALWAYS points at the PARENT session transcript,
-# even for a sub-agent's tool call (a sub-agent's own turns live in a
-# separate ``…/subagents/agent-<id>.jsonl`` the hook never receives), and
-# the parent transcript's tail entries carry ``isSidechain: false`` — so
-# the previous transcript-``isSidechain`` read MISDETECTED every genuine
-# sub-agent as the main agent and blocked it. The reliable signal is on
-# the payload itself: a sub-agent call carries a non-empty ``agent_id``
-# (and ``agent_type``); a main-agent call omits it. ``_call_is_from_subagent``
-# reads that field directly — no transcript needed.
+# The main-vs-sub-agent signal (#115 root cause: a sub-agent call carries a
+# non-empty ``agent_id``, a main-agent call omits it) is ``_call_is_from_subagent``,
+# imported aliased above from the shared ``orchestration_boundary_signals`` leaf.
 
 # Pure-orchestration tools — always allowed for the main agent.
 _ORCHESTRATION_TOOLS = {
@@ -3432,33 +3368,11 @@ _ORCHESTRATION_TOOLS = {
     "SendMessage",
     "AskUserQuestion",
 }
-# ``pytest`` must match only in a VERB POSITION — never inside a quoted
-# arg, a branch name, a ``-m``/``--title`` message, or a hyphenated
-# package name (``pytest-django``). A bare ``\bpytest\b`` mis-denied the
-# loop owner's ``git commit -m 'fix pytest fixture'`` / ``git branch
-# x-pytest`` / ``uv add pytest-django`` (#1178 cold-review false-deny).
-# So anchor it to a command head: start-of-string OR a shell separator
-# (``;`` ``&&`` ``||`` ``|`` newline ``(`` ``{``), then optional env-var
-# assignments, optional (possibly-stacked) command-wrapper prefixes
-# (``command``/``exec``/``time``/``nice``), and an optional Python runner
-# prefix — note ``uvx`` runs a tool DIRECTLY with no ``run`` (``uvx
-# pytest``), while ``uv``/``poetry``/``pdm``/``hatch`` DO need ``run``, and
-# ``python[3] -m`` — then ``pytest`` NOT followed by a word char or hyphen.
-# The separator branch keeps the shell-grammar bypass guard intact (``git
-# status && pytest`` still denies); the trailing ``(?![\w-])`` keeps the
-# match pinned to ``pytest`` so wrapper prefixes never widen to other tools
-# (``uvx ruff`` / ``command ls`` stay ALLOWED).
-_PYTEST_VERB_RE = (
-    r"(?:^|[;&|\n(){}])"
-    r"\s*"
-    r"(?:\w+=\S+\s+)*"
-    r"(?:(?:command|exec|time|nice)\s+)*"
-    r"(?:uvx\s+|(?:uv|poetry|pdm|hatch)\s+run\s+|python3?\s+-m\s+)?"
-    r"pytest(?![\w-])"
-)
-_PYTEST_VERB_FINDER = re.compile(_PYTEST_VERB_RE)
-
-# A TARGETED pytest run is cheap and must stay ALLOWED in the foreground
+# ``_PYTEST_VERB_RE`` / ``_PYTEST_VERB_FINDER`` (the VERB-position pytest matcher,
+# anchored to a command head so a ``git commit -m '…pytest…'`` mention is not a
+# false-deny — #1178) now live in the shared ``orchestration_boundary_signals``
+# leaf, imported aliased above so this gate and the investigation nudge read one
+# source. A TARGETED pytest run is cheap and must stay ALLOWED in the foreground
 # main agent (#1825): only the whole suite ties the session up. The verb
 # match above tells us a ``pytest`` invocation is present; this decides
 # whether the args make it a single/targeted run. Targeted iff the
@@ -3533,19 +3447,6 @@ _ORCHESTRATOR_HEAVY_BASH_RE = re.compile(
 # mirroring the ``[skip-skill-gate: <reason>]`` token. An empty reason does not
 # unblock.
 _FG_OK_RE = re.compile(r"\[fg-ok:\s*\S[^\]]*?\s*\]")
-
-
-def _call_is_from_subagent(data: dict) -> bool:
-    """True when the gated tool call originates from a sub-agent.
-
-    The PreToolUse payload carries a non-empty ``agent_id`` (and
-    ``agent_type``) for every sub-agent call and omits it for the main
-    agent — the only reliable main-vs-sub-agent signal, because the
-    payload's ``transcript_path`` always points at the PARENT session
-    transcript (see the #115 root-cause note above). Empty/absent
-    ``agent_id`` ⇒ main agent.
-    """
-    return bool(data.get("agent_id"))
 
 
 def _is_orchestration_action(data: dict) -> bool:
@@ -4131,6 +4032,19 @@ def _record_skills(skills_file: Path, existing: set[str], closure: list[str]) ->
             _append_line(skills_file, name)
 
 
+def _maybe_engage_t3(session_id: str, names: list[str]) -> None:
+    # #256 Option-1: a token that canonicalizes to the ``t3:`` namespace engages
+    # the SUGGESTER via ``.t3-engaged`` — NOT ``.teatree-active`` (loops stay
+    # reserved for teatree-requiring skills, preserving downstream-overlay loop
+    # isolation). Canonicalize through the SAME identity seam
+    # (:func:`normalize_skill_name`, normalize UP) that ``_is_teatree_skill``
+    # uses, so a bare ``code`` and a qualified ``t3:code`` are detected
+    # identically while a foreign ``other:review`` keeps its namespace and never
+    # matches (no qualifier-stripping conflation).
+    if any(normalize_skill_name(name).startswith("t3:") for name in names):
+        _state_file(session_id, "t3-engaged").touch()
+
+
 def handle_track_skill_usage(data: dict) -> None:
     """Track which skills are active this session, including their closure.
 
@@ -4154,6 +4068,7 @@ def handle_track_skill_usage(data: dict) -> None:
         _record_skills(skills_file, existing, _resolve_skill_closure([skill_name]))
         if _skill_load_activates_teatree([skill_name]):
             _state_file(session_id, "teatree-active").touch()
+        _maybe_engage_t3(session_id, [skill_name])
         return
 
     # InstructionsLoaded: array of skill objects or skill name strings
@@ -4170,6 +4085,7 @@ def handle_track_skill_usage(data: dict) -> None:
     _record_skills(skills_file, existing, _resolve_skill_closure(loaded))
     if _skill_load_activates_teatree(loaded):
         _state_file(session_id, "teatree-active").touch()
+    _maybe_engage_t3(session_id, loaded)
 
 
 # ── PostToolUse: read-dedup ────────────────────────────────────────
@@ -5371,6 +5287,27 @@ def _merge_session_start_context(context: str, session_id: str, source: str) -> 
     return context
 
 
+# #256 one-line how-to-start advisory for a default-off, not-yet-engaged session.
+_TEATREE_NOT_ACTIVE_ADVISORY = (
+    "teatree is installed but not active in this session — run /teatree to start it "
+    "(or set [teatree] autoload = true to start it automatically)."
+)
+
+
+def _emit_session_start_context(context: str) -> None:
+    # #1452: the harness silently drops the legacy flat top-level
+    # ``{"additionalContext": ...}`` form for SessionStart; the documented schema
+    # (Agent SDK ``SessionStartHookSpecificOutput``) requires the nested envelope.
+    # An empty merge (a not-engaged compact resume with no recovery context)
+    # emits nothing (#256).
+    if not context.strip():
+        return
+    json.dump(
+        {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": context}},
+        sys.stdout,
+    )
+
+
 def handle_session_start_bootstrap(data: dict) -> None:
     """Emit the tick-dispatch bootstrap directive (#786 WS3 — roster retired).
 
@@ -5398,9 +5335,24 @@ def handle_session_start_bootstrap(data: dict) -> None:
     tick-owner record / emits the bootstrap directive when it both opted into
     teatree AND the operator enabled session-start auto-load. Default OFF, so a
     colleague cloning the repo never silently becomes the loop owner.
+
+    Default-off engagement (#256): when ``[teatree] autoload`` is set the owner
+    default flips the session ``teatree-active`` BEFORE the loop gate, so today's
+    bootstrap fires unchanged. When the session is neither autoloaded nor
+    teatree-active, a FRESH start surfaces a one-line how-to-start advisory
+    instead of returning silently; a compact/resume skips the advisory but still
+    merges so snapshot-recovery / hand-off context is never dropped.
     """
     session_id = data.get("session_id", "")
     if not session_id:
+        return
+    source = data.get("source", "")
+    if _autoload_enabled():
+        _ensure_state_dir()
+        _state_file(session_id, "teatree-active").touch()
+    elif not _teatree_active(session_id):
+        advisory = "" if source in {"compact", "resume"} else _TEATREE_NOT_ACTIVE_ADVISORY
+        _emit_session_start_context(_merge_session_start_context(advisory, session_id, source))
         return
     if not _loop_auto_load_active(session_id):
         return
@@ -5465,7 +5417,6 @@ def handle_session_start_bootstrap(data: dict) -> None:
     # the flock — the DB has its own CAS serialization; holding the registry
     # flock across a Django bootstrap would needlessly stall sibling
     # SessionStart hooks.
-    source = data.get("source", "")
     if became_owner_after_rotation or source == "compact":
         _evict_stale_db_lease_owner(session_id, current_pid=current_pid)
 
@@ -5475,22 +5426,7 @@ def handle_session_start_bootstrap(data: dict) -> None:
         _emit_osc_title()
 
     context = _merge_session_start_context(context, session_id, source)
-
-    # #1452: the harness silently drops the legacy flat top-level
-    # ``{"additionalContext": ...}`` form for SessionStart events; the
-    # documented schema (Agent SDK ``SessionStartHookSpecificOutput``)
-    # requires the nested envelope. Confirmed empirically: 24 compactions
-    # in session a1e3d2d8-… emitted the flat form and zero of them
-    # injected the snapshot text into the post-compact model context.
-    json.dump(
-        {
-            "hookSpecificOutput": {
-                "hookEventName": "SessionStart",
-                "additionalContext": context,
-            },
-        },
-        sys.stdout,
-    )
+    _emit_session_start_context(context)
 
 
 def handle_session_end_loop_registry(data: dict) -> None:
@@ -5736,31 +5672,6 @@ def _resolve_loop_env(name: str) -> str:
     return _read_bash_env_var(name)
 
 
-def _all_loops_disabled() -> bool:
-    """Does ``T3_LOOPS_DISABLED`` fully prune the loop for this session?
-
-    Mirrors the ``all`` sentinel of ``teatree.loops.config._env_disabled_names``
-    without importing ``teatree`` (a Stop hook runs under whatever
-    interpreter the harness invokes, where ``teatree`` may be absent —
-    #810). The orchestrator gates every ``t3 loop tick`` job through that
-    same env var; the Stop self-pump is the in-session counterpart of a
-    tick, so it must honour the kill-switch identically. ``T3_LOOPS_DISABLED=all``
-    means every non-always-on loop is off — re-pumping then only re-runs the
-    one ``always_on`` ``dispatch`` scanner, doing no useful work while the
-    pending Tasks that drive ``pending-spawn`` keep the pump re-arming every
-    interval. That is the busy-loop the prune is meant to silence, so a fully
-    pruned session never pumps.
-
-    The value is resolved via :func:`_resolve_loop_env` so the kill-switch
-    set in ``~/.teatree`` (never sourced into the bare-``python3`` Stop
-    hook) is still honoured.
-    """
-    raw = _resolve_loop_env("T3_LOOPS_DISABLED").strip()
-    if not raw:
-        return False
-    return any(part.strip().lower() == "all" for part in raw.split(","))
-
-
 def _pause_suppresses_self_pump() -> bool:
     """True when an explicit user pause must win over the standing loop directive.
 
@@ -5801,24 +5712,22 @@ def _self_pump_suppressed(session_id: str) -> bool:
     per-agent consolidation slot stays as a secondary cross-session
     dedup, NOT a substitute for this gate.
 
-    ``T3_LOOPS_DISABLED=all`` fully prunes the loop (the same kill-switch
-    the orchestrator honours per tick job): the owner's Stop hook becomes
-    a clean no-op so a pruned environment cannot busy-loop on stale
-    pending work. Both this and ``T3_LOOP_DISOWN`` resolve through
-    :func:`_resolve_loop_env`, which falls back to the ``~/.teatree`` bash
-    env file when the var is absent from the process env — the bare
-    ``python3`` Stop hook never sources that file, so a kill-switch set
-    only there would otherwise be invisible to the self-pump.
+    A durable DB ``LoopState`` pause/disable of ``dispatch`` (the loop the
+    self-pump drives) makes the owner's Stop hook a clean no-op so a paused
+    control plane cannot busy-loop on stale pending work — the
+    restart-surviving 'pause everything' (#1913,
+    :func:`db_loop_state_suppresses_self_pump`). Loop control is ``/loops`` +
+    the DB only; there is no env kill-switch.
 
     Immediate mitigation knob: ``T3_LOOP_DISOWN`` truthy (in the session's
-    env or the bash env file) makes even the owner's Stop hook a clean
-    no-op, so a session can stop driving the loop in-process without
-    touching the registry or ending the session.
+    env or the bash env file, resolved via :func:`_resolve_loop_env`) makes
+    even the owner's Stop hook a clean no-op, so a session can stop driving
+    the loop in-process without touching the registry or ending the session.
 
-    A user pause (away, #2247/#2250, :func:`_pause_suppresses_self_pump`) or a
-    durable DB ``LoopState`` pause of ``dispatch`` (#1913, :func:`db_loop_state_suppresses_self_pump`) gate it off.
+    A user pause (away, #2247/#2250, :func:`_pause_suppresses_self_pump`) also
+    gates it off.
     """
-    if _all_loops_disabled() or db_loop_state_suppresses_self_pump():
+    if db_loop_state_suppresses_self_pump():
         return True
     if _resolve_loop_env("T3_LOOP_DISOWN").strip() not in _DISOWN_FALSEY:
         return True
@@ -8193,43 +8102,17 @@ def _record_no_commit_signal(session_id: str, finding: object) -> None:
             _append_line(no_commit_file, line)
 
 
-def _capture_subagent_snapshot(worktree: str, branch: str, label: str) -> None:
-    """Capture a bundle+diff of a dirty/unpushed sub-agent worktree (#1764).
-
-    Runs under bare ``python3`` from the SubagentStop hook, so it imports only
-    the Django-free :mod:`teatree.core.worktree_snapshot`. The snapshot lands
-    BEFORE any teardown can auto-clean the worktree, preserving uncommitted
-    edits and unpushed commits an outage-killed sub-agent left behind. ``git
-    bundle`` runs against the worktree's own object store (the worktree shares
-    the main clone's gitdir), so the worktree path doubles as the repo handle.
-    Best-effort: a no-op for a clean+pushed tree, fully crash-proof at the
-    caller's boundary.
-    """
-    from teatree.core.worktree_snapshot import capture_worktree_snapshot  # noqa: PLC0415
-
-    recovery_dir = capture_worktree_snapshot(Path(worktree), worktree, branch=branch, label=label)
-    if recovery_dir is not None:
-        print(  # noqa: T201 — hook stderr is the module's logging channel
-            f"[hook_router] sub-agent worktree {worktree!r} (branch {branch!r}) had dirty/unpushed work — "
-            f"captured recovery artifact to {recovery_dir} before teardown.",
-            file=sys.stderr,
-        )
-
-
 def handle_subagent_stop_no_commit(data: dict) -> None:
     """SubagentStop: record a work-branch worktree that produced 0 commits (#1205).
 
-    Also captures a recovery snapshot (#1764) of the sub-agent's worktree
-    (resolved to a work branch) BEFORE teardown can auto-clean it — the
-    Django-free snapshot no-ops on a clean+pushed tree and writes a bundle+diff
-    when there are uncommitted edits or unpushed commits, so an outage-killed
-    sub-agent's work survives.
-
     Resolves the sub-agent's worktree from the harness ``cwd``, runs the
     conservative :func:`teatree.hooks.no_commit_detector.detect`, and records a
-    ``terminated_without_commit`` signal only on the confirmed-flag verdict.
-    No-op for a read-only/detached worktree, a committed branch, an
-    undeterminable git state, or a missing ``cwd``.
+    ``terminated_without_commit`` signal only on the confirmed-flag verdict, so the
+    orchestrator SEES the empty termination instead of assuming work landed. It is
+    a pure DETECTION/surfacing hook — there is no recovery snapshot (the #1770
+    capture mechanism was removed): unproven sub-agent work is surfaced for
+    salvage, never auto-captured. No-op for a read-only/detached worktree, a
+    committed branch, an undeterminable git state, or a missing ``cwd``.
 
     Crash-proof (#810 Stop contract): a broad boundary guard contains any
     unexpected error (an unimportable ``teatree``, git introspection failure)
@@ -8244,15 +8127,10 @@ def handle_subagent_stop_no_commit(data: dict) -> None:
         if str(src_dir) not in sys.path:
             sys.path.insert(0, str(src_dir))
         from teatree.hooks import no_commit_detector  # noqa: PLC0415
-        from teatree.utils import git  # noqa: PLC0415
 
         finding = no_commit_detector.detect(worktree)
         if finding.is_flagged:
             _record_no_commit_signal(data.get("session_id", ""), finding)
-
-        branch = git.current_branch(repo=worktree)
-        if branch and branch not in no_commit_detector.NON_WORK_BRANCHES:
-            _capture_subagent_snapshot(worktree, branch, branch)
     except Exception as exc:  # noqa: BLE001 — SubagentStop hook must be crash-proof
         print(  # noqa: T201 — hook stderr is the module's logging channel
             f"[hook_router] no-commit detection skipped (unexpected error: {exc})",
@@ -8270,6 +8148,9 @@ _HANDLERS: dict[str, list] = {
         handle_inject_pending_questions,
         handle_inject_pending_chat,
         handle_user_prompt_submit,
+        # LAST: cold-tier memory recall injection (#2746) — runs after skill
+        # loading so it never delays the load-first suggestion.
+        handle_recall_cold_memory,
     ],
     "PreToolUse": [
         handle_allow_classifier_relax_settings_write,
@@ -8294,6 +8175,7 @@ _HANDLERS: dict[str, list] = {
         handle_block_ai_signature,
         handle_block_uncovered_diff,
         handle_enforce_orchestrator_boundary,
+        handle_enforce_orchestrator_investigation_boundary,
         handle_warn_batched_questions,
         handle_mirror_question_to_slack,
         handle_orchestrator_turn_budget_nudge,

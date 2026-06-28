@@ -42,10 +42,11 @@ class PendingTasksScanner:
         return [
             ScanSignal(
                 kind="pending_task",
-                summary=f"Task {task.id} ({task.phase}) {task.status}",
+                summary=f"Task {task.id} {task.display_subject()} {task.status}",
                 payload={
                     "task_id": task.id,
                     "phase": task.phase,
+                    "subject": task.display_subject(),
                     "status": task.status,
                     "ticket_id": task.ticket_id,
                     "ticket_role": task.ticket.role,

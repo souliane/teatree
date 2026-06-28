@@ -25,7 +25,15 @@ from pathlib import Path
 import pytest
 
 from teatree.hooks import banned_terms_cli
-from teatree.hooks.banned_terms_cli import _diff_only_report, _full_file_report, _load_terms, staged_added_lines
+from teatree.hooks.banned_terms_cli import (
+    _diff_only_report,
+    _full_file_report,
+    _load_allowlist,
+    _load_terms,
+    main,
+    staged_added_lines,
+)
+from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
 
 _TERMS = ("acme",)
 
@@ -379,13 +387,70 @@ def test_load_terms_reads_first_banned_terms_array(tmp_path: Path) -> None:
     assert _load_terms(config) == ("acme", "widget")
 
 
-def test_load_terms_empty_on_unreadable_or_termless_config(tmp_path: Path) -> None:
+def test_load_terms_raises_on_unset(tmp_path: Path) -> None:
+    # A missing config, a config that omits banned_terms, and a wrong-typed
+    # value are ALL "unset" — refused LOUD so a load bug never masquerades as a
+    # deliberate empty list.
     missing = tmp_path / "nope.toml"
-    assert _load_terms(missing) == ()
+    with pytest.raises(BannedTermsUnsetError):
+        _load_terms(missing)
 
     no_terms = tmp_path / "no_terms.toml"
     no_terms.write_text("[teatree]\nother = 1\n", encoding="utf-8")
-    assert _load_terms(no_terms) == ()
+    with pytest.raises(BannedTermsUnsetError):
+        _load_terms(no_terms)
+
+    non_list = tmp_path / "non_list.toml"
+    non_list.write_text('[teatree]\nbanned_terms = "not-a-list"\n', encoding="utf-8")
+    with pytest.raises(BannedTermsUnsetError):
+        _load_terms(non_list)
+
+
+def test_load_terms_explicit_empty_list_is_allowed(tmp_path: Path) -> None:
+    # The deliberate no-terms choice: an explicit empty array is NOT unset.
+    config = tmp_path / "empty.toml"
+    config.write_text("[teatree]\nbanned_terms = []\n", encoding="utf-8")
+    assert _load_terms(config) == ()
+
+
+def test_load_allowlist_stays_empty_when_unset(tmp_path: Path) -> None:
+    # The allowlist is OPTIONAL — an absent key defaults to empty, never raises.
+    config = tmp_path / "no_allow.toml"
+    config.write_text('[teatree]\nbanned_terms = ["acme"]\n', encoding="utf-8")
+    assert _load_allowlist(config) == ()
+
+
+class TestMainUnsetVsEmpty:
+    """``main`` fails LOUD on an unset banned_terms but is a no-op on empty.
+
+    The shell hook keeps "no config file ⇒ no-op" (the legitimate off-state for
+    a machine with no teatree config), but once a config FILE exists the
+    ``banned_terms`` key must be present — an absent key is refused (exit 2)
+    so a load bug never reads as a clean scan. An explicit empty list is the
+    deliberate no-op.
+    """
+
+    def test_no_config_file_is_a_noop(self, tmp_path: Path) -> None:
+        clean = tmp_path / "clean.md"
+        clean.write_text("nothing to see\n", encoding="utf-8")
+        assert main(["--config", str(tmp_path / "absent.toml"), str(clean)]) == 0
+
+    def test_config_without_banned_terms_exits_misconfigured(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        config = tmp_path / "no_terms.toml"
+        config.write_text("[teatree]\nother = 1\n", encoding="utf-8")
+        clean = tmp_path / "clean.md"
+        clean.write_text("nothing\n", encoding="utf-8")
+        assert main(["--config", str(config), str(clean)]) == 2
+        assert "banned_terms is unset" in capsys.readouterr().err
+
+    def test_explicit_empty_banned_terms_is_a_noop(self, tmp_path: Path) -> None:
+        config = tmp_path / "empty.toml"
+        config.write_text("[teatree]\nbanned_terms = []\n", encoding="utf-8")
+        flagged = tmp_path / "doc.md"
+        flagged.write_text("acme reference\n", encoding="utf-8")
+        assert main(["--config", str(config), str(flagged)]) == 0
 
 
 def test_full_file_report_flags_committed_line(tmp_path: Path) -> None:

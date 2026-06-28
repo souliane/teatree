@@ -18,9 +18,41 @@ from django.core.management.base import CommandError
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.models import ConsolidatedMemory, DreamRunMarker, LoopLease, MiniLoopMarker
+from teatree.core.models import ConsolidatedMemory, DreamRunMarker, Loop, LoopLease
 from teatree.loops.dream.engine import DreamRunResult
 from teatree.loops.dream.loop import DREAM_LEASE_NAME, DREAM_LEASE_SECONDS, DREAM_LOOP_NAME
+
+
+def _enable_dream_loop(*, last_run_at: "dt.datetime | None" = None) -> None:
+    """Seed an ENABLED, interval-cadenced ``dream`` Loop row — the ONE cadence ledger.
+
+    ``last_run_at=None`` ⇒ due immediately; a recent ``last_run_at`` ⇒ not due.
+    """
+    Loop.objects.update_or_create(
+        name=DREAM_LOOP_NAME,
+        defaults={
+            "script": "src/teatree/loops/dream/loop.py",
+            "prompt": None,
+            "delay_seconds": 86400,
+            "daily_at": None,
+            "enabled": True,
+            "last_run_at": last_run_at,
+        },
+    )
+
+
+class _DreamTickEnabledMixin:
+    """Mixin for tests that drive ``dream tick`` to RUN.
+
+    The dream Loop row ships PAUSED (#2513) and the cron gate now routes through the
+    single enable verdict (``Loop.enabled`` + ``LoopState``), so a tick SKIPs until
+    the row is enabled. These tests enable an interval-cadenced, due dream row.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        _enable_dream_loop(last_run_at=None)
+
 
 if TYPE_CHECKING:
     from teatree.loops.dream.gates import DreamQaReport
@@ -143,7 +175,7 @@ class DreamProposeEvalsFlagTestCase(TestCase):
         assert seen["eval_proposals"] is None
 
 
-class DreamNightlyTickRequestsProposalsTestCase(TestCase):
+class DreamNightlyTickRequestsProposalsTestCase(_DreamTickEnabledMixin, TestCase):
     """The cadence-driven ``tick`` now requests eval proposals by default (#2346)."""
 
     @staticmethod
@@ -222,7 +254,7 @@ class DreamNightlyTickRequestsProposalsTestCase(TestCase):
         assert "withheld 1 unvalidated candidate(s)" in out
 
 
-class DreamDeriveEvalsWiringTestCase(TestCase):
+class DreamDeriveEvalsWiringTestCase(_DreamTickEnabledMixin, TestCase):
     """The default-OFF LLM full-scenario derivation only runs when its toggle is on (#2447)."""
 
     def test_derivation_skipped_when_toggle_off(self) -> None:
@@ -273,7 +305,7 @@ class DreamDeriveEvalsWiringTestCase(TestCase):
         assert DreamRunMarker.objects.get(name=DreamRunMarker.NAME).last_succeeded_at is not None
 
 
-class DreamLiveValidationGateWiringTestCase(TestCase):
+class DreamLiveValidationGateWiringTestCase(_DreamTickEnabledMixin, TestCase):
     """``--validate-live`` (folded into ``--full``) supplies the metered live validator.
 
     Promotion now lands a scenario ONLY when it passes a live pass@k. The nightly
@@ -376,6 +408,7 @@ class DreamMemoryPhasesPipelineTestCase(TestCase):
         topic = "the worktree provision lease pid claim guard owner liveness anchored"
         (self.memdir / "mem_a.md").write_text(f"name: mem_a\n{topic}\n", encoding="utf-8")
         (self.memdir / "mem_b.md").write_text(f"name: mem_b\n{topic} session\n", encoding="utf-8")
+        _enable_dream_loop(last_run_at=None)  # dream ships paused; tick gates on the enabled row
 
     #: All phase toggles cleared to default-ON unless a test overrides one.
     _PHASE_ENV: ClassVar[dict[str, str]] = {
@@ -532,8 +565,8 @@ class DreamMemoryPhasesPipelineTestCase(TestCase):
             "merge clearance approval gate pipeline status watch tick orchestrator dispatch"
         )
         # Many >90d near-duplicate feedback files (pairs of the same lesson) so the
-        # rendered index is well over the ~24KB / 150-line budget.
-        for i in range(120):
+        # rendered index is well over the ~24 KB session-load byte budget.
+        for i in range(180):
             for half in ("a", "b"):
                 f = self.memdir / f"feedback_dup_{i:03d}_{half}.md"
                 f.write_text(
@@ -632,6 +665,7 @@ class DreamAcceptanceGateWiringTestCase(TestCase):
         topic = "the worktree provision lease pid claim guard owner liveness anchored"
         (self.memdir / "mem_a.md").write_text(f"name: mem_a\n{topic}\n", encoding="utf-8")
         (self.memdir / "mem_b.md").write_text(f"name: mem_b\n{topic} session\n", encoding="utf-8")
+        _enable_dream_loop(last_run_at=None)  # dream ships paused; tick gates on the enabled row
 
     def _run(self, stdout: StringIO, *, report: "DreamQaReport") -> None:
         with (
@@ -726,6 +760,7 @@ class DreamZeroClusterMaintenanceStampsSucceededTestCase(TestCase):
         topic = "the worktree provision lease pid claim guard owner liveness anchored"
         (self.memdir / "mem_a.md").write_text(f"name: mem_a\n{topic}\n", encoding="utf-8")
         (self.memdir / "mem_b.md").write_text(f"name: mem_b\n{topic} session\n", encoding="utf-8")
+        _enable_dream_loop(last_run_at=None)  # dream ships paused; tick gates on the enabled row
 
     def _zero_cluster_tick(self, stdout: StringIO) -> None:
         # members replayed > 0 (transcript was processed) but 0 NEW clusters distilled.
@@ -761,7 +796,7 @@ class DreamZeroClusterMaintenanceStampsSucceededTestCase(TestCase):
         assert DreamRunMarker.objects.is_stale(timezone.now()) is False
 
 
-class DreamMemoryPromotionWiringTestCase(TestCase):
+class DreamMemoryPromotionWiringTestCase(_DreamTickEnabledMixin, TestCase):
     """Pass-2 memory promotion only runs when its default-OFF toggle is on (#2426)."""
 
     def _tick(self, stdout: StringIO, *, env: dict[str, str]) -> None:
@@ -821,7 +856,7 @@ class DreamMemoryPromotionWiringTestCase(TestCase):
         assert "no teatree code host resolved" in stdout.getvalue()
 
 
-class DreamAutomationAsksWiringTestCase(TestCase):
+class DreamAutomationAsksWiringTestCase(_DreamTickEnabledMixin, TestCase):
     """Phase-3d automatable-ask promotion only runs when its default-OFF toggle is on (#2663)."""
 
     def _tick(self, stdout: StringIO, *, env: dict[str, str]) -> None:
@@ -1041,17 +1076,43 @@ class DreamInFlightLockTestCase(TestCase):
 
 
 class DreamTickCadenceTestCase(TestCase):
-    def test_tick_runs_when_cadence_elapsed(self) -> None:
+    """The dream cron gates on the ONE cadence ledger (LOOP-PR-A).
+
+    The ``dream`` Loop row's ``is_due`` / ``last_run_at`` plus the single enable
+    verdict — never a second cadence-marker ledger.
+    """
+
+    def test_tick_runs_when_due_and_bumps_last_run_at(self) -> None:
+        _enable_dream_loop(last_run_at=None)  # never run ⇒ due
         with patch(
             "teatree.loops.dream.engine.run_consolidation",
             return_value=_ok_result(),
         ) as engine:
             call_command("dream", "tick", stdout=StringIO())
         engine.assert_called_once()
-        assert MiniLoopMarker.objects.filter(name=DREAM_LOOP_NAME).exists()
+        assert Loop.objects.get(name=DREAM_LOOP_NAME).last_run_at is not None
 
-    def test_tick_skips_when_cadence_not_elapsed(self) -> None:
-        MiniLoopMarker.objects.mark_fired(DREAM_LOOP_NAME, timezone.now())
+    def test_tick_skips_when_not_due(self) -> None:
+        _enable_dream_loop(last_run_at=timezone.now())  # just ran ⇒ not due
+        stdout = StringIO()
+        with patch("teatree.loops.dream.engine.run_consolidation") as engine:
+            call_command("dream", "tick", stdout=stdout)
+        engine.assert_not_called()
+        assert "SKIP" in stdout.getvalue()
+
+    def test_tick_skips_when_loop_disabled(self) -> None:
+        # A disabled Loop row (or no row) is a hard skip via the single verdict.
+        Loop.objects.update_or_create(
+            name=DREAM_LOOP_NAME,
+            defaults={
+                "script": "src/teatree/loops/dream/loop.py",
+                "prompt": None,
+                "delay_seconds": 86400,
+                "daily_at": None,
+                "enabled": False,
+                "last_run_at": None,
+            },
+        )
         stdout = StringIO()
         with patch("teatree.loops.dream.engine.run_consolidation") as engine:
             call_command("dream", "tick", stdout=stdout)
@@ -1059,8 +1120,8 @@ class DreamTickCadenceTestCase(TestCase):
         assert "SKIP" in stdout.getvalue()
 
     def test_run_ignores_cadence_gate(self) -> None:
-        # `run` is the manual escape hatch — it runs regardless of cadence.
-        MiniLoopMarker.objects.mark_fired(DREAM_LOOP_NAME, timezone.now())
+        # `run` is the manual escape hatch — it runs regardless of cadence / enable.
+        _enable_dream_loop(last_run_at=timezone.now())  # not due
         with patch(
             "teatree.loops.dream.engine.run_consolidation",
             return_value=_ok_result(),
@@ -1069,12 +1130,13 @@ class DreamTickCadenceTestCase(TestCase):
         engine.assert_called_once()
 
     def test_tick_failed_engine_does_not_advance_cadence_ledger(self) -> None:
+        _enable_dream_loop(last_run_at=None)  # due
         with patch(
             "teatree.loops.dream.engine.run_consolidation",
             side_effect=RuntimeError("engine boom"),
         ):
             call_command("dream", "tick", stdout=StringIO())
-        assert not MiniLoopMarker.objects.filter(name=DREAM_LOOP_NAME).exists()
+        assert Loop.objects.get(name=DREAM_LOOP_NAME).last_run_at is None
 
 
 class DreamZeroMembersFailLoudTestCase(TestCase):
@@ -1134,6 +1196,7 @@ class DreamZeroMembersStillRunsMemoryPhasesTestCase(TestCase):
         topic = "the worktree provision lease pid claim guard owner liveness anchored"
         (self.memdir / "mem_a.md").write_text(f"name: mem_a\n{topic}\n", encoding="utf-8")
         (self.memdir / "mem_b.md").write_text(f"name: mem_b\n{topic} session\n", encoding="utf-8")
+        _enable_dream_loop(last_run_at=None)  # dream ships paused; tick gates on the enabled row
 
     def _zero_member_tick(self, stdout: StringIO) -> None:
         zero_result = DreamRunResult(clusters_recorded=0, members_replayed=0, dry_run=False)

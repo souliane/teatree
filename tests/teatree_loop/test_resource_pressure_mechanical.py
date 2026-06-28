@@ -185,7 +185,7 @@ class WorktreeGcSafetyTests(TestCase):
 
         wt = self._add_worktree("clean", "feat-clean")
         self._make_stale(wt)
-        with patch.object(mechanical_resources, "workspace_dir", return_value=self.main_clone):
+        with patch.object(mechanical_resources, "worktree_root", return_value=self.main_clone):
             free_resources(self._payload())
         assert not wt.exists(), "a clean+pushed+stale worktree should be GC'd"
 
@@ -195,7 +195,7 @@ class WorktreeGcSafetyTests(TestCase):
         wt = self._add_worktree("dirty", "feat-dirty")
         (wt / "a.txt").write_text("locally modified")  # tracked-dirty
         self._make_stale(wt)
-        with patch.object(mechanical_resources, "workspace_dir", return_value=self.main_clone):
+        with patch.object(mechanical_resources, "worktree_root", return_value=self.main_clone):
             free_resources(self._payload())
         assert wt.exists(), "a dirty worktree must never be removed"
 
@@ -207,7 +207,7 @@ class WorktreeGcSafetyTests(TestCase):
         _run("git", "add", "b.txt", cwd=wt)
         _run("git", "commit", "-m", "unpushed", cwd=wt)  # ahead of upstream, not pushed
         self._make_stale(wt)
-        with patch.object(mechanical_resources, "workspace_dir", return_value=self.main_clone):
+        with patch.object(mechanical_resources, "worktree_root", return_value=self.main_clone):
             free_resources(self._payload())
         assert wt.exists(), "an ahead-of-upstream worktree must never be removed"
 
@@ -217,7 +217,7 @@ class WorktreeGcSafetyTests(TestCase):
         wt = self._add_worktree("active", "feat-active")
         self._make_stale(wt)
         with (
-            patch.object(mechanical_resources, "workspace_dir", return_value=self.main_clone),
+            patch.object(mechanical_resources, "worktree_root", return_value=self.main_clone),
             patch.object(mechanical_resources, "_safe_cwd", return_value=wt.resolve()),
         ):
             free_resources(self._payload())
@@ -230,7 +230,7 @@ class WorktreeGcSafetyTests(TestCase):
         self._make_stale(wt)
         payload = self._payload()
         payload["allow_destructive_disk"] = False
-        with patch.object(mechanical_resources, "workspace_dir", return_value=self.main_clone):
+        with patch.object(mechanical_resources, "worktree_root", return_value=self.main_clone):
             free_resources(payload)
         assert wt.exists(), "with the flag off, NO worktree is removed"
 
@@ -615,14 +615,14 @@ class HelperTests(TestCase):
     def test_list_worktrees_empty_when_workspace_missing(self) -> None:
         from unittest.mock import patch  # noqa: PLC0415
 
-        with patch.object(mechanical_resources, "workspace_dir", return_value=self.tmp / "absent"):
+        with patch.object(mechanical_resources, "worktree_root", return_value=self.tmp / "absent"):
             assert mechanical_resources._list_workspace_worktrees() == []
 
     def test_list_worktrees_empty_when_git_unavailable(self) -> None:
         from unittest.mock import patch  # noqa: PLC0415
 
         with (
-            patch.object(mechanical_resources, "workspace_dir", return_value=self.tmp),
+            patch.object(mechanical_resources, "worktree_root", return_value=self.tmp),
             patch.object(mechanical_resources, "_git", return_value=None),
         ):
             assert mechanical_resources._list_workspace_worktrees() == []

@@ -16,7 +16,10 @@ import os
 import re
 from pathlib import Path
 
+from django.core.exceptions import ImproperlyConfigured
+
 from teatree.core.models import Ticket, Worktree
+from teatree.core.overlay_loader import get_all_overlays, get_overlay_for_repo
 from teatree.core.worktree_env import CACHE_FILENAME
 from teatree.utils import git
 
@@ -29,6 +32,35 @@ _LEADING_TICKET_NUMBER = re.compile(r"^(?:[^/]*/)?(\d+)(?:-|$)")
 
 class WorktreeNotFoundError(RuntimeError):
     """Raised when no worktree can be resolved from the current context."""
+
+
+class TicketIdentityCollisionError(RuntimeError):
+    """Raised when a derived ``ticket_number`` resolves to more than one ticket.
+
+    ``ticket_number`` is a DERIVED, non-unique key (trailing digits of
+    ``issue_url``, else the pk), so two tickets on different repos/forges can
+    share one. Returning an arbitrary ``.first()`` silently cross-attaches a
+    worktree to the wrong ticket; failing loud surfaces the ambiguity instead.
+    """
+
+
+class WorktreePathConflictError(RuntimeError):
+    """Raised when refreshing a row would steal a ``worktree_path`` another row owns.
+
+    Repointing row A onto a path row B already records would leave two rows
+    claiming one directory — every downstream consumer (run, provision,
+    teardown) would then disagree about which ticket owns it. Fail loud rather
+    than silently repoint.
+    """
+
+
+class WorkspaceOwnerCollisionError(RuntimeError):
+    """Raised when one workspace dir is owned by worktrees of more than one ticket.
+
+    The one-ticket-per-workspace-dir invariant is violated. Picking an
+    arbitrary owner mis-attributes a sibling worktree; failing loud tells the
+    operator to run the command from a specific worktree subdir.
+    """
 
 
 def _get_user_cwd() -> str:
@@ -128,48 +160,90 @@ def _ticket_number_from_branch(branch: str) -> str | None:
     return match.group(1) if match else None
 
 
-def _ticket_by_number(number: str) -> Ticket | None:
+def _ticket_by_number(number: str, *, overlay: str | None = None) -> Ticket | None:
     """Return the non-synthetic ticket whose ``ticket_number`` is *number*.
 
-    ``ticket_number`` is a derived property (trailing digits of ``issue_url``,
-    else the pk), so the match is done in Python over real tickets — synthetic
+    ``ticket_number`` is a DERIVED, non-unique key (trailing digits of
+    ``issue_url``, else the pk), so two tickets on different repos/forges can
+    share one. The match is done in Python over real tickets — synthetic
     ``auto:`` rows are excluded so a hint never resolves back to a placeholder.
+
+    When *overlay* is known (inferred from the resolving repo's remote) the
+    candidates are narrowed to that overlay first, so a same-number ticket in a
+    different overlay never competes. More than one surviving candidate raises
+    :class:`TicketIdentityCollisionError` (fail loud) rather than returning an
+    arbitrary ``.first()`` that would cross-attach the worktree to the wrong
+    ticket.
     """
-    for ticket in Ticket.objects.exclude(issue_url="").exclude(issue_url__startswith="auto:"):
-        if ticket.ticket_number == number:
-            return ticket
-    return None
+    matches = [
+        ticket
+        for ticket in Ticket.objects.exclude(issue_url="").exclude(issue_url__startswith="auto:")
+        if ticket.ticket_number == number
+    ]
+    if overlay:
+        scoped = [ticket for ticket in matches if ticket.overlay == overlay]
+        if scoped:
+            matches = scoped
+    if len(matches) > 1:
+        msg = (
+            f"ticket_number {number!r} resolves to {len(matches)} tickets "
+            f"(pks {sorted(ticket.pk for ticket in matches)}); refusing to attach a "
+            "worktree to an arbitrary one. Pass --ticket to disambiguate."
+        )
+        raise TicketIdentityCollisionError(msg)
+    return matches[0] if matches else None
 
 
-def _ticket_owning_branch(branch: str) -> Ticket | None:
+def _ticket_owning_branch(branch: str, *, overlay: str | None = None) -> Ticket | None:
     """Return the ticket whose ``ticket_number`` the branch encodes, or None.
 
     A manually-added worktree (``git worktree add`` without ``workspace
     ticket``) has no Worktree row yet, but its branch already names the
     ticket. Matching on that number attaches the worktree to the correct
-    ticket instead of the most-recent workspace sibling.
+    ticket instead of the most-recent workspace sibling. *overlay* scopes the
+    number lookup (see :func:`_ticket_by_number`).
     """
     number = _ticket_number_from_branch(branch)
     if number is None:
         return None
-    return _ticket_by_number(number)
+    return _ticket_by_number(number, overlay=overlay)
+
+
+def _overlay_name_for_cwd(cwd_path: Path) -> str | None:
+    """Best-effort overlay name owning the repo at *cwd_path* (or ``None``).
+
+    Scopes ``_ticket_by_number`` so a same-number ticket in another overlay
+    never collides. Resolution is via the repo's ``origin`` remote
+    (:func:`get_overlay_for_repo`); a repo with no recognised remote yields
+    ``None`` and the number match stays global (still fail-loud on >1).
+    """
+    try:
+        overlay = get_overlay_for_repo(str(cwd_path))
+    except ImproperlyConfigured:
+        return None
+    if overlay is None:
+        return None
+    for name, candidate in get_all_overlays().items():
+        if candidate is overlay:
+            return name
+    return None
 
 
 def _auto_register_from_git(cwd: str, ticket_hint: Ticket | None = None) -> Worktree | None:
     """Detect a git worktree from the filesystem and auto-register it in the DB.
 
-    Reuses an existing Worktree row keyed by branch + repo before falling
-    through to creating a new ``auto:<branch>`` ticket. This prevents duplicate
-    ticket rows when a real-ticket worktree exists but its
-    ``extra["worktree_path"]`` is missing or stale (which would make
-    ``match_worktree_by_path`` miss it).
-
     Ticket attribution for a manually-added worktree resolves in order:
     an explicit *ticket_hint* (the ``--ticket`` flag), the branch-encoded
-    ticket number (``_ticket_owning_branch``), the workspace-dir owner
-    (``_workspace_owner_ticket``), then a fresh ``auto:<branch>`` ticket. The
-    hint and branch number win first so a manual worktree never cross-attaches
-    to an unrelated sibling under the same workspace dir.
+    ticket number (``_ticket_owning_branch``, overlay-scoped), then the
+    workspace-dir owner (``_workspace_owner_ticket``). The attribution chain
+    runs FIRST so a real signal always wins over a foreign row that merely
+    shares this branch + repo basename — the cross-attach that bound a worktree
+    to a merged ticket.
+
+    Only when the chain yields nothing does the legacy branch+repo reuse fire,
+    as a LAST resort before forking a fresh ``auto:<branch>`` ticket — it
+    rescues a moved or stale-``worktree_path`` worktree of a non-numbered branch
+    without forking a duplicate, and can no longer out-vote real attribution.
     """
     cwd_path = Path(cwd).resolve()
     git_file = cwd_path / ".git"
@@ -181,21 +255,30 @@ def _auto_register_from_git(cwd: str, ticket_hint: Ticket | None = None) -> Work
         return None
 
     repo_name = cwd_path.name
+    overlay_name = _overlay_name_for_cwd(cwd_path)
+    ticket = ticket_hint or _ticket_owning_branch(branch, overlay=overlay_name) or _workspace_owner_ticket(cwd_path)
+    if ticket is not None:
+        return _get_or_refresh_worktree(ticket, repo_name, branch, cwd_path)
+
     existing = Worktree.objects.filter(branch=branch, repo_path=repo_name).first()
     if existing is not None:
         _refresh_reused_row(existing, branch, cwd_path)
         return existing
 
-    ticket = (
-        ticket_hint
-        or _ticket_owning_branch(branch)
-        or _workspace_owner_ticket(cwd_path)
-        or Ticket.objects.get_or_create(
-            issue_url=f"auto:{branch}",
-            defaults={"variant": "", "repos": [repo_name]},
-        )[0]
-    )
-    wt, wt_created = Worktree.objects.get_or_create(
+    ticket = Ticket.objects.get_or_create(
+        issue_url=f"auto:{branch}",
+        defaults={"variant": "", "repos": [repo_name]},
+    )[0]
+    return _get_or_refresh_worktree(ticket, repo_name, branch, cwd_path)
+
+
+def _get_or_refresh_worktree(ticket: Ticket, repo_name: str, branch: str, cwd_path: Path) -> Worktree:
+    """Reuse *ticket*'s row for *repo_name* (mirror ``provision.py``) or create it.
+
+    The reuse is scoped to the RESOLVED ticket, so a foreign ticket's row that
+    happens to share this branch + repo basename is never stolen.
+    """
+    wt, created = Worktree.objects.get_or_create(
         ticket=ticket,
         repo_path=repo_name,
         defaults={
@@ -204,7 +287,7 @@ def _auto_register_from_git(cwd: str, ticket_hint: Ticket | None = None) -> Work
             "extra": {"worktree_path": str(cwd_path)},
         },
     )
-    if not wt_created:
+    if not created:
         _refresh_reused_row(wt, branch, cwd_path)
     return wt
 
@@ -212,54 +295,99 @@ def _auto_register_from_git(cwd: str, ticket_hint: Ticket | None = None) -> Work
 def _refresh_reused_row(worktree: Worktree, branch: str, cwd_path: Path) -> None:
     """Re-point a reused row at the git worktree actually being resolved.
 
-    Both reuse arms above hand back an existing row whose recorded
-    ``branch``/``extra.worktree_path`` may describe a PREVIOUS worktree of
-    the same ticket+repo (the dir was re-created elsewhere, or the work
-    moved to a new branch). ``get_or_create`` ignores its ``defaults`` on
-    reuse, so without this refresh every downstream consumer (run
-    commands, provision steps) keeps acting on the stale path — e.g. a
-    frontend build silently lands in a different ticket's worktree
-    directory while the user is sitting in the current one.
+    A reused row's recorded ``branch``/``extra.worktree_path`` may describe a
+    PREVIOUS worktree of the same ticket+repo (the dir was re-created
+    elsewhere, or the work moved to a new branch). ``get_or_create`` ignores
+    its ``defaults`` on reuse, so without this refresh every downstream
+    consumer (run commands, provision steps) keeps acting on the stale path.
+
+    Refuses to repoint onto a ``worktree_path`` another row already owns: two
+    rows claiming one directory is the collision this fix forecloses, so it
+    raises :class:`WorktreePathConflictError` rather than silently steal.
     """
     update_fields: list[str] = []
     if worktree.branch != branch:
         worktree.branch = branch
         update_fields.append("branch")
     extra = worktree.extra or {}
-    if extra.get("worktree_path") != str(cwd_path):
-        extra["worktree_path"] = str(cwd_path)
+    new_path = str(cwd_path)
+    if extra.get("worktree_path") != new_path:
+        _assert_path_unclaimed(worktree, new_path)
+        extra["worktree_path"] = new_path
         worktree.extra = extra
         update_fields.append("extra")
     if update_fields:
         worktree.save(update_fields=update_fields)
 
 
-def _workspace_owner_ticket(cwd_path: Path) -> Ticket | None:
-    """Return the ticket that already owns *cwd_path*'s workspace dir, if any.
+def _assert_path_unclaimed(worktree: Worktree, new_path: str) -> None:
+    """Raise if a row other than *worktree* already records *new_path*."""
+    conflict = (
+        Worktree.objects.exclude(pk=worktree.pk).filter(extra__worktree_path__in=_candidate_paths(new_path)).first()
+    )
+    if conflict is not None:
+        msg = (
+            f"Refusing to repoint worktree #{worktree.pk} onto {new_path}: "
+            f"worktree #{conflict.pk} (ticket {conflict.ticket_id}) already owns it. "
+            "Two rows must never claim one directory."
+        )
+        raise WorktreePathConflictError(msg)
+
+
+def tickets_owning_workspace_dir(workspace_dir: Path) -> list[Ticket]:
+    """Return the distinct tickets whose worktrees live directly under *workspace_dir*.
 
     A per-ticket workspace dir holds one repo worktree per affected repo
-    (e.g. ``<workspace>/<ticket>/<repoA>``, ``…/<repoB>``). When a sibling
-    worktree under the same parent directory is already registered, its
-    ticket owns the workspace — a different branch/repo resolved from the
-    same workspace must attach to that ticket rather than fork a fresh
-    ``auto:<branch>`` ticket (#641).
+    (``<workspace>/<ticket>/<repoA>``, ``…/<repoB>``). A worktree belongs to
+    *workspace_dir* when its stored ``worktree_path``'s parent matches it.
 
     Stored ``worktree_path`` values are written unresolved (provision uses
-    ``config.workspace_dir()`` verbatim) while ``cwd_path`` here is
-    ``.resolve()``-d, so a symlinked workspace root (macOS ``/tmp`` →
-    ``/private/tmp``) would otherwise miss. Comparison goes through
-    ``_candidate_paths`` — the same symlink-variant set
-    ``match_worktree_by_path`` uses. Relies on the one-ticket-per-
-    workspace-dir invariant; if violated the first match wins.
+    ``config.worktree_root()`` verbatim) while callers pass a ``.resolve()``-d
+    dir, so comparison goes through ``_candidate_paths`` — the same
+    symlink-variant set ``match_worktree_by_path`` uses (macOS ``/tmp`` →
+    ``/private/tmp``). This is the single source of truth for workspace-dir →
+    ticket attribution, routed through by both the auto-register attribution
+    chain and the ``workspace`` command resolver.
     """
-    workspace_candidates = set(_candidate_paths(str(cwd_path.parent)))
+    workspace_candidates = set(_candidate_paths(str(workspace_dir)))
+    owners: dict[int, Ticket] = {}
     for wt in Worktree.objects.exclude(extra__worktree_path__isnull=True).order_by("pk"):
         recorded = (wt.extra or {}).get("worktree_path", "")
         if not recorded:
             continue
         if set(_candidate_paths(str(Path(recorded).parent))) & workspace_candidates:
-            return wt.ticket
-    return None
+            owners.setdefault(wt.ticket_id, wt.ticket)
+    return list(owners.values())
+
+
+def workspace_owner_ticket(workspace_dir: Path) -> Ticket | None:
+    """Return the single ticket owning *workspace_dir*, or ``None``; fail loud on >1.
+
+    The one-ticket-per-workspace-dir invariant: at most one ticket's worktrees
+    share a workspace dir (#641). More than one owner means the invariant is
+    violated; raising :class:`WorkspaceOwnerCollisionError` is the single
+    fail-loud policy both ``_auto_register_from_git`` and the ``workspace``
+    command resolver share — never an arbitrary pick.
+    """
+    owners = tickets_owning_workspace_dir(workspace_dir)
+    if len(owners) > 1:
+        msg = (
+            f"{workspace_dir} holds worktrees from {len(owners)} tickets "
+            f"(pks {sorted(ticket.pk for ticket in owners)}). Run the command "
+            "from a specific worktree subdir."
+        )
+        raise WorkspaceOwnerCollisionError(msg)
+    return owners[0] if owners else None
+
+
+def _workspace_owner_ticket(cwd_path: Path) -> Ticket | None:
+    """Return the ticket that owns *cwd_path*'s workspace dir, if any.
+
+    Thin wrapper resolving the workspace dir (the parent that holds the repo
+    subdirs) and delegating to :func:`workspace_owner_ticket` so the
+    attribution chain shares the one fail-loud multi-owner policy (#641).
+    """
+    return workspace_owner_ticket(cwd_path.parent)
 
 
 def _is_main_clone(path: str) -> bool:

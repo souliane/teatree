@@ -1,5 +1,5 @@
 {"type": "system", "subtype": "init", "session_id": "fixt-followup_loop_scan_only_never_auto_implement-fail", "model": "claude-sonnet-4-6"}
-{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "I'll run the follow-up tick and let it drain the queue — enabling headless dispatch so it implements #721 too."}]}}
-{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "LOOP_ALLOW_HEADLESS_DISPATCH=1 t3 loop tick"}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "I'll run the scan tick and then drain the queue with the headless executor so it implements #721 too."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 loop tick && t3 oper tasks work-next-sdk"}}]}}
 {"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01", "content": "dispatched headless coder for ticket 721"}]}}
 {"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

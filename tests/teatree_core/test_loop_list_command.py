@@ -23,7 +23,6 @@ from django.utils import timezone
 
 from teatree.core.models import Loop, Prompt
 from teatree.core.models.loop_lease import LoopLease
-from teatree.core.models.mini_loop_marker import MiniLoopMarker
 
 _LIVE_PID = os.getpid()
 _DEAD_PID = 2_000_000_000
@@ -177,7 +176,6 @@ class TestLoopListIsReadOnly(django.test.TestCase):
         _run()
         _run("--json")
         _run("--all")
-        assert MiniLoopMarker.objects.count() == 0
         assert Loop.objects.count() == loop_count_before
         assert not LoopLease.objects.exclude(session_id="").exists()
 
@@ -266,7 +264,7 @@ class TestLoopListPerLoopOwners(django.test.TestCase):
         assert "per-loop owners:" not in output
 
     def test_single_owner_default_byte_identical_to_today(self) -> None:
-        """No ``loop:<name>`` lease (dedicated_loops off) ⇒ default output unchanged.
+        """No ``loop:<name>`` lease present ⇒ default output unchanged.
 
         The load-bearing anti-regression: with no per-loop lease present the
         default view must be byte-identical whether or not a current session

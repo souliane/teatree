@@ -87,9 +87,15 @@ _TACH = _REPO_ROOT / "tach.toml"
 # module header (an eager declared parent->child edge, import-cycle-safe: the
 # slack_answer.cycle transitive eager closure reaches only declared leaves,
 # never the orchestration top), dropping the count 30 -> 29.
+# The DB-only-loop-control cutover deletes ``teatree.loop_enabled`` and repoints
+# ``review_claim_signals.review_loop_enabled`` to the eager
+# ``teatree.loop.loop_state_db.loop_held_in_db`` already on its module header,
+# removing the one function-scoped ``from teatree.loop_enabled import ...`` edge
+# (target ``teatree.loop_enabled`` matched the ``teatree.loop`` prefix), dropping
+# the count 29 -> 28.
 # SHRINK-ONLY: lower this as later carves convert remaining deferred edges into
 # declared tach sub-node edges; never raise it.
-_FROZEN_INTRA_LOOP_DEFERRED = 29
+_FROZEN_INTRA_LOOP_DEFERRED = 28
 
 
 def _function_scoped_intra_loop_imports(source: Path) -> int:

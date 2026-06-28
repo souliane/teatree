@@ -5,9 +5,9 @@ A sub-agent's bare ``git worktree add`` leaves a worktree with NO teatree
 accumulates (a real host reached 183). These tests drive
 :func:`reap_orphan_raw_worktrees` against a real ``git worktree`` under
 ``tmp_path`` and prove BOTH directions: an orphan whose work is on a remote (or
-detached with nothing unique) is reaped; an orphan with unpushed unique work is
-KEPT under the default policy, SNAPSHOTTED-then-reaped under ``snapshot``, and
-the #706 guard refuses to reap unique work when no snapshot materialises.
+detached with nothing unique) is reaped; an orphan with unpushed unique work (or
+uncommitted changes) is KEPT — the #706 data-loss guard, never destroyed and
+never snapshot. Salvage is a separate explicit action (push the branch to a PR).
 """
 
 import subprocess
@@ -69,7 +69,7 @@ class _OrphanWorktreeFixture(TestCase):
             env=_clean_env(),
         ).stdout
 
-    def _reap(self, *, reap_unsynced: str = "keep") -> list[str]:
+    def _reap(self) -> list[str]:
         # Force cwd-based clone discovery onto the tmp main clone.
         with (
             patch(
@@ -81,7 +81,7 @@ class _OrphanWorktreeFixture(TestCase):
                 return_value=self.repo_main,
             ),
         ):
-            return reap_orphan_raw_worktrees(self.workspace, reap_unsynced=reap_unsynced)
+            return reap_orphan_raw_worktrees(self.workspace)
 
 
 class TestRawWorktreeDiscovery(_OrphanWorktreeFixture):
@@ -129,89 +129,25 @@ class TestReapsMergedOrphan(_OrphanWorktreeFixture):
 
 
 class TestKeepsUnpushedOrphan(_OrphanWorktreeFixture):
-    def test_unpushed_orphan_is_kept_under_default_keep_policy(self) -> None:
-        """The 183-accumulation case: unpushed unique work is KEPT by default (data-loss guard)."""
+    def test_unpushed_orphan_is_kept_by_default(self) -> None:
+        """The 183-accumulation case: unpushed unique work is KEPT (data-loss guard), never snapshot."""
         wt_path = self._add_orphan("unpushed-feat", files={"new.txt": "secret work"})
 
-        results = self._reap(reap_unsynced="keep")
+        results = self._reap()
 
-        assert wt_path.exists(), "unpushed orphan must NOT be reaped under keep policy"
+        assert wt_path.exists(), "unpushed orphan must NOT be reaped — it carries unique work"
         assert str(wt_path) in self._registered_paths()
         assert any("KEPT orphan" in line and "unpushed-feat" in line for line in results)
 
     def test_dirty_orphan_is_always_kept(self) -> None:
-        """A live worktree with uncommitted changes is never reaped, even under snapshot policy."""
+        """A live worktree with uncommitted changes is never reaped."""
         wt_path = self._add_orphan("dirty-feat")
         (wt_path / "wip.txt").write_text("mid-task edit")  # uncommitted
 
-        results = self._reap(reap_unsynced="snapshot")
+        results = self._reap()
 
         assert wt_path.exists(), "dirty orphan must never be reaped"
         assert any("uncommitted changes" in line for line in results)
-
-
-class TestSnapshotThenReap(_OrphanWorktreeFixture):
-    def test_unpushed_orphan_is_snapshotted_then_reaped_and_is_recoverable(self) -> None:
-        """``--reap-unsynced=snapshot``: write a recovery artifact, THEN reap; commits recoverable."""
-        wt_path = self._add_orphan("snapshot-feat", files={"keep.txt": "important work"})
-        unique_sha = subprocess.run(
-            [_GIT, "-C", str(wt_path), "rev-parse", "HEAD"],
-            check=True,
-            capture_output=True,
-            text=True,
-            env=_clean_env(),
-        ).stdout.strip()
-
-        results = self._reap(reap_unsynced="snapshot")
-
-        assert not wt_path.exists(), "snapshot-policy orphan should be reaped"
-        assert str(wt_path) not in self._registered_paths()
-        reaped = [line for line in results if "Reaped orphan worktree (snapshot at" in line]
-        assert reaped, f"expected a snapshot-then-reap line, got {results}"
-
-        snapshot_dir = Path(reaped[0].split("snapshot at ", 1)[1].split(")", 1)[0])
-        bundle = snapshot_dir / "branch.bundle"
-        assert bundle.is_file(), "recovery bundle was not written"
-
-        # The reaped commit must be present in the bundle and restorable from it.
-        heads = subprocess.run(
-            [_GIT, "bundle", "list-heads", str(bundle)],
-            check=True,
-            capture_output=True,
-            text=True,
-            env=_clean_env(),
-        ).stdout
-        assert unique_sha in heads, "the unpushed commit is NOT recorded in the recovery bundle"
-
-        restored = snapshot_dir / "restored"
-        subprocess.run(
-            [_GIT, "clone", "-q", str(bundle), str(restored)],
-            check=True,
-            capture_output=True,
-            env=_clean_env(),
-        )
-        log = subprocess.run(
-            [_GIT, "-C", str(restored), "log", "--format=%H", "origin/snapshot-feat"],
-            check=True,
-            capture_output=True,
-            text=True,
-            env=_clean_env(),
-        ).stdout
-        assert unique_sha in log, "the unpushed commit is NOT recoverable from the cloned snapshot"
-
-    def test_706_guard_refuses_reap_when_snapshot_does_not_materialise(self) -> None:
-        """#706: unique work is never reaped WITHOUT a successful snapshot — bundle failure keeps it."""
-        wt_path = self._add_orphan("guard-feat", files={"x.txt": "unique"})
-
-        with patch(
-            "teatree.core.management.commands._workspace_orphan_worktrees.capture_worktree_snapshot",
-            return_value=None,
-        ):
-            results = self._reap(reap_unsynced="snapshot")
-
-        assert wt_path.exists(), "orphan reaped despite the snapshot not materialising (data loss!)"
-        assert str(wt_path) in self._registered_paths()
-        assert any("snapshot did not materialise" in line for line in results)
 
 
 class TestReapsSquashMergedOrphan(_OrphanWorktreeFixture):
@@ -231,7 +167,7 @@ class TestReapsSquashMergedOrphan(_OrphanWorktreeFixture):
         _run_git("commit", "-q", "-m", "squash: the feature (#1)", cwd=self.repo_main)
         _run_git("push", "-q", "origin", "main", cwd=self.repo_main)
 
-        results = self._reap(reap_unsynced="keep")
+        results = self._reap()
 
         assert not wt_path.exists(), "squash-merged orphan survived despite work being on main"
         assert str(wt_path) not in self._registered_paths()
@@ -251,7 +187,7 @@ class TestTrackedWorktreeNeverReapedAsOrphan(_OrphanWorktreeFixture):
             extra={"worktree_path": str(wt_path), "clone_path": str(self.repo_main)},
         )
 
-        results = self._reap(reap_unsynced="snapshot")
+        results = self._reap()
 
         assert wt_path.exists(), "a DB-tracked worktree must never be reaped by the orphan pass"
         assert not any("tracked-feat" in line for line in results)

@@ -17,7 +17,7 @@ import teatree.core.management.commands.worktree as worktree_cmd
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.runners.worktree_provision as worktree_provision_mod
 import teatree.utils.run as utils_run_mod
-from teatree.core.models import Session, Task, TaskAttempt, Ticket, Worktree
+from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket, Worktree
 from teatree.core.overlay import DbImportStrategy, OverlayBase, ProvisionStep, RunCommands
 from tests.teatree_agents._sdk_fake import fake_sdk, success_stream
 
@@ -276,8 +276,8 @@ class TestTaskCommands(TestCase):
     def test_return_none_when_no_work_available(self) -> None:
         assert call_command("tasks", "work-next-sdk", claimed_by="worker-1") is None
 
-    @override_settings(LOOP_ALLOW_HEADLESS_DISPATCH=False)
     def test_work_next_sdk_refuses_loop_dispatched_phase(self) -> None:
+        ConfigSetting.objects.set_value("agent_runtime", "interactive")
         ticket = Ticket.objects.create(overlay="test")
         session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent-1")
         task = Task.objects.create(ticket=ticket, session=session, phase="answering")
@@ -304,8 +304,8 @@ class TestTaskCommands(TestCase):
         assert attempt.exit_code == 1
         assert "routing_error" in attempt.result
 
-    @override_settings(LOOP_ALLOW_HEADLESS_DISPATCH=True)
-    def test_work_next_sdk_override_allows_loop_dispatched_phase(self) -> None:
+    def test_work_next_sdk_headless_runtime_allows_loop_dispatched_phase(self) -> None:
+        ConfigSetting.objects.set_value("agent_runtime", "sdk_oauth")
         ticket = Ticket.objects.create(overlay="test")
         session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent-1")
         task = Task.objects.create(ticket=ticket, session=session, phase="answering")
@@ -863,7 +863,7 @@ class TestUpdateTicketVariant(TestCase):
             overlay="test",
             repo_path="backend",
             branch="feature",
-            db_name=f"wt_{ticket.ticket_number}_old",
+            db_name=f"wt_{ticket.pk}_old",
         )
 
         _update_ticket_variant(ticket, "new")
@@ -871,7 +871,7 @@ class TestUpdateTicketVariant(TestCase):
         ticket.refresh_from_db()
         wt.refresh_from_db()
         assert ticket.variant == "new"
-        assert wt.db_name == f"wt_{ticket.ticket_number}_new"
+        assert wt.db_name == f"wt_{ticket.pk}_new"
 
     def test_skips_save_when_db_name_unchanged(self) -> None:
         from teatree.core.management.commands.worktree import _update_ticket_variant  # noqa: PLC0415
@@ -886,7 +886,7 @@ class TestUpdateTicketVariant(TestCase):
             overlay="test",
             repo_path="backend",
             branch="feature",
-            db_name=f"wt_{ticket.ticket_number}",
+            db_name=f"wt_{ticket.pk}",
         )
         original_db_name = wt.db_name
 
@@ -895,7 +895,7 @@ class TestUpdateTicketVariant(TestCase):
 
         wt.refresh_from_db()
         assert wt.db_name != original_db_name
-        assert wt.db_name == f"wt_{ticket.ticket_number}_acme"
+        assert wt.db_name == f"wt_{ticket.pk}_acme"
 
 
 class TestFollowupCommands(TestCase):

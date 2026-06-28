@@ -90,6 +90,44 @@ class TestDeriveAndReplay(SimpleTestCase):
         assert probe_answerable(probe, snap) is True
 
 
+class TestSignatureIsDescriptionAware(SimpleTestCase):
+    """``gates._signature_line`` delegates to the frontmatter-aware extractor (#2746 nit-4).
+
+    The old inline scanner returned the body ``node_type: memory`` line for a
+    node-typed memory, near-vacuating its retention probe. The signature now
+    prefers the frontmatter ``description:`` so the hot index, the cold index, and
+    the probe all carry the SAME real lesson.
+    """
+
+    _NODE_TYPED = (
+        "---\nname: feedback_x\n"
+        "description: the lease guard rejects an empty owner address\n"
+        "metadata:\n  type: feedback\n---\n"
+        "node_type: memory\ntrailing body\n"
+    )
+
+    def test_signature_line_returns_description_not_node_type(self) -> None:
+        signature = gates._signature_line(self._NODE_TYPED)
+        assert signature == "the lease guard rejects an empty owner address"
+        assert "node_type" not in signature
+
+    def test_signature_line_agrees_with_reindex_signature_text(self) -> None:
+        # ONE extractor: hot index (reindex) and cold/probe (gates) must agree.
+        assert gates._signature_line(self._NODE_TYPED) == reindex.signature_text(self._NODE_TYPED)
+
+    def test_derive_probes_expected_answer_is_the_description(self) -> None:
+        snap = _snapshot({"feedback_x.md": self._NODE_TYPED})
+        probes = derive_probes(snap)
+        assert len(probes) == 1
+        assert probes[0].expected_answer == "the lease guard rejects an empty owner address"
+
+    def test_probe_for_node_typed_memory_stays_answerable(self) -> None:
+        # The description is a substring of the body, so retention stays green.
+        snap = _snapshot({"feedback_x.md": self._NODE_TYPED})
+        probes = derive_probes(snap)
+        assert probe_answerable(probes[0], snap) is True
+
+
 class TestGateA(SimpleTestCase):
     def test_passes_when_every_pre_answerable_probe_still_answerable(self) -> None:
         before = _snapshot({"m.md": "name: m\nfact ONE and fact TWO\n"})
@@ -243,6 +281,15 @@ class TestGateC(SimpleTestCase):
         )
         assert not result.passed  # maintenance happened but a pruned line is orphaned
 
+    def test_archived_entry_pruned_line_is_homed_via_archived_names(self) -> None:
+        # #2723: an archived entry's pruned hot line points at a .md that LEFT `memories`
+        # for the cold archive/ — a RESTORABLE durable home. The shared _line_targets homes
+        # it when the line's pointer is in the archived set; an empty set leaves it unhomed
+        # (teeth — the homing is real, not always-true).
+        line = "- feedback_low_signal.md — a stale low-signal lesson"
+        assert gates._line_targets(line, {"feedback_low_signal.md"})
+        assert not gates._line_targets(line, set())
+
     def test_summary_name_dropping_a_live_memory_does_not_home_a_gone_target(self) -> None:
         # The pruned line's link TARGET (gone_x.md) vanished, but its free-text summary
         # mentions a DIFFERENT, surviving memory's filename. Homing keys on the link
@@ -265,23 +312,28 @@ class TestGateD(SimpleTestCase):
         result = Gate.index_budget(after)
         assert result.passed
 
-    def test_fails_over_line_budget(self) -> None:
-        big_index = "\n".join(f"- line {i}" for i in range(gates.INDEX_LINE_BUDGET + 5))
+    def test_many_short_lines_under_byte_budget_passes(self) -> None:
+        # #2755 core behavioral win: an index of MANY short lines (300, FAR over the
+        # retired 150-line cap) that totals WELL under 24 KB now PASSES. The old line cap
+        # FAILED this needlessly; bytes are the only constraint. Anti-vacuous —
+        # reintroduce a 150-line cap and this goes RED.
+        big_index = "\n".join(f"- m{i}.md — s" for i in range(300))
         after = _snapshot({}, index=big_index)
+        assert after.index_line_count == 300  # well over the retired 150-line cap
+        assert after.index_byte_size < gates.INDEX_BYTE_BUDGET  # ... yet under the byte budget
         result = Gate.index_budget(after)
-        assert not result.passed
+        assert result.passed
 
     def test_fails_over_byte_budget(self) -> None:
         after = _snapshot({}, index="- " + "x" * (gates.INDEX_BYTE_BUDGET + 10))
         result = Gate.index_budget(after)
         assert not result.passed
 
-    def test_budget_tracks_the_real_session_load_limit(self) -> None:
-        # #2723: the budget must track the ~24KB session-load truncation point,
-        # not a 10x regression alarm. Pin the load limit explicitly so a future
-        # widening of the threshold past loadability fails here.
+    def test_budget_tracks_the_real_session_load_byte_limit(self) -> None:
+        # #2723/#2755: the budget tracks the ~24 KB session-load BYTE truncation point,
+        # not a line cap or a 10x regression alarm. Pin the byte load limit explicitly so
+        # a future widening past loadability fails here.
         assert gates.INDEX_BYTE_BUDGET <= 24 * 1024
-        assert gates.INDEX_LINE_BUDGET <= 160
 
 
 class TestGateDLoadability(SimpleTestCase):

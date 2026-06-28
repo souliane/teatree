@@ -50,11 +50,17 @@ def _dispatchable_q() -> Q:
     tasks (one source of truth). Phase is matched across every accepted
     spelling (``phase_spellings``) so a short-verb ``code``/``review`` task
     resolves the same as the canonical token ``_subagent_for`` normalizes.
+
+    The in-session ``/loop`` claims only INTERACTIVE tasks: under a headless
+    ``agent_runtime`` a loop-dispatched phase task is HEADLESS and owned by the
+    headless lane (``execute_headless_task``), so AND-ing ``execution_target ==
+    INTERACTIVE`` keeps the two lanes disjoint — the same task is never claimed
+    in-session AND run headless.
     """
     q = Q(pk__in=[])  # matches nothing; OR-folded below
     for role, phase in _SUBAGENT_BY_PHASE:
         q |= Q(ticket__role=role, phase__in=phase_spellings(phase))
-    return q
+    return q & Q(execution_target=Task.ExecutionTarget.INTERACTIVE)
 
 
 def _admit_budget_exhausted() -> bool:

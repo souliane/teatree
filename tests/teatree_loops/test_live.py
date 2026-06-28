@@ -8,8 +8,8 @@ helpers. The clock is pinned so the derived numbers are deterministic.
 After the #2513 cutover the mini-loop rows come from the DB ``Loop`` table, so
 the tests that need a mini-loop present create real ``Loop`` rows (with a
 ``demo-`` name prefix scoping their assertions away from the seeded production
-loops) instead of patching the removed ``iter_loops`` / ``LoopsConfig`` /
-``MiniLoopMarker`` source.
+loops) instead of patching the removed code-cadence source (``iter_loops`` /
+``LoopsConfig`` / the deleted cadence-marker ledger).
 """
 
 import datetime as dt

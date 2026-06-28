@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from teatree.config.enums import Autonomy, MissingIssuePolicy, Mode, OnBehalfPostMode, Speed, TeamsDisplay
+from teatree.config.enums import AgentRuntime, Autonomy, MissingIssuePolicy, Mode, OnBehalfPostMode, Speed, TeamsDisplay
 from teatree.config_mr_reminder import MrReminderConfig
 from teatree.paths import DATA_DIR
 from teatree.types import DEFAULT_MR_TITLE_REGEX, SlackVoiceClassifierMode, SpeakConfig
@@ -85,12 +85,9 @@ def _parse_on_behalf_auto_actions(raw: object) -> list[str]:
 
 
 def _parse_env_bool(raw: str) -> bool:
-    """Coerce a ``T3_*`` env-var string to a bool for ``ENV_SETTING_OVERRIDES``.
+    """Coerce a ``T3_*`` env string to a bool for ``ENV_SETTING_OVERRIDES``.
 
-    Conservative truthy set (``1``/``true``/``yes``/``on``, case-insensitive);
-    everything else — including ``false``/``0``/``no`` — resolves to ``False``.
-    A kill-switch env var is meant to *disable*, so any value that is not an
-    explicit enable reads as off.
+    Truthy set ``1``/``true``/``yes``/``on`` (case-insensitive); else ``False``.
     """
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
@@ -248,12 +245,9 @@ def _parse_strict_str(raw: object) -> str:
     """Coerce a TOML/JSON value for a str-typed overridable setting, strictly.
 
     Accepts only a real ``str``; REJECTS a ``bool``/``int``/``float``/``list``
-    rather than stringifying it via ``str(...)`` (#258). The bare ``str`` parser
-    accepted anything (``str(True) == "True"``, ``str(5) == "5"``), so a
-    type-mismatched value for a str-typed setting was silently coerced into a
-    nonsense string instead of being rejected. Single coercer for every
-    str-typed overridable setting, applied identically on the write and read
-    paths.
+    rather than stringifying it via ``str(...)`` (#258, which the bare ``str``
+    parser silently did: ``str(True) == "True"``). The single coercer for every
+    str-typed overridable setting, applied identically on read and write.
     """
     if not isinstance(raw, str):
         msg = f"Invalid str value {raw!r}; expected a JSON/TOML string"
@@ -290,13 +284,16 @@ def _parse_user_identity_aliases(raw: object) -> list[str]:
 # fitness test asserts this registry covers exactly the DB-home set (no TOML-home
 # key, every DB-home key present).
 OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
+    # Stored as a path STRING (JSONField holds no Path); config.worktree_root() is
+    # the typed accessor that expanduser()-wraps it and applies the per-overlay default.
+    "workspace_dir": _parse_strict_str,
     "mode": Mode.parse,
     "autonomy": Autonomy.parse,
     "speed": Speed.parse,
+    "agent_runtime": AgentRuntime.parse,
     "contribute": _parse_strict_bool,
     "excluded_skills": _parse_str_list,
     "loop_cadence_seconds": _parse_strict_int,
-    "dedicated_loops": _parse_strict_bool,
     "teams_enabled": _parse_strict_bool,
     "teams_max_panes": _parse_overridable_positive_int(1),
     "teams_idle_minutes": _parse_overridable_positive_int(30),
@@ -410,6 +407,7 @@ TOML_OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
 ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_MODE": ("mode", Mode.parse),
     "T3_SPEED": ("speed", Speed.parse),
+    "T3_AGENT_RUNTIME": ("agent_runtime", AgentRuntime.parse),
     "T3_ON_BEHALF_POST_MODE": ("on_behalf_post_mode", OnBehalfPostMode.parse),
     "T3_MISSING_ISSUE_POLICY": ("missing_issue_ref_policy", MissingIssuePolicy.parse),
     "T3_ON_BEHALF_AUTO_ACTIONS": ("on_behalf_auto_actions", _parse_env_str_list),
@@ -417,13 +415,13 @@ ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_ISSUE_IMPLEMENTER_ENABLED": ("issue_implementer_enabled", _parse_env_bool),
     "T3_LOOP_AUTO_UPDATE": ("auto_update_reinstall", _parse_env_bool),
     "T3_ORCHESTRATE_CLAIM_ENABLED": ("orchestrate_claim_enabled", _parse_env_bool),
-    "T3_DEDICATED_LOOPS": ("dedicated_loops", _parse_env_bool),
     "T3_TEAMS_ENABLED": ("teams_enabled", _parse_env_bool),
     "T3_TEAMS_MAX_PANES": ("teams_max_panes", _parse_env_positive_int(1)),
     "T3_TEAMS_IDLE_MINUTES": ("teams_idle_minutes", _parse_env_positive_int(30)),
     "T3_TEAMS_DISPLAY": ("teams_display", _parse_env_teams_display),
     "T3_CONTRIBUTE": ("contribute_plugin_dir", _parse_env_bool),
     "T3_HOOK_FETCH_TITLES": ("hook_fetch_titles", _parse_env_bool_default_on),
+    "T3_AUTOLOAD": ("autoload", _parse_env_bool),
 }
 
 
@@ -494,11 +492,28 @@ class UserSettings:
     worktrees_dir: Path = field(default_factory=lambda: DATA_DIR / "worktrees")
     privacy: str = ""
     check_updates: bool = True
+    # #256 Default-OFF teatree engagement. When false (the default) a fresh
+    # Claude session does NOT auto-engage teatree — no skill auto-suggest, no
+    # PreToolUse load-block, no loop scheduling — and SessionStart shows a
+    # one-line how-to-start advisory instead. The owner flips it true to
+    # auto-activate every session. TOML-home like ``check_updates`` (the cold
+    # SessionStart / UserPromptSubmit hooks read it pre-Django, so it can never
+    # move into the DB store); ``T3_AUTOLOAD`` env wins. A DB row is ignored on
+    # read. Explicitly calling ``/teatree`` — or loading any ``t3:`` skill —
+    # engages teatree for the session regardless of this default.
+    autoload: bool = False
     timezone: str = ""
     contribute: bool = False
     excluded_skills: list[str] = field(default_factory=list)
     mode: Mode = Mode.INTERACTIVE
     autonomy: Autonomy = Autonomy.BABYSIT
+    # The single runtime selector for loop-dispatched phase agents (those whose
+    # (role, phase) has a registered phase sub-agent). ``interactive`` (default,
+    # today's behaviour) dispatches them in-session via the ``/loop`` slot's
+    # ``Agent`` tool; ``sdk_oauth`` / ``sdk_apikey`` / ``api`` run them headless
+    # via ``agents/headless.py`` (OAuth subscription / metered API key / future
+    # raw-API runner). Per-overlay overridable; ``T3_AGENT_RUNTIME`` env wins.
+    agent_runtime: AgentRuntime = AgentRuntime.INTERACTIVE
     # How much parallel work the orchestrator drives at once. The
     # conservative ``MEDIUM`` baseline means NO orchestrator fan-out — only
     # the intrinsic loop + PR sweep + per-overlay ``max_concurrent_auto_starts``
@@ -510,15 +525,6 @@ class UserSettings:
     speed: Speed = Speed.MEDIUM
     # Loop tick interval in seconds (BLUEPRINT § 5.6). Default 12 minutes.
     loop_cadence_seconds: int = 720
-    # Opt-in: replace the single fat `loop-owner` slot (one `run_tick`
-    # fanning across ALL mini-loops) with N dedicated `/loop <cadence>`
-    # slots, each driving one dedicated loop (a named group of mini-loops)
-    # via a SCOPED `t3 loop tick --slot <name>` claiming `loop:<name>`
-    # (#1838 Track-A). Default OFF and fail-OFF: when false the slot
-    # generator emits the single fat slot and the no-`--slot` tick path is
-    # byte-identical to today (BLUEPRINT § 5.6 "Per-loop owning-session
-    # layer"). Per-overlay overridable; `T3_DEDICATED_LOOPS` env wins.
-    dedicated_loops: bool = False
     # #1838 Track-B PR#6 — the inert agent-teams WORK layer. When false (the
     # default, fail-OFF), the team-role registry (`teatree.teams.roles`) is
     # PURE DATA referenced by nothing in the loop/dispatch/claim path: the

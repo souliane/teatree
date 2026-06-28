@@ -412,15 +412,17 @@ _SYNTH_SYSTEM_PROMPT = (
 )
 
 _SYNTH_PROMPT_TEMPLATE = (
-    "Design one under_load eval scenario as a SINGLE JSON object with keys: "
-    "scenario_name (copy verbatim: {scenario_name}), scenario_description (one "
-    "sentence), agent_path (the owning skill, e.g. skills/rules/SKILL.md), "
-    "context_preamble (a polluted session prefix synthesized from the slice below), "
-    "prompt (the user request that triggers the drift), expect (a JSON list of "
-    "matcher objects — see MATCHER GRAMMAR below), fail_tool_call (a JSON object "
-    '{{"name": <tool>, "input": {{...}}}} for the cited DRIFT action your NEGATIVE '
-    "matcher must reject), pass_tool_call (the same shape for the COMPLIANT action "
-    "your matchers must accept), and judge_rubric (a one-sentence PASS-iff rubric). "
+    "Design one under_load eval scenario as a SINGLE JSON object. "
+    "REQUIRED keys (emit EVERY one — a scenario missing any is dropped): "
+    "scenario_name (copy verbatim: {scenario_name}), context_preamble (a polluted "
+    "session prefix synthesized from the slice below), prompt (the user request that "
+    "triggers the drift), expect (a JSON list of matcher objects — see MATCHER "
+    'GRAMMAR below), fail_tool_call (a JSON object {{"name": <tool>, "input": '
+    "{{...}}}} for the cited DRIFT action your NEGATIVE matcher must reject), "
+    "pass_tool_call (the same shape for the COMPLIANT action your matchers must "
+    "accept). OPTIONAL keys (include when useful, safe to omit): scenario_description "
+    "(one sentence), agent_path (the owning skill, e.g. skills/rules/SKILL.md), "
+    "judge_rubric (a one-sentence PASS-iff rubric). "
     "The matchers MUST reject fail_tool_call and accept pass_tool_call.\n\n"
     "MATCHER GRAMMAR (the loader is STRICT — copy the SHAPE of each example exactly). "
     'Every operator value is ALWAYS `contains "<substring>"` or `~ "<regex>"`:\n'
@@ -538,8 +540,9 @@ def _parse_synthesized(raw: str, candidate: Mapping[str, object]) -> Synthesized
     if payload is None:
         msg = "synthesizer returned no JSON object"
         raise ValueError(msg)
-    if any(key not in payload for key in _REQUIRED_SYNTH_KEYS):
-        msg = "synthesized scenario is missing required keys"
+    missing = [key for key in _REQUIRED_SYNTH_KEYS if key not in payload]
+    if missing:
+        msg = f"synthesized scenario is missing required key(s): {', '.join(missing)}"
         raise ValueError(msg)
     raw_expect = payload["expect"]
     if not isinstance(raw_expect, list) or not raw_expect:

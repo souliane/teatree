@@ -41,6 +41,7 @@ import sys
 import tomllib
 from pathlib import Path
 
+from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
 from teatree.hooks.term_match import file_matches as _file_matches
 from teatree.hooks.term_match import line_matches, strip_emails
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
@@ -50,29 +51,49 @@ from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to
 # the commit, so the budget is deliberately tight.
 _GIT_DIFF_TIMEOUT_S = 10
 
+# The REQUIRED term-list key (an unset value fails loud) vs the OPTIONAL
+# allow-list key (an unset value defaults to empty). See ``_load_terms`` /
+# ``_load_allowlist`` for the split.
+_TERMS_KEY = "banned_terms"
+_ALLOWLIST_KEY = "banned_terms_allowlist"
 
-def _load_array(config: Path, key: str) -> tuple[str, ...]:
-    """Return the first ``key`` array found in any TOML section (or the root).
+
+def _load_array(config: Path, key: str) -> tuple[str, ...] | None:
+    """Return the first ``key`` array found in any TOML section, or ``None`` if unset.
 
     Mirrors the old shell extractor: scan every top-level section (and the
-    document root) for *key* and use the first one found. Backs both the
-    ``banned_terms`` list and the ``banned_terms_allowlist`` carve-out.
+    document root) for *key* and use the first list found. ``None`` is the
+    distinct "unset" signal — the key appears as a list in NO section, or the
+    config is unloadable — that the caller turns into a LOUD failure for the
+    REQUIRED ``banned_terms`` key while leaving the OPTIONAL allowlist at its
+    empty default. An explicit empty array returns ``()`` (set, but
+    deliberately empty), never ``None``.
     """
     try:
         data = tomllib.loads(config.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError):
-        return ()
+        return None
     for value in [*data.values(), data]:
         if isinstance(value, dict) and key in value:
             entries = value[key]
             if isinstance(entries, list):
                 return tuple(str(e).strip() for e in entries if str(e).strip())
-    return ()
+    return None
 
 
 def _load_terms(config: Path) -> tuple[str, ...]:
-    """Return the first ``banned_terms`` array found in the TOML config."""
-    return _load_array(config, "banned_terms")
+    """Return the ``banned_terms`` array; RAISE when it is genuinely unset.
+
+    An explicit ``banned_terms = []`` is the operator's deliberate no-terms
+    choice and returns ``()``. A genuinely-absent key (or an unloadable config)
+    raises :class:`BannedTermsUnsetError` — an unset list is too
+    dangerous to scan as empty because a load bug would look identical to a
+    deliberate empty list.
+    """
+    terms = _load_array(config, _TERMS_KEY)
+    if terms is None:
+        raise BannedTermsUnsetError.for_key(_TERMS_KEY)
+    return terms
 
 
 def _load_allowlist(config: Path) -> tuple[str, ...]:
@@ -83,9 +104,11 @@ def _load_allowlist(config: Path) -> tuple[str, ...]:
     NEVER a leak — they are the org's own org/repo names, not customer PII. Each
     entry's token-run is removed from a line before banned-term matching, so a
     shorter banned term (a bare org slug) can no longer surface inside a longer
-    company-owned identifier. Empty (default) preserves the prior behaviour.
+    company-owned identifier. Unlike ``banned_terms`` the allow-list is OPTIONAL:
+    an absent key defaults to empty (preserving the prior behaviour), never a
+    raise.
     """
-    return _load_array(config, "banned_terms_allowlist")
+    return _load_array(config, _ALLOWLIST_KEY) or ()
 
 
 def staged_added_lines(repo: Path, file: str) -> list[str] | None:
@@ -192,10 +215,18 @@ def main(argv: list[str]) -> int:  # pragma: no cover — CLI entry point (orche
 
     config = Path(args.config).expanduser()
     if not config.is_file():
-        return 0  # no config ⇒ no-op, matching the old shell behaviour
-    terms = _load_terms(config)
+        return 0  # no config file ⇒ no-op (a machine with no teatree config)
+    try:
+        terms = _load_terms(config)
+    except BannedTermsUnsetError as exc:
+        # The config EXISTS but omits banned_terms — fail LOUD (exit 2, the
+        # scanner's "could not run" code) rather than silently scan as empty:
+        # an unset list is indistinguishable from a load bug. An
+        # explicit ``banned_terms = []`` does not raise and is a clean no-op.
+        sys.stderr.write(f"{exc}\n")
+        return 2
     if not terms:
-        return 0  # no terms ⇒ no-op
+        return 0  # explicit empty list ⇒ deliberate no-op
     allowlist = _load_allowlist(config)
 
     if args.diff_only:

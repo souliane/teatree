@@ -1,4 +1,4 @@
-"""Dispatch mini-loop definition — always-on global scanners."""
+"""Dispatch mini-loop definition — the core global scanners."""
 
 from typing import TYPE_CHECKING
 
@@ -9,7 +9,7 @@ if TYPE_CHECKING:
 
 
 def _build_jobs(**_: object) -> "list[_ScannerJob]":
-    """Build the always-on global scanner dispatch set.
+    """Build the core global scanner dispatch set.
 
     Delegates to the ``Domain.DISPATCH`` slice of the public
     :func:`teatree.loop.domain_jobs.jobs_for_domain` seam so the legacy
@@ -26,5 +26,4 @@ MINI_LOOP = MiniLoop(
     name="dispatch",
     default_cadence_seconds=300,
     build_jobs=_build_jobs,
-    always_on=True,
 )

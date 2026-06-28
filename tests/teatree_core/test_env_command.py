@@ -221,10 +221,11 @@ class TestEnvMigrateSecrets(TestCase):
             ):
                 call_command("env", "migrate-secrets", "--path", str(wt_path))
 
-            assert stored == {"teatree/wt/42/postgres": "top-secret"}
+            # Pass key is ticket-pk-scoped (canonical, unique), not ticket_number.
+            assert stored == {f"teatree/wt/{wt.ticket_id}/postgres": "top-secret"}
             new_body = cache_file.read_text(encoding="utf-8")
             assert "POSTGRES_PASSWORD=top-secret" not in new_body
-            assert "POSTGRES_PASSWORD_PASS_KEY=teatree/wt/42/postgres" in new_body
+            assert f"POSTGRES_PASSWORD_PASS_KEY=teatree/wt/{wt.ticket_id}/postgres" in new_body
 
     def test_reports_already_migrated_when_no_literal_present(self) -> None:
         from tempfile import TemporaryDirectory  # noqa: PLC0415

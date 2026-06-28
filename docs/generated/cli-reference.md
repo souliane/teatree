@@ -400,11 +400,13 @@ Usage: t3 banned-terms scan-tree [OPTIONS]
 │                               current directory).                            │
 │ --config                PATH  Override the ~/.teatree.toml term-list config  │
 │                               (else resolved as the gate does).              │
-│ --require-brands              HARD-FAIL (exit 2) when no brands are          │
-│                               configured, instead of warning and exiting 0.  │
-│                               CI passes this so a missing                    │
-│                               TEATREE_BANNED_BRANDS secret reds the job      │
-│                               loudly; local dev omits it and stays green.    │
+│ --require-brands              HARD-FAIL (exit 2) on an explicit-empty brand  │
+│                               list (`banned_brands = []`), instead of        │
+│                               warning and exiting 0. A genuinely-unset list  │
+│                               always fails loud regardless of this flag;     │
+│                               --require-brands additionally rejects the      │
+│                               deliberate empty list. CI passes it; local dev │
+│                               omits it.                                      │
 │ --help                        Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -2433,7 +2435,7 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │ notion-download      Download a Notion file attachment using the Brave       │
 │                      browser session.                                        │
 │ comment-density      Warn on added comments that merely restate the code     │
-│                      (near-zero-comments rule).                              │
+│                      (comments-as-code rule).                                │
 │ ai-sig-scan          Refuse a PR body / commit message carrying an           │
 │                      AI-signature trailer.                                   │
 │ diff-coverage        Per-diff coverage + mutation/revert gate (BLUEPRINT     │
@@ -2675,9 +2677,9 @@ Usage: t3 tool notion-download [OPTIONS] URL
 ```
 Usage: t3 tool comment-density [OPTIONS]
 
- Warn on added comments that merely restate the code (near-zero-comments rule).
+ Warn on added comments that merely restate the code (comments-as-code rule).
 
- Content-blind density pass over a unified diff. Reusable by any overlay:
+ Content-aware diff pass over a unified diff. Reusable by any overlay:
  the dedicated prek hook and the CI job both call this command. The check
  is **advisory** — it prints the findings as a warning but **always exits
  0**, so it never blocks a commit, push, or pipeline, and it is never a
@@ -3139,7 +3141,8 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │ pending-spawn  List pending Tasks (read-only probe; legacy — prefer          │
 │                ``claim-next``).                                              │
 │ spawn-claim    Claim a Task by id (legacy — prefer atomic ``claim-next``).   │
-│ start          Spawn a Claude Code session with the loop pre-registered.     │
+│ start          Spawn a Claude Code session; the loop-owner registers each    │
+│                enabled loop's ``/loop``.                                     │
 │ stop           Print the slot id to stop in the Claude Code session.         │
 │ claim          Claim the session-scoped loop-owner slot for this Claude      │
 │                session (#1073).                                              │
@@ -3269,42 +3272,24 @@ Usage: t3 loop spawn-claim [OPTIONS] TASK_ID
 ```
 Usage: t3 loop start [OPTIONS]
 
- Spawn a Claude Code session with the loop pre-registered.
+ Spawn a Claude Code session; the loop-owner registers each enabled loop's
+ ``/loop``.
 
- Looks for ``claude`` on ``PATH`` and runs it with an initial
- ``/loop <cadence> !t3 loop tick`` prompt so the loop is registered
- before the user types anything. When ``claude`` is not available or
- the caller is already inside a Claude Code session, falls back to
- printing the slash command for manual entry.
+ Looks for ``claude`` on ``PATH`` and spawns it (with the interactive session
+ model/effort pins). Under #2650 the live set of native Claude ``/loop``s
+ mirrors the ENABLED ``Loop`` rows — ONE ``/loop`` per loop firing
+ ``t3 loops tick --loop <name>`` — and the SessionStart loop-owner hook
+ registers them automatically, so there is no single fat slot to pass on the
+ command line. When ``claude`` is unavailable or the caller is already inside a
+ Claude Code session, prints the per-loop registration guidance instead.
 
- Slot topology is governed by the default-off `` dedicated_loops``
- toggle (#1838). OFF (default): the single fat ``loop-owner`` slot drives
- one ``t3 loop tick`` fanning across ALL mini-loops — byte-identical to
- today. ON: ``--print-slots`` (or the manual-paste fallback) emits N
- dedicated ``/loop <cadence> Run `t3 loop tick --slot <name>``` slots, one
- per dedicated loop, each scoped to its own ``loop:<name>`` owner. The two
- are mutually-exclusive deployment modes.
-
- Durability (by design; #786 WS3): the loop is session-bound and
- tick-driven. The SessionStart hook records ONE Django-free tick-owner
- record (``_OWNER_LOOP``: session_id/agent_id/pid/heartbeat — no
- per-loop briefs) in the machine-wide loop registry. There is no
- roster to re-spawn: the ``t3 loop tick`` cron drives the loop, each
- tick atomically claiming the next pending unit (``t3 loop
- claim-next``) and spawning one fresh bounded sub-agent for it. If
- this session dies, the next open session prunes the dead owner,
- becomes tick-owner, and keeps ticking. With no session open the loop
- is paused until the next session start.
+ Durability (by design; #786 WS3): the loop is session-bound and tick-driven.
+ With no session open the loop is paused until the next session start.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --print-only           Print the /loop slot definition instead of spawning a │
-│                        Claude Code session.                                  │
-│ --print-slots          Print the resolved /loop slot definition(s) and exit, │
-│                        without spawning. One fat slot when `dedicated_loops` │
-│                        is off (default); N dedicated scoped-tick slots when  │
-│                        on. Inspect the slot generator without registering    │
-│                        anything.                                             │
-│ --help                 Show this message and exit.                           │
+│ --print-only          Print the per-loop registration guidance instead of    │
+│                       spawning a Claude Code session.                        │
+│ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4170,6 +4155,8 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │                 confirmed non-live (#2225).                                  │
 │ agent           Launch Claude Code with overlay context and auto-detected    │
 │                 skills.                                                      │
+│ skill-preamble  Emit the inline SKILL.md preamble a raw Agent-tool sub-agent │
+│                 brief must carry.                                            │
 │ config          Overlay configuration.                                       │
 │ gate            Enforcement-gate kill-switches (self-rescue).                │
 │ speed           Parallel-work throughput dial.                               │
@@ -4201,6 +4188,7 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ mr_reminder     Cross-repo "my open MRs" Slack reminder (TODO-276).          │
 │ retro           Retrospective enforcement tooling (#1573).                   │
 │ honesty         Situational honesty-critical escalation (#2263).             │
+│ memory          Cold-tier memory recall (#2746).                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4300,6 +4288,20 @@ Usage: t3 teatree agent [OPTIONS] [TASK]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+#### `t3 teatree skill-preamble`
+
+```
+Usage: t3 teatree skill-preamble [OPTIONS]
+
+ Emit the inline SKILL.md preamble a raw Agent-tool sub-agent brief must carry.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --skills,--skill        TEXT  Skills to embed, comma-separated and/or        │
+│                               repeated (e.g. --skills t3:rules,t3:e2e).      │
+│ --help                        Show this message and exit.                    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 #### `t3 teatree config`
 
 ```
@@ -4333,6 +4335,8 @@ Usage: t3 teatree gate [OPTIONS] COMMAND [ARGS]...
 │                   (self-rescue).                                             │
 │ completion-claim  Completion-claim gate (on-target evidence before done)     │
 │                   kill-switch (self-rescue).                                 │
+│ memory-recall     Cold-tier memory recall injector kill-switch               │
+│                   (self-rescue).                                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4577,6 +4581,59 @@ Usage: t3 teatree gate completion-claim disable [OPTIONS]
 
 ```
 Usage: t3 teatree gate completion-claim enable [OPTIONS]
+
+ Re-enable the gate.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree gate memory-recall`
+
+```
+Usage: t3 teatree gate memory-recall [OPTIONS] COMMAND [ARGS]...
+
+ Cold-tier memory recall injector kill-switch (self-rescue).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ status   Show whether the gate is enabled.                                   │
+│ disable  Disable the gate (self-rescue from a lockout).                      │
+│ enable   Re-enable the gate.                                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate memory-recall status`
+
+```
+Usage: t3 teatree gate memory-recall status [OPTIONS]
+
+ Show whether the gate is enabled.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate memory-recall disable`
+
+```
+Usage: t3 teatree gate memory-recall disable [OPTIONS]
+
+ Disable the gate (self-rescue from a lockout).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate memory-recall enable`
+
+```
+Usage: t3 teatree gate memory-recall enable [OPTIONS]
 
  Re-enable the gate.
 
@@ -4900,6 +4957,8 @@ Usage: t3 teatree workspace [OPTIONS] COMMAND [ARGS]...
 │ clean-merged    Tear down every worktree whose ticket is already MERGED.     │
 │ clean-all       Prune merged worktrees, stale branches, orphaned stashes,    │
 │                 orphan DBs, old DSLR snapshots.                              │
+│ relocate        Move this overlay's existing worktrees under the per-overlay │
+│                 workspace dir (git worktree move).                           │
 │ list-orphans    List orphan branches (commits not on main, no open PR).      │
 │ landscape       Survey in-flight PRs/MRs and local unsynced work before      │
 │                 planning (read-only).                                        │
@@ -4909,6 +4968,10 @@ Usage: t3 teatree workspace [OPTIONS] COMMAND [ARGS]...
 │                 dangling images + unreferenced volumes).                     │
 │ stamp-identity  Stamp the repo's local git identity to the GitHub noreply    │
 │                 form (public-push safety).                                   │
+│ emit            Print the JSON handoff for every NOT-auto-deleted worktree   │
+│                 (the judgment skill's input).                                │
+│ salvage         Capture a branch's unique content to a PR, verify it landed, │
+│                 then delete the branch.                                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -5083,11 +5146,13 @@ Usage: t3 teatree workspace doctor [OPTIONS]
 ```
 Usage: t3 teatree workspace clean-merged [OPTIONS]
 
- Tear down every worktree whose ticket is already MERGED.
+ Tear down every done worktree (analyze-then-wipe) on demand.
 
- On-demand reconciler for the daily followup sync. Use when merged-PR
- cleanup silently failed and stale docker containers, branches, or
- databases linger. Errors are surfaced inline — no suppression.
+ On-demand reconciler for the daily followup sync — the same consolidated
+ done+redundant reaper ``clean-all`` and the FSM teardown use. Use when
+ merged-PR cleanup silently failed and stale docker stacks, branches, or
+ databases linger. A not-done or potentially-needed worktree is KEPT with a
+ reported reason; nothing unproven is destroyed.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -5099,43 +5164,54 @@ Usage: t3 teatree workspace clean-merged [OPTIONS]
 ```
 Usage: t3 teatree workspace clean-all [OPTIONS]
 
- Prune merged worktrees/branches/stashes, orphan databases + docker + env
- roots, and DSLR snapshots.
+ Reap every done+redundant worktree, then prune branches/stashes, orphan
+ DBs/docker/env-roots, DSLR.
 
- Unattended by default (#2361): never blocks on stdin; an uncertain worktree
- is kept with a warning, not prompted. ``--interactive`` opts into the
- per-worktree push/abandon/skip prompt, gated on a real TTY (so a pipe or
- loop tick still runs unattended). The #706/#835/#1506 data-loss guards and
- the deterministic squash signal are unchanged.
+ The consolidated done-worktree reaper runs first: a worktree is wiped only
+ when its ticket is done (MERGED/DELIVERED/IGNORED, or a forge squash-merge)
+ AND every unpushed commit and uncommitted change is PROVEN redundant. A
+ not-done or potentially-needed worktree is KEPT with a reported reason — the
+ #706 data-loss guard, surfaced as the primary analyze-before-wipe step.
+ There is no recovery snapshot: unproven work is kept, never destroyed.
 
- Orphaned RAW worktrees (#2361): a ``git worktree`` with no teatree
- ``Worktree`` row (created by a sub-agent's bare ``git worktree add``) is
- discovered and disposed of. A merged/gone orphan is reaped; one with
- unpushed work is reaped only under ``--reap-unsynced=snapshot`` AND only
- after a recovery artifact is captured — ``keep`` (default) leaves it.
+ Fully unattended (#2361 / CORRECTION 3): never blocks on stdin and never
+ prompts — an uncertain worktree is kept with a warning, salvage is the
+ separate explicit ``t3 <overlay> pr create``. ``--dry-run`` previews the
+ reaper (would-wipe/keep) and removes nothing.
 
  The ordered passes live in :func:`run_clean_all`; this method is the thin
  CLI wrapper that supplies the worktree dir and the command's IO sinks.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --keep-dslr                            INTEGER  Number of DSLR snapshots to  │
-│                                                 keep per tenant.             │
-│                                                 [default: 1]                 │
-│ --reap-unsynced                        TEXT     Disposition for orphaned RAW │
-│                                                 worktrees with unpushed work │
-│                                                 (#2361): 'keep' (default,    │
-│                                                 safe — leave them) or        │
-│                                                 'snapshot' (write a recovery │
-│                                                 artifact, THEN reap).        │
-│                                                 [default: keep]              │
-│ --interactive      --no-interactive             Prompt push/abandon/skip per │
-│                                                 worktree with unsynced work  │
-│                                                 (#2361). Default is fully    │
-│                                                 unattended — uncertain       │
-│                                                 worktrees are kept with a    │
-│                                                 warning, never prompted.     │
-│                                                 [default: no-interactive]    │
-│ --help                                          Show this message and exit.  │
+│ --keep-dslr                    INTEGER  Number of DSLR snapshots to keep per │
+│                                         tenant.                              │
+│                                         [default: 1]                         │
+│ --dry-run      --no-dry-run             Preview only: list each worktree     │
+│                                         that WOULD WIPE (with its            │
+│                                         done-signal source) or be KEPT,      │
+│                                         removing nothing.                    │
+│                                         [default: no-dry-run]                │
+│ --help                                  Show this message and exit.          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree workspace relocate`
+
+```
+Usage: t3 teatree workspace relocate [OPTIONS]
+
+ Move this overlay's teatree-managed worktrees under the per-overlay dir
+ (regroup).
+
+ Thin wrapper supplying the resolved overlay + per-overlay WORKTREE root
+ (``config.worktree_root()``) to :func:`run_relocate` (the engine, with the
+ full locked/dirty/active skip doctrine + idempotency + ``--dry-run``); see
+ ``/t3:workspace``.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --dry-run    --no-dry-run      List the moves without moving anything.       │
+│                                [default: no-dry-run]                         │
+│ --help                         Show this message and exit.                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -5150,7 +5226,7 @@ Usage: t3 teatree workspace list-orphans [OPTIONS]
  Used by the session-end hook and the ``workspace ticket`` warning to
  surface work that would otherwise be lost when a session closes or a
  new worktree is created. Emits a JSON-serialisable list — one entry
- per orphan.
+ per orphan (the mapping lives in :func:`_wh.list_orphan_entries`).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -5229,12 +5305,64 @@ Usage: t3 teatree workspace stamp-identity [OPTIONS]
 
  Fixes public souliane/* clones/worktrees created before the
  provisioner source-fix (new worktrees are stamped at creation).
- Idempotent. Refuses non-souliane / private remotes so the private overlay's
- legitimate real-identity attribution is never touched.
+ Idempotent. Refuses non-github / private remotes so a private
+ overlay's (or a GitLab clone's) legitimate real-identity
+ attribution is never touched.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --repo        TEXT  [default: .]                                             │
 │ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree workspace emit`
+
+```
+Usage: t3 teatree workspace emit [OPTIONS]
+
+ Print the machine-readable JSON handoff for every NOT-auto-deleted item
+ (#2763).
+
+ The read-only structured EMIT the judgment skill consumes: a JSON array of
+ records (path, branch, kind, unique_commit_shas, merged_with_post_merge_work,
+ banned_terms_status, liveness, last_commit_date, owner — schema in
+ ``teatree.core.cleanup_emit``). Removes nothing — ``clean-all`` does the
+ auto-deletion of provably-redundant items; this surfaces the rest for the
+ skill to route (superseded / salvage-to-fresh-PR / defer-live).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree workspace salvage`
+
+```
+Usage: t3 teatree workspace salvage [OPTIONS] SOURCE_REF
+
+ Capture a branch's unique content to a PR, verify it landed, then delete the
+ branch (#2763).
+
+ The salvage primitive the judgment skill calls once it has decided an
+ emitted item is worth keeping and cleaned any banned terms. Fail-safe: the
+ source branch is deleted ONLY after the forge confirms the PR — a failed
+ push / open / verify leaves it intact. Operates on the current repo (cwd).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    source_ref      TEXT  [required]                                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --salvage-branch                         TEXT  Fresh branch to capture onto  │
+│                                                (default:                     │
+│                                                salvage/<source_ref>).        │
+│ --target                                 TEXT  Base the salvage PR opens     │
+│                                                against.                      │
+│                                                [default: origin/main]        │
+│ --allow-banned      --no-allow-banned          Skip the final banned-terms   │
+│                                                safety gate (the skill        │
+│                                                cleaned the content).         │
+│                                                [default: no-allow-banned]    │
+│ --help                                         Show this message and exit.   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -5495,7 +5623,11 @@ Usage: t3 teatree e2e external [OPTIONS]
 
  Extra Playwright flags (--config, --timeout, --grep, etc.) can be
  passed via --playwright-args: ``--playwright-args="--config x.ts --timeout
- 120000"``
+ 120000"``.
+ The overlay also contributes per-spec args via
+ ``get_e2e_playwright_args(test_path)`` (e.g. ``-c <config>`` chosen by
+ the spec's lane); overlay args go first, an explicit ``--playwright-args``
+ follows so a caller can override.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --test-path                                   TEXT                           │
@@ -6075,19 +6207,16 @@ Usage: t3 teatree tasks [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ cancel                Cancel a task by ID.                                   │
-│ claim                 Claim the next available task.                         │
-│ complete              Mark a claimed task COMPLETED for work finished        │
-│                       out-of-band.                                           │
-│ create                Enqueue the next-phase task for a ticket.              │
-│ list                  List tasks with optional filters; --session scopes to  │
-│                       the current harness session's todos.                   │
-│ start                 Claim and run the next interactive task in the current │
-│                       terminal.                                              │
-│ work-next-sdk         Claim and execute a headless task; refuses             │
-│                       loop-dispatched phases unless                          │
-│                       LOOP_ALLOW_HEADLESS_DISPATCH.                          │
-│ work-next-user-input  Claim and execute a user input task.                   │
+│ cancel         Cancel a task by ID.                                          │
+│ claim          Claim the next available task.                                │
+│ complete       Mark a claimed task COMPLETED for work finished out-of-band.  │
+│ create         Enqueue the next-phase task for a ticket.                     │
+│ list           List tasks with optional filters; --session scopes to the     │
+│                current harness session's todos.                              │
+│ start          Claim and run the next interactive task in the current        │
+│                terminal.                                                     │
+│ work-next-sdk  Claim and execute a headless task; refuses loop-dispatched    │
+│                phases while agent_runtime=interactive.                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -6240,14 +6369,6 @@ Usage: t3 teatree tasks work-next-sdk [OPTIONS]
 │ --claimed-by        TEXT  [default: worker]                                  │
 │ --help                    Show this message and exit.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-##### `t3 teatree tasks work-next-user-input`
-
-```
-Usage: t3 teatree tasks work-next-user-input [OPTIONS]
-
- Claim and execute a user input task.
 ```
 
 #### `t3 teatree queue`
@@ -8013,5 +8134,47 @@ Usage: t3 teatree honesty escalate [OPTIONS]
 │ --task           INTEGER  Optional task id to scope the escalation to.       │
 │ --session        TEXT     Session id (defaults to the active session).       │
 │ --help                    Show this message and exit.                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree memory`
+
+```
+Usage: t3 teatree memory [OPTIONS] COMMAND [ARGS]...
+
+ Cold-tier memory recall (#2746).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ recall  Surface the cold-tier (MEMORY_ARCHIVE.md) rules most relevant to a   │
+│         query (read-only).                                                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree memory recall`
+
+```
+Usage: t3 teatree memory recall [OPTIONS] QUERY
+
+ Print the cold-tier memory rules most relevant to *query* (top *limit*).
+
+ Resolves the memory dir from ``--memory-dir`` else the current project's
+ default, scores the cold index, and echoes one line per hit — or a single
+ "no relevant cold-tier entries" line (exit 0) when nothing clears the
+ relevance floor. A missing memory dir / cold index is reported as an error
+ (exit 1) so a mistyped ``--memory-dir`` is loud, not a silent empty result.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    query      TEXT  The text whose relevant cold-tier rules to surface.    │
+│                       [required]                                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --memory-dir        TEXT     Memory dir to search; defaults to the current   │
+│                              project's.                                      │
+│ --limit             INTEGER  Max number of cold-tier rules to surface.       │
+│                              [default: 5]                                    │
+│ --help                       Show this message and exit.                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
