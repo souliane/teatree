@@ -27,7 +27,7 @@ from django.db import DatabaseError
 
 from teatree.config import OverlayEntry
 from teatree.core.clone_paths import find_clone_path
-from teatree.core.models import Session, Task, Worktree
+from teatree.core.models import Worktree
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 
@@ -59,15 +59,9 @@ class RelocateResult:
         return lines
 
 
-_ACTIVE_TASK_STATES: tuple[str, ...] = (Task.Status.PENDING, Task.Status.CLAIMED)
-
-
 def _ticket_is_busy(worktree: Worktree) -> bool:
     """True iff the worktree's ticket has a live session or an active/claimed task."""
-    ticket = worktree.ticket
-    if Session.objects.filter(ticket=ticket, ended_at__isnull=True).exists():
-        return True
-    return Task.objects.filter(ticket=ticket, status__in=_ACTIVE_TASK_STATES).exists()
+    return worktree.ticket.has_active_work()
 
 
 def _is_active_cwd(old_resolved: Path, active_path: Path | None) -> bool:

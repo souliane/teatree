@@ -44,13 +44,12 @@ from pathlib import Path
 from django.utils import timezone as dj_timezone
 
 from teatree.core.gates.idle_stack import active_delivery_keep_reason
-from teatree.core.models import Session, Task, Worktree
+from teatree.core.models import Worktree
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 
 logger = logging.getLogger(__name__)
 
-_ACTIVE_TASK_STATES: tuple[str, ...] = (Task.Status.PENDING, Task.Status.CLAIMED)
 # A worktree touched (HEAD commit or dir mtime) within this window is treated as
 # live in-progress work and kept. Generous by design — the reaper errs to keep.
 _RECENT_ACTIVITY_MINUTES = 120
@@ -72,11 +71,7 @@ class LivenessVerdict:
 def _ticket_is_busy(worktree: Worktree) -> bool:
     """True iff the worktree's ticket has a live session or an active/claimed task."""
     ticket = worktree.ticket
-    if ticket is None:
-        return False
-    if Session.objects.filter(ticket=ticket, ended_at__isnull=True).exists():
-        return True
-    return Task.objects.filter(ticket=ticket, status__in=_ACTIVE_TASK_STATES).exists()
+    return ticket is not None and ticket.has_active_work()
 
 
 def _is_cwd(wt_path: Path) -> bool:
