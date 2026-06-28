@@ -437,11 +437,13 @@ def _guard_or_warn_dirty_worktree(worktree: Worktree, wt_path: str, *, keep_if_d
 
     A worktree with uncommitted changes may be a live one an agent is mid-task in.
     The unattended ``clean-all`` path passes ``keep_if_dirty=True`` so such a
-    worktree is never bundle-and-reaped on a merged signal: this raises
-    ``RuntimeError`` before any destructive step, which the reaper routes to a
-    KEEP-with-warning. ``force=True`` (explicit abandon) overrides the guard. The
-    automated FSM teardown of a genuinely-MERGED ticket leaves ``keep_if_dirty``
-    off and keeps the documented warn-then-reap-with-recovery-bundle behaviour.
+    worktree is never reaped on a merged signal: this raises ``RuntimeError``
+    before any destructive step, which the reaper routes to a KEEP-with-warning.
+    ``force=True`` (explicit abandon) overrides the guard. The automated FSM
+    teardown of a genuinely-MERGED ticket leaves ``keep_if_dirty`` off and
+    warn-then-reaps — there is no recovery bundle or snapshot and nothing is ever
+    serialized to a file; the work was already preserved on the remote by the
+    merge.
     """
     if not (Path(wt_path).is_dir() and git.status_porcelain(wt_path)):
         return
