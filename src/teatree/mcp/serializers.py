@@ -14,7 +14,6 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from teatree.core.models.incoming_event import IncomingEvent
     from teatree.core.models.pull_request import PullRequest
-    from teatree.core.models.session import Session
     from teatree.core.models.ticket import Ticket
     from teatree.core.models.worktree import Worktree
 
@@ -80,21 +79,6 @@ def serialize_pull_request(pull_request: "PullRequest") -> dict[str, Any]:
         "state": pull_request.state,
         "slack_url": pull_request.slack_url,
         "review_requested_at": _iso(pull_request.review_requested_at),
-    }
-
-
-def serialize_session(session: "Session") -> dict[str, Any]:
-    """Project a :class:`Session` onto its structured-search shape."""
-    return {
-        "id": session.pk,
-        "ticket_id": session.ticket_id,  # ty: ignore[unresolved-attribute]
-        "overlay": session.overlay,
-        "agent_id": session.agent_id,
-        "visited_phases": list(session.visited_phases or []),
-        "repos_modified": list(session.repos_modified or []),
-        "repos_tested": list(session.repos_tested or []),
-        "started_at": _iso(session.started_at),
-        "ended_at": _iso(session.ended_at),
     }
 
 

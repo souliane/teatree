@@ -4,7 +4,7 @@ from django.test import TestCase
 
 from teatree.core.models import IncomingEvent, PullRequest
 from teatree.mcp import serializers
-from tests.factories import IncomingEventFactory, PullRequestFactory, SessionFactory, TicketFactory, WorktreeFactory
+from tests.factories import IncomingEventFactory, PullRequestFactory, TicketFactory, WorktreeFactory
 
 
 class TestSerializeTicket(TestCase):
@@ -51,20 +51,6 @@ class TestSerializePullRequest(TestCase):
         assert data["repo"] == "souliane/teatree"
         assert data["state"] == PullRequest.State.MERGED
         assert data["review_requested_at"] is None
-
-
-class TestSerializeSession(TestCase):
-    def test_projects_phase_ledger(self) -> None:
-        session = SessionFactory(agent_id="coding")
-        session.visited_phases = ["planning", "coding"]
-        session.save(update_fields=["visited_phases"])
-
-        data = serializers.serialize_session(session)
-
-        assert data["agent_id"] == "coding"
-        assert data["visited_phases"] == ["planning", "coding"]
-        assert data["started_at"] is not None
-        assert data["ended_at"] is None
 
 
 class TestSerializeIncomingEvent(TestCase):
