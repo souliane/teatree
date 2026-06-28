@@ -238,10 +238,16 @@ def rerender_statusline(target: Path | None = None, *, colorize: bool | None = N
     invert the tach-enforced dependency DAG); the orchestration layer injects it
     as the action-ladder ``auto_fix_callable``, retiring the prior
     ``_default_rerender`` no-op.
+
+    A re-render runs NO scan, so it has no fresh ``my_pr.*`` signals — it must
+    leave the ``open-prs.json`` snapshot intact (the full-tick scan path owns
+    that cache). The open-PR anchor reads the existing snapshot via
+    :func:`_populate_open_prs_in_anchors`, so the genuinely-open PRs survive the
+    refresh. Writing an empty cache here (the prior behaviour) wiped every open
+    PR a real scan had recorded, blanking the anchor until the next full tick.
     """
     zones = StatuslineZones()
     _populate_live_loops_in_anchors(zones, colorize=colorize)
-    _write_open_prs_cache([], target=target)
     _populate_open_prs_in_anchors(zones, target=target, colorize=colorize)
     _populate_loop_owner_anchor(zones)
     return render(zones, target=target, colorize=colorize)

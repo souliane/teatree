@@ -101,6 +101,38 @@ def test_rerender_statusline_rewrites_a_stale_file(tmp_path: Path) -> None:
     assert "stale merged-PR" not in sl.read_text(encoding="utf-8")
 
 
+def test_rerender_statusline_preserves_the_open_prs_cache(tmp_path: Path) -> None:
+    """A re-render must NOT wipe the open-PRs snapshot a real scan recorded (M5).
+
+    ``rerender_statusline`` is a display refresh with no scan, so it carries no
+    fresh ``my_pr.*`` signals. The prior behaviour wrote an EMPTY cache, which
+    destroyed every open PR a previous full tick had snapshotted and blanked the
+    anchor until the next scan. The cache is owned by the scan path: the refresh
+    must leave it intact and re-render the preserved PRs from it.
+    """
+    from teatree.loop.open_prs import OpenPr, read_open_prs_cache, write_open_prs_cache  # noqa: PLC0415
+    from teatree.loop.phases.render import rerender_statusline  # noqa: PLC0415
+
+    sl = tmp_path / "statusline.txt"
+    pr = OpenPr(
+        iid=42,
+        title="ship the thing",
+        url="https://github.com/acme/repo/pull/42",
+        overlay="teatree",
+        draft=False,
+    )
+    write_open_prs_cache([pr], statusline_path=sl)
+
+    rerender_statusline(sl, colorize=False)
+
+    # The seeded snapshot survives the re-render (the bug wiped it to []).
+    assert read_open_prs_cache(statusline_path=sl) == [pr]
+    # And the preserved PR is actually rendered into the statusline anchor.
+    rendered = sl.read_text(encoding="utf-8")
+    assert "#42" in rendered
+    assert "ship the thing" in rendered
+
+
 def test_self_improve_rerender_adapter_invokes_the_render_seam(monkeypatch: pytest.MonkeyPatch) -> None:
     """The action-ladder ``auto_fix_callable`` adapter bridges to ``rerender_statusline``.
 
