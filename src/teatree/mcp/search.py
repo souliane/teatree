@@ -2,8 +2,9 @@
 
 These are the synchronous query functions the MCP tools expose. Each reuses the
 existing model managers (``Ticket.objects.for_overlay`` / ``in_flight`` /
-``resolve``, ``Worktree.objects.active``, ``IncomingEvent.objects.unprocessed``)
-rather than re-deriving query logic in the protocol layer — the manager is the
+``resolve``, ``Worktree.objects.active``, ``Task.objects.for_overlay``,
+``IncomingEvent.objects.unprocessed``) rather than re-deriving query logic in
+the protocol layer — the manager is the
 single source of truth for what "in-flight" or "active" or "this overlay" means,
 and the MCP surface is a thin read over it.
 
@@ -117,17 +118,13 @@ def loop_stats(*, overlay: str | None = None) -> dict[str, Any]:
 
     ``tasks`` is a count per ``Task.Status`` (pending / claimed / completed /
     failed) — the loop's work queue at a glance. ``overlay`` scopes the tasks
-    through either the ticket or the session overlay (matching the loop's own
-    ``claimable_for_*`` overlay clause, legacy empty-overlay rows included).
-    ``dead_letter`` is the global count of reply dispatches that exhausted their
-    retries — a system-health signal that is not overlay-scoped (the inbound
-    event it answers carries no overlay).
+    through ``TaskQuerySet.for_overlay`` — the same overlay clause the loop's
+    own claim path uses (spanning the ticket and session relations, legacy
+    empty-overlay rows included). ``dead_letter`` is the global count of reply
+    dispatches that exhausted their retries — a system-health signal that is
+    not overlay-scoped (the inbound event it answers carries no overlay).
     """
-    tasks = Task.objects.all()
-    if overlay:
-        tasks = tasks.filter(
-            Q(ticket__overlay=overlay) | Q(session__overlay=overlay) | Q(ticket__overlay="") | Q(session__overlay=""),
-        )
+    tasks = Task.objects.for_overlay(overlay)
     counts = {status.value: 0 for status in Task.Status}
     for row in tasks.values("status").annotate(total=Count("pk")):
         counts[row["status"]] = row["total"]
