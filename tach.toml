@@ -214,6 +214,13 @@ depends_on = [
 ]
 
 [[modules]]
+path = "teatree.mcp"
+layer = "integration"
+depends_on = [
+  "teatree.core.models"
+]
+
+[[modules]]
 path = "teatree.agents"
 layer = "domain"
 depends_on = [
@@ -330,6 +337,7 @@ depends_on = [
   "teatree.messaging",
   "teatree.quality",
   "teatree.hooks",
+  "teatree.mcp",
   "teatree.cli.eval"
 ]
 
