@@ -240,3 +240,64 @@ class TestAllowsApiMergeEndpointReadsAndUnrelated:
         repo = _repo_with_remote(tmp_path / "wt", "git@github.com:souliane/teatree.git")
         assert router.handle_block_out_of_band_merge(_merge_event("gh pr merge 12", repo)) is True
         assert _parse_deny(capsys) is not None
+
+
+# ── Merge-TARGET classification — the cwd-only bypass (security) ──────────────
+#
+# The gate must classify the merge TARGET repo (extracted from the command),
+# not the agent's cwd. Keying solely on the cwd meant a raw REST merge form —
+# ``gh api --method PUT repos/souliane/teatree/pulls/N/merge`` or ``gh pr merge
+# N --repo souliane/teatree`` — issued from ANY resolvable-but-UNMANAGED git
+# cwd resolved cwd->unmanaged->ALLOW and merged a MANAGED repo's PR, bypassing
+# the keystone MergeClear ceremony (reviewer!=loop, SHA-bind, live-CI recheck).
+# Pre-fix, every command below returned False (allowed) from the unmanaged cwd.
+
+
+class TestClassifiesMergeTargetNotCwd:
+    """A managed-repo TARGET is blocked even from a resolvable, unmanaged cwd."""
+
+    @pytest.fixture(autouse=True)
+    def _home(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _patch_home(tmp_path / "home", _MANAGED_CONFIG, monkeypatch)
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            # GitHub REST PUT to teatree-core's merge endpoint (the cited bypass).
+            "gh api --method PUT repos/souliane/teatree/pulls/123/merge",
+            "gh api -X PUT repos/souliane/teatree/pulls/123/merge",
+            # ``gh pr merge`` naming the managed target via ``--repo``.
+            "gh pr merge 123 --repo souliane/teatree --squash",
+            # An overlay-claimed managed repo named via ``--repo``.
+            "gh pr merge 7 --repo example-org/private-repo",
+            # GitLab REST POST to the managed overlay repo's merge endpoint
+            # (url-encoded namespace decodes to example-org/private-repo).
+            "glab api projects/example-org%2Fprivate-repo/merge_requests/9/merge --method POST",
+        ],
+    )
+    def test_managed_target_blocked_from_unmanaged_cwd(
+        self, command: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # cwd is a resolvable, confidently-UNMANAGED repo — the bypass surface.
+        repo = _repo_with_remote(tmp_path / "wt", "git@github.com:example-org/public-repo.git")
+        assert router.handle_block_out_of_band_merge(_merge_event(command, repo)) is True
+        deny = _parse_deny(capsys)
+        assert deny is not None
+        assert "ticket merge" in deny["permissionDecisionReason"]
+
+    def test_sanctioned_keystone_still_passes(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        # The keystone transition is not a raw gh/glab merge form, so the gate
+        # never fires — even from inside the managed teatree-core checkout.
+        repo = _repo_with_remote(tmp_path / "wt", "git@github.com:souliane/teatree.git")
+        assert router.handle_block_out_of_band_merge(_merge_event("t3 t3-teatree ticket merge 42", repo)) is False
+        assert capsys.readouterr().out.strip() == ""
+
+    def test_unmanaged_target_from_unmanaged_cwd_still_allowed(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A genuinely-unmanaged target named via ``--repo`` from an unmanaged
+        # cwd is still ALLOWED — the fix only blocks managed targets.
+        repo = _repo_with_remote(tmp_path / "wt", "git@github.com:example-org/public-repo.git")
+        command = "gh pr merge 3 --repo example-org/public-repo --squash"
+        assert router.handle_block_out_of_band_merge(_merge_event(command, repo)) is False
+        assert capsys.readouterr().out.strip() == ""

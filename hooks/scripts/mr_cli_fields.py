@@ -224,3 +224,22 @@ def extract_mr_target_repo(command: str) -> str | None:
         return gh_api_match.group("slug")
 
     return None
+
+
+def merge_target_is_managed(command: str, managed_slugs: list[str]) -> bool:
+    """Whether the command's MR-TARGET slug names a teatree-managed repo.
+
+    Classifies the merge TARGET (parsed by :func:`extract_mr_target_repo`),
+    NOT the agent's cwd, so a raw merge form aimed at a managed repo is caught
+    regardless of where it runs. Returns ``True`` only when a target slug
+    parses AND contains one of the ``managed_slugs`` signal substrings (the
+    same offline set the cwd-keyed check uses). A non-parseable target — a
+    numeric GitLab project id, or a bare ``gh pr merge <n>`` with no
+    ``--repo`` — returns ``False`` so the caller falls back to its cwd-keyed
+    classification (the established fail-safe).
+    """
+    target = extract_mr_target_repo(command)
+    if target is None:
+        return False
+    target_lower = target.strip().lower()
+    return bool(target_lower) and any(entry in target_lower for entry in managed_slugs)

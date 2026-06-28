@@ -55,7 +55,7 @@ from django_bootstrap import bootstrap_teatree_django
 from loop_registrations import emit_loop_registrations, is_bare_loop_tick_prompt, loop_name_from_prompt
 from loop_state_self_pump_gate import db_loop_state_suppresses_self_pump
 from memory_recall import handle_recall_cold_memory
-from mr_cli_fields import extract_cli_mr_fields, extract_mr_target_repo
+from mr_cli_fields import extract_cli_mr_fields, extract_mr_target_repo, merge_target_is_managed
 from no_self_reviewer_assign import handle_block_self_reviewer_assign
 from orchestration_boundary_signals import PYTEST_VERB_FINDER as _PYTEST_VERB_FINDER
 from orchestration_boundary_signals import PYTEST_VERB_RE as _PYTEST_VERB_RE
@@ -6850,9 +6850,11 @@ def handle_block_out_of_band_merge(data: dict) -> bool:
     with a body flag, else GET). A GET to the merge endpoint reads merge status
     and is NOT denied.
 
-    Carve-out for the permanent-lockout case (#126): a merge is allowed only
-    when the cwd repo is confidently NOT teatree-managed. Managed repos and
-    any case the gate cannot classify stay BLOCKED — fail-safe on uncertainty.
+    Classification keys on the merge TARGET (parsed from the command), not the
+    cwd: a managed-repo target is BLOCKED regardless of cwd, closing the bypass
+    where the same merge ran from an unmanaged cwd. When no target parses, the
+    cwd-keyed check (#126) is the fail-safe fallback — allow only on a
+    confidently-unmanaged cwd; a managed or unresolvable cwd stays BLOCKED.
     """
     if data.get("tool_name") != "Bash":
         return False
@@ -6861,12 +6863,10 @@ def handle_block_out_of_band_merge(data: dict) -> bool:
         return False
     if not _invokes_raw_merge_subcommand(command) and not _is_raw_merge_api_write(command):
         return False
-    cwd = _resolve_cwd_repo(data)
-    if cwd is None:
-        return emit_pretooluse_deny(_OUT_OF_BAND_MERGE_REASON)
-    managed = _cwd_is_teatree_managed(cwd)
-    if managed is False:
-        return False
+    if not merge_target_is_managed(command, _overlay_managed_repo_signals()[0]):
+        cwd = _resolve_cwd_repo(data)
+        if cwd is not None and _cwd_is_teatree_managed(cwd) is False:
+            return False
     return emit_pretooluse_deny(_OUT_OF_BAND_MERGE_REASON)
 
 
