@@ -29,11 +29,17 @@ from teatree.mcp.serializers import (
 
 _DEFAULT_TICKET_LIMIT = 50
 _DEFAULT_EVENT_LIMIT = 20
+_MAX_LIMIT = 200
 
 
 def _capped(limit: int, default: int) -> int:
-    """A positive row cap — a non-positive request falls back to *default*."""
-    return limit if limit and limit > 0 else default
+    """A bounded row cap for a page request.
+
+    A non-positive request falls back to *default*, and any request is clamped
+    to ``_MAX_LIMIT`` so a client cannot ask the read-only server for an
+    unbounded page.
+    """
+    return min(limit if limit and limit > 0 else default, _MAX_LIMIT)
 
 
 # ast-grep-ignore: ac-django-no-complexity-suppressions

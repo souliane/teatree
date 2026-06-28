@@ -20,6 +20,18 @@ from tests.factories import (
 )
 
 
+class TestCapped:
+    def test_non_positive_falls_back_to_default(self) -> None:
+        assert search._capped(0, 50) == 50
+        assert search._capped(-7, 20) == 20
+
+    def test_in_range_limit_passes_through(self) -> None:
+        assert search._capped(10, 50) == 10
+
+    def test_oversized_limit_is_clamped_to_max(self) -> None:
+        assert search._capped(10_000, 50) == search._MAX_LIMIT
+
+
 class TestTicketSearch(TestCase):
     def test_overlay_scopes_and_includes_legacy_empty_overlay(self) -> None:
         mine = TicketFactory(overlay="t3-teatree", issue_url="https://x/issues/1")
