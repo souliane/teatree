@@ -174,11 +174,11 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         The single owner of the ticket-liveness rule the reapers and the relocate
         command consult — a busy ticket must never be torn down.
         """
-        from teatree.core.models.task import Task  # noqa: PLC0415
-
         if self.sessions.filter(ended_at__isnull=True).exists():  # type: ignore[attr-defined]  # Django reverse FK
             return True
-        return self.tasks.filter(status__in=Task.Status.active()).exists()  # type: ignore[attr-defined]  # Django reverse FK
+        # apps.get_model, not a direct import: task.py imports ticket.py at module scope (real cycle).
+        task_model = apps.get_model("core", "Task")
+        return self.tasks.filter(status__in=task_model.Status.active()).exists()  # type: ignore[attr-defined]  # Django reverse FK
 
     def mark_remote_missing(self) -> None:
         """Targeted UPDATE to set remote_missing; skips the FSM and save() overhead (#1875)."""
