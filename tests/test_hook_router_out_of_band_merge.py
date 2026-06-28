@@ -328,3 +328,52 @@ class TestClassifiesMergeTargetNotCwd:
         repo = _repo_with_remote(tmp_path / "wt", "git@github.com:example-org/public-repo.git")
         assert router.handle_block_out_of_band_merge(_merge_event("gh pr merge 5", repo)) is False
         assert capsys.readouterr().out.strip() == ""
+
+
+# ── cwd classifier must not crash-fail-open with an overlay path configured ───
+#
+# `_cwd_is_teatree_managed` iterated each overlay `path` base with
+# `cwd.resolve().relative_to(base)` under `suppress(OSError, RuntimeError)`.
+# `Path.relative_to` raises `ValueError` for a non-subpath — NOT one of the
+# suppressed types — so with ≥1 overlay path configured (the real config sets
+# one) and a cwd NOT under it, the handler raised before the slug-based managed
+# check ran. The crash-proof dispatcher catches the exception and fails OPEN,
+# so a bare `gh pr merge <n>` / `glab mr merge !<n>` from a managed-by-slug
+# checkout outside the overlay path bypassed the keystone. The fix swaps
+# `relative_to` for the non-raising `is_relative_to`.
+
+
+def _overlay_path_config(overlay_root: Path) -> str:
+    return f'[overlays.example]\nworkspace_repos = ["example-org/private-repo"]\npath = "{overlay_root}"\n'
+
+
+class TestCwdClassifyDoesNotCrashWithOverlayPath:
+    """A configured overlay `path` must not crash the cwd-keyed classifier."""
+
+    @pytest.fixture(autouse=True)
+    def _home(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        overlay_root = tmp_path / "overlay-root"
+        overlay_root.mkdir()
+        _patch_home(tmp_path / "home", _overlay_path_config(overlay_root), monkeypatch)
+
+    @pytest.mark.parametrize("command", ["gh pr merge 5", "glab mr merge !9"])
+    def test_bare_merge_from_managed_slug_cwd_outside_overlay_path_blocks(
+        self, command: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # cwd is teatree-core (managed BY SLUG) but sits OUTSIDE the overlay
+        # path, so the path loop must fall through to the slug check, not crash.
+        repo = _repo_with_remote(tmp_path / "wt", "git@github.com:souliane/teatree.git")
+        assert router.handle_block_out_of_band_merge(_merge_event(command, repo)) is True
+        deny = _parse_deny(capsys)
+        assert deny is not None
+        assert "ticket merge" in deny["permissionDecisionReason"]
+
+    @pytest.mark.parametrize("command", ["gh pr merge 5", "glab mr merge !9"])
+    def test_bare_merge_from_unmanaged_cwd_outside_overlay_path_allows(
+        self, command: str, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Same overlay-path config, but an unmanaged-slug cwd outside the path:
+        # the classifier must ALLOW (the fix classifies, it does not over-block).
+        repo = _repo_with_remote(tmp_path / "wt", "git@github.com:example-org/public-repo.git")
+        assert router.handle_block_out_of_band_merge(_merge_event(command, repo)) is False
+        assert capsys.readouterr().out.strip() == ""

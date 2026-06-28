@@ -6806,9 +6806,12 @@ def _cwd_is_teatree_managed(cwd: Path) -> bool | None:
     """
     slugs, paths = _overlay_managed_repo_signals()
     for base in paths:
+        # is_relative_to, not relative_to: a non-subpath returns False instead
+        # of raising ValueError, which the suppress() below does NOT catch — an
+        # uncaught crash here makes the crash-proof dispatcher fail OPEN.
         with contextlib.suppress(OSError, RuntimeError):
-            cwd.resolve().relative_to(base)
-            return True
+            if cwd.resolve().is_relative_to(base):
+                return True
     try:
         with _teatree_src_on_path():
             from teatree.hooks import publish_surface  # noqa: PLC0415
