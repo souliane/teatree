@@ -2733,6 +2733,7 @@ name = "teatree"
 version = "0.0.1"
 source = { editable = "." }
 dependencies = [
+    { name = "asgiref" },
     { name = "claude-agent-sdk" },
     { name = "coverage" },
     { name = "croniter" },
@@ -2744,6 +2745,7 @@ dependencies = [
     { name = "django-tasks-db" },
     { name = "django-typer" },
     { name = "httpx" },
+    { name = "mcp" },
     { name = "pillow" },
     { name = "pyyaml" },
     { name = "tomlkit" },
@@ -2800,6 +2802,7 @@ ui = [
 
 [package.metadata]
 requires-dist = [
+    { name = "asgiref", specifier = ">=3.8" },
     { name = "browser-cookie3", marker = "extra == 'notion'", specifier = ">=0.20" },
     { name = "claude-agent-sdk", specifier = ">=0.2.94" },
     { name = "coverage", specifier = ">=7" },
@@ -2813,6 +2816,7 @@ requires-dist = [
     { name = "django-typer", specifier = ">=3.3" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "markitdown", extras = ["docx", "pdf", "pptx", "xlsx"], marker = "extra == 'markdown'", specifier = ">=0.1.6" },
+    { name = "mcp", specifier = ">=1.27" },
     { name = "pillow", specifier = ">=11" },
     { name = "pyyaml", specifier = ">=6" },
     { name = "slack-sdk", marker = "extra == 'slack'", specifier = ">=3.35" },

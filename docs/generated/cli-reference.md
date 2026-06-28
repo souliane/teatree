@@ -56,6 +56,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 one consolidation loop per agent identity, deduped across    │
 │                 all sessions (#786 WS4); it idles when none.                 │
 │ loops           Manage DB-configured autonomous loops (#1796).               │
+│ mcp             Read-only MCP server exposing teatree's structured search    │
+│                 (stdio).                                                     │
 │ prompts         Manage and trigger reusable prompts (#2513).                 │
 │ teams           Agent-teams master switch. The teams.enabled config key      │
 │                 (default off) gates the pane-backed teammate layer; off      │
@@ -3723,6 +3725,34 @@ Usage: t3 loops run [OPTIONS]
 │                            all).                                             │
 │ --once                     Run a single tick and return (test hook).         │
 │ --help                     Show this message and exit.                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 mcp`
+
+```
+Usage: t3 mcp [OPTIONS] COMMAND [ARGS]...
+
+ Read-only MCP server exposing teatree's structured search (stdio).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ serve  Run the structured-search MCP server over stdio (blocks until stdin   │
+│        closes).                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 mcp serve`
+
+```
+Usage: t3 mcp serve [OPTIONS]
+
+ Run the structured-search MCP server over stdio (blocks until stdin closes).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
