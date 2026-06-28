@@ -118,7 +118,7 @@ class TestIsGithubHost:
             "ssh://git@github.com/souliane/teatree.git",
             "https://user@github.com:443/souliane/teatree.git",
             "git@github.com-work:souliane/teatree.git",  # ssh-alias host
-            "git@github.com-adrien-oper:souliane/teatree.git",
+            "git@github.com-work-2:souliane/teatree.git",  # ssh-alias host (2nd alias)
         ],
     )
     def test_github_hosts(self, remote: str) -> None:
