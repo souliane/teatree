@@ -50,7 +50,7 @@ This module is a top-level Typer group reached through the typer runner
 directly (sibling of ``t3 setup`` / ``t3 doctor``), so it raises
 ``typer.Exit(code=N)`` — *not* ``SystemExit`` (which is for ``TyperCommand``
 groups reached via Django ``call_command``; see ``skills/teatree`` § "CLI exit
-codes").  Precedent: ``cli/setup.py`` ``_validate_repo`` → ``raise typer.Exit``.
+codes").  Precedent: ``cli/setup/clone.py`` ``validate_repo`` → ``raise typer.Exit``.
 """
 
 import enum
@@ -379,13 +379,13 @@ def _collect_repos() -> list[tuple[str, Path]]:
     config); each entry's ``project_path`` is walked up to its containing git
     work tree.
     """
-    from teatree.cli.setup import _find_main_clone  # noqa: PLC0415
+    from teatree.cli.setup import find_main_clone  # noqa: PLC0415
     from teatree.config import discover_overlays  # noqa: PLC0415
 
     repos: list[tuple[str, Path]] = []
     seen: set[Path] = set()
 
-    core = _find_main_clone()
+    core = find_main_clone()
     if core is not None:
         resolved = core.resolve()
         repos.append((_CORE_REPO_NAME, resolved))

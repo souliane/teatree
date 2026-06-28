@@ -455,7 +455,7 @@ class TestCollectRepos:
         ovl_bare = _make_remote(tmp_path, "ovl")
         ovl = _clone(tmp_path, ovl_bare, "ovl-clone")
 
-        monkeypatch.setattr(setup_mod, "_find_main_clone", lambda: core)
+        monkeypatch.setattr(setup_mod, "find_main_clone", lambda: core)
         monkeypatch.setattr(
             config_mod,
             "discover_overlays",
@@ -478,7 +478,7 @@ class TestCollectRepos:
         ovl_bare = _make_remote(tmp_path, "ovl")
         ovl = _clone(tmp_path, ovl_bare, "ovl-clone")
 
-        monkeypatch.setattr(setup_mod, "_find_main_clone", lambda: None)
+        monkeypatch.setattr(setup_mod, "find_main_clone", lambda: None)
         monkeypatch.setattr(update_mod, "_running_clone", lambda: None)
         monkeypatch.setattr(config_mod, "discover_overlays", lambda: [_Result("ovl", ovl)])
 
@@ -491,7 +491,7 @@ class TestCollectRepos:
     ) -> None:
         """A worktree-anchored entrypoint is audited for currency (#1507).
 
-        ``_find_main_clone`` reports the *configured* main clone (cwd/T3_REPO),
+        ``find_main_clone`` reports the *configured* main clone (cwd/T3_REPO),
         but the editable ``.pth`` can be anchored to a worktree the interpreter
         actually imports from. Unless the running clone is collected, a stale
         worktree-anchored install sails past the #948 clone-currency gate.
@@ -501,7 +501,7 @@ class TestCollectRepos:
         running_bare = _make_remote(tmp_path, "running")
         running = _clone(tmp_path, running_bare, "running-clone").resolve()
 
-        monkeypatch.setattr(setup_mod, "_find_main_clone", lambda: core)
+        monkeypatch.setattr(setup_mod, "find_main_clone", lambda: core)
         monkeypatch.setattr(config_mod, "discover_overlays", list)
         monkeypatch.setattr(update_mod, "_running_clone", lambda: running)
 

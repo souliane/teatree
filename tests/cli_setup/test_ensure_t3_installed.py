@@ -1,4 +1,4 @@
-"""Tests for ``_ensure_t3_installed`` — t3 self-install / editable repair.
+"""Tests for ``ToolInstaller.ensure_installed`` — t3 self-install / editable repair.
 
 Lifted verbatim from the former monolithic ``tests/test_cli_setup.py``
 (souliane/teatree#443). No behavior change: same assertions and helpers,
@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
-from teatree.cli.setup import _ensure_t3_installed
+from teatree.cli.setup.tool_installer import ToolInstaller
 
 if TYPE_CHECKING:
     import pytest
@@ -52,11 +52,11 @@ class TestEnsureT3Installed:
         )
 
         with (
-            patch("teatree.cli.setup.shutil.which") as mock_which,
+            patch("teatree.cli.setup.tool_installer.shutil.which") as mock_which,
             patch("teatree.utils.run.subprocess.run", side_effect=_install_run_side_effect(uv_tools_dir)) as mock_run,
         ):
             mock_which.side_effect = _which_t3_and_uv
-            assert _ensure_t3_installed(editable_source) is True
+            assert ToolInstaller(editable_source).ensure_installed() is True
             # Only the `uv tool dir` receipt lookup — no install invoked.
             install_calls = [c for c in mock_run.call_args_list if c[0][0][:3] == ["/usr/bin/uv", "tool", "install"]]
             assert install_calls == []
@@ -68,11 +68,11 @@ class TestEnsureT3Installed:
         (teatree_tool / "uv-receipt.toml").write_text('[tool]\nrequirements = [{ name = "teatree" }]\n')
 
         with (
-            patch("teatree.cli.setup.shutil.which") as mock_which,
+            patch("teatree.cli.setup.tool_installer.shutil.which") as mock_which,
             patch("teatree.utils.run.subprocess.run", side_effect=_install_run_side_effect(uv_tools_dir)) as mock_run,
         ):
             mock_which.side_effect = _which_t3_and_uv
-            assert _ensure_t3_installed(tmp_path / "main-clone") is True
+            assert ToolInstaller(tmp_path / "main-clone").ensure_installed() is True
             install_calls = [c for c in mock_run.call_args_list if c[0][0][:3] == ["/usr/bin/uv", "tool", "install"]]
             assert install_calls == []
 
@@ -89,11 +89,11 @@ class TestEnsureT3Installed:
         main_clone.mkdir()
 
         with (
-            patch("teatree.cli.setup.shutil.which") as mock_which,
+            patch("teatree.cli.setup.tool_installer.shutil.which") as mock_which,
             patch("teatree.utils.run.subprocess.run", side_effect=_install_run_side_effect(uv_tools_dir)) as mock_run,
         ):
             mock_which.side_effect = _which_t3_and_uv
-            assert _ensure_t3_installed(main_clone) is True
+            assert ToolInstaller(main_clone).ensure_installed() is True
             install_calls = [c for c in mock_run.call_args_list if c[0][0][:3] == ["/usr/bin/uv", "tool", "install"]]
             assert len(install_calls) == 1
             args = install_calls[0][0][0]
@@ -102,14 +102,14 @@ class TestEnsureT3Installed:
             assert str(main_clone) in args
 
     def test_returns_false_when_uv_missing(self, tmp_path: Path) -> None:
-        with patch("teatree.cli.setup.shutil.which", return_value=None):
-            assert _ensure_t3_installed(tmp_path) is False
+        with patch("teatree.cli.setup.tool_installer.shutil.which", return_value=None):
+            assert ToolInstaller(tmp_path).ensure_installed() is False
 
     def test_returns_true_when_t3_on_path_without_uv(self, tmp_path: Path) -> None:
         """Pipx or other non-uv installs are respected — we only touch uv tool installs."""
-        with patch("teatree.cli.setup.shutil.which") as mock_which:
+        with patch("teatree.cli.setup.tool_installer.shutil.which") as mock_which:
             mock_which.side_effect = lambda name: "/usr/local/bin/t3" if name == "t3" else None
-            assert _ensure_t3_installed(tmp_path) is True
+            assert ToolInstaller(tmp_path).ensure_installed() is True
 
     def test_installs_editable_when_t3_missing(self, tmp_path: Path) -> None:
         repo = tmp_path / "teatree"
@@ -117,11 +117,11 @@ class TestEnsureT3Installed:
         uv_tools_dir = tmp_path / "uv-tools"
         uv_tools_dir.mkdir()
         with (
-            patch("teatree.cli.setup.shutil.which") as mock_which,
+            patch("teatree.cli.setup.tool_installer.shutil.which") as mock_which,
             patch("teatree.utils.run.subprocess.run", side_effect=_install_run_side_effect(uv_tools_dir)) as mock_run,
         ):
             mock_which.side_effect = lambda name: "/usr/bin/uv" if name == "uv" else None
-            assert _ensure_t3_installed(repo) is True
+            assert ToolInstaller(repo).ensure_installed() is True
             install_calls = [c for c in mock_run.call_args_list if c[0][0][:3] == ["/usr/bin/uv", "tool", "install"]]
             assert len(install_calls) == 1
             args = install_calls[0][0][0]
@@ -136,11 +136,11 @@ class TestEnsureT3Installed:
         uv_tools_dir.mkdir()
         side_effect = _install_run_side_effect(uv_tools_dir, install_returncode=1, install_stderr="boom")
         with (
-            patch("teatree.cli.setup.shutil.which") as mock_which,
+            patch("teatree.cli.setup.tool_installer.shutil.which") as mock_which,
             patch("teatree.utils.run.subprocess.run", side_effect=side_effect),
         ):
             mock_which.side_effect = lambda name: "/usr/bin/uv" if name == "uv" else None
-            assert _ensure_t3_installed(repo) is False
+            assert ToolInstaller(repo).ensure_installed() is False
 
     def test_prints_shell_rc_hint_when_still_not_on_path(
         self,
@@ -157,11 +157,11 @@ class TestEnsureT3Installed:
             return SimpleNamespace(returncode=0, stderr="", stdout=stdout)
 
         with (
-            patch("teatree.cli.setup.shutil.which") as mock_which,
+            patch("teatree.cli.setup.tool_installer.shutil.which") as mock_which,
             patch("teatree.utils.run.subprocess.run", side_effect=mock_run_side_effect),
         ):
             mock_which.side_effect = lambda name: "/usr/bin/uv" if name == "uv" else None
-            _ensure_t3_installed(repo)
+            ToolInstaller(repo).ensure_installed()
 
         out = capsys.readouterr().out
         assert str(bin_dir) in out

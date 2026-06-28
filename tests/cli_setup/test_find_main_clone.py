@@ -1,4 +1,4 @@
-"""Tests for ``_find_main_clone`` — t3 setup main-clone resolution.
+"""Tests for ``find_main_clone`` — t3 setup main-clone resolution.
 
 Lifted verbatim from the former monolithic ``tests/test_cli_setup.py``
 (souliane/teatree#443). No behavior change: same assertions and helpers,
@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from teatree.cli.setup import _find_main_clone
+from teatree.cli.setup.clone import find_main_clone
 
 GIT_BIN = shutil.which("git") or "git"
 
@@ -28,9 +28,9 @@ def _init_git_repo(path: Path) -> None:
 
 class TestFindMainClone:
     def test_returns_none_when_no_repo(self) -> None:
-        with patch("teatree.cli.setup.DoctorService") as mock_svc:
+        with patch("teatree.cli.setup.clone.DoctorService") as mock_svc:
             mock_svc.find_teatree_repo.return_value = None
-            assert _find_main_clone() is None
+            assert find_main_clone() is None
 
     def test_resolves_worktree_to_main_clone(self, tmp_path: Path) -> None:
         import subprocess  # noqa: PLC0415
@@ -43,26 +43,26 @@ class TestFindMainClone:
             cwd=main_clone,
             check=True,
         )
-        with patch("teatree.cli.setup.DoctorService") as mock_svc:
+        with patch("teatree.cli.setup.clone.DoctorService") as mock_svc:
             mock_svc.find_teatree_repo.return_value = worktree
-            assert _find_main_clone() == main_clone
+            assert find_main_clone() == main_clone
 
     def test_returns_repo_when_main_clone(self, tmp_path: Path) -> None:
         repo = tmp_path / "teatree"
         repo.mkdir()
         (repo / ".git").mkdir()
-        with patch("teatree.cli.setup.DoctorService") as mock_svc:
+        with patch("teatree.cli.setup.clone.DoctorService") as mock_svc:
             mock_svc.find_teatree_repo.return_value = repo
-            result = _find_main_clone()
+            result = find_main_clone()
             assert result == repo
 
     def test_returns_none_when_git_file_unparseable(self, tmp_path: Path) -> None:
         repo = tmp_path / "teatree"
         repo.mkdir()
         (repo / ".git").write_text("not a gitdir line\n")
-        with patch("teatree.cli.setup.DoctorService") as mock_svc:
+        with patch("teatree.cli.setup.clone.DoctorService") as mock_svc:
             mock_svc.find_teatree_repo.return_value = repo
-            assert _find_main_clone() is None
+            assert find_main_clone() is None
 
     def test_env_var_wins_over_cwd_heuristic(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """``T3_REPO`` env var must take priority so setup from a worktree still targets the configured main clone."""
@@ -72,7 +72,7 @@ class TestFindMainClone:
         (main_clone / "pyproject.toml").touch()
         monkeypatch.setenv("T3_REPO", str(main_clone))
 
-        with patch("teatree.cli.setup.DoctorService") as mock_svc:
+        with patch("teatree.cli.setup.clone.DoctorService") as mock_svc:
             mock_svc.find_teatree_repo.return_value = tmp_path / "some-worktree"
-            assert _find_main_clone() == main_clone
+            assert find_main_clone() == main_clone
             mock_svc.find_teatree_repo.assert_not_called()
