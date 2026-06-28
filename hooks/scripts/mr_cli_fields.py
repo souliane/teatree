@@ -196,6 +196,14 @@ _GLAB_API_PROJECT_RE = re.compile(r"\bprojects/(?P<ns>[^/\s'\"]+)/merge_requests
 # ``gh api repos/<owner>/<repo>/pulls…`` — the slug is the two path segments
 # after ``repos/``.
 _GH_API_REPO_RE = re.compile(r"\brepos/(?P<slug>[^/\s'\"]+/[^/\s'\"]+)/pulls")
+# A GitHub PR WEB URL operand to ``gh pr merge`` —
+# ``https://<host>/<owner>/<repo>/pull/<n>`` yields ``owner/repo``.
+_GH_WEB_PR_URL_RE = re.compile(r"https?://[^/\s]+/(?P<slug>[^/\s]+/[^/\s]+)/pull/\d+")
+# A GitLab MR WEB URL operand to ``glab mr merge`` —
+# ``https://<host>/<namespace…>/-/merge_requests/<n>`` yields the namespace.
+# The namespace may span subgroups (multiple path segments) up to the ``/-/``
+# separator, so it is captured non-greedily and URL-decoded like the api form.
+_GL_WEB_MR_URL_RE = re.compile(r"https?://[^/\s]+/(?P<ns>[^\s]+?)/-/merge_requests/\d+")
 
 
 def extract_mr_target_repo(command: str) -> str | None:
@@ -206,7 +214,10 @@ def extract_mr_target_repo(command: str) -> str | None:
     ``-R``/``--repo`` flag on ``glab mr`` gives the slug directly; the
     ``glab api .../projects/<ns>/merge_requests…`` namespace is URL-decoded
     (``acme-group%2Fwidget`` → ``acme-group/widget``); a ``gh api
-    repos/<owner>/<repo>/pulls…`` path yields the two segments after ``repos/``.
+    repos/<owner>/<repo>/pulls…`` path yields the two segments after ``repos/``;
+    and a forge WEB URL operand to ``gh pr merge`` / ``glab mr merge``
+    (``…/<owner>/<repo>/pull/<n>`` or ``…/<namespace>/-/merge_requests/<n>``)
+    yields the owner/repo or namespace.
 
     ``None`` when no target is parseable — the validator then keeps its
     cwd-keyed resolution (the established never-lockout fallback).
@@ -222,6 +233,14 @@ def extract_mr_target_repo(command: str) -> str | None:
     gh_api_match = _GH_API_REPO_RE.search(command)
     if gh_api_match:
         return gh_api_match.group("slug")
+
+    gh_web_match = _GH_WEB_PR_URL_RE.search(command)
+    if gh_web_match:
+        return gh_web_match.group("slug")
+
+    gl_web_match = _GL_WEB_MR_URL_RE.search(command)
+    if gl_web_match:
+        return unquote(gl_web_match.group("ns"))
 
     return None
 

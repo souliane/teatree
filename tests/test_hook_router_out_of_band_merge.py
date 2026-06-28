@@ -273,6 +273,16 @@ class TestClassifiesMergeTargetNotCwd:
             # GitLab REST POST to the managed overlay repo's merge endpoint
             # (url-encoded namespace decodes to example-org/private-repo).
             "glab api projects/example-org%2Fprivate-repo/merge_requests/9/merge --method POST",
+            # Forge WEB-URL operand to ``gh pr merge`` — no --repo/api path, so the
+            # slug must be parsed from the URL itself (GitHub /pull/<n>).
+            "gh pr merge https://github.com/souliane/teatree/pull/123 --squash",
+            # Forge WEB-URL operand to ``glab mr merge`` — GitLab /-/merge_requests/<n>
+            # against the managed overlay namespace.
+            "glab mr merge https://gitlab.com/example-org/private-repo/-/merge_requests/9",
+            # GraphQL mergePullRequest mutation — target is an opaque node id the
+            # slug parser cannot resolve, and the keystone never merges via raw
+            # graphql, so this signature is blocked unconditionally (fail-closed).
+            "gh api graphql -f query='mutation{mergePullRequest(input:{pullRequestId:\"PR_x\"}){clientMutationId}}'",
         ],
     )
     def test_managed_target_blocked_from_unmanaged_cwd(
@@ -300,4 +310,14 @@ class TestClassifiesMergeTargetNotCwd:
         repo = _repo_with_remote(tmp_path / "wt", "git@github.com:example-org/public-repo.git")
         command = "gh pr merge 3 --repo example-org/public-repo --squash"
         assert router.handle_block_out_of_band_merge(_merge_event(command, repo)) is False
+        assert capsys.readouterr().out.strip() == ""
+
+    def test_bare_number_from_unmanaged_cwd_still_allowed(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # ``gh pr merge <n>`` with no --repo targets the cwd repo; from an
+        # unmanaged cwd it must still ALLOW — the URL/graphql branches must not
+        # fail-close the legitimate no-target case (#126 lockout guard).
+        repo = _repo_with_remote(tmp_path / "wt", "git@github.com:example-org/public-repo.git")
+        assert router.handle_block_out_of_band_merge(_merge_event("gh pr merge 5", repo)) is False
         assert capsys.readouterr().out.strip() == ""

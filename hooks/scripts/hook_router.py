@@ -6838,29 +6838,28 @@ def _invokes_raw_merge_subcommand(command: str) -> bool:
 
 
 def handle_block_out_of_band_merge(data: dict) -> bool:
-    """Block a raw merge command or REST-API merge write on a managed repo.
+    """Block a raw/REST-API/graphql merge form aimed at a teatree-managed repo.
 
-    Covers two bypass vectors. The literal subcommand form (``gh pr merge`` /
-    ``glab mr merge``) is matched action-aware by
-    :func:`_invokes_raw_merge_subcommand` — only an actual invocation, not a
-    heredoc/echo/comment that documents the phrase (#2387). The REST-API form
-    (``gh api .../pulls/<n>/merge -X PUT``, ``glab api
-    .../merge_requests/<n>/merge --method POST``) is matched by
-    :func:`_is_raw_merge_api_write` (last ``-X``/``--method`` wins; default POST
-    with a body flag, else GET). A GET to the merge endpoint reads merge status
-    and is NOT denied.
+    Three bypass vectors. The literal subcommand (``gh pr merge`` / ``glab mr
+    merge``) is matched action-aware by :func:`_invokes_raw_merge_subcommand`
+    (a real invocation, not a heredoc/echo/comment — #2387). The REST-API form
+    (``gh api .../pulls/<n>/merge -X PUT``) is matched by
+    :func:`_is_raw_merge_api_write` (a GET read is NOT denied). A graphql
+    ``mergePullRequest`` mutation has an opaque node-id target that cannot resolve
+    to a slug and is never used by the keystone, so it is blocked (fail-closed).
 
-    Classification keys on the merge TARGET (parsed from the command), not the
-    cwd: a managed-repo target is BLOCKED regardless of cwd, closing the bypass
-    where the same merge ran from an unmanaged cwd. When no target parses, the
-    cwd-keyed check (#126) is the fail-safe fallback — allow only on a
-    confidently-unmanaged cwd; a managed or unresolvable cwd stays BLOCKED.
+    Otherwise classification keys on the merge TARGET (parsed from the command),
+    not the cwd: a managed-repo target is BLOCKED regardless of cwd. When no
+    target parses, the cwd-keyed check (#126) is the fail-safe fallback — allow
+    only on a confidently-unmanaged cwd; a managed/unresolvable cwd stays BLOCKED.
     """
     if data.get("tool_name") != "Bash":
         return False
     command = data.get("tool_input", {}).get("command", "")
     if not command:
         return False
+    if _GLAB_GH_API_RE.search(command) and re.search(r"mergePullRequest\s*\(", command):
+        return emit_pretooluse_deny(_OUT_OF_BAND_MERGE_REASON)
     if not _invokes_raw_merge_subcommand(command) and not _is_raw_merge_api_write(command):
         return False
     if not merge_target_is_managed(command, _overlay_managed_repo_signals()[0]):
