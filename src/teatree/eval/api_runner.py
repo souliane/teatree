@@ -38,7 +38,6 @@ The async ``query`` is bridged to the sync :meth:`ApiInProcessRunner.run` via
 import asyncio
 import dataclasses
 import os
-import re
 import shutil
 import time
 from collections.abc import Callable, Iterator
@@ -48,6 +47,15 @@ from pathlib import Path
 from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions, Message, query
 from claude_agent_sdk.types import EffortLevel
 
+from teatree.eval.api_errors import (
+    BUDGET_EXCEEDED_REASON,
+    SuccessMislabelResultError,
+    TerminalResultError,
+    budget_amount_from_message,
+    budget_floor_from_message,
+    classify_terminal_error,
+    is_success_result_error,
+)
 from teatree.eval.context_budget import extract_sections
 from teatree.eval.ephemeral_checkout import ephemeral_checkout_env, provision_ephemeral_checkout
 from teatree.eval.git_fixture import provision_git_fixture
@@ -186,127 +194,11 @@ WATCHDOG_SECONDS = resolve_watchdog_seconds()
 MAX_BUDGET_USD = "0.10"
 FALLBACK_MODEL = "claude-sonnet-4-6"
 EMPTY_SETTINGS = '{"hooks":{}}'
-BUDGET_EXCEEDED_REASON = "budget_exceeded"
-MAX_TURNS_REASON = "max_turns"
-
-#: The SDK has no typed error-result exception: when a run hits a cap the CLI
-#: emits an ``is_error`` ``result`` event and exits non-zero, which the SDK's
-#: ``receive_messages`` (``claude_agent_sdk/_internal/query.py`` L852) surfaces as
-#: a bare ``Exception`` whose message is ``"Claude Code returned an error result:
-#: <subtype-or-errors>"`` (built at L342). The trailing text is the CLI's own
-#: error string, so each terminal subtype is identified by a stable substring:
-#:
-#: * ``error_max_budget_usd`` -> ``"Reached maximum budget ($0.1)"``
-#: * ``error_max_turns``      -> ``"Reached maximum number of turns (3)"``
-#:
-#: A capped run is a GRADED terminus (the agent ran out of room), not an infra
-#: failure — so each marker maps to a ``terminal_reason``. Anything NOT matched
-#: here is a genuine error and re-raises, so a real crash is never swallowed as a
-#: graded cell. Extend by adding a ``(marker, reason)`` pair.
-_TERMINAL_MARKERS: tuple[tuple[str, str], ...] = (
-    ("maximum budget", BUDGET_EXCEEDED_REASON),
-    ("maximum number of turns", MAX_TURNS_REASON),
-)
-#: The SDK wraps the CLI's non-zero exit as ``"Claude Code returned an error
-#: result: <subtype-or-errors>"`` (``claude_agent_sdk/_internal/query.py`` L342)
-#: whenever a ``result`` event carried ``is_error=True`` — but the descriptive
-#: field it falls back to is the ``subtype``, which the CLI sometimes reports as
-#: ``"success"`` even while exiting non-zero. That is a SUCCESSFUL terminus
-#: mislabeled, NOT a cap and NOT a crash: the captured trajectory already holds
-#: the success ``result`` event, so the run is graded normally instead of raised.
-_SUCCESS_RESULT_MARKER = "returned an error result: success"
-#: The cap the SDK reports in the budget message — ``Reached maximum budget
-#: ($0.1)`` — is the partial-cost floor when no metered ``result`` event was
-#: produced. (max-turns carries no ``($X)``; its cost comes from a captured
-#: ``ResultMessage`` if any, else ``0.0``.)
-_BUDGET_AMOUNT_RE = re.compile(r"\$\s*([0-9]+(?:\.[0-9]+)?)")
 
 #: Typed alias callers may ``raise``/``except`` against. The SDK raises a bare
 #: ``Exception`` for the budget breaker, so the runner ALSO matches the message
 #: substring — this alias only types the direct-raise path, never narrows it.
 BudgetExceededError = RuntimeError
-
-
-def classify_terminal_error(message: str) -> str | None:
-    """Map an SDK error-result *message* to a graded ``terminal_reason``, or ``None``.
-
-    Returns the ``terminal_reason`` for a known terminal cap (budget, max-turns —
-    see :data:`_TERMINAL_MARKERS`) when the message carries that cap's marker
-    substring, else ``None`` for a genuine error the runner must re-raise. The
-    markers are the CLI's own error-result strings (see :data:`_TERMINAL_MARKERS`
-    for provenance); the list is the single place to extend with a new cap.
-    """
-    for marker, reason in _TERMINAL_MARKERS:
-        if marker in message:
-            return reason
-    return None
-
-
-def is_success_result_error(message: str) -> bool:
-    """``True`` when the SDK's error-result *message* actually describes a SUCCESS.
-
-    The CLI can exit non-zero while its ``result`` event subtype reads
-    ``"success"``; the SDK then raises ``"...returned an error result: success"``.
-    Treating that as a genuine error would crash a finished run, so the runner
-    recognizes it and grades the captured trajectory normally (the success
-    ``result`` event is already in the captured messages).
-    """
-    return _SUCCESS_RESULT_MARKER in message
-
-
-def _budget_amount_from_message(message: str) -> float | None:
-    """Return the ``$X`` amount the SDK message names, or ``None`` when absent.
-
-    The budget cap message carries the spend at truncation (``Reached maximum
-    budget ($0.1)``); the max-turns message carries none. ``None`` lets the caller
-    pick a per-terminus fallback (the cap for budget, a captured ``ResultMessage``
-    cost or ``0.0`` for max-turns).
-    """
-    match = _BUDGET_AMOUNT_RE.search(message)
-    return float(match.group(1)) if match else None
-
-
-def _budget_floor_from_message(message: str, *, cap: float) -> float:
-    """Recover the partial cost from the SDK's ``Reached maximum budget ($X)``.
-
-    Returns the amount the message names (the spend at truncation) when present,
-    else the configured *cap* as a floor — an over-budget cell always reports a
-    real cost, never a misleading ``0.0``/blank.
-    """
-    amount = _budget_amount_from_message(message)
-    return amount if amount is not None else cap
-
-
-class _TerminalResultError(Exception):
-    """A known terminal cap (budget/max-turns) the SDK surfaced mid-stream.
-
-    Carries the partial trajectory ``_collect`` gathered before the cap plus the
-    classified ``terminal_reason``, so the runner can grade the REAL trajectory
-    instead of discarding every message the all-or-nothing comprehension held.
-    """
-
-    def __init__(self, *, terminal_reason: str, messages: list[Message], cause: Exception) -> None:
-        super().__init__(str(cause))
-        self.terminal_reason = terminal_reason
-        self.messages = messages
-        self.cause = cause
-
-
-class _SuccessMislabelResultError(Exception):
-    """A finished SUCCESS the CLI mislabeled by exiting non-zero on a ``"success"`` subtype.
-
-    The captured ``result`` event already reads ``subtype="success"`` but also
-    carries a stray ``is_error=True`` (the CLI exited non-zero), so grading the
-    trajectory as-is would force a finished, all-matchers-pass run to FAIL on the
-    flag alone. Carries the captured trajectory so the runner can grade the REAL
-    messages and clear ``is_error`` — the same correction
-    :meth:`ApiInProcessRunner._terminal_capped_run` applies to a capped run.
-    """
-
-    def __init__(self, *, messages: list[Message], cause: Exception) -> None:
-        super().__init__(str(cause))
-        self.messages = messages
-        self.cause = cause
 
 
 class ClaudeCliMissingError(RuntimeError):
@@ -511,13 +403,13 @@ class ApiInProcessRunner:
             messages = asyncio.run(self._drive(spec, system_prompt=system_prompt, max_turns=max_turns))
         except TimeoutError:
             return self._terminal_run(spec, terminal_reason="timeout")
-        except _TerminalResultError as terminal:
+        except TerminalResultError as terminal:
             return self._terminal_capped_run(spec, terminal)
-        except _SuccessMislabelResultError as mislabel:
+        except SuccessMislabelResultError as mislabel:
             return self._success_mislabel_run(spec, mislabel)
         return eval_run_from_messages(spec, messages)
 
-    def _terminal_capped_run(self, spec: EvalSpec, terminal: _TerminalResultError) -> EvalRun:
+    def _terminal_capped_run(self, spec: EvalSpec, terminal: TerminalResultError) -> EvalRun:
         """Grade a run the SDK terminated at a known cap (budget/max-turns).
 
         When the agent produced a trajectory before the cap, grade the REAL
@@ -533,13 +425,13 @@ class ApiInProcessRunner:
         was captured does it fall back to the empty :meth:`_terminal_run` shape —
         whose budget cost floors to the cap, the existing over-budget behavior.
         """
-        message_amount = _budget_amount_from_message(str(terminal.cause))
+        message_amount = budget_amount_from_message(str(terminal.cause))
         if not terminal.messages:
             # Floor the over-budget cost to the scenario's EFFECTIVE budget (its own
             # per-scenario override when set, else the run default) so a raised-cap
             # scenario reports the cap it actually ran under, not the shared default.
             effective_cap = spec.max_budget_usd if spec.max_budget_usd is not None else self._max_budget_usd
-            cost = _budget_floor_from_message(str(terminal.cause), cap=effective_cap)
+            cost = budget_floor_from_message(str(terminal.cause), cap=effective_cap)
             empty_cost = cost if terminal.terminal_reason == BUDGET_EXCEEDED_REASON else 0.0
             return self._terminal_run(spec, terminal_reason=terminal.terminal_reason, cost_usd=empty_cost)
         graded = eval_run_from_messages(spec, terminal.messages)
@@ -552,7 +444,7 @@ class ApiInProcessRunner:
         )
 
     @staticmethod
-    def _success_mislabel_run(spec: EvalSpec, mislabel: _SuccessMislabelResultError) -> EvalRun:
+    def _success_mislabel_run(spec: EvalSpec, mislabel: SuccessMislabelResultError) -> EvalRun:
         """Grade a finished SUCCESS the CLI mislabeled by exiting non-zero.
 
         The captured ``result`` event reads ``subtype="success"`` but carries a
@@ -670,9 +562,9 @@ async def _collect(prompt: str, options: ClaudeAgentOptions) -> list[Message]:
     as they arrive — instead of an all-or-nothing comprehension — keeps every
     ``AssistantMessage`` (with its tool calls) the agent produced before hitting
     the cap. On a KNOWN terminal cap the partial list is re-raised inside a
-    :class:`_TerminalResultError` for the runner to grade; a SUCCESS mislabeled as
+    :class:`TerminalResultError` for the runner to grade; a SUCCESS mislabeled as
     an error result (the CLI exited non-zero on a ``"success"`` subtype) is
-    re-raised inside a :class:`_SuccessMislabelResultError` so the runner grades the
+    re-raised inside a :class:`SuccessMislabelResultError` so the runner grades the
     captured messages AND clears the stray ``is_error``; a metered-key CREDIT
     exhaustion (HTTP 400 "credit balance is too low" — the billed
     ``ANTHROPIC_API_KEY`` at $0) is re-raised as a :class:`CreditExhaustedError`
@@ -689,14 +581,14 @@ async def _collect(prompt: str, options: ClaudeAgentOptions) -> list[Message]:
             messages.append(message)  # noqa: PERF401 — partial list must survive a mid-iteration Exception
     except Exception as exc:
         if is_success_result_error(str(exc)):
-            raise _SuccessMislabelResultError(messages=messages, cause=exc) from exc
+            raise SuccessMislabelResultError(messages=messages, cause=exc) from exc
         limit = classify_limit(str(exc))
         if limit is not None and limit.cause is LimitCause.API_CREDIT:
             raise CreditExhaustedError(limit.remediation) from exc
         reason = classify_terminal_error(str(exc))
         if reason is None:
             raise
-        raise _TerminalResultError(terminal_reason=reason, messages=messages, cause=exc) from exc
+        raise TerminalResultError(terminal_reason=reason, messages=messages, cause=exc) from exc
     return messages
 
 
