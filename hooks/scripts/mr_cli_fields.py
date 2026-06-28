@@ -197,13 +197,14 @@ _GLAB_API_PROJECT_RE = re.compile(r"\bprojects/(?P<ns>[^/\s'\"]+)/merge_requests
 # after ``repos/``.
 _GH_API_REPO_RE = re.compile(r"\brepos/(?P<slug>[^/\s'\"]+/[^/\s'\"]+)/pulls")
 # A GitHub PR WEB URL operand to ``gh pr merge`` —
-# ``https://<host>/<owner>/<repo>/pull/<n>`` yields ``owner/repo``.
-_GH_WEB_PR_URL_RE = re.compile(r"https?://[^/\s]+/(?P<slug>[^/\s]+/[^/\s]+)/pull/\d+")
+# ``https://<host>/<owner>/<repo>/pull/<n>`` yields ``owner/repo``. The ``/pull/``
+# path segment matches case-insensitively; the captured slug stays case-preserved.
+_GH_WEB_PR_URL_RE = re.compile(r"https?://[^/\s]+/(?P<slug>[^/\s]+/[^/\s]+)/pull/\d+", re.IGNORECASE)
 # A GitLab MR WEB URL operand to ``glab mr merge`` —
 # ``https://<host>/<namespace…>/-/merge_requests/<n>`` yields the namespace.
 # The namespace may span subgroups (multiple path segments) up to the ``/-/``
 # separator, so it is captured non-greedily and URL-decoded like the api form.
-_GL_WEB_MR_URL_RE = re.compile(r"https?://[^/\s]+/(?P<ns>[^\s]+?)/-/merge_requests/\d+")
+_GL_WEB_MR_URL_RE = re.compile(r"https?://[^/\s]+/(?P<ns>[^\s]+?)/-/merge_requests/\d+", re.IGNORECASE)
 
 
 def extract_mr_target_repo(command: str) -> str | None:

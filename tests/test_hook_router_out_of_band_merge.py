@@ -283,6 +283,13 @@ class TestClassifiesMergeTargetNotCwd:
             # slug parser cannot resolve, and the keystone never merges via raw
             # graphql, so this signature is blocked unconditionally (fail-closed).
             "gh api graphql -f query='mutation{mergePullRequest(input:{pullRequestId:\"PR_x\"}){clientMutationId}}'",
+            # GraphQL enablePullRequestAutoMerge — merges on GitHub's native rules,
+            # same merge effect as mergePullRequest under a different name.
+            "gh api graphql -f query='mutation{enablePullRequestAutoMerge(input:{pullRequestId:\"X\"})}'",
+            # GraphQL mergeBranch — merges head ref into base ref out-of-band.
+            'gh api graphql -f query=\'mutation{mergeBranch(input:{base:"a",head:"b"})}\'',
+            # Uppercase URL path segment must still match (case-insensitive /PULL/).
+            "gh pr merge https://github.com/souliane/teatree/PULL/9 --squash",
         ],
     )
     def test_managed_target_blocked_from_unmanaged_cwd(

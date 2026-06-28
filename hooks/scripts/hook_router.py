@@ -6705,6 +6705,9 @@ _OUT_OF_BAND_MERGE_RE = re.compile(r"\b(?:gh\s+pr\s+merge|glab\s+mr\s+merge)\b")
 # Matches both GitHub (``repos/OWNER/REPO/pulls/<n>/merge``) and
 # GitLab (``projects/<id>/merge_requests/<n>/merge``) URL shapes.
 _MERGE_ENDPOINT_RE = re.compile(r"(?:merge_requests|pulls)/\d+/merge\b")
+# GitHub GraphQL merge-effecting mutations (all merge the PR / a branch out of band):
+# mergePullRequest, enablePullRequestAutoMerge (native-rules merge), mergeBranch.
+_GRAPHQL_MERGE_MUTATION_RE = re.compile(r"(?:mergePullRequest|enablePullRequestAutoMerge|mergeBranch)\s*\(")
 _OUT_OF_BAND_MERGE_REASON = (
     "BLOCKED: raw `gh pr merge` / `glab mr merge` on a teatree-managed repo — "
     "an out-of-band merge bypasses the FSM coherence mechanism (ledger update, "
@@ -6844,21 +6847,23 @@ def handle_block_out_of_band_merge(data: dict) -> bool:
     merge``) is matched action-aware by :func:`_invokes_raw_merge_subcommand`
     (a real invocation, not a heredoc/echo/comment — #2387). The REST-API form
     (``gh api .../pulls/<n>/merge -X PUT``) is matched by
-    :func:`_is_raw_merge_api_write` (a GET read is NOT denied). A graphql
-    ``mergePullRequest`` mutation has an opaque node-id target that cannot resolve
-    to a slug and is never used by the keystone, so it is blocked (fail-closed).
+    :func:`_is_raw_merge_api_write` (a GET read is NOT denied). A graphql merge
+    mutation (mergePullRequest / enablePullRequestAutoMerge / mergeBranch) has an
+    unresolvable node-id target, so it is blocked (fail-closed).
 
     Otherwise classification keys on the merge TARGET (parsed from the command),
-    not the cwd: a managed-repo target is BLOCKED regardless of cwd. When no
-    target parses, the cwd-keyed check (#126) is the fail-safe fallback — allow
-    only on a confidently-unmanaged cwd; a managed/unresolvable cwd stays BLOCKED.
+    not the cwd — a managed-repo target is BLOCKED regardless of cwd; when none
+    parses, the cwd-keyed fallback (#126) allows only a confidently-unmanaged cwd.
     """
     if data.get("tool_name") != "Bash":
         return False
     command = data.get("tool_input", {}).get("command", "")
     if not command:
         return False
-    if _GLAB_GH_API_RE.search(command) and re.search(r"mergePullRequest\s*\(", command):
+    # Matches the mutation name in argv only: a query loaded from a file or stdin
+    # (`gh api graphql -F query=@file` / `--input`) moves the text out of argv and
+    # is NOT inspected — an accepted residual, not a silent miss.
+    if _GLAB_GH_API_RE.search(command) and _GRAPHQL_MERGE_MUTATION_RE.search(command):
         return emit_pretooluse_deny(_OUT_OF_BAND_MERGE_REASON)
     if not _invokes_raw_merge_subcommand(command) and not _is_raw_merge_api_write(command):
         return False
