@@ -44,7 +44,7 @@ from django.utils import timezone
 from django_fsm import can_proceed
 
 from teatree.config import get_effective_settings
-from teatree.core.models import Session, Task, Ticket, Worktree
+from teatree.core.models import Ticket, Worktree
 from teatree.core.models.external_delivery import under_external_delivery
 from teatree.core.models.types import validated_worktree_extra
 from teatree.core.worktree_env import compose_project
@@ -53,7 +53,6 @@ from teatree.utils.run import run_allowed_to_fail
 logger = logging.getLogger(__name__)
 
 _RUNNING_STATES: tuple[str, ...] = (Worktree.State.SERVICES_UP, Worktree.State.READY)
-_ACTIVE_TASK_STATES: tuple[str, ...] = (Task.Status.PENDING, Task.Status.CLAIMED)
 
 
 def _running_container_count(project: str) -> int:
@@ -103,14 +102,13 @@ def _is_currently_active(worktree: Worktree, active_path: Path | None) -> bool:
 def ticket_is_busy(ticket: Ticket) -> bool:
     """True iff *ticket* has a live session or an active/claimed task.
 
-    The ticket-level half of the liveness signal. Reapers do not call this
-    directly — they call :func:`worktree_protects_against_reap`, which combines
+    The ticket-level half of the liveness signal, delegating to the single owner
+    :meth:`teatree.core.models.ticket.Ticket.has_active_work`. Reapers do not call
+    this directly — they call :func:`worktree_protects_against_reap`, which combines
     it with the worktree-level active-delivery guards so an irreversible reaper
     never protects LESS than the reversible idle-stack reaper.
     """
-    if Session.objects.filter(ticket=ticket, ended_at__isnull=True).exists():
-        return True
-    return Task.objects.filter(ticket=ticket, status__in=_ACTIVE_TASK_STATES).exists()
+    return ticket.has_active_work()
 
 
 def _is_reaper_pinned(worktree: Worktree) -> bool:

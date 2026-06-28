@@ -26,6 +26,16 @@ class Task(models.Model):
         COMPLETED = "completed", "Completed"
         FAILED = "failed", "Failed"
 
+        @classmethod
+        def active(cls) -> frozenset["Task.Status"]:
+            """The states a task is still being worked in — the active half of the partition."""
+            return frozenset({cls.PENDING, cls.CLAIMED})
+
+        @classmethod
+        def terminal(cls) -> frozenset["Task.Status"]:
+            """The states a task is finished in — the terminal half of the partition."""
+            return frozenset({cls.COMPLETED, cls.FAILED})
+
     ticket = models.ForeignKey(Ticket, on_delete=models.CASCADE, related_name="tasks")
     session = models.ForeignKey(Session, on_delete=models.CASCADE, related_name="tasks")
     parent_task = models.ForeignKey(
@@ -146,7 +156,7 @@ class Task(models.Model):
         now = timezone.now()
         with transaction.atomic():
             locked = Task.objects.select_for_update().get(pk=self.pk)
-            if locked.status in {self.Status.COMPLETED, self.Status.FAILED}:
+            if locked.status in self.Status.terminal():
                 msg = "Task already finished"
                 raise InvalidTransitionError(msg)
             if locked.status == self.Status.CLAIMED and locked.lease_expires_at and locked.lease_expires_at > now:
@@ -482,7 +492,7 @@ class Task(models.Model):
         children = self.child_tasks.all()  # ty: ignore[unresolved-attribute]
         if not children.exists():
             return True
-        return not children.exclude(status__in={self.Status.COMPLETED, self.Status.FAILED}).exists()
+        return not children.exclude(status__in=self.Status.terminal()).exists()
 
     def phase_iteration_count(self) -> int:
         """How many attempts this ticket-phase has already recorded (#2009)."""
