@@ -67,6 +67,7 @@ from question_gates import (
     is_user_directed_question,
     preceding_user_rejected_question_and_asked_clarify,
 )
+from question_gates import last_assistant_turn as _last_assistant_turn
 from question_gates import read_transcript_entries as _read_transcript_entries
 from quote_verdict import QuoteVerdict
 from quote_verdict import resolve_high_verdict as _resolve_quote_verdict
@@ -3452,6 +3453,12 @@ _ORCHESTRATOR_HEAVY_BASH_RE = re.compile(
 # unblock.
 _FG_OK_RE = re.compile(r"\[fg-ok:\s*\S[^\]]*?\s*\]")
 
+# A heavy verb invoked purely to print its ``--help``/``-h``/``--version`` (and
+# exit immediately) is trivially fast and read-only — NOT the long-running shape
+# this gate guards (``t3 dream run --help``, ``docker build --help``,
+# ``pytest -h``). The lookahead requires the flag to be a complete token so a
+_HELP_OR_VERSION_RE = re.compile(r"(?:^|\s)(?:--help|-h|--version)(?=\s|$)")
+
 
 def _is_orchestration_action(data: dict) -> bool:
     """True when the tool call is a sanctioned orchestration verb.
@@ -3594,6 +3601,24 @@ def _command_matches_non_pytest_heavy(command: str) -> bool:
     return bool(_ORCHESTRATOR_HEAVY_BASH_RE.search(stripped))
 
 
+def _heavy_command_is_help_only(command: str) -> bool:
+    """True when EVERY heavy denylist match in ``command`` is a --help/--version query.
+
+    A help/version invocation of a heavy verb prints usage and exits immediately
+    (trivially fast, read-only), so it is not the session-wedging shape the gate
+    guards. Scoped per shell segment so a help flag on one arm cannot vouch for a
+    genuinely heavy command on another (``t3 x run --help && pytest tests/`` still
+    denies on the pytest arm). False when no heavy segment is present.
+    """
+    saw_heavy = False
+    for segment in re.split(r"[;&|\n(){}]", command):
+        if _ORCHESTRATOR_HEAVY_BASH_RE.search(segment):
+            saw_heavy = True
+            if not _HELP_OR_VERSION_RE.search(segment):
+                return False
+    return saw_heavy
+
+
 def _deny_heavy_main_agent_bash(data: dict) -> bool:
     """Deny a main-agent foreground HEAVY/long-running ``Bash`` command.
 
@@ -3616,7 +3641,11 @@ def _deny_heavy_main_agent_bash(data: dict) -> bool:
     command = tool_input.get("command")
     if not isinstance(command, str):
         return False
-    if _FG_OK_RE.search(command) or not _ORCHESTRATOR_HEAVY_BASH_RE.search(command):
+    if (
+        _FG_OK_RE.search(command)
+        or not _ORCHESTRATOR_HEAVY_BASH_RE.search(command)
+        or _heavy_command_is_help_only(command)
+    ):
         return False
     if _pytest_command_is_targeted(command) and not _command_matches_non_pytest_heavy(command):
         return False
@@ -5831,35 +5860,10 @@ def _entry_content(entry: dict) -> list:
     return content if isinstance(content, list) else []
 
 
-def _last_assistant_turn(transcript_path: str) -> tuple[str, bool] | None:
-    """Return ``(final_assistant_text, used_question_tool)`` for the last turn.
-
-    The "last turn" is every assistant message after the most recent user
-    message in the transcript JSONL. ``final_assistant_text`` is the
-    concatenated text blocks of those messages; ``used_question_tool`` is
-    ``True`` if any ``AskUserQuestion`` ``tool_use`` block appears in the
-    turn. Returns ``None`` when the transcript is missing, unreadable,
-    empty, or has no trailing assistant turn (fail-safe to "do nothing").
-    """
-    texts: list[str] = []
-    used_tool = False
-    for entry in reversed(_read_transcript_entries(transcript_path)):
-        role = _entry_role(entry)
-        if role == "user":
-            break
-        if role != "assistant":
-            continue
-        for block in _entry_content(entry):
-            if not isinstance(block, dict):
-                continue
-            if block.get("type") == "text":
-                texts.append(str(block.get("text", "")))
-            elif block.get("type") == "tool_use" and block.get("name") == "AskUserQuestion":
-                used_tool = True
-    if not texts:
-        return None
-    # entries were walked newest→oldest; restore reading order
-    return "\n".join(reversed(texts)), used_tool
+# ``_last_assistant_turn`` moved to the ``question_gates`` sibling (the
+# transcript-parsing home, beside ``read_transcript_entries``) and imported back
+# as ``_last_assistant_turn`` so this god-module keeps shrinking; callers and the
+# ``completion_claim_gate`` re-export are unchanged.
 
 
 _STRUCTURED_QUESTION_BLOCK = (

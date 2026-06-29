@@ -153,6 +153,38 @@ def _entry_message_blocks(entry: dict) -> list:
     return content if isinstance(content, list) else []
 
 
+def last_assistant_turn(transcript_path: str) -> tuple[str, bool] | None:
+    """Return ``(final_assistant_text, used_question_tool)`` for the last turn.
+
+    The "last turn" is every assistant message after the most recent user
+    message in the transcript JSONL. ``final_assistant_text`` is the concatenated
+    text blocks of those messages; ``used_question_tool`` is ``True`` if any
+    ``AskUserQuestion`` ``tool_use`` block appears in the turn. Returns ``None``
+    when the transcript is missing, unreadable, empty, or has no trailing
+    assistant turn (fail-safe to "do nothing"). Owned here (the transcript-parsing
+    home) and imported back into ``hook_router`` to keep that god-module shrinking.
+    """
+    texts: list[str] = []
+    used_tool = False
+    for entry in reversed(read_transcript_entries(transcript_path)):
+        role = _entry_message_role(entry)
+        if role == "user":
+            break
+        if role != "assistant":
+            continue
+        for block in _entry_message_blocks(entry):
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "text":
+                texts.append(str(block.get("text", "")))
+            elif block.get("type") == "tool_use" and block.get("name") == "AskUserQuestion":
+                used_tool = True
+    if not texts:
+        return None
+    # entries were walked newest→oldest; restore reading order
+    return "\n".join(reversed(texts)), used_tool
+
+
 def preceding_user_rejected_question_and_asked_clarify(entries: list[dict]) -> bool:
     """True when the user just rejected an AskUserQuestion and asked to clarify.
 
