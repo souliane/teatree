@@ -24,6 +24,7 @@ caller (the keystone, the sweep) refuses the auto-merge.
 import logging
 from dataclasses import dataclass
 
+from django.apps import apps
 from django.db import OperationalError, ProgrammingError
 
 logger = logging.getLogger(__name__)
@@ -58,9 +59,9 @@ def trusted_handles() -> set[str]:
     migration window.
     """
     try:
-        from teatree.core.models import TrustedIdentity  # noqa: PLC0415
+        trusted_identity_model = apps.get_model("core", "TrustedIdentity")
 
-        handles = TrustedIdentity.objects.trusted_handles()
+        handles = trusted_identity_model.objects.trusted_handles()
     except (OperationalError, ProgrammingError):
         logger.info("author_trust: teatree_trusted_identity unavailable (DB not migrated yet) — config fallback")
         return _config_trusted_handles()

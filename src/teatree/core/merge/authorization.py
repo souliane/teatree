@@ -8,6 +8,7 @@ The result type :class:`MergePrecheck` and the guard functions
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from teatree.core.author_trust import classify_author
 from teatree.core.merge.ci_rollup import fetch_pr_author
 from teatree.core.merge.errors import MergePreconditionError
 
@@ -315,8 +316,6 @@ def assert_public_repo_author_trusted(*, slug: str, pr_id: int, host_kind: str =
     PUBLIC repo -> the author must be a trusted identity; an untrusted, unknown,
     empty, or unfetchable author is refused (fail-closed).
     """
-    from teatree.core.author_trust import classify_author  # noqa: PLC0415
-
     author = fetch_pr_author(slug, pr_id, host_kind=host_kind)
     classification = classify_author(slug, author, host_kind=host_kind)
     if classification.internal_repo or classification.trusted:
