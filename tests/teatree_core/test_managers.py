@@ -1,5 +1,6 @@
 from datetime import timedelta
 
+import pytest
 from django.test import TestCase
 from django.utils import timezone
 
@@ -657,6 +658,162 @@ class TestClaimNextPendingConcurrencyOnSqlite(TestCase):
         assert winner.pk == only.pk
         assert only.claimed_by == winner.claimed_by
         assert only.claimed_by in {"tick-1", "tick-2"}
+
+
+class TestTaskClaimAtomic(TestCase):
+    """``Task.claim`` is an atomic CAS — the create-and-assign-to-one-session claim.
+
+    The owner-reported bug: two concurrent Claude sessions picked up the SAME
+    unit because ``Task.claim`` was a read-then-write — ``select_for_update()``
+    (a silent no-op on the production SQLite backend, ``has_select_for_update``
+    is ``False``) then an UNCONDITIONAL ``save()`` with no affected-row guard.
+    Both sessions passed the in-Python check on the same stale view and both
+    wrote. It is now a single guarded ``UPDATE ... WHERE pk AND <claimable>``
+    whose row count is the CAS token, the same backend-agnostic shape the
+    sibling ``claim_next_pending`` / ``reap_stale_claims`` paths already use.
+
+    Three directions, all pinned here:
+
+    * race — two concurrent claims on one available unit ⇒ EXACTLY one wins;
+    * dead-lease reclaim — a unit whose owner's lease lapsed is re-claimable;
+    * live-lease protection — a unit with a FRESH lease is NOT stolen.
+    """
+
+    def _task(self) -> Task:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="a")
+        return Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+
+    def test_backend_is_sqlite(self) -> None:
+        # Pin the premise: the race shape below reflects the PRODUCTION backend,
+        # where ``select_for_update`` is a no-op — the whole reason the previous
+        # read-then-write raced.
+        from django.db import connection  # noqa: PLC0415
+
+        assert connection.vendor == "sqlite"
+        assert connection.features.has_select_for_update is False
+
+    def test_two_concurrent_claims_on_one_task_exactly_one_wins(self) -> None:
+        """The race: session A and session B both claim the same PENDING unit.
+
+        Same deterministic single-connection interleave as
+        ``TestClaimNextPendingConcurrencyOnSqlite``: session B runs its FULL
+        claim inside session A's critical section, just before A's write
+        commits, so A's write lands on a row B already moved to CLAIMED. The
+        seam patches BOTH write primitives (``QuerySet.update`` — the fixed
+        CAS — and ``Task.save`` — the pre-fix read-then-write), so the test is
+        RED on the buggy code (both "win") and GREEN on the fix (the CAS
+        ``WHERE`` lets exactly one writer match).
+        """
+        from unittest.mock import patch  # noqa: PLC0415
+
+        from django.db.models import QuerySet  # noqa: PLC0415
+
+        from teatree.core.models.errors import InvalidTransitionError  # noqa: PLC0415
+        from teatree.core.models.task import Task as TaskModel  # noqa: PLC0415
+
+        row = self._task()
+        session_a = Task.objects.get(pk=row.pk)
+        session_b = Task.objects.get(pk=row.pk)
+
+        fired: list[str] = []
+        rival_won = [False]
+        real_update = QuerySet.update
+        real_save = TaskModel.save
+
+        def _fire_rival_once() -> None:
+            if fired:
+                return
+            fired.append("x")
+            try:
+                session_b.claim(claimed_by="session-B")
+                rival_won[0] = True
+            except InvalidTransitionError:
+                rival_won[0] = False
+
+        def update_with_rival(self: object, *args: object, **kwargs: object) -> object:
+            _fire_rival_once()
+            return real_update(self, *args, **kwargs)
+
+        def save_with_rival(self: object, *args: object, **kwargs: object) -> object:
+            _fire_rival_once()
+            return real_save(self, *args, **kwargs)
+
+        caller_won = False
+        with (
+            patch.object(QuerySet, "update", update_with_rival),
+            patch.object(TaskModel, "save", save_with_rival),
+        ):
+            try:
+                session_a.claim(claimed_by="session-A")
+                caller_won = True
+            except InvalidTransitionError:
+                caller_won = False
+
+        row.refresh_from_db()
+        # EXACTLY one of the two interleaved sessions claimed the single unit.
+        assert (caller_won, rival_won[0]).count(True) == 1, (
+            f"double-claim race NOT closed on SQLite: {caller_won=} {rival_won[0]=}"
+        )
+        assert row.status == Task.Status.CLAIMED
+        assert row.claimed_by in {"session-A", "session-B"}
+
+    def test_claim_reclaims_a_dead_sessions_expired_lease(self) -> None:
+        """Dead-lease reclaim: a unit whose owner's lease lapsed is re-claimable.
+
+        Session A claims the unit, then dies — its lease is forced into the
+        past. The next healthy session B claims the SAME unit directly via
+        ``Task.claim``; the CAS ``<claimable>`` predicate admits a CLAIMED row
+        whose lease is expired, so B reclaims it (no duplicate unit, no manual
+        reopen).
+        """
+        task = self._task()
+        task.claim(claimed_by="session-A", lease_seconds=300)
+        # Session A dies: its lease lapses (no more heartbeats).
+        task.lease_expires_at = timezone.now() - timedelta(seconds=10)
+        task.save(update_fields=["lease_expires_at"])
+
+        session_b = Task.objects.get(pk=task.pk)
+        session_b.claim(claimed_by="session-B")
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.CLAIMED
+        assert task.claimed_by == "session-B"  # reclaimed, not duplicated
+        assert task.lease_expires_at is not None
+        assert task.lease_expires_at > timezone.now()  # a fresh lease for B
+
+    def test_claim_does_not_steal_a_unit_with_a_fresh_lease(self) -> None:
+        """Live-lease protection: a unit with a FRESH lease is NOT stolen.
+
+        Session A holds a live lease. Session B's claim must lose — the CAS
+        ``<claimable>`` predicate excludes a CLAIMED row whose lease is still
+        in the future, so A's claim is left intact and B raises the typed
+        ``InvalidTransitionError``.
+        """
+        from teatree.core.models.errors import InvalidTransitionError  # noqa: PLC0415
+
+        task = self._task()
+        task.claim(claimed_by="session-A", lease_seconds=300)
+
+        session_b = Task.objects.get(pk=task.pk)
+        with pytest.raises(InvalidTransitionError):
+            session_b.claim(claimed_by="session-B")
+
+        task.refresh_from_db()
+        assert task.status == Task.Status.CLAIMED
+        assert task.claimed_by == "session-A"  # the live owner keeps its claim
+
+    def test_claim_refuses_a_terminal_task(self) -> None:
+        """A COMPLETED/FAILED unit is never re-claimed — the typed refusal stands."""
+        from teatree.core.models.errors import InvalidTransitionError  # noqa: PLC0415
+
+        task = self._task()
+        task.fail()  # terminal
+
+        with pytest.raises(InvalidTransitionError):
+            task.claim(claimed_by="session-A")
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
 
 
 class TestReplyDispatchQuerySet(TestCase):
