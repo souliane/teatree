@@ -56,11 +56,19 @@ def _config_path() -> Path:
 def _gate_key_is_enabled(key: str) -> bool:
     """Resolve ``[teatree] <key>`` (default True), failing OPEN to enabled.
 
-    Mirrors the hook layer's gate resolution: the gate is enabled unless an
-    explicit ``false`` is recorded. Fails OPEN to enabled on a
-    missing/broken config so the reported status matches what the gate
-    itself would do.
+    Mirrors the hook layer's gate resolution: the gate is enabled unless an explicit
+    ``false`` is recorded. For a cold-hook gate key the resolution is DB-first then TOML —
+    matching the flipped hook reader (config-unify PR3) so ``t3 teatree gate status`` reports what
+    the gate actually does: a real DB bool wins, otherwise it falls through to the
+    ``[teatree]`` TOML value. Fails OPEN to enabled on a missing/broken config + DB so the
+    reported status matches the gate's own fail-open posture.
     """
+    if _is_cold_hook_gate_key(key):
+        from teatree.config import cold_reader  # noqa: PLC0415
+
+        db_value = cold_reader.read_setting(key, scope="")
+        if isinstance(db_value, bool):
+            return db_value
     config_path = _config_path()
     if not config_path.is_file():
         return True
@@ -129,7 +137,40 @@ def danger_gate_fail_open_is_enabled() -> bool:
     return teatree.get(DANGER_GATE_FAIL_OPEN_KEY) is True
 
 
-def _set_gate_key(key: str, *, enabled: bool) -> None:
+def _is_cold_hook_gate_key(key: str) -> bool:
+    """Whether *key* is a seeded cold-hook gate (DB tier) vs a TOML-home gate.
+
+    The cold-hook gates (``skill_loading`` / ``plan_edit`` / ``config_overwrite`` /
+    ``completion_claim`` / ``memory_recall``) are seeded into the canonical DB by ``t3
+    setup`` and read DB-first by the flipped hook reader (config-unify PR3), so ``t3 teatree gate``
+    must read/write that SAME DB tier or its toggle is shadowed by the seeded row.
+    ``orchestrator_bash_gate_enabled`` and ``danger_gate_fail_open`` are TOML-home (#1775,
+    never seeded), so they stay on TOML — the always-available Bash self-rescue. Membership
+    is derived from ``COLD_HOOK_SETTINGS`` (inline import — this module is pulled by
+    ``teatree.config`` at bootstrap) so it can never drift from the seeded registry.
+    """
+    from teatree.config import COLD_HOOK_SETTINGS  # noqa: PLC0415
+
+    return key in COLD_HOOK_SETTINGS
+
+
+def _set_gate_key(key: str, *, enabled: bool) -> Path:
+    """Persist ``<key> = <enabled>`` to the tier the gate's reader consults; return that destination.
+
+    For a cold-hook gate key the flipped reader is DB-first (config-unify PR3), so the write
+    goes to the canonical DB via the Django-free cold writer — making the toggle authoritative
+    over a seeded row, and the returned destination is the canonical DB path. A present-but-
+    locked DB (``WRITE_FAILED``) still returns the DB path WITHOUT a TOML fallback: the DB row
+    stays authoritative, so the caller's read-back-verify surfaces the locked write rather than
+    a dead, shadowed TOML row. Only a genuinely absent DB tier (a fresh, pre-``t3 setup`` cold
+    state) or a TOML-home gate key falls through to the ``~/.teatree.toml`` write.
+    """
+    if _is_cold_hook_gate_key(key):
+        from teatree.config import cold_writer  # noqa: PLC0415
+
+        if cold_writer.write_setting(key, enabled) is not cold_writer.WriteResult.NO_DB_TIER:
+            return cold_writer.canonical_config_db()
+
     # ``tomlkit`` is imported inline (matching ``slack_setup``) so loading this
     # module — pulled transitively by ``teatree.config`` on every CLI bootstrap
     # — never eagerly imports the toml-preserving dep.
@@ -144,6 +185,31 @@ def _set_gate_key(key: str, *, enabled: bool) -> None:
         document["teatree"] = teatree
     teatree[key] = enabled
     config_path.write_text(tomlkit.dumps(document), encoding="utf-8")
+    return config_path
+
+
+def _write_gate_and_verify(key: str, *, enabled: bool) -> Path:
+    """Write ``<key>=<enabled>``, verify the toggle actually took, and return the real destination.
+
+    After the write, read the gate back through :func:`_gate_key_is_enabled` — DB-first for a
+    cold-hook key, exactly as the flipped hook reader resolves it. If the observed state
+    disagrees with *enabled*, the canonical DB was locked (or the write otherwise failed) and
+    the toggle did NOT take: raise ``typer.Exit(1)`` with a loud message so the command never
+    prints a success line over a stale, still-effective gate. The returned destination lets the
+    caller report where the value ACTUALLY landed (the canonical DB vs the ``~/.teatree.toml``
+    fallback). Catching the mismatch by read-back rather than by classifying the write error
+    covers EVERY failure mode, regardless of cause.
+    """
+    destination = _set_gate_key(key, enabled=enabled)
+    if _gate_key_is_enabled(key) != enabled:
+        still = "ENABLED" if not enabled else "DISABLED"
+        typer.echo(
+            f"ERROR: `{key}` did NOT take — the canonical DB is locked or the write failed; "
+            f"the gate is still {still}. Retry once the DB is free.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    return destination
 
 
 def _register_keyed_gate(parent: typer.Typer, *, name: str, key: str, label: str) -> None:
@@ -158,14 +224,14 @@ def _register_keyed_gate(parent: typer.Typer, *, name: str, key: str, label: str
     @group.command(name="disable")
     def disable() -> None:
         """Disable the gate (self-rescue from a lockout)."""
-        _set_gate_key(key, enabled=False)
-        typer.echo(f"gate DISABLED — wrote `{key} = false` to {_config_path()}")
+        destination = _write_gate_and_verify(key, enabled=False)
+        typer.echo(f"gate DISABLED — wrote `{key} = false` to {destination}")
 
     @group.command(name="enable")
     def enable() -> None:
         """Re-enable the gate."""
-        _set_gate_key(key, enabled=True)
-        typer.echo(f"gate ENABLED — wrote `{key} = true` to {_config_path()}")
+        destination = _write_gate_and_verify(key, enabled=True)
+        typer.echo(f"gate ENABLED — wrote `{key} = true` to {destination}")
 
     parent.add_typer(group, name=name)
 
@@ -188,14 +254,14 @@ def register_gate_commands(overlay_app: typer.Typer) -> None:
     @gate_group.command(name="disable")
     def disable() -> None:
         """Disable the gate (self-rescue from a Bash lockout)."""
-        _set_gate_key(GATE_KEY, enabled=False)
-        typer.echo(f"gate DISABLED — wrote `{GATE_KEY} = false` to {_config_path()}")
+        destination = _write_gate_and_verify(GATE_KEY, enabled=False)
+        typer.echo(f"gate DISABLED — wrote `{GATE_KEY} = false` to {destination}")
 
     @gate_group.command(name="enable")
     def enable() -> None:
         """Re-enable the gate."""
-        _set_gate_key(GATE_KEY, enabled=True)
-        typer.echo(f"gate ENABLED — wrote `{GATE_KEY} = true` to {_config_path()}")
+        destination = _write_gate_and_verify(GATE_KEY, enabled=True)
+        typer.echo(f"gate ENABLED — wrote `{GATE_KEY} = true` to {destination}")
 
     _register_keyed_gate(
         gate_group,
@@ -257,14 +323,14 @@ def register_fail_open_gate_commands(review_app: typer.Typer) -> None:
     @fail_open.command(name="enable")
     def enable() -> None:
         """Turn the master fail-open switch ON (self-rescue from an over-deny lockout)."""
-        _set_gate_key(DANGER_GATE_FAIL_OPEN_KEY, enabled=True)
-        typer.echo(f"fail-open ON — wrote `{DANGER_GATE_FAIL_OPEN_KEY} = true` to {_config_path()}")
+        destination = _write_gate_and_verify(DANGER_GATE_FAIL_OPEN_KEY, enabled=True)
+        typer.echo(f"fail-open ON — wrote `{DANGER_GATE_FAIL_OPEN_KEY} = true` to {destination}")
 
     @fail_open.command(name="disable")
     def disable() -> None:
         """Turn the master fail-open switch OFF (restore normal gate enforcement)."""
-        _set_gate_key(DANGER_GATE_FAIL_OPEN_KEY, enabled=False)
-        typer.echo(f"fail-open OFF — wrote `{DANGER_GATE_FAIL_OPEN_KEY} = false` to {_config_path()}")
+        destination = _write_gate_and_verify(DANGER_GATE_FAIL_OPEN_KEY, enabled=False)
+        typer.echo(f"fail-open OFF — wrote `{DANGER_GATE_FAIL_OPEN_KEY} = false` to {destination}")
 
     gate_group.add_typer(fail_open, name="fail-open")
     review_app.add_typer(gate_group, name="gate")
