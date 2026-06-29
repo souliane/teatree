@@ -62,6 +62,8 @@ from orchestration_boundary_signals import PYTEST_VERB_RE as _PYTEST_VERB_RE
 from orchestration_boundary_signals import call_is_from_subagent as _call_is_from_subagent
 from orchestrator_investigation_gate import handle_enforce_orchestrator_investigation_boundary
 from question_gates import FENCED_CODE_RE, handle_warn_batched_questions, is_user_directed_question
+from quote_verdict import QuoteVerdict
+from quote_verdict import resolve_high_verdict as _resolve_quote_verdict
 from state_files import append_line, read_lines
 from subagent_skill_gate import is_file_safe, unreferenced_demand_reason
 from teatree_settings import autoload_enabled as _autoload_enabled
@@ -2641,22 +2643,18 @@ def handle_quote_scanner_pretool(data: dict) -> bool:
                 sys.path.remove(str(src_dir))
 
 
-def _quote_scanner_high_verdict(
-    quote_scanner: "ModuleType", tool_name: str, result: object, *, carve_out: bool
-) -> bool:
-    """Resolve a HIGH quote-scanner match into a deny / downgrade verdict.
+def _quote_scanner_high_io(quote_scanner: "ModuleType", tool_name: str, result: object, verdict: QuoteVerdict) -> bool:
+    """Apply a resolved quote ``QuoteVerdict``: warn-downgrade or deny.
 
-    A HIGH match on a private-repo commit (``carve_out``) downgrades to a
-    warn (#126); every other HIGH match denies. Split out of
-    :func:`_run_quote_scanner_pretool` to keep its return count under the
-    PLR0911 ceiling.
+    The verdict DECISION (#1213/#1415/#126) lives in the ``quote_verdict`` sibling;
+    this owns only the router-side I/O — the stderr warning + ledger write on a
+    downgrade, or the ledger deny + ``emit_pretooluse_deny`` block. Split out of
+    :func:`_run_quote_scanner_pretool` to keep its return count under the PLR0911
+    ceiling, mirroring :func:`_banned_term_marker_blocks`.
     """
-    if carve_out:
-        sys.stderr.write(
-            "WARNING: pre-publish quote-scanner gate (#1213) — patterns matched on a "
-            "private-repo commit; downgraded to warn (#126). Verify the content is paraphrased.\n"
-        )
-        quote_scanner.log_decision(tool_name=tool_name, decision="warn-private-repo", result=result, override=False)
+    if verdict.warning is not None:
+        sys.stderr.write(verdict.warning)
+        quote_scanner.log_decision(tool_name=tool_name, decision=verdict.decision, result=result, override=False)
         return False
     quote_scanner.log_decision(tool_name=tool_name, decision="deny", result=result, override=False)
     return emit_pretooluse_deny(quote_scanner.format_block_message(result))
@@ -2671,7 +2669,7 @@ def _run_quote_scanner_pretool(data: dict) -> bool:
     """
     from typing import cast  # noqa: PLC0415
 
-    from teatree.hooks import publish_surface, quote_scanner  # noqa: PLC0415
+    from teatree.hooks import quote_scanner  # noqa: PLC0415
 
     tool_name = data.get("tool_name", "")
     raw_input = data.get("tool_input", {}) or {}
@@ -2697,8 +2695,8 @@ def _run_quote_scanner_pretool(data: dict) -> bool:
 
     if result.has_high:
         command = tool_input.get("command", "")
-        carve_out = publish_surface.carve_out_applies(tool_name, command, payload, _resolve_cwd_repo(data))
-        return _quote_scanner_high_verdict(quote_scanner, tool_name, result, carve_out=carve_out)
+        verdict = _resolve_quote_verdict(command, _resolve_cwd_repo(data))
+        return _quote_scanner_high_io(quote_scanner, tool_name, result, verdict)
 
     if result.has_medium:
         sys.stderr.write(quote_scanner.format_warn_message(result) + "\n")

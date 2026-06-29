@@ -1221,6 +1221,187 @@ class TestPrivateRepoCarveOut:
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
 
+@pytest.mark.integration
+@pytest.mark.usefixtures("_private_repo_cfg")
+class TestUnreadableCommitBodyQuoteGateVisibilityScoped:
+    """A readable commit body is resolved+scanned for ALL visibilities; the sentinel is visibility-scoped (#1415/#1213).
+
+    The over-block that stuck multiple coders: a clean ``git commit -F -`` /
+    heredoc to the user's own PUBLIC clone hard-blocked via the fail-closed
+    sentinel (whose text reads "failing closed" — the "fails open/closed"
+    misfire). The fix RESOLVES a readable stdin/heredoc/``printf``-piped body (so
+    a real user quote in it still blocks, and a clean one passes) regardless of
+    visibility.
+
+    The residual case is a GENUINELY-opaque body (``cat | git commit -F -`` /
+    ``-m "$VAR"``) the gate cannot read: the only HIGH finding is the fail-closed
+    sentinel. Unlike the banned-terms gate, the quote-scanner has NO push-time
+    backstop — ``refuse-public-push-with-leak.sh`` runs ``privacy-scan``, which
+    has no verbatim-quote detector — so a verbatim user quote in an opaque body
+    would reach public history un-scanned. The sentinel therefore DENIES on a
+    PUBLIC commit (as base ``main`` did) and only DOWNGRADES on a provably-PRIVATE
+    commit (the #126 carve-out: a private repo cannot leak to the public). Every
+    ``gh``/``glab`` POST still hard-blocks an unreadable public body.
+    """
+
+    def test_public_commit_heredoc_stdin_clean_passes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # USED-TO-FALSE-BLOCK, now PASSES: a clean ``git commit -F - <<EOF`` to a
+        # public repo. The heredoc body is resolved and scanned clean (no sentinel).
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git_init_remote(repo, "git@github.com:souliane/teatree.git")
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        cmd = "git commit -F - <<'EOF'\nfix(gate): the gate fails closed only on a genuinely opaque stdin\nEOF"
+        data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(repo)}
+        assert handle_quote_scanner_pretool(data) is False
+        assert capsys.readouterr().out == ""  # clean: no deny JSON
+
+    def test_public_commit_heredoc_stdin_user_quote_still_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # ANTI-VACUITY: a REAL leaked user quote in the SAME readable heredoc body
+        # still hard-blocks. The body is resolved and scanned, so the verbatim-quote
+        # pattern fires — the fix removes the unreadable-body false-block, never the
+        # real-quote true-block.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git_init_remote(repo, "git@github.com:souliane/teatree.git")
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        cmd = "git commit -F - <<'EOF'\nthe user said: ship it now without review\nEOF"
+        data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(repo)}
+        assert handle_quote_scanner_pretool(data) is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_public_commit_unreadable_var_message_still_denies(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # THE FIX (un-backstopped quote leak): ``git commit -m "$VAR"`` whose VAR is
+        # not in the hook env is unreadable at scan time, so the only HIGH finding is
+        # the fail-closed sentinel. On a PUBLIC commit it DENIES — the quote-scanner
+        # has no push-time re-scan (privacy-scan carries no verbatim-quote detector),
+        # so a verbatim quote in an opaque body would otherwise reach public history.
+        monkeypatch.delenv("UNSET_COMMIT_BODY", raising=False)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git_init_remote(repo, "git@github.com:souliane/teatree.git")
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        data = {"tool_name": "Bash", "tool_input": {"command": 'git commit -m "$UNSET_COMMIT_BODY"'}, "cwd": str(repo)}
+        assert handle_quote_scanner_pretool(data) is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_public_commit_opaque_cat_pipe_still_denies(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # THE OTHER opaque channel: ``cat <file> | git commit -F -``. ``cat`` is not a
+        # resolvable ``printf``/``echo`` writer, so the piped body is genuinely opaque
+        # at scan time → fail-closed sentinel → DENY on a PUBLIC commit.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git_init_remote(repo, "git@github.com:souliane/teatree.git")
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        data = {"tool_name": "Bash", "tool_input": {"command": "cat draft.txt | git commit -F -"}, "cwd": str(repo)}
+        assert handle_quote_scanner_pretool(data) is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_private_commit_unreadable_var_message_downgrades(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A NON-public equivalent downgrades: the SAME opaque ``-m "$VAR"`` sentinel on
+        # a provably-PRIVATE commit downgrades to a warn (#126 — a private repo cannot
+        # leak to the public). The coder-unblock for opaque bodies survives where it is
+        # provably safe; only the public case reverts to deny.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git_init_remote(repo, "git@gitlab.com:acmecorp-engineering/product.git")
+        data = {"tool_name": "Bash", "tool_input": {"command": 'git commit -m "$UNSET_COMMIT_BODY"'}, "cwd": str(repo)}
+        assert handle_quote_scanner_pretool(data) is False  # downgraded to warn
+        captured = capsys.readouterr()
+        assert captured.out == ""  # no deny JSON
+        assert "WARNING" in captured.err
+        assert _ledger_lines(tmp_path)[-1]["decision"] == "warn-private-repo"
+
+    def test_public_gh_post_unreadable_var_body_still_denies(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # ANTI-VACUITY: a ``gh`` POST whose ``--body`` is an unreadable ``$VAR`` is the
+        # real public action with no push gate behind it, so it STILL hard-blocks.
+        monkeypatch.delenv("UNSET_BODY", raising=False)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": 'gh pr create --repo souliane/teatree --title t --body "$UNSET_BODY"'},
+        }
+        assert handle_quote_scanner_pretool(data) is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+
+@pytest.mark.integration
+@pytest.mark.usefixtures("_private_repo_cfg")
+class TestChainedRawRestPostDefeatsPrivateDowngrade:
+    """A private commit chained to a RAW-REST ``gh api`` POST to a PUBLIC repo must DENY (#1213).
+
+    The private-destination downgrade is gated by the chained-segment proof
+    ``_chained_segments_provably_inert``. A ``gh api`` POST carries its target in
+    the URL PATH (no ``--repo``), so the proof's target resolver falls back to the
+    private commit CWD and wrongly accepts the segment as a private post -- a
+    verbatim quote in the ``gh api`` body then reaches a PUBLIC repo with the gate
+    downgraded to warn. The fix rejects any chained raw-REST segment outright
+    (mirroring ``publish_surface._segment_proves_pure_private_post``), so the whole
+    command denies. A chained PRIVATE structured post (``gh pr create --repo
+    <PRIVATE>``, not raw REST) still downgrades -- the fix does not over-block the
+    normal private path.
+    """
+
+    def test_private_commit_chained_public_gh_api_post_with_quote_denies(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # THE CONFIRMED LEAK: a clean private commit chained to a public ``gh api``
+        # POST whose body is a verbatim user quote. The raw-REST segment must defeat
+        # the private downgrade so the quote never reaches the public repo.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git_init_remote(repo, "git@gitlab.com:acmecorp-engineering/product.git")
+        cmd = 'git commit -m clean && gh api repos/souliane/teatree/issues -X POST -f body="the user said: ship it now"'
+        data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(repo)}
+        assert handle_quote_scanner_pretool(data) is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_private_commit_sentinel_chained_public_gh_api_post_denies(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The sentinel variant (base ``main`` DENIED this; the private_only delta
+        # regressed it to a downgrade): an unreadable ``-m "$VAR"`` commit body chained
+        # to a public ``gh api`` POST. The raw-REST guard restores the deny.
+        monkeypatch.delenv("UNSET_COMMIT_BODY", raising=False)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git_init_remote(repo, "git@gitlab.com:acmecorp-engineering/product.git")
+        cmd = 'git commit -m "$UNSET_COMMIT_BODY" && gh api repos/souliane/teatree/issues -X POST -f body=acknowledged'
+        data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(repo)}
+        assert handle_quote_scanner_pretool(data) is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_private_commit_chained_private_gh_pr_create_still_downgrades(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # ANTI-OVER-BLOCK: a verbatim quote in a private commit chained to a PRIVATE
+        # structured ``gh pr create --repo <PRIVATE>`` (NOT raw REST) still downgrades.
+        # The raw-REST guard rejects only raw REST, never a normal private post.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git_init_remote(repo, "git@gitlab.com:acmecorp-engineering/product.git")
+        cmd = (
+            'git commit -m "the user said: ship it now" '
+            "&& gh pr create --repo acmecorp-engineering/product --title t --body ok"
+        )
+        data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(repo)}
+        assert handle_quote_scanner_pretool(data) is False  # both segments private → downgrade
+        assert capsys.readouterr().out == ""  # no deny JSON
+        assert _ledger_lines(tmp_path)[-1]["decision"] == "warn-private-repo"
+
+
 class TestHookChainRegistration:
     def test_handler_is_wired_before_skill_load(self) -> None:
         chain = router._HANDLERS["PreToolUse"]

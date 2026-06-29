@@ -508,11 +508,13 @@ def carve_out_applies(
 command_targets_private_only = _commit_carve_out.command_targets_private_only
 
 # Re-exported sibling of ``command_targets_private_only`` for the UNREADABLE-body
-# downgrade: True iff the command is a ``git commit`` landing in a NON-public repo
-# (private/allowlisted/unknown). A commit is LOCAL and the pre-push gate re-scans
-# commit messages, so an undeclared-repo commit whose body the gate cannot READ
-# downgrades rather than hard-blocking (#1415 task #62). Scoped to commits only.
-command_targets_non_public_commit = _commit_carve_out.command_targets_non_public_commit
+# downgrade: True iff the command is a LOCAL ``git commit`` (landing repo of ANY
+# visibility — public, private, or unknown) whose chained segments cannot publish.
+# A commit is LOCAL and the pre-push gate (#703) re-scans commit messages before a
+# public push, so an ordinary commit whose body the gate cannot READ at scan time
+# downgrades rather than hard-blocking (#1415). Scoped to commits only — a chained
+# PUBLIC gh/glab post still defeats the downgrade.
+command_targets_local_commit = _commit_carve_out.command_targets_local_commit
 
 
 def own_slug_term_downgrades(
