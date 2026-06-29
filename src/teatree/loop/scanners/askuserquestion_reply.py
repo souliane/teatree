@@ -83,8 +83,14 @@ class AskUserQuestionReplyScanner:
             # never recorded against a reply the user never saw acknowledged).
             reply.unmark_loop_replied()
             return
-        if question.apply_answer(answer, resolved_via=DeferredQuestion.ResolvedVia.SLACK) is None:
+        applied = question.apply_answer(answer, resolved_via=DeferredQuestion.ResolvedVia.SLACK)
+        if applied is None:
             reply.unmark_loop_replied()
+            return
+        if applied.parked_task_id:  # ty: ignore[unresolved-attribute]
+            from teatree.core.models.task_handoff import schedule_headless_resume  # noqa: PLC0415
+
+            schedule_headless_resume(applied.parked_task, answer=answer)
 
     def _react_ack(self, reply: PendingChatInjection, egress: OnBehalfSlackEgress) -> bool:
         try:

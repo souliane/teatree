@@ -52,7 +52,12 @@ _TACH = _REPO_ROOT / "tach.toml"
 # imports; banking the reduction.
 # Dropped 184→181 (loop-tick cutover): deleting `core/management/commands/loop_tick.py`
 # removed its 3 intra-`core` deferred imports; banking the reduction.
-_FROZEN_INTRA_CORE_DEFERRED = 181
+# Rose 181→182 (headless question routing): `task_handoff.py` is split out of
+# `task.py` (at its module-health LOC cap) and imports `Task` at module scope,
+# so `task.py`'s `park_for_user_input` edge into it must stay function-scoped —
+# the same genuine `task.py`↔helper module-level cycle the #2009 `task_repair`
+# deferral pins. One deferral, banked here; not a new severable edge.
+_FROZEN_INTRA_CORE_DEFERRED = 182
 
 
 def _function_scoped_intra_core_imports(source: Path) -> int:

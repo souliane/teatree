@@ -25,11 +25,14 @@ audited — so the team can reason about all four (DB, on-behalf, merge,
 question) as the same primitive.
 """
 
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from django.db import models, transaction
 from django.db.models import Max
 from django.utils import timezone
+
+if TYPE_CHECKING:
+    from teatree.core.models.task import Task
 
 
 class DeferredQuestionError(ValueError):
@@ -72,6 +75,13 @@ class DeferredQuestion(models.Model):
     options_hash = models.CharField(max_length=64, blank=True, default="")
     generation = models.PositiveIntegerField(default=0)
     run_id = models.CharField(max_length=255, blank=True, default="")
+    parked_task = models.ForeignKey(
+        "core.Task",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="deferred_questions",
+    )
     resolved_via = models.CharField(
         max_length=8,
         blank=True,
@@ -113,6 +123,7 @@ class DeferredQuestion(models.Model):
         options_hash: str = "",
         generation: int = 0,
         run_id: str = "",
+        parked_task: "Task | None" = None,
     ) -> "DeferredQuestion":
         """The single guarded factory for a queued question.
 
@@ -123,6 +134,10 @@ class DeferredQuestion(models.Model):
         kwargs (``slack_ts`` / ``slack_channel`` / ``options_hash`` /
         ``generation`` / ``run_id``) link the row to its Slack DM so a
         later Slack reply can resolve exactly the live generation (#1174).
+        ``parked_task`` correlates a headless-lane question back to the SDK
+        task that emitted ``needs_user_input`` so the reply re-queues a
+        headless resume of that task (the SDK lane has no Slack DM yet — the
+        tick-level poster scanner mirrors it later).
         """
         clean_question = question.strip()
         if not clean_question:
@@ -140,7 +155,40 @@ class DeferredQuestion(models.Model):
                 options_hash=options_hash or "",
                 generation=generation,
                 run_id=run_id or "",
+                parked_task=parked_task,
             )
+
+    @classmethod
+    def unmirrored_pending(cls) -> models.QuerySet["DeferredQuestion"]:
+        """Pending rows with no Slack mirror yet, oldest first.
+
+        The headless lane and ``task_repair._escalate_stall`` record a row
+        with an empty ``slack_ts``; the tick-level poster drains exactly these
+        so a reply can later bind. A row already mirrored (``slack_ts != ""``)
+        or resolved is excluded.
+        """
+        return cls.objects.filter(
+            answered_at__isnull=True,
+            dismissed_at__isnull=True,
+            slack_ts="",
+        ).order_by("created_at")
+
+    def mark_mirrored(self, *, channel: str, slack_ts: str) -> bool:
+        """Stamp the Slack mirror coordinates single-use; ``True`` on the transition.
+
+        An idempotent ``UPDATE … WHERE slack_ts = ''`` so a concurrent second
+        drain (or a re-tick after a partial stamp) sees 0 rows updated and does
+        not re-stamp — the verify-by-re-read seam for the poster scanner.
+        """
+        if not channel or not slack_ts:
+            return False
+        updated = bool(
+            type(self).objects.filter(pk=self.pk, slack_ts="").update(slack_ts=slack_ts, slack_channel=channel)
+        )
+        if updated:
+            self.slack_ts = slack_ts
+            self.slack_channel = channel
+        return updated
 
     @classmethod
     def next_generation(cls, *, session_id: str, run_id: str) -> int:

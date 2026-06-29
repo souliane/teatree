@@ -32,6 +32,7 @@ from teatree.loop.scanners import (
     ActiveTicketsScanner,
     AskUserQuestionReplyScanner,
     AssignedIssuesScanner,
+    DeferredQuestionPosterScanner,
     GitLabApprovalsScanner,
     IncomingEventsScanner,
     MyPrsScanner,
@@ -80,6 +81,7 @@ def _global_dispatch_jobs() -> list[_ScannerJob]:
         _ScannerJob(scanner=IncomingEventsScanner(), overlay=""),
         _ScannerJob(scanner=OutboundAuditScanner(notifier=default_drift_notifier), overlay=""),
         _ScannerJob(scanner=UndeliveredNotifyScanner(), overlay=""),
+        _ScannerJob(scanner=DeferredQuestionPosterScanner(), overlay=""),
     ]
 
 
