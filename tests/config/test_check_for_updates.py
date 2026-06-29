@@ -36,6 +36,22 @@ class TestCheckForUpdates:
 
         assert check_for_updates(force=False) is None
 
+    def test_disabled_check_honoured_pre_django_without_network(self, config_file: Path) -> None:
+        """A TOML ``check_updates=false`` is honoured with no Django/DB and no network.
+
+        config-unify PR5 audit: ``check_for_updates`` resolves ``check_updates``
+        from ``load_config().user`` (the TOML file tier), so the opt-out holds on
+        the pre-Django CLI paths that are its only readers. This guard is
+        anti-vacuous against a DB-home move of ``check_updates``: dropping the
+        loader field-build would resolve ``check_updates`` to its ``True`` default
+        here, skip the early return, and reach the network call — turning this red.
+        """
+        _write_check_updates_toml(config_file, enabled=False)
+
+        with patch("teatree.update_check.run_allowed_to_fail") as network:
+            assert check_for_updates(force=False) is None
+        network.assert_not_called()
+
     def test_cached_result_returned_when_fresh(
         self,
         tmp_path: Path,

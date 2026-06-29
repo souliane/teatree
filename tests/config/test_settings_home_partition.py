@@ -77,6 +77,18 @@ def test_autoload_is_toml_home_not_db() -> None:
     assert SETTING_HOMES["autoload"] is SettingHome.TOML
 
 
+def test_check_updates_is_toml_home_not_db() -> None:
+    # config-unify PR5 audit: ``check_updates``'s sole reader ``check_for_updates``
+    # runs only on PRE-DJANGO paths — the CLI root callback (parent ``t3`` process,
+    # every invocation; Django subcommands subprocess to manage.py) and the
+    # plain-Typer ``t3 config check-update``, neither of which bootstraps Django. A
+    # DB-home read there fails safe to the default, so a stored ``check_updates=false``
+    # would be silently ignored and the banner would reappear. It must stay TOML-home.
+    # The behavioural guard is ``test_check_for_updates`` §
+    # ``test_disabled_check_honoured_pre_django_without_network``.
+    assert SETTING_HOMES["check_updates"] is SettingHome.TOML
+
+
 def test_derived_fields_are_exactly_the_one_computed_value() -> None:
     assert frozenset({"notify_on_behalf"}) == DERIVED_FIELDS
 
