@@ -14,6 +14,7 @@ cutover recurring.
 """
 
 import dataclasses
+import itertools
 import re
 from pathlib import Path
 
@@ -45,15 +46,44 @@ _BOOL_FLAG_DEFAULT = re.compile(
 )
 
 # The bespoke ``[teatree] <key>`` integer budgets ``hook_router`` reads directly
-# with ``tomllib`` (not through the bool adapter). Re-checked below to still appear
-# in the live hook source, so a rename in the hook turns this stale set red.
-_BESPOKE_TEATREE_INT_READS = frozenset(
-    {
-        "deny_circuit_breaker_threshold",
-        "orchestrator_turn_budget",
-        "orchestrator_turn_wall_clock_seconds",
-    }
-)
+# with ``tomllib`` (not through the bool adapter), via ``teatree.get("<key>")`` where
+# ``teatree`` is the parsed ``[teatree]`` table. Restricted to reads inside a ``->
+# int`` reader so a sibling str/table read (``slack_user_id``, ``speak``) is never
+# mistaken for a budget. Each match captures the budget key + its reader function.
+_TEATREE_INT_READ = re.compile(r"""teatree\.get\(\s*["']([a-z0-9_]+)["']""")
+_INT_READER_SIG = re.compile(r"^def \w+\([^\n]*\)\s*->\s*int:\s*$")
+# The first ``return _UPPER_CONST`` in a reader names its in-code default constant.
+_RETURN_DEFAULT_CONST = re.compile(r"^\s*return\s+(_[A-Z][A-Z0-9_]*)\s*$", re.MULTILINE)
+# Module-level ``_UPPER_CONST = <int>`` assignments (the default constants).
+_MODULE_INT_CONST = re.compile(r"^(_[A-Z][A-Z0-9_]*)\s*=\s*(-?\d+)\b", re.MULTILINE)
+
+
+def _top_level_def_bodies(src: str) -> dict[str, str]:
+    """Map each top-level ``def <name>`` to its source body (its def line up to the next)."""
+    boundaries = [m.start() for m in re.finditer(r"^(?:def |class )", src, re.MULTILINE)]
+    boundaries.append(len(src))
+    bodies: dict[str, str] = {}
+    for start, end in itertools.pairwise(boundaries):
+        chunk = src[start:end]
+        match = re.match(r"def (\w+)\(", chunk)
+        if match:
+            bodies[match.group(1)] = chunk
+    return bodies
+
+
+def _enumerate_cold_int_reads(src: str) -> dict[str, str]:
+    """Every ``[teatree]`` budget read via ``teatree.get(...)`` inside a ``-> int`` reader.
+
+    Returns ``{key: reader_function_name}`` so the default-drift check below can
+    locate each budget's own reader and its returned default constant.
+    """
+    reads: dict[str, str] = {}
+    for name, body in _top_level_def_bodies(src).items():
+        if not _INT_READER_SIG.match(body.splitlines()[0]):
+            continue
+        for key in _TEATREE_INT_READ.findall(body):
+            reads[key] = name
+    return reads
 
 
 def _toml_home_user_settings_fields() -> set[str]:
@@ -113,11 +143,41 @@ def test_cold_bool_flag_defaults_match_the_hook_default() -> None:
     assert len(registered) >= 10
 
 
-def test_bespoke_int_budgets_are_registered_and_still_live() -> None:
+def test_bespoke_int_budgets_are_registered_with_a_matching_default() -> None:
+    # The mechanized int-side no-silent-drop guard (#2794 review MED). Every
+    # ``[teatree]`` integer budget hook_router reads cold (via ``teatree.get(...)``
+    # in a ``-> int`` reader), once the bool-adapter keys and recognised non-cold
+    # homes are subtracted, MUST be registered in COLD_HOOK_SETTINGS AND carry the
+    # SAME default the hook's own ``_DEFAULT_*`` constant uses — so a future budget
+    # added without a registration, or a drifted default, turns this red rather than
+    # silently resetting on the reader flip. No hand-frozen allowlist.
     router_src = _HOOK_ROUTER.read_text(encoding="utf-8")
-    for key in _BESPOKE_TEATREE_INT_READS:
-        assert key in COLD_HOOK_SETTINGS, f"bespoke cold-hook int {key!r} is unregistered"
-        assert key in router_src, f"bespoke cold-hook int {key!r} no longer read in hook_router — stale set"
+    int_reads = _enumerate_cold_int_reads(router_src)
+    const_values = {name: int(value) for name, value in _MODULE_INT_CONST.findall(router_src)}
+    bodies = _top_level_def_bodies(router_src)
+
+    recognised_non_cold = (
+        set(OVERLAY_OVERRIDABLE_SETTINGS) | set(TOML_OVERLAY_OVERRIDABLE_SETTINGS) | _toml_home_user_settings_fields()
+    )
+    bespoke_int_budgets = set(int_reads) - _enumerate_cold_bool_flags() - recognised_non_cold
+
+    # Anti-vacuity: the three known budgets must surface, so a broken regex / moved
+    # reader cannot make the guard pass against an empty enumeration.
+    assert {
+        "deny_circuit_breaker_threshold",
+        "orchestrator_turn_budget",
+        "orchestrator_turn_wall_clock_seconds",
+    } <= bespoke_int_budgets
+
+    for key in bespoke_int_budgets:
+        assert key in COLD_HOOK_SETTINGS, f"bespoke cold-hook int {key!r} unregistered — the import would drop it"
+        default_const = _RETURN_DEFAULT_CONST.search(bodies[int_reads[key]])
+        assert default_const is not None, f"no ``_DEFAULT_*`` return found in the reader for {key!r}"
+        hook_default = const_values[default_const.group(1)]
+        registered = COLD_HOOK_SETTINGS[key].default
+        assert registered == hook_default, (
+            f"registered default for {key!r} ({registered}) drifted from the hook default {hook_default}"
+        )
 
 
 def test_cold_hook_settings_disjoint_from_overridable_registry() -> None:

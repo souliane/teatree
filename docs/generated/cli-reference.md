@@ -69,6 +69,7 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 network-outage death (#1764).                                │
 │ dogfood         Overlay-smoke commands — exercise CLI paths so bugs surface  │
 │                 in the loop, not in E2E.                                     │
+│ identities      Manage the user's trusted forge identities (#1773).          │
 │ dream           Idle-time memory-consolidation (dreaming) cron (#1933).      │
 │                 Distils recent session feedback into the ConsolidatedMemory  │
 │                 DB ledger on a low-frequency schedule, decoupled from the    │
@@ -4042,6 +4043,82 @@ Usage: t3 dogfood [OPTIONS] COMMAND [ARGS]...
 Usage: t3 dogfood overlay-provision-smoke [OPTIONS]
 
  Forward ``t3 dogfood overlay-provision-smoke `` to the management command.
+```
+
+### `t3 identities`
+
+```
+Usage: t3 identities [OPTIONS] COMMAND [ARGS]...
+
+ Manage the user's trusted forge identities (#1773).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ seed    Consolidate the configured ``user_identity_aliases`` into the DB     │
+│         (idempotent).                                                        │
+│ add     Add a trusted identity (idempotent on ``(platform, handle)``).       │
+│ list    List all trusted identities.                                         │
+│ remove  Remove a trusted identity by ``(platform, handle)``.                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 identities seed`
+
+```
+Usage: t3 identities seed [OPTIONS]
+
+ Consolidate the configured ``user_identity_aliases`` into the DB (idempotent).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 identities add`
+
+```
+Usage: t3 identities add [OPTIONS] PLATFORM HANDLE
+
+ Add a trusted identity (idempotent on ``(platform, handle)``).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    platform      TEXT  github | gitlab | slack | internal [required]       │
+│ *    handle        TEXT  The forge handle / login to trust. [required]       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --note        TEXT  Free-form upkeep note.                                   │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 identities list`
+
+```
+Usage: t3 identities list [OPTIONS]
+
+ List all trusted identities.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 identities remove`
+
+```
+Usage: t3 identities remove [OPTIONS] PLATFORM HANDLE
+
+ Remove a trusted identity by ``(platform, handle)``.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    platform      TEXT  github | gitlab | slack | internal [required]       │
+│ *    handle        TEXT  The forge handle / login to untrust. [required]     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
 ### `t3 dream`

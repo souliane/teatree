@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, ClassVar, Protocol
 
 from django.db import IntegrityError, transaction
 
+from teatree.core.gates.privacy_gate import PrivacyGateResult, scan_outbound_text
 from teatree.core.models import IncomingEvent, ReplyDispatch
 from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError, require_on_behalf_approval
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
@@ -34,6 +35,25 @@ if TYPE_CHECKING:
     from teatree.types import RawAPIDict
 
 logger = logging.getLogger(__name__)
+
+
+class PublicationPrivacyBlockedError(RuntimeError):
+    """A reply body tripped the #1295 publication privacy gate — it must NOT egress.
+
+    Raised on the on-behalf delivery path so a finding fails CLOSED: in
+    :meth:`_BaseReplier._send` it is caught and converted to a FAILED
+    ``ReplyDispatch``, and on the :meth:`_BaseReplier.redeliver` retry path it
+    propagates to the sweep, which keeps the row FAILED until the body is
+    redacted. Builds its own message from the gate result (mirroring
+    ``OnBehalfPostBlockedError``).
+    """
+
+    def __init__(self, result: PrivacyGateResult) -> None:
+        names = ", ".join(sorted({match.pattern_name for match in result.matches}))
+        super().__init__(
+            f"publication privacy gate refused: {result.target_repo} is public and the body "
+            f"trips {len(result.matches)} privacy pattern(s) ({names}); redact before posting."
+        )
 
 
 class _ProjectInfoLike(Protocol):
@@ -95,6 +115,35 @@ class Replier(Protocol):
     ) -> ReplyDispatch: ...
 
     def redeliver(self, dispatch: ReplyDispatch) -> None: ...
+
+
+#: Code-host sources (``channel_ref`` is a repo slug) → the visibility probe's forge.
+#: A Slack/CI source has no repo target, so it is absent and scoped OUT of the gate.
+_FORGE_BY_SOURCE: dict[str, str] = {
+    IncomingEvent.Source.GITHUB: "github",
+    IncomingEvent.Source.GITLAB: "gitlab",
+}
+
+
+def _enforce_privacy(spec: ReplySpec) -> None:
+    """Raise :class:`PublicationPrivacyBlockedError` if *spec.body* trips the gate.
+
+    The send-time chokepoint for the #1295 gate on the colleague code-host
+    surfaces: a GitHub PR comment / GitLab MR note carries the body to a repo
+    that may be PUBLIC, so it is scanned for the overlay's redact-terms plus the
+    built-in quote anchors before the wire call. Scoped to code-host events only
+    (:data:`_FORGE_BY_SOURCE`) — a Slack thread reply carries a channel ref, not
+    a repo slug, so it is out of scope here (and never mis-classified as a public
+    repo). :func:`scan_outbound_text` then derives public-ness from the visibility
+    axis, so a provably-private repo is a clean pass. Shared by ``_send`` (caught
+    → FAILED) and ``redeliver`` (propagates to the retry sweep).
+    """
+    forge = _FORGE_BY_SOURCE.get(spec.event.source)
+    if forge is None:
+        return
+    result = scan_outbound_text(text=spec.body, target_repo=spec.event.channel_ref, forge=forge)
+    if result.refused:
+        raise PublicationPrivacyBlockedError(result)
 
 
 class _BaseReplier:
@@ -194,6 +243,7 @@ class _BaseReplier:
             return dispatch
         if spec.action_name in self._ON_BEHALF_ACTIONS:
             try:
+                _enforce_privacy(spec)
                 # #1879: consume + deliver + audit run in one transaction.atomic
                 # inside the gate, so a delivery failure rolls back the consume
                 # (the approval is never burned) and no audit lies. A BLOCK with
@@ -279,6 +329,8 @@ class _BaseReplier:
             action_name=dispatch.action_name,
         )
         if dispatch.action_name in self._ON_BEHALF_ACTIONS:
+            # Re-scan on retry: a leaking (or newly-matched) body stays FAILED, never egresses.
+            _enforce_privacy(spec)
             posted_ref = require_on_behalf_approval(
                 target=dispatch.target_ref,
                 action=dispatch.action_name,

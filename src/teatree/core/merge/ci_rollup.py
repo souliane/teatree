@@ -77,6 +77,16 @@ def fetch_pr_is_draft(slug: str, pr_id: int, *, host_kind: str = "github") -> bo
     return _code_host_for(host_kind).fetch_pr_is_draft(slug=slug, pr_id=pr_id)
 
 
+def fetch_pr_author(slug: str, pr_id: int, *, host_kind: str = "github") -> str:
+    """The PR/MR author handle — the §17.4.3 author-gate input (#1773).
+
+    Delegates to the registry-resolved :class:`CodeHostBackend`; GitHub reads
+    ``author.login`` and GitLab ``.author.username`` inside the backend. Returns
+    ``""`` on any forge error so the keystone's author gate fails closed.
+    """
+    return _code_host_for(host_kind).fetch_pr_author(slug=slug, pr_id=pr_id)
+
+
 def fetch_pr_changed_paths(slug: str, pr_id: int, *, host_kind: str = "github") -> list[str]:
     """The PR/MR's changed file paths — feeds the path-based substrate detector.
 

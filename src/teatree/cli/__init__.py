@@ -55,6 +55,7 @@ from teatree.cli.dogfood import dogfood_app
 from teatree.cli.dream import dream_app
 from teatree.cli.eval import eval_app
 from teatree.cli.eval.skill_command_lane import register_command_registry_provider
+from teatree.cli.identities import identities_app
 from teatree.cli.loop import loop_app
 from teatree.cli.loops import loops_app
 from teatree.cli.mcp import mcp_app
@@ -165,6 +166,7 @@ app.add_typer(slack_app, name="slack")
 app.add_typer(task_app, name="task")
 app.add_typer(recover_app, name="recover")
 app.add_typer(dogfood_app, name="dogfood")
+app.add_typer(identities_app, name="identities")
 app.add_typer(dream_app, name="dream")
 app.add_typer(mutation_app, name="mutation")
 

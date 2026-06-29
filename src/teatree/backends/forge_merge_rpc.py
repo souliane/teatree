@@ -97,6 +97,18 @@ class GhMergeRpc:
         )
         return rc == 0 and out.strip().lower() == "true"
 
+    def fetch_pr_author(self, *, slug: str, pr_id: int) -> str:
+        """The PR author ``login`` — the §17.4.3 author-gate input (#1773).
+
+        Returns ``""`` on any error; the empty author is fail-closed at the
+        keystone (an author that cannot be proved trusted does not auto-merge
+        on a public repo).
+        """
+        rc, out, _ = self._run(
+            ["pr", "view", str(pr_id), "--repo", slug, "--json", "author", "--jq", ".author.login"],
+        )
+        return out.strip() if rc == 0 else ""
+
     def fetch_required_checks_rollup(self, *, slug: str, pr_id: int) -> list[RawAPIDict]:
         rc, out, _ = self._run(
             [
@@ -234,6 +246,25 @@ class GlabMergeRpc:
         # ``draft`` is canonical on modern GitLab; ``work_in_progress`` is the legacy
         # field kept for compatibility — accept either.
         return bool(data.get("draft") or data.get("work_in_progress"))
+
+    def fetch_pr_author(self, *, slug: str, pr_id: int) -> str:
+        """The MR author ``username`` — the §17.4.3 author-gate input (#1773).
+
+        Returns ``""`` on any error; the empty author is fail-closed at the
+        keystone (an author that cannot be proved trusted does not auto-merge
+        on a public repo).
+        """
+        rc, out, _ = self._run(["api", f"projects/{glab_project_path(slug)}/merge_requests/{pr_id}"])
+        if rc != 0 or not out.strip():
+            return ""
+        try:
+            data = json.loads(out)
+        except json.JSONDecodeError:
+            return ""
+        if not isinstance(data, dict):
+            return ""
+        author = data.get("author")
+        return str(author.get("username") or "") if isinstance(author, dict) else ""
 
     def fetch_required_checks_rollup(self, *, slug: str, pr_id: int) -> list[RawAPIDict]:
         rc, out, _ = self._run(["api", f"projects/{glab_project_path(slug)}/merge_requests/{pr_id}/pipelines"])

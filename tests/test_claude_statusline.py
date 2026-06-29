@@ -1355,3 +1355,101 @@ class TestStaleStatuslineBanner:
         assert result.returncode == 0, result.stderr
         plain = _strip_ansi(result.stdout)
         assert "statusline STALE" not in plain, plain
+
+
+def _make_config_db(path: Path, *, autoload: object) -> None:
+    """Build a real ``teatree_config_setting`` DB carrying a GLOBAL ``autoload`` row."""
+    import sqlite3  # noqa: PLC0415
+
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute(
+            "CREATE TABLE teatree_config_setting ("
+            "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', "
+            "key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'autoload', ?)",
+            (json.dumps(autoload),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+class TestStatuslineAutoloadDbFlip:
+    """The statusline autoload gate reads the canonical ConfigSetting DB (config-unify PR3).
+
+    The gate decides whether the statusline renders at all. It now reads the DB
+    first (sqlite3, the cold_reader WAL fallback), then the ``[teatree] autoload``
+    TOML value, then OFF — exercised here WITHOUT ``T3_AUTOLOAD`` so the env
+    short-circuit does not mask the DB/TOML path.
+    """
+
+    def _run_gate(
+        self, tmp_path: Path, *, config_db: Path | None, toml_body: str | None
+    ) -> subprocess.CompletedProcess:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir(exist_ok=True)
+        session_id = "gate-sess"
+        (state_dir / f"{session_id}.teatree-active").touch()
+        home = tmp_path / "home"
+        home.mkdir(exist_ok=True)
+        if toml_body is not None:
+            (home / ".teatree.toml").write_text(toml_body, encoding="utf-8")
+        env = os.environ.copy()
+        env.pop("T3_AUTOLOAD", None)
+        env["HOME"] = str(home)
+        env["TEATREE_CLAUDE_STATUSLINE_STATE_DIR"] = str(state_dir)
+        env["CLAUDE_CONFIG_DIR"] = str(state_dir)
+        env["CLAUDE_TASKS_DIR"] = str(state_dir / "_tasks")
+        env.pop("XDG_DATA_HOME", None)
+        if config_db is not None:
+            env["T3_CONFIG_DB"] = str(config_db)
+        else:
+            env.pop("T3_CONFIG_DB", None)
+        return subprocess.run(
+            [str(SCRIPT)],
+            input=json.dumps({"session_id": session_id, "model": {"display_name": "Claude Opus"}}),
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+            cwd=REPO_ROOT,
+        )
+
+    def test_db_autoload_true_renders(self, tmp_path: Path) -> None:
+        db = tmp_path / "db.sqlite3"
+        _make_config_db(db, autoload=True)
+        result = self._run_gate(tmp_path, config_db=db, toml_body=None)
+        assert result.returncode == 0, result.stderr
+        assert "model=" in _strip_ansi(result.stdout)
+
+    def test_db_autoload_false_is_off(self, tmp_path: Path) -> None:
+        db = tmp_path / "db.sqlite3"
+        _make_config_db(db, autoload=False)
+        result = self._run_gate(tmp_path, config_db=db, toml_body=None)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == ""
+
+    def test_missing_db_falls_back_to_off(self, tmp_path: Path) -> None:
+        # No DB, no TOML autoload -> the gate falls through to OFF (blank statusline).
+        result = self._run_gate(tmp_path, config_db=tmp_path / "absent.sqlite3", toml_body=None)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == ""
+
+    def test_missing_db_honours_toml_autoload(self, tmp_path: Path) -> None:
+        # autoload is TOML-home (never seeded): with no DB row the TOML opt-in still
+        # engages the statusline (the fail-open fallback).
+        result = self._run_gate(
+            tmp_path, config_db=tmp_path / "absent.sqlite3", toml_body="[teatree]\nautoload = true\n"
+        )
+        assert result.returncode == 0, result.stderr
+        assert "model=" in _strip_ansi(result.stdout)
+
+    def test_db_false_wins_over_toml_true(self, tmp_path: Path) -> None:
+        db = tmp_path / "db.sqlite3"
+        _make_config_db(db, autoload=False)
+        result = self._run_gate(tmp_path, config_db=db, toml_body="[teatree]\nautoload = true\n")
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == ""
