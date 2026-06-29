@@ -11,19 +11,14 @@ from unittest.mock import patch
 
 import pytest
 
-from teatree.cli.setup import (
-    _enable_plugin,
-    _install_claude_plugin,
-    _register_installed_plugin,
-    _run_apm_install,
-    _strip_apm_hooks,
-)
+from teatree.cli.setup.apm import ApmInstaller, strip_apm_hooks
+from teatree.cli.setup.plugin_registrar import PluginRegistrar
 
 
 class TestRunApmInstall:
     def test_returns_false_when_apm_not_found(self) -> None:
         with patch("shutil.which", return_value=None):
-            assert _run_apm_install(Path("/fake")) is False
+            assert ApmInstaller(Path("/fake")).install() is False
 
     def test_returns_false_on_failure(self, tmp_path: Path) -> None:
         with (
@@ -33,7 +28,7 @@ class TestRunApmInstall:
             mock_run.return_value.returncode = 1
             mock_run.return_value.stdout = ""
             mock_run.return_value.stderr = "some error"
-            assert _run_apm_install(tmp_path) is False
+            assert ApmInstaller(tmp_path).install() is False
 
     def test_returns_true_on_success(self, tmp_path: Path) -> None:
         with (
@@ -43,7 +38,7 @@ class TestRunApmInstall:
             mock_run.return_value.returncode = 0
             mock_run.return_value.stdout = "[*] All packages installed."
             mock_run.return_value.stderr = ""
-            assert _run_apm_install(tmp_path) is True
+            assert ApmInstaller(tmp_path).install() is True
             mock_run.assert_called_once()
             args = mock_run.call_args
             assert args[0][0] == ["/usr/bin/apm", "install", "-g", "--target", "claude"]
@@ -61,7 +56,7 @@ class TestRunApmInstall:
             mock_run.return_value.returncode = 1
             mock_run.return_value.stdout = apm_diagnostics
             mock_run.return_value.stderr = ""
-            assert _run_apm_install(tmp_path) is False
+            assert ApmInstaller(tmp_path).install() is False
         out = capsys.readouterr().out
         assert "Missing required directory: .apm/" in out
 
@@ -79,7 +74,7 @@ class TestRunApmInstall:
             mock_run.return_value.returncode = 0
             mock_run.return_value.stdout = apm_diagnostics
             mock_run.return_value.stderr = ""
-            assert _run_apm_install(tmp_path) is False
+            assert ApmInstaller(tmp_path).install() is False
         out = capsys.readouterr().out
         assert "Installation failed" in out
 
@@ -92,7 +87,7 @@ class TestEnablePlugin:
         settings = claude_dir / "settings.json"
         settings.write_text(json.dumps({"key": "value"}))
 
-        _enable_plugin()
+        PluginRegistrar(tmp_path).enable()
 
         data = json.loads(settings.read_text())
         assert data["enabledPlugins"]["t3@souliane"] is True
@@ -105,7 +100,7 @@ class TestEnablePlugin:
         settings.write_text(json.dumps({"enabledPlugins": {"t3@souliane": True}}))
         mtime_before = settings.stat().st_mtime
 
-        _enable_plugin()
+        PluginRegistrar(tmp_path).enable()
 
         assert settings.stat().st_mtime == mtime_before
 
@@ -117,7 +112,7 @@ class TestRegisterInstalledPlugin:
         repo = tmp_path / "teatree-clone"
         repo.mkdir()
 
-        _register_installed_plugin(repo)
+        PluginRegistrar(repo).register_installed()
 
         data = json.loads((tmp_path / ".claude" / "plugins" / "installed_plugins.json").read_text())
         entries = data["plugins"]["t3@souliane"]
@@ -132,10 +127,10 @@ class TestRegisterInstalledPlugin:
         repo = tmp_path / "teatree-clone"
         repo.mkdir()
 
-        _register_installed_plugin(repo)
+        PluginRegistrar(repo).register_installed()
         mtime = (plugins_dir / "installed_plugins.json").stat().st_mtime
 
-        _register_installed_plugin(repo)
+        PluginRegistrar(repo).register_installed()
         assert (plugins_dir / "installed_plugins.json").stat().st_mtime == mtime
 
 
@@ -144,7 +139,7 @@ class TestInstallClaudePlugin:
         monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
         repo = tmp_path / "teatree-clone"
         repo.mkdir()
-        assert _install_claude_plugin(repo) is True
+        assert PluginRegistrar(repo).install() is True
 
         data = json.loads((tmp_path / ".claude" / "plugins" / "installed_plugins.json").read_text())
         assert "t3@souliane" in data["plugins"]
@@ -164,7 +159,7 @@ class TestInstallClaudePlugin:
 
         repo = tmp_path / "teatree-clone"
         repo.mkdir()
-        _install_claude_plugin(repo)
+        PluginRegistrar(repo).install()
 
         assert not link.exists()
 
@@ -177,7 +172,7 @@ class TestInstallClaudePlugin:
 
         repo = tmp_path / "teatree-clone"
         repo.mkdir()
-        _install_claude_plugin(repo)
+        PluginRegistrar(repo).install()
 
         data = json.loads(settings.read_text())
         assert "/some/path/t3" not in data["enabledPlugins"]
@@ -186,12 +181,12 @@ class TestInstallClaudePlugin:
 
 class TestStripApmHooks:
     def test_no_file(self, tmp_path: Path) -> None:
-        assert _strip_apm_hooks(tmp_path / "nonexistent.json") == 0
+        assert strip_apm_hooks(tmp_path / "nonexistent.json") == 0
 
     def test_no_hooks(self, tmp_path: Path) -> None:
         settings = tmp_path / "settings.json"
         settings.write_text(json.dumps({"key": "value"}))
-        assert _strip_apm_hooks(settings) == 0
+        assert strip_apm_hooks(settings) == 0
 
     def test_removes_apm_entries(self, tmp_path: Path) -> None:
         settings = tmp_path / "settings.json"
@@ -204,7 +199,7 @@ class TestStripApmHooks:
             },
         }
         settings.write_text(json.dumps(data))
-        removed = _strip_apm_hooks(settings)
+        removed = strip_apm_hooks(settings)
         assert removed == 1
         result = json.loads(settings.read_text())
         assert len(result["hooks"]["UserPromptSubmit"]) == 1
@@ -220,7 +215,7 @@ class TestStripApmHooks:
             },
         }
         settings.write_text(json.dumps(data))
-        removed = _strip_apm_hooks(settings)
+        removed = strip_apm_hooks(settings)
         assert removed == 1
         result = json.loads(settings.read_text())
         assert "hooks" not in result
@@ -228,9 +223,9 @@ class TestStripApmHooks:
     def test_invalid_json(self, tmp_path: Path) -> None:
         settings = tmp_path / "settings.json"
         settings.write_text("not json")
-        assert _strip_apm_hooks(settings) == 0
+        assert strip_apm_hooks(settings) == 0
 
     def test_hooks_not_a_dict(self, tmp_path: Path) -> None:
         settings = tmp_path / "settings.json"
         settings.write_text(json.dumps({"hooks": "not-a-dict"}))
-        assert _strip_apm_hooks(settings) == 0
+        assert strip_apm_hooks(settings) == 0
