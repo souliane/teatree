@@ -18,7 +18,10 @@ build/
 node_modules/
 .claude/
 docs/plan
-docs/design
+# Per-ticket architecture pre-check scratch is ignored, but a tracked, permanent
+# design/decision doc (ADR) under docs/design/ is carved back in explicitly.
+docs/design/*
+!docs/design/autonomous-lane-redesign.md
 tach_module_graph.dot
 htmlcov/
 # mkdocs build output
