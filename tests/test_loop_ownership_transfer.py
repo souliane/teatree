@@ -80,7 +80,7 @@ class TestTickOwnerRecord:
     def test_no_owner_is_tick_dispatch_not_spawn(self, capsys: pytest.CaptureFixture[str]) -> None:
         handle_session_start_bootstrap({"session_id": "first", "agent_id": "a1"})
         ctx = _ctx(capsys).lower()
-        assert "t3 loop tick" in ctx
+        assert "t3 loops tick" in ctx
         assert "claim-next" in ctx
         assert "from its brief" not in ctx
         assert _read_loop_registry()[_OWNER_LOOP]["session_id"] == "first"
@@ -97,7 +97,7 @@ class TestDeadOwnerReclaim:
         # "nothing to re-spawn" (the negation IS the point) — what must be
         # absent is the retired roster vocabulary + the stale ghost
         # agentId being surfaced for resume.
-        assert "t3 loop tick" in ctx
+        assert "t3 loops tick" in ctx
         for retired in ("from its brief", "takeover", "resume by", "ghost", "t3-main-loop", "t3-bug-hunt"):
             assert retired not in ctx
         entry = _read_loop_registry()[_OWNER_LOOP]
@@ -133,7 +133,7 @@ class TestSameSessionRestartStaysOwner:
         handle_session_start_bootstrap({"session_id": "owner-1", "agent_id": "agent-owner"})
 
         ctx = _ctx(capsys).lower()
-        assert "t3 loop tick" in ctx
+        assert "t3 loops tick" in ctx
         assert "resume by" not in ctx
         assert _read_loop_registry()[_OWNER_LOOP]["session_id"] == "owner-1"
 

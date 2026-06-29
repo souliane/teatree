@@ -1,13 +1,13 @@
 """Session-scoped loop-owner claim on ``LoopLease`` (#1073).
 
-The #1073 hijack: ``loop_tick`` re-acquires the ``loop-tick`` mutex with a
+The #1073 hijack: ``loops_tick`` re-acquires the ``loop-tick`` mutex with a
 fresh ``pid-<pid>`` every tick, so between ticks ``loop-tick`` rests
 ``owner=""`` and ANY session running ``t3 loop tick`` (a statusline, an
 unrelated blog-post session) wins the unowned CAS and does full loop work
 — drains the user's Slack DMs, dispatches reviewers, runs CLEARs. The fix
 is a persistent session-scoped ``loop-owner`` claim the owning session
 refreshes every tick (that re-claim IS the heartbeat); a non-owner
-``loop_tick`` SKIPs before any scanner/drain/dispatch.
+``loops_tick`` SKIPs before any scanner/drain/dispatch.
 
 Keystone: ``TestCrossSessionLoopHijackOnSqlite`` reproduces the hijack on
 the file-backed prod SQLite backend (RED before the gate: BOTH sessions'
@@ -320,11 +320,11 @@ def _unblocked_db(django_db_blocker: pytest.FixtureRequest) -> Iterator[None]:
 class TestCrossSessionLoopHijackOnSqlite:
     """The #1073 hijack, reproduced on the file-backed prod SQLite backend.
 
-    A "tick" here is the loop_tick gate's decision distilled to its
+    A "tick" here is the loops_tick gate's decision distilled to its
     essence: a session is allowed to do loop work iff its
     ``claim_ownership("loop-owner", session_id=…)`` returns ``won=True``.
 
-    RED (pre-fix): the gate does not exist, so loop_tick keyed loop work
+    RED (pre-fix): the gate does not exist, so loops_tick keyed loop work
     on the per-tick ``acquire("loop-tick", owner="pid-<pid>")`` only —
     which BOTH a hijacking session and the main session win between ticks
     (the lease rests unowned), so BOTH ticks ``ran``. To reproduce that
@@ -355,7 +355,7 @@ class TestCrossSessionLoopHijackOnSqlite:
         try:
             # Two real subprocesses race the gated tick against the same
             # file DB. Each prints "RAN" iff its claim_ownership won —
-            # exactly the loop_tick gate's pre-scanner decision.
+            # exactly the loops_tick gate's pre-scanner decision.
             script = (
                 "import os, sys, django;"
                 "os.environ.setdefault('DJANGO_SETTINGS_MODULE','teatree.settings');"

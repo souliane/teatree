@@ -1175,7 +1175,7 @@ def _loop_registration_exempt(data: dict) -> bool:
     - this session is NOT the loop driver — a *different* live session already
         owns the tick (``_session_drives_loop`` is False), so this is an
         attended, non-owner interactive session. Nagging it to ``CronCreate`` a
-        competing ``t3 loop tick`` would only spawn a duplicate loop the
+        competing ``t3 loops tick`` would only spawn a duplicate loop the
         non-owner tick gate would SKIP anyway; the rightful owner (or, with no
         live owner, the next eligible session — see ``_session_drives_loop``)
         still gets nagged, so the loop is never left unregistered.
@@ -4420,7 +4420,7 @@ def _durable_session_snapshot(session_id: str, data: dict | None = None) -> str:
             (
                 "This session is the loop-tick OWNER. The loop is tick-driven "
                 "(#786 WS3): there is no roster of long-lived sub-agents to "
-                "resume — re-arm by ensuring the `t3 loop tick` cron is "
+                "resume — re-arm by ensuring the `t3 loops tick` cron is "
                 "registered for this session; each tick atomically claims the "
                 "next pending unit via `t3 loop claim-next`."
             ),
@@ -4896,7 +4896,7 @@ def _emit_osc_title() -> None:
 # #786 WS3: the per-loop spawn-brief machinery (_LOOP_SPAWN_BRIEFS /
 # _loop_spawn_briefs / _brief_block / _DURABILITY_NOTE) is RETIRED — there
 # is no immortal roster to re-spawn from a brief. The loop is the
-# `t3 loop tick` cron + WS1 atomic claim-next + WS2 LoopLease; surviving
+# `t3 loops tick` cron + WS1 atomic claim-next + WS2 LoopLease; surviving
 # an owner death is "the next session becomes tick-owner and keeps
 # ticking", not "re-spawn N sub-agents from persisted briefs".
 
@@ -4918,7 +4918,7 @@ _RENAME_REMINDER = (
 #
 # The loop is no longer a fixed roster of long-lived sub-agents that a
 # coordinator must keep alive / re-spawn on death/compaction. It is
-# driven by the machine-wide ``t3 loop tick`` cron (#676): each tick the
+# driven by the machine-wide ``t3 loops tick`` cron (#676): each tick the
 # loop-owner session atomically claims pending DB work (WS1
 # ``t3 loop claim-next`` — conditional-UPDATE CAS) and spawns a FRESH,
 # BOUNDED sub-agent for just that unit, which returns. Statelessness
@@ -4933,12 +4933,12 @@ _TICK_DISPATCH_OWNER_DIRECTIVE = (
     "TEATREE LOOP — tick-driven, no roster to spawn.\n\n"
     "This session is the teatree loop-tick OWNER. The loop is NOT a set of "
     "long-lived sub-agents you spawn or keep alive: it is the recurring "
-    "`t3 loop tick` cron. Each tick, claim the next pending unit atomically "
+    "`t3 loops tick` cron. Each tick, claim the next pending unit atomically "
     "with `t3 loop claim-next` and spawn ONE fresh, bounded sub-agent for "
     "just that unit (it does the work and returns). No persistent loop "
     "roster, nothing to re-spawn on compaction — a worker dying mid-task "
     "leaves its Task reclaimable and the next tick re-dispatches it. Ensure "
-    "the `t3 loop tick` cron is registered for this session." + _RENAME_REMINDER
+    "the `t3 loops tick` cron is registered for this session." + _RENAME_REMINDER
 )
 
 _ACCOUNT_SWITCH_DIRECTIVE = (
@@ -4968,9 +4968,9 @@ _MCP_CONNECTIVITY_DIRECTIVE = (
 _TICK_DISPATCH_NON_OWNER_DIRECTIVE = (
     "TEATREE LOOP — tick-driven; another session owns the tick.\n\n"
     "Another live session is the teatree loop-tick owner (owner session "
-    "{owner_session}). Do NOT arm a competing `t3 loop tick` cron and do "
+    "{owner_session}). Do NOT arm a competing `t3 loops tick` cron and do "
     "NOT spawn loop sub-agents. The loop-owner gate (#1073) is now a HARD "
-    "gate: a non-owner `t3 loop tick` will SKIP before any scanner / Slack "
+    "gate: a non-owner `t3 loops tick` will SKIP before any scanner / Slack "
     "DM-drain / dispatch runs at all — it does NOT execute the tick. "
     "Stay idle with respect to the loop. (If you ARE the user's main "
     "session and a foreign session has hijacked the loop, run `t3 loop "
@@ -5029,7 +5029,7 @@ def _evict_stale_db_lease_owner(session_id: str, current_pid: int | None) -> Non
     rewritten to the new id, but the DB ``LoopLease`` row name=
     ``loop-owner`` still carries the OLD id with an unexpired
     ``lease_expires_at``. ``CLAUDE_SESSION_ID`` is empty in Bash-tool
-    subprocesses (#1107) so the next ``t3 loop tick`` resolves the NEW
+    subprocesses (#1107) so the next ``t3 loops tick`` resolves the NEW
     id via the registry fallback and the ``claim_ownership`` CAS fails
     (DB row's session != new session, lease not expired) — the same
     session can never own its own loop until ``t3 loop claim
@@ -5281,7 +5281,7 @@ def handle_session_start_bootstrap(data: dict) -> None:
 
     The immortal-singleton roster (spawn/takeover/resume/re-attach a fixed
     set of long-lived loop sub-agents) is GONE. The loop is the
-    ``t3 loop tick`` cron + WS1 atomic ``claim-next`` + WS2 ``LoopLease``
+    ``t3 loops tick`` cron + WS1 atomic ``claim-next`` + WS2 ``LoopLease``
     tick mutex. This hook only decides which *session* is the tick-owner
     (one Django-free record, so the #758/#810 Stop self-pump can gate on
     it without a Django bootstrap) and orients the session accordingly:
@@ -5373,7 +5373,7 @@ def handle_session_start_bootstrap(data: dict) -> None:
     # Runs when the registry had no entry (fresh machine or dead-owner prune)
     # and the DB also showed no live foreign lease, OR (#1838 PR#7a) on a
     # compaction resume — the eviction ORPHANS the stale lease (``session_id=""``)
-    # synchronously before any tick, so the lead's next ``t3 loop tick``
+    # synchronously before any tick, so the lead's next ``t3 loops tick``
     # re-anchors ``loop-owner`` uncontested and no maker pane can win the
     # compaction-window CAS race against the rotated lead session. (The eviction
     # only orphans; it does NOT itself re-claim — the re-claim is the lead's next
@@ -5673,7 +5673,7 @@ def _self_pump_suppressed(session_id: str) -> bool:
     at SessionEnd, transferable across sessions). WS4's "per-agent,
     decoupled from the tick-owner" model leaked the loop into EVERY
     fresh/unrelated session — a brand-new blog-writing session
-    immediately started pumping ``t3 loop tick``/``claim-next`` and
+    immediately started pumping ``t3 loops tick``/``claim-next`` and
     spawning review sub-agents. This gate is checked FIRST so a
     non-owner session's Stop hook is a clean no-op: no ``pending-spawn``
     subprocess, no registry write, no error noise in the transcript. The

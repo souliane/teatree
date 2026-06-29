@@ -8,7 +8,7 @@ fake Slack transport bolted onto the ``httpx`` boundary so the only
 thing mocked is the network. Every other layer — the real
 ``SlackBotBackend``, the real ``SlackDmInboundScanner``, real
 ``PendingChatInjection`` rows in the Django DB, the real hook router,
-the real ``notify_user``, the real ``loop_tick`` management command —
+the real ``notify_user``, the real ``loops_tick`` management command —
 runs unmodified. The split into ``test_inbound`` / ``test_outbound`` /
 ``test_routing`` / ``test_backend_error_paths`` (#1066) mirrors the
 ``tests/teatree_core/management_commands/`` package convention.
