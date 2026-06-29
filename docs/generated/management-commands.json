@@ -265,6 +265,28 @@
       ]
     },
     {
+      "help": "",
+      "name": "identities",
+      "subcommands": [
+        {
+          "help": "Consolidate the configured ``user_identity_aliases`` into the DB (idempotent)",
+          "name": "seed"
+        },
+        {
+          "help": "Add a trusted identity (idempotent on ``(platform, handle)``)",
+          "name": "add"
+        },
+        {
+          "help": "Remove a trusted identity by ``(platform, handle)``",
+          "name": "remove"
+        },
+        {
+          "help": "List all trusted identities",
+          "name": "list"
+        }
+      ]
+    },
+    {
       "help": "``t3 info`` group root.",
       "name": "info",
       "subcommands": [

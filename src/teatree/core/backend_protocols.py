@@ -295,6 +295,8 @@ class CodeHostBackend(Protocol):
 
     def fetch_pr_is_draft(self, *, slug: str, pr_id: int) -> bool: ...  # pragma: no branch
 
+    def fetch_pr_author(self, *, slug: str, pr_id: int) -> str: ...  # pragma: no branch
+
     def fetch_required_checks_rollup(self, *, slug: str, pr_id: int) -> list[RawAPIDict]: ...  # pragma: no branch
 
     def fetch_required_status_check_contexts(  # pragma: no branch

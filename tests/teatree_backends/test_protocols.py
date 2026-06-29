@@ -174,6 +174,10 @@ class _FakeCodeHost:
         _ = (slug, pr_id)
         return False
 
+    def fetch_pr_author(self, *, slug: str, pr_id: int) -> str:
+        _ = (slug, pr_id)
+        return ""
+
     def fetch_required_checks_rollup(self, *, slug: str, pr_id: int) -> list[dict[str, object]]:
         _ = (slug, pr_id)
         return []
