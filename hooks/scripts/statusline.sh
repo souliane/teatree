@@ -65,11 +65,29 @@ if [ -n "$session_id" ] && [ ! -f "${state_dir}/${session_id}.teatree-active" ];
     exit 0
 fi
 
+# The canonical ConfigSetting store's GLOBAL `autoload` value, JSON-decoded:
+# `true` / `false` / empty. Read-only via the sqlite3 CLI (so the statusline needs
+# no importable teatree python), mirroring teatree.config.cold_reader's WAL
+# fallback: `mode=ro` first (live writer, sidecars present), then `immutable=1`
+# (quiescent WAL, no sidecars — `mode=ro` then errors). Fails silent (empty) on no
+# sqlite3, a missing DB, or any read error.
+_autoload_db_value() {
+    command -v sqlite3 >/dev/null 2>&1 || return 0
+    local db="${T3_CONFIG_DB:-${XDG_DATA_HOME:-$HOME/.local/share}/teatree/db.sqlite3}"
+    [ -f "$db" ] || return 0
+    local q="SELECT value FROM teatree_config_setting WHERE scope='' AND key='autoload' LIMIT 1;"
+    sqlite3 "file:${db}?mode=ro" "$q" 2>/dev/null \
+        || sqlite3 "file:${db}?immutable=1" "$q" 2>/dev/null \
+        || return 0
+}
+
 # Session-start loop/statusline auto-load is OPT-IN (#256): default OFF so a
 # colleague who merely clones the repo never sees the loop statusline. ``autoload``
 # is the ONE owner flag (it engages the session AND arms its loops). Mirrors
-# hook_router._autoload_enabled — env T3_AUTOLOAD first, then [teatree] autoload
-# in ~/.teatree.toml; fails closed (silent) on absence.
+# hook_router._autoload_enabled — env T3_AUTOLOAD first, then the canonical
+# ConfigSetting DB (config-unify PR3), then the [teatree] autoload TOML value
+# (autoload is TOML-home #1775, never seeded into the DB, so the TOML read
+# preserves a configured opt-in); fails closed (silent OFF) on absence.
 autoload_enabled() {
     local env_val="${T3_AUTOLOAD:-}"
     if [ -n "$env_val" ]; then
@@ -78,6 +96,10 @@ autoload_enabled() {
             *) return 1 ;;
         esac
     fi
+    case "$(_autoload_db_value)" in
+        true) return 0 ;;
+        false) return 1 ;;
+    esac
     local toml="$HOME/.teatree.toml"
     [ -r "$toml" ] || return 1
     local in_teatree=false
