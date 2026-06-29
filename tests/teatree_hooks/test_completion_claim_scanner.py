@@ -116,6 +116,56 @@ class TestDoesNotFire:
         assert scanner.find_completion_block("") is None
 
 
+# An architecture-RECOMMENDATION turn enumerating options/decision items with an
+# incidental completeness phrase ("ready to go", "I'm done laying out the
+# options") — NOTHING is claimed done, there is no tracked multi-deliverable
+# ticket. The gate counted the option lines as "deliverables" and demanded an
+# evidence map (#2665 false positive). It must NOT fire.
+_ARCHITECTURE_RECOMMENDATION = (
+    "Architecture recommendation for the config layer. Here are the options and "
+    "trade-offs to consider:\n"
+    "- Option A: DB-only runtime, TOML export only. Trade-off: simpler reads.\n"
+    "- Option B: dual-tier DB + TOML. Trade-off: flexible but drift-prone.\n"
+    "- Pattern 1: a Django-free sqlite cold reader.\n"
+    "- Decision item: where does workspace_dir live?\n"
+    "- Decision item: how to migrate existing config?\n"
+    "- Recommendation: go with Option A.\n"
+    "- Open question: keep loops/presets in one registry?\n"
+    "That's my draft proposal — I'm done laying out the options, ready to go when "
+    "you decide.\n"
+)
+
+
+class TestRecommendationProseNeverFires:
+    """Anti-vacuous pair: the recommendation FP passes; the real claim still fires."""
+
+    def test_architecture_recommendation_does_not_fire(self) -> None:
+        # The false positive: options/decisions enumeration with an incidental
+        # "ready to go" / "I'm done" must NOT read as a completion claim.
+        assert scanner.find_completion_block(_ARCHITECTURE_RECOMMENDATION) is None
+
+    def test_real_multideliverable_claim_still_fires(self) -> None:
+        # Proves the recommendation guard did not weaken the gate: the real
+        # stranded multi-deliverable done-claim (no recommendation frame, zero
+        # option-shaped lines) still blocks.
+        verdict = scanner.find_completion_block(_STRANDED_CLAIM)
+        assert verdict is not None
+        assert verdict.deliverable_count == 3
+
+    def test_recommendation_frame_alone_does_not_exempt_a_work_claim(self) -> None:
+        # A real done-claim that merely USES "recommend" but enumerates delivered
+        # WORK (not options) is NOT exempted — the line-majority leg fails, so the
+        # gate still fires. Guards against the frame regex over-exempting.
+        text = (
+            "I recommend merging now — no blockers anywhere.\n"
+            "- Backend serializer: MR opened.\n"
+            "- Authoring UI: MR opened.\n"
+            "- Frontend banner: MR opened.\n"
+            "Everything is here and ready to merge.\n"
+        )
+        assert scanner.find_completion_block(text) is not None
+
+
 class TestFormatBlockMessage:
     def test_message_names_the_incomplete_legs(self) -> None:
         verdict = scanner.find_completion_block(_STRANDED_CLAIM)
