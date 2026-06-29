@@ -49,6 +49,10 @@
           "name": "get"
         },
         {
+          "help": "Dump the ``ConfigSetting`` store to TOML \u2014 the inverse of ``import``",
+          "name": "export"
+        },
+        {
           "help": "List every DB config override row, naming each row's scope (read-only)",
           "name": "list"
         },

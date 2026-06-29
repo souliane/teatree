@@ -12,9 +12,11 @@ value the user has since changed via ``config_setting set`` — it seeds only ke
 absent from the store and leaves present rows untouched.
 """
 
+import tomllib
+
 from django.test import TestCase
 
-from teatree.core.config_migration import import_toml_into_db
+from teatree.core.config_migration import export_db_to_toml, import_toml_into_db
 from teatree.core.models import ConfigSetting
 
 
@@ -180,3 +182,72 @@ class TestColdHookSettingsImport(TestCase):
         assert ConfigSetting.objects.filter(key="self_dm_gate_enabled").exists() is False
         assert ConfigSetting.objects.get_effective("banned_terms_gate_enabled") is False
         assert any("self_dm_gate_enabled" in line for line in result.skipped_reasons)
+
+
+class TestExportDbToToml(TestCase):
+    """``ConfigSetting`` store -> TOML export — the precise inverse of import (PR6).
+
+    Serialises the DB override store back to TOML so the import/export pair is a
+    full round-trip interchange: global rows -> ``[teatree]``, each overlay scope
+    -> ``[overlays.<name>]``, each stored value rendered as its native TOML scalar.
+    """
+
+    def test_global_rows_render_under_teatree_table(self) -> None:
+        ConfigSetting.objects.set_value("mode", "auto")
+        ConfigSetting.objects.set_value("issue_implementer_max_concurrent", 3)
+        doc = tomllib.loads(export_db_to_toml())
+        assert doc["teatree"]["mode"] == "auto"
+        assert doc["teatree"]["issue_implementer_max_concurrent"] == 3
+
+    def test_overlay_rows_render_under_overlays_name_table(self) -> None:
+        ConfigSetting.objects.set_value("mode", "interactive", scope="myproj")
+        doc = tomllib.loads(export_db_to_toml())
+        assert doc["overlays"]["myproj"]["mode"] == "interactive"
+        # An overlay-only store carries no global [teatree] table.
+        assert "teatree" not in doc
+
+    def test_native_scalar_types_round_trip(self) -> None:
+        # Each JSON-stored value decodes to its native TOML scalar, not a string.
+        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True)
+        ConfigSetting.objects.set_value("issue_implementer_max_concurrent", 5)
+        ConfigSetting.objects.set_value("issue_implementer_label", "ready")
+        ConfigSetting.objects.set_value("excluded_skills", ["foo", "bar"])
+        teatree = tomllib.loads(export_db_to_toml())["teatree"]
+        assert teatree["issue_implementer_enabled"] is True
+        assert teatree["issue_implementer_max_concurrent"] == 5
+        assert isinstance(teatree["issue_implementer_max_concurrent"], int)
+        assert teatree["issue_implementer_label"] == "ready"
+        assert teatree["excluded_skills"] == ["foo", "bar"]
+
+    def test_overlay_filter_dumps_only_that_overlay(self) -> None:
+        ConfigSetting.objects.set_value("mode", "auto")  # global
+        ConfigSetting.objects.set_value("mode", "interactive", scope="myproj")
+        ConfigSetting.objects.set_value("mode", "auto", scope="other")
+        doc = tomllib.loads(export_db_to_toml(overlay="myproj"))
+        assert doc["overlays"]["myproj"]["mode"] == "interactive"
+        assert "teatree" not in doc
+        assert "other" not in doc["overlays"]
+
+    def test_empty_store_exports_empty_document(self) -> None:
+        assert export_db_to_toml().strip() == ""
+
+    def test_export_import_export_is_a_fixed_point(self) -> None:
+        # Operational + cold-hook keys across global and overlay scopes survive an
+        # export -> import (into a cleared store) -> export with no drift.
+        ConfigSetting.objects.set_value("mode", "auto")
+        ConfigSetting.objects.set_value("issue_implementer_max_concurrent", 3)
+        ConfigSetting.objects.set_value("excluded_skills", ["foo", "bar"])
+        ConfigSetting.objects.set_value("orchestrator_turn_budget", 40)  # cold-hook, global-only
+        ConfigSetting.objects.set_value("self_dm_gate_enabled", value=False)  # cold-hook
+        ConfigSetting.objects.set_value("mode", "interactive", scope="myproj")
+        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True, scope="myproj")
+
+        first = export_db_to_toml()
+        # Anti-vacuity: the fixed point is meaningless unless the first export
+        # actually carried the seeded scopes.
+        assert "[teatree]" in first
+        assert "[overlays.myproj]" in first
+        ConfigSetting.objects.all().delete()
+        import_toml_into_db(tomllib.loads(first))
+        second = export_db_to_toml()
+        assert second == first
