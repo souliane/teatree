@@ -22,13 +22,14 @@ Non-zero exits use ``raise SystemExit(N)`` — this runs under Django's
 """
 
 import json
+from pathlib import Path
 from typing import Annotated
 
 import typer
 from django_typer.management import TyperCommand, command
 
 from teatree.config import OVERLAY_OVERRIDABLE_SETTINGS, get_effective_settings, load_config
-from teatree.core.config_migration import import_toml_into_db
+from teatree.core.config_migration import export_db_to_toml, import_toml_into_db
 from teatree.core.models import ConfigSetting
 
 _OverlayOption = Annotated[
@@ -182,3 +183,30 @@ class Command(TyperCommand):
             stored = ConfigSetting.objects.get_effective(key, scope=scope)
             self.stdout.write(f"  imported {key} = {stored!r}  [{_scope_label(scope)}]")
         self.stdout.write(f"  {result.summary()}")
+
+    @command()
+    def export(
+        self,
+        *,
+        overlay: _OverlayOption = "",
+        output: Annotated[
+            str,
+            typer.Option("--output", help="Write the TOML to this path instead of stdout."),
+        ] = "",
+    ) -> None:
+        """Dump the ``ConfigSetting`` store to TOML — the inverse of ``import``.
+
+        Global rows render under ``[teatree]`` and each overlay scope under
+        ``[overlays.<name>]``, each value as its native TOML scalar — so a dump fed
+        back through ``import`` rebuilds the same store (``export -> import ->
+        export`` is a fixed point). ``--overlay <name>`` scopes the dump to that one
+        overlay; omitted, every scope is dumped. ``--output <path>`` writes a file;
+        omitted, the TOML goes to stdout. Only ``ConfigSetting`` rows are read, so
+        bootstrap-file-only and secret-ref keys never appear.
+        """
+        toml_text = export_db_to_toml(overlay or None)
+        if output:
+            Path(output).expanduser().write_text(toml_text, encoding="utf-8")
+            self.stdout.write(f"  exported config store to {output}")
+            return
+        self.stdout.write(toml_text, ending="")

@@ -30,8 +30,12 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+import tomlkit
+from tomlkit import items as tomlkit_items
+
 from teatree.config import COLD_HOOK_SETTINGS, OVERLAY_OVERRIDABLE_SETTINGS
 from teatree.core.models import ConfigSetting
+from teatree.core.models.config_setting import ConfigValue
 
 GLOBAL_SCOPE = ""
 
@@ -109,6 +113,60 @@ def import_toml_into_db(raw: dict, *, clobber: bool = True) -> ConfigImportResul
                     overlay_cfg, overlay_name, clobber=clobber, result=result, parsers=OVERLAY_OVERRIDABLE_SETTINGS
                 )
     return result
+
+
+def export_db_to_toml(overlay: str | None = None) -> str:
+    """Serialise the ``ConfigSetting`` store back to TOML — the inverse of import.
+
+    Global-scope rows render under ``[teatree]`` and each overlay scope under
+    ``[overlays.<name>]``. Each stored value is emitted as its native TOML scalar:
+    the ``JSONField`` already returns the canonical Python type ``set``/``import``
+    persisted, so export is value-identical to those writers' input and
+    ``export -> import -> export`` is a fixed point. With *overlay* the dump is
+    scoped to that one overlay's ``[overlays.<name>]`` table; omitted, it dumps the
+    global scope plus every overlay scope. ONLY ``ConfigSetting`` rows are read —
+    bootstrap-file-only and secret-ref keys never live in the store, so they
+    cannot leak into the dump.
+    """
+    document = tomlkit.document()
+    if overlay is not None:
+        _emit_overlay_tables(document, [overlay])
+        return tomlkit.dumps(document)
+
+    global_rows = ConfigSetting.objects.overrides_for_scope(GLOBAL_SCOPE)
+    if global_rows:
+        document["teatree"] = _toml_table(global_rows)
+    scopes = list(
+        ConfigSetting.objects.exclude(scope=GLOBAL_SCOPE).order_by("scope").values_list("scope", flat=True).distinct()
+    )
+    _emit_overlay_tables(document, scopes)
+    return tomlkit.dumps(document)
+
+
+def _toml_table(rows: dict[str, ConfigValue]) -> tomlkit_items.Table:
+    """A ``[table]`` of *rows*, each native value rendered as its TOML scalar."""
+    table = tomlkit.table()
+    for key, value in rows.items():
+        table[key] = value
+    return table
+
+
+def _emit_overlay_tables(document: tomlkit.TOMLDocument, scopes: list[str]) -> None:
+    """Attach an ``[overlays.<name>]`` sub-table for every non-empty *scope*.
+
+    The ``overlays`` super-table is added only when at least one scope has rows, so
+    an empty store (or an ``--overlay`` filter that matches nothing) stays an empty
+    document rather than a bare ``[overlays]`` header.
+    """
+    overlays = tomlkit.table(is_super_table=True)
+    emitted = False
+    for scope in scopes:
+        rows = ConfigSetting.objects.overrides_for_scope(scope)
+        if rows:
+            overlays[scope] = _toml_table(rows)
+            emitted = True
+    if emitted:
+        document["overlays"] = overlays
 
 
 def _import_table(

@@ -6,6 +6,7 @@ against the real DB; the value is parsed as JSON so a bool kill-switch, a
 string, an int, or a list all round-trip into the override store.
 """
 
+import tomllib
 from io import StringIO
 from pathlib import Path
 
@@ -317,3 +318,69 @@ class TestConfigSettingOverlayScope(TestCase):
         rendered = out.getvalue()
         assert "global" in rendered
         assert "ov" in rendered
+
+
+class TestConfigSettingExport(TestCase):
+    """``config_setting export`` — the inverse of import (TOML round-trip, PR6)."""
+
+    @pytest.fixture(autouse=True)
+    def _config_path(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.tmp_path = tmp_path
+        self.config_path = tmp_path / ".teatree.toml"
+        monkeypatch.setattr(config_facade, "CONFIG_PATH", self.config_path)
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+
+    def test_export_to_stdout_dumps_teatree_and_overlay_tables(self) -> None:
+        call_command("config_setting", "set", "mode", '"auto"')
+        call_command("config_setting", "set", "issue_implementer_max_concurrent", "3")
+        call_command("config_setting", "set", "mode", '"interactive"', "--overlay", "myproj")
+        out = StringIO()
+        call_command("config_setting", "export", stdout=out)
+        doc = tomllib.loads(out.getvalue())
+        assert doc["teatree"]["mode"] == "auto"
+        assert doc["teatree"]["issue_implementer_max_concurrent"] == 3
+        assert isinstance(doc["teatree"]["issue_implementer_max_concurrent"], int)
+        assert doc["overlays"]["myproj"]["mode"] == "interactive"
+
+    def test_export_output_writes_a_file(self) -> None:
+        call_command("config_setting", "set", "issue_implementer_enabled", "true")
+        target = self.tmp_path / "dump.toml"
+        call_command("config_setting", "export", "--output", str(target))
+        doc = tomllib.loads(target.read_text(encoding="utf-8"))
+        assert doc["teatree"]["issue_implementer_enabled"] is True
+
+    def test_export_overlay_scopes_the_dump(self) -> None:
+        call_command("config_setting", "set", "mode", '"auto"')  # global
+        call_command("config_setting", "set", "mode", '"interactive"', "--overlay", "myproj")
+        out = StringIO()
+        call_command("config_setting", "export", "--overlay", "myproj", stdout=out)
+        doc = tomllib.loads(out.getvalue())
+        assert doc["overlays"]["myproj"]["mode"] == "interactive"
+        # The global scope is excluded when a single overlay is requested.
+        assert "teatree" not in doc
+
+    def test_export_import_export_is_a_fixed_point(self) -> None:
+        # Round-trip idempotence through the real import command: export -> clear ->
+        # import the exported file -> export yields byte-identical TOML, for
+        # operational + cold-hook keys across global and overlay scopes. The first
+        # export lands on the monkeypatched CONFIG_PATH so the import re-reads it.
+        ConfigSetting.objects.set_value("mode", "auto")
+        ConfigSetting.objects.set_value("issue_implementer_max_concurrent", 3)
+        ConfigSetting.objects.set_value("excluded_skills", ["foo", "bar"])
+        ConfigSetting.objects.set_value("orchestrator_turn_budget", 40)  # cold-hook, global-only
+        ConfigSetting.objects.set_value("self_dm_gate_enabled", value=False)  # cold-hook
+        ConfigSetting.objects.set_value("mode", "interactive", scope="myproj")
+        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True, scope="myproj")
+
+        call_command("config_setting", "export", "--output", str(self.config_path))
+        first_text = self.config_path.read_text(encoding="utf-8")
+        # Anti-vacuity: an empty dump would round-trip trivially.
+        assert "[teatree]" in first_text
+        assert "[overlays.myproj]" in first_text
+
+        ConfigSetting.objects.all().delete()
+        call_command("config_setting", "import", stdout=StringIO())
+
+        second = self.tmp_path / "export2.toml"
+        call_command("config_setting", "export", "--output", str(second))
+        assert second.read_text(encoding="utf-8") == first_text

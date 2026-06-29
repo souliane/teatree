@@ -16,7 +16,9 @@ Detail behind [BLUEPRINT.md](https://github.com/souliane/teatree/blob/main/BLUEP
 # existing config into the store on every run (non-clobbering: it seeds only keys
 # absent from the store, so a value you later change via `config_setting set`
 # survives); `t3 <overlay> config_setting import` is the manual equivalent (it
-# refreshes every operational key from the file).
+# refreshes every operational key from the file). `config_setting export` is the
+# inverse — it dumps the store back to TOML ([teatree] + [overlays.<name>]) so the
+# pair is a full round-trip interchange.
 [teatree]
 # workspace_dir is DB-home now (per-overlay; default ~/workspace/t3-workspaces/<overlay>/).
 # Set it with `t3 <overlay> config_setting set workspace_dir <path> [--overlay <name>]`;
@@ -71,6 +73,7 @@ t3 <overlay> config_setting set require_human_approval_to_merge false --overlay 
 t3 <overlay> config_setting set on_behalf_post_mode immediate
 t3 <overlay> config_setting set user_identity_aliases '["handle-a", "handle-b"]'
 t3 <overlay> config_setting import                                         # manual one-time migrate (refreshes from file); `t3 setup` runs the non-clobbering auto-migration
+t3 <overlay> config_setting export [--overlay myproject] [--output dump.toml]  # inverse of import: dump the store to TOML (stdout default); export -> import -> export is a fixed point
 ```
 
 **Cross-repo "my open MRs" reminder** (`t3 <overlay> mr_reminder`): generalises a
