@@ -689,3 +689,66 @@ class TestApiEndpointNormalization:
             "https://gitlab.com/api/v4/projects/public-org%2Fapp/merge_requests/6378/notes -f body=x"
         )
         assert publish_destination.gate_skips_destination(cmd, None, config_path=cfg) is False
+
+
+def _private_repos_config(tmp_path: Path, namespaces: list[str]) -> Path:
+    cfg = tmp_path / ".teatree.toml"
+    entries = ", ".join(f'"{n}"' for n in namespaces)
+    cfg.write_text(f"[teatree]\nprivate_repos = [{entries}]\n", encoding="utf-8")
+    return cfg
+
+
+class TestRestrictedPathCwdResolution:
+    """The cwd-remote slug must resolve OFFLINE inside the restricted hook PATH.
+
+    The PreToolUse hook subprocess inherits a PATH that frequently does not
+    resolve a bare ``git``. Resolving the flagless-create destination by
+    shelling out to ``git remote get-url`` failed there, so the destination
+    resolved to ``None`` and the banned-terms gate OVER-BLOCKED a flagless
+    ``glab mr create`` to the user's OWN private repo (the offline
+    ``private_repos`` allowlist never got a slug to match). The slug is now
+    parsed from ``.git/config`` directly, so it resolves with no ``git`` on
+    PATH -- while a genuinely-PUBLIC cwd still scans (no over-relaxation).
+    """
+
+    def test_flagless_create_to_private_cwd_skips_without_git_on_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # MUST-NOT-FIRE (red on revert): a flagless ``glab mr create`` whose cwd
+        # is an allowlisted-private checkout SKIPS the leak scan even when ``git``
+        # is unresolvable on PATH -- the offline ``.git/config`` parse supplies
+        # the slug the allowlist matches. Before the fix the slug was empty, the
+        # destination None, and the gate over-blocked.
+        repo = _repo_with_remote(tmp_path / "wt", "git@gitlab.com:internalcorp/svc.git")
+        cfg = _private_repos_config(tmp_path, ["internalcorp"])
+        monkeypatch.setenv("PATH", "")  # mimic the restricted hook subprocess: no git
+        cmd = "glab mr create --source-branch x --target-branch master --fill"
+        assert publish_destination.gate_skips_destination(cmd, repo, config_path=cfg) is True
+
+    def test_flagless_create_from_linked_worktree_skips_without_git_on_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The real-world shape: the agent's cwd is a LINKED worktree whose
+        # ``.git`` is a FILE pointing at the shared common-dir config. The slug
+        # must still resolve offline so the private post is not over-blocked.
+        repo = _repo_with_remote(tmp_path / "main", "git@gitlab.com:internalcorp/svc.git")
+        _git(repo, "commit", "--allow-empty", "-m", "init")
+        linked = tmp_path / "linked"
+        _git(repo, "worktree", "add", str(linked), "-b", "feat/x")
+        cfg = _private_repos_config(tmp_path, ["internalcorp"])
+        monkeypatch.setenv("PATH", "")
+        cmd = "glab mr create --source-branch x --target-branch master --fill"
+        assert publish_destination.gate_skips_destination(cmd, linked, config_path=cfg) is True
+
+    def test_flagless_create_to_public_cwd_still_scans_without_git_on_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # MUST-FIRE (no over-relaxation): the offline slug resolution must NOT
+        # relax a genuinely-PUBLIC cwd. With the repo not in the allowlist and
+        # the probe confirming PUBLIC, the flagless create still scans.
+        repo = _repo_with_remote(tmp_path / "wt", "git@github.com:souliane/teatree.git")
+        cfg = _private_repos_config(tmp_path, ["internalcorp"])
+        monkeypatch.setattr(publish_destination, "slug_is_private", lambda slug: False)
+        monkeypatch.setenv("PATH", "")
+        cmd = "gh pr create --title x --body y"
+        assert publish_destination.gate_skips_destination(cmd, repo, config_path=cfg) is False
