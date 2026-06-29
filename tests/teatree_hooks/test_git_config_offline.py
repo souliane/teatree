@@ -21,7 +21,19 @@ def _git(cwd: Path, *args: str) -> None:
         cwd=cwd,
         check=True,
         capture_output=True,
-        env={**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"},
+        env={
+            **os.environ,
+            "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_CONFIG_SYSTEM": "/dev/null",
+            # Deterministic identity so ``git commit`` / ``git worktree add``
+            # succeed under an identity-less git: the CI container has no global
+            # user.name/email and auto-detection is disabled, so no inherited
+            # identity can be assumed.
+            "GIT_AUTHOR_NAME": "test",
+            "GIT_AUTHOR_EMAIL": "test@example.com",
+            "GIT_COMMITTER_NAME": "test",
+            "GIT_COMMITTER_EMAIL": "test@example.com",
+        },
     )
 
 
