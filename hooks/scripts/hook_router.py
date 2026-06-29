@@ -61,7 +61,13 @@ from orchestration_boundary_signals import PYTEST_VERB_FINDER as _PYTEST_VERB_FI
 from orchestration_boundary_signals import PYTEST_VERB_RE as _PYTEST_VERB_RE
 from orchestration_boundary_signals import call_is_from_subagent as _call_is_from_subagent
 from orchestrator_investigation_gate import handle_enforce_orchestrator_investigation_boundary
-from question_gates import FENCED_CODE_RE, handle_warn_batched_questions, is_user_directed_question
+from question_gates import (
+    FENCED_CODE_RE,
+    handle_warn_batched_questions,
+    is_user_directed_question,
+    preceding_user_rejected_question_and_asked_clarify,
+)
+from question_gates import read_transcript_entries as _read_transcript_entries
 from quote_verdict import QuoteVerdict
 from quote_verdict import resolve_high_verdict as _resolve_quote_verdict
 from state_files import append_line, read_lines
@@ -5809,35 +5815,9 @@ def handle_session_end_self_pump(data: dict) -> None:
 # the routing decision (loop-ownership, transcript parsing, the block emit).
 
 
-def _read_transcript_entries(transcript_path: str) -> list[dict]:
-    """Parse the Claude Code transcript JSONL into a list of dict entries.
-
-    Fail-safe: an empty/missing/unreadable file or malformed lines yield
-    ``[]`` (the caller then does nothing) rather than raising.
-    """
-    if not transcript_path:
-        return []
-    path = Path(transcript_path)
-    if not path.is_file():
-        return []
-    try:
-        raw = path.read_text(encoding="utf-8")
-    except OSError:
-        return []
-    entries: list[dict] = []
-    for raw_line in raw.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        try:
-            parsed = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(parsed, dict):
-            entries.append(parsed)
-    return entries
-
-
+# ``_read_transcript_entries`` moved to the ``question_gates`` sibling (the
+# transcript-parsing home) and imported back as ``_read_transcript_entries`` so
+# this god-module stays under its LOC cap; callers below are unchanged.
 def _entry_role(entry: dict) -> str | None:
     message = entry.get("message")
     if isinstance(message, dict):
@@ -5978,7 +5958,13 @@ def handle_enforce_structured_question(data: dict) -> bool | None:
     text, used_question_tool = turn
     if used_question_tool or not is_user_directed_question(text):
         return None
-    if _is_classifier_relax_explanation(text):
+    # Two never-block exemptions: a Step-2 classifier-relax explanation (the
+    # sanctioned protocol explains the denial in prose before AskUserQuestion),
+    # and a clarification right after the user rejected an AskUserQuestion (the
+    # harness already routes that re-ask) — neither must be force-gated (#807).
+    if _is_classifier_relax_explanation(text) or preceding_user_rejected_question_and_asked_clarify(
+        _read_transcript_entries(data.get("transcript_path", ""))
+    ):
         return None
     json.dump({"decision": "block", "reason": _STRUCTURED_QUESTION_BLOCK}, sys.stdout)
     return True
