@@ -18,6 +18,7 @@ import logging
 import re
 from dataclasses import dataclass
 
+from teatree.core.overlay_loader import get_overlay
 from teatree.hooks import term_match
 
 logger = logging.getLogger(__name__)
@@ -173,8 +174,6 @@ def _overlay_privacy_rules() -> tuple[list[str], list[str]]:
     apply; the gate still scans a public target (the built-ins are the floor),
     so it never goes inert on a rules-resolution failure.
     """
-    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred Django import.
-
     try:
         config = get_overlay().config
         return list(config.privacy_redact_terms), list(config.privacy_block_patterns)

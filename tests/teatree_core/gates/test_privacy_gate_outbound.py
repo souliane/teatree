@@ -18,7 +18,6 @@ from types import SimpleNamespace
 import pytest
 from django.core.exceptions import ImproperlyConfigured
 
-from teatree.core import overlay_loader
 from teatree.core.gates import privacy_gate
 from teatree.core.gates.privacy_gate import scan_outbound_text
 from teatree.hooks import _repo_visibility, publish_destination
@@ -106,11 +105,11 @@ def test_overlay_redact_rules_empty_when_overlay_unresolved(monkeypatch: pytest.
     def _raise(*_args: object, **_kwargs: object) -> object:
         raise ImproperlyConfigured
 
-    monkeypatch.setattr(overlay_loader, "get_overlay", _raise)
+    monkeypatch.setattr(privacy_gate, "get_overlay", _raise)
     assert privacy_gate._overlay_privacy_rules() == ([], [])
 
 
 def test_overlay_redact_rules_read_from_resolved_overlay_config(monkeypatch: pytest.MonkeyPatch) -> None:
     config = SimpleNamespace(privacy_redact_terms=[REDACT], privacy_block_patterns=["custom-pattern"])
-    monkeypatch.setattr(overlay_loader, "get_overlay", lambda *_a, **_k: SimpleNamespace(config=config))
+    monkeypatch.setattr(privacy_gate, "get_overlay", lambda *_a, **_k: SimpleNamespace(config=config))
     assert privacy_gate._overlay_privacy_rules() == ([REDACT], ["custom-pattern"])
