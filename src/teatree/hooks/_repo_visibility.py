@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 from typing import Final, TypedDict
 
-from teatree.utils import git
+from teatree.hooks import git_config_offline
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail
 
 
@@ -125,16 +125,13 @@ def slug_for_cwd(cwd: Path) -> str:
         tripped the substring matcher and falsely downgraded a PUBLIC repo
         (#1953).
 
-    ``FileNotFoundError`` (the ``git`` binary unresolved on the restricted hook
-    PATH) and ``OSError`` are caught alongside ``CommandFailedError`` so a
-    degraded subprocess fails SAFE to an empty slug -- an uncaught error would
-    propagate out of the carve-out and crash the whole gate, denying the offline
-    allowlist any chance to downgrade.
+    The ``origin`` URL is resolved OFFLINE-FIRST (:func:`_origin_remote_url`):
+    parsing ``.git/config`` directly needs no ``git`` binary, so the slug
+    resolves inside the restricted PreToolUse hook subprocess where a bare
+    ``git`` is unresolvable. An empty slug fails SAFE -- the destination then
+    resolves PUBLIC and the gate stays hard-blocking.
     """
-    try:
-        url = git.remote_url(repo=str(cwd))
-    except (CommandFailedError, OSError):
-        return ""
+    url = _origin_remote_url(cwd)
     if not url:
         return ""
     cleaned = url.strip().rstrip("/").removesuffix(".git")
@@ -152,6 +149,47 @@ def slug_for_cwd(cwd: Path) -> str:
             return f"{real_host}/{path}"
         return path
     return cleaned
+
+
+def _origin_remote_url(cwd: Path) -> str:
+    """Resolve ``cwd``'s ``origin`` URL, OFFLINE-FIRST.
+
+    The offline ``.git/config`` parse (:func:`git_config_offline.origin_url`)
+    spawns no process, so it resolves the remote inside the restricted
+    PreToolUse hook subprocess where a bare ``git`` is unresolvable -- the bug
+    that left a flagless ``glab mr create`` / ``gh pr create`` to the user's
+    OWN private repo with no slug to match the offline ``private_repos``
+    allowlist, over-blocking it. The PATH-augmented subprocess is the fallback
+    for the rare configs an offline parse cannot read (e.g. an
+    ``[include]``-redirected url).
+    """
+    offline = git_config_offline.origin_url(cwd)
+    if offline:
+        return offline
+    return _origin_url_via_git(cwd)
+
+
+def _origin_url_via_git(cwd: Path) -> str:
+    """Resolve ``origin`` via ``git remote get-url`` against the augmented PATH.
+
+    The PreToolUse hook subprocess inherits a restricted PATH where a bare
+    ``git`` may not resolve; resolving the binary against the augmented probe
+    PATH (the same one the visibility probe uses) keeps this fallback working
+    in-hook. Any failure (binary absent, not a repo) fails SAFE to ``""``.
+    """
+    binary = shutil.which("git", path=_probe_search_path())
+    if binary is None:
+        return ""
+    try:
+        result = run_allowed_to_fail(
+            [binary, "-C", str(cwd), "remote", "get-url", "origin"],
+            expected_codes=(0,),
+            env=_probe_env(),
+            timeout=_PROBE_TIMEOUT_S,
+        )
+    except (CommandFailedError, OSError):
+        return ""
+    return result.stdout.strip()
 
 
 def _is_canonical_host(host: str) -> bool:

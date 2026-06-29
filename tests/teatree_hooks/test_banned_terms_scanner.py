@@ -2061,21 +2061,27 @@ class TestPrivateRepoCarveOut:
         assert blocked is False
         assert capsys.readouterr().out == ""
 
-    def test_slug_for_cwd_fails_safe_when_git_binary_is_absent(
+    def test_slug_for_cwd_resolves_offline_when_git_binary_is_absent(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # The cold hook subprocess can inherit a restricted PATH where ``git``
-        # does not resolve, so ``git remote get-url`` raises FileNotFoundError.
-        # An uncaught error would propagate out of the carve-out and crash the
-        # whole gate; the slug resolver must fail SAFE to an empty slug exactly
-        # as it already does for a CommandFailedError.
+        # does not resolve. The slug must STILL resolve -- parsed OFFLINE from
+        # ``.git/config`` -- so the offline ``private_repos`` allowlist gets a
+        # slug to match and the user's OWN private post is not over-blocked.
+        # Before the fix the bare ``git remote get-url`` raised
+        # FileNotFoundError and the slug was empty, which over-blocked it.
         repo = _private_repo(tmp_path)
-        monkeypatch.setattr(
-            _repo_visibility.git,
-            "remote_url",
-            lambda repo=".", remote="origin": (_ for _ in ()).throw(FileNotFoundError("git")),
-        )
-        assert _repo_visibility.slug_for_cwd(repo) == ""
+        monkeypatch.setenv("PATH", "")  # mimic the restricted hook subprocess: no git
+        assert _repo_visibility.slug_for_cwd(repo) == "gitlab.com/acmecorp-engineering/product"
+
+    def test_slug_for_cwd_fails_safe_for_non_repo_cwd_without_git(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A genuinely non-repo cwd has no ``.git/config`` to parse and ``git``
+        # is absent, so the slug fails SAFE to an empty string -- a detection
+        # failure never weakens the gate.
+        monkeypatch.setenv("PATH", "")
+        assert _repo_visibility.slug_for_cwd(tmp_path) == ""
 
     def test_private_repo_commit_downgrades_when_probe_binary_is_absent(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
