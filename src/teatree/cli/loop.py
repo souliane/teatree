@@ -112,7 +112,7 @@ def status_command() -> None:
 
     target = default_path()
     if not target.is_file():
-        typer.echo("No statusline rendered yet — run `t3 loop tick` first.")
+        typer.echo("No statusline rendered yet — run `t3 loops tick` first.")
         raise typer.Exit(code=1)
     # A frozen statusline (dead/stopped loop) is displayed verbatim — prepend a
     # RED staleness banner when the render age crosses the cutoff so the reader

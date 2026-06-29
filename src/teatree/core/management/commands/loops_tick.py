@@ -31,7 +31,7 @@ from django_typer.management import TyperCommand
 
 from teatree.core.backend_factory import code_host_from_overlay, iter_overlay_backends, messaging_from_overlay
 from teatree.core.connector_preflight import run_connector_preflight
-from teatree.core.loop_lease_manager import per_loop_owner_slot
+from teatree.core.loop_lease_manager import PER_LOOP_TICK_MUTEX_PREFIX, per_loop_owner_slot
 from teatree.core.models import LoopLease
 from teatree.loop.tick_piggyback import _loop_owner_ttl_seconds
 
@@ -175,7 +175,7 @@ class Command(TyperCommand):
 
         is_master = not loop
         owner_slot = _MASTER_SLOT if is_master else per_loop_owner_slot(loop)
-        tick_mutex = _MASTER_TICK_MUTEX if is_master else f"loop-tick:{loop}"
+        tick_mutex = _MASTER_TICK_MUTEX if is_master else f"{PER_LOOP_TICK_MUTEX_PREFIX}{loop}"
 
         session_id = current_session_id()
         # The lease ``owner_pid`` MUST be the durable session process, not

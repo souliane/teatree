@@ -68,4 +68,26 @@ def per_loop_chunk_visible(name: str, owned_per_loop: set[str] | None) -> bool:
     return name in owned_per_loop
 
 
-__all__ = ["current_session_owned_per_loop_slots", "owned_per_loop_slots", "per_loop_chunk_visible"]
+def is_transient_tick_mutex(name: str) -> bool:
+    """Whether a lease ``name`` is a transient per-loop tick mutex (``loop-tick:<name>``).
+
+    The single-loop tick (``t3 loops tick --loop <name>``) holds a
+    ``loop-tick:<name>`` mutex for the duration of its beat purely to serialise
+    concurrent ticks of the SAME loop. It is NOT a user-facing loop, and while
+    it is held the matching durable ``loop:<name>`` owner lease is held too — so
+    rendering it produces a confusing duplicate where the currently-ticking loop
+    shows under both ``tick:<name>`` (the stripped mutex) and ``loop:<name>``
+    (the owner lease). The statusline loop line therefore drops it. The bare
+    master ``loop-tick`` mutex (no trailing ``:``) is left visible as ``tick``.
+    """
+    from teatree.core.loop_lease_manager import is_per_loop_tick_mutex  # noqa: PLC0415
+
+    return is_per_loop_tick_mutex(name)
+
+
+__all__ = [
+    "current_session_owned_per_loop_slots",
+    "is_transient_tick_mutex",
+    "owned_per_loop_slots",
+    "per_loop_chunk_visible",
+]
