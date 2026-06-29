@@ -14,18 +14,25 @@ config_setting import``.
 ``ConfigSetting`` row for a TOML-home key is ignored on read; ``config_setting
 set`` refuses to write one.
 
-The TOML-home set is the irreducible carve-out: settings a NON-DJANGO or
-PRE-DJANGO reader needs (so the DB is unreachable — ``orchestrator_bash_gate_enabled``,
-``speak``, ``handover_mirror_path``, ``check_updates``, ``autoload`` (the cold
-SessionStart / UserPromptSubmit hooks read it pre-Django to decide engagement),
-and ``statusline_chain``, which the bash statusline hook reads straight from
-``~/.teatree.toml`` and can never reach the DB), path/infra bootstrap that the settings module itself needs
-(``workspace_dir``, ``worktrees_dir``, ``timezone``,
-``privacy``), and nested structured tables that have no flat scalar shape for a
-``ConfigSetting`` row (``mr_reminder``). Every other field is DB-home — it resolves
-from the ``ConfigSetting`` store + env, never from a ``[teatree]`` /
-``[overlays.<name>]`` TOML value (which is ignored on read and the resolver warns
-on).
+The TOML-home set is the irreducible carve-out — a field stays here ONLY when a
+NON-DJANGO / PRE-DJANGO reader needs it (the DB is then unreachable), it bootstraps
+path/infra the settings module itself needs, or it is a nested table with no flat
+``ConfigSetting`` shape. The pre-Django readers: ``orchestrator_bash_gate_enabled``
+(the GATE_KEY bash self-rescue), ``speak`` (the Stop hook re-reads ``[teatree.speak]``
+with tomllib), ``handover_mirror_path`` (the SessionStart bootstrap path read when the
+DB is unreachable), ``autoload`` (the cold SessionStart / UserPromptSubmit hooks read
+``[teatree] autoload`` pre-Django to decide engagement, #256), ``statusline_chain`` (the
+bash statusline hook reads it straight from ``~/.teatree.toml`` and can never reach the
+DB), and ``check_updates`` (its sole reader ``check_for_updates`` runs only on pre-Django
+CLI paths — the root callback in the parent ``t3`` process on every invocation, and the
+plain-Typer ``t3 config check-update`` — so a DB-home value would fail safe to the default
+there and a stored ``check_updates=false`` would be silently ignored; config-unify PR5
+audit). The path/infra bootstrap the settings module needs to even open the DB:
+``worktrees_dir``, ``timezone``, ``privacy``. The nested structured table with no flat
+scalar shape: ``mr_reminder``. Every other field is DB-home — it resolves from the
+``ConfigSetting`` store + env, never from a ``[teatree]`` / ``[overlays.<name>]`` TOML
+value (which is ignored on read and the resolver warns on). ``workspace_dir`` is DB-home
+(per-overlay overridable), NOT in this carve-out.
 
 :data:`DERIVED_FIELDS` is the one value the resolver COMPUTES rather than
 reads (``notify_on_behalf`` derived by the autonomy collapse); it has
@@ -52,15 +59,20 @@ DERIVED_FIELDS: frozenset[str] = frozenset({"notify_on_behalf"})
 
 # The irreducible TOML-home carve-out (exactly these ten):
 # - non-Django / pre-Django readers (read via tomllib or a bash grep, no DB):
-#   ``orchestrator_bash_gate_enabled``, ``speak`` (the Stop hook re-reads the
-#   ``[teatree.speak]`` sub-table with tomllib — it cannot reach the Django DB),
-#   ``handover_mirror_path`` (the SessionStart bootstrap path read precisely when
-#   the DB is unreachable), ``check_updates``, ``autoload`` (the cold SessionStart
-#   / UserPromptSubmit hooks read ``[teatree] autoload`` with tomllib to decide
-#   default-off engagement, before any Django bootstrap — #256), and
+#   ``orchestrator_bash_gate_enabled`` (the GATE_KEY bash self-rescue), ``speak``
+#   (the Stop hook re-reads the ``[teatree.speak]`` sub-table with tomllib — it
+#   cannot reach the Django DB), ``handover_mirror_path`` (the SessionStart
+#   bootstrap path read precisely when the DB is unreachable), ``autoload`` (the
+#   cold SessionStart / UserPromptSubmit hooks read ``[teatree] autoload`` with
+#   tomllib to decide default-off engagement, before any Django bootstrap — #256),
 #   ``statusline_chain`` (the bash statusline hook reads ``[teatree]
 #   statusline_chain`` straight from ``~/.teatree.toml`` — it has no path to the
-#   Django DB, so a DB row for it would be silently unread)
+#   Django DB, so a DB row for it would be silently unread), and ``check_updates``
+#   (its sole reader ``check_for_updates`` runs only on pre-Django CLI paths — the
+#   root callback in the parent ``t3`` process on every invocation, and the
+#   plain-Typer ``t3 config check-update``; neither bootstraps Django, so a
+#   DB-home value would fail safe to the default and a stored ``check_updates=false``
+#   would be silently ignored — config-unify PR5 audit confirmed the move is unsafe)
 # - path / infra bootstrap the settings module needs to even open the DB:
 #   ``worktrees_dir``, ``timezone``, ``privacy``
 # - nested structured table with no flat ConfigSetting shape: ``mr_reminder``
