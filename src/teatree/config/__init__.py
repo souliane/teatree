@@ -11,6 +11,7 @@ through this facade at call-time, which both breaks the import cycle and keeps a
 single ``patch("teatree.config.<name>")`` honoured by every internal caller.
 """
 
+from teatree.config.cold_hook_settings import COLD_HOOK_SETTINGS, ColdHookSetting
 from teatree.config.discovery import (
     _active_overlay_entry,
     _canonical_active_overlay_name,
@@ -64,6 +65,7 @@ from teatree.paths import DATA_DIR, get_data_dir
 
 __all__ = [
     "BOOTSTRAP_FILE_ONLY_SETTINGS",
+    "COLD_HOOK_SETTINGS",
     "CONFIG_PATH",
     "DATA_DIR",
     "DERIVED_FIELDS",
@@ -73,6 +75,7 @@ __all__ = [
     "TOML_OVERLAY_OVERRIDABLE_SETTINGS",
     "AgentRuntime",
     "Autonomy",
+    "ColdHookSetting",
     "E2ERepo",
     "MissingIssuePolicy",
     "Mode",

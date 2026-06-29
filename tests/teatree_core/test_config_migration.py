@@ -107,3 +107,76 @@ class TestImportTomlIntoDb(TestCase):
         assert "global" in rendered
         assert "myproj" in rendered
         assert "2" in rendered
+
+
+class TestColdHookSettingsImport(TestCase):
+    """Lossless TOML->DB import of the pre-Django cold-hook settings (config-unify PR2).
+
+    The hook-only gate flags + integer budgets the cold layer reads from
+    ``~/.teatree.toml`` used to be dropped on import. The import now unions
+    ``OVERLAY_OVERRIDABLE_SETTINGS`` with ``COLD_HOOK_SETTINGS`` for the global
+    ``[teatree]`` table, so a non-default value survives the cutover to the DB
+    store. Readers still hit TOML this PR — the import is purely additive.
+    """
+
+    def test_lossless_round_trip_for_a_spread_of_cold_hook_settings(self) -> None:
+        raw = {
+            "teatree": {
+                "self_dm_gate_enabled": False,  # default True, flipped off
+                "dispatch_quote_gate_on_task_create_enabled": True,  # default False, flipped on
+                "deny_circuit_breaker_threshold": 7,  # raised threshold
+                "orchestrator_turn_budget": 40,  # raised budget
+                "issue_implementer_enabled": True,  # an OVERLAY_OVERRIDABLE key — union still works
+            },
+        }
+        result = import_toml_into_db(raw)
+        assert ConfigSetting.objects.get_effective("self_dm_gate_enabled") is False
+        assert ConfigSetting.objects.get_effective("dispatch_quote_gate_on_task_create_enabled") is True
+        assert ConfigSetting.objects.get_effective("deny_circuit_breaker_threshold") == 7
+        assert ConfigSetting.objects.get_effective("orchestrator_turn_budget") == 40
+        assert ConfigSetting.objects.get_effective("issue_implementer_enabled") is True
+        for key in ("self_dm_gate_enabled", "deny_circuit_breaker_threshold", "orchestrator_turn_budget"):
+            assert ConfigSetting.objects.get_effective(key, scope="") is not None
+        assert result.imported == 5
+
+    def test_json_typed_values_land_with_correct_python_type(self) -> None:
+        raw = {"teatree": {"deny_circuit_breaker_threshold": 9, "banned_terms_gate_enabled": False}}
+        import_toml_into_db(raw)
+        threshold = ConfigSetting.objects.get_effective("deny_circuit_breaker_threshold")
+        gate = ConfigSetting.objects.get_effective("banned_terms_gate_enabled")
+        assert threshold == 9
+        assert isinstance(threshold, int)
+        assert not isinstance(threshold, bool)
+        assert gate is False
+
+    def test_reimport_no_clobber_preserves_db_value(self) -> None:
+        ConfigSetting.objects.set_value("self_dm_gate_enabled", value=False)
+        result = import_toml_into_db({"teatree": {"self_dm_gate_enabled": True}}, clobber=False)
+        assert ConfigSetting.objects.get_effective("self_dm_gate_enabled") is False
+        assert result.preserved == 1
+        assert result.imported == 0
+
+    def test_reimport_is_idempotent(self) -> None:
+        raw = {"teatree": {"orchestrator_turn_wall_clock_seconds": 240}}
+        import_toml_into_db(raw)
+        import_toml_into_db(raw)
+        assert ConfigSetting.objects.filter(key="orchestrator_turn_wall_clock_seconds").count() == 1
+        assert ConfigSetting.objects.get_effective("orchestrator_turn_wall_clock_seconds") == 240
+
+    def test_cold_hook_keys_are_global_only_never_overlay_scoped(self) -> None:
+        # The cold reader consults only the global [teatree] table for these, so an
+        # [overlays.<name>] gate flag must never be mis-scoped to an overlay row.
+        raw = {"overlays": {"myproj": {"deny_circuit_breaker_threshold": 9, "mode": "auto"}}}
+        result = import_toml_into_db(raw)
+        assert ConfigSetting.objects.filter(key="deny_circuit_breaker_threshold", scope="myproj").exists() is False
+        assert ConfigSetting.objects.get_effective("mode", scope="myproj") == "auto"
+        assert result.imported == 1
+
+    def test_invalid_cold_hook_value_is_skipped_not_fatal(self) -> None:
+        # A quoted "false" for a bool gate (a str, not a bool) is rejected loud and
+        # skipped — never silently truthy-coerced, never aborting the rest.
+        raw = {"teatree": {"self_dm_gate_enabled": "false", "banned_terms_gate_enabled": False}}
+        result = import_toml_into_db(raw)
+        assert ConfigSetting.objects.filter(key="self_dm_gate_enabled").exists() is False
+        assert ConfigSetting.objects.get_effective("banned_terms_gate_enabled") is False
+        assert any("self_dm_gate_enabled" in line for line in result.skipped_reasons)
