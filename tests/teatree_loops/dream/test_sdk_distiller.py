@@ -1,7 +1,9 @@
 """Tests for the real LLM distiller seam — extract → clusters, no live LLM (#2723)."""
 
 import json
+import threading
 from pathlib import Path
+from typing import Self
 from unittest.mock import patch
 
 import claude_agent_sdk
@@ -164,3 +166,65 @@ class SdkDistillerParseTestCase(SimpleTestCase):
             clusters = sdk_distiller.sdk_distiller(empty)
         turn.assert_not_called()
         assert clusters == []
+
+
+class _HangOnConnectClient:
+    """A ``ClaudeSDKClient`` stand-in whose connect (``__aenter__``) never returns.
+
+    Models a ``claude`` subprocess that stalls during spawn/handshake — the region
+    the prior watchdog (which wrapped only the response drain) did NOT cover, so a
+    real stall there hung the dream pass forever.
+    """
+
+    def __init__(self, *, options: object = None, **_: object) -> None:
+        self._options = options
+
+    async def __aenter__(self) -> Self:
+        import asyncio  # noqa: PLC0415
+
+        await asyncio.sleep(30)  # connect stalls; only the turn watchdog can bound it
+        return self
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+    async def query(self, prompt: str) -> None:  # pragma: no cover - connect hangs first
+        return None
+
+    async def receive_response(self) -> object:  # pragma: no cover - connect hangs first
+        return
+        yield  # unreachable
+
+
+class SdkDistillerWatchdogTestCase(SimpleTestCase):
+    def test_turn_is_time_bounded_when_sdk_connect_hangs(self) -> None:
+        # Anti-vacuous regression pin for the silent-hang bug: a stalled ``claude``
+        # CONNECT must raise TimeoutError within the watchdog, never hang the dream
+        # pass forever. RED on the pre-fix code whose watchdog wrapped only the
+        # response drain (leaving connect/query unbounded); GREEN once the watchdog
+        # bounds the WHOLE turn. Run on a thread so a regression hangs the THREAD,
+        # not the suite, and is observed as a still-alive thread.
+        captured: dict[str, BaseException | None] = {}
+
+        def _run() -> None:
+            try:
+                sdk_distiller._run_distiller_turn(_extract_with_one_snippet())
+                captured["exc"] = None
+            except BaseException as exc:  # noqa: BLE001 - record whatever the turn raised
+                captured["exc"] = exc
+
+        with (
+            patch("shutil.which", return_value="/usr/bin/claude"),
+            patch.object(sdk_distiller, "_DISTILL_WATCHDOG_SECONDS", 0.5),
+            patch.object(claude_agent_sdk, "ClaudeSDKClient", _HangOnConnectClient),
+        ):
+            thread = threading.Thread(target=_run, daemon=True)
+            thread.start()
+            thread.join(timeout=8)
+
+        assert not thread.is_alive(), (
+            "distiller SDK turn was NOT time-bounded: a stalled claude connect hangs the dream pass forever"
+        )
+        assert isinstance(captured.get("exc"), TimeoutError), (
+            f"expected the watchdog to raise TimeoutError on a stalled turn, got {captured.get('exc')!r}"
+        )
