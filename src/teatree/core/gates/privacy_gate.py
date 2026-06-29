@@ -141,3 +141,43 @@ def format_refusal(result: PrivacyGateResult) -> str:
     )
     lines.append("Re-run with `--privacy-ok` only when the matches are intentional.")
     return "\n".join(lines)
+
+
+def _overlay_publication_rules() -> tuple[list[str], list[str], list[str]]:
+    """The active overlay's ``(public_repos, privacy_redact_terms, privacy_block_patterns)``.
+
+    Best-effort: when no overlay resolves — none installed, Django not yet set
+    up, or several with no ``T3_OVERLAY_NAME`` to disambiguate — every list is
+    empty, so :func:`scan_outbound_text` refuses nothing (the gate only ever
+    fires on a public-repo target the overlay itself declared). Resolution is
+    wrapped so a publish never crashes on a missing/partial overlay, mirroring
+    the same egress-never-crash posture as ``reply_transport._linkify_for_slack``.
+    """
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred Django import.
+
+    try:
+        config = get_overlay().config
+        return list(config.public_repos), list(config.privacy_redact_terms), list(config.privacy_block_patterns)
+    except Exception as exc:  # noqa: BLE001 — overlay resolution is best-effort; a publish must never crash on it.
+        logger.debug("publication privacy gate: overlay rules unresolved (%s) — scanning nothing", exc)
+        return [], [], []
+
+
+def scan_outbound_text(*, text: str, target_repo: str) -> PrivacyGateResult:
+    """Scan outbound *text* bound for *target_repo* against the active overlay's rules.
+
+    The egress-chokepoint wrapper of :func:`scan_for_publication`: it resolves
+    the active overlay's ``public_repos`` plus redact/quote rules and delegates,
+    so a publication seam need only supply the body and its repo target. The
+    scan self-gates on ``public_repos`` — a non-repo destination (a Slack
+    channel ref) or a private repo is never in it, so the scan refuses nothing
+    there.
+    """
+    public_repos, redact_terms, block_patterns = _overlay_publication_rules()
+    return scan_for_publication(
+        text=text,
+        target_repo=target_repo,
+        public_repos=public_repos,
+        redact_terms=redact_terms,
+        block_patterns=block_patterns,
+    )
