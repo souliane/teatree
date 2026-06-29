@@ -58,7 +58,7 @@ def _gate_key_is_enabled(key: str) -> bool:
 
     Mirrors the hook layer's gate resolution: the gate is enabled unless an explicit
     ``false`` is recorded. For a cold-hook gate key the resolution is DB-first then TOML —
-    matching the flipped hook reader (config-unify PR3) so ``t3 gate status`` reports what
+    matching the flipped hook reader (config-unify PR3) so ``t3 <overlay> gate status`` reports what
     the gate actually does: a real DB bool wins, otherwise it falls through to the
     ``[teatree]`` TOML value. Fails OPEN to enabled on a missing/broken config + DB so the
     reported status matches the gate's own fail-open posture.
@@ -142,8 +142,8 @@ def _is_cold_hook_gate_key(key: str) -> bool:
 
     The cold-hook gates (``skill_loading`` / ``plan_edit`` / ``config_overwrite`` /
     ``completion_claim`` / ``memory_recall``) are seeded into the canonical DB by ``t3
-    setup`` and read DB-first by the flipped hook reader (config-unify PR3), so ``t3 gate``
-    must read/write that SAME DB tier or its toggle is shadowed by the seeded row.
+    setup`` and read DB-first by the flipped hook reader (config-unify PR3), so ``t3 <overlay>
+    gate`` must read/write that SAME DB tier or its toggle is shadowed by the seeded row.
     ``orchestrator_bash_gate_enabled`` and ``danger_gate_fail_open`` are TOML-home (#1775,
     never seeded), so they stay on TOML — the always-available Bash self-rescue. Membership
     is derived from ``COLD_HOOK_SETTINGS`` (inline import — this module is pulled by
