@@ -7,6 +7,7 @@ The DB is the dispatch queue: when ``run_tick`` produces a
 each via ``spawn-claim`` so the next tick doesn't see them as pending.
 """
 
+import contextlib
 import json
 import logging
 from typing import Annotated, Any
@@ -286,6 +287,19 @@ class Command(TyperCommand):
         default ``medium`` / toggle-off throughput is byte-identical.
         """
         from teatree.core.session_identity import current_session_id  # noqa: PLC0415
+
+        # Reclaim a dead session's orphan BEFORE claiming (#652): a unit whose
+        # owner stopped heartbeating (its lease lapsed) is returned to PENDING so
+        # THIS healthy session's claim picks it up. The full loop tick already
+        # runs this via ``_reap_stale_task_claims``; the standalone ``claim-next``
+        # entry (Stop-hook self-pump / slack-answer cycle) did not, so a dead
+        # session's unit stalled CLAIMED until some other session happened to run
+        # a full tick. ``reclaim_orphaned_claims`` is the budget-aware (#2009)
+        # CAS — a no-op when nothing is stale, and it leaves a still-live lease
+        # untouched (the WHERE re-asserts ``lease_expires_at < now``). Best-effort
+        # so a DB-blocked harness still claims (parity with the tick sweep).
+        with contextlib.suppress(RuntimeError):
+            Task.objects.reclaim_orphaned_claims()
 
         session = current_session_id() if claimed_by_session is None else claimed_by_session
         if _admit_budget_exhausted():

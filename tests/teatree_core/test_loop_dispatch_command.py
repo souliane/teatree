@@ -180,6 +180,57 @@ class TestClaimNextAtomicDispatch(_LoopDispatchTest):
         )
         assert got == sorted([t_a.pk, t_b.pk])  # both dispatched, no overlap
 
+    def test_claim_next_reclaims_a_dead_sessions_orphaned_unit(self) -> None:
+        """Defect (b): the standalone ``claim-next`` reclaims a dead session's stale lease.
+
+        Session A claims the unit, then dies — its lease lapses. The next
+        healthy session's ``claim-next`` reclaims and dispatches that SAME unit
+        exactly once. Previously only the full loop tick's recovery sweep
+        (``_reap_stale_task_claims``) returned an orphan to PENDING, so on the
+        standalone self-pump / slack-answer path a dead session's unit stalled
+        CLAIMED forever and the loop silently stopped picking it up.
+
+        Anti-vacuity: on the pre-fix command (no reclaim before the claim) the
+        unit is still CLAIMED — not PENDING — so ``claim_next_pending`` returns
+        nothing and the payload is empty. The ``len(payload) == 1`` assertion
+        is RED on the buggy code, GREEN once the reclaim runs first.
+        """
+        task = self._reviewer_task()
+        task.claim(claimed_by="loop-slot")
+        # Session A dies: force its lease into the past (no more heartbeats).
+        task.lease_expires_at = timezone.now() - timedelta(seconds=10)
+        task.save(update_fields=["lease_expires_at"])
+
+        stdout = StringIO()
+        call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
+
+        payload = json.loads(stdout.getvalue())
+        assert len(payload) == 1
+        assert payload[0]["task_id"] == task.pk
+        task.refresh_from_db()
+        assert task.status == Task.Status.CLAIMED
+        assert task.lease_expires_at is not None
+        assert task.lease_expires_at > timezone.now()  # a fresh lease for the reclaiming session
+
+    def test_claim_next_does_not_reclaim_a_live_lease(self) -> None:
+        """Live-lease protection at the command level: a FRESH lease is never stolen.
+
+        The reclaim is staleness-gated — a unit whose owner still holds a live
+        lease is left untouched, so ``claim-next`` dispatches nothing and the
+        living owner keeps its claim. Guards the reclaim against turning into a
+        blanket steal of in-flight work.
+        """
+        task = self._reviewer_task()
+        task.claim(claimed_by="loop-slot")  # a fresh 300s lease
+
+        stdout = StringIO()
+        call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
+
+        assert json.loads(stdout.getvalue()) == []  # the live owner keeps the unit
+        task.refresh_from_db()
+        assert task.status == Task.Status.CLAIMED
+        assert task.claimed_by == "loop-slot"
+
     def test_claim_next_empty_when_nothing_pending(self) -> None:
         stdout = StringIO()
         call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
