@@ -11,6 +11,7 @@ orchestration and under the module-health LOC cap (same split rationale as
 import logging
 from collections.abc import Iterable
 
+from teatree.core.author_trust import classify_author
 from teatree.core.models.merge_clear import MergeClear
 from teatree.core.review_candidate import author_is_self
 from teatree.loop.pr_ticket_index import resolve_author_ticket
@@ -23,6 +24,17 @@ from teatree.loop.scanners.pr_sweep_types import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def untrusted_public_author(pr: PrSummary) -> bool:
+    """True iff *pr* is on a PUBLIC repo authored by an untrusted identity (#1773).
+
+    PRIVATE / internal repos return False (no author check — the user owns
+    access control). An empty / unknown author on a public repo is untrusted
+    (fail-closed). Delegates to the shared :func:`classify_author` so the
+    scanners and the merge keystone cannot drift.
+    """
+    return classify_author(pr.slug, pr.author).untrusted
 
 
 def pr_authored_by_self(*, author: str, self_identities: Iterable[str]) -> bool:

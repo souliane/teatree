@@ -59,6 +59,15 @@ def _non_substrate_changed_paths():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _repo_internal_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The #1773 untrusted-public-author rung is exercised by
+    # TestUntrustedAuthorPublicRepo; the pre-#1773 decision-ladder tests treat
+    # the repo as internal so the author gate is a no-op for them (no live
+    # ``gh`` visibility probe in the test path).
+    monkeypatch.setattr("teatree.core.author_trust.repo_is_internal", lambda *a, **k: True)
+
+
 SLUG = "souliane/teatree"
 HEAD = "feedfacecafebabe1234567890abcdef12345678"
 STALE = "deadbeef00000000000000000000000000000000"
@@ -265,6 +274,70 @@ class TestGreenAndClean:
 
         assert signals[0].payload["slug"] == SLUG
         assert signals[0].payload["pr_id"] == 6230
+
+
+class TestUntrustedAuthorPublicRepo:
+    """The #1773 rung: an untrusted author on a PUBLIC repo never auto-merges."""
+
+    def test_untrusted_author_skips_before_clear_and_never_merges(self) -> None:
+        # An actionable CLEAR exists, CI is green — yet the untrusted-author
+        # rung fires BEFORE the CLEAR lookup, so the keystone is never called.
+        _issue_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(author="evilhacker")]})
+        keystone = FakeKeystone()
+        scanner, notifier = _scanner(api=api, keystone=keystone)
+
+        with patch("teatree.core.author_trust.repo_is_internal", return_value=False):
+            signals = scanner.scan()
+
+        assert keystone.calls == []
+        assert api.merge_pr_calls == []
+        assert notifier.calls == []
+        assert signals[0].payload["reason"] == "untrusted_author_public_repo"
+
+    def test_empty_author_on_public_repo_is_untrusted(self) -> None:
+        _issue_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(author="")]})
+        keystone = FakeKeystone()
+        scanner, _ = _scanner(api=api, keystone=keystone)
+
+        with patch("teatree.core.author_trust.repo_is_internal", return_value=False):
+            signals = scanner.scan()
+
+        assert keystone.calls == []
+        assert signals[0].payload["reason"] == "untrusted_author_public_repo"
+
+    def test_solo_overlay_fallback_bypass_is_closed_for_untrusted_author(self) -> None:
+        # The solo-overlay no-CLEAR fallback merges via ``merge_pr_squash_bound``
+        # OUTSIDE the keystone author gate. The #1773 rung fires first, so an
+        # untrusted public author can never reach that fallback even with a
+        # recorded independent cold review.
+        _record_cold_review()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(author="evilhacker")]})
+        keystone = FakeKeystone()
+        scanner, _ = _scanner(api=api, keystone=keystone, solo_overlay=True)
+
+        with patch("teatree.core.author_trust.repo_is_internal", return_value=False):
+            signals = scanner.scan()
+
+        assert api.merge_pr_calls == []
+        assert keystone.calls == []
+        assert signals[0].payload["reason"] == "untrusted_author_public_repo"
+
+    def test_trusted_author_merges_normally_on_public_repo(self) -> None:
+        from teatree.core.models import TrustedIdentity  # noqa: PLC0415
+
+        TrustedIdentity.objects.get_or_create(platform="github", handle=SELF_LOGIN)
+        clear = _issue_clear()
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(author=SELF_LOGIN)]})
+        keystone = FakeKeystone()
+        scanner, _ = _scanner(api=api, keystone=keystone)
+
+        with patch("teatree.core.author_trust.repo_is_internal", return_value=False):
+            signals = scanner.scan()
+
+        assert keystone.calls == [int(clear.pk)]
+        assert signals[0].payload["reason"] == "all_green"
 
 
 class TestSkipPaths:

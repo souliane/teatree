@@ -30,6 +30,7 @@ from teatree.core.merge.authorization import (
     _assert_anti_vacuity,
     _assert_clear_authorized,
     _assert_rubric_satisfied,
+    assert_public_repo_author_trusted,
 )
 from teatree.core.merge.ci_rollup import (
     _code_host_for,
@@ -576,6 +577,7 @@ def _merge_ticket_pr_inner(
         reviewed_sha=str(getattr(clear, "reviewed_sha", "") or ""),
         host_kind=host_kind,
     )
+    assert_public_repo_author_trusted(slug=slug, pr_id=pr_id, host_kind=host_kind)
     precheck = assert_merge_preconditions(
         clear=clear,
         executing_loop_identity=executing_loop_identity,

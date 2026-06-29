@@ -50,6 +50,15 @@ _MOCK_OVERLAY = {"t3-teatree": CommandOverlay()}
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
+
+@pytest.fixture(autouse=True)
+def _skip_author_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The #1773 public-repo author gate is exercised by
+    # ``test_merge_execution_author_gate``; these §17.4.3 mechanics tests
+    # pre-date it and assert other failure modes, so the gate is a no-op here.
+    monkeypatch.setattr("teatree.core.merge.execution.assert_public_repo_author_trusted", lambda **_: None)
+
+
 _SHA = "a" * 40
 _MOVED = "b" * 40
 _GREEN = '[{"status": "COMPLETED", "conclusion": "SUCCESS"}]'

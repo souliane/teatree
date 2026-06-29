@@ -368,6 +368,17 @@ one prevents a specific class of failure that has bitten a real session:
   surface form (plain, quoted, attribute access, subscript, CamelCase
   variants, sibling repos) and confirms zero hits before claiming the rename
   is complete.
+- **A PUBLIC-repo PR never auto-merges unless its author is trusted.** On a
+  public repo anyone who is not the user is a potential malicious actor, so the
+  merge keystone refuses to auto-merge a PR whose author is not one of the
+  user's known identities (fail-closed: an unknown, empty, or unfetchable
+  author is refused; an unresolvable repo visibility is treated as public).
+  Private/internal repos skip the check entirely — the user owns access
+  control there. The trusted set lives in the DB; manage it with
+  `t3 identities {seed,add,list,remove}` (the configured `user_identity_aliases`
+  is the fallback during the config-to-DB migration window). The same trust
+  classifier flags an untrusted public-repo PR as adversarial across the
+  reviewing scanners, so a malicious PR is never treated like a colleague's.
 
 These rules live in the `ship`, `review`, `code`, and `rules` skills. The CLI
 enforces what it can mechanically (gate checks, transition predicates); the

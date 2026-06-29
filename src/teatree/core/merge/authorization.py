@@ -8,6 +8,7 @@ The result type :class:`MergePrecheck` and the guard functions
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from teatree.core.merge.ci_rollup import fetch_pr_author
 from teatree.core.merge.errors import MergePreconditionError
 
 if TYPE_CHECKING:
@@ -299,3 +300,31 @@ def _assert_rubric_satisfied(clear: "MergeClear", head_sha: str) -> None:
         check_rubric_satisfied(ticket, head_sha, transition="merge")
     except RubricNotSatisfiedError as exc:
         raise MergePreconditionError(str(exc)) from exc
+
+
+def assert_public_repo_author_trusted(*, slug: str, pr_id: int, host_kind: str = "github") -> None:
+    """Refuse the merge when *slug* is PUBLIC and the PR author is not trusted (#1773).
+
+    The authoritative, load-bearing author gate (BLUEPRINT §17.4.3 step 6 /
+    invariant 8): every sanctioned merge funnels through ``merge_ticket_pr``, so
+    even a future scanner that forgets the author still cannot auto-merge an
+    untrusted public-repo PR. The overlay merge-guard sits in FRONT of this
+    keystone, so relaxing an overlay over-block can never relax this gate.
+
+    PRIVATE / internal repo -> no author check (the user owns access control).
+    PUBLIC repo -> the author must be a trusted identity; an untrusted, unknown,
+    empty, or unfetchable author is refused (fail-closed).
+    """
+    from teatree.core.author_trust import classify_author  # noqa: PLC0415
+
+    author = fetch_pr_author(slug, pr_id, host_kind=host_kind)
+    classification = classify_author(slug, author, host_kind=host_kind)
+    if classification.internal_repo or classification.trusted:
+        return
+    msg = (
+        f"{slug}#{pr_id} is on a PUBLIC repo and its author is not a trusted identity — refusing to "
+        f"auto-merge (§17.4.3 author gate / #1773). On a public repo anyone who is not the user is a "
+        f"potential malicious actor; add the handle via `t3 identities add <platform> <handle>` if it is "
+        f"genuinely the user, or merge it by hand after an adversarial review."
+    )
+    raise MergePreconditionError(msg)

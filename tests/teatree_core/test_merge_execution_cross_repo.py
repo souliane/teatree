@@ -31,6 +31,14 @@ from teatree.core.models import MergeClear
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
+
+@pytest.fixture(autouse=True)
+def _skip_author_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    # #1773 public-repo author gate — exercised by test_merge_execution_author_gate;
+    # these pre-date it and target other concerns, so it is a no-op here.
+    monkeypatch.setattr("teatree.core.merge.execution.assert_public_repo_author_trusted", lambda **_: None)
+
+
 _RIGHT_SHA = "a" * 40  # the reviewed SHA on the cross-repo PR
 _WRONG_SHA = "b" * 40  # the unrelated same-numbered PR on the clone origin
 _GREEN = '[{"status": "COMPLETED", "conclusion": "SUCCESS"}]'

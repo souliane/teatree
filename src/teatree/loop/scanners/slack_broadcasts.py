@@ -58,6 +58,7 @@ from typing import Protocol
 
 from django.db import OperationalError, ProgrammingError
 
+from teatree.core.author_trust import classify_author
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import BroadcastObservation, ScannedBroadcast
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
@@ -71,6 +72,7 @@ from teatree.loop.review_request_tracker import record_review_request_post
 from teatree.loop.scanners.base import ScanSignal
 from teatree.types import RawAPIDict
 from teatree.url_classify import Forge, find_pr_urls, forge_of, repo_and_iid
+from teatree.utils.url_slug import pr_ref_from_url
 
 logger = logging.getLogger(__name__)
 
@@ -381,23 +383,33 @@ class SlackBroadcastsScanner:
         # posts the outcome reaction). #79: a review-intent dispatch is the
         # work-queue signal; when the review loop is stopped it must not fire.
         return filter_review_intent_signals(
-            _signal_for_pending_mr(state.url, row, overlay=self.overlay) for state in open_states
+            _signal_for_pending_mr(state, row, overlay=self.overlay) for state in open_states
         )
 
     def _user_id(self) -> str:
         return getattr(self.backend, "user_id", "") or self.user_slack_id
 
     def _all_authored_by_me(self, open_states: Sequence[MrState]) -> bool:
-        """True when every open MR in the broadcast is authored by the current user (#1384).
+        """True when every open MR is authored by a trusted identity (#1384, #1773).
 
-        Returns ``False`` when the filter is disabled (no
-        ``current_gitlab_username`` configured) or there are no open MRs, so
-        the legacy react-on-every-pending behaviour is preserved for callers
-        that don't supply the username.
+        The own-author exclusion is a trusted-SET check: an MR by any of the
+        user's identities (DB rows, config fallback, or the configured
+        ``current_gitlab_username``) is their own work, so eyes/dispatch skip.
         """
-        if not self.current_gitlab_username or not open_states:
+        if not open_states:
             return False
-        return all(state.author_username == self.current_gitlab_username for state in open_states)
+        return all(self._author_is_trusted(state) for state in open_states)
+
+    def _author_is_trusted(self, state: MrState) -> bool:
+        author = state.author_username
+        if not author:
+            return False
+        if self.current_gitlab_username and author == self.current_gitlab_username:
+            return True
+        ref = pr_ref_from_url(state.url)
+        if ref is None:
+            return False
+        return classify_author(ref.slug, author, host_kind=ref.host_kind).trusted
 
     def _sweep_white_check_mark(self, row: ScannedBroadcast, states: Sequence[MrState]) -> None:
         """Re-react ``:white_check_mark:`` on sibling broadcasts of the same MRs (#1295 cap C).
@@ -602,13 +614,18 @@ class GlabGhMrStateClassifier:
         return MrState(url=url, merged=merged, approved=approved, author_username=author_username)
 
 
-def _signal_for_pending_mr(mr_url: str, row: ScannedBroadcast, *, overlay: str) -> ScanSignal:
+def _signal_for_pending_mr(state: MrState, row: ScannedBroadcast, *, overlay: str) -> ScanSignal:
     """Build the ``slack.review_intent`` signal for one open MR in a broadcast.
 
     Reuses the existing signal shape so the dispatcher routes through
     ``review_request_dispatch`` to the ``t3:reviewer`` agent — no new
-    signal kind, no parallel dispatch path.
+    signal kind, no parallel dispatch path. An untrusted author on a PUBLIC
+    repo flags the signal ADVERSARIAL (#1773) so the reviewer treats it as a
+    potential malicious actor rather than a colleague MR.
     """
+    mr_url = state.url
+    ref = pr_ref_from_url(mr_url)
+    untrusted = ref is not None and classify_author(ref.slug, state.author_username, host_kind=ref.host_kind).untrusted
     return ScanSignal(
         kind="slack.review_intent",
         summary=f"Review intent (broadcast): {mr_url}",
@@ -620,5 +637,7 @@ def _signal_for_pending_mr(mr_url: str, row: ScannedBroadcast, *, overlay: str) 
             "trigger": "broadcast",
             "overlay": overlay,
             "broadcast_id": row.pk,
+            "adversarial": untrusted,
+            "requires_human_authorization": untrusted,
         },
     )
