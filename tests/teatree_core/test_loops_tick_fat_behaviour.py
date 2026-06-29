@@ -1,4 +1,4 @@
-"""Tests for the ``loop_tick`` Django management command."""
+"""Tests for the ``loops_tick`` Django management command."""
 
 import datetime as dt
 import json
@@ -12,7 +12,7 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
-from teatree.core.management.commands.loop_tick import _report_to_dict
+from teatree.core.management.commands.loops_tick import _report_to_dict
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.tick import TickReport
@@ -58,7 +58,7 @@ class TestLoopTickCommand(TestCase):
             patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
             patch("teatree.loop.tick.run_tick", return_value=report),
         ):
-            call_command("loop_tick", stdout=stdout)
+            call_command("loops_tick", stdout=stdout)
 
         assert stdout.getvalue() == ""
 
@@ -69,7 +69,7 @@ class TestLoopTickCommand(TestCase):
             patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
             patch("teatree.loop.tick.run_tick", return_value=report),
         ):
-            call_command("loop_tick", stdout=stdout)
+            call_command("loops_tick", stdout=stdout)
 
         output = stdout.getvalue()
         assert "WARN  my_prs" in output
@@ -91,7 +91,7 @@ class TestLoopTickCommand(TestCase):
             ),
             patch("teatree.loop.tick.run_tick", side_effect=lambda *a, **k: (order.append("tick"), report)[1]),
         ):
-            call_command("loop_tick", stdout=StringIO())
+            call_command("loops_tick", stdout=StringIO())
 
         assert order == ["drain", "tick"], "drain must precede the scanner pass"
 
@@ -106,7 +106,7 @@ class TestLoopTickCommand(TestCase):
             patch("teatree.loop.tick.run_tick", return_value=report),
             patch("teatree.loop.statusline.set_mini_loop_schedules_reader") as seam,
         ):
-            call_command("loop_tick", stdout=StringIO())
+            call_command("loops_tick", stdout=StringIO())
         # Installed for the tick, then reset so the process-global never leaks.
         assert seam.call_args_list == [call(mini_loop_schedules), call(None)]
 
@@ -117,7 +117,7 @@ class TestLoopTickCommand(TestCase):
             patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
             patch("teatree.loop.tick.run_tick", return_value=report),
         ):
-            call_command("loop_tick", stdout=stdout)
+            call_command("loops_tick", stdout=stdout)
 
         output = stdout.getvalue()
         assert "WARN  my_prs" in output
@@ -129,7 +129,7 @@ class TestLoopTickCommand(TestCase):
             patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
             patch("teatree.loop.tick.run_tick", return_value=report),
         ):
-            call_command("loop_tick", "--json", stdout=stdout)
+            call_command("loops_tick", "--json", stdout=stdout)
 
         payload = json.loads(stdout.getvalue())
         assert payload["signal_count"] == 1
@@ -139,11 +139,11 @@ class TestLoopTickCommand(TestCase):
         report = _build_report()
         stdout = StringIO()
         with (
-            patch("teatree.core.backend_factory.code_host_from_overlay", return_value=None) as host_mock,
-            patch("teatree.core.backend_factory.messaging_from_overlay", return_value=None),
+            patch("teatree.core.management.commands.loops_tick.code_host_from_overlay", return_value=None) as host_mock,
+            patch("teatree.core.management.commands.loops_tick.messaging_from_overlay", return_value=None),
             patch("teatree.loop.tick.run_tick", return_value=report),
         ):
-            call_command("loop_tick", "--overlay", "myoverlay", stdout=stdout)
+            call_command("loops_tick", "--overlay", "myoverlay", stdout=stdout)
 
         host_mock.assert_called_once()
 
@@ -157,13 +157,13 @@ class TestLoopTickCommand(TestCase):
         report = _build_report()
         with (
             patch(
-                "teatree.core.connector_preflight.run_connector_preflight",
+                "teatree.core.management.commands.loops_tick.run_connector_preflight",
                 side_effect=SystemExit("Connector preflight failed for overlay 'acme': Slack down"),
             ),
             patch("teatree.loop.tick.run_tick", return_value=report) as run_tick_mock,
             pytest.raises(SystemExit) as excinfo,
         ):
-            call_command("loop_tick", stdout=StringIO())
+            call_command("loops_tick", stdout=StringIO())
 
         assert excinfo.value.code != 0
         run_tick_mock.assert_not_called()
@@ -181,7 +181,7 @@ class TestLoopTickCommand(TestCase):
         assert LoopLease.objects.acquire("loop-tick", owner="rival-tick") is True
         stdout = StringIO()
         with patch("teatree.loop.tick.run_tick") as run_tick_mock:
-            call_command("loop_tick", stdout=stdout)
+            call_command("loops_tick", stdout=stdout)
 
         run_tick_mock.assert_not_called()
         output = stdout.getvalue()
@@ -205,7 +205,7 @@ class TestLoopTickCommand(TestCase):
         with tempfile.TemporaryDirectory() as d:
             # Isolate the tick-meta freshness-touch off the real
             # ~/.local/share path during the test.
-            call_command("loop_tick", "--json", "--statusline-file", str(Path(d) / "sl.txt"), stdout=stdout)
+            call_command("loops_tick", "--json", "--statusline-file", str(Path(d) / "sl.txt"), stdout=stdout)
 
         payload = json.loads(stdout.getvalue())
         assert payload["signal_count"] == 0
@@ -236,7 +236,7 @@ class TestLoopTickCommand(TestCase):
             meta = sl.with_name("tick-meta.json")
             assert LoopLease.objects.acquire("loop-tick", owner="rival-tick") is True
             before = int(_dt.datetime.now(tz=_dt.UTC).timestamp())
-            call_command("loop_tick", "--statusline-file", str(sl), stdout=StringIO())
+            call_command("loops_tick", "--statusline-file", str(sl), stdout=StringIO())
 
             assert meta.exists(), "skipped tick did not write tick-meta.json — false 'tick stale' will follow"
             payload = json.loads(meta.read_text(encoding="utf-8"))
@@ -265,16 +265,16 @@ class TestLoopOwnerGate(TestCase):
             patch("teatree.loop.tick.build_default_jobs") as build_jobs_mock,
             patch("teatree.loop.tick_piggyback.run_piggyback_cycles") as piggyback_mock,
         ):
-            call_command("loop_tick", stdout=stdout)
+            call_command("loops_tick", stdout=stdout)
 
         run_tick_mock.assert_not_called()
         build_jobs_mock.assert_not_called()
         # #1107 Prong B anti-#1073: a non-owner SKIP must NOT piggyback.
         piggyback_mock.assert_not_called()
         output = stdout.getvalue()
-        assert "SKIP  loop not owned by this session" in output
+        assert "SKIP  loop slot 'loop-owner' not owned by this session" in output
         assert "owner is session owner-session" in output
-        assert "t3 loop claim --take-over" in output
+        assert "t3 loop claim --slot loop-owner --take-over" in output
 
     def test_non_owner_skip_json_is_contract_shaped(self) -> None:
         from teatree.core.models import LoopLease  # noqa: PLC0415
@@ -285,7 +285,7 @@ class TestLoopOwnerGate(TestCase):
             patch.dict("os.environ", {"CLAUDE_SESSION_ID": "intruder-session"}),
             patch("teatree.loop.tick.run_tick"),
         ):
-            call_command("loop_tick", "--json", stdout=stdout)
+            call_command("loops_tick", "--json", stdout=stdout)
 
         payload = json.loads(stdout.getvalue())
         assert payload["signal_count"] == 0
@@ -293,7 +293,7 @@ class TestLoopOwnerGate(TestCase):
         assert payload["errors"] == {}
         assert payload["actions"] == []
         assert payload["skipped"] is True
-        assert "loop not owned by this session" in payload["skipped_reason"]
+        assert "loop slot 'loop-owner' not owned by this session" in payload["skipped_reason"]
 
     def test_non_owner_skip_refreshes_tick_meta(self) -> None:
         import tempfile  # noqa: PLC0415
@@ -306,7 +306,7 @@ class TestLoopOwnerGate(TestCase):
             meta = sl.with_name("tick-meta.json")
             before = int(dt.datetime.now(tz=dt.UTC).timestamp())
             with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "intruder-session"}):
-                call_command("loop_tick", "--statusline-file", str(sl), stdout=StringIO())
+                call_command("loops_tick", "--statusline-file", str(sl), stdout=StringIO())
             assert meta.exists(), "non-owner skip must keep tick-meta fresh (no false 'tick stale')"
             assert json.loads(meta.read_text(encoding="utf-8"))["next_epoch"] >= before
 
@@ -321,7 +321,7 @@ class TestLoopOwnerGate(TestCase):
             patch("teatree.loop.tick.run_tick", return_value=report) as run_tick_mock,
             patch("teatree.loop.tick_piggyback.run_piggyback_cycles") as piggyback_mock,
         ):
-            call_command("loop_tick", stdout=stdout)
+            call_command("loops_tick", stdout=stdout)
 
         run_tick_mock.assert_called_once()
         # #1107 Prong B: the won-owner success path fires the piggyback.
@@ -342,9 +342,9 @@ class TestLoopOwnerGate(TestCase):
             patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
             patch("teatree.loop.tick.run_tick", return_value=report),
         ):
-            call_command("loop_tick", stdout=StringIO())
+            call_command("loops_tick", stdout=StringIO())
             first = LoopLease.objects.get(name="loop-owner").lease_expires_at
-            call_command("loop_tick", stdout=StringIO())
+            call_command("loops_tick", stdout=StringIO())
             second = LoopLease.objects.get(name="loop-owner").lease_expires_at
         assert second >= first
 
@@ -357,7 +357,7 @@ class TestLoopOwnerGate(TestCase):
             patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
             patch("teatree.loop.tick.run_tick", return_value=report) as run_tick_mock,
         ):
-            call_command("loop_tick", stdout=StringIO())
+            call_command("loops_tick", stdout=StringIO())
 
         run_tick_mock.assert_called_once()
         assert LoopLease.objects.get(name="loop-owner").session_id == "fresh-session"
@@ -373,7 +373,7 @@ class TestLoopOwnerGate(TestCase):
             patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
             patch("teatree.loop.tick.run_tick", return_value=report) as rt1,
         ):
-            call_command("loop_tick", stdout=StringIO())
+            call_command("loops_tick", stdout=StringIO())
             rt1.assert_called_once()
 
         # The chat-only user runs `t3 loop claim --take-over` from main.
@@ -386,9 +386,9 @@ class TestLoopOwnerGate(TestCase):
             patch.dict("os.environ", {"CLAUDE_SESSION_ID": "hijacker"}),
             patch("teatree.loop.tick.run_tick") as rt2,
         ):
-            call_command("loop_tick", stdout=stdout)
+            call_command("loops_tick", stdout=stdout)
         rt2.assert_not_called()
-        assert "loop not owned by this session" in stdout.getvalue()
+        assert "loop slot 'loop-owner' not owned by this session" in stdout.getvalue()
 
     def test_anonymous_session_skips_when_live_owner(self) -> None:
         import tempfile  # noqa: PLC0415
@@ -407,13 +407,13 @@ class TestLoopOwnerGate(TestCase):
             patch.dict("os.environ", env, clear=True),
             patch("teatree.loop.tick.run_tick") as run_tick_mock,
         ):
-            call_command("loop_tick", "--statusline-file", str(Path(d) / "sl.txt"), stdout=stdout)
+            call_command("loops_tick", "--statusline-file", str(Path(d) / "sl.txt"), stdout=stdout)
 
         run_tick_mock.assert_not_called()
-        assert "loop not owned by this session" in stdout.getvalue()
+        assert "loop slot 'loop-owner' not owned by this session" in stdout.getvalue()
 
     def test_owner_ttl_env_override_is_parsed_defensively(self) -> None:
-        from teatree.core.management.commands.loop_tick import _loop_owner_ttl_seconds  # noqa: PLC0415
+        from teatree.core.management.commands.loops_tick import _loop_owner_ttl_seconds  # noqa: PLC0415
 
         with patch.dict("os.environ", {"T3_LOOP_OWNER_TTL": "3600"}):
             assert _loop_owner_ttl_seconds() == 3600
@@ -443,7 +443,7 @@ class TestLoopTickClaimsGlobalOwnerAndRunsFatTick(TestCase):
             patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
             patch("teatree.loop.tick.run_tick", return_value=report) as fat_run_tick,
         ):
-            call_command("loop_tick", stdout=StringIO())
+            call_command("loops_tick", stdout=StringIO())
 
         fat_run_tick.assert_called_once()
         assert LoopLease.objects.get(name="loop-owner").session_id == "owner-session"
@@ -453,7 +453,7 @@ class TestLoopTickClaimsGlobalOwnerAndRunsFatTick(TestCase):
         from django.core.management.base import CommandError  # noqa: PLC0415
 
         with pytest.raises((CommandError, SystemExit)):
-            call_command("loop_tick", "--slot", "dispatch", stdout=StringIO())
+            call_command("loops_tick", "--slot", "dispatch", stdout=StringIO())
 
 
 class TestLeaseOwnerPidIsDurableSessionNotTickSubprocess(TestCase):
@@ -496,7 +496,7 @@ class TestLeaseOwnerPidIsDurableSessionNotTickSubprocess(TestCase):
             patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
             patch("teatree.loop.tick.run_tick", return_value=report),
         ):
-            call_command("loop_tick", stdout=StringIO())
+            call_command("loops_tick", stdout=StringIO())
 
         row = LoopLease.objects.get(name="loop-owner")
         assert row.session_id == "owner-session"
@@ -525,7 +525,7 @@ class TestLeaseOwnerPidIsDurableSessionNotTickSubprocess(TestCase):
             patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
             patch("teatree.loop.tick.run_tick", return_value=report),
         ):
-            call_command("loop_tick", stdout=StringIO())
+            call_command("loops_tick", stdout=StringIO())
 
         # Simulate the owner going busy/idle past the TTL: the lease lapses
         # but the session process (durable_session_pid) is still alive.
@@ -608,13 +608,13 @@ class TestNonOwnerDoesNotDrainReactionsOrDispatchReviewer(TestCase):
     session.
 
     Anti-vacuity: this exercises the REAL path (no ``run_tick`` /
-    ``build_default_jobs`` mock). With ``loop_tick.py`` resolved to
+    ``build_default_jobs`` mock). With ``loops_tick.py`` resolved to
     main's gated ``handle()`` the JSONL survives untouched and no
     ``ReviewAssignment`` row exists. If the merge had taken #1059's
     ungated ``handle()``, ``run_tick`` would run the scanner, the JSONL
     would be drained (file gone) and a row would be created — the two
     asserts below would FAIL. Verified RED→GREEN by temporarily
-    reverting ``loop_tick.py`` to the PR's ungated ``handle()``.
+    reverting ``loops_tick.py`` to the PR's ungated ``handle()``.
     """
 
     def test_non_owner_does_not_drain_reactions_jsonl_nor_dispatch_reviewer(self) -> None:
@@ -651,7 +651,7 @@ class TestNonOwnerDoesNotDrainReactionsOrDispatchReviewer(TestCase):
                     return_value=overlay_backends,
                 ),
             ):
-                call_command("loop_tick", stdout=StringIO())
+                call_command("loops_tick", stdout=StringIO())
 
             # The non-owner SKIP fired before run_tick: the reactions
             # queue was never drained (drain_reactions_queue renames +

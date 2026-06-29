@@ -7,7 +7,7 @@ self-improve monitor so user DMs get :eyes:/answered and smells get
 recorded. The cycles run behind their existing dedicated ``LoopLease``
 CAS so a real dedicated slot is never double-run (#1014/#1075 preserved).
 
-Test-Writing Doctrine: real DB rows + ``call_command("loop_tick")``; only
+Test-Writing Doctrine: real DB rows + ``call_command("loops_tick")``; only
 the Slack network (a recording fake) and the RAM probe are faked. The
 cycle, ``run_tick``, and the lease CAS are all real.
 """
@@ -88,7 +88,7 @@ def _patch_resolver(backend: RecordingBackend):
 
 class TestTickPiggybackSlackAnswer:
     def test_tick_reacts_eyes_on_unreplied_dm_without_fat_loop_owner(self) -> None:
-        """RED on main: ``loop_tick`` never invokes the reactive cycle.
+        """RED on main: ``loops_tick`` never invokes the reactive cycle.
 
         Pure-cron incident state — no session env vars AND no loop-registry
         — so Prong A cannot resolve an owner; this proves B is an
@@ -102,10 +102,10 @@ class TestTickPiggybackSlackAnswer:
         with (
             patch.dict("os.environ", _no_session_env(), clear=True),
             patch("teatree.core.connector_preflight.run_connector_preflight"),
-            patch("teatree.core.management.commands.loop_tick._registry_jobs_builder", return_value=[]),
+            patch("teatree.core.management.commands.loops_tick._loop_table_jobs_builder", return_value=[]),
             _patch_resolver(backend),
         ):
-            call_command("loop_tick", stdout=out)
+            call_command("loops_tick", stdout=out)
 
         row.refresh_from_db()
         assert row.eyes_reacted_at is not None
@@ -121,10 +121,10 @@ class TestTickPiggybackSlackAnswer:
         with (
             patch.dict("os.environ", _no_session_env(), clear=True),
             patch("teatree.core.connector_preflight.run_connector_preflight"),
-            patch("teatree.core.management.commands.loop_tick._registry_jobs_builder", return_value=[]),
+            patch("teatree.core.management.commands.loops_tick._loop_table_jobs_builder", return_value=[]),
             _patch_resolver(backend),
         ):
-            call_command("loop_tick", stdout=out)
+            call_command("loops_tick", stdout=out)
 
         row.refresh_from_db()
         assert row.eyes_reacted_at is None
@@ -144,11 +144,11 @@ class TestTickPiggybackSlackAnswer:
                 clear=True,
             ),
             patch("teatree.core.connector_preflight.run_connector_preflight"),
-            patch("teatree.core.management.commands.loop_tick._registry_jobs_builder", return_value=[]),
+            patch("teatree.core.management.commands.loops_tick._loop_table_jobs_builder", return_value=[]),
             _patch_resolver(backend),
         ):
-            call_command("loop_tick", stdout=io.StringIO())
-            call_command("loop_tick", stdout=io.StringIO())
+            call_command("loops_tick", stdout=io.StringIO())
+            call_command("loops_tick", stdout=io.StringIO())
 
         assert backend.reactions.count(("C9", "9.0", "eyes")) == 1
 
@@ -183,10 +183,10 @@ class TestTickPiggybackSelfImprove:
         with (
             patch.dict("os.environ", {**_no_session_env(), "XDG_DATA_HOME": str(tmp_path)}, clear=True),
             patch("teatree.core.connector_preflight.run_connector_preflight"),
-            patch("teatree.core.management.commands.loop_tick._registry_jobs_builder", return_value=[]),
+            patch("teatree.core.management.commands.loops_tick._loop_table_jobs_builder", return_value=[]),
             patch("teatree.loop.self_improve.budget._read_ram_used_percent", return_value=0.0),
         ):
-            call_command("loop_tick", "--statusline-file", str(tick_statusline), stdout=out)
+            call_command("loops_tick", "--statusline-file", str(tick_statusline), stdout=out)
 
         assert SelfImproveFiring.objects.filter(detector="stale_statusline_entry").exists()
 
@@ -195,7 +195,7 @@ class TestTickPiggybackSelfImprove:
 
         Recording a ``SelfImproveFiring`` row (the sibling test above) proves the
         smell was detected, NOT that the heal ran. This drives the same full
-        ``loop_tick`` -> piggyback -> action-ladder path and asserts the injected
+        ``loops_tick`` -> piggyback -> action-ladder path and asserts the injected
         ``self_improve_rerender`` seam is actually invoked. On the wired-but-
         unreachable code (ceiling == ``statusline``) the ladder never reaches the
         ``auto_fix`` rung, so the seam is never called and this fails RED.
@@ -215,11 +215,11 @@ class TestTickPiggybackSelfImprove:
         with (
             patch.dict("os.environ", {**_no_session_env(), "XDG_DATA_HOME": str(tmp_path)}, clear=True),
             patch("teatree.core.connector_preflight.run_connector_preflight"),
-            patch("teatree.core.management.commands.loop_tick._registry_jobs_builder", return_value=[]),
+            patch("teatree.core.management.commands.loops_tick._loop_table_jobs_builder", return_value=[]),
             patch("teatree.loop.self_improve.budget._read_ram_used_percent", return_value=0.0),
             patch("teatree.loop.tick_piggyback.self_improve_rerender") as seam,
         ):
-            call_command("loop_tick", "--statusline-file", str(tick_statusline), stdout=out)
+            call_command("loops_tick", "--statusline-file", str(tick_statusline), stdout=out)
 
         seam.assert_called_once()
 
@@ -250,7 +250,7 @@ class TestTickPiggybackOwnerGate:
         GREEN on main by accident (the #1073 owner gate returns before any
         piggyback could exist) — this is the anti-hijack guard that must
         stay GREEN after the fix, not a vacuous test. Mirrors
-        ``test_loop_tick_command.TestLoopOwnerGate``.
+        ``test_loops_tick_fat_behaviour.TestLoopOwnerGate``.
         """
         LoopLease.objects.claim_ownership("loop-owner", session_id="owner-session")
         row = PendingChatInjection.record(channel="C9", slack_ts="9.0", text="thanks!")
@@ -262,17 +262,17 @@ class TestTickPiggybackOwnerGate:
             patch("teatree.core.connector_preflight.run_connector_preflight"),
             _patch_resolver(backend),
         ):
-            call_command("loop_tick", stdout=out)
+            call_command("loops_tick", stdout=out)
 
         row.refresh_from_db()
         assert "SKIP" in out.getvalue()
-        assert "loop not owned by this session" in out.getvalue()
+        assert "loop slot 'loop-owner' not owned by this session" in out.getvalue()
         assert row.eyes_reacted_at is None
         assert backend.reactions == []
 
 
 class TestPiggybackCadenceParsing:
-    """The defensive ``int()`` fallbacks (mirror ``loop_tick._loop_owner_ttl_seconds``)."""
+    """The defensive ``int()`` fallbacks (mirror ``loops_tick._loop_owner_ttl_seconds``)."""
 
     def test_slack_answer_cadence_falls_back_on_non_integer(self) -> None:
         from teatree.loop.tick_piggyback import _slack_answer_cadence_seconds  # noqa: PLC0415

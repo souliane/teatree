@@ -67,8 +67,8 @@ def _live_loop_leases() -> list[tuple[str, datetime | None]]:
 # :mod:`teatree.loops` — and the tach module graph forbids
 # :mod:`teatree.loop` from importing :mod:`teatree.loops` (the dependency
 # points the other way). Mirroring the ``jobs_builder`` seam in
-# :func:`teatree.loop.tick.run_tick`, the live entry point (the ``loop_tick``
-# management command) injects the real reader via
+# :func:`teatree.loop.tick.run_tick`, the live entry point (the ``loops_tick``
+# master tick command) injects the real reader via
 # :func:`set_mini_loop_schedules_reader`; absent injection (a quiet machine,
 # a unit test) the default reader returns ``[]`` and the mini-loop chunks are
 # simply omitted — never an import-direction violation, never a crash.
@@ -86,7 +86,7 @@ _mini_loop_schedules_reader: MiniLoopSchedulesReader = _empty_mini_loop_schedule
 def set_mini_loop_schedules_reader(reader: MiniLoopSchedulesReader | None) -> None:
     """Install the up-stack mini-loop next-fire reader (``None`` resets to empty).
 
-    Called once by the ``loop_tick`` management command — the only place
+    Called once by the ``loops_tick`` master tick command — the only place
     allowed to bridge :mod:`teatree.loops` into the statusline without
     violating the tach module graph.
     """

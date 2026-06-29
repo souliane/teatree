@@ -25,7 +25,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 #: The single machine-wide loop-owner slot (#1073). This is the DEFAULT
-#: that the fat ``loop_tick`` gate claims; its pid-anchored, hijack-guarded
+#: that the master ``loops_tick`` gate claims; its pid-anchored, hijack-guarded
 #: semantics are unchanged. Per-loop owners live in the ``loop:<name>``
 #: namespace below — a disjoint key space, so a per-loop claim can never
 #: collide with or evict the global owner.
@@ -230,6 +230,37 @@ class LoopLeaseQuerySet(models.QuerySet):
             owner_session, (row or {}).get("owner_pid"), (row or {}).get("lease_expires_at"), now
         )
         return owner_session if is_live else ""
+
+    @staticmethod
+    def _pid_is_foreign(stored_pid: int | None, current_pid: int | None) -> bool:
+        """Whether a live lease's ``owner_pid`` belongs to a DIFFERENT OS process (#1604).
+
+        A live foreign-session lease whose ``owner_pid`` matches ``current_pid`` is
+        a post-compaction same-process self-reclaim — the session rotated its id
+        but the OS process is ours — so it is NOT a genuinely foreign owner. A null
+        stored pid is treated as foreign (unknown → bias to report-foreign/KEEP).
+        """
+        return current_pid is None or stored_pid != current_pid
+
+    def live_foreign_owner(self, name: str, *, session_id: str, current_pid: int | None) -> str:
+        """The session of a genuinely LIVE foreign owner of ``name``, or ``""`` (#1604).
+
+        The READ predicate the SessionStart/UserPromptSubmit desync check consults:
+        a slot owned by a DIFFERENT, still-live session that is also a DIFFERENT OS
+        process means that session is the rightful owner and a fresh session must
+        stay idle (INV1). Reuses :meth:`_live_foreign_owner_session` for the
+        foreign-and-live decision (the same pid-anchored liveness ``claim_ownership``
+        and ``evict_stale_owner`` use) plus the :meth:`_pid_is_foreign` carve-out so
+        a same-process self-reclaim is never reported as foreign. Returns ``""``
+        when the slot is unowned, owned by ``session_id`` itself, owned by a
+        dead/expired owner, or owned by this very process.
+        """
+        now = timezone.now()
+        row = self.filter(name=name).values("session_id", "owner_pid", "lease_expires_at").first()
+        owner = self._live_foreign_owner_session(row, session_id, now)
+        if not owner:
+            return ""
+        return owner if self._pid_is_foreign((row or {}).get("owner_pid"), current_pid) else ""
 
     def evict_stale_owner(
         self,

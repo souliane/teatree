@@ -22,9 +22,12 @@ dies, the next open session prunes it, becomes tick-owner, and keeps
 ticking (it does NOT re-spawn anything). With ZERO sessions open the loop
 is DEAD until the next session starts — accepted, not a defect.
 
-The ``tick`` subcommand delegates to the ``loop_tick`` Django management
-command via subprocess — anything that touches the Django ORM must be a
-management command, not a plain typer command with manual ``django.setup()``.
+The ``tick`` subcommand delegates to the ``loops_tick`` Django management
+command (the single tick surface after the #2777 cutover) via the management
+framework — anything that touches the Django ORM must be a management command,
+not a plain typer command with manual ``django.setup()``. The legacy
+``t3 loop tick`` spelling is kept as a migration shim that delegates to the
+bare master ``loops_tick`` so in-flight directives keep working.
 """
 
 import os
@@ -81,10 +84,10 @@ def tick_command(
 ) -> None:
     """Run one tick: scan in parallel, dispatch, render statusline.
 
-    Delegates to the ``loop_tick`` Django management command so that
+    Delegates to the ``loops_tick`` Django management command (bare master) so
     Django is bootstrapped by the management framework (not manual
-    ``django.setup()``).  All heavy imports (ORM, backends, scanners)
-    live in the management command module, not here.
+    ``django.setup()``).  All heavy imports (ORM, backends, scanners) live in the
+    management command module, not here.
     """
     ensure_django()
 
@@ -97,7 +100,9 @@ def tick_command(
         kwargs["overlay"] = overlay
     if json_output:
         kwargs["json_output"] = True
-    call_command("loop_tick", **kwargs)
+    # migration shim (#2777): `t3 loop tick` retires after one release; until then
+    # it delegates to the bare master `loops_tick` so a stale directive still ticks.
+    call_command("loops_tick", **kwargs)
 
 
 @loop_app.command("status")

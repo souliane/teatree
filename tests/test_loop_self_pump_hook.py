@@ -52,6 +52,12 @@ def _isolation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # leaks into a test that does not opt in. Cases that exercise the file
     # override it explicitly.
     monkeypatch.setenv("TEATREE_BASH_ENV_FILE", str(tmp_path / "no-bash-env"))
+    # The DB LoopState gate is owned by test_loop_state_self_pump_hook.py (which
+    # fakes the ``t3`` subprocess). These tests exercise the OTHER suppression
+    # paths (ownership, disown, away, anti-spin), so isolate them from the live
+    # control plane — otherwise a real ``t3`` whose ``dispatch`` loop is paused
+    # (the #2777 L3 fail-closed) suppresses the pump these tests assert fires.
+    monkeypatch.setattr(router, "db_loop_state_suppresses_self_pump", lambda: False)
 
 
 def _own_loop(session_id: str) -> None:
@@ -112,7 +118,10 @@ class TestLoopSelfPump:
         handle_loop_self_pump({"session_id": "owner-1"})
 
         reason = _decision(capsys)["reason"]
-        assert "T3_LOOP_SESSION_ID=owner-1 T3_LOOP_SESSION_PID=4242 t3 loop tick" in reason
+        # #2777 cutover: the self-pump fires the bare master `t3 loops tick`
+        # (claims loop-owner + loop-tick — behaviour-preserving vs the retired
+        # `t3 loop tick`), not the legacy fat-tick spelling.
+        assert "T3_LOOP_SESSION_ID=owner-1 T3_LOOP_SESSION_PID=4242 t3 loops tick" in reason
 
     def test_owner_with_no_pending_work_does_not_block(
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch

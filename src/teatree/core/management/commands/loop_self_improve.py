@@ -1,6 +1,6 @@
 """``manage.py loop_self_improve`` — one schedule cycle of the self-improve monitor.
 
-Mirrors the shape of ``loop_tick``: acquires a dedicated ``LoopLease``
+Mirrors the shape of ``loops_tick``: acquires a dedicated ``LoopLease``
 (``loop-self-improve``) so a long self-improve cycle never blocks a fast
 regular tick, refuses to run when this session is not the loop owner,
 runs the tier dispatcher, and prints a one-line summary (or the JSON

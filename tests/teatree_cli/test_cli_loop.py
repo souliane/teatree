@@ -1,7 +1,8 @@
 """Tests for the ``t3 loop`` CLI commands (non-Django: start, stop, status, cadence).
 
-Tick-specific tests live in ``teatree_core/test_loop_tick_command.py`` since
-tick is now a Django management command.
+Tick-specific tests live in ``teatree_core/test_loops_tick_fat_behaviour.py`` since
+tick is now a Django management command. ``t3 loop tick`` is a migration shim that
+delegates to the bare master ``loops_tick`` (#2777 cutover).
 """
 
 import time
@@ -26,7 +27,7 @@ class TestTickCommandDelegation:
             result = runner.invoke(loop_app, ["tick", "--statusline-file", str(tmp_path / "sl.txt")])
 
         assert result.exit_code == 0
-        call_mock.assert_called_once_with("loop_tick", statusline_file=str(tmp_path / "sl.txt"))
+        call_mock.assert_called_once_with("loops_tick", statusline_file=str(tmp_path / "sl.txt"))
 
     def test_passes_overlay_and_json_flags(self) -> None:
         with (
@@ -36,7 +37,7 @@ class TestTickCommandDelegation:
             result = runner.invoke(loop_app, ["tick", "--overlay", "myoverlay", "--json"])
 
         assert result.exit_code == 0
-        call_mock.assert_called_once_with("loop_tick", overlay="myoverlay", json_output=True)
+        call_mock.assert_called_once_with("loops_tick", overlay="myoverlay", json_output=True)
 
     def test_no_args_calls_with_empty_kwargs(self) -> None:
         with (
@@ -46,7 +47,7 @@ class TestTickCommandDelegation:
             result = runner.invoke(loop_app, ["tick"])
 
         assert result.exit_code == 0
-        call_mock.assert_called_once_with("loop_tick")
+        call_mock.assert_called_once_with("loops_tick")
 
 
 class TestPendingSpawnCommandDelegation:

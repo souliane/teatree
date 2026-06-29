@@ -1018,7 +1018,7 @@ def handle_record_presence(data: dict) -> None:
 _LOOP_CADENCE_DEFAULT = 720
 
 
-_LOOP_PROMPT = "Run `t3 loop tick` in Bash, then briefly report the tick summary."
+_LOOP_PROMPT = "Run `t3 loops tick` in Bash, then briefly report the tick summary."
 
 
 def _loop_cadence_seconds() -> int:
@@ -4997,60 +4997,28 @@ def _tick_owner_record(session_id: str, agent_id: str) -> dict[str, dict]:
     }
 
 
-def _live_lease_is_foreign(stored_pid: int, current_pid: int | None) -> bool:
-    """Return True iff a LIVE foreign-session lease should be treated as genuinely foreign.
-
-    Called only for live leases whose ``session_id`` differs from the current session.
-    Returns False (evictable) when stored_pid matches current_pid (post-compaction
-    same-process self-reclaim) or pid_alive confirms the owner process is dead.
-    Returns True (KEEP) when pid_alive is unavailable (conservative bias, INV4) or
-    the owner process is still alive and belongs to a different OS process (INV1).
-    """
-    if current_pid is not None and stored_pid == current_pid:
-        return False
-    try:
-        from teatree.utils.singleton import pid_alive  # noqa: PLC0415
-    except ImportError:
-        return True
-    else:
-        return pid_alive(stored_pid)
-
-
 def _db_live_foreign_owner(session_id: str, current_pid: int | None) -> str:
     """Return the session id of a genuinely LIVE foreign ``loop-owner`` DB lease, or ``""``.
 
     #1604: called when the file registry has no entry for the tick-owner
-    (empty after prune / fail-safe) to detect registry/DB desync. If the
-    DB shows a live claim by a *different* session that is also a
-    *different alive process*, that session is still the rightful owner —
-    the new session must stay idle (INV1). Fails open (returns ``""``) on
-    any DB/import error so a hiccup never blocks the SessionStart directive.
+    (empty after prune / fail-safe) to detect registry/DB desync. The
+    foreign-and-live decision is the manager's single liveness predicate
+    (:meth:`LoopLease.objects.live_foreign_owner`, the same CAS-shape READ the
+    eviction path routes through): a live claim by a *different* session that is
+    also a *different alive process* keeps the new session idle (INV1). This
+    helper is only the disabled / bootstrap / fail-open envelope — any DB/import
+    error returns ``""`` so a hiccup never blocks the SessionStart directive.
     """
     if _db_lease_consult_disabled():
         return ""
     if not bootstrap_teatree_django():
         return ""
     try:
-        import datetime  # noqa: PLC0415
-
         from teatree.core.models import LoopLease  # noqa: PLC0415
-        from teatree.utils.singleton import pid_alive  # noqa: PLC0415
 
-        row = LoopLease.objects.filter(name="loop-owner").values("session_id", "owner_pid", "lease_expires_at").first()
-        owner_session = (row or {}).get("session_id") or ""
-        is_foreign_session = bool(owner_session) and owner_session != session_id
-        expires_at = (row or {}).get("lease_expires_at")
-        stored_pid = (row or {}).get("owner_pid")
-        # Liveness is pid-anchored: an alive owner_pid is a live owner past
-        # its tick TTL (the busy-owner hijack the TTL-only check missed).
-        is_live = (expires_at is not None and expires_at > datetime.datetime.now(tz=datetime.UTC)) or (
-            stored_pid is not None and pid_alive(stored_pid)
-        )
-        pid_is_foreign = stored_pid is None or _live_lease_is_foreign(stored_pid, current_pid)
+        return LoopLease.objects.live_foreign_owner("loop-owner", session_id=session_id, current_pid=current_pid)
     except Exception:  # noqa: BLE001
         return ""
-    else:
-        return owner_session if (is_foreign_session and is_live and pid_is_foreign) else ""
 
 
 def _evict_stale_db_lease_owner(session_id: str, current_pid: int | None) -> None:
@@ -5780,7 +5748,7 @@ def _loop_self_pump(data: dict) -> bool | None:
         "TEATREE LOOP SELF-PUMP — consolidated work remains; continue the loop "
         f"without waiting for an external prompt. Run `T3_LOOP_SESSION_ID={session_id} "
         f"T3_LOOP_SESSION_PID={session_pid} "
-        "t3 loop tick`, then "
+        "t3 loops tick`, then "
         "repeatedly `t3 loop claim-next` and spawn ONE fresh, bounded sub-agent "
         "(Agent tool) for each claimed unit until it returns nothing — the "
         "claim is atomic (#786 WS1), so no separate post-spawn claim step and "
