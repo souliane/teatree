@@ -4,13 +4,13 @@ The write-side twin of :mod:`teatree.config.cold_reader`. ``t3 <overlay> gate <n
 enable/disable`` is the orchestrator's guaranteed self-rescue and must stay Django-free
 (no ORM, no ``manage.py`` subprocess) so it survives a wedged install. PR3 flips the
 cold-hook gate READERS to the canonical DB; this module gives those same gates a
-Django-free DB WRITE path, so the tier ``t3 gate`` writes IS the tier the flipped reader
-reads. Without it a ``t3 gate disable`` (a TOML write) is SHADOWED by a seeded DB row,
+Django-free DB WRITE path, so the tier ``t3 teatree gate`` writes IS the tier the flipped
+reader reads. Without it a ``t3 teatree gate disable`` (a TOML write) is SHADOWED by a seeded DB row,
 and the never-lockout escape can never be lifted once ``t3 setup`` has seeded a row.
 
 Targets the PRIMARY ``~/.local/share/teatree/db.sqlite3`` (never the per-worktree
 isolated copy) by reusing :func:`cold_reader.canonical_config_db`. The write never raises —
-it returns a :class:`WriteResult` classifying the outcome so the caller (``t3 gate``) can
+it returns a :class:`WriteResult` classifying the outcome so the caller (``t3 teatree gate``) can
 tell a genuinely absent DB tier (fall back to the TOML write) apart from a present-but-locked
 DB (the DB row stays authoritative, so a TOML write would be a dead, shadowed row).
 """
@@ -40,7 +40,7 @@ _UPSERT = (
 
 
 class WriteResult(Enum):
-    """Outcome of a Django-free cold write — tells ``t3 gate`` whether to fall back to TOML.
+    """Outcome of a Django-free cold write — tells ``t3 teatree gate`` whether to fall back to TOML.
 
     The caller must distinguish three states, because the right fallback differs:
 
@@ -79,7 +79,7 @@ def write_setting(
     env: Mapping[str, str] = os.environ,
     db_path: Path | None = None,
 ) -> WriteResult:
-    """UPSERT ``(scope, key)=value`` into the canonical DB; classify the outcome for ``t3 gate``.
+    """UPSERT ``(scope, key)=value`` into the canonical DB; classify the outcome for ``t3 teatree gate``.
 
     The Django-free stdlib write twin of :func:`cold_reader.read_setting`. The value is
     stored JSON-encoded (matching the ORM ``JSONField`` and the ``JSON_VALID`` check
