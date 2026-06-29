@@ -3189,10 +3189,10 @@ Usage: t3 loop tick [OPTIONS]
 
  Run one tick: scan in parallel, dispatch, render statusline.
 
- Delegates to the ``loop_tick`` Django management command so that
+ Delegates to the ``loops_tick`` Django management command (bare master) so
  Django is bootstrapped by the management framework (not manual
- ``django.setup()``).  All heavy imports (ORM, backends, scanners)
- live in the management command module, not here.
+ ``django.setup()``).  All heavy imports (ORM, backends, scanners) live in the
+ management command module, not here.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --statusline-file        PATH  Override the statusline output path (test     │
@@ -3688,10 +3688,11 @@ Usage: t3 loops tick [OPTIONS]
  Run the master ONCE: run every enabled, due loop (each on its own cadence),
  then render.
 
- The master claims the ``t3-master`` lease and dispatches only the loops whose
- DB row is enabled and due. With ``--loop <name>`` it scopes to that single
- enabled, due row instead — the per-loop primitive each native Claude ``/loop``
- fires (#2650). Delegates to the ``loops_tick`` management command.
+ The master claims the singleton ``loop-owner`` lease and dispatches only the
+ loops whose DB row is enabled and due. With ``--loop <name>`` it scopes to
+ that
+ single enabled, due row instead — the per-loop primitive each native Claude
+ ``/loop`` fires (#2650). Delegates to the ``loops_tick`` management command.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --overlay        TEXT  Restrict scanning to the named overlay (default:      │

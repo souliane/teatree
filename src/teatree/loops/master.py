@@ -29,10 +29,12 @@ column, not by its name.
 An ``off_live_tick`` loop (the heavy ``dream`` consolidation pass, #1933 § 3) is
 NEVER picked up here — the live tick must not invoke its ``build_jobs`` or bump
 its ``last_run_at``; it is driven by its own low-frequency cron. The
-``LoopsConfig.is_enabled`` check runs BEFORE ``build_jobs`` / ``mark_run`` so a
-held loop is neither dispatched nor cadence-bumped — its anchor is preserved,
-not silently consumed. After building an admitted loop's jobs the master bumps
-that row's ``last_run_at`` so the next tick's cadence gate sees the move.
+``LoopsConfig.is_enabled`` check runs BEFORE the cadence claim so a held loop is
+neither dispatched nor cadence-bumped — its anchor is preserved, not silently
+consumed. The master then ATOMICALLY claims an admitted loop's ``last_run_at``
+(a compare-and-swap on the anchor it read, :meth:`LoopManager.mark_run_if_unchanged`)
+BEFORE building its jobs, so a master tick and a per-loop tick that read the same
+anchor cannot both drive the loop — exactly one wins the claim and dispatches.
 
 This is the ``jobs_builder`` the master tick (``t3 loops tick``) injects into the
 shared :func:`teatree.loop.tick.run_tick` pipeline, so reap + scan + act + render
@@ -90,13 +92,18 @@ def build_loop_table_jobs(
     considered (every other row is untouched, its cadence anchor unconsumed). The
     same enabled / due / unified-verdict gates still apply to that one row.
 
-    For each admitted row the dispatch target is read from the row's OWN
-    ``script``/``prompt`` column (#2513): a script row's ``script`` resolves to
-    the loop it names, a prompt row dispatches its own loop. A row whose
+    Each admitted row's cadence anchor is claimed atomically
+    (:meth:`LoopManager.mark_run_if_unchanged`, a CAS on the ``last_run_at`` the
+    row was read with) BEFORE its jobs are built, so a master tick and a per-loop
+    tick that read the same anchor never both drive the loop — the loser's CAS
+    matches 0 rows and it skips. The dispatch target is then read from the row's
+    OWN ``script``/``prompt`` column (#2513): a script row's ``script`` resolves
+    to the loop it names, a prompt row dispatches its own loop. A row whose
     ``script`` does not resolve to a real registered loop module raises — that one
     loop is logged and skipped (never aborts the master tick, never a silent
-    no-op) and its cadence anchor is NOT bumped. ``mark_run`` bumps the row's
-    cadence anchor for each successfully-dispatched loop.
+    no-op). Because the anchor is claimed before ``build_jobs``, a row that wins
+    the claim but then raises has already advanced its anchor (it is simply not
+    re-driven until its cadence elapses again).
     """
     from teatree.core.models import Loop  # noqa: PLC0415
     from teatree.loops.config import LoopsConfig  # noqa: PLC0415
@@ -116,6 +123,14 @@ def build_loop_table_jobs(
             continue
         if not config.is_enabled(loop):
             continue
+        # Atomically claim the cadence anchor BEFORE building jobs so a master
+        # tick and a per-loop tick that read the same ``last_run_at`` cannot both
+        # drive the loop (lost-update double-drive). The loser's CAS matches 0
+        # rows and it skips. The anchor advances ahead of ``build_jobs`` — benign
+        # for a raising loop (it is not re-driven until its cadence elapses again),
+        # the price of atomicity.
+        if not Loop.objects.mark_run_if_unchanged(loop.name, previous_last_run_at=row.last_run_at, now=now):
+            continue
         try:
             target = _resolve_dispatch_loop(row, registry_by_name)
             built = target.build_jobs(**scanner_context)
@@ -123,5 +138,4 @@ def build_loop_table_jobs(
             logger.exception("Loop %r raised while resolving/building jobs from its column — skipping", loop.name)
             continue
         jobs.extend(built)
-        Loop.objects.mark_run(loop.name, now)
     return jobs

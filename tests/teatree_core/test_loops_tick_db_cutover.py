@@ -1,6 +1,6 @@
 """The live ``t3 loop tick`` is cut over to the DB ``Loop`` table (#2513, D1).
 
-After the #1796 cutover the LIVE fat tick (``loop_tick`` management command) selects
+After the #1796 cutover the LIVE fat tick (``loops_tick`` management command) selects
 its scanner jobs from the ``Loop`` table via ``build_loop_table_jobs`` — NOT from a
 code-cadence ledger. LOOP-PR-A then DELETED that retired ledger + gate entirely.
 These tests pin that the live builder routes through the Loop table and that the
@@ -15,7 +15,7 @@ import django.test
 import pytest
 from django.utils import timezone
 
-from teatree.core.management.commands.loop_tick import _registry_jobs_builder
+from teatree.core.management.commands.loops_tick import _loop_table_jobs_builder
 from teatree.core.models import Loop, Prompt
 from teatree.loop.tick import TickRequest
 from teatree.loops.base import MiniLoop
@@ -39,7 +39,7 @@ class TestLiveTickReadsLoopTable(django.test.TestCase):
         Loop.objects.create(name="ct-off", delay_seconds=60, prompt=_prompt(), enabled=False)
         request = TickRequest()
         with patch("teatree.loops.master.iter_loops", return_value=(_mini("ct-on"), _mini("ct-off"))):
-            jobs = _registry_jobs_builder(request, now)
+            jobs = _loop_table_jobs_builder(request, now)
         assert "job-ct-on" in jobs
         assert "job-ct-off" not in jobs
 
@@ -56,7 +56,7 @@ class TestLiveTickReadsLoopTable(django.test.TestCase):
                 wraps=build_loop_table_jobs,
             ) as canonical,
         ):
-            jobs = _registry_jobs_builder(request, now)
+            jobs = _loop_table_jobs_builder(request, now)
         canonical.assert_called_once()
         assert "job-ct-only" in jobs
 
@@ -72,7 +72,7 @@ class TestLiveTickReadsLoopTable(django.test.TestCase):
         now = timezone.now()
         Loop.objects.create(name="ct-bump", delay_seconds=60, prompt=_prompt())
         with patch("teatree.loops.master.iter_loops", return_value=(_mini("ct-bump"),)):
-            _registry_jobs_builder(TickRequest(), now)
+            _loop_table_jobs_builder(TickRequest(), now)
         assert Loop.objects.get(name="ct-bump").last_run_at == now
 
     def test_cooling_row_is_skipped_by_its_own_cadence(self) -> None:
@@ -81,7 +81,7 @@ class TestLiveTickReadsLoopTable(django.test.TestCase):
             name="ct-cool", delay_seconds=600, prompt=_prompt(), last_run_at=now - dt.timedelta(seconds=10)
         )
         with patch("teatree.loops.master.iter_loops", return_value=(_mini("ct-cool"),)):
-            jobs = _registry_jobs_builder(TickRequest(), now)
+            jobs = _loop_table_jobs_builder(TickRequest(), now)
         assert jobs == []
 
 

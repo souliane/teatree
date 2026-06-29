@@ -391,11 +391,6 @@
       ]
     },
     {
-      "help": "Run one tick: scan all overlays, dispatch, render statusline.",
-      "name": "loop_tick",
-      "subcommands": []
-    },
-    {
       "help": "List DB-configured autonomous loops (read-only; #1796).",
       "name": "loops_list",
       "subcommands": []

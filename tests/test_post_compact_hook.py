@@ -120,7 +120,7 @@ class TestSessionStartCompactRecoversSnapshot:
         assert "PRE-COMPACTION SNAPSHOTS RECOVERED" in ctx
         assert "/repo/work" in ctx
         # The tick-dispatch directive is preserved in the same payload.
-        assert "t3 loop tick" in ctx
+        assert "t3 loops tick" in ctx
 
     def test_recovers_arbitrary_snapshot_content(self, capsys: pytest.CaptureFixture[str]) -> None:
         session_id = "sess-456"
