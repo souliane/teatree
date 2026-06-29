@@ -3,10 +3,11 @@
 A GitHub PR comment / GitLab MR note posted on the user's behalf carries its
 body to a repo that may be PUBLIC, so ``_BaseReplier`` privacy-scans the body
 via ``scan_outbound_text`` before the wire call and FAILS CLOSED on a finding.
-A bot→user ``post_dm`` is never scanned. These tests inject the overlay's
-``public_repos`` + redact rules (which live in the operator's private config in
-production) and assert the chokepoint blocks a leaking body and passes a clean
-one — they fail if the scan is not wired into ``_send`` / ``redeliver``.
+Public-ness comes from the visibility axis (``_target_is_public``), so these
+tests inject it (plus the overlay redact rules) rather than a ``public_repos``
+list. A Slack thread reply is scoped OUT by source; a bot→user DM is never
+scanned. The blocking tests fail if the scan is not wired into ``_send`` /
+``redeliver``; the scope tests fail if Slack/private targets get over-blocked.
 """
 
 from collections.abc import Sequence
@@ -43,23 +44,17 @@ def _event(source: str, *, channel_ref: str, thread_ref: str, key: str) -> Incom
 
 
 class TestReplyTransportPrivacyGate(TestCase):
-    def _inject_rules(
-        self,
-        public_repos: Sequence[str],
-        *,
-        redact: Sequence[str] = (),
-        block: Sequence[str] = (),
-    ) -> None:
-        patcher = mock.patch.object(
-            privacy_gate,
-            "_overlay_publication_rules",
-            return_value=(list(public_repos), list(redact), list(block)),
-        )
-        patcher.start()
-        self.addCleanup(patcher.stop)
+    def _inject(self, *, public: bool, redact: Sequence[str] = (), block: Sequence[str] = ()) -> None:
+        for attr, value in (
+            ("_target_is_public", lambda _repo, _forge: public),
+            ("_overlay_privacy_rules", lambda: (list(redact), list(block))),
+        ):
+            patcher = mock.patch.object(privacy_gate, attr, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def test_github_pr_comment_blocked_on_redact_term(self) -> None:
-        self._inject_rules([GITHUB_REPO], redact=[REDACT])
+        self._inject(public=True, redact=[REDACT])
         event = _event(IncomingEvent.Source.GITHUB, channel_ref=GITHUB_REPO, thread_ref="17", key="gh:leak")
         host = MagicMock()
 
@@ -75,7 +70,7 @@ class TestReplyTransportPrivacyGate(TestCase):
         host.post_pr_comment.assert_not_called()
 
     def test_github_pr_comment_blocked_on_builtin_quote_anchor(self) -> None:
-        self._inject_rules([GITHUB_REPO])
+        self._inject(public=True)
         event = _event(IncomingEvent.Source.GITHUB, channel_ref=GITHUB_REPO, thread_ref="17", key="gh:quote")
         host = MagicMock()
 
@@ -90,7 +85,7 @@ class TestReplyTransportPrivacyGate(TestCase):
         host.post_pr_comment.assert_not_called()
 
     def test_github_pr_comment_clean_body_is_delivered(self) -> None:
-        self._inject_rules([GITHUB_REPO], redact=[REDACT])
+        self._inject(public=True, redact=[REDACT])
         event = _event(IncomingEvent.Source.GITHUB, channel_ref=GITHUB_REPO, thread_ref="17", key="gh:clean")
         host = MagicMock()
         host.post_pr_comment.return_value = {"html_url": "https://github.com/owner/pub-repo/pull/17#issuecomment-1"}
@@ -110,7 +105,7 @@ class TestReplyTransportPrivacyGate(TestCase):
         )
 
     def test_gitlab_mr_note_blocked_on_redact_term(self) -> None:
-        self._inject_rules([GITLAB_REPO], redact=[REDACT])
+        self._inject(public=True, redact=[REDACT])
         event = _event(IncomingEvent.Source.GITLAB, channel_ref=GITLAB_REPO, thread_ref="42", key="gl:leak")
         client = MagicMock()
         client.resolve_project.return_value = MagicMock(project_id=777)
@@ -125,11 +120,29 @@ class TestReplyTransportPrivacyGate(TestCase):
         assert dispatch.status == ReplyDispatch.Status.FAILED
         client.post_json.assert_not_called()
 
+    def test_gitlab_mr_note_on_private_project_is_delivered(self) -> None:
+        # A provably-private project is a clean pass even with a redact term in
+        # the body — the visibility axis says not-public, so no scan.
+        self._inject(public=False, redact=[REDACT])
+        event = _event(IncomingEvent.Source.GITLAB, channel_ref="acme/private", thread_ref="42", key="gl:priv")
+        client = MagicMock()
+        client.resolve_project.return_value = MagicMock(project_id=9)
+
+        dispatch = GitLabReplier(client=client).post_comment(
+            event=event,
+            target_ref="acme/private",
+            body=f"MR note mentioning {REDACT} on a private customer project.",
+            idempotency_key="gl:priv:n",
+        )
+
+        assert dispatch.status == ReplyDispatch.Status.SENT
+        client.post_json.assert_called_once()
+
     def test_post_dm_is_never_privacy_scanned(self) -> None:
-        # channel_ref is a public repo and the body carries a redact term, yet a
-        # bot→user DM is excluded from the on-behalf actions, so it is not scanned.
-        self._inject_rules([GITHUB_REPO], redact=[REDACT])
-        event = _event(IncomingEvent.Source.SLACK, channel_ref=GITHUB_REPO, thread_ref="", key="dm:leak")
+        # A bot→user DM is excluded from the on-behalf actions, so it is never
+        # scanned even if it were to carry a redact term.
+        self._inject(public=True, redact=[REDACT])
+        event = _event(IncomingEvent.Source.SLACK, channel_ref="C-eng", thread_ref="", key="dm:leak")
         bot = MagicMock()
         bot.open_dm.return_value = "D-USER"
 
@@ -143,10 +156,11 @@ class TestReplyTransportPrivacyGate(TestCase):
         assert dispatch.status == ReplyDispatch.Status.SENT
         bot.post_message.assert_called_once()
 
-    def test_clean_slack_thread_reply_is_not_blocked(self) -> None:
-        # A Slack channel ref is never in public_repos, so a thread reply passes
-        # even when redact terms are configured.
-        self._inject_rules([GITHUB_REPO], redact=[REDACT])
+    def test_slack_thread_reply_is_scoped_out_of_the_repo_gate(self) -> None:
+        # A Slack channel ref is not a repo target, so the publication privacy
+        # gate is scoped out by source — a thread reply is never classified as a
+        # public repo and scanned (would block if it were, given the injection).
+        self._inject(public=True, redact=[REDACT])
         event = _event(IncomingEvent.Source.SLACK, channel_ref="C-eng", thread_ref="170.1", key="slack:reply")
         bot = MagicMock()
 
@@ -162,7 +176,7 @@ class TestReplyTransportPrivacyGate(TestCase):
         bot.post_message.assert_called_once()
 
     def test_redeliver_blocked_on_privacy_finding(self) -> None:
-        self._inject_rules([GITHUB_REPO], redact=[REDACT])
+        self._inject(public=True, redact=[REDACT])
         event = _event(IncomingEvent.Source.GITHUB, channel_ref=GITHUB_REPO, thread_ref="17", key="gh:rd")
         dispatch = ReplyDispatch.objects.create(
             event=event,

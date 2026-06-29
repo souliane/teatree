@@ -117,19 +117,31 @@ class Replier(Protocol):
     def redeliver(self, dispatch: ReplyDispatch) -> None: ...
 
 
+#: Code-host sources (``channel_ref`` is a repo slug) → the visibility probe's forge.
+#: A Slack/CI source has no repo target, so it is absent and scoped OUT of the gate.
+_FORGE_BY_SOURCE: dict[str, str] = {
+    IncomingEvent.Source.GITHUB: "github",
+    IncomingEvent.Source.GITLAB: "gitlab",
+}
+
+
 def _enforce_privacy(spec: ReplySpec) -> None:
     """Raise :class:`PublicationPrivacyBlockedError` if *spec.body* trips the gate.
 
     The send-time chokepoint for the #1295 gate on the colleague code-host
     surfaces: a GitHub PR comment / GitLab MR note carries the body to a repo
     that may be PUBLIC, so it is scanned for the overlay's redact-terms plus the
-    built-in quote anchors before the wire call. :func:`scan_outbound_text`
-    self-gates on ``public_repos`` — a Slack channel ref (``post_in_thread``) or
-    a private repo is never in it, so a non-public destination is a clean pass.
-    Shared by ``_send`` (caught → FAILED) and ``redeliver`` (propagates to the
-    retry sweep), so the raise lives in one place.
+    built-in quote anchors before the wire call. Scoped to code-host events only
+    (:data:`_FORGE_BY_SOURCE`) — a Slack thread reply carries a channel ref, not
+    a repo slug, so it is out of scope here (and never mis-classified as a public
+    repo). :func:`scan_outbound_text` then derives public-ness from the visibility
+    axis, so a provably-private repo is a clean pass. Shared by ``_send`` (caught
+    → FAILED) and ``redeliver`` (propagates to the retry sweep).
     """
-    result = scan_outbound_text(text=spec.body, target_repo=spec.event.channel_ref)
+    forge = _FORGE_BY_SOURCE.get(spec.event.source)
+    if forge is None:
+        return
+    result = scan_outbound_text(text=spec.body, target_repo=spec.event.channel_ref, forge=forge)
     if result.refused:
         raise PublicationPrivacyBlockedError(result)
 

@@ -143,41 +143,63 @@ def format_refusal(result: PrivacyGateResult) -> str:
     return "\n".join(lines)
 
 
-def _overlay_publication_rules() -> tuple[list[str], list[str], list[str]]:
-    """The active overlay's ``(public_repos, privacy_redact_terms, privacy_block_patterns)``.
+def _target_is_public(target_repo: str, forge: str) -> bool:
+    """Classify *target_repo* through the bash gates' visibility axis, not ``public_repos``.
 
-    Best-effort: when no overlay resolves — none installed, Django not yet set
-    up, or several with no ``T3_OVERLAY_NAME`` to disambiguate — every list is
-    empty, so :func:`scan_outbound_text` refuses nothing (the gate only ever
-    fires on a public-repo target the overlay itself declared). Resolution is
-    wrapped so a publish never crashes on a missing/partial overlay, mirroring
-    the same egress-never-crash posture as ``reply_transport._linkify_for_slack``.
+    A repo is PUBLIC (scanned) unless provably private — via the ``private_repos`` /
+    ``internal_publish_namespaces`` allowlists or a cached ``gh``/``glab`` probe — so
+    the gate AGREES with the bash publish gates and protects a real public repo (e.g.
+    ``souliane/teatree``) without a per-overlay ``public_repos`` list, which is empty
+    by default and would make the gate inert. Fails CLOSED on any classification error
+    (treats the target as public → scanned), so a detection failure never silently
+    skips the scan.
+    """
+    from teatree.hooks.publish_destination import Destination, is_public_destination  # noqa: PLC0415
+
+    try:
+        return is_public_destination(Destination(slug=target_repo, via="api", forge=forge))
+    except Exception as exc:  # noqa: BLE001 — a classification failure must fail CLOSED (scan), never skip.
+        logger.debug("publication privacy gate: visibility classification failed for %s (%s)", target_repo, exc)
+        return True
+
+
+def _overlay_privacy_rules() -> tuple[list[str], list[str]]:
+    """The active overlay's ``(privacy_redact_terms, privacy_block_patterns)``.
+
+    Best-effort overlay-specific ADDITIONS to the always-on built-in quote
+    anchors (:data:`_DEFAULT_QUOTE_PATTERNS`). When no single overlay resolves —
+    none installed, several with no ``T3_OVERLAY_NAME`` to disambiguate, or
+    Django not yet set up — both lists are empty and only the built-in detectors
+    apply; the gate still scans a public target (the built-ins are the floor),
+    so it never goes inert on a rules-resolution failure.
     """
     from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415 — deferred Django import.
 
     try:
         config = get_overlay().config
-        return list(config.public_repos), list(config.privacy_redact_terms), list(config.privacy_block_patterns)
-    except Exception as exc:  # noqa: BLE001 — overlay resolution is best-effort; a publish must never crash on it.
-        logger.debug("publication privacy gate: overlay rules unresolved (%s) — scanning nothing", exc)
-        return [], [], []
+        return list(config.privacy_redact_terms), list(config.privacy_block_patterns)
+    except Exception as exc:  # noqa: BLE001 — overlay rules are a best-effort add; the built-in detectors are the floor.
+        logger.debug("publication privacy gate: overlay redact rules unresolved (%s) — built-in detectors only", exc)
+        return [], []
 
 
-def scan_outbound_text(*, text: str, target_repo: str) -> PrivacyGateResult:
-    """Scan outbound *text* bound for *target_repo* against the active overlay's rules.
+def scan_outbound_text(*, text: str, target_repo: str, forge: str = "") -> PrivacyGateResult:
+    """Scan outbound *text* bound for *target_repo* against the publication rules.
 
-    The egress-chokepoint wrapper of :func:`scan_for_publication`: it resolves
-    the active overlay's ``public_repos`` plus redact/quote rules and delegates,
-    so a publication seam need only supply the body and its repo target. The
-    scan self-gates on ``public_repos`` — a non-repo destination (a Slack
-    channel ref) or a private repo is never in it, so the scan refuses nothing
-    there.
+    The egress-chokepoint wrapper of :func:`scan_for_publication`. Public-ness is
+    derived from the bash gates' visibility axis (:func:`_target_is_public`), NOT
+    from a per-overlay ``public_repos`` list, so the gate actually fires on a real
+    public repo. A provably-private repo is a clean pass; an unknown repo fails
+    CLOSED (scanned). *forge* (``"github"``/``"gitlab"``) routes a bare-slug
+    visibility probe to the right tool.
     """
-    public_repos, redact_terms, block_patterns = _overlay_publication_rules()
+    if not _target_is_public(target_repo, forge):
+        return PrivacyGateResult(target_repo=target_repo, is_public=False)
+    redact_terms, block_patterns = _overlay_privacy_rules()
     return scan_for_publication(
         text=text,
         target_repo=target_repo,
-        public_repos=public_repos,
+        public_repos=[target_repo],
         redact_terms=redact_terms,
         block_patterns=block_patterns,
     )
