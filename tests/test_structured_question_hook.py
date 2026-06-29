@@ -520,6 +520,84 @@ class TestGateIsLoopDrivenContextAware:
         assert result is not True
 
 
+class TestSequencingOfferDoesNotFire:
+    """Anti-vacuous pair: the rhetorical sequencing offer passes; a real offer fires."""
+
+    def test_sequencing_offer_does_not_block(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        # The documented false positive: an offer about the ORDER of the agent's
+        # own work ("write X now or react first") is self-resolvable, not a lost
+        # user decision — it must NOT block.
+        offer = "I can write the regression test next. Want me to write it now or react to the Slack message first?"
+        transcript = _write_transcript(tmp_path, [_user("review the MR"), _assistant(offer)])
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript)})
+
+        assert _decision(capsys) == {}
+        assert result is not True
+
+    def test_genuine_go_no_go_offer_still_blocks(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        # Proves the offer suppression did not weaken the gate: a real go/no-go
+        # offer (no "now … or … first" sequencing) still blocks.
+        transcript = _write_transcript(
+            tmp_path, [_user("finish the work"), _assistant("All set. Want me to open the PR now?")]
+        )
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript)})
+
+        assert _decision(capsys).get("decision") == "block"
+        assert result is True
+
+
+class TestClarifyAfterRejectedQuestionDoesNotFire:
+    """Anti-vacuous pair: a post-rejection clarification passes; an unrelated one fires."""
+
+    def test_clarification_after_rejected_question_does_not_block(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The user rejected an AskUserQuestion and asked to clarify; the harness
+        # already routes that re-ask, so the agent's prose clarification (which
+        # carries a decision cue) must NOT be force-gated into a second tool call.
+        transcript = _write_transcript(
+            tmp_path,
+            [
+                _user("do the config work"),
+                _assistant("Which surface should I target?", tool_uses=["AskUserQuestion"]),
+                _user("none of these — what do you mean by config surface?"),
+                _assistant(
+                    "By config surface I mean the DB-home ConfigSetting store. "
+                    "Did you want me to target that or the TOML export?"
+                ),
+            ],
+        )
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript)})
+
+        assert _decision(capsys) == {}
+        assert result is not True
+
+    def test_decision_question_without_prior_rejected_question_still_blocks(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Control: the same clarify-shaped wording but NO prior AskUserQuestion in
+        # the transcript — the exemption must not apply, so the inline decision
+        # still blocks. Guards against the exemption over-firing on any clarify
+        # phrasing.
+        transcript = _write_transcript(
+            tmp_path,
+            [
+                _user("do the config work"),
+                _assistant("On it."),
+                _user("none of these — handle migrations too"),
+                _assistant("Should I target main or develop for the migration?"),
+            ],
+        )
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript)})
+
+        assert _decision(capsys).get("decision") == "block"
+        assert result is True
+
+
 class TestWiredIntoRouter:
     def test_stop_event_includes_structured_question_gate(self) -> None:
         assert handle_enforce_structured_question in router._HANDLERS["Stop"]

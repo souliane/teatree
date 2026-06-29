@@ -345,7 +345,7 @@ def _extract_slack_mcp_payload(tool_name: str, tool_input: ToolInput) -> str | N
     return ""
 
 
-def extract_publish_payload(tool_name: str, tool_input: ToolInput) -> str | None:
+def extract_publish_payload(tool_name: str, tool_input: ToolInput, cwd: Path | None = None) -> str | None:
     """Return the text-to-scan from a tool invocation, or ``None`` if not a publish.
 
     The ``None`` return is the gate's pass-through signal — the
@@ -356,12 +356,19 @@ def extract_publish_payload(tool_name: str, tool_input: ToolInput) -> str | None
     detection substring matcher and the body-extractor see the same
     logical token stream bash itself would execute (codex round-2 #2/#3,
     round-3 #1/#2/#3/#4).
+
+    ``cwd`` is the harness-provided working directory, threaded into the body
+    extractor so a ``gh pr edit --body-file <relpath>`` / ``--body "$(cat
+    <relpath>)"`` body is RESOLVED against the dir the command actually runs in
+    and SCANNED — instead of fail-closing on an unreadable relative path from the
+    cold hook's reset cwd (#1213). Mirrors the banned-terms gate, which already
+    threads it.
     """
     if tool_name == "Bash":
         raw_command = tool_input.get("command", "")
         if not _is_publish_command(raw_command):
             return None
-        return _extract_bash_payload(raw_command)
+        return _extract_bash_payload(raw_command, cwd=cwd)
 
     return _extract_slack_mcp_payload(tool_name, tool_input)
 

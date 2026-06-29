@@ -119,8 +119,59 @@ _CRUCIAL_SURFACE_RE: Final[re.Pattern[str]] = re.compile(
     re.IGNORECASE,
 )
 
+# An ARCHITECTURE / PLANNING / RECOMMENDATION frame: the turn is laying out
+# options, patterns, or decisions to choose among — NOT claiming delivered work
+# is done. The gate targets "all the deliverables are done" on a real
+# multi-deliverable TICKET; a recommendation that merely enumerates options must
+# never read as a completion claim (#2665 false positive: an architecture-
+# recommendation turn enumerating 10 decision items was counted as "10
+# deliverables" and demanded an evidence map though NOTHING was claimed done).
+_RECOMMENDATION_FRAME_RE: Final[re.Pattern[str]] = re.compile(
+    r"\brecommendation\b|\bi(?:'d| would)?\s+(?:recommend|suggest|propose)\b|"
+    r"\bdraft proposal\b|\bproposal\b|"
+    r"\barchitecture (?:recommendation|proposal|options?|decision)\b|"
+    r"\b(?:the )?options?\s+(?:are|below|to (?:consider|choose|weigh))\b|"
+    r"\boptions? and trade[- ]?offs?\b|"
+    r"\bdecision items?\b|\btrade[- ]?offs?\b|\bpros and cons\b|"
+    r"\bopen questions?\b|\bwe could\b|\bwe should consider\b|"
+    r"\blaying out the options\b",
+    re.IGNORECASE,
+)
+
+# An enumerated line that is an OPTION / PATTERN / DECISION / QUESTION rather than
+# a unit of delivered work. A recommendation turn is DOMINATED by these; a real
+# multi-deliverable done-claim's lines are units of work ("Backend change: MR
+# opened"), not "Option A" / "Decision item" / "Trade-off".
+_RECOMMENDATION_LINE_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*(?:"
+    r"option\b|pattern\s+\w|approach\b|alternative\b|"
+    r"decision(?:\s+item)?\b|trade[- ]?off\b|pros?\b|cons?\b|"
+    r"proposal\b|recommendation\b|recommend\b|"
+    r"open question\b|question\b|consider\b"
+    r")",
+    re.IGNORECASE,
+)
+
 # Minimum enumerated lines for the multi-deliverable scope this gate targets.
 _MIN_DELIVERABLES: Final[int] = 2
+
+
+def _is_recommendation_prose(text: str, bodies: list[str]) -> bool:
+    """True when the turn is architecture/planning/recommendation prose, not a claim.
+
+    Precision-preserving AND of two independent signals, so a genuine
+    multi-deliverable done-claim is never exempted: (1) the turn carries a
+    recommendation/proposal/options FRAME (``_RECOMMENDATION_FRAME_RE``), AND
+    (2) a MAJORITY of the enumerated lines are option/pattern/decision/question
+    lines (``_RECOMMENDATION_LINE_RE``), i.e. the enumeration is options to
+    choose among, not delivered work. The real-incident stranded claim
+    ("- Backend change: MR opened") carries NO recommendation frame and ZERO
+    option-shaped lines, so it stays firing.
+    """
+    if not bodies or not _RECOMMENDATION_FRAME_RE.search(text):
+        return False
+    reco_lines = sum(1 for body in bodies if _RECOMMENDATION_LINE_RE.match(body))
+    return reco_lines * 2 >= len(bodies)
 
 
 class CompletionVerdict(NamedTuple):
@@ -161,6 +212,16 @@ def _line_has_on_target_evidence(body: str) -> bool:
     return bool(_ON_TARGET_EVIDENCE_RE.search(body))
 
 
+def _no_claim_to_evaluate(text: str) -> bool:
+    """True when there is no completeness claim to evaluate before line parsing.
+
+    Folds the three text-only pre-checks — empty text, no completeness verb, or
+    an honest "NOT done" refusal — so the main detector stays within the
+    return-count budget without a suppression.
+    """
+    return not text or not _has_completeness_claim(text) or _is_honest_refusal(text)
+
+
 def find_completion_block(text: str) -> CompletionVerdict | None:
     """Return a verdict to BLOCK, or ``None`` to allow (no fire).
 
@@ -173,17 +234,17 @@ def find_completion_block(text: str) -> CompletionVerdict | None:
     crucial deliverable was not explicitly verified on its correct surface.
 
     Returns ``None`` (allow) when there is no claim, when it is an honest
-    refusal, when the ticket is single-deliverable, or when every leg of the
-    map is satisfied. Empty/odd input yields ``None``.
+    refusal, when the turn is architecture/planning/recommendation prose
+    enumerating options rather than delivered work, when the ticket is
+    single-deliverable, or when every leg of the map is satisfied. Empty/odd
+    input yields ``None``.
     """
-    if not text:
-        return None
-    if not _has_completeness_claim(text):
-        return None
-    if _is_honest_refusal(text):
+    if _no_claim_to_evaluate(text):
         return None
     bodies = _deliverable_bodies(text)
     if len(bodies) < _MIN_DELIVERABLES:
+        return None
+    if _is_recommendation_prose(text, bodies):
         return None
     missing: list[str] = []
     lines_without_evidence = [

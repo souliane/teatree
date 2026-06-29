@@ -179,6 +179,50 @@ class TestHeavyBashEscapeHatch:
         assert handle_enforce_orchestrator_boundary(_subagent_bash("nx serve frontend")) is False
 
 
+class TestHelpAndVersionQueriesAllowed:
+    """A --help/--version query of a heavy verb is fast/read-only — not gated.
+
+    Anti-vacuous: the help/version FALSE POSITIVES now pass, while a genuinely
+    heavy invocation of the SAME verb (and a help-arm chained to a heavy arm)
+    still denies — proving the exemption did not weaken the gate.
+    """
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "t3 dream run --help",
+            "t3 teatree run backend --help",
+            "docker build --help",
+            "docker compose up --help",
+            "pytest -h",
+            "npm run --help",
+            "make --version",
+        ],
+    )
+    def test_help_or_version_query_is_allowed(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is False
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "t3 dream run",  # same verb, no --help → still heavy
+            "docker build .",
+            "t3 x run --help && pytest tests/",  # help arm + a genuinely heavy arm
+            "ls -lhR /",  # has -h but as a flag bundle, not a help token
+            # A -h after `find … -exec` is the EXEC'd command's flag, never a
+            # find help query — the recursive sweep must stay denied.
+            r"find /src -name '*.py' -exec grep -h 'TODO' {} \;",  # grep -h = suppress filename
+            "find . -type f -exec chmod -h {} +",  # chmod -h = no-dereference
+            r"find / -name '*.log' -exec rm -h {} \;",
+            "find . -exec du -h {} +",  # du -h = human-readable
+            "git push --help",  # opens a blocking pager — a worse wedge
+            "git push -h",
+        ],
+    )
+    def test_genuinely_heavy_still_denied(self, command: str) -> None:
+        assert handle_enforce_orchestrator_boundary(_main_agent_bash(command)) is True
+
+
 class TestPytestSubstringFalseDenyFixed:
     """``pytest`` is verb-anchored — a mention in an arg is NOT a false-deny.
 

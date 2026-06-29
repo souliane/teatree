@@ -61,7 +61,14 @@ from orchestration_boundary_signals import PYTEST_VERB_FINDER as _PYTEST_VERB_FI
 from orchestration_boundary_signals import PYTEST_VERB_RE as _PYTEST_VERB_RE
 from orchestration_boundary_signals import call_is_from_subagent as _call_is_from_subagent
 from orchestrator_investigation_gate import handle_enforce_orchestrator_investigation_boundary
-from question_gates import FENCED_CODE_RE, handle_warn_batched_questions, is_user_directed_question
+from question_gates import (
+    FENCED_CODE_RE,
+    handle_warn_batched_questions,
+    is_user_directed_question,
+    preceding_user_rejected_question_and_asked_clarify,
+)
+from question_gates import last_assistant_turn as _last_assistant_turn
+from question_gates import read_transcript_entries as _read_transcript_entries
 from quote_verdict import QuoteVerdict
 from quote_verdict import resolve_high_verdict as _resolve_quote_verdict
 from state_files import append_line, read_lines
@@ -2677,7 +2684,7 @@ def _run_quote_scanner_pretool(data: dict) -> bool:
         return False
     tool_input = cast("quote_scanner.ToolInput", raw_input)
 
-    payload = quote_scanner.extract_publish_payload(tool_name, tool_input)
+    payload = quote_scanner.extract_publish_payload(tool_name, tool_input, _resolve_cwd_repo(data))
     if payload is None:
         return False
 
@@ -3446,6 +3453,24 @@ _ORCHESTRATOR_HEAVY_BASH_RE = re.compile(
 # unblock.
 _FG_OK_RE = re.compile(r"\[fg-ok:\s*\S[^\]]*?\s*\]")
 
+# A heavy verb invoked purely to print its ``--help``/``-h``/``--version`` (and
+# exit immediately) is trivially fast and read-only — NOT the long-running shape
+# this gate guards (``t3 dream run --help``, ``docker build --help``,
+# ``pytest -h``). The lookahead requires the flag to be a complete token so a
+# recursive ``ls -lhR`` (a flag bundle, not a help query) is not mistaken for one.
+_HELP_OR_VERSION_RE = re.compile(r"(?:^|\s)(?:--help|-h|--version)(?=\s|$)")
+
+# Heavy shapes a help token must NEVER exempt, because the token does not belong
+# to the heavy verb's own fast --help path:
+#   * ``find … -exec <cmd> …`` — a ``-h`` after ``-exec`` is the EXEC'd command's
+#     flag (``grep -h`` = suppress filename, ``rm -h`` / ``chmod -h``, ``du -h`` =
+#     human-readable), NOT a help query; the find-sweep itself is still heavy.
+#   * recursive ``ls …R…`` — its ``-h`` is the human-readable flag bundle.
+#   * ``git push`` — ``git push --help`` / ``-h`` opens a blocking pager (a worse
+#     session wedge than the push it guards), so it is never exempted.
+# Reuses the exact heavy sub-patterns so the two regexes can never drift.
+_NEVER_HELP_EXEMPT_RE = re.compile(r"\bfind\s+\S+.*-exec\b|\bls\s+-[a-zA-Z]*R[a-zA-Z]*\b|" + _GIT_PUSH_RE)
+
 
 def _is_orchestration_action(data: dict) -> bool:
     """True when the tool call is a sanctioned orchestration verb.
@@ -3588,6 +3613,23 @@ def _command_matches_non_pytest_heavy(command: str) -> bool:
     return bool(_ORCHESTRATOR_HEAVY_BASH_RE.search(stripped))
 
 
+def _heavy_command_is_help_only(command: str) -> bool:
+    """True when EVERY heavy denylist match in ``command`` is a --help/--version query.
+
+    A help/version invocation of a heavy verb prints usage and exits immediately
+    (fast, read-only). Scoped per shell segment; a segment matching
+    ``_NEVER_HELP_EXEMPT_RE`` (find-exec / recursive-ls / git-push) is never
+    exempted even with a help token. False when no heavy segment present.
+    """
+    saw_heavy = False
+    for segment in re.split(r"[;&|\n(){}]", command):
+        if _ORCHESTRATOR_HEAVY_BASH_RE.search(segment):
+            saw_heavy = True
+            if _NEVER_HELP_EXEMPT_RE.search(segment) or not _HELP_OR_VERSION_RE.search(segment):
+                return False
+    return saw_heavy
+
+
 def _deny_heavy_main_agent_bash(data: dict) -> bool:
     """Deny a main-agent foreground HEAVY/long-running ``Bash`` command.
 
@@ -3610,7 +3652,11 @@ def _deny_heavy_main_agent_bash(data: dict) -> bool:
     command = tool_input.get("command")
     if not isinstance(command, str):
         return False
-    if _FG_OK_RE.search(command) or not _ORCHESTRATOR_HEAVY_BASH_RE.search(command):
+    if (
+        _FG_OK_RE.search(command)
+        or not _ORCHESTRATOR_HEAVY_BASH_RE.search(command)
+        or _heavy_command_is_help_only(command)
+    ):
         return False
     if _pytest_command_is_targeted(command) and not _command_matches_non_pytest_heavy(command):
         return False
@@ -5809,35 +5855,9 @@ def handle_session_end_self_pump(data: dict) -> None:
 # the routing decision (loop-ownership, transcript parsing, the block emit).
 
 
-def _read_transcript_entries(transcript_path: str) -> list[dict]:
-    """Parse the Claude Code transcript JSONL into a list of dict entries.
-
-    Fail-safe: an empty/missing/unreadable file or malformed lines yield
-    ``[]`` (the caller then does nothing) rather than raising.
-    """
-    if not transcript_path:
-        return []
-    path = Path(transcript_path)
-    if not path.is_file():
-        return []
-    try:
-        raw = path.read_text(encoding="utf-8")
-    except OSError:
-        return []
-    entries: list[dict] = []
-    for raw_line in raw.splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        try:
-            parsed = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(parsed, dict):
-            entries.append(parsed)
-    return entries
-
-
+# ``_read_transcript_entries`` moved to the ``question_gates`` sibling (the
+# transcript-parsing home) and imported back as ``_read_transcript_entries`` so
+# this god-module stays under its LOC cap; callers below are unchanged.
 def _entry_role(entry: dict) -> str | None:
     message = entry.get("message")
     if isinstance(message, dict):
@@ -5851,35 +5871,10 @@ def _entry_content(entry: dict) -> list:
     return content if isinstance(content, list) else []
 
 
-def _last_assistant_turn(transcript_path: str) -> tuple[str, bool] | None:
-    """Return ``(final_assistant_text, used_question_tool)`` for the last turn.
-
-    The "last turn" is every assistant message after the most recent user
-    message in the transcript JSONL. ``final_assistant_text`` is the
-    concatenated text blocks of those messages; ``used_question_tool`` is
-    ``True`` if any ``AskUserQuestion`` ``tool_use`` block appears in the
-    turn. Returns ``None`` when the transcript is missing, unreadable,
-    empty, or has no trailing assistant turn (fail-safe to "do nothing").
-    """
-    texts: list[str] = []
-    used_tool = False
-    for entry in reversed(_read_transcript_entries(transcript_path)):
-        role = _entry_role(entry)
-        if role == "user":
-            break
-        if role != "assistant":
-            continue
-        for block in _entry_content(entry):
-            if not isinstance(block, dict):
-                continue
-            if block.get("type") == "text":
-                texts.append(str(block.get("text", "")))
-            elif block.get("type") == "tool_use" and block.get("name") == "AskUserQuestion":
-                used_tool = True
-    if not texts:
-        return None
-    # entries were walked newest→oldest; restore reading order
-    return "\n".join(reversed(texts)), used_tool
+# ``_last_assistant_turn`` moved to the ``question_gates`` sibling (the
+# transcript-parsing home, beside ``read_transcript_entries``) and imported back
+# as ``_last_assistant_turn`` so this god-module keeps shrinking; callers and the
+# ``completion_claim_gate`` re-export are unchanged.
 
 
 _STRUCTURED_QUESTION_BLOCK = (
@@ -5978,7 +5973,13 @@ def handle_enforce_structured_question(data: dict) -> bool | None:
     text, used_question_tool = turn
     if used_question_tool or not is_user_directed_question(text):
         return None
-    if _is_classifier_relax_explanation(text):
+    # Two never-block exemptions: a Step-2 classifier-relax explanation (the
+    # sanctioned protocol explains the denial in prose before AskUserQuestion),
+    # and a clarification right after the user rejected an AskUserQuestion (the
+    # harness already routes that re-ask) — neither must be force-gated (#807).
+    if _is_classifier_relax_explanation(text) or preceding_user_rejected_question_and_asked_clarify(
+        _read_transcript_entries(data.get("transcript_path", ""))
+    ):
         return None
     json.dump({"decision": "block", "reason": _STRUCTURED_QUESTION_BLOCK}, sys.stdout)
     return True
