@@ -29,6 +29,28 @@ from typing import cast
 _GLOBAL_SCOPE = ""
 
 
+def _open_readonly(db: Path, parameters: str) -> sqlite3.Connection:
+    """Open `db` for a read-only query, with the shared read PRAGMA setup.
+
+    `parameters` is the URI query — `mode=ro` (the live-writer fast path) or
+    `immutable=1` (the quiescent-WAL fallback). The URI is built via
+    `Path.as_uri()`, which percent-encodes URI-special path characters (space,
+    `%`, `?`, `#`), so an exotic `T3_CONFIG_DB` path can't malform it into a
+    silent fail-open; `.absolute()` satisfies `as_uri`'s absolute-path
+    requirement (every config-DB path is absolute in practice). On a PRAGMA
+    failure the connection is closed before the error propagates, so a failed
+    open never strands an open handle.
+    """
+    conn = sqlite3.connect(f"{db.absolute().as_uri()}?{parameters}", uri=True)
+    try:
+        conn.execute("PRAGMA query_only=1")
+        conn.execute("PRAGMA busy_timeout=100")
+    except sqlite3.Error:
+        conn.close()
+        raise
+    return conn
+
+
 def canonical_config_db(env: Mapping[str, str] = os.environ, home: Path | None = None) -> Path:
     """Resolve the PRIMARY config DB path, never the per-worktree isolated one.
 
@@ -45,6 +67,45 @@ def canonical_config_db(env: Mapping[str, str] = os.environ, home: Path | None =
     return base / "teatree" / "db.sqlite3"
 
 
+def _fetch_value_row(db: Path, scope: str, key: str) -> tuple[object, ...] | None:
+    """Read the `(scope, key)` value row read-only, with the quiescent-WAL fallback.
+
+    Fails open to `None` on any sqlite error or a missing row.
+    The canonical DB is WAL-mode (`settings.SQLITE_WRITE_SERIALIZATION_OPTIONS`),
+    so its file header is permanently WAL-format. When the DB is quiescent — no
+    teatree process holding it, the standalone bash/statusline cold case this
+    module exists for — its `-shm`/`-wal` sidecars are absent, and a `mode=ro`
+    open then FAILS on first read with `SQLITE_CANTOPEN` (it can't recreate the
+    `-shm`). So this tries `mode=ro` first (returns the WAL-current snapshot when
+    a writer is live and the sidecars exist) and, only on that exact
+    `SQLITE_CANTOPEN`, falls back to `immutable=1`, which opens the sidecar-less
+    WAL-format file and reads the last-checkpointed value (correct, as no writer
+    is active — see `teatree.paths._sqlite_snapshot`). A locked DB
+    (`SQLITE_BUSY`), an absent table, and every other error keep failing open to
+    `None`; `immutable=1` is the fallback ONLY for `SQLITE_CANTOPEN`, never a lock
+    bypass.
+    """
+    for parameters in ("mode=ro", "immutable=1"):
+        try:
+            conn = _open_readonly(db, parameters)
+        except sqlite3.Error:
+            return None
+        try:
+            return conn.execute(
+                "SELECT value FROM teatree_config_setting WHERE scope=? AND key=?",
+                (scope, key),
+            ).fetchone()
+        except sqlite3.OperationalError as exc:
+            if parameters == "mode=ro" and exc.sqlite_errorcode == sqlite3.SQLITE_CANTOPEN:
+                continue  # quiescent WAL: no sidecars → retry with immutable=1
+            return None
+        except sqlite3.Error:
+            return None
+        finally:
+            conn.close()
+    return None
+
+
 def read_setting(
     key: str,
     *,
@@ -56,30 +117,21 @@ def read_setting(
 
     Fails open to `None` for every path: missing DB file, absent table (fresh
     install), locked DB (within `busy_timeout`), corrupt JSON, and a missing row.
+    The open strategy (and the quiescent-WAL `immutable=1` fallback) lives in
+    `_fetch_value_row`.
     """
     db = db_path if db_path is not None else canonical_config_db(env=env)
     if not db.exists():
         return None
-    try:
-        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-    except sqlite3.Error:
-        return None
-    try:
-        conn.execute("PRAGMA query_only=1")
-        conn.execute("PRAGMA busy_timeout=100")
-        row = conn.execute(
-            "SELECT value FROM teatree_config_setting WHERE scope=? AND key=?",
-            (scope, key),
-        ).fetchone()
-    except sqlite3.Error:
-        return None
-    finally:
-        conn.close()
+    row = _fetch_value_row(db, scope, key)
     if row is None:
         return None
+    raw = row[0]
+    if not isinstance(raw, str | bytes | bytearray):
+        return None
     try:
-        return json.loads(row[0])
-    except (json.JSONDecodeError, TypeError):
+        return json.loads(raw)
+    except json.JSONDecodeError:
         return None
 
 
@@ -121,6 +173,12 @@ def int_setting(
     A `bool` is rejected though it subclasses `int` (mirrors
     `teatree.config.settings._parse_strict_int`); a value below `minimum`
     degrades to `default` so the bound it encodes can't be mistyped away.
+
+    Note: unlike the hot-path `settings._parse_strict_int` (which coerces a JSON
+    string `"5"` → 5), this rejects a numeric string and falls back to `default`.
+    That is intentional defense-in-depth, not a divergence to reconcile: the
+    validated write path (`config_setting`) stores canonical JSON ints, so a
+    string-typed numeric is unreachable here.
     """
     value = _read_chain(name, scope_chain, db_path=db_path)
     if isinstance(value, bool) or not isinstance(value, int):

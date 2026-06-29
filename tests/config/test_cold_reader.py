@@ -39,6 +39,16 @@ def _make_db(path: Path, rows: Iterable[Row], *, wal: bool = False) -> None:
         conn.close()
 
 
+def _remove_wal_sidecars(db: Path) -> None:
+    """Delete the ``-wal``/``-shm`` companions of `db`.
+
+    The realistic quiescent cold state (no teatree process holding the DB),
+    where a WAL-format file has no live sidecars.
+    """
+    for suffix in ("-wal", "-shm"):
+        db.with_name(db.name + suffix).unlink(missing_ok=True)
+
+
 class TestCanonicalConfigDb:
     def test_t3_config_db_override_wins(self, tmp_path: Path) -> None:
         override = tmp_path / "explicit.sqlite3"
@@ -202,6 +212,67 @@ class TestWalNonBlocking:
         finally:
             writer.rollback()
             writer.close()
+
+
+class TestWalSidecarsAbsent:
+    """The quiescent cold state: a WAL-format DB with NO live writer.
+
+    Its ``-wal``/``-shm`` sidecars are absent, so a ``mode=ro``-only open CANNOT
+    read it (it would need to recreate the ``-shm`` → ``SQLITE_CANTOPEN``); the
+    ``immutable=1`` fallback returns the last-checkpointed value. Distinct from
+    ``TestWalNonBlocking``, which holds a writer open and so materializes the
+    sidecars — that case passes even on a ``mode=ro``-only reader, masking this
+    bug.
+    """
+
+    def test_committed_value_readable_with_sidecars_removed(self, tmp_path: Path) -> None:
+        db = tmp_path / "wal.sqlite3"
+        _make_db(db, [("", "mode", "auto")], wal=True)
+        _remove_wal_sidecars(db)
+        # Precondition: the realistic cold state — no live sidecars.
+        assert not db.with_name(db.name + "-wal").exists()
+        assert not db.with_name(db.name + "-shm").exists()
+        # mode=ro alone raises SQLITE_CANTOPEN here and the read silently fails
+        # open to None; the immutable=1 fallback returns the stored value.
+        assert cold_reader.read_setting("mode", db_path=db) == "auto"
+
+    def test_typed_wrappers_do_not_revert_to_default_when_quiescent(self, tmp_path: Path) -> None:
+        db = tmp_path / "wal.sqlite3"
+        _make_db(db, [("", "budget", 5), ("", "flag", True)], wal=True)
+        _remove_wal_sidecars(db)
+        # A safety-gate caller's stored kill-switch must NOT revert to its
+        # in-code default just because the DB is quiescent. Anti-vacuous: each
+        # default differs from the stored value.
+        assert cold_reader.int_setting("budget", default=99, db_path=db) == 5
+        assert cold_reader.bool_setting("flag", default=False, db_path=db) is True
+
+
+class TestUriRobustness:
+    """An exotic ``T3_CONFIG_DB`` path must not malform the ``file:`` URI.
+
+    A raw ``file:{db}?mode=ro`` f-string breaks on a path containing
+    ``%``/``?``/``#`` (it decodes ``%41``→'A' and points at the wrong file →
+    silent fail-open); building the URI via ``Path.as_uri()`` percent-encodes
+    them.
+    """
+
+    def test_reads_value_from_path_with_uri_special_chars(self, tmp_path: Path) -> None:
+        # A space AND a literal percent sequence: the raw f-string decodes
+        # `%41`→'A' → wrong path → CANTOPEN; as_uri encodes it correctly.
+        exotic_dir = tmp_path / "cfg dir %41x"
+        exotic_dir.mkdir()
+        db = exotic_dir / "db.sqlite3"
+        _make_db(db, [("", "mode", "auto")])
+        assert cold_reader.read_setting("mode", db_path=db) == "auto"
+
+    def test_reads_via_t3_config_db_env_with_special_chars(self, tmp_path: Path) -> None:
+        # Same, resolved through the env hook the cold path actually uses.
+        exotic_dir = tmp_path / "x %41 y"
+        exotic_dir.mkdir()
+        db = exotic_dir / "db.sqlite3"
+        _make_db(db, [("", "mode", "auto")])
+        env = {"T3_CONFIG_DB": str(db)}
+        assert cold_reader.read_setting("mode", env=env) == "auto"
 
 
 class TestOverlayThenGlobal:
