@@ -36,7 +36,7 @@ _MOCK_OVERLAY = {"t3-teatree": CommandOverlay()}
 
 def _seed_known() -> None:
     TrustedIdentity.objects.get_or_create(platform="github", handle="souliane")
-    TrustedIdentity.objects.get_or_create(platform="github", handle="adrien-oper")
+    TrustedIdentity.objects.get_or_create(platform="github", handle="trusted-bot")
     TrustedIdentity.objects.get_or_create(platform="gitlab", handle="adrien.cossa")
 
 
@@ -108,7 +108,7 @@ class TestPublicRepoMustAllow(TestCase):
 
     def test_second_github_login_merges(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
-        stub = _GhStub(author="adrien-oper")
+        stub = _GhStub(author="trusted-bot")
         _run(_clear(ticket), stub, internal=False)
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.MERGED
