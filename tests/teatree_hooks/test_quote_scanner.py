@@ -1337,6 +1337,71 @@ class TestUnreadableCommitBodyQuoteGateVisibilityScoped:
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
 
+@pytest.mark.integration
+@pytest.mark.usefixtures("_private_repo_cfg")
+class TestChainedRawRestPostDefeatsPrivateDowngrade:
+    """A private commit chained to a RAW-REST ``gh api`` POST to a PUBLIC repo must DENY (#1213).
+
+    The private-destination downgrade is gated by the chained-segment proof
+    ``_chained_segments_provably_inert``. A ``gh api`` POST carries its target in
+    the URL PATH (no ``--repo``), so the proof's target resolver falls back to the
+    private commit CWD and wrongly accepts the segment as a private post -- a
+    verbatim quote in the ``gh api`` body then reaches a PUBLIC repo with the gate
+    downgraded to warn. The fix rejects any chained raw-REST segment outright
+    (mirroring ``publish_surface._segment_proves_pure_private_post``), so the whole
+    command denies. A chained PRIVATE structured post (``gh pr create --repo
+    <PRIVATE>``, not raw REST) still downgrades -- the fix does not over-block the
+    normal private path.
+    """
+
+    def test_private_commit_chained_public_gh_api_post_with_quote_denies(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # THE CONFIRMED LEAK: a clean private commit chained to a public ``gh api``
+        # POST whose body is a verbatim user quote. The raw-REST segment must defeat
+        # the private downgrade so the quote never reaches the public repo.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git_init_remote(repo, "git@gitlab.com:acmecorp-engineering/product.git")
+        cmd = 'git commit -m clean && gh api repos/souliane/teatree/issues -X POST -f body="the user said: ship it now"'
+        data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(repo)}
+        assert handle_quote_scanner_pretool(data) is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_private_commit_sentinel_chained_public_gh_api_post_denies(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The sentinel variant (base ``main`` DENIED this; the private_only delta
+        # regressed it to a downgrade): an unreadable ``-m "$VAR"`` commit body chained
+        # to a public ``gh api`` POST. The raw-REST guard restores the deny.
+        monkeypatch.delenv("UNSET_COMMIT_BODY", raising=False)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git_init_remote(repo, "git@gitlab.com:acmecorp-engineering/product.git")
+        cmd = 'git commit -m "$UNSET_COMMIT_BODY" && gh api repos/souliane/teatree/issues -X POST -f body=acknowledged'
+        data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(repo)}
+        assert handle_quote_scanner_pretool(data) is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_private_commit_chained_private_gh_pr_create_still_downgrades(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # ANTI-OVER-BLOCK: a verbatim quote in a private commit chained to a PRIVATE
+        # structured ``gh pr create --repo <PRIVATE>`` (NOT raw REST) still downgrades.
+        # The raw-REST guard rejects only raw REST, never a normal private post.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git_init_remote(repo, "git@gitlab.com:acmecorp-engineering/product.git")
+        cmd = (
+            'git commit -m "the user said: ship it now" '
+            "&& gh pr create --repo acmecorp-engineering/product --title t --body ok"
+        )
+        data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(repo)}
+        assert handle_quote_scanner_pretool(data) is False  # both segments private → downgrade
+        assert capsys.readouterr().out == ""  # no deny JSON
+        assert _ledger_lines(tmp_path)[-1]["decision"] == "warn-private-repo"
+
+
 class TestHookChainRegistration:
     def test_handler_is_wired_before_skill_load(self) -> None:
         chain = router._HANDLERS["PreToolUse"]

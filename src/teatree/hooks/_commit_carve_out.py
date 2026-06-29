@@ -17,8 +17,8 @@ foreign term and a resolvable PUBLIC landing repo both keep the block.
 
 The structural helpers (``command_segments``, ``segment_is_pure_gh_glab_post``,
 substitution/transport token checks, repo-dir resolution) are imported from
-their leaf modules; the three ``publish_surface``-local predicates it needs are
-imported lazily inside the call to avoid an import cycle.
+their leaf modules; the ``publish_surface``-local predicates each call needs are
+imported lazily inside it to avoid an import cycle.
 """
 
 from pathlib import Path
@@ -74,12 +74,21 @@ def _chained_segments_provably_inert(command: str, cwd: Path | None, *, config_p
     The chained-segment half of the commit carve-out, shared by both commit
     downgrade predicates: every segment that is not the ``git commit`` itself
     must be PROVABLY publish-inert (no forge tool, no execution-transport or
-    substitution construct) OR a pure private ``gh``/``glab`` post. Any other
-    publishing construct fails the proof, so a chained PUBLIC post in the same
-    command keeps the hard-block -- the unresolvable-body fail-open never relaxes
-    a chained public post.
+    substitution construct) OR a pure private ``gh``/``glab`` post that is NOT
+    raw REST. Any other publishing construct fails the proof, so a chained PUBLIC
+    post in the same command keeps the hard-block -- the unresolvable-body
+    fail-open never relaxes a chained public post.
+
+    A chained ``gh api`` / ``glab api`` raw-REST POST is rejected outright
+    (``_segment_is_raw_rest``), mirroring the top-level proof
+    ``publish_surface._segment_proves_pure_private_post``: raw REST carries its
+    target in the URL PATH (no ``--repo``), so ``segment_target_is_private`` would
+    fall back to the private commit CWD and wrongly vouch for a PUBLIC ``gh api
+    repos/<owner>/<public>/...`` POST -- leaking the body to a public repo while
+    the gate downgraded to warn (#1213/#1415).
     """
     from teatree.hooks.publish_surface import (  # noqa: PLC0415
+        _segment_is_raw_rest,
         is_git_commit_command,
         segment_target_is_private,
         strip_cd_prefix,
@@ -90,8 +99,11 @@ def _chained_segments_provably_inert(command: str, cwd: Path | None, *, config_p
             continue
         if segment_is_publish_inert(words):
             continue
-        if _gh_glab_hiding.segment_is_pure_gh_glab_post(words) and segment_target_is_private(
-            strip_cd_prefix(words), cwd, config_path=config_path
+        rest = strip_cd_prefix(words)
+        if (
+            _gh_glab_hiding.segment_is_pure_gh_glab_post(words)
+            and not _segment_is_raw_rest(rest)
+            and segment_target_is_private(rest, cwd, config_path=config_path)
         ):
             continue
         return False

@@ -2259,6 +2259,24 @@ class TestGitCommitSegmentBehindNonCdPrefix:
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
+    def test_private_commit_chained_public_gh_api_raw_rest_still_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # SHARED-CHOKEPOINT hole (mirror of the quote-gate fix): a private commit
+        # chained to a RAW-REST ``gh api`` POST must STILL hard-block. ``gh api``
+        # carries its target in the URL PATH (no ``--repo``), so the chained-segment
+        # proof's target resolver falls back to the commit CWD; with the CWD the
+        # private repo, the public POST is wrongly accepted as private and the term
+        # in its body leaks. The proof must reject any chained raw-REST segment.
+        repo = _private_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
+        post = "gh api repos/souliane/teatree/issues -X POST -f body=acmecorp"
+        cmd = f'git commit -m "feat: ship faster builds" && {post}'
+        data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(repo)}
+        blocked = handle_banned_terms_pretool(data)
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
     def test_private_commit_chained_network_redirect_still_blocks(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
