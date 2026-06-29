@@ -11,10 +11,15 @@ The readers are now DB-first (config-unify PR3): a gate flag resolves from the
 canonical ``ConfigSetting`` store — seeded from ``~/.teatree.toml`` by ``t3 setup``
 (:func:`teatree.core.config_migration.import_toml_into_db`) — falling back to the
 ``[teatree] <flag>`` TOML value, then the per-setting default (the #938 dual-read).
-DB precedence makes ``config_setting set`` / ``t3 <overlay> gate <name> disable``
-authoritative; the TOML fallback preserves a value the import never seeds —
-critically the TOML-home keys ``autoload`` and ``orchestrator_bash_gate_enabled``
-(#1775) — so a missing/unreadable DB row never silently flips a gate's verdict.
+Because this reader is DB-first, every WRITE that must steer a cold-hook gate also
+targets the DB tier: ``config_setting set`` for the overridable keys, and ``t3
+<overlay> gate <name> disable/enable`` for the cold-hook gate keys (it writes the
+canonical DB via :func:`teatree.config.cold_writer.write_setting`, falling back to TOML
+only in the pre-``t3 setup`` cold state). So a ``t3 gate`` toggle stays authoritative
+over a seeded row instead of being shadowed by it. The TOML fallback preserves a value
+the import never seeds — critically the TOML-home keys ``autoload`` and
+``orchestrator_bash_gate_enabled`` (#1775) — so a missing/unreadable DB row never
+silently flips a gate's verdict.
 """
 
 import os

@@ -56,11 +56,19 @@ def _config_path() -> Path:
 def _gate_key_is_enabled(key: str) -> bool:
     """Resolve ``[teatree] <key>`` (default True), failing OPEN to enabled.
 
-    Mirrors the hook layer's gate resolution: the gate is enabled unless an
-    explicit ``false`` is recorded. Fails OPEN to enabled on a
-    missing/broken config so the reported status matches what the gate
-    itself would do.
+    Mirrors the hook layer's gate resolution: the gate is enabled unless an explicit
+    ``false`` is recorded. For a cold-hook gate key the resolution is DB-first then TOML —
+    matching the flipped hook reader (config-unify PR3) so ``t3 gate status`` reports what
+    the gate actually does: a real DB bool wins, otherwise it falls through to the
+    ``[teatree]`` TOML value. Fails OPEN to enabled on a missing/broken config + DB so the
+    reported status matches the gate's own fail-open posture.
     """
+    if _is_cold_hook_gate_key(key):
+        from teatree.config import cold_reader  # noqa: PLC0415
+
+        db_value = cold_reader.read_setting(key, scope="")
+        if isinstance(db_value, bool):
+            return db_value
     config_path = _config_path()
     if not config_path.is_file():
         return True
@@ -129,7 +137,37 @@ def danger_gate_fail_open_is_enabled() -> bool:
     return teatree.get(DANGER_GATE_FAIL_OPEN_KEY) is True
 
 
+def _is_cold_hook_gate_key(key: str) -> bool:
+    """Whether *key* is a seeded cold-hook gate (DB tier) vs a TOML-home gate.
+
+    The cold-hook gates (``skill_loading`` / ``plan_edit`` / ``config_overwrite`` /
+    ``completion_claim`` / ``memory_recall``) are seeded into the canonical DB by ``t3
+    setup`` and read DB-first by the flipped hook reader (config-unify PR3), so ``t3 gate``
+    must read/write that SAME DB tier or its toggle is shadowed by the seeded row.
+    ``orchestrator_bash_gate_enabled`` and ``danger_gate_fail_open`` are TOML-home (#1775,
+    never seeded), so they stay on TOML — the always-available Bash self-rescue. Membership
+    is derived from ``COLD_HOOK_SETTINGS`` (inline import — this module is pulled by
+    ``teatree.config`` at bootstrap) so it can never drift from the seeded registry.
+    """
+    from teatree.config import COLD_HOOK_SETTINGS  # noqa: PLC0415
+
+    return key in COLD_HOOK_SETTINGS
+
+
 def _set_gate_key(key: str, *, enabled: bool) -> None:
+    """Persist ``[teatree] <key> = <enabled>`` to the tier the gate's reader consults.
+
+    For a cold-hook gate key the flipped reader is DB-first (config-unify PR3), so the write
+    goes to the canonical DB via the Django-free cold writer — making the toggle authoritative
+    over a seeded row. When no canonical DB/table exists yet (a fresh, pre-``t3 setup`` cold
+    state), or for a TOML-home gate key, it falls back to the ``~/.teatree.toml`` write.
+    """
+    if _is_cold_hook_gate_key(key):
+        from teatree.config import cold_writer  # noqa: PLC0415
+
+        if cold_writer.write_setting(key, enabled):
+            return
+
     # ``tomlkit`` is imported inline (matching ``slack_setup``) so loading this
     # module — pulled transitively by ``teatree.config`` on every CLI bootstrap
     # — never eagerly imports the toml-preserving dep.
