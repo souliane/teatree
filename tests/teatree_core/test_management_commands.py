@@ -1,5 +1,6 @@
 import io
 import json
+import re
 import tempfile
 from contextlib import AbstractContextManager
 from pathlib import Path
@@ -24,6 +25,16 @@ from tests.teatree_agents._sdk_fake import fake_sdk, success_stream
 pytestmark = pytest.mark.filterwarnings(
     "ignore:In Typer, only the parameter 'autocompletion' is supported.*:DeprecationWarning",
 )
+
+_ANSI_SGR = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _strip_ansi(text: str) -> str:
+    # Rich colorizes when color is on (real TTY / FORCE_COLOR), wrapping numeric
+    # ids mid-token ("TODO-\x1b[1;36m7\x1b[0m") so a literal substring assert
+    # breaks under color but passes when piped. Assert on de-colorized text so
+    # the rendering content is checked deterministically in either color state.
+    return _ANSI_SGR.sub("", text)
 
 
 class CommandOverlay(OverlayBase):
@@ -459,7 +470,7 @@ class TestSessionTodoRendering(TestCase):
             self._row(3, status="completed", reason="read the model"),
         ]
         session_view.render_session_view(rows, session_id="claude-abc", stream=out)
-        printed = out.getvalue()
+        printed = _strip_ansi(out.getvalue())
         # The harness-TODO section never renders here (the CLI cannot read the
         # live harness list); only the teatree-tasks section does.
         assert "harness TODO" not in printed
@@ -473,12 +484,12 @@ class TestSessionTodoRendering(TestCase):
     def test_no_active_session_is_explicit(self) -> None:
         out = io.StringIO()
         session_view.render_session_view([], session_id="", stream=out)
-        assert "No active harness session" in out.getvalue()
+        assert "No active harness session" in _strip_ansi(out.getvalue())
 
     def test_empty_session_says_no_teatree_tasks(self) -> None:
         out = io.StringIO()
         session_view.render_session_view([], session_id="claude-abc", stream=out)
-        assert "No teatree tasks for this session" in out.getvalue()
+        assert "No teatree tasks for this session" in _strip_ansi(out.getvalue())
 
     def test_task_id_uses_distinct_prefix_not_bare_hash(self) -> None:
         out = io.StringIO()
@@ -487,7 +498,7 @@ class TestSessionTodoRendering(TestCase):
             session_id="claude-abc",
             stream=out,
         )
-        printed = out.getvalue()
+        printed = _strip_ansi(out.getvalue())
         assert "TODO-7" in printed
         assert "(ticket #42" in printed
         assert "task #7" not in printed
@@ -501,7 +512,7 @@ class TestSessionTodoRendering(TestCase):
             session_id="claude-abc",
             stream=out,
         )
-        printed = out.getvalue()
+        printed = _strip_ansi(out.getvalue())
         assert "fix the broken widget" in printed
         assert "ticket #42 (fix the broken widget)" in printed
 
@@ -514,7 +525,7 @@ class TestSessionTodoRendering(TestCase):
             session_id="claude-abc",
             stream=out,
         )
-        printed = out.getvalue()
+        printed = _strip_ansi(out.getvalue())
         assert "ticket #42 ()" not in printed
         assert "(ticket #42" in printed
 
@@ -525,7 +536,7 @@ class TestSessionTodoRendering(TestCase):
             session_id="claude-abc",
             stream=out,
         )
-        printed = out.getvalue()
+        printed = _strip_ansi(out.getvalue())
         assert "TODO-5" in printed
         assert "ticket #5" in printed
         assert "task #5" not in printed
@@ -615,7 +626,7 @@ class TestReconcileChecklist(TestCase):
         out = io.StringIO()
         with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "claude-abc", "T3_LOOP_SESSION_ID": ""}):
             call_command("tasks", "reconcile-checklist", stdout=out)
-        printed = out.getvalue()
+        printed = _strip_ansi(out.getvalue())
         # The agent must drive the live list with its OWN tools — the checklist
         # names them explicitly so the discipline is self-contained.
         assert "TaskList" in printed
@@ -639,7 +650,7 @@ class TestReconcileChecklist(TestCase):
             other = Session.objects.create(ticket=other_ticket, overlay="test", agent_id="claude-other")
             Task.objects.create(ticket=other_ticket, session=other, phase="coding", execution_reason="someone else")
             call_command("tasks", "reconcile-checklist", stdout=out)
-        printed = out.getvalue()
+        printed = _strip_ansi(out.getvalue())
         # This session's open teatree task surfaces as a completion candidate…
         assert f"TODO-{open_task.pk}" in printed
         assert "land the gate" in printed
@@ -705,7 +716,7 @@ class TestReconcileChecklist(TestCase):
         out = io.StringIO()
         with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "", "T3_LOOP_SESSION_ID": ""}):
             call_command("tasks", "reconcile-checklist", stdout=out)
-        printed = out.getvalue()
+        printed = _strip_ansi(out.getvalue())
         # An anonymous caller has no session-scoped teatree tasks, but the
         # reconcile discipline (the load-bearing half) still prints.
         assert "TaskList" in printed
