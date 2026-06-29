@@ -88,7 +88,11 @@ class TestLoopListText(django.test.TestCase):
         lease.save(update_fields=["acquired_at"])
         output = _run()
         assert "STALLED" in output
-        assert "t3 loop tick" in output
+        # #2650 remedy: re-register the per-loop `/loop`s via `/t3:loops`, or take
+        # ownership with `t3 loop claim`; the human force-render is the PLURAL
+        # `t3 loops tick` — never the retired singular `t3 loop tick` shim.
+        assert "/t3:loops" in output
+        assert "t3 loops tick" in output
         assert "t3 loop claim" in output
 
     def test_no_stall_when_recent_tick(self) -> None:

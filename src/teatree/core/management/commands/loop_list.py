@@ -24,7 +24,10 @@ from teatree.core.session_identity import current_session_id
 from teatree.loops.live import LoopOwnerStatus, LoopStatusEntry, LoopStatusReport, build_report, owned_per_loop_owners
 
 _NEVER = "—"
-_REMEDIATION = "register the `t3 loop tick` cron, or run `t3 loop claim` in a Claude Code session to take ownership"
+_REMEDIATION = (
+    "re-register each enabled loop's `/loop` via the `/t3:loops` skill, or run `t3 loop claim` "
+    "in a Claude Code session to take ownership (force a one-off render with `t3 loops tick`)"
+)
 _SECONDS_PER_MINUTE = 60
 _SECONDS_PER_HOUR = 3600
 

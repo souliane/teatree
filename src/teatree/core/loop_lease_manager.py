@@ -65,6 +65,28 @@ def is_per_loop_owner_slot(slot: str) -> bool:
     return slot.startswith(PER_LOOP_OWNER_PREFIX)
 
 
+#: Prefix for the transient PER-LOOP tick mutex (#1834/#2650). A single-loop
+#: tick (``t3 loops tick --loop <name>``) acquires ``loop-tick:<name>`` for the
+#: duration of its beat to serialise concurrent ticks of the SAME loop, then
+#: releases it in a ``finally``. It is disjoint from the bare master
+#: ``loop-tick`` mutex (no ``:``) and from the durable ``loop:<name>`` owner
+#: lease: whenever a per-loop tick holds ``loop-tick:<name>`` it ALSO holds the
+#: matching ``loop:<name>`` owner lease (claimed first), so the mutex is pure
+#: implementation detail — a concurrency lock, not a user-facing loop. The
+#: statusline never renders it; the loop is already represented by its
+#: ``loop:<name>`` owner-lease chunk.
+PER_LOOP_TICK_MUTEX_PREFIX = "loop-tick:"
+
+
+def is_per_loop_tick_mutex(slot: str) -> bool:
+    """Whether ``slot`` is a transient per-loop tick mutex (``loop-tick:<name>``).
+
+    Distinct from the bare master ``loop-tick`` mutex (no trailing ``:``), which
+    is NOT a per-loop mutex and is left untouched.
+    """
+    return slot.startswith(PER_LOOP_TICK_MUTEX_PREFIX)
+
+
 class OwnershipStatus(NamedTuple):
     """Read-only snapshot of a session-scoped loop-owner claim (#1073/#1604).
 
