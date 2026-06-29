@@ -3,6 +3,7 @@
 import datetime as dt
 import logging
 from typing import cast
+from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
@@ -14,8 +15,10 @@ from teatree.loop.mechanical import (
     assign_gitlab_reviewer,
     complete_ticket,
     ignore_disposed_ticket,
+    payload_author_untrusted_public,
     reopen_ticket,
     reviewer_task_orphaned,
+    reviewer_task_self_authored,
 )
 from teatree.loop.tick import TickReport
 from teatree.loop.tick_recovery import _execute_mechanical
@@ -162,6 +165,45 @@ class TestReviewerTaskOrphaned(TestCase):
 
         task.refresh_from_db()
         assert task.status == Task.Status.COMPLETED
+
+
+class TestReviewerTaskSelfAuthoredAuthorTrust(TestCase):
+    """#1773: an untrusted public-repo author never gets the 'no self-review' skip."""
+
+    def _make_reviewer_ticket_with_pending_task(self, url: str) -> tuple[Ticket, Task]:
+        ticket = Ticket.objects.create(role=Ticket.Role.REVIEWER, issue_url=url, overlay="acme")
+        session = Session.objects.create(ticket=ticket, agent_id="external-review")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="reviewing",
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            execution_reason="Review needed",
+        )
+        return ticket, task
+
+    def test_untrusted_public_author_does_not_close_reviewing_task(self) -> None:
+        url = "https://github.com/souliane/teatree/pull/4242"
+        ticket, task = self._make_reviewer_ticket_with_pending_task(url)
+        with patch("teatree.core.author_trust.repo_is_internal", return_value=False):
+            reviewer_task_self_authored(_payload(ticket_id=ticket.pk, url=url, author="evilhacker"))
+        task.refresh_from_db()
+        assert task.status != Task.Status.COMPLETED
+
+    def test_no_author_payload_keeps_legacy_self_authored_close(self) -> None:
+        url = "https://github.com/souliane/teatree/pull/4243"
+        ticket, task = self._make_reviewer_ticket_with_pending_task(url)
+        reviewer_task_self_authored(_payload(ticket_id=ticket.pk, url=url))
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+
+    def test_classifier_helper_matches_shared_seam(self) -> None:
+        url = "https://github.com/souliane/teatree/pull/1"
+        with patch("teatree.core.author_trust.repo_is_internal", return_value=False):
+            assert payload_author_untrusted_public({"url": url, "author": "evilhacker"}) is True
+        with patch("teatree.core.author_trust.repo_is_internal", return_value=True):
+            assert payload_author_untrusted_public({"url": url, "author": "evilhacker"}) is False
+        assert payload_author_untrusted_public({"author": "evilhacker"}) is False
 
 
 class TestAssignGitlabReviewer:

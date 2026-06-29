@@ -10,14 +10,36 @@ from typing import TYPE_CHECKING
 
 from django_fsm import can_proceed
 
+from teatree.core.author_trust import classify_author
 from teatree.loop.dispatch import ActionPayload
 from teatree.loop.mechanical_local_stack import drain_stack_queue_item, reap_idle_stack
 from teatree.loop.mechanical_resources import free_resources
+from teatree.utils.url_slug import pr_ref_from_url
 
 if TYPE_CHECKING:
     from teatree.core.models.task import Task
 
 logger = logging.getLogger(__name__)
+
+
+def payload_author_untrusted_public(payload: ActionPayload) -> bool:
+    """True iff the payload's ``url`` + ``author`` is an untrusted PUBLIC-repo author (#1773).
+
+    The shared author-trust classifier a mechanical handler consults before
+    treating a non-self-authored signal as benign. Reuses the SAME
+    :func:`classify_author` the keystone and the three reviewing scanners use,
+    so the four cannot drift. Returns False when the payload carries no explicit
+    author or no resolvable PR url — the legacy signals that omit the author
+    were already verified self-authored by the emitting scanner, so the belt
+    only acts on an EXPLICIT author it can independently classify.
+    """
+    author = str(payload.get("author") or "")
+    if not author:
+        return False
+    ref = pr_ref_from_url(str(payload.get("url") or payload.get("mr_url") or ""))
+    if ref is None:
+        return False
+    return classify_author(ref.slug, author, host_kind=ref.host_kind).untrusted
 
 
 def ignore_disposed_ticket(payload: ActionPayload) -> None:
@@ -136,6 +158,18 @@ def reviewer_task_self_authored(payload: ActionPayload) -> None:
     ticket_model = apps.get_model("core", "Ticket")
     ticket_id = payload.get("ticket_id")
     if ticket_id is None:
+        return
+    if payload_author_untrusted_public(payload):
+        # #1773: a self-authored signal must never silently close the reviewing
+        # task when the author is an untrusted identity on a PUBLIC repo — that
+        # PR needs an adversarial review, not a "no self-review" skip. Refuse
+        # the auto-complete (the keystone refuses the merge too — invariant 8).
+        logger.warning(
+            "reviewer_task_self_authored: refusing to auto-close reviewing task on ticket %s — "
+            "untrusted author on a public repo (%s) must get an adversarial review",
+            ticket_id,
+            payload.get("url", "?"),
+        )
         return
     try:
         ticket = ticket_model.objects.get(pk=ticket_id)

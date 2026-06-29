@@ -14,6 +14,7 @@ the user never has to ask "have you run codex on this?" again.
 """
 
 from dataclasses import dataclass, field
+from unittest.mock import patch
 
 import pytest
 
@@ -33,6 +34,14 @@ from teatree.loop.scanners.codex_review import (
 pytestmark = pytest.mark.django_db
 
 
+@pytest.fixture(autouse=True)
+def _repo_internal_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The #1773 untrusted-public-author variant routing is exercised by
+    # TestUntrustedPublicAuthor; the pre-#1773 path-footprint tests treat the
+    # repo as internal so the author gate is a no-op for them.
+    monkeypatch.setattr("teatree.core.author_trust.repo_is_internal", lambda *a, **k: True)
+
+
 SLUG = "souliane/teatree"
 HEAD = "feedfacecafebabe1234567890abcdef12345678"
 NEW_HEAD = "1234567890abcdeffeedfacecafebabe87654321"
@@ -45,6 +54,7 @@ def _pr(
     head: str = HEAD,
     is_draft: bool = False,
     changed_files: tuple[str, ...] = ("src/teatree/loop/scanners/codex_review.py",),
+    author: str = "souliane",
 ) -> PrSummary:
     return PrSummary(
         slug=SLUG,
@@ -54,6 +64,7 @@ def _pr(
         changed_files=changed_files,
         url=f"https://github.com/{SLUG}/pull/{pr_id}",
         title=f"PR {pr_id}",
+        author=author,
     )
 
 
@@ -172,6 +183,40 @@ class TestAdversarialClassifier:
         signals = scanner.scan()
 
         assert signals[0].payload["variant"] == "codex:review"
+
+
+class TestUntrustedPublicAuthor:
+    """#1773: a benign diff from an untrusted PUBLIC-repo author is adversarial."""
+
+    def test_untrusted_public_author_routes_to_adversarial(self) -> None:
+        api = FakeCodexPrApi(prs_by_slug={SLUG: [_pr(author="evilhacker", changed_files=("README.md",))]})
+        scanner = _scanner(api=api)
+
+        with patch("teatree.core.author_trust.repo_is_internal", return_value=False):
+            signals = scanner.scan()
+
+        assert signals[0].payload["variant"] == ADVERSARIAL_REVIEW_VARIANT
+
+    def test_trusted_public_author_stays_standard(self) -> None:
+        from teatree.core.models import TrustedIdentity  # noqa: PLC0415
+
+        TrustedIdentity.objects.get_or_create(platform="github", handle="souliane")
+        api = FakeCodexPrApi(prs_by_slug={SLUG: [_pr(author="souliane", changed_files=("README.md",))]})
+        scanner = _scanner(api=api)
+
+        with patch("teatree.core.author_trust.repo_is_internal", return_value=False):
+            signals = scanner.scan()
+
+        assert signals[0].payload["variant"] == STANDARD_REVIEW_VARIANT
+
+    def test_untrusted_author_allowed_standard_on_private_repo(self) -> None:
+        api = FakeCodexPrApi(prs_by_slug={SLUG: [_pr(author="evilhacker", changed_files=("README.md",))]})
+        scanner = _scanner(api=api)
+
+        with patch("teatree.core.author_trust.repo_is_internal", return_value=True):
+            signals = scanner.scan()
+
+        assert signals[0].payload["variant"] == STANDARD_REVIEW_VARIANT
 
 
 class TestSignalAttribution:

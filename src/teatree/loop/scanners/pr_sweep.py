@@ -59,6 +59,7 @@ from teatree.loop.scanners.pr_sweep_decision import (
     pr_ticket_under_external_delivery,
     record_mergeable_notified,
     red_checks_are_all_repo_state,
+    untrusted_public_author,
 )
 from teatree.loop.scanners.pr_sweep_types import (
     GH_CONFLICT_MERGE_STATE,
@@ -576,6 +577,12 @@ def _precondition_skip_reason(pr: PrSummary) -> str | None:
         return "draft"
     if pr.has_changes_requested:
         return "changes_requested"
+    # #1773: on a PUBLIC repo an untrusted author is a potential malicious actor.
+    # This rung fires AHEAD of the CLEAR lookup and the solo-overlay
+    # ``merge_pr_squash_bound`` fallback (which would otherwise auto-merge OUTSIDE
+    # the keystone author gate). The keystone refuses this same merge too.
+    if untrusted_public_author(pr):
+        return "untrusted_author_public_repo"
     return None
 
 

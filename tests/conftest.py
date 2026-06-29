@@ -251,6 +251,11 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / ".cache"))
+    # The cold-hook readers now resolve the canonical ConfigSetting DB from these
+    # (config-unify PR3): clear both so the flipped ``teatree_settings`` / statusline
+    # readers resolve under the isolated ``$HOME`` and never read a host DB.
+    monkeypatch.delenv("T3_CONFIG_DB", raising=False)
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
     # Default to per-worktree postgres for test isolation (override in specific tests)
     monkeypatch.setenv("T3_SHARE_DB_SERVER", "false")
     monkeypatch.delenv("T3_WORKSPACE_DIR", raising=False)

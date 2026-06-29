@@ -37,6 +37,15 @@ def _gate_off(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.Monk
     disable_on_behalf_gate(tmp_path_factory, monkeypatch)
 
 
+@pytest.fixture(autouse=True)
+def _repo_public_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    # #1773: the trusted-set author classification treats the broadcast repos as
+    # PUBLIC so a colleague (non-trusted) author is correctly untrusted — no live
+    # ``glab`` visibility probe in the test path. An own/trusted author is still
+    # excluded via the trusted-set check.
+    monkeypatch.setattr("teatree.core.author_trust.repo_is_internal", lambda *a, **k: False)
+
+
 CHANNEL = "C0DEMOCHAN1"
 TS_A = "1779201478.501469"
 TS_B = "1779201499.123456"
@@ -273,6 +282,53 @@ class TestSkipsEyesOnOwnMrBroadcasts(TestCase):
 
         assert {s.payload["mr_url"] for s in signals} == {MR_OPEN, MR_OPEN_2}
         assert backend.react_calls == []
+
+
+class TestTrustedSetAndAdversarial(TestCase):
+    """#1773: own-author exclusion is a trusted-SET check; untrusted public author is adversarial."""
+
+    def test_trusted_set_author_other_than_current_username_skips_eyes(self) -> None:
+        # An MR authored by a seeded trusted identity (not the configured
+        # ``current_gitlab_username``) is still the user's own work → skip eyes.
+        from teatree.core.models import TrustedIdentity  # noqa: PLC0415
+
+        TrustedIdentity.objects.get_or_create(platform="gitlab", handle="adrien.cossa")
+        backend = FakeMessaging()
+        history = {CHANNEL: [_message(f"please review {MR_OPEN}", TS_A)]}
+        states = {MR_OPEN: MrState(url=MR_OPEN, merged=False, approved=False, author_username="adrien.cossa")}
+        scanner = SlackBroadcastsScanner(
+            backend=backend,
+            channels=[CHANNEL],
+            fetch_channel_history=_fetcher(history),
+            classify_mrs=_classifier(states),
+            current_gitlab_username="me",
+        )
+
+        signals = scanner.scan()
+
+        assert signals == []
+        assert backend.react_calls == []
+
+    def test_untrusted_public_author_signal_flags_adversarial(self) -> None:
+        from teatree.core.models import TrustedIdentity  # noqa: PLC0415
+
+        TrustedIdentity.objects.get_or_create(platform="gitlab", handle="adrien.cossa")
+        backend = FakeMessaging()
+        history = {CHANNEL: [_message(f"please review {MR_OPEN}", TS_A)]}
+        states = {MR_OPEN: MrState(url=MR_OPEN, merged=False, approved=False, author_username="evilhacker")}
+        scanner = SlackBroadcastsScanner(
+            backend=backend,
+            channels=[CHANNEL],
+            fetch_channel_history=_fetcher(history),
+            classify_mrs=_classifier(states),
+            current_gitlab_username="me",
+        )
+
+        signals = scanner.scan()
+
+        assert [s.payload["mr_url"] for s in signals] == [MR_OPEN]
+        assert signals[0].payload["adversarial"] is True
+        assert signals[0].payload["requires_human_authorization"] is True
 
 
 class TestSkipsBroadcastsAlreadyEyesReactedByColleague(TestCase):

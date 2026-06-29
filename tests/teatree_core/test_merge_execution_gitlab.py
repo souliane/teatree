@@ -34,6 +34,14 @@ from teatree.core.models import MergeAudit, MergeClear, Ticket
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
+
+@pytest.fixture(autouse=True)
+def _skip_author_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    # #1773 public-repo author gate — exercised by test_merge_execution_author_gate;
+    # these GitLab transport tests pre-date it, so it is a no-op here.
+    monkeypatch.setattr("teatree.core.merge.execution.assert_public_repo_author_trusted", lambda **_: None)
+
+
 _SHA = "a" * 40
 _GITLAB_ISSUE_URL = "https://gitlab.com/acme/widget/-/issues/6264"
 _GITLAB_SELF_HOSTED_URL = "https://gitlab.example.com/acme/widget/-/issues/6264"

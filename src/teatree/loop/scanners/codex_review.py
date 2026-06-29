@@ -34,6 +34,7 @@ import shutil
 from dataclasses import dataclass
 from typing import Protocol, TypedDict, cast, runtime_checkable
 
+from teatree.core.author_trust import classify_author
 from teatree.core.models.codex_review_marker import CodexReviewMarker
 from teatree.loop.scanners.base import ScannerError, ScanSignal, classify_gh_stderr
 from teatree.utils.run import run_allowed_to_fail
@@ -72,7 +73,14 @@ class GhPrJson(TypedDict, total=False):
     isDraft: bool
     url: str
     title: str
+    author: "GhAuthorJson"
     files: list[object]
+
+
+class GhAuthorJson(TypedDict, total=False):
+    """Shape of ``GhPrJson.author`` (``gh`` returns ``{"login": ...}``)."""
+
+    login: str
 
 
 class GhFileJson(TypedDict, total=False):
@@ -92,6 +100,7 @@ class PrSummary:
     changed_files: tuple[str, ...]
     url: str = ""
     title: str = ""
+    author: str = ""
 
 
 @runtime_checkable
@@ -146,7 +155,7 @@ class CodexReviewScanner:
     def _evaluate(self, pr: PrSummary) -> ScanSignal | None:
         if pr.is_draft:
             return None
-        variant = _classify_variant(pr.changed_files)
+        variant = _classify_variant(pr.changed_files, slug=pr.slug, author=pr.author)
         marker = CodexReviewMarker.claim(
             slug=pr.slug,
             pr_id=pr.number,
@@ -171,16 +180,19 @@ class CodexReviewScanner:
         )
 
 
-def _classify_variant(changed_files: tuple[str, ...]) -> str:
-    """Choose the codex review variant based on the diff's path footprint.
+def _classify_variant(changed_files: tuple[str, ...], *, slug: str = "", author: str = "") -> str:
+    """Choose the codex review variant based on author trust and diff footprint.
 
-    Defaults to ``codex:review``; routes to ``codex:adversarial-review``
-    when the diff touches a high-stakes path (auth, permissions,
-    migrations, secrets/tokens/credentials). The classifier is
-    intentionally conservative — false positives are fine (adversarial
-    review is strictly more thorough), false negatives are the actual
-    failure mode.
+    Routes to ``codex:adversarial-review`` when EITHER the PR is on a PUBLIC
+    repo authored by an untrusted identity (#1773 — the untrusted public author
+    never gets the lenient self-PR path) OR the diff touches a high-stakes path
+    (auth, permissions, migrations, secrets/tokens/credentials). Defaults to
+    ``codex:review``. The classifier is intentionally conservative — false
+    positives are fine (adversarial review is strictly more thorough), false
+    negatives are the actual failure mode.
     """
+    if slug and classify_author(slug, author).untrusted:
+        return ADVERSARIAL_REVIEW_VARIANT
     for path in changed_files:
         lowered = path.lower()
         if any(marker in lowered for marker in ADVERSARIAL_PATH_MARKERS):
@@ -212,7 +224,7 @@ class GhCodexPrApi:
             "--author",
             "@me",
             "--json",
-            "number,headRefOid,isDraft,url,title,files",
+            "number,headRefOid,isDraft,url,title,author,files",
         ]
         rc, out, err = self._run_gh(argv)
         if rc == _GH_NOT_INSTALLED_RC:
@@ -256,6 +268,8 @@ def _decode_pr(*, slug: str, raw: GhPrJson) -> PrSummary | None:
     is_draft = bool(raw.get("isDraft"))
     url = _as_str(raw.get("url"))
     title = _as_str(raw.get("title"))
+    author_raw = raw.get("author")
+    author = _as_str(author_raw.get("login")) if isinstance(author_raw, dict) else ""
     files_raw = raw.get("files")
     files: list[str] = []
     if isinstance(files_raw, list):
@@ -272,6 +286,7 @@ def _decode_pr(*, slug: str, raw: GhPrJson) -> PrSummary | None:
         changed_files=tuple(files),
         url=url,
         title=title,
+        author=author,
     )
 
 

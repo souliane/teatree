@@ -136,6 +136,15 @@ Hand all current work from this session to another session.
 | --- | --- |
 | `escalate` | Record a honesty escalation so the next verification spawn routes to the most-honest model |
 
+## `identities`
+
+| Subcommand | Description |
+| --- | --- |
+| `seed` | Consolidate the configured ``user_identity_aliases`` into the DB (idempotent) |
+| `add` | Add a trusted identity (idempotent on ``(platform, handle)``) |
+| `remove` | Remove a trusted identity by ``(platform, handle)`` |
+| `list` | List all trusted identities |
+
 ## `info`
 
 ``t3 info`` group root.
