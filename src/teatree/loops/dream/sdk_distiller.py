@@ -9,6 +9,10 @@ of :mod:`teatree.loops.dream.engine` (#2723) is the LLM call + defensive JSON pa
 headless-runner invocation shape: ``claude_code`` preset, ``bypassPermissions``, a
 wall-clock watchdog) and raises when ``claude`` is unavailable or the turn fails, so a
 failure propagates and the pass is marked attempted-not-succeeded — never a fake success.
+The watchdog (:func:`asyncio.timeout`) bounds the WHOLE turn — the ``claude`` connect, the
+query, AND the response drain — so a stuck subprocess connect can never hang the dream pass
+forever (the prior watchdog wrapped only the response drain, leaving connect/query
+unbounded: a stalled ``claude`` spawn hung the pass with no rows, no marker, no output).
 
 :func:`_parse_clusters` tolerates surrounding prose and drops malformed entries so one bad
 element never discards a valid batch.
@@ -95,10 +99,11 @@ def _run_distiller_turn(extract: ConsolidationExtract) -> str:
     """Run one bounded headless ``claude-agent-sdk`` turn, returning its text.
 
     Reuses the headless-runner invocation shape (the ``claude_code`` preset,
-    ``bypassPermissions``, a wall-clock watchdog via :func:`asyncio.wait_for`)
+    ``bypassPermissions``, a wall-clock watchdog via :func:`asyncio.timeout`)
     for a single no-tool turn — the extract is already bounded, so the model
     only transforms text to JSON. Raises when ``claude`` is unavailable or the
-    turn fails, so the caller never reports a fake success.
+    turn fails (including :class:`TimeoutError` when the turn exceeds the
+    watchdog), so the caller never reports a fake success and never hangs.
     """
     import asyncio  # noqa: PLC0415
     import shutil  # noqa: PLC0415
@@ -124,13 +129,15 @@ async def _collect_turn(prompt: str) -> str:
         allowed_tools=[],
     )
     parts: list[str] = []
-    async with ClaudeSDKClient(options=options) as client:
+    # Bound the ENTIRE turn — connect (``__aenter__`` spawns the ``claude``
+    # subprocess), query, AND the response drain — under one watchdog. Wrapping
+    # only the drain (the prior shape) left connect/query unbounded, so a stalled
+    # ``claude`` connect hung the dream pass forever (no rows, no marker, no
+    # output) instead of failing loud; ``asyncio.timeout`` raises ``TimeoutError``
+    # on expiry and the ``async with`` tears the subprocess down on unwind.
+    async with asyncio.timeout(_DISTILL_WATCHDOG_SECONDS), ClaudeSDKClient(options=options) as client:
         await client.query(prompt)
-
-        async def _drain() -> list[object]:
-            return [message async for message in client.receive_response()]
-
-        for message in await asyncio.wait_for(_drain(), timeout=_DISTILL_WATCHDOG_SECONDS):
+        async for message in client.receive_response():
             if isinstance(message, AssistantMessage):
                 parts.extend(block.text for block in message.content if isinstance(block, TextBlock))
     return "\n".join(parts)
