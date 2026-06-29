@@ -81,6 +81,12 @@ class _NoRouteFake:
         self.post_routed_calls.append((channel, text, thread_ts))
         return {"ok": True}
 
+    def post_message(self, *, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
+        return {"ok": True, "ts": "1700000000.0001"}
+
+    def get_permalink(self, *, channel: str, ts: str) -> str:
+        return "https://slack.example/p1"
+
 
 def _write_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
     # ``slack_user_id`` is a RAW key (TOML-home); ``on_behalf_post_mode`` is
@@ -360,3 +366,44 @@ class TestThreadedAnswerRetiresQuestion(TestCase):
 
         assert response.get("ok") is True
         assert PendingChatInjection.objects.get().loop_replied_at is None
+
+
+class TestUnknownSurfaceRouting(TestCase):
+    @pytest.fixture(autouse=True)
+    def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _write_mode(tmp_path, monkeypatch, "ask")
+
+    def test_unknown_surface_logs_explicitly_and_fails_closed(self) -> None:
+        """Unknown surface (no route_token) logs surface name and fails closed to gate."""
+        fake = _NoRouteFake()
+        egress = OnBehalfSlackEgress(fake)
+
+        with patch("teatree.core.on_behalf_egress.logger") as mock_logger, pytest.raises(OnBehalfPostBlockedError):
+            egress.post(
+                channel="C_UNKNOWN",
+                text="post to unknown surface",
+                target="https://github.com/o/r/pull/1",
+                action="test_action",
+            )
+
+        mock_logger.warning.assert_called()
+        call_args = str(mock_logger.warning.call_args)
+        assert "C_UNKNOWN" in call_args or "unclassifiable" in call_args.lower()
+
+    def test_unknown_surface_react_logs_explicitly_and_fails_closed(self) -> None:
+        """Unknown surface (no route_token) for react logs surface name and fails closed to gate."""
+        fake = _NoRouteFake()
+        egress = OnBehalfSlackEgress(fake)
+
+        with patch("teatree.core.on_behalf_egress.logger") as mock_logger, pytest.raises(OnBehalfPostBlockedError):
+            egress.react(
+                channel="C_UNKNOWN",
+                ts="1.1",
+                emoji="eyes",
+                target="https://github.com/o/r/pull/1",
+                action="test_action",
+            )
+
+        mock_logger.warning.assert_called()
+        call_args = str(mock_logger.warning.call_args)
+        assert "C_UNKNOWN" in call_args or "unclassifiable" in call_args.lower()

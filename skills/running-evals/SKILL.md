@@ -1,6 +1,6 @@
 ---
 name: running-evals
-description: Single in-session entrypoint that auto-orchestrates the whole eval picture — free deterministic lanes (skill-triggers, pinned-regressions) plus the transcript AI/trajectory lane (prepare → produce transcripts in-session → grade) — and prints one unified results table. Use when running the full eval suite, producing recorded transcripts, or deciding between `t3 eval run` (AI evals) and `t3 teatree run tests` (deterministic tests).
+description: Single in-session entrypoint that auto-orchestrates the whole eval picture — free deterministic lanes (skill-triggers, the eval-coverage gate `t3 eval coverage`, pinned-regressions) plus the transcript AI/trajectory lane (prepare → produce transcripts in-session → grade) — and prints one unified results table. Use when running the full eval suite, producing recorded transcripts, or deciding between `t3 eval run` (AI evals) and `t3 teatree run tests` (deterministic tests).
 eval_exempt: in-session driver for the eval harness itself; its commands are covered by the eval CLI tests, not by a self-referential behavioural eval
 compatibility: any
 metadata:

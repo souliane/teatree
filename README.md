@@ -177,7 +177,7 @@ in `src/teatree/core/models/` (`ticket.py`, `worktree.py`, `task.py`,
 
 **Ticket** — tracks a unit of work from intake to delivery. The lifecycle phases
 (ticket → code → test → review → ship) drive corresponding ticket states. The
-full `Ticket.State` set is `not_started → scoped → started → coded → tested →
+full `Ticket.State` set is `not_started → scoped → started → planned → coded → tested →
 reviewed → shipped → in_review → merged → retrospected → delivered`, plus
 `ignored` for work that is consciously skipped.
 
@@ -475,7 +475,7 @@ graph LR
 | `review` | Code review — self-review before finalization, giving review, receiving review feedback |
 | `review-request` | Batch review requests — discover open PRs, validate metadata, check for duplicates, post to review channels |
 | `rules` | Cross-cutting agent safety rules — clickable refs, temp files, sub-agent limits, UX preservation. Auto-loaded as a dependency by other skills. |
-| `running-evals` | Single in-session entrypoint that auto-orchestrates the whole eval picture — free deterministic lanes (skill-triggers, pinned-regressions) plus the transcript AI/trajectory lane (prepare → produce transcripts in-session → grade) — and prints one unified results table |
+| `running-evals` | Single in-session entrypoint that auto-orchestrates the whole eval picture — free deterministic lanes (skill-triggers, the eval-coverage gate `t3 eval coverage`, pinned-regressions) plus the transcript AI/trajectory lane (prepare → produce transcripts in-session → grade) — and prints one unified results table |
 | `scanning-news` | Scans today's TLDR AI and The Rundown AI editions for ideas that could improve teatree, fetches the full article for promising items, queues each concrete t3-improvement candidate behind an ask-gate (PendingArticleSuggestion) for per-article user approval before any souliane/teatree issue is filed, and posts a terse Slack DM summary |
 | `setup` | Bootstrap and validate teatree for local use — prerequisites, config, skill symlinks, optional agent hooks, and Django project scaffolding |
 | `ship` | Delivery — committing, pushing, creating MR/PR, pipeline monitoring, review requests |
@@ -565,7 +565,7 @@ extension point is what any other consumer would use.
 
 Teatree reads its config from `~/.teatree.toml`. Every key is optional; the
 table below lists the ones most users touch. The full set and their defaults
-live in `UserSettings` in `src/teatree/config.py`.
+live in `UserSettings` in `src/teatree/config/settings.py`.
 
 ```toml
 [teatree]
@@ -627,8 +627,8 @@ to a less-safe mode.
 
 A subset of `[teatree]` keys can be **overridden per-overlay** in
 `[overlays.<name>]`. The overridable set lives in
-`OVERLAY_OVERRIDABLE_SETTINGS` in `src/teatree/config.py`: `mode`,
-`privacy`, `contribute`, `excluded_skills`,
+`OVERLAY_OVERRIDABLE_SETTINGS` in `src/teatree/config/settings.py`: `mode`,
+`agent_runtime`, `contribute`, `excluded_skills`,
 `loop_cadence_seconds`, `require_human_approval_to_merge`, and
 `require_human_approval_to_answer`. For example, run `auto` mode on a personal
 dogfooding overlay while keeping `interactive` on a client project:
