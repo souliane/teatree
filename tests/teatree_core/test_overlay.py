@@ -232,6 +232,13 @@ class TestOverlayConfig(TestCase):
         assert config.custom_setting == "value"
         assert not hasattr(config, "class")  # reserved, skipped
 
+    def test_default_token_getters_always_defined(self) -> None:
+        # scanner_factories calls these getters unguarded (no hasattr fallback),
+        # so a default OverlayConfig MUST expose both returning a string.
+        config = OverlayConfig()
+        assert config.get_gitlab_token() == ""
+        assert config.get_github_token() == ""
+
     def test_toml_pass_key_registers_secret_reader(self) -> None:
         mock_config = MagicMock()
         mock_config.raw = {
