@@ -145,6 +145,48 @@ class TestExtractPublishPayloadBash:
         assert "the user said" in payload
 
 
+class TestBodyFileResolvedAgainstHarnessCwd:
+    """A ``gh pr edit`` RELATIVE body file / ``$(cat rel)`` resolves against cwd.
+
+    Anti-vacuous pair (#1213): the false positive — a relative body the gate could
+    not read from the cold hook's reset cwd, so it fail-closed and forced
+    literal-inline ``--body`` — now RESOLVES and scans the real content; while a
+    real user quote inside that same resolved body STILL blocks, proving the gate
+    did not go blind.
+    """
+
+    def test_relative_cat_body_without_cwd_fails_closed(self, tmp_path: Path) -> None:
+        # The bug shape: no cwd threaded → the relative path is unreadable → the
+        # parser injects the fail-closed sentinel (which the gate would block on).
+
+        (tmp_path / "body.md").write_text("## What\nclean body\n", encoding="utf-8")
+        cmd = 'gh pr edit 5 --body "$(cat body.md)"'
+        payload = extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert is_fail_closed_sentinel(payload)
+
+    def test_relative_cat_body_with_cwd_is_resolved_and_clean(self, tmp_path: Path) -> None:
+        # The fix: cwd threaded → the relative body resolves and scans clean (no
+        # fail-closed sentinel, no HIGH finding) instead of over-blocking.
+
+        (tmp_path / "body.md").write_text("## What\nclean body, no quotes\n", encoding="utf-8")
+        cmd = 'gh pr edit 5 --body "$(cat body.md)"'
+        payload = extract_publish_payload("Bash", {"command": cmd}, tmp_path)
+        assert payload is not None
+        assert not is_fail_closed_sentinel(payload)
+        assert "clean body" in payload
+        assert not scan_text(payload).has_high
+
+    def test_relative_body_file_with_user_quote_still_blocks(self, tmp_path: Path) -> None:
+        # Anti-vacuous: a REAL verbatim user quote in the cwd-resolved relative
+        # body file is scanned and still flagged HIGH — the gate keeps biting.
+        (tmp_path / "body.md").write_text('## What\n> "A direct quote the user gave me."\n', encoding="utf-8")
+        cmd = "gh pr edit 5 --body-file body.md"
+        payload = extract_publish_payload("Bash", {"command": cmd}, tmp_path)
+        assert payload is not None
+        assert scan_text(payload).has_high
+
+
 class TestT3PublishCommands:
     @pytest.mark.parametrize(
         "subcommand",

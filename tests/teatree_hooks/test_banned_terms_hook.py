@@ -8,7 +8,8 @@ import pytest
 
 from hooks.scripts.hook_router import handle_banned_terms_pretool
 from teatree import find_project_root
-from teatree.hooks import _repo_visibility
+from teatree.hooks import _repo_visibility, banned_terms_scanner
+from teatree.hooks._command_parser import is_fail_closed_sentinel
 
 
 @pytest.mark.integration
@@ -1032,3 +1033,28 @@ def test_live_hook_scans_unresolvable_target_failsafe(
     assert blocked is True
     decision = json.loads(captured.out)
     assert decision["permissionDecision"] == "deny"
+
+
+def test_posting_body_file_resolves_against_cwd(tmp_path: Path) -> None:
+    """The gh-posting path resolves a RELATIVE --body-file against the harness cwd.
+
+    Anti-vacuous pair (#1415/#1213): a clean relative body resolves (no
+    fail-closed sentinel — the over-block FP is gone), AND a real banned term in
+    the cwd-resolved body is scanned and reported — the posting path neither
+    over-blocks a clean body nor goes blind to a real term.
+    """
+    (tmp_path / "clean.md").write_text("## What\nclean body\n", encoding="utf-8")
+    clean = banned_terms_scanner.extract_publish_payload(
+        "Bash", {"command": "gh pr edit 5 --body-file clean.md"}, tmp_path
+    )
+    assert clean is not None
+    assert not is_fail_closed_sentinel(clean)
+    assert "clean body" in clean
+
+    (tmp_path / "leak.md").write_text("## What\nmentions acmewidget here\n", encoding="utf-8")
+    leaked = banned_terms_scanner.extract_publish_payload(
+        "Bash", {"command": "gh pr edit 5 --body-file leak.md"}, tmp_path
+    )
+    cfg = tmp_path / "cfg.toml"
+    cfg.write_text('[teatree]\nbanned_terms = ["acmewidget"]\n', encoding="utf-8")
+    assert banned_terms_scanner.scan_text(leaked, config_path=cfg) == "acmewidget"

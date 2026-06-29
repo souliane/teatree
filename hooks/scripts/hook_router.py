@@ -2684,7 +2684,7 @@ def _run_quote_scanner_pretool(data: dict) -> bool:
         return False
     tool_input = cast("quote_scanner.ToolInput", raw_input)
 
-    payload = quote_scanner.extract_publish_payload(tool_name, tool_input)
+    payload = quote_scanner.extract_publish_payload(tool_name, tool_input, _resolve_cwd_repo(data))
     if payload is None:
         return False
 
