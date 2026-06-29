@@ -53,38 +53,28 @@ def db_loop_state_suppresses_self_pump() -> bool:
     process that carries its own venv. The bare-``python3`` Stop hook
     interpreter never needs a ``django.setup()`` of its own.
 
-    FAIL CLOSED on a reachable-but-unreadable control plane (pause must win,
-    matching ``_pause_suppresses_self_pump``): when ``t3`` IS on PATH but the
-    read fails (non-zero exit, unparsable, subprocess error), the durable status
-    is INDETERMINATE — ``_dispatch_loop_status`` returns ``""`` and that
-    suppresses, so a transiently-unreadable control plane cannot nag the loop
-    through a possible pause. The ONE carve-out is fail OPEN: an absent ``t3``
-    binary (``_dispatch_loop_status`` returns ``None``) means the loop genuinely
-    cannot run ``t3`` at all — a loop that can't run ``t3`` can't be paused — so
-    the availability / ownership gates decide instead.
+    FAIL OPEN — a Stop hook must be crash-proof: an absent ``t3`` binary, a
+    non-zero exit, unparsable output, or any subprocess error resolves to
+    ``False`` (do NOT suppress), so the availability / ownership gates still
+    decide and the pump can never crash the session on an unreadable control
+    plane.
     """
     status = _dispatch_loop_status()
-    if status is None:
-        # Binary absent — the loop can't run t3, so it can't be paused: fail OPEN.
-        return False
-    # Reachable: an enabled status pumps; any other (incl. an unreadable "")
-    # suppresses. Reachable-but-unreadable fails CLOSED (pause must win).
-    return status != _RUNNABLE_STATUS
+    # An empty status means "unreadable" — fail OPEN (do not suppress).
+    return bool(status) and status != _RUNNABLE_STATUS
 
 
-def _dispatch_loop_status() -> str | None:
-    """Durable status of the ``dispatch`` loop via ``t3``; split unreadable signals.
+def _dispatch_loop_status() -> str:
+    """Durable status of the ``dispatch`` loop via ``t3``; ``""`` when unreadable.
 
     Reads ``t3 loop loop-state dispatch --json`` in a child process so the
-    bare-``python3`` hook never needs ``django.setup()``. Returns ``None`` ONLY
-    when the ``t3`` binary is absent from PATH (the loop cannot run ``t3`` at all
-    → the caller fails OPEN). A PRESENT binary whose read fails — non-zero exit,
-    unparsable / non-dict output, subprocess error — yields ``""`` (reachable but
-    unreadable → the caller fails CLOSED / suppresses).
+    bare-``python3`` hook never needs ``django.setup()``. Any failure — absent
+    ``t3``, non-zero exit, unparsable / non-dict output — yields ``""`` so the
+    caller fails OPEN.
     """
     t3_bin = shutil.which("t3")
     if not t3_bin:
-        return None
+        return ""
     try:
         result = subprocess.run(  # noqa: S603 — trusted local binary, fixed argv, no shell
             [t3_bin, "loop", "loop-state", _DISPATCH_LOOP_NAME, "--json"],

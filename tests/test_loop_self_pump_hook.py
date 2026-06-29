@@ -52,12 +52,6 @@ def _isolation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # leaks into a test that does not opt in. Cases that exercise the file
     # override it explicitly.
     monkeypatch.setenv("TEATREE_BASH_ENV_FILE", str(tmp_path / "no-bash-env"))
-    # The DB LoopState gate is owned by test_loop_state_self_pump_hook.py (which
-    # fakes the ``t3`` subprocess). These tests exercise the OTHER suppression
-    # paths (ownership, disown, away, anti-spin), so isolate them from the live
-    # control plane — otherwise a real ``t3`` whose ``dispatch`` loop is paused
-    # (the #2777 L3 fail-closed) suppresses the pump these tests assert fires.
-    monkeypatch.setattr(router, "db_loop_state_suppresses_self_pump", lambda: False)
 
 
 def _own_loop(session_id: str) -> None:

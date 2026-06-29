@@ -50,7 +50,9 @@ _TACH = _REPO_ROOT / "tach.toml"
 # Dropped 188→184 (one-driver collapse): deleting the dead dedicated loop layer
 # and the duplicate `MiniLoopMarker` model removed 4 intra-`core` deferred
 # imports; banking the reduction.
-_FROZEN_INTRA_CORE_DEFERRED = 184
+# Dropped 184→181 (loop-tick cutover): deleting `core/management/commands/loop_tick.py`
+# removed its 3 intra-`core` deferred imports; banking the reduction.
+_FROZEN_INTRA_CORE_DEFERRED = 181
 
 
 def _function_scoped_intra_core_imports(source: Path) -> int:

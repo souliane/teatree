@@ -177,27 +177,11 @@ class TestSelfPumpHonoursDbLoopState:
 
         assert result is True
 
-    def test_reachable_but_unreadable_control_plane_fails_closed_suppresses(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # #2777 L3: when ``t3`` IS on PATH but the read raises, the control plane
-        # is reachable-but-unreadable ⇒ INDETERMINATE ⇒ FAIL CLOSED (suppress), so
-        # a transient read failure can never nag the loop through a possible pause
-        # (pause must win, matching ``_pause_suppresses_self_pump``). RED on main,
-        # which failed OPEN here and pumped.
+    def test_control_plane_read_failure_fails_open_pump_proceeds(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A Stop hook must be crash-proof: if the control-plane read raises, the
+        # gate fails OPEN (defers to env/availability/ownership) and the pump
+        # runs. Mirrors the #2559 stdlib read failing safe.
         _fake_loop_state(monkeypatch, crash=True)
-        _own_loop("owner-1")
-        _fake_pending(monkeypatch, [{"task_id": 4, "subagent": "x", "phase": "coding", "issue_url": "u"}])
-
-        result = handle_loop_self_pump({"session_id": "owner-1"})
-
-        assert result is not True
-
-    def test_t3_absent_fails_open_pump_proceeds(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # The ONE carve-out: no ``t3`` binary on PATH ⇒ the loop genuinely cannot
-        # run ``t3`` at all (a loop that can't run t3 can't be paused) ⇒ fail OPEN,
-        # the pump runs (the other gates still decide).
-        monkeypatch.setattr(gate, "shutil", SimpleNamespace(which=lambda _name: None))
         _own_loop("owner-1")
         _fake_pending(monkeypatch, [{"task_id": 4, "subagent": "x", "phase": "coding", "issue_url": "u"}])
 
@@ -205,48 +189,13 @@ class TestSelfPumpHonoursDbLoopState:
 
         assert result is True
 
-
-class TestGateFailDirectionSplit:
-    """``db_loop_state_suppresses_self_pump`` splits binary-absent (OPEN) from unreadable (CLOSED).
-
-    #2777 L3: the fix narrows the fail direction. ``_dispatch_loop_status`` now
-    returns ``None`` ONLY for a binary-absent control plane (fail OPEN) and ``""``
-    for a present-but-unreadable one (fail CLOSED / suppress). The suppress
-    predicate maps that split:
-    ``None`` → pump (carve-out); ``""`` / ``paused`` / ``disabled`` → suppress;
-    ``enabled`` → pump.
-    """
-
-    def test_binary_absent_status_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # RED on main: ``_dispatch_loop_status`` returned ``""`` for binary-absent,
-        # conflating it with present-but-unreadable. Now it returns ``None``.
+    def test_t3_absent_fails_open_pump_proceeds(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # No ``t3`` binary on PATH ⇒ the control plane is genuinely unreadable ⇒
+        # fail OPEN, the pump runs (the other gates still decide).
         monkeypatch.setattr(gate, "shutil", SimpleNamespace(which=lambda _name: None))
-        assert gate._dispatch_loop_status() is None
-
-    def test_present_but_unreadable_suppresses(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # RED on main: ``""`` resolved to ``False`` (fail OPEN). Now it suppresses.
-        monkeypatch.setattr(gate, "_dispatch_loop_status", lambda: "")
-        assert gate.db_loop_state_suppresses_self_pump() is True
-
-    def test_binary_absent_does_not_suppress(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(gate, "_dispatch_loop_status", lambda: None)
-        assert gate.db_loop_state_suppresses_self_pump() is False
-
-    @pytest.mark.parametrize(
-        ("status", "suppressed"),
-        [("enabled", False), ("paused", True), ("disabled", True)],
-    )
-    def test_resolved_status_maps_to_suppress(
-        self, status: str, monkeypatch: pytest.MonkeyPatch, *, suppressed: bool
-    ) -> None:
-        monkeypatch.setattr(gate, "_dispatch_loop_status", lambda: status)
-        assert gate.db_loop_state_suppresses_self_pump() is suppressed
-
-    def test_self_pump_suppressed_composes_the_unreadable_close(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Composition: a reachable-but-unreadable control plane gates the owner's
-        # self-pump off via ``_self_pump_suppressed`` (the gate is checked first).
-        # RED on main: ``""`` failed open, so the owner kept pumping.
         _own_loop("owner-1")
-        monkeypatch.setattr(router, "_pause_suppresses_self_pump", lambda: False)
-        monkeypatch.setattr(gate, "_dispatch_loop_status", lambda: "")
-        assert router._self_pump_suppressed("owner-1") is True
+        _fake_pending(monkeypatch, [{"task_id": 4, "subagent": "x", "phase": "coding", "issue_url": "u"}])
+
+        result = handle_loop_self_pump({"session_id": "owner-1"})
+
+        assert result is True
