@@ -1940,16 +1940,19 @@ class TestPrivateRepoCarveOut:
         assert blocked is False  # downgraded to warn, not denied
         assert capsys.readouterr().out == ""  # no deny JSON on stdout
 
-    def test_commit_bodyfile_genuinely_missing_on_provably_public_repo_still_blocks(
+    def test_commit_bodyfile_genuinely_missing_on_provably_public_repo_downgrades(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # ANTI-VACUITY guard for the private downgrade above: the SAME genuinely-
-        # missing ``-F`` path landing in a PROBE-CONFIRMED-PUBLIC repo must STILL
-        # fail closed. This preserves the #1207 fail-closed sentinel contract on a
-        # known-public surface. (#1415 task #62 relaxes ONLY the not-provably-
-        # public commit case -- see ``...unknown_repo...downgrades`` below -- where
-        # the pre-push gate re-scans commit messages; a probe-confirmed PUBLIC
-        # commit keeps the conservative hard-block.)
+        # #1415: a genuinely-missing ``-F`` path landing in a PROBE-CONFIRMED-PUBLIC
+        # repo now DOWNGRADES to warn, not hard-block. A ``git commit`` is LOCAL --
+        # the message enters only local history until a push -- and the dedicated
+        # pre-push gate (``refuse-public-push-with-leak.sh``, #703) re-scans EVERY
+        # commit message in the push range for banned terms before they reach a
+        # public remote. The commit-time hard-block on an unreadable body to a
+        # public repo was a pure over-block that stuck multiple coders mid-commit;
+        # the real public-surface protection is the paired READABLE-term guard
+        # (``...public_commit_with_banned_term_still_blocks``) and the public
+        # ``gh``/``glab`` post path, both of which still hard-block.
         repo = tmp_path / "pub"
         repo.mkdir()
         _git(repo, "init", "-b", "main")
@@ -1962,8 +1965,8 @@ class TestPrivateRepoCarveOut:
             "cwd": str(tmp_path),
         }
         blocked = handle_banned_terms_pretool(data)
-        assert blocked is True
-        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+        assert blocked is False  # downgraded to warn, not denied
+        assert capsys.readouterr().out == ""  # no deny JSON on stdout
 
     def test_commit_bodyfile_genuinely_missing_on_unknown_repo_downgrades(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -2184,17 +2187,41 @@ class TestGitCommitSegmentBehindNonCdPrefix:
         assert blocked is False  # downgraded to warn, not denied
         assert capsys.readouterr().out == ""  # no deny JSON on stdout
 
-    def test_prefix_segment_provably_public_commit_unreadable_body_still_blocks(
+    def test_prefix_segment_provably_public_commit_unreadable_body_downgrades(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # ANTI-VACUITY guard: the SAME unreadable-body shape behind a leading
-        # segment landing in a PROBE-CONFIRMED-PUBLIC repo must STILL fail closed.
-        # (#1415 task #62 relaxes only the not-provably-public commit case below;
-        # a known-public commit keeps the conservative hard-block.)
+        # #1415: the SAME unreadable-body shape behind a leading segment landing in
+        # a PROBE-CONFIRMED-PUBLIC repo now DOWNGRADES. A ``git commit`` is LOCAL
+        # regardless of the landing repo's visibility, and the pre-push gate (#703)
+        # re-scans commit messages before a public push -- so the commit-time gate
+        # must not hard-block an ordinary commit merely because its body is
+        # unreadable at scan time. The anti-vacuity guard is the chained-PUBLIC-post
+        # case (still blocks, below) and the readable-term case.
         repo = _public_repo(tmp_path)
         monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
         monkeypatch.chdir(tmp_path)
         cmd = f"true && git -C {repo} commit -F does_not_exist.txt"
+        data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(tmp_path)}
+        blocked = handle_banned_terms_pretool(data)
+        assert blocked is False  # downgraded to warn, not denied
+        assert capsys.readouterr().out == ""  # no deny JSON on stdout
+
+    def test_prefix_segment_public_commit_chained_to_public_post_still_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # ANTI-VACUITY guard for the public-commit downgrade above: the LOCAL-commit
+        # widening (#1415) is gated by the chained-segment proof, so a commit whose
+        # body is unreadable but that is CHAINED to a real PUBLIC ``gh`` post in the
+        # same command must STILL hard-block -- the public post is the genuine
+        # public action with no push gate behind it, and the secret/term in the
+        # post body leaks the moment the command runs.
+        repo = _public_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        monkeypatch.chdir(tmp_path)
+        cmd = (
+            f"git -C {repo} commit -F does_not_exist.txt "
+            f'&& gh issue create --repo souliane/teatree --title x --body "ship to acmecorp"'
+        )
         data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(tmp_path)}
         blocked = handle_banned_terms_pretool(data)
         assert blocked is True
@@ -2276,17 +2303,17 @@ def _unknown_repo(tmp_path: Path) -> Path:
     return repo
 
 
-# #1415 task #62: a NORMAL ``git commit -m`` whose inline message merely MENTIONS
-# a ``$(...)`` snippet (``feat: support $(date) output``) is held in full by the
+# #1415: a NORMAL ``git commit -m`` whose inline message merely MENTIONS a
+# ``$(...)`` snippet (``feat: support $(date) output``) is held in full by the
 # gate as literal argv text, but ``resolve_inline_body_value`` fail-closes on any
 # live ``$(...)`` because for a PUBLIC ``gh``/``glab`` --body it cannot predict
 # the expansion. A ``git commit`` is LOCAL, not a public surface, and the
-# dedicated pre-push gate (refuse-public-push-with-leak.sh) re-scans commit
+# dedicated pre-push gate (refuse-public-push-with-leak.sh, #703) re-scans commit
 # messages before they reach a public remote -- so the unreadable-body marker
-# must DOWNGRADE on a commit whose landing repo is not provably-PUBLIC (private,
-# allowlisted, OR unknown), while a provably-public commit and every gh/glab post
-# stay hard-blocked. Before the fix every ordinary commit on an undeclared repo
-# (the common steady state) hard-blocked, forcing ALLOW_BANNED_TERM=1 on it.
+# must DOWNGRADE on EVERY local commit regardless of the landing repo's visibility
+# (private, allowlisted, unknown, OR provably-public), while every gh/glab POST
+# stays hard-blocked. Before the fix every ordinary commit hard-blocked, forcing
+# ALLOW_BANNED_TERM=1 on it -- the over-block that stuck multiple coders.
 class TestNormalCommitWithDollarParenMessage:
     def test_unknown_repo_commit_mentioning_dollar_paren_downgrades(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -2337,13 +2364,15 @@ class TestNormalCommitWithDollarParenMessage:
         assert blocked is False
         assert capsys.readouterr().out == ""
 
-    def test_public_repo_commit_mentioning_dollar_paren_still_blocks(
+    def test_public_repo_commit_mentioning_dollar_paren_downgrades(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # ANTI-VACUITY guard: a commit landing in a PROVABLY-public repo keeps the
-        # hard-block on an unreadable body -- the downgrade only relaxes the
-        # not-provably-public (private/unknown) case. The push gate is the
-        # backstop, but a known-public commit is still treated conservatively.
+        # #1415: a commit landing in a PROVABLY-public repo (the user's own public
+        # clone) now DOWNGRADES on an unreadable body too -- a ``git commit`` is
+        # LOCAL and the pre-push gate (#703) is the real public-leak chokepoint, so
+        # an ordinary commit whose message merely mentions a ``$(...)`` snippet must
+        # not hard-block. The commit-scoped anti-vacuity guard is the gh/glab POST
+        # below (still blocks); the readable-term commit guards block too.
         repo = _public_repo(tmp_path)
         monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
         data = {
@@ -2352,8 +2381,8 @@ class TestNormalCommitWithDollarParenMessage:
             "cwd": str(repo),
         }
         blocked = handle_banned_terms_pretool(data)
-        assert blocked is True
-        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+        assert blocked is False  # downgraded to warn, not denied
+        assert capsys.readouterr().out == ""  # no deny JSON on stdout
 
     def test_unknown_repo_gh_post_with_live_subst_body_still_blocks(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -2401,6 +2430,74 @@ class TestNormalCommitWithDollarParenMessage:
         blocked = handle_banned_terms_pretool(data)
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+
+class TestGitCommitStdinBodyResolution:
+    """``git commit -F -`` stdin / heredoc / piped bodies are RESOLVED and scanned (#1415).
+
+    The over-block that stuck multiple coders mid-commit: a clean ``git commit
+    -F -`` heredoc or ``printf … | git commit -F -`` to the user's own PUBLIC
+    clone hard-blocked merely because the body was unreadable as a file named
+    ``-`` at scan time. The fix resolves the in-command stdin body (heredoc /
+    piped ``printf``/``echo`` writer) so a CLEAN message PASSES and a REAL banned
+    term in that same readable body still BLOCKS -- the resolution never weakens
+    the scan. A genuinely-OPAQUE stdin (``cat file | git commit -F -``) is a LOCAL
+    commit and downgrades to warn (the pre-push gate re-scans before a public push).
+    """
+
+    def _run(self, command: str, cwd: Path) -> bool:
+        return handle_banned_terms_pretool({"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(cwd)})
+
+    def test_heredoc_stdin_clean_commit_to_public_passes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # USED-TO-FALSE-BLOCK, now PASSES: a clean ``git commit -F - <<EOF`` to a
+        # PROVABLY-PUBLIC repo. The heredoc body is read and scanned clean.
+        repo = _public_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        cmd = "git commit -F - <<'EOF'\nfix(gate): resolve stdin bodies cleanly\nEOF"
+        assert self._run(cmd, repo) is False
+        assert capsys.readouterr().out == ""  # clean: no deny JSON
+
+    def test_heredoc_stdin_banned_term_to_public_still_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # ANTI-VACUITY: a REAL banned term in the SAME readable heredoc body still
+        # hard-blocks -- resolution feeds the real body to the scanner, so the leak
+        # is caught. The fix removes the false-block, never the true-block.
+        repo = _public_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        cmd = "git commit -F - <<'EOF'\nfix: ship to acmecorp this sprint\nEOF"
+        assert self._run(cmd, repo) is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_piped_printf_clean_commit_to_public_passes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repo = _public_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        assert self._run("printf '%s' 'fix: a perfectly clean commit message' | git commit -F -", repo) is False
+        assert capsys.readouterr().out == ""
+
+    def test_piped_printf_banned_term_to_public_still_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # ANTI-VACUITY: the piped writer's body is scanned, so a banned term in it
+        # still blocks.
+        repo = _public_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        assert self._run("printf '%s' 'ship to acmecorp right now' | git commit -F -", repo) is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_opaque_stdin_commit_to_public_downgrades(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A genuinely-opaque stdin (no heredoc, no printf/echo writer) is a LOCAL
+        # commit whose body the gate cannot read -- it downgrades, not blocks.
+        repo = _public_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        assert self._run("cat COMMIT_MSG.txt | git commit -F -", repo) is False
+        assert capsys.readouterr().out == ""
 
 
 class TestAbsoluteBodyFileResolvesRegardlessOfCwd:

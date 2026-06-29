@@ -1221,6 +1221,85 @@ class TestPrivateRepoCarveOut:
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
 
+@pytest.mark.integration
+@pytest.mark.usefixtures("_private_repo_cfg")
+class TestLocalCommitUnreadableBodyDowngrade:
+    """A LOCAL ``git commit`` with an UNREADABLE body downgrades; a readable quote still blocks (#1415).
+
+    The over-block that stuck multiple coders: a clean ``git commit -F -`` /
+    heredoc / ``-m "$VAR"`` to the user's own PUBLIC clone hard-blocked via the
+    fail-closed sentinel (whose text reads "failing closed" — the "fails
+    open/closed" misfire). The fix RESOLVES a readable stdin/heredoc body (so a
+    real user quote in it still blocks) and DOWNGRADES the sentinel-only case on
+    a LOCAL commit to a warn (the body becomes public only on push). A real quote
+    pattern on a readable body, and every ``gh``/``glab`` POST, still hard-block.
+    """
+
+    def test_public_commit_heredoc_stdin_clean_passes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # USED-TO-FALSE-BLOCK, now PASSES: a clean ``git commit -F - <<EOF`` to a
+        # public repo. The heredoc body is resolved and scanned clean (no sentinel).
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git_init_remote(repo, "git@github.com:souliane/teatree.git")
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        cmd = "git commit -F - <<'EOF'\nfix(gate): the gate fails closed only on a genuinely opaque stdin\nEOF"
+        data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(repo)}
+        assert handle_quote_scanner_pretool(data) is False
+        assert capsys.readouterr().out == ""  # clean: no deny JSON
+
+    def test_public_commit_heredoc_stdin_user_quote_still_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # ANTI-VACUITY: a REAL leaked user quote in the SAME readable heredoc body
+        # still hard-blocks. The body is resolved and scanned, so the verbatim-quote
+        # pattern fires — the fix removes the unreadable-body false-block, never the
+        # real-quote true-block.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git_init_remote(repo, "git@github.com:souliane/teatree.git")
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        cmd = "git commit -F - <<'EOF'\nthe user said: ship it now without review\nEOF"
+        data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(repo)}
+        assert handle_quote_scanner_pretool(data) is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_public_commit_unreadable_var_message_downgrades(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The sentinel-only case: ``git commit -m "$VAR"`` whose VAR is not in the
+        # hook env is unreadable at scan time, so the only HIGH finding is the
+        # fail-closed sentinel. A LOCAL commit downgrades it to a warn (the body is
+        # public only on push), instead of hard-blocking a clean commit.
+        monkeypatch.delenv("UNSET_COMMIT_BODY", raising=False)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git_init_remote(repo, "git@github.com:souliane/teatree.git")
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        data = {"tool_name": "Bash", "tool_input": {"command": 'git commit -m "$UNSET_COMMIT_BODY"'}, "cwd": str(repo)}
+        assert handle_quote_scanner_pretool(data) is False  # downgraded to warn
+        captured = capsys.readouterr()
+        assert captured.out == ""  # no deny JSON
+        assert "WARNING" in captured.err
+        assert _ledger_lines(tmp_path)[-1]["decision"] == "warn-local-commit"
+
+    def test_public_gh_post_unreadable_var_body_still_denies(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # ANTI-VACUITY: the sentinel downgrade is COMMIT-scoped. A ``gh`` POST whose
+        # ``--body`` is an unreadable ``$VAR`` is the real public action with no push
+        # gate behind it, so it STILL hard-blocks on the sentinel.
+        monkeypatch.delenv("UNSET_BODY", raising=False)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        data = {
+            "tool_name": "Bash",
+            "tool_input": {"command": 'gh pr create --repo souliane/teatree --title t --body "$UNSET_BODY"'},
+        }
+        assert handle_quote_scanner_pretool(data) is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+
 class TestHookChainRegistration:
     def test_handler_is_wired_before_skill_load(self) -> None:
         chain = router._HANDLERS["PreToolUse"]

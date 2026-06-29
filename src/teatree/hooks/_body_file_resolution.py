@@ -24,7 +24,7 @@ one-directionally. ``_command_parser`` calls back into here via a lazy import
 import os
 import re
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Final
 
 from teatree.hooks._command_parser import (
@@ -33,7 +33,13 @@ from teatree.hooks._command_parser import (
     attached_value,
     read_file_arg,
 )
-from teatree.hooks._shell_lexer import Token, TokenKind, raw_substitution_sees_live, split_commands
+from teatree.hooks._shell_lexer import (
+    Token,
+    TokenKind,
+    is_command_separator,
+    raw_substitution_sees_live,
+    split_commands,
+)
 
 # Long options that point at a FILE whose content we should read. If the
 # file is missing or unreadable the parser appends the fail-closed sentinel.
@@ -273,22 +279,104 @@ def unredirected_heredoc_bodies(command: str) -> list[str]:
     ]
 
 
+# Stdin spellings of git's commit-message file flag: ``git commit -F -`` (and
+# the long ``--file -`` / ``--file=-`` forms). ``-`` means "read the commit
+# message from STDIN", so the body lives in whatever feeds the command's stdin
+# (an in-command heredoc or a piped ``printf``/``echo`` writer), NOT in a file
+# named ``-`` on disk.
+STDIN_DASH: Final[str] = "-"
+
+
+def _segments_with_leading_separator(tokens: list[Token]) -> list[tuple[str | None, list[str]]]:
+    r"""Split ``tokens`` into ``(preceding-separator, WORD-values)`` pairs.
+
+    Like :func:`_shell_lexer.split_commands` but preserves the command-separator
+    operator (``|``/``;``/``&&``/``\n`` …) that PRECEDES each segment, so a
+    caller can tell a PIPE-fed consumer (its stdin is the previous segment's
+    stdout) from a merely sequenced one. The first segment's separator is
+    ``None``.
+    """
+    out: list[tuple[str | None, list[str]]] = []
+    current: list[Token] = []
+    pending_sep: str | None = None
+    for tok in tokens:
+        if is_command_separator(tok):
+            if current:
+                out.append((pending_sep, [t.value for t in current if t.kind is TokenKind.WORD]))
+                current = []
+            pending_sep = tok.value
+        else:
+            current.append(tok)
+    if current:
+        out.append((pending_sep, [t.value for t in current if t.kind is TokenKind.WORD]))
+    return out
+
+
+def _segment_reads_commit_message_from_stdin(words: list[str]) -> bool:
+    """Return True iff ``words`` is a ``git ... commit`` reading its message from stdin.
+
+    The message comes from stdin when the commit carries ``-F -`` (or the long
+    ``--file -`` / ``--file=-`` form). A bare ``git commit`` opens an editor, and
+    ``-F <file>`` / ``-m`` read elsewhere, so neither pairs with a pipe.
+    """
+    if not words or PurePosixPath(words[0]).name != "git" or "commit" not in words:
+        return False
+    for i, word in enumerate(words):
+        if word in {"-F", "--file"} and i + 1 < len(words) and words[i + 1] == STDIN_DASH:
+            return True
+        if word == "--file=-":
+            return True
+        if attached_value(word, "-F") == STDIN_DASH:
+            return True
+    return False
+
+
+def piped_stdin_writer_body(tokens: list[Token]) -> str | None:
+    """Return the body a ``printf``/``echo`` writer pipes into a ``git commit -F -``.
+
+    For ``printf '%s' 'msg' | git commit -F -`` the writer's operands ARE the
+    commit message fed to git's stdin — at PreToolUse scan time that is the only
+    place the message lives (the commit has not run). Returns the joined operands
+    of a ``printf``/``echo`` segment sitting immediately upstream (via a ``|``
+    pipe) of a ``git commit`` reading its message from stdin, else ``None``. The
+    operands are joined verbatim and scanned as a conservative SUPERSET (a banned
+    term / user quote in the real body is a substring of the join), never
+    re-executed.
+    """
+    segments = _segments_with_leading_separator(tokens)
+    for idx in range(1, len(segments)):
+        separator, words = segments[idx]
+        if separator != "|" or not _segment_reads_commit_message_from_stdin(words):
+            continue
+        _, prev_words = segments[idx - 1]
+        if prev_words and PurePosixPath(prev_words[0]).name in _REDIRECT_WRITER_COMMANDS:
+            return " ".join(prev_words[1:])
+    return None
+
+
 @dataclass(frozen=True)
 class BodyFileContext:
     """Resolution context for ``-F``/``--file``/``--body-file`` body files.
 
-    Groups the three settings that flow together through the body-file
-    walkers: the in-command ``heredoc_files`` map (a body written earlier in
-    the SAME command — a ``> path <<EOF`` heredoc or a ``printf``/``echo >
-    path`` redirect — keyed by the redirect-target token), the ``base`` dir a
-    relative body file is retried against (the commit's repo dir), and
-    ``fail_closed_body_file`` (what an UNREADABLE ``gh``/``glab`` body file
-    does — the git ``-F`` commit-message path always fails closed regardless).
+    Groups the settings that flow together through the body-file walkers: the
+    in-command ``heredoc_files`` map (a body written earlier in the SAME command
+    — a ``> path <<EOF`` heredoc or a ``printf``/``echo > path`` redirect — keyed
+    by the redirect-target token), the ``base`` dir a relative body file is
+    retried against (the commit's repo dir), ``fail_closed_body_file`` (what an
+    UNREADABLE ``gh``/``glab`` body file does), and the two STDIN-body inputs that
+    feed a ``git commit -F -`` (#1415): ``stdin_piped_body`` (a ``printf``/``echo
+    | git commit -F -`` writer's body) and ``has_unredirected_heredoc`` (a
+    ``git commit -F - <<EOF`` heredoc, already appended globally by
+    :func:`_command_parser.extract_bash_payload`). When EITHER stdin source is
+    present the commit message is READABLE, so ``git commit -F -`` resolves it
+    instead of fail-closing on an unreadable stdin.
     """
 
     heredoc_files: dict[str, str]
     fail_closed_body_file: bool
     base: Path | None = None
+    stdin_piped_body: str | None = None
+    has_unredirected_heredoc: bool = False
 
 
 def commit_body_file_base(command: str, cwd: Path | None = None) -> Path | None:
@@ -406,42 +494,82 @@ def walk_body_file_flags(words: list[str], payloads: list[str], *, leader: str, 
     while i < n:
         word = words[i]
         if word in _BODY_FILE_FLAG_NAMES and i + 1 < n:
-            _append_file_payload(words[i + 1], payloads, ctx, fail_closed=fail_closed)
+            _append_file_payload(words[i + 1], payloads, ctx, fail_closed=fail_closed, leader=leader)
             i += 2
             continue
         attached: str | None = None
         for flag in _BODY_FILE_FLAG_NAMES:
             attached = attached_value(word, flag + "=")
             if attached is not None:
-                _append_file_payload(attached, payloads, ctx, fail_closed=fail_closed)
+                _append_file_payload(attached, payloads, ctx, fail_closed=fail_closed, leader=leader)
                 break
         if attached is not None:
             i += 1
             continue
         short = _short_f_body_file(leader, words, i, fail_closed=fail_closed)
         if short is not None:
-            _append_file_payload(short.path, payloads, ctx, fail_closed=short.fail_closed)
+            _append_file_payload(short.path, payloads, ctx, fail_closed=short.fail_closed, leader=leader)
             i += short.consumed
             continue
         i += 1
 
 
-def _append_file_payload(path: str, payloads: list[str], ctx: BodyFileContext, *, fail_closed: bool) -> None:
+def _append_git_stdin_commit_body(payloads: list[str], ctx: BodyFileContext) -> None:
+    """Resolve the message a ``git commit -F -`` reads from STDIN (#1415).
+
+    ``-F -`` is not a file named ``-`` — git reads the commit message from
+    stdin, so the body lives in whatever feeds the command's stdin at scan
+    time:
+
+    - a piped ``printf``/``echo`` writer (``printf 'msg' | git commit -F -``) →
+        its operands are appended (``ctx.stdin_piped_body``) and SCANNED, so a
+        real banned term / user quote in the body still blocks;
+    - a heredoc (``git commit -F - <<EOF … EOF``) → the body is already appended
+        globally by :func:`_command_parser.extract_bash_payload`
+        (``ctx.has_unredirected_heredoc``), so this contributes nothing (no
+        double-count) and emits NO sentinel;
+    - genuinely-opaque stdin (``cat file | git commit -F -``, an interactive
+        editor) → the message is unreadable at scan time. It is a LOCAL commit
+        (no leak until push, and the pre-push gate re-scans commit messages), so
+        the generic fail-closed sentinel is emitted: the destination-aware
+        gates DOWNGRADE it to a warning for a local commit rather than
+        hard-blocking, while a chained PUBLIC post still defeats that downgrade.
+
+    Resolving the readable stdin sources is the #1415 fix: a clean ``git commit
+    -F -`` heredoc/piped message is no longer hard-blocked merely for being
+    unreadable as a file named ``-``.
+    """
+    if ctx.stdin_piped_body is not None:
+        payloads.append(ctx.stdin_piped_body)
+    elif ctx.has_unredirected_heredoc:
+        return
+    else:
+        payloads.append(FAIL_CLOSED_SENTINEL)
+
+
+def _append_file_payload(
+    path: str, payloads: list[str], ctx: BodyFileContext, *, fail_closed: bool, leader: str = ""
+) -> None:
     """Append the body referenced by a ``-F``/``--file``/``--body-file`` path.
 
-    Resolution order: the on-disk file (as-is, then relative to ``ctx.base`` --
-    the commit's repo dir), then an in-command body written to that path — a
-    ``cat > path <<EOF … EOF`` heredoc or a ``printf``/``echo > path`` redirect
-    — then the ``fail_closed`` branch. The in-command fallback closes the #126
-    false positive where a body written to a temp file and posted via
-    ``--body-file``/``-F`` in the same command was unreadable at PreToolUse
-    scan time (the hook runs BEFORE the file is created); the lookup key is the
-    raw ``--body-file`` argument token, so a ``$f`` / ``$(mktemp)`` path matches
-    the textually-identical redirect target even though neither is expanded.
-    The ``ctx.base`` fallback closes the cold-hook false positive where the
-    harness cwd has reset away from the worktree, so a ``git -C <worktree>
-    commit -F <relpath>`` body file is unreadable from the cwd yet readable from
-    the commit's own repo dir.
+    A ``git commit -F -`` (``leader == "git"`` and ``path == "-"``) reads its
+    message from STDIN, not a file named ``-``; it is resolved by
+    :func:`_append_git_stdin_commit_body` (the in-command heredoc / piped writer,
+    else a downgrade-eligible fail-closed sentinel for the LOCAL commit).
+
+    For a real path the resolution order is: the on-disk file (as-is, then
+    relative to ``ctx.base`` -- the commit's repo dir), then an in-command body
+    written to that path — a ``cat > path <<EOF … EOF`` heredoc or a
+    ``printf``/``echo > path`` redirect — then the ``fail_closed`` branch. The
+    in-command fallback closes the #126 false positive where a body written to a
+    temp file and posted via ``--body-file``/``-F`` in the same command was
+    unreadable at PreToolUse scan time (the hook runs BEFORE the file is
+    created); the lookup key is the raw ``--body-file`` argument token, so a
+    ``$f`` / ``$(mktemp)`` path matches the textually-identical redirect target
+    even though neither is expanded. The ``ctx.base`` fallback closes the
+    cold-hook false positive where the harness cwd has reset away from the
+    worktree, so a ``git -C <worktree> commit -F <relpath>`` body file is
+    unreadable from the cwd yet readable from the commit's own repo dir.
 
     ``fail_closed`` selects what an unresolvable path does. ``True`` appends
     the fail-closed sentinel: the ``git commit -F <path>`` commit-message path
@@ -453,6 +581,9 @@ def _append_file_payload(path: str, payloads: list[str], ctx: BodyFileContext, *
     scanner keeps a drafted-but-absent ``gh``/``glab`` body file as
     "needs-inline", not a fail-closed HIGH (#126).
     """
+    if leader == "git" and path == STDIN_DASH:
+        _append_git_stdin_commit_body(payloads, ctx)
+        return
     content = read_file_arg(path, ctx.base)
     if content is None:
         content = ctx.heredoc_files.get(path)
