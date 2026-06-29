@@ -25,7 +25,7 @@ _PUBLIC = "souliane/teatree"
 
 def _seed_known() -> None:
     TrustedIdentity.objects.get_or_create(platform="github", handle="souliane")
-    TrustedIdentity.objects.get_or_create(platform="github", handle="adrien-oper")
+    TrustedIdentity.objects.get_or_create(platform="github", handle="trusted-bot")
     TrustedIdentity.objects.get_or_create(platform="gitlab", handle="adrien.cossa")
 
 
@@ -46,7 +46,7 @@ class TestTrustedIdentityManager(TestCase):
             ("souliane", ""),
             ("Souliane", ""),
             ("SOULIANE", "github"),
-            ("adrien-oper", "github"),
+            ("trusted-bot", "github"),
             ("adrien.cossa", "gitlab"),
             ("adrien.cossa", ""),
             ("adrien.cossa", "github"),  # platform-tolerant: handle trusted on any forge
@@ -60,7 +60,7 @@ class TestTrustedIdentityManager(TestCase):
                 assert TrustedIdentity.objects.is_trusted(handle) is False
 
     def test_trusted_handles_union_lowercased(self) -> None:
-        assert TrustedIdentity.objects.trusted_handles() == {"souliane", "adrien-oper", "adrien.cossa"}
+        assert TrustedIdentity.objects.trusted_handles() == {"souliane", "trusted-bot", "adrien.cossa"}
 
 
 class TestClassifyAuthorPublicRepo(TestCase):
@@ -70,7 +70,7 @@ class TestClassifyAuthorPublicRepo(TestCase):
     def test_seeded_identities_trusted(self) -> None:
         cases = (
             (_PUBLIC, "souliane", "github"),
-            (_PUBLIC, "adrien-oper", "github"),
+            (_PUBLIC, "trusted-bot", "github"),
             ("adrien.cossa/proj", "adrien.cossa", "gitlab"),
         )
         for slug, author, host_kind in cases:

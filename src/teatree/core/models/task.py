@@ -3,6 +3,7 @@ from typing import TYPE_CHECKING, cast
 
 from django.apps import apps
 from django.db import models, transaction
+from django.db.models import Q
 from django.utils import timezone
 from django_fsm import FSMField
 
@@ -153,29 +154,50 @@ class Task(models.Model):
             self.execution_reason = "Loop-dispatched phase — in-session sub-agent (agent_runtime=interactive)"
 
     def claim(self, *, claimed_by: str, lease_seconds: int = 300) -> None:
+        """Atomically claim this task — exactly one concurrent claimer wins (#786 shape).
+
+        A single guarded conditional ``UPDATE ... WHERE pk=self AND <claimable>``
+        whose affected-row count is the compare-and-swap token — NOT a
+        read-then-write. The previous shape (``select_for_update().get()`` then
+        an unconditional ``save()``) raced on the production SQLite backend:
+        ``has_select_for_update`` is ``False`` there, so ``select_for_update``
+        is a silent no-op (the #786 B1 lesson the sibling ``claim_next_pending``
+        / ``reap_stale_claims`` / ``LoopLease.acquire`` paths already heed). Two
+        concurrent sessions both passed the in-Python guard on the same stale
+        view and both wrote, each believing it owned the task — so two sessions
+        worked the same unit. The conditional UPDATE re-evaluates ``<claimable>``
+        at write time and is atomic on SQLite AND Postgres: exactly one writer
+        matches one row, the loser updates zero.
+
+        ``<claimable>`` is PENDING, or CLAIMED with an absent/expired lease (a
+        dead owner's orphan — reclaimable). A CLAIMED task whose lease is still
+        live is NOT claimable, so a healthy owner's claim is never stolen; a
+        terminal task is never re-claimed. On a lost claim the current row is
+        read back ONLY to raise the matching typed error — the claim *decision*
+        is the atomic UPDATE's row count, never the read-back.
+        """
         now = timezone.now()
-        with transaction.atomic():
-            locked = Task.objects.select_for_update().get(pk=self.pk)
-            if locked.status in self.Status.terminal():
+        claimable = Q(status=self.Status.PENDING) | (
+            Q(status=self.Status.CLAIMED) & (Q(lease_expires_at__isnull=True) | Q(lease_expires_at__lte=now))
+        )
+        won = (
+            Task.objects.filter(pk=self.pk)
+            .filter(claimable)
+            .update(
+                status=self.Status.CLAIMED,
+                claimed_by=claimed_by,
+                claimed_at=now,
+                heartbeat_at=now,
+                lease_expires_at=now + timedelta(seconds=lease_seconds),
+            )
+        )
+        if won != 1:
+            self.refresh_from_db()
+            if self.status in self.Status.terminal():
                 msg = "Task already finished"
                 raise InvalidTransitionError(msg)
-            if locked.status == self.Status.CLAIMED and locked.lease_expires_at and locked.lease_expires_at > now:
-                msg = "Task already claimed"
-                raise InvalidTransitionError(msg)
-            locked.status = self.Status.CLAIMED
-            locked.claimed_by = claimed_by
-            locked.claimed_at = now
-            locked.heartbeat_at = now
-            locked.lease_expires_at = now + timedelta(seconds=lease_seconds)
-            locked.save(
-                update_fields=[
-                    "status",
-                    "claimed_by",
-                    "claimed_at",
-                    "heartbeat_at",
-                    "lease_expires_at",
-                ],
-            )
+            msg = "Task already claimed"
+            raise InvalidTransitionError(msg)
         self.refresh_from_db()
 
     def renew_lease(self, *, lease_seconds: int = 300) -> None:
