@@ -75,6 +75,7 @@ from state_files import append_line, read_lines
 from subagent_skill_gate import is_file_safe, unreferenced_demand_reason
 from teatree_settings import autoload_enabled as _autoload_enabled
 from teatree_settings import teatree_bool_setting as _teatree_bool_setting
+from teatree_settings import teatree_int_setting as _teatree_int_setting
 from turn_inspect import current_turn_tool_commands
 from unknown_repo_push_gate import handle_block_unknown_repo_push
 
@@ -472,28 +473,15 @@ def _deny_circuit_breaker_enabled() -> bool:
 def _deny_circuit_breaker_threshold() -> int:
     """Consecutive-denial count K at which the breaker trips (default 3).
 
-    Best-effort read of ``[teatree] deny_circuit_breaker_threshold`` from
-    ``~/.teatree.toml``. Fails to the default on a missing/broken config or a
-    non-positive / non-int value so a malformed config can never disable the
-    breaker by setting an impossible threshold.
+    DB-first read of ``[teatree] deny_circuit_breaker_threshold`` via the shared
+    :func:`_teatree_int_setting` adapter (config-unify PR4), TOML as never-lockout
+    fallback. ``minimum=1`` keeps a non-positive / non-int value falling to the
+    default so a malformed config can never disable the breaker by setting an
+    impossible threshold.
     """
-    import tomllib  # noqa: PLC0415
-
-    config_path = Path.home() / ".teatree.toml"
-    if not config_path.is_file():
-        return _DENY_CIRCUIT_BREAKER_DEFAULT_THRESHOLD
-    try:
-        with config_path.open("rb") as f:
-            config = tomllib.load(f)
-    except Exception:  # noqa: BLE001
-        return _DENY_CIRCUIT_BREAKER_DEFAULT_THRESHOLD
-    teatree = config.get("teatree") if isinstance(config, dict) else None
-    if not isinstance(teatree, dict):
-        return _DENY_CIRCUIT_BREAKER_DEFAULT_THRESHOLD
-    value = teatree.get("deny_circuit_breaker_threshold")
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        return _DENY_CIRCUIT_BREAKER_DEFAULT_THRESHOLD
-    return value
+    return _teatree_int_setting(
+        "deny_circuit_breaker_threshold", default=_DENY_CIRCUIT_BREAKER_DEFAULT_THRESHOLD, minimum=1
+    )
 
 
 def _deny_gate_id(reason: str) -> str:
@@ -3745,57 +3733,27 @@ _DEFAULT_ORCHESTRATOR_WALL_CLOCK_SECONDS = 180
 def _orchestrator_turn_budget() -> int:
     """Soft per-turn tool-call budget for the main agent (default 25; 0 ⇒ off).
 
-    Best-effort read of ``[teatree] orchestrator_turn_budget`` from
-    ``~/.teatree.toml``, mirroring :func:`_orchestrator_bash_gate_enabled`'s
-    toml-read shape. A missing/broken config keeps the protective default; an
-    explicit ``0`` (or any non-positive value) disables the nudge with one
-    config line — never a code edit. A non-int value falls back to the default.
+    DB-first read of ``[teatree] orchestrator_turn_budget`` via the shared
+    :func:`_teatree_int_setting` adapter (config-unify PR4), TOML as never-lockout
+    fallback. ``minimum=0`` keeps an explicit ``0`` valid — it disables the nudge
+    with one config line, never a code edit — while a below-zero or non-int value
+    falls back to the default.
     """
-    import tomllib  # noqa: PLC0415
-
-    config_path = Path.home() / ".teatree.toml"
-    if not config_path.is_file():
-        return _DEFAULT_ORCHESTRATOR_TURN_BUDGET
-    try:
-        with config_path.open("rb") as f:
-            config = tomllib.load(f)
-    except Exception:  # noqa: BLE001
-        return _DEFAULT_ORCHESTRATOR_TURN_BUDGET
-    teatree = config.get("teatree") if isinstance(config, dict) else None
-    if not isinstance(teatree, dict):
-        return _DEFAULT_ORCHESTRATOR_TURN_BUDGET
-    raw = teatree.get("orchestrator_turn_budget", _DEFAULT_ORCHESTRATOR_TURN_BUDGET)
-    if not isinstance(raw, int) or isinstance(raw, bool):
-        return _DEFAULT_ORCHESTRATOR_TURN_BUDGET
-    return raw
+    return _teatree_int_setting("orchestrator_turn_budget", default=_DEFAULT_ORCHESTRATOR_TURN_BUDGET, minimum=0)
 
 
 def _orchestrator_turn_wall_clock_threshold() -> int:
     """Wall-clock responsiveness threshold for the main agent (default 180s; 0 ⇒ off).
 
-    Best-effort read of ``[teatree] orchestrator_turn_wall_clock_seconds`` from
-    ``~/.teatree.toml``, mirroring :func:`_orchestrator_turn_budget`'s toml-read
-    shape. A missing/broken config keeps the protective default; an explicit
-    ``0`` (or any non-positive value) disables the wall-clock dimension with one
-    config line. A non-int (or bool) value falls back to the default.
+    DB-first read of ``[teatree] orchestrator_turn_wall_clock_seconds`` via the
+    shared :func:`_teatree_int_setting` adapter (config-unify PR4), TOML as
+    never-lockout fallback. ``minimum=0`` keeps an explicit ``0`` valid — it
+    disables the wall-clock dimension with one config line — while a below-zero or
+    non-int value falls back to the default.
     """
-    import tomllib  # noqa: PLC0415
-
-    config_path = Path.home() / ".teatree.toml"
-    if not config_path.is_file():
-        return _DEFAULT_ORCHESTRATOR_WALL_CLOCK_SECONDS
-    try:
-        with config_path.open("rb") as f:
-            config = tomllib.load(f)
-    except Exception:  # noqa: BLE001
-        return _DEFAULT_ORCHESTRATOR_WALL_CLOCK_SECONDS
-    teatree = config.get("teatree") if isinstance(config, dict) else None
-    if not isinstance(teatree, dict):
-        return _DEFAULT_ORCHESTRATOR_WALL_CLOCK_SECONDS
-    raw = teatree.get("orchestrator_turn_wall_clock_seconds", _DEFAULT_ORCHESTRATOR_WALL_CLOCK_SECONDS)
-    if not isinstance(raw, int) or isinstance(raw, bool):
-        return _DEFAULT_ORCHESTRATOR_WALL_CLOCK_SECONDS
-    return raw
+    return _teatree_int_setting(
+        "orchestrator_turn_wall_clock_seconds", default=_DEFAULT_ORCHESTRATOR_WALL_CLOCK_SECONDS, minimum=0
+    )
 
 
 def handle_reset_turn_tool_budget(data: dict) -> None:

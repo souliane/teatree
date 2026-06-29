@@ -1,4 +1,4 @@
-"""Shared ``[teatree] <flag>`` boolean-setting reader for the hook leaves (#2746).
+"""Shared ``[teatree] <flag>`` boolean + integer setting readers for the hook leaves (#2746).
 
 Extracted from ``hook_router`` so a leaf gate (e.g. ``memory_recall``) can read its
 own kill-switch WITHOUT importing ``hook_router`` — which would create a
@@ -93,6 +93,56 @@ def section_bool_setting(section: str, name: str, *, default: bool) -> bool:
 def teatree_bool_setting(name: str, *, default: bool = True) -> bool:
     """Best-effort read of a ``[teatree] <name>`` boolean flag (see :func:`section_bool_setting`)."""
     return section_bool_setting("teatree", name, default=default)
+
+
+def _cold_db_int(name: str) -> int | None:
+    """The stored GLOBAL-scope DB int for ``[teatree] <name>``; ``None`` on absence/failure.
+
+    The integer sibling of :func:`_cold_db_bool` (config-unify PR4). Lazily delegates
+    to the Django-free ``teatree.config.cold_reader`` and fails open to ``None`` on
+    ANY error. REJECTS a ``bool``: a ``bool`` subclasses ``int``, but a stored boolean
+    must never be read as a budget, so it returns ``None`` and the caller's TOML
+    fallback / default fires instead (never-lockout).
+    """
+    try:
+        from teatree.config.cold_reader import read_setting  # noqa: PLC0415
+
+        value = read_setting(name, scope=_GLOBAL_SCOPE)
+    except Exception:  # noqa: BLE001
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def section_int_setting(section: str, name: str, *, default: int, minimum: int | None = None) -> int:
+    """DB-first, TOML-fallback read of a ``[section] <name>`` integer budget (config-unify PR4).
+
+    The integer sibling of :func:`section_bool_setting`. Resolves from the DB
+    ``ConfigSetting`` store FIRST — ``section`` ``teatree`` maps to the GLOBAL scope,
+    the only section the cold budgets use — falling back to the ``[section] <name>``
+    TOML value, then *default*. Only a real int (never a bool) is honoured at either
+    tier. A value below *minimum* is malformed and degrades to *default* so the bound
+    it encodes can't be mistyped away (a ``deny_circuit_breaker_threshold`` of ``0``
+    never disables the breaker); ``minimum=0`` keeps ``0`` valid so an explicit "off"
+    budget survives. A missing/unreadable DB row falls through to the SAME
+    TOML-or-default verdict the inline ``tomllib`` reader produced before the flip.
+    """
+    if section == "teatree":
+        db_value = _cold_db_int(name)
+        if db_value is not None:
+            return db_value if minimum is None or db_value >= minimum else default
+    table = _load_home_toml().get(section)
+    if isinstance(table, dict):
+        value = table.get(name)
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value if minimum is None or value >= minimum else default
+    return default
+
+
+def teatree_int_setting(name: str, *, default: int, minimum: int | None = None) -> int:
+    """Best-effort read of a ``[teatree] <name>`` integer budget (see :func:`section_int_setting`)."""
+    return section_int_setting("teatree", name, default=default, minimum=minimum)
 
 
 _AUTOLOAD_TRUTHY: frozenset[str] = frozenset({"1", "true", "yes", "on"})
