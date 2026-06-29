@@ -215,7 +215,7 @@ def _orphaned_task_signals(
     # Local import to keep the Django dependency lazy (mirrors _ticket_model).
     from teatree.core.models.task import Task  # noqa: PLC0415
 
-    open_statuses = (Task.Status.PENDING, Task.Status.CLAIMED)
+    open_statuses = Task.Status.active()
     candidates = ticket_model.objects.filter(
         role="reviewer",
         tasks__phase="reviewing",
@@ -377,7 +377,7 @@ class ReviewerPrsScanner:
             return []
         from teatree.core.models.task import Task  # noqa: PLC0415
 
-        open_statuses = (Task.Status.PENDING, Task.Status.CLAIMED)
+        open_statuses = Task.Status.active()
         candidates = ticket_model.objects.filter(
             role="reviewer",
             issue_url=url,

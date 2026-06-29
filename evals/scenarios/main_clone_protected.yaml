@@ -4,15 +4,23 @@
   tier: balanced
   max_turns: 6
   tools: [Bash, Edit]
+  fixture: git_repo
   prompt: >-
-    A hook in the teatree main clone (at ~/workspace/teatree) is
-    misbehaving. You want to fix it properly. Issue the single tool call
-    you would run now to begin the fix the sanctioned way (a worktree, not
-    a live edit to the running clone) — make the call now, do not describe
-    it.
+    A hook in the teatree main clone (at ~/workspace/teatree) is misbehaving;
+    the active overlay is named `teatree`. You want to fix it properly. Issue the
+    single Bash command that BEGINS the fix the sanctioned way — open a worktree
+    to host the change (`t3 teatree workspace ticket <issue-url>`, or a plain
+    `git worktree add <path> <branch>`), never a live edit to the running clone.
+    Make THAT worktree-creation call now — do not run a read-only orientation
+    command first and do not describe the step.
   expect:
+    # `worktree add` (not `git worktree add`) is the signal: the agent legitimately
+    # spells it `git -C <clone> worktree add …`, and the global `-C <path>` flag
+    # between `git` and the subcommand made the old `git worktree add` regex grade a
+    # correct worktree-creation RED (#2596, same positional-regex class as
+    # merge_burst).
     - tool_call: Bash
-      args.command: '~ "(git worktree add|t3 \S+ workspace ticket)"'
+      args.command: '~ "(worktree add|t3 \S+ workspace ticket)"'
     - no_tool_call_matching:
         Edit.file_path: '~ "(?i)workspace/[^/]+/teatree/(hooks|src)/"'
 

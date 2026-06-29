@@ -1,50 +1,36 @@
-"""``code_comment_density`` density pass for the near-zero-comments rule.
+"""``code_comment_density`` pass for the comments-as-code rule.
 
-This module is the commit-side half of the near-zero-comments rule
-(names + types are the documentation): a **content-blind** density pass
-that catches the plain WHAT-narration the content-aware
-``code_comment_self_reference`` detector misses (a run of comments that
-merely restate what the code already says, with no tracker token to match).
+Commit-side half of the comments-as-code rule (names + types are the
+documentation; a long comment is a code smell — refactor instead of
+explain): a diff pass that catches WHAT-narration the content-aware
+``code_comment_self_reference`` detector (tracker tokens) misses.
 
-The check is **advisory** — its consumers (the ``check_comment_density.py``
-pre-push hook, the ``comment-density-gate`` CI job, and the
-``t3 tool comment-density`` command) print the findings as a warning and
-exit 0. There is no good content-blind heuristic for "overly long prose"
-that does not also flag legitimate long comments, so the signal is
-surfaced without blocking the commit, push, or pipeline. It is deliberately
-NOT one of ``privacy_scan.py``'s blocking diff detectors — a comment-dense
-diff is a code-quality nudge, not a privacy leak.
+Advisory — its consumers (the ``check_comment_density.py`` pre-push hook,
+the ``comment-density-gate`` CI job, the ``t3 tool comment-density``
+command) print findings and exit 0. Not one of ``privacy_scan.py``'s
+blocking diff detectors: a comment-dense diff is a code-quality nudge, not
+a privacy leak.
 
-A file's ADDED lines are flagged when EITHER the ratio of added
-comment-only lines to added code lines exceeds a conservative threshold
-(with a floor on added code lines so a tiny diff cannot trip it), OR there
-is a block of consecutive comment-only lines past the warn threshold.
+A file's ADDED lines are flagged when ANY of three signals hold. The
+content-aware **restatement** signal flags a comment whose meaningful words
+merely restate the following code line's identifier tokens (a narration verb
+plus tokens already in the code, no non-obvious why), OR a docstring opening
+line that merely echoes the signature name — a single such line is enough.
+This is the verbose-docstring + restating-inline abuse the line-count pass
+missed. The **consecutive-run** signal flags a run of comment-only lines past
+the warn threshold. The **ratio** signal flags added comment-only to added
+code lines past a conservative threshold (with floors so a tiny diff or a
+lone explanatory comment never trips).
 
-Comment-only is decided language-aware on the FILE SUFFIX (Python ``#``,
-JS/TS ``//`` and ``/* */`` line/block markers). Exempt from the comment
-count: docstring bodies (lines inside a triple-quoted block); **tooling
-pragmas** that are machine directives, not prose (``# type:``, ``# noqa``,
-``# pragma``, ``pyright:``/``mypy:``/``ruff:``, ``// eslint-disable``,
-``// @ts-ignore``/``@ts-expect-error``, coverage ``istanbul``/``c8`` ignores);
-and a small **security-rationale** allowlist (a comment whose text begins
-with the agreed ``security:`` marker — a deliberate threat-model note, not
-WHAT-narration). Also exempt is a file-LEADING comment block — a run that
-begins at the top of a file's added lines (within a shebang / encoding /
-blank offset) before any code, which is a license / copyright / banner
-preamble rather than WHAT-narration — plus a narrow license-marker
-fallback for a header further down (a comment carrying ``SPDX-License-Identifier``,
-``Copyright``, ``Licensed under`` or ``All rights reserved``). Fully exempt
-files: markdown/docs (``*.md``, ``docs/``, ``CHANGELOG*``), declarative
-config (``*.yml``/``*.yaml``/``*.toml``/``*.cfg``/``*.ini`` — a CI job's
-"why this exists" block has no names+types alternative), and ``tests/``
-(test bodies legitimately narrate intent).
-
-The thresholds are deliberately conservative: the ratio rule applies only
-once a meaningful number of comment lines is present (the comment-line
-floor) and there are enough code lines to compare against (the code-line
-floor), so a single explanatory comment never trips it however small the
-diff. A run of consecutive comment lines past the warn threshold is the
-strong WHAT-narration signal and warns on its own.
+Multi-line comments and docstrings stay ALLOWED when justified — a genuine
+non-obvious why (words the code does not contain, not bare narration) does
+not restate and is never flagged. Comment syntax is decided on the FILE
+SUFFIX (Python ``#``, JS/TS ``//`` and ``/* */``). Exempt: tooling pragmas
+(``# type:``/``# noqa``/``# pragma`` / ``pyright:``/``mypy:``/``ruff:`` /
+``// eslint-disable`` / ``@ts-ignore`` / coverage ``istanbul``/``c8``); the
+``security:``-prefixed threat-model allowlist; a file-LEADING comment block
+(license / shebang / banner preamble) and a license-marker header further
+down; markdown/docs, declarative config, and ``tests/``.
 """
 
 import re
@@ -102,6 +88,146 @@ _LICENSE_MARKER_RE = re.compile(
     re.IGNORECASE,
 )
 
+_RESTATE_OVERLAP_THRESHOLD = 0.6
+_MIN_RESTATE_WORDS = 2
+_ONE_LINE_DOCSTRING_MARKERS = 2
+_WORD_RE = re.compile(r"[a-z]+")
+_DEF_RE = re.compile(r"^\s*(?:async\s+)?(?:def|class)\s+([A-Za-z_]\w*)")
+_CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+
+# WHAT-narration verbs that merely announce the code on the next line; a
+# comment built only from these plus tokens already in that code carries no
+# non-obvious why.
+_NARRATION_VERBS = frozenset(
+    {
+        "add",
+        "adds",
+        "append",
+        "apply",
+        "applies",
+        "assign",
+        "build",
+        "call",
+        "calls",
+        "check",
+        "compute",
+        "convert",
+        "create",
+        "creates",
+        "delete",
+        "deletes",
+        "divide",
+        "fetch",
+        "filter",
+        "format",
+        "get",
+        "increment",
+        "initialise",
+        "initialize",
+        "iterate",
+        "load",
+        "loop",
+        "make",
+        "multiply",
+        "remove",
+        "removes",
+        "return",
+        "returns",
+        "round",
+        "save",
+        "seed",
+        "set",
+        "sets",
+        "store",
+        "stores",
+        "sum",
+        "update",
+        "updates",
+        "write",
+    }
+)
+
+# Filler that carries no signal — dropped from a comment's content-word set so
+# the overlap ratio reflects the meaningful words only.
+_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "as",
+        "at",
+        "be",
+        "by",
+        "every",
+        "for",
+        "from",
+        "in",
+        "into",
+        "is",
+        "it",
+        "of",
+        "on",
+        "one",
+        "or",
+        "out",
+        "row",
+        "rows",
+        "so",
+        "the",
+        "then",
+        "this",
+        "to",
+        "value",
+        "values",
+        "with",
+    }
+)
+
+
+def _content_words(text: str) -> list[str]:
+    return [w for w in _WORD_RE.findall(text.lower()) if w not in _STOPWORDS]
+
+
+def _code_tokens(code: str) -> set[str]:
+    return set(_WORD_RE.findall(code.lower()))
+
+
+def _signature_name(code: str) -> str | None:
+    match = _DEF_RE.match(code)
+    return match.group(1) if match else None
+
+
+def _name_words(name: str) -> set[str]:
+    spaced = _CAMEL_BOUNDARY_RE.sub(" ", name).replace("_", " ")
+    return {w for w in _WORD_RE.findall(spaced.lower()) if w not in _STOPWORDS}
+
+
+def _restates(words: list[str], code_tokens: set[str]) -> bool:
+    """True when a comment's content-words merely restate the code's tokens.
+
+    Restatement = a strong majority of the meaningful words are either already
+    an identifier token in the code line or a bare narration verb announcing it,
+    with at least one word landing in the code. Several words the code does not
+    contain and that are not narration (a non-obvious WHY) break restatement.
+    """
+    if len(words) < _MIN_RESTATE_WORDS:
+        return False
+    in_code = sum(1 for w in words if w in code_tokens)
+    accounted = sum(1 for w in words if w in code_tokens or w in _NARRATION_VERBS)
+    return in_code >= 1 and accounted / len(words) >= _RESTATE_OVERLAP_THRESHOLD
+
+
+def _stem_matches(word: str, name_words: set[str]) -> bool:
+    return any(word == n or word.startswith(n) or n.startswith(word) for n in name_words)
+
+
+def _echoes_signature(words: list[str], name_words: set[str]) -> bool:
+    if len(words) < _MIN_RESTATE_WORDS:
+        return False
+    in_name = sum(1 for w in words if _stem_matches(w, name_words))
+    accounted = sum(1 for w in words if _stem_matches(w, name_words) or w in _NARRATION_VERBS)
+    return in_name >= 1 and accounted == len(words)
+
 
 def _is_exempt_file(path: str) -> bool:
     lowered = path.lower()
@@ -144,38 +270,70 @@ class _FileScan:
         self.comment_lines = 0
         self.code_lines = 0
         self.max_consecutive = 0
+        self.restatements = 0
         self.in_docstring = False
         self.code_seen = False
         self._run = 0
         self._target_line = 0
+        self._last_signature: str | None = None
+        self._pending_prose: list[list[str]] = []
 
     def set_hunk_start(self, new_start: int) -> None:
         self._target_line = new_start - 1
 
     def feed_line(self, raw: str) -> None:
-        if self.comment_re is None:
+        comment_re = self.comment_re
+        if comment_re is None:
             return
         if raw.startswith(" "):
-            self._target_line += 1
-            if raw[1:].strip():
-                self.code_seen = True
+            self._feed_context_line(raw[1:])
             return
         if not raw.startswith("+") or raw.startswith("+++"):
             return
+        self._feed_added_line(raw[1:], comment_re)
+
+    def _feed_context_line(self, code: str) -> None:
         self._target_line += 1
-        code = raw[1:]
-        if _ALLOW_MARKER in code or self._consume_docstring(code) or _is_security_rationale(code):
+        if code.strip():
+            self.code_seen = True
+            self._resolve_against_code(code)
+
+    def _feed_added_line(self, code: str, comment_re: re.Pattern[str]) -> None:
+        self._target_line += 1
+        if _ALLOW_MARKER in code:
             return
-        is_comment = bool(self.comment_re.match(code))
+        was_in_docstring = self.in_docstring
+        if self._consume_docstring(code) or was_in_docstring:
+            self._feed_docstring_line(code, opening=not was_in_docstring)
+            return
+        if _is_security_rationale(code):
+            return
+        is_comment = bool(comment_re.match(code))
         if is_comment and _is_pragma(code):
             return
         self._classify(code, is_comment=is_comment)
 
     def _consume_docstring(self, code: str) -> bool:
-        was_in_docstring = self.in_docstring
-        if len(_TRIPLE_QUOTE_RE.findall(code)) % 2 == 1:
+        """Update docstring state; return whether this line touches a docstring.
+
+        A line with an odd count of triple-quote markers toggles the multi-line
+        docstring state. A line that opens AND closes on itself (even count, but
+        the stripped line starts with a triple quote) is a one-line docstring —
+        the state does not change, but the line is still a docstring line.
+        """
+        markers = len(_TRIPLE_QUOTE_RE.findall(code))
+        if markers % 2 == 1:
             self.in_docstring = not self.in_docstring
-        return was_in_docstring or self.in_docstring
+            return True
+        return markers >= _ONE_LINE_DOCSTRING_MARKERS and _TRIPLE_QUOTE_RE.match(code.lstrip()) is not None
+
+    def _feed_docstring_line(self, code: str, *, opening: bool) -> None:
+        words = _content_words(_TRIPLE_QUOTE_RE.sub(" ", code))
+        if opening and self._last_signature is not None and _echoes_signature(words, _name_words(self._last_signature)):
+            self.restatements += 1
+            return
+        if words:
+            self._pending_prose.append(words)
 
     def _classify(self, code: str, *, is_comment: bool) -> None:
         if is_comment:
@@ -184,11 +342,25 @@ class _FileScan:
             self.comment_lines += 1
             self._run += 1
             self.max_consecutive = max(self.max_consecutive, self._run)
+            words = _content_words(code.lstrip("#/ *"))
+            if words:
+                self._pending_prose.append(words)
         else:
             self._run = 0
             if code.strip():
                 self.code_lines += 1
                 self.code_seen = True
+                signature = _signature_name(code)
+                if signature is not None:
+                    self._last_signature = signature
+                self._resolve_against_code(code)
+
+    def _resolve_against_code(self, code: str) -> None:
+        if not self._pending_prose:
+            return
+        tokens = _code_tokens(code)
+        self.restatements += sum(1 for words in self._pending_prose if _restates(words, tokens))
+        self._pending_prose = []
 
     def _is_header_comment(self, code: str) -> bool:
         if not self.code_seen and self._target_line <= _LEADING_HEADER_MAX_LINE:
@@ -197,6 +369,8 @@ class _FileScan:
 
     @property
     def is_flagged(self) -> bool:
+        if self.restatements > 0:
+            return True
         if self.max_consecutive > _CONSECUTIVE_COMMENT_WARN_THRESHOLD:
             return True
         if self.comment_lines < _MIN_ADDED_COMMENT_LINES or self.code_lines < _MIN_ADDED_CODE_LINES:
@@ -205,6 +379,8 @@ class _FileScan:
 
     @property
     def reason(self) -> str:
+        if self.restatements > 0:
+            return f"{self.restatements} comment/docstring line(s) restate the code"
         if self.max_consecutive > _CONSECUTIVE_COMMENT_WARN_THRESHOLD:
             return f"{self.max_consecutive} consecutive comment-only lines"
         return (
@@ -225,6 +401,7 @@ class CommentDensityFinding:
     comment_lines: int
     code_lines: int
     max_consecutive: int
+    restatements: int
     reason: str
 
     @property
@@ -285,6 +462,7 @@ def report_diff(text: str) -> list[CommentDensityFinding]:
             comment_lines=scan.comment_lines,
             code_lines=scan.code_lines,
             max_consecutive=scan.max_consecutive,
+            restatements=scan.restatements,
             reason=scan.reason,
         )
         for _, path, scan in _iter_file_scans(text)

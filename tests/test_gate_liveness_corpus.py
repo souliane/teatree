@@ -1080,6 +1080,10 @@ _NON_DENY_PRETOOLUSE_HANDLERS: Final[frozenset[Callable[[dict], bool | None]]] =
         # One-decision-per-call advisory — warn-only (stderr nudge on a batched
         # AskUserQuestion), returns ``None``, never denies.
         router.handle_warn_batched_questions,
+        # Orchestrator-investigation boundary (#1442) — a WARN-only nudge (stderr
+        # + always returns ``False``); it has no deny path, so no must-deny
+        # corpus payload.
+        router.handle_enforce_orchestrator_investigation_boundary,
     }
 )
 

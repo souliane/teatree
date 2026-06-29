@@ -260,6 +260,7 @@ t3 recover                      # find/recover work stranded by a network-outage
 t3 mutation run                 # scoped mutation testing — mutate only the high-value safety modules a diff touches
 t3 ui                           # browse and run the whole command tree in a terminal UI (needs `uv sync --group ui`)
 t3 admin                        # run the Django admin for the teatree project on a local dev server
+t3 mcp serve                    # serve teatree's structured search (tickets, worktrees, tasks, loop stats, incoming events) as a read-only MCP server over stdio
 t3 dream run [--since <iso>] [--dry-run]  # run one memory-consolidation pass NOW (ignores cadence)
 t3 dream tick                   # cadence-gated cron entry point (~04:00 schedule, decoupled from live loop)
 ```
@@ -457,6 +458,7 @@ graph LR
 | `availability` | 24/7 dual question-mode — switch between asking the user now (present) and capturing questions as durable `DeferredQuestion` rows (away) |
 | `backlog-sweep` | Periodic evidence-gated triage of the issue backlog — for each open issue, classify it against current `main` as superseded / stale / regressive / still-valid, then propose close-with-citation. The retire counterpart to teatree-plan's prioritize, reusing its GitHub Projects board layer and one-decision-per-question walkthrough. Dry-run first; close only on user approval (or auto-close ONLY the high-confidence "superseded by merged PR #X" class), posting a one-line reason on every close |
 | `checking` | A SHORT "what did I miss" report when the user checks in mid-loop — terse, grouped, clickable; then answer the pending deferred questions in-band |
+| `cleanup-sweep` | Use when sweeping stale, lost, or abandoned worktrees, branches, or stashes that are NOT actively being worked — deciding per item whether to salvage unmerged work to a fresh PR, delete a shipped/superseded/redundant item, push post-merge commits to a new PR, or keep an uncertain one. The judgment layer over `t3 <overlay> workspace emit` / `salvage` / `clean-all` (the mechanical reaper is `/t3:workspace`) |
 | `code` | Writing code with TDD methodology |
 | `contribute` | Push retro improvements to a branch, open a PR, and optionally create upstream issues |
 | `debug` | Troubleshooting and fixing — something is broken, find and fix it |

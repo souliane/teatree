@@ -124,7 +124,7 @@ def cost_chip_lines() -> list[str]:
     try:
         from teatree.config import get_effective_settings  # noqa: PLC0415
         from teatree.core.cost import CostReport, cycle_start, cycle_start_datetime  # noqa: PLC0415
-        from teatree.core.models.task import TaskAttempt  # noqa: PLC0415
+        from teatree.core.models.task_attempt import TaskAttempt  # noqa: PLC0415
 
         settings = get_effective_settings()
         anchor = settings.billing_cycle_anchor_day or None

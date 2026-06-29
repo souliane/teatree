@@ -9,7 +9,7 @@ the per-overlay domain slices (``domain_jobs``) consume. Depends DOWN on
 import logging
 from typing import TYPE_CHECKING
 
-from teatree.config import Autonomy, Mode, UserSettings, get_effective_settings, workspace_dir
+from teatree.config import Autonomy, Mode, UserSettings, clone_root, get_effective_settings
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.clone_paths import find_clone_path
@@ -323,7 +323,8 @@ def _pull_main_clone_scanner_for(backend: OverlayBackends) -> PullMainCloneScann
     """Build a per-overlay pull-main-clone scanner from the overlay's workspace repos.
 
     Repo list comes from ``overlay.get_workspace_repos()``; each name is
-    resolved to its on-disk main clone under ``$T3_WORKSPACE_DIR`` via
+    resolved to its on-disk main clone under the CLONE root
+    (``config.clone_root()``, ``~/workspace``) via
     :func:`teatree.core.clone_paths.find_clone_path` (the same namespace-
     aware resolver provisioning/cleanup use). A repo with no clone on disk
     is dropped — there is nothing to pull. The marker/signal label is
@@ -340,7 +341,7 @@ def _pull_main_clone_scanner_for(backend: OverlayBackends) -> PullMainCloneScann
     settings = _effective_settings_for_overlay(backend.name)
     if settings.pull_main_clone_disabled:
         return None
-    workspace = workspace_dir()
+    workspace = clone_root()
     repos: list[tuple[str, Path]] = []
     for repo_name in overlay.get_workspace_repos():
         clone = find_clone_path(workspace, repo_name)
@@ -540,7 +541,7 @@ def _clone_relative_path_exists(workspace_repos: list[str]) -> "Callable[[str], 
     guess. Otherwise returns a predicate that is True when the relative *path*
     exists under at least one resolved clone.
     """
-    workspace = workspace_dir()
+    workspace = clone_root()
     clones = [clone for name in workspace_repos if (clone := find_clone_path(workspace, name)) is not None]
     if not clones:
         return None

@@ -24,8 +24,10 @@ from ._shared import _write_toml
 
 
 def test_load_config_reads_toml_home_fields(tmp_path: Path) -> None:
-    # workspace_dir + privacy are TOML-home; review_skill is DB-home and keeps
-    # its dataclass default at the file tier (resolved from the DB store).
+    # privacy is TOML-home (read off the file). workspace_dir is DB-home now:
+    # its ``[teatree]`` value is ignored on read so the field keeps its dataclass
+    # default at the file tier (resolved per-overlay via config.worktree_root()).
+    # review_skill is DB-home too and keeps its default at the file tier.
     config_path = tmp_path / ".teatree.toml"
     _write_toml(
         config_path,
@@ -36,7 +38,7 @@ privacy = "strict"
 """,
     )
     config = load_config(config_path)
-    assert config.user.workspace_dir == Path("/custom/workspace")
+    assert config.user.workspace_dir == Path.home() / "workspace"
     assert config.user.privacy == "strict"
     assert config.user.review_skill == ""
     assert "teatree" in config.raw
@@ -80,10 +82,13 @@ def test_agent_signature_defaults_off(tmp_path: Path) -> None:
 def test_toml_home_and_raw_keys_do_not_warn(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     # TOML-home carve-out fields, overlay discovery/messaging keys, and raw
     # bootstrap keys are legitimate in the file — they must NOT trip the WARN.
+    # ``workspace_dir`` is deliberately ABSENT here — it is DB-home now and warns
+    # on presence (see TestDbHomeTomlConflictWarning); this fixture covers only
+    # the keys that must STAY silent.
     config_path = tmp_path / ".teatree.toml"
     _write_toml(
         config_path,
-        '[teatree]\nworkspace_dir = "~/ws"\nprivacy = "strict"\n'
+        '[teatree]\nprivacy = "strict"\n'
         'statusline_chain = []\nprivate_repos = ["acme/x"]\n\n'
         '[overlays.myproj]\npath = "~/p"\n',
     )
@@ -123,8 +128,31 @@ class TestDbHomeTomlConflictWarning(TestCase):
         ConfigSetting.objects.set_value("mode", "auto")
         ConfigSetting.objects.set_value("repo_mode", "solo")
         ConfigSetting.objects.set_value("contribute", value=True)
-        _write_toml(self.config_path, '[teatree]\nworkspace_dir = "~/ws"\nprivacy = "strict"\n')
+        # ``workspace_dir`` omitted: it is the one DB-home key that warns on
+        # presence (it silently relocates worktrees) — covered separately below.
+        _write_toml(self.config_path, '[teatree]\nprivacy = "strict"\n')
         assert self._load_and_collect() == []
+
+    def test_retired_workspace_dir_in_toml_warns_to_migrate(self) -> None:
+        # workspace_dir moved to the DB store (the per-overlay WORKTREE root); a
+        # leftover ``[teatree] workspace_dir`` is ignored on read AND would
+        # silently change where worktrees are created, so it ALWAYS warns (not
+        # only on a value conflict) with the config_setting import migrate path.
+        _write_toml(self.config_path, '[teatree]\nworkspace_dir = "/custom/ws"\n')
+        warnings = self._load_and_collect()
+        assert len(warnings) == 1
+        assert "workspace_dir" in warnings[0]
+        assert "config_setting import" in warnings[0]
+
+    def test_overlay_scoped_workspace_dir_in_toml_warns(self) -> None:
+        _write_toml(
+            self.config_path,
+            '[teatree]\n\n[overlays.myproj]\npath = "~/p"\nworkspace_dir = "/srv/ws"\n',
+        )
+        warnings = self._load_and_collect()
+        assert len(warnings) == 1
+        assert "workspace_dir" in warnings[0]
+        assert "myproj" in warnings[0]
 
     def test_db_home_key_in_toml_without_db_row_is_silent(self) -> None:
         # A DB-home key still in the TOML but with NO DB row is being migrated
@@ -420,16 +448,6 @@ class TestIssueImplementerSettings:
         monkeypatch.setenv("T3_ISSUE_IMPLEMENTER_ENABLED", "true")
 
         assert get_effective_settings().issue_implementer_enabled is True
-
-
-class TestDedicatedLoopsSetting:
-    """``dedicated_loops`` is DB-home (#1775): default OFF, env wins."""
-
-    def test_default_is_off(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("T3_DEDICATED_LOOPS", raising=False)
-        cfg = tmp_path / ".teatree.toml"
-        cfg.write_text("[teatree]\n", encoding="utf-8")
-        assert load_config(cfg).user.dedicated_loops is False
 
 
 class TestOrchestrateClaimEnabledSetting:

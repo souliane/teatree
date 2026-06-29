@@ -44,7 +44,7 @@ from django.utils import timezone
 from django_fsm import can_proceed
 
 from teatree.config import get_effective_settings
-from teatree.core.models import Session, Task, Worktree
+from teatree.core.models import Ticket, Worktree
 from teatree.core.models.external_delivery import under_external_delivery
 from teatree.core.models.types import validated_worktree_extra
 from teatree.core.worktree_env import compose_project
@@ -53,7 +53,6 @@ from teatree.utils.run import run_allowed_to_fail
 logger = logging.getLogger(__name__)
 
 _RUNNING_STATES: tuple[str, ...] = (Worktree.State.SERVICES_UP, Worktree.State.READY)
-_ACTIVE_TASK_STATES: tuple[str, ...] = (Task.Status.PENDING, Task.Status.CLAIMED)
 
 
 def _running_container_count(project: str) -> int:
@@ -100,12 +99,16 @@ def _is_currently_active(worktree: Worktree, active_path: Path | None) -> bool:
     return active_path == resolved or resolved in active_path.parents
 
 
-def _ticket_is_busy(worktree: Worktree) -> bool:
-    """True iff the worktree's ticket has a live session or an active/claimed task."""
-    ticket = worktree.ticket
-    if Session.objects.filter(ticket=ticket, ended_at__isnull=True).exists():
-        return True
-    return Task.objects.filter(ticket=ticket, status__in=_ACTIVE_TASK_STATES).exists()
+def ticket_is_busy(ticket: Ticket) -> bool:
+    """True iff *ticket* has a live session or an active/claimed task.
+
+    The ticket-level half of the liveness signal, delegating to the single owner
+    :meth:`teatree.core.models.ticket.Ticket.has_active_work`. Reapers do not call
+    this directly — they call :func:`worktree_protects_against_reap`, which combines
+    it with the worktree-level active-delivery guards so an irreversible reaper
+    never protects LESS than the reversible idle-stack reaper.
+    """
+    return ticket.has_active_work()
 
 
 def _is_reaper_pinned(worktree: Worktree) -> bool:
@@ -127,7 +130,7 @@ def _structural_keep_reason(worktree: Worktree, *, cutoff: datetime, active_path
         return "never started (last_used_at is null) — cannot confirm idle"
     if worktree.last_used_at > cutoff:
         return "recently used (within the idle window)"
-    if _ticket_is_busy(worktree):
+    if ticket_is_busy(worktree.ticket):
         return "ticket has a live session or active/claimed task"
     if _is_currently_active(worktree, active_path):
         return "the currently-active worktree (CWD)"
@@ -143,6 +146,48 @@ def _active_delivery_keep_reason(worktree: Worktree, *, e2e_cutoff: datetime) ->
     if _is_reaper_pinned(worktree):
         return "explicitly pinned (extra['reaper_pinned'])"
     return None
+
+
+def active_delivery_keep_reason(worktree: Worktree, *, now: datetime | None = None) -> str | None:
+    """The #2227 active-delivery half of the reap guard, with the e2e cutoff resolved.
+
+    The worktree-level guards — a live external-delivery lease, a recent
+    E2E/evidence run, or an explicit ``extra['reaper_pinned']`` — shared by every
+    reap path. The public, self-contained wrapper over
+    :func:`_active_delivery_keep_reason` (it resolves the e2e recency cutoff from
+    settings). Reusable on its own: :func:`worktree_protects_against_reap` combines
+    it with :func:`ticket_is_busy`, and the FSM-done worktree reaper
+    (:func:`teatree.core.cleanup_liveness.worktree_liveness`) folds it in
+    UNCONDITIONALLY — unlike busy-ticket / recent-commit it is NOT an FSM-ceremony
+    false positive (the merge mints neither a delivery lease, an e2e run, nor a
+    pin), so a worktree delivering externally / freshly e2e-tested / pinned is KEPT
+    through the post-merge teardown too.
+    """
+    e2e_minutes = get_effective_settings().idle_stack_e2e_recent_minutes
+    e2e_cutoff = (now or timezone.now()) - timedelta(minutes=e2e_minutes)
+    return _active_delivery_keep_reason(worktree, e2e_cutoff=e2e_cutoff)
+
+
+def worktree_protects_against_reap(worktree: Worktree, *, now: datetime | None = None) -> str | None:
+    """The reason a destructive reaper must KEEP *worktree*, or ``None`` when it may reap.
+
+    The shared liveness predicate every OPPORTUNISTIC destructive reaper/teardown
+    path consults before deleting filesystem or DB state — the FSM-done worktree
+    reaper (:func:`teatree.core.worktree_done.reap_done_worktree`, via
+    :func:`teatree.core.cleanup_liveness.worktree_liveness`), the clean-merged
+    sweep, the merge-sync cleanup, and the orphan-isolated-root reaper all route
+    through it (or through :func:`teatree.core.cleanup.cleanup_worktree`). It
+    combines the ticket-level :func:`ticket_is_busy` (live session /
+    active-or-claimed task) with the worktree-level #2227 active-delivery guards
+    (:func:`active_delivery_keep_reason` — external-delivery lease, recent E2E,
+    ``reaper_pinned``) so the IRREVERSIBLE teardown reapers never protect LESS
+    than the REVERSIBLE idle-stack reaper. Explicit/FSM-driven teardown bypasses
+    this (it has decided to tear the worktree down); opportunistic reaps respect
+    it (#291/#2243 data-loss discipline).
+    """
+    if ticket_is_busy(worktree.ticket):
+        return "ticket has a live session or active/claimed task"
+    return active_delivery_keep_reason(worktree, now=now)
 
 
 def preserve_reason(
@@ -216,4 +261,11 @@ def reapable_worktrees(
             yield worktree
 
 
-__all__ = ["classify_running_worktrees", "preserve_reason", "reapable_worktrees"]
+__all__ = [
+    "active_delivery_keep_reason",
+    "classify_running_worktrees",
+    "preserve_reason",
+    "reapable_worktrees",
+    "ticket_is_busy",
+    "worktree_protects_against_reap",
+]

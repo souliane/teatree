@@ -118,7 +118,7 @@ class TestSessionStartBootstrapGating:
         assert out != ""
         ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
         assert "run /teatree" in ctx
-        assert "t3 loop tick" not in ctx
+        assert "t3 loops tick" not in ctx
 
     def test_fresh_session_without_marker_does_not_claim_ownership(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("T3_AUTOLOAD", raising=False)
@@ -131,7 +131,7 @@ class TestSessionStartBootstrapGating:
         out = capsys.readouterr().out
         assert out != ""
         ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
-        assert "t3 loop tick" in ctx
+        assert "t3 loops tick" in ctx
 
     def test_marked_session_claims_ownership(self) -> None:
         _mark_active("teatree-session")
@@ -155,7 +155,7 @@ class TestSessionStartBootstrapGating:
         out = capsys.readouterr().out
         assert out != ""
         ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
-        assert "t3 loop tick" in ctx
+        assert "t3 loops tick" in ctx
 
 
 # ── handle_enforce_loop_on_prompt gating ──────────────────────────────
@@ -411,9 +411,14 @@ class TestRisk6MidSessionOwnershipClaim:
         assert owner is not None
         assert owner["session_id"] == "mid-sess"
 
-    def test_toml_loops_disabled_prevents_ownership_claim(
+    def test_toml_loops_disabled_no_longer_prevents_ownership_claim(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
+        # The ``[loops] enabled = false`` toml kill-switch is removed — there is
+        # no ``[loops]`` toml disabled-state tier. Writing it is INERT and no
+        # longer prunes the ownership claim; loop pause/disable lives in the DB
+        # ``LoopState`` tier, and the in-process ``T3_LOOP_DISOWN`` knob is the
+        # orthogonal mitigation (test_loop_disown_prevents_ownership_claim).
         _mark_active("mid-sess-disabled")
         monkeypatch.setattr(router, "_tick_meta_stale", lambda: True)
         monkeypatch.setattr(router, "_session_has_loop", lambda sid: False)
@@ -424,7 +429,9 @@ class TestRisk6MidSessionOwnershipClaim:
 
         handle_enforce_loop_on_prompt({"session_id": "mid-sess-disabled"})
 
-        assert _read_loop_registry() == {}
+        owner = _read_loop_registry().get(_OWNER_LOOP)
+        assert owner is not None
+        assert owner["session_id"] == "mid-sess-disabled"
 
     def test_env_loops_disabled_all_no_longer_prevents_ownership_claim(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # ``T3_LOOPS_DISABLED`` is removed — it is INERT and no longer prunes the
@@ -502,7 +509,7 @@ class TestLoopAutoLoadOptInGate:
         self._opt_in(monkeypatch)
         handle_session_start_bootstrap({"session_id": "colleague"})
         out = capsys.readouterr().out
-        assert "t3 loop tick" in out
+        assert "t3 loops tick" in out
         assert _read_loop_registry().get(_OWNER_LOOP, {}).get("session_id") == "colleague"
 
     # prompt-time cron nag ─────────────────────────────────────────────
@@ -708,7 +715,7 @@ class TestAutoloadSessionStart:
         handle_session_start_bootstrap({"session_id": "owner-default"})
         assert _is_marked_active("owner-default")
         ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
-        assert "t3 loop tick" in ctx
+        assert "t3 loops tick" in ctx
         assert "run /teatree" not in ctx
 
     def test_autoload_on_claims_ownership(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -721,7 +728,7 @@ class TestAutoloadSessionStart:
         ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
         assert "run /teatree" in ctx
         assert "autoload = true" in ctx
-        assert "t3 loop tick" not in ctx
+        assert "t3 loops tick" not in ctx
         assert _read_loop_registry() == {}
 
     def test_compact_resume_default_off_skips_how_to(self, capsys: pytest.CaptureFixture[str]) -> None:

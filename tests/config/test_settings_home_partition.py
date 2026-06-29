@@ -24,7 +24,6 @@ _TOML_CARVE_OUT = frozenset(
         "check_updates",
         "autoload",
         "statusline_chain",
-        "workspace_dir",
         "worktrees_dir",
         "timezone",
         "privacy",
@@ -60,11 +59,15 @@ def test_db_home_and_toml_home_are_disjoint() -> None:
     assert db_home | toml_home == set(SETTING_HOMES)
 
 
-def test_toml_carve_out_is_exactly_the_eleven_fields() -> None:
+def test_toml_carve_out_is_exactly_the_ten_fields() -> None:
     # The irreducible carve-out — non-Django / pre-Django readers, infra
-    # bootstrap, nested structured tables — is exactly these eleven and no more.
+    # bootstrap, nested structured tables — is exactly these ten and no more.
+    # ``autoload`` joined the carve-out (#256, cold pre-Django engagement read);
+    # ``workspace_dir`` left it — it is now DB-home (per-overlay overridable,
+    # regroup-worktrees default, resolved by ``config.worktree_root()``).
     toml_home = {k for k, home in SETTING_HOMES.items() if home is SettingHome.TOML}
     assert toml_home == _TOML_CARVE_OUT
+    assert "workspace_dir" not in toml_home
 
 
 def test_autoload_is_toml_home_not_db() -> None:

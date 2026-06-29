@@ -10,8 +10,8 @@ them — a back-edge hidden from tach's acyclic guard.
 These readers depend on nothing but ``os.environ``, so they belong at the bottom
 of the ``teatree.loop`` layer. Pulling them into this leaf lets ``statusline_loops``
 reach them via an eager DOWN edge; ``tick_piggyback`` / ``queue_drain`` re-export
-them so every existing import path (the ``loop_tick`` / ``loops_tick`` management
-commands resolve ``_loop_owner_ttl_seconds`` from ``tick_piggyback``) is unchanged.
+them so every existing import path (the ``loops_tick`` management command resolves
+``_loop_owner_ttl_seconds`` from ``tick_piggyback``) is unchanged.
 """
 
 import os

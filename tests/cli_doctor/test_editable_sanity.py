@@ -107,10 +107,10 @@ class TestCheckEditableSanity(TestCase):
 
     def test_auto_fixes_overlay_when_contribute_true(self):
         _stage_home(self.tmp_path, self.monkeypatch)
-        _write_teatree_toml(
-            self.tmp_path / ".teatree.toml",
-            f'[teatree]\nworkspace_dir = "{self.tmp_path}"\n',
-        )
+        _write_teatree_toml(self.tmp_path / ".teatree.toml", "[teatree]\n")
+        # Overlay repos are discovered under config.clone_root(), resolved from
+        # T3_WORKSPACE_DIR — not the retired [teatree] workspace_dir TOML key.
+        self.monkeypatch.setenv("T3_WORKSPACE_DIR", str(self.tmp_path))
         ConfigSetting.objects.set_value("contribute", value=True)
         overlay_repo = self.tmp_path / "my-overlay"
         overlay_repo.mkdir()
@@ -163,10 +163,10 @@ class TestCheckEditableSanity(TestCase):
 
     def test_warns_when_overlay_repo_not_found(self):
         _stage_home(self.tmp_path, self.monkeypatch)
-        _write_teatree_toml(
-            self.tmp_path / ".teatree.toml",
-            f'[teatree]\nworkspace_dir = "{self.tmp_path}"\n',
-        )
+        _write_teatree_toml(self.tmp_path / ".teatree.toml", "[teatree]\n")
+        # Overlay repos are discovered under config.clone_root(), resolved from
+        # T3_WORKSPACE_DIR — not the retired [teatree] workspace_dir TOML key.
+        self.monkeypatch.setenv("T3_WORKSPACE_DIR", str(self.tmp_path))
         ConfigSetting.objects.set_value("contribute", value=True)
         # No ``my-overlay`` directory under workspace_dir.
         self.monkeypatch.setattr(

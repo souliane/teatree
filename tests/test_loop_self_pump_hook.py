@@ -112,7 +112,10 @@ class TestLoopSelfPump:
         handle_loop_self_pump({"session_id": "owner-1"})
 
         reason = _decision(capsys)["reason"]
-        assert "T3_LOOP_SESSION_ID=owner-1 T3_LOOP_SESSION_PID=4242 t3 loop tick" in reason
+        # #2777 cutover: the self-pump fires the bare master `t3 loops tick`
+        # (claims loop-owner + loop-tick — behaviour-preserving vs the retired
+        # `t3 loop tick`), not the legacy fat-tick spelling.
+        assert "T3_LOOP_SESSION_ID=owner-1 T3_LOOP_SESSION_PID=4242 t3 loops tick" in reason
 
     def test_owner_with_no_pending_work_does_not_block(
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch

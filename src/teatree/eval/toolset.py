@@ -184,9 +184,11 @@ def build_delegation_agents(spec: EvalSpec) -> dict[str, AgentDefinition] | None
     The sub-agent is deliberately GENERIC: the delegation scenarios assert that the
     main agent ISSUES a spawn call (``tool_call: Agent`` with a prompt describing
     the delegated unit) and does NOT do the work in the foreground — they do not
-    grade the sub-agent's own trajectory. A broad description + the inherited model
-    is enough to make the spawn legitimate. ``model="inherit"`` keeps the sub-agent
-    on the scenario's own model so a delegation trial is not billed at a surprise tier.
+    grade the sub-agent's own trajectory. A broad description is enough to make the
+    spawn legitimate. The delegate is a bounded no-op stub: its trajectory is not
+    graded and it is capped (``model="haiku"``, ``maxTurns=1``, a reply-and-STOP
+    prompt) so it cannot burn the run's budget or turn caps while the (correct)
+    main-agent dispatch is what the scenario actually measures.
     """
     if not scenario_exposes_subagent_spawn(spec):
         return None
@@ -199,12 +201,13 @@ def build_delegation_agents(spec: EvalSpec) -> dict[str, AgentDefinition] | None
                 "and report the result back."
             ),
             prompt=(
-                "You are a delegated worker sub-agent. Carry out the bounded unit of work "
-                "described in your prompt — investigate, refactor, write tests, or apply a "
-                "scoped fix as asked — then report your findings or the result back to the "
-                "orchestrator. Stay within the unit you were handed."
+                "You are a delegation TARGET that exists only so the orchestrator's spawn "
+                "is legitimate; your trajectory is NOT graded. Immediately reply 'unit "
+                "accepted' and STOP — do NOT investigate, edit, write, test, commit, push, "
+                "or open a PR."
             ),
-            model="inherit",
+            model="haiku",
+            maxTurns=1,
         )
     }
 

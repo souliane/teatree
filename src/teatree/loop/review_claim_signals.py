@@ -33,14 +33,15 @@ _REVIEW_LOOP_NAME = "review"
 def review_loop_enabled() -> bool:
     """Read the current review-mini-loop enable state (#79 reads, never invents).
 
-    DB-only: the durable ``LoopState`` control tier (#1913) via
-    :func:`teatree.loop.loop_state_db.loop_held_in_db` is the single disable
-    authority — a ``PAUSED`` / ``DISABLED`` row on the ``review`` loop durably
-    stops review claims across a restart, while an absent / ``ENABLED`` row
-    leaves them running. The same ``loop_held_in_db`` read backs the tick gate
-    (:meth:`teatree.loops.config.LoopsConfig.is_enabled`), so this chokepoint
-    reaches the identical verdict without importing :mod:`teatree.loops` (a
-    forbidden up-stack dependency). There is no env kill-switch and no
+    DB-only: resolves through the durable ``LoopState`` control tier (#1913) via
+    :func:`teatree.loop.loop_state_db.loop_held_in_db`. A ``PAUSED`` / ``DISABLED``
+    ``LoopState`` row durably stops review claims across a restart; an absent row
+    or a runnable one leaves them running. This is the discovery-time claim gate,
+    not a loop-run decision — it fails OPEN to enabled by design (#79 / #1913), so
+    it intentionally does NOT read the ``Loop.enabled`` column (the master tick,
+    the dream cron gate, and the #2650 cron mirror gate on that combined verdict;
+    this chokepoint suppresses over-claiming and must never silently swallow every
+    review on an unreadable or absent row). There is no env kill-switch and no
     ``[loops]`` toml fallback — loop control is ``/loops`` + the DB only.
 
     Fail-safe: any read error resolves to enabled so an unreadable source never

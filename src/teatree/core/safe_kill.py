@@ -318,7 +318,7 @@ def _dead_task_for_session(session_id: str) -> tuple[int | None, bool]:
     attempt = TaskAttempt.objects.filter(agent_session_id=session_id).select_related("task").order_by("-pk").first()
     if attempt is None:
         return None, False
-    is_dead = attempt.task.status in {Task.Status.FAILED, Task.Status.COMPLETED}
+    is_dead = attempt.task.status in Task.Status.terminal()
     return attempt.task_id, is_dead
 
 

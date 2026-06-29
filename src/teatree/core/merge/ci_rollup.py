@@ -200,42 +200,120 @@ def _rollup_verdict(statuses: list[str]) -> str:
     return "green"
 
 
+def _check_name(entry: object) -> str:
+    """The NAME used to match a rollup entry against a required-status-check context.
+
+    A CheckRun carries ``name``; a legacy StatusContext carries ``context``. The
+    branch-protection required contexts are keyed by this name.
+    """
+    if not isinstance(entry, dict):
+        return ""
+    typed = cast("_RollupEntry", entry)
+    return str(typed.get("name") or typed.get("context") or "")
+
+
+def _required_contexts_verdict(deduped: "list[RawAPIDict]", required_names: set[str]) -> str:
+    """Verdict over ONLY the branch-protection-required contexts (§17.4.3 step 3).
+
+    The authoritative required set is *required_names* (the repo's branch-
+    protection ``required_status_checks`` contexts). Each required context must
+    have a reporting check that is green; a required context that is failing →
+    ``failed``, one still pending OR with no reporting check at all (missing) →
+    ``pending`` (both refuse the merge, fail closed). A check whose name is NOT
+    in *required_names* (``eval``, advisory lanes) is ignored entirely — it can
+    never block the merge regardless of its conclusion. When several rollup
+    entries share a required name the WORST verdict wins.
+    """
+    verdicts_by_name: dict[str, list[str]] = {}
+    for check in deduped:
+        name = _check_name(check)
+        if name not in required_names:
+            continue
+        if verdict := _classify_check(check):
+            verdicts_by_name.setdefault(name, []).append(verdict)
+    # A required context with no reporting check at all is "pending" (missing → refuse).
+    per_context = [_rollup_verdict(verdicts_by_name.get(name) or ["pending"]) for name in required_names]
+    return _rollup_verdict(per_context)
+
+
 def fetch_required_checks_status(slug: str, pr_id: int, *, host_kind: str = "github") -> str:
     """Live required-checks verdict for the PR/MR head — §17.4.3 step 3.
 
-    Evaluated against the forge's live rollup at merge time (the authoritative
+    Evaluated against the forge's live state at merge time (the authoritative
     set), NOT the ``gh_verify_result`` snapshot saved on the CLEAR. Returns
-    ``"green"`` only when every reported check concluded successfully;
-    ``"pending"`` while any is still running; otherwise the failing state.
+    ``"green"`` only when every branch-protection-REQUIRED context concluded
+    successfully; ``"pending"`` while a required context is still running or has
+    not reported; otherwise ``"failed"``.
 
     The backend returns the RAW rollup (GitHub ``statusCheckRollup`` entries,
     GitLab pipeline entries); core does the verdict classification here so the
-    §17.4.3 ``green``/``pending``/``failed`` semantics stay in one place. A
-    backend query failure surfaces as the :data:`ROLLUP_QUERY_FAILED` sentinel
-    → ``failed``; an empty rollup means no required checks → ``green``. GitLab
-    needs the head SHA to pick the right (non-merge-train) pipeline, fetched via
-    :func:`fetch_live_head_sha`.
+    §17.4.3 ``green``/``pending``/``failed`` semantics stay in one place. A rollup
+    query failure surfaces as the :data:`ROLLUP_QUERY_FAILED` sentinel → ``failed``.
 
-    The GitHub rollup is first deduped to the newest check-run per
-    ``(typename, name)`` so a stale/cancelled FAILURE superseded by a newer
-    SUCCESS for the same name does not false-block the merge — parity with the
-    forge's own branch protection, which keys newest-per-context.
+    **GitHub — the required set is branch protection, not the whole rollup.** The
+    ``statusCheckRollup`` reports EVERY check on the head commit, required or not
+    (``eval``, advisory lanes, …). The authoritative required set is the repo's
+    branch-protection ``required_status_checks`` contexts, fetched via
+    :meth:`fetch_required_status_check_contexts`. Only a check whose name is in
+    that set can block the merge; a non-required check NEVER blocks regardless of
+    its conclusion (failed/pending/skipped). If the required set cannot be fetched
+    the merge fails CLOSED (``failed``) — an indeterminate required set never
+    falls open. An empty required set (the base branch has no required-status-
+    check protection) means no gate → ``green``. The rollup is first deduped to
+    the newest check-run per ``(typename, name)`` so a stale/cancelled FAILURE
+    superseded by a newer SUCCESS for the same name does not false-block — parity
+    with the forge's own branch protection, which keys newest-per-context.
+
+    **GitLab** gates on the head pipeline's overall status (which aggregates the
+    required jobs server-side); it needs the head SHA to pick the right
+    (non-merge-train) pipeline, fetched via :func:`fetch_live_head_sha`.
     """
     backend = _code_host_for(host_kind)
     rollup = backend.fetch_required_checks_rollup(slug=slug, pr_id=pr_id)
     if rollup_query_failed(rollup):
         return "failed"
     if host_kind == "gitlab":
-        if not rollup:
-            return "green"
-        head_sha = backend.fetch_live_head_sha(slug=slug, pr_id=pr_id)
-        head = _select_gitlab_head_pipeline(list(rollup), head_sha, slug=slug, pr_id=pr_id)
-        if head is None:
-            return "failed"
-        return _classify_gitlab_pipeline(str(head.get("status") or ""))
-    deduped = _dedupe_newest_per_name(rollup)
-    statuses = [verdict for check in deduped if (verdict := _classify_check(check))]
-    return _rollup_verdict(statuses) if statuses else "green"
+        return _gitlab_pipeline_verdict(backend, rollup, slug=slug, pr_id=pr_id)
+    return _github_required_checks_verdict(backend, rollup, slug=slug, pr_id=pr_id)
+
+
+def _gitlab_pipeline_verdict(
+    backend: "CodeHostBackend",
+    rollup: "list[RawAPIDict]",
+    *,
+    slug: str,
+    pr_id: int,
+) -> str:
+    """GitLab §17.4.3 verdict: the head pipeline's overall status (aggregates required jobs)."""
+    if not rollup:
+        return "green"
+    head_sha = backend.fetch_live_head_sha(slug=slug, pr_id=pr_id)
+    head = _select_gitlab_head_pipeline(list(rollup), head_sha, slug=slug, pr_id=pr_id)
+    if head is None:
+        return "failed"
+    return _classify_gitlab_pipeline(str(head.get("status") or ""))
+
+
+def _github_required_checks_verdict(
+    backend: "CodeHostBackend",
+    rollup: "list[RawAPIDict]",
+    *,
+    slug: str,
+    pr_id: int,
+) -> str:
+    """GitHub §17.4.3 verdict: scope the rollup to the branch-protection required contexts.
+
+    Fail CLOSED when the required set is indeterminate; ``green`` when no
+    required-status-check gate is configured; otherwise the verdict over only
+    the required contexts (a non-required check never blocks).
+    """
+    required = backend.fetch_required_status_check_contexts(slug=slug, pr_id=pr_id)
+    if rollup_query_failed(required):
+        return "failed"  # fail CLOSED — the branch-protection required set is indeterminate
+    required_names = {str(entry["context"]) for entry in required if isinstance(entry, dict) and entry.get("context")}
+    if not required_names:
+        return "green"  # no required-status-check gate configured → nothing to satisfy
+    return _required_contexts_verdict(_dedupe_newest_per_name(rollup), required_names)
 
 
 _GITLAB_PIPELINE_GREEN_STATUSES = frozenset({"success", "manual", "skipped"})

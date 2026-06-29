@@ -226,3 +226,43 @@ def _populate_loop_owner_anchor(zones: StatuslineZones) -> None:
         return
     if line:
         getattr(zones, zone).append(line)
+
+
+def rerender_statusline(target: Path | None = None, *, colorize: bool | None = None) -> Path:
+    """Re-render the statusline from current state without a full tick (#2625).
+
+    Runs the idle (no-jobs) render path — the live-loop, open-PR, and loop-owner
+    anchors over an empty zone set — so a stale merged-PR / terminal-ticket URL
+    drops out of the rendered file. This is the idempotent self-heal seam the
+    domain-layer ``StaleStatuslineEntryDetector`` cannot reach itself (it would
+    invert the tach-enforced dependency DAG); the orchestration layer injects it
+    as the action-ladder ``auto_fix_callable``, retiring the prior
+    ``_default_rerender`` no-op.
+
+    A re-render runs NO scan, so it has no fresh ``my_pr.*`` signals — it must
+    leave the ``open-prs.json`` snapshot intact (the full-tick scan path owns
+    that cache). The open-PR anchor reads the existing snapshot via
+    :func:`_populate_open_prs_in_anchors`, so the genuinely-open PRs survive the
+    refresh. Writing an empty cache here (the prior behaviour) wiped every open
+    PR a real scan had recorded, blanking the anchor until the next full tick.
+    """
+    zones = StatuslineZones()
+    _populate_live_loops_in_anchors(zones, colorize=colorize)
+    _populate_open_prs_in_anchors(zones, target=target, colorize=colorize)
+    _populate_loop_owner_anchor(zones)
+    return render(zones, target=target, colorize=colorize)
+
+
+def self_improve_rerender(_report: object) -> None:
+    """Action-ladder ``auto_fix_callable`` adapter for the statusline self-heal (#2625).
+
+    Bridges the ladder's ``Callable[[DetectorReport], None]`` signature to the
+    parameterless idle re-render. Every orchestration entry point that drives the
+    cheap self-improve tier injects this as the ladder's ``auto_fix_callable`` — the
+    dedicated ``loop_self_improve`` slot and the tick piggyback alike — so the
+    domain-layer ``StaleStatuslineEntryDetector`` never reaches up into this
+    orchestration render seam itself (which would invert the tach-enforced DAG).
+    The ladder only invokes it once a whitelisted ``auto_fix`` report reaches the
+    ``auto_fix`` rung; the report is unused here (the heal reads current state).
+    """
+    rerender_statusline()

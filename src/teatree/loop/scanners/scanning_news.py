@@ -188,6 +188,7 @@ class ScanningNewsScanner:
                     session=session,
                     phase=SCANNING_NEWS_PHASE,
                     execution_target=task_model.ExecutionTarget.HEADLESS,
+                    subject=f"Scan AI news: {self.overlay_name}",
                     execution_reason=self._execution_reason(trigger),
                 )
         except Exception:

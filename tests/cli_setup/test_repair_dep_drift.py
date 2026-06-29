@@ -1,4 +1,4 @@
-"""Tests for ``_repair_dep_drift`` — t3 setup dependency-drift repair.
+"""Tests for ``repair_dep_drift`` — t3 setup dependency-drift repair.
 
 Lifted verbatim from the former monolithic ``tests/test_cli_setup.py``
 (souliane/teatree#443). No behavior change: same assertions, autouse
@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from teatree.cli.setup import _repair_dep_drift
+from teatree.cli.dep_drift_repair import repair_dep_drift
 
 
 def _write_pyproject(repo: Path, deps: list[str]) -> Path:
@@ -27,7 +27,7 @@ def _write_pyproject(repo: Path, deps: list[str]) -> Path:
 
 
 class TestRepairDepDrift:
-    """``_repair_dep_drift`` repairs the env that actually executes ``t3``.
+    """``repair_dep_drift`` repairs the env that actually executes ``t3``.
 
     The detection (:func:`find_missing_dependencies`) reads the running
     interpreter; the regression these tests guard is the repair targeting a
@@ -48,12 +48,12 @@ class TestRepairDepDrift:
         repo = tmp_path / "repo"
         _write_pyproject(repo, ["django", "httpx"])
         with patch("teatree.cli.dep_drift_repair.find_missing_dependencies", return_value=[]):
-            assert _repair_dep_drift(repo) is False
+            assert repair_dep_drift(repo) is False
 
     def test_returns_false_when_pyproject_absent(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
         repo.mkdir()
-        assert _repair_dep_drift(repo) is False
+        assert repair_dep_drift(repo) is False
 
     def test_warns_on_non_editable_install_points_at_running_python(
         self,
@@ -67,7 +67,7 @@ class TestRepairDepDrift:
             patch("teatree.cli.dep_drift_repair.editable_source_path", return_value=None),
             patch("teatree.cli.dep_drift_repair.running_python", return_value=Path("/envs/run/bin/python")),
         ):
-            assert _repair_dep_drift(repo) is False
+            assert repair_dep_drift(repo) is False
         out = capsys.readouterr().out
         assert "tomlkit" in out
         # Manual hint must name the *running* interpreter, not a uv tool env.
@@ -109,7 +109,7 @@ class TestRepairDepDrift:
             patch("teatree.cli.dep_drift_repair.sys.argv", ["/pyenv/shims/t3", "setup"]),
             pytest.raises(SystemExit),
         ):
-            _repair_dep_drift(repo)
+            repair_dep_drift(repo)
 
         repair_cmd = mock_run.call_args.args[0]
         # The repair MUST target the running interpreter, NOT `uv tool`.
@@ -141,7 +141,7 @@ class TestRepairDepDrift:
             patch("teatree.cli.dep_drift_repair.sys.argv", ["/uv/bin/t3", "setup"]),
             pytest.raises(SystemExit),
         ):
-            _repair_dep_drift(repo)
+            repair_dep_drift(repo)
         install_cmd = mock_run.call_args.args[0]
         assert install_cmd[:3] == ["/usr/bin/uv", "tool", "install"]
         assert "--reinstall" in install_cmd
@@ -161,7 +161,7 @@ class TestRepairDepDrift:
             patch("teatree.cli.dep_drift_repair.running_env_is_uv_tool", return_value=True),
             patch("teatree.cli.dep_drift_repair.shutil.which", return_value=None),
         ):
-            assert _repair_dep_drift(repo) is False
+            assert repair_dep_drift(repo) is False
         assert "uv` is not on PATH" in capsys.readouterr().out
 
     def test_returns_false_and_prints_manual_fix_when_reinstall_fails(
@@ -185,7 +185,7 @@ class TestRepairDepDrift:
             patch("teatree.cli.dep_drift_repair._run_captured", return_value=completed),
             patch("teatree.cli.dep_drift_repair.os.execv") as mock_execv,
         ):
-            assert _repair_dep_drift(repo) is False
+            assert repair_dep_drift(repo) is False
             mock_execv.assert_not_called()
         out = capsys.readouterr().out
         assert "Reinstall failed" in out
@@ -209,7 +209,7 @@ class TestRepairDepDrift:
             patch("teatree.cli.dep_drift_repair.editable_source_path", return_value=source),
             patch("teatree.cli.dep_drift_repair.running_python", return_value=running_py),
         ):
-            assert _repair_dep_drift(repo) is False
+            assert repair_dep_drift(repo) is False
         out = capsys.readouterr().out
         assert "already attempted" in out
         assert "tomlkit" in out

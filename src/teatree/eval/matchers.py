@@ -49,8 +49,12 @@ def assert_tool_call_contains(run: EvalRun, tool_name: str, arg_path: str, subst
     for call in run.tool_calls:
         if canonicalize_tool(call.name) != tool_name:
             continue
-        value = _as_text(_get_arg(call, arg_path))
-        if value is not None and substring in value:
+        # An absent arg compares as "" so a tool-presence matcher (substring "")
+        # passes when the agent calls the tool with no/omitted arg — e.g. a
+        # correct ``TaskList()`` that reads the whole live list. A specific
+        # substring still fails against "", so value-pinning matchers are unchanged.
+        value = _as_text(_get_arg(call, arg_path)) or ""
+        if substring in value:
             return
     msg = (
         f"Expected a {tool_name} tool call with {arg_path} containing {substring!r}, "
@@ -64,8 +68,12 @@ def assert_tool_call_matching(run: EvalRun, tool_name: str, arg_path: str, regex
     for call in run.tool_calls:
         if canonicalize_tool(call.name) != tool_name:
             continue
-        value = _as_text(_get_arg(call, arg_path))
-        if value is not None and pattern.search(value):
+        # An absent arg compares as "" so a tool-presence matcher (``~ ".*"``)
+        # passes when the agent calls the tool with no/omitted arg — e.g. a
+        # correct ``TaskList()`` reading the whole live list. A value-pinning
+        # regex (``~ "in_progress"``) still fails against "", so it is unchanged.
+        value = _as_text(_get_arg(call, arg_path)) or ""
+        if pattern.search(value):
             return
     msg = (
         f"Expected a {tool_name} tool call with {arg_path} matching regex {regex!r}, "

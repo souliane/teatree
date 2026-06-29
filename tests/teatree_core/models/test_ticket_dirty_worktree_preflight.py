@@ -199,7 +199,7 @@ class TestDirtyWorktreePreflightRefusesTransition(TestCase):
 
 
 class TestWorktreeTrackedDirtyPathFailOpen(TestCase):
-    """Fail-open behaviour of ``_worktree_tracked_dirty_path``.
+    """Fail-open behaviour of ``worktree_tracked_dirty_path``.
 
     Returns ``None`` on an unverifiable worktree — the guard must not
     block on a state it cannot confirm, otherwise a legitimately-clean
@@ -211,18 +211,18 @@ class TestWorktreeTrackedDirtyPathFailOpen(TestCase):
         self._tmp_path = tmp_path
 
     def test_returns_none_when_worktree_has_no_path(self) -> None:
-        from teatree.core.models.ticket import _worktree_tracked_dirty_path  # noqa: PLC0415
+        from teatree.core.models.ticket_worktree_checks import worktree_tracked_dirty_path  # noqa: PLC0415
 
         ticket = Ticket.objects.create()
         wt = Worktree.objects.create(ticket=ticket, repo_path="", branch="feature", extra={})
 
-        assert _worktree_tracked_dirty_path(wt) is None
+        assert worktree_tracked_dirty_path(wt) is None
 
     def test_returns_none_when_git_status_raises(self) -> None:
         from unittest.mock import patch  # noqa: PLC0415
 
-        from teatree.core.models import ticket as ticket_mod  # noqa: PLC0415
-        from teatree.core.models.ticket import _worktree_tracked_dirty_path  # noqa: PLC0415
+        from teatree.core.models import ticket_worktree_checks as checks_mod  # noqa: PLC0415
+        from teatree.core.models.ticket_worktree_checks import worktree_tracked_dirty_path  # noqa: PLC0415
         from teatree.utils.run import CommandFailedError  # noqa: PLC0415
 
         ticket = Ticket.objects.create()
@@ -233,5 +233,5 @@ class TestWorktreeTrackedDirtyPathFailOpen(TestCase):
             extra={"worktree_path": str(self._tmp_path)},
         )
         err = CommandFailedError(["git", "status", "--porcelain"], 128, "", "not a git repository")
-        with patch.object(ticket_mod.git, "status_porcelain", side_effect=err):
-            assert _worktree_tracked_dirty_path(wt) is None
+        with patch.object(checks_mod.git, "status_porcelain", side_effect=err):
+            assert worktree_tracked_dirty_path(wt) is None

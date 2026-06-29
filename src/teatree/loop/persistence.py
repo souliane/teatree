@@ -20,8 +20,6 @@ from teatree.loop.dispatch import DispatchAction
 
 logger = logging.getLogger(__name__)
 
-_OPEN_TASK_STATUSES: frozenset[str] = frozenset({Task.Status.PENDING, Task.Status.CLAIMED})
-
 
 def persist_agent_actions(actions: list[DispatchAction]) -> list[Task]:
     """Translate ``kind="agent"`` actions into DB rows; return the newly created Tasks.

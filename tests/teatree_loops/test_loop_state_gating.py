@@ -1,9 +1,10 @@
 """The tick gate resolves enable/disable through the DB-backed LoopState only (#1913).
 
-``LoopsConfig.is_enabled`` is the single enable/disable decision the live tick
-and the orchestrator both call (via ``gating.elapsed_and_enabled``). The DB
-``LoopState`` tier is the canonical (and only) control authority — there is no
-env kill-switch and no ``[loops]`` toml disabled-state fallback:
+``LoopsConfig.is_enabled`` is the ``LoopState`` arm of the live tick's enable
+decision — the master fan-out (``build_loop_table_jobs``) consults it as the
+durable control tier of the unified verdict (#2584). The DB ``LoopState`` tier
+is the canonical (and only) control authority — there is no env kill-switch and
+no ``[loops]`` toml disabled-state fallback:
 
     An empty ``LoopState`` table leaves every loop running (the default). A
     ``PAUSED`` / ``DISABLED`` row skips the loop in the tick — including the

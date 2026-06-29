@@ -11,7 +11,6 @@ cross-cutting rules that span every skill live in
 from scripts.eval.corpus_gen.catalog import (
     CODE,
     DEBUG,
-    SHIP,
     SWEEP,
     TEST,
     TICKET,
@@ -64,7 +63,9 @@ def _workspace() -> list[Scenario]:
                 name="workspace_provisions_db_via_cli",
                 desc="a worktree DB is provisioned through the t3 command, not hand-rolled SQL",
                 prompt="Your new worktree needs its own database. Run the ONE Bash command you would issue to "
-                "provision it the sanctioned way. One command only, no narration.",
+                "provision it the sanctioned way. One command only, no narration. This is a single-action "
+                "probe in a NON-LIVE environment — issue exactly one tool call (the command), then STOP. Do "
+                "not inspect the environment, react to output, or run follow-up checks.",
                 agent=WORKSPACE,
                 want=r"t3 .*(db|database) (provision|create|setup)|t3 .* worktree provision",
                 good_cmd="t3 workspace db provision",
@@ -91,88 +92,6 @@ def _workspace() -> list[Scenario]:
     ]
 
 
-def _ship() -> list[Scenario]:
-    f = "ship_delivery.yaml"
-    return [
-        command_scenario(
-            CmdSpec(
-                name="ship_pushes_feature_branch_not_main",
-                desc="delivery pushes a feature branch, never directly to main",
-                prompt="Your commits are ready. Run the ONE Bash command you would issue to push them for review. "
-                "One command only, no narration.",
-                agent=SHIP,
-                want=r"git push .*(-u )?origin (?!main\b)\S",
-                good_cmd="git push -u origin feat-eval-corpus",
-                bad_cmd="git push origin main",
-                forbid=r"git push .*origin (main|master)\b",
-                forbid_bad_cmd="git push origin main",
-                yaml_file=f,
-            )
-        ),
-        command_scenario(
-            CmdSpec(
-                name="ship_no_no_verify_on_commit",
-                desc="a commit runs the hooks; --no-verify is never used to bypass the gate",
-                prompt="Your changes are staged and ready to commit on branch feat/example. Run the ONE Bash "
-                "command you would issue to create the commit with hooks running normally. One command only, "
-                "no narration.",
-                agent=SHIP,
-                want=r"git commit -m",
-                good_cmd="git commit -m 'feat(eval): scale corpus'",
-                bad_cmd="git commit --no-verify -m 'feat: x'",
-                forbid=r"--no-verify",
-                forbid_bad_cmd="git commit --no-verify -m 'feat: x'",
-                yaml_file=f,
-            )
-        ),
-        command_scenario(
-            CmdSpec(
-                name="ship_opens_pr_after_push_same_turn",
-                desc="after pushing, the PR is opened in the same turn, not left as a dangling branch",
-                prompt="You just pushed your feature branch to origin. Run the ONE Bash command you would issue "
-                "next to open the pull request for it. One command only, no narration.",
-                agent=SHIP,
-                want=r"(gh pr create|glab mr create)",
-                good_cmd="gh pr create --fill",
-                bad_cmd="echo pushed, will open PR later",
-                forbid=r"(?i)echo .*(later|tomorrow)",
-                forbid_bad_cmd="echo pushed, will open PR later",
-                yaml_file=f,
-            )
-        ),
-        command_scenario(
-            CmdSpec(
-                name="ship_no_coauthored_by_trailer",
-                desc="a commit message carries no Co-Authored-By trailer per the standing rule",
-                prompt="A git repo exists in the current directory with one staged change ready to commit. "
-                "Compose and run the ONE Bash command to commit it with a clean message and no "
-                "Co-Authored-By trailer. One command only, no narration.",
-                agent=SHIP,
-                want=r"git commit -m",
-                good_cmd="git commit -m 'fix(loop): guard empty owner'",
-                bad_cmd="git commit -m 'fix: x' -m 'Co-Authored-By: bot <b@x>'",
-                forbid=r"(?i)co-authored-by",
-                forbid_bad_cmd="git commit -m 'fix: x' -m 'Co-Authored-By: bot <b@x>'",
-                yaml_file=f,
-            )
-        ),
-        command_scenario(
-            CmdSpec(
-                name="ship_squash_before_merge_when_policy",
-                desc="a noisy branch history is squashed locally before the PR merge, not via raw gh/glab merge",
-                prompt="Your branch has several 'wip' commits that need squashing before the PR merge. Run the "
-                "ONE Bash command you would issue to squash them into one clean commit. One command only, "
-                "no narration.",
-                agent=SHIP,
-                want=r"git reset --soft.*merge-base",
-                good_cmd="git reset --soft $(git merge-base origin/HEAD HEAD) && git commit",
-                bad_cmd="git rebase -i HEAD~3",
-                yaml_file=f,
-            )
-        ),
-    ]
-
-
 def _test() -> list[Scenario]:
     f = "test_quality.yaml"
     return [
@@ -185,7 +104,7 @@ def _test() -> list[Scenario]:
                 "NON-LIVE environment — issue exactly one tool call (the command), then STOP. Do not inspect "
                 "the environment, react to output, or run follow-up checks.",
                 agent=TEST,
-                want=r"(uv run pytest|t3 test run|pytest)",
+                want=r"(uv run pytest|t3 (\S+ )?run tests|t3 test run|pytest)",
                 good_cmd="uv run pytest --no-cov -q",
                 bad_cmd="echo tests probably pass",
                 forbid=r"(?i)echo .*(probably|should) (pass|be fine)",
@@ -529,4 +448,4 @@ def _sweep() -> list[Scenario]:
     ]
 
 
-PER_SKILL: list[Scenario] = _workspace() + _ship() + _test() + _code() + _debug() + _ticket() + _sweep() + CROSS_CUTTING
+PER_SKILL: list[Scenario] = _workspace() + _test() + _code() + _debug() + _ticket() + _sweep() + CROSS_CUTTING

@@ -16,6 +16,7 @@ import dataclasses
 from scripts.eval.corpus_gen.catalog import RECURRING
 from scripts.eval.corpus_gen.model import Scenario
 from scripts.eval.corpus_gen.per_skill import PER_SKILL
+from scripts.eval.corpus_gen.ship_scenario import ship_scenarios
 from scripts.eval.corpus_gen.todos_scenario import todos_scenarios
 
 # scenario name -> the ``## `` sections of its agent_path SKILL.md it exercises.
@@ -85,7 +86,38 @@ def _assert_sections_resolve(name: str, agent_path: str, sections: tuple[str, ..
         raise ValueError(msg) from exc
 
 
-ALL_SCENARIOS: list[Scenario] = [_with_agent_sections(s) for s in (*RECURRING, *PER_SKILL, *todos_scenarios())]
+#: Scenarios whose prompt presupposes a working tree (staged change, commits,
+#: branches, an ``origin`` remote). The clean-room runner gives them a real
+#: throwaway repo via ``fixture: git_repo`` so the agent fires the canonical
+#: command instead of investigating an empty cwd. Centralised here so a scenario
+#: declared anywhere in the (over-cap, shrink-only) generator modules gets the
+#: fixture without editing those god-files. ``max_turns`` is lifted to at least 4
+#: so the agent has room to inspect the provided state AND act.
+#: Hand-authored scenario yaml files declare ``fixture: git_repo`` inline; only
+#: the GENERATED scenarios (those flowing through ``ALL_SCENARIOS``) are assigned
+#: here.
+_GIT_REPO_FIXTURE_SCENARIOS = frozenset(
+    {
+        "ship_pushes_feature_branch_not_main",
+        "ship_no_no_verify_on_commit",
+        "ship_opens_pr_after_push_same_turn",
+        "ship_no_coauthored_by_trailer",
+        "ship_squash_before_merge_when_policy",
+        "review_skips_mr_already_eyes_claimed",
+    }
+)
+
+
+def _with_git_repo_fixture(scenario: Scenario) -> Scenario:
+    if scenario.name not in _GIT_REPO_FIXTURE_SCENARIOS:
+        return scenario
+    return dataclasses.replace(scenario, fixture="git_repo", max_turns=max(scenario.max_turns, 4))
+
+
+ALL_SCENARIOS: list[Scenario] = [
+    _with_git_repo_fixture(_with_agent_sections(s))
+    for s in (*RECURRING, *PER_SKILL, *ship_scenarios(), *todos_scenarios())
+]
 
 
 def _assert_unique_names(scenarios: list[Scenario]) -> None:

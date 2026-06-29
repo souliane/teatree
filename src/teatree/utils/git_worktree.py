@@ -1,8 +1,8 @@
 """Worktree management and the teardown data-loss guards.
 
-The worktree partition of :mod:`teatree.utils.git`. Holds worktree add/remove,
-the #706 "absent from all remotes" guard, and the bundle-recovery primitive,
-all via the :mod:`teatree.utils.git_run` runners.
+The worktree partition of :mod:`teatree.utils.git`. Holds worktree add/remove
+and the #706 "absent from all remotes" guard, all via the
+:mod:`teatree.utils.git_run` runners.
 """
 
 from pathlib import Path
@@ -89,6 +89,36 @@ def worktree_remove(repo: str = ".", path: str = "") -> bool:
     return check(repo=repo, args=["worktree", "remove", "--force", path])
 
 
+def worktree_move(repo: str, src: str, dst: str) -> None:
+    """``git worktree move <src> <dst>`` run from *repo* (the source clone).
+
+    Updates git's worktree admin (the per-worktree gitdir + the gitfile pointer)
+    so the moved worktree stays linked to its clone — the reason a raw ``mv`` is
+    wrong (it leaves git's metadata pointing at the stale path). Run from *repo*
+    (the clone, or any OTHER worktree), never from inside *src*: git refuses to
+    move the worktree it is currently sitting in. Raises ``CommandFailedError``
+    on failure so the caller can report-and-continue.
+    """
+    run_strict(repo=repo, args=["worktree", "move", src, dst])
+
+
+def locked_worktree_paths(repo: str) -> set[str]:
+    """Resolved paths of *repo*'s git-locked worktrees (``git worktree list --porcelain``).
+
+    A ``locked`` line in the porcelain listing marks the preceding ``worktree``
+    entry as locked; a locked worktree must never be relocated. Paths are
+    ``resolve()``-d so they compare equal to a caller's ``Path(...).resolve()``.
+    """
+    locked: set[str] = set()
+    current: str | None = None
+    for line in run(repo=repo, args=["worktree", "list", "--porcelain"]).splitlines():
+        if line.startswith("worktree "):
+            current = line[len("worktree ") :]
+        elif line.startswith("locked") and current is not None:
+            locked.add(str(Path(current).resolve()))
+    return locked
+
+
 def worktree_add_at_ref(repo: str, path: str, ref: str) -> bool:
     """Materialise a detached worktree at an explicit ``ref`` (SHA or branch).
 
@@ -112,38 +142,3 @@ def worktree_add(repo: str, path: str, branch: str, *, create_branch: bool = Tru
     except CommandFailedError:
         return False
     return True
-
-
-def bundle_create(repo: str, bundle_path: str, branch: str) -> None:
-    """Write a self-contained ``git bundle`` of ``branch`` to ``bundle_path``.
-
-    A bundle carries every commit reachable from the branch tip and is
-    restorable with ``git clone <bundle>`` / ``git fetch <bundle>`` — preferred
-    over relocating a worktree directory, which leaves git's worktree admin
-    pointing at a stale path. Raises ``CommandFailedError`` on failure (the
-    caller must not believe a recovery artifact exists when it does not).
-    """
-    run_strict(repo=repo, args=["bundle", "create", bundle_path, branch])
-
-
-def bundle_create_at_sha(repo: str, bundle_path: str, sha: str, recovery_branch: str) -> None:
-    """Bundle a bare ``sha`` anchored under ``refs/heads/<recovery_branch>``.
-
-    Used to capture a dangling-HEAD worktree (forge post-merge ref deletion):
-    ``git rev-parse HEAD`` exits 128 there, so :func:`bundle_create` of the
-    literal ``HEAD`` cannot run — but the surviving tip SHA recovered from the
-    per-worktree reflog still resolves as a commit. ``git bundle`` refuses a
-    bare commit ("Refusing to create empty bundle") and ``git clone`` only
-    checks out branch refs, so this anchors the recovered tip under a transient
-    ``refs/heads/<recovery_branch>`` ref, bundles THAT (clone-restorable to a
-    branch the caller can ``git apply`` its working-tree diff onto), then
-    deletes the temp ref. Raises ``CommandFailedError`` on a failed bundle (the
-    temp ref is still cleaned up first) so the caller never believes a recovery
-    artifact exists when it does not.
-    """
-    recovery_ref = f"refs/heads/{recovery_branch}"
-    run_strict(repo=repo, args=["update-ref", recovery_ref, sha])
-    try:
-        run_strict(repo=repo, args=["bundle", "create", bundle_path, recovery_ref])
-    finally:
-        check(repo=repo, args=["update-ref", "-d", recovery_ref])

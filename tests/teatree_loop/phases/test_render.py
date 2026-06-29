@@ -82,6 +82,90 @@ def test_render_phase_idle_omits_scanner_error_line(tmp_path: Path) -> None:
     assert "scanner errors" not in sl.read_text(encoding="utf-8")
 
 
+def test_rerender_statusline_rewrites_a_stale_file(tmp_path: Path) -> None:
+    """The #2625 self-heal seam re-renders the zones file from current state.
+
+    ``StaleStatuslineEntryDetector``'s auto-fix wires its ``rerender`` callable
+    to this seam: a merged-PR / terminal-ticket URL the detector flags must drop
+    out of the rendered file when the seam runs — the retired ``_default_rerender``
+    no-op left the stale URL in place.
+    """
+    from teatree.loop.phases.render import rerender_statusline  # noqa: PLC0415
+
+    sl = tmp_path / "statusline.txt"
+    sl.write_text("stale merged-PR https://github.com/acme/repo/pull/1\n", encoding="utf-8")
+
+    out = rerender_statusline(sl, colorize=False)
+
+    assert out == sl
+    assert "stale merged-PR" not in sl.read_text(encoding="utf-8")
+
+
+def test_rerender_statusline_preserves_the_open_prs_cache(tmp_path: Path) -> None:
+    """A re-render must NOT wipe the open-PRs snapshot a real scan recorded (M5).
+
+    ``rerender_statusline`` is a display refresh with no scan, so it carries no
+    fresh ``my_pr.*`` signals. The prior behaviour wrote an EMPTY cache, which
+    destroyed every open PR a previous full tick had snapshotted and blanked the
+    anchor until the next scan. The cache is owned by the scan path: the refresh
+    must leave it intact and re-render the preserved PRs from it.
+    """
+    from teatree.loop.open_prs import OpenPr, read_open_prs_cache, write_open_prs_cache  # noqa: PLC0415
+    from teatree.loop.phases.render import rerender_statusline  # noqa: PLC0415
+
+    sl = tmp_path / "statusline.txt"
+    pr = OpenPr(
+        iid=42,
+        title="ship the thing",
+        url="https://github.com/acme/repo/pull/42",
+        overlay="teatree",
+        draft=False,
+    )
+    write_open_prs_cache([pr], statusline_path=sl)
+
+    rerender_statusline(sl, colorize=False)
+
+    # The seeded snapshot survives the re-render (the bug wiped it to []).
+    assert read_open_prs_cache(statusline_path=sl) == [pr]
+    # And the preserved PR is actually rendered into the statusline anchor.
+    rendered = sl.read_text(encoding="utf-8")
+    assert "#42" in rendered
+    assert "ship the thing" in rendered
+
+
+def test_self_improve_rerender_adapter_invokes_the_render_seam(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The action-ladder ``auto_fix_callable`` adapter bridges to ``rerender_statusline``.
+
+    Both live orchestration entry points (the dedicated ``loop_self_improve`` slot
+    and the tick piggyback) inject this as the ladder's ``auto_fix_callable``.
+    """
+    from teatree.loop.phases import render as render_module  # noqa: PLC0415
+
+    calls: list[object] = []
+    monkeypatch.setattr(render_module, "rerender_statusline", lambda *a, **k: calls.append((a, k)))
+
+    render_module.self_improve_rerender(object())
+
+    assert len(calls) == 1
+
+
+def test_rerender_statusline_defaults_target_to_the_canonical_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With no target the seam writes the canonical statusline path (idle render)."""
+    from teatree.loop.phases import render as render_module  # noqa: PLC0415
+
+    written: dict[str, object] = {}
+
+    def _fake_render(zones: object, *, target: Path | None = None, colorize: bool | None = None) -> Path:
+        written["target"] = target
+        return Path("/tmp/sentinel-statusline.txt")
+
+    monkeypatch.setattr(render_module, "render", _fake_render)
+    out = render_module.rerender_statusline()
+
+    assert out == Path("/tmp/sentinel-statusline.txt")
+    assert written["target"] is None
+
+
 def test_identity_aliases_for_request_unions_across_backends(monkeypatch: pytest.MonkeyPatch) -> None:
     from unittest.mock import MagicMock  # noqa: PLC0415
 

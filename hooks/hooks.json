@@ -9,7 +9,7 @@
           },
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event SessionStart",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/run-hook.sh ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event SessionStart",
             "timeout": 3
           }
         ]
@@ -20,7 +20,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event UserPromptSubmit",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/run-hook.sh ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event UserPromptSubmit",
             "timeout": 5
           }
         ]
@@ -32,7 +32,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event PreToolUse",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/run-hook.sh ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event PreToolUse",
             "timeout": 3
           }
         ]
@@ -42,7 +42,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event PreToolUse",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/run-hook.sh ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event PreToolUse",
             "timeout": 6
           }
         ]
@@ -52,7 +52,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event PreToolUse",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/run-hook.sh ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event PreToolUse",
             "timeout": 3
           }
         ]
@@ -62,7 +62,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event PreToolUse",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/run-hook.sh ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event PreToolUse",
             "timeout": 5
           }
         ]
@@ -72,7 +72,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event PreToolUse",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/run-hook.sh ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event PreToolUse",
             "timeout": 3
           }
         ]
@@ -84,7 +84,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event PostToolUse",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/run-hook.sh ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event PostToolUse",
             "timeout": 5
           }
         ]
@@ -94,7 +94,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event PostToolUse",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/run-hook.sh ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event PostToolUse",
             "timeout": 5
           }
         ]
@@ -104,7 +104,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event PostToolUse",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/run-hook.sh ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event PostToolUse",
             "timeout": 3
           }
         ]
@@ -115,7 +115,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event TaskCreated",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/run-hook.sh ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event TaskCreated",
             "timeout": 3
           }
         ]
@@ -126,7 +126,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event InstructionsLoaded",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/run-hook.sh ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event InstructionsLoaded",
             "timeout": 5
           }
         ]
@@ -137,7 +137,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event PreCompact",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/run-hook.sh ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event PreCompact",
             "timeout": 3
           }
         ]
@@ -148,7 +148,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event SessionEnd",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/run-hook.sh ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event SessionEnd",
             "timeout": 5
           }
         ]
@@ -159,7 +159,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event Stop",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/run-hook.sh ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event Stop",
             "timeout": 8
           }
         ]
@@ -170,7 +170,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event SubagentStop",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/run-hook.sh ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/hook_router.py --event SubagentStop",
             "timeout": 8
           }
         ]

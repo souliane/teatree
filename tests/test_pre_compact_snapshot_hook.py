@@ -68,7 +68,7 @@ class TestPreCompactSnapshotFromDurableState:
         assert "agent-abc-123" in body
         # #786 WS3: tick-owner snapshot — no roster name, no spawn brief.
         assert "loop-tick OWNER" in body
-        assert "t3 loop tick" in body
+        assert "t3 loops tick" in body
         assert "t3 loop claim-next" in body
 
     def test_snapshot_does_not_consume_spawn_brief(self) -> None:

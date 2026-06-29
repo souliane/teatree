@@ -50,6 +50,23 @@ class LoopManager(models.Manager["Loop"]):
         """
         self.filter(name=name).update(last_run_at=ts)
 
+    def mark_run_if_unchanged(self, name: str, *, previous_last_run_at: dt.datetime | None, now: dt.datetime) -> bool:
+        """Atomically claim the cadence anchor: bump ``last_run_at`` iff still ``previous_last_run_at``.
+
+        The lost-update guard for the master/per-loop double-drive (#2777
+        follow-up): two ticks that read the SAME ``last_run_at`` would each build
+        the loop's jobs and each ``mark_run``, dispatching the loop twice. This is
+        the same compare-and-swap shape as
+        :meth:`LoopLeaseQuerySet.acquire` — a single conditional ``UPDATE`` whose
+        ``WHERE`` matches only when the anchor is still the value the caller read,
+        so exactly one of N racing ticks updates 1 row and wins. Django renders
+        ``last_run_at=None`` as ``IS NULL``, so the never-run (NULL) anchor is
+        handled by the same predicate (``IS NOT DISTINCT FROM``). Returns ``True``
+        iff this caller won (updated 1 row).
+        """
+        won = self.filter(name=name, last_run_at=previous_last_run_at).update(last_run_at=now)
+        return won == 1
+
     def set_enabled(self, name: str, *, enabled: bool) -> int:
         """Set the ``enabled`` toggle for *name*; return the number of rows updated.
 

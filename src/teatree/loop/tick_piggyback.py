@@ -10,12 +10,12 @@ running — also drives the reactive Slack-answer cycle and the cheap
 self-improve tier so user DMs still get :eyes:/answered and smells still
 get recorded.
 
-The piggyback runs ONLY on the won-owner success path of
-``loop_tick.Command.handle`` (AFTER the ``loop-tick`` lease ``finally``,
+The piggyback runs ONLY on the won-owner success path of the master
+``loops_tick.Command.handle`` (AFTER the ``loop-tick`` lease ``finally``,
 AFTER the #1073 owner gate). A non-owner foreign-session SKIP must NOT
 piggyback — that would re-open the #1073 hijack (a foreign session
-draining the user's Slack DMs). ``loop_tick`` enforces that by calling
-this only past the owner gate.
+draining the user's Slack DMs). ``loops_tick`` enforces that by calling
+this only past the owner gate, and only on the bare master tick.
 
 Each cycle is guarded by its own dedicated ``LoopLease`` CAS — the SAME
 lease a real dedicated ``loop-slack-answer`` / ``loop-self-improve`` slot
@@ -37,6 +37,7 @@ from teatree.loop.loop_cadences import _LOOP_OWNER_TTL_DEFAULT
 from teatree.loop.loop_cadences import loop_owner_ttl_seconds as _loop_owner_ttl_seconds
 from teatree.loop.loop_cadences import self_improve_cadence_seconds as _self_improve_cadence_seconds
 from teatree.loop.loop_cadences import slack_answer_cadence_seconds as _slack_answer_cadence_seconds
+from teatree.loop.phases.render import self_improve_rerender
 from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
 
 logger = logging.getLogger(__name__)
@@ -44,8 +45,8 @@ logger = logging.getLogger(__name__)
 # The four pure-`os.environ` cadence readers moved DOWN to the
 # `teatree.loop.loop_cadences` leaf (#2413 PR-4) so the statusline loop-line can
 # reach them without deferring an import UP into this orchestration-top module.
-# Re-exported here under their established private names so the `loop_tick` /
-# `loops_tick` management commands and the existing tests keep their import path.
+# Re-exported here under their established private names so the `loops_tick`
+# master tick command and the existing tests keep their import path.
 __all__ = [
     "_LOOP_OWNER_TTL_DEFAULT",
     "_loop_owner_ttl_seconds",
@@ -73,14 +74,14 @@ def _piggyback_self_improve() -> None:
     owner = f"tickpiggyback-{os.getpid()}-{uuid.uuid4().hex}"
     if not LoopLease.objects.acquire("loop-self-improve", owner=owner, lease_seconds=_self_improve_cadence_seconds()):
         return
-    run_tier(Tier.CHEAP)
+    run_tier(Tier.CHEAP, auto_fix_callable=self_improve_rerender)
 
 
 def run_piggyback_cycles() -> None:
     """Run the reactive cycles, each isolated so one failure cannot mask the others.
 
-    Called from ``loop_tick.Command.handle`` on the won-owner success path
-    only. Each cycle's broad ``except`` mirrors the loop's existing
+    Called from the master ``loops_tick.Command.handle`` on the won-owner
+    success path only. Each cycle's broad ``except`` mirrors the loop's existing
     crash-isolation convention (``cycle.py`` / ``tick_recovery.py``): a
     safety net must never turn a transient cycle error into a failed tick.
     """

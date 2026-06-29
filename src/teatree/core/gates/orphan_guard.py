@@ -20,7 +20,7 @@ points that keep the no-orphan invariant:
 from dataclasses import dataclass
 from enum import StrEnum
 
-from teatree.config import load_config
+from teatree.config import clone_root
 from teatree.core.cleanup import _branch_tree_matches_squash, classify_branch_commits, probe_host_cli
 from teatree.core.clone_paths import resolve_clone_path
 from teatree.core.models import Worktree
@@ -123,7 +123,7 @@ def find_orphans_in_workspace() -> list[BranchReport]:
     Deduplicates by ``(repo, branch)`` — multiple Worktree rows sharing a
     branch produce a single report.
     """
-    workspace = load_config().user.workspace_dir
+    workspace = clone_root()
     reports: list[BranchReport] = []
     seen: set[tuple[str, str]] = set()
     for wt in Worktree.objects.all():

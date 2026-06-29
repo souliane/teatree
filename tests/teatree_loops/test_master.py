@@ -6,6 +6,8 @@ The cutover gate: which loops fan out a tick is decided by the ``Loop`` rows
 the seeded production loops.
 """
 
+import datetime as dt
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import django.test
@@ -14,6 +16,9 @@ from django.utils import timezone
 from teatree.core.models import Loop, LoopState, Prompt
 from teatree.loops.base import MiniLoop
 from teatree.loops.master import build_loop_table_jobs
+
+if TYPE_CHECKING:
+    from teatree.loop.job_identity import _ScannerJob
 
 
 def _mini(name: str) -> MiniLoop:
@@ -102,8 +107,11 @@ class TestBuildLoopTableJobs(django.test.TestCase):
         with patch("teatree.loops.master.iter_loops", return_value=(boom, _mini("m-ok"))):
             jobs = build_loop_table_jobs({}, now=now)
         assert "job-m-ok" in jobs
-        # the raising loop is NOT marked run; the healthy one is
-        assert Loop.objects.get(name="m-boom").last_run_at is None
+        # The anchor is now claimed atomically BEFORE build_jobs, so a loop that
+        # wins the claim and then raises has already advanced its anchor — it is
+        # simply not re-driven until its cadence elapses again (the price of
+        # atomicity). The healthy sibling still runs.
+        assert Loop.objects.get(name="m-boom").last_run_at == now
         assert Loop.objects.get(name="m-ok").last_run_at == now
 
 
@@ -233,7 +241,10 @@ class TestMasterColumnIsLoadBearing(django.test.TestCase):
         assert "job-m-good" in jobs
         assert "job-m-stale" not in jobs
         assert any("m-stale" in line or "run.py" in line for line in logs.output)
-        assert Loop.objects.get(name="m-stale").last_run_at is None
+        # The stale row wins its atomic cadence claim before the unresolvable
+        # script raises, so its anchor advances (claimed before build) — it is not
+        # re-driven until its cadence elapses again. The healthy sibling runs.
+        assert Loop.objects.get(name="m-stale").last_run_at == now
         assert Loop.objects.get(name="m-good").last_run_at == now
 
     def test_prompt_row_dispatches_its_own_loop_jobs(self) -> None:
@@ -244,3 +255,79 @@ class TestMasterColumnIsLoadBearing(django.test.TestCase):
         with patch("teatree.loops.master.iter_loops", return_value=(_mini("m-prompt"),)):
             jobs = build_loop_table_jobs({}, now=now)
         assert "job-m-prompt" in jobs
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestMarkRunIfUnchanged(django.test.TestCase):
+    """The atomic cadence-anchor CAS (:meth:`LoopManager.mark_run_if_unchanged`)."""
+
+    def test_wins_when_anchor_matches_the_read_value(self) -> None:
+        before = timezone.now() - dt.timedelta(seconds=120)
+        now = timezone.now()
+        Loop.objects.create(name="cas-match", delay_seconds=60, prompt=_prompt(), last_run_at=before)
+        won = Loop.objects.mark_run_if_unchanged("cas-match", previous_last_run_at=before, now=now)
+        assert won is True
+        assert Loop.objects.get(name="cas-match").last_run_at == now
+
+    def test_loses_when_anchor_advanced_since_the_read(self) -> None:
+        # A concurrent tick already moved the anchor: the CAS on the stale value
+        # matches 0 rows and loses, leaving the anchor untouched.
+        before = timezone.now() - dt.timedelta(seconds=120)
+        advanced = timezone.now() - dt.timedelta(seconds=10)
+        now = timezone.now()
+        Loop.objects.create(name="cas-stale", delay_seconds=60, prompt=_prompt(), last_run_at=advanced)
+        won = Loop.objects.mark_run_if_unchanged("cas-stale", previous_last_run_at=before, now=now)
+        assert won is False
+        assert Loop.objects.get(name="cas-stale").last_run_at == advanced
+
+    def test_wins_on_first_run_from_null_anchor(self) -> None:
+        # The never-run NULL anchor is matched by the same predicate (Django
+        # renders ``last_run_at=None`` as ``IS NULL``).
+        now = timezone.now()
+        Loop.objects.create(name="cas-null", delay_seconds=60, prompt=_prompt())  # last_run_at is None
+        won = Loop.objects.mark_run_if_unchanged("cas-null", previous_last_run_at=None, now=now)
+        assert won is True
+        assert Loop.objects.get(name="cas-null").last_run_at == now
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestCadenceClaimIsAtomic(django.test.TestCase):
+    """A master and a per-loop tick that read the same anchor drive the loop ONCE.
+
+    The lost-update (TOCTOU) the cutover left open: a master
+    ``build_loop_table_jobs(only=None)`` and a per-loop
+    ``build_loop_table_jobs(only=<name>)`` that both read the same stale
+    ``last_run_at`` would each build the loop's jobs and each bump the anchor —
+    the loop is driven twice. The fix claims the anchor atomically (CAS) BEFORE
+    building, so exactly one wins.
+
+    The concurrent per-loop tick is interleaved from inside the master's
+    ``build_jobs`` — a point both the pre-fix and post-fix code reach. On the
+    PRE-FIX code (``mark_run`` runs AFTER ``build_jobs``) the master has not yet
+    bumped the anchor, so the concurrent tick reads the SAME stale anchor and
+    double-drives ⇒ ``produced == 2`` (RED). On the FIXED code the master claimed
+    the anchor BEFORE ``build_jobs``, so the concurrent tick sees the advanced
+    anchor, is not due, and skips ⇒ ``produced == 1`` (GREEN).
+    """
+
+    def test_concurrent_master_and_per_loop_drive_exactly_one(self) -> None:
+        now = timezone.now()
+        Loop.objects.create(name="m-race", delay_seconds=60, prompt=_prompt())  # never-run → due
+        concurrent: dict[str, list[_ScannerJob]] = {"jobs": []}
+        per_loop_mini = MiniLoop(name="m-race", default_cadence_seconds=60, build_jobs=lambda **_: ["job-m-race"])
+        fired = {"n": 0}
+
+        def master_build_jobs(**_: object) -> list[str]:
+            fired["n"] += 1
+            if fired["n"] == 1:
+                with patch("teatree.loops.master.iter_loops", return_value=(per_loop_mini,)):
+                    concurrent["jobs"] = build_loop_table_jobs({}, now=now, only="m-race")
+            return ["job-m-race"]
+
+        master_mini = MiniLoop(name="m-race", default_cadence_seconds=60, build_jobs=master_build_jobs)
+        with patch("teatree.loops.master.iter_loops", return_value=(master_mini,)):
+            master_jobs = build_loop_table_jobs({}, now=now, only=None)
+
+        produced = ("job-m-race" in master_jobs) + ("job-m-race" in concurrent["jobs"])
+        assert produced == 1, f"loop driven {produced}x (master={master_jobs}, per_loop={concurrent['jobs']})"
+        assert Loop.objects.get(name="m-race").last_run_at == now

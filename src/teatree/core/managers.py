@@ -171,6 +171,25 @@ class ReplyDispatchQuerySet(models.QuerySet):
 
 
 class TaskQuerySet(models.QuerySet):
+    def for_overlay(self, overlay: str | None = None) -> models.QuerySet:
+        """Tasks scoped to an overlay through the ticket OR the session.
+
+        A ``Task`` has no overlay column of its own — its overlay is the
+        ticket's or the session's, so the scope clause spans both relations
+        and includes legacy empty-overlay rows. An empty ``overlay`` returns
+        every task. This is the single source of truth for the Task overlay
+        clause, shared by ``_claimable_for_target`` (the loop claim) and the
+        MCP ``loop_stats`` read.
+        """
+        if overlay:
+            return self.filter(
+                Q(ticket__overlay=overlay)
+                | Q(session__overlay=overlay)
+                | Q(ticket__overlay="")
+                | Q(session__overlay="")
+            )
+        return self.all()
+
     def for_claude_session(self, claude_session_id: str) -> models.QuerySet:
         """Tasks whose session is the given Claude session, newest first.
 
@@ -214,7 +233,7 @@ class TaskQuerySet(models.QuerySet):
 
         return self.filter(
             phase__in=phase_spellings(phase),
-            status__in=[task_model.Status.PENDING, task_model.Status.CLAIMED],
+            status__in=task_model.Status.active(),
         )
 
     def claimable_for_headless(self, overlay: str | None = None) -> models.QuerySet:
@@ -485,18 +504,13 @@ class TaskQuerySet(models.QuerySet):
         qs = (
             self.filter(
                 execution_target=target,
-                status__in=[task_model.Status.PENDING, task_model.Status.CLAIMED],
+                status__in=task_model.Status.active(),
             )
             .filter(Q(lease_expires_at__isnull=True) | Q(lease_expires_at__lte=now))
             .order_by("pk")
         )
         if overlay:
-            qs = qs.filter(
-                Q(ticket__overlay=overlay)
-                | Q(session__overlay=overlay)
-                | Q(ticket__overlay="")
-                | Q(session__overlay="")
-            )
+            qs = qs.for_overlay(overlay)
         return qs
 
 

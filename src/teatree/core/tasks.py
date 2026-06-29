@@ -4,7 +4,7 @@ from typing import TypedDict
 from django.db import transaction
 from django.tasks import task
 
-from teatree.config import workspace_dir
+from teatree.config import worktree_root
 from teatree.core.landscape_gather import run_landscape
 from teatree.core.models import LandscapeArtifact, Task, Ticket
 from teatree.core.models.external_delivery import under_external_delivery
@@ -27,7 +27,7 @@ def _persist_intake_landscape(ticket: Ticket) -> None:
     leaves no artifact.
     """
     try:
-        survey = run_landscape(workspace_dir())
+        survey = run_landscape(worktree_root())
     except Exception:
         logger.warning("Intake landscape gather failed for ticket %s; skipping artifact", ticket.pk, exc_info=True)
         return
@@ -202,8 +202,8 @@ def execute_retrospect(ticket_id: int) -> TransitionResult:
 
 
 @task()
-def execute_teardown(ticket_id: int, *, force: bool = False) -> TransitionResult:
-    """Tear down worktrees for a MERGED ticket.
+def execute_teardown(ticket_id: int) -> TransitionResult:
+    """Tear down worktrees for a MERGED ticket via the analyze-then-wipe reaper.
 
     Idempotency: the worker takes a row lock and re-checks state before running.
     At-least-once delivery from django-tasks means this can fire more than once
@@ -214,17 +214,12 @@ def execute_teardown(ticket_id: int, *, force: bool = False) -> TransitionResult
     the operator either fixes the underlying issue and re-enqueues, or moves
     on with ``retrospect()`` once the residual state is acceptable.
 
-    ``force`` controls the #706 unsynced-commit data-loss guard. The default
-    ``False`` keeps the guard on for the ``mark_merged`` path — the FSM can read
-    MERGED there without a confirmed forge merge (a manual advance, or async ship
-    that never drained #707/#708), so a branch with commits on no remote must not
-    be destroyed. The merge keystone fires this with ``force=True`` (from
-    ``reconcile_merged``): the PR merge is provably confirmed on the forge before
-    the FSM reaches MERGED, so a squash-merge that landed a new SHA on main and
-    deleted the source ref — leaving the local branch reading as "on no remote" —
-    must not block cleanup. The #835/#1506 recovery-capture backstop still runs
-    under force, so even the bypass captures a restorable bundle before the
-    destructive remove.
+    There is no force-bypass (CORRECTION 1): :class:`WorktreeTeardown` routes every
+    worktree through the analyze-before-wipe reaper, which proves each unpushed
+    commit and uncommitted change redundant before wiping. A squash-merge that
+    landed a new SHA and deleted the source ref is proven redundant by patch-id and
+    wiped; a branch with genuinely-unsynced work (an async ship that never drained,
+    #707/#708) is KEPT and surfaced, never force-destroyed.
     """
     with transaction.atomic():
         ticket = Ticket.objects.select_for_update().get(pk=ticket_id)
@@ -236,7 +231,7 @@ def execute_teardown(ticket_id: int, *, force: bool = False) -> TransitionResult
             )
             return {"ticket_id": ticket_id, "skipped": True, "state": str(ticket.state)}
 
-        result = WorktreeTeardown(ticket, force=force).run()
+        result = WorktreeTeardown(ticket).run()
         if not result.ok:
             logger.warning("Teardown reported errors for ticket %s: %s", ticket_id, result.detail)
             return {"ticket_id": ticket_id, "ok": False, "detail": result.detail}

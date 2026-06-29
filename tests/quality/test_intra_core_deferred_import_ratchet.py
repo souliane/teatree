@@ -47,7 +47,12 @@ _TACH = _REPO_ROOT / "tach.toml"
 # Rose 186→188 (#2009): the two task_repair-cycle-breaking deferrals stay
 # deferred (a genuine task.py↔task_repair module-level cycle); the two zero-dep
 # `repair_loop` deferrals were hoisted to module scope.
-_FROZEN_INTRA_CORE_DEFERRED = 188
+# Dropped 188→184 (one-driver collapse): deleting the dead dedicated loop layer
+# and the duplicate `MiniLoopMarker` model removed 4 intra-`core` deferred
+# imports; banking the reduction.
+# Dropped 184→181 (loop-tick cutover): deleting `core/management/commands/loop_tick.py`
+# removed its 3 intra-`core` deferred imports; banking the reduction.
+_FROZEN_INTRA_CORE_DEFERRED = 181
 
 
 def _function_scoped_intra_core_imports(source: Path) -> int:

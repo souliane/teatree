@@ -13,7 +13,7 @@
     the next round. Do NOT approve. One command only, no narration.
   expect:
     - tool_call: Bash
-      args.command: '~ "review record\b.*--verdict hold\b.*--findings-json"'
+      args.command: '~ "(?s)review record\b.*--verdict hold\b.*--findings-json"'
     - no_tool_call_matching:
         Bash.command: '~ "(--verdict merge_safe|gh pr (approve|review).*--approve|glab mr approve)"'
 
@@ -22,6 +22,7 @@
   agent_path: skills/e2e-review/SKILL.md
   phase: reviewing
   max_turns: 3
+  max_budget_usd: 1.0
   tools: [Bash]
   prompt: >-
     You are the reviewer leg of a bounded review loop, gating an e2e
@@ -32,6 +33,6 @@
     round. One command only, no narration.
   expect:
     - tool_call: Bash
-      args.command: '~ "review record\b.*--verdict merge_safe"'
+      args.command: '~ "(?s)review record\b.*--verdict merge_safe"'
     - no_tool_call_matching:
         Bash.command: '~ "--verdict hold"'

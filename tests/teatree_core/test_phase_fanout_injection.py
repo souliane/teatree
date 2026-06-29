@@ -8,11 +8,14 @@ interactive payload would pass vacuously).
 
 Anti-vacuous spine: with no ``[agent.phase_fanout]`` opt-in the dispatch payload
 carries ``fanout_directive == ""`` (byte-identical to today). The PRESENT tests
-prove the opt-in renders the directive; the slot-prose literal test proves the
-``/loop`` slot is instructed to append ``entry.fanout_directive``; the headless
-parity tests prove ``build_system_context`` carries the same directive so
-switching ``agent_runtime`` between interactive and a headless runtime does not
-lose it.
+prove the opt-in renders the directive; the headless parity tests prove
+``build_system_context`` carries the same directive so switching ``agent_runtime``
+between interactive and a headless runtime does not lose it. (Under #2650 the
+``/loop`` body just runs ``t3 loops tick --loop <name>``, so the directive is
+threaded by the dispatch code path — the ``claim-next`` payload + the headless
+composer below — not by ``/loop`` slot prose; the legacy fat-``/loop`` slot-prose
+append, and its literal test, retired with the dedicated-loop slot generator in
+LOOP-PR-A.)
 """
 
 import json
@@ -26,7 +29,6 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.agents.prompt import build_system_context
-from teatree.cli import loop as loop_cli
 from teatree.core.models import Task, Ticket
 from teatree.core.models.ticket import schedule_external_review
 
@@ -163,24 +165,6 @@ class TestClaimNextCarriesFanoutDirective(_FanoutDispatchTest):
             call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
         entry = json.loads(stdout.getvalue())[0]
         assert "adversarial-verify" in entry["fanout_directive"]
-
-
-class TestSlotProseReferencesFanoutDirective(TestCase):
-    """The ``/loop`` slot prose must literally instruct appending the field.
-
-    Mirrors the command-literal-resolve gate's intent for a payload field: a
-    silent drop of the append instruction would mean the rendered directive is
-    never threaded into the sub-agent prompt, with no other failing test.
-    """
-
-    def test_register_command_references_entry_fanout_directive(self) -> None:
-        with patch.object(loop_cli, "_stdin_is_terminal", return_value=False):
-            stdout = StringIO()
-            with patch("typer.echo", side_effect=lambda *a, **k: stdout.write(" ".join(str(x) for x in a) + "\n")):
-                loop_cli.start_command(print_only=True)
-        prose = stdout.getvalue()
-        assert "entry.fanout_directive" in prose
-        assert "append" in prose.lower()
 
 
 class TestHeadlessParity(_FanoutDispatchTest):

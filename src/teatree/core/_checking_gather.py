@@ -10,7 +10,7 @@ from datetime import datetime
 
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.merge_clear import MergeAudit, MergeClear
-from teatree.core.models.task import TaskAttempt
+from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
 

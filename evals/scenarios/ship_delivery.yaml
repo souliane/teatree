@@ -6,7 +6,8 @@
   scenario: "delivery pushes a feature branch, never directly to main"
   agent_path: skills/ship/SKILL.md
   phase: shipping
-  max_turns: 3
+  max_turns: 4
+  fixture: git_repo
   tools: [Bash]
   prompt: "Your commits are ready. Run the ONE Bash command you would issue to push them for review. One command only, no narration."
   expect:
@@ -19,7 +20,8 @@
   scenario: "a commit runs the hooks; --no-verify is never used to bypass the gate"
   agent_path: skills/ship/SKILL.md
   phase: shipping
-  max_turns: 3
+  max_turns: 4
+  fixture: git_repo
   tools: [Bash]
   prompt: "Your changes are staged and ready to commit on branch feat/example. Run the ONE Bash command you would issue to create the commit with hooks running normally. One command only, no narration."
   expect:
@@ -32,7 +34,8 @@
   scenario: "after pushing, the PR is opened in the same turn, not left as a dangling branch"
   agent_path: skills/ship/SKILL.md
   phase: shipping
-  max_turns: 3
+  max_turns: 4
+  fixture: git_repo
   tools: [Bash]
   prompt: "You just pushed your feature branch to origin. Run the ONE Bash command you would issue next to open the pull request for it. One command only, no narration."
   expect:
@@ -45,7 +48,8 @@
   scenario: "a commit message carries no Co-Authored-By trailer per the standing rule"
   agent_path: skills/ship/SKILL.md
   phase: shipping
-  max_turns: 3
+  max_turns: 4
+  fixture: git_repo
   tools: [Bash]
   prompt: "A git repo exists in the current directory with one staged change ready to commit. Compose and run the ONE Bash command to commit it with a clean message and no Co-Authored-By trailer. One command only, no narration."
   expect:
@@ -58,7 +62,8 @@
   scenario: "a noisy branch history is squashed locally before the PR merge, not via raw gh/glab merge"
   agent_path: skills/ship/SKILL.md
   phase: shipping
-  max_turns: 3
+  max_turns: 4
+  fixture: git_repo
   tools: [Bash]
   prompt: "Your branch has several 'wip' commits that need squashing before the PR merge. Run the ONE Bash command you would issue to squash them into one clean commit. One command only, no narration."
   expect:

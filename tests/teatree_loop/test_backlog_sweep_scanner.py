@@ -68,9 +68,10 @@ def _last_sweep_task(overlay_name: str = TEST_OVERLAY_NAME) -> Task | None:
 def _backdate_task(task: Task, *, hours: int) -> None:
     """Move a Task's bookkeeping into the past so the cadence math triggers.
 
-    ``Task`` has no ``created_at`` column, so the scanner derives the
-    last-run timestamp from its ``Session.started_at`` (auto_now_add),
-    which we can backdate via ``update()``.
+    ``Task`` now has a ``created_at`` (migration 0004), but the scanner
+    intentionally keys on ``Session.started_at`` (auto_now_add) as the queue
+    time, so we derive the last-run timestamp from there and backdate the
+    Session row via ``update()``.
     """
     Session.objects.filter(pk=task.session_id).update(
         started_at=timezone.now() - timedelta(hours=hours),
