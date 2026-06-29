@@ -63,13 +63,24 @@ def _ceiling_index(report: DetectorReport) -> int:
     return _LADDER_ORDER.index(ceiling)
 
 
-def _next_rung_index(firing: SelfImproveFiring | None, ceiling_index: int) -> int:
+def _next_rung_index(report: DetectorReport, firing: SelfImproveFiring | None, ceiling_index: int) -> int:
     """Compute the rung index for this observation.
 
-    First firing ⇒ rung 1 (``statusline``) when within the ceiling, else
-    the ceiling.  Subsequent escalation ⇒ one rung up from the last
-    recorded action, bounded by the ceiling.
+    An ``auto_fix`` report targets its ceiling (``auto_fix``) on the FIRST
+    firing: the self-heal is idempotent and side-effect-free, so it must run
+    the moment the smell is observed rather than climb the graduated ladder.
+    The climb would never reach ``auto_fix`` for a persistent smell anyway — the
+    same stale state hashes to the same ``state_hash`` every tick, so
+    ``fresh_or_escalated`` suppresses it at rung 1 and it can never escalate
+    (the wired-but-unreachable bug #2625 Part B fixes).
+
+    Every other (non-auto-fix) report keeps the monotonic ladder: first firing
+    ⇒ rung 1 (``statusline``) when within the ceiling, else the ceiling;
+    subsequent escalation ⇒ one rung up from the last recorded action, bounded
+    by the ceiling.
     """
+    if report.auto_fix:
+        return ceiling_index
     if firing is None:
         return min(_LADDER_ORDER.index(ActionRung.STATUSLINE), ceiling_index)
     current = _LADDER_ORDER.index(firing.last_action) if firing.last_action in _LADDER_ORDER else 0
@@ -118,7 +129,7 @@ def run_action_ladder(
         return None
 
     ceiling_index = _ceiling_index(report)
-    rung_index = _next_rung_index(existing, ceiling_index)
+    rung_index = _next_rung_index(report, existing, ceiling_index)
     rung = _LADDER_ORDER[rung_index]
 
     slack_capped = False

@@ -339,7 +339,7 @@ def _resilient_matrix_trial(
     that fail-loud). ``KeyboardInterrupt``/``SystemExit`` are ``BaseException``s
     and propagate; ``typer.Exit`` subclasses ``RuntimeError`` (an ``Exception``)
     but is a control-flow signal, so it is re-raised explicitly rather than
-    isolated. (``_TerminalResultError``/``TimeoutError`` are already handled
+    isolated. (``TerminalResultError``/``TimeoutError`` are already handled
     inside ``run()`` and never reach here.) After :data:`MAX_MATRIX_CELL_RETRIES`
     retries still fail, the cell is logged loudly to stderr and recorded
     ``errored=True`` so the rest of the matrix survives.

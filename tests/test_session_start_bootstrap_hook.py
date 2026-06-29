@@ -120,7 +120,7 @@ class TestHandleSessionStartBootstrap:
             assert name not in ctx
         for retired in ("re-attach", "reattach", "takeover", "resume by", "from its brief"):
             assert retired not in ctx.lower()
-        assert "t3 loop tick" in ctx
+        assert "t3 loops tick" in ctx
         assert "t3 loop claim-next" in ctx
         # Owner gets the rename reminder.
         assert "/rename TEATREE LOOP" in ctx
@@ -179,7 +179,7 @@ class TestHandleSessionStartBootstrap:
         ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
         # Post-compaction same-session restart: still owner, tick-driven,
         # nothing to re-spawn.
-        assert "t3 loop tick" in ctx
+        assert "t3 loops tick" in ctx
         for retired_token in (
             "t3-main-loop",
             "t3-review-loop",
@@ -204,7 +204,7 @@ class TestHandleSessionStartBootstrap:
         ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
         # Dead owner pruned -> this session becomes tick-owner (no
         # re-spawn; the cron keeps ticking).
-        assert "t3 loop tick" in ctx
+        assert "t3 loops tick" in ctx
         for retired_token in (
             "t3-main-loop",
             "t3-review-loop",
@@ -358,7 +358,7 @@ class TestWs3TickDispatchContract:
         ctx = self._ctx(capsys).lower()
         # The directive must orient the session toward the tick-driven model.
         assert "tick" in ctx
-        assert "t3 loop tick" in ctx or "loop tick" in ctx
+        assert "t3 loops tick" in ctx or "loops tick" in ctx
 
     def test_bootstrap_still_emits_a_directive(self, capsys: pytest.CaptureFixture[str]) -> None:
         # A session must still be told the loop is tick-driven; empty

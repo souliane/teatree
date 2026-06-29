@@ -109,6 +109,23 @@ def _working_repo_clear() -> MergeClear:
     )
 
 
+def _read_probe(joined: str, *, head: str) -> tuple[int, str, str] | None:
+    """The §17.4.3 read-only probes (head / draft / checks / branch-protection).
+
+    The branch-protection required-context set is empty (no gate) so a green
+    rollup stays green; returns ``None`` when *joined* is none of the probes.
+    """
+    if "headRefOid" in joined:
+        return (0, head, "")
+    if "isDraft" in joined:
+        return (0, "false", "")
+    if "statusCheckRollup" in joined:
+        return (0, _GREEN, "")
+    if "baseRefName" in joined or "required_status_checks" in joined:
+        return (0, "main" if "baseRefName" in joined else '{"contexts": []}', "")
+    return None
+
+
 def _gh_keyed_by_repo(calls: list[list[str]], right_repo: str):
     """``gh`` stub keyed by ``--repo`` — only *right_repo*'s PR head matches."""
 
@@ -117,12 +134,8 @@ def _gh_keyed_by_repo(calls: list[list[str]], right_repo: str):
         joined = " ".join(argv)
         repo = argv[argv.index("--repo") + 1] if "--repo" in argv else ""
         head = _RIGHT_SHA if repo == right_repo else _WRONG_SHA
-        if "headRefOid" in joined:
-            return (0, head, "")
-        if "isDraft" in joined:
-            return (0, "false", "")
-        if "statusCheckRollup" in joined:
-            return (0, _GREEN, "")
+        if (probe := _read_probe(joined, head=head)) is not None:
+            return probe
         if "state,mergeCommit" in joined:
             return (0, '{"state": "OPEN", "mergeCommit": null}', "")
         if "pulls" in joined and "merge" in joined:

@@ -14,6 +14,15 @@ classifiers = [
   "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
+  # ``t3 mcp serve`` runs a stdio MCP server built on the official ``mcp``
+  # Python SDK (``teatree.mcp.server`` imports ``mcp.server.fastmcp``). It
+  # arrives transitively via ``claude-agent-sdk`` today, but ``teatree.mcp``
+  # imports it directly on a RUNTIME command path — same class as the
+  # ``coverage`` / ``pyyaml`` runtime-dep declarations — so it is pinned here.
+  # ``asgiref.sync_to_async`` (a hard Django dependency) crosses the ORM
+  # boundary inside the async tools; declared alongside since it is imported
+  # directly by ``teatree.mcp.server``.
+  "asgiref>=3.8",
   "claude-agent-sdk>=0.2.94",
   # ``t3 tool diff-coverage`` and ``t3 ci coverage`` are RUNTIME commands
   # that import ``coverage`` (utils/diff_coverage.py, utils/coverage_floor.py).
@@ -30,6 +39,7 @@ dependencies = [
   "django-tasks-db>=0.12",
   "django-typer>=3.3",
   "httpx>=0.27",
+  "mcp>=1.27",
   # ``teatree.core.test_plan_validation`` opens evidence PNGs with Pillow to
   # detect the highlightAndShoot red box before ``e2e post-test-plan`` uploads.
   # A RUNTIME command path, so it must be in the installed tool env, not only

@@ -173,7 +173,7 @@ class TestRelevanceFloor(RecallTestCase):
         # scorer double-counted that one name token (entry-overlap PLUS name-overlap)
         # to fake-clear the floor of 2 and surface the rule. The floor must count
         # DISTINCT tokens, so a single name token is below it and the entry is dropped.
-        self._cold("- feedback_review_crew.md — slack reaction rendering colors note")
+        self._cold("- feedback_review_team.md — slack reaction rendering colors note")
         hits = recall_cold_memory(self.dir, "review the kubernetes deployment manifest")
         assert hits == []
 

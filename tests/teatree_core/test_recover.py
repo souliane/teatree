@@ -1,4 +1,4 @@
-"""``t3 recover`` — outage recovery report + requeue/snapshot actions (#1764).
+"""``t3 recover`` — outage recovery report + requeue actions (#1764).
 
 The orphan classifier and reconcile pass probe git/the host CLI, so those seams
 are mocked via a context manager; the task/ticket mapping and the requeue
@@ -7,7 +7,6 @@ so the assertions cover pure reads.
 """
 
 import json
-import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from io import StringIO
@@ -19,7 +18,7 @@ from django.test import TestCase
 
 from teatree.core.gates.orphan_guard import BranchReport, BranchStatus
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
-from teatree.core.recover import RecoverReport, _collect_stranded_snapshots, gather_recover_report, requeue_failed_tasks
+from teatree.core.recover import RecoverReport, gather_recover_report, requeue_failed_tasks
 from teatree.core.recovery_sweeps import BootSweepCounts
 
 
@@ -29,7 +28,6 @@ def _mocked_probes(*, orphans: list[BranchReport] | None = None) -> Iterator[Non
     with (
         patch("teatree.core.recover.run_boot_sweeps", return_value=BootSweepCounts()),
         patch("teatree.core.recover.reconcile_all", return_value={}),
-        patch("teatree.core.recover._collect_stranded_snapshots"),
         patch("teatree.core.recover.find_orphans_in_workspace", return_value=orphans or []),
     ):
         yield
@@ -108,12 +106,11 @@ class TestGatherRecoverReport(TestCase):
 
 class TestToTerse(TestCase):
     def test_renders_every_group_with_clickable_refs(self) -> None:
-        from teatree.core.recover import OrphanItem, RequeueCandidate, StrandedSnapshot  # noqa: PLC0415
+        from teatree.core.recover import OrphanItem, RequeueCandidate  # noqa: PLC0415
 
         report = RecoverReport(boot_sweeps=BootSweepCounts(replayed_transitions=1, reclaimed_claims=2, reaped_claims=3))
         report.data_loss_risk.append(OrphanItem(repo="/r", branch="b1", ahead_count=4, ticket_url="https://x/i/1"))
         report.open_pr_pending.append(OrphanItem(repo="/r", branch="b2", ahead_count=1, open_pr_url="https://x/pull/2"))
-        report.stranded_snapshots.append(StrandedSnapshot(path=Path("/tmp/t3-recover-x")))
         report.requeue_candidates.append(
             RequeueCandidate(
                 task_pk=7,
@@ -131,7 +128,6 @@ class TestToTerse(TestCase):
         assert "replayed=1 reclaimed=2 reaped=3" in out
         assert "https://x/i/1" in out
         assert "https://x/pull/2" in out  # the PR url wins over the ticket url
-        assert "/tmp/t3-recover-x" in out
         assert "TODO-7" in out
         assert "task#7" not in out
         assert "[outage]" in out
@@ -146,27 +142,6 @@ class TestToTerse(TestCase):
 
         assert "(no url)" in report.to_terse(dry_run=False)
         assert "applied" in report.to_terse(dry_run=False)
-
-
-class TestStrandedSnapshots(TestCase):
-    def test_collects_only_t3_recover_dirs_from_tempdir(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / "t3-recover-1764-x").mkdir()
-            (root / "unrelated-dir").mkdir()
-            (root / "t3-recover-file-not-dir").write_text("x", encoding="utf-8")
-            report = RecoverReport()
-            with patch("teatree.core.recover.tempfile.gettempdir", return_value=str(root)):
-                _collect_stranded_snapshots(report)
-
-        assert {s.path.name for s in report.stranded_snapshots} == {"t3-recover-1764-x"}
-
-    def test_missing_tempdir_is_a_noop(self) -> None:
-        report = RecoverReport()
-        with patch("teatree.core.recover.tempfile.gettempdir", return_value="/nonexistent/tmp/path"):
-            _collect_stranded_snapshots(report)
-
-        assert report.stranded_snapshots == []
 
 
 class TestBranchToTicketUrl(TestCase):
@@ -184,7 +159,7 @@ class TestBranchToTicketUrl(TestCase):
             return Path("/c1") if wt.branch == "feat-a" else None
 
         with (
-            patch("teatree.core.recover.load_config"),
+            patch("teatree.core.recover.clone_root"),
             patch("teatree.core.recover.resolve_clone_path", side_effect=_resolve),
         ):
             mapping = _branch_to_ticket_url()
@@ -219,53 +194,6 @@ class TestRequeueFailedTasks(TestCase):
         assert task.status == Task.Status.COMPLETED
 
 
-class TestForceCaptureSnapshots(TestCase):
-    def test_captures_only_worktrees_with_a_clone_and_a_path(self) -> None:
-        from teatree.core.models import Worktree  # noqa: PLC0415
-        from teatree.core.recover import force_capture_snapshots  # noqa: PLC0415
-
-        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED, issue_url="https://x/i/77")
-        with_path = Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="myrepo",
-            branch="feat-77",
-            extra={"worktree_path": "/some/wt", "clone_path": "/some/clone"},
-        )
-        Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="r2",
-            branch="feat-77b",
-            extra={"clone_path": "/c2"},  # has a clone but no worktree_path -> skipped
-        )
-
-        clean = Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="r3",
-            branch="feat-clean",
-            extra={"worktree_path": "/clean/wt", "clone_path": "/c3"},
-        )
-
-        def _resolve(_ws: Path, wt: Worktree) -> Path | None:
-            return {with_path.pk: Path("/some/clone"), clean.pk: Path("/c3")}.get(wt.pk, Path("/c2"))
-
-        def _capture(_clone: Path, wt_path: str, *, branch: str, label: str) -> Path | None:
-            return None if wt_path == "/clean/wt" else Path("/tmp/t3-recover-77")
-
-        with (
-            patch("teatree.core.recover.load_config"),
-            patch("teatree.core.recover.resolve_clone_path", side_effect=_resolve),
-            patch("teatree.core.recover.capture_worktree_snapshot", side_effect=_capture) as cap,
-        ):
-            captured = force_capture_snapshots()
-
-        # dirty -> captured; clean -> capture returned None (not appended); no-path -> skipped before capture.
-        assert captured == [Path("/tmp/t3-recover-77")]
-        assert cap.call_count == 2
-
-
 class TestRecoverCommand(TestCase):
     def test_dry_run_mutates_nothing(self) -> None:
         task = _failed_outage_task(url="https://x/i/4")
@@ -285,22 +213,6 @@ class TestRecoverCommand(TestCase):
         task.refresh_from_db()
         assert task.status == Task.Status.PENDING
 
-    def test_snapshot_flag_captures_and_reports(self) -> None:
-        with (
-            _mocked_probes(),
-            patch(
-                "teatree.core.management.commands.recover.force_capture_snapshots",
-                return_value=[Path("/tmp/t3-recover-z")],
-            ),
-        ):
-            out = StringIO()
-            call_command("recover", "--snapshot", stdout=out)
-
-        body = out.getvalue()
-        assert "Captured 1 snapshot(s)." in body
-        assert "/tmp/t3-recover-z" in body
-        assert "applied" in body  # not a dry run
-
     def test_json_output_shape(self) -> None:
         orphans = [BranchReport(repo="/r", branch="b", status=BranchStatus.UNPUSHED_ORPHAN, ahead_count=1)]
         with _mocked_probes(orphans=orphans):
@@ -311,7 +223,6 @@ class TestRecoverCommand(TestCase):
         assert payload["data_loss_risk"][0]["branch"] == "b"
         assert "boot_sweeps" in payload
         assert payload["reopened_task_pks"] == []
-        assert payload["captured_snapshots"] == []
 
 
 class TestSplitOverlayFlag(TestCase):
@@ -320,7 +231,7 @@ class TestSplitOverlayFlag(TestCase):
 
         assert _split_overlay_flag(["--overlay", "acme", "--json"]) == ("acme", ["--json"])
         assert _split_overlay_flag(["--overlay=acme", "--requeue"]) == ("acme", ["--requeue"])
-        assert _split_overlay_flag(["--snapshot"]) == ("", ["--snapshot"])
+        assert _split_overlay_flag(["--json"]) == ("", ["--json"])
 
 
 class TestRecoverCliForwarding(TestCase):

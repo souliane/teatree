@@ -14,9 +14,9 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
-from teatree.core.cleanup import CleanupResult
 from teatree.core.models import Ticket, Worktree
 from teatree.core.runners import WorktreeTeardown
+from teatree.core.worktree_done import ReapOutcome
 from tests.teatree_core.conftest import CommandOverlay
 
 _GIT = shutil.which("git") or "git"
@@ -52,20 +52,18 @@ class TestWorktreeTeardown(TestCase):
 
         cleaned: list[str] = []
 
-        def fake_cleanup(
-            worktree: Worktree, *, force: bool = False, strict_hygiene: bool = True, respect_liveness: bool = True
-        ) -> CleanupResult:
-            # FSM teardown bypasses the opportunistic liveness guard (#2243).
-            assert respect_liveness is False, "FSM teardown must opt out of the liveness guard"
-            del force, strict_hygiene, respect_liveness
-            label = f"Cleaned: {worktree.repo_path}"
+        def fake_reap(worktree: Worktree, *, workspace: Path, dry_run: bool, fsm_terminal: bool) -> ReapOutcome:
+            # FSM teardown bypasses the FSM-ceremony liveness false positives via
+            # fsm_terminal=True (#2243; #2773's respect_liveness=False equivalent).
+            assert fsm_terminal is True, "FSM teardown must pass fsm_terminal=True"
+            del workspace, dry_run
             cleaned.append(worktree.repo_path)
             worktree.delete()
-            return CleanupResult(label=label)
+            return ReapOutcome("wiped", f"Wiped '{worktree.branch}': Cleaned: {worktree.repo_path}")
 
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch("teatree.core.runners.teardown.cleanup_worktree", side_effect=fake_cleanup),
+            patch("teatree.core.runners.teardown.reap_done_worktree", side_effect=fake_reap),
         ):
             result = WorktreeTeardown(ticket).run()
 
@@ -73,32 +71,55 @@ class TestWorktreeTeardown(TestCase):
         assert sorted(cleaned) == ["repo-0", "repo-1"]
         assert ticket.worktrees.count() == 0
 
-    def test_continues_on_individual_failure_and_reports_errors(self) -> None:
+    def test_keeps_unproven_worktree_and_still_wipes_the_rest(self) -> None:
+        """A kept (not-proven-redundant) worktree makes teardown ok=False, but the rest wipe."""
         ticket = self._ticket_with_worktrees(count=2)
 
-        def fake_cleanup(
-            worktree: Worktree, *, force: bool = False, strict_hygiene: bool = True, respect_liveness: bool = True
-        ) -> CleanupResult:
-            # FSM teardown bypasses the opportunistic liveness guard (#2243).
-            assert respect_liveness is False, "FSM teardown must opt out of the liveness guard"
-            del force, strict_hygiene, respect_liveness
+        def fake_reap(worktree: Worktree, *, workspace: Path, dry_run: bool, fsm_terminal: bool) -> ReapOutcome:
+            # FSM teardown bypasses the FSM-ceremony liveness false positives via
+            # fsm_terminal=True (#2243; #2773's respect_liveness=False equivalent).
+            assert fsm_terminal is True, "FSM teardown must pass fsm_terminal=True"
+            del workspace, dry_run
             if worktree.repo_path == "repo-0":
-                msg = "branch ahead of main"
-                raise RuntimeError(msg)
+                return ReapOutcome("kept", f"KEPT '{worktree.branch}': branch ahead of main — do not wipe")
             worktree.delete()
-            return CleanupResult(label=f"Cleaned: {worktree.repo_path}")
+            return ReapOutcome("wiped", f"Wiped '{worktree.branch}': Cleaned: {worktree.repo_path}")
 
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch("teatree.core.runners.teardown.cleanup_worktree", side_effect=fake_cleanup),
+            patch("teatree.core.runners.teardown.reap_done_worktree", side_effect=fake_reap),
         ):
             result = WorktreeTeardown(ticket).run()
 
         assert result.ok is False
         assert "repo-0" in result.detail
         assert "branch ahead of main" in result.detail
-        # repo-1 cleaned even though repo-0 raised
+        # repo-1 wiped even though repo-0 was kept
         assert ticket.worktrees.filter(repo_path="repo-1").count() == 0
+
+    def test_stranded_non_wiped_outcome_surfaces_as_failure(self) -> None:
+        """A non-wiped, non-kept outcome (excluded/active/skipped) must surface, not read as success.
+
+        B2: the teardown previously mapped only kept→ok=False / wiped→ok=True, so an
+        EXCLUDED/ACTIVE/SKIPPED/WOULD-WIPE worktree the reaper left standing fell
+        through to ``ok=True`` "tore down 0 worktree(s)" — success while tearing
+        nothing down. Any surviving worktree on the FSM path is now ``ok=False``.
+        """
+        ticket = self._ticket_with_worktrees(count=1)
+
+        def fake_reap(worktree: Worktree, *, workspace: Path, dry_run: bool, fsm_terminal: bool) -> ReapOutcome:
+            del workspace, dry_run, fsm_terminal
+            return ReapOutcome("excluded", f"EXCLUDED '{worktree.branch}': colleague-authored on a product repo")
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.teardown.reap_done_worktree", side_effect=fake_reap),
+        ):
+            result = WorktreeTeardown(ticket).run()
+
+        assert result.ok is False, result.detail
+        assert "EXCLUDED" in result.detail
+        assert ticket.worktrees.count() == 1, "a stranded worktree is left intact, never silently dropped"
 
 
 def _run_git(*args: str, cwd: Path) -> None:
@@ -160,15 +181,14 @@ class TestWorktreeTeardownUnpushedGuard(TestCase):
         )
         return ticket
 
-    def _teardown(self, ticket: Ticket, **kwargs: bool) -> object:
+    def _teardown(self, ticket: Ticket) -> object:
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch("teatree.core.cleanup.load_config") as mock_config,
+            patch("teatree.core.cleanup.clone_root", return_value=self.workspace),
             patch("teatree.core.cleanup.get_overlay_for_worktree") as mock_overlay,
         ):
-            mock_config.return_value.user.workspace_dir = self.workspace
             mock_overlay.return_value.get_cleanup_steps.return_value = []
-            return WorktreeTeardown(ticket, **kwargs).run()
+            return WorktreeTeardown(ticket).run()
 
     def test_refuses_to_remove_worktree_with_unpushed_commits(self) -> None:
         """The session-destroying scenario: branch has commits on NO remote."""
@@ -179,8 +199,8 @@ class TestWorktreeTeardownUnpushedGuard(TestCase):
 
         assert result.ok is False
         assert self.branch in result.detail
-        assert "on NO remote" in result.detail
-        assert "data loss" in result.detail
+        assert "not provably on origin/main" in result.detail
+        assert "salvage" in result.detail
         assert self.wt_path.exists(), "worktree with unpushed commits was destroyed"
         assert Worktree.objects.filter(branch=self.branch).exists()
 
@@ -192,16 +212,6 @@ class TestWorktreeTeardownUnpushedGuard(TestCase):
         _run_git("fetch", "-q", "origin", cwd=self.repo_main)
 
         result = self._teardown(ticket)
-
-        assert result.ok is True, result.detail
-        assert not self.wt_path.exists()
-
-    def test_force_overrides_the_guard(self) -> None:
-        """An explicit force escape hatch tears down even unpushed work."""
-        ticket = self._ticket_with_worktree()
-        self._commit_in_worktree("unpushed but force")
-
-        result = self._teardown(ticket, force=True)
 
         assert result.ok is True, result.detail
         assert not self.wt_path.exists()
@@ -243,38 +253,5 @@ class TestWorktreeTeardownUnpushedGuard(TestCase):
 
         assert result.ok is True, result.detail
         assert "unknown revision" not in result.detail
-        assert not self.wt_path.exists()
-        assert not Worktree.objects.filter(branch="branch-git-never-heard-of").exists()
-
-    def test_force_proceeds_when_db_slug_drifted_from_the_real_clean_branch(self) -> None:
-        """Force teardown of a drifted-slug, clean+pushed worktree proceeds cleanly.
-
-        The recovery capture probes the real HEAD (resolved from the worktree
-        dir), finds a clean+pushed worktree with nothing to lose, captures
-        nothing, and the hard-delete proceeds. Pre-fix the slug-keyed capture
-        probe errored and the post-failure re-check kept the worktree forever.
-
-        The fail-closed-on-inconclusive-probe guarantee (#706/#1506) that this
-        test formerly exercised via a phantom slug is now covered against the
-        real HEAD probe by
-        ``cleanup/test_drifted_branch.py::TestDetachedHeadForceCapturesTheRealCommits``
-        (a corrupt HEAD object makes the real probe inconclusive → still refuses).
-        """
-        ticket = Ticket.objects.create(
-            overlay="test",
-            issue_url="https://example.com/issues/706",
-            state=Ticket.State.MERGED,
-        )
-        Worktree.objects.create(
-            ticket=ticket,
-            overlay="test",
-            repo_path="myrepo",
-            branch="branch-git-never-heard-of",
-            extra={"worktree_path": str(self.wt_path)},
-        )
-
-        result = self._teardown(ticket, force=True)
-
-        assert result.ok is True, result.detail
         assert not self.wt_path.exists()
         assert not Worktree.objects.filter(branch="branch-git-never-heard-of").exists()

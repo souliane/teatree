@@ -44,12 +44,12 @@ from teatree.utils.git_run import check, git_env_without_overrides, run, run_str
 from teatree.utils.git_status import full_worktree_diff, status_porcelain, status_porcelain_strict
 from teatree.utils.git_sync import fetch, merge_abort, merge_no_edit, pull_ff_only, push, rebase
 from teatree.utils.git_worktree import (
-    bundle_create,
-    bundle_create_at_sha,
     commits_absent_from_all_remotes,
+    locked_worktree_paths,
     recovered_head_sha_after_ref_gone,
     worktree_add,
     worktree_add_at_ref,
+    worktree_move,
     worktree_remove,
 )
 
@@ -59,8 +59,6 @@ __all__ = [
     "branch_delete",
     "branch_diff",
     "branch_merged",
-    "bundle_create",
-    "bundle_create_at_sha",
     "check",
     "commit",
     "commit_messages",
@@ -74,6 +72,7 @@ __all__ = [
     "git_env_without_overrides",
     "head_sha",
     "last_commit_message",
+    "locked_worktree_paths",
     "log_oneline",
     "merge_abort",
     "merge_base",
@@ -93,6 +92,7 @@ __all__ = [
     "unsynced_commits",
     "worktree_add",
     "worktree_add_at_ref",
+    "worktree_move",
     "worktree_remove",
 ]
 

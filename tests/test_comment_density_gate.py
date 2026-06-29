@@ -7,18 +7,23 @@ pipeline. The load-bearing part is the **golden corpus** — two symmetric,
 non-negotiable sets that pin the detection regardless of the (always-zero)
 exit code.
 
-The **must-DENY** set is comment-heavy diffs the check MUST flag: WHAT-narration
-by ratio, a 3+ consecutive-comment run, a TS block-comment run.
+The **must-DENY** set is diffs the check MUST flag: WHAT-narration by ratio, a
+3+ consecutive-comment run, a TS block-comment run, a single inline comment
+restating the next code line, and a signature-echo docstring (the content-aware
+restatement detection).
 
 The **must-ALLOW** set is clean diffs the check MUST pass: sparse code, one
-explanatory comment, docstrings, tooling pragmas, license/shebang headers,
-tests, docs, CI YAML rationale blocks. It proves the check cannot over-flag
-legitimate code — a detector without it is incomplete (the over-flag doctrine).
+explanatory comment, a docstring carrying a non-obvious why, tooling pragmas,
+license/shebang headers, tests, docs, CI YAML rationale blocks. It proves the
+check cannot over-flag legitimate code — a detector without it is incomplete
+(the over-flag doctrine).
 
-The check is content-blind and diff-aware; the analysis lives in
-:mod:`teatree.hooks.privacy_diff_comment_density`, exercised here through the
-reusable :func:`report_diff`, the ``t3 tool comment-density`` CLI, and the
-``scripts/hooks/check_comment_density.py`` pre-push hook (each warn-only).
+The check is content-aware (it flags a comment whose words restate the next
+code line, and a docstring opening that echoes the signature) and diff-aware;
+the analysis lives in :mod:`teatree.hooks.privacy_diff_comment_density`,
+exercised here through the reusable :func:`report_diff`, the ``t3 tool
+comment-density`` CLI, and the ``scripts/hooks/check_comment_density.py``
+pre-push hook (each warn-only).
 """
 
 import json
@@ -94,6 +99,19 @@ _MUST_DENY: dict[str, str] = {
         "  // then apply the scaling factor",
         "  // and clamp into the valid range",
         "return result;",
+    ),
+    "migration_signature_echo_docstring": _diff(
+        "src/myapp/migrations/0002_add_flag.py",
+        "def add_feature_flag(apps, schema_editor):",
+        '    """Add the feature flag."""',
+        "    model = apps.get_model('myapp', 'FeatureFlag')",
+        "    model.objects.get_or_create(definition=FLAG, defaults={'value': False})",
+    ),
+    "single_inline_comment_restating_the_update_call": _diff(
+        "src/myapp/migrations/0002_add_flag.py",
+        "def backfill(model, metadata):",
+        "    # update the rows with the metadata",
+        "    model.objects.filter(definition=FLAG).update(**metadata)",
     ),
 }
 
@@ -183,6 +201,17 @@ _MUST_ALLOW: dict[str, str] = {
         "    # sees the PR contents — the documented CI convention.",
         "    runs-on: ubuntu-latest",
     ),
+    "migration_docstring_with_non_obvious_why": _diff(
+        "src/myapp/migrations/0002_add_flag.py",
+        "def add_feature_flag(apps, schema_editor):",
+        '    """Seed the platform-messages flag, OFF by default.',
+        "",
+        "    The endpoint reports zero messages while OFF so the capability",
+        "    stays dark per tenant until each environment opts in.",
+        '    """',
+        "    model = apps.get_model('myapp', 'FeatureFlag')",
+        "    model.objects.get_or_create(definition=FLAG, defaults={'value': False})",
+    ),
 }
 
 
@@ -251,9 +280,15 @@ class TestStructuredFinding:
         from teatree.hooks.privacy_diff_comment_density import CommentDensityFinding  # noqa: PLC0415
 
         finding = CommentDensityFinding(
-            path="src/teatree/x.py", comment_lines=3, code_lines=0, max_consecutive=3, reason="x"
+            path="src/teatree/x.py", comment_lines=3, code_lines=0, max_consecutive=3, restatements=0, reason="x"
         )
         assert not finding.ratio
+
+    def test_restatement_finding_reports_count_and_reason(self) -> None:
+        findings = report_diff(_MUST_DENY["single_inline_comment_restating_the_update_call"])
+        assert len(findings) == 1
+        assert findings[0].restatements >= 1
+        assert "restate" in findings[0].reason
 
 
 class TestCli:

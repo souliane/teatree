@@ -1,5 +1,6 @@
 """Tests for the workspace and worktree management commands."""
 
+import json
 import os
 import re
 import subprocess
@@ -17,25 +18,29 @@ from django.utils import timezone
 from django.utils.module_loading import import_string
 
 import teatree.core.branch_classification as bc_mod
+import teatree.core.clean_ignore as clean_ignore_mod
 import teatree.core.cleanup as cleanup_mod
 import teatree.core.management.commands._workspace_clean_all as ws_clean_all_mod
 import teatree.core.management.commands._workspace_cleanup as ws_cleanup_mod
 import teatree.core.management.commands._workspace_docker as ws_docker_mod
-import teatree.core.management.commands._workspace_reap as ws_reap_mod
+import teatree.core.management.commands._workspace_salvage as ws_salvage_mod
 import teatree.core.management.commands._workspace_stash as ws_stash_mod
 import teatree.core.management.commands.workspace as workspace_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.runners.provision as provision_mod
+import teatree.core.worktree_done as worktree_done_mod
 import teatree.utils.db as db_mod
 import teatree.utils.git as git_mod
 import teatree.utils.git_commit as git_commit_mod
 import teatree.utils.run as utils_run_mod
 from teatree.config import load_config
+from teatree.core.cleanup_liveness import LivenessVerdict
 from teatree.core.management.commands._workspace_ticket_intake import build_branch_name
-from teatree.core.management.commands.workspace import _branch_prefix, _workspace_dir
+from teatree.core.management.commands.workspace import _branch_prefix, _worktree_root
 from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.overlay import OverlayBase, ProvisionStep
 from teatree.core.runners import RunnerResult
+from teatree.core.worktree_done import reap_done_worktrees
 from tests.teatree_core.management_commands._overlays import (
     FULL_OVERLAY,
     NESTED_OVERLAY,
@@ -72,6 +77,51 @@ class TestBranchPrefix(TestCase):
         ):
             os.environ.pop("T3_BRANCH_PREFIX", None)
             assert _branch_prefix() == "dev"
+
+
+class TestStampIdentity(TestCase):
+    """#2655: ``stamp-identity`` is host-aware — it gates on the full remote URL.
+
+    The proactive provisioner stamps new worktrees; ``stamp-identity``
+    retroactively fixes a public souliane clone created before that fix.
+    Both must refuse a non-github (e.g. GitLab) remote so its legitimate
+    inherited identity is never overwritten with the github noreply — even
+    when a public github.com repo happens to exist at the same
+    host-stripped ``owner/repo`` slug.
+    """
+
+    @staticmethod
+    def _gh_public(_cmd: list[str], **_kw: object) -> object:
+        return type("R", (), {"stdout": "PUBLIC\n", "returncode": 0})()
+
+    def _stamp(self, url: str, slug: str) -> tuple[object, list[str]]:
+        set_calls: list[str] = []
+        with (
+            patch.object(workspace_mod.git, "remote_url", return_value=url),
+            patch.object(workspace_mod.git, "remote_slug", return_value=slug),
+            patch("teatree.core.public_identity.run_allowed_to_fail", side_effect=self._gh_public),
+            patch.object(workspace_mod, "set_local_noreply_identity", side_effect=set_calls.append),
+        ):
+            result = workspace_mod.Command().stamp_identity(repo=".")
+        return result, set_calls
+
+    def test_public_github_remote_is_stamped(self) -> None:
+        result, set_calls = self._stamp("git@github.com:souliane/teatree.git", "souliane/teatree")
+        assert result.get("stamped") is True, result
+        assert set_calls == ["."], "the clone-local noreply identity must be stamped"
+
+    def test_github_ssh_alias_host_is_stamped(self) -> None:
+        result, set_calls = self._stamp("git@github.com-work:souliane/teatree.git", "souliane/teatree")
+        assert result.get("stamped") is True, result
+        assert set_calls == ["."]
+
+    def test_gitlab_remote_is_not_stamped(self) -> None:
+        # gh WOULD answer PUBLIC for the host-stripped ``acme-eng/widget``
+        # slug, but the non-github host short-circuits the gate to False
+        # BEFORE any gh call — the GitLab clone keeps its inherited identity.
+        result, set_calls = self._stamp("git@gitlab.com:acme-eng/widget.git", "acme-eng/widget")
+        assert result.get("stamped") is False, result
+        assert set_calls == [], "a GitLab clone must NEVER be stamped with the github noreply identity (#2655)"
 
 
 class TestBuildBranchName(TestCase):
@@ -155,17 +205,61 @@ class TestBuildBranchName(TestCase):
         assert re.fullmatch(r"[a-z0-9-]+", branch)
 
 
-class TestWorkspaceDirHelper(TestCase):
-    def test_uses_config_workspace_dir(self) -> None:
-        from teatree.config import TeaTreeConfig, UserSettings  # noqa: PLC0415
-
-        cfg = TeaTreeConfig(user=UserSettings(workspace_dir=Path("/tmp/ws-test")))
-        with patch.object(workspace_mod, "load_config", return_value=cfg):
-            result = _workspace_dir()
+class TestWorktreeRootHelper(TestCase):
+    def test_delegates_to_per_overlay_resolver(self) -> None:
+        # The worktree-creation path resolves through config.worktree_root()
+        # (the per-overlay env → DB → default WORKTREE root), NOT the CLONE root
+        # config.clone_root() used for clone discovery.
+        with patch.object(workspace_mod, "_config_worktree_root", return_value=Path("/tmp/ws-test")):
+            result = _worktree_root()
             assert result == Path("/tmp/ws-test")
 
 
 # ── Workspace commands ──────────────────────────────────────────────
+
+
+class TestProvisionSplitsCloneRootFromWorktreeRoot(TestCase):
+    """Provisioning splits the clone root from the per-overlay worktree root.
+
+    It DISCOVERS clones under the CLONE root and CREATES worktrees under the
+    per-overlay WORKTREE root — with NO ``T3_WORKSPACE_DIR`` pin.
+
+    Anti-vacuity: on the pre-split code (clone discovery shared the per-overlay
+    worktree root) ``find_clone_path`` scanned ``~/workspace/t3-workspaces/<overlay>``
+    for clones, found none, and provisioning failed — so this test goes RED there.
+    The two existing pinned setUps masked exactly this; here the pin is absent.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        mock_result = MagicMock(returncode=0, stdout="dev", stderr="")
+        self.enterContext(patch.object(utils_run_mod.subprocess, "run", return_value=mock_result))
+        # Seed clones at the realistic NAMESPACED clone-root layout
+        # ``~/workspace/<ns>/<repo>`` (HOME sandboxed by the autouse fixture).
+        # No ``T3_WORKSPACE_DIR`` pin: clone_root() defaults to ``~/workspace``.
+        self.workspace = Path(os.environ["HOME"]) / "workspace"
+        for repo in ("backend", "frontend"):
+            (self.workspace / "souliane" / repo / ".git").mkdir(parents=True, exist_ok=True)
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_clone_at_clone_root_worktree_under_per_overlay_worktree_root(self) -> None:
+        ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/42"))
+
+        # Provisioning SUCCEEDED — clones were discovered at the namespaced clone
+        # root via clone_root() even with no env pin (rc 0 means a failed provision).
+        assert ticket_id, "provisioning failed: clone discovery did not resolve the clone root"
+        ticket = Ticket.objects.get(pk=ticket_id)
+        assert ticket.repos == ["backend", "frontend"]
+        assert ticket.worktrees.count() == 2
+        # Every worktree was CREATED under the per-overlay WORKTREE root
+        # ``~/workspace/t3-workspaces/<overlay>/`` — distinct from the clone root.
+        for wt in ticket.worktrees.all():
+            assert wt.worktree_path, "worktree not provisioned"
+            parts = Path(wt.worktree_path).parts
+            assert "t3-workspaces" in parts, wt.worktree_path
+            # …and NOT created flat under the clone root (the pre-split colocation).
+            assert Path(wt.worktree_path).parent.parent != self.workspace, wt.worktree_path
 
 
 class TestWorkspaceTicket(TestCase):
@@ -203,7 +297,7 @@ class TestWorkspaceTicket(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
             (workspace / "42-someone-else-already-here").mkdir()
-            with patch.object(workspace_mod, "_workspace_dir", return_value=workspace):
+            with patch.object(workspace_mod, "_worktree_root", return_value=workspace):
                 rc = call_command("workspace", "ticket", "https://example.com/issues/42")
         assert rc == 0
         assert not Ticket.objects.filter(issue_url="https://example.com/issues/42").exists()
@@ -215,7 +309,7 @@ class TestWorkspaceTicket(TestCase):
             workspace = Path(tmp)
             (workspace / "42-someone-else-already-here").mkdir()
             with (
-                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(workspace_mod, "_worktree_root", return_value=workspace),
                 patch.object(workspace_mod, "WorktreeProvisioner") as provisioner,
             ):
                 provisioner.return_value.run.return_value = RunnerResult(ok=True, detail="ok")
@@ -231,7 +325,7 @@ class TestWorkspaceTicket(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
             with (
-                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
+                patch.object(workspace_mod, "_worktree_root", return_value=workspace),
                 patch.object(workspace_mod, "WorktreeProvisioner") as provisioner,
             ):
                 provisioner.return_value.run.return_value = RunnerResult(ok=True, detail="ok")
@@ -399,8 +493,9 @@ class TestWorkspaceTicket(TestCase):
             mock_result.returncode = 0
 
             with (
-                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
+                patch.object(workspace_mod, "_worktree_root", return_value=workspace),
+                patch.object(provision_mod, "clone_root", return_value=workspace),
+                patch.object(provision_mod, "worktree_root", return_value=workspace),
                 patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
             ):
                 ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/80"))
@@ -433,7 +528,7 @@ class TestWorkspaceTicket(TestCase):
         ]
         stderr_buf = StringIO()
         with patch(
-            "teatree.core.management.commands.workspace.find_orphans_in_workspace",
+            "teatree.core.management.commands._workspace_helpers.find_orphans_in_workspace",
             return_value=fake_orphans,
         ):
             call_command("workspace", "ticket", "https://example.com/issues/500", stderr=stderr_buf)
@@ -492,8 +587,9 @@ class TestWorkspaceTicket(TestCase):
             mock_result.returncode = 0
 
             with (
-                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
+                patch.object(workspace_mod, "_worktree_root", return_value=workspace),
+                patch.object(provision_mod, "clone_root", return_value=workspace),
+                patch.object(provision_mod, "worktree_root", return_value=workspace),
                 patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
             ):
                 ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/81"))
@@ -527,8 +623,9 @@ class TestWorkspaceTicket(TestCase):
             mock_result.returncode = 0
 
             with (
-                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
+                patch.object(workspace_mod, "_worktree_root", return_value=workspace),
+                patch.object(provision_mod, "clone_root", return_value=workspace),
+                patch.object(provision_mod, "worktree_root", return_value=workspace),
                 patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
             ):
                 ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/82"))
@@ -563,8 +660,9 @@ class TestWorkspaceTicket(TestCase):
                 return mock_pull
 
             with (
-                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
+                patch.object(workspace_mod, "_worktree_root", return_value=workspace),
+                patch.object(provision_mod, "clone_root", return_value=workspace),
+                patch.object(provision_mod, "worktree_root", return_value=workspace),
                 patch.object(utils_run_mod.subprocess, "run", side_effect=side_effect),
             ):
                 result = cast("int", call_command("workspace", "ticket", "https://example.com/issues/83"))
@@ -627,8 +725,9 @@ class TestWorkspaceTicket(TestCase):
                 return mock_pull
 
             with (
-                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
+                patch.object(workspace_mod, "_worktree_root", return_value=workspace),
+                patch.object(provision_mod, "clone_root", return_value=workspace),
+                patch.object(provision_mod, "worktree_root", return_value=workspace),
                 patch.object(utils_run_mod.subprocess, "run", side_effect=side_effect),
             ):
                 ticket_id = cast(
@@ -674,8 +773,9 @@ class TestWorkspaceTicket(TestCase):
                 return mock_add_ok
 
             with (
-                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
+                patch.object(workspace_mod, "_worktree_root", return_value=workspace),
+                patch.object(provision_mod, "clone_root", return_value=workspace),
+                patch.object(provision_mod, "worktree_root", return_value=workspace),
                 patch.object(utils_run_mod.subprocess, "run", side_effect=side_effect),
             ):
                 ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/103"))
@@ -708,8 +808,9 @@ class TestWorkspaceTicket(TestCase):
                 return MagicMock(returncode=0, stdout=stdout, stderr="")
 
             with (
-                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
+                patch.object(workspace_mod, "_worktree_root", return_value=workspace),
+                patch.object(provision_mod, "clone_root", return_value=workspace),
+                patch.object(provision_mod, "worktree_root", return_value=workspace),
                 patch.object(utils_run_mod.subprocess, "run", side_effect=fake_run),
             ):
                 ticket_id = cast("int", call_command("workspace", "ticket", "https://example.com/issues/90"))
@@ -748,8 +849,9 @@ class TestWorkspaceTicket(TestCase):
 
             mock_result = MagicMock(returncode=0, stdout="", stderr="")
             with (
-                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
+                patch.object(workspace_mod, "_worktree_root", return_value=workspace),
+                patch.object(provision_mod, "clone_root", return_value=workspace),
+                patch.object(provision_mod, "worktree_root", return_value=workspace),
                 patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
                 patch("teatree.core.dev_repo.find_project_root", return_value=core),
                 patch("teatree.core.dev_repo.discover_active_overlay", return_value=None),
@@ -776,8 +878,9 @@ class TestWorkspaceTicket(TestCase):
 
             mock_result = MagicMock(returncode=0, stdout="", stderr="")
             with (
-                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
+                patch.object(workspace_mod, "_worktree_root", return_value=workspace),
+                patch.object(provision_mod, "clone_root", return_value=workspace),
+                patch.object(provision_mod, "worktree_root", return_value=workspace),
                 patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
                 patch("teatree.core.dev_repo.find_project_root", return_value=core),
                 patch("teatree.core.dev_repo.discover_active_overlay", return_value=None),
@@ -807,10 +910,16 @@ _no_orphan_docker = patch.object(ws_clean_all_mod, "reap_orphan_worktree_docker"
 _no_orphan_isolated_roots = patch.object(ws_clean_all_mod, "reap_orphan_isolated_worktree_roots", new=list)
 
 
-_no_orphan_raw = patch.object(ws_clean_all_mod, "reap_orphan_raw_worktrees", new=lambda _ws, *, reap_unsynced: [])
+_no_orphan_raw = patch.object(ws_clean_all_mod, "reap_orphan_raw_worktrees", new=lambda _ws: [])
 
 
 _no_dslr_prune = patch("teatree.utils.django_db.prune_dslr_snapshots", new=lambda **kw: [])
+
+
+# These integration tests model SETTLED worktrees (cleanup's target). The freshly
+# created fixture worktrees would trip the liveness "recent commit" gate, which is
+# tested directly in test_cleanup_liveness.py — neutralise it here.
+_no_liveness = patch.object(worktree_done_mod, "worktree_liveness", new=lambda *_a, **_k: LivenessVerdict(active=False))
 
 
 class TestWorkspaceProvisionPositionalId(TestCase):
@@ -1224,23 +1333,51 @@ class TestWorkspaceMultiOverlayResolution(TestCase):
                 call_command("workspace", "teardown", path=str(wt_dir))
 
 
-class TestCleanAllReapUnsyncedFlag(TestCase):
-    """``clean-all --reap-unsynced`` validates its value and threads it to the orphan pass (#2361)."""
+class TestWorkspaceEmitAndSalvage(TestCase):
+    """The ``workspace emit`` (structured handoff) and ``workspace salvage`` CLI entries (#2763)."""
 
-    @_no_prune
-    @_no_stash
-    @_no_orphan_dbs
-    @_no_orphan_isolated_roots
-    @_no_orphan_docker
-    @_no_dslr_prune
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_rejects_an_unknown_policy_value(self) -> None:
+    def test_emit_prints_json_array(self) -> None:
+        with patch.object(workspace_mod, "_worktree_root", return_value=Path("/ws")):
+            rendered = cast("str", call_command("workspace", "emit"))
+        assert json.loads(rendered) == [], "no NOT-auto-deleted items → empty JSON array"
+
+    def test_emit_serialises_collected_records(self) -> None:
+        from teatree.core.cleanup_emit import CleanupEmitRecord  # noqa: PLC0415
+
+        record = CleanupEmitRecord(path="/ws/feat", branch="feat", kind="worktree", unique_commit_shas=["abc"])
         with (
-            patch.object(workspace_mod, "_workspace_dir", return_value=Path("/tmp/ws")),
-            pytest.raises(SystemExit),
+            patch.object(workspace_mod, "_worktree_root", return_value=Path("/ws")),
+            patch.object(ws_salvage_mod, "collect_emit_records", return_value=[record]),
         ):
-            call_command("workspace", "clean-all", "--reap-unsynced", "delete-everything")
+            data = json.loads(cast("str", call_command("workspace", "emit")))
+        assert data[0]["branch"] == "feat"
+        assert data[0]["unique_commit_shas"] == ["abc"]
+        assert data[0]["schema_version"] == 1
+
+    def test_salvage_builds_request_and_reports_outcome(self) -> None:
+        from teatree.core.cleanup_salvage import SalvageRequest, SalvageResult  # noqa: PLC0415
+
+        captured: dict[str, object] = {}
+
+        def _fake_salvage(request: SalvageRequest, _hooks: object) -> SalvageResult:
+            captured["source_ref"] = request.source_ref
+            captured["salvage_branch"] = request.salvage_branch
+            return SalvageResult(salvaged=True, deleted=True, pr_url="https://x/pr/9", salvage_branch="salvage/feat")
+
+        with (
+            patch.object(ws_salvage_mod.git, "run", return_value="/repo"),
+            patch.object(ws_salvage_mod, "salvage_item", side_effect=_fake_salvage),
+        ):
+            line = cast("str", call_command("workspace", "salvage", "feat"))
+
+        assert captured["source_ref"] == "feat"
+        assert captured["salvage_branch"] == "salvage/feat", "defaults to salvage/<source_ref>"
+        assert "salvaged=True" in line
+        assert "deleted=True" in line
+
+
+class TestCleanAllDryRun(TestCase):
+    """``clean-all --dry-run`` previews the done-reaper and removes nothing."""
 
     @_no_prune
     @_no_stash
@@ -1248,68 +1385,40 @@ class TestCleanAllReapUnsyncedFlag(TestCase):
     @_no_orphan_isolated_roots
     @_no_orphan_docker
     @_no_dslr_prune
+    @_no_orphan_raw
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_default_policy_is_keep(self) -> None:
-        captured: dict[str, str] = {}
+    def test_dry_run_skips_the_destructive_passes(self) -> None:
+        reaper_calls: dict[str, bool] = {}
 
-        def _spy(_ws: Path, *, reap_unsynced: str) -> list[str]:
-            captured["policy"] = reap_unsynced
-            return []
+        def _spy(_ws: Path, *, dry_run: bool) -> list[str]:
+            reaper_calls["dry_run"] = dry_run
+            return ["WOULD WIPE 'feat': done (ticket-state:merged), all changes proven redundant"]
 
         with (
             tempfile.TemporaryDirectory() as tmp,
-            patch.object(workspace_mod, "_workspace_dir", return_value=Path(tmp)),
-            patch.object(ws_clean_all_mod, "reap_orphan_raw_worktrees", side_effect=_spy),
+            patch.object(workspace_mod, "_worktree_root", return_value=Path(tmp)),
+            patch.object(ws_clean_all_mod, "reap_done_worktrees", side_effect=_spy),
+            patch.object(ws_clean_all_mod, "drop_orphan_databases") as mock_drop,
         ):
-            call_command("workspace", "clean-all")
+            cleaned = cast("list[str]", call_command("workspace", "clean-all", "--dry-run"))
 
-        assert captured["policy"] == "keep"
-
-    @_no_prune
-    @_no_stash
-    @_no_orphan_dbs
-    @_no_orphan_isolated_roots
-    @_no_orphan_docker
-    @_no_dslr_prune
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_snapshot_policy_is_threaded_to_the_orphan_pass(self) -> None:
-        captured: dict[str, str] = {}
-
-        def _spy(_ws: Path, *, reap_unsynced: str) -> list[str]:
-            captured["policy"] = reap_unsynced
-            return ["Reaped orphan worktree (snapshot at /tmp/x): feat (/tmp/wt)"]
-
-        with (
-            tempfile.TemporaryDirectory() as tmp,
-            patch.object(workspace_mod, "_workspace_dir", return_value=Path(tmp)),
-            patch.object(ws_clean_all_mod, "reap_orphan_raw_worktrees", side_effect=_spy),
-        ):
-            cleaned = cast("list[str]", call_command("workspace", "clean-all", "--reap-unsynced", "snapshot"))
-
-        assert captured["policy"] == "snapshot"
-        assert any("Reaped orphan worktree (snapshot at" in line for line in cleaned)
+        assert reaper_calls["dry_run"] is True
+        assert any("WOULD WIPE" in line for line in cleaned)
+        mock_drop.assert_not_called()  # dry-run touches nothing beyond the preview
 
 
 @_no_orphan_raw
 class TestWorkspaceCleanAll(TestCase):
-    @_no_prune
-    @_no_stash
-    @_no_orphan_dbs
-    @_no_orphan_isolated_roots
-    @_no_orphan_docker
-    @_no_dslr_prune
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_removes_stale_worktrees(self) -> None:
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/50")
-        Worktree.objects.create(overlay="test", ticket=ticket, repo_path="/tmp/test", branch="feature")
+    """End-to-end ``clean-all`` CLI integration over the consolidated done-reaper.
 
-        cleaned = cast("list[str]", call_command("workspace", "clean-all"))
-
-        assert len(cleaned) == 1
-        assert Worktree.objects.count() == 0
+    The per-worktree done-detection + analyze-before-wipe depth lives in
+    ``tests/teatree_core/test_worktree_done.py`` (real git, every disposition);
+    full-stack reap/keep in :class:`TestCleanAllReapsAndSurvivesForeignOverlay`.
+    These pin the remaining CLI-level concerns: overlay cleanup steps fire while
+    wiping a done worktree, and the secondary passes (empty-dir prune, DSLR prune,
+    in-use-tenant skip, orphan-docker reap) are sequenced and reported.
+    """
 
     @_no_prune
     @_no_stash
@@ -1317,189 +1426,22 @@ class TestWorkspaceCleanAll(TestCase):
     @_no_orphan_isolated_roots
     @_no_orphan_docker
     @_no_dslr_prune
+    @_no_liveness
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_removes_git_worktree_and_branch(self) -> None:
-        """clean-all delegates to cleanup_worktree which calls git worktree remove + branch -D."""
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
+    def test_runs_overlay_cleanup_steps_on_a_reaped_worktree(self) -> None:
+        """clean-all invokes overlay.get_cleanup_steps() while wiping a done worktree."""
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            _make_squash_merged_worktree(tmp, ticket_number="86")
 
-            workspace = tmp_path / "workspace"
-            repo_main = workspace / "backend"
-            repo_main.mkdir(parents=True)
-            (repo_main / ".git").mkdir()
-
-            wt_dir = workspace / "ac-backend-80-ticket" / "backend"
-            wt_dir.mkdir(parents=True)
-
-            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/80")
-            Worktree.objects.create(
-                overlay="test",
-                ticket=ticket,
-                repo_path="backend",
-                branch="ac-backend-80-ticket",
-                extra={"worktree_path": str(wt_dir)},
-            )
-
-            mock_config = MagicMock()
-            mock_config.user.workspace_dir = workspace
-            with (
-                patch.object(cleanup_mod, "load_config", return_value=mock_config),
-                patch.object(cleanup_mod, "git") as mock_git,
-                patch.object(cleanup_mod, "get_overlay_for_worktree") as mock_overlay,
-                # The fake repo (.git is a bare dir) can't satisfy a real
-                # ``git bundle``; isolate the recovery-capture seam so this test
-                # exercises the clean+pushed reap path, not the capture itself.
-                patch.object(cleanup_mod, "capture_recovery_artifact", return_value=None),
-            ):
-                mock_overlay.return_value.get_cleanup_steps.return_value = []
-                mock_git.status_porcelain.return_value = ""
-                mock_git.unsynced_commits.return_value = []
-                mock_git.commits_absent_from_all_remotes.return_value = []
-                # The on-disk worktree's effective branch matches the DB slug
-                # (no drift) — the teardown resolves and deletes that real branch.
-                mock_git.DETACHED_HEAD = git_mod.DETACHED_HEAD
-                mock_git.current_branch.return_value = "ac-backend-80-ticket"
-                cleaned = cast("list[str]", call_command("workspace", "clean-all"))
-
-            assert any("Cleaned: backend" in c for c in cleaned)
-            assert Worktree.objects.count() == 0
-
-            mock_git.worktree_remove.assert_called_once()
-            mock_git.branch_delete.assert_called_once_with(str(repo_main), "ac-backend-80-ticket")
-
-    @_no_prune
-    @_no_stash
-    @_no_orphan_dbs
-    @_no_orphan_isolated_roots
-    @_no_orphan_docker
-    @_no_dslr_prune
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_drops_database_when_db_name_set(self) -> None:
-        """clean-all calls dropdb when worktree has a db_name."""
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-
-            workspace = tmp_path / "workspace"
-            workspace.mkdir(parents=True)
-
-            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/81")
-            wt = Worktree.objects.create(
-                overlay="test",
-                ticket=ticket,
-                repo_path="backend",
-                branch="ac-backend-81-ticket",
-                extra={},
-            )
-            # Set db_name directly (bypass FSM provision)
-            Worktree.objects.filter(pk=wt.pk).update(db_name="wt_test_db")
-
-            with (
-                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
-                patch.object(
-                    utils_run_mod.subprocess,
-                    "run",
-                    return_value=subprocess.CompletedProcess([], 0, "", ""),
-                ) as mock_run,
-                patch.object(db_mod, "pg_host", return_value="localhost"),
-                patch.object(db_mod, "pg_user", return_value="testuser"),
-                patch.object(db_mod, "pg_env", return_value={"PGPASSWORD": "secret"}),
-            ):
-                cleaned = cast("list[str]", call_command("workspace", "clean-all"))
-
-            assert len(cleaned) == 1
-            assert Worktree.objects.count() == 0
-
-            # cleanup_worktree now calls docker_compose_down then dropdb (#1306).
-            calls = [c[0][0] for c in mock_run.call_args_list]
-            assert any("dropdb" in cmd and "wt_test_db" in cmd for cmd in calls)
-            assert any("docker" in cmd[0] and "compose" in cmd for cmd in calls)
-
-    @_no_prune
-    @_no_stash
-    @_no_orphan_dbs
-    @_no_orphan_isolated_roots
-    @_no_orphan_docker
-    @_no_dslr_prune
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_keeps_worktree_with_uncommitted_changes(self) -> None:
-        """clean-all KEEPS a worktree with uncommitted changes — never reaps a live dir (#2243).
-
-        Pre-fix a dirty worktree on a merged signal was bundle-and-reaped with a
-        "cleaning anyway (PR merged)" warning; the unattended default must never
-        delete a dir an agent may be mid-task in. The row survives and a skip line
-        names the uncommitted changes.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-
-            workspace = tmp_path / "workspace"
-            workspace.mkdir(parents=True)
-
-            wt_dir = workspace / "ac-backend-85-ticket" / "backend"
-            wt_dir.mkdir(parents=True)
-
-            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/85")
-            row = Worktree.objects.create(
-                overlay="test",
-                ticket=ticket,
-                repo_path="backend",
-                branch="ac-backend-85-ticket",
-                extra={"worktree_path": str(wt_dir)},
-            )
-
-            mock_config = MagicMock()
-            mock_config.user.workspace_dir = workspace
-            with (
-                patch.object(cleanup_mod, "load_config", return_value=mock_config),
-                patch.object(cleanup_mod, "git") as mock_git,
-                patch.object(cleanup_mod, "get_overlay_for_worktree") as mock_overlay,
-            ):
-                mock_overlay.return_value.get_cleanup_steps.return_value = []
-                mock_git.status_porcelain.return_value = " M dirty_file.py"
-                mock_git.commits_absent_from_all_remotes.return_value = []
-                cleaned = cast("list[str]", call_command("workspace", "clean-all"))
-
-            assert Worktree.objects.filter(pk=row.pk).exists(), f"dirty worktree must be kept; got: {cleaned!r}"
-            assert wt_dir.is_dir(), "DATA LOSS: dirty worktree dir was removed"
-            assert any("uncommitted changes" in c and "ac-backend-85-ticket" in c for c in cleaned)
-
-    @_no_prune
-    @_no_stash
-    @_no_orphan_dbs
-    @_no_orphan_isolated_roots
-    @_no_orphan_docker
-    @_no_dslr_prune
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_runs_overlay_cleanup_steps(self) -> None:
-        """clean-all invokes overlay.get_cleanup_steps() for each worktree."""
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-
-            workspace = tmp_path / "workspace"
-            workspace.mkdir(parents=True)
-
-            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/86")
-            Worktree.objects.create(
-                overlay="test",
-                ticket=ticket,
-                repo_path="backend",
-                branch="ac-backend-86-ticket",
-                extra={},
-            )
-
-            cleanup_called = []
+            cleanup_called: list[bool] = []
 
             class CleanupOverlay(FullOverlay):
                 def get_cleanup_steps(self, worktree: Worktree) -> list[ProvisionStep]:
                     return [ProvisionStep(name="docker-down", callable=lambda: cleanup_called.append(True))]
 
-            cleanup_overlay = CleanupOverlay()
-            result: dict[str, OverlayBase] = {"test": cleanup_overlay}
+            result: dict[str, OverlayBase] = {"test": CleanupOverlay()}
 
             def _fake_discover() -> dict[str, OverlayBase]:
                 return result
@@ -1507,13 +1449,17 @@ class TestWorkspaceCleanAll(TestCase):
             _fake_discover.cache_clear = lambda: None
 
             with (
-                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
+                patch.object(workspace_mod, "_worktree_root", return_value=tmp),
+                patch.object(provision_mod, "clone_root", return_value=tmp),
+                patch.object(provision_mod, "worktree_root", return_value=tmp),
                 patch.object(overlay_loader_mod, "_discover_overlays", new=_fake_discover),
+                patch.object(cleanup_mod, "drop_db"),
+                patch("teatree.core.runners.worktree_start.docker_compose_down"),
             ):
                 call_command("workspace", "clean-all")
 
-            assert cleanup_called == [True]
+            assert cleanup_called == [True], "overlay cleanup steps must run while reaping a done worktree"
+            assert Worktree.objects.count() == 0, "the squash-merged worktree must be reaped"
 
     @_no_prune
     @_no_stash
@@ -1541,8 +1487,9 @@ class TestWorkspaceCleanAll(TestCase):
             (nonempty_dir / "some_file.txt").write_text("content", encoding="utf-8")
 
             with (
-                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-                patch.object(provision_mod, "_workspace_dir", return_value=workspace),
+                patch.object(workspace_mod, "_worktree_root", return_value=workspace),
+                patch.object(provision_mod, "clone_root", return_value=workspace),
+                patch.object(provision_mod, "worktree_root", return_value=workspace),
             ):
                 cleaned = cast("list[str]", call_command("workspace", "clean-all"))
 
@@ -1563,8 +1510,9 @@ class TestWorkspaceCleanAll(TestCase):
         """clean-all includes DSLR snapshot pruning results."""
         with (
             tempfile.TemporaryDirectory() as tmp,
-            patch.object(workspace_mod, "_workspace_dir", return_value=Path(tmp)),
-            patch.object(provision_mod, "_workspace_dir", return_value=Path(tmp)),
+            patch.object(workspace_mod, "_worktree_root", return_value=Path(tmp)),
+            patch.object(provision_mod, "clone_root", return_value=Path(tmp)),
+            patch.object(provision_mod, "worktree_root", return_value=Path(tmp)),
             patch("teatree.utils.django_db.prune_dslr_snapshots", return_value=["old-snapshot-2025"]),
         ):
             cleaned = cast("list[str]", call_command("workspace", "clean-all"))
@@ -1597,8 +1545,9 @@ class TestWorkspaceCleanAll(TestCase):
 
         with (
             tempfile.TemporaryDirectory() as tmp,
-            patch.object(workspace_mod, "_workspace_dir", return_value=Path(tmp)),
-            patch.object(provision_mod, "_workspace_dir", return_value=Path(tmp)),
+            patch.object(workspace_mod, "_worktree_root", return_value=Path(tmp)),
+            patch.object(provision_mod, "clone_root", return_value=Path(tmp)),
+            patch.object(provision_mod, "worktree_root", return_value=Path(tmp)),
             patch("teatree.utils.django_db.prune_dslr_snapshots", side_effect=fake_prune),
         ):
             ticket = Ticket.objects.create(
@@ -1617,194 +1566,6 @@ class TestWorkspaceCleanAll(TestCase):
         # Default overlay returns the variant verbatim; the in-use tenant set
         # carries the active variant string so the pruner skips it.
         assert captured.get("in_use_tenants") == {"tenant-a"}
-
-    @_no_prune
-    @_no_stash
-    @_no_orphan_dbs
-    @_no_orphan_isolated_roots
-    @_no_orphan_docker
-    @_no_dslr_prune
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_continues_when_one_worktree_refuses_cleanup(self) -> None:
-        """clean-all skips worktrees with unsynced commits and still cleans the rest."""
-        with tempfile.TemporaryDirectory() as tmp:
-            workspace = Path(tmp) / "workspace"
-            for repo in ("frontend", "backend"):
-                repo_main = workspace / repo
-                repo_main.mkdir(parents=True)
-                (repo_main / ".git").mkdir()
-
-            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/360")
-            stuck_wt_dir = workspace / "ac-frontend-360-ticket" / "frontend"
-            stuck_wt_dir.mkdir(parents=True)
-            Worktree.objects.create(
-                overlay="test",
-                ticket=ticket,
-                repo_path="frontend",
-                branch="ac-frontend-360-ticket",
-                extra={"worktree_path": str(stuck_wt_dir)},
-            )
-            clean_wt_dir = workspace / "ac-backend-360-ticket" / "backend"
-            clean_wt_dir.mkdir(parents=True)
-            Worktree.objects.create(
-                overlay="test",
-                ticket=ticket,
-                repo_path="backend",
-                branch="ac-backend-360-ticket",
-                extra={"worktree_path": str(clean_wt_dir)},
-            )
-
-            def _unsynced(_repo: str, branch: str) -> list[str]:
-                return ["abc123 chore: unpushed"] if branch == "ac-frontend-360-ticket" else []
-
-            def _blockers(_repo: str, branch: str, target: str = "origin/main") -> list[str]:
-                # The frontend branch's commit content is NOT on origin/main —
-                # the authoritative content gate (#2609) refuses its force-delete.
-                return ["abc123"] if branch == "ac-frontend-360-ticket" else []
-
-            mock_config = MagicMock()
-            mock_config.user.workspace_dir = workspace
-            with (
-                patch.object(cleanup_mod, "load_config", return_value=mock_config),
-                patch.object(cleanup_mod, "git") as mock_git,
-                patch.object(cleanup_mod, "get_overlay_for_worktree") as mock_overlay,
-                patch.object(cleanup_mod, "content_equivalence_blockers", side_effect=_blockers),
-                patch.object(cleanup_mod, "_branch_tree_matches_squash", return_value=False),
-                patch.object(cleanup_mod, "_branch_pr_is_merged", return_value=False),
-                # Isolate the recovery-capture seam — the fake repos (.git is a
-                # bare dir) can't satisfy a real ``git bundle``; this test
-                # targets the origin/main hygiene refusal, not capture.
-                patch.object(cleanup_mod, "capture_recovery_artifact", return_value=None),
-            ):
-                mock_overlay.return_value.get_cleanup_steps.return_value = []
-                mock_git.status_porcelain.return_value = ""
-                mock_git.unsynced_commits.side_effect = _unsynced
-                # Both branches are pushed to their own remote ref, so the
-                # #706 data-loss guard passes; this test targets the stricter
-                # origin/main content hygiene refusal on the frontend branch.
-                mock_git.commits_absent_from_all_remotes.return_value = []
-                # No drift: each on-disk worktree's effective branch is its DB
-                # slug. The hygiene classification runs against that real branch.
-                mock_git.DETACHED_HEAD = git_mod.DETACHED_HEAD
-                mock_git.current_branch.side_effect = lambda wt: (
-                    "ac-frontend-360-ticket" if str(stuck_wt_dir) == str(wt) else "ac-backend-360-ticket"
-                )
-                cleaned = cast("list[str]", call_command("workspace", "clean-all"))
-
-            assert any("Cleaned: backend" in c for c in cleaned)
-            assert any("ac-frontend-360-ticket" in c and "content not upstream" in c.lower() for c in cleaned)
-            assert Worktree.objects.filter(branch="ac-backend-360-ticket").count() == 0
-            assert Worktree.objects.filter(branch="ac-frontend-360-ticket").count() == 1
-
-    @_no_prune
-    @_no_stash
-    @_no_orphan_dbs
-    @_no_orphan_isolated_roots
-    @_no_orphan_docker
-    @_no_dslr_prune
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_never_reads_stdin_when_not_a_tty(self) -> None:
-        """#279: clean-all must never block on a stdin prompt when not a TTY.
-
-        Anti-vacuous: ``builtins.input`` is patched to raise on any call, so a
-        single read of stdin fails the test. The EOFError fallback in
-        ``resolve_unsynced_worktree`` means a vacuous test (one that does not
-        assert ``input`` is uncalled) would pass even if the TTY guard were
-        removed — the input-raises patch is what makes this guard the fix.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            workspace = Path(tmp) / "workspace"
-            repo_main = workspace / "frontend"
-            repo_main.mkdir(parents=True)
-            (repo_main / ".git").mkdir()
-
-            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/279")
-            stuck_wt_dir = workspace / "ac-frontend-279-ticket" / "frontend"
-            stuck_wt_dir.mkdir(parents=True)
-            Worktree.objects.create(
-                overlay="test",
-                ticket=ticket,
-                repo_path="frontend",
-                branch="ac-frontend-279-ticket",
-                extra={"worktree_path": str(stuck_wt_dir)},
-            )
-
-            stdin_read_msg = "clean-all read stdin in a non-interactive context (#279)"
-
-            def _input_must_not_be_called(*_a: object, **_k: object) -> str:
-                raise AssertionError(stdin_read_msg)
-
-            non_tty = MagicMock()
-            non_tty.isatty.return_value = False
-            mock_config = MagicMock()
-            mock_config.user.workspace_dir = workspace
-            with (
-                patch.object(ws_reap_mod.sys, "stdin", non_tty),
-                patch.object(ws_reap_mod.sys, "stdout", non_tty),
-                patch("builtins.input", side_effect=_input_must_not_be_called),
-                patch.object(cleanup_mod, "load_config", return_value=mock_config),
-                patch.object(cleanup_mod, "git") as mock_git,
-                patch.object(cleanup_mod, "get_overlay_for_worktree") as mock_overlay,
-                # The content gate (#2609) reports the branch as not provably
-                # upstream → clean-all refuses it without a stdin prompt.
-                patch.object(cleanup_mod, "content_equivalence_blockers", return_value=["abc123"]),
-                patch.object(cleanup_mod, "_branch_tree_matches_squash", return_value=False),
-                patch.object(cleanup_mod, "_branch_pr_is_merged", return_value=False),
-                patch.object(cleanup_mod, "capture_recovery_artifact", return_value=None),
-            ):
-                mock_overlay.return_value.get_cleanup_steps.return_value = []
-                mock_git.status_porcelain.return_value = ""
-                mock_git.unsynced_commits.side_effect = lambda _repo, _branch: ["abc123 chore: unpushed"]
-                mock_git.commits_absent_from_all_remotes.return_value = []
-                mock_git.DETACHED_HEAD = git_mod.DETACHED_HEAD
-                mock_git.current_branch.side_effect = lambda _wt: "ac-frontend-279-ticket"
-                cleaned = cast("list[str]", call_command("workspace", "clean-all"))
-
-            assert any("ac-frontend-279-ticket" in c and "content not upstream" in c.lower() for c in cleaned)
-            assert Worktree.objects.filter(branch="ac-frontend-279-ticket").count() == 1
-
-    @_no_prune
-    @_no_stash
-    @_no_orphan_dbs
-    @_no_orphan_isolated_roots
-    @_no_orphan_docker
-    @_no_dslr_prune
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_push_or_abandon_failure_raises_system_exit_1(self) -> None:
-        """clean-all must exit 1 when a push/abandon attempt genuinely failed.
-
-        Regression for #932: `_workspace_cleanup` returned "Push failed:" /
-        "Abandon failed:" strings that clean-all printed and then exited 0,
-        so the followup loop saw the cleanup as successful.
-        """
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/932")
-        Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="backend",
-            branch="ac-backend-932-ticket",
-            extra={"worktree_path": "/tmp/wt932"},
-        )
-
-        with (
-            patch.object(
-                ws_reap_mod,
-                "cleanup_worktree",
-                side_effect=RuntimeError("2 unsynced commit(s) not on origin/main"),
-            ),
-            patch.object(
-                ws_reap_mod,
-                "resolve_unsynced_worktree",
-                return_value="Push failed: backend (ac-backend-932-ticket) — remote rejected",
-            ),
-            pytest.raises(SystemExit) as exc_info,
-        ):
-            call_command("workspace", "clean-all")
-
-        assert exc_info.value.code == 1
 
     @_no_prune
     @_no_stash
@@ -1865,305 +1626,37 @@ class TestReapOrphanWorktreeDocker(TestCase):
         assert "backend-wt9" in lines[0]
 
 
-class TestIsInteractive(TestCase):
-    """#279: TTY detection that fails closed to non-interactive."""
-
-    def test_both_tty_is_interactive(self) -> None:
-        tty = MagicMock()
-        tty.isatty.return_value = True
-        with (
-            patch.object(ws_reap_mod.sys, "stdin", tty),
-            patch.object(ws_reap_mod.sys, "stdout", tty),
-        ):
-            assert ws_reap_mod._is_interactive() is True
-
-    def test_stdin_not_tty_is_not_interactive(self) -> None:
-        stdin, stdout = MagicMock(), MagicMock()
-        stdin.isatty.return_value = False
-        stdout.isatty.return_value = True
-        with (
-            patch.object(ws_reap_mod.sys, "stdin", stdin),
-            patch.object(ws_reap_mod.sys, "stdout", stdout),
-        ):
-            assert ws_reap_mod._is_interactive() is False
-
-    def test_stdout_not_tty_is_not_interactive(self) -> None:
-        stdin, stdout = MagicMock(), MagicMock()
-        stdin.isatty.return_value = True
-        stdout.isatty.return_value = False
-        with (
-            patch.object(ws_reap_mod.sys, "stdin", stdin),
-            patch.object(ws_reap_mod.sys, "stdout", stdout),
-        ):
-            assert ws_reap_mod._is_interactive() is False
-
-    def test_closed_stdin_value_error_fails_closed(self) -> None:
-        """A daemonised worker's closed stdin raises ValueError on isatty()."""
-        stdin = MagicMock()
-        stdin.isatty.side_effect = ValueError("I/O operation on closed file.")
-        with patch.object(ws_reap_mod.sys, "stdin", stdin):
-            assert ws_reap_mod._is_interactive() is False
-
-    def test_none_stdin_fails_closed(self) -> None:
-        """Some runners leave sys.stdin as None; .isatty raises AttributeError."""
-        with patch.object(ws_reap_mod.sys, "stdin", None):
-            assert ws_reap_mod._is_interactive() is False
-
-
-class TestResolveUnsyncedWorktree(TestCase):
-    """Interactive push/abandon/skip resolution for worktrees with unpushed work."""
-
-    def _make_worktree(self, wt_path: str = "/tmp/wt") -> Worktree:
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/379")
-        return Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="backend",
-            branch="ac-backend-379-ticket",
-            extra={"worktree_path": wt_path},
-        )
-
-    def test_non_tty_preserves_skip_behaviour(self) -> None:
-        wt = self._make_worktree()
-        exc = RuntimeError("2 unsynced commit(s) not on origin/main: foo")
-        result = ws_reap_mod.resolve_unsynced_worktree(wt, exc, interactive=False)
-        assert result.startswith("Skipped:")
-        assert "unsynced" in result
-
-    def test_interactive_default_is_skip(self) -> None:
-        wt = self._make_worktree()
-        exc = RuntimeError("1 unsynced commit(s) not on origin/main: bar")
-        with patch("builtins.input", return_value=""):
-            result = ws_reap_mod.resolve_unsynced_worktree(wt, exc, interactive=True)
-        assert result.startswith("Skipped:")
-
-    def test_interactive_eof_falls_back_to_skip(self) -> None:
-        wt = self._make_worktree()
-        exc = RuntimeError("whatever")
-        with patch("builtins.input", side_effect=EOFError):
-            result = ws_reap_mod.resolve_unsynced_worktree(wt, exc, interactive=True)
-        assert result.startswith("Skipped:")
-
-    def test_interactive_push_success_suggests_pr_create(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            wt = self._make_worktree(wt_path=tmp)
-            exc = RuntimeError("work pending")
-            fake_push = subprocess.CompletedProcess([], 0, stdout="", stderr="")
-            with (
-                patch("builtins.input", return_value="p"),
-                patch.object(utils_run_mod.subprocess, "run", return_value=fake_push) as mock_run,
-            ):
-                result = ws_reap_mod.resolve_unsynced_worktree(wt, exc, interactive=True)
-        assert result.startswith("Pushed:")
-        assert "pr create" in result
-        args = mock_run.call_args[0][0]
-        assert args[:2] == ["git", "-C"]
-        assert args[-3:] == ["push", "-u", "origin"] or args[-4:-1] == ["push", "-u", "origin"]
-
-    def test_interactive_push_failure_reports_stderr(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            wt = self._make_worktree(wt_path=tmp)
-            exc = RuntimeError("work pending")
-            fake_push = subprocess.CompletedProcess([], 1, stdout="", stderr="remote rejected: protected branch")
-            with (
-                patch("builtins.input", return_value="p"),
-                patch.object(utils_run_mod.subprocess, "run", return_value=fake_push),
-            ):
-                result = ws_reap_mod.resolve_unsynced_worktree(wt, exc, interactive=True)
-        assert result.startswith("Push failed:")
-        assert "protected branch" in result
-
-    def test_interactive_push_missing_worktree_path(self) -> None:
-        wt = self._make_worktree(wt_path="/tmp/does-not-exist-12345")
-        exc = RuntimeError("pending")
-        with patch("builtins.input", return_value="p"):
-            result = ws_reap_mod.resolve_unsynced_worktree(wt, exc, interactive=True)
-        assert result.startswith("Push failed:")
-        assert "worktree path missing" in result
-
-    def test_interactive_abandon_force_cleans(self) -> None:
-        wt = self._make_worktree()
-        exc = RuntimeError("pending")
-        with (
-            patch("builtins.input", return_value="a"),
-            patch.object(ws_reap_mod, "cleanup_worktree", return_value="Cleaned: backend (branch)") as mock_clean,
-        ):
-            result = ws_reap_mod.resolve_unsynced_worktree(wt, exc, interactive=True)
-        assert result == "Cleaned: backend (branch)"
-        mock_clean.assert_called_once_with(wt, force=True)
-
-    def test_interactive_abandon_failure_reports_error(self) -> None:
-        wt = self._make_worktree()
-        exc = RuntimeError("pending")
-        with (
-            patch("builtins.input", return_value="a"),
-            patch.object(ws_reap_mod, "cleanup_worktree", side_effect=OSError("boom")),
-        ):
-            result = ws_reap_mod.resolve_unsynced_worktree(wt, exc, interactive=True)
-        assert result.startswith("Abandon failed:")
-        assert "boom" in result
-
-
 class TestWorkspaceCleanMerged(TestCase):
+    """``clean-merged`` delegates to the consolidated done-worktree reaper.
+
+    The deep done-detection + analyze-before-wipe behaviour lives in
+    ``tests/teatree_core/test_worktree_done.py``; here we only assert the CLI
+    routes to :func:`reap_done_worktrees` (the live, non-dry-run path).
+    """
+
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_no_merged_tickets_returns_placeholder(self) -> None:
+    def test_no_worktrees_returns_empty(self) -> None:
         cleaned = cast("list[str]", call_command("workspace", "clean-merged"))
-        assert cleaned == ["No merged tickets have lingering worktrees."]
+        assert cleaned == []
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_cleans_worktrees_of_merged_tickets(self) -> None:
-        merged = Ticket.objects.create(
-            overlay="test",
-            issue_url="https://example.com/issues/70",
-            state=Ticket.State.MERGED,
-        )
-        Worktree.objects.create(overlay="test", ticket=merged, repo_path="repo", branch="ac-repo-70")
-        other = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/71")
-        Worktree.objects.create(overlay="test", ticket=other, repo_path="repo2", branch="ac-repo2-71")
-
-        with patch.object(
-            ws_cleanup_mod, "cleanup_worktree", return_value="Cleaned: repo (ac-repo-70)"
-        ) as mock_cleanup:
+    def test_delegates_to_the_done_reaper(self) -> None:
+        with patch.object(workspace_mod, "reap_done_worktrees", return_value=["Wiped 'ac-repo-70'"]) as mock_reap:
             cleaned = cast("list[str]", call_command("workspace", "clean-merged"))
 
-        assert cleaned == ["Cleaned: repo (ac-repo-70)"]
-        assert mock_cleanup.call_count == 1
-        # #706 — clean-merged must NOT force-bypass the data-loss guard. The
-        # ticket is MERGED so the origin/main hygiene gate is skipped, but
-        # commits absent from every remote still block teardown.
-        assert mock_cleanup.call_args.kwargs.get("force") is not True
-        assert mock_cleanup.call_args.kwargs.get("strict_hygiene") is False
-
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_keeps_busy_merged_worktree(self) -> None:
-        """A MERGED ticket whose worktree has live work is KEPT, not torn down (#2243).
-
-        ``clean-merged`` is the daily opportunistic sweep — it must not reap a
-        merged-but-still-worked-in worktree out from under a mid-task agent. The
-        funnel liveness guard in ``cleanup_worktree`` fires first, so the sweep
-        records a SKIPPED-kept line and the row survives, distinct from the FAILED
-        line a genuine teardown error produces.
-        """
-        merged = Ticket.objects.create(
-            overlay="test",
-            issue_url="https://example.com/issues/2243m",
-            state=Ticket.State.MERGED,
-        )
-        wt = Worktree.objects.create(overlay="test", ticket=merged, repo_path="repo", branch="ac-repo-2243m")
-        Session.objects.create(ticket=merged, overlay="test")  # live: ended_at is null
-
-        cleaned = cast("list[str]", call_command("workspace", "clean-merged"))
-
-        assert Worktree.objects.filter(pk=wt.pk).exists(), f"DATA LOSS: busy merged worktree reaped; got: {cleaned!r}"
-        assert any("SKIPPED" in c and "live work" in c for c in cleaned), f"expected a live-work skip, got: {cleaned!r}"
-        assert not any("FAILED" in c for c in cleaned), f"a kept-live worktree must not be a FAILURE; got: {cleaned!r}"
-
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_surfaces_cleanup_failures(self) -> None:
-        merged = Ticket.objects.create(
-            overlay="test",
-            issue_url="https://example.com/issues/72",
-            state=Ticket.State.MERGED,
-        )
-        Worktree.objects.create(overlay="test", ticket=merged, repo_path="repo", branch="ac-repo-72")
-
-        with patch.object(ws_cleanup_mod, "cleanup_worktree", side_effect=RuntimeError("docker down failed")):
-            cleaned = cast("list[str]", call_command("workspace", "clean-merged"))
-
-        assert any("FAILED" in c and "docker down failed" in c for c in cleaned)
-
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_reaps_merged_worktree_whose_overlay_is_not_installed(self) -> None:
-        # A merged row for an overlay not installed in this environment must be
-        # REAPED overlay-free (not skipped — the under-reaping that left stale
-        # worktrees behind), while the sweep still completes per-row (#2472).
-        merged = Ticket.objects.create(
-            overlay="t3-ghost",
-            issue_url="https://example.com/issues/73",
-            state=Ticket.State.MERGED,
-        )
-        wt = Worktree.objects.create(overlay="t3-ghost", ticket=merged, repo_path="repo", branch="ac-repo-73")
-
-        cleaned = cast("list[str]", call_command("workspace", "clean-merged"))
-
-        assert not Worktree.objects.filter(pk=wt.pk).exists(), (
-            "foreign-overlay merged row must be reaped overlay-free, not skipped"
-        )
-        assert any("Cleaned" in c and "ac-repo-73" in c for c in cleaned)
-
-
-def _subprocess_side_effect(gh_stdout: str, glab_stdout: str):
-    """Return a side_effect function that dispatches mock stdout based on the CLI command."""
-
-    def _side_effect(args, **kwargs):
-        cmd = args[0] if args else ""
-        stdout = gh_stdout if cmd == "gh" else glab_stdout
-        return subprocess.CompletedProcess([], 0, stdout=stdout)
-
-    return _side_effect
-
-
-_gh_no_pr = patch(
-    "teatree.utils.run.subprocess.run",
-    side_effect=_subprocess_side_effect(gh_stdout="[]", glab_stdout=""),
-)
-
-
-_gh_merged_pr = patch(
-    "teatree.utils.run.subprocess.run",
-    return_value=subprocess.CompletedProcess([], 0, stdout='[{"number":1}]'),
-)
-
-
-_glab_merged_mr = patch(
-    "teatree.utils.run.subprocess.run",
-    side_effect=_subprocess_side_effect(gh_stdout="[]", glab_stdout="!5\tMR title\t(feature)\t1 hour ago"),
-)
+        mock_reap.assert_called_once()
+        assert mock_reap.call_args.kwargs.get("dry_run") is False
+        assert cleaned == ["Wiped 'ac-repo-70'"]
 
 
 class TestPruneBranches(TestCase):
-    def test_squash_merged_detected_via_gh_api(self) -> None:
-        with _gh_merged_pr:
-            assert ws_cleanup_mod.is_squash_merged("/repo", "feature", "main") is True
-
-    def test_squash_merged_detected_via_glab_api(self) -> None:
-        with _glab_merged_mr:
-            assert ws_cleanup_mod.is_squash_merged("/repo", "feature", "main") is True
-
-    def test_squash_merged_fallback_via_cherry_all_equivalent(self) -> None:
-        # git cherry marks every unique commit "- <sha>" when its patch is
-        # already upstream (the squash captured it) -> branch is merged.
-        with _gh_no_pr, patch.object(git_mod, "run", return_value="- abc123\n- def456"):
-            assert ws_cleanup_mod.is_squash_merged("/repo", "feature", "main") is True
-
-    def test_squash_merged_fallback_via_cherry_no_unique_commits(self) -> None:
-        with _gh_no_pr, patch.object(git_mod, "run", return_value=""):
-            assert ws_cleanup_mod.is_squash_merged("/repo", "feature", "main") is True
-
-    def test_non_merged_detected_via_cherry_plus_line(self) -> None:
-        # A "+ <sha>" line is a unique commit NOT upstream -> not merged.
-        with _gh_no_pr, patch.object(git_mod, "run", return_value="- abc123\n+ def456"):
-            assert ws_cleanup_mod.is_squash_merged("/repo", "feature", "main") is False
-
-    def test_falls_back_to_cherry_when_host_cli_is_blocked(self) -> None:
-        # A blocked/missing gh/glab raises OSError (PermissionError in a sandbox,
-        # FileNotFoundError when absent) — clean-all must not crash, it falls
-        # back to the git cherry check rather than propagating the error.
-        with (
-            patch("teatree.utils.run.subprocess.run", side_effect=PermissionError("blocked")),
-            patch.object(git_mod, "run", return_value="- abc123"),
-        ):
-            assert ws_cleanup_mod.is_squash_merged("/repo", "feature", "main") is True
-        with (
-            patch("teatree.utils.run.subprocess.run", side_effect=FileNotFoundError("gh")),
-            patch.object(git_mod, "run", return_value="+ def456"),
-        ):
-            assert ws_cleanup_mod.is_squash_merged("/repo", "feature", "main") is False
+    # The canonical layered ``is_squash_merged`` / ``branch_redundancy`` detection
+    # (cherry-zero / synthetic-squash / ``--merged`` / forge-corroborating-only) is
+    # exercised end-to-end against real git in ``tests/teatree_core/cleanup/
+    # test_branch_redundancy.py`` and ``TestIsSquashMergedRealGit`` — a mocked
+    # ``git.run`` cannot model the multi-command layered detector.
 
     def test_worktree_map_parses_porcelain(self) -> None:
         porcelain = (
@@ -2203,10 +1696,14 @@ class TestPruneBranches(TestCase):
 
         gh_merged = subprocess.CompletedProcess([], 0, stdout='[{"number":1}]')
         with (
-            patch.object(workspace_mod, "_workspace_dir", return_value=Path("/tmp/ws")),
-            patch.object(provision_mod, "_workspace_dir", return_value=Path("/tmp/ws")),
+            patch.object(workspace_mod, "_worktree_root", return_value=Path("/tmp/ws")),
+            patch.object(provision_mod, "clone_root", return_value=Path("/tmp/ws")),
+            patch.object(provision_mod, "worktree_root", return_value=Path("/tmp/ws")),
             patch.object(ws_cleanup_mod, "worktree_map", return_value=wt_map),
             patch.object(ws_cleanup_mod, "worktree_branches", return_value={"gone-branch"}),
+            # The layered detection is real-git-tested in test_branch_redundancy.py; here
+            # the branch IS classified squash-merged so the Pass-3 reap/block path is exercised.
+            patch.object(ws_cleanup_mod, "is_squash_merged", return_value=True),
             patch.object(git_mod, "run", side_effect=fake_run),
             patch.object(git_commit_mod, "run", side_effect=fake_run),
             patch.object(git_mod, "current_branch", return_value="main"),
@@ -2239,10 +1736,14 @@ class TestPruneBranches(TestCase):
 
         gh_merged = subprocess.CompletedProcess([], 0, stdout='[{"number":1}]')
         with (
-            patch.object(workspace_mod, "_workspace_dir", return_value=Path("/tmp/ws")),
-            patch.object(provision_mod, "_workspace_dir", return_value=Path("/tmp/ws")),
+            patch.object(workspace_mod, "_worktree_root", return_value=Path("/tmp/ws")),
+            patch.object(provision_mod, "clone_root", return_value=Path("/tmp/ws")),
+            patch.object(provision_mod, "worktree_root", return_value=Path("/tmp/ws")),
             patch.object(ws_cleanup_mod, "worktree_map", return_value=wt_map),
             patch.object(ws_cleanup_mod, "worktree_branches", return_value={"gone-branch"}),
+            # The layered detection is real-git-tested in test_branch_redundancy.py; here
+            # the branch IS classified squash-merged so the Pass-3 reap/block path is exercised.
+            patch.object(ws_cleanup_mod, "is_squash_merged", return_value=True),
             patch.object(git_mod, "run", side_effect=fake_run),
             patch.object(git_mod, "current_branch", return_value="main"),
             patch.object(git_mod, "default_branch", return_value="main"),
@@ -2273,10 +1774,14 @@ class TestPruneBranches(TestCase):
 
         gh_merged = subprocess.CompletedProcess([], 0, stdout='[{"number":1}]')
         with (
-            patch.object(workspace_mod, "_workspace_dir", return_value=Path("/tmp/ws")),
-            patch.object(provision_mod, "_workspace_dir", return_value=Path("/tmp/ws")),
+            patch.object(workspace_mod, "_worktree_root", return_value=Path("/tmp/ws")),
+            patch.object(provision_mod, "clone_root", return_value=Path("/tmp/ws")),
+            patch.object(provision_mod, "worktree_root", return_value=Path("/tmp/ws")),
             patch.object(ws_cleanup_mod, "worktree_map", return_value=wt_map),
             patch.object(ws_cleanup_mod, "worktree_branches", return_value={"gone-branch"}),
+            # The layered detection is real-git-tested in test_branch_redundancy.py; here
+            # the branch IS classified squash-merged so the Pass-3 reap/block path is exercised.
+            patch.object(ws_cleanup_mod, "is_squash_merged", return_value=True),
             patch.object(git_mod, "run", side_effect=fake_run),
             patch.object(git_mod, "current_branch", return_value="main"),
             patch.object(git_mod, "default_branch", return_value="main"),
@@ -2437,7 +1942,7 @@ class TestPruneBranchesHonorsCleanIgnore(TestCase):
 
     def _patch_clean_ignore(self, patterns: list[str]) -> AbstractContextManager[object]:
         patched = replace(load_config().user, clean_ignore=patterns)
-        return patch.object(ws_cleanup_mod, "get_effective_settings", return_value=patched)
+        return patch.object(clean_ignore_mod, "get_effective_settings", return_value=patched)
 
     def test_clean_ignore_squash_merged_branch_survives(self) -> None:
         def fake_run(*, repo: str = ".", args: list[str]) -> str:
@@ -2469,12 +1974,14 @@ class TestPruneBranchesHonorsCleanIgnore(TestCase):
 
 
 class TestReapHonorsPerOverlayCleanIgnore(TestCase):
-    """The row reaper must resolve clean_ignore per the worktree's own overlay.
+    """The done reaper must resolve clean_ignore per the worktree's own overlay.
 
     Pre-fix it read the raw global ``load_config().user.clean_ignore``, so a
     pattern set only under ``[overlays.<name>]`` was dead — the per-overlay
-    override never reached the keep decision. The fix resolves
-    ``get_effective_settings(worktree.overlay).clean_ignore`` per row.
+    override never reached the keep decision. The single ``is_clean_ignored``
+    predicate (in :mod:`teatree.core.clean_ignore`) resolves
+    ``get_effective_settings(worktree.overlay).clean_ignore`` per row, and
+    ``reap_done_worktree`` checks it FIRST — before the done/analyze gates.
     """
 
     def _make_row(self, work: Path, wt_dir: Path, *, overlay: str, branch: str) -> Worktree:
@@ -2504,8 +2011,8 @@ class TestReapHonorsPerOverlayCleanIgnore(TestCase):
                 patterns = ["spike-*"] if name == "heavy" else []
                 return replace(base, clean_ignore=patterns)
 
-            with patch.object(ws_cleanup_mod, "get_effective_settings", side_effect=fake_effective):
-                cleaned = ws_cleanup_mod.WorktreeReaper(workspace).reap_squash_merged_worktrees(interactive=False)
+            with patch.object(clean_ignore_mod, "get_effective_settings", side_effect=fake_effective):
+                cleaned = reap_done_worktrees(workspace, dry_run=False)
 
             assert Worktree.objects.filter(pk=row.pk).exists(), (
                 f"per-overlay clean_ignore must keep the row; got: {cleaned!r}"
@@ -2861,9 +2368,13 @@ _GIT_IDENTITY_ENV = {
 }
 
 
-def _git(repo: Path, *args: str) -> str:
-    """Run git in ``repo`` with a deterministic identity, returning stdout."""
-    env = {**os.environ, **_GIT_IDENTITY_ENV}
+def _git(repo: Path, *args: str, env_extra: dict[str, str] | None = None) -> str:
+    """Run git in ``repo`` with a deterministic identity, returning stdout.
+
+    ``env_extra`` overlays extra environment for the one invocation (e.g.
+    ``GIT_COMMITTER_DATE``/``GIT_AUTHOR_DATE`` to backdate a commit).
+    """
+    env = {**os.environ, **_GIT_IDENTITY_ENV, **(env_extra or {})}
     out = subprocess.run(
         ["git", "-C", str(repo), *args],  # noqa: S607
         check=True,
@@ -3470,169 +2981,6 @@ def _squash_merge_into_main(tmp: Path, *, subject: str) -> tuple[Path, str]:
     return work, tip
 
 
-class TestReapSquashMergedWorktreeRows(TestCase):
-    """#1940 gap (a): a Worktree *row* whose branch is squash-merged is reaped.
-
-    ``clean-all`` only reaped ``CREATED``-state rows. A PROVISIONED/READY row
-    whose branch shipped (squash-merged under a retitled subject) survived
-    forever — its dir, compose project, and ticket dir all leaked. The new
-    ``reap_squash_merged_worktrees`` pass closes that, reusing the existing
-    ``is_squash_merged`` classifier (no duplicated subject-match logic).
-    """
-
-    def _make_row(self, work: Path, wt_dir: Path, *, branch: str = "feature") -> Worktree:
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/1940")
-        return Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="work",
-            branch=branch,
-            state=Worktree.State.PROVISIONED,
-            extra={"worktree_path": str(wt_dir), "clone_path": str(work)},
-        )
-
-    def _reap(self, workspace: Path) -> list[str]:
-        return ws_cleanup_mod.WorktreeReaper(workspace).reap_squash_merged_worktrees(interactive=False)
-
-    def test_squash_merged_row_with_different_subject_is_reaped(self) -> None:
-        """A squash-merged row (retitled subject) is reaped via the forge signal.
-
-        A squash-merge into a pushed main does NOT yield an empty
-        ``origin/main...feature`` diff (the squash is a new commit, not an
-        ancestor of feature) — the empty-diff fallback never fires. The forge
-        merged-PR lookup is the real-world primary signal: both the selection
-        classifier (``is_squash_merged``) and ``cleanup_worktree``'s strict
-        data-loss guards probe the forge, so the unstoppable ``gh``/``glab``
-        CLI is the legitimate mock boundary for both.
-        """
-        with tempfile.TemporaryDirectory() as tmp_s:
-            tmp = Path(tmp_s)
-            workspace = tmp / "workspace"
-            workspace.mkdir()
-            work, _tip = _squash_merge_into_main(workspace, subject="feat: shipped work (#1940)")
-            wt_dir = workspace / "feature" / "work"
-            _git(work, "worktree", "add", "-q", str(wt_dir), "feature")
-            row = self._make_row(work, wt_dir)
-
-            ws_merged = subprocess.CompletedProcess([], 0, '[{"number": 1940}]', "")
-            with (
-                patch.object(ws_cleanup_mod, "_run_host_cli", return_value=ws_merged),
-                patch.object(cleanup_mod, "_branch_pr_is_merged", return_value=True),
-                patch.object(cleanup_mod, "capture_recovery_artifact", return_value=None),
-                patch.object(cleanup_mod, "get_overlay_for_worktree") as mock_overlay,
-            ):
-                mock_overlay.return_value.get_cleanup_steps.return_value = []
-                mock_overlay.return_value.config.teardown_removes_pass_entries = False
-                cleaned = self._reap(workspace)
-
-            assert not Worktree.objects.filter(pk=row.pk).exists(), (
-                f"squash-merged row should be reaped; got: {cleaned!r}"
-            )
-            assert not wt_dir.exists(), "squash-merged worktree dir should be removed"
-            assert any("Cleaned" in c or "feature" in c for c in cleaned)
-
-    def test_clean_ignore_branch_is_skipped_with_warning(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_s:
-            tmp = Path(tmp_s)
-            workspace = tmp / "workspace"
-            workspace.mkdir()
-            work, _tip = _squash_merge_into_main(workspace, subject="feat: shipped work (#1940)")
-            wt_dir = workspace / "keepme" / "work"
-            _git(work, "branch", "-m", "feature", "keepme")
-            _git(work, "worktree", "add", "-q", str(wt_dir), "keepme")
-            row = self._make_row(work, wt_dir, branch="keepme")
-
-            with self._patch_clean_ignore(["keep*"]):
-                cleaned = self._reap(workspace)
-
-            assert Worktree.objects.filter(pk=row.pk).exists(), "clean_ignore branch must be kept"
-            assert wt_dir.is_dir(), "clean_ignore worktree dir must survive"
-            assert any("SKIP" in c and "keepme" in c for c in cleaned)
-
-    def _patch_clean_ignore(self, patterns: list[str]) -> AbstractContextManager[object]:
-        patched = replace(load_config().user, clean_ignore=patterns)
-        return patch.object(ws_cleanup_mod, "get_effective_settings", return_value=patched)
-
-    def test_uncertain_classification_is_skipped_not_deleted(self) -> None:
-        """A row whose branch is genuinely ahead (not merged) is kept, warn-not-fail."""
-        with tempfile.TemporaryDirectory() as tmp_s:
-            tmp = Path(tmp_s)
-            workspace = tmp / "workspace"
-            workspace.mkdir()
-            _remote, work = _init_repo_with_remote(workspace)
-            _git(work, "checkout", "-q", "-b", "feature")
-            (work / "ahead.py").write_text("unmerged work\n", encoding="utf-8")
-            _git(work, "add", "ahead.py")
-            _git(work, "commit", "-q", "-m", "feat: not merged yet")
-            _git(work, "push", "-q", "origin", "feature")
-            _git(work, "checkout", "-q", "main")
-            wt_dir = workspace / "feature" / "work"
-            _git(work, "worktree", "add", "-q", str(wt_dir), "feature")
-            row = self._make_row(work, wt_dir)
-
-            cleaned = self._reap(workspace)
-
-            assert Worktree.objects.filter(pk=row.pk).exists(), (
-                f"genuinely-ahead row must NOT be deleted; got: {cleaned!r}"
-            )
-            assert wt_dir.is_dir()
-
-    def test_row_without_a_resolvable_clone_is_skipped(self) -> None:
-        """A row whose source clone is gone is silently skipped, not crashed."""
-        with tempfile.TemporaryDirectory() as tmp_s:
-            workspace = Path(tmp_s) / "workspace"
-            workspace.mkdir()
-            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/1940")
-            row = Worktree.objects.create(
-                overlay="test",
-                ticket=ticket,
-                repo_path="ghost",
-                branch="feature",
-                state=Worktree.State.PROVISIONED,
-                extra={"worktree_path": str(workspace / "feature" / "ghost")},
-            )
-
-            cleaned = self._reap(workspace)
-
-            assert Worktree.objects.filter(pk=row.pk).exists()
-            assert cleaned == []
-
-    def test_data_loss_guard_refusal_is_surfaced_not_deleted(self) -> None:
-        """is_squash_merged says shipped, but cleanup_worktree's #706 guard refuses → kept.
-
-        A positive squash signal narrows the candidate set; it never bypasses the
-        data-loss guards. A branch with commits on no remote is surfaced as a
-        Skipped warning, the row preserved.
-        """
-        with tempfile.TemporaryDirectory() as tmp_s:
-            tmp = Path(tmp_s)
-            workspace = tmp / "workspace"
-            workspace.mkdir()
-            _remote, work = _init_repo_with_remote(workspace)
-            _git(work, "checkout", "-q", "-b", "feature")
-            (work / "unpushed.py").write_text("never pushed\n", encoding="utf-8")
-            _git(work, "add", "unpushed.py")
-            _git(work, "commit", "-q", "-m", "feat: unpushed work")
-            _git(work, "checkout", "-q", "main")
-            wt_dir = workspace / "feature" / "work"
-            _git(work, "worktree", "add", "-q", str(wt_dir), "feature")
-            row = self._make_row(work, wt_dir)
-
-            ws_merged = subprocess.CompletedProcess([], 0, '[{"number": 1940}]', "")
-            with (
-                patch.object(ws_cleanup_mod, "_run_host_cli", return_value=ws_merged),
-                patch.object(cleanup_mod, "_branch_pr_is_merged", return_value=False),
-                patch.object(cleanup_mod, "get_overlay_for_worktree") as mock_overlay,
-            ):
-                mock_overlay.return_value.get_cleanup_steps.return_value = []
-                mock_overlay.return_value.config.teardown_removes_pass_entries = False
-                cleaned = self._reap(workspace)
-
-            assert Worktree.objects.filter(pk=row.pk).exists(), f"data-loss row must be kept; got: {cleaned!r}"
-            assert wt_dir.is_dir()
-            assert any("Skipped" in c for c in cleaned)
-
-
 class TestRemoveEmptyTicketDirs(TestCase):
     """#1940 gap (b): a ticket dir holding only empty repo subdirs is removed.
 
@@ -3696,7 +3044,21 @@ def _make_squash_merged_worktree(tmp: Path, *, overlay: str = "test", ticket_num
     _git(work, "checkout", "-q", "-b", "feature")
     (work / "f.py").write_text("work\n", encoding="utf-8")
     _git(work, "add", "f.py")
-    _git(work, "commit", "-q", "-m", f"feat: shipped work (#{ticket_number})")
+    # Backdate this commit — it becomes the ``feature`` worktree's HEAD, which the
+    # liveness predicate reads as its recent-commit signal. A fresh timestamp would
+    # mask the busy-ticket signal under test (a live Session / claimed Task), making
+    # the keep VACUOUS — it would fire on recency regardless of the ticket. An old
+    # date keeps the recent-commit signal silent so the busy-ticket signal is what
+    # is actually proven. Mirrors the ``test_cleanup_liveness`` fixture's backdating.
+    old = "2020-01-01T00:00:00 +0000"
+    _git(
+        work,
+        "commit",
+        "-q",
+        "-m",
+        f"feat: shipped work (#{ticket_number})",
+        env_extra={"GIT_COMMITTER_DATE": old, "GIT_AUTHOR_DATE": old},
+    )
     _git(work, "push", "-q", "origin", "feature")
     _git(work, "checkout", "-q", "main")
     _git(work, "merge", "-q", "--squash", "feature")
@@ -3728,6 +3090,7 @@ def _make_squash_merged_worktree(tmp: Path, *, overlay: str = "test", ticket_num
 @_no_orphan_isolated_roots
 @_no_orphan_docker
 @_no_dslr_prune
+@_no_liveness
 @_patch_overlays(FULL_OVERLAY)
 @override_settings(**SETTINGS)
 @_no_orphan_raw
@@ -3749,13 +3112,13 @@ class TestCleanAllReapsAndSurvivesForeignOverlay(TestCase):
         """
         dropped: list[str] = []
         with (
-            patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-            patch.object(provision_mod, "_workspace_dir", return_value=workspace),
-            patch.object(cleanup_mod, "load_config") as mock_config,
+            patch.object(workspace_mod, "_worktree_root", return_value=workspace),
+            patch.object(provision_mod, "clone_root", return_value=workspace),
+            patch.object(provision_mod, "worktree_root", return_value=workspace),
+            patch.object(cleanup_mod, "clone_root", return_value=workspace),
             patch("teatree.core.runners.worktree_start.docker_compose_down") as mock_docker_down,
             patch.object(cleanup_mod, "drop_db", side_effect=lambda name, **_kw: dropped.append(name)),
         ):
-            mock_config.return_value.user.workspace_dir = workspace
             cleaned = cast("list[str]", call_command("workspace", "clean-all"))
         return cleaned, mock_docker_down, dropped
 
@@ -3772,12 +3135,18 @@ class TestCleanAllReapsAndSurvivesForeignOverlay(TestCase):
             assert Worktree.objects.count() == 0, f"row should be gone, got: {cleaned!r}"
             assert not wt_path.exists(), "git worktree dir should be removed"
             assert "feature" not in _git(work, "branch", "--format=%(refname:short)").split()
-            mock_docker_down.assert_called_once_with("backend-wt200")
+            mock_docker_down.assert_called_once_with("backend-wt200", remove_volumes=True)
             assert "wt_test_200" in dropped, f"dropdb not invoked: {dropped!r}"
             assert any("Cleaned" in c for c in cleaned)
 
     def test_keeps_unmerged_worktree_with_unique_work(self) -> None:
-        """A worktree with genuinely-unique unpushed work is kept and reported, not reaped."""
+        """Even on a DONE ticket, genuinely-unique unpushed work is kept — the analyze gate.
+
+        The done (MERGED) ticket clears the necessary gate, so the per-change
+        analyze-before-wipe step (the #706 data-loss guard, hoisted to primary) is
+        the only thing keeping the unique unpushed commit: it is not provably on
+        ``origin/main``, so the worktree is kept and reported for salvage.
+        """
         with tempfile.TemporaryDirectory() as tmp_s:
             tmp = Path(tmp_s)
             _remote, work = _init_repo_with_remote(tmp)
@@ -3789,7 +3158,9 @@ class TestCleanAllReapsAndSurvivesForeignOverlay(TestCase):
             wt_path = tmp / "wt-feature"
             _git(work, "worktree", "add", "-q", str(wt_path), "feature")
 
-            ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/201")
+            ticket = Ticket.objects.create(
+                overlay="test", issue_url="https://example.com/issues/201", state=Ticket.State.MERGED
+            )
             Worktree.objects.create(
                 overlay="test",
                 ticket=ticket,
@@ -3799,69 +3170,12 @@ class TestCleanAllReapsAndSurvivesForeignOverlay(TestCase):
                 extra={"clone_path": str(work), "worktree_path": str(wt_path)},
             )
 
-            # Force the classifier to treat the branch as merged so the reap is
-            # attempted; the data-loss guard is what must keep the unique work.
-            with patch.object(ws_cleanup_mod, "is_squash_merged", return_value=True):
-                cleaned, _docker, _dropped = self._run_clean_all(tmp)
+            cleaned, _docker, _dropped = self._run_clean_all(tmp)
 
             assert Worktree.objects.count() == 1, "row with unpushed unique work must survive"
             assert wt_path.is_dir(), "DATA LOSS: worktree dir was removed"
             assert "feature" in _git(work, "branch", "--format=%(refname:short)").split()
-            assert any("feature" in c and "Skipped" in c for c in cleaned), f"expected a skip line, got: {cleaned!r}"
-
-    def test_keeps_busy_squash_merged_worktree(self) -> None:
-        """A squash-merged worktree whose ticket has live work is KEPT, not reaped (#2243).
-
-        ``test_reaps_merged_worktree_fully`` proves the same row IS reaped when
-        idle, so a live :class:`Session` flipping it to KEEP is a non-vacuous
-        red-first guard: clean-all must never tear down a squash-merged
-        follow-up worktree an agent is mid-task in.
-        """
-        with tempfile.TemporaryDirectory() as tmp_s:
-            tmp = Path(tmp_s)
-            wt = _make_squash_merged_worktree(tmp)
-            wt_path = Path(wt.extra["worktree_path"])
-            Session.objects.create(ticket=wt.ticket, overlay="test")  # live: ended_at is null
-
-            cleaned, _docker, _dropped = self._run_clean_all(tmp)
-
-            assert Worktree.objects.filter(pk=wt.pk).exists(), f"DATA LOSS: busy merged row reaped; got: {cleaned!r}"
-            assert wt_path.is_dir(), "DATA LOSS: busy worktree dir removed"
-            assert any("live work" in c for c in cleaned), f"expected a live-work skip line, got: {cleaned!r}"
-
-    def test_keeps_busy_created_worktree(self) -> None:
-        """The CREATED-state loop keeps a worktree whose ticket has live work (#2243).
-
-        The funnel liveness guard in ``cleanup_worktree`` fires first (before any
-        path/git resolution), so a busy CREATED row survives clean-all with a KEEP
-        line — never handed to teardown. The safe-reap of an IDLE worktree is
-        covered by ``test_reaps_merged_worktree_fully`` and the cleanup-level
-        ``TestCleanupWorktreeLivenessGuard.test_idle_worktree_is_torn_down``.
-        """
-        with tempfile.TemporaryDirectory() as tmp_s:
-            tmp = Path(tmp_s)
-            workspace = tmp / "workspace"
-            workspace.mkdir()
-
-            busy_ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/2243a")
-            busy = Worktree.objects.create(
-                overlay="test",
-                ticket=busy_ticket,
-                repo_path="backend",
-                branch="busy",
-                state=Worktree.State.CREATED,
-                extra={"worktree_path": str(workspace / "busy" / "backend")},
-            )
-            session = Session.objects.create(ticket=busy_ticket, overlay="test")
-            session.ended_at = timezone.now()
-            session.save(update_fields=["ended_at"])
-            Task.objects.create(ticket=busy_ticket, session=session, status=Task.Status.CLAIMED)
-
-            with patch.object(workspace_mod, "_workspace_dir", return_value=workspace):
-                cleaned = cast("list[str]", call_command("workspace", "clean-all"))
-
-            assert Worktree.objects.filter(pk=busy.pk).exists(), "DATA LOSS: busy CREATED worktree reaped"
-            assert any("live work" in c for c in cleaned), f"expected a live-work skip line, got: {cleaned!r}"
+            assert any("feature" in c and "KEPT" in c for c in cleaned), f"expected a keep line, got: {cleaned!r}"
 
     def test_foreign_overlay_merged_row_is_reaped_overlay_free_not_skipped(self) -> None:
         """A merged row whose overlay is unregistered is REAPED overlay-free, not skipped.
@@ -3916,7 +3230,11 @@ class TestCleanAllReapsAndSurvivesForeignOverlay(TestCase):
             wt_path = tmp / "wt-feature"
             _git(work, "worktree", "add", "-q", str(wt_path), "feature")
 
-            ticket = Ticket.objects.create(overlay="overlay-uninstalled", issue_url="https://example.com/issues/204")
+            ticket = Ticket.objects.create(
+                overlay="overlay-uninstalled",
+                issue_url="https://example.com/issues/204",
+                state=Ticket.State.MERGED,
+            )
             wt = Worktree.objects.create(
                 overlay="overlay-uninstalled",
                 ticket=ticket,
@@ -3926,21 +3244,21 @@ class TestCleanAllReapsAndSurvivesForeignOverlay(TestCase):
                 extra={"clone_path": str(work), "worktree_path": str(wt_path)},
             )
 
-            # Force the merged classifier so the reap is attempted; the data-loss
-            # guard is the only thing that may keep the unique unpushed work.
-            with patch.object(ws_cleanup_mod, "is_squash_merged", return_value=True):
-                cleaned, _docker, _dropped = self._run_clean_all(tmp)
+            # The ticket is DONE (MERGED), so the necessary gate is cleared; the
+            # per-change analyze step (the #706 guard) is the only thing that may
+            # keep the unique unpushed work — and no overlay is required to run it.
+            cleaned, _docker, _dropped = self._run_clean_all(tmp)
 
             assert Worktree.objects.filter(pk=wt.pk).exists(), "unmerged foreign-overlay row must be kept"
             assert wt_path.is_dir(), "DATA LOSS: foreign-overlay worktree dir with unique work was removed"
-            assert any("feature" in c and "Skipped" in c for c in cleaned), f"expected a skip line, got: {cleaned!r}"
+            assert any("feature" in c and "KEPT" in c for c in cleaned), f"expected a keep line, got: {cleaned!r}"
 
     def test_unclassifiable_sibling_repo_is_skipped_not_crashed(self) -> None:
-        """A non-CREATED row whose sibling repo cannot be classified is skipped, not fatal.
+        """A row whose sibling repo cannot be classified is kept, not fatal.
 
         A corrupt/origin-less clone makes ``git.default_branch`` /
-        ``is_squash_merged`` raise; the squash-merge pass must skip that one row
-        with a warning rather than abort the whole run.
+        ``is_squash_merged`` raise; the done-signal fails safe to NOT done, so the
+        reaper keeps that one row with a reported reason rather than aborting the run.
         """
         with tempfile.TemporaryDirectory() as tmp_s:
             tmp = Path(tmp_s)
@@ -3967,8 +3285,114 @@ class TestCleanAllReapsAndSurvivesForeignOverlay(TestCase):
             cleaned, _docker, _dropped = self._run_clean_all(tmp)
 
             assert Worktree.objects.filter(pk=wt.pk).exists(), "unclassifiable row must be kept, not crashed on"
-            assert any("feature" in c and "could not classify" in c for c in cleaned), (
-                f"expected a classify-failure skip line, got: {cleaned!r}"
+            assert any("feature" in c and "KEPT" in c for c in cleaned), (
+                f"expected a keep line for the unclassifiable row, got: {cleaned!r}"
+            )
+
+
+@_no_prune
+@_no_stash
+@_no_orphan_dbs
+@_no_orphan_isolated_roots
+@_no_orphan_docker
+@_no_dslr_prune
+@_patch_overlays(FULL_OVERLAY)
+@override_settings(**SETTINGS)
+@_no_orphan_raw
+class TestCleanAllKeepsBusyWorktree(TestCase):
+    """clean-all KEEPS a worktree under live work, never reaping it mid-task (#2243/#2773).
+
+    The reconciliation home for #2773's end-to-end busy-keep guards: ported off the
+    ``@_no_liveness``-neutralised reap-fully class so the REAL
+    :func:`teatree.core.cleanup_liveness.worktree_liveness` predicate runs. The
+    ad-hoc ``clean-all`` sweep funnels through :func:`reap_done_worktree` with
+    ``fsm_terminal`` OFF, so a busy ticket (live session / claimed task) flips a
+    squash-merged or CREATED row from would-reap to an ``ACTIVE … skipping`` KEEP —
+    the data-loss discipline #2773 widened and #2763 enforces at the reaper's
+    liveness pre-gate. ``test_reaps_merged_worktree_fully`` proves the same
+    squash-merged row IS reaped when idle, so each KEEP here is a non-vacuous,
+    red-first guard.
+    """
+
+    def _run_clean_all(self, workspace: Path) -> tuple[list[str], MagicMock, list[str]]:
+        """Run clean-all against real git, stubbing only docker-down and the DB drop.
+
+        Mirrors ``TestCleanAllReapsAndSurvivesForeignOverlay._run_clean_all`` but
+        WITHOUT the liveness neutralisation — the live-work KEEP is exactly what is
+        under test here. The git layer is never mocked.
+        """
+        dropped: list[str] = []
+        with (
+            patch.object(workspace_mod, "_worktree_root", return_value=workspace),
+            patch.object(provision_mod, "clone_root", return_value=workspace),
+            patch.object(provision_mod, "worktree_root", return_value=workspace),
+            patch.object(cleanup_mod, "clone_root", return_value=workspace),
+            patch("teatree.core.runners.worktree_start.docker_compose_down") as mock_docker_down,
+            patch.object(cleanup_mod, "drop_db", side_effect=lambda name, **_kw: dropped.append(name)),
+        ):
+            cleaned = cast("list[str]", call_command("workspace", "clean-all"))
+        return cleaned, mock_docker_down, dropped
+
+    def test_keeps_busy_squash_merged_worktree(self) -> None:
+        """A squash-merged worktree whose ticket has live work is KEPT, not reaped (#2243).
+
+        ``test_reaps_merged_worktree_fully`` proves the same row IS reaped when
+        idle, so a live :class:`Session` flipping it to KEEP is a non-vacuous
+        red-first guard: clean-all must never tear down a squash-merged
+        follow-up worktree an agent is mid-task in.
+        """
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            wt = _make_squash_merged_worktree(tmp)
+            wt_path = Path(wt.extra["worktree_path"])
+            Session.objects.create(ticket=wt.ticket, overlay="test")  # live: ended_at is null
+
+            cleaned, _docker, _dropped = self._run_clean_all(tmp)
+
+            assert Worktree.objects.filter(pk=wt.pk).exists(), f"DATA LOSS: busy merged row reaped; got: {cleaned!r}"
+            assert wt_path.is_dir(), "DATA LOSS: busy worktree dir removed"
+            # Assert the BUSY-TICKET-specific keep reason, not the generic
+            # ``ACTIVE … skipping`` — the recent-commit signal also emits that generic
+            # phrase, so a generic match would pass on recency alone (vacuous). The
+            # backdated factory commit silences recency; this pins the live-Session signal.
+            assert any("live session or active/claimed task" in c and "skipping" in c for c in cleaned), (
+                f"expected the busy-ticket keep reason, got: {cleaned!r}"
+            )
+
+    def test_keeps_busy_created_worktree(self) -> None:
+        """The CREATED-state row keeps a worktree whose ticket has live work (#2243).
+
+        The liveness pre-gate in :func:`reap_done_worktree` fires before
+        done-detection, so a busy CREATED row survives clean-all with an
+        ``ACTIVE … skipping`` line — never handed to teardown. The safe-reap of an
+        IDLE worktree is covered by ``test_reaps_merged_worktree_fully`` and the
+        cleanup-level ``TestCleanupWorktreeLivenessGuard.test_idle_worktree_is_torn_down``.
+        """
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            workspace = tmp / "workspace"
+            workspace.mkdir()
+
+            busy_ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/2243a")
+            busy = Worktree.objects.create(
+                overlay="test",
+                ticket=busy_ticket,
+                repo_path="backend",
+                branch="busy",
+                state=Worktree.State.CREATED,
+                extra={"worktree_path": str(workspace / "busy" / "backend")},
+            )
+            session = Session.objects.create(ticket=busy_ticket, overlay="test")
+            session.ended_at = timezone.now()
+            session.save(update_fields=["ended_at"])
+            Task.objects.create(ticket=busy_ticket, session=session, status=Task.Status.CLAIMED)
+
+            with patch.object(workspace_mod, "_worktree_root", return_value=workspace):
+                cleaned = cast("list[str]", call_command("workspace", "clean-all"))
+
+            assert Worktree.objects.filter(pk=busy.pk).exists(), "DATA LOSS: busy CREATED worktree reaped"
+            assert any("live session or active/claimed task" in c and "skipping" in c for c in cleaned), (
+                f"expected the busy-ticket keep reason, got: {cleaned!r}"
             )
 
 
@@ -3983,7 +3407,9 @@ class TestIsSquashMergedRealGit(TestCase):
 
     @staticmethod
     def _no_host_cli() -> AbstractContextManager[object]:
-        return patch.object(ws_cleanup_mod, "_run_host_cli", return_value=None)
+        # Forge absent: the corroborating forge probe yields nothing, so only the
+        # deterministic git content layers (cherry / synthetic-squash / --merged) decide.
+        return patch.object(bc_mod, "probe_host_cli", return_value="")
 
     def test_squash_merged_branch_is_detected_despite_non_ancestor(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_s:
@@ -3996,7 +3422,7 @@ class TestIsSquashMergedRealGit(TestCase):
             ).returncode
             assert is_ancestor != 0, "precondition: squash-merged branch is NOT an ancestor of origin/main"
             with self._no_host_cli():
-                assert ws_cleanup_mod.is_squash_merged(str(work), "feature", "main") is True
+                assert bc_mod.is_squash_merged(str(work), "feature", "main") is True
 
     def test_divergent_branch_is_not_detected_as_merged(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_s:
@@ -4008,147 +3434,7 @@ class TestIsSquashMergedRealGit(TestCase):
             _git(work, "commit", "-q", "-m", "feat: never merged (#301)")
             _git(work, "checkout", "-q", "main")
             with self._no_host_cli():
-                assert ws_cleanup_mod.is_squash_merged(str(work), "feature", "main") is False
-
-
-@_no_orphan_raw
-class TestCleanAllUnattendedDefault(TestCase):
-    """clean-all is fully unattended by default — it never blocks on stdin (#2361).
-
-    The user's complaint: ``clean-all`` stalled on a key-press before doing
-    anything and then prompted on every one of ~100+ stale worktrees. The fix
-    makes the default path never call ``input``, regardless of TTY, and gates the
-    per-worktree prompt behind an explicit ``--interactive`` opt-in.
-    """
-
-    def _make_unsynced_row(self, workspace: Path) -> Worktree:
-        """A CREATED row whose branch is genuinely ahead (would trip the prompt)."""
-        repo_main = workspace / "frontend"
-        repo_main.mkdir(parents=True)
-        (repo_main / ".git").mkdir()
-        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/2361")
-        wt_dir = workspace / "2361-stale" / "frontend"
-        wt_dir.mkdir(parents=True)
-        return Worktree.objects.create(
-            overlay="test",
-            ticket=ticket,
-            repo_path="frontend",
-            branch="2361-stale",
-            extra={"worktree_path": str(wt_dir)},
-        )
-
-    def _patch_cleanup_to_refuse(self) -> AbstractContextManager[object]:
-        return patch.object(
-            ws_reap_mod,
-            "cleanup_worktree",
-            side_effect=RuntimeError("1 unsynced commit(s) not on origin/main: abc123"),
-        )
-
-    @_no_prune
-    @_no_stash
-    @_no_orphan_dbs
-    @_no_orphan_isolated_roots
-    @_no_orphan_docker
-    @_no_dslr_prune
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_default_run_never_calls_input_even_on_a_tty(self) -> None:
-        """Anti-vacuous: ``builtins.input`` raises, and ``_is_interactive`` is True.
-
-        Pre-fix, ``clean_all`` derived interactivity from TTY presence
-        (``interactive = _is_interactive()``), so a TTY run prompted per worktree.
-        Patching ``input`` to raise turns any single stdin read into a failure;
-        forcing ``_is_interactive`` True proves the unattended default is the
-        ``--interactive``-flag gate, NOT a lucky non-TTY. Revert the gate (set the
-        default back to ``_is_interactive()``) and this test goes RED.
-        """
-        with tempfile.TemporaryDirectory() as tmp_s:
-            workspace = Path(tmp_s) / "workspace"
-            row = self._make_unsynced_row(workspace)
-
-            def _input_must_not_be_called(*_a: object, **_k: object) -> str:
-                msg = "clean-all blocked on stdin in the unattended default (#2361)"
-                raise AssertionError(msg)
-
-            with (
-                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-                patch.object(ws_clean_all_mod, "_is_interactive", return_value=True),
-                patch("builtins.input", side_effect=_input_must_not_be_called),
-                self._patch_cleanup_to_refuse(),
-            ):
-                cleaned = cast("list[str]", call_command("workspace", "clean-all"))
-
-            assert Worktree.objects.filter(pk=row.pk).exists(), "uncertain row must be kept, not reaped"
-            assert any("Skipped" in c and "unsynced" in c.lower() for c in cleaned)
-
-    @_no_prune
-    @_no_stash
-    @_no_orphan_dbs
-    @_no_orphan_isolated_roots
-    @_no_orphan_docker
-    @_no_dslr_prune
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_interactive_flag_without_a_tty_stays_unattended(self) -> None:
-        """``--interactive`` in a pipe / loop tick still never prompts.
-
-        The flag is ANDed with ``_is_interactive`` so a non-TTY context (the loop,
-        a pipe) runs unattended even with the opt-in passed — the safe direction.
-        """
-        with tempfile.TemporaryDirectory() as tmp_s:
-            workspace = Path(tmp_s) / "workspace"
-            row = self._make_unsynced_row(workspace)
-
-            def _input_must_not_be_called(*_a: object, **_k: object) -> str:
-                msg = "clean-all --interactive blocked on stdin with no TTY (#2361)"
-                raise AssertionError(msg)
-
-            with (
-                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-                patch.object(ws_clean_all_mod, "_is_interactive", return_value=False),
-                patch("builtins.input", side_effect=_input_must_not_be_called),
-                self._patch_cleanup_to_refuse(),
-            ):
-                cleaned = cast("list[str]", call_command("workspace", "clean-all", "--interactive"))
-
-            assert Worktree.objects.filter(pk=row.pk).exists()
-            assert any("Skipped" in c for c in cleaned)
-
-    @_no_prune
-    @_no_stash
-    @_no_orphan_dbs
-    @_no_orphan_isolated_roots
-    @_no_orphan_docker
-    @_no_dslr_prune
-    @_patch_overlays(FULL_OVERLAY)
-    @override_settings(**SETTINGS)
-    def test_interactive_flag_with_a_tty_does_prompt(self) -> None:
-        """The opt-in prompt still works: ``--interactive`` + a real TTY reads a choice.
-
-        Proves the flag is not inert — with both the flag and a TTY, the
-        per-worktree push/abandon/skip prompt fires (here the user skips).
-        """
-        with tempfile.TemporaryDirectory() as tmp_s:
-            workspace = Path(tmp_s) / "workspace"
-            row = self._make_unsynced_row(workspace)
-            prompts: list[str] = []
-
-            def _record_prompt(prompt: str = "") -> str:
-                prompts.append(prompt)
-                return ""  # default = skip
-
-            with (
-                patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-                patch.object(ws_clean_all_mod, "_is_interactive", return_value=True),
-                patch("builtins.input", side_effect=_record_prompt),
-                self._patch_cleanup_to_refuse(),
-            ):
-                cleaned = cast("list[str]", call_command("workspace", "clean-all", "--interactive"))
-
-            assert prompts, "interactive + TTY must reach the per-worktree prompt"
-            assert any("[P]ush" in p and "[A]bandon" in p and "[S]kip" in p for p in prompts)
-            assert Worktree.objects.filter(pk=row.pk).exists(), "default choice (skip) keeps the row"
-            assert any("Skipped" in c for c in cleaned)
+                assert bc_mod.is_squash_merged(str(work), "feature", "main") is False
 
 
 @_no_prune
@@ -4158,6 +3444,7 @@ class TestCleanAllUnattendedDefault(TestCase):
 @_no_orphan_docker
 @_no_orphan_raw
 @_no_dslr_prune
+@_no_liveness
 @_patch_overlays(FULL_OVERLAY)
 @override_settings(**SETTINGS)
 class TestCleanAllUnattendedReapMatrix(TestCase):
@@ -4165,9 +3452,9 @@ class TestCleanAllUnattendedReapMatrix(TestCase):
 
     Each case runs the whole command unattended (no ``--interactive``) against a
     real on-disk git repo, mocking only the unstoppable forge CLI (``gh``/``glab``
-    via ``_run_host_cli``) and the docker-down / dropdb side effects — never the
-    git layer, so the deterministic squash signals and data-loss guards run for
-    real. Asserts the reap/keep decision and that no prompt was ever issued.
+    via ``probe_host_cli`` / ``_branch_pr_is_merged``) and the docker-down / dropdb
+    side effects — never the git layer, so the deterministic squash signals and
+    data-loss guards run for real. Asserts the reap/keep decision and no prompt.
     """
 
     def _run(self, workspace: Path, *, forge: "subprocess.CompletedProcess[str] | None") -> list[str]:
@@ -4177,17 +3464,21 @@ class TestCleanAllUnattendedReapMatrix(TestCase):
             msg = "unattended clean-all blocked on stdin (#2361)"
             raise AssertionError(msg)
 
+        forge_merged = forge is not None
         with (
-            patch.object(workspace_mod, "_workspace_dir", return_value=workspace),
-            patch.object(provision_mod, "_workspace_dir", return_value=workspace),
-            patch.object(cleanup_mod, "load_config") as mock_config,
-            patch.object(ws_cleanup_mod, "_run_host_cli", return_value=forge),
-            patch.object(cleanup_mod, "_branch_pr_is_merged", return_value=forge is not None),
+            patch.object(workspace_mod, "_worktree_root", return_value=workspace),
+            patch.object(provision_mod, "clone_root", return_value=workspace),
+            patch.object(provision_mod, "worktree_root", return_value=workspace),
+            patch.object(cleanup_mod, "clone_root", return_value=workspace),
+            # The forge is corroborating-only now: stub both its probe (so no real
+            # gh/glab subprocess runs) and the merged report. It never alone reaps.
+            patch.object(bc_mod, "probe_host_cli", return_value="42" if forge_merged else ""),
+            patch.object(bc_mod, "_branch_pr_is_merged", return_value=forge_merged),
+            patch.object(cleanup_mod, "_branch_pr_is_merged", return_value=forge_merged),
             patch("teatree.core.runners.worktree_start.docker_compose_down"),
             patch.object(cleanup_mod, "drop_db", side_effect=lambda name, **_kw: dropped.append(name)),
             patch("builtins.input", side_effect=_input_must_not_be_called),
         ):
-            mock_config.return_value.user.workspace_dir = workspace
             return cast("list[str]", call_command("workspace", "clean-all"))
 
     def _row(self, work: Path, wt_path: Path, *, branch: str = "feature", number: str = "1830") -> Worktree:
@@ -4219,12 +3510,14 @@ class TestCleanAllUnattendedReapMatrix(TestCase):
             assert not wt_path.exists()
             assert "feature" not in _git(work, "branch", "--format=%(refname:short)").split()
 
-    def test_forge_confirmed_merged_branch_is_reaped(self) -> None:
-        """When git signals are ambiguous but the forge reports MERGED, the row is reaped.
+    def test_forge_merged_but_tip_not_on_target_is_kept_not_reaped(self) -> None:
+        """A forge-merged branch whose CURRENT tip is NOT on origin/main is KEPT (#2763).
 
         The branch is pushed and genuinely ahead of origin/main (no empty diff, no
-        cherry-equivalence), so ONLY the forge MR/PR record (retained after branch
-        deletion) confirms it shipped — the forge-fallback path.
+        cherry-equivalence, no squash on main), so the forge MR/PR record is the
+        ONLY merged signal. Under the canonical layered detection the forge signal
+        is corroborating-only and NEVER alone authorises deletion: the row is kept
+        for salvage to a fresh PR, never reaped on the stale merged signal.
         """
         with tempfile.TemporaryDirectory() as tmp_s:
             tmp = Path(tmp_s)
@@ -4242,8 +3535,10 @@ class TestCleanAllUnattendedReapMatrix(TestCase):
             forge_merged = subprocess.CompletedProcess([], 0, '[{"number": 42}]', "")
             cleaned = self._run(tmp, forge=forge_merged)
 
-            assert not Worktree.objects.filter(pk=wt.pk).exists(), f"forge-merged row should be reaped: {cleaned!r}"
-            assert not wt_path.exists()
+            assert Worktree.objects.filter(pk=wt.pk).exists(), (
+                f"forge-merged alone must NOT reap a tip not on origin/main (#2763): {cleaned!r}"
+            )
+            assert wt_path.is_dir()
 
     def test_dirty_live_worktree_is_kept(self) -> None:
         """#2243 / #835: a worktree with uncommitted changes is KEPT, never reaped.

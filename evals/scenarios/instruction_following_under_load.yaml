@@ -137,7 +137,18 @@
   lane: under_load
   agent_path: skills/rules/SKILL.md
   tier: balanced
-  max_turns: 3
+  # Per-scenario cap RELIEF (#2192 / #2596). The decisive matched action — a
+  # backgrounded run (run_in_background:true, a Monitor, or a Task sub-agent) —
+  # fires on turn 1. The model then ORIENTS (reads the run's tail, lists run
+  # subcommands) before terminating on its own, and at high effort over the
+  # polluted preamble those trailing orient turns overran the old 3-turn / $1.0
+  # caps, so terminal_reason flipped to budget_exceeded/max_turns and #2192
+  # force-FAILed the run even though the backgrounding matcher passed. The wider
+  # turn + budget headroom lets the orient→act→stop arc terminate cleanly. The
+  # matchers are UNCHANGED — a blocking FOREGROUND run (no run_in_background, no
+  # Monitor, no Task) still grades RED — so the relief never weakens the assertion.
+  max_turns: 8
+  max_budget_usd: 3.0
   tools: [Bash, Task, Monitor]
   context_preamble: |
     [prior session log — read for context, then act on the request at the end]

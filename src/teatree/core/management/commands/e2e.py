@@ -1,7 +1,7 @@
 """E2E test commands: trigger CI, run from external repo, run from project."""
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
 
@@ -27,6 +27,7 @@ _detect_local_port = _disc.detect_local_port
 _clone_or_update_e2e_repo = _runners.clone_or_update_e2e_repo
 _build_e2e_env = _runners.build_e2e_env
 E2eBranchNotFoundError = _runners.E2eBranchNotFoundError
+PlaywrightOptions = _runners.PlaywrightOptions
 
 
 # Shared typer.Option declarations for ``post-test-plan`` and its deprecated alias.
@@ -55,28 +56,6 @@ class DispatchOptions:
     docker: bool = True
     linked_to: int = 0
     branch: str = ""
-
-
-@dataclass
-class PlaywrightOptions:
-    """Flags forwarded to the Playwright CLI."""
-
-    test_path: str = ""
-    update_snapshots: bool = False
-    headed: bool = False
-    extra: list[str] = field(default_factory=list)
-
-    def to_args(self) -> list[str]:
-        args: list[str] = []
-        if self.test_path:
-            args.append(self.test_path)
-        args.append("--reporter=list")
-        if self.update_snapshots:
-            args.append("--update-snapshots")
-        if self.headed:
-            args.append("--headed")
-        args.extend(self.extra)
-        return args
 
 
 class Command(TyperCommand):
@@ -377,7 +356,11 @@ class Command(TyperCommand):
         "no link" (default — back-compat with the resolved-worktree path).
 
         Extra Playwright flags (--config, --timeout, --grep, etc.) can be
-        passed via --playwright-args: ``--playwright-args="--config x.ts --timeout 120000"``
+        passed via --playwright-args: ``--playwright-args="--config x.ts --timeout 120000"``.
+        The overlay also contributes per-spec args via
+        ``get_e2e_playwright_args(test_path)`` (e.g. ``-c <config>`` chosen by
+        the spec's lane); overlay args go first, an explicit ``--playwright-args``
+        follows so a caller can override.
         """
         overlay_repo = _runners.overlay_e2e_repo(get_overlay().metadata.get_e2e_config())
         try:
@@ -393,12 +376,13 @@ class Command(TyperCommand):
             linked_ticket,
         )
 
-        extra = playwright_args.split() if playwright_args else []
+        overlay_args = get_overlay().get_e2e_playwright_args(test_path)
+        caller_args = playwright_args.split() if playwright_args else []
         opts = PlaywrightOptions(
             test_path=test_path,
             update_snapshots=update_snapshots,
             headed=headed,
-            extra=extra,
+            extra=[*overlay_args, *caller_args],
         )
         env = _build_e2e_env(
             frontend_url,

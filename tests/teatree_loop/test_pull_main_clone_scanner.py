@@ -607,7 +607,7 @@ class PullMainCloneScannerWiringTests(TestCase):
                 "teatree.loop.scanner_factories._effective_settings_for_overlay",
                 return_value=UserSettings(pull_main_clone_cadence_hours=4),
             ),
-            patch("teatree.loop.scanner_factories.workspace_dir", return_value=workspace),
+            patch("teatree.loop.scanner_factories.clone_root", return_value=workspace),
         ):
             scanner = _pull_main_clone_scanner_for(backend)
 
@@ -657,7 +657,7 @@ class PullMainCloneScannerWiringTests(TestCase):
                 "teatree.loop.scanner_factories._effective_settings_for_overlay",
                 return_value=UserSettings(),
             ),
-            patch("teatree.loop.scanner_factories.workspace_dir", return_value=empty_workspace),
+            patch("teatree.loop.scanner_factories.clone_root", return_value=empty_workspace),
         ):
             scanner = _pull_main_clone_scanner_for(backend)
         assert scanner is None

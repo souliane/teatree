@@ -10,14 +10,47 @@ interrupted-provision DB heal used by ``start`` (#1038).
 
 import os
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
+from teatree.core.gates.orphan_guard import find_orphans_in_workspace
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay, infer_overlay_for_url
 from teatree.core.runners import heal_missing_provisioned_db
 
 if TYPE_CHECKING:
     from teatree.core.overlay import OverlayBase
+
+
+class OrphanEntry(TypedDict):
+    repo: str
+    branch: str
+    status: str
+    ahead_count: int
+
+
+def list_orphan_entries() -> list["OrphanEntry"]:
+    """JSON-serialisable orphan-branch list (commits ahead of origin/main, no open PR)."""
+    return [
+        OrphanEntry(repo=r.repo, branch=r.branch, status=r.status.value, ahead_count=r.ahead_count)
+        for r in find_orphans_in_workspace()
+    ]
+
+
+def warn_orphans(write: Callable[[str], None]) -> None:
+    """Warn (up to 5 previewed) about orphan branches before a session-closing action."""
+    orphans = find_orphans_in_workspace()
+    if not orphans:
+        return
+    preview = orphans[:5]
+    write(f"WARNING: {len(orphans)} orphan branch(es) in the workspace:")
+    for r in preview:
+        write(f"  - {r.repo} ({r.branch}, {r.ahead_count} ahead, {r.status.value})")
+    if len(orphans) > len(preview):
+        write(f"  - …and {len(orphans) - len(preview)} more")
+    write(
+        "Run `t3 <overlay> pr ensure-pr --branch <name>` to track them, "
+        "or `t3 <overlay> workspace clean-all` to reap synced ones.",
+    )
 
 
 def dslr_tenants_in_use() -> set[str]:

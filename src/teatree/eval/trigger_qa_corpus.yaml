@@ -60,6 +60,18 @@
     - "review the merge request feedback"
     - "scan the AI news for improvement ideas"
 
+- skill: cleanup-sweep
+  should_fire:
+    - "sweep the stale worktrees and decide what to salvage or delete"
+    - "I have a pile of lost worktrees and branches — judge each one, salvage or delete"
+    - "clean up the abandoned worktrees, but figure out which hold unmerged work worth keeping"
+    - "run a cleanup sweep over the stale branches and stashes and route each one"
+  should_not_fire:
+    - "create a worktree and provision the database"
+    - "open a pull request for the finished branch"
+    - "review the code on this merge request"
+    - "start the backend and frontend servers"
+
 - skill: loops
   should_fire:
     - "which loops are running and is the loop ticking?"

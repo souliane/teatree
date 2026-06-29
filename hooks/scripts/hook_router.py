@@ -55,13 +55,16 @@ from django_bootstrap import bootstrap_teatree_django
 from loop_registrations import emit_loop_registrations, is_bare_loop_tick_prompt, loop_name_from_prompt
 from loop_state_self_pump_gate import db_loop_state_suppresses_self_pump
 from memory_recall import handle_recall_cold_memory
-from mr_cli_fields import extract_cli_mr_fields, extract_mr_target_repo
+from mr_cli_fields import extract_cli_mr_fields, extract_mr_target_repo, merge_target_is_managed
 from no_self_reviewer_assign import handle_block_self_reviewer_assign
+from orchestration_boundary_signals import PYTEST_VERB_FINDER as _PYTEST_VERB_FINDER
+from orchestration_boundary_signals import PYTEST_VERB_RE as _PYTEST_VERB_RE
+from orchestration_boundary_signals import call_is_from_subagent as _call_is_from_subagent
+from orchestrator_investigation_gate import handle_enforce_orchestrator_investigation_boundary
 from question_gates import FENCED_CODE_RE, handle_warn_batched_questions, is_user_directed_question
 from state_files import append_line, read_lines
 from subagent_skill_gate import is_file_safe, unreferenced_demand_reason
 from teatree_settings import autoload_enabled as _autoload_enabled
-from teatree_settings import section_bool_setting as _section_bool_setting
 from teatree_settings import teatree_bool_setting as _teatree_bool_setting
 from turn_inspect import current_turn_tool_commands
 from unknown_repo_push_gate import handle_block_unknown_repo_push
@@ -1015,12 +1018,7 @@ def handle_record_presence(data: dict) -> None:
 _LOOP_CADENCE_DEFAULT = 720
 
 
-def _loops_toml_enabled() -> bool:
-    """Whether ``[loops] enabled`` is true (default True, fails OPEN; see :func:`_section_bool_setting`)."""
-    return _section_bool_setting("loops", "enabled", default=True)
-
-
-_LOOP_PROMPT = "Run `t3 loop tick` in Bash, then briefly report the tick summary."
+_LOOP_PROMPT = "Run `t3 loops tick` in Bash, then briefly report the tick summary."
 
 
 def _loop_cadence_seconds() -> int:
@@ -1086,17 +1084,14 @@ def _claim_loop_ownership(session_id: str) -> None:
     gated out), the ownership-claim logic in
     :func:`handle_session_start_bootstrap` never ran.  The first
     UserPromptSubmit after the marker is set calls this to fill the gap.
-    No-ops if a live foreign owner already holds the record, or if either
-    loop kill-switch is engaged: ``[loops] enabled = false`` in
-    ``~/.teatree.toml`` or ``T3_LOOP_DISOWN`` truthy.  Re-arming a paused
-    loop here would resurrect the very machinery the pause surface exists to
-    silence.  Durable per-loop pause/disable lives in the DB ``LoopState``
-    tier (``t3 loop pause``/``disable``) — the in-process ``T3_LOOP_DISOWN``
-    knob is the orthogonal immediate-mitigation lever, not a loops
-    kill-switch.
+    No-ops if a live foreign owner already holds the record, or if the
+    ``T3_LOOP_DISOWN`` immediate-mitigation knob is truthy.  Durable per-loop
+    pause/disable lives in the DB ``LoopState`` tier (``t3 loop pause`` /
+    ``disable``); there is no ``[loops] enabled`` toml kill-switch (the dead cold
+    arm was dropped — loop control is ``/loops`` + the DB only).  The in-process
+    ``T3_LOOP_DISOWN`` knob is the orthogonal immediate-mitigation lever, not a
+    loops kill-switch.
     """
-    if not _loops_toml_enabled():
-        return
     if _resolve_loop_env("T3_LOOP_DISOWN").strip() not in _DISOWN_FALSEY:
         return
     current_pid = os.getppid()
@@ -1180,7 +1175,7 @@ def _loop_registration_exempt(data: dict) -> bool:
     - this session is NOT the loop driver — a *different* live session already
         owns the tick (``_session_drives_loop`` is False), so this is an
         attended, non-owner interactive session. Nagging it to ``CronCreate`` a
-        competing ``t3 loop tick`` would only spawn a duplicate loop the
+        competing ``t3 loops tick`` would only spawn a duplicate loop the
         non-owner tick gate would SKIP anyway; the rightful owner (or, with no
         live owner, the next eligible session — see ``_session_drives_loop``)
         still gets nagged, so the loop is never left unregistered.
@@ -3358,16 +3353,9 @@ def handle_block_uncovered_diff(data: dict) -> bool:
 # (#115): 4.x-class agents need to inspect freely, so the gate now flags
 # the narrow set of commands that actually hurt — never every Bash.
 #
-# Main-vs-sub-agent signal (#115 root cause). The PreToolUse payload's
-# ``transcript_path`` ALWAYS points at the PARENT session transcript,
-# even for a sub-agent's tool call (a sub-agent's own turns live in a
-# separate ``…/subagents/agent-<id>.jsonl`` the hook never receives), and
-# the parent transcript's tail entries carry ``isSidechain: false`` — so
-# the previous transcript-``isSidechain`` read MISDETECTED every genuine
-# sub-agent as the main agent and blocked it. The reliable signal is on
-# the payload itself: a sub-agent call carries a non-empty ``agent_id``
-# (and ``agent_type``); a main-agent call omits it. ``_call_is_from_subagent``
-# reads that field directly — no transcript needed.
+# The main-vs-sub-agent signal (#115 root cause: a sub-agent call carries a
+# non-empty ``agent_id``, a main-agent call omits it) is ``_call_is_from_subagent``,
+# imported aliased above from the shared ``orchestration_boundary_signals`` leaf.
 
 # Pure-orchestration tools — always allowed for the main agent.
 _ORCHESTRATION_TOOLS = {
@@ -3380,33 +3368,11 @@ _ORCHESTRATION_TOOLS = {
     "SendMessage",
     "AskUserQuestion",
 }
-# ``pytest`` must match only in a VERB POSITION — never inside a quoted
-# arg, a branch name, a ``-m``/``--title`` message, or a hyphenated
-# package name (``pytest-django``). A bare ``\bpytest\b`` mis-denied the
-# loop owner's ``git commit -m 'fix pytest fixture'`` / ``git branch
-# x-pytest`` / ``uv add pytest-django`` (#1178 cold-review false-deny).
-# So anchor it to a command head: start-of-string OR a shell separator
-# (``;`` ``&&`` ``||`` ``|`` newline ``(`` ``{``), then optional env-var
-# assignments, optional (possibly-stacked) command-wrapper prefixes
-# (``command``/``exec``/``time``/``nice``), and an optional Python runner
-# prefix — note ``uvx`` runs a tool DIRECTLY with no ``run`` (``uvx
-# pytest``), while ``uv``/``poetry``/``pdm``/``hatch`` DO need ``run``, and
-# ``python[3] -m`` — then ``pytest`` NOT followed by a word char or hyphen.
-# The separator branch keeps the shell-grammar bypass guard intact (``git
-# status && pytest`` still denies); the trailing ``(?![\w-])`` keeps the
-# match pinned to ``pytest`` so wrapper prefixes never widen to other tools
-# (``uvx ruff`` / ``command ls`` stay ALLOWED).
-_PYTEST_VERB_RE = (
-    r"(?:^|[;&|\n(){}])"
-    r"\s*"
-    r"(?:\w+=\S+\s+)*"
-    r"(?:(?:command|exec|time|nice)\s+)*"
-    r"(?:uvx\s+|(?:uv|poetry|pdm|hatch)\s+run\s+|python3?\s+-m\s+)?"
-    r"pytest(?![\w-])"
-)
-_PYTEST_VERB_FINDER = re.compile(_PYTEST_VERB_RE)
-
-# A TARGETED pytest run is cheap and must stay ALLOWED in the foreground
+# ``_PYTEST_VERB_RE`` / ``_PYTEST_VERB_FINDER`` (the VERB-position pytest matcher,
+# anchored to a command head so a ``git commit -m '…pytest…'`` mention is not a
+# false-deny — #1178) now live in the shared ``orchestration_boundary_signals``
+# leaf, imported aliased above so this gate and the investigation nudge read one
+# source. A TARGETED pytest run is cheap and must stay ALLOWED in the foreground
 # main agent (#1825): only the whole suite ties the session up. The verb
 # match above tells us a ``pytest`` invocation is present; this decides
 # whether the args make it a single/targeted run. Targeted iff the
@@ -3481,19 +3447,6 @@ _ORCHESTRATOR_HEAVY_BASH_RE = re.compile(
 # mirroring the ``[skip-skill-gate: <reason>]`` token. An empty reason does not
 # unblock.
 _FG_OK_RE = re.compile(r"\[fg-ok:\s*\S[^\]]*?\s*\]")
-
-
-def _call_is_from_subagent(data: dict) -> bool:
-    """True when the gated tool call originates from a sub-agent.
-
-    The PreToolUse payload carries a non-empty ``agent_id`` (and
-    ``agent_type``) for every sub-agent call and omits it for the main
-    agent — the only reliable main-vs-sub-agent signal, because the
-    payload's ``transcript_path`` always points at the PARENT session
-    transcript (see the #115 root-cause note above). Empty/absent
-    ``agent_id`` ⇒ main agent.
-    """
-    return bool(data.get("agent_id"))
 
 
 def _is_orchestration_action(data: dict) -> bool:
@@ -4467,7 +4420,7 @@ def _durable_session_snapshot(session_id: str, data: dict | None = None) -> str:
             (
                 "This session is the loop-tick OWNER. The loop is tick-driven "
                 "(#786 WS3): there is no roster of long-lived sub-agents to "
-                "resume — re-arm by ensuring the `t3 loop tick` cron is "
+                "resume — re-arm by ensuring the `t3 loops tick` cron is "
                 "registered for this session; each tick atomically claims the "
                 "next pending unit via `t3 loop claim-next`."
             ),
@@ -4943,7 +4896,7 @@ def _emit_osc_title() -> None:
 # #786 WS3: the per-loop spawn-brief machinery (_LOOP_SPAWN_BRIEFS /
 # _loop_spawn_briefs / _brief_block / _DURABILITY_NOTE) is RETIRED — there
 # is no immortal roster to re-spawn from a brief. The loop is the
-# `t3 loop tick` cron + WS1 atomic claim-next + WS2 LoopLease; surviving
+# `t3 loops tick` cron + WS1 atomic claim-next + WS2 LoopLease; surviving
 # an owner death is "the next session becomes tick-owner and keeps
 # ticking", not "re-spawn N sub-agents from persisted briefs".
 
@@ -4965,7 +4918,7 @@ _RENAME_REMINDER = (
 #
 # The loop is no longer a fixed roster of long-lived sub-agents that a
 # coordinator must keep alive / re-spawn on death/compaction. It is
-# driven by the machine-wide ``t3 loop tick`` cron (#676): each tick the
+# driven by the machine-wide ``t3 loops tick`` cron (#676): each tick the
 # loop-owner session atomically claims pending DB work (WS1
 # ``t3 loop claim-next`` — conditional-UPDATE CAS) and spawns a FRESH,
 # BOUNDED sub-agent for just that unit, which returns. Statelessness
@@ -4980,12 +4933,12 @@ _TICK_DISPATCH_OWNER_DIRECTIVE = (
     "TEATREE LOOP — tick-driven, no roster to spawn.\n\n"
     "This session is the teatree loop-tick OWNER. The loop is NOT a set of "
     "long-lived sub-agents you spawn or keep alive: it is the recurring "
-    "`t3 loop tick` cron. Each tick, claim the next pending unit atomically "
+    "`t3 loops tick` cron. Each tick, claim the next pending unit atomically "
     "with `t3 loop claim-next` and spawn ONE fresh, bounded sub-agent for "
     "just that unit (it does the work and returns). No persistent loop "
     "roster, nothing to re-spawn on compaction — a worker dying mid-task "
     "leaves its Task reclaimable and the next tick re-dispatches it. Ensure "
-    "the `t3 loop tick` cron is registered for this session." + _RENAME_REMINDER
+    "the `t3 loops tick` cron is registered for this session." + _RENAME_REMINDER
 )
 
 _ACCOUNT_SWITCH_DIRECTIVE = (
@@ -5015,9 +4968,9 @@ _MCP_CONNECTIVITY_DIRECTIVE = (
 _TICK_DISPATCH_NON_OWNER_DIRECTIVE = (
     "TEATREE LOOP — tick-driven; another session owns the tick.\n\n"
     "Another live session is the teatree loop-tick owner (owner session "
-    "{owner_session}). Do NOT arm a competing `t3 loop tick` cron and do "
+    "{owner_session}). Do NOT arm a competing `t3 loops tick` cron and do "
     "NOT spawn loop sub-agents. The loop-owner gate (#1073) is now a HARD "
-    "gate: a non-owner `t3 loop tick` will SKIP before any scanner / Slack "
+    "gate: a non-owner `t3 loops tick` will SKIP before any scanner / Slack "
     "DM-drain / dispatch runs at all — it does NOT execute the tick. "
     "Stay idle with respect to the loop. (If you ARE the user's main "
     "session and a foreign session has hijacked the loop, run `t3 loop "
@@ -5044,60 +4997,28 @@ def _tick_owner_record(session_id: str, agent_id: str) -> dict[str, dict]:
     }
 
 
-def _live_lease_is_foreign(stored_pid: int, current_pid: int | None) -> bool:
-    """Return True iff a LIVE foreign-session lease should be treated as genuinely foreign.
-
-    Called only for live leases whose ``session_id`` differs from the current session.
-    Returns False (evictable) when stored_pid matches current_pid (post-compaction
-    same-process self-reclaim) or pid_alive confirms the owner process is dead.
-    Returns True (KEEP) when pid_alive is unavailable (conservative bias, INV4) or
-    the owner process is still alive and belongs to a different OS process (INV1).
-    """
-    if current_pid is not None and stored_pid == current_pid:
-        return False
-    try:
-        from teatree.utils.singleton import pid_alive  # noqa: PLC0415
-    except ImportError:
-        return True
-    else:
-        return pid_alive(stored_pid)
-
-
 def _db_live_foreign_owner(session_id: str, current_pid: int | None) -> str:
     """Return the session id of a genuinely LIVE foreign ``loop-owner`` DB lease, or ``""``.
 
     #1604: called when the file registry has no entry for the tick-owner
-    (empty after prune / fail-safe) to detect registry/DB desync. If the
-    DB shows a live claim by a *different* session that is also a
-    *different alive process*, that session is still the rightful owner —
-    the new session must stay idle (INV1). Fails open (returns ``""``) on
-    any DB/import error so a hiccup never blocks the SessionStart directive.
+    (empty after prune / fail-safe) to detect registry/DB desync. The
+    foreign-and-live decision is the manager's single liveness predicate
+    (:meth:`LoopLease.objects.live_foreign_owner`, the same CAS-shape READ the
+    eviction path routes through): a live claim by a *different* session that is
+    also a *different alive process* keeps the new session idle (INV1). This
+    helper is only the disabled / bootstrap / fail-open envelope — any DB/import
+    error returns ``""`` so a hiccup never blocks the SessionStart directive.
     """
     if _db_lease_consult_disabled():
         return ""
     if not bootstrap_teatree_django():
         return ""
     try:
-        import datetime  # noqa: PLC0415
-
         from teatree.core.models import LoopLease  # noqa: PLC0415
-        from teatree.utils.singleton import pid_alive  # noqa: PLC0415
 
-        row = LoopLease.objects.filter(name="loop-owner").values("session_id", "owner_pid", "lease_expires_at").first()
-        owner_session = (row or {}).get("session_id") or ""
-        is_foreign_session = bool(owner_session) and owner_session != session_id
-        expires_at = (row or {}).get("lease_expires_at")
-        stored_pid = (row or {}).get("owner_pid")
-        # Liveness is pid-anchored: an alive owner_pid is a live owner past
-        # its tick TTL (the busy-owner hijack the TTL-only check missed).
-        is_live = (expires_at is not None and expires_at > datetime.datetime.now(tz=datetime.UTC)) or (
-            stored_pid is not None and pid_alive(stored_pid)
-        )
-        pid_is_foreign = stored_pid is None or _live_lease_is_foreign(stored_pid, current_pid)
+        return LoopLease.objects.live_foreign_owner("loop-owner", session_id=session_id, current_pid=current_pid)
     except Exception:  # noqa: BLE001
         return ""
-    else:
-        return owner_session if (is_foreign_session and is_live and pid_is_foreign) else ""
 
 
 def _evict_stale_db_lease_owner(session_id: str, current_pid: int | None) -> None:
@@ -5108,7 +5029,7 @@ def _evict_stale_db_lease_owner(session_id: str, current_pid: int | None) -> Non
     rewritten to the new id, but the DB ``LoopLease`` row name=
     ``loop-owner`` still carries the OLD id with an unexpired
     ``lease_expires_at``. ``CLAUDE_SESSION_ID`` is empty in Bash-tool
-    subprocesses (#1107) so the next ``t3 loop tick`` resolves the NEW
+    subprocesses (#1107) so the next ``t3 loops tick`` resolves the NEW
     id via the registry fallback and the ``claim_ownership`` CAS fails
     (DB row's session != new session, lease not expired) — the same
     session can never own its own loop until ``t3 loop claim
@@ -5360,7 +5281,7 @@ def handle_session_start_bootstrap(data: dict) -> None:
 
     The immortal-singleton roster (spawn/takeover/resume/re-attach a fixed
     set of long-lived loop sub-agents) is GONE. The loop is the
-    ``t3 loop tick`` cron + WS1 atomic ``claim-next`` + WS2 ``LoopLease``
+    ``t3 loops tick`` cron + WS1 atomic ``claim-next`` + WS2 ``LoopLease``
     tick mutex. This hook only decides which *session* is the tick-owner
     (one Django-free record, so the #758/#810 Stop self-pump can gate on
     it without a Django bootstrap) and orients the session accordingly:
@@ -5452,7 +5373,7 @@ def handle_session_start_bootstrap(data: dict) -> None:
     # Runs when the registry had no entry (fresh machine or dead-owner prune)
     # and the DB also showed no live foreign lease, OR (#1838 PR#7a) on a
     # compaction resume — the eviction ORPHANS the stale lease (``session_id=""``)
-    # synchronously before any tick, so the lead's next ``t3 loop tick``
+    # synchronously before any tick, so the lead's next ``t3 loops tick``
     # re-anchors ``loop-owner`` uncontested and no maker pane can win the
     # compaction-window CAS race against the rotated lead session. (The eviction
     # only orphans; it does NOT itself re-claim — the re-claim is the lead's next
@@ -5752,7 +5673,7 @@ def _self_pump_suppressed(session_id: str) -> bool:
     at SessionEnd, transferable across sessions). WS4's "per-agent,
     decoupled from the tick-owner" model leaked the loop into EVERY
     fresh/unrelated session — a brand-new blog-writing session
-    immediately started pumping ``t3 loop tick``/``claim-next`` and
+    immediately started pumping ``t3 loops tick``/``claim-next`` and
     spawning review sub-agents. This gate is checked FIRST so a
     non-owner session's Stop hook is a clean no-op: no ``pending-spawn``
     subprocess, no registry write, no error noise in the transcript. The
@@ -5827,7 +5748,7 @@ def _loop_self_pump(data: dict) -> bool | None:
         "TEATREE LOOP SELF-PUMP — consolidated work remains; continue the loop "
         f"without waiting for an external prompt. Run `T3_LOOP_SESSION_ID={session_id} "
         f"T3_LOOP_SESSION_PID={session_pid} "
-        "t3 loop tick`, then "
+        "t3 loops tick`, then "
         "repeatedly `t3 loop claim-next` and spawn ONE fresh, bounded sub-agent "
         "(Agent tool) for each claimed unit until it returns nothing — the "
         "claim is atomic (#786 WS1), so no separate post-spawn claim step and "
@@ -6752,6 +6673,9 @@ _OUT_OF_BAND_MERGE_RE = re.compile(r"\b(?:gh\s+pr\s+merge|glab\s+mr\s+merge)\b")
 # Matches both GitHub (``repos/OWNER/REPO/pulls/<n>/merge``) and
 # GitLab (``projects/<id>/merge_requests/<n>/merge``) URL shapes.
 _MERGE_ENDPOINT_RE = re.compile(r"(?:merge_requests|pulls)/\d+/merge\b")
+# GitHub GraphQL merge-effecting mutations (all merge the PR / a branch out of band):
+# mergePullRequest, enablePullRequestAutoMerge (native-rules merge), mergeBranch.
+_GRAPHQL_MERGE_MUTATION_RE = re.compile(r"(?:mergePullRequest|enablePullRequestAutoMerge|mergeBranch)\s*\(")
 _OUT_OF_BAND_MERGE_REASON = (
     "BLOCKED: raw `gh pr merge` / `glab mr merge` on a teatree-managed repo — "
     "an out-of-band merge bypasses the FSM coherence mechanism (ledger update, "
@@ -6850,9 +6774,12 @@ def _cwd_is_teatree_managed(cwd: Path) -> bool | None:
     """
     slugs, paths = _overlay_managed_repo_signals()
     for base in paths:
+        # is_relative_to, not relative_to: a non-subpath returns False instead
+        # of raising ValueError, which the suppress() below does NOT catch — an
+        # uncaught crash here makes the crash-proof dispatcher fail OPEN.
         with contextlib.suppress(OSError, RuntimeError):
-            cwd.resolve().relative_to(base)
-            return True
+            if cwd.resolve().is_relative_to(base):
+                return True
     try:
         with _teatree_src_on_path():
             from teatree.hooks import publish_surface  # noqa: PLC0415
@@ -6885,35 +6812,36 @@ def _invokes_raw_merge_subcommand(command: str) -> bool:
 
 
 def handle_block_out_of_band_merge(data: dict) -> bool:
-    """Block a raw merge command or REST-API merge write on a managed repo.
+    """Block a raw/REST-API/graphql merge form aimed at a teatree-managed repo.
 
-    Covers two bypass vectors. The literal subcommand form (``gh pr merge`` /
-    ``glab mr merge``) is matched action-aware by
-    :func:`_invokes_raw_merge_subcommand` — only an actual invocation, not a
-    heredoc/echo/comment that documents the phrase (#2387). The REST-API form
-    (``gh api .../pulls/<n>/merge -X PUT``, ``glab api
-    .../merge_requests/<n>/merge --method POST``) is matched by
-    :func:`_is_raw_merge_api_write` (last ``-X``/``--method`` wins; default POST
-    with a body flag, else GET). A GET to the merge endpoint reads merge status
-    and is NOT denied.
+    Three bypass vectors. The literal subcommand (``gh pr merge`` / ``glab mr
+    merge``) is matched action-aware by :func:`_invokes_raw_merge_subcommand`
+    (a real invocation, not a heredoc/echo/comment — #2387). The REST-API form
+    (``gh api .../pulls/<n>/merge -X PUT``) is matched by
+    :func:`_is_raw_merge_api_write` (a GET read is NOT denied). A graphql merge
+    mutation (mergePullRequest / enablePullRequestAutoMerge / mergeBranch) has an
+    unresolvable node-id target, so it is blocked (fail-closed).
 
-    Carve-out for the permanent-lockout case (#126): a merge is allowed only
-    when the cwd repo is confidently NOT teatree-managed. Managed repos and
-    any case the gate cannot classify stay BLOCKED — fail-safe on uncertainty.
+    Otherwise classification keys on the merge TARGET (parsed from the command),
+    not the cwd — a managed-repo target is BLOCKED regardless of cwd; when none
+    parses, the cwd-keyed fallback (#126) allows only a confidently-unmanaged cwd.
     """
     if data.get("tool_name") != "Bash":
         return False
     command = data.get("tool_input", {}).get("command", "")
     if not command:
         return False
+    # Matches the mutation name in argv only: a query loaded from a file or stdin
+    # (`gh api graphql -F query=@file` / `--input`) moves the text out of argv and
+    # is NOT inspected — an accepted residual, not a silent miss.
+    if _GLAB_GH_API_RE.search(command) and _GRAPHQL_MERGE_MUTATION_RE.search(command):
+        return emit_pretooluse_deny(_OUT_OF_BAND_MERGE_REASON)
     if not _invokes_raw_merge_subcommand(command) and not _is_raw_merge_api_write(command):
         return False
-    cwd = _resolve_cwd_repo(data)
-    if cwd is None:
-        return emit_pretooluse_deny(_OUT_OF_BAND_MERGE_REASON)
-    managed = _cwd_is_teatree_managed(cwd)
-    if managed is False:
-        return False
+    if not merge_target_is_managed(command, _overlay_managed_repo_signals()[0]):
+        cwd = _resolve_cwd_repo(data)
+        if cwd is not None and _cwd_is_teatree_managed(cwd) is False:
+            return False
     return emit_pretooluse_deny(_OUT_OF_BAND_MERGE_REASON)
 
 
@@ -8149,43 +8077,17 @@ def _record_no_commit_signal(session_id: str, finding: object) -> None:
             _append_line(no_commit_file, line)
 
 
-def _capture_subagent_snapshot(worktree: str, branch: str, label: str) -> None:
-    """Capture a bundle+diff of a dirty/unpushed sub-agent worktree (#1764).
-
-    Runs under bare ``python3`` from the SubagentStop hook, so it imports only
-    the Django-free :mod:`teatree.core.worktree_snapshot`. The snapshot lands
-    BEFORE any teardown can auto-clean the worktree, preserving uncommitted
-    edits and unpushed commits an outage-killed sub-agent left behind. ``git
-    bundle`` runs against the worktree's own object store (the worktree shares
-    the main clone's gitdir), so the worktree path doubles as the repo handle.
-    Best-effort: a no-op for a clean+pushed tree, fully crash-proof at the
-    caller's boundary.
-    """
-    from teatree.core.worktree_snapshot import capture_worktree_snapshot  # noqa: PLC0415
-
-    recovery_dir = capture_worktree_snapshot(Path(worktree), worktree, branch=branch, label=label)
-    if recovery_dir is not None:
-        print(  # noqa: T201 — hook stderr is the module's logging channel
-            f"[hook_router] sub-agent worktree {worktree!r} (branch {branch!r}) had dirty/unpushed work — "
-            f"captured recovery artifact to {recovery_dir} before teardown.",
-            file=sys.stderr,
-        )
-
-
 def handle_subagent_stop_no_commit(data: dict) -> None:
     """SubagentStop: record a work-branch worktree that produced 0 commits (#1205).
 
-    Also captures a recovery snapshot (#1764) of the sub-agent's worktree
-    (resolved to a work branch) BEFORE teardown can auto-clean it — the
-    Django-free snapshot no-ops on a clean+pushed tree and writes a bundle+diff
-    when there are uncommitted edits or unpushed commits, so an outage-killed
-    sub-agent's work survives.
-
     Resolves the sub-agent's worktree from the harness ``cwd``, runs the
     conservative :func:`teatree.hooks.no_commit_detector.detect`, and records a
-    ``terminated_without_commit`` signal only on the confirmed-flag verdict.
-    No-op for a read-only/detached worktree, a committed branch, an
-    undeterminable git state, or a missing ``cwd``.
+    ``terminated_without_commit`` signal only on the confirmed-flag verdict, so the
+    orchestrator SEES the empty termination instead of assuming work landed. It is
+    a pure DETECTION/surfacing hook — there is no recovery snapshot (the #1770
+    capture mechanism was removed): unproven sub-agent work is surfaced for
+    salvage, never auto-captured. No-op for a read-only/detached worktree, a
+    committed branch, an undeterminable git state, or a missing ``cwd``.
 
     Crash-proof (#810 Stop contract): a broad boundary guard contains any
     unexpected error (an unimportable ``teatree``, git introspection failure)
@@ -8200,15 +8102,10 @@ def handle_subagent_stop_no_commit(data: dict) -> None:
         if str(src_dir) not in sys.path:
             sys.path.insert(0, str(src_dir))
         from teatree.hooks import no_commit_detector  # noqa: PLC0415
-        from teatree.utils import git  # noqa: PLC0415
 
         finding = no_commit_detector.detect(worktree)
         if finding.is_flagged:
             _record_no_commit_signal(data.get("session_id", ""), finding)
-
-        branch = git.current_branch(repo=worktree)
-        if branch and branch not in no_commit_detector.NON_WORK_BRANCHES:
-            _capture_subagent_snapshot(worktree, branch, branch)
     except Exception as exc:  # noqa: BLE001 — SubagentStop hook must be crash-proof
         print(  # noqa: T201 — hook stderr is the module's logging channel
             f"[hook_router] no-commit detection skipped (unexpected error: {exc})",
@@ -8253,6 +8150,7 @@ _HANDLERS: dict[str, list] = {
         handle_block_ai_signature,
         handle_block_uncovered_diff,
         handle_enforce_orchestrator_boundary,
+        handle_enforce_orchestrator_investigation_boundary,
         handle_warn_batched_questions,
         handle_mirror_question_to_slack,
         handle_orchestrator_turn_budget_nudge,

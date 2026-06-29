@@ -7,114 +7,13 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from teatree.agents.prompt import (
-    _is_primary,
     _parent_result_summary,
-    _read_skill_contents,
-    _read_skill_contents_scoped,
     build_interactive_context,
     build_reviewer_dispatch_prompt,
     build_system_context,
     build_task_prompt,
 )
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
-
-# --- _read_skill_contents ---
-
-
-def test_read_skill_contents_reads_existing_skill(tmp_path: Path) -> None:
-    skill_dir = tmp_path / "my-skill"
-    skill_dir.mkdir()
-    (skill_dir / "SKILL.md").write_text("# My Skill\nDo stuff.", encoding="utf-8")
-
-    result = _read_skill_contents(["my-skill"], skills_dir=tmp_path)
-    assert "--- SKILL: my-skill ---" in result
-    assert "# My Skill" in result
-
-
-def test_read_skill_contents_skips_missing_skill(tmp_path: Path) -> None:
-    result = _read_skill_contents(["nonexistent"], skills_dir=tmp_path)
-    assert result == ""
-
-
-def test_read_skill_contents_multiple_skills(tmp_path: Path) -> None:
-    for name in ("skill-a", "skill-b"):
-        d = tmp_path / name
-        d.mkdir()
-        (d / "SKILL.md").write_text(f"# {name}", encoding="utf-8")
-
-    result = _read_skill_contents(["skill-a", "skill-b"], skills_dir=tmp_path)
-    assert "--- SKILL: skill-a ---" in result
-    assert "--- SKILL: skill-b ---" in result
-
-
-# --- _is_primary ---
-
-
-def test_is_primary_matches_short_name() -> None:
-    assert _is_primary("test", {"test"})
-    assert not _is_primary("code", {"test"})
-
-
-def test_is_primary_matches_always_full() -> None:
-    assert _is_primary("rules", set())
-
-
-def test_is_primary_matches_absolute_path() -> None:
-    assert _is_primary("/tmp/skills/test/SKILL.md", {"test"})
-    assert _is_primary("/tmp/skills/rules/SKILL.md", set())
-    assert not _is_primary("/tmp/skills/ac-django/SKILL.md", {"test"})
-
-
-# --- _read_skill_contents_scoped ---
-
-
-def test_read_scoped_embeds_primary_and_summarizes_companions(tmp_path: Path) -> None:
-    for name in ("rules", "test", "ac-django", "workspace"):
-        d = tmp_path / name
-        d.mkdir()
-        (d / "SKILL.md").write_text(f"# {name} full content", encoding="utf-8")
-
-    result = _read_skill_contents_scoped(
-        ["ac-django", "workspace", "rules", "test"],
-        primary_skills={"test"},
-        skills_dir=tmp_path,
-    )
-    # Primary skills get full content
-    assert "--- SKILL: test ---" in result
-    assert "# test full content" in result
-    # rules is always fully loaded
-    assert "--- SKILL: rules ---" in result
-    assert "# rules full content" in result
-    # Companion skills get summary only
-    assert "COMPANION SKILLS" in result
-    assert "- ac-django:" in result
-    assert "- workspace:" in result
-    assert "# ac-django full content" not in result
-    assert "# workspace full content" not in result
-
-
-def test_read_scoped_all_primary(tmp_path: Path) -> None:
-    d = tmp_path / "only-skill"
-    d.mkdir()
-    (d / "SKILL.md").write_text("# Only", encoding="utf-8")
-
-    result = _read_skill_contents_scoped(
-        ["only-skill"],
-        primary_skills={"only-skill"},
-        skills_dir=tmp_path,
-    )
-    assert "--- SKILL: only-skill ---" in result
-    assert "COMPANION" not in result
-
-
-def test_read_scoped_missing_skill(tmp_path: Path) -> None:
-    result = _read_skill_contents_scoped(
-        ["nonexistent"],
-        primary_skills={"nonexistent"},
-        skills_dir=tmp_path,
-    )
-    assert result == ""
-
 
 # --- build_task_prompt ---
 
@@ -300,7 +199,7 @@ class TestBuildSystemContext(TestCase):
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(ticket=ticket, session=session)
 
-        with patch("teatree.agents.prompt.DEFAULT_SKILLS_DIR", tmp_dir):
+        with patch("teatree.agents.skill_injection.DEFAULT_SKILLS_DIR", tmp_dir):
             ctx = build_system_context(task, skills=["my-skill"])
         assert "# Loaded Skills" in ctx
         assert "# Loaded Skill" in ctx
@@ -317,7 +216,7 @@ class TestBuildSystemContext(TestCase):
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(ticket=ticket, session=session, phase="testing")
 
-        with patch("teatree.agents.prompt.DEFAULT_SKILLS_DIR", tmp_dir):
+        with patch("teatree.agents.skill_injection.DEFAULT_SKILLS_DIR", tmp_dir):
             ctx = build_system_context(
                 task,
                 skills=["ac-django", "rules", "test"],
@@ -667,7 +566,7 @@ class TestCodingPhaseDispatchContract(TestCase):
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket)
         task = Task.objects.create(ticket=ticket, session=session, phase="coding")
-        with patch("teatree.agents.prompt.DEFAULT_SKILLS_DIR", tmp_dir):
+        with patch("teatree.agents.skill_injection.DEFAULT_SKILLS_DIR", tmp_dir):
             ctx = build_system_context(
                 task,
                 skills=["code", "rules", "architecture-design"],
@@ -760,7 +659,7 @@ class TestCodingPhaseStackSkillLoadInjection(TestCase):
             d = tmp_dir / name
             d.mkdir()
             (d / "SKILL.md").write_text(f"# {name} BODY", encoding="utf-8")
-        with patch("teatree.agents.prompt.DEFAULT_SKILLS_DIR", tmp_dir):
+        with patch("teatree.agents.skill_injection.DEFAULT_SKILLS_DIR", tmp_dir):
             ctx = build_system_context(
                 self._coding_task(),
                 skills=["ac-django", "t3:demo-overlay", "code", "rules", "architecture-design"],

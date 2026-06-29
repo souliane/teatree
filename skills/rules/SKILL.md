@@ -434,6 +434,14 @@ Before posting any screenshot, PDF, or "proof it works" artifact on an MR/PR/iss
 
 A passing local test suite is not evidence. The deployed system is the only artifact that proves a user-visible feature works. If the proper evidence requires steps you can't complete this session, say so explicitly in the comment — don't substitute a prohibited source.
 
+**The mandatory-E2E gate is bypassed ONLY by a recorded user approval — never by the agent self-asserting a skip.** For a display-impacting change that genuinely cannot get E2E this session, the single sanctioned escape is the user-authorized bypass command:
+
+```bash
+t3 <overlay> ticket e2e-bypass <ticket-id> --approver <human-user-id> --head-sha <full-40-char-sha>
+```
+
+It is durable, single-use, and scoped to the ticket + reviewed head SHA; the next ship-gate / §17.4 CLEAR at that exact SHA consumes it once. Maker≠checker is enforced — a `--approver` that is a maker / coding-agent / loop id is refused (#1967), so the implementing agent can never authorize its own bypass. There is no `--skip-e2e` flag and no `approve-on-behalf` path for the E2E gate; `ticket e2e-bypass` with a human approver is the only one. Conversely, once a green run's evidence is POSTED, record the attestation with `t3 <overlay> lifecycle record-e2e-run <ticket-id> --spec <path> --result green --head-sha <sha> --posted-url <evidence-url>` — a run recorded WITHOUT `--posted-url` does not clear the gate.
+
 ## Never Modify a Remote Database Without Explicit User Approval (Non-Negotiable)
 
 Never write to, mutate, seed, or delete data in a remote/shared database (dev, staging, production, or any environment the agent did not provision locally) without explicit user approval in the chat for that specific action. This covers direct SQL/`psql`, ORM shells against a remote `DATABASE_URL`, seed/fixture scripts pointed at a remote DB, and API calls whose side effect is a remote write performed solely to set up the agent's own task. Read-only queries are fine. Generating a document or other persisted record on a remote environment is a remote write — ask first. A request to "finish the task" or "get the evidence" is not approval to mutate a shared DB; surface the blocker and let the user decide.
@@ -506,6 +514,8 @@ Sub-agents (Agent tool) **lose all loaded skills, MCP access, and shell function
 **Exception:** Skills with `subagent_safe: true` in their YAML frontmatter are pure methodology/guidelines that work without shell functions, MCP tools, or cross-skill state.
 
 **Exception (monitor/work-trigger loop only):** `/teatree-batch` deliberately delegates each ticket's full delivery to a single **singleton** sub-agent, run one at a time. That sub-agent loads the skills it needs via the Skill tool itself, so the "loses all loaded skills" caveat does not apply. This keeps the batch orchestrator's context lean across a long backlog. The singleton constraint is scoped narrowly to the loop that _monitors external systems and triggers work_ — it says nothing about loops in general or sub-agent use in general, and an ordinary session remains free to use loops and sub-agents as usual. The canonical statement (with the full scope boundary) lives in `/teatree-batch` § Rules "Singleton delivery sub-agent (canonical statement)"; this is a reference to it, not a second copy.
+
+**Every raw Agent-tool spawn MUST carry the skill preamble (Non-Negotiable).** A sub-agent dispatched through the raw harness Agent tool gets only its thin subagent-type system prompt — it never receives the SKILL.md bodies the orchestrator has loaded, so it over-provisions for remote e2e, runs raw `playwright`/`glab` instead of `t3`, and ignores overlay rules. Before spawning an e2e / coder / reviewer sub-agent, generate the inline skill preamble with `t3 <overlay> skill-preamble --skills t3:rules,t3:e2e[,<overlay-skill>]` (it concatenates each `SKILL.md` body, resolving framework **and** the active overlay's skills) and **prepend it to the brief**. The dispatched prompt must contain the embedded skill bodies (the `--- SKILL: <name> ---` markers), not a bare task description. A bare brief is the bug this gate exists to catch. (Pinned by `evals/scenarios/orchestrator_embeds_skills_in_subagent_brief.yaml`; the headless dispatch path injects the same bodies via `teatree.agents.skill_injection`.)
 
 **Before delegating platform API work:** Read the relevant platform reference (`t3:platforms`) before writing sub-agent prompts that involve API calls (draft notes, discussions, PR operations). Sub-agents can't read skills themselves — copy the exact API recipe into the agent prompt.
 

@@ -6,24 +6,14 @@ prefix) because the only public surface is the ``clean-all`` subcommand.
 """
 
 from contextlib import suppress
-from fnmatch import fnmatch
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from django.core.exceptions import ImproperlyConfigured
-
-from teatree.config import get_effective_settings
-from teatree.core.cleanup import (
-    WorktreeBusyError,
-    _branch_tree_matches_squash,
-    _ref_captured_by_merge,
-    _remote_tracking_ref_exists,
-    cleanup_worktree,
-)
-from teatree.core.cleanup_busy_guards import guard_live_worktree
-from teatree.core.clone_paths import resolve_clone_path
-from teatree.core.management.commands._workspace_reap import reap_one_worktree
-from teatree.core.models import Ticket, Worktree
+from teatree.core.branch_classification import _branch_tree_matches_squash, is_squash_merged
+from teatree.core.clean_ignore import is_clean_ignored
+from teatree.core.cleanup import _ref_captured_by_merge, _remote_tracking_ref_exists
+from teatree.core.cleanup_busy_guards import WorktreeBusyError, guard_live_worktree
+from teatree.core.models import Worktree
 from teatree.core.resolve import match_worktree_by_path
 from teatree.core.worktree_env import CACHE_DIRNAME, CACHE_FILENAME, write_env_cache
 from teatree.utils import git
@@ -34,7 +24,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from teatree.core.reconcile import Drift
-    from teatree.utils.run import CompletedProcess
 
 
 # Regenerable artifacts a clean-working-tree probe must ignore: provisioning
@@ -65,67 +54,6 @@ def worktree_map(repo: str) -> dict[str, str]:
 def worktree_branches(repo: str) -> set[str]:
     """Return branch names linked to active git worktrees (safe to skip)."""
     return set(worktree_map(repo))
-
-
-def _run_host_cli(cmd: list[str], repo: str) -> "CompletedProcess[str] | None":
-    """Run a host CLI that may be missing, returning ``None`` when it cannot run.
-
-    ``gh`` / ``glab`` are optional — absent in CI without auth and blocked in
-    sandboxes (a denied binary raises ``PermissionError``, a missing one
-    ``FileNotFoundError``; both are ``OSError``). Swallowing ``OSError`` lets
-    :func:`is_squash_merged` fall back to the diff check instead of crashing the
-    whole ``clean-all`` run — the exact condition under which merged worktrees
-    were left unpruned.
-    """
-    try:
-        return run_allowed_to_fail(cmd, cwd=repo, expected_codes=None)
-    except OSError:
-        return None
-
-
-def is_squash_merged(repo: str, branch: str, default: str) -> bool:
-    # GitHub: ask if a PR for this branch was merged.
-    result = _run_host_cli(
-        ["gh", "pr", "list", "--head", branch, "--state", "merged", "--json", "number", "--limit", "1"],
-        repo,
-    )
-    if result is not None and result.returncode == 0 and result.stdout.strip() not in {"", "[]"}:
-        return True
-
-    # GitLab: glab mr list output lines for found MRs start with "!" (e.g. "!5  Title  (branch)").
-    result = _run_host_cli(
-        ["glab", "mr", "list", "--merged", "--source-branch", branch, "--limit", "1"],
-        repo,
-    )
-    if (
-        result is not None
-        and result.returncode == 0
-        and any(line.lstrip().startswith("!") for line in result.stdout.splitlines())
-    ):
-        return True
-
-    return _branch_captured_upstream(repo, branch, default)
-
-
-def _branch_captured_upstream(repo: str, branch: str, default: str) -> bool:
-    """Whether every unique commit of ``branch`` is already in ``origin/<default>``.
-
-    The forge-CLI-free squash-merge signal. A squash-merge rewrites the source
-    commits into one new SHA on the default branch, so ``branch`` is NOT an
-    ancestor of ``origin/<default>`` and an is-ancestor / three-dot-diff test
-    misses it. ``git cherry`` compares by patch-id instead: it prints ``- <sha>``
-    for each ``branch`` commit whose change is already upstream (the squash
-    captured it) and ``+ <sha>`` for one that is not. The branch is captured when
-    cherry finds no ``+`` line — empty output (nothing unique) or every line a
-    ``-`` (all unique commits are equivalent upstream). A probe failure (unknown
-    ref, missing ``origin/<default>``) reads as not-captured so the data-loss
-    guards downstream keep the worktree.
-    """
-    try:
-        cherry = git.run(repo=repo, args=["cherry", f"origin/{default}", branch])
-    except CommandFailedError:
-        return False
-    return all(line.startswith("-") for line in cherry.splitlines() if line.strip())
 
 
 def _refuse_if_unpushed(repo: str, name: str, *, remote_ref_was_present: bool) -> str:
@@ -202,85 +130,16 @@ def _prune_squash_merged(repo: str, name: str, wt_map: dict[str, str], *, remote
     return f"Pruned squash-merged branch: {name}"
 
 
-def is_clean_ignored(branch: str, *, overlay: str | None = None) -> bool:
-    """Whether ``branch`` matches a ``clean_ignore`` glob and must never be reaped.
-
-    The single predicate every clean-all deletion path consults — the worktree-row
-    reaper, the CREATED-state row loop, and the branch-prune passes — so the
-    never-reap guarantee lives in one place rather than three drifting copies.
-
-    The DB-home ``clean_ignore`` setting is per-overlay overridable, so the
-    patterns are resolved through :func:`get_effective_settings` for the row's
-    own overlay (``overlay`` = ``worktree.overlay``) or, on the repo-scoped
-    branch-prune path, the active overlay (``overlay=None``). Resolution per
-    pattern set: the overlay-scope ``ConfigSetting`` row, then the global-scope
-    row, then the empty default. A ``[teatree]`` / ``[overlays.<name>]`` TOML
-    value is ignored on read.
-    """
-    patterns = get_effective_settings(overlay).clean_ignore
-    return any(fnmatch(branch, pattern) for pattern in patterns)
-
-
 class WorktreeReaper:
-    """Workspace-scoped clean-all reaping: squash-merged rows + empty dirs.
+    """Workspace-scoped clean-all empty-ticket-dir pruning.
 
-    Groups the two passes that operate on the whole ``workspace`` (rather than a
-    single repo like the branch/stash helpers): tear down Worktree rows whose
-    branch shipped, then prune the now-empty ticket dirs they leave behind.
+    Prunes the now-empty ticket dirs the done-worktree reaper leaves behind. The
+    Worktree-row teardown itself is :func:`teatree.core.worktree_done.reap_done_worktrees`
+    — the one consolidated done+redundant pass.
     """
 
     def __init__(self, workspace: Path) -> None:
         self.workspace = workspace
-
-    def reap_squash_merged_worktrees(self, *, interactive: bool) -> list[str]:
-        """Tear down Worktree rows whose branch is squash-merged.
-
-        ``clean-all`` only reaped ``CREATED``-state rows; a PROVISIONED/READY row
-        whose branch shipped under a retitled squash subject survived forever (its
-        dir, compose project, and ticket dir all leaking). This pass reaps those.
-
-        The squash signal reuses :func:`is_squash_merged` — the same forge-primary,
-        empty-diff-fallback classifier the branch-prune pass uses (no duplicated
-        subject-match logic). It is fail-safe to *not merged*: a missing forge CLI,
-        a non-empty diff, or any uncertain outcome reads as keep, so an uncertain
-        row is reported with a SKIPPED warning and never deleted (warn-not-fail).
-
-        The teardown goes through :func:`reap_one_worktree` with the default
-        ``strict_hygiene=True`` / ``force=False``, so the #706/#835/#1506 data-loss
-        guards still refuse a branch with commits on no remote — a positive squash
-        signal narrows the candidate set, it never bypasses the guards. Branches
-        matching ``clean_ignore`` — resolved per the row's own overlay via
-        :func:`is_clean_ignored` — are skipped before any classification.
-
-        Every step that touches a possibly-corrupt sibling repo or an
-        unregistered overlay is funnelled through :func:`reap_one_worktree` or the
-        ``CommandFailedError`` guard below, so one bad row is skipped with a
-        warning rather than aborting the whole ``clean-all`` run.
-        """
-        cleaned: list[str] = []
-        for worktree in Worktree.objects.exclude(state=Worktree.State.CREATED).select_related("ticket"):
-            if is_clean_ignored(worktree.branch, overlay=worktree.overlay):
-                cleaned.append(f"SKIPPED '{worktree.branch}': matches clean_ignore — keeping")
-                continue
-            repo = resolve_clone_path(self.workspace, worktree)
-            if repo is None or not repo.is_dir():
-                continue
-            try:
-                default = git.default_branch(str(repo))
-                merged = is_squash_merged(str(repo), worktree.branch, default)
-            except (RuntimeError, CommandFailedError) as exc:
-                cleaned.append(
-                    f"SKIPPED '{worktree.branch}': could not classify against {repo} ({exc}) — keeping the row."
-                )
-                continue
-            if not merged:
-                continue
-            # is_squash_merged already confirmed the branch shipped, so the
-            # origin/main-relative hygiene gate is redundant here and would
-            # re-refuse a genuinely squash-merged branch (distinct new SHA). The
-            # always-on #706 data-loss guard still protects unpushed-everywhere work.
-            cleaned.append(reap_one_worktree(worktree, interactive=interactive, strict_hygiene=False))
-        return cleaned
 
     def remove_empty_ticket_dirs(self) -> list[str]:
         """Remove ticket dirs that are empty or hold only empty repo subdirs.
@@ -290,8 +149,15 @@ class WorktreeReaper:
         itself, so the single-level ``not any(iterdir())`` check kept it. This
         prunes empty leaf subdirs first, then the ticket dir if it is now empty.
         A subdir holding any real file or nested content is left untouched.
+
+        The per-overlay WORKTREE root (``config.worktree_root()``) is resolved
+        purely — it is created at the point of USE (ticket provisioning), not by
+        the getter — so a fresh setup may have no dir yet. A missing root is "no
+        ticket dirs to prune", never a crash.
         """
         removed: list[str] = []
+        if not self.workspace.is_dir():
+            return removed
         for entry in self.workspace.iterdir():
             if not entry.is_dir():
                 continue
@@ -472,13 +338,6 @@ def prune_branches(repo: str) -> list[str]:
     return cleaned
 
 
-# A ``git stash list`` line is ``stash@{N}: <subject>`` where git writes the
-# subject as ``WIP on <branch>: ...`` (auto-stash) or ``On <branch>: ...``
-# (``git stash push -m``). The branch is the text between the anchored
-# ``[WIP ]on `` prefix and the first ``:`` that follows it. A naive split on
-# ``" on "`` both missed the capital-``On`` (explicit-message) form entirely and
-# mis-parsed any stash whose message contained the word "on", dropping stashes
-# that still belonged to an existing branch.
 def drop_orphan_databases() -> list[str]:
     """Drop Postgres databases matching wt_* that don't belong to any worktree."""
     from teatree.utils.db import pg_env, pg_host, pg_user  # noqa: PLC0415
@@ -584,34 +443,3 @@ def _fix_drift(drift: "Drift") -> list[str]:
     )
 
     return fixes
-
-
-def clean_merged_worktrees() -> list[str]:
-    """Tear down every worktree whose ticket is already MERGED.
-
-    An OPPORTUNISTIC sweep (the daily followup sync runs it), so it routes through
-    :func:`cleanup_worktree`'s liveness guard: a merged ticket whose worktree has
-    live work — a live session, an active/claimed task, an external-delivery
-    lease, a recent E2E run, or an explicit pin — is KEPT, never torn down
-    mid-task (#291/#2243). A targeted FSM teardown of a freshly-merged ticket is a
-    separate path that bypasses liveness.
-
-    Fails open per row: a worktree whose overlay is not installed in this
-    environment is SKIPPED (recorded) rather than aborting the whole sweep
-    (#2472); live work is SKIPPED (kept); any other teardown ``RuntimeError`` is
-    reported as FAILED. Errors are surfaced inline — no suppression.
-    """
-    cleaned: list[str] = []
-    for ticket in Ticket.objects.filter(state=Ticket.State.MERGED):
-        for wt in Worktree.objects.filter(ticket=ticket):
-            try:
-                cleaned.append(str(cleanup_worktree(wt, strict_hygiene=False)))
-            except ImproperlyConfigured as exc:
-                cleaned.append(f"SKIPPED {wt.repo_path} ({wt.branch}): overlay not installed here — {exc}")
-            except WorktreeBusyError as exc:
-                cleaned.append(f"SKIPPED {wt.repo_path} ({wt.branch}): {exc}")
-            except RuntimeError as exc:
-                cleaned.append(f"FAILED {wt.repo_path} ({wt.branch}): {exc}")
-    if not cleaned:
-        return ["No merged tickets have lingering worktrees."]
-    return cleaned

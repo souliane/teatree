@@ -245,12 +245,9 @@ def _parse_strict_str(raw: object) -> str:
     """Coerce a TOML/JSON value for a str-typed overridable setting, strictly.
 
     Accepts only a real ``str``; REJECTS a ``bool``/``int``/``float``/``list``
-    rather than stringifying it via ``str(...)`` (#258). The bare ``str`` parser
-    accepted anything (``str(True) == "True"``, ``str(5) == "5"``), so a
-    type-mismatched value for a str-typed setting was silently coerced into a
-    nonsense string instead of being rejected. Single coercer for every
-    str-typed overridable setting, applied identically on the write and read
-    paths.
+    rather than stringifying it via ``str(...)`` (#258, which the bare ``str``
+    parser silently did: ``str(True) == "True"``). The single coercer for every
+    str-typed overridable setting, applied identically on read and write.
     """
     if not isinstance(raw, str):
         msg = f"Invalid str value {raw!r}; expected a JSON/TOML string"
@@ -287,6 +284,9 @@ def _parse_user_identity_aliases(raw: object) -> list[str]:
 # fitness test asserts this registry covers exactly the DB-home set (no TOML-home
 # key, every DB-home key present).
 OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
+    # Stored as a path STRING (JSONField holds no Path); config.worktree_root() is
+    # the typed accessor that expanduser()-wraps it and applies the per-overlay default.
+    "workspace_dir": _parse_strict_str,
     "mode": Mode.parse,
     "autonomy": Autonomy.parse,
     "speed": Speed.parse,
@@ -294,7 +294,6 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "contribute": _parse_strict_bool,
     "excluded_skills": _parse_str_list,
     "loop_cadence_seconds": _parse_strict_int,
-    "dedicated_loops": _parse_strict_bool,
     "teams_enabled": _parse_strict_bool,
     "teams_max_panes": _parse_overridable_positive_int(1),
     "teams_idle_minutes": _parse_overridable_positive_int(30),
@@ -416,7 +415,6 @@ ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_ISSUE_IMPLEMENTER_ENABLED": ("issue_implementer_enabled", _parse_env_bool),
     "T3_LOOP_AUTO_UPDATE": ("auto_update_reinstall", _parse_env_bool),
     "T3_ORCHESTRATE_CLAIM_ENABLED": ("orchestrate_claim_enabled", _parse_env_bool),
-    "T3_DEDICATED_LOOPS": ("dedicated_loops", _parse_env_bool),
     "T3_TEAMS_ENABLED": ("teams_enabled", _parse_env_bool),
     "T3_TEAMS_MAX_PANES": ("teams_max_panes", _parse_env_positive_int(1)),
     "T3_TEAMS_IDLE_MINUTES": ("teams_idle_minutes", _parse_env_positive_int(30)),
@@ -527,15 +525,6 @@ class UserSettings:
     speed: Speed = Speed.MEDIUM
     # Loop tick interval in seconds (BLUEPRINT § 5.6). Default 12 minutes.
     loop_cadence_seconds: int = 720
-    # Opt-in: replace the single fat `loop-owner` slot (one `run_tick`
-    # fanning across ALL mini-loops) with N dedicated `/loop <cadence>`
-    # slots, each driving one dedicated loop (a named group of mini-loops)
-    # via a SCOPED `t3 loop tick --slot <name>` claiming `loop:<name>`
-    # (#1838 Track-A). Default OFF and fail-OFF: when false the slot
-    # generator emits the single fat slot and the no-`--slot` tick path is
-    # byte-identical to today (BLUEPRINT § 5.6 "Per-loop owning-session
-    # layer"). Per-overlay overridable; `T3_DEDICATED_LOOPS` env wins.
-    dedicated_loops: bool = False
     # #1838 Track-B PR#6 — the inert agent-teams WORK layer. When false (the
     # default, fail-OFF), the team-role registry (`teatree.teams.roles`) is
     # PURE DATA referenced by nothing in the loop/dispatch/claim path: the

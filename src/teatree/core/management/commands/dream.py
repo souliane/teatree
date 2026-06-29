@@ -6,8 +6,10 @@ file-side phases 4-6 (cross-link / re-index / decay) after it:
 
 ``run`` is the manual escape hatch: it runs a pass NOW regardless of cadence,
 with an optional ``--since`` window bound and a ``--dry-run`` no-write mode.
-``tick`` is the cron entry point: it runs a pass only when the ``dream``
-cadence has elapsed (``MiniLoopMarker``), bumping the cadence ledger on a fire.
+``tick`` is the cron entry point: it runs a pass only when the ``dream`` Loop
+row is due (``Loop.is_due`` / ``last_run_at`` — the ONE cadence ledger) and the
+single enable verdict (``Loop.enabled`` + ``LoopState``) admits it, bumping
+``last_run_at`` on a successful fire.
 
 Both acquire the in-flight ``LoopLease`` (``dream-tick``) first so two passes
 never overlap — the loser SKIPs (the #786 WS2 CAS, correct on the prod SQLite
@@ -136,16 +138,22 @@ class Command(TyperCommand):
 
         from django.utils import timezone  # noqa: PLC0415
 
-        from teatree.core.models import DreamRunMarker, LoopLease, MiniLoopMarker  # noqa: PLC0415
-        from teatree.loops.config import LoopsConfig  # noqa: PLC0415
+        from teatree.core.models import DreamRunMarker, Loop, LoopLease  # noqa: PLC0415
+        from teatree.loop.loop_state_db import loop_enabled  # noqa: PLC0415
         from teatree.loops.dream.loop import DREAM_LEASE_NAME, DREAM_LEASE_SECONDS, MINI_LOOP  # noqa: PLC0415
-        from teatree.loops.gating import elapsed_and_enabled  # noqa: PLC0415
 
         now = timezone.now()
         if enforce_cadence:
-            decision = elapsed_and_enabled(LoopsConfig.load(), MINI_LOOP, now)
-            if not decision.should_fire:
-                self.stdout.write(f"SKIP  dream cadence not elapsed ({decision.skip_reason}).")
+            # The ONE cadence ledger: the dream Loop row's is_due / last_run_at, gated
+            # by the single enable verdict (Loop.enabled + LoopState) — never a second
+            # cadence ledger. dream is off_live_tick, so the master never bumps this
+            # row; t3 dream tick owns its last_run_at alone.
+            row = Loop.objects.filter(name=MINI_LOOP.name).first()
+            if row is None or not loop_enabled(MINI_LOOP.name):
+                self.stdout.write("SKIP  dream loop disabled (no enabled Loop row / LoopState hold).")
+                return
+            if not row.is_due(now):
+                self.stdout.write("SKIP  dream cadence not elapsed.")
                 return
 
         owner = f"pid-{os.getpid()}"
@@ -162,7 +170,7 @@ class Command(TyperCommand):
             LoopLease.objects.release(DREAM_LEASE_NAME, owner=owner)
 
         if enforce_cadence and succeeded:
-            MiniLoopMarker.objects.mark_fired(MINI_LOOP.name, now)
+            Loop.objects.mark_run(MINI_LOOP.name, now)
 
         # Re-read confirmation so a stamped success can be cited (resilience #7).
         if not dry_run:

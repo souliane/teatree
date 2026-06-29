@@ -8,6 +8,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models import InvalidTransitionError, Session, Task, TaskAttempt, Ticket
+from teatree.core.models.task_attempt import TaskAttemptQuerySet
 from tests.teatree_core.models._shared import _advance_ticket_to_tested
 
 
@@ -138,6 +139,71 @@ class TestTask(TestCase):
 
         with pytest.raises(InvalidTransitionError, match="Can only reopen failed tasks"):
             task.reopen()
+
+
+class TestTaskDisplaySubject(TestCase):
+    """``display_subject()`` yields a human-readable title, never the bare phase token."""
+
+    def test_prefers_explicit_subject(self) -> None:
+        ticket = Ticket.objects.create(overlay="acme", issue_url="https://example.com/issues/7")
+        session = Session.objects.create(ticket=ticket, agent_id="agent")
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding", subject="Hand-written summary")
+
+        assert task.display_subject() == "Hand-written summary"
+
+    def test_derives_from_ticket_short_description(self) -> None:
+        ticket = Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://example.com/issues/42",
+            short_description="Improve the export pipeline",
+        )
+        session = Session.objects.create(ticket=ticket, agent_id="agent")
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+
+        assert task.display_subject() == "#42 Improve the export pipeline"
+
+    def test_derives_from_extra_issue_title_when_no_short_description(self) -> None:
+        ticket = Ticket.objects.create(
+            overlay="acme",
+            issue_url="https://example.com/issues/99",
+            extra={"issue_title": "Export pipeline rework"},
+        )
+        session = Session.objects.create(ticket=ticket, agent_id="agent")
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+
+        assert task.display_subject() == "#99 Export pipeline rework"
+
+    def test_falls_back_to_phase_when_no_title(self) -> None:
+        ticket = Ticket.objects.create(overlay="acme", issue_url="dogfood-smoke://acme")
+        session = Session.objects.create(ticket=ticket, agent_id="agent")
+        task = Task.objects.create(ticket=ticket, session=session, phase="dogfood_smoke")
+
+        assert task.display_subject() == f"#{ticket.pk} dogfood_smoke"
+
+    def test_never_returns_the_bare_phase_token(self) -> None:
+        ticket = Ticket.objects.create(overlay="acme", issue_url="https://example.com/issues/3")
+        session = Session.objects.create(ticket=ticket, agent_id="agent")
+        task = Task.objects.create(ticket=ticket, session=session, phase="short_describe")
+
+        subject = task.display_subject()
+        assert subject.strip()
+        assert subject != "short_describe"
+
+
+class TestTaskAttemptQuerySet(TestCase):
+    """The relocated ``TaskAttempt`` manager still yields a ``TaskAttemptQuerySet``."""
+
+    def test_manager_returns_task_attempt_queryset(self) -> None:
+        assert isinstance(TaskAttempt.objects.all(), TaskAttemptQuerySet)
+
+    def test_headless_filters_to_headless_attempts(self) -> None:
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket, agent_id="agent")
+        task = Task.objects.create(ticket=ticket, session=session)
+        headless = TaskAttempt.objects.create(task=task, execution_target=Task.ExecutionTarget.HEADLESS)
+        TaskAttempt.objects.create(task=task, execution_target=Task.ExecutionTarget.INTERACTIVE)
+
+        assert list(TaskAttempt.objects.headless()) == [headless]
 
 
 class TestChildTaskSpawning(TestCase):

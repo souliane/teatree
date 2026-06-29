@@ -38,6 +38,7 @@ from teatree.agents.model_tiering import resolve_spawn_model
 from teatree.agents.prompt import build_system_context, build_task_prompt
 from teatree.agents.skill_bundle import resolve_skill_bundle
 from teatree.config.settings import UserSettings
+from teatree.core.cost import tier_rank
 from teatree.core.models import Task
 from teatree.skill_support.loading import SkillLoadingPolicy
 from teatree.teams.guardrails import assert_pane_claim_allowed, live_owner_blocks_pane
@@ -49,6 +50,29 @@ from teatree.teams.roles import TEAM_CLAIM_PREFIX, TeamRole, team_claim_slot
 #: a judgment phase (absent from the tier map) so the pane inherits the user's
 #: default model unless a per-skill floor raises it.
 _MAKER_PANE_PHASE = "coding"
+
+#: A maker pane runs a long-lived, multi-task session, so it MUST spawn on at
+#: least the reasoning tier: a sub-opus mate auto-compacts mid-task and loses its
+#: working context. This is the floor :func:`_floor_teammate_model` enforces.
+_TEAMMATE_MODEL_FLOOR = "opus"
+
+
+def _floor_teammate_model(model: str | None) -> str:
+    """Raise an inherited / below-opus maker-pane spawn model up to the opus floor.
+
+    :func:`resolve_spawn_model` returns ``None`` (or an empty inherit sentinel)
+    when the ``coding`` phase inherits the user's default and no skill floor
+    applies, and can resolve to sonnet/haiku under a cheap-tier phase pin — either
+    of which would spawn a maker pane on a model that auto-compacts mid-task. A
+    plain most-capable-wins merge would NOT close the inherit hole
+    (``tier_rank(None) == tier_rank("opus")``), so this pins
+    :data:`_TEAMMATE_MODEL_FLOOR` whenever the resolved model is absent or ranks
+    below it, and leaves an at-or-above-opus model (opus, or the more-capable
+    fable) untouched — the floor only ever raises, never lowers.
+    """
+    if not model or tier_rank(model) < tier_rank(_TEAMMATE_MODEL_FLOOR):
+        return _TEAMMATE_MODEL_FLOOR
+    return model
 
 
 class ReviewerPaneProhibitedError(RuntimeError):
@@ -86,7 +110,8 @@ def build_pane_options(task: Task, *, role: TeamRole) -> ClaudeAgentOptions:
     The single spawn-options seam. RAISES :class:`ReviewerPaneProhibitedError`
     for the REVIEWER role before building anything. For a maker role it MIRRORS
     :func:`teatree.agents.headless._build_options` field-for-field — the appended
-    ``claude_code`` preset, the floor-merged spawn model, the worktree ``cwd`` /
+    ``claude_code`` preset, the floor-merged spawn model (raised to the opus
+    team-mate floor by :func:`_floor_teammate_model`), the worktree ``cwd`` /
     ``add_dirs``, the shared permission mode / max-turns, and
     ``resume = _get_resume_session_id(task)`` so the pane re-attaches its session
     across claims.
@@ -110,13 +135,14 @@ def build_pane_options(task: Task, *, role: TeamRole) -> ClaudeAgentOptions:
         # APPEND to the claude_code preset, never REPLACE it (the headless path's
         # rationale): a plain-str system_prompt would drop the preset.
         system_prompt=SystemPromptPreset(type="preset", preset="claude_code", append=system_context),
-        model=resolve_spawn_model(
-            _MAKER_PANE_PHASE,
-            skills=skills,
-            session_id=escalation_session_id or None,
-            task_id=int(task.pk),
-        )
-        or None,
+        model=_floor_teammate_model(
+            resolve_spawn_model(
+                _MAKER_PANE_PHASE,
+                skills=skills,
+                session_id=escalation_session_id or None,
+                task_id=int(task.pk),
+            )
+        ),
         cwd=cwd,
         add_dirs=add_dirs,
         permission_mode=_PERMISSION_MODE,

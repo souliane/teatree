@@ -15,7 +15,7 @@ def build_active_sessions() -> list[ActiveSessionRow]:
     if not _CLAUDE_SESSIONS_DIR.is_dir():
         return []
 
-    active_statuses = (Task.Status.PENDING, Task.Status.CLAIMED)
+    active_statuses = Task.Status.active()
     active_tasks = {t.pk: t for t in Task.objects.filter(status__in=active_statuses).select_related("ticket")}
 
     # Match tasks to sessions by agent_session_id
@@ -26,7 +26,7 @@ def build_active_sessions() -> list[ActiveSessionRow]:
             session_to_task[last_attempt.agent_session_id] = task
 
     # Collect session IDs for finished tasks so we can exclude them
-    finished_statuses = (Task.Status.COMPLETED, Task.Status.FAILED)
+    finished_statuses = Task.Status.terminal()
     finished_session_ids: set[str] = set(
         TaskAttempt.objects.filter(
             task__status__in=finished_statuses,

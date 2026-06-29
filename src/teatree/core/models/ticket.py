@@ -12,9 +12,8 @@ from teatree.core.managers import TicketManager
 from teatree.core.modelkit.gate_registry import get_gate, get_resolver
 from teatree.core.modelkit.review_state import ReviewState
 from teatree.core.models.errors import DirtyWorktreeError, InvalidTransitionError
+from teatree.core.models.ticket_worktree_checks import worktree_has_commits_ahead, worktree_tracked_dirty_path
 from teatree.core.models.types import validated_ticket_extra
-from teatree.utils import git
-from teatree.utils.run import CommandFailedError
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +37,6 @@ if TYPE_CHECKING:
         TicketExtra,
         TicketSiblingFields,
     )
-    from teatree.core.models.worktree import Worktree
 
 
 # ast-grep-ignore: ac-django-no-complexity-suppressions
@@ -169,6 +167,18 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
     def has_dispatchable_overlay(self) -> bool:
         """False only for a non-empty overlay that no longer resolves (#1959 poison-pill)."""
         return not (self.overlay and get_resolver("resolve_overlay_name")(self.overlay) is None)
+
+    def has_active_work(self) -> bool:
+        """True iff this ticket has an open session or an active (pending/claimed) task.
+
+        The single owner of the ticket-liveness rule the reapers and the relocate
+        command consult — a busy ticket must never be torn down.
+        """
+        if self.sessions.filter(ended_at__isnull=True).exists():  # type: ignore[attr-defined]  # Django reverse FK
+            return True
+        # apps.get_model, not a direct import: task.py imports ticket.py at module scope (real cycle).
+        task_model = apps.get_model("core", "Task")
+        return self.tasks.filter(status__in=task_model.Status.active()).exists()  # type: ignore[attr-defined]  # Django reverse FK
 
     def mark_remote_missing(self) -> None:
         """Targeted UPDATE to set remote_missing; skips the FSM and save() overhead (#1875)."""
@@ -407,7 +417,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         gated.
         """
         worktree_model = apps.get_model("core", "Worktree")
-        return any(_worktree_has_commits_ahead(wt) for wt in worktree_model.objects.filter(ticket=self))
+        return any(worktree_has_commits_ahead(wt) for wt in worktree_model.objects.filter(ticket=self))
 
     def artifacts(self, *, port_resolver: "PortResolver | None" = None) -> "TicketArtifacts":
         """Read-only artifact-discovery aggregation (#273) — see ``ticket_artifacts``."""
@@ -782,7 +792,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         """Fail all pending/claimed tasks when reworking."""
         from teatree.core.models.task import Task  # noqa: PLC0415
 
-        for task in self.tasks.filter(status__in=[Task.Status.PENDING, Task.Status.CLAIMED]):  # type: ignore[attr-defined]  # Django reverse FK
+        for task in self.tasks.filter(status__in=Task.Status.active()):  # type: ignore[attr-defined]  # Django reverse FK
             task.fail()
 
     def _retire_phase_ledger(self) -> None:
@@ -847,7 +857,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         dirty = [
             path
             for wt in worktree_model.objects.filter(ticket=self)
-            if (path := _worktree_tracked_dirty_path(wt)) is not None
+            if (path := worktree_tracked_dirty_path(wt)) is not None
         ]
         if not dirty:
             return
@@ -1057,55 +1067,3 @@ def schedule_external_review(ticket: Ticket, *, parent_task: "Task | None" = Non
         execution_reason=f"Auto-scheduled external review — review {ticket.issue_url}",
         parent_task=parent_task,
     )
-
-
-def _worktree_has_commits_ahead(worktree: "Worktree") -> bool:
-    repo_path = (worktree.extra or {}).get("worktree_path") or worktree.repo_path
-    branch = worktree.branch
-    if not repo_path or not branch:
-        return False
-    base = _resolve_base_branch(repo_path)
-    try:
-        return git.rev_count(repo=repo_path, range_spec=f"{base}..{branch}") > 0
-    except (CommandFailedError, ValueError, OSError):
-        # Missing path, missing branch, missing git remote — all mean no
-        # shippable diff. Fail closed so the auto-FSM stops at REVIEWED.
-        return False
-
-
-def _worktree_tracked_dirty_path(worktree: "Worktree") -> str | None:
-    """Return the worktree's on-disk path iff it has uncommitted *tracked* changes.
-
-    Reuses the existing :func:`git.status_porcelain` helper (the same one
-    ``cleanup`` / ``worktree_recovery`` use) and applies the #925
-    tracked-vs-untracked distinction: ``git status --porcelain`` prefixes
-    an untracked entry with ``"?? "``, so lines that do *not* start with
-    ``??`` are the tracked modifications a transition must refuse. Untracked
-    scratch never blocks (the loop legitimately leaves it around, and a
-    fast-forward never conflicts with it).
-
-    Path resolution mirrors :func:`_worktree_has_commits_ahead`
-    (``extra['worktree_path']`` then ``repo_path``). An unresolvable or
-    non-git path returns ``None`` (not dirty): the guard must not block on
-    a state it cannot verify — "couldn't determine" is not "is dirty", and
-    over-blocking a legitimately-clean ticket would stall the loop.
-    """
-    repo_path = (worktree.extra or {}).get("worktree_path") or worktree.repo_path
-    if not repo_path:
-        return None
-    try:
-        porcelain = git.status_porcelain(repo_path)
-    except (CommandFailedError, OSError):
-        return None
-    tracked_dirty = any(line and not line.startswith("??") for line in porcelain.splitlines())
-    return repo_path if tracked_dirty else None
-
-
-def _resolve_base_branch(repo_path: str) -> str:
-    try:
-        return f"origin/{git.default_branch(repo_path)}"
-    except (CommandFailedError, RuntimeError):
-        # No origin remote (fresh clones, tests under tmp_path) — fall back to
-        # the local default. ``RuntimeError`` covers ``default_branch``'s own
-        # "could not detect" path.
-        return "main"

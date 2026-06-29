@@ -14,11 +14,17 @@ from teatree.core.models import (
     EvalScenarioResult,
     EvalVerdict,
     ImplementedIssueMarker,
+    IncomingEvent,
     MergeClear,
+    PullRequest,
+    ReplyDispatch,
     ReviewVerdict,
     Rubric,
     RubricCriterion,
+    Session,
+    Task,
     Ticket,
+    Worktree,
 )
 
 _FORTY_HEX = "c" * 40
@@ -147,3 +153,72 @@ class EvalScenarioResultFactory(DjangoModelFactory[EvalScenarioResult]):
     class Params:
         failing = factory.Trait(verdict=EvalVerdict.FAIL, score=0.0)
         was_skipped = factory.Trait(verdict=EvalVerdict.SKIP, score=0.0)
+
+
+class WorktreeFactory(DjangoModelFactory[Worktree]):
+    class Meta:
+        model = Worktree
+
+    ticket = factory.SubFactory(TicketFactory)
+    overlay = "t3-teatree"
+    repo_path = "souliane/teatree"
+    branch = factory.Sequence(lambda n: f"feat/wt-{n}")
+    state = Worktree.State.PROVISIONED
+
+
+class SessionFactory(DjangoModelFactory[Session]):
+    class Meta:
+        model = Session
+
+    ticket = factory.SubFactory(TicketFactory)
+    overlay = "t3-teatree"
+    agent_id = "coding"
+
+
+class TaskFactory(DjangoModelFactory[Task]):
+    class Meta:
+        model = Task
+
+    ticket = factory.SubFactory(TicketFactory)
+    session = factory.SubFactory(SessionFactory)
+    phase = "coding"
+    status = Task.Status.PENDING
+    # INTERACTIVE keeps ``status`` deterministic: the HEADLESS save-override
+    # reroute only touches ``execution_target``, never the status the tests count.
+    execution_target = Task.ExecutionTarget.INTERACTIVE
+
+
+class PullRequestFactory(DjangoModelFactory[PullRequest]):
+    class Meta:
+        model = PullRequest
+
+    ticket = factory.SubFactory(TicketFactory)
+    overlay = "t3-teatree"
+    url = factory.Sequence(lambda n: f"https://github.com/souliane/teatree/pull/{1000 + n}")
+    repo = "souliane/teatree"
+    iid = factory.Sequence(lambda n: str(1000 + n))
+    state = PullRequest.State.OPEN
+
+
+class IncomingEventFactory(DjangoModelFactory[IncomingEvent]):
+    class Meta:
+        model = IncomingEvent
+
+    source = IncomingEvent.Source.SLACK
+    actor = "U123"
+    body = factory.Sequence(lambda n: f"event body {n}")
+    idempotency_key = factory.Sequence(lambda n: f"evt-{n}")
+
+
+class ReplyDispatchFactory(DjangoModelFactory[ReplyDispatch]):
+    class Meta:
+        model = ReplyDispatch
+
+    event = factory.SubFactory(IncomingEventFactory)
+    target_ref = "C123"
+    action_name = "reply"
+    idempotency_key = factory.Sequence(lambda n: f"disp-{n}")
+    status = ReplyDispatch.Status.SENT
+
+    class Params:
+        dead = factory.Trait(status=ReplyDispatch.Status.DEAD_LETTER)

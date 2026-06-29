@@ -1,77 +1,68 @@
 import logging
 
-from teatree.core.cleanup import cleanup_worktree
+from teatree.config import clone_root
 from teatree.core.models import Ticket
 from teatree.core.runners.base import RunnerBase, RunnerResult
+from teatree.core.worktree_done import reap_done_worktree
 
 logger = logging.getLogger(__name__)
 
 
 class WorktreeTeardown(RunnerBase):
-    """Tear down every worktree owned by a MERGED ticket.
+    """Tear down a done ticket's worktrees through the analyze-then-wipe reaper.
 
-    Iterates ``ticket.worktrees`` and delegates to ``cleanup_worktree`` for
-    each one (git worktree removal, branch deletion, DB drop, overlay
-    cleanup hooks). Errors on a single worktree are captured but do not
-    abort the rest — the runner reports a combined success/failure label.
+    The FSM-automatic teardown path (CORRECTION 3): ``execute_teardown`` enqueues
+    this when the ticket reaches MERGED (the merge/ship transition). Each worktree
+    funnels through :func:`reap_done_worktree` — the SAME consolidated
+    done+redundant reaper ``clean-all`` and ``clean-merged`` use — so the loop
+    tears a ticket's worktrees down the moment it is done, with the per-change
+    analyze-before-wipe as the primary data-loss safety.
 
-    Two distinct outcomes (#877). A *refusal* (``cleanup_worktree`` raises
-    ``RuntimeError`` — the #706 data-loss / hygiene guard) means the
-    worktree was deliberately NOT torn down: the runner reports
-    ``ok=False`` and the FSM stays put. A *completed teardown with step
-    errors* (``CleanupResult.errors`` non-empty — a DB drop, pass-entry
-    removal, recovery capture, or branch delete failed) means the worktree
-    row IS gone but some side resource may linger; these were previously
-    swallowed into a label string the caller never inspected (#932) and
-    are now logged loudly and folded into the result detail so they reach
-    the operator, without re-blocking a teardown the operator explicitly
-    forced (the #706/#710 force-escape contract).
+    Two dispositions. A *wipe* removes the git worktree + branch, the per-worktree
+    DB, and the docker stack (containers/images/volumes); a per-worktree step error
+    (DB drop, branch delete) is logged and folded into the detail without
+    re-blocking (#932). Any *non-wiped* outcome — ``kept`` (a change NOT proven
+    redundant: genuinely-unsynced work the FSM read as MERGED while an async ship
+    never drained (#707/#708), or an uncommitted change (CORRECTION 1)), or a
+    ``skipped``/``excluded``/``active`` worktree the reaper left standing — is a
+    worktree that survived the teardown and MUST surface: it is logged and reported
+    as a refusal (``ok=False``) so the FSM stays put and the operator sees it,
+    never silently read as "tore down 0 worktree(s)" success. There is no recovery
+    snapshot; potentially-needed work is KEPT, never force-destroyed.
 
-    This is the *automated* teardown path: ``execute_teardown`` enqueues it
-    when the ticket FSM reaches MERGED. The FSM can read MERGED while the
-    branch was never actually pushed (async ship never drained — #707/#708),
-    so this path must NOT force-bypass ``cleanup_worktree``'s unsynced-commit
-    guard. ``force`` defaults to ``False`` (the guard fires); pass
-    ``force=True`` only from an explicit operator override (e.g.
-    ``--force``). #706 — forcing here physically destroyed worktrees with
-    unpushed work.
+    The teardown funnels through :func:`reap_done_worktree` with ``fsm_terminal=True``
+    so the LIVENESS guard does not false-keep a just-merged worktree on the merge's
+    own phase session / merge commit — the data-loss safety stays the analyze step.
     """
 
-    def __init__(self, ticket: Ticket, *, force: bool = False) -> None:
+    def __init__(self, ticket: Ticket) -> None:
         self.ticket = ticket
-        self.force = force
 
     def run(self) -> RunnerResult:
-        ticket = self.ticket
-        worktrees = list(ticket.worktrees.all())  # ty: ignore[unresolved-attribute]
+        worktrees = list(self.ticket.worktrees.all())  # ty: ignore[unresolved-attribute]
         if not worktrees:
             return RunnerResult(ok=True, detail="no worktrees to tear down")
 
-        labels: list[str] = []
-        refusals: list[str] = []
+        workspace = clone_root()
+        wiped: list[str] = []
+        stranded: list[str] = []
         step_errors: list[str] = []
         for worktree in worktrees:
-            try:
-                # FSM-driven teardown of a MERGED ticket: the FSM decided to tear
-                # this worktree down, so it bypasses the opportunistic liveness
-                # guard (respect_liveness=False) — a still-open session row on a
-                # merged ticket must not block teardown. The #706 unpushed-commit
-                # guard (force defaults False here) still protects real work.
-                cleanup_result = cleanup_worktree(
-                    worktree, force=self.force, strict_hygiene=False, respect_liveness=False
-                )
-            except RuntimeError as exc:
-                logger.exception("teardown refused for %s", worktree.repo_path)
-                refusals.append(f"{worktree.repo_path} ({worktree.branch}): {exc}")
+            outcome = reap_done_worktree(worktree, workspace=workspace, dry_run=False, fsm_terminal=True)
+            if outcome.action == "wiped":
+                wiped.append(outcome.label)
+                for err in outcome.errors:
+                    logger.error("teardown step failed for %s: %s", worktree.repo_path, err)
+                    step_errors.append(f"{worktree.repo_path} ({worktree.branch}): {err}")
                 continue
-            labels.append(cleanup_result.label)
-            for err in cleanup_result.errors:
-                logger.error("teardown step failed for %s: %s", worktree.repo_path, err)
-                step_errors.append(f"{worktree.repo_path} ({worktree.branch}): {err}")
+            # Any non-wiped outcome left a worktree standing — surface it, never
+            # let it read as success.
+            logger.warning("teardown did not wipe %s (%s): %s", worktree.repo_path, outcome.action, outcome.label)
+            stranded.append(f"{worktree.repo_path} ({worktree.branch}): {outcome.label}")
 
-        if refusals:
-            return RunnerResult(ok=False, detail="; ".join(refusals + step_errors))
-        detail = f"tore down {len(labels)} worktree(s)"
+        if stranded:
+            return RunnerResult(ok=False, detail="; ".join(stranded + step_errors))
+        detail = f"tore down {len(wiped)} worktree(s)"
         if step_errors:
             detail += f" [with errors: {'; '.join(step_errors)}]"
         return RunnerResult(ok=True, detail=detail)

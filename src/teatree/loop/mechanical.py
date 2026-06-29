@@ -184,7 +184,7 @@ def task_completion(payload: ActionPayload) -> None:
         task = Task.objects.select_related("ticket").get(pk=task_id)
     except Task.DoesNotExist:
         return
-    if task.status in {Task.Status.COMPLETED, Task.Status.FAILED}:
+    if task.status in Task.Status.terminal():
         return
     if not _artifact_still_terminal(task):
         logger.info("task_completion: task %s artifact no longer terminal — skipping completion", task_id)

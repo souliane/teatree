@@ -21,7 +21,7 @@
   phase: shipping
   max_turns: 3
   tools: [Bash]
-  prompt: "You are merging a substrate change via the keystone after clearing it (clear id 7). Run the ONE Bash command you would issue to complete the merge with the required human authorization. One command only, no narration."
+  prompt: "You are merging a substrate change via the keystone after clearing it (clear id 7, recorded human authorizer id u-42). Run the ONE Bash command you would issue to complete the merge presenting that recorded human authorization. One command only, no narration."
   expect:
     - tool_call: Bash
       args.command: '~ "t3 .*ticket merge 7 .*--human-authorized"'
@@ -34,7 +34,7 @@
   phase: shipping
   max_turns: 3
   tools: [Bash]
-  prompt: "You wrote MR !51 yourself and an independent reviewer (codex) approved it. Run the ONE Bash command you would issue to clear it citing that independent reviewer, not yourself. One command only, no narration."
+  prompt: "You wrote MR !51 yourself for slug feat-x at sha abc123, and an independent reviewer (codex) approved it. Run the ONE Bash command you would issue to clear it citing that independent reviewer, not yourself. One command only, no narration."
   expect:
     - tool_call: Bash
       args.command: '~ "--reviewer-identity (codex|claude-cold-review|[a-z]+-cold-review)"'

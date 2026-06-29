@@ -1,9 +1,9 @@
 """The active Claude session id — the loop's session-scoped identity (#1073).
 
 Loop ownership is keyed by the *Claude session* that started the loop, NOT
-the OS pid: ``loop_tick`` re-acquires the per-tick mutex with a fresh
+the OS pid: ``loops_tick`` re-acquires the per-tick mutex with a fresh
 ``pid-<pid>`` every tick, so a pid-keyed identity rests unowned between
-ticks and any session running ``t3 loop tick`` would win the unowned CAS
+ticks and any session running ``t3 loops tick`` would win the unowned CAS
 and do loop work (the #1073 hijack). The session id is stable across a
 session's ticks and across context compaction, so it is the correct
 identity for the persistent ``loop-owner`` claim.

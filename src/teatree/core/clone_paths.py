@@ -24,10 +24,18 @@ def find_clone_path(workspace: Path, repo_name: str) -> Path | None:
     ``workspace/souliane/teatree``. Returns ``None`` when no match exists.
     Logs a warning when more than one match is found and picks the first
     (alphabetic) so the operator can spot basename collisions in the logs.
+
+    A non-existent ``workspace`` resolves to ``None`` (no clone), never a crash:
+    the per-overlay ``workspace_dir`` default (``~/workspace/t3-workspaces/<overlay>/``)
+    need not exist yet on a fresh setup, and ``iterdir()`` would raise
+    ``FileNotFoundError`` on the one-level scan otherwise.
     """
     literal = workspace / repo_name
     if (literal / ".git").is_dir():
         return literal
+
+    if not workspace.is_dir():
+        return None
 
     basename = Path(repo_name).name
     matches: list[Path] = []

@@ -3,7 +3,7 @@
 The dream consolidation cron needs a staleness alarm so memories never pile up
 unpromoted unnoticed: the doctor surfaces a WARN when the last *successful*
 dream run is older than the 48h threshold (or has never succeeded). A fresh
-successful run clears it. Mirrors the SelfUpdateMarker/MiniLoopMarker-style
+successful run clears it. Mirrors the ``SelfUpdateMarker``-style
 marker-staleness alarms.
 """
 

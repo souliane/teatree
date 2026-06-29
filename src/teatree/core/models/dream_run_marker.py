@@ -7,9 +7,8 @@ consolidation has not succeeded within the cadence window and raise the
 staleness alarm — an attempt that keeps failing leaves ``last_succeeded_at``
 behind ``last_attempted_at``, so staleness keys on the *success* timestamp.
 
-Mirror shape of :class:`teatree.core.models.mini_loop_marker.MiniLoopMarker`
-and :class:`teatree.core.models.self_update_marker.SelfUpdateMarker` — a
-single ``name`` identity carrying timestamps, with the read/write surface
+Mirror shape of :class:`teatree.core.models.self_update_marker.SelfUpdateMarker`
+— a single ``name`` identity carrying timestamps, with the read/write surface
 on the manager.
 """
 

@@ -22,19 +22,21 @@ from teatree.core.overlay_loader import get_overlay
 def isolated_config(tmp_path: Path, monkeypatch) -> Path:
     """Redirect overlay discovery to a fresh tmp toml, ignoring the user's real config.
 
-    ``CONFIG_PATH`` is baked into ``load_config`` / ``discover_overlays``
-    defaults at def-time, so monkeypatching the module constant alone is not
-    enough — we wrap both callables to always pass the tmp path explicitly.
+    ``CONFIG_PATH`` is baked into ``discover_overlays``'s default at def-time, so
+    monkeypatching the module constant alone is not enough — we wrap it to always
+    pass the tmp path explicitly. Overlay clones are discovered under
+    ``config.clone_root()`` (resolved from ``T3_WORKSPACE_DIR``), so we point that
+    at the ``tmp_path / "workspace"`` root every test builds under.
     """
     from functools import partial  # noqa: PLC0415
 
     toml_path = tmp_path / "teatree.toml"
-    monkeypatch.setattr(overlay_mod, "load_config", partial(config_mod.load_config, path=toml_path))
     monkeypatch.setattr(
         overlay_mod,
         "discover_overlays",
         partial(config_mod.discover_overlays, config_path=toml_path),
     )
+    monkeypatch.setenv("T3_WORKSPACE_DIR", str(tmp_path / "workspace"))
     return toml_path
 
 
@@ -95,7 +97,7 @@ class TestGetWorkspaceRepos:
         """Discovery empty → final fallback is ``get_repos()``."""
         workspace = tmp_path / "workspace"
         workspace.mkdir()
-        isolated_config.write_text(f'[teatree]\nworkspace_dir = "{workspace}"\n', encoding="utf-8")
+        isolated_config.write_text("[teatree]\n", encoding="utf-8")
         monkeypatch.setattr(overlay_mod, "_repo_root", lambda: tmp_path / "elsewhere")
 
         overlay = TeatreeOverlay()
@@ -114,7 +116,7 @@ class TestGetWorkspaceRepos:
         (workspace / "acme" / "t3-acme").mkdir(parents=True)
 
         isolated_config.write_text(
-            f'[teatree]\nworkspace_dir = "{workspace}"\n\n'
+            "[teatree]\n\n"
             f'[overlays.t3-acme]\npath = "{workspace / "acme" / "t3-acme"}"\n'
             'class = "t3_acme.overlay:AcmeOverlay"\n',
             encoding="utf-8",
@@ -137,8 +139,7 @@ class TestGetWorkspaceRepos:
         outside.mkdir(parents=True)
 
         isolated_config.write_text(
-            f'[teatree]\nworkspace_dir = "{workspace}"\n\n'
-            f'[overlays.rogue]\npath = "{outside}"\nclass = "rogue:Overlay"\n',
+            f'[teatree]\n\n[overlays.rogue]\npath = "{outside}"\nclass = "rogue:Overlay"\n',
             encoding="utf-8",
         )
 
@@ -158,7 +159,7 @@ class TestGetFollowupRepos:
     ) -> None:
         workspace = tmp_path / "workspace"
         workspace.mkdir()
-        isolated_config.write_text(f'[teatree]\nworkspace_dir = "{workspace}"\n', encoding="utf-8")
+        isolated_config.write_text("[teatree]\n", encoding="utf-8")
         monkeypatch.setattr(overlay_mod, "_repo_root", lambda: tmp_path / "elsewhere")
 
         overlay = TeatreeOverlay()
@@ -268,8 +269,7 @@ class TestInstallOverlaysEditableStep:
         self._make_pyproject(overlay_wt, "t3-acme")
 
         isolated_config.write_text(
-            f'[teatree]\nworkspace_dir = "{workspace}"\n\n'
-            f'[overlays.t3-acme]\npath = "{main_overlay}"\nclass = "t3_acme.overlay:AcmeOverlay"\n',
+            f'[teatree]\n\n[overlays.t3-acme]\npath = "{main_overlay}"\nclass = "t3_acme.overlay:AcmeOverlay"\n',
             encoding="utf-8",
         )
 
@@ -306,8 +306,7 @@ class TestInstallOverlaysEditableStep:
         self._make_pyproject(ticket_dir / "rogue", "rogue")
 
         isolated_config.write_text(
-            f'[teatree]\nworkspace_dir = "{workspace}"\n\n'
-            f'[overlays.rogue]\npath = "{outside_overlay}"\nclass = "rogue:Overlay"\n',
+            f'[teatree]\n\n[overlays.rogue]\npath = "{outside_overlay}"\nclass = "rogue:Overlay"\n',
             encoding="utf-8",
         )
 
@@ -343,7 +342,7 @@ class TestInstallOverlaysEditableStep:
         self._make_pyproject(teatree_wt, "teatree")
 
         isolated_config.write_text(
-            f'[teatree]\nworkspace_dir = "{workspace}"\n\n'
+            "[teatree]\n\n"
             f'[overlays.t3-teatree]\npath = "{teatree_wt}"\n'
             'class = "teatree.contrib.t3_teatree.overlay:TeatreeOverlay"\n',
             encoding="utf-8",
@@ -379,8 +378,7 @@ class TestInstallOverlaysEditableStep:
         self._make_pyproject(teatree_wt, "teatree")
 
         isolated_config.write_text(
-            f'[teatree]\nworkspace_dir = "{workspace}"\n\n'
-            f'[overlays.t3-acme]\npath = "{main_overlay}"\nclass = "t3_acme.overlay:AcmeOverlay"\n',
+            f'[teatree]\n\n[overlays.t3-acme]\npath = "{main_overlay}"\nclass = "t3_acme.overlay:AcmeOverlay"\n',
             encoding="utf-8",
         )
 

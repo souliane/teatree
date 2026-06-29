@@ -1,8 +1,11 @@
-"""``manage.py loops_tick`` — the master tick (#1796).
+"""``manage.py loops_tick`` — the single tick surface (#1796 / #2777 cutover).
 
 Drives the real command via ``call_command`` with the dispatch pipeline and
-backends mocked. Asserts the ``t3-master`` ownership gate (non-owner SKIPs) and
-that the won path runs ``run_tick`` with the DB-``Loop``-driven jobs builder.
+backends mocked. Asserts the singleton ``loop-owner`` ownership gate (non-owner
+SKIPs) and that the won path runs ``run_tick`` with the DB-``Loop``-driven jobs
+builder. After #2777 the bare master claims ``loop-owner`` + ``loop-tick`` (the
+slots the retired ``loop_tick`` command held), so the self-pump cutover is
+behaviour-preserving.
 """
 
 import datetime as dt
@@ -32,6 +35,39 @@ class TestLoopsTickOwnership(django.test.TestCase):
         ):
             out = _run()
         assert "SKIP" in out
+        run_tick.assert_not_called()
+
+    def test_bare_master_claims_loop_owner_and_loop_tick_never_t3_master(self) -> None:
+        """#2777 L1: bare master claims the unified ``loop-owner`` + ``loop-tick`` slots.
+
+        RED on main: the bare master claimed ``t3-master`` + ``t3-master-tick`` (a
+        slot the live session's lease + the self-pump cutover did not share), so no
+        ``loop-owner`` row was written.
+        """
+        report = TickReport(started_at=dt.datetime.now(dt.UTC))
+        with (
+            patch.dict("os.environ", {"CLAUDE_SESSION_ID": "owner-session"}),
+            patch("teatree.core.connector_preflight.run_connector_preflight"),
+            patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
+            patch("teatree.loop.tick.run_tick", return_value=report),
+            patch("teatree.loop.tick_piggyback.run_piggyback_cycles"),
+        ):
+            _run()
+        assert LoopLease.objects.get(name="loop-owner").session_id == "owner-session"
+        # The per-tick mutex row exists (acquired then released → owner blanked).
+        assert LoopLease.objects.filter(name="loop-tick").exists()
+        assert not LoopLease.objects.filter(name="t3-master").exists()
+        assert not LoopLease.objects.filter(name="t3-master-tick").exists()
+
+    def test_master_skip_names_the_loop_owner_slot(self) -> None:
+        """#2777 L2: the SKIP remedy interpolates the REAL slot (``loop-owner``)."""
+        with (
+            patch("teatree.core.connector_preflight.run_connector_preflight"),
+            patch.object(LoopLease.objects, "claim_ownership", return_value=(False, "other-session")),
+            patch("teatree.loop.tick.run_tick") as run_tick,
+        ):
+            out = _run()
+        assert "t3 loop claim --slot loop-owner --take-over" in out
         run_tick.assert_not_called()
 
     def test_won_owner_runs_master_tick_with_loop_table_builder(self) -> None:
@@ -74,12 +110,27 @@ class TestLoopsTickPerLoop(django.test.TestCase):
         ):
             _run(loop="inbox")
         # A disjoint per-loop owner key (``loop:<name>``), never the singleton
-        # ``t3-master`` — so the N per-loop ``/loop``s run in parallel, not
+        # ``loop-owner`` — so the N per-loop ``/loop``s run in parallel, not
         # serialised on one master lease.
         assert captured["slot"] == "loop:inbox"
         # The reactive piggyback cycles belong to the master fan-out, NOT a
         # single-loop tick — never amplified once per enabled loop.
         piggyback.assert_not_called()
+
+    def test_per_loop_skip_names_the_real_per_loop_slot(self) -> None:
+        """#2777 L2: a per-loop SKIP interpolates the per-loop ``loop:<name>`` slot.
+
+        RED on main: the remedy was the bare ``t3 loop claim --take-over`` (the
+        wrong slot — a per-loop hand-off needs ``--slot loop:dispatch``).
+        """
+        with (
+            patch("teatree.core.connector_preflight.run_connector_preflight"),
+            patch.object(LoopLease.objects, "claim_ownership", return_value=(False, "other-session")),
+            patch("teatree.loop.tick.run_tick") as run_tick,
+        ):
+            out = _run(loop="dispatch")
+        assert "t3 loop claim --slot loop:dispatch --take-over" in out
+        run_tick.assert_not_called()
 
     def test_loop_flag_scopes_the_jobs_builder_to_that_one_loop(self) -> None:
         report = TickReport(started_at=dt.datetime.now(dt.UTC))

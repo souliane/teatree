@@ -16,7 +16,7 @@ import pytest
 def _run_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, migrate_returns: bool = False):
     import typer  # noqa: PLC0415
 
-    from teatree.cli import setup as setup_module  # noqa: PLC0415
+    from teatree.cli.setup import command as setup_module  # noqa: PLC0415
 
     skills_src = tmp_path / "core_skills"
     skills_src.mkdir()
@@ -35,9 +35,9 @@ def _run_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, migrate_retur
     raised: list[int] = []
     with (
         patch("teatree.agents.skill_bundle.DEFAULT_SKILLS_DIR", skills_src),
-        patch.object(setup_module, "_find_main_clone", return_value=repo),
-        patch.object(setup_module, "_run_apm_install", return_value=True),
-        patch.object(setup_module, "_install_claude_plugin", return_value=True),
+        patch.object(setup_module, "find_main_clone", return_value=repo),
+        patch.object(setup_module, "ApmInstaller"),
+        patch.object(setup_module, "PluginRegistrar"),
         patch.object(setup_module, "ensure_self_db_migrated", return_value=migrate_returns) as mock_migrate,
         patch.object(setup_module, "seed_db_config_from_toml") as mock_seed,
         patch.object(setup_module, "seed_default_loops") as mock_seed_loops,

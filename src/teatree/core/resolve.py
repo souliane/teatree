@@ -321,7 +321,7 @@ def tickets_owning_workspace_dir(workspace_dir: Path) -> list[Ticket]:
     *workspace_dir* when its stored ``worktree_path``'s parent matches it.
 
     Stored ``worktree_path`` values are written unresolved (provision uses
-    ``config.workspace_dir()`` verbatim) while callers pass a ``.resolve()``-d
+    ``config.worktree_root()`` verbatim) while callers pass a ``.resolve()``-d
     dir, so comparison goes through ``_candidate_paths`` — the same
     symlink-variant set ``match_worktree_by_path`` uses (macOS ``/tmp`` →
     ``/private/tmp``). This is the single source of truth for workspace-dir →

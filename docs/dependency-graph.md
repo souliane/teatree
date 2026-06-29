@@ -60,6 +60,7 @@ graph TD
     teatree.core.models --> teatree.core.managers
     teatree.core.models --> teatree.core.models.errors
     teatree.core.models --> teatree.core.repair_loop
+    teatree.mcp --> teatree.core.models
     teatree.agents --> teatree.types
     teatree.agents --> teatree.core
     teatree.agents --> teatree.core.modelkit
@@ -132,6 +133,7 @@ graph TD
     teatree.cli --> teatree.messaging
     teatree.cli --> teatree.quality
     teatree.cli --> teatree.hooks
+    teatree.cli --> teatree.mcp
     teatree.cli --> teatree.cli.eval
     teatree.cli.eval --> teatree.cli._format_opts
     teatree.cli.eval --> teatree.core

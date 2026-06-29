@@ -9,7 +9,7 @@ directory, and building the Playwright environment dict.
 
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import typer
@@ -22,6 +22,28 @@ from teatree.utils.run import CommandFailedError, run_checked
 
 _BRANCH_HELP = "Specs git ref, overriding the [e2e_repos.<name>].branch default (e.g. an open MR's branch)."
 BRANCH_OPTION = typer.Option("", "--branch", "--ref", help=_BRANCH_HELP)
+
+
+@dataclass
+class PlaywrightOptions:
+    """Flags forwarded to the Playwright CLI."""
+
+    test_path: str = ""
+    update_snapshots: bool = False
+    headed: bool = False
+    extra: list[str] = field(default_factory=list)
+
+    def to_args(self) -> list[str]:
+        args: list[str] = []
+        if self.test_path:
+            args.append(self.test_path)
+        args.append("--reporter=list")
+        if self.update_snapshots:
+            args.append("--update-snapshots")
+        if self.headed:
+            args.append("--headed")
+        args.extend(self.extra)
+        return args
 
 
 class E2eBranchNotFoundError(RuntimeError):
