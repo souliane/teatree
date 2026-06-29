@@ -2695,7 +2695,7 @@ def _run_quote_scanner_pretool(data: dict) -> bool:
 
     if result.has_high:
         command = tool_input.get("command", "")
-        verdict = _resolve_quote_verdict(tool_name, result, command, payload, _resolve_cwd_repo(data))
+        verdict = _resolve_quote_verdict(command, _resolve_cwd_repo(data))
         return _quote_scanner_high_io(quote_scanner, tool_name, result, verdict)
 
     if result.has_medium:

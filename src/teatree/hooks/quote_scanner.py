@@ -296,24 +296,6 @@ def scan_text(text: str, *, blocklist_path: Path | None = None) -> ScanResult:
     return result
 
 
-def result_is_unreadable_body_only(result: ScanResult) -> bool:
-    """Return True iff the SOLE HIGH finding is the unreadable-body sentinel.
-
-    ``scan_text`` flags an INJECTED fail-closed sentinel (an unresolvable file,
-    a ``$VAR`` / stdin body the parser could not read before the command runs)
-    as a :data:`FAIL_CLOSED_FINDING_NAME` HIGH finding, DISTINCT from a real
-    verbatim-quote content match. When that sentinel is the only HIGH finding,
-    the gate never actually saw a user quote -- it only saw that the body was
-    unreadable. The caller uses this to DOWNGRADE the over-block on a LOCAL
-    ``git commit`` (an unreadable ``-F -`` / heredoc / ``-m "$VAR"`` message is
-    not a leak before push; the commit is local), while a REAL quote pattern (a
-    readable body that matched a content rule) keeps blocking. Returns False
-    when any non-sentinel HIGH finding is present, or there is no HIGH finding.
-    """
-    highs = result.high
-    return bool(highs) and all(finding.name == FAIL_CLOSED_FINDING_NAME for finding in highs)
-
-
 # ── Slack MCP write-tool body-field allowlist ──────────────────────
 
 # Slack MCP outbound write tools → body-field map. The substring "send"

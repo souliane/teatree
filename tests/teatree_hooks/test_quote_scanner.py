@@ -1223,16 +1223,25 @@ class TestPrivateRepoCarveOut:
 
 @pytest.mark.integration
 @pytest.mark.usefixtures("_private_repo_cfg")
-class TestLocalCommitUnreadableBodyDowngrade:
-    """A LOCAL ``git commit`` with an UNREADABLE body downgrades; a readable quote still blocks (#1415).
+class TestUnreadableCommitBodyQuoteGateVisibilityScoped:
+    """A readable commit body is resolved+scanned for ALL visibilities; the sentinel is visibility-scoped (#1415/#1213).
 
     The over-block that stuck multiple coders: a clean ``git commit -F -`` /
-    heredoc / ``-m "$VAR"`` to the user's own PUBLIC clone hard-blocked via the
-    fail-closed sentinel (whose text reads "failing closed" — the "fails
-    open/closed" misfire). The fix RESOLVES a readable stdin/heredoc body (so a
-    real user quote in it still blocks) and DOWNGRADES the sentinel-only case on
-    a LOCAL commit to a warn (the body becomes public only on push). A real quote
-    pattern on a readable body, and every ``gh``/``glab`` POST, still hard-block.
+    heredoc to the user's own PUBLIC clone hard-blocked via the fail-closed
+    sentinel (whose text reads "failing closed" — the "fails open/closed"
+    misfire). The fix RESOLVES a readable stdin/heredoc/``printf``-piped body (so
+    a real user quote in it still blocks, and a clean one passes) regardless of
+    visibility.
+
+    The residual case is a GENUINELY-opaque body (``cat | git commit -F -`` /
+    ``-m "$VAR"``) the gate cannot read: the only HIGH finding is the fail-closed
+    sentinel. Unlike the banned-terms gate, the quote-scanner has NO push-time
+    backstop — ``refuse-public-push-with-leak.sh`` runs ``privacy-scan``, which
+    has no verbatim-quote detector — so a verbatim user quote in an opaque body
+    would reach public history un-scanned. The sentinel therefore DENIES on a
+    PUBLIC commit (as base ``main`` did) and only DOWNGRADES on a provably-PRIVATE
+    commit (the #126 carve-out: a private repo cannot leak to the public). Every
+    ``gh``/``glab`` POST still hard-blocks an unreadable public body.
     """
 
     def test_public_commit_heredoc_stdin_clean_passes(
@@ -1265,31 +1274,59 @@ class TestLocalCommitUnreadableBodyDowngrade:
         assert handle_quote_scanner_pretool(data) is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
-    def test_public_commit_unreadable_var_message_downgrades(
+    def test_public_commit_unreadable_var_message_still_denies(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # The sentinel-only case: ``git commit -m "$VAR"`` whose VAR is not in the
-        # hook env is unreadable at scan time, so the only HIGH finding is the
-        # fail-closed sentinel. A LOCAL commit downgrades it to a warn (the body is
-        # public only on push), instead of hard-blocking a clean commit.
+        # THE FIX (un-backstopped quote leak): ``git commit -m "$VAR"`` whose VAR is
+        # not in the hook env is unreadable at scan time, so the only HIGH finding is
+        # the fail-closed sentinel. On a PUBLIC commit it DENIES — the quote-scanner
+        # has no push-time re-scan (privacy-scan carries no verbatim-quote detector),
+        # so a verbatim quote in an opaque body would otherwise reach public history.
         monkeypatch.delenv("UNSET_COMMIT_BODY", raising=False)
         repo = tmp_path / "repo"
         repo.mkdir()
         _git_init_remote(repo, "git@github.com:souliane/teatree.git")
         monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
         data = {"tool_name": "Bash", "tool_input": {"command": 'git commit -m "$UNSET_COMMIT_BODY"'}, "cwd": str(repo)}
+        assert handle_quote_scanner_pretool(data) is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_public_commit_opaque_cat_pipe_still_denies(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # THE OTHER opaque channel: ``cat <file> | git commit -F -``. ``cat`` is not a
+        # resolvable ``printf``/``echo`` writer, so the piped body is genuinely opaque
+        # at scan time → fail-closed sentinel → DENY on a PUBLIC commit.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git_init_remote(repo, "git@github.com:souliane/teatree.git")
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        data = {"tool_name": "Bash", "tool_input": {"command": "cat draft.txt | git commit -F -"}, "cwd": str(repo)}
+        assert handle_quote_scanner_pretool(data) is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_private_commit_unreadable_var_message_downgrades(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A NON-public equivalent downgrades: the SAME opaque ``-m "$VAR"`` sentinel on
+        # a provably-PRIVATE commit downgrades to a warn (#126 — a private repo cannot
+        # leak to the public). The coder-unblock for opaque bodies survives where it is
+        # provably safe; only the public case reverts to deny.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git_init_remote(repo, "git@gitlab.com:acmecorp-engineering/product.git")
+        data = {"tool_name": "Bash", "tool_input": {"command": 'git commit -m "$UNSET_COMMIT_BODY"'}, "cwd": str(repo)}
         assert handle_quote_scanner_pretool(data) is False  # downgraded to warn
         captured = capsys.readouterr()
         assert captured.out == ""  # no deny JSON
         assert "WARNING" in captured.err
-        assert _ledger_lines(tmp_path)[-1]["decision"] == "warn-local-commit"
+        assert _ledger_lines(tmp_path)[-1]["decision"] == "warn-private-repo"
 
     def test_public_gh_post_unreadable_var_body_still_denies(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # ANTI-VACUITY: the sentinel downgrade is COMMIT-scoped. A ``gh`` POST whose
-        # ``--body`` is an unreadable ``$VAR`` is the real public action with no push
-        # gate behind it, so it STILL hard-blocks on the sentinel.
+        # ANTI-VACUITY: a ``gh`` POST whose ``--body`` is an unreadable ``$VAR`` is the
+        # real public action with no push gate behind it, so it STILL hard-blocks.
         monkeypatch.delenv("UNSET_BODY", raising=False)
         monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
         data = {

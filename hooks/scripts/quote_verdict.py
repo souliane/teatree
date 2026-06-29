@@ -7,29 +7,29 @@ keeps only the I/O (deny emission, stderr warning, ledger write); this module
 owns "given a HIGH scan result on a publish/commit surface, does it DENY or
 DOWNGRADE to a warn, and with which warning + ledger label?".
 
-Two downgrades-to-warn, else deny. The LOCAL-commit sentinel downgrade (#1415):
-the ONLY HIGH finding is the unreadable-body sentinel AND the surface is a LOCAL
-``git commit`` -- the gate never saw a real quote, only that an ``-F -`` stdin /
-heredoc / ``-m "$VAR"`` body was unreadable at scan time, which is not a leak
-before push (it stuck multiple coders mid-commit; the body becomes public only on
-push). The private-repo carve-out (#126): a real pattern matched on a private-repo
-commit. Every other HIGH match denies -- a REAL verbatim-quote pattern on a public
-surface always blocks, and a readable commit body that matched a content rule
-keeps blocking too.
+One downgrade-to-warn, else deny: the private-repo carve-out (#126) downgrades a
+HIGH match on a provably-PRIVATE commit/post (a private repo cannot leak to the
+public). Every other HIGH match DENIES -- a real verbatim-quote pattern on a
+public surface, and the unreadable-body fail-closed sentinel on a public commit,
+both block.
+
+Why the unreadable-body sentinel is NOT downgraded on a public commit the way
+the banned-terms gate downgrades it (#1415): the banned-terms downgrade is
+backstopped by the pre-push gate (``refuse-public-push-with-leak.sh`` #703),
+which re-scans every commit message via ``privacy-scan`` for banned terms before
+a public push. ``privacy-scan`` has NO verbatim-quote detector, so the quote
+gate has NO such backstop -- a verbatim user quote committed via a genuinely
+opaque body (``cat | git commit -F -`` / ``-m "$VAR"``) would reach public
+history un-scanned. So the quote gate keeps base ``main``'s conservative DENY on
+a public unreadable-body commit. The coder-unblock for clean commits still holds
+for ALL visibilities, because a readable stdin/heredoc/``printf``-piped body is
+RESOLVED and scanned upstream (``_body_file_resolution``) and never produces the
+sentinel; only the genuinely-opaque public case reverts to deny.
 """
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from teatree.hooks.quote_scanner import ScanResult
-
-_LOCAL_COMMIT_WARNING = (
-    "WARNING: pre-publish quote-scanner gate (#1213/#1415) — could not read the commit "
-    "body, but it is a LOCAL commit; downgraded to warn. The body becomes public only on "
-    "push. Verify any user-attributed content is paraphrased.\n"
-)
 _PRIVATE_REPO_WARNING = (
     "WARNING: pre-publish quote-scanner gate (#1213) — patterns matched on a "
     "private-repo commit; downgraded to warn (#126). Verify the content is paraphrased.\n"
@@ -50,26 +50,28 @@ class QuoteVerdict:
     decision: str
 
 
-def resolve_high_verdict(
-    tool_name: str, result: "ScanResult", command: str, payload: str, cwd: Path | None
-) -> QuoteVerdict:
+def resolve_high_verdict(command: str, cwd: Path | None) -> QuoteVerdict:
     """Resolve a HIGH quote-scanner result to a deny / downgrade verdict.
 
-    The unreadable-body sentinel on a LOCAL ``git commit`` downgrades regardless
-    of the landing repo's visibility (the commit is local; the pre-push gate is
-    the real public-surface chokepoint) -- but only when the sentinel is the SOLE
-    HIGH finding, so a REAL verbatim-quote pattern on a readable commit body still
-    denies. The private-repo carve-out then downgrades a real match on a
-    private-repo commit (#126). Everything else denies. Config resolution is the
+    A HIGH match whose destination is provably PRIVATE downgrades to a warn (#126
+    -- a private repo cannot leak to the public). The check is body-INDEPENDENT
+    (``command_targets_private_only``: a ``git commit`` landing in a known-private
+    repo, or a pure private ``gh``/``glab`` post), so it covers BOTH a real quote
+    pattern AND the unreadable-body fail-closed sentinel on a private commit --
+    the same private predicate the banned-terms sibling marker uses. Everything
+    else DENIES: a real verbatim-quote pattern on a public surface, and the
+    unreadable-body sentinel on a PUBLIC commit.
+
+    This is deliberately the banned-terms marker MINUS its ``command_targets_local_commit``
+    public-local downgrade: the banned-terms gate may downgrade an unreadable
+    PUBLIC commit because the pre-push gate re-scans commit messages for banned
+    terms; the quote gate may NOT, because ``privacy-scan`` carries no
+    verbatim-quote detector (see the module docstring). Config resolution is the
     default env/home one (the live gate passes no explicit config; tests pin it
     via ``T3_BANNED_TERMS_CONFIG``).
     """
-    from teatree.hooks import publish_surface, quote_scanner  # noqa: PLC0415
+    from teatree.hooks import publish_surface  # noqa: PLC0415
 
-    if quote_scanner.result_is_unreadable_body_only(result) and publish_surface.command_targets_local_commit(
-        command, cwd
-    ):
-        return QuoteVerdict(deny=False, warning=_LOCAL_COMMIT_WARNING, decision="warn-local-commit")
-    if publish_surface.carve_out_applies(tool_name, command, payload, cwd):
+    if publish_surface.command_targets_private_only(command, cwd):
         return QuoteVerdict(deny=False, warning=_PRIVATE_REPO_WARNING, decision="warn-private-repo")
     return QuoteVerdict(deny=True, warning=None, decision="deny")
