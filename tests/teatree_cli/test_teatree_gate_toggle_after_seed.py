@@ -100,3 +100,45 @@ class TestGateToggleAfterSeed(TransactionTestCase):
         # honours it — the pre-setup path is coherent on its own.
         self._gate("disable")
         assert self._reader_sees_enabled() is False
+
+    def test_disable_under_a_locked_canonical_db_fails_loud(self) -> None:
+        # The residual HIGH (review HOLD #2): a seeded ENABLED row + a LOCKED canonical DB.
+        # The disable's DB write cannot land, so the seeded `true` row survives and the
+        # DB-first reader still returns it. Falling back to a TOML write would write a dead,
+        # shadowed row and print a lying "gate DISABLED" success while the gate stays ENABLED.
+        # The command MUST fail loud (non-zero exit) and print NO success line.
+        from teatree.config import cold_writer  # noqa: PLC0415
+
+        self.config_path.write_text(f"[teatree]\n{_GATE} = true\n", encoding="utf-8")
+        db_file = self._seed_canonical_db()  # DB carries the frozen true row; T3_CONFIG_DB -> it
+        # Keep the busy-wait short so the locked write fails fast instead of waiting 2s.
+        self.monkeypatch.setattr(cold_writer, "_BUSY_TIMEOUT_MS", 100)
+        blocker = sqlite3.connect(db_file)
+        try:
+            blocker.execute("PRAGMA journal_mode=WAL")
+            blocker.execute("BEGIN IMMEDIATE")  # hold the write lock for the whole invocation
+            result = self.runner.invoke(self.app, [*_GATE_PATH, "disable"])
+        finally:
+            blocker.close()
+        assert result.exit_code != 0, result.output
+        assert "did NOT take" in result.output  # loud failure, not a silent no-op
+        assert "gate DISABLED — wrote" not in result.output  # NO lying success line
+        # The seeded row survived: the gate is still ENABLED, coherently across both readers.
+        assert self._reader_sees_enabled() is True
+        assert memory_recall_gate_is_enabled() is True
+
+    def test_db_write_reports_the_db_destination_not_the_toml_path(self) -> None:
+        # The LOW: a successful DB write must report the canonical DB as the destination —
+        # previously BOTH the DB-write and the TOML fallback printed the ~/.teatree.toml path.
+        self.config_path.write_text(f"[teatree]\n{_GATE} = true\n", encoding="utf-8")
+        db_file = self._seed_canonical_db()  # the DB tier now exists, so the toggle lands in it
+        result = self.runner.invoke(self.app, [*_GATE_PATH, "disable"])
+        assert result.exit_code == 0, result.output
+        assert str(db_file) in result.output  # the ACTUAL destination
+        assert ".teatree.toml" not in result.output  # never the misreported TOML path
+
+    def test_pre_setup_toml_write_reports_the_toml_destination(self) -> None:
+        # The mirror: with no DB tier yet, the TOML write must report the ~/.teatree.toml path.
+        result = self.runner.invoke(self.app, [*_GATE_PATH, "disable"])
+        assert result.exit_code == 0, result.output
+        assert str(self.config_path) in result.output
