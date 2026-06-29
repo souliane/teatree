@@ -209,6 +209,14 @@ class TestHelpAndVersionQueriesAllowed:
             "docker build .",
             "t3 x run --help && pytest tests/",  # help arm + a genuinely heavy arm
             "ls -lhR /",  # has -h but as a flag bundle, not a help token
+            # A -h after `find … -exec` is the EXEC'd command's flag, never a
+            # find help query — the recursive sweep must stay denied.
+            r"find /src -name '*.py' -exec grep -h 'TODO' {} \;",  # grep -h = suppress filename
+            "find . -type f -exec chmod -h {} +",  # chmod -h = no-dereference
+            r"find / -name '*.log' -exec rm -h {} \;",
+            "find . -exec du -h {} +",  # du -h = human-readable
+            "git push --help",  # opens a blocking pager — a worse wedge
+            "git push -h",
         ],
     )
     def test_genuinely_heavy_still_denied(self, command: str) -> None:

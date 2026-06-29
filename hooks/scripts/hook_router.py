@@ -3457,7 +3457,19 @@ _FG_OK_RE = re.compile(r"\[fg-ok:\s*\S[^\]]*?\s*\]")
 # exit immediately) is trivially fast and read-only — NOT the long-running shape
 # this gate guards (``t3 dream run --help``, ``docker build --help``,
 # ``pytest -h``). The lookahead requires the flag to be a complete token so a
+# recursive ``ls -lhR`` (a flag bundle, not a help query) is not mistaken for one.
 _HELP_OR_VERSION_RE = re.compile(r"(?:^|\s)(?:--help|-h|--version)(?=\s|$)")
+
+# Heavy shapes a help token must NEVER exempt, because the token does not belong
+# to the heavy verb's own fast --help path:
+#   * ``find … -exec <cmd> …`` — a ``-h`` after ``-exec`` is the EXEC'd command's
+#     flag (``grep -h`` = suppress filename, ``rm -h`` / ``chmod -h``, ``du -h`` =
+#     human-readable), NOT a help query; the find-sweep itself is still heavy.
+#   * recursive ``ls …R…`` — its ``-h`` is the human-readable flag bundle.
+#   * ``git push`` — ``git push --help`` / ``-h`` opens a blocking pager (a worse
+#     session wedge than the push it guards), so it is never exempted.
+# Reuses the exact heavy sub-patterns so the two regexes can never drift.
+_NEVER_HELP_EXEMPT_RE = re.compile(r"\bfind\s+\S+.*-exec\b|\bls\s+-[a-zA-Z]*R[a-zA-Z]*\b|" + _GIT_PUSH_RE)
 
 
 def _is_orchestration_action(data: dict) -> bool:
@@ -3605,16 +3617,15 @@ def _heavy_command_is_help_only(command: str) -> bool:
     """True when EVERY heavy denylist match in ``command`` is a --help/--version query.
 
     A help/version invocation of a heavy verb prints usage and exits immediately
-    (trivially fast, read-only), so it is not the session-wedging shape the gate
-    guards. Scoped per shell segment so a help flag on one arm cannot vouch for a
-    genuinely heavy command on another (``t3 x run --help && pytest tests/`` still
-    denies on the pytest arm). False when no heavy segment is present.
+    (fast, read-only). Scoped per shell segment; a segment matching
+    ``_NEVER_HELP_EXEMPT_RE`` (find-exec / recursive-ls / git-push) is never
+    exempted even with a help token. False when no heavy segment present.
     """
     saw_heavy = False
     for segment in re.split(r"[;&|\n(){}]", command):
         if _ORCHESTRATOR_HEAVY_BASH_RE.search(segment):
             saw_heavy = True
-            if not _HELP_OR_VERSION_RE.search(segment):
+            if _NEVER_HELP_EXEMPT_RE.search(segment) or not _HELP_OR_VERSION_RE.search(segment):
                 return False
     return saw_heavy
 
