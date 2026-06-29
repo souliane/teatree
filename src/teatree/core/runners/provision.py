@@ -8,6 +8,7 @@ from teatree.core.clone_paths import find_clone_path
 from teatree.core.models import Ticket, Worktree
 from teatree.core.public_identity import is_public_github_remote, set_local_noreply_identity
 from teatree.core.runners.base import RunnerBase, RunnerResult
+from teatree.core.worktree_paths import ticket_dir_for
 from teatree.utils import git
 from teatree.utils.git_guard import guard_repo_remote_slug, is_github_slug
 
@@ -71,7 +72,7 @@ class WorktreeProvisioner(RunnerBase):
         # in ``<worktree_root>/<actual-branch>`` while ``extra['branch']`` may have
         # been (re)set to a pk-default like ``<pk>-ticket`` by a later scope(),
         # so ``worktree_root / branch`` would split the second repo into a new dir.
-        ticket_dir = self._existing_ticket_dir(ticket) or (worktree_root() / branch)
+        ticket_dir = self._existing_ticket_dir(ticket) or ticket_dir_for(worktree_root(), branch)
         ticket_dir.mkdir(parents=True, exist_ok=True)
 
         provisioned: dict[str, str] = dict(extra.get("provision") or {})

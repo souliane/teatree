@@ -2703,6 +2703,33 @@ class TestPruneGoneRemoteWorktree(TestCase):
                 f"branch ref must be kept (recoverable), got: {cleaned!r}"
             )
 
+    def test_gone_remote_busy_worktree_is_kept(self) -> None:
+        # WT-PR-F rider: a clean, recoverable gone-remote worktree under LIVE work
+        # (a live Session on its ticket) must be KEPT — the gone-remote prune is an
+        # OPPORTUNISTIC reaper, so it routes through the liveness funnel just like
+        # every other opportunistic destructive path.
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            _remote, work = _init_repo_with_remote(tmp)
+            wt_path, squash_sha = self._squash_merge_and_delete_remote(work, "feature")
+
+            ticket = Ticket.objects.create(issue_url="https://example.com/issues/1558")
+            Worktree.objects.create(
+                overlay="test",
+                ticket=ticket,
+                repo_path="work",
+                branch="feature",
+                extra={"worktree_path": wt_path},
+            )
+            Session.objects.create(ticket=ticket, overlay="test")  # live: ended_at is null
+
+            with patch.object(bc_mod, "_pr_merge_commit_sha", return_value=squash_sha):
+                cleaned = ws_cleanup_mod.prune_branches(str(work))
+
+            assert Path(wt_path).is_dir(), f"busy gone-remote worktree must be kept, got: {cleaned!r}"
+            assert any("feature" in c and "live work" in c.lower() for c in cleaned), cleaned
+            assert "feature" in _git(work, "branch", "--format=%(refname:short)").split()
+
     def test_gone_remote_dirty_worktree_is_kept(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_s:
             tmp = Path(tmp_s)

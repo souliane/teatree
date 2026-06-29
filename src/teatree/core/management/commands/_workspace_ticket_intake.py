@@ -20,6 +20,7 @@ from teatree.core.management.commands import _workspace_helpers as _wh
 from teatree.core.models import Ticket
 from teatree.core.models.external_delivery import mark_external_delivery
 from teatree.core.worktree_collision import find_foreign_issue_worktrees
+from teatree.core.worktree_paths import ticket_dir_for
 
 if TYPE_CHECKING:
     from teatree.core.models.types import TicketExtra
@@ -161,7 +162,9 @@ def build_ticket(
         # the on-disk worktree and the delivery-ownership claim so neither side
         # effect survives a refusal.
         if not intake.take_over:
-            _refuse_on_foreign_issue_worktree(write, ticket, workspace_root, workspace_root / extra["branch"])
+            _refuse_on_foreign_issue_worktree(
+                write, ticket, workspace_root, ticket_dir_for(workspace_root, extra["branch"])
+            )
 
         # #2104: this CLI IS the hand-dispatched external-delivery entry — a
         # directly-implementing delivery agent (per /teatree-batch) runs it, the

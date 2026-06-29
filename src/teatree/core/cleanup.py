@@ -37,6 +37,7 @@ from teatree.core.clone_paths import resolve_clone_path
 from teatree.core.models import Worktree
 from teatree.core.overlay_loader import get_overlay_for_worktree
 from teatree.core.worktree_env import compose_project, worktree_pg_connection
+from teatree.core.worktree_paths import worktree_dir_for
 from teatree.utils import git
 from teatree.utils.db import drop_db
 from teatree.utils.postgres_secret import remove_postgres_pass_entry
@@ -359,14 +360,13 @@ def _resolve_worktree_path(workspace: Path, worktree: Worktree) -> str:
 
     Provisioning records ``worktree_path`` in ``Worktree.extra`` after a
     successful ``git worktree add``. When that record is missing (extras lost,
-    row created before the path was set, manual provisioning), derive the path
-    from the canonical layout used by ``WorktreeProvisioner._create``:
-    ``workspace/<branch>/<repo-leaf>``.
+    row created before the path was set, manual provisioning), fall back to the
+    shared :func:`worktree_dir_for` ``<workspace>/<branch>/<repo-leaf>`` layout.
     """
     stored = (worktree.extra or {}).get("worktree_path", "")
     if stored:
         return stored
-    return str(workspace / worktree.branch / Path(worktree.repo_path).name)
+    return str(worktree_dir_for(workspace, worktree.branch, worktree.repo_path))
 
 
 def _remove_git_worktree(

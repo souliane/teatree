@@ -21,6 +21,7 @@ from django.core.exceptions import ImproperlyConfigured
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_all_overlays, get_overlay_for_repo
 from teatree.core.worktree_env import CACHE_FILENAME
+from teatree.core.worktree_paths import _candidate_paths
 from teatree.utils import git
 
 logger = logging.getLogger(__name__)
@@ -94,28 +95,6 @@ def _find_env_cache(cwd: str) -> Path | None:
         if candidate.is_file():
             return candidate
     return None
-
-
-def _candidate_paths(path: str) -> list[str]:
-    """Return de-duplicated list of path variants to try for DB lookups.
-
-    On macOS, ``/var`` is a symlink to ``/private/var``, so a path stored
-    as ``/var/folders/…`` won't match ``/private/var/folders/…`` (and vice
-    versa).  We try the original, the resolved form, and the ``/private``
-    prefix stripped/added variants.
-    """
-    candidates: list[str] = [path]
-    resolved = str(Path(path).resolve())
-    if resolved != path:
-        candidates.append(resolved)
-    # macOS: /private/var ↔ /var, /private/tmp ↔ /tmp, /private/etc ↔ /etc
-    if path.startswith("/private/"):
-        candidates.append(path.removeprefix("/private"))
-    else:
-        prefixed = "/private" + path
-        if Path(prefixed).exists():
-            candidates.append(prefixed)
-    return candidates
 
 
 def match_worktree_by_path(path: str) -> Worktree | None:

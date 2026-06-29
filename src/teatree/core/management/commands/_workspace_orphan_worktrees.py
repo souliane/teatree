@@ -25,6 +25,7 @@ from teatree.core.branch_classification import is_squash_merged
 from teatree.core.clean_ignore import is_clean_ignored
 from teatree.core.clone_paths import resolve_clone_path
 from teatree.core.models import Worktree
+from teatree.core.worktree_paths import paths_match
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 
@@ -55,14 +56,14 @@ def _raw_worktree_paths(repo: str) -> dict[str, str]:
     return result
 
 
-def _db_tracked_paths() -> set[str]:
-    """Absolute on-disk paths of every git worktree teatree has a ``Worktree`` row for."""
-    tracked: set[str] = set()
-    for wt in Worktree.objects.all():
-        path = wt.worktree_path
-        if path:
-            tracked.add(str(Path(path).resolve()))
-    return tracked
+def _db_tracked_paths() -> list[str]:
+    """On-disk paths of every git worktree teatree has a ``Worktree`` row for.
+
+    Returned unresolved so :func:`paths_match` can apply its full symlink-variant
+    set per comparison (a bare ``.resolve()`` set misses the ``/private`` literal
+    twin a ``git worktree list`` path may carry).
+    """
+    return [wt.worktree_path for wt in Worktree.objects.all() if wt.worktree_path]
 
 
 def _candidate_clones(workspace: Path) -> set[str]:
@@ -161,7 +162,7 @@ def reap_orphan_raw_worktrees(workspace: Path) -> list[str]:
             cleaned.append(f"SKIPPED clone {repo}: could not list worktrees ({exc})")
             continue
         for wt_path, branch in sorted(worktrees.items()):
-            if str(Path(wt_path).resolve()) in tracked:
+            if any(paths_match(wt_path, t) for t in tracked):
                 continue
             cleaned.append(_reap_one_orphan(repo, wt_path, branch))
     return cleaned
