@@ -784,14 +784,17 @@ def test_live_hook_allows_unreadable_commit_body_file_in_private_worktree(
     assert captured.out == ""  # no deny JSON
 
 
-def test_live_hook_blocks_unreadable_commit_body_file_in_provably_public_repo(
+def test_live_hook_downgrades_unreadable_commit_body_file_in_provably_public_repo(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # ANTI-VACUITY guard for the downgrade above: the SAME unreadable
-    # ``git commit -F <nonexistent file>`` landing in a PROBE-CONFIRMED-PUBLIC
-    # repo must STILL hard-block. #1415 task #62 relaxes only the not-provably-
-    # public commit case (see the unknown-visibility test below); a known-public
-    # commit keeps the conservative hard-block.
+    # #1415: the SAME unreadable ``git commit -F <nonexistent file>`` landing in a
+    # PROBE-CONFIRMED-PUBLIC repo now DOWNGRADES to warn. A ``git commit`` is LOCAL
+    # regardless of the landing repo's visibility, and the pre-push gate (#703)
+    # re-scans every commit message before a public push -- so the commit-time gate
+    # must not hard-block an ordinary commit merely because its body is unreadable
+    # at scan time (the over-block that stuck multiple coders mid-commit). The
+    # public-surface protection lives in the readable-term guard and the chained
+    # public ``gh`` post guard (``...chained...``), both of which still hard-block.
     home = Path(os.environ["HOME"])
     _write_home_config(home, _SUBSTRING_TERM_CONFIG, monkeypatch, tmp_path)
     monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
@@ -805,9 +808,8 @@ def test_live_hook_blocks_unreadable_commit_body_file_in_provably_public_repo(
     blocked = handle_banned_terms_pretool(data)
     captured = capsys.readouterr()
 
-    assert blocked is True
-    decision = json.loads(captured.out)
-    assert decision["permissionDecision"] == "deny"
+    assert blocked is False  # downgraded to warn, not denied
+    assert captured.out == ""  # no deny JSON on stdout
 
 
 def test_live_hook_downgrades_unreadable_commit_body_file_in_unknown_visibility_repo(

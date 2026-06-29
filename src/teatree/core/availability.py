@@ -51,7 +51,7 @@ from pathlib import Path
 from croniter import croniter
 
 from teatree.core.models.deferred_question import DeferredQuestion
-from teatree.core.notify import drain_deferred_questions
+from teatree.core.notify_question_drains import drain_deferred_questions
 from teatree.paths import DATA_DIR
 
 logger = logging.getLogger(__name__)
@@ -372,7 +372,7 @@ def write_override(
 def _drain_on_return(*, user_id: str, overlay: str) -> None:
     """Auto-fire the away→present deferred-question drain, fail-open.
 
-    Reuses the canonical :func:`teatree.core.notify.drain_deferred_questions`
+    Reuses the canonical :func:`teatree.core.notify_question_drains.drain_deferred_questions`
     egress (the same code path ``t3 teatree questions resurface`` runs). Any
     failure — a Slack outage, a missing backend, an import error — is
     swallowed so the availability flip that already landed on disk is never

@@ -16,8 +16,13 @@ from unittest.mock import patch
 import pytest
 from django.utils import timezone
 
+from teatree.core.loop_lease_manager import is_per_loop_tick_mutex
 from teatree.core.models.loop_lease import LoopLease
-from teatree.loop.loop_scoping import current_session_owned_per_loop_slots, owned_per_loop_slots
+from teatree.loop.loop_scoping import (
+    current_session_owned_per_loop_slots,
+    is_transient_tick_mutex,
+    owned_per_loop_slots,
+)
 from teatree.loop.statusline import live_loops_anchor
 from teatree.loop.statusline_loops import _live_lease_chunks
 
@@ -159,3 +164,69 @@ class TestLiveLoopsAnchorIntegration:
         assert len(lines) == 1, repr(lines)
         assert "tick" in lines[0], lines[0]
         assert "loop:review" not in lines[0], lines[0]
+
+
+class TestTransientTickMutexPredicate:
+    """``loop-tick:<name>`` is the transient per-loop tick mutex; bare ``loop-tick`` is not."""
+
+    def test_per_loop_tick_mutex_is_recognised(self) -> None:
+        assert is_per_loop_tick_mutex("loop-tick:resource_pressure")
+        assert is_transient_tick_mutex("loop-tick:resource_pressure")
+
+    def test_bare_master_tick_mutex_is_not_a_per_loop_mutex(self) -> None:
+        # The bare master ``loop-tick`` (no trailing ``:``) must stay visible as
+        # ``tick`` — only the per-loop ``loop-tick:<name>`` variants are dropped.
+        assert not is_per_loop_tick_mutex("loop-tick")
+        assert not is_transient_tick_mutex("loop-tick")
+
+    def test_owner_lease_is_not_a_tick_mutex(self) -> None:
+        assert not is_transient_tick_mutex("loop:resource_pressure")
+
+
+class TestTickMutexNotDoubleRendered:
+    """A loop holding BOTH a ``loop-tick:<name>`` mutex and a ``loop:<name>`` lease renders once.
+
+    The bug: the currently-ticking loop showed under two indistinguishable
+    namespaces — the transient tick mutex (rendered ``tick:<name>`` after the
+    ``loop-`` strip) AND its durable per-loop owner lease (``loop:<name>``) — so
+    ``resource_pressure`` appeared twice on the loop-owner line. The transient
+    mutex must be dropped; the loop is represented by its ``loop:<name>`` chunk
+    alone.
+    """
+
+    def test_currently_ticking_loop_is_not_shown_twice(self) -> None:
+        # The render happens INSIDE the per-loop tick (`t3 loops tick --loop
+        # resource_pressure`), so the `loop-tick:resource_pressure` mutex is live
+        # alongside the durable `loop:resource_pressure` owner lease.
+        leases = [
+            ("loop-tick", _at(120)),
+            ("loop-tick:resource_pressure", _at(120)),
+            ("loop:resource_pressure", _at(120)),
+        ]
+        with (
+            patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
+            patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
+            patch(_OWNED_SLOTS_TARGET, return_value={"loop:resource_pressure"}),
+        ):
+            chunks = _live_lease_chunks()
+        joined = " · ".join(chunks)
+        # The durable per-loop owner lease renders exactly once ...
+        assert joined.count("loop:resource_pressure") == 1, joined
+        # ... and the transient `tick:resource_pressure` mutex is NOT a second,
+        # indistinguishable entry for the same loop.
+        assert "tick:resource_pressure" not in joined, joined
+        # The bare master `loop-tick` mutex still renders as `tick` (only the
+        # per-loop mutex is dropped, never the master signal).
+        assert any(c == "tick" or c.startswith("tick ") for c in chunks), chunks
+
+    def test_tick_mutex_dropped_even_when_owner_lease_absent(self) -> None:
+        # Defence in depth: a stray `loop-tick:<name>` with no matching
+        # `loop:<name>` owner lease is still a transient mutex, never a chunk.
+        leases = [("loop-tick:inbox", _at(120))]
+        with (
+            patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
+            patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
+            patch(_OWNED_SLOTS_TARGET, return_value=None),
+        ):
+            chunks = _live_lease_chunks()
+        assert chunks == [], chunks

@@ -7928,7 +7928,8 @@ Usage: t3 teatree questions resurface [OPTIONS]
  Re-post the pending backlog to the user's Slack DM (away→present drain).
 
  Manual / idempotent entry point to the same
- :func:`teatree.core.notify.drain_deferred_questions` egress the
+ :func:`teatree.core.notify_question_drains.drain_deferred_questions` egress
+ the
  ``write_override(MODE_PRESENT)`` away→present transition auto-fires,
  so a re-run never double-posts (the ``BotPing`` ledger dedupes).
 

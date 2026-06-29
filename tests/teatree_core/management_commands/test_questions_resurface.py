@@ -18,7 +18,7 @@ from django.core.management import call_command
 
 from teatree.core.models import BotPing
 from teatree.core.models.deferred_question import DeferredQuestion
-from teatree.core.notify import _resurface_text
+from teatree.core.notify_question_drains import _resurface_text
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db

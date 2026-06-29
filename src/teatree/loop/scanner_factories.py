@@ -253,8 +253,8 @@ def _slack_broadcasts_scanner_for(backend: OverlayBackends) -> SlackBroadcastsSc
     channel_ids = [cid for _name, cid in channels_pairs if cid]
     if not channel_ids:
         return None
-    glab_token = overlay.config.get_gitlab_token() if hasattr(overlay.config, "get_gitlab_token") else ""
-    github_token = overlay.config.get_github_token() if hasattr(overlay.config, "get_github_token") else ""
+    glab_token = overlay.config.get_gitlab_token()
+    github_token = overlay.config.get_github_token()
     current_gitlab_username = _own_author_identity(backend)
     return SlackBroadcastsScanner(
         backend=backend.messaging,
@@ -287,7 +287,7 @@ def _pr_sweep_scanner_for(backend: OverlayBackends, *, slack_user_id: str) -> Pr
     repos = tuple(overlay.metadata.get_followup_repos())
     if not repos:
         return None
-    github_token = overlay.config.get_github_token() if hasattr(overlay.config, "get_github_token") else ""
+    github_token = overlay.config.get_github_token()
     notifier: SlackMergeNotifier | NullMergeNotifier
     if backend.messaging is not None and slack_user_id:
         notifier = SlackMergeNotifier(backend=backend.messaging, user_id=slack_user_id)
@@ -380,7 +380,7 @@ def _codex_review_scanner_for(backend: OverlayBackends) -> CodexReviewScanner | 
     settings = _effective_settings_for_overlay(backend.name)
     if settings.mode != Mode.AUTO or settings.require_human_approval_to_merge:
         return None
-    github_token = overlay.config.get_github_token() if hasattr(overlay.config, "get_github_token") else ""
+    github_token = overlay.config.get_github_token()
     return CodexReviewScanner(
         repos=repos,
         api=GhCodexPrApi(token=github_token),

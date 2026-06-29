@@ -66,6 +66,14 @@
 - **Fix:** Re-run without `--delete-branch`: `gh pr merge <n> --squash`. Then clean up manually: `git fetch --prune origin` deletes the remote-tracking ref, and from the main clone run `git worktree remove <path>` and `git branch -D <branch>` to drop the local worktree and branch.
 - **Prevention:** When the main clone is in a sibling worktree, omit `--delete-branch` on `gh pr merge`. The remote delete is handled by GitHub's "auto-delete branch on merge" setting; local cleanup belongs to `git fetch --prune` and `git worktree remove`.
 
+## `git worktree add <path> origin/<branch>` Lands on a Detached HEAD
+
+- **Symptom:** After `git worktree add <path> origin/<branch>` the new worktree prints `HEAD is now at <sha> (detached HEAD)`, and a later `git checkout -B <branch>` fails with `fatal: '<branch>' is already used by worktree at '<other-path>'`. Commits made here are not on the branch.
+- **Cause:** The local branch is already checked out in another worktree (a branch can be checked out in at most one worktree). `git worktree add` therefore creates a detached worktree at the remote ref instead of attaching the branch, and silently succeeds.
+- **Fix:** Find the worktree that owns the branch — `git worktree list | grep <branch>` — and do the work there (it is the single source of truth). Make edits directly in that worktree rather than moving a patch across.
+- **Prevention:** Before `git worktree add`, run `git worktree list` to see whether the branch is already checked out. If it is, `cd` into the existing worktree instead of adding a second one. Drop the stray detached worktree with `git worktree remove <path> --force`.
+- **Cross-worktree patch trap:** Do **not** move changes between worktrees via `git diff > p.patch && git apply p.patch` — `git diff` paths are repo-relative and `git apply` from a different worktree root strips the directory prefix (`error: <file>: No such file or directory`). Re-apply the edit directly in the owning worktree, or use `git -C <src> diff | git -C <dst> apply -p1` from matching roots.
+
 ## `clean-all` Refuses a Worktree as "Unsynced" After a Squash Merge
 
 - **Symptom:** `t3 teatree workspace clean-all` reports `refused cleanup — N unsynced commit(s) not on origin/main` for a branch whose PR you just merged via squash.

@@ -161,7 +161,7 @@ if [ -r "$_sl_meta" ] && command -v jq >/dev/null 2>&1; then
             elif (( _sl_age < 86400 )); then _sl_age_h="$(( _sl_age / 3600 ))h"
             else _sl_age_h="$(( _sl_age / 86400 ))d"
             fi
-            _stale_banner=$'\033[1;31m'"⚠ statusline STALE — last rendered ${_sl_age_h} ago; loop may be stopped (run \`t3 loop tick\`)"$'\033[0m'
+            _stale_banner=$'\033[1;31m'"⚠ statusline STALE — last rendered ${_sl_age_h} ago; loop may be stopped (re-register its /loop via /t3:loops, or run \`t3 loops tick\`)"$'\033[0m'
         fi
     fi
 fi

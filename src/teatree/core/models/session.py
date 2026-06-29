@@ -157,7 +157,7 @@ class Session(models.Model):
         missing = [phase for phase in self._REQUIRED_PHASES.get(canonical_target, []) if phase not in canonical_visited]
         if missing:
             joined = ", ".join(missing)
-            msg = f"{target_phase} requires: {joined}"
+            msg = f"{canonical_target} requires: {joined}"
             raise QualityGateError(msg)
 
     def mark_repo_modified(self, repo: str) -> None:

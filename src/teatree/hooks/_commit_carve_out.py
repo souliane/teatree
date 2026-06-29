@@ -17,8 +17,8 @@ foreign term and a resolvable PUBLIC landing repo both keep the block.
 
 The structural helpers (``command_segments``, ``segment_is_pure_gh_glab_post``,
 substitution/transport token checks, repo-dir resolution) are imported from
-their leaf modules; the three ``publish_surface``-local predicates it needs are
-imported lazily inside the call to avoid an import cycle.
+their leaf modules; the ``publish_surface``-local predicates each call needs are
+imported lazily inside it to avoid an import cycle.
 """
 
 from pathlib import Path
@@ -74,12 +74,21 @@ def _chained_segments_provably_inert(command: str, cwd: Path | None, *, config_p
     The chained-segment half of the commit carve-out, shared by both commit
     downgrade predicates: every segment that is not the ``git commit`` itself
     must be PROVABLY publish-inert (no forge tool, no execution-transport or
-    substitution construct) OR a pure private ``gh``/``glab`` post. Any other
-    publishing construct fails the proof, so a chained PUBLIC post in the same
-    command keeps the hard-block -- the unresolvable-body fail-open never relaxes
-    a chained public post.
+    substitution construct) OR a pure private ``gh``/``glab`` post that is NOT
+    raw REST. Any other publishing construct fails the proof, so a chained PUBLIC
+    post in the same command keeps the hard-block -- the unresolvable-body
+    fail-open never relaxes a chained public post.
+
+    A chained ``gh api`` / ``glab api`` raw-REST POST is rejected outright
+    (``_segment_is_raw_rest``), mirroring the top-level proof
+    ``publish_surface._segment_proves_pure_private_post``: raw REST carries its
+    target in the URL PATH (no ``--repo``), so ``segment_target_is_private`` would
+    fall back to the private commit CWD and wrongly vouch for a PUBLIC ``gh api
+    repos/<owner>/<public>/...`` POST -- leaking the body to a public repo while
+    the gate downgraded to warn (#1213/#1415).
     """
     from teatree.hooks.publish_surface import (  # noqa: PLC0415
+        _segment_is_raw_rest,
         is_git_commit_command,
         segment_target_is_private,
         strip_cd_prefix,
@@ -90,8 +99,11 @@ def _chained_segments_provably_inert(command: str, cwd: Path | None, *, config_p
             continue
         if segment_is_publish_inert(words):
             continue
-        if _gh_glab_hiding.segment_is_pure_gh_glab_post(words) and segment_target_is_private(
-            strip_cd_prefix(words), cwd, config_path=config_path
+        rest = strip_cd_prefix(words)
+        if (
+            _gh_glab_hiding.segment_is_pure_gh_glab_post(words)
+            and not _segment_is_raw_rest(rest)
+            and segment_target_is_private(rest, cwd, config_path=config_path)
         ):
             continue
         return False
@@ -112,69 +124,50 @@ def commit_branch_downgrades(command: str, cwd: Path | None, *, config_path: Pat
     return _chained_segments_provably_inert(command, cwd, config_path=config_path)
 
 
-def _repo_root_is_provably_public(repo_root: Path, *, config_path: Path | None) -> bool:
-    """Return True iff ``repo_root`` is a PROBE-CONFIRMED public repo.
+def _commit_target_is_local(command: str, cwd: Path | None) -> bool:
+    r"""Return True iff the commit lands in a resolvable LOCAL repo of ANY visibility.
 
-    The strict complement of ``publish_surface.commit_targets_private_repo`` for
-    the UNREADABLE-body downgrade: a repo is "provably public" ONLY when the
-    offline ``[teatree] private_repos`` allowlist does NOT cover it AND the live
-    ``gh``/``glab`` probe positively returns ``PUBLIC``. An UNKNOWN visibility (the
-    probe is unavailable in the cold hook's restricted PATH, or the slug is
-    unresolvable) is NOT provably public -- it returns False -- so an undeclared
-    local checkout (the common steady state) is treated as not-provably-public and
-    its unscannable-body commit downgrades rather than hard-blocking. The
-    fail-direction is the OPPOSITE of ``commit_targets_private_repo`` (unknown ->
-    NOT private there, to keep a real SCANNABLE banned term hard-blocked): for an
-    UNREADABLE body a commit is local and the pre-push public-leak gate re-scans
-    commit messages, so blocking ONLY a positively-public commit is correct.
-    """
-    slug = _repo_visibility.slug_for_cwd(repo_root)
-    if not slug:
-        return False
-    if _repo_visibility.slug_is_allowlisted_private(slug, config_path):
-        return False
-    return _repo_visibility.probe_visibility(slug) == "PUBLIC"
-
-
-def commit_target_not_provably_public(command: str, cwd: Path | None, *, config_path: Path | None) -> bool:
-    r"""Return True iff the commit's landing repo is NOT a PROBE-CONFIRMED public repo.
-
-    The UNREADABLE-body sibling of :func:`commit_target_downgrades`. The repo the
-    commit lands in is resolved the same way (``resolve_commit_dir`` -- leading
-    ``cd``/``pushd``, then ``--git-dir`` else ``-C``, never ``--work-tree``,
-    anchored on the ambient ``cwd``), but the landing-repo verdict is WIDER (via
-    :func:`_repo_root_is_provably_public`): a PRIVATE, allowlisted-private, OR
-    UNKNOWN-visibility repo all return True; only a probe-confirmed PUBLIC repo
-    returns False. The wider acceptance is sound ONLY for an unreadable body,
-    where the gate cannot see a leak and the commit is LOCAL -- the pre-push
-    public-leak gate re-scans commit messages before they reach a public remote --
-    so blocking only a positively-public commit is the right conservatism. The
-    ``UNRESOLVABLE_REPO_DIR`` sentinel (a ``-C`` value carrying a substitution
-    marker) hard-blocks (returns False); NO resolvable commit dir at all
-    FAILS-OPEN (True), because a local commit cannot leak.
+    A ``git commit`` is LOCAL regardless of whether its landing repo is public,
+    private, or unknown: the message enters only local history until a push, and
+    the dedicated pre-push gate (``refuse-public-push-with-leak.sh``, #703)
+    re-scans EVERY commit message in the push range for banned terms / secrets /
+    internal paths before they reach a public remote. So an UNREADABLE-body commit
+    need not be classified by visibility at all -- it cannot leak before push, and
+    the push gate is the real public-surface chokepoint. The landing dir is
+    resolved the usual way (``resolve_commit_dir`` -- leading ``cd``/``pushd``,
+    then ``--git-dir`` else the ``-C``-adjusted dir, never ``--work-tree``,
+    anchored on the ambient ``cwd``). The ``UNRESOLVABLE_REPO_DIR`` sentinel (a
+    ``-C`` value carrying a substitution marker the gate cannot pin down)
+    hard-blocks (returns False); a resolved dir OR no commit dir at all (a plain
+    local commit git runs in the cwd) is LOCAL (True).
     """
     commit_target = _commit_repo_dir.resolve_commit_dir(command, cwd)
-    if commit_target == _commit_repo_dir.UNRESOLVABLE_REPO_DIR:
-        return False
-    if commit_target is None:
-        return True
-    repo_root = _commit_repo_dir.git_root_for_dir(Path(commit_target))
-    if repo_root is None:
-        return True
-    return not _repo_root_is_provably_public(repo_root, config_path=config_path)
+    return commit_target != _commit_repo_dir.UNRESOLVABLE_REPO_DIR
 
 
-def commit_branch_not_provably_public(command: str, cwd: Path | None, *, config_path: Path | None) -> bool:
-    r"""Return True iff an UNREADABLE-body ``git commit`` command may downgrade to warn.
+def command_targets_local_commit(command: str, cwd: Path | None, *, config_path: Path | None = None) -> bool:
+    r"""Return True iff ``command`` is a LOCAL ``git commit`` whose chain cannot publish.
 
-    The unreadable-body sibling of :func:`commit_branch_downgrades`: the landing
-    repo must be NOT-provably-public (:func:`commit_target_not_provably_public`)
-    AND every chained segment must be provably publish-inert or a pure private
-    post (:func:`_chained_segments_provably_inert`). The chained-segment proof is
-    IDENTICAL -- a chained public post still defeats the downgrade -- only the
-    landing-repo eligibility widens from PRIVATE-only to NOT-provably-public.
+    The widest commit-downgrade predicate, for the UNREADABLE-body case on a repo
+    of ANY visibility. It closes the #1415 over-block where a clean ``git commit
+    -F -`` / heredoc / ``-m "$VAR"`` to a PROVABLY-PUBLIC repo (the user's own
+    public clone) hard-blocked merely because the body was unreadable at scan
+    time -- which stuck multiple coders mid-commit. It widens the prior
+    NOT-provably-public eligibility to ANY landing repo, justified because a
+    commit is LOCAL and the pre-push public-leak gate re-scans commit messages
+    before they reach a public remote (#703).
+
+    The chained-segment proof is UNCHANGED (:func:`_chained_segments_provably_inert`):
+    a chained PUBLIC ``gh``/``glab`` post in the same command (``git commit -F -
+    … && gh issue create --repo <PUBLIC>``) still fails the proof and keeps the
+    hard-block, so the widening never relaxes a real public post. The commit is
+    recognised PER SEGMENT (:func:`command_has_git_commit_segment`), so the
+    chained worktree idiom (``cd <wt> && git add -A && git commit -F -``) whose
+    ``git commit`` is a LATER segment still qualifies.
     """
-    if not commit_target_not_provably_public(command, cwd, config_path=config_path):
+    if not command_has_git_commit_segment(command):
+        return False
+    if not _commit_target_is_local(command, cwd):
         return False
     return _chained_segments_provably_inert(command, cwd, config_path=config_path)
 
@@ -230,31 +223,6 @@ def command_targets_private_only(command: str, cwd: Path | None, *, config_path:
     if command_has_git_commit_segment(command):
         return commit_branch_downgrades(command, cwd, config_path=config_path)
     return command_is_pure_private_gh_glab_post(command, cwd, config_path=config_path)
-
-
-def command_targets_non_public_commit(command: str, cwd: Path | None, *, config_path: Path | None = None) -> bool:
-    r"""Return True iff ``command`` is a ``git commit`` landing in a NON-public repo.
-
-    The COMMIT-only, WIDER sibling of :func:`command_targets_private_only`, for
-    the UNREADABLE-body downgrade. ``command_targets_private_only`` requires a
-    PROVABLY-private destination (so an unknown-visibility commit stays
-    hard-blocked); this widens the commit landing-repo acceptance to
-    NOT-provably-public (PRIVATE, allowlisted-private, OR UNKNOWN) via
-    :func:`commit_branch_not_provably_public`, because a ``git commit`` is LOCAL
-    (not a publish to a public surface) and the dedicated pre-push gate re-scans
-    commit messages before they reach a public remote -- so the commit-time gate
-    over-blocks an ordinary commit on an undeclared repo when it merely cannot
-    READ the body (a message that mentions a ``$(...)`` snippet, #1415 task #62).
-
-    SCOPED TO ``git commit`` ONLY: a non-commit ``gh``/``glab`` post is the real
-    public action with no push gate behind it, so it is NOT widened here -- it
-    returns False and the unreadable-body marker keeps hard-blocking it. The
-    chained-segment proof is unchanged, so a commit chained to a PUBLIC post still
-    hard-blocks.
-    """
-    if not command_has_git_commit_segment(command):
-        return False
-    return commit_branch_not_provably_public(command, cwd, config_path=config_path)
 
 
 def segment_is_publish_inert(words: list[str]) -> bool:

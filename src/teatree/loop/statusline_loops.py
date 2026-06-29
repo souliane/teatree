@@ -8,7 +8,11 @@ from teatree.loop.loop_cadences import (
     self_improve_cadence_seconds,
     slack_answer_cadence_seconds,
 )
-from teatree.loop.loop_scoping import current_session_owned_per_loop_slots, per_loop_chunk_visible
+from teatree.loop.loop_scoping import (
+    current_session_owned_per_loop_slots,
+    is_transient_tick_mutex,
+    per_loop_chunk_visible,
+)
 from teatree.loop.statusline_palette import (
     _ANSI_DIM,
     _ANSI_GREEN,
@@ -206,11 +210,16 @@ def _live_lease_chunks(*, colorize: bool = False) -> list[str]:
     The ``loop-owner`` lease is excluded: it is a session-ownership token,
     not a work loop, and its countdown is meaningless in the shared zones
     file (the per-session owner badge in ``statusline.sh`` replaces that
-    signal). The dedicated-loop ``loop:<name>`` leases (#1834) are
-    **per-session scoped** via :mod:`teatree.loop.loop_scoping` — only the
-    loops THIS session owns survive (fail-open, byte-identical under the
-    single-owner default). When *colorize* is set, each chunk is wrapped in
-    its recency color (:func:`_loop_recency_color`); fails open to ``[]``.
+    signal). The transient per-loop tick mutex ``loop-tick:<name>`` (#2650) is
+    excluded too: it is a concurrency lock held only for the beat, and while it
+    is held the matching ``loop:<name>`` owner lease is held as well — so
+    rendering it would show the currently-ticking loop twice, once as
+    ``tick:<name>`` and once as ``loop:<name>``. The dedicated-loop
+    ``loop:<name>`` leases (#1834) are **per-session scoped** via
+    :mod:`teatree.loop.loop_scoping` — only the loops THIS session owns survive
+    (fail-open, byte-identical under the single-owner default). When *colorize*
+    is set, each chunk is wrapped in its recency color
+    (:func:`_loop_recency_color`); fails open to ``[]``.
     """
     try:
         leases = _live_loop_leases()
@@ -224,7 +233,7 @@ def _live_lease_chunks(*, colorize: bool = False) -> list[str]:
             colorize=colorize,
         )
         for name, acquired_at in leases
-        if name != "loop-owner" and per_loop_chunk_visible(name, owned_per_loop)
+        if name != "loop-owner" and not is_transient_tick_mutex(name) and per_loop_chunk_visible(name, owned_per_loop)
     ]
 
 

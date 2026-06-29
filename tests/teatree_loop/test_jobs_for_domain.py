@@ -101,7 +101,13 @@ class JobsForDomainPartitionTestCase(TestCase):
         backend = self._backend()
         dispatch_jobs = jobs_for_domain(Domain.DISPATCH, backend)
         names = {job.scanner.name for job in dispatch_jobs}
-        assert names == {"pending_tasks", "incoming_events", "outbound_audit", "undelivered_notify"}
+        assert names == {
+            "pending_tasks",
+            "incoming_events",
+            "outbound_audit",
+            "undelivered_notify",
+            "deferred_question_poster",
+        }
         assert all(job.overlay == "" for job in dispatch_jobs)
 
     def test_dispatch_excluded_from_per_overlay_domains(self) -> None:

@@ -534,15 +534,23 @@ def extract_bash_payload(command: str, *, fail_closed_body_file: bool = False, c
         command_body_file_base,
         commit_body_file_base,
         heredoc_files_map,
+        piped_stdin_writer_body,
         unredirected_heredoc_bodies,
     )
 
     parts: list[str] = []
     tokens = tokenize(command)
+    # Heredocs fed straight to a CONSUMER (stdin / ``$(cat <<EOF)``) are part of
+    # the published payload and are appended below; their presence ALSO resolves
+    # a ``git commit -F -`` stdin body (the heredoc feeds git's stdin), so the
+    # ``-F -`` walker emits no spurious sentinel and never double-counts (#1415).
+    unredirected_heredocs = unredirected_heredoc_bodies(command)
     ctx = BodyFileContext(
         heredoc_files=heredoc_files_map(command, tokens),
         fail_closed_body_file=fail_closed_body_file,
         base=commit_body_file_base(command, cwd) or command_body_file_base(command) or cwd,
+        stdin_piped_body=piped_stdin_writer_body(tokens),
+        has_unredirected_heredoc=bool(unredirected_heredocs),
     )
     for segment in split_commands(tokens):
         _walk_command_segment(segment, parts, ctx)
@@ -552,7 +560,7 @@ def extract_bash_payload(command: str, *, fail_closed_body_file: bool = False, c
     # are emitted here; a ``> path <<EOF`` heredoc writes to a file resolved by
     # path-pairing, so emitting it blanket would scan an unposted scratch body
     # and double-count a posted one.
-    parts.extend(unredirected_heredoc_bodies(command))
+    parts.extend(unredirected_heredocs)
     # A forge call hidden inside an interpreter / wrapper argument
     # (``sh -c "gh ... --body X"``, ``eval``, ``ssh host gh``, ``xargs gh``)
     # carries its body in an opaque token the walkers cannot descend into; the
