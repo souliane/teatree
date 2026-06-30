@@ -168,10 +168,11 @@ class TestRecommendationProseNeverFires:
 
 # A PURE design-discussion turn (#2665 over-fire): a decision table whose rows are
 # locked design choices, with a "we're done / ready to go" sign-off — but NO active
-# ticket and NO delivery artifact (no MR/PR, branch, merge, commit, deliverable,
+# ticket and NO delivery context (no MR/PR, branch, merge, commit, deliverable,
 # ticket, E2E). The gate read the 6 decision rows as "6 deliverables" and the
 # locked/done wording as a multi-deliverable completion claim, forcing the agent to
-# escape with [skip-completion-gate]. With no delivery grounding it must NOT fire.
+# escape with [skip-completion-gate]. As a no-delivery-context design table it must
+# NOT fire.
 _DESIGN_DECISION_TABLE = (
     "Locking in the design decisions for the integration factory:\n"
     "- Stack: build directly on a thin Python harness on the Claude Agent SDK (locked)\n"
@@ -183,23 +184,57 @@ _DESIGN_DECISION_TABLE = (
     "Everything is locked. We're done here — ready to go when you start the build.\n"
 )
 
+# A genuine multi-deliverable false-"done" that uses NO delivery vocabulary at all
+# (no MR/PR/merge/branch/commit/ticket/E2E) — just enumerated units of work claimed
+# in place with no evidence map, on a loop-driven turn. The reviewer's over-exemption
+# finding: the prior delivery-grounding requirement let this slip through silently.
+# It is NOT a design-decision table (no locked/decided rows, no design frame), so it
+# MUST still fire.
+_NO_DELIVERY_VOCAB_FALSE_DONE = (
+    "Done - everything is in place:\n- validation logic added\n- error handling added\n- UI button wired up\n"
+)
+
+# A done-claim resting on "tests written" with no delivery vocab — also previously
+# slipped through the grounding requirement. Must still fire.
+_TESTS_WRITTEN_FALSE_DONE = "Everything is done:\n- core logic implemented\n- tests written\n- edge cases handled\n"
+
 
 class TestDesignDecisionTableNeverFires:
-    """Anti-vacuous pair: the no-grounding design FP passes; a grounded claim fires."""
+    """Anti-vacuous pair: the no-delivery-context design FP passes; a grounded claim fires."""
 
-    def test_design_decision_table_without_delivery_grounding_does_not_fire(self) -> None:
+    def test_design_decision_table_does_not_fire(self) -> None:
         # The over-fire: a decision table + "we're done / ready to go" sign-off with
-        # NO ticket/PR-delivery context must NOT read as a completion claim. Reverting
-        # the delivery-grounding guard makes this fire — the RED-on-revert anchor.
+        # NO delivery context must NOT read as a completion claim. Reverting the
+        # design-table suppression makes this fire — the RED-on-revert anchor.
         assert scanner.find_completion_block(_DESIGN_DECISION_TABLE) is None
 
     def test_delivery_grounded_multideliverable_claim_still_fires(self) -> None:
-        # Proves the grounding requirement did not neuter the gate: the same
+        # Proves the design-table suppression did not neuter the gate: the same
         # enumerated-and-claimed shape, once it cites real delivery artifacts (MRs,
         # the merge target), still blocks.
         verdict = scanner.find_completion_block(_STRANDED_CLAIM)
         assert verdict is not None
         assert verdict.deliverable_count == 3
+
+
+class TestMultiDeliverableFalseDoneWithoutDeliveryVocabStillFires:
+    """Reviewer regression: a no-evidence multi-deliverable done-claim fires with no delivery vocab."""
+
+    def test_no_delivery_vocab_false_done_fires(self) -> None:
+        # The reviewer's over-exemption finding: a multi-deliverable false-"done" that
+        # omits all delivery words must STILL block. Previously returned None.
+        verdict = scanner.find_completion_block(_NO_DELIVERY_VOCAB_FALSE_DONE)
+        assert verdict is not None
+        assert verdict.deliverable_count == 3
+        assert verdict.missing
+
+    def test_tests_written_grounded_false_done_fires(self) -> None:
+        # A done-claim resting on "tests written" with no delivery vocab must STILL
+        # block. Previously returned None under the grounding requirement.
+        verdict = scanner.find_completion_block(_TESTS_WRITTEN_FALSE_DONE)
+        assert verdict is not None
+        assert verdict.deliverable_count == 3
+        assert verdict.missing
 
 
 class TestFormatBlockMessage:
