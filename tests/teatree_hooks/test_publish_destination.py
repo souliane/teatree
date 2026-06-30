@@ -719,8 +719,8 @@ class TestRestrictedPathCwdResolution:
         # is unresolvable on PATH -- the offline ``.git/config`` parse supplies
         # the slug the allowlist matches. Before the fix the slug was empty, the
         # destination None, and the gate over-blocked.
-        repo = _repo_with_remote(tmp_path / "wt", "git@gitlab.com:oper-engineering/oper-client-workspace.git")
-        cfg = _private_repos_config(tmp_path, ["oper-engineering"])
+        repo = _repo_with_remote(tmp_path / "wt", "git@gitlab.com:acme-company/client-workspace.git")
+        cfg = _private_repos_config(tmp_path, ["acme-company"])
         monkeypatch.setenv("PATH", "")  # mimic the restricted hook subprocess: no git
         cmd = "glab mr create --source-branch x --target-branch master --fill"
         assert publish_destination.gate_skips_destination(cmd, repo, config_path=cfg) is True
@@ -731,11 +731,11 @@ class TestRestrictedPathCwdResolution:
         # The real-world shape: the agent's cwd is a LINKED worktree whose
         # ``.git`` is a FILE pointing at the shared common-dir config. The slug
         # must still resolve offline so the private post is not over-blocked.
-        repo = _repo_with_remote(tmp_path / "main", "git@gitlab.com:oper-engineering/oper-client-workspace.git")
+        repo = _repo_with_remote(tmp_path / "main", "git@gitlab.com:acme-company/client-workspace.git")
         _git(repo, "commit", "--allow-empty", "-m", "init")
         linked = tmp_path / "linked"
         _git(repo, "worktree", "add", str(linked), "-b", "feat/x")
-        cfg = _private_repos_config(tmp_path, ["oper-engineering"])
+        cfg = _private_repos_config(tmp_path, ["acme-company"])
         monkeypatch.setenv("PATH", "")
         cmd = "glab mr create --source-branch x --target-branch master --fill"
         assert publish_destination.gate_skips_destination(cmd, linked, config_path=cfg) is True
@@ -747,7 +747,7 @@ class TestRestrictedPathCwdResolution:
         # relax a genuinely-PUBLIC cwd. With the repo not in the allowlist and
         # the probe confirming PUBLIC, the flagless create still scans.
         repo = _repo_with_remote(tmp_path / "wt", "git@github.com:souliane/teatree.git")
-        cfg = _private_repos_config(tmp_path, ["oper-engineering"])
+        cfg = _private_repos_config(tmp_path, ["acme-company"])
         monkeypatch.setattr(publish_destination, "slug_is_private", lambda slug: False)
         monkeypatch.setenv("PATH", "")
         cmd = "gh pr create --title x --body y"

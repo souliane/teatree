@@ -37,8 +37,8 @@ class TestOriginUrlFromCheckout:
 
     def test_main_checkout_dir_git(self, tmp_path: Path) -> None:
         # A main checkout's ``.git`` is a directory that is its own common dir.
-        repo = _repo_with_remote(tmp_path / "r", "git@gitlab.com:oper-engineering/oper-client-workspace.git")
-        assert git_config_offline.origin_url(repo) == "git@gitlab.com:oper-engineering/oper-client-workspace.git"
+        repo = _repo_with_remote(tmp_path / "r", "git@gitlab.com:acme-company/client-workspace.git")
+        assert git_config_offline.origin_url(repo) == "git@gitlab.com:acme-company/client-workspace.git"
 
     def test_subdirectory_walks_up_to_repo_root(self, tmp_path: Path) -> None:
         repo = _repo_with_remote(tmp_path / "r", "https://github.com/acme-internal/app.git")
@@ -50,12 +50,12 @@ class TestOriginUrlFromCheckout:
         # The real-world hook case: the agent's cwd is a LINKED worktree whose
         # ``.git`` is a FILE ``gitdir: ...``; the origin lives in the shared
         # common-dir config and must resolve without a ``git`` subprocess.
-        repo = _repo_with_remote(tmp_path / "r", "git@gitlab.com:oper-engineering/oper-client-workspace.git")
+        repo = _repo_with_remote(tmp_path / "r", "git@gitlab.com:acme-company/client-workspace.git")
         _git(repo, "commit", "--allow-empty", "-m", "init")
         linked = tmp_path / "linked"
         _git(repo, "worktree", "add", str(linked), "-b", "feat/x")
         assert (linked / ".git").is_file()
-        assert git_config_offline.origin_url(linked) == "git@gitlab.com:oper-engineering/oper-client-workspace.git"
+        assert git_config_offline.origin_url(linked) == "git@gitlab.com:acme-company/client-workspace.git"
 
     def test_non_repo_dir_returns_empty(self, tmp_path: Path) -> None:
         assert git_config_offline.origin_url(tmp_path) == ""
@@ -74,10 +74,10 @@ class TestRemoteUrlFromConfig:
         text = (
             "[core]\n\trepositoryformatversion = 0\n"
             '[remote "upstream"]\n\turl = https://example.com/up/stream.git\n'
-            '[remote "origin"]\n\turl = git@gitlab.com:oper-engineering/svc.git\n'
+            '[remote "origin"]\n\turl = git@gitlab.com:acme-company/svc.git\n'
             "\tfetch = +refs/heads/*:refs/remotes/origin/*\n"
         )
-        assert git_config_offline._remote_url_from_config(text, "origin") == "git@gitlab.com:oper-engineering/svc.git"
+        assert git_config_offline._remote_url_from_config(text, "origin") == "git@gitlab.com:acme-company/svc.git"
 
     def test_section_name_is_case_insensitive(self) -> None:
         text = '[REMOTE "origin"]\n\tURL = git@gitlab.com:ns/repo.git\n'
