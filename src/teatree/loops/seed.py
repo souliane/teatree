@@ -54,16 +54,20 @@ def script_entry_point_for(name: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class LoopSeedSpec:
-    """One default loop's seed config — name, cadence, and how it is invoked.
+    """One default loop's seed config — name, cadence, description, and how it is invoked.
 
     ``prompt_body`` set ⇒ a prompt-backed loop (a :class:`Prompt` named for the
     loop is seeded and the FK points at it); otherwise the loop is script-backed
     at its OWN module (:func:`script_entry_point_for`). ``daily_at`` overrides the
-    interval for a once-per-day loop.
+    interval for a once-per-day loop. ``description`` is the loop's real one-line
+    "what it does and when" — the source of truth populated onto ``Loop.description``
+    (and the prompt-backed loop's ``Prompt.description``) and rendered by
+    ``t3 loops list``.
     """
 
     name: str
     delay_seconds: int
+    description: str
     daily_at: dt.time | None = None
     prompt_body: str | None = None
 
@@ -80,27 +84,114 @@ class LoopSeedSpec:
 # One autonomous loop per row, each on its own cadence. Every script-backed loop
 # points at its OWN module; ``arch_review`` is the single prompt-backed default.
 DEFAULT_LOOPS: tuple[LoopSeedSpec, ...] = (
-    LoopSeedSpec("inbox", 60),
-    LoopSeedSpec("idle_stack_reaper", 60),
-    LoopSeedSpec("local_stack_queue", 60),
-    LoopSeedSpec("resource_pressure", 60),
+    LoopSeedSpec(
+        "inbox",
+        60,
+        "Drains inbound Slack mentions, DMs, review-intent and RED-CARD reactions "
+        "(plus the Notion view) into the DB every 1m and routes them.",
+    ),
+    LoopSeedSpec(
+        "idle_stack_reaper",
+        60,
+        "Stops local dev stacks left idle past their threshold to free a concurrency slot; checks every 1m.",
+    ),
+    LoopSeedSpec(
+        "local_stack_queue",
+        60,
+        "Drains the local-stack acquisition queue, starting the next queued worktree "
+        "stack whose backoff retry is due; checks every 1m.",
+    ),
+    LoopSeedSpec(
+        "resource_pressure",
+        60,
+        "Auto-frees host disk and RAM when they cross the pressure threshold; "
+        "checks every 1m on its own ~5m internal cadence.",
+    ),
     # NOTE: ``slack_answer`` is intentionally absent — it has no registry
     # MiniLoop and runs only via the won-tick piggyback cycle (see the module
     # docstring). A seeded row would be an orphan the master tick can never run.
-    LoopSeedSpec("dispatch", 300),
-    LoopSeedSpec("tickets", 300),
-    LoopSeedSpec("review", 300),
-    LoopSeedSpec("ship", 300),
-    LoopSeedSpec("pane_reaper", 300),
-    LoopSeedSpec("audit", 1800),
-    LoopSeedSpec("followup", 1800),
-    LoopSeedSpec("issue_implementer", 3600),
-    LoopSeedSpec("housekeeping", 3600),
-    LoopSeedSpec("arch_review", 10800, prompt_body=ARCH_REVIEW_PROMPT_BODY),
-    LoopSeedSpec("dogfood", 86400),
-    LoopSeedSpec("eval_local", 86400),
-    LoopSeedSpec("news", 86400, daily_at=dt.time(8, 0)),
-    LoopSeedSpec("dream", 86400, daily_at=dt.time(3, 0)),
+    LoopSeedSpec(
+        "dispatch",
+        300,
+        "Runs the always-on global scanners every 5m: dispatches pending headless Tasks "
+        "to phase sub-agents, ingests incoming events, redelivers undelivered notifies, "
+        "and posts deferred questions.",
+    ),
+    LoopSeedSpec(
+        "tickets",
+        300,
+        "Scans the local Ticket DB and each code host every 5m — surfacing active and "
+        "stale tickets, dispositioning issues, and marking completed ones.",
+    ),
+    LoopSeedSpec(
+        "review",
+        300,
+        "Reviews colleague-authored open PRs every 5m and posts inline findings (with the "
+        "PR-sweep, codex double-check and Slack-broadcast companions).",
+    ),
+    LoopSeedSpec(
+        "ship",
+        300,
+        "Sweeps your own-authored open PRs every 5m: folds in approvals/CI and executes "
+        "the keystone merge of your PRs (consumes the orchestrator's MergeClear).",
+    ),
+    LoopSeedSpec(
+        "pane_reaper",
+        300,
+        "Demotes idle Agent-Teams maker panes past the idle threshold every 5m; inert unless team mode is enabled.",
+    ),
+    LoopSeedSpec(
+        "audit",
+        1800,
+        "Verifies and posts per-overlay failed-E2E results to Slack (driven by overlay watchers) every 30m.",
+    ),
+    LoopSeedSpec(
+        "followup",
+        1800,
+        "Intakes newly-assigned issues (auto-starting ready ones) and fires the review-request nag every 30m.",
+    ),
+    LoopSeedSpec(
+        "issue_implementer",
+        3600,
+        "Discovers and claims labelled backlog issues to auto-implement, kicking off the "
+        "maker pipeline; hourly, default-off behind a triple gate.",
+    ),
+    LoopSeedSpec(
+        "housekeeping",
+        3600,
+        "Fast-forwards the editable teatree and overlay installs (self-update) and pulls "
+        "each overlay's main clone hourly.",
+    ),
+    LoopSeedSpec(
+        "arch_review",
+        10800,
+        "Dispatches a sub-agent every 3h to run a holistic, codebase-wide architectural "
+        "review via the ac-reviewing-codebase skill.",
+        prompt_body=ARCH_REVIEW_PROMPT_BODY,
+    ),
+    LoopSeedSpec(
+        "dogfood",
+        86400,
+        "Runs the overlay provisioning smoke test once a day to catch broken worktree setup.",
+    ),
+    LoopSeedSpec(
+        "eval_local",
+        86400,
+        "Runs the local behavioral eval suite; the scanner enforces its own weekly cadence (checked daily).",
+    ),
+    LoopSeedSpec(
+        "news",
+        86400,
+        "Fires the daily news-scan task at 08:00 to surface relevant external releases and improvement ideas.",
+        daily_at=dt.time(8, 0),
+    ),
+    LoopSeedSpec(
+        "dream",
+        86400,
+        "Runs the nightly memory-consolidation pass at 03:00 — cross-link, merge, "
+        "reindex MEMORY.md, decay — off the live tick.",
+        daily_at=dt.time(3, 0),
+    ),
 )
 
 
@@ -123,6 +214,12 @@ def seed_default_loops_and_prompts() -> SeedResult:
     The cutover is plumbing only — no loop ticks until an operator deliberately
     enables it. ``get_or_create`` never reaches the ``defaults`` for a row that
     already exists, so an operator who has since ENABLED a loop keeps that choice.
+
+    **Descriptions backfill onto existing rows.** ``get_or_create`` populates
+    ``description`` on a fresh row; an earlier install's row predates the field and
+    carries a blank one, so the seed also backfills any blank ``description`` from
+    the spec. The backfill filters on ``description=""``, so it is idempotent and
+    never clobbers a description an operator rewrote.
     """
     from teatree.core.models import Loop, Prompt  # noqa: PLC0415
 
@@ -133,12 +230,14 @@ def seed_default_loops_and_prompts() -> SeedResult:
         if spec.is_prompt_backed:
             prompt, made = Prompt.objects.get_or_create(
                 name=spec.name,
-                defaults={"body": spec.prompt_body or "", "description": f"Default loop prompt for {spec.name!r}."},
+                defaults={"body": spec.prompt_body or "", "description": spec.description},
             )
             prompts_created += int(made)
+            Prompt.objects.filter(name=spec.name, description="").update(description=spec.description)
         defaults = {
             "delay_seconds": spec.delay_seconds,
             "daily_at": spec.daily_at,
+            "description": spec.description,
             "enabled": False,
         }
         if prompt is not None:
@@ -147,4 +246,5 @@ def seed_default_loops_and_prompts() -> SeedResult:
             defaults["script"] = spec.script_entry_point
         _, made = Loop.objects.get_or_create(name=spec.name, defaults=defaults)
         loops_created += int(made)
+        Loop.objects.filter(name=spec.name, description="").update(description=spec.description)
     return SeedResult(loops_created=loops_created, prompts_created=prompts_created)
