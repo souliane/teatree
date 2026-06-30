@@ -15,7 +15,6 @@ Exits 0 silently for passthrough.
 
 import argparse
 import contextlib
-import dataclasses
 import hashlib
 import json
 import os
@@ -28,7 +27,7 @@ import time
 import traceback
 from collections.abc import Iterator
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from types import ModuleType
@@ -64,6 +63,7 @@ from loop_owner_db import db_owner_is_current_session as _db_owner_is_current_se
 from loop_registrations import emit_loop_registrations, is_bare_loop_tick_prompt, loop_name_from_prompt
 from loop_state_self_pump_gate import db_loop_state_suppresses_self_pump
 from main_clone_guard import handle_block_main_clone_mutation
+from managed_repo import db_overlays_registry as _db_overlays_registry
 from managed_repo import file_is_inside_worktree as _file_is_inside_worktree
 from managed_repo import is_agent_state_path as _is_agent_state_path
 from managed_repo import load_protected_branches as _load_protected_branches
@@ -93,6 +93,8 @@ from raw_review_post_guard import REVIEW_POST_ENDPOINT_RE as _REVIEW_POST_ENDPOI
 from raw_review_post_guard import handle_block_raw_review_post
 from raw_review_post_guard import is_raw_review_write as _is_raw_review_write  # noqa: F401
 from secret_file_print_guard import handle_block_secret_file_print
+from self_dm_destinations import SelfDmDestinations as _SelfDmDestinations
+from self_dm_destinations import resolve_self_dm_destinations as _resolve_self_dm_destinations
 from state_files import append_line, read_lines
 from subagent_no_commit import handle_subagent_stop_no_commit
 from subagent_skill_gate import is_file_safe, unreferenced_demand_reason
@@ -2280,50 +2282,28 @@ def _self_dm_gate_enabled() -> bool:
     return _teatree_bool_setting("self_dm_gate_enabled", default=True)
 
 
-@dataclasses.dataclass(frozen=True)
-class _SelfDmDestinations:
-    """Resolved set of self-DM destination ids, with a read-success flag.
+def _self_dm_toml_config() -> dict[str, Any] | None:
+    """Parse ``~/.teatree.toml`` to a dict; ``None`` on a missing/unparsable file.
 
-    The set mirrors the canonical ``SlackBotBackend._is_self_dm``: each
-    overlay's ``slack_dm_channel_id`` (the ``D…`` self-IM id) AND each
-    ``slack_user_id`` plus the global ``[teatree] slack_user_id`` (the
-    ``U…`` id Slack accepts as a target that opens the self-IM).
-
-    ``resolved`` distinguishes a genuinely-empty configuration (nothing
-    declared → ALLOW silently) from an unreadable/unparsable one
-    (→ DENY fail-closed: the hook cannot self-identify the author without the
-    config, so a can't-read config must not let a self-DM through).
+    The toml IO stays in the router (not the ``self_dm_destinations`` sibling)
+    because it reads ``Path.home()`` and the gate's tests patch ``router.Path``.
     """
-
-    ids: frozenset[str]
-    resolved: bool
-
-
-def _self_dm_destination_ids() -> _SelfDmDestinations:
     import tomllib  # noqa: PLC0415
 
     config_path = Path.home() / ".teatree.toml"
     if not config_path.is_file():
-        return _SelfDmDestinations(frozenset(), resolved=False)
+        return None
     try:
         with config_path.open("rb") as f:
-            config = tomllib.load(f)
+            return tomllib.load(f)
     except Exception:  # noqa: BLE001
-        return _SelfDmDestinations(frozenset(), resolved=False)
-    ids: set[str] = set()
-    overlays = config.get("overlays")
-    if isinstance(overlays, dict):
-        for cfg in overlays.values():
-            if not isinstance(cfg, dict):
-                continue
-            for key in ("slack_dm_channel_id", "slack_user_id"):
-                value = cfg.get(key)
-                if isinstance(value, str) and value:
-                    ids.add(value)
-    teatree = config.get("teatree")
-    if isinstance(teatree, dict) and isinstance(teatree.get("slack_user_id"), str) and teatree["slack_user_id"]:
-        ids.add(teatree["slack_user_id"])
-    return _SelfDmDestinations(frozenset(ids), resolved=True)
+        return None
+
+
+def _self_dm_destination_ids() -> _SelfDmDestinations:
+    # DB-first (eliminate-~/.teatree.toml): the overlay registry resolves from the
+    # DB-home ``overlays`` row, so a DELETED toml still self-identifies the operator.
+    return _resolve_self_dm_destinations(_db_overlays_registry(), _self_dm_toml_config())
 
 
 def _self_dm_destination(tool_input: dict, dm_ids: frozenset[str]) -> str:
@@ -6651,7 +6631,7 @@ def _speak_settings() -> tuple[str, bool]:
     the defaults so the Stop arm stays silent unless the user opted in. A
     ``[teatree.speak]`` TOML value is ignored on read.
     """
-    from typing import Any, cast  # noqa: PLC0415
+    from typing import cast  # noqa: PLC0415
 
     from teatree.config import cold_reader  # noqa: PLC0415 — Django-free DB read on the pre-Django Stop path
 
