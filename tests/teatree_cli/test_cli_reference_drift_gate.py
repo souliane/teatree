@@ -127,8 +127,58 @@ class TestSyncCheckerFiresOnDrift:
         assert result.returncode == 1, f"checker must go red on stale doc:\n{result.stdout}"
 
 
+class TestSyncCheckerUnmaskableByGenerator:
+    """The sync checker catches a stale COMMITTED doc even after the generator runs.
+
+    souliane/teatree#2599: the gate's correctness must not hinge on the generator
+    NOT having repaired the working tree first (the generate-before-check
+    vacuousness class). ``check_cli_reference_sync.py`` re-renders in memory and
+    compares against the doc as it sits in the git INDEX — the bytes that will be
+    committed — so a working-tree regeneration by ``generate_cli_reference.py``
+    (which, under ``CLI_REFERENCE_NO_STAGE``, never stages) cannot mask the stale
+    committed bytes the gate exists to catch.
+    """
+
+    def _seed_stale_committed_repo(self, tmp_path: Path) -> Path:
+        repo = make_git_repo(tmp_path / "repo")
+        (repo / "docs" / "generated").mkdir(parents=True)
+        (repo / "scripts" / "hooks").mkdir(parents=True)
+        fresh = (_REPO_ROOT / "docs" / "generated" / "cli-reference.md").read_text(encoding="utf-8")
+        stale = fresh + "\nstale drift line the live CLI does not produce\n"
+        doc = repo / "docs" / "generated" / "cli-reference.md"
+        # Commit the STALE doc: index + HEAD hold the drifted bytes.
+        doc.write_text(stale, encoding="utf-8")
+        (repo / "scripts" / "hooks" / "check_cli_reference_sync.py").write_text(
+            _SYNC_CHECKER.read_text(encoding="utf-8"), encoding="utf-8"
+        )
+        run_git(repo, "add", ".")
+        run_git(repo, "commit", "-qm", "seed stale committed doc")
+        # Repair the WORKING-TREE doc to the fresh render — exactly what
+        # generate_cli_reference.py does under CLI_REFERENCE_NO_STAGE (write, do not
+        # stage) — so the index keeps the stale bytes while the working tree looks clean.
+        doc.write_text(fresh, encoding="utf-8")
+        return repo
+
+    def test_checker_catches_stale_committed_doc_after_worktree_repaired(self, tmp_path: Path) -> None:
+        repo = self._seed_stale_committed_repo(tmp_path)
+        # A working-tree read sees the repaired (fresh) doc and passes vacuously;
+        # reading the committed index must still go red on the stale committed bytes.
+        result = _run(repo / "scripts" / "hooks" / "check_cli_reference_sync.py")
+        assert result.returncode == 1, (
+            "sync checker must catch a stale COMMITTED doc even after the working tree "
+            f"was repaired to the fresh render (generate-before-check vacuousness):\n{result.stdout}"
+        )
+
+
 class TestDocsDriftCiUnmasksCliReference:
     """The docs-drift CI job must run the cli-reference generator with NO_STAGE."""
+
+    def test_sync_checker_runs_in_docs_drift(self) -> None:
+        joined = " ".join(str(s.get("run", "")) for s in _docs_drift_steps())
+        assert "check_cli_reference_sync.py" in joined, (
+            "docs-drift must run the in-memory cli-reference sync checker so a stale "
+            "committed reference fails the gate independent of git-add/diff semantics."
+        )
 
     def test_generator_runs_before_diff_assertion(self) -> None:
         runs = [s.get("run", "") for s in _docs_drift_steps()]
