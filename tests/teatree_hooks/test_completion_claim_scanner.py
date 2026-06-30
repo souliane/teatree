@@ -237,6 +237,62 @@ class TestMultiDeliverableFalseDoneWithoutDeliveryVocabStillFires:
         assert verdict.missing
 
 
+# The #2665 over-fire: a real ship report binds each deliverable to a 40-hex merge
+# commit SHA + a MERGED PR/MR state + origin/main HEAD + fast-forward — the
+# STRONGEST proof it landed on the merge target. The on-target recognizer enumerated
+# only English "landed on target" phrases, so every machine-grade row fell into
+# lines_without_evidence and the gate over-fired "N of N deliverables lack on-target
+# evidence". (Enumerated as list lines, not a `| … |` table — a pure markdown table
+# returns None for a different reason: its rows do not match _DELIVERABLE_LINE_RE.)
+# The spec-read and crucial-surface legs are confirmed too, so the ONLY leg the
+# recognizer extension clears is on-target — making this the RED-on-revert anchor.
+_MERGE_SHA_EVIDENCE_MAP = (
+    "I read the authoritative spec and its comments and enumerated every deliverable.\n"
+    "Both deliverables are merged and live on main — done.\n"
+    "- US-03 EURIBOR endpoint: MR !41 MERGED, merge commit "
+    "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0, origin/main HEAD = "
+    "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0, fast-forwarded.\n"
+    "- US-05 product-items endpoint: MR !42 MERGED, merge commit "
+    "0f1e2d3c4b5a69788796a5b4c3d2e1f0a9b8c7d6, origin/main HEAD = "
+    "0f1e2d3c4b5a69788796a5b4c3d2e1f0a9b8c7d6, fast-forwarded.\n"
+    "The crucial deliverable (US-03) is verified on its correct surface.\n"
+    "Both US-03 and US-05 are fixed and live on main.\n"
+)
+
+# The sibling over-exemption guard (#2842 must not re-open): a multi-deliverable
+# "done" whose ONLY evidence is "an MR/PR exists" — a PR url/number with NO merge
+# commit SHA and NO MERGED state. The spec-read and crucial-surface legs are
+# confirmed, so the on-target leg is the only thing that can keep it firing — and it
+# MUST, because neither row carries a merge SHA or a MERGED token.
+_MR_EXISTS_ONLY_FALSE_DONE = (
+    "I read the authoritative spec and its comments.\n"
+    "Both deliverables are done and ready to merge.\n"
+    "- US-03 EURIBOR endpoint: MR !41 opened, ready for review.\n"
+    "- US-05 product-items endpoint: PR #42 created, branch pushed.\n"
+    "The crucial deliverable (US-03) is verified on its correct surface.\n"
+)
+
+
+class TestMergeShaEvidenceClears:
+    """Anti-vacuous pair: the merge-SHA over-fire clears; the MR-exists-only claim fires."""
+
+    def test_merge_sha_evidence_map_does_not_fire(self) -> None:
+        # The over-fire: each row bound to a merge commit SHA + MERGED + origin/main
+        # HEAD + fast-forward is a COMPLETE on-target map. Reverting the recognizer
+        # alternations makes this fire — the RED-on-revert anchor.
+        assert scanner.find_completion_block(_MERGE_SHA_EVIDENCE_MAP) is None
+
+    def test_mr_exists_only_false_done_still_fires(self) -> None:
+        # The #2842 sibling over-exemption must NOT re-open: "MR opened" / "PR created"
+        # with no merge SHA and no MERGED state is not on-target evidence, so the
+        # multi-deliverable claim STILL blocks. Stays GREEN when the recognizer is
+        # reverted — proving the positive test isolates the recognizer, not the legs.
+        verdict = scanner.find_completion_block(_MR_EXISTS_ONLY_FALSE_DONE)
+        assert verdict is not None
+        assert verdict.deliverable_count == 2
+        assert any("on-target evidence" in reason for reason in verdict.missing)
+
+
 class TestFormatBlockMessage:
     def test_message_names_the_incomplete_legs(self) -> None:
         verdict = scanner.find_completion_block(_STRANDED_CLAIM)

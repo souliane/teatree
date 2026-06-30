@@ -83,6 +83,14 @@ _DELIVERABLE_LINE_RE: Final[re.Pattern[str]] = re.compile(
 
 # On-target evidence anchors: proof a deliverable landed on the actual merge
 # target. "an MR exists" is explicitly NOT evidence and must NOT match here.
+#
+# The machine-grade alternations (merge-commit SHA / MERGED state / origin-HEAD /
+# fast-forward) recognise the merged-to-target vocabulary a real ship report uses
+# (#2665 over-fire): a merge-commit SHA reachable from origin/main is the
+# STRONGEST possible proof a deliverable landed — you only obtain a merge SHA
+# AFTER the merge lands. Each hex SHA is anchored to a merge cue (merge commit /
+# merged as / origin-HEAD / fast-forwarded), never matched bare, so a SHA quoted
+# on an unmerged feature branch is not mistaken for on-target evidence.
 _ON_TARGET_EVIDENCE_RE: Final[re.Pattern[str]] = re.compile(
     r"\bmerged (?:to|into|onto) (?:the )?(?:merge )?target\b|"
     r"\bmerged to (?:main|master|develop|the default branch)\b|"
@@ -91,7 +99,12 @@ _ON_TARGET_EVIDENCE_RE: Final[re.Pattern[str]] = re.compile(
     r"\bverified on (?:the |its )?(?:correct |config |configuration |intended |right )*surface\b|"
     r"\bpassing e2e\b|\be2e (?:passes|passing|green)\b|"
     r"\bverified on (?:the )?deployed\b|"
-    r"\bevidence (?:posted|on target)\b",
+    r"\bevidence (?:posted|on target)\b|"
+    r"\bmerge(?:d)? commit\s+[0-9a-f]{7,40}\b|"
+    r"\b(?:squash[- ]?)?merged as\s+[0-9a-f]{7,40}\b|"
+    r"\b(?:pr|mr|pull request|merge request)\b[^.\n]*\bmerged\b|"
+    r"\borigin/[\w./-]+\s+HEAD\s*(?:is|=|now|at)\s*[0-9a-f]{7,40}\b|"
+    r"\bfast[- ]forwarded(?:\s+to)?\s+[0-9a-f]{7,40}\b",
     re.IGNORECASE,
 )
 
