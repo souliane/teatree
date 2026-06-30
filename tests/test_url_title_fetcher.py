@@ -9,6 +9,7 @@ import pytest
 from django.test import TestCase
 
 from teatree import url_title_fetcher as utf
+from teatree.config import get_effective_settings
 from teatree.core.models import ConfigSetting
 
 
@@ -128,6 +129,13 @@ class TestFetchTitlesDbHome(TestCase):
     def test_enabled_by_default_with_no_db_row(self) -> None:
         self.cache_path.write_text(json.dumps({"gitlab:g/r:merge_requests:1": "Cached title"}))
         assert utf.fetch_titles("https://gitlab.com/g/r/-/merge_requests/1") == ["Cached title"]
+
+
+class TestModuleScopeConfigImport:
+    def test_get_effective_settings_imported_at_module_scope(self):
+        # The deferred function-scoped form required a PLC0415 suppression that ruff
+        # autofix could strip then re-flag; importing at module scope removes that.
+        assert utf.get_effective_settings is get_effective_settings
 
 
 class TestEnrichPrompt:
