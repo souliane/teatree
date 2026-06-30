@@ -23,7 +23,7 @@ from teatree.core.management.commands._plan_gate_commands import (
 from teatree.core.management.commands._rubric_commands import RubricCommands
 from teatree.core.management.commands._ticket_show import TicketShowCommands
 from teatree.core.management.commands._transition_refusals import review_context_refusal
-from teatree.core.merge import MergePreconditionError, merge_ticket_pr
+from teatree.core.merge import MergePreconditionError, merge_ticket_pr, resolve_pr_repo_slug
 from teatree.core.models import ClearIssuanceError, ClearRequest, MergeClear, ReviewVerdict, Ticket
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.external_delivery import refresh_external_delivery_if_active
@@ -569,9 +569,13 @@ class Command(RubricCommands, TicketShowCommands, TyperCommand):
         # (issuance refused any non-green verdict). Record the durable read-side
         # sibling so a later `review status` lookup can answer "safe to approve
         # at the current head?" without re-deriving the cold review.
+        #
+        # Key the verdict under the SAME owner/repo the merge gate resolves, not
+        # the raw workstream `clear.slug`: a bare slug would record where the gate
+        # never queries. An already-qualified slug resolves to itself.
         verdict = ReviewVerdict.record(
             pr_id=clear.pr_id,
-            slug=clear.slug,
+            slug=resolve_pr_repo_slug(clear),
             reviewed_sha=clear.reviewed_sha,
             verdict=ReviewVerdict.Verdict.MERGE_SAFE,
             reviewer_identity=clear.reviewer_identity,
