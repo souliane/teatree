@@ -27,10 +27,31 @@ import typer
 from django_typer.management import TyperCommand, command
 
 
+def _refresh_loop_owner_statusline() -> None:
+    """Re-render the statusline after a global ``loop-owner`` ownership change.
+
+    The foreign-hijack RED anchor reads the DB ``loop-owner`` lease, but the
+    rendered zones file is rewritten only on a tick or an explicit re-render —
+    so a ``claim``/``take-over`` that transfers the lease to THIS session left
+    the stale pre-claim RED line (written by this session's own earlier foreign
+    render) alive in the file, split-brained against the live per-session badge
+    ``statusline.sh`` reads from the loop registry. Recomputing the anchor here
+    against the just-written owner (now this session) clears it in the same
+    command. Reuses the #2625 self-heal render seam. Fails open: a render error
+    must never fail the claim it follows.
+    """
+    try:
+        from teatree.loop.phases.render import rerender_statusline  # noqa: PLC0415
+
+        rerender_statusline()
+    except Exception:  # noqa: BLE001
+        return
+
+
 def _claim(slot: str, *, take_over: bool, json_output: bool, stdout_write) -> None:  # noqa: ANN001
     import os  # noqa: PLC0415
 
-    from teatree.core.loop_lease_manager import is_per_loop_owner_slot  # noqa: PLC0415
+    from teatree.core.loop_lease_manager import GLOBAL_OWNER_SLOT, is_per_loop_owner_slot  # noqa: PLC0415
     from teatree.core.models import LoopLease  # noqa: PLC0415
     from teatree.loop.session_identity import current_session_id, current_session_pid  # noqa: PLC0415
 
@@ -61,6 +82,10 @@ def _claim(slot: str, *, take_over: bool, json_output: bool, stdout_write) -> No
     won, owner = LoopLease.objects.claim_ownership(
         slot, session_id=session_id, take_over=take_over, owner_pid=owner_pid
     )
+    if won and slot == GLOBAL_OWNER_SLOT:
+        # The lease now names THIS session — clear any stale foreign-hijack
+        # anchor the rendered statusline still carries from before the claim.
+        _refresh_loop_owner_statusline()
     if json_output:
         stdout_write(json.dumps({"ok": won, "slot": slot, "owner_session": owner}, indent=2))
     elif won:
