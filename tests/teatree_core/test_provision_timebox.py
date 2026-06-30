@@ -9,12 +9,20 @@ from a true hang.
 """
 
 import subprocess
+import threading
 import time
 from unittest.mock import MagicMock, patch
 
+import pytest
 from django.test import TestCase, override_settings
 
-from teatree.core.provision_timebox import detect_migration_conflict, resolve_step_timeout_seconds, run_timeboxed_step
+from teatree.core.provision_timebox import (
+    detect_migration_conflict,
+    resolve_step_timeout_seconds,
+    run_timeboxed_callable,
+    run_timeboxed_db_import,
+    run_timeboxed_step,
+)
 from teatree.core.step_runner import run_step
 
 
@@ -122,3 +130,87 @@ class TestRunStepUsesTimebox(TestCase):
         assert result.success is False
         assert "timed out" in result.error
         assert mock_notify.called
+
+
+class TestRunTimeboxedCallable(TestCase):
+    """A callable provision step is wall-clock bounded (#2244).
+
+    The overlay's migrate / seed (each wrapping an inner `compose run`) aborts
+    loud with a named step when a child blocks on its PIPE, never hanging.
+    """
+
+    @patch("teatree.core.provision_timebox.notify_user")
+    def test_overrun_aborts_and_names_step(self, mock_notify: MagicMock) -> None:
+        release = threading.Event()
+        result = run_timeboxed_callable("seed", lambda: release.wait(timeout=3), timeout=0.1, heartbeat_interval=0.05)
+        release.set()
+        assert result.success is False
+        assert result.name == "seed"
+        assert "timed out" in result.error
+        assert mock_notify.called
+        assert "seed" in mock_notify.call_args.args[0]
+
+    @patch("teatree.core.provision_timebox.notify_user")
+    def test_clean_completed_process_is_interpreted(self, mock_notify: MagicMock) -> None:
+        ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="done", stderr="")
+        result = run_timeboxed_callable("migrate", lambda: ok, timeout=5)
+        assert result.success is True
+        assert result.stdout == "done"
+        assert not mock_notify.called
+
+    @patch("teatree.core.provision_timebox.notify_user")
+    def test_failed_completed_process_is_a_failure(self, mock_notify: MagicMock) -> None:
+        bad = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="boom")
+        result = run_timeboxed_callable("migrate", lambda: bad, timeout=5)
+        assert result.success is False
+        assert "boom" in result.error
+
+    @patch("teatree.core.provision_timebox.notify_user")
+    def test_heartbeat_fires_while_running(self, mock_notify: MagicMock) -> None:
+        beats: list[str] = []
+
+        def slow_then_finish() -> None:
+            time.sleep(0.2)
+
+        run_timeboxed_callable("seed", slow_then_finish, timeout=5, heartbeat_interval=0.05, heartbeat=beats.append)
+        assert beats, "expected at least one heartbeat while the callable ran"
+        assert any("seed" in b for b in beats)
+
+
+class TestRunTimeboxedDbImport(TestCase):
+    """The DB-import call is wall-clock bounded (#2244).
+
+    The no-DSLR-snapshot block aborts loud-and-fast with an actionable message
+    instead of hanging on a child stuck on its PIPE.
+    """
+
+    @patch("teatree.core.provision_timebox.notify_user")
+    def test_passes_through_success(self, mock_notify: MagicMock) -> None:
+        assert run_timeboxed_db_import(lambda: True, timeout=5) is True
+        assert not mock_notify.called
+
+    @patch("teatree.core.provision_timebox.notify_user")
+    def test_passes_through_failure(self, mock_notify: MagicMock) -> None:
+        assert run_timeboxed_db_import(lambda: False, timeout=5) is False
+        assert not mock_notify.called
+
+    @patch("teatree.core.provision_timebox.notify_user")
+    def test_overrun_returns_false_with_actionable_alert(self, mock_notify: MagicMock) -> None:
+        release = threading.Event()
+        result = run_timeboxed_db_import(lambda: release.wait(timeout=3) or True, timeout=0.1, heartbeat_interval=0.05)
+        release.set()
+        assert result is False
+        assert mock_notify.called
+        alert_text = mock_notify.call_args.args[0].lower()
+        assert "dslr snapshot" in alert_text
+        assert "db refresh" in alert_text
+
+    @patch("teatree.core.provision_timebox.notify_user")
+    def test_reraises_a_callable_exception(self, mock_notify: MagicMock) -> None:
+        def boom() -> bool:
+            msg = "kaboom"
+            raise RuntimeError(msg)
+
+        with pytest.raises(RuntimeError):
+            run_timeboxed_db_import(boom, timeout=5)
+        assert not mock_notify.called

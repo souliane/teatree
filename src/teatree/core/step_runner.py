@@ -227,6 +227,29 @@ def run_callable_step(name: str, fn: Callable[[], object]) -> StepResult:
         return StepResult(name=name, success=False, duration=duration, error=error)
 
 
+def _timeboxed_callable_step(name: str, fn: Callable[[], object]) -> StepResult:
+    """Run a callable provision step via the wall-clock time-box, degrading plain.
+
+    The callable sibling of :func:`_timeboxed_step`. Callable provision steps
+    (the overlay's migrate / seed wrapping an inner ``compose run``) had no
+    wall-clock bound, so a child blocked on its PIPE hung the whole provision
+    (souliane/teatree#2244); the time-box aborts loud with the named step
+    instead. When ``provision_timebox`` itself is absent on a stale base
+    (souliane/teatree#2664) this degrades to a plain :func:`run_callable_step`,
+    never aborting the caller. The catch is narrowed to the module's OWN absence
+    (``ModuleNotFoundError.name``) so a present-but-internally-broken module
+    re-raises rather than silently disabling the time-box.
+    """
+    try:
+        from teatree.core.provision_timebox import run_timeboxed_callable  # noqa: PLC0415
+    except ModuleNotFoundError as exc:
+        if exc.name != _PROVISION_TIMEBOX_MODULE:
+            raise
+        logger.warning("provision_timebox unavailable for callable step %r — plain run", name)
+        return run_callable_step(name, fn)
+    return run_timeboxed_callable(name, fn)
+
+
 def run_provision_steps(
     steps: list,
     *,
@@ -247,7 +270,7 @@ def run_provision_steps(
 
     for step in steps:
         write(f"  Running: {step.name}")
-        result = run_callable_step(step.name, step.callable)
+        result = _timeboxed_callable_step(step.name, step.callable)
         result = StepResult(
             name=result.name,
             success=result.success,

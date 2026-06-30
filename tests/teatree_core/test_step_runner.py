@@ -1,6 +1,7 @@
 """Tests for the structured step execution engine."""
 
 import subprocess
+import threading
 from functools import partial
 from unittest.mock import MagicMock, patch
 
@@ -297,3 +298,56 @@ class TestRunProvisionSteps(TestCase):
     def test_failed_required_step_none_when_all_pass(self) -> None:
         report = ProvisionReport(steps=[StepResult(name="ok", success=True)])
         assert report.failed_required_step is None
+
+
+class TestRunProvisionStepsTimebox(TestCase):
+    """A blocking callable provision step aborts loud (#2244).
+
+    A step that blocks on its inner subprocess (a hung `compose run`, a missing
+    DB source) is wall-clock bounded and fails with the named step instead of
+    hanging the whole provision.
+    """
+
+    @patch("teatree.core.provision_timebox.notify_user")
+    @patch("teatree.core.provision_timebox.resolve_step_timeout_seconds", return_value=0.1)
+    def test_blocking_required_step_aborts_loud(self, mock_ceiling: MagicMock, mock_notify: MagicMock) -> None:
+        release = threading.Event()
+        ran_after: list[str] = []
+        steps = [
+            ProvisionStep(name="seed", callable=lambda: release.wait(timeout=3), required=True),
+            ProvisionStep(name="after", callable=partial(ran_after.append, "after"), required=True),
+        ]
+        report = run_provision_steps(steps)
+        release.set()
+
+        assert report.success is False
+        assert report.failed_step == "seed"
+        assert "timed out" in report.steps[0].error
+        assert ran_after == []  # halted on the timed-out required step
+        assert mock_notify.called
+
+
+class TestRunProvisionStepsSurvivesMissingProvisionTimebox(TestCase):
+    """The callable path degrades to a plain run when the time-box is absent (#2664).
+
+    A worktree torn down from a stale base cannot import ``provision_timebox``;
+    the callable provision path must degrade, never abort the caller.
+    """
+
+    def test_callable_step_runs_when_module_absent(self) -> None:
+        ran: list[str] = []
+        steps = [ProvisionStep(name="noop", callable=partial(ran.append, "noop"), required=True)]
+
+        with provision_timebox_unimportable():
+            report = run_provision_steps(steps)
+
+        assert ran == ["noop"]
+        assert report.success is True
+
+    def test_callable_step_propagates_when_module_present_but_internally_broken(self) -> None:
+        steps = [ProvisionStep(name="noop", callable=lambda: None, required=True)]
+
+        with provision_timebox_internally_broken(), pytest.raises(ModuleNotFoundError) as exc_info:
+            run_provision_steps(steps)
+
+        assert exc_info.value.name == BROKEN_DEPENDENCY_NAME
