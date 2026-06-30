@@ -6,6 +6,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.models import Ticket, Worktree
+from teatree.core.worktree_env import compose_project
 
 
 class TestWorktreeTransitionSignals(TestCase):
@@ -258,3 +259,131 @@ class TestAssertDbNameUnclaimed(TestCase):
         )
 
         wt_b.assert_db_name_unclaimed()  # CREATED row owns no DB → no conflict
+
+
+class TestWorktreeComposeProjectIsIdentityScoped(TestCase):
+    """The docker compose project keys on the unique Ticket pk (#2774 follow-up).
+
+    ``ticket_number`` is a DERIVED, non-unique key, so two tickets on different
+    repos/forges can share one and collide on a single docker stack
+    (``COMPOSE_PROJECT_NAME``). Keying the project name on the immutable Ticket
+    pk — frozen on the row at provision time so a running stack is never renamed
+    out from under its containers — makes a cross-ticket clobber impossible. A
+    ticket's sibling repos each get their OWN stack (distinct ``repo_path``),
+    unlike the ticket-shared db_name.
+    """
+
+    def test_compose_project_keyed_on_ticket_pk_not_ticket_number(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://a.example.com/x/issues/5")
+        worktree = Worktree.objects.create(ticket=ticket, repo_path="backend", branch="5-x")
+        worktree.provision()
+        worktree.save()
+
+        assert worktree.compose_project == f"backend-wt{ticket.pk}"
+        assert worktree.compose_project != "backend-wt5"
+
+    def test_two_tickets_sharing_trailing_number_get_distinct_compose_projects(self) -> None:
+        ticket_a = Ticket.objects.create(issue_url="https://a.example.com/x/issues/5")
+        ticket_b = Ticket.objects.create(issue_url="https://b.example.com/y/issues/5")
+        wt_a = Worktree.objects.create(ticket=ticket_a, repo_path="backend", branch="5-a")
+        wt_b = Worktree.objects.create(ticket=ticket_b, repo_path="backend", branch="5-b")
+        wt_a.provision()
+        wt_a.save()
+        wt_b.provision()
+        wt_b.save()
+
+        assert compose_project(wt_a) != compose_project(wt_b)
+
+    def test_sibling_repos_of_one_ticket_get_distinct_compose_projects(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://a.example.com/x/issues/5")
+        backend = Worktree.objects.create(ticket=ticket, repo_path="backend", branch="5-x")
+        frontend = Worktree.objects.create(ticket=ticket, repo_path="frontend", branch="5-x")
+        backend.provision()
+        backend.save()
+        frontend.provision()
+        frontend.save()
+
+        assert backend.compose_project != frontend.compose_project
+
+    def test_provision_does_not_rename_an_already_stored_project(self) -> None:
+        # Sticky: a worktree whose compose project was set under a previous scheme
+        # (e.g. backfilled to its running stack's name) keeps that name across
+        # re-provision — renaming it would orphan its live containers.
+        ticket = Ticket.objects.create(issue_url="https://a.example.com/x/issues/5")
+        worktree = Worktree.objects.create(
+            ticket=ticket, repo_path="backend", branch="5-x", compose_project="backend-wt5"
+        )
+        worktree.provision()
+        worktree.save()
+
+        assert worktree.compose_project == "backend-wt5"
+
+
+class TestAssertComposeProjectUnclaimed(TestCase):
+    """``worktree start`` must refuse a compose project a foreign live worktree owns."""
+
+    def test_raises_when_another_live_different_ticket_owns_compose_project(self) -> None:
+        from teatree.core.models.worktree import WorktreeComposeProjectConflictError  # noqa: PLC0415
+
+        ticket_a = Ticket.objects.create(issue_url="https://a.example.com/x/issues/1")
+        ticket_b = Ticket.objects.create(issue_url="https://b.example.com/y/issues/2")
+        Worktree.objects.create(
+            ticket=ticket_a,
+            repo_path="backend",
+            branch="1-x",
+            compose_project="backend-wt-shared",
+            state=Worktree.State.SERVICES_UP,
+        )
+        wt_b = Worktree.objects.create(
+            ticket=ticket_b,
+            repo_path="backend",
+            branch="2-x",
+            compose_project="backend-wt-shared",
+            state=Worktree.State.PROVISIONED,
+        )
+
+        with pytest.raises(WorktreeComposeProjectConflictError):
+            wt_b.assert_compose_project_unclaimed()
+
+    def test_noop_when_compose_project_is_unique(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://a.example.com/x/issues/1")
+        worktree = Worktree.objects.create(
+            ticket=ticket,
+            repo_path="backend",
+            branch="1-x",
+            compose_project="backend-wt-unique",
+            state=Worktree.State.PROVISIONED,
+        )
+
+        worktree.assert_compose_project_unclaimed()  # no raise
+
+    def test_noop_when_compose_project_unset(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://a.example.com/x/issues/1")
+        worktree = Worktree.objects.create(
+            ticket=ticket,
+            repo_path="backend",
+            branch="1-x",
+            state=Worktree.State.CREATED,
+        )
+
+        worktree.assert_compose_project_unclaimed()  # empty project → nothing to claim
+
+    def test_ignores_created_state_row_that_owns_no_stack_yet(self) -> None:
+        ticket_a = Ticket.objects.create(issue_url="https://a.example.com/x/issues/1")
+        ticket_b = Ticket.objects.create(issue_url="https://b.example.com/y/issues/2")
+        Worktree.objects.create(
+            ticket=ticket_a,
+            repo_path="backend",
+            branch="1-x",
+            compose_project="backend-wt-shared",
+            state=Worktree.State.CREATED,
+        )
+        wt_b = Worktree.objects.create(
+            ticket=ticket_b,
+            repo_path="backend",
+            branch="2-x",
+            compose_project="backend-wt-shared",
+            state=Worktree.State.PROVISIONED,
+        )
+
+        wt_b.assert_compose_project_unclaimed()  # CREATED row owns no stack → no conflict

@@ -75,6 +75,10 @@ class WorktreeStartRunner(RunnerBase):
     def run(self) -> RunnerResult:
         worktree = self.worktree
         overlay = self.overlay
+        # Fail loud BEFORE any docker call: if another live, foreign-ticket worktree
+        # already owns this compose project, the `down` below would tear down ITS
+        # running stack — never clobber a foreign stack (#2774 follow-up).
+        worktree.assert_compose_project_unclaimed()
         project = compose_project(worktree)
 
         docker_compose_down(project, timeout=self.timeouts.get(DOCKER_COMPOSE_DOWN))

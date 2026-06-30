@@ -1,6 +1,6 @@
 """Every compose-project name derives through one helper (Follow-ups from #1998).
 
-The docker-compose project name ``<repo_path>-wt<ticket_number>`` was
+The docker-compose project name ``<repo_path>-wt<ticket.pk>`` was
 re-derived inline in several core modules (the stack gate, the env cache,
 the reconciler) instead of resolving through the single
 ``compose_project`` helper. A duplicated derivation drifts silently — a
@@ -47,7 +47,7 @@ def _make_worktree(*, ticket_number: str, repo_path: str = "backend") -> Worktre
 class TestComposeProjectSingleSource(TestCase):
     def test_helper_qualifies_repo_and_ticket(self) -> None:
         wt = _make_worktree(ticket_number="9001", repo_path="frontend")
-        assert compose_project(wt) == "frontend-wt9001"
+        assert compose_project(wt) == f"frontend-wt{wt.ticket.pk}"
 
     def test_helper_falls_back_to_repo_path_without_ticket(self) -> None:
         wt = _TicketlessWorktree(repo_path="backend")

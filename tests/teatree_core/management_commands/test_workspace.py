@@ -3079,6 +3079,7 @@ def _make_squash_merged_worktree(tmp: Path, *, overlay: str = "test", ticket_num
         repo_path="backend",
         branch="feature",
         db_name=f"wt_test_{ticket_number}",
+        compose_project=f"backend-wt{ticket_number}",
         state=Worktree.State.PROVISIONED,
         extra={"clone_path": str(work), "worktree_path": str(wt_path)},
     )
