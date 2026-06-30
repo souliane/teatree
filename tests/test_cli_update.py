@@ -172,6 +172,7 @@ class TestUpdateRepoSkips:
 
         assert result.status is UpdateStatus.SKIPPED
         assert "tracked" in result.reason.lower()
+        assert result.stale_kind == "dirty"
         assert result.is_error is False
         # Never clobbered — the local edit survives.
         assert (clone / "f.txt").read_text() == "local uncommitted work\n"
@@ -191,6 +192,7 @@ class TestUpdateRepoSkips:
 
         assert result.status is UpdateStatus.SKIPPED
         assert "branch" in result.reason.lower()
+        assert result.stale_kind == "off_default"
         assert _git(clone, "rev-parse", "--abbrev-ref", "HEAD") == "feature/wip"
 
     def test_non_default_branch_with_upstream_skips(self, tmp_path: Path) -> None:
@@ -1040,6 +1042,45 @@ class TestRunUpdateEndToEnd:
         update_mod._run_update()
 
         assert "+3 commits" in capsys.readouterr().out
+
+
+class TestStaleCloneNotice:
+    """``_run_update`` emits a DURABLE notice for a dirty/off-default skip (#2836)."""
+
+    def _stub_side_effects(self, monkeypatch: pytest.MonkeyPatch, clone: Path) -> None:
+        monkeypatch.setattr(update_mod, "_collect_repos", lambda: [("clone", clone)])
+        monkeypatch.setattr(update_mod, "_reinstall_and_resetup", lambda _r: None)
+        monkeypatch.setattr(update_mod, "ensure_self_db_migrated", lambda: False)
+
+    def test_dirty_skip_emits_durable_notice(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        bare = _make_remote(tmp_path)
+        clone = _clone(tmp_path, bare)
+        _advance_remote(tmp_path, bare)
+        (clone / "f.txt").write_text("local uncommitted work\n")
+        self._stub_side_effects(monkeypatch, clone)
+
+        with patch("teatree.core.stale_clone_notice.notify_stale_clone_skip") as spy:
+            update_mod._run_update()
+
+        spy.assert_called_once()
+        skip = spy.call_args.args[0]
+        assert skip.reason.value == "dirty"
+        assert skip.repo_path == str(clone)
+
+    def test_healthy_run_emits_no_notice(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        bare = _make_remote(tmp_path)
+        clone = _clone(tmp_path, bare)
+        _advance_remote(tmp_path, bare)
+        self._stub_side_effects(monkeypatch, clone)
+
+        with patch("teatree.core.stale_clone_notice.notify_stale_clone_skip") as spy:
+            update_mod._run_update()
+
+        spy.assert_not_called()
 
 
 if __name__ == "__main__":

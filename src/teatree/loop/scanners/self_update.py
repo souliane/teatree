@@ -110,6 +110,7 @@ class SelfUpdateScanner:
         signals: list[ScanSignal] = []
         for label, path in self.repos:
             outcome = self._process_one(label=label, path=path)
+            _maybe_notify_stale_clone(label=label, path=path, outcome=outcome)
             signals.append(_signal_from_outcome(label=label, outcome=outcome))
             logger.info(
                 "self_update %s outcome=%s reason=%s",
@@ -159,6 +160,44 @@ class SelfUpdateScanner:
             return False
         elapsed_hours = (timezone.now() - marker.last_pull_at).total_seconds() / 3600.0
         return elapsed_hours < self.cadence_hours
+
+
+def _maybe_notify_stale_clone(*, label: str, path: Path, outcome: _PullOutcome) -> None:
+    """Emit a durable notice when the clone was skipped as dirty / off-default (#2836).
+
+    Only the silently-stale skip classes notify: ``dirty_tracked`` and the
+    off-default ``branch=…`` reason (which includes a detached HEAD —
+    ``_current_branch`` returns ``HEAD`` when detached). CI-gated and
+    no-origin skips are expected waits, not a clone the operator must fix, so
+    they stay log-only. The notice is idempotent per (clone, reason, HEAD), so a
+    persistent skip is surfaced once rather than every tick.
+    """
+    if outcome.outcome != "skipped":
+        return
+    from teatree.core.stale_clone_notice import (  # noqa: PLC0415
+        StaleCloneReason,
+        StaleCloneSkip,
+        notify_stale_clone_skip,
+    )
+
+    reason = outcome.reason
+    if reason.startswith("dirty_tracked"):
+        kind, default_branch = StaleCloneReason.DIRTY, ""
+    elif reason.startswith("branch="):
+        kind = StaleCloneReason.OFF_DEFAULT
+        default_branch = reason.split("!=", 1)[1] if "!=" in reason else ""
+    else:
+        return
+    notify_stale_clone_skip(
+        StaleCloneSkip(
+            label=label,
+            repo_path=str(path),
+            reason=kind,
+            head_sha=outcome.old_sha,
+            default_branch=default_branch,
+            detail=reason,
+        )
+    )
 
 
 def _record_marker(*, label: str, path: Path, outcome: _PullOutcome) -> _PullOutcome:

@@ -53,6 +53,14 @@ from config_overwrite_guard import handle_block_config_overwrite
 from django_bootstrap import bootstrap_teatree_django
 from loop_registrations import emit_loop_registrations, is_bare_loop_tick_prompt, loop_name_from_prompt
 from loop_state_self_pump_gate import db_loop_state_suppresses_self_pump
+from main_clone_guard import handle_block_main_clone_mutation
+from managed_repo import file_is_inside_worktree as _file_is_inside_worktree
+from managed_repo import is_agent_state_path as _is_agent_state_path
+from managed_repo import load_protected_branches as _load_protected_branches
+from managed_repo import overlay_managed_repo_signals as _overlay_managed_repo_signals
+from managed_repo import repo_root_is_teatree_managed as _repo_root_is_teatree_managed
+from managed_repo import resolve_branch_and_root as _resolve_branch_and_root
+from managed_repo import teatree_src_on_path as _teatree_src_on_path
 from memory_recall import handle_recall_cold_memory
 from mr_cli_fields import extract_cli_mr_fields, extract_mr_target_repo, merge_target_is_managed
 from no_self_reviewer_assign import handle_block_self_reviewer_assign
@@ -1909,133 +1917,6 @@ def handle_block_edit_before_planned(data: dict) -> bool:
 
 
 # ── PreToolUse: protect-default-branch ─────────────────────────────
-
-
-_DEFAULT_PROTECTED_BRANCHES = {"main", "master"}
-
-
-def _load_protected_branches() -> set[str]:
-    """Return the merged set of protected branches from defaults + all overlays."""
-    import tomllib  # noqa: PLC0415
-
-    branches = set(_DEFAULT_PROTECTED_BRANCHES)
-    config_path = Path.home() / ".teatree.toml"
-    if not config_path.is_file():
-        return branches
-    try:
-        with config_path.open("rb") as f:
-            config = tomllib.load(f)
-    except Exception:  # noqa: BLE001
-        return branches
-    for overlay_cfg in config.get("overlays", {}).values():
-        branches.update(overlay_cfg.get("protected_branches", []))
-    return branches
-
-
-# Agent-harness state dirs that may sit UNDER a git repo's working tree
-# (e.g. ``~/.claude`` inside a dotfiles repo) but whose files are never
-# repo source. A Write here must never be blocked by the protected-branch
-# gate — editing agent memory / todos / per-project state on `main` is
-# exactly what the agent is supposed to do. Mirrors ``_KEEP_PATTERNS``.
-_AGENT_STATE_PATH_RE = re.compile(
-    r"/\.(claude|codex|cursor|copilot)/(projects/.*/memory/|memory/|todos/|statsig/|.*\.log$)",
-)
-
-
-def _is_agent_state_path(file_path: str) -> bool:
-    """True iff *file_path* is agent-harness state, not repo source.
-
-    Resolved to an absolute, symlink-free path first so a relative or
-    ``..``-laden path can't dodge the pattern. A resolution failure (a
-    path under a missing dir) falls back to the raw string — the regex
-    is anchored on the harness-dir segment, which survives either form.
-    """
-    try:
-        resolved = str(Path(file_path).expanduser().resolve())
-    except (OSError, RuntimeError):
-        resolved = file_path
-    return _AGENT_STATE_PATH_RE.search(resolved) is not None
-
-
-def _file_is_inside_worktree(repo_root: str, file_path: str) -> bool:
-    """True iff *file_path* resolves to a path inside *repo_root*'s working tree.
-
-    ``git -C <parent> rev-parse`` walks UP to the nearest enclosing
-    ``.git``, so the resolved repo root can be an ANCESTOR of the file
-    (a dotfiles/home repo the file merely sits under). Confirming the
-    file is genuinely within that root is what scopes the gate to the
-    TARGET FILE's repo rather than whatever happens to enclose its parent
-    dir (#126). A resolution failure means we cannot confirm containment —
-    fail open (return ``False``, do not block).
-    """
-    try:
-        file_resolved = Path(file_path).expanduser().resolve()
-        root_resolved = Path(repo_root).expanduser().resolve()
-    except (OSError, RuntimeError):
-        return False
-    try:
-        file_resolved.relative_to(root_resolved)
-    except ValueError:
-        return False
-    return True
-
-
-def _repo_root_is_teatree_managed(repo_root: str) -> bool:
-    """True iff *repo_root* is a teatree-MANAGED source repo.
-
-    The protected-branch gate guards only teatree core + the active
-    overlay's registered repos (``~/.teatree.toml``
-    ``workspace_repos`` / ``frontend_repos`` / ``public_repos`` slugs,
-    plus each overlay ``path``) — NOT every git repo (#126). An unmanaged
-    repo on ``main`` (a dotfiles repo, an unrelated clone) must not block,
-    so this returns ``False`` for any repo the managed-signal set does not
-    cover, and ``False`` on any classification error (fail OPEN — the
-    gate-over-deny class this whole change closes).
-
-    Reuses :func:`_overlay_managed_repo_signals` (the same signal source
-    as the out-of-band-merge gate) and ``publish_surface.slug_for_cwd``
-    so the slug shape matches the rest of the managed-repo machinery.
-    """
-    slugs, paths = _overlay_managed_repo_signals()
-    try:
-        root_resolved = Path(repo_root).expanduser().resolve()
-    except (OSError, RuntimeError):
-        return False
-    for base in paths:
-        with contextlib.suppress(OSError, RuntimeError):
-            root_resolved.relative_to(base)
-            return True
-    try:
-        with _teatree_src_on_path():
-            from teatree.hooks import publish_surface  # noqa: PLC0415
-
-            slug = publish_surface.slug_for_cwd(root_resolved).lower()
-    except Exception:  # noqa: BLE001
-        return False
-    return any(entry in slug for entry in slugs) if slug else False
-
-
-def _resolve_branch_and_root(parent: str) -> tuple[str, str] | None:
-    """Return ``(branch, repo_root)`` for the repo enclosing *parent*, or ``None``.
-
-    ``None`` when *parent* is not inside a git repo, on a git error, or on
-    a timeout — every one of which fails the gate open. ``git -C`` walks UP
-    to the nearest ``.git``, so the returned root can be an ancestor of the
-    file; :func:`_file_is_inside_worktree` is what re-scopes it.
-    """
-
-    def _rev_parse(*flags: str) -> str:
-        return subprocess.check_output(  # noqa: S603
-            ["git", "-C", parent, "--no-optional-locks", "rev-parse", *flags],  # noqa: S607
-            text=True,
-            timeout=3,
-            stderr=subprocess.DEVNULL,
-        ).strip()
-
-    try:
-        return _rev_parse("--abbrev-ref", "HEAD"), _rev_parse("--show-toplevel")
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
-        return None
 
 
 def handle_protect_default_branch(data: dict) -> bool:
@@ -6543,62 +6424,6 @@ def _is_raw_merge_api_write(command: str) -> bool:
     return _effective_method_is_write(command)
 
 
-def _overlay_managed_repo_signals() -> tuple[list[str], list[Path]]:
-    """Return ``(repo_slug_substrings, overlay_base_paths)`` from config.
-
-    Offline read of ``~/.teatree.toml`` (mirroring :func:`_load_protected_branches`'s
-    shape) collecting the two signals that mark a repo teatree-managed: the
-    per-overlay repo slug lists (``workspace_repos`` / ``frontend_repos`` /
-    ``public_repos``) and each overlay's ``path`` working-tree base. Teatree
-    core's own slug (``souliane/teatree``) is always included. Fails to an
-    empty signal set on a missing/broken config — the caller treats "no
-    resolvable signal + a resolvable slug" as unmanaged, never as a license
-    to weaken the gate on uncertainty.
-    """
-    import tomllib  # noqa: PLC0415
-
-    slugs: list[str] = ["souliane/teatree"]
-    paths: list[Path] = []
-    config_path = Path.home() / ".teatree.toml"
-    if not config_path.is_file():
-        return slugs, paths
-    try:
-        with config_path.open("rb") as f:
-            config = tomllib.load(f)
-    except Exception:  # noqa: BLE001
-        return slugs, paths
-    for overlay_cfg in (config.get("overlays") or {}).values():
-        if not isinstance(overlay_cfg, dict):
-            continue
-        for key in ("workspace_repos", "frontend_repos", "public_repos"):
-            slugs.extend(str(s).strip().lower() for s in overlay_cfg.get(key, []) if str(s).strip())
-        base = overlay_cfg.get("path")
-        if isinstance(base, str) and base.strip():
-            with contextlib.suppress(OSError, RuntimeError):
-                paths.append(Path(base).expanduser().resolve())
-    return slugs, paths
-
-
-@contextlib.contextmanager
-def _teatree_src_on_path() -> "Iterator[None]":
-    """Put the sibling ``src/`` on ``sys.path`` for the block, then restore it.
-
-    The hook runs in the user's session shell with no guarantee ``teatree`` is
-    importable (#1314); this is the shared bootstrap the lazy ``teatree.hooks``
-    imports in the merge gate rely on.
-    """
-    src_dir = str(Path(__file__).resolve().parents[2] / "src")
-    added = src_dir not in sys.path
-    if added:
-        sys.path.insert(0, src_dir)
-    try:
-        yield
-    finally:
-        if added:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(src_dir)
-
-
 def _cwd_is_teatree_managed(cwd: Path) -> bool | None:
     """Whether *cwd* belongs to a teatree-managed repo.
 
@@ -7878,6 +7703,7 @@ _HANDLERS: dict[str, list] = {
         handle_block_edit_before_planned,
         handle_block_config_overwrite,
         handle_protect_default_branch,
+        handle_block_main_clone_mutation,
         handle_block_self_dm_via_mcp,
         handle_quote_scanner_pretool,
         handle_dispatch_prompt_quote_scanner,

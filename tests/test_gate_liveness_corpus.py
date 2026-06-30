@@ -341,6 +341,31 @@ def _protect_branch_allow(ctx: GateContext) -> dict:
     return {"tool_name": "Edit", "tool_input": {"file_path": str(repo / "module.py")}}
 
 
+# block-main-clone-mutation (PreToolUse Bash): a `git checkout <feature>` run in
+# a teatree-managed MAIN CLONE (a `.git`-*dir* primary clone) is denied; a
+# read-only `git status` in the same clone passes through (#2836).
+
+
+def _main_clone_bash_deny(ctx: GateContext) -> dict:
+    repo = _managed_repo(ctx, "main")
+    return {
+        "session_id": ctx.session_id,
+        "tool_name": "Bash",
+        "tool_input": {"command": "git checkout feature"},
+        "cwd": str(repo),
+    }
+
+
+def _main_clone_bash_allow(ctx: GateContext) -> dict:
+    repo = _managed_repo(ctx, "main")
+    return {
+        "session_id": ctx.session_id,
+        "tool_name": "Bash",
+        "tool_input": {"command": "git status"},
+        "cwd": str(repo),
+    }
+
+
 # validate-mr-metadata Bash arm (PreToolUse Bash): glab mr create routes to the
 # overlay validator; rc!=0 denies, rc==0 allows.
 
@@ -754,6 +779,14 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         matched="Edit",
         deny_input=_protect_branch_deny,
         allow_input=_protect_branch_allow,
+    ),
+    GateRow(
+        gate_id="block-main-clone-mutation",
+        handler=router.handle_block_main_clone_mutation,
+        event="PreToolUse",
+        matched="Bash",
+        deny_input=_main_clone_bash_deny,
+        allow_input=_main_clone_bash_allow,
     ),
     GateRow(
         gate_id="validate-mr-metadata-bash",
