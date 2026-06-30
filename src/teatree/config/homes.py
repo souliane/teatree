@@ -17,10 +17,9 @@ set`` refuses to write one.
 The TOML-home set is the carve-out — a field stays here ONLY when a NON-DJANGO /
 PRE-DJANGO reader needs it (the DB is then unreachable) or it is a nested table with
 no flat ``ConfigSetting`` shape. The pre-Django readers: ``speak`` (the Stop hook
-re-reads ``[teatree.speak]`` with tomllib), ``autoload`` (the cold SessionStart /
+re-reads ``[teatree.speak]`` with tomllib) and ``autoload`` (the cold SessionStart /
 UserPromptSubmit hooks read ``[teatree] autoload`` pre-Django to decide engagement,
-#256), and ``statusline_chain`` (the bash statusline hook reads it straight from
-``~/.teatree.toml``). The nested structured table with no flat
+#256). The nested structured table with no flat
 scalar shape: ``mr_reminder``. Every other field is DB-home — it resolves from the
 ``ConfigSetting`` store + env, never from a ``[teatree]`` / ``[overlays.<name>]`` TOML
 value (which is ignored on read and the resolver warns on). ``workspace_dir`` and
@@ -53,14 +52,12 @@ class SettingHome(StrEnum):
 # from the partition. ``notify_on_behalf`` is ORed in by the autonomy collapse.
 DERIVED_FIELDS: frozenset[str] = frozenset({"notify_on_behalf"})
 
-# The TOML-home carve-out (exactly these four):
-# - non-Django / pre-Django readers (read via tomllib or a bash grep, no DB):
-#   ``speak`` (the Stop hook re-reads the ``[teatree.speak]`` sub-table with tomllib
-#   — it cannot reach the Django DB), ``autoload`` (the cold SessionStart /
-#   UserPromptSubmit hooks read ``[teatree] autoload`` with tomllib to decide
-#   default-off engagement, before any Django bootstrap — #256), and
-#   ``statusline_chain`` (the bash statusline hook reads ``[teatree]
-#   statusline_chain`` straight from ``~/.teatree.toml``).
+# The TOML-home carve-out (exactly these three):
+# - non-Django / pre-Django readers (read via tomllib, no DB): ``speak`` (the Stop
+#   hook re-reads the ``[teatree.speak]`` sub-table with tomllib — it cannot reach
+#   the Django DB) and ``autoload`` (the cold SessionStart / UserPromptSubmit hooks
+#   read ``[teatree] autoload`` with tomllib to decide default-off engagement,
+#   before any Django bootstrap — #256).
 # - nested structured table with no flat ConfigSetting shape: ``mr_reminder``
 #
 # eliminate-~/.teatree.toml LEFT the carve-out: ``check_updates`` (cold_reader on
@@ -70,9 +67,11 @@ DERIVED_FIELDS: frozenset[str] = frozenset({"notify_on_behalf"})
 # ``privacy`` (the last two per-overlay-TOML-overridable fields, now DB-home — the
 # gate reader ``teatree_gate._gate_key_is_enabled`` is already DB-first via
 # ``cold_reader`` with a TOML self-rescue fallback; ``privacy`` has no live reader);
-# and ``handover_mirror_path`` (the SessionStart bootstrap reader now reads the
+# ``handover_mirror_path`` (the SessionStart bootstrap reader now reads the
 # canonical sqlite via ``cold_reader``, which fails open to the same default path
-# ``write_mirror`` uses when unset — so it needs no TOML even when Django is down).
+# ``write_mirror`` uses when unset — so it needs no TOML even when Django is down);
+# and ``statusline_chain`` (the bash statusline hook reads it from the canonical
+# sqlite via the ``sqlite3`` CLI + ``json_each``, no importable teatree python).
 #
 # ``workspace_dir`` / ``worktrees_dir`` are DB-home (resolved Django-side off the
 # ``ConfigSetting`` store): worktrees regroup under a per-overlay default
@@ -85,7 +84,6 @@ _TOML_HOME: frozenset[str] = frozenset(
         "speak",
         "mr_reminder",
         "autoload",
-        "statusline_chain",
     }
 )
 

@@ -95,13 +95,13 @@ class TestTomlHomeIgnoresDb(TestCase):
         # Still the dataclass default (False) — the DB row never applies.
         assert get_effective_settings().autoload is False
 
-    def test_statusline_chain_resolves_from_teatree_not_db(self) -> None:
-        # statusline_chain is TOML-home: the bash statusline hook reads it
-        # straight from ~/.teatree.toml and can never reach the DB, so it must
-        # resolve from [teatree] and a ConfigSetting row for it is ignored.
+    def test_statusline_chain_resolves_from_db_not_teatree(self) -> None:
+        # eliminate-~/.teatree.toml: statusline_chain is DB-home — the bash
+        # statusline hook reads it from the canonical sqlite via json_each, so the
+        # ConfigSetting row wins and a [teatree] value is ignored on read.
         _write_toml(self.config_path, '[teatree]\nstatusline_chain = ["custom/*.sh"]\n')
         ConfigSetting.objects.set_value("statusline_chain", value=["db/*.sh"])
-        assert get_effective_settings().statusline_chain == ["custom/*.sh"]
+        assert get_effective_settings().statusline_chain == ["db/*.sh"]
 
 
 class TestOverlayScopeLayering(TestCase):
@@ -178,10 +178,10 @@ class TestDbHomeKeyInOverlayTomlIsLoud(TestCase):
 
     def test_no_warning_when_overlay_toml_has_only_toml_home_keys(self) -> None:
         # A clean overlay table (no DB-home key) emits no DB-home drop warning.
-        # ``statusline_chain`` is TOML-home and not a per-overlay DB-home key.
+        # ``autoload`` is TOML-home and not a per-overlay DB-home key.
         _write_toml(
             self.config_path,
-            '[teatree]\n\n[overlays.my-overlay]\nclass = "x.y:Z"\nstatusline_chain = []\n',
+            '[teatree]\n\n[overlays.my-overlay]\nclass = "x.y:Z"\nautoload = true\n',
         )
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "my-overlay")
         logger = logging.getLogger("teatree.config")

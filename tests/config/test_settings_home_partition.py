@@ -20,7 +20,6 @@ _TOML_CARVE_OUT = frozenset(
         "speak",
         "mr_reminder",
         "autoload",
-        "statusline_chain",
     }
 )
 
@@ -53,15 +52,23 @@ def test_db_home_and_toml_home_are_disjoint() -> None:
     assert db_home | toml_home == set(SETTING_HOMES)
 
 
-def test_toml_carve_out_is_exactly_the_four_fields() -> None:
-    # The carve-out — pre-Django/bash readers + the nested structured tables — is
-    # exactly these four and no more. eliminate-~/.teatree.toml has moved
-    # ``check_updates``, ``worktrees_dir`` / ``timezone``, the two former
-    # per-overlay-TOML-overridable fields (``orchestrator_bash_gate_enabled`` /
-    # ``privacy``), and ``handover_mirror_path`` to the DB.
+def test_toml_carve_out_is_exactly_the_three_fields() -> None:
+    # The carve-out — pre-Django readers + the nested structured table — is exactly
+    # these three and no more. eliminate-~/.teatree.toml has moved ``check_updates``,
+    # ``worktrees_dir`` / ``timezone``, the two former per-overlay-TOML-overridable
+    # fields (``orchestrator_bash_gate_enabled`` / ``privacy``), ``handover_mirror_path``,
+    # and ``statusline_chain`` to the DB.
     toml_home = {k for k, home in SETTING_HOMES.items() if home is SettingHome.TOML}
     assert toml_home == _TOML_CARVE_OUT
-    for moved in ("workspace_dir", "check_updates", "worktrees_dir", "timezone", "handover_mirror_path"):
+    moved_to_db = (
+        "workspace_dir",
+        "check_updates",
+        "worktrees_dir",
+        "timezone",
+        "handover_mirror_path",
+        "statusline_chain",
+    )
+    for moved in moved_to_db:
         assert moved not in toml_home
 
 
@@ -88,6 +95,13 @@ def test_handover_mirror_path_is_db_home() -> None:
     # the exact path ``write_mirror`` uses when unset — so the "read when the DB
     # is unreachable" carve-out is satisfied without TOML.
     assert SETTING_HOMES["handover_mirror_path"] is SettingHome.DB
+
+
+def test_statusline_chain_is_db_home() -> None:
+    # eliminate-~/.teatree.toml: the bash statusline hook reads ``statusline_chain``
+    # from the canonical sqlite via the ``sqlite3`` CLI + ``json_each`` (no
+    # importable teatree python, no TOML parse), so it is DB-home.
+    assert SETTING_HOMES["statusline_chain"] is SettingHome.DB
 
 
 def test_autoload_is_toml_home_not_db() -> None:

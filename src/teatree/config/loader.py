@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 import teatree.config as _facade
-from teatree.config.settings import E2ERepo, TeaTreeConfig, UserSettings, _parse_str_list
+from teatree.config.settings import E2ERepo, TeaTreeConfig, UserSettings
 from teatree.config_mr_reminder import resolve_mr_reminder
 from teatree.config_speak import resolve_speak
 from teatree.paths import DATA_DIR, get_data_dir
@@ -327,7 +327,6 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         autoload=teatree.get("autoload", False) is True,
         speak=resolve_speak(teatree),
         mr_reminder=resolve_mr_reminder(raw),
-        statusline_chain=_parse_str_list(teatree["statusline_chain"]) if "statusline_chain" in teatree else [],
     )
 
     return TeaTreeConfig(user=user, raw=raw)

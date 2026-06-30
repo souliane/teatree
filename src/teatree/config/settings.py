@@ -421,6 +421,10 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     # exact path ``write_mirror`` uses when unset — so the "read when the DB is
     # unreachable" carve-out is satisfied without TOML. Stored as a path STRING.
     "handover_mirror_path": _parse_handover_mirror_path,
+    # eliminate-~/.teatree.toml: ``statusline_chain``. The bash statusline hook now
+    # reads it from the canonical sqlite via the ``sqlite3`` CLI + ``json_each``
+    # (``_statusline_chain_db``) — no importable teatree python, no TOML parse.
+    "statusline_chain": _parse_str_list,
 }
 
 # TOML-home keys that ALSO support a per-overlay ``[overlays.<name>]`` override.

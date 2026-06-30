@@ -90,15 +90,13 @@ def test_agent_signature_defaults_off(tmp_path: Path) -> None:
 def test_toml_home_and_raw_keys_do_not_warn(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     # TOML-home carve-out fields, overlay discovery/messaging keys, and raw
     # bootstrap keys are legitimate in the file — they must NOT trip the WARN.
-    # ``workspace_dir`` is deliberately ABSENT here — it is DB-home now and warns
-    # on presence (see TestDbHomeTomlConflictWarning); this fixture covers only
-    # the keys that must STAY silent.
+    # ``workspace_dir`` / ``statusline_chain`` are deliberately ABSENT here — they
+    # are DB-home now and warn on presence (see TestDbHomeTomlConflictWarning);
+    # this fixture covers only the keys that must STAY silent.
     config_path = tmp_path / ".teatree.toml"
     _write_toml(
         config_path,
-        "[teatree]\nautoload = true\n"
-        'statusline_chain = []\nprivate_repos = ["acme/x"]\n\n'
-        '[overlays.myproj]\npath = "~/p"\n',
+        '[teatree]\nautoload = true\nprivate_repos = ["acme/x"]\n\n[overlays.myproj]\npath = "~/p"\n',
     )
     with caplog.at_level("WARNING", logger="teatree.config"):
         load_config(config_path)

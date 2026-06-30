@@ -81,6 +81,21 @@ _autoload_db_value() {
         || return 0
 }
 
+# The canonical ConfigSetting store's GLOBAL `statusline_chain` (a JSON array of
+# glob patterns), one element per line. Read-only via the sqlite3 CLI + `json_each`
+# (so the statusline needs no importable teatree python), with the same WAL
+# fallback as `_autoload_db_value`. Empty on no sqlite3, a missing DB, no row, or a
+# non-array value.
+_statusline_chain_db() {
+    command -v sqlite3 >/dev/null 2>&1 || return 0
+    local db="${T3_CONFIG_DB:-${XDG_DATA_HOME:-$HOME/.local/share}/teatree/db.sqlite3}"
+    [ -f "$db" ] || return 0
+    local q="SELECT je.value FROM teatree_config_setting t, json_each(t.value) je WHERE t.scope='' AND t.key='statusline_chain';"
+    sqlite3 "file:${db}?mode=ro" "$q" 2>/dev/null \
+        || sqlite3 "file:${db}?immutable=1" "$q" 2>/dev/null \
+        || return 0
+}
+
 # Session-start loop/statusline auto-load is OPT-IN (#256): default OFF so a
 # colleague who merely clones the repo never sees the loop statusline. ``autoload``
 # is the ONE owner flag (it engages the session AND arms its loops). Mirrors
@@ -684,28 +699,20 @@ elif [ -n "$_loop_owner_badge" ]; then
     printf '%s\n' "$_loop_owner_badge"
 fi
 
-# Chain extra statusline scripts from [teatree] statusline_chain in
-# ~/.teatree.toml. Each entry is a glob pattern; the latest match
-# (sort -V) is run with the Claude stdin JSON piped in.
+# Chain extra statusline scripts from the DB-home `statusline_chain` setting.
+# Each entry is a glob pattern; the latest match (sort -V) is run with the
+# Claude stdin JSON piped in.
 if [ -n "${input:-}" ]; then
-    _toml="$HOME/.teatree.toml"
-    if [ -r "$_toml" ]; then
-        _in_chain=false
-        while IFS= read -r _line; do
-            if [[ "$_line" =~ ^statusline_chain ]]; then _in_chain=true; continue; fi
-            $_in_chain || continue
-            [[ "$_line" =~ ^\] ]] && break
-            [[ "$_line" =~ ^[[:space:]]*\" ]] || continue
-            _pat=$(printf '%s' "$_line" | sed 's/.*"\(.*\)".*/\1/')
-            _pat="${_pat/#\~/$HOME}"
-            _resolved=$(ls -d $_pat 2>/dev/null | sort -V | tail -1)
-            [ -z "$_resolved" ] && continue
-            case "$_resolved" in
-                *.mjs|*.js) _runner="node" ;;
-                *.py)       _runner="python3" ;;
-                *)          _runner="bash" ;;
-            esac
-            printf '%s' "$input" | "$_runner" "$_resolved" 2>/dev/null
-        done < "$_toml"
-    fi
+    while IFS= read -r _pat; do
+        [ -z "$_pat" ] && continue
+        _pat="${_pat/#\~/$HOME}"
+        _resolved=$(ls -d $_pat 2>/dev/null | sort -V | tail -1)
+        [ -z "$_resolved" ] && continue
+        case "$_resolved" in
+            *.mjs|*.js) _runner="node" ;;
+            *.py)       _runner="python3" ;;
+            *)          _runner="bash" ;;
+        esac
+        printf '%s' "$input" | "$_runner" "$_resolved" 2>/dev/null
+    done < <(_statusline_chain_db)
 fi
