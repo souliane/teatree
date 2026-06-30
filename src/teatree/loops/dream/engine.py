@@ -75,6 +75,7 @@ import stat
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Protocol
 
@@ -142,10 +143,45 @@ class DistilledCluster:
     durable_destination: str
 
 
-class Distiller(Protocol):
-    """The injected LLM seam: extract → root-cause clusters."""
+class DistillEmptyReason(StrEnum):
+    """WHY a distiller produced 0 clusters — so a healthy-0 is told from a broken-0.
 
-    def __call__(self, extract: ConsolidationExtract) -> list[DistilledCluster]: ...
+    ``NOTHING_TO_CONSOLIDATE`` is the only HEALTHY value (the model returned a real
+    empty array — nothing met the consolidation bar). The other three are broken
+    output the operator must act on: ``EMPTY_RAW`` (the model returned empty /
+    whitespace), ``UNPARSABLE`` (no decodable JSON array in the reply), and
+    ``ALL_ENTRIES_DROPPED`` (an array decoded but every element was malformed).
+    """
+
+    NOTHING_TO_CONSOLIDATE = "nothing_to_consolidate"
+    EMPTY_RAW = "empty_raw"
+    UNPARSABLE = "unparsable"
+    ALL_ENTRIES_DROPPED = "all_entries_dropped"
+
+
+@dataclass(frozen=True, slots=True)
+class DistillResult:
+    """A distiller call's clusters plus, when empty, WHY (#2847).
+
+    ``empty_reason`` is set exactly when ``clusters`` is empty and ``None`` otherwise,
+    so :func:`distill_in_batches` can surface a broken parse distinctly from a genuine
+    no-consolidation in its 0-cluster WARNING.
+    """
+
+    clusters: list[DistilledCluster]
+    empty_reason: DistillEmptyReason | None
+
+
+class Distiller(Protocol):
+    """The injected LLM seam: extract → root-cause clusters.
+
+    The production distiller returns a :class:`DistillResult` carrying the clusters and,
+    when empty, the :class:`DistillEmptyReason` so the 0-cluster path is diagnosable. A
+    test fake may return a bare ``list[DistilledCluster]``; :func:`distill_in_batches`
+    normalizes both, so a minimal fake never constructs a diagnostic it has no basis for.
+    """
+
+    def __call__(self, extract: ConsolidationExtract) -> list[DistilledCluster] | DistillResult: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -431,11 +467,11 @@ def run_consolidation(
     descriptors, never a scenario file or fixture.
     """
     from teatree.loops.dream.distill import distill_in_batches  # noqa: PLC0415
-    from teatree.loops.dream.sdk_distiller import sdk_distiller  # noqa: PLC0415
+    from teatree.loops.dream.sdk_distiller import sdk_distill  # noqa: PLC0415
 
     members = enumerate_members(since=since)
     extract = build_extract(members)
-    distill = distiller or sdk_distiller
+    distill = distiller or sdk_distill
     outcome = distill_in_batches(extract, distiller=distill)
     clusters = outcome.clusters
     written = write_clusters(clusters, extract, dry_run=dry_run, overlay=overlay)
@@ -456,6 +492,8 @@ def run_consolidation(
 
 __all__ = [
     "ConsolidationExtract",
+    "DistillEmptyReason",
+    "DistillResult",
     "DistilledCluster",
     "Distiller",
     "DreamRunResult",

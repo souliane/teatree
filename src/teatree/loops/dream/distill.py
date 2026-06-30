@@ -18,7 +18,7 @@ import logging
 import os
 from dataclasses import dataclass
 
-from teatree.loops.dream.engine import ConsolidationExtract, DistilledCluster, Distiller
+from teatree.loops.dream.engine import ConsolidationExtract, DistilledCluster, Distiller, DistillResult
 
 logger = logging.getLogger(__name__)
 
@@ -80,23 +80,34 @@ def distill_in_batches(extract: ConsolidationExtract, *, distiller: Distiller) -
     oversized call can never silently return nothing. Clusters are merged
     last-wins by ``cluster_key`` (the ledger's idempotency anchor), so a key
     surfaced in two batches collapses to one row instead of duplicating. A batch
-    that returns 0 clusters from a NON-empty member set is counted and logged —
-    the silent-empty case is surfaced, never swallowed.
+    that returns 0 clusters from a NON-empty member set is counted and logged with
+    the distiller's :class:`~teatree.loops.dream.engine.DistillEmptyReason` so the
+    operator can tell a healthy no-consolidation from a broken parse (#2847) — the
+    silent-empty case is surfaced with WHY, never swallowed.
     """
     merged: dict[str, DistilledCluster] = {}
     empty_batches = 0
     for batch in _batch_extracts(extract, _max_distill_members()):
-        clusters = distiller(batch)
-        if not clusters:
+        result = _as_result(distiller(batch))
+        if not result.clusters:
             empty_batches += 1
+            reason = f" — reason: {result.empty_reason.value}" if result.empty_reason else ""
             logger.warning(
-                "dream distiller returned 0 clusters from a non-empty batch of %d member(s)",
+                "dream distiller returned 0 clusters from a non-empty batch of %d member(s)%s",
                 len(batch.snippets),
+                reason,
             )
             continue
-        for cluster in clusters:
+        for cluster in result.clusters:
             merged[cluster.cluster_key] = cluster
     return BatchDistillOutcome(clusters=list(merged.values()), empty_batches=empty_batches)
+
+
+def _as_result(returned: list[DistilledCluster] | DistillResult) -> DistillResult:
+    """Normalize a distiller return: the real distiller carries a reason, a fake may not."""
+    if isinstance(returned, DistillResult):
+        return returned
+    return DistillResult(clusters=returned, empty_reason=None)
 
 
 __all__ = ["BatchDistillOutcome", "distill_in_batches"]

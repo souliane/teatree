@@ -1,9 +1,9 @@
 """The real LLM distiller: extract → root-cause clusters via one headless SDK call.
 
-This is the only place the dream pass touches an LLM. :func:`sdk_distiller` is the
-default :class:`~teatree.loops.dream.engine.Distiller` the engine injects; tests pass a
-fake so the engine — and every phase around it — runs with no LLM. The concern split out
-of :mod:`teatree.loops.dream.engine` (#2723) is the LLM call + defensive JSON parse.
+This is the only place the dream pass touches an LLM. :func:`sdk_distill` is the default
+:class:`~teatree.loops.dream.engine.Distiller` the engine injects; tests pass a fake so the
+engine — and every phase around it — runs with no LLM. The concern split out of
+:mod:`teatree.loops.dream.engine` (#2723) is the LLM call + defensive JSON parse.
 
 :func:`_run_distiller_turn` makes ONE bounded headless ``claude-agent-sdk`` turn (the
 headless-runner invocation shape: ``claude_code`` preset, ``bypassPermissions``, a
@@ -14,8 +14,12 @@ query, AND the response drain — so a stuck subprocess connect can never hang t
 forever (the prior watchdog wrapped only the response drain, leaving connect/query
 unbounded: a stalled ``claude`` spawn hung the pass with no rows, no marker, no output).
 
-:func:`_parse_clusters` tolerates surrounding prose and drops malformed entries so one bad
-element never discards a valid batch.
+:func:`_extract_json_array` finds the model's top-level JSON array tolerating bracket-heavy
+prose around it (a balanced-bracket scan, not the prior greedy first-``[`` … last-``]``
+span that swallowed prose brackets and silently yielded 0 — #2847). :func:`sdk_distill`
+classifies an empty return into a :class:`~teatree.loops.dream.engine.DistillEmptyReason`
+so a genuine no-consolidation is told from a broken parse; :func:`sdk_distiller` is the
+clusters-only convenience for callers that do not need that diagnostic.
 
 :func:`deterministic_cluster_key` is the idempotency anchor — sha256 over the normalized
 member set, NOT the LLM's prose slug (#2723), matching the ``ConsolidatedMemory`` docstring.
@@ -24,10 +28,11 @@ Two runs that group the same members under different wording upsert to one ledge
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping, Sequence
 from typing import cast
 
-from teatree.loops.dream.engine import ConsolidationExtract, DistilledCluster
+from teatree.loops.dream.engine import ConsolidationExtract, DistilledCluster, DistillEmptyReason, DistillResult
 
 _DISTILL_SYSTEM_PROMPT = (
     "You consolidate an agent's recent feedback and lessons into durable rules. "
@@ -60,6 +65,15 @@ _DISTILL_MODEL = "claude-haiku-4-5"
 #: to fork a duplicate row; the deterministic key upserts instead.
 _REQUIRED_CLUSTER_KEYS = ("rule", "source_files", "is_binding", "verified_citation")
 
+#: A fenced ```json … ``` block the model may wrap its array in. Tried after a direct
+#: decode and before the balanced-bracket scan in :func:`_extract_json_array`.
+_JSON_FENCE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
+
+#: Anchored decoder for the balanced-bracket scan: ``raw_decode`` parses exactly one
+#: JSON value starting at a given ``[`` and returns where it ended, so a prose span
+#: that is not valid JSON raises and is skipped rather than swallowing the real array.
+_DECODER = json.JSONDecoder()
+
 
 def deterministic_cluster_key(source_files: Sequence[str]) -> str:
     """The idempotency anchor: sha256 over the normalized, sorted member identities.
@@ -74,19 +88,27 @@ def deterministic_cluster_key(source_files: Sequence[str]) -> str:
     return hashlib.sha256("\n".join(members).encode("utf-8")).hexdigest()
 
 
-def sdk_distiller(extract: ConsolidationExtract) -> list[DistilledCluster]:
-    """The real distiller: one bounded headless SDK call, parsed defensively.
+def sdk_distill(extract: ConsolidationExtract) -> DistillResult:
+    """The real distiller: one bounded headless SDK call, parsed defensively (#2847).
 
     An empty extract short-circuits without an LLM call. Otherwise one bounded
     turn through :func:`_run_distiller_turn` produces JSON, which is parsed into
     clusters; malformed or partial JSON yields no clusters rather than a crash.
+    When 0 clusters result, the :class:`~teatree.loops.dream.engine.DistillResult`
+    carries WHY (empty raw / unparsable / all-entries-dropped / genuine empty
+    array) so the operator can tell a healthy no-consolidation from a broken parse.
     An SDK failure propagates so the command marks the pass attempted-not-
     succeeded (staleness keeps firing) — never laundered into a fake success.
     """
     if not extract.snippets:
-        return []
+        return DistillResult(clusters=[], empty_reason=DistillEmptyReason.NOTHING_TO_CONSOLIDATE)
     raw = _run_distiller_turn(extract)
-    return _parse_clusters(raw)
+    return _parse_distill_result(raw)
+
+
+def sdk_distiller(extract: ConsolidationExtract) -> list[DistilledCluster]:
+    """Clusters-only distiller for callers that do not need the empty-reason diagnostic."""
+    return sdk_distill(extract).clusters
 
 
 def _render_snippets(extract: ConsolidationExtract) -> str:
@@ -143,34 +165,76 @@ async def _collect_turn(prompt: str) -> str:
     return "\n".join(parts)
 
 
-def _parse_clusters(raw: str) -> list[DistilledCluster]:
-    """Parse the distiller's JSON array into clusters, dropping malformed entries.
+def _parse_distill_result(raw: str) -> DistillResult:
+    """Parse the distiller's reply into clusters AND classify an empty result (#2847).
 
-    Tolerates surrounding prose by scanning for the first ``[`` … matching
-    ``]``. An entry missing a required key is skipped (not fatal), so one bad
-    element never discards a whole valid batch.
+    Drops malformed entries so one bad element never discards a valid batch. When the
+    result is empty the reason distinguishes a broken parse (empty/whitespace raw,
+    unparsable raw, or an array whose every entry was malformed) from a genuine empty
+    array (the model found nothing to consolidate — healthy).
     """
+    if not raw.strip():
+        return DistillResult(clusters=[], empty_reason=DistillEmptyReason.EMPTY_RAW)
     payload = _extract_json_array(raw)
     if payload is None:
-        return []
+        return DistillResult(clusters=[], empty_reason=DistillEmptyReason.UNPARSABLE)
     clusters: list[DistilledCluster] = []
     for entry in payload:
         cluster = _coerce_cluster(entry)
         if cluster is not None:
             clusters.append(cluster)
-    return clusters
+    if clusters:
+        return DistillResult(clusters=clusters, empty_reason=None)
+    reason = DistillEmptyReason.NOTHING_TO_CONSOLIDATE if not payload else DistillEmptyReason.ALL_ENTRIES_DROPPED
+    return DistillResult(clusters=[], empty_reason=reason)
 
 
 def _extract_json_array(raw: str) -> list[object] | None:
-    start = raw.find("[")
-    end = raw.rfind("]")
-    if start == -1 or end == -1 or end < start:
-        return None
+    """Find the model's top-level JSON array, tolerating bracketed prose around it.
+
+    Three tiers, first hit wins: (1) the stripped reply IS a JSON array; (2) a fenced
+    ```json code block holds one; (3) a balanced-bracket scan returns the FIRST ``[`` …
+    ``]`` span that decodes to a list. The scan — not the prior greedy first-``[`` …
+    last-``]`` span — is what makes bracket-heavy prose (markdown links, ``#N`` refs,
+    regex classes) around the array safe: a prose ``[…]`` that is not valid JSON is
+    skipped instead of swallowing the real array (#2847).
+    """
+    direct = _loads_array(raw.strip())
+    if direct is not None:
+        return direct
+    for match in _JSON_FENCE.finditer(raw):
+        fenced = _loads_array(match.group(1).strip())
+        if fenced is not None:
+            return fenced
+    return _first_balanced_array(raw)
+
+
+def _loads_array(text: str) -> list[object] | None:
     try:
-        parsed = json.loads(raw[start : end + 1])
+        parsed = json.loads(text)
     except json.JSONDecodeError:
         return None
     return parsed if isinstance(parsed, list) else None
+
+
+def _first_balanced_array(raw: str) -> list[object] | None:
+    """Return the first ``[``-anchored span that ``json`` decodes to a list.
+
+    Attempts a strict decode at each ``[`` (``raw_decode`` stops at the value's own
+    matching ``]`` and handles nested arrays and brackets-inside-strings natively), so
+    a bracketed prose span that is not valid JSON — a markdown ref, a regex class — is
+    skipped instead of being swallowed by the prior greedy first-``[`` … last-``]`` span.
+    A successful decode anchored at ``[`` is always a JSON array by grammar.
+    """
+    for i, ch in enumerate(raw):
+        if ch != "[":
+            continue
+        try:
+            parsed, _ = _DECODER.raw_decode(raw, i)
+        except json.JSONDecodeError:
+            continue
+        return cast("list[object]", parsed)
+    return None
 
 
 def _coerce_cluster(entry: object) -> DistilledCluster | None:
@@ -193,4 +257,4 @@ def _coerce_cluster(entry: object) -> DistilledCluster | None:
     )
 
 
-__all__ = ["deterministic_cluster_key", "sdk_distiller"]
+__all__ = ["deterministic_cluster_key", "sdk_distill", "sdk_distiller"]

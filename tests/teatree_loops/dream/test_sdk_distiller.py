@@ -11,7 +11,7 @@ import pytest
 from django.test import SimpleTestCase
 
 from teatree.loops.dream import sdk_distiller
-from teatree.loops.dream.engine import ConsolidationExtract, WeightedSnippet
+from teatree.loops.dream.engine import ConsolidationExtract, DistillEmptyReason, WeightedSnippet
 from teatree.loops.dream.sdk_distiller import deterministic_cluster_key
 from tests.teatree_agents._sdk_fake import FakeSdkClient, assistant_text
 
@@ -49,6 +49,68 @@ class SdkDistillerParseTestCase(SimpleTestCase):
         with patch.object(sdk_distiller, "_run_distiller_turn", return_value=payload):
             clusters = sdk_distiller.sdk_distiller(_extract_with_one_snippet())
         assert len(clusters) == 1
+
+    def test_parses_json_with_bracketed_prose_around_the_array(self) -> None:
+        # #2847 RED: the model wraps its array in bracket-heavy prose (a markdown-ish
+        # ref and a trailing marker). The greedy first-"[" .. last-"]" span captured the
+        # prose brackets, json.loads raised, and the batch silently yielded 0. The
+        # balanced-bracket scan must skip the prose "[...]" spans and return the real array.
+        payload = (
+            "Here are the clusters [per your guidance #2663]: "
+            '[{"cluster_key":"k1","rule":"do x","source_files":["/feedback_x.md"],'
+            '"is_binding":true,"verified_citation":"x","durable_destination":"d.md"}]'
+            " — done [end]"
+        )
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value=payload):
+            clusters = sdk_distiller.sdk_distiller(_extract_with_one_snippet())
+        assert len(clusters) == 1
+        assert clusters[0].source_files == ["/feedback_x.md"]
+
+    def test_parses_json_from_a_fenced_code_block(self) -> None:
+        # The model wraps its array in a ```json fence; the direct decode fails on the
+        # backticks, so the fenced-block tier must extract and decode the inner array.
+        payload = (
+            "```json\n"
+            '[{"cluster_key":"k1","rule":"do x","source_files":["/feedback_x.md"],'
+            '"is_binding":false,"verified_citation":"x","durable_destination":""}]\n'
+            "```"
+        )
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value=payload):
+            clusters = sdk_distiller.sdk_distiller(_extract_with_one_snippet())
+        assert len(clusters) == 1
+
+    def test_balanced_scan_skips_string_brackets_and_a_bad_prose_span(self) -> None:
+        # A leading prose "[noise]" span must be skipped, and a JSON string value carrying
+        # an escaped quote and bracket characters must NOT skew the bracket depth.
+        payload = (
+            "prose [noise] "
+            '[{"cluster_key":"k1","rule":"match \\"x\\" in [a-z]+",'
+            '"source_files":["/feedback_x.md"],"is_binding":false,'
+            '"verified_citation":"q","durable_destination":""}]'
+        )
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value=payload):
+            clusters = sdk_distiller.sdk_distiller(_extract_with_one_snippet())
+        assert len(clusters) == 1
+        assert clusters[0].source_files == ["/feedback_x.md"]
+
+    def test_fenced_non_array_falls_through_to_the_balanced_scan(self) -> None:
+        # A ```json fence wrapping a JSON object (not an array) is not the result; the
+        # scan must fall through to the real array that follows in prose.
+        payload = (
+            '```json\n{"not": "an array"}\n```\n'
+            '[{"rule":"r","source_files":["/feedback_x.md"],'
+            '"is_binding":false,"verified_citation":"m","durable_destination":""}]'
+        )
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value=payload):
+            clusters = sdk_distiller.sdk_distiller(_extract_with_one_snippet())
+        assert len(clusters) == 1
+        assert clusters[0].source_files == ["/feedback_x.md"]
+
+    def test_json_object_not_array_yields_no_clusters(self) -> None:
+        # A decodable JSON object (not a list) is not an array — it yields no clusters.
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value='{"not": "an array"}'):
+            clusters = sdk_distiller.sdk_distiller(_extract_with_one_snippet())
+        assert clusters == []
 
     def test_malformed_json_yields_no_clusters(self) -> None:
         with patch.object(sdk_distiller, "_run_distiller_turn", return_value="not json at all"):
@@ -166,6 +228,52 @@ class SdkDistillerParseTestCase(SimpleTestCase):
             clusters = sdk_distiller.sdk_distiller(empty)
         turn.assert_not_called()
         assert clusters == []
+
+
+class SdkDistillReasonTestCase(SimpleTestCase):
+    """The 0-cluster path is diagnosable: sdk_distill signals WHY it produced 0 (#2847)."""
+
+    def test_empty_raw_is_classified(self) -> None:
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value="   "):
+            result = sdk_distiller.sdk_distill(_extract_with_one_snippet())
+        assert result.clusters == []
+        assert result.empty_reason is DistillEmptyReason.EMPTY_RAW
+
+    def test_unparsable_raw_is_classified(self) -> None:
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value="not json at all"):
+            result = sdk_distiller.sdk_distill(_extract_with_one_snippet())
+        assert result.clusters == []
+        assert result.empty_reason is DistillEmptyReason.UNPARSABLE
+
+    def test_genuine_empty_array_is_healthy(self) -> None:
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value="[]"):
+            result = sdk_distiller.sdk_distill(_extract_with_one_snippet())
+        assert result.clusters == []
+        assert result.empty_reason is DistillEmptyReason.NOTHING_TO_CONSOLIDATE
+
+    def test_array_with_all_entries_dropped_is_classified(self) -> None:
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value='[{"is_binding":false}]'):
+            result = sdk_distiller.sdk_distill(_extract_with_one_snippet())
+        assert result.clusters == []
+        assert result.empty_reason is DistillEmptyReason.ALL_ENTRIES_DROPPED
+
+    def test_productive_result_carries_no_reason(self) -> None:
+        payload = (
+            '[{"rule":"r","source_files":["/feedback_x.md"],'
+            '"is_binding":false,"verified_citation":"m","durable_destination":""}]'
+        )
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value=payload):
+            result = sdk_distiller.sdk_distill(_extract_with_one_snippet())
+        assert len(result.clusters) == 1
+        assert result.empty_reason is None
+
+    def test_empty_extract_is_nothing_to_consolidate_without_sdk_call(self) -> None:
+        empty = ConsolidationExtract(snippets=(), truncated=False)
+        with patch.object(sdk_distiller, "_run_distiller_turn") as turn:
+            result = sdk_distiller.sdk_distill(empty)
+        turn.assert_not_called()
+        assert result.clusters == []
+        assert result.empty_reason is DistillEmptyReason.NOTHING_TO_CONSOLIDATE
 
 
 class _HangOnConnectClient:
