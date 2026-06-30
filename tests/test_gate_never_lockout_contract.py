@@ -160,6 +160,47 @@ def _module_functions(tree: ast.Module) -> dict[str, ast.FunctionDef]:
     return {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
 
 
+def _reexport_sibling_sources(tree: ast.Module, handler_names: set[str]) -> list[ast.Module]:
+    """Parsed ASTs of the ``hooks/scripts`` siblings a re-exported handler is defined in.
+
+    A PreToolUse handler extracted into a sibling (the #2384 router split) is
+    registered in ``_HANDLERS`` under its re-exported name but DEFINED in the
+    sibling, reached via a top-level ``from <sibling> import <handler>`` at the
+    router head. To trace such a handler's deny path the call graph must include the
+    sibling's functions — the sibling reaches the deny writer through a lazy
+    ``from hook_router import emit_pretooluse_deny`` back-import.
+    """
+    scripts_dir = _HOOK_ROUTER_SRC.parent
+    sources: list[ast.Module] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom) or node.level or node.module is None:
+            continue
+        if not any(alias.name in handler_names for alias in node.names):
+            continue
+        sibling = scripts_dir / f"{node.module}.py"
+        if sibling.is_file():
+            sources.append(ast.parse(sibling.read_text(encoding="utf-8")))
+    return sources
+
+
+def _call_graph_functions(tree: ast.Module) -> dict[str, ast.FunctionDef]:
+    """Every function in the router's PreToolUse call graph, including re-exported siblings.
+
+    The router's own functions PLUS the functions of each ``hooks/scripts`` sibling
+    it re-exports a PreToolUse handler from. The graph is name-based and module-flat
+    (``_callee_names`` keys on the call name regardless of import origin), so a
+    handler defined in a sibling and the sibling's lazy ``from hook_router import
+    emit_pretooluse_deny`` back-import resolve transitively once both modules' defs
+    share one dict. Router defs win on a name collision.
+    """
+    handler_names = set(_pretooluse_handler_names(tree))
+    funcs: dict[str, ast.FunctionDef] = {}
+    for sibling_tree in _reexport_sibling_sources(tree, handler_names):
+        funcs.update(_module_functions(sibling_tree))
+    funcs.update(_module_functions(tree))
+    return funcs
+
+
 def _callers_of(name: str, funcs: dict[str, ast.FunctionDef]) -> set[str]:
     """The names of module functions that call ``name`` directly."""
     return {fname for fname, func in funcs.items() if name in _callee_names(func)}
@@ -175,7 +216,7 @@ def _never_lockout_offenders(tree: ast.Module) -> list[str]:
     is caught, not evaded. Shared by the real-source check and the synthetic-source
     proof so both exercise the identical classifier.
     """
-    funcs = _module_functions(tree)
+    funcs = _call_graph_functions(tree)
     handlers = _pretooluse_handler_names(tree)
     offenders: list[str] = []
     for handler in handlers:
@@ -212,7 +253,7 @@ def test_every_pretooluse_deny_handler_is_never_lockout() -> None:
 def test_loop_registration_gate_routes_through_fail_open() -> None:
     """The incident gate itself must now fail-open-route (regression pin)."""
     tree = _module_tree()
-    funcs = _module_functions(tree)
+    funcs = _call_graph_functions(tree)
     reachable = _reachable_callees("handle_enforce_loop_registration", funcs)
     assert _DENY_WRITER in reachable, "loop-registration gate must still be able to deny"
     assert _FAIL_OPEN_ROUTER in reachable, (
@@ -232,7 +273,7 @@ def test_exemption_allowlist_has_no_stale_entries() -> None:
     fail-open-routing) must be pruned, not left as a silent broadening.
     """
     tree = _module_tree()
-    funcs = _module_functions(tree)
+    funcs = _call_graph_functions(tree)
     handlers = set(_pretooluse_handler_names(tree))
 
     stale: list[str] = []
@@ -261,7 +302,7 @@ def test_write_pretooluse_deny_has_single_funnel() -> None:
     fail-open / circuit-breaker routing un-sidesteppable.
     """
     tree = _module_tree()
-    funcs = _module_functions(tree)
+    funcs = _call_graph_functions(tree)
     assert _DENY_WRITER in funcs, f"{_DENY_WRITER} not found in hook_router — writer rename regression"
 
     callers = _callers_of(_DENY_WRITER, funcs)
