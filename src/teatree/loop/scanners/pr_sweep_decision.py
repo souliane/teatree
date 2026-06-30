@@ -113,7 +113,7 @@ def find_actionable_clear(*, slug: str, pr_id: int, head_sha: str) -> MergeClear
 
 
 def has_independent_cold_review(*, slug: str, pr_id: int, head_sha: str) -> bool:
-    """True iff a recorded INDEPENDENT cold-review vouches for this exact head (#68).
+    """True iff the EFFECTIVE (newest-wins) verdict vouches for this exact head (#68, #2829).
 
     A :class:`teatree.core.models.review_verdict.ReviewVerdict` is the
     durable record of a cold review; ``ReviewVerdict.record`` refuses a
@@ -124,11 +124,18 @@ def has_independent_cold_review(*, slug: str, pr_id: int, head_sha: str) -> bool
     and cannot authorise the merge. A maker who is the only identity on
     the repo therefore cannot self-merge: no independent reviewer means no
     matching row and the auto-merge is refused.
-    """
-    from teatree.core.models.review_verdict import ReviewVerdict  # noqa: PLC0415
 
-    candidates = ReviewVerdict.objects.for_pr(slug, pr_id).filter(verdict=ReviewVerdict.Verdict.MERGE_SAFE)
-    return any(not verdict.is_stale_at(head_sha) for verdict in candidates)
+    #2829: defence-in-depth + better UX — returns ``False`` when the EFFECTIVE
+    (most-recent non-stale) verdict at the head is a HOLD, so the solo sweep
+    FLAGS the PR (``_flag_no_review``) instead of diving into
+    ``execute_bound_merge`` to be refused by :func:`assert_review_verdict_gate`.
+    Shares ``ReviewVerdict.objects.effective_state_at`` with that gate so the
+    newest-wins logic cannot drift between the two.
+    """
+    from teatree.core.models.review_verdict import HeadVerdictState, ReviewVerdict  # noqa: PLC0415
+
+    state = ReviewVerdict.objects.effective_state_at(slug=slug, pr_id=pr_id, head_sha=head_sha)
+    return state is HeadVerdictState.MERGE_SAFE
 
 
 def pr_ticket_under_external_delivery(*, slug: str, pr_id: int, pr_url: str) -> bool:

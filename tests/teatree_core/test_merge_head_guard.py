@@ -26,6 +26,7 @@ from django.test import TestCase
 from teatree.core.merge import merge_ticket_pr, restore_caller_branch
 from teatree.core.merge.head_guard import _capture_head, _restore_head
 from teatree.core.models import MergeClear, Ticket
+from tests.teatree_core.conftest import seed_merge_safe_verdict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -88,7 +89,7 @@ def _ticket() -> Ticket:
 
 
 def _clear(ticket: Ticket) -> MergeClear:
-    return MergeClear.objects.create(
+    clear = MergeClear.objects.create(
         ticket=ticket,
         pr_id=2380,
         slug="souliane/teatree",
@@ -97,6 +98,10 @@ def _clear(ticket: Ticket) -> MergeClear:
         gh_verify_result=MergeClear.VerifyResult.GREEN,
         blast_class=MergeClear.BlastClass.DOCS,
     )
+    # The #2829 merge-verdict gate requires the sibling verdict the real
+    # ``clear`` path records.
+    seed_merge_safe_verdict(slug=clear.slug, pr_id=clear.pr_id, sha=clear.reviewed_sha)
+    return clear
 
 
 def _read_probe(joined: str) -> tuple[int, str, str] | None:
