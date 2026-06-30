@@ -6,7 +6,7 @@ single dependency (:mod:`teatree.types`). The hook-side mirror lives in
 ``hook_router._speak_settings``; a parity test pins the two in agreement.
 """
 
-from typing import Any
+from typing import Any, cast
 
 from teatree.types import LocalPlayback, SpeakConfig
 
@@ -32,3 +32,18 @@ def resolve_speak(teatree: dict[str, Any]) -> SpeakConfig:
     if isinstance(subtable, dict):
         return speak_from_subtable(subtable)
     return SpeakConfig()
+
+
+def parse_speak_setting(raw: object) -> dict[str, bool | str]:
+    """Validate + normalise a stored/JSON ``speak`` value to its canonical dict (#1775 DB-home).
+
+    The DB-home registry parser (``OVERLAY_OVERRIDABLE_SETTINGS``): ``config_setting
+    set speak`` validates the value through here and stores the canonical
+    :meth:`SpeakConfig.to_dict` form (a JSON object), so a bad ``local`` enum is
+    rejected at WRITE time and the stored value round-trips back through
+    :func:`speak_from_subtable` on read.
+    """
+    if not isinstance(raw, dict):
+        msg = f"Invalid speak value {raw!r}; expected a JSON/TOML table"
+        raise TypeError(msg)
+    return speak_from_subtable(cast("dict[str, Any]", raw)).to_dict()

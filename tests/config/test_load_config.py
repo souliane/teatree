@@ -24,12 +24,13 @@ from teatree.types import LocalPlayback
 from ._shared import _write_toml
 
 
-def test_load_config_reads_toml_home_fields(tmp_path: Path) -> None:
-    # ``speak`` is the surviving TOML-home field (read off the file). workspace_dir /
-    # privacy / autoload are DB-home now (eliminate-~/.teatree.toml): their ``[teatree]``
-    # value is ignored on read so the fields keep their dataclass defaults at the file
-    # tier (workspace_dir resolves per-overlay via config.worktree_root()). review_skill
-    # is DB-home too.
+def test_load_config_ignores_db_home_settings_in_toml(tmp_path: Path) -> None:
+    # eliminate-~/.teatree.toml is COMPLETE: the carve-out is empty, so ``load_config``
+    # reads NO ``UserSettings`` field off the file — every field keeps its dataclass
+    # default at the file tier and resolves from the ``ConfigSetting`` store via
+    # ``get_effective_settings``. ``speak`` was the last to move: a ``[teatree.speak]``
+    # value is now ignored on read, so ``config.user.speak`` is the default (OFF). The
+    # raw dict is still carried (for the non-settings overlay/e2e tables).
     config_path = tmp_path / ".teatree.toml"
     _write_toml(
         config_path,
@@ -44,7 +45,7 @@ local = "dm"
     )
     config = load_config(config_path)
     assert config.user.workspace_dir == Path.home() / "workspace"
-    assert config.user.speak.local is LocalPlayback.DM
+    assert config.user.speak.local is LocalPlayback.OFF
     assert config.user.privacy == ""
     assert config.user.review_skill == ""
     assert "teatree" in config.raw
@@ -92,11 +93,11 @@ def test_agent_signature_defaults_off(tmp_path: Path) -> None:
 
 
 def test_toml_home_and_raw_keys_do_not_warn(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    # TOML-home carve-out fields, overlay discovery/messaging keys, and raw
-    # bootstrap keys are legitimate in the file — they must NOT trip the WARN.
-    # ``workspace_dir`` / ``statusline_chain`` / ``autoload`` are deliberately ABSENT
-    # here — they are DB-home now (autoload moved by eliminate-~/.teatree.toml); the
-    # TOML-home representative is the ``[teatree.speak]`` sub-table.
+    # Overlay discovery/messaging keys and raw bootstrap keys (``private_repos``) are
+    # legitimate in the file — they must NOT trip the WARN. eliminate-~/.teatree.toml
+    # emptied the TOML carve-out: a DB-home key absent from the DB store (here the
+    # ``[teatree.speak]`` sub-table, now DB-home, with no conflicting DB row) is also
+    # silent — it only warns on a value CONFLICT with a stored row.
     config_path = tmp_path / ".teatree.toml"
     _write_toml(
         config_path,
@@ -140,7 +141,8 @@ class TestDbHomeTomlConflictWarning(TestCase):
         ConfigSetting.objects.set_value("contribute", value=True)
         # ``workspace_dir`` omitted: it is the one DB-home key that warns on
         # presence (it silently relocates worktrees) — covered separately below.
-        # The file carries only the TOML-home ``[teatree.speak]`` table, no DB-home key.
+        # The ``[teatree.speak]`` table is DB-home now (eliminate-~/.teatree.toml) but
+        # has no conflicting DB row, so it is silent (warns only on a value conflict).
         _write_toml(self.config_path, '[teatree]\n\n[teatree.speak]\nlocal = "dm"\n')
         assert self._load_and_collect() == []
 

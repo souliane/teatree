@@ -14,20 +14,19 @@ config_setting import``.
 ``ConfigSetting`` row for a TOML-home key is ignored on read; ``config_setting
 set`` refuses to write one.
 
-The TOML-home set is the carve-out — a field stays here ONLY when it is a nested
-table with no flat ``ConfigSetting`` shape. The sole remaining pre-Django reader on
-a scalar carve-out is ``speak`` (the Stop hook re-reads ``[teatree.speak]`` with
-tomllib). The nested structured table with no flat scalar shape: ``mr_reminder``.
-Every other field is DB-home — it resolves from the ``ConfigSetting`` store + env,
-never from a ``[teatree]`` / ``[overlays.<name>]`` TOML value (which is ignored on
-read and the resolver warns on). ``workspace_dir`` and ``worktrees_dir`` are DB-home
-(resolved Django-side off the store — Django ``settings.py`` hardcodes ``TIME_ZONE``
-and configures ``DATABASES`` without reading either, so neither was ever a DB-open
-bootstrap dep); ``timezone`` is DB-home too (no live reader); ``handover_mirror_path``
-is DB-home (its pre-Django SessionStart reader uses ``cold_reader``, which fails open
-to the default bootstrap path); ``autoload`` is DB-home (its cold readers —
-``teatree_settings._cold_db_bool`` and the bash ``statusline.sh._autoload_db_value``
-— read the canonical sqlite pre-Django, so it needs no TOML).
+The TOML-home carve-out is now EMPTY (eliminate-~/.teatree.toml): EVERY
+``UserSettings`` field is DB-home. The last two fields — the nested structured
+tables ``speak`` and ``mr_reminder`` — moved to the DB store as JSON-dict
+``ConfigSetting`` rows (``parse_speak_setting`` / ``parse_mr_reminder_setting``),
+rebuilt bespoke by the resolver (``resolution._BESPOKE_STRUCTURED_FIELDS``). The
+cold Stop-hook ``speak`` reader now reads the canonical sqlite via
+``cold_reader.read_setting`` (a dict), so it needs no tomllib. A ``[teatree]`` /
+``[overlays.<name>]`` value for ANY ``UserSettings`` field is ignored on read (its
+home is the DB) and the resolver warns on it. ``workspace_dir`` and ``worktrees_dir``
+resolve Django-side off the store (Django ``settings.py`` hardcodes ``TIME_ZONE`` and
+configures ``DATABASES`` without reading either, so neither was ever a DB-open
+bootstrap dep); ``handover_mirror_path`` / ``statusline_chain`` / ``autoload`` resolve
+from the store on their pre-Django paths via ``cold_reader`` / the ``sqlite3`` CLI.
 
 :data:`DERIVED_FIELDS` is the one value the resolver COMPUTES rather than
 reads (``notify_on_behalf`` derived by the autonomy collapse); it has
@@ -52,40 +51,28 @@ class SettingHome(StrEnum):
 # from the partition. ``notify_on_behalf`` is ORed in by the autonomy collapse.
 DERIVED_FIELDS: frozenset[str] = frozenset({"notify_on_behalf"})
 
-# The TOML-home carve-out (exactly these two):
-# - non-Django / pre-Django reader (read via tomllib, no DB): ``speak`` (the Stop
-#   hook re-reads the ``[teatree.speak]`` sub-table with tomllib — it cannot reach
-#   the Django DB).
-# - nested structured table with no flat ConfigSetting shape: ``mr_reminder``
+# The TOML-home carve-out is now EMPTY — eliminate-~/.teatree.toml moved EVERY
+# ``UserSettings`` field to the DB store. The final two were the nested structured
+# tables ``speak`` and ``mr_reminder``: each is stored as a JSON-dict
+# ``ConfigSetting`` row (``parse_speak_setting`` / ``parse_mr_reminder_setting``) and
+# rebuilt bespoke by the resolver (``resolution._BESPOKE_STRUCTURED_FIELDS``) since a
+# dict cannot flat-replace the dataclass field. The cold Stop-hook ``speak`` reader
+# (``hook_router._speak_settings``) now reads the canonical sqlite via
+# ``cold_reader.read_setting`` (a dict), so it needs no tomllib.
 #
-# eliminate-~/.teatree.toml LEFT the carve-out: ``check_updates`` (cold_reader on
-# its pre-Django path); ``worktrees_dir`` / ``timezone`` (Django ``settings.py``
-# hardcodes ``TIME_ZONE = "UTC"`` and configures ``DATABASES`` without reading
-# either, so neither was a bootstrap dep); ``orchestrator_bash_gate_enabled`` /
-# ``privacy`` (the two former per-overlay-TOML-overridable fields, now DB-home — the
-# gate reader ``teatree_gate._gate_key_is_enabled`` is already DB-first via
-# ``cold_reader`` with a TOML self-rescue fallback; ``privacy`` has no live reader);
-# ``handover_mirror_path`` (the SessionStart bootstrap reader now reads the
-# canonical sqlite via ``cold_reader``, which fails open to the same default path
-# ``write_mirror`` uses when unset — so it needs no TOML even when Django is down);
-# ``statusline_chain`` (the bash statusline hook reads it from the canonical
-# sqlite via the ``sqlite3`` CLI + ``json_each``, no importable teatree python);
-# and ``autoload`` (the #256 engagement flag — its cold readers
-# ``teatree_settings._cold_db_bool`` and bash ``statusline.sh._autoload_db_value``
-# read the canonical sqlite pre-Django, so it needs no TOML).
+# Earlier moves (still DB-home): ``check_updates``, ``worktrees_dir`` / ``timezone``,
+# the two former per-overlay-TOML-overridable fields ``orchestrator_bash_gate_enabled``
+# / ``privacy`` (per-overlay override now lives in a ``ConfigSetting`` overlay-scope
+# row), ``handover_mirror_path``, and ``statusline_chain`` / ``autoload`` (read from
+# the canonical sqlite on their pre-Django paths via ``cold_reader`` / the ``sqlite3``
+# CLI). ``workspace_dir`` / ``worktrees_dir`` are read only after Django is up; the
+# worktree root regroups under ``~/workspace/t3-workspaces/<overlay>/``
+# (``config.worktree_root()``), distinct from the CLONE root ``config.clone_root()``.
 #
-# ``workspace_dir`` / ``worktrees_dir`` are DB-home (resolved Django-side off the
-# ``ConfigSetting`` store): worktrees regroup under a per-overlay default
-# ``~/workspace/t3-workspaces/<overlay>/``, resolved by ``config.worktree_root()``
-# (env → DB overlay-scope → DB global-scope → default). Read only after Django is
-# up, so no bootstrap need. ``workspace_dir`` is distinct from the CLONE root
-# ``config.clone_root()`` (``~/workspace``, where main repo clones live).
-_TOML_HOME: frozenset[str] = frozenset(
-    {
-        "speak",
-        "mr_reminder",
-    }
-)
+# An empty carve-out is the end state of the partition: a NEW ``UserSettings`` field
+# is DB-home by default (``_build_setting_homes``); adding one here again would need a
+# genuine pre-Django/bootstrap justification that ``cold_reader`` cannot satisfy.
+_TOML_HOME: frozenset[str] = frozenset()
 
 # Every DB-home field: the canonical list, built once below from the
 # ``UserSettings`` dataclass minus the carve-out and the derived fields, so the

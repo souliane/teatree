@@ -109,6 +109,19 @@ def import_toml_into_db(raw: dict, *, clobber: bool = True) -> ConfigImportResul
     teatree_table = raw.get("teatree")
     if isinstance(teatree_table, dict):
         _import_table(teatree_table, GLOBAL_SCOPE, clobber=clobber, result=result, parsers=_global_parsers())
+    # ``[mr_reminder]`` is a TOP-LEVEL table (not under ``[teatree]``), but the whole
+    # table IS the value of the single DB-home ``mr_reminder`` setting — seed it into
+    # the global scope through the same per-key machinery so a migrating install
+    # moves it without a manual ``config_setting set`` (eliminate-~/.teatree.toml).
+    mr_reminder_table = raw.get("mr_reminder")
+    if isinstance(mr_reminder_table, dict):
+        _import_table(
+            {"mr_reminder": mr_reminder_table},
+            GLOBAL_SCOPE,
+            clobber=clobber,
+            result=result,
+            parsers={"mr_reminder": OVERLAY_OVERRIDABLE_SETTINGS["mr_reminder"]},
+        )
     overlays = raw.get("overlays")
     if isinstance(overlays, dict):
         for overlay_name, overlay_cfg in overlays.items():

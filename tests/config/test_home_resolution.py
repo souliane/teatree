@@ -82,7 +82,13 @@ class TestDbHomeIgnoresToml(TestCase):
         assert get_effective_settings().autoload is False
 
 
-class TestTomlHomeIgnoresDb(TestCase):
+class TestSpeakDbHomeIgnoresToml(TestCase):
+    """eliminate-~/.teatree.toml: ``speak`` is DB-home — the last carve-out field moved.
+
+    It resolves from the ``ConfigSetting`` store (rebuilt bespoke from the stored JSON
+    dict), and a ``[teatree.speak]`` sub-table is ignored on read.
+    """
+
     @pytest.fixture(autouse=True)
     def _config_path(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         self.config_path = tmp_path / ".teatree.toml"
@@ -90,24 +96,16 @@ class TestTomlHomeIgnoresDb(TestCase):
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
         self.monkeypatch = monkeypatch
 
-    def test_toml_home_field_resolves_from_teatree_table(self) -> None:
-        # ``speak`` is the surviving TOML-home representative (eliminate-~/.teatree.toml
-        # moved autoload to the DB). Default OFF; a [teatree.speak] sub-table proves
-        # the field resolves off the file.
-        _write_toml(self.config_path, '[teatree]\n\n[teatree.speak]\nlocal = "dm"\n')
-        assert get_effective_settings().speak.local is LocalPlayback.DM
-
-    def test_toml_home_field_ignores_a_config_setting_row(self) -> None:
-        # A ConfigSetting row for a TOML-home key is ignored on read — the
-        # [teatree.speak] value is the sole authority.
-        _write_toml(self.config_path, '[teatree]\n\n[teatree.speak]\nlocal = "dm"\n')
-        ConfigSetting.objects.set_value("speak", value={"local": "off"})
-        assert get_effective_settings().speak.local is LocalPlayback.DM
-
-    def test_toml_home_field_default_with_no_row_and_no_table_value(self) -> None:
+    def test_speak_resolves_from_db_row(self) -> None:
+        # A global ``speak`` ConfigSetting row (a JSON dict) resolves to the dataclass.
         _write_toml(self.config_path, "[teatree]\n")
-        ConfigSetting.objects.set_value("speak", value={"local": "all"})
-        # Still the dataclass default (OFF) — the DB row never applies.
+        ConfigSetting.objects.set_value("speak", value={"local": "dm"})
+        assert get_effective_settings().speak.local is LocalPlayback.DM
+
+    def test_speak_ignores_a_teatree_speak_table(self) -> None:
+        # A ``[teatree.speak]`` value is ignored on read (speak's home is the DB) —
+        # with no DB row the resolved value is the dataclass default (OFF).
+        _write_toml(self.config_path, '[teatree]\n\n[teatree.speak]\nlocal = "dm"\n')
         assert get_effective_settings().speak.local is LocalPlayback.OFF
 
     def test_statusline_chain_resolves_from_db_not_teatree(self) -> None:
@@ -141,18 +139,18 @@ class TestOverlayScopeLayering(TestCase):
     # ``test_overlay_scoped_db_row_beats_global_db_row_for_db_home`` above. The former
     # ``test_overlay_scoped_toml_value_beats_global_toml_for_toml_home`` is obsolete.)
 
-    def test_overlay_db_row_for_toml_home_key_is_ignored(self) -> None:
-        # Critical: an overlay-scope ConfigSetting row for a TOML-home key is
-        # ignored on read — the TOML value (or default) is the sole authority.
-        # ``speak`` is the surviving TOML-home representative (eliminate-~/.teatree.toml
-        # moved autoload to the DB).
-        _write_toml(
-            self.config_path,
-            '[teatree]\n\n[teatree.speak]\nlocal = "dm"\n\n[overlays.my-overlay]\nclass = "x.y:Z"\n',
-        )
-        ConfigSetting.objects.set_value("speak", value={"local": "off"}, scope="my-overlay")
+    def test_overlay_db_row_for_speak_merges_onto_global(self) -> None:
+        # eliminate-~/.teatree.toml: ``speak`` is DB-home and its per-overlay row
+        # MERGES onto the global ``speak`` base — only the keys the overlay row sets
+        # override. Here the global row sets local=all+slack on; the overlay row sets
+        # only slack off, so local stays ``all`` and slack flips off.
+        _write_toml(self.config_path, '[teatree]\n\n[overlays.my-overlay]\nclass = "x.y:Z"\n')
+        ConfigSetting.objects.set_value("speak", value={"local": "all", "slack": True})
+        ConfigSetting.objects.set_value("speak", value={"slack": False}, scope="my-overlay")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "my-overlay")
-        assert get_effective_settings().speak.local is LocalPlayback.DM
+        speak = get_effective_settings().speak
+        assert speak.local is LocalPlayback.ALL
+        assert speak.slack is False
 
 
 class TestDbHomeKeyInOverlayTomlIsLoud(TestCase):
@@ -192,13 +190,14 @@ class TestDbHomeKeyInOverlayTomlIsLoud(TestCase):
         assert "my-overlay" in joined
         assert "DB-home" in joined
 
-    def test_no_warning_when_overlay_toml_has_only_toml_home_keys(self) -> None:
-        # A clean overlay table (no DB-home key) emits no DB-home drop warning.
-        # ``speak`` is the surviving TOML-home representative (eliminate-~/.teatree.toml
-        # moved autoload to the DB), exercised as the [overlays.<name>.speak] subtable.
+    def test_no_warning_when_overlay_toml_has_no_user_settings_keys(self) -> None:
+        # A clean overlay table with only structural keys (no ``UserSettings`` field)
+        # emits no DB-home drop warning. eliminate-~/.teatree.toml emptied the TOML
+        # carve-out, so ANY UserSettings key here is DB-home and would warn; a table
+        # that carries none (just the overlay ``class`` registration) is silent.
         _write_toml(
             self.config_path,
-            '[teatree]\n\n[overlays.my-overlay]\nclass = "x.y:Z"\n\n[overlays.my-overlay.speak]\nslack = true\n',
+            '[teatree]\n\n[overlays.my-overlay]\nclass = "x.y:Z"\n',
         )
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "my-overlay")
         logger = logging.getLogger("teatree.config")
@@ -266,7 +265,14 @@ class TestAutonomyCollapseWithDbHomeGates(TestCase):
         assert settings.require_human_approval_to_answer is False
 
 
-class TestSpeakAndMrReminderPreserved(TestCase):
+class TestSpeakAndMrReminderDbHome(TestCase):
+    """eliminate-~/.teatree.toml: the last two carve-out fields resolve from the DB.
+
+    ``speak`` keeps its per-overlay MERGE semantics (the global row is the base, the
+    overlay row overrides only the keys it carries); ``mr_reminder`` resolves from a
+    global ``ConfigSetting`` JSON-dict row.
+    """
+
     @pytest.fixture(autouse=True)
     def _config_path(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         self.config_path = tmp_path / ".teatree.toml"
@@ -274,22 +280,18 @@ class TestSpeakAndMrReminderPreserved(TestCase):
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
         self.monkeypatch = monkeypatch
 
-    def test_speak_overlay_subtable_merges_onto_base(self) -> None:
-        _write_toml(
-            self.config_path,
-            '[teatree]\n\n[teatree.speak]\nlocal = "dm"\nslack = false\n\n'
-            '[overlays.my-overlay]\nclass = "x.y:Z"\n\n[overlays.my-overlay.speak]\nslack = true\n',
-        )
+    def test_speak_overlay_row_merges_onto_base(self) -> None:
+        _write_toml(self.config_path, '[teatree]\n\n[overlays.my-overlay]\nclass = "x.y:Z"\n')
+        ConfigSetting.objects.set_value("speak", value={"local": "dm", "slack": False})
+        ConfigSetting.objects.set_value("speak", value={"slack": True}, scope="my-overlay")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "my-overlay")
         speak = get_effective_settings().speak
-        # local inherited from base, slack overridden by the overlay subtable.
-        assert speak.local == "dm"
+        # local inherited from the global base, slack overridden by the overlay row.
+        assert speak.local is LocalPlayback.DM
         assert speak.slack is True
 
-    def test_mr_reminder_table_resolves(self) -> None:
-        _write_toml(
-            self.config_path,
-            '[teatree]\n\n[mr_reminder.channels]\n"acme/widget" = "#widget-mrs"\n',
-        )
+    def test_mr_reminder_resolves_from_db_row(self) -> None:
+        _write_toml(self.config_path, "[teatree]\n")
+        ConfigSetting.objects.set_value("mr_reminder", value={"channels": {"acme/widget": "#widget-mrs"}})
         mr_reminder = get_effective_settings().mr_reminder
         assert mr_reminder.channels == (("acme/widget", "#widget-mrs"),)

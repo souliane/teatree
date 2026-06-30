@@ -1,10 +1,11 @@
 # test-path: cross-cutting
 """Every ``UserSettings`` field has exactly one home — DB or TOML (#1775).
 
-The hard partition: a setting that CAN live in the DB MUST be DB-home; only the
-irreducible carve-out (pre-Django readers, path/infra bootstrap, nested
-structured tables, dead fields) stays TOML-home. One field is DERIVED — the
-resolver computes it, so it has no home and is excluded from the partition.
+The hard partition: a setting that CAN live in the DB MUST be DB-home. As of
+eliminate-~/.teatree.toml the carve-out is EMPTY — every field is DB-home (the
+final two, the nested ``speak`` / ``mr_reminder`` tables, moved to JSON-dict
+``ConfigSetting`` rows). One field is DERIVED — the resolver computes it, so it
+has no home and is excluded from the partition.
 
 The fitness functions below make the partition machine-checked: they go RED the
 moment a new ``UserSettings`` field is added without classifying it, or a field
@@ -15,12 +16,8 @@ import dataclasses
 
 from teatree.config import DERIVED_FIELDS, SETTING_HOMES, SettingHome, UserSettings
 
-_TOML_CARVE_OUT = frozenset(
-    {
-        "speak",
-        "mr_reminder",
-    }
-)
+# eliminate-~/.teatree.toml: the carve-out is EMPTY — every UserSettings field is DB-home.
+_TOML_CARVE_OUT: frozenset[str] = frozenset()
 
 
 def _all_field_names() -> set[str]:
@@ -51,15 +48,15 @@ def test_db_home_and_toml_home_are_disjoint() -> None:
     assert db_home | toml_home == set(SETTING_HOMES)
 
 
-def test_toml_carve_out_is_exactly_the_two_fields() -> None:
-    # The carve-out — the pre-Django ``speak`` reader + the nested ``mr_reminder``
-    # structured table — is exactly these two and no more. eliminate-~/.teatree.toml
-    # has moved ``check_updates``, ``worktrees_dir`` / ``timezone``, the two former
-    # per-overlay-TOML-overridable fields (``orchestrator_bash_gate_enabled`` /
-    # ``privacy``), ``handover_mirror_path``, ``statusline_chain``, and the #256
-    # engagement flag ``autoload`` to the DB.
+def test_toml_carve_out_is_empty() -> None:
+    # eliminate-~/.teatree.toml is COMPLETE: the TOML-home carve-out is empty — every
+    # ``UserSettings`` field is DB-home. The last two fields, the nested structured
+    # tables ``speak`` and ``mr_reminder``, moved to JSON-dict ``ConfigSetting`` rows
+    # rebuilt bespoke by the resolver. (Earlier moves: ``check_updates``,
+    # ``worktrees_dir`` / ``timezone``, ``orchestrator_bash_gate_enabled`` /
+    # ``privacy``, ``handover_mirror_path``, ``statusline_chain``, ``autoload``.)
     toml_home = {k for k, home in SETTING_HOMES.items() if home is SettingHome.TOML}
-    assert toml_home == _TOML_CARVE_OUT
+    assert toml_home == frozenset()
     moved_to_db = (
         "workspace_dir",
         "check_updates",
@@ -68,9 +65,12 @@ def test_toml_carve_out_is_exactly_the_two_fields() -> None:
         "handover_mirror_path",
         "statusline_chain",
         "autoload",
+        "speak",
+        "mr_reminder",
     )
     for moved in moved_to_db:
         assert moved not in toml_home
+        assert SETTING_HOMES[moved] is SettingHome.DB
 
 
 def test_falsely_bootstrap_fields_are_db_home() -> None:
@@ -112,6 +112,21 @@ def test_autoload_is_db_home() -> None:
     # canonical sqlite directly, so it needs no TOML; a ``[teatree] autoload`` value
     # is ignored on read.
     assert SETTING_HOMES["autoload"] is SettingHome.DB
+
+
+def test_speak_is_db_home() -> None:
+    # eliminate-~/.teatree.toml: ``speak`` is DB-home — stored as a JSON-dict
+    # ``ConfigSetting`` row (``parse_speak_setting``), rebuilt bespoke by the resolver.
+    # The cold Stop-hook reader (``hook_router._speak_settings``) reads it via
+    # ``cold_reader.read_setting`` (a dict), so it needs no tomllib.
+    assert SETTING_HOMES["speak"] is SettingHome.DB
+
+
+def test_mr_reminder_is_db_home() -> None:
+    # eliminate-~/.teatree.toml: ``mr_reminder`` is DB-home — stored as a JSON-dict
+    # ``ConfigSetting`` row (``parse_mr_reminder_setting``), rebuilt bespoke by the
+    # resolver (overlay-then-global). The last nested structured table to move.
+    assert SETTING_HOMES["mr_reminder"] is SettingHome.DB
 
 
 def test_check_updates_is_db_home() -> None:

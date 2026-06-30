@@ -1,17 +1,22 @@
-"""``MrReminderConfig`` parsing + ``[mr_reminder]`` resolution (TODO-276).
+"""``MrReminderConfig`` parsing + DB-home ``mr_reminder`` resolution (TODO-276).
 
-The schema: a top-level ``[mr_reminder]`` table with an ordered
-``[mr_reminder.channels]`` slug→channel sub-table and an optional
-``default_channel`` fallback. Covers defaults when absent, a full parse
-with order preserved, partial keys, and malformed-input degradation.
-``load_config`` round-trips it from a real ``tmp_path`` toml file so the
-loader wiring is exercised, not just the parser.
+The schema: an ordered ``channels`` slug→channel map and an optional
+``default_channel`` fallback. Covers defaults when absent, a full parse with order
+preserved, partial keys, and malformed-input degradation. eliminate-~/.teatree.toml
+made ``mr_reminder`` DB-home — it resolves from a JSON-dict ``ConfigSetting`` row
+(rebuilt bespoke via ``mr_reminder_from_table``), so the resolver wiring is
+exercised end-to-end, not just the parser.
 """
 
 from pathlib import Path
 
-from teatree.config import load_config
+import pytest
+from django.test import TestCase
+
+import teatree.config as config_facade
+from teatree.config import get_effective_settings
 from teatree.config_mr_reminder import MrReminderConfig, mr_reminder_from_table, resolve_mr_reminder
+from teatree.core.models import ConfigSetting
 
 
 class TestMrReminderFromTable:
@@ -58,23 +63,23 @@ class TestResolveMrReminder:
         assert cfg.channels == (("o/r", "C1"),)
 
 
-class TestLoadConfigRoundTrip:
-    def test_load_config_populates_mr_reminder(self, tmp_path: Path) -> None:
-        toml = tmp_path / ".teatree.toml"
-        toml.write_text(
-            """\
-[mr_reminder]
-default_channel = "C_FALLBACK"
-[mr_reminder.channels]
-"souliane/teatree" = "C_TEATREE"
-"acme" = "C_ACME"
-""",
-        )
-        user = load_config(toml).user
-        assert user.mr_reminder.default_channel == "C_FALLBACK"
-        assert user.mr_reminder.channels == (("souliane/teatree", "C_TEATREE"), ("acme", "C_ACME"))
+class TestMrReminderDbResolution(TestCase):
+    @pytest.fixture(autouse=True)
+    def _sandbox(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(config_facade, "CONFIG_PATH", tmp_path / ".teatree.toml")
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
 
-    def test_load_config_without_table_keeps_default(self, tmp_path: Path) -> None:
-        toml = tmp_path / ".teatree.toml"
-        toml.write_text('[teatree]\nbranch_prefix = "ac"\n')
-        assert load_config(toml).user.mr_reminder == MrReminderConfig()
+    def test_resolves_from_db_row(self) -> None:
+        ConfigSetting.objects.set_value(
+            "mr_reminder",
+            value={
+                "default_channel": "C_FALLBACK",
+                "channels": {"souliane/teatree": "C_TEATREE", "acme": "C_ACME"},
+            },
+        )
+        mr = get_effective_settings().mr_reminder
+        assert mr.default_channel == "C_FALLBACK"
+        assert mr.channels == (("souliane/teatree", "C_TEATREE"), ("acme", "C_ACME"))
+
+    def test_no_row_keeps_default(self) -> None:
+        assert get_effective_settings().mr_reminder == MrReminderConfig()

@@ -11,9 +11,9 @@ boundary is the per-channel post, routed + gated through the on-behalf
 egress chokepoint (``OnBehalfSlackEgress.post``) like every colleague-
 surface egress — a reminder channel is a colleague surface, so it is
 subject to the on-behalf approval gate, never a raw backend call.
-Channels come from the ``[mr_reminder]`` config table; identities from the
-user's configured ``user_identity_aliases`` so cross-forge work surfaces
-under one reminder.
+Channels come from the DB-home ``mr_reminder`` config (#1775; set with
+``config_setting set mr_reminder``); identities from the user's configured
+``user_identity_aliases`` so cross-forge work surfaces under one reminder.
 """
 
 import os
@@ -67,7 +67,7 @@ def _build(overlay: str) -> tuple[MrReminder | None, str]:
     settings = get_effective_settings(overlay or None)
     config = settings.mr_reminder
     if not config.channels and not config.default_channel:
-        return None, "No [mr_reminder] channel map configured in ~/.teatree.toml"
+        return None, "No mr_reminder channel map configured — set one with `config_setting set mr_reminder`"
     reminder = build_mr_reminder(
         host,
         config=config,

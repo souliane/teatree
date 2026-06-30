@@ -6950,32 +6950,24 @@ def _current_turn_assistant_text(transcript_path: str) -> str:
 
 
 def _speak_settings() -> tuple[str, bool]:
-    """Read ``[teatree.speak]`` from ``~/.teatree.toml`` → ``(local, slack)`` (#2060).
+    """Read the global ``speak`` DB row → ``(local, slack)`` (#2060, eliminate-~/.teatree.toml).
 
-    The hook-side mirror of :func:`teatree.config_speak.resolve_speak` (the hook
-    cannot cheaply import the Django config, so it re-reads the toml with the
-    SAME precedence — a parity test pins the two in agreement): an explicit
-    ``[teatree.speak]`` sub-table wins, else the defaults (``"off", False``).
-    ``local`` is the :class:`~teatree.types.LocalPlayback` value
-    (``off``/``dm``/``all``). Best-effort: a missing or malformed config, or
-    no ``[teatree]`` table, yields the defaults so the Stop arm stays silent
-    unless the user opted in.
+    The hook-side mirror of :func:`teatree.config_speak.resolve_speak`. ``speak`` is
+    DB-home (#1775): the Stop hook cannot cheaply boot the Django config, so it reads
+    the same ``ConfigSetting`` store via the Django-free :mod:`teatree.config.cold_reader`
+    — a stored JSON dict ``{"local": ..., "slack": ...}``, else the defaults
+    (``"off", False``). ``local`` is the :class:`~teatree.types.LocalPlayback` value
+    (``off``/``dm``/``all``). Best-effort: a missing DB / row / malformed value yields
+    the defaults so the Stop arm stays silent unless the user opted in. A
+    ``[teatree.speak]`` TOML value is ignored on read.
     """
-    import tomllib  # noqa: PLC0415
+    from typing import Any, cast  # noqa: PLC0415
 
-    config_path = Path.home() / ".teatree.toml"
-    if not config_path.is_file():
-        return "off", False
-    try:
-        with config_path.open("rb") as f:
-            config = tomllib.load(f)
-    except Exception:  # noqa: BLE001 — Stop hook must be crash-proof
-        return "off", False
-    teatree = config.get("teatree") if isinstance(config, dict) else None
-    if not isinstance(teatree, dict):
-        return "off", False
-    subtable = teatree.get("speak")
-    if isinstance(subtable, dict):
+    from teatree.config import cold_reader  # noqa: PLC0415 — Django-free DB read on the pre-Django Stop path
+
+    raw = cold_reader.read_setting("speak")
+    if isinstance(raw, dict):
+        subtable = cast("dict[str, Any]", raw)
         local = subtable.get("local")
         return (
             local.strip().lower() if isinstance(local, str) else "off",

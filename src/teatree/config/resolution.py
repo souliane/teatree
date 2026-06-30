@@ -32,10 +32,18 @@ from teatree.config.settings import (
     TeaTreeConfig,
     UserSettings,
 )
+from teatree.config_mr_reminder import mr_reminder_from_table
 from teatree.config_speak import speak_from_subtable
 from teatree.types import SpeakConfig
 
 _logger = logging.getLogger("teatree.config")
+
+# The structured nested settings (#1775 eliminate-~/.teatree.toml): stored as a JSON
+# dict ConfigSetting, NOT a scalar. ``_coerce_db_rows`` SKIPS them — a bare dict
+# cannot flat-replace the dataclass field — and ``get_effective_settings`` resolves
+# them bespoke from the raw rows (``_apply_structured_db_settings``): ``mr_reminder``
+# overlay-then-global, ``speak`` as a per-overlay MERGE onto the global base.
+_BESPOKE_STRUCTURED_FIELDS: frozenset[str] = frozenset({"speak", "mr_reminder"})
 
 
 def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
@@ -83,10 +91,12 @@ def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
     To make an additional setting DB-overridable, add it to
     ``OVERLAY_OVERRIDABLE_SETTINGS`` (the DB-home registry) or
     ``ENV_SETTING_OVERRIDES`` (env); the resolver picks it up generically via
-    ``dataclasses.replace``. The one non-generic override is ``speak`` (a
-    TOML-home field): its ``[overlays.<name>.speak]`` sub-table MERGES onto the
-    base (see :func:`_overlay_speak_override`) rather than flat-replacing, so a
-    partial table overrides only the keys it sets.
+    ``dataclasses.replace``. The two non-generic fields are the nested structured
+    tables ``speak`` / ``mr_reminder`` (``_BESPOKE_STRUCTURED_FIELDS``): they are
+    stored as JSON dicts, so ``_coerce_db_rows`` skips them and
+    :func:`_apply_structured_db_settings` rebuilds the dataclass from the raw rows —
+    ``mr_reminder`` overlay-then-global, ``speak`` as a per-overlay MERGE onto the
+    global base (a partial overlay ``speak`` row overrides only the keys it sets).
 
     As a final step the single ``autonomy`` switch is applied: under
     :attr:`Autonomy.FULL` / :attr:`Autonomy.NOTIFY` the three approval gates
@@ -112,8 +122,13 @@ def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
     # default (NOT a hard pin), the OVERLAY scope is a per-overlay opinion (a hard
     # pin), env beats both.
     resolved_overlay = _resolved_overlay_name(overlay_name)
-    global_db = _db_global_overrides()
-    overlay_db = _db_overlay_overrides(resolved_overlay)
+    # Read the raw rows ONCE: the coerced tier drives the generic ``replace`` below,
+    # and the raw dicts feed the bespoke structured resolution (speak / mr_reminder
+    # are JSON dicts that ``_coerce_db_rows`` skips — see ``_BESPOKE_STRUCTURED_FIELDS``).
+    global_rows = _load_global_rows()
+    overlay_rows = _load_overlay_rows(resolved_overlay)
+    global_db = _coerce_db_rows(global_rows)
+    overlay_db = _coerce_db_rows(overlay_rows)
     hard_pinned = set(overrides) | set(overlay_db)
     overrides.update(global_db)
     overrides.update(overlay_db)
@@ -122,9 +137,7 @@ def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
         overrides.update(env_overrides)
         hard_pinned |= set(env_overrides)
     settings = base if not overrides else replace(base, **overrides)
-    speak_override = _overlay_speak_override(config, overlay_name, base.speak)
-    if speak_override is not None:
-        settings = replace(settings, speak=speak_override)
+    settings = _apply_structured_db_settings(settings, global_rows, overlay_rows, base.speak)
     return _apply_autonomy(
         settings,
         hard_pinned=hard_pinned,
@@ -132,30 +145,51 @@ def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
     )
 
 
-def _overlay_speak_override(
-    config: "TeaTreeConfig",
-    overlay_name: str | None,
+def _apply_structured_db_settings(
+    settings: UserSettings,
+    global_rows: dict[str, Any],
+    overlay_rows: dict[str, Any],
+    base_speak: SpeakConfig,
+) -> UserSettings:
+    """Resolve the nested-table DB-home fields from the raw rows (#1775).
+
+    ``mr_reminder`` is global-or-overlay (an overlay row wins, no merge — it had no
+    per-overlay layer in TOML either). ``speak`` is the one non-generic override:
+    the per-overlay ``speak`` row MERGES onto the global ``speak`` base so a partial
+    overlay table overrides only the keys it sets (the DB twin of the old
+    ``[overlays.<name>.speak]`` sub-table merge).
+    """
+    mr = overlay_rows.get("mr_reminder")
+    if not isinstance(mr, dict):
+        mr = global_rows.get("mr_reminder")
+    if isinstance(mr, dict):
+        settings = replace(settings, mr_reminder=mr_reminder_from_table(mr))
+    speak = _resolve_speak_db(global_rows, overlay_rows, base_speak)
+    if speak is not None:
+        settings = replace(settings, speak=speak)
+    return settings
+
+
+def _resolve_speak_db(
+    global_rows: dict[str, Any],
+    overlay_rows: dict[str, Any],
     base: SpeakConfig,
 ) -> SpeakConfig | None:
-    """Merge a per-overlay ``[overlays.<name>.speak]`` sub-table onto ``base`` (#2050).
+    """Merge the per-overlay ``speak`` DB row onto the global ``speak`` base (#2050 semantics).
 
-    The single non-generic override (see :func:`get_effective_settings`):
-    merges only the keys the overlay table sets. ``None`` → base stands.
+    ``None`` (no ``speak`` row in either scope) → the dataclass default stands. A
+    global row sets the base; an overlay row merges onto it so only the keys it
+    carries override — the DB equivalent of the old ``[overlays.<name>.speak]``
+    partial-table merge in :func:`speak_from_subtable`.
     """
-    name = overlay_name if overlay_name is not None else os.environ.get("T3_OVERLAY_NAME", "")
-    if not name:
+    global_speak = global_rows.get("speak")
+    overlay_speak = overlay_rows.get("speak")
+    if not isinstance(global_speak, dict) and not isinstance(overlay_speak, dict):
         return None
-    overlays = config.raw.get("overlays") or {}
-    canonical = OverlayEntry.canonical_overlay_name(name)
-    for table_name, overlay_cfg in overlays.items():
-        if not isinstance(overlay_cfg, dict):
-            continue
-        if table_name != name and OverlayEntry.canonical_overlay_name(table_name) != canonical:
-            continue
-        subtable = overlay_cfg.get("speak")
-        if isinstance(subtable, dict):
-            return speak_from_subtable(subtable, base=base)
-    return None
+    merged = speak_from_subtable(global_speak, base=base) if isinstance(global_speak, dict) else base
+    if isinstance(overlay_speak, dict):
+        merged = speak_from_subtable(overlay_speak, base=merged)
+    return merged
 
 
 def _active_overlay_overrides() -> dict[str, Any]:
@@ -269,6 +303,8 @@ def _coerce_db_rows(rows: dict[str, Any]) -> dict[str, Any]:
     for key, value in rows.items():
         is_alias = key in _LEGACY_SETTING_ALIASES
         field_name = _LEGACY_SETTING_ALIASES.get(key, key)
+        if field_name in _BESPOKE_STRUCTURED_FIELDS:
+            continue  # resolved bespoke in get_effective_settings (dict -> dataclass + merge)
         parser = OVERLAY_OVERRIDABLE_SETTINGS.get(field_name)
         if parser is None:
             continue
