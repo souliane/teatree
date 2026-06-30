@@ -650,7 +650,7 @@ class TestE2eExternal(TestCase):
                 result = cast("str", call_command("e2e", "external", target="local"))
             assert "passed" in result
             env = mock_run.call_args[1]["env"]
-            assert env["COMPOSE_PROJECT_NAME"] == f"backend-wt{ticket.ticket_number}"
+            assert env["COMPOSE_PROJECT_NAME"] == f"backend-wt{ticket.pk}"
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -757,7 +757,7 @@ class TestE2eExternal(TestCase):
             assert env["BASE_URL"] == "http://localhost:62674"
             # COMPOSE_PROJECT_NAME points at the backend worktree's project,
             # not the e2e cache worktree's.
-            assert env["COMPOSE_PROJECT_NAME"] == f"backend-repo-wt{backend_ticket.ticket_number}"
+            assert env["COMPOSE_PROJECT_NAME"] == f"backend-repo-wt{backend_ticket.pk}"
             # Defect 2: the env-cache that feeds get_e2e_env_extras must be
             # the linked backend worktree's, so overlay-derived extras (e.g.
             # CUSTOMER=<variant>) reach the spec.
@@ -824,7 +824,7 @@ class TestE2eExternal(TestCase):
             assert "passed" in result
             env = mock_run.call_args[1]["env"]
             assert env["BASE_URL"] == "http://localhost:4202"
-            assert env["COMPOSE_PROJECT_NAME"] == f"backend-repo-wt{backend_ticket.ticket_number}"
+            assert env["COMPOSE_PROJECT_NAME"] == f"backend-repo-wt{backend_ticket.pk}"
             assert env["CUSTOMER"] == "acme"
 
     @_patch_overlays(FULL_OVERLAY)

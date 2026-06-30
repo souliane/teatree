@@ -19,6 +19,16 @@ class WorktreeDbNameConflictError(RuntimeError):
     """
 
 
+class WorktreeComposeProjectConflictError(RuntimeError):
+    """Raised when another live worktree of a different ticket owns a computed compose project.
+
+    ``compose_project`` is frozen on the immutable, unique Ticket pk so a
+    collision cannot arise through the normal flow; this guards a hand-built,
+    legacy, or backfilled row from bringing a docker stack up under a name
+    another live worktree already runs (a clobber at ``docker compose up``).
+    """
+
+
 class Worktree(models.Model):
     class State(models.TextChoices):
         CREATED = "created", "Created"
@@ -36,6 +46,11 @@ class Worktree(models.Model):
     branch = models.CharField(max_length=255)
     state = FSMField(max_length=32, choices=State.choices, default=State.CREATED)
     db_name = models.CharField(max_length=255, blank=True)
+    # Frozen docker-compose project name (``<repo_path>-wt<ticket.pk>``). Set once
+    # at provision time and never rewritten — renaming it would orphan a running
+    # stack's containers. Empty before provisioning; resolved (stored-or-derived)
+    # through ``worktree_env.compose_project``.
+    compose_project = models.CharField(max_length=255, blank=True, default="")
     extra = models.JSONField(default=dict, blank=True)
     # #2190 Activity-recency signal for the idle-stack reaper. Stamped on
     # ``start_services``/``verify``/``db_refresh`` (the operator-driven
@@ -105,6 +120,12 @@ class Worktree(models.Model):
         name — the body stays free of the worktree-tasks up-edge (#2385).
         """
         self.db_name = self._build_db_name()
+        # STICKY (unlike db_name, which is recomputed every provision): set the
+        # compose project once and keep it for the worktree's life. An orphaned
+        # db is reaped scheme-agnostically, but renaming a compose project would
+        # orphan a RUNNING stack's containers — so a worktree keeps the name its
+        # stack was first brought up under.
+        self.compose_project = self.compose_project or self._build_compose_project()
 
     @transition(field=state, source=[State.PROVISIONED, State.SERVICES_UP, State.READY], target=State.SERVICES_UP)
     def start_services(self, *, services: list[str] | None = None) -> None:
@@ -237,6 +258,40 @@ class Worktree(models.Model):
                 f"(#{conflict.pk}); refusing db_import for worktree #{self.pk} to avoid clobber."
             )
             raise WorktreeDbNameConflictError(msg)
+
+    def _build_compose_project(self) -> str:
+        ticket = cast("Ticket", self.ticket)
+        # Keyed on the immutable, unique Ticket pk (not the derived, non-unique
+        # ``ticket_number``): two tickets sharing a trailing issue number must
+        # never collide on one docker stack. Per-repo (NOT ticket-scoped) — each
+        # repo runs its own compose project, unlike the ticket-shared db_name.
+        return f"{self.repo_path}-wt{ticket.pk}"
+
+    def assert_compose_project_unclaimed(self) -> None:
+        """Fail loud if another LIVE worktree of a DIFFERENT ticket owns ``compose_project``.
+
+        Defense-in-depth guard ``worktree start`` calls before ``docker compose up``:
+        ``compose_project`` is ticket-pk-keyed so a collision cannot arise through
+        the normal flow, but a hand-built, legacy, or backfilled row could still
+        bring a stack up under a name another live worktree already runs — clobbering
+        it. CREATED rows own no stack yet and are excluded.
+        """
+        if not self.compose_project:
+            return
+        ticket_pk = self.ticket_id  # ty: ignore[unresolved-attribute]  # Django FK accessor
+        conflict = (
+            Worktree.objects.exclude(pk=self.pk)
+            .exclude(ticket_id=ticket_pk)
+            .exclude(state=Worktree.State.CREATED)
+            .filter(compose_project=self.compose_project)
+            .first()
+        )
+        if conflict is not None:
+            msg = (
+                f"compose project {self.compose_project!r} is owned by another live worktree "
+                f"(#{conflict.pk}); refusing docker compose up for worktree #{self.pk} to avoid clobber."
+            )
+            raise WorktreeComposeProjectConflictError(msg)
 
     def get_extra(self) -> WorktreeExtra:
         return validated_worktree_extra(self.extra)

@@ -57,13 +57,24 @@ class EnvCacheSpec:
 def compose_project(worktree: Worktree) -> str:
     """Return the docker-compose project name for *worktree*.
 
-    The single source of truth for the ``<repo_path>-wt<ticket_number>``
-    qualified key. Every consumer (the env cache, the stack gate, the
-    reconciler, the start/cleanup runners, the CLI) resolves through here
-    so the naming scheme can never drift across call sites.
+    Single source of truth for the project key — every consumer (the env cache,
+    the stack gate, the reconciler, the start/cleanup runners, the CLI) resolves
+    through here so the naming scheme can never drift across call sites.
+
+    For a provisioned worktree the name is FROZEN on the immutable, unique
+    ``Ticket.pk`` (``<repo_path>-wt<ticket.pk>``) and stored on
+    ``Worktree.compose_project``, so two tickets sharing a trailing issue number
+    never collide on one docker stack (the deferred half of #2774). The stored
+    value is returned verbatim so a running stack's name never changes under it
+    (a rename orphans its containers). Falls back to a live
+    ``<repo_path>-wt<ticket.pk>`` derivation for a ticketless probe or an
+    unprovisioned row that has no stored name yet.
     """
-    ticket = worktree.ticket
-    return f"{worktree.repo_path}-wt{ticket.ticket_number}" if ticket else worktree.repo_path
+    stored = getattr(worktree, "compose_project", "")
+    if stored:
+        return stored
+    ticket = getattr(worktree, "ticket", None)
+    return f"{worktree.repo_path}-wt{ticket.pk}" if ticket else worktree.repo_path
 
 
 def _docker_host_address() -> str:

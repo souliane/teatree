@@ -26,6 +26,7 @@ from teatree.config import get_effective_settings, load_config
 from teatree.core.gates import local_stack_gate as gate_mod
 from teatree.core.gates.local_stack_gate import LocalStackLimitExceededError, check_local_stack_limit
 from teatree.core.models import ConfigSetting, Ticket, Worktree
+from teatree.core.worktree_env import compose_project
 
 
 @pytest.fixture(autouse=True)
@@ -446,8 +447,10 @@ class TestLocalStackGateDockerReconciliation(TestCase):
             state=Worktree.State.PROVISIONED,
         )
 
+        phantom_project = compose_project(phantom)
+
         def counts(project: str) -> int:
-            return 0 if "wt7040" in project else 1
+            return 0 if project == phantom_project else 1
 
         with (
             patch.object(gate_mod, "_running_container_count", side_effect=counts),

@@ -20,14 +20,14 @@ class TicketFrontendProjectsTests(TestCase):
         # compose project, never the sibling app worktree hosting the frontend.
         projects = _ticket_frontend_projects(self.test_repo_wt)
 
-        assert projects[0] == "e2e-tests-wt147"
-        assert "webapp-wt147" in projects
+        assert projects[0] == f"e2e-tests-wt{self.ticket.pk}"
+        assert f"webapp-wt{self.ticket.pk}" in projects
 
     def test_resolved_worktree_is_probed_first(self) -> None:
         projects = _ticket_frontend_projects(self.app_repo_wt)
 
-        assert projects[0] == "webapp-wt147"
-        assert "e2e-tests-wt147" in projects
+        assert projects[0] == f"webapp-wt{self.ticket.pk}"
+        assert f"e2e-tests-wt{self.ticket.pk}" in projects
 
     def test_no_duplicate_projects(self) -> None:
         projects = _ticket_frontend_projects(self.test_repo_wt)
@@ -65,7 +65,7 @@ class TicketFrontendProjectsTests(TestCase):
 
         assert compose_project(backend_wt) in projects
         # The resolved-worktree ticket's siblings are bypassed when a link is given.
-        assert "webapp-wt147" not in projects
+        assert f"webapp-wt{self.ticket.pk}" not in projects
 
 
 class ResolveLinkedWorktreeTests(TestCase):

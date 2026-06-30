@@ -124,7 +124,7 @@ class TestCleanupWorktree(TestCase):
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
         with patch("teatree.core.runners.worktree_start.docker_compose_down") as mock_down:
             cleanup_worktree(wt)
-        # The compose project name follows `{repo_path}-wt{ticket_number}`.
+        # The compose project name follows `{repo_path}-wt{ticket.pk}`.
         ((project,), _kwargs) = mock_down.call_args
         assert project.startswith("org/repo-wt")
 
