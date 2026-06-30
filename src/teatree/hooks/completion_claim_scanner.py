@@ -95,15 +95,20 @@ _DELIVERABLE_LINE_RE: Final[re.Pattern[str]] = re.compile(
 # between), so forward-looking "PR #41 will be merged once CI passes" is not read as
 # a landed state. A trailing future/conditional qualifier ("merged once CI passes",
 # "merged on green/ci/pipeline", "merged pending/awaiting approval", "merged subject
-# to/following/contingent on approval", "merged provided/assuming CI passes")
-# likewise leans not-yet-landed, so a negative lookahead after the bare-MERGED
-# "merged" token disqualifies it — applied ONLY to this leg, never to the
-# merged-to-target / on-main / merge-commit-SHA / origin-HEAD / fast-forward legs,
-# which are past-tense. The separator before the qualifier is the punctuation-
-# tolerant class [\s,:(\-]+, so a comma/paren/colon/dash between "merged" and the
-# qualifier ("merged, pending", "merged (pending …)", "merged: once …") cannot
-# defeat it. "after" and "to" are deliberately NOT qualifiers — "merged after the
-# refactor landed" / "merged to main" are landed, not conditional.
+# to/following approval", "merged contingent/dependent/conditional on-or-upon
+# approval", "merged provided/assuming CI passes", "merged barring objections",
+# "merged save for the changelog") likewise leans not-yet-landed, so a negative lookahead after the
+# bare-MERGED "merged" token disqualifies it — applied ONLY to this leg, never to
+# the merged-to-target / on-main / merge-commit-SHA / origin-HEAD / fast-forward
+# legs, which are past-tense. The separator before the qualifier is the
+# punctuation-tolerant class — ASCII space/comma/colon/open-paren/hyphen plus the
+# whole adjacent Unicode dash family as a RANGE, not an enumeration: the contiguous
+# U+2010-U+2015 (HYPHEN through HORIZONTAL BAR) and the non-contiguous outliers U+2212
+# (MINUS SIGN), U+2E3A/U+2E3B (TWO/THREE-EM DASH), and U+FE58/U+FE63/U+FF0D (the small
+# and fullwidth forms). So any Unicode dash an agent types between "merged" and the
+# qualifier ("merged, pending", "merged — pending", "merged: once …") cannot defeat it.
+# "after" and "to" are deliberately NOT qualifiers — "merged after the refactor
+# landed" / "merged to main" are landed, not conditional.
 _ON_TARGET_EVIDENCE_RE: Final[re.Pattern[str]] = re.compile(
     r"\bmerged (?:to|into|onto) (?:the )?(?:merge )?target\b|"
     r"\bmerged to (?:main|master|develop|the default branch)\b|"
@@ -116,8 +121,11 @@ _ON_TARGET_EVIDENCE_RE: Final[re.Pattern[str]] = re.compile(
     r"\bmerge(?:d)? commit\s+[0-9a-f]{7,40}\b|"
     r"\b(?:squash[- ]?)?merged as\s+[0-9a-f]{7,40}\b|"
     r"\b(?:pr|mr|pull request|merge request)\s*[#!]?\d+\b\s*(?:(?:is|was|has been|now)\s+|[:=]\s*)?merged\b"
-    r"(?![\s,:(\-]+(?:once|on\s+green|on\s+ci|on\s+(?:the\s+)?pipeline|pending|when|upon|"
-    r"as\s+soon\s+as|if|unless|awaiting|subject\s+to|following|provided|assuming|contingent\s+on)\b)|"
+    r"(?![\s,:(\-\u2010-\u2015\u2212\u2e3a\u2e3b\ufe58\ufe63\uff0d]+"
+    r"(?:once|on\s+green|on\s+ci|on\s+(?:the\s+)?pipeline|pending|when|upon|"
+    r"as\s+soon\s+as|if|unless|awaiting|subject\s+to|following|provided|assuming|"
+    r"contingent\s+(?:on|upon)|depend(?:ing|ent)\s+(?:on|upon)|conditional\s+(?:on|upon)|"
+    r"barring|save\s+for)\b)|"
     r"\borigin/[\w./-]+\s+HEAD\s*(?:is|=|now|at)\s*[0-9a-f]{7,40}\b|"
     r"\bfast[- ]forwarded(?:\s+to)?\s+[0-9a-f]{7,40}\b",
     re.IGNORECASE,

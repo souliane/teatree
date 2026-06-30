@@ -502,6 +502,110 @@ class TestMergedQualifierSynonymsAndPunctuationDoNotCount:
         assert scanner.find_completion_block(_MERGED_QUALIFIER_PRESERVATION_MAP) is None
 
 
+# The HOLD on #2864 (reviewer-verified): the punctuation-tolerant separator class
+# covered ASCII space/comma/colon/open-paren/hyphen but NOT the Unicode em-dash
+# (U+2014) or en-dash (U+2013) — the dash agents most often type — so "PR #41
+# merged — pending approval" (em-dash) CLEARED even though the comma form of the
+# identical claim correctly BLOCKED and "pending" is already a covered qualifier.
+# And four future/conditional SYNONYMS stayed uncovered ("merged depending on /
+# conditional on approval", "merged barring objections", "merged save for the
+# changelog"), each reading as landed evidence. Every one is a premature
+# not-yet-landed row that MUST disqualify the bare-MERGED leg so the claim blocks.
+_EM_DASH = "\u2014"
+_EN_DASH = "\u2013"
+_DASH_AND_SYNONYM_LEAK_PHRASES = [
+    f"merged {_EM_DASH} pending approval",
+    f"merged {_EN_DASH} pending approval",
+    "merged depending on approval",
+    "merged conditional on approval",
+    "merged barring objections",
+    "merged save for the changelog",
+]
+
+
+class TestUnicodeDashSeparatorAndSynonymQualifiersDoNotCount:
+    """Anti-vacuous pair: Unicode-dash + synonym 'merged' qualifiers fire; a dash + NON-qualifier still clears."""
+
+    @pytest.mark.parametrize("phrase", _DASH_AND_SYNONYM_LEAK_PHRASES)
+    def test_unicode_dash_and_synonym_qualifier_leak_fires(self, phrase: str) -> None:
+        # Each phrase is a covered qualifier reached past an em/en-dash, or an
+        # uncovered synonym (depending on / conditional on / barring / save for) — all
+        # lean not-yet-landed, so no row carries on-target evidence and the premature
+        # multi-deliverable claim MUST block. Reverting the dash chars from the
+        # separator class or the four synonyms from the alternation makes these
+        # return None — the RED-on-revert anchor for the leak fix.
+        verdict = scanner.find_completion_block(_two_row_claim(f"PR #41 {phrase}.", f"PR #42 {phrase}."))
+        assert verdict is not None
+        assert verdict.deliverable_count == 2
+        assert any("on-target evidence" in reason for reason in verdict.missing)
+
+    def test_dash_followed_by_non_qualifier_still_clears(self) -> None:
+        # Preservation: "PR #42 merged — see the changelog #123" — an em-dash followed
+        # by a NON-qualifier ("see") — is landed evidence, so the complete map clears.
+        # Only a dash followed by a COVERED qualifier disqualifies the leg. Stays GREEN
+        # when the dash chars are reverted, isolating the leak fix.
+        row = f"PR #42 merged {_EM_DASH} see the changelog #123"
+        assert scanner.find_completion_block(_two_row_claim(f"{row}.", f"{row}.")) is None
+
+
+# The second HOLD on #2864 (reviewer-verified): the prior fix ENUMERATED only
+# en-dash (U+2013) and em-dash (U+2014), so the rest of the adjacent Unicode dash
+# family still slipped. The reviewer's named failing input -- PR #41 merged <U+2015>
+# pending approval (HORIZONTAL BAR) -- cleared, as did U+2010 HYPHEN, U+2012 FIGURE
+# DASH, U+2212 MINUS SIGN, U+2E3A TWO-EM DASH, and U+FF0D FULLWIDTH HYPHEN-MINUS,
+# each reaching the COVERED 'pending' qualifier yet read as landed. The on/upon
+# conditional synonyms ('contingent upon', 'dependent on', 'depending upon',
+# 'conditional upon') stayed uncovered too. The dash ENUMERATION is replaced with a
+# RANGE and the synonyms generalized, so each is a premature not-yet-landed row that
+# MUST disqualify the bare-MERGED leg so the claim blocks.
+_HORIZONTAL_BAR = "\u2015"
+_HYPHEN = "\u2010"
+_FIGURE_DASH = "\u2012"
+_MINUS_SIGN = "\u2212"
+_TWO_EM_DASH = "\u2e3a"
+_FULLWIDTH_HYPHEN_MINUS = "\uff0d"
+
+
+_DASH_FAMILY_LEAK_PHRASES = [
+    f"merged {_HORIZONTAL_BAR} pending approval",
+    f"merged {_HYPHEN} pending approval",
+    f"merged {_FIGURE_DASH} pending approval",
+    f"merged {_MINUS_SIGN} pending approval",
+    f"merged {_TWO_EM_DASH} pending approval",
+    f"merged {_FULLWIDTH_HYPHEN_MINUS} pending approval",
+]
+_CONDITIONAL_SYNONYM_LEAK_PHRASES = [
+    "merged contingent upon approval",
+    "merged dependent on approval",
+    "merged depending upon approval",
+    "merged conditional upon approval",
+]
+
+
+class TestUnicodeDashFamilyAndConditionalSynonymsDoNotCount:
+    """Anti-vacuous pair: the full Unicode dash family + on/upon synonyms fire; a dash + NON-qualifier clears."""
+
+    @pytest.mark.parametrize("phrase", _DASH_FAMILY_LEAK_PHRASES + _CONDITIONAL_SYNONYM_LEAK_PHRASES)
+    def test_dash_family_and_conditional_synonym_leak_fires(self, phrase: str) -> None:
+        # Each phrase reaches the covered "pending" qualifier past a Unicode-dash-family
+        # separator (incl. the named U+2015 HORIZONTAL BAR), or is an on/upon conditional
+        # synonym. All lean not-yet-landed, so no row carries on-target evidence and the
+        # premature multi-deliverable claim MUST block. Reverting the dash RANGE or the
+        # widened synonyms makes these return None, the RED-on-revert anchor.
+        verdict = scanner.find_completion_block(_two_row_claim(f"PR #41 {phrase}.", f"PR #42 {phrase}."))
+        assert verdict is not None
+        assert verdict.deliverable_count == 2
+        assert any("on-target evidence" in reason for reason in verdict.missing)
+
+    def test_horizontal_bar_followed_by_non_qualifier_still_clears(self) -> None:
+        # Preservation: a HORIZONTAL BAR (U+2015) followed by a NON-qualifier ("see") is
+        # landed evidence, so the complete map clears. Only a dash followed by a COVERED
+        # qualifier disqualifies the leg, so the widened range must not over-block. Stays
+        # GREEN when the range is reverted, isolating the leak fix.
+        row = f"PR #42 merged {_HORIZONTAL_BAR} see the changelog #123"
+        assert scanner.find_completion_block(_two_row_claim(f"{row}.", f"{row}.")) is None
+
+
 class TestFormatBlockMessage:
     def test_message_names_the_incomplete_legs(self) -> None:
         verdict = scanner.find_completion_block(_STRANDED_CLAIM)
