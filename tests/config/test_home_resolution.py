@@ -76,21 +76,24 @@ class TestTomlHomeIgnoresDb(TestCase):
         self.monkeypatch = monkeypatch
 
     def test_toml_home_field_resolves_from_teatree_table(self) -> None:
-        _write_toml(self.config_path, "[teatree]\norchestrator_bash_gate_enabled = false\n")
-        assert get_effective_settings().orchestrator_bash_gate_enabled is False
+        # ``autoload`` is the TOML-home bool representative (eliminate-~/.teatree.toml
+        # moved orchestrator_bash_gate_enabled to the DB). Default False; a [teatree]
+        # ``true`` proves the field resolves off the file.
+        _write_toml(self.config_path, "[teatree]\nautoload = true\n")
+        assert get_effective_settings().autoload is True
 
     def test_toml_home_field_ignores_a_config_setting_row(self) -> None:
         # A ConfigSetting row for a TOML-home key is ignored on read — the
         # [teatree] value is the sole authority.
-        _write_toml(self.config_path, "[teatree]\norchestrator_bash_gate_enabled = true\n")
-        ConfigSetting.objects.set_value("orchestrator_bash_gate_enabled", value=False)
-        assert get_effective_settings().orchestrator_bash_gate_enabled is True
+        _write_toml(self.config_path, "[teatree]\nautoload = true\n")
+        ConfigSetting.objects.set_value("autoload", value=False)
+        assert get_effective_settings().autoload is True
 
     def test_toml_home_field_default_with_no_row_and_no_table_value(self) -> None:
         _write_toml(self.config_path, "[teatree]\n")
-        ConfigSetting.objects.set_value("orchestrator_bash_gate_enabled", value=False)
-        # Still the dataclass default (True) — the DB row never applies.
-        assert get_effective_settings().orchestrator_bash_gate_enabled is True
+        ConfigSetting.objects.set_value("autoload", value=True)
+        # Still the dataclass default (False) — the DB row never applies.
+        assert get_effective_settings().autoload is False
 
     def test_statusline_chain_resolves_from_teatree_not_db(self) -> None:
         # statusline_chain is TOML-home: the bash statusline hook reads it
@@ -117,25 +120,23 @@ class TestOverlayScopeLayering(TestCase):
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "my-overlay")
         assert get_effective_settings().issue_implementer_enabled is True
 
-    def test_overlay_scoped_toml_value_beats_global_toml_for_toml_home(self) -> None:
-        _write_toml(
-            self.config_path,
-            "[teatree]\norchestrator_bash_gate_enabled = true\n\n"
-            '[overlays.my-overlay]\nclass = "x.y:Z"\norchestrator_bash_gate_enabled = false\n',
-        )
-        self.monkeypatch.setenv("T3_OVERLAY_NAME", "my-overlay")
-        assert get_effective_settings().orchestrator_bash_gate_enabled is False
+    # (eliminate-~/.teatree.toml removed the generic per-overlay-TOML-scalar override:
+    # ``TOML_OVERLAY_OVERRIDABLE_SETTINGS`` is now empty — a setting's per-overlay
+    # override lives in a ``ConfigSetting`` overlay-scope row, covered by
+    # ``test_overlay_scoped_db_row_beats_global_db_row_for_db_home`` above. The former
+    # ``test_overlay_scoped_toml_value_beats_global_toml_for_toml_home`` is obsolete.)
 
     def test_overlay_db_row_for_toml_home_key_is_ignored(self) -> None:
         # Critical: an [overlays.<name>] DB-key row is ignored on read for a
         # TOML-home key — the TOML value (or default) is the sole authority.
+        # ``autoload`` is the TOML-home representative.
         _write_toml(
             self.config_path,
-            '[teatree]\norchestrator_bash_gate_enabled = true\n\n[overlays.my-overlay]\nclass = "x.y:Z"\n',
+            '[teatree]\nautoload = true\n\n[overlays.my-overlay]\nclass = "x.y:Z"\n',
         )
-        ConfigSetting.objects.set_value("orchestrator_bash_gate_enabled", value=False, scope="my-overlay")
+        ConfigSetting.objects.set_value("autoload", value=False, scope="my-overlay")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "my-overlay")
-        assert get_effective_settings().orchestrator_bash_gate_enabled is True
+        assert get_effective_settings().autoload is True
 
 
 class TestDbHomeKeyInOverlayTomlIsLoud(TestCase):
@@ -176,10 +177,11 @@ class TestDbHomeKeyInOverlayTomlIsLoud(TestCase):
         assert "DB-home" in joined
 
     def test_no_warning_when_overlay_toml_has_only_toml_home_keys(self) -> None:
-        # A clean overlay table (only TOML-home keys) emits no DB-home drop warning.
+        # A clean overlay table (no DB-home key) emits no DB-home drop warning.
+        # ``statusline_chain`` is TOML-home and not a per-overlay DB-home key.
         _write_toml(
             self.config_path,
-            '[teatree]\n\n[overlays.my-overlay]\nclass = "x.y:Z"\norchestrator_bash_gate_enabled = false\n',
+            '[teatree]\n\n[overlays.my-overlay]\nclass = "x.y:Z"\nstatusline_chain = []\n',
         )
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "my-overlay")
         logger = logging.getLogger("teatree.config")

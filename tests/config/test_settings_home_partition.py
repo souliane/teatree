@@ -17,13 +17,11 @@ from teatree.config import DERIVED_FIELDS, SETTING_HOMES, SettingHome, UserSetti
 
 _TOML_CARVE_OUT = frozenset(
     {
-        "orchestrator_bash_gate_enabled",
         "speak",
         "mr_reminder",
         "handover_mirror_path",
         "autoload",
         "statusline_chain",
-        "privacy",
     }
 )
 
@@ -56,11 +54,12 @@ def test_db_home_and_toml_home_are_disjoint() -> None:
     assert db_home | toml_home == set(SETTING_HOMES)
 
 
-def test_toml_carve_out_is_exactly_the_seven_fields() -> None:
-    # The carve-out — non-Django / pre-Django readers + the nested structured
-    # tables — is exactly these seven and no more. eliminate-~/.teatree.toml has
-    # moved ``check_updates`` (cold_reader) and ``worktrees_dir`` / ``timezone``
-    # (Django settings.py never reads them, so not a bootstrap dep) to the DB.
+def test_toml_carve_out_is_exactly_the_five_fields() -> None:
+    # The carve-out — pre-Django/bash readers + the nested structured tables — is
+    # exactly these five and no more. eliminate-~/.teatree.toml has moved
+    # ``check_updates``, ``worktrees_dir`` / ``timezone``, and the last two
+    # per-overlay-TOML-overridable fields (``orchestrator_bash_gate_enabled`` /
+    # ``privacy``) to the DB.
     toml_home = {k for k, home in SETTING_HOMES.items() if home is SettingHome.TOML}
     assert toml_home == _TOML_CARVE_OUT
     for moved in ("workspace_dir", "check_updates", "worktrees_dir", "timezone"):
@@ -73,6 +72,14 @@ def test_falsely_bootstrap_fields_are_db_home() -> None:
     # ``DATABASES`` without reading either — so both are DB-home, not bootstrap.
     assert SETTING_HOMES["worktrees_dir"] is SettingHome.DB
     assert SETTING_HOMES["timezone"] is SettingHome.DB
+
+
+def test_per_overlay_toml_fields_collapsed_to_db_home() -> None:
+    # eliminate-~/.teatree.toml: the two former per-overlay-TOML-overridable fields
+    # are DB-home — per-overlay override now lives in a ``ConfigSetting`` overlay
+    # row, not ``[overlays.<name>]``. The gate reader is DB-first (cold_reader).
+    assert SETTING_HOMES["orchestrator_bash_gate_enabled"] is SettingHome.DB
+    assert SETTING_HOMES["privacy"] is SettingHome.DB
 
 
 def test_autoload_is_toml_home_not_db() -> None:

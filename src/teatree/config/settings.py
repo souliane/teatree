@@ -401,19 +401,24 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     # partition consistency).
     "worktrees_dir": _parse_strict_str,
     "timezone": _parse_strict_str,
-}
-
-# TOML-home keys that ALSO support a per-overlay ``[overlays.<name>]`` override.
-# A TOML-home field's authoritative tier is the TOML tables + env (never the DB),
-# but a subset of them is per-overlay overridable in TOML. ``speak`` is omitted —
-# its sub-table merges bespoke (see ``_overlay_speak_override``); the others in the
-# carve-out are global-only. Discovery parses the union of this and the DB-home
-# registry so a ``[overlays.<name>]`` value for either is read off the table; the
-# resolver then keeps only TOML-home override keys.
-TOML_OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
+    # eliminate-~/.teatree.toml: the last two per-overlay-TOML-overridable carve-out
+    # fields move to DB-home (per-overlay via a ``ConfigSetting`` overlay-scope row).
+    # ``orchestrator_bash_gate_enabled``'s reader (``teatree_gate._gate_key_is_enabled``)
+    # is already DB-first via ``cold_reader`` (toml fallback for the cold self-rescue);
+    # ``privacy`` has no live production reader.
     "orchestrator_bash_gate_enabled": _parse_strict_bool,
     "privacy": _parse_strict_str,
 }
+
+# TOML-home keys that ALSO support a per-overlay ``[overlays.<name>]`` override.
+# eliminate-~/.teatree.toml emptied this: the per-overlay override of a setting now
+# lives entirely in the DB (an overlay-scoped ``ConfigSetting`` row). The last two
+# entries (``orchestrator_bash_gate_enabled``, ``privacy``) moved to the DB-home
+# registry above. ``speak`` was never here — its sub-table merges bespoke (see
+# ``_overlay_speak_override``); the remaining carve-out fields are global-only.
+# Discovery still unions this with the DB-home registry; with it empty the union is
+# just the DB-home registry.
+TOML_OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {}
 
 # ``T3_*`` env vars that win over both the per-overlay override and the
 # global setting. Mapped to ``(UserSettings field, parser)``.

@@ -321,14 +321,12 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
     # left in ``[teatree]`` / ``[overlays.<name>]`` is ignored on read (its home is the
     # DB); migrate it into the store with ``t3 <overlay> config_setting import``.
     user = UserSettings(
-        privacy=teatree.get("privacy", ""),
         # Strict bool: only a real TOML boolean ``true`` engages autoload — a
         # quoted ``"true"`` / ``"false"`` string is ignored (matches the
         # cold-read in ``teatree_settings.autoload_enabled``).
         autoload=teatree.get("autoload", False) is True,
         speak=resolve_speak(teatree),
         mr_reminder=resolve_mr_reminder(raw),
-        orchestrator_bash_gate_enabled=bool(teatree.get("orchestrator_bash_gate_enabled", True)),
         statusline_chain=_parse_str_list(teatree["statusline_chain"]) if "statusline_chain" in teatree else [],
         handover_mirror_path=(
             Path(str(teatree["handover_mirror_path"])).expanduser()

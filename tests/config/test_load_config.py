@@ -24,22 +24,24 @@ from ._shared import _write_toml
 
 
 def test_load_config_reads_toml_home_fields(tmp_path: Path) -> None:
-    # privacy is TOML-home (read off the file). workspace_dir is DB-home now:
-    # its ``[teatree]`` value is ignored on read so the field keeps its dataclass
-    # default at the file tier (resolved per-overlay via config.worktree_root()).
-    # review_skill is DB-home too and keeps its default at the file tier.
+    # autoload is TOML-home (read off the file). workspace_dir / privacy are DB-home
+    # now (eliminate-~/.teatree.toml): their ``[teatree]`` value is ignored on read so
+    # the fields keep their dataclass defaults at the file tier (workspace_dir resolves
+    # per-overlay via config.worktree_root()). review_skill is DB-home too.
     config_path = tmp_path / ".teatree.toml"
     _write_toml(
         config_path,
         """
 [teatree]
 workspace_dir = "/custom/workspace"
+autoload = true
 privacy = "strict"
 """,
     )
     config = load_config(config_path)
     assert config.user.workspace_dir == Path.home() / "workspace"
-    assert config.user.privacy == "strict"
+    assert config.user.autoload is True
+    assert config.user.privacy == ""
     assert config.user.review_skill == ""
     assert "teatree" in config.raw
 
@@ -88,7 +90,7 @@ def test_toml_home_and_raw_keys_do_not_warn(tmp_path: Path, caplog: pytest.LogCa
     config_path = tmp_path / ".teatree.toml"
     _write_toml(
         config_path,
-        '[teatree]\nprivacy = "strict"\n'
+        "[teatree]\nautoload = true\n"
         'statusline_chain = []\nprivate_repos = ["acme/x"]\n\n'
         '[overlays.myproj]\npath = "~/p"\n',
     )
@@ -130,7 +132,7 @@ class TestDbHomeTomlConflictWarning(TestCase):
         ConfigSetting.objects.set_value("contribute", value=True)
         # ``workspace_dir`` omitted: it is the one DB-home key that warns on
         # presence (it silently relocates worktrees) — covered separately below.
-        _write_toml(self.config_path, '[teatree]\nprivacy = "strict"\n')
+        _write_toml(self.config_path, "[teatree]\nautoload = true\n")
         assert self._load_and_collect() == []
 
     def test_retired_workspace_dir_in_toml_warns_to_migrate(self) -> None:
@@ -272,10 +274,14 @@ def test_orchestrator_bash_gate_enabled_defaults_on(tmp_path: Path) -> None:
     assert load_config(config_path).user.orchestrator_bash_gate_enabled is True
 
 
-def test_orchestrator_bash_gate_enabled_can_be_disabled(tmp_path: Path) -> None:
+def test_orchestrator_bash_gate_enabled_toml_is_ignored_db_home(tmp_path: Path) -> None:
+    # eliminate-~/.teatree.toml: orchestrator_bash_gate_enabled is DB-home, so its
+    # ``[teatree]`` value is ignored on read and the dataclass default (True) stands at
+    # the file tier. The gate's authoritative read/write is the DB tier via teatree_gate
+    # (cold_reader / cold_writer) — see tests/teatree_cli/test_teatree_gate.
     config_path = tmp_path / ".teatree.toml"
     _write_toml(config_path, "[teatree]\norchestrator_bash_gate_enabled = false\n")
-    assert load_config(config_path).user.orchestrator_bash_gate_enabled is False
+    assert load_config(config_path).user.orchestrator_bash_gate_enabled is True
 
 
 def test_require_human_approval_to_merge_defaults_on(tmp_path: Path) -> None:
