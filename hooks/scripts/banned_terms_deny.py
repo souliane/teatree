@@ -13,13 +13,23 @@ known-private target, where the repo's own domain words are expected. (2)
 own org/repo slug, landing in that private repo; a work-item URL naming the repo
 is not a leak. (3) ``own_repo_url_carve_out`` — a structured ``gh``/``glab`` post
 to a PUBLIC surface whose term appears ONLY inside a URL of one of the overlay's
-own configured repos; the address of the repo is not a leak. (4)
-``own_dest_slug_carve_out.term_is_destination_own_slug`` (#2597) — a structured
-post whose tripped term IS the OWN repo slug of every publish destination (the
-overlay's private tracker, named after the overlay); the repo's own name on its
-own surface is not a leak. Unlike (1)-(3) this keys off the resolved destination
-slug, not ``private_repos``, so it needs no config; a public destination whose
-slug omits the term still hard-blocks.
+own configured repos; the address of the repo is not a leak.
+
+Every carve-out above conditions its downgrade on a PROVABLY-internal landing
+repo or a PROVABLY-own configured URL — never on the destination SLUG TEXT
+alone. A slug-text downgrade (a term that merely matches the resolved
+destination's own repo slug) would fail OPEN: this deny path is reached ONLY
+after ``publish_destination.gate_skips_destination`` already returned False, so
+the destination is NOT provably-internal (it is PUBLIC or unknown-visibility) —
+exactly the surface the fail-closed design protects. An org/repo slug is
+attacker-controllable (``<term>-eng/tracker``), so downgrading on slug text
+would let a genuinely-public repo named after the term silence the leak block.
+The #2597 false positive (a status comment to the overlay's OWN private tracker)
+is therefore resolved the SOUND way instead: declaring that tracker in
+``[teatree] private_repos`` / ``internal_publish_namespaces`` makes
+``gate_skips_destination`` skip the WHOLE gate for it (the overlay name on a
+provably-private surface is not a leak), and the #1657 NOTE below points the
+operator at that config when an in-hook probe cannot prove visibility.
 
 Anything not downgraded hard-blocks, after emitting the #1657 unknown-visibility
 NOTE when the target's visibility could not be resolved in-hook.
@@ -32,12 +42,7 @@ from pathlib import Path
 def emit_banned_term_deny(tool_name: str, command: str, payload: str, term: str, cwd_repo: Path | None) -> bool:
     from hook_router import emit_pretooluse_deny  # noqa: PLC0415
 
-    from teatree.hooks import (  # noqa: PLC0415
-        banned_terms_scanner,
-        own_dest_slug_carve_out,
-        own_repo_url_carve_out,
-        publish_surface,
-    )
+    from teatree.hooks import banned_terms_scanner, own_repo_url_carve_out, publish_surface  # noqa: PLC0415
 
     if publish_surface.carve_out_applies(tool_name, command, payload, cwd_repo):
         sys.stderr.write(
@@ -59,13 +64,6 @@ def emit_banned_term_deny(tool_name: str, command: str, payload: str, term: str,
         sys.stderr.write(
             f"WARNING: banned-terms gate (#1415) — term '{term}' appears only inside a URL of "
             "the overlay's own configured repo; downgraded to warn. The address of the repo is not a leak.\n"
-        )
-        return False
-    if tool_name == "Bash" and own_dest_slug_carve_out.term_is_destination_own_slug(command, term, cwd_repo):
-        sys.stderr.write(
-            f"WARNING: banned-terms gate (#1415/#2597) — term '{term}' is the OWN repo slug of this "
-            "post's private destination; downgraded to warn. The tracker named after the overlay is "
-            "not a leak on its own surface; a public destination whose slug omits the term still blocks.\n"
         )
         return False
     unknown_slug = publish_surface.visibility_unknown_for_block(command, cwd_repo)
