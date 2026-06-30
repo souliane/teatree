@@ -54,7 +54,42 @@ class TestLoopsListText(django.test.TestCase):
 
 
 @django.test.override_settings(USE_TZ=True)
+class TestLoopsListDescription(django.test.TestCase):
+    def test_renders_description_on_its_own_line(self) -> None:
+        Loop.objects.create(
+            name="demo-desc",
+            delay_seconds=60,
+            prompt=_prompt(),
+            description="Does the thing every minute.",
+        )
+        lines = _run().splitlines()
+        status = next(ln for ln in lines if ln.strip().startswith("demo-desc"))
+        # The status columns stay on their own line (no description bleed-in)…
+        assert "Does the thing every minute." not in status
+        # …and the description renders on the indented continuation line below it.
+        desc_line = lines[lines.index(status) + 1]
+        assert desc_line.strip() == "Does the thing every minute."
+
+    def test_blank_description_emits_no_continuation_line(self) -> None:
+        Loop.objects.create(name="demo-nodesc", delay_seconds=60, prompt=_prompt(), description="")
+        lines = _run().splitlines()
+        status = next(ln for ln in lines if ln.strip().startswith("demo-nodesc"))
+        following = lines[lines.index(status) + 1 :]
+        # The next non-empty line is another loop's status row, not a blank
+        # description continuation line.
+        assert not following or following[0].strip()
+
+
+@django.test.override_settings(USE_TZ=True)
 class TestLoopsListJson(django.test.TestCase):
+    def test_json_carries_description(self) -> None:
+        Loop.objects.create(
+            name="demo-json-desc", delay_seconds=60, prompt=_prompt(), description="A useful one-liner."
+        )
+        payload = json.loads(_run("--json"))
+        demo = next(e for e in payload["loops"] if e["name"] == "demo-json-desc")
+        assert demo["description"] == "A useful one-liner."
+
     def test_json_interval_loop_shape(self) -> None:
         Loop.objects.create(
             name="demo-json", delay_seconds=120, prompt=_prompt(), last_run_at=timezone.now() - dt.timedelta(seconds=30)

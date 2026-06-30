@@ -121,6 +121,49 @@ class TestSeedDefaultLoops(django.test.TestCase):
         assert arch.prompt_id is not None
         assert "ac-reviewing-codebase" in arch.prompt.body
 
+    def test_every_seeded_loop_carries_a_real_description(self) -> None:
+        # The owner's requirement: every default loop ships a real, useful
+        # one-line description on its ``Loop`` row — never blank, never the old
+        # ``Default loop prompt for ...`` placeholder.
+        seed_default_loops_and_prompts()
+        for loop in Loop.objects.filter(name__in=[s.name for s in DEFAULT_LOOPS]):
+            assert loop.description.strip(), loop.name
+            assert "Default loop prompt for" not in loop.description, loop.name
+
+    def test_seeded_description_matches_the_spec(self) -> None:
+        # The spec is the single source of truth: ``Loop.description`` is the
+        # spec's ``description`` verbatim.
+        seed_default_loops_and_prompts()
+        by_name = {loop.name: loop for loop in Loop.objects.all()}
+        for spec in DEFAULT_LOOPS:
+            assert by_name[spec.name].description == spec.description, spec.name
+
+    def test_reseed_backfills_a_blank_description_on_an_existing_row(self) -> None:
+        # A pre-feature install has a row with a blank description; re-running the
+        # seed must backfill it from the spec (the "reseed updates existing row"
+        # wiring) rather than leaving the placeholder/blank in place.
+        seed_default_loops_and_prompts()
+        Loop.objects.filter(name="dispatch").update(description="")
+        seed_default_loops_and_prompts()
+        dispatch_spec = next(s for s in DEFAULT_LOOPS if s.name == "dispatch")
+        assert Loop.objects.get(name="dispatch").description == dispatch_spec.description
+
+    def test_reseed_does_not_clobber_an_operator_edited_description(self) -> None:
+        # Mirrors the enabled-flag preservation: an operator who rewrote a
+        # description keeps it through a re-seed (only blank rows are backfilled).
+        seed_default_loops_and_prompts()
+        Loop.objects.filter(name="inbox").update(description="operator note")
+        seed_default_loops_and_prompts()
+        assert Loop.objects.get(name="inbox").description == "operator note"
+
+    def test_arch_review_prompt_description_is_the_real_description(self) -> None:
+        # The single prompt-backed default's ``Prompt.description`` is the loop's
+        # real description, not the retired ``Default loop prompt for ...`` placeholder.
+        seed_default_loops_and_prompts()
+        prompt = Prompt.objects.get(name="arch_review")
+        assert prompt.description.strip()
+        assert "Default loop prompt for" not in prompt.description
+
     def test_management_command_seeds_and_reports(self) -> None:
         out = _run()
         assert Loop.objects.filter(name="dispatch").exists()

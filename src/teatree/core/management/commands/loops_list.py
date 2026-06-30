@@ -54,11 +54,23 @@ def _line(loop: Loop, now: dt.datetime) -> str:
     return f"  {loop.name:<22} {enabled:<8} {loop.cadence_label:<13} last {last:<10} next {_next_label(loop, now)}"
 
 
+def _description_line(loop: Loop) -> str | None:
+    """The loop's description as an indented continuation line, or ``None`` if blank.
+
+    Kept on its own line below the status row so the fixed-width status columns
+    stay aligned regardless of description length.
+    """
+    if not loop.description:
+        return None
+    return f"      {loop.description}"
+
+
 def _payload(loop: Loop, now: dt.datetime) -> dict[str, Any]:
     next_at = loop.next_run_at()
     return {
         "name": loop.name,
         "enabled": loop.enabled,
+        "description": loop.description,
         "delay_seconds": loop.delay_seconds,
         "daily_at": loop.daily_at.strftime("%H:%M") if loop.daily_at else "",
         "cadence": loop.cadence_label,
@@ -84,3 +96,6 @@ class Command(TyperCommand):
         self.stdout.write("loops:")
         for loop in loops:
             self.stdout.write(_line(loop, now))
+            description_line = _description_line(loop)
+            if description_line is not None:
+                self.stdout.write(description_line)
