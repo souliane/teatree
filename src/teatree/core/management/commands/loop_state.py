@@ -17,6 +17,11 @@ deliberately ``disable``d).
 Each transition is the atomic, idempotent ``LoopState`` upsert paired with the
 idempotent ``Loop.enabled`` update; the command re-reads and reports the LANDED
 status so the operator sees the verified state rather than an echo of the request.
+
+``status`` is the one strictly READ-ONLY verb: it reports the current durable
+state and writes nothing. Its output is phrased as a read (``status: <STATUS>``),
+never the mutation verbs' ``is now <status>``, so inspecting a loop can never be
+mistaken for a pause/enable that just changed it.
 """
 
 import json
@@ -30,11 +35,28 @@ from teatree.core.models import Loop, LoopState
 
 
 def _report(name: str, *, json_output: bool, stdout_write) -> None:  # noqa: ANN001
+    """Re-read and report the LANDED status after a mutating transition."""
     status = LoopState.objects.status_of(name)
     if json_output:
         stdout_write(json.dumps({"name": name, "status": status.value}, indent=2))
     else:
         stdout_write(f"OK    loop {name!r} is now {status.value}.")
+
+
+def _report_status(name: str, *, json_output: bool, stdout_write) -> None:  # noqa: ANN001
+    """Read-only status report for ``status`` — phrased as a READ, never a mutation.
+
+    The mutation verbs print ``is now <status>``; the read prints
+    ``status: <STATUS>`` so an operator inspecting a loop cannot mistake the
+    output for a pause/enable that just changed it. The ``--json`` shape is
+    identical to :func:`_report` (name + status) so machine consumers are
+    unaffected.
+    """
+    status = LoopState.objects.status_of(name)
+    if json_output:
+        stdout_write(json.dumps({"name": name, "status": status.value}, indent=2))
+    else:
+        stdout_write(f"loop {name!r} status: {status.value.upper()}")
 
 
 class Command(TyperCommand):
@@ -97,5 +119,5 @@ class Command(TyperCommand):
         *,
         json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
     ) -> None:
-        """Report *name*'s durable state (ENABLED when no row exists)."""
-        _report(name, json_output=json_output, stdout_write=self.stdout.write)
+        """Read *name*'s durable state (ENABLED when no row exists) WITHOUT mutating it."""
+        _report_status(name, json_output=json_output, stdout_write=self.stdout.write)

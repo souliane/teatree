@@ -20,7 +20,7 @@ from pathlib import Path
 import django.test
 from django.utils import timezone
 
-from teatree.core.models import Loop, Prompt
+from teatree.core.models import Loop, LoopState, Prompt
 from teatree.loop.statusline import mini_loops_anchor, set_mini_loop_schedules_reader
 from teatree.loops.config import LoopsConfig
 from teatree.loops.schedule import mini_loop_schedules
@@ -75,6 +75,20 @@ class TestMiniLoopSchedulesFromLedger(django.test.TestCase):
         _make_loop("inbox", 60)
         names = [name for name, _, _ in mini_loop_schedules()]
         assert names == ["audit", "inbox", "ship"]
+
+    def test_paused_loop_is_excluded(self) -> None:
+        # A PAUSED loop keeps Loop.enabled=True with a live cadence anchor, so
+        # the pre-fix `if entry.enabled` filter kept it in the statusline
+        # schedule with a countdown — masking that the tick skips it. The
+        # schedule must mirror the tick's `loop_enabled` verdict.
+        Loop.objects.all().delete()
+        _make_loop("dispatch", 300, last_run_at=timezone.now())
+        _make_loop("review", 300, last_run_at=timezone.now())
+        LoopState.objects.pause("review")
+        names = [name for name, _, _ in mini_loop_schedules()]
+        assert "review" not in names
+        # The peer loop proves the schedule is non-empty (not a blanket exclude).
+        assert "dispatch" in names
 
 
 @django.test.override_settings(USE_TZ=True)

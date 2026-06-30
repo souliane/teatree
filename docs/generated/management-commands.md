@@ -212,7 +212,7 @@ Pause, resume, disable, enable, or inspect a mini-loop's durable state (#1913).
 | `resume` | Return *name* to ENABLED, clearing a pause OR a disable — both planes |
 | `disable` | Move *name* into the durable DISABLED kill-switch — both planes |
 | `enable` | Return *name* to ENABLED (alias of resume) — both planes |
-| `status` | Report *name*'s durable state (ENABLED when no row exists) |
+| `status` | Read *name*'s durable state (ENABLED when no row exists) WITHOUT mutating it |
 
 ## `loops_list`
 

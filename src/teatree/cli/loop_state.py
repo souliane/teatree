@@ -76,7 +76,7 @@ def register(loop_app: typer.Typer) -> None:
         *,
         json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
     ) -> None:
-        """Show a mini-loop's durable state (ENABLED when it has never been touched)."""
+        """Read a mini-loop's durable state, read-only (ENABLED when never touched; no mutation)."""
         _delegate("status", name, json_output=json_output)
 
 

@@ -21,7 +21,7 @@ import django.test
 from django.core.management import call_command
 from django.utils import timezone
 
-from teatree.core.models import Loop, Prompt
+from teatree.core.models import Loop, LoopState, Prompt
 from teatree.core.models.loop_lease import LoopLease
 
 _LIVE_PID = os.getpid()
@@ -77,6 +77,17 @@ class TestLoopListText(django.test.TestCase):
         output = _run()
         assert output.index("infra slots:") < output.index("mini-loops:")
         assert "loop-tick" in output
+
+    def test_paused_loop_shows_held_marker_despite_enabled_row(self) -> None:
+        # A PAUSED loop keeps Loop.enabled=True with a live countdown; the
+        # `held` marker is the only signal that the tick will skip it.
+        Loop.objects.all().delete()
+        _make_loop("review", 300, last_run_at=timezone.now())
+        LoopState.objects.pause("review")
+        output = _run()
+        line = next(ln for ln in output.splitlines() if ln.strip().startswith("review"))
+        assert "held" in line
+        assert "enabled" in line
 
     def test_stall_warning_when_last_tick_old(self) -> None:
         # Every Loop row never ran (no mini-loop contributes a recent tick) and
@@ -171,6 +182,22 @@ class TestLoopListJson(django.test.TestCase):
         assert inbox["last_fired_at"] == ""
         assert inbox["next_fire_at"] == ""
         assert inbox["age_seconds"] is None
+
+    def test_json_paused_loop_reports_held_true(self) -> None:
+        Loop.objects.all().delete()
+        _make_loop("review", 300, last_run_at=timezone.now())
+        LoopState.objects.pause("review")
+        payload = json.loads(_run("--json"))
+        review = next(e for e in payload["mini_loops"] if e["name"] == "review")
+        assert review["held"] is True
+        assert review["enabled"] is True
+
+    def test_json_running_loop_reports_held_false(self) -> None:
+        Loop.objects.all().delete()
+        _make_loop("dispatch", 300, last_run_at=timezone.now())
+        payload = json.loads(_run("--json"))
+        dispatch = next(e for e in payload["mini_loops"] if e["name"] == "dispatch")
+        assert dispatch["held"] is False
 
 
 @django.test.override_settings(USE_TZ=True)
