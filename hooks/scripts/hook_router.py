@@ -47,8 +47,7 @@ if "hook_router" not in sys.modules:
     sys.modules["hook_router"] = sys.modules[__name__]
 
 from availability_away_probe import resolved_away_mode as resolved_away_mode_stdlib
-from banned_terms_deny import emit_banned_term_deny
-from banned_terms_marker import resolve_marker as _resolve_banned_terms_marker
+from banned_terms_gate import handle_banned_terms_pretool
 from completion_claim_gate import handle_completion_claim_gate
 from config_overwrite_guard import handle_block_config_overwrite
 from django_bootstrap import bootstrap_teatree_django
@@ -3064,127 +3063,6 @@ def _run_dispatch_quote_scanner_on_task_create(data: dict) -> bool:
         override=False,
     )
     return False
-
-
-# ── PreToolUse: banned-terms posting gate (#1415) ───────────────────
-
-
-def _banned_terms_gate_enabled() -> bool:
-    """Whether the #1415 banned-terms publish gate is enabled (default True).
-
-    Fails OPEN to enabled on a missing/broken config so the gate keeps its
-    protective default; an explicit ``[teatree] banned_terms_gate_enabled =
-    false`` is the one-line kill-switch (NEVER-LOCKOUT) the user flips to
-    disable the gate while its body-resolution over-block (an allowlisted
-    private-repo commit hard-blocked because the body could not be read) is
-    fixed properly. See :func:`_teatree_bool_setting` for the shared semantics.
-    """
-    return _teatree_bool_setting("banned_terms_gate_enabled", default=True)
-
-
-def handle_banned_terms_pretool(data: dict) -> bool:
-    """Refuse a non-commit publish whose body carries a banned term.
-
-    Sibling of the #1213 quote-scanner gate. The commit-only
-    ``check-banned-terms.sh`` pre-commit hook misses ``gh issue/pr
-    create|edit|comment``, ``glab mr|issue note|create`` and the
-    ``gh api`` / ``glab api`` REST posting paths — exactly where
-    overlay/customer terms have leaked on this PUBLIC repo. This gate
-    reuses the #1213 ``_command_parser`` publish-surface detection + body
-    extraction, then delegates the matching to the SAME
-    ``check-banned-terms.sh`` against the ``~/.teatree.toml`` term list
-    (no new term config, no reimplemented matching).
-
-    A banned-term match ⇒ refuse via ``permissionDecision: deny`` + a
-    reason naming the matched term and pointing at the
-    ``--allow-banned-term`` / ``ALLOW_BANNED_TERM=1`` override.
-
-    Fail-open on any internal error: a crashing hook is worse than no
-    scan. The handler bootstraps ``sys.path`` to import ``teatree`` from
-    the sibling ``src/`` directory (the hook script runs in the user's
-    session shell with no guarantee that ``teatree`` is already
-    importable, #1314) and swallows any exception, returning ``False``.
-    """
-    if not _banned_terms_gate_enabled():
-        return False
-    src_dir = Path(__file__).resolve().parents[2] / "src"
-    added = False
-    try:
-        if str(src_dir) not in sys.path:
-            sys.path.insert(0, str(src_dir))
-            added = True
-        return _run_banned_terms_pretool(data)
-    except Exception:  # noqa: BLE001
-        return False
-    finally:
-        if added:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(str(src_dir))
-
-
-_BANNED_TERMS_CREDENTIAL_DENY = (
-    "BLOCKED: a high-confidence secret (token / key / private-key block) was detected in the "
-    "publish payload. Secrets are blocked on every surface, including a private repo — remove "
-    "the credential before posting."
-)
-
-
-def _banned_term_marker_blocks(term: str, command: str, cwd_repo: "Path | None") -> bool | None:
-    """Decide a fail-closed MARKER term, or ``None`` when ``term`` is a real banned term.
-
-    Thin router wrapper over ``banned_terms_marker.resolve_marker`` (which owns the
-    destination-aware logic + rationale). For a real configured term it returns
-    ``None`` so the caller takes its own destination-aware banned-term path. For a
-    fail-closed marker the verdict is either a downgrade-to-warn (write the stderr
-    line, return ``False``) or a hard-block (``emit_pretooluse_deny``).
-    """
-    verdict = _resolve_banned_terms_marker(term, command, cwd_repo)
-    if not verdict.is_marker:
-        return None
-    if verdict.warning is not None:
-        sys.stderr.write(verdict.warning)
-        return False
-    return emit_pretooluse_deny(verdict.deny_message or "")
-
-
-def _run_banned_terms_pretool(data: dict) -> bool:
-    """Banned-terms inner body — assumes ``teatree`` is already importable."""
-    from typing import cast  # noqa: PLC0415
-
-    from teatree.hooks import banned_terms_scanner, publish_destination, publish_surface  # noqa: PLC0415
-
-    tool_name = data.get("tool_name", "")
-    raw_input = data.get("tool_input", {}) or {}
-    if not isinstance(raw_input, dict):
-        return False
-    tool_input = cast("banned_terms_scanner.ToolInput", raw_input)
-
-    command = tool_input.get("command", "")
-    cwd_repo = _resolve_cwd_repo(data)
-
-    # A high-confidence secret leaks on EVERY surface -- a title, a short ``-t``
-    # flag, a ``gh api -f title=`` field, a ``git -C ... commit`` subject -- not
-    # only the description body, and on an internal post the destination gate
-    # would SKIP or a command carrying the --allow-banned-term override. Scan the
-    # WIDE surface set and block before the payload-None early-return and any skip
-    # / override short-circuit (#1672 secrets-always-blocked invariant).
-    if publish_surface.contains_secret(banned_terms_scanner.secret_scan_text(tool_name, tool_input)):
-        return emit_pretooluse_deny(_BANNED_TERMS_CREDENTIAL_DENY)
-
-    payload = banned_terms_scanner.extract_publish_payload(tool_name, tool_input, cwd_repo)
-    if payload is None:
-        return False
-
-    skipped = banned_terms_scanner.has_override(tool_name, tool_input) or (
-        tool_name == "Bash" and publish_destination.gate_skips_destination(command, cwd_repo)
-    )
-    term = None if skipped else banned_terms_scanner.scan_text(payload)
-    if term is None:
-        return False
-    marker_decision = _banned_term_marker_blocks(term, command, cwd_repo)
-    if marker_decision is not None:
-        return marker_decision
-    return emit_banned_term_deny(tool_name, command, payload, term, cwd_repo)
 
 
 # ── PreToolUse: block-uncovered-diff (#937 §17.6 gate 12) ───────────
