@@ -273,6 +273,12 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [commit-msg]
+      - id: generate-dashboard-snapshot
+        name: Generate the admin-dashboard HTML snapshot from the models
+        language: system
+        entry: uv run python scripts/hooks/generate_dashboard_snapshot.py
+        pass_filenames: false
+        files: ^src/teatree/core/(admin|dashboard_snapshot)\.py$
       - id: generate-management-commands-doc
         name: Generate management-commands reference doc
         language: system

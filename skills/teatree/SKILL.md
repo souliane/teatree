@@ -70,6 +70,8 @@ t3 <overlay> followup sync            # Daily ticket/PR sync
 - **Task** — claimable work unit with lease, heartbeat, parent chain
 - **TaskAttempt** — execution result with exit code, structured output
 
+These models are surfaced in a small Django admin dashboard. A rendered, drift-checked HTML snapshot of it — generated through Django's test client by `scripts/hooks/generate_dashboard_snapshot.py` — lives at [docs/generated/dashboard/admin-index.html](../../docs/generated/dashboard/admin-index.html) as an always-fresh "screenshot".
+
 ## Overlay API
 
 Overlays subclass `OverlayBase` and override methods:
