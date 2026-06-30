@@ -520,6 +520,73 @@ class TestGateIsLoopDrivenContextAware:
         assert result is not True
 
 
+class TestGateSkipsLiveUserTurn:
+    """A live user turn skips the gate even when this session owns the loop (#807).
+
+    The over-fire: this session is the SessionStart-designated tick-owner
+    (``_session_drives_loop`` true), but a human is actively responding in real
+    time (``_is_live_user_turn`` true). Forcing an ``AskUserQuestion`` menu into
+    that free-form discussion is exactly the pointless nagging the gate must
+    avoid. The anti-vacuous pair pins both dimensions: live turn ⇒ skip, and the
+    SAME owning session with no live turn ⇒ the gate still fires (the live-turn
+    escape is not an over-exemption that neuters the autonomous-loop job).
+    """
+
+    @staticmethod
+    def _owner_record(session_id: str, pid: int) -> dict[str, dict]:
+        return {
+            router._OWNER_LOOP: {
+                "session_id": session_id,
+                "agent_id": "a",
+                "pid": pid,
+                "heartbeat_ts": 0,
+            }
+        }
+
+    @pytest.fixture(autouse=True)
+    def _registry_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        reg = tmp_path / "data"
+        reg.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(reg))
+
+    def _inline_question_transcript(self, tmp_path: Path) -> Path:
+        return _write_transcript(
+            tmp_path,
+            [_user("let us discuss the design"), _assistant("Done. Should I push the branch now?")],
+        )
+
+    def test_must_not_fire_on_live_user_turn_even_when_owner(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Over-fire reproduction: this session OWNS the tick (drives_loop true),
+        # but a human typed a prompt seconds ago in it (live user turn). The
+        # human is reading the prose, so the gate MUST NOT force a tool call.
+        router._write_loop_registry(self._owner_record("owner-live", os.getpid()))
+        monkeypatch.setattr(router, "_is_live_user_turn", lambda _data: True)
+        transcript = self._inline_question_transcript(tmp_path)
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript), "session_id": "owner-live"})
+
+        assert _decision(capsys) == {}
+        assert result is not True
+
+    def test_must_fire_on_autonomous_owner_turn_when_not_live(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Anti-over-exemption: the SAME owning session with NO live user turn is
+        # a genuinely autonomous loop run, where the inline question is invisible
+        # — the gate MUST still fire. This goes GREEN only because the skip is
+        # gated on the live-turn signal, not an unconditional owner exemption.
+        router._write_loop_registry(self._owner_record("owner-auto", os.getpid()))
+        monkeypatch.setattr(router, "_is_live_user_turn", lambda _data: False)
+        transcript = self._inline_question_transcript(tmp_path)
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript), "session_id": "owner-auto"})
+
+        assert _decision(capsys).get("decision") == "block"
+        assert result is True
+
+
 class TestSequencingOfferDoesNotFire:
     """Anti-vacuous pair: the rhetorical sequencing offer passes; a real offer fires."""
 
