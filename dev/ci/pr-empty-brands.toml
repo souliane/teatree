@@ -1,0 +1,11 @@
+# Fork-PR fallback for the banned-terms full-tree gate (#44).
+#
+# A fork PR cannot read repository secrets, so $TEATREE_BANNED_BRANDS is empty
+# and the loader would refuse a genuinely-unset brand list (exit 2). Pointing
+# T3_BANNED_TERMS_CONFIG at this explicit-empty list lets the always-on
+# terminology pass run pre-merge without that refusal. Same-repo PRs read the
+# secret (which takes precedence) and the full brand backstop runs on
+# push/schedule.
+
+[teatree]
+banned_brands = []
