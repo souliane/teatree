@@ -3166,8 +3166,8 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │                kill-switch.                                                  │
 │ enable         Enable a disabled mini-loop — return it to the ENABLED state  │
 │                (alias of resume).                                            │
-│ loop-state     Show a mini-loop's durable state (ENABLED when it has never   │
-│                been touched).                                                │
+│ loop-state     Read a mini-loop's durable state, read-only (ENABLED when     │
+│                never touched; no mutation).                                  │
 │ claude-spec    Print the native Claude `/loop` spec (slot_id, cron, prompt)  │
 │                for one DB Loop.                                              │
 │ self-improve   Self-improving monitor — scheduled smell detection with a     │
@@ -3487,7 +3487,8 @@ Usage: t3 loop enable [OPTIONS] NAME
 ```
 Usage: t3 loop loop-state [OPTIONS] NAME
 
- Show a mini-loop's durable state (ENABLED when it has never been touched).
+ Read a mini-loop's durable state, read-only (ENABLED when never touched; no
+ mutation).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    name      TEXT  Mini-loop name. [required]                              │

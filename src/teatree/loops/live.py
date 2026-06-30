@@ -25,6 +25,7 @@ from django.utils import timezone
 
 from teatree.core.loop_lease_manager import is_per_loop_owner_slot
 from teatree.core.models.loop_lease import LoopLease
+from teatree.loop.loop_state_db import loop_held_in_db
 from teatree.loop.statusline_loops import _cadence_for_loop as cadence_for_loop
 from teatree.utils.singleton import pid_alive
 
@@ -175,6 +176,11 @@ def _mini_entries() -> tuple[LoopStatusEntry, ...]:
     next-due instant comes from the ``Loop`` row (was the retired ``LoopsConfig``
     + code-cadence ledger). One read here re-points BOTH the statusline and
     ``t3 loop list`` since both consume :func:`build_report`.
+
+    ``held`` is read from the ``LoopState`` control tier the master tick gates on
+    (``loop_enabled`` = ``Loop.enabled`` AND not :func:`loop_held_in_db`), so a
+    PAUSED loop — which keeps ``Loop.enabled=True`` and a live cadence anchor — is
+    surfaced as held rather than masquerading as a running, counting-down loop.
     """
     from teatree.core.models import Loop  # noqa: PLC0415
 
@@ -186,6 +192,7 @@ def _mini_entries() -> tuple[LoopStatusEntry, ...]:
             cadence_seconds=_row_cadence_seconds(loop),
             last_fired_at=loop.last_run_at,
             next_fire_at=loop.next_run_at(),
+            held=loop_held_in_db(loop.name),
         )
         for loop in Loop.objects.all()
     ]
