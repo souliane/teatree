@@ -19,6 +19,7 @@ import subprocess  # noqa: S404 — hook code legitimately shells `git` (mirrors
 import sys
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any, cast
 
 # Alias the bare and ``hooks.scripts.`` identities to ONE module object so the
 # router's ``from managed_repo import ...`` and a test's
@@ -59,21 +60,67 @@ def teatree_src_on_path() -> Iterator[None]:
                 sys.path.remove(src_dir)
 
 
-def load_protected_branches() -> set[str]:
-    """Return the merged set of protected branches from defaults + all overlays."""
+def db_overlays_registry() -> dict[str, Any] | None:
+    """The DB-home ``overlays`` registry dict, or ``None`` on any absence/failure.
+
+    The cold-hook twin of ``loader._inject_db_registries``: reads the canonical
+    ``ConfigSetting`` ``overlays`` row Django-free via ``cold_reader``, through the
+    same :func:`teatree_src_on_path` bootstrap the managed-repo gates use to reach
+    ``teatree.*``. Fails open to ``None`` on ANY error — ``teatree`` unimportable,
+    an unreadable/locked DB, a missing row, a non-dict value — so the caller's
+    ``~/.teatree.toml`` fallback still stands (never-lockout).
+    """
+    try:
+        with teatree_src_on_path():
+            from teatree.config.cold_reader import read_setting  # noqa: PLC0415
+
+            value = read_setting("overlays")
+    except Exception:  # noqa: BLE001
+        return None
+    return cast("dict[str, Any]", value) if isinstance(value, dict) else None
+
+
+def _toml_overlays_registry() -> dict[str, Any]:
+    """The ``[overlays.*]`` tables of ``~/.teatree.toml``; ``{}`` on a missing/broken file."""
     import tomllib  # noqa: PLC0415
 
-    branches = set(DEFAULT_PROTECTED_BRANCHES)
     config_path = Path.home() / ".teatree.toml"
     if not config_path.is_file():
-        return branches
+        return {}
     try:
         with config_path.open("rb") as f:
             config = tomllib.load(f)
     except Exception:  # noqa: BLE001
-        return branches
-    for overlay_cfg in config.get("overlays", {}).values():
-        branches.update(overlay_cfg.get("protected_branches", []))
+        return {}
+    overlays = config.get("overlays")
+    return cast("dict[str, Any]", overlays) if isinstance(overlays, dict) else {}
+
+
+def overlays_registry() -> dict[str, Any]:
+    """The effective overlay registry: the DB-home row when present, else ``~/.teatree.toml``.
+
+    DB-first (eliminate-~/.teatree.toml): the migrated ``overlays`` ``ConfigSetting``
+    row wins, falling back to the ``[overlays.<name>]`` toml tables when the DB read
+    yields nothing/empty — so a DELETED ``~/.teatree.toml`` resolves the registry
+    from the DB while an existing-toml install is byte-for-byte unaffected. ``{}``
+    when neither resolves.
+    """
+    db = db_overlays_registry()
+    return db or _toml_overlays_registry()
+
+
+def load_protected_branches() -> set[str]:
+    """Return the merged set of protected branches from defaults + all overlays.
+
+    DB-first (eliminate-~/.teatree.toml): the overlay registry resolves via
+    :func:`overlays_registry` (DB-home row, ``~/.teatree.toml`` fallback), so a
+    DELETED toml still protects an overlay's declared ``development`` / ``release``
+    branches instead of degrading to ``{main, master}`` only.
+    """
+    branches = set(DEFAULT_PROTECTED_BRANCHES)
+    for overlay_cfg in overlays_registry().values():
+        if isinstance(overlay_cfg, dict):
+            branches.update(overlay_cfg.get("protected_branches", []))
     return branches
 
 
@@ -116,29 +163,21 @@ def file_is_inside_worktree(repo_root: str, file_path: str) -> bool:
 
 
 def overlay_managed_repo_signals() -> tuple[list[str], list[Path]]:
-    """Return ``(repo_slug_substrings, overlay_base_paths)`` from config.
+    """Return ``(repo_slug_substrings, overlay_base_paths)`` from the overlay registry.
 
-    Offline read of ``~/.teatree.toml`` collecting the two signals that mark a
-    repo teatree-managed: the per-overlay repo slug lists (``workspace_repos`` /
-    ``frontend_repos`` / ``public_repos``) and each overlay's ``path``
-    working-tree base. Teatree core's own slug (``souliane/teatree``) is always
-    included. Fails to an empty signal set on a missing/broken config — the
-    caller treats "no resolvable signal + a resolvable slug" as unmanaged, never
-    as a license to weaken the gate on uncertainty.
+    Collects the two signals that mark a repo teatree-managed: the per-overlay repo
+    slug lists (``workspace_repos`` / ``frontend_repos`` / ``public_repos``) and
+    each overlay's ``path`` working-tree base. Teatree core's own slug
+    (``souliane/teatree``) is always included. DB-first (eliminate-~/.teatree.toml):
+    the registry resolves via :func:`overlays_registry` (DB-home row,
+    ``~/.teatree.toml`` fallback), so a DELETED toml still recognises an overlay's
+    product repos as managed. Fails to the core-only signal set when neither source
+    resolves — the caller treats "no resolvable signal + a resolvable slug" as
+    unmanaged, never as a license to weaken the gate on uncertainty.
     """
-    import tomllib  # noqa: PLC0415
-
     slugs: list[str] = ["souliane/teatree"]
     paths: list[Path] = []
-    config_path = Path.home() / ".teatree.toml"
-    if not config_path.is_file():
-        return slugs, paths
-    try:
-        with config_path.open("rb") as f:
-            config = tomllib.load(f)
-    except Exception:  # noqa: BLE001
-        return slugs, paths
-    for overlay_cfg in (config.get("overlays") or {}).values():
+    for overlay_cfg in overlays_registry().values():
         if not isinstance(overlay_cfg, dict):
             continue
         for key in ("workspace_repos", "frontend_repos", "public_repos"):
@@ -154,9 +193,10 @@ def repo_root_is_teatree_managed(repo_root: str) -> bool:
     """True iff *repo_root* is a teatree-MANAGED source repo.
 
     The worktree-first gates guard only teatree core + the active overlay's
-    registered repos (``~/.teatree.toml`` ``workspace_repos`` /
-    ``frontend_repos`` / ``public_repos`` slugs, plus each overlay ``path``) —
-    NOT every git repo (#126). An unmanaged repo (a dotfiles repo, an unrelated
+    registered repos (the overlay registry's ``workspace_repos`` /
+    ``frontend_repos`` / ``public_repos`` slugs, plus each overlay ``path``;
+    DB-home with a ``~/.teatree.toml`` fallback) — NOT every git repo (#126). An
+    unmanaged repo (a dotfiles repo, an unrelated
     clone) must not block, so this returns ``False`` for any repo the
     managed-signal set does not cover, and ``False`` on any classification
     error (fail OPEN — the gate-over-deny class this whole change closes).

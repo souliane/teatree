@@ -36,6 +36,7 @@ import tomlkit
 from tomlkit import items as tomlkit_items
 
 from teatree.config import COLD_HOOK_SETTINGS, OVERLAY_OVERRIDABLE_SETTINGS
+from teatree.config.registries import REGISTRY_KEYS, REGISTRY_SETTINGS
 from teatree.config.secret_settings import SECRET_SETTINGS
 from teatree.core.models import ConfigSetting
 from teatree.core.models.config_setting import ConfigValue
@@ -98,12 +99,14 @@ def import_toml_into_db(raw: dict, *, clobber: bool = True) -> ConfigImportResul
     """Seed the ``ConfigSetting`` store from a raw config dict; return the outcome.
 
     Walks the global ``[teatree]`` table into the global scope and each
-    ``[overlays.<name>]`` table into that overlay's scope. With *clobber* (the
-    default, the manual ``config_setting import`` semantics) an existing row is
-    overwritten from the file value. With ``clobber=False`` (the ``t3 setup``
-    auto-migration) a key that already has a row in its scope is left untouched
-    and counted as ``preserved`` — so a value the user changed via
-    ``config_setting set`` survives every later ``t3 setup``.
+    ``[overlays.<name>]`` table into that overlay's scope, plus the top-level
+    ``[mr_reminder]`` setting and the ``[overlays]`` / ``[e2e_repos]`` registry
+    tables (each stored whole as one global row). With *clobber* (the default, the
+    manual ``config_setting import`` semantics) an existing row is overwritten from
+    the file value. With ``clobber=False`` (the ``t3 setup`` auto-migration) a key
+    that already has a row in its scope is left untouched and counted as
+    ``preserved`` — so a value the user changed via ``config_setting set`` survives
+    every later ``t3 setup``.
     """
     result = ConfigImportResult()
     teatree_table = raw.get("teatree")
@@ -129,7 +132,62 @@ def import_toml_into_db(raw: dict, *, clobber: bool = True) -> ConfigImportResul
                 _import_table(
                     overlay_cfg, overlay_name, clobber=clobber, result=result, parsers=OVERLAY_OVERRIDABLE_SETTINGS
                 )
+    _import_registry_tables(raw, clobber=clobber, result=result)
     return result
+
+
+def _overlay_definition_registry(overlays_table: dict) -> dict[str, Any]:
+    """The overlay DEFINITION keys (``path`` / ``class`` / ...) per overlay name.
+
+    The payload of the ``overlays`` registry row: each ``[overlays.<name>]`` table with
+    every recognised SETTING key STRIPPED OUT — both the per-overlay overridable settings
+    (migrated into that overlay's own scope rows by the per-overlay loop) and the
+    global-only cold-hook keys (which the per-overlay walk ignores). So the registry
+    carries only what ``discover_overlays`` needs (the overlay list + each one's
+    ``path`` / ``class``), never a setting. An overlay table that is pure setting-overrides
+    (no definition key) contributes no entry: its overlay is defined by an entry point,
+    not the registry.
+    """
+    setting_keys = set(_global_parsers())
+    registry: dict[str, Any] = {}
+    for name, cfg in overlays_table.items():
+        if not isinstance(cfg, dict):
+            continue
+        definitions = {key: value for key, value in cfg.items() if key not in setting_keys}
+        if definitions:
+            registry[name] = definitions
+    return registry
+
+
+def _import_registry_tables(raw: dict, *, clobber: bool, result: ConfigImportResult) -> None:
+    """Seed the DB-home ``overlays`` / ``e2e_repos`` registries (eliminate-~/.teatree.toml).
+
+    The two NON-``UserSettings`` config tables (their readers consult ``config.raw``
+    directly, see ``config.registries``) move whole into ONE global row each so a migrating
+    install carries its overlay definitions + e2e repos in the DB and boots with no toml.
+    ``overlays`` is reduced to its DEFINITION keys (the SETTING overrides go to the
+    per-overlay scope rows above — keeping the two orthogonal makes ``export -> import``
+    a fixed point); ``e2e_repos`` (no setting overload) moves verbatim.
+    """
+    overlays = raw.get("overlays")
+    overlays_registry = _overlay_definition_registry(overlays) if isinstance(overlays, dict) else {}
+    if overlays_registry:
+        _import_table(
+            {"overlays": overlays_registry},
+            GLOBAL_SCOPE,
+            clobber=clobber,
+            result=result,
+            parsers={"overlays": REGISTRY_SETTINGS["overlays"]},
+        )
+    e2e_repos = raw.get("e2e_repos")
+    if isinstance(e2e_repos, dict):
+        _import_table(
+            {"e2e_repos": e2e_repos},
+            GLOBAL_SCOPE,
+            clobber=clobber,
+            result=result,
+            parsers={"e2e_repos": REGISTRY_SETTINGS["e2e_repos"]},
+        )
 
 
 @dataclass(frozen=True)
@@ -147,6 +205,20 @@ class ConfigExport:
 
     toml: str
     redacted: tuple[RedactedRow, ...]
+
+
+@dataclass
+class _ExportGuard:
+    """The secret-guard context threaded through every export emitter.
+
+    ``include_private`` exports everything (a personal backup); otherwise each row is
+    scanned against ``terms`` + ``SECRET_SETTINGS`` and a withheld one is appended to the
+    shared ``redacted`` accumulator. Bundled so the emitters stay within the arg-count cap.
+    """
+
+    include_private: bool
+    terms: tuple[str, ...]
+    redacted: list[RedactedRow]
 
 
 def _resolve_export_scan_terms() -> tuple[str, ...]:
@@ -180,24 +252,17 @@ def _redaction_reason(key: str, value: ConfigValue, terms: tuple[str, ...]) -> s
     return f"banned-term:{hit}" if hit else None
 
 
-def _exportable_rows(
-    rows: dict[str, ConfigValue],
-    scope: str,
-    *,
-    include_private: bool,
-    terms: tuple[str, ...],
-    redacted: list[RedactedRow],
-) -> dict[str, ConfigValue]:
-    """Drop secret/tainted rows (recording each in *redacted*) unless *include_private*."""
-    if include_private:
+def _exportable_rows(rows: dict[str, ConfigValue], scope: str, *, guard: _ExportGuard) -> dict[str, ConfigValue]:
+    """Drop secret/tainted rows (recording each in ``guard.redacted``) unless include_private."""
+    if guard.include_private:
         return rows
     kept: dict[str, ConfigValue] = {}
     for key, value in rows.items():
-        reason = _redaction_reason(key, value, terms)
+        reason = _redaction_reason(key, value, guard.terms)
         if reason is None:
             kept[key] = value
         else:
-            redacted.append(RedactedRow(scope, key, reason))
+            guard.redacted.append(RedactedRow(scope, key, reason))
     return kept
 
 
@@ -209,11 +274,14 @@ def export_db_to_toml(
 ) -> ConfigExport:
     """Serialise the ``ConfigSetting`` store back to TOML — the inverse of import.
 
-    Global-scope rows render under ``[teatree]`` and each overlay scope under
-    ``[overlays.<name>]``. Each stored value is emitted as its native TOML scalar so
-    ``export -> import -> export`` is a fixed point. With *overlay* the dump is
-    scoped to that one overlay's ``[overlays.<name>]`` table; omitted, it dumps the
-    global scope plus every overlay scope.
+    Global-scope settings render under ``[teatree]``; each overlay renders under
+    ``[overlays.<name>]`` (its registry DEFINITIONS merged with its per-overlay SETTING
+    scope rows); the ``e2e_repos`` registry renders as ``[e2e_repos.<name>]`` tables. The
+    two registry keys are NEVER dumped under ``[teatree]`` (they are not ``UserSettings``
+    fields). Each stored value is emitted as its native TOML scalar so
+    ``export -> import -> export`` is a fixed point. With *overlay* the dump is scoped to
+    that one overlay's ``[overlays.<name>]`` table; omitted, it dumps the global scope plus
+    every overlay scope plus the e2e-repos registry.
 
     By DEFAULT the secret guard withholds any row that is a known-private key
     (``SECRET_SETTINGS``) OR whose key/value contains a banned customer/brand term
@@ -223,26 +291,36 @@ def export_db_to_toml(
     withheld rows ride back on the result so the caller can warn what it dropped.
     """
     terms = scan_terms if scan_terms is not None else _resolve_export_scan_terms()
-    redacted: list[RedactedRow] = []
+    guard = _ExportGuard(include_private=include_private, terms=terms, redacted=[])
     document = tomlkit.document()
-    if overlay is not None:
-        _emit_overlay_tables(document, [overlay], include_private=include_private, terms=terms, redacted=redacted)
-        return ConfigExport(tomlkit.dumps(document), tuple(redacted))
+    all_global = ConfigSetting.objects.overrides_for_scope(GLOBAL_SCOPE)
+    overlays_registry = _registry_value(all_global, "overlays")
+    e2e_repos_registry = _registry_value(all_global, "e2e_repos")
 
-    global_rows = _exportable_rows(
-        ConfigSetting.objects.overrides_for_scope(GLOBAL_SCOPE),
-        GLOBAL_SCOPE,
-        include_private=include_private,
-        terms=terms,
-        redacted=redacted,
-    )
+    if overlay is not None:
+        scoped_registry = {overlay: overlays_registry[overlay]} if overlay in overlays_registry else {}
+        _emit_overlay_tables(document, [overlay], scoped_registry, guard=guard)
+        return ConfigExport(tomlkit.dumps(document), tuple(guard.redacted))
+
+    # The registry keys are rendered as their own top-level tables below, never under
+    # ``[teatree]`` (they are NOT ``UserSettings`` fields) — exclude them from the
+    # global settings table so the dump re-imports cleanly.
+    settings_global = {key: value for key, value in all_global.items() if key not in REGISTRY_KEYS}
+    global_rows = _exportable_rows(settings_global, GLOBAL_SCOPE, guard=guard)
     if global_rows:
         document["teatree"] = _toml_table(global_rows)
     scopes = list(
         ConfigSetting.objects.exclude(scope=GLOBAL_SCOPE).order_by("scope").values_list("scope", flat=True).distinct()
     )
-    _emit_overlay_tables(document, scopes, include_private=include_private, terms=terms, redacted=redacted)
-    return ConfigExport(tomlkit.dumps(document), tuple(redacted))
+    _emit_overlay_tables(document, scopes, overlays_registry, guard=guard)
+    _emit_e2e_repos_tables(document, e2e_repos_registry, guard=guard)
+    return ConfigExport(tomlkit.dumps(document), tuple(guard.redacted))
+
+
+def _registry_value(global_rows: dict[str, ConfigValue], key: str) -> dict[str, Any]:
+    """The stored registry dict for *key* in the global rows, or ``{}`` when absent/malformed."""
+    value = global_rows.get(key)
+    return value if isinstance(value, dict) else {}
 
 
 def _toml_table(rows: dict[str, ConfigValue]) -> tomlkit_items.Table:
@@ -256,33 +334,57 @@ def _toml_table(rows: dict[str, ConfigValue]) -> tomlkit_items.Table:
 def _emit_overlay_tables(
     document: tomlkit.TOMLDocument,
     scopes: list[str],
+    overlays_registry: dict[str, Any],
     *,
-    include_private: bool,
-    terms: tuple[str, ...],
-    redacted: list[RedactedRow],
+    guard: _ExportGuard,
 ) -> None:
-    """Attach an ``[overlays.<name>]`` sub-table for every *scope* with exportable rows.
+    """Attach an ``[overlays.<name>]`` sub-table per overlay, merging definitions + settings.
 
-    The ``overlays`` super-table is added only when at least one scope has rows that
-    survive the secret guard, so an empty store (an ``--overlay`` filter that matches
-    nothing, or a scope whose every row was redacted) stays an empty document rather
-    than a bare ``[overlays]`` header.
+    Each table is the union of the overlay's DEFINITION keys (from the ``overlays``
+    registry row — ``path`` / ``class`` / ...) and its per-overlay SETTING overrides
+    (its scope rows). Re-importing splits them back apart (settings to scope rows,
+    definitions to the registry), so the dump is an ``export -> import`` fixed point.
+    The names are the registry overlays UNION the setting scopes, deduped order-stable.
+    The ``overlays`` super-table is added only when at least one overlay has rows that
+    survive the secret guard, so an empty store stays an empty document rather than a
+    bare ``[overlays]`` header.
     """
     overlays = tomlkit.table(is_super_table=True)
     emitted = False
-    for scope in scopes:
-        rows = _exportable_rows(
-            ConfigSetting.objects.overrides_for_scope(scope),
-            scope,
-            include_private=include_private,
-            terms=terms,
-            redacted=redacted,
-        )
+    for name in dict.fromkeys([*overlays_registry, *scopes]):
+        merged = {**overlays_registry.get(name, {}), **ConfigSetting.objects.overrides_for_scope(name)}
+        rows = _exportable_rows(merged, name, guard=guard)
         if rows:
-            overlays[scope] = _toml_table(rows)
+            overlays[name] = _toml_table(rows)
             emitted = True
     if emitted:
         document["overlays"] = overlays
+
+
+def _emit_e2e_repos_tables(
+    document: tomlkit.TOMLDocument,
+    e2e_repos_registry: dict[str, Any],
+    *,
+    guard: _ExportGuard,
+) -> None:
+    """Attach an ``[e2e_repos.<name>]`` sub-table per registered E2E repo.
+
+    The inverse of ``load_e2e_repos`` reading ``raw["e2e_repos"]`` — each entry's
+    ``url`` / ``branch`` / ``e2e_dir`` rendered as its own table so the dump re-imports
+    into the ``e2e_repos`` registry row. The super-table is added only when a repo has
+    rows surviving the secret guard.
+    """
+    repos = tomlkit.table(is_super_table=True)
+    emitted = False
+    for name, entry in e2e_repos_registry.items():
+        if not isinstance(entry, dict):
+            continue
+        rows = _exportable_rows(entry, f"e2e_repos.{name}", guard=guard)
+        if rows:
+            repos[name] = _toml_table(rows)
+            emitted = True
+    if emitted:
+        document["e2e_repos"] = repos
 
 
 def _import_table(

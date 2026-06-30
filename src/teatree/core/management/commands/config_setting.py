@@ -5,9 +5,11 @@ slice of "move config to the database"). Mirrors the per-worktree env command
 shape: a django_typer ``TyperCommand`` whose subcommands write to the
 authoritative source (the DB), never a file.
 
-The pilot is scoped to keys registered in ``OVERLAY_OVERRIDABLE_SETTINGS`` — the
-same registry the resolver's DB tier consults — so an admin cannot stash a row
-the resolver would silently ignore. The ``value`` is parsed as JSON, so a bool
+The pilot is scoped to keys registered in ``OVERLAY_OVERRIDABLE_SETTINGS`` (the
+``UserSettings`` partition the resolver's DB tier consults) plus the
+``REGISTRY_SETTINGS`` keys (``overlays`` / ``e2e_repos`` — the non-``UserSettings``
+registries ``loader._inject_db_registries`` injects into ``config.raw``), so an admin
+cannot stash a row no reader would consult. The ``value`` is parsed as JSON, so a bool
 kill-switch (``true``/``false``), a string (``'"ready"'``), an int (``3``), or a
 list (``'["a","b"]'``) all round-trip into the store.
 
@@ -29,6 +31,7 @@ import typer
 from django_typer.management import TyperCommand, command
 
 from teatree.config import OVERLAY_OVERRIDABLE_SETTINGS, get_effective_settings, load_config
+from teatree.config.registries import REGISTRY_SETTINGS
 from teatree.core.config_migration import export_db_to_toml, import_toml_into_db
 from teatree.core.models import ConfigSetting
 
@@ -53,9 +56,10 @@ class Command(TyperCommand):
     ) -> None:
         """Upsert the DB override row for *key* (in *overlay*'s scope or global) to *value*.
 
-        Refuses a key not in ``OVERLAY_OVERRIDABLE_SETTINGS``, a *value* that is
-        not valid JSON, and a *value* that JSON-parses but is invalid for the
-        setting's type, leaving the store untouched on any error.
+        Refuses a key in neither ``OVERLAY_OVERRIDABLE_SETTINGS`` nor
+        ``REGISTRY_SETTINGS``, a *value* that is not valid JSON, and a *value* that
+        JSON-parses but is invalid for the setting's type, leaving the store
+        untouched on any error.
 
         ``--overlay <name>`` scopes the row to one overlay (the DB twin of a
         per-overlay TOML override); omitted, it writes the global scope.
@@ -66,7 +70,8 @@ class Command(TyperCommand):
         raise on every later config resolution can never be stored. Validating
         on write is what keeps a bad row from bricking all reads.
         """
-        if key not in OVERLAY_OVERRIDABLE_SETTINGS:
+        allowed = {**OVERLAY_OVERRIDABLE_SETTINGS, **REGISTRY_SETTINGS}
+        if key not in allowed:
             self.stderr.write(f"  refusing: {key!r} is not an overridable setting (#1775 pilot scope)")
             raise SystemExit(2)
         try:
@@ -74,7 +79,7 @@ class Command(TyperCommand):
         except json.JSONDecodeError as exc:
             self.stderr.write(f"  invalid JSON value for {key!r}: {exc}")
             raise SystemExit(2) from exc
-        parser = OVERLAY_OVERRIDABLE_SETTINGS[key]
+        parser = allowed[key]
         try:
             canonical = parser(parsed)
         except (ValueError, TypeError, AttributeError) as exc:
@@ -133,10 +138,11 @@ class Command(TyperCommand):
         in the requested scope it is reported as the ``db`` source; otherwise the
         value falls through to the file/env layer and is reported as the
         ``file/env`` source. ``--overlay <name>`` reads that overlay's scope.
-        Refuses a key not in ``OVERLAY_OVERRIDABLE_SETTINGS`` so a typo is loud,
-        not a silent ``file/env`` answer for a non-setting.
+        Refuses a key in neither ``OVERLAY_OVERRIDABLE_SETTINGS`` nor
+        ``REGISTRY_SETTINGS`` so a typo is loud, not a silent ``file/env`` answer
+        for a non-setting.
         """
-        if key not in OVERLAY_OVERRIDABLE_SETTINGS:
+        if key not in OVERLAY_OVERRIDABLE_SETTINGS and key not in REGISTRY_SETTINGS:
             self.stderr.write(f"  refusing: {key!r} is not an overridable setting (#1775 pilot scope)")
             raise SystemExit(2)
         stored = ConfigSetting.objects.get_effective(key, scope=overlay)

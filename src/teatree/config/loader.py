@@ -292,34 +292,62 @@ def _warn_db_home_keys_in_toml(raw: dict, path: Path) -> None:
         )
 
 
+# The registry tables (#1775 eliminate-~/.teatree.toml): NON-``UserSettings`` config
+# read directly off ``config.raw`` at many call sites — the ``overlays`` definition
+# registry (``discover_overlays`` + every ``raw["overlays"]`` reader) and the
+# ``e2e_repos`` registry (``load_e2e_repos``). They are DB-home: stored as a single
+# JSON-dict ``ConfigSetting`` row each (``REGISTRY_SETTINGS``), injected into ``raw``
+# here so every existing reader is untouched. The DB row WINS over a ``[overlays]`` /
+# ``[e2e_repos]`` TOML table (which is then ignored on read); with no DB row the TOML
+# table is the migration fallback.
+
+
+def _inject_db_registries(raw: dict) -> None:
+    """Override ``raw['overlays']`` / ``raw['e2e_repos']`` with their DB rows when present.
+
+    Read via the Django-free ``cold_reader`` (the same store ``config_setting`` writes)
+    because ``load_config`` runs pre-Django on the overlay-discovery path. Fail-open: a
+    missing DB / row leaves the TOML value (or absence) in place, so a not-yet-migrated
+    install still boots off its file.
+    """
+    from teatree.config import cold_reader  # noqa: PLC0415 — Django-free DB read on the pre-Django discovery path
+    from teatree.config.registries import REGISTRY_KEYS  # noqa: PLC0415
+
+    for key in REGISTRY_KEYS:
+        stored = cold_reader.read_setting(key)
+        if isinstance(stored, dict):
+            raw[key] = stored
+
+
 def load_config(path: Path | None = None) -> TeaTreeConfig:
     if path is None:
         path = _facade.CONFIG_PATH
-    if not path.is_file():
-        return TeaTreeConfig()
-
-    raw = _load_toml(path)
-    _warn_db_home_keys_in_toml(raw, path)
-    _warn_retired_keys_in_toml(raw, path)
-    _warn_migrated_keys_in_toml(raw, path)
-
-    # The hard partition (#1775) is now COMPLETE (eliminate-~/.teatree.toml): the
-    # TOML-home carve-out is empty, so ``load_config`` reads NO ``UserSettings`` field
-    # off the file — every field keeps its dataclass default here and resolves from the
-    # ``ConfigSetting`` store via ``get_effective_settings``. The final two fields
-    # (``speak`` / ``mr_reminder``) are nested-table DB-home settings rebuilt bespoke by
-    # the resolver. A value left in ``[teatree]`` / ``[overlays.<name>]`` for any field
-    # is ignored on read (warned above); migrate it with ``config_setting import``. The
-    # raw dict is still carried for the NON-settings tables (``[overlays.<name>]`` /
-    # ``[e2e_repos]``), which are overlay/repo DEFINITIONS, not ``UserSettings``.
+    # The hard partition (#1775) is COMPLETE for settings (eliminate-~/.teatree.toml):
+    # the TOML-home carve-out is empty, so ``load_config`` reads NO ``UserSettings``
+    # field off the file — every field keeps its dataclass default here and resolves
+    # from the ``ConfigSetting`` store via ``get_effective_settings`` (the last two,
+    # ``speak`` / ``mr_reminder``, are rebuilt bespoke by the resolver). The ``raw``
+    # dict carries only the NON-settings registry tables (``overlays`` / ``e2e_repos``),
+    # which are DB-home too: ``_inject_db_registries`` overrides them from the store, so
+    # the file is consulted ONLY as a pre-migration fallback. With every value migrated,
+    # an ABSENT ``~/.teatree.toml`` boots a fully DB-configured teatree.
+    raw: dict = _load_toml(path) if path.is_file() else {}
+    if raw:
+        _warn_db_home_keys_in_toml(raw, path)
+        _warn_retired_keys_in_toml(raw, path)
+        _warn_migrated_keys_in_toml(raw, path)
+    _inject_db_registries(raw)
     return TeaTreeConfig(user=UserSettings(), raw=raw)
 
 
 def load_e2e_repos(path: Path | None = None) -> list[E2ERepo]:
-    """Load named E2E repos from ``[e2e_repos.<name>]`` sections in ``~/.teatree.toml``.
+    """Load named E2E repos from the ``e2e_repos`` registry (DB-home #1775).
 
-    Each entry may specify ``url``, ``branch``, and optionally ``e2e_dir``
-    (the subdirectory containing ``playwright.config.ts``, default ``"e2e"``).
+    Reads ``config.raw["e2e_repos"]`` — which ``load_config`` populates from the
+    DB-home ``e2e_repos`` ``ConfigSetting`` row (``_inject_db_registries``), falling
+    back to an ``[e2e_repos.<name>]`` TOML table only for a not-yet-migrated install.
+    Each entry may specify ``url``, ``branch``, and optionally ``e2e_dir`` (the
+    subdirectory containing ``playwright.config.ts``, default ``"e2e"``).
     """
     config = _facade.load_config(path)
     repos = []

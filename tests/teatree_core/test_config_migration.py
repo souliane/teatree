@@ -54,7 +54,50 @@ class TestImportTomlIntoDb(TestCase):
     def test_skips_non_setting_overlay_keys(self) -> None:
         raw = {"overlays": {"myproj": {"path": "~/p", "url": "git@x"}}}
         import_toml_into_db(raw)
+        # No per-overlay SETTING rows (path/url are definition keys), but the whole
+        # ``[overlays]`` table is still seeded as the global ``overlays`` registry row.
         assert ConfigSetting.objects.filter(scope="myproj").exists() is False
+        assert ConfigSetting.objects.get_effective("overlays") == {"myproj": {"path": "~/p", "url": "git@x"}}
+
+    def test_seeds_overlays_registry_as_global_row(self) -> None:
+        # The ``[overlays]`` table (overlay DEFINITIONS) is stored whole as one
+        # global ``overlays`` registry row — the source ``discover_overlays`` reads
+        # once ``_inject_db_registries`` overrides ``raw["overlays"]`` from the DB.
+        raw = {"overlays": {"db-overlay": {"class": "x.settings", "path": "~/p"}}}
+        result = import_toml_into_db(raw)
+        assert ConfigSetting.objects.get_effective("overlays") == {"db-overlay": {"class": "x.settings", "path": "~/p"}}
+        assert ("", "overlays") in result.rows
+
+    def test_seeds_e2e_repos_registry_as_global_row(self) -> None:
+        raw = {"e2e_repos": {"myrepo": {"url": "git@x", "branch": "dev", "e2e_dir": "tests"}}}
+        result = import_toml_into_db(raw)
+        assert ConfigSetting.objects.get_effective("e2e_repos") == {
+            "myrepo": {"url": "git@x", "branch": "dev", "e2e_dir": "tests"}
+        }
+        assert ("", "e2e_repos") in result.rows
+
+    def test_overlays_registry_and_per_overlay_settings_coexist(self) -> None:
+        # The registry row (DEFINITIONS only) and the per-overlay setting rows are
+        # orthogonal: a ``[overlays.myproj]`` table seeds the overlay-scoped ``mode``
+        # setting row AND a definitions-only ``overlays`` registry row (``mode`` stripped).
+        raw = {"overlays": {"myproj": {"path": "~/p", "mode": "auto"}}}
+        import_toml_into_db(raw)
+        assert ConfigSetting.objects.get_effective("overlays") == {"myproj": {"path": "~/p"}}
+        assert ConfigSetting.objects.get_effective("mode", scope="myproj") == "auto"
+
+    def test_pure_setting_overlay_table_creates_no_registry_row(self) -> None:
+        # An ``[overlays.<name>]`` table with only SETTING keys (no path/class) is a
+        # pure override — its overlay is defined by an entry point, so it contributes
+        # NO registry row (only the scope setting row).
+        import_toml_into_db({"overlays": {"myproj": {"mode": "auto"}}})
+        assert ConfigSetting.objects.filter(key="overlays").exists() is False
+        assert ConfigSetting.objects.get_effective("mode", scope="myproj") == "auto"
+
+    def test_no_clobber_preserves_existing_registry_row(self) -> None:
+        ConfigSetting.objects.set_value("overlays", {"kept": {"class": "kept.settings"}})
+        result = import_toml_into_db({"overlays": {"new": {"class": "new.settings"}}}, clobber=False)
+        assert ConfigSetting.objects.get_effective("overlays") == {"kept": {"class": "kept.settings"}}
+        assert result.preserved >= 1
 
     def test_clobber_default_overwrites_existing_row(self) -> None:
         ConfigSetting.objects.set_value("mode", "interactive")
@@ -256,6 +299,27 @@ class TestExportDbToToml(TestCase):
         import_toml_into_db(tomllib.loads(first))
         second = export_db_to_toml(scan_terms=()).toml
         assert second == first
+
+    def test_registry_rows_round_trip_through_export_import(self) -> None:
+        # The DB-home ``overlays`` (definitions) + ``e2e_repos`` registries survive an
+        # export -> import -> export with no drift: the registry renders into top-level
+        # ``[overlays.<name>]`` / ``[e2e_repos.<name>]`` tables, and re-import re-seeds the
+        # same rows — overlay definitions merged with the overlay's own setting scope.
+        ConfigSetting.objects.set_value("overlays", {"db-overlay": {"path": "~/p", "class": "x.settings"}})
+        ConfigSetting.objects.set_value("mode", "auto", scope="db-overlay")
+        ConfigSetting.objects.set_value("e2e_repos", {"r1": {"url": "git@x:r.git", "branch": "dev"}})
+
+        first = export_db_to_toml(scan_terms=()).toml
+        assert "[overlays.db-overlay]" in first
+        assert "[e2e_repos.r1]" in first
+        assert "[teatree]" not in first  # registries never leak into the global settings table
+
+        ConfigSetting.objects.all().delete()
+        import_toml_into_db(tomllib.loads(first))
+        assert ConfigSetting.objects.get_effective("overlays") == {"db-overlay": {"path": "~/p", "class": "x.settings"}}
+        assert ConfigSetting.objects.get_effective("mode", scope="db-overlay") == "auto"
+        assert ConfigSetting.objects.get_effective("e2e_repos") == {"r1": {"url": "git@x:r.git", "branch": "dev"}}
+        assert export_db_to_toml(scan_terms=()).toml == first
 
 
 class TestBannedTermsNeverEnterExportableStore(TestCase):
