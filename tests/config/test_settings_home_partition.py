@@ -23,8 +23,6 @@ _TOML_CARVE_OUT = frozenset(
         "handover_mirror_path",
         "autoload",
         "statusline_chain",
-        "worktrees_dir",
-        "timezone",
         "privacy",
     }
 )
@@ -58,15 +56,23 @@ def test_db_home_and_toml_home_are_disjoint() -> None:
     assert db_home | toml_home == set(SETTING_HOMES)
 
 
-def test_toml_carve_out_is_exactly_the_nine_fields() -> None:
-    # The carve-out — non-Django / pre-Django readers, infra bootstrap, nested
-    # structured tables — is exactly these nine and no more. ``check_updates`` LEFT
-    # it (eliminate-~/.teatree.toml: its pre-Django reader now reads the DB via
-    # ``cold_reader``); ``workspace_dir`` is DB-home (per-overlay overridable).
+def test_toml_carve_out_is_exactly_the_seven_fields() -> None:
+    # The carve-out — non-Django / pre-Django readers + the nested structured
+    # tables — is exactly these seven and no more. eliminate-~/.teatree.toml has
+    # moved ``check_updates`` (cold_reader) and ``worktrees_dir`` / ``timezone``
+    # (Django settings.py never reads them, so not a bootstrap dep) to the DB.
     toml_home = {k for k, home in SETTING_HOMES.items() if home is SettingHome.TOML}
     assert toml_home == _TOML_CARVE_OUT
-    assert "workspace_dir" not in toml_home
-    assert "check_updates" not in toml_home
+    for moved in ("workspace_dir", "check_updates", "worktrees_dir", "timezone"):
+        assert moved not in toml_home
+
+
+def test_falsely_bootstrap_fields_are_db_home() -> None:
+    # ``worktrees_dir`` / ``timezone`` were tagged "needed to open the DB", but
+    # Django ``settings.py`` hardcodes ``TIME_ZONE = "UTC"`` and configures
+    # ``DATABASES`` without reading either — so both are DB-home, not bootstrap.
+    assert SETTING_HOMES["worktrees_dir"] is SettingHome.DB
+    assert SETTING_HOMES["timezone"] is SettingHome.DB
 
 
 def test_autoload_is_toml_home_not_db() -> None:

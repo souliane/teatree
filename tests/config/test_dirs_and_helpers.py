@@ -23,6 +23,7 @@ from teatree.config import (
     worktree_root,
     worktrees_dir,
 )
+from teatree.paths import DATA_DIR
 
 from ._shared import _write_toml
 
@@ -82,7 +83,11 @@ class TestWorktreesDir:
         result = worktrees_dir()
         assert result == custom
 
-    def test_falls_back_to_config_file(self, tmp_path: Path, config_file: Path, settings) -> None:
+    def test_ignores_toml_value_falls_back_to_default(self, tmp_path: Path, config_file: Path, settings) -> None:
+        # worktrees_dir is DB-home now (eliminate-~/.teatree.toml): a ``[teatree]
+        # worktrees_dir`` value is IGNORED on read; with no env/Django override and
+        # no DB row the default ``DATA_DIR/worktrees`` stands. The DB tier is
+        # covered in test_worktrees_dir_db.py.
         del config_file
         _write_toml(
             tmp_path / ".teatree.toml",
@@ -91,7 +96,7 @@ class TestWorktreesDir:
         if hasattr(settings, "T3_WORKTREES_DIR"):
             del settings.T3_WORKTREES_DIR
 
-        assert worktrees_dir() == Path("/from/config/wt")
+        assert worktrees_dir() == DATA_DIR / "worktrees"
 
 
 def test_get_data_dir_creates_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

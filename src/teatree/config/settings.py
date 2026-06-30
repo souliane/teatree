@@ -392,6 +392,15 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     # runs pre-Django but now reads the DB via ``cold_reader`` (Django-free), so a
     # stored ``check_updates=false`` IS honoured. DB-home, seeded by ``t3 setup``.
     "check_updates": _parse_strict_bool,
+    # eliminate-~/.teatree.toml: ``worktrees_dir`` / ``timezone`` were tagged
+    # "needed to open the DB", but Django ``settings.py`` hardcodes ``TIME_ZONE =
+    # "UTC"`` and configures ``DATABASES`` without reading either — so neither is a
+    # bootstrap dep. ``worktrees_dir`` resolves via ``loader.worktrees_dir()`` off
+    # the DB store (Django-side, like ``workspace_dir`` / ``worktree_root()``);
+    # stored as a path STRING. ``timezone`` has no live reader (DB-home for
+    # partition consistency).
+    "worktrees_dir": _parse_strict_str,
+    "timezone": _parse_strict_str,
 }
 
 # TOML-home keys that ALSO support a per-overlay ``[overlays.<name>]`` override.

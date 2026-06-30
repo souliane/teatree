@@ -14,21 +14,21 @@ config_setting import``.
 ``ConfigSetting`` row for a TOML-home key is ignored on read; ``config_setting
 set`` refuses to write one.
 
-The TOML-home set is the irreducible carve-out — a field stays here ONLY when a
-NON-DJANGO / PRE-DJANGO reader needs it (the DB is then unreachable), it bootstraps
-path/infra the settings module itself needs, or it is a nested table with no flat
-``ConfigSetting`` shape. The pre-Django readers: ``orchestrator_bash_gate_enabled``
+The TOML-home set is the carve-out — a field stays here ONLY when a NON-DJANGO /
+PRE-DJANGO reader needs it (the DB is then unreachable) or it is a nested table with
+no flat ``ConfigSetting`` shape. The pre-Django readers: ``orchestrator_bash_gate_enabled``
 (the GATE_KEY bash self-rescue), ``speak`` (the Stop hook re-reads ``[teatree.speak]``
 with tomllib), ``handover_mirror_path`` (the SessionStart bootstrap path read when the
 DB is unreachable), ``autoload`` (the cold SessionStart / UserPromptSubmit hooks read
-``[teatree] autoload`` pre-Django to decide engagement, #256), and ``statusline_chain``
-(the bash statusline hook reads it straight from ``~/.teatree.toml``). The path/infra
-bootstrap the settings module needs to even open the DB:
-``worktrees_dir``, ``timezone``, ``privacy``. The nested structured table with no flat
+``[teatree] autoload`` pre-Django to decide engagement, #256), ``privacy`` (the
+pre-Django MCP privacy gate), and ``statusline_chain`` (the bash statusline hook reads it
+straight from ``~/.teatree.toml``). The nested structured table with no flat
 scalar shape: ``mr_reminder``. Every other field is DB-home — it resolves from the
 ``ConfigSetting`` store + env, never from a ``[teatree]`` / ``[overlays.<name>]`` TOML
-value (which is ignored on read and the resolver warns on). ``workspace_dir`` is DB-home
-(per-overlay overridable), NOT in this carve-out.
+value (which is ignored on read and the resolver warns on). ``workspace_dir`` and
+``worktrees_dir`` are DB-home (resolved Django-side off the store — Django ``settings.py``
+hardcodes ``TIME_ZONE`` and configures ``DATABASES`` without reading either, so neither
+was ever a DB-open bootstrap dep); ``timezone`` is DB-home too (no live reader).
 
 :data:`DERIVED_FIELDS` is the one value the resolver COMPUTES rather than
 reads (``notify_on_behalf`` derived by the autonomy collapse); it has
@@ -53,7 +53,7 @@ class SettingHome(StrEnum):
 # from the partition. ``notify_on_behalf`` is ORed in by the autonomy collapse.
 DERIVED_FIELDS: frozenset[str] = frozenset({"notify_on_behalf"})
 
-# The TOML-home carve-out (exactly these nine):
+# The TOML-home carve-out (exactly these seven):
 # - non-Django / pre-Django readers (read via tomllib or a bash grep, no DB):
 #   ``orchestrator_bash_gate_enabled`` (the GATE_KEY bash self-rescue), ``speak``
 #   (the Stop hook re-reads the ``[teatree.speak]`` sub-table with tomllib — it
@@ -61,21 +61,22 @@ DERIVED_FIELDS: frozenset[str] = frozenset({"notify_on_behalf"})
 #   bootstrap path read precisely when the DB is unreachable), ``autoload`` (the
 #   cold SessionStart / UserPromptSubmit hooks read ``[teatree] autoload`` with
 #   tomllib to decide default-off engagement, before any Django bootstrap — #256),
-#   and ``statusline_chain`` (the bash statusline hook reads ``[teatree]
-#   statusline_chain`` straight from ``~/.teatree.toml``).
-#   (``check_updates`` LEFT this carve-out — eliminate-~/.teatree.toml: its sole
-#   reader ``check_for_updates`` now reads the DB via the Django-free ``cold_reader``
-#   on its pre-Django path, so a stored ``check_updates=false`` is honoured.)
-# - path / infra bootstrap the settings module needs to even open the DB:
-#   ``worktrees_dir``, ``timezone``, ``privacy``
+#   ``privacy`` (the pre-Django MCP privacy gate), and ``statusline_chain`` (the
+#   bash statusline hook reads ``[teatree] statusline_chain`` straight from
+#   ``~/.teatree.toml``).
 # - nested structured table with no flat ConfigSetting shape: ``mr_reminder``
 #
-# ``workspace_dir`` is DB-home (per-overlay overridable via the ``ConfigSetting``
-# store): worktrees regroup under a per-overlay default
+# eliminate-~/.teatree.toml LEFT the carve-out: ``check_updates`` (cold_reader on
+# its pre-Django path), and ``worktrees_dir`` / ``timezone`` — tagged "needed to
+# open the DB" but Django ``settings.py`` hardcodes ``TIME_ZONE = "UTC"`` and
+# configures ``DATABASES`` without reading either, so neither was a bootstrap dep.
+#
+# ``workspace_dir`` / ``worktrees_dir`` are DB-home (resolved Django-side off the
+# ``ConfigSetting`` store): worktrees regroup under a per-overlay default
 # ``~/workspace/t3-workspaces/<overlay>/``, resolved by ``config.worktree_root()``
-# (env → DB overlay-scope → DB global-scope → default). It is read only after
-# Django is up, so it carries no bootstrap need. It is distinct from the CLONE
-# root ``config.clone_root()`` (``~/workspace``, where main repo clones live).
+# (env → DB overlay-scope → DB global-scope → default). Read only after Django is
+# up, so no bootstrap need. ``workspace_dir`` is distinct from the CLONE root
+# ``config.clone_root()`` (``~/workspace``, where main repo clones live).
 _TOML_HOME: frozenset[str] = frozenset(
     {
         "orchestrator_bash_gate_enabled",
@@ -84,8 +85,6 @@ _TOML_HOME: frozenset[str] = frozenset(
         "handover_mirror_path",
         "autoload",
         "statusline_chain",
-        "worktrees_dir",
-        "timezone",
         "privacy",
     }
 )
