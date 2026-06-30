@@ -15,6 +15,8 @@ from teatree.loops.dream import distill, engine, sdk_distiller
 from teatree.loops.dream.engine import (
     ConsolidationExtract,
     DistilledCluster,
+    DistillEmptyReason,
+    DistillResult,
     DreamRunResult,
     TranscriptMember,
     WeightedSnippet,
@@ -764,6 +766,30 @@ class SilentEmptyBatchTestCase(TestCase):
         with patch.object(engine, "enumerate_members", return_value=[]):
             result = run_consolidation(overlay="", since=None, dry_run=True, distiller=_no_clusters)
         assert result.empty_batches == 0
+
+    def test_empty_batch_warning_surfaces_a_broken_reason(self) -> None:
+        # #2847: a distiller signalling an unparsable reply makes the 0-cluster WARNING
+        # name WHY, so an operator can tell a broken parse from a healthy no-consolidation.
+        members = _many_members(self.tmp, 2)
+        extract = build_extract(members)
+
+        def _broken(_batch: ConsolidationExtract) -> DistillResult:
+            return DistillResult(clusters=[], empty_reason=DistillEmptyReason.UNPARSABLE)
+
+        with self.assertLogs("teatree.loops.dream.distill", level="WARNING") as captured:
+            distill.distill_in_batches(extract, distiller=_broken)
+        assert any("unparsable" in line for line in captured.output)
+
+    def test_empty_batch_warning_surfaces_a_healthy_reason(self) -> None:
+        members = _many_members(self.tmp, 2)
+        extract = build_extract(members)
+
+        def _healthy(_batch: ConsolidationExtract) -> DistillResult:
+            return DistillResult(clusters=[], empty_reason=DistillEmptyReason.NOTHING_TO_CONSOLIDATE)
+
+        with self.assertLogs("teatree.loops.dream.distill", level="WARNING") as captured:
+            distill.distill_in_batches(extract, distiller=_healthy)
+        assert any("nothing_to_consolidate" in line for line in captured.output)
 
 
 class RunConsolidationEvalProposalTestCase(TestCase):
