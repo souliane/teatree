@@ -36,6 +36,7 @@ from django.test import TestCase
 
 from teatree.core.merge import MergePreconditionError, assert_merge_preconditions, merge_ticket_pr
 from teatree.core.models import ConfigSetting, MergeAudit, MergeClear, Ticket
+from tests.teatree_core.conftest import seed_merge_safe_verdict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -488,6 +489,7 @@ class TestSanctionedHumanSubstrateMerge(TestCase):
             blast_class=MergeClear.BlastClass.SUBSTRATE,
             human_authorizer="owner:adrien",
         )
+        seed_merge_safe_verdict(slug=clear.slug, pr_id=clear.pr_id, sha=clear.reviewed_sha)
         with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub):
             result = cast(
                 "dict[str, object]",
@@ -609,6 +611,7 @@ class TestAgentExecutesApprovedSubstrateMerge(TestCase):
             blast_class=MergeClear.BlastClass.SUBSTRATE,
             human_authorizer="owner:adrien",
         )
+        seed_merge_safe_verdict(slug=clear.slug, pr_id=clear.pr_id, sha=clear.reviewed_sha)
         # call_command is exactly what the durable loop / agent invokes for
         # `t3 <overlay> ticket merge`. No human-actor parameter exists; the
         # recorded approver is re-presented, the agent performs the merge.
@@ -668,7 +671,11 @@ def _substrate_clear(ticket: Ticket, **overrides: object) -> MergeClear:
         "blast_class": MergeClear.BlastClass.SUBSTRATE,
     }
     defaults.update(overrides)
-    return MergeClear.objects.create(**defaults)
+    clear = MergeClear.objects.create(**defaults)
+    # The #2829 merge-verdict gate needs the sibling verdict the real clear path
+    # records (harmless on the held-substrate tests that refuse before the gate).
+    seed_merge_safe_verdict(slug=clear.slug, pr_id=clear.pr_id, sha=clear.reviewed_sha)
+    return clear
 
 
 def _assert_preconditions(clear: MergeClear, *, human_authorized: str = "", slug: str | None = None) -> object:

@@ -18,7 +18,7 @@ import os
 import django.test
 from django.utils import timezone
 
-from teatree.core.models import Loop, Prompt
+from teatree.core.models import Loop, LoopState, Prompt
 from teatree.core.models.loop_lease import LoopLease
 from teatree.loops.live import STALL_FACTOR, LoopKind, LoopStatusEntry, build_report, owned_per_loop_owners
 
@@ -289,3 +289,43 @@ class TestInfraEntries(django.test.TestCase):
         tick = next(e for e in report.infra_slots if e.name == "loop-tick")
         assert tick.held is False
         assert tick.never_fired is True
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestMiniEntriesHeldFromLoopState(django.test.TestCase):
+    """``_mini_entries`` routes ``held`` through the ``LoopState`` control tier (#1913).
+
+    The master tick gates on ``loop_enabled`` (``Loop.enabled`` AND not
+    ``loop_held_in_db``). A PAUSED loop keeps ``Loop.enabled=True`` (pause does
+    not flip the row), so before this fix the snapshot showed it as
+    ``enabled=True, held=False`` with a live countdown — masking that the tick
+    will skip it. ``held`` must reflect the SAME authority the tick obeys.
+    """
+
+    def _loop(self, name: str, *, enabled: bool = True) -> Loop:
+        Loop.objects.filter(name=name).delete()
+        prompt, _ = Prompt.objects.get_or_create(name="demo-held", defaults={"body": "x"})
+        return Loop.objects.create(name=name, delay_seconds=120, prompt=prompt, enabled=enabled)
+
+    def test_paused_loop_is_held_but_row_stays_enabled(self) -> None:
+        now = timezone.now()
+        self._loop("demo-held-paused")
+        LoopState.objects.pause("demo-held-paused")
+        entry = next(e for e in build_report(now=now).mini_loops if e.name == "demo-held-paused")
+        assert entry.held is True
+        # The row flag is untouched by a pause — held is the ONLY signal here.
+        assert entry.enabled is True
+
+    def test_disabled_via_loop_state_is_held(self) -> None:
+        now = timezone.now()
+        self._loop("demo-held-disabled", enabled=False)
+        LoopState.objects.disable("demo-held-disabled")
+        entry = next(e for e in build_report(now=now).mini_loops if e.name == "demo-held-disabled")
+        assert entry.held is True
+
+    def test_unheld_enabled_loop_is_not_held(self) -> None:
+        now = timezone.now()
+        self._loop("demo-held-running")
+        entry = next(e for e in build_report(now=now).mini_loops if e.name == "demo-held-running")
+        assert entry.held is False
+        assert entry.enabled is True

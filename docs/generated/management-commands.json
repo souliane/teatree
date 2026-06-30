@@ -411,7 +411,7 @@
           "name": "enable"
         },
         {
-          "help": "Report *name*'s durable state (ENABLED when no row exists)",
+          "help": "Read *name*'s durable state (ENABLED when no row exists) WITHOUT mutating it",
           "name": "status"
         }
       ]

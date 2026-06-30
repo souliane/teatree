@@ -16,6 +16,7 @@ from django.test import TestCase
 from teatree.core.merge import MergePreconditionError, merge_ticket_pr
 from teatree.core.models import MergeClear, Ticket
 from teatree.core.models.merge_clear import ClearIssuanceError, ClearRequest, is_non_reviewer_role
+from tests.teatree_core.conftest import seed_merge_safe_verdict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -166,6 +167,7 @@ class TestLegitimateReviewerIdentityPositiveControl(TestCase):
             )
         )
         assert clear.pk is not None
+        seed_merge_safe_verdict(slug=clear.slug, pr_id=clear.pr_id, sha=clear.reviewed_sha)
         with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub):
             outcome = merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
         ticket.refresh_from_db()

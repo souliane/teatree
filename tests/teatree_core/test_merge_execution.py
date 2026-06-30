@@ -87,7 +87,56 @@ def _clear(ticket: Ticket, **overrides: object) -> MergeClear:
         "blast_class": MergeClear.BlastClass.DOCS,
     }
     defaults.update(overrides)
-    return MergeClear.objects.create(**defaults)
+    clear = MergeClear.objects.create(**defaults)
+    _seed_sibling_verdict(clear)
+    return clear
+
+
+def _seed_sibling_verdict(clear: MergeClear) -> None:
+    """Record the MERGE_SAFE ``ReviewVerdict`` the real ``ticket clear`` keystone records (#2829).
+
+    These tests build the CLEAR via ``.objects.create()`` (bypassing the
+    ``ticket clear`` command that records the sibling verdict), so they must
+    seed it themselves or the #2829 review-verdict gate in
+    ``execute_bound_merge`` fails closed. Seeding the verdict is NOT a weakening
+    — it reproduces exactly what the production ``clear`` path records (a
+    non-author ``merge_safe`` at the reviewed SHA). Skipped when the CLEAR's
+    reviewer is a non-reviewer role or its checks are non-green: those CLEARs
+    are refused at the authorization step BEFORE the gate, and
+    ``ReviewVerdict.record`` would itself reject them.
+    """
+    from teatree.core.models.merge_clear import is_non_reviewer_role  # noqa: PLC0415
+    from teatree.core.models.review_verdict import ReviewVerdict  # noqa: PLC0415
+
+    if (
+        not clear.reviewer_identity.strip()
+        or is_non_reviewer_role(clear.reviewer_identity)
+        or clear.gh_verify_result != MergeClear.VerifyResult.GREEN
+    ):
+        return
+    ReviewVerdict.record(
+        pr_id=clear.pr_id,
+        slug=clear.slug,
+        reviewed_sha=clear.reviewed_sha,
+        verdict=ReviewVerdict.Verdict.MERGE_SAFE,
+        reviewer_identity=clear.reviewer_identity,
+        blast_class=clear.blast_class,
+        gh_verify_result=clear.gh_verify_result,
+        ticket=clear.ticket,
+    )
+
+
+def _record_merge_safe_verdict(*, pr_id: int, sha: str, slug: str = "souliane/teatree") -> None:
+    """Record a non-author MERGE_SAFE verdict at *sha* for a direct ``execute_bound_merge`` call (#2829)."""
+    from teatree.core.models.review_verdict import ReviewVerdict  # noqa: PLC0415
+
+    ReviewVerdict.record(
+        pr_id=pr_id,
+        slug=slug,
+        reviewed_sha=sha,
+        verdict=ReviewVerdict.Verdict.MERGE_SAFE,
+        reviewer_identity="cold-reviewer",
+    )
 
 
 class _GhStub:
@@ -520,6 +569,7 @@ class TestMergeExecutionEdgeCases(TestCase):
             gh_verify_result=MergeClear.VerifyResult.GREEN,
             blast_class=MergeClear.BlastClass.DOCS,
         )
+        _seed_sibling_verdict(clear)
         outcome = _run(clear, _GhStub())
         assert outcome.ticket_state == ""
         clear.refresh_from_db()
@@ -1127,6 +1177,9 @@ class TestTransientMergeRetry(TestCase):
     def test_execute_bound_merge_classifies_empty_output_as_transient(self) -> None:
         # A bare empty response (rc != 0, no stderr marker) on the merge call
         # is transient — the truncated/empty-JSON class the #1804 window hit.
+        # Seed the #2829 verdict the gate at the top of execute_bound_merge
+        # requires (this calls the primitive directly, with no CLEAR/keystone).
+        _record_merge_safe_verdict(pr_id=859, sha=_SHA)
         attempts = {"merge": 0}
 
         def _empty_then_fail(argv: list[str]) -> tuple[int, str, str]:

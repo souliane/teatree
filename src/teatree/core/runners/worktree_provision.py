@@ -6,6 +6,7 @@ from teatree.core import prek_hook
 from teatree.core.models import Worktree
 from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import get_overlay_for_worktree
+from teatree.core.provision_timebox import run_timeboxed_db_import
 from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.core.step_runner import ProvisionReport, run_provision_steps, run_step
 from teatree.core.worktree_env import CACHE_FILENAME, worktree_pg_connection, write_env_cache
@@ -162,7 +163,12 @@ class WorktreeProvisionRunner(RunnerBase):
         env = {**os.environ, **overlay.get_env_extra(worktree)}
         env.pop("VIRTUAL_ENV", None)
         os.environ.update(env)
-        if overlay.db_import(worktree, slow_import=self.slow_import):
+        # #2244: a child blocked on its PIPE (no DSLR snapshot) must abort loud, never hang the provision.
+        imported = run_timeboxed_db_import(
+            lambda: overlay.db_import(worktree, slow_import=self.slow_import),
+            repo=worktree.repo_path,
+        )
+        if imported:
             extra = worktree.extra or {}
             extra.pop("db_import_failures", None)
             worktree.extra = extra

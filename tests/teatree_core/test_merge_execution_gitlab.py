@@ -30,6 +30,7 @@ from teatree.core.merge import (
     pr_slug_resolution,
 )
 from teatree.core.models import MergeAudit, MergeClear, Ticket
+from tests.teatree_core.conftest import seed_merge_safe_verdict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -289,6 +290,11 @@ class TestFetchRequiredChecksGitLab(TestCase):
 
 
 class TestExecuteBoundMergeGitLab(TestCase):
+    def setUp(self) -> None:
+        # The #2829 merge-verdict gate at the top of execute_bound_merge needs a
+        # non-stale, independent merge_safe verdict at the bound head.
+        seed_merge_safe_verdict(slug=_GITLAB_SLUG, pr_id=_PR_IID, sha=_SHA)
+
     def test_uses_glab_api_put_merge_endpoint_with_sha(self) -> None:
         stub = _GlabStub(merge_sha="commit-sha-12345")
         with patch("teatree.backends.forge_merge_rpc.glab_runner", return_value=stub):
@@ -410,6 +416,7 @@ class TestGitLabEndToEndMerge(TestCase):
     def test_full_keystone_drives_gitlab_mr_via_glab(self) -> None:
         ticket = _make_ticket(gitlab=True)
         clear = _clear(ticket)
+        seed_merge_safe_verdict(slug=clear.slug, pr_id=clear.pr_id, sha=clear.reviewed_sha)
         stub = _GlabStub(sha=_SHA, draft=False, pipeline_status="success")
 
         with patch("teatree.backends.forge_merge_rpc.glab_runner", return_value=stub):

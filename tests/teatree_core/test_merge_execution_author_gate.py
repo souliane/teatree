@@ -24,7 +24,7 @@ from teatree.core.merge.authorization import assert_public_repo_author_trusted
 from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.merge.execution import merge_ticket_pr
 from teatree.core.models import MergeClear, Ticket, TrustedIdentity
-from tests.teatree_core.conftest import CommandOverlay
+from tests.teatree_core.conftest import CommandOverlay, seed_merge_safe_verdict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -86,6 +86,9 @@ class _GhStub:
 
 
 def _run(clear: MergeClear, stub: _GhStub, *, internal: bool) -> execution.MergeOutcome:
+    # Seed the #2829 sibling verdict (the author gate runs before the merge-verdict
+    # gate, so a refuse-on-untrusted-author test is unaffected by this seed).
+    seed_merge_safe_verdict(slug=clear.slug, pr_id=clear.pr_id, sha=clear.reviewed_sha)
     with (
         patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=stub),
         patch.object(author_trust, "repo_is_internal", return_value=internal),

@@ -12,8 +12,13 @@ alive but BUSY past the tick TTL fires no Stop self-pump, so no tick
 re-claims and its lease TTL-lapses while the owner process is still alive.
 ``claim_ownership`` therefore treats a non-empty owner whose ``owner_pid``
 is alive as a LIVE owner — protected past its TTL against any non-
-``take_over`` claim. The TTL is the FALLBACK release, used only when
-``owner_pid`` is null or dead. The doctrine has no ``renew()`` and no
+``take_over`` claim from a DIFFERENT process. The one exception is a
+same-process self-reclaim across a session-id rotation (#2835): when the
+live owner's ``owner_pid`` is the requesting caller's own pid, context
+compaction rotated the session id but the OS process is unchanged, so the
+lease is re-anchored to the new session id and the claim wins — every slot
+self-heals on its next tick. The TTL is the FALLBACK release, used only
+when ``owner_pid`` is null or dead. The doctrine has no ``renew()`` and no
 background timer (#54): the per-tick re-claim IS the heartbeat.
 """
 
@@ -132,8 +137,16 @@ class LoopLeaseQuerySet(models.QuerySet):
         expired" row can never form and a live owner's row is never erased.
         A pid-anchored reclaim then applies: a lease whose ``owner_pid`` is
         ALIVE and whose ``session_id`` is a *different* non-empty session
-        BLOCKS the claim even if its TTL has lapsed. Otherwise the existing
-        backend-agnostic conditional-UPDATE CAS runs (correct on the
+        BLOCKS the claim even if its TTL has lapsed — UNLESS that alive
+        ``owner_pid`` is the requesting caller's OWN pid (#2835): a
+        post-compaction same-process self-reclaim. Compaction rotates the
+        session id but does not restart the durable session process, so the
+        live lease is still ours; it is RE-ANCHORED to the rotated session
+        id and the claim WINS. This is slot-agnostic, so the master
+        ``loop-owner``, ``t3-master``, and every ``loop:<name>`` per-loop
+        slot self-heal on their next tick without a manual ``t3 loop claim
+        --take-over``. Otherwise the existing backend-agnostic
+        conditional-UPDATE CAS runs (correct on the
         production SQLite backend where ``select_for_update`` is a silent
         no-op — the #786 B1 lesson): the ``WHERE`` matches only when the
         claim is unclaimed (``session_id=""``), already this session's
@@ -182,8 +195,25 @@ class LoopLeaseQuerySet(models.QuerySet):
             return not live_owner, live_owner
 
         if live_owner:
-            # A protected live foreign owner (alive pid, or unexpired TTL)
-            # blocks the claim — no DB write.
+            stored_pid = (row or {}).get("owner_pid")
+            if not self._pid_is_foreign(stored_pid, owner_pid):
+                # Same-process self-reclaim across a session-id rotation (#2835):
+                # context compaction rotates ``session_id`` but does NOT restart
+                # the durable session process, so ``owner_pid`` is unchanged — the
+                # live lease is still ours. Re-anchor it to the rotated session id
+                # and refresh the TTL so the slot self-heals on the next tick. The
+                # CAS re-asserts the exact stored pid so a concurrent claim that
+                # already moved the lease off it is never clobbered.
+                won = self.filter(name=name, owner_pid=stored_pid).update(
+                    session_id=session_id,
+                    owner_pid=owner_pid,
+                    acquired_at=now,
+                    lease_expires_at=expires,
+                )
+                current = self.filter(name=name).values_list("session_id", flat=True).first() or ""
+                return won == 1, current
+            # A genuinely foreign live owner (a DIFFERENT alive pid, or an
+            # indeterminate null pid within its TTL) blocks the claim — no write.
             return False, live_owner
 
         won = (

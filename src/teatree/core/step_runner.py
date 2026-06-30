@@ -227,6 +227,35 @@ def run_callable_step(name: str, fn: Callable[[], object]) -> StepResult:
         return StepResult(name=name, success=False, duration=duration, error=error)
 
 
+def _timeboxed_subprocess_callable_step(name: str, fn: Callable[[], object]) -> StepResult:
+    """Run a ``subprocess_only`` provision step wall-clock-bounded, degrading plain.
+
+    The callable sibling of :func:`_timeboxed_step`, for a step the overlay
+    affirmed is a pure subprocess shellout touching no ORM (``uv sync``, ``uv
+    pip install -e``). Without a wall-clock bound, a child blocked on its PIPE —
+    a network stall — hangs the whole provision (souliane/teatree#2244); the
+    time-box aborts loud with the named step instead. When ``provision_timebox``
+    itself is absent on a stale base (souliane/teatree#2664) this degrades to a
+    plain :func:`run_callable_step`, never aborting the caller. The catch is
+    narrowed to the module's OWN absence (``ModuleNotFoundError.name``) so a
+    present-but-internally-broken module re-raises rather than silently disabling
+    the time-box.
+
+    ORM-touching steps (``subprocess_only=False``, the default) never reach
+    here — :func:`run_provision_steps` runs them in-process, because Django DB
+    connections are per-thread and a worker-thread time-box would write on a
+    connection invisible to the caller.
+    """
+    try:
+        from teatree.core.provision_timebox import run_timeboxed_callable  # noqa: PLC0415
+    except ModuleNotFoundError as exc:
+        if exc.name != _PROVISION_TIMEBOX_MODULE:
+            raise
+        logger.warning("provision_timebox unavailable for subprocess step %r — plain run", name)
+        return run_callable_step(name, fn)
+    return run_timeboxed_callable(name, fn)
+
+
 def run_provision_steps(
     steps: list,
     *,
@@ -247,7 +276,19 @@ def run_provision_steps(
 
     for step in steps:
         write(f"  Running: {step.name}")
-        result = run_callable_step(step.name, step.callable)
+        # #2244: a subprocess-only step (uv sync / uv pip install) shells out
+        # with no wall-clock bound, so a child blocked on its PIPE (a network
+        # stall) hangs the whole provision — time-box it on a worker thread,
+        # which is safe BECAUSE it touches no ORM. An ORM-touching step
+        # (subprocess_only=False, the default) runs IN-PROCESS: Django
+        # connections are per-thread, so a worker-thread time-box would write on
+        # a connection invisible to the caller ("database table is locked" under
+        # a test transaction). The db_import callable is the other #2244 hang and
+        # is time-boxed separately in worktree_provision via run_timeboxed_db_import.
+        if step.subprocess_only:
+            result = _timeboxed_subprocess_callable_step(step.name, step.callable)
+        else:
+            result = run_callable_step(step.name, step.callable)
         result = StepResult(
             name=result.name,
             success=result.success,

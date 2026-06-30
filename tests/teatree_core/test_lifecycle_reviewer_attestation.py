@@ -19,6 +19,7 @@ from django.test import TestCase
 
 from teatree.core.management.commands.lifecycle import ReviewerAttestationError
 from teatree.core.models import MergeClear, Session, Ticket
+from tests.teatree_core.conftest import seed_merge_safe_verdict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -118,6 +119,7 @@ class TestTicketMergeKeystoneCli(TestCase):
             gh_verify_result=MergeClear.VerifyResult.GREEN,
             blast_class=MergeClear.BlastClass.DOCS,
         )
+        seed_merge_safe_verdict(slug=clear.slug, pr_id=clear.pr_id, sha=clear.reviewed_sha)
         with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=self._gh_stub):
             result = cast(
                 "dict[str, object]", call_command("ticket", "merge", str(clear.pk), loop_identity="merge-loop")

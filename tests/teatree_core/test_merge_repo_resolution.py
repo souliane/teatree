@@ -29,6 +29,7 @@ from teatree.core.merge import (
     resolve_pr_repo_slug,
 )
 from teatree.core.models import MergeClear, Ticket
+from tests.teatree_core.conftest import seed_merge_safe_verdict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -97,6 +98,8 @@ class TestMergeUsesResolvedRepo(TestCase):
     def test_workstream_slug_merge_calls_gh_with_real_repo(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
         clear = _workstream_clear(ticket)
+        # The workstream slug resolves to the clone-origin repo; seed the verdict there.
+        seed_merge_safe_verdict(slug="souliane/teatree", pr_id=clear.pr_id, sha=clear.reviewed_sha)
         calls: list[list[str]] = []
 
         def _gh(argv: list[str]) -> tuple[int, str, str]:
@@ -218,6 +221,8 @@ class TestOverlayRepoDiffersFromCloneOrigin(TestCase):
 
     def test_sha_bind_precondition_passes_against_overlay_repo(self) -> None:
         clear = self._overlay_clear()
+        # The merge resolves to the overlay repo; seed the #2829 verdict there.
+        seed_merge_safe_verdict(slug=self._OVERLAY_REPO, pr_id=clear.pr_id, sha=clear.reviewed_sha)
         calls: list[list[str]] = []
 
         with (

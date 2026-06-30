@@ -34,11 +34,12 @@ import subprocess  # noqa: S404 — only TimeoutExpired accessed, no shelling he
 import threading
 import time
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from teatree.config import get_effective_settings
 from teatree.core.notify import NotifyKind, notify_user
-from teatree.core.step_runner import StepResult
+from teatree.core.step_runner import StepResult, run_callable_step
 from teatree.utils.run import run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
@@ -209,3 +210,150 @@ def run_timeboxed_step(  # noqa: PLR0913 — each kwarg is a documented opt-in /
             error=error,
         )
     return StepResult(name=name, success=True, duration=duration, stdout=proc.stdout, stderr=proc.stderr)
+
+
+def _log_heartbeat(message: str) -> None:
+    logger.info("provision: %s", message)
+
+
+# ast-grep-ignore: ac-django-no-complexity-suppressions
+def _join_callable_on_ceiling(  # noqa: PLR0913 — each kwarg is a documented seam, mirroring run_timeboxed_step.
+    name: str,
+    invoke: Callable[[], None],
+    *,
+    ceiling: float,
+    repo: str,
+    heartbeat_interval: float,
+    heartbeat: Callable[[str], object] | None,
+    overrun_detail: str,
+) -> tuple[bool, float]:
+    """Run *invoke* on a daemon thread, heartbeating, bounded by *ceiling* seconds.
+
+    Returns ``(timed_out, duration)``. On a wall-clock overrun the loud user
+    alert fires and the daemon thread is abandoned — it dies with the process,
+    so we never block on it. This is the "never hang" half of #2244: a callable
+    provisioning step whose inner subprocess is blocked on its PIPE (the
+    no-DSLR-snapshot / buffered case) is aborted rather than grinding forever.
+    The subprocess sibling is :func:`run_timeboxed_step`.
+    """
+    start = time.monotonic()
+    done = threading.Event()
+    beat = heartbeat or _log_heartbeat
+    worker = threading.Thread(target=invoke, daemon=True)
+    pulse = threading.Thread(
+        target=_emit_heartbeats,
+        kwargs={"step": name, "interval": heartbeat_interval, "done": done, "heartbeat": beat},
+        daemon=True,
+    )
+    pulse.start()
+    worker.start()
+    worker.join(timeout=ceiling)
+    done.set()
+    pulse.join(timeout=1)
+    duration = time.monotonic() - start
+    if worker.is_alive():
+        logger.warning("Provisioning callable %r timed out after %ss — aborting (never hang)", name, ceiling)
+        alert_provision_user(step=name, repo=repo, detail=overrun_detail)
+        return True, duration
+    return False, duration
+
+
+# ast-grep-ignore: ac-django-no-complexity-suppressions
+def run_timeboxed_callable(  # noqa: PLR0913 — each kwarg is a documented opt-in / test seam.
+    name: str,
+    fn: Callable[[], object],
+    *,
+    timeout: float | None = None,
+    repo: str = "",
+    heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
+    heartbeat: Callable[[str], object] | None = None,
+) -> StepResult:
+    """The callable sibling of :func:`run_timeboxed_step`, for an ORM-free shellout (#2244).
+
+    A ``subprocess_only`` provision step (``uv sync``, ``uv pip install -e``)
+    shells out with no wall-clock bound, so a child blocked on its PIPE — a
+    network stall — hangs the whole provision with no output. On overrunning the
+    ceiling this returns a FAILED :class:`StepResult` naming the step and fires
+    the loud user alert — it never hangs. A clean return is interpreted exactly
+    as :func:`teatree.core.step_runner.run_callable_step` does
+    (``CompletedProcess`` → success/failure, exception → FAILED), so the
+    contract is identical whether or not the step overran.
+
+    Only callables that touch NO ORM may run here: the work happens on a daemon
+    worker thread, and Django DB connections are per-thread, so an ORM-touching
+    callable would write/read on a connection invisible to the caller. The
+    ``ProvisionStep.subprocess_only`` flag is that contract — ``run_provision_steps``
+    routes a step here only when the overlay affirmed it is subprocess-only.
+    """
+    ceiling = timeout if timeout is not None else resolve_step_timeout_seconds()
+    captured: dict[str, StepResult] = {}
+    timed_out, duration = _join_callable_on_ceiling(
+        name,
+        lambda: captured.__setitem__("result", run_callable_step(name, fn)),
+        ceiling=ceiling,
+        repo=repo,
+        heartbeat_interval=heartbeat_interval,
+        heartbeat=heartbeat,
+        overrun_detail=(
+            f"exceeded {ceiling}s and was aborted — a child process is blocked "
+            "(a network stall on `uv sync` / `uv pip install`, or a hung shellout); never hangs"
+        ),
+    )
+    if timed_out:
+        return StepResult(name=name, success=False, duration=duration, error=f"timed out after {ceiling}s")
+    return captured["result"]
+
+
+@dataclass(slots=True)
+class _DbImportOutcome:
+    """What the time-boxed ``db_import`` thread captured for the main thread."""
+
+    ok: bool = False
+    error: BaseException | None = None
+
+
+# ast-grep-ignore: ac-django-no-complexity-suppressions
+def run_timeboxed_db_import(  # noqa: PLR0913 — each kwarg is a documented opt-in / test seam.
+    fn: Callable[[], bool],
+    *,
+    name: str = "db_import",
+    timeout: float | None = None,
+    repo: str = "",
+    heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
+    heartbeat: Callable[[str], object] | None = None,
+) -> bool:
+    """The DB-import sibling of :func:`run_timeboxed_step`, for a bool callable (#2244).
+
+    Returns the import's own bool on a clean return. On a wall-clock overrun —
+    the silent-hang root cause when no DSLR snapshot exists and a child blocks on
+    its PIPE — it fires the loud, actionable alert ("no local DSLR snapshot …
+    run ``db refresh`` or supply a dump") and returns ``False`` so the caller
+    aborts the provision loud and non-zero instead of hanging. A callable
+    exception is re-raised on the main thread to keep the loud crash.
+    """
+    ceiling = timeout if timeout is not None else resolve_step_timeout_seconds()
+    outcome = _DbImportOutcome()
+
+    def _invoke() -> None:
+        try:
+            outcome.ok = bool(fn())
+        except Exception as exc:  # noqa: BLE001 — re-raised on the main thread to keep the loud crash
+            outcome.error = exc
+
+    timed_out, _duration = _join_callable_on_ceiling(
+        name,
+        _invoke,
+        ceiling=ceiling,
+        repo=repo,
+        heartbeat_interval=heartbeat_interval,
+        heartbeat=heartbeat,
+        overrun_detail=(
+            f"exceeded {ceiling}s and was aborted — no local DSLR snapshot to restore "
+            "(run `db refresh` or supply a dump); never hangs"
+        ),
+    )
+    if timed_out:
+        return False
+    if outcome.error is not None:
+        raise outcome.error
+    return outcome.ok

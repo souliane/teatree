@@ -11,6 +11,7 @@ the runner aborts the provision (``ok=False``) before any provision or
 post-db step runs — pytest must never get a worktree with no test DB.
 """
 
+import threading
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -128,3 +129,56 @@ class TestRunnerSkipsDbImportWhenNoDbName(TestCase):
         assert overlay.db_import_calls == 1
         assert overlay.provision_steps_calls == 0
         assert overlay.post_db_steps_calls == 0
+
+
+class _BlockingDbImportOverlay(_RecordingOverlay):
+    """Overlay whose ``db_import`` blocks (a child stuck on its PIPE) until released."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.release = threading.Event()
+
+    def db_import(self, worktree: Worktree, **kwargs: Any) -> bool:
+        self.db_import_calls += 1
+        self.release.wait(timeout=3)
+        return True
+
+
+class TestRunnerDbImportNeverHangs(TestCase):
+    """A blocked DB-import aborts the provision loud, never hangs (#2244).
+
+    A DB-import stuck on a missing DSLR snapshot (no output, blocked on a child
+    PIPE) must abort the provision loud and non-zero instead of hanging silently
+    for 10+ minutes.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tmp_workspace(self, tmp_path: Path) -> None:
+        self.wt_path = tmp_path / "worktree"
+        self.wt_path.mkdir()
+
+    def test_blocking_db_import_aborts_loud(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/i/2244")
+        worktree = Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="backend",
+            branch="feature",
+            db_name="wt_2244",
+            extra={"worktree_path": str(self.wt_path)},
+        )
+        overlay = _BlockingDbImportOverlay()
+
+        with (
+            patch("teatree.core.runners.worktree_provision._setup_worktree_dir", return_value=None),
+            patch("teatree.utils.db.db_exists", return_value=False),
+            patch("teatree.core.provision_timebox.resolve_step_timeout_seconds", return_value=0.1),
+            patch("teatree.core.provision_timebox.notify_user") as mock_notify,
+        ):
+            result = WorktreeProvisionRunner(worktree, overlay=overlay).run()
+            overlay.release.set()
+
+        assert result.ok is False
+        assert overlay.db_import_calls == 1
+        assert overlay.provision_steps_calls == 0
+        assert mock_notify.called

@@ -31,6 +31,7 @@ from teatree.core.merge.authorization import (
     _assert_clear_authorized,
     _assert_rubric_satisfied,
     assert_public_repo_author_trusted,
+    assert_review_verdict_gate,
 )
 from teatree.core.merge.ci_rollup import (
     _code_host_for,
@@ -152,10 +153,7 @@ def _reconcile_if_already_merged(
     merge_state = fetch_pr_merge_state(slug, pr_id, host_kind=host_kind)
     if not merge_state.is_merged:
         return None
-    return MergePrecheck(
-        verified_sha=live_sha,
-        already_merged_sha=merge_state.merge_commit_oid or live_sha,
-    )
+    return MergePrecheck(verified_sha=live_sha, already_merged_sha=merge_state.merge_commit_oid or live_sha)
 
 
 # ast-grep-ignore: ac-django-no-complexity-suppressions
@@ -292,8 +290,11 @@ def execute_bound_merge(
     bound SHA returns the existing merge commit so the caller runs the post
     hook idempotently instead of re-issuing the (then-405-bricking) merge.
     A policy refusal (not-mergeable / required-checks / 405 / 422) and a
-    head-moved are NOT transient — they raise on the first attempt.
+    head-moved are NOT transient — they raise on the first attempt. Before the
+    retry loop the #2829 :func:`assert_review_verdict_gate` runs against the
+    bound ``expected_head_oid`` — the single chokepoint both merge paths cross.
     """
+    assert_review_verdict_gate(slug=slug, pr_id=pr_id, head_sha=expected_head_oid)
     for attempt in range(MERGE_TRANSIENT_ATTEMPTS):
         if attempt > 0:
             landed = _already_merged_at(
