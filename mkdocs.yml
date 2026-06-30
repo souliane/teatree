@@ -78,4 +78,6 @@ nav:
       - Skills Catalogue: generated/skills-catalogue.md
       - Anti-Pattern Catalog: generated/antipattern-catalog.md
       - Worktree Lifecycle: generated/diagrams/worktree-lifecycle.md
+      - PullRequest Lifecycle: generated/diagrams/pull-request-lifecycle.md
+      - Ticket Lifecycle: generated/diagrams/ticket-lifecycle.md
   - Contributing: contributing.md

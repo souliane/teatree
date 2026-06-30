@@ -339,9 +339,9 @@ jobs:
       - run: uv run python scripts/hooks/generate_antipattern_catalog.py
         env:
           ANTIPATTERN_CATALOG_NO_STAGE: "1"
-      # Check the worktree-lifecycle FSM diagram is in sync with the model
-      # BEFORE regenerating it. The sync check reads the COMMITTED consumers, so
-      # it catches drift in README + SKILL.md (which the docs/generated diff
+      # Check every FSM lifecycle diagram is in sync with its model BEFORE
+      # regenerating it. The sync check reads the COMMITTED consumers, so it
+      # catches drift in README + SKILL.md (which the docs/generated diff
       # below does NOT cover). It must run first: the generator REWRITES those
       # files on disk (FSM_DIAGRAMS_NO_STAGE only skips git-add), so a check run
       # after the generator would see freshly-repaired files and pass vacuously.

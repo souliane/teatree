@@ -179,7 +179,83 @@ in `src/teatree/core/models/` (`ticket.py`, `worktree.py`, `task.py`,
 (ticket → code → test → review → ship) drive corresponding ticket states. The
 full `Ticket.State` set is `not_started → scoped → started → planned → coded → tested →
 reviewed → shipped → in_review → merged → retrospected → delivered`, plus
-`ignored` for work that is consciously skipped.
+`ignored` for work that is consciously skipped. This diagram is generated from
+the `Ticket` model's `@transition` decorators; edit the model, not the diagram
+(`scripts/hooks/generate_fsm_diagrams.py`).
+
+<!-- BEGIN GENERATED: ticket-fsm -->
+```mermaid
+stateDiagram-v2
+    [*] --> not_started
+    not_started --> scoped : scope
+    not_started --> reviewed : reconcile_reviewed
+    not_started --> merged : reconcile_merged
+    not_started --> delivered : mark_review_no_action
+    not_started --> delivered : mark_reviewed_externally
+    not_started --> ignored : ignore
+    scoped --> started : start
+    scoped --> reviewed : reconcile_reviewed
+    scoped --> merged : reconcile_merged
+    scoped --> delivered : mark_review_no_action
+    scoped --> delivered : mark_reviewed_externally
+    scoped --> ignored : ignore
+    started --> started : start
+    started --> planned : plan
+    started --> reviewed : reconcile_reviewed
+    started --> merged : reconcile_merged
+    started --> delivered : mark_review_no_action
+    started --> delivered : mark_reviewed_externally
+    started --> ignored : ignore
+    planned --> coded : code
+    planned --> reviewed : reconcile_reviewed
+    planned --> merged : reconcile_merged
+    planned --> delivered : mark_review_no_action
+    planned --> delivered : mark_reviewed_externally
+    planned --> ignored : ignore
+    coded --> started : rework
+    coded --> tested : test
+    coded --> reviewed : reconcile_reviewed
+    coded --> merged : reconcile_merged
+    coded --> delivered : mark_review_no_action
+    coded --> delivered : mark_reviewed_externally
+    coded --> ignored : ignore
+    tested --> started : rework
+    tested --> reviewed : reconcile_reviewed
+    tested --> reviewed : review
+    tested --> merged : reconcile_merged
+    tested --> delivered : mark_review_no_action
+    tested --> delivered : mark_reviewed_externally
+    tested --> ignored : ignore
+    reviewed --> started : rework
+    reviewed --> reviewed : reconcile_reviewed
+    reviewed --> shipped : ship
+    reviewed --> merged : reconcile_merged
+    reviewed --> delivered : mark_review_no_action
+    reviewed --> delivered : mark_reviewed_externally
+    reviewed --> ignored : ignore
+    shipped --> started : reopen
+    shipped --> shipped : ship
+    shipped --> in_review : request_review
+    shipped --> merged : reconcile_merged
+    shipped --> ignored : ignore
+    in_review --> started : reopen
+    in_review --> reviewed : reconcile_reviewed
+    in_review --> merged : mark_merged
+    in_review --> merged : reconcile_merged
+    in_review --> ignored : ignore
+    merged --> started : reopen
+    merged --> merged : mark_merged
+    merged --> merged : reconcile_merged
+    merged --> retrospected : retrospect
+    merged --> ignored : ignore
+    retrospected --> started : reopen
+    retrospected --> reviewed : reconcile_reviewed
+    retrospected --> retrospected : retrospect
+    retrospected --> delivered : mark_delivered
+    retrospected --> ignored : ignore
+    delivered --> delivered : mark_review_no_action
+```
+<!-- END GENERATED: ticket-fsm -->
 
 **Worktree** — one repo checkout inside a ticket's workspace. This diagram is
 generated from the `Worktree` model's `@transition` decorators; edit the model,
@@ -208,7 +284,10 @@ stateDiagram-v2
 ```
 <!-- END GENERATED: worktree-fsm -->
 
-**Task** — claimable work unit with lease and heartbeat.
+**Task** — claimable work unit with lease and heartbeat. Unlike the others,
+`Task` advances through guarded methods (`claim`, `complete`, `fail`, `reopen`)
+that take a row lock and a lease rather than `@transition` decorators, so this
+diagram is illustrative and maintained by hand, not generated.
 
 ```mermaid
 stateDiagram-v2
@@ -219,15 +298,21 @@ stateDiagram-v2
   claimed --> pending: lease_expired
 ```
 
-**PullRequest** — tracks delivery state on the code host.
+**PullRequest** — tracks delivery state on the code host. This diagram is
+generated from the `PullRequest` model's `@transition` decorators; edit the
+model, not the diagram (`scripts/hooks/generate_fsm_diagrams.py`).
 
+<!-- BEGIN GENERATED: pull-request-fsm -->
 ```mermaid
 stateDiagram-v2
-  [*] --> open
-  open --> review_requested: request_review
-  review_requested --> approved: approve
-  approved --> merged: merge
+    [*] --> open
+    open --> review_requested : request_review
+    open --> merged : mark_merged
+    review_requested --> approved : approve
+    review_requested --> merged : mark_merged
+    approved --> merged : mark_merged
 ```
+<!-- END GENERATED: pull-request-fsm -->
 
 Every state change goes through a method with code behind it. `Ticket`,
 `Worktree`, and `PullRequest` use `django-fsm`-style `@transition` decorators
