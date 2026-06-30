@@ -122,7 +122,7 @@ class TestPreview:
         result = cast("dict[str, object]", result)
         assert result["total"] == 0
         channels = cast("list[dict[str, object]]", result["channels"])
-        assert "No [mr_reminder] channel map" in cast("str", channels[0]["text"])
+        assert "No mr_reminder channel map" in cast("str", channels[0]["text"])
 
 
 class TestSend:

@@ -154,14 +154,15 @@ def autoload_enabled() -> bool:
     """Whether teatree auto-engages a fresh session (#256). Default OFF, fail-closed.
 
     The cold-hook reader the SessionStart / UserPromptSubmit hooks consult to decide
-    default-off engagement. Env-first (``T3_AUTOLOAD`` truthy), else the DB-first
-    ``[teatree] autoload`` flag via :func:`teatree_bool_setting`. ``autoload`` is
-    TOML-home (#1775) so the import never seeds it — the TOML fallback inside
-    :func:`section_bool_setting` is what preserves a configured ``autoload = true``.
-    Fails CLOSED (OFF) on a missing/broken config + DB, so a fresh install never
-    auto-engages teatree until the owner opts in.
+    default-off engagement. Env-first (``T3_AUTOLOAD`` truthy), else the DB-home
+    ``autoload`` flag read DB-ONLY via the Django-free ``_cold_db_bool``
+    (eliminate-~/.teatree.toml: autoload is DB-home, so a ``[teatree] autoload`` TOML
+    value is ignored on read — no TOML fallback here, unlike the shared gate flags).
+    Fails CLOSED (OFF) on a missing/broken DB, so a fresh install never auto-engages
+    teatree until the owner opts in.
     """
     env = os.environ.get("T3_AUTOLOAD", "").strip().lower()
     if env:
         return env in _AUTOLOAD_TRUTHY
-    return teatree_bool_setting("autoload", default=False)
+    db_value = _cold_db_bool("autoload")
+    return db_value if db_value is not None else False

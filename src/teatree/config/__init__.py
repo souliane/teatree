@@ -40,7 +40,6 @@ from teatree.config.resolution import (
     _apply_autonomy,
     _global_pinned_fields,
     _overlay_overrides_by_name,
-    _overlay_speak_override,
     cadence_seconds,
     get_effective_settings,
 )
@@ -99,7 +98,6 @@ __all__ = [
     "_load_toml",
     "_match_canonical_ep",
     "_overlay_overrides_by_name",
-    "_overlay_speak_override",
     "_parse_disk_cache_allowlist",
     "_parse_env_bool",
     "_parse_handover_mirror_path",

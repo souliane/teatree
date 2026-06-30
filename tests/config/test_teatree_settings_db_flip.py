@@ -129,10 +129,11 @@ class TestFailOpenParity:
 class TestTomlFallbackForUnseededKeys:
     """The dual-read fallback preserves a TOML value the import never seeds.
 
-    ``autoload`` and ``orchestrator_bash_gate_enabled`` are TOML-home (#1775): the
-    TOML->DB import skips them, so the DB never carries a row. The TOML fallback is
-    what keeps a configured value working — without it the flip would silently
-    re-enable ``orchestrator_bash_gate_enabled`` and turn ``autoload`` off.
+    ``orchestrator_bash_gate_enabled`` is TOML-home (#1775): the TOML->DB import
+    skips it, so the DB never carries a row. The TOML fallback is what keeps a
+    configured value working — without it the flip would silently re-enable it.
+    (``autoload`` is DB-home since eliminate-~/.teatree.toml — read DB-only with NO
+    TOML fallback; its DB path is covered in ``tests/config/test_autoload_db``.)
     """
 
     def test_toml_home_gate_disabled_in_toml_stays_disabled(
@@ -143,13 +144,6 @@ class TestTomlFallbackForUnseededKeys:
         monkeypatch.setenv("T3_CONFIG_DB", str(db))
         _write_teatree_toml(tmp_path / "home", "orchestrator_bash_gate_enabled = false\n")
         assert settings_module.teatree_bool_setting("orchestrator_bash_gate_enabled", default=True) is False
-
-    def test_autoload_true_in_toml_is_honoured_without_a_db_row(
-        self, settings_module, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        monkeypatch.delenv("T3_AUTOLOAD", raising=False)
-        _write_teatree_toml(tmp_path / "home", "autoload = true\n")
-        assert settings_module.autoload_enabled() is True
 
     def test_db_row_missing_no_toml_returns_default(
         self, settings_module, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

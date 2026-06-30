@@ -30,8 +30,6 @@ from typing import Any
 
 import teatree.config as _facade
 from teatree.config.settings import E2ERepo, TeaTreeConfig, UserSettings
-from teatree.config_mr_reminder import resolve_mr_reminder
-from teatree.config_speak import resolve_speak
 from teatree.paths import DATA_DIR, get_data_dir
 from teatree.update_check import run_update_check
 
@@ -305,31 +303,16 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
     _warn_retired_keys_in_toml(raw, path)
     _warn_migrated_keys_in_toml(raw, path)
 
-    teatree = raw.get("teatree", {})
-    # ``workspace_dir`` / ``worktrees_dir`` are DB-home: their ``[teatree]`` value is
-    # ignored on read (warned + migrate via ``config_setting import``); the fields keep
-    # their dataclass defaults here and ``config.worktree_root()`` / ``worktrees_dir()``
-    # resolve them off the store. (Django ``settings.py`` hardcodes ``TIME_ZONE`` and
-    # configures ``DATABASES`` without reading ``worktrees_dir`` / ``timezone``, so
-    # neither was ever a DB-open bootstrap dep.)
-
-    # The hard partition (#1775): ``load_config`` builds ONLY the TOML-home fields
-    # (the carve-out — pre-Django readers, path/infra bootstrap, nested structured
-    # tables). Every DB-home field keeps its dataclass default at the file tier; its
-    # value comes from the ``ConfigSetting`` store via ``get_effective_settings``.
-    # ``on_behalf_post_mode`` is DB-home (so it keeps its default here). A DB-home key
-    # left in ``[teatree]`` / ``[overlays.<name>]`` is ignored on read (its home is the
-    # DB); migrate it into the store with ``t3 <overlay> config_setting import``.
-    user = UserSettings(
-        # Strict bool: only a real TOML boolean ``true`` engages autoload — a
-        # quoted ``"true"`` / ``"false"`` string is ignored (matches the
-        # cold-read in ``teatree_settings.autoload_enabled``).
-        autoload=teatree.get("autoload", False) is True,
-        speak=resolve_speak(teatree),
-        mr_reminder=resolve_mr_reminder(raw),
-    )
-
-    return TeaTreeConfig(user=user, raw=raw)
+    # The hard partition (#1775) is now COMPLETE (eliminate-~/.teatree.toml): the
+    # TOML-home carve-out is empty, so ``load_config`` reads NO ``UserSettings`` field
+    # off the file — every field keeps its dataclass default here and resolves from the
+    # ``ConfigSetting`` store via ``get_effective_settings``. The final two fields
+    # (``speak`` / ``mr_reminder``) are nested-table DB-home settings rebuilt bespoke by
+    # the resolver. A value left in ``[teatree]`` / ``[overlays.<name>]`` for any field
+    # is ignored on read (warned above); migrate it with ``config_setting import``. The
+    # raw dict is still carried for the NON-settings tables (``[overlays.<name>]`` /
+    # ``[e2e_repos]``), which are overlay/repo DEFINITIONS, not ``UserSettings``.
+    return TeaTreeConfig(user=UserSettings(), raw=raw)
 
 
 def load_e2e_repos(path: Path | None = None) -> list[E2ERepo]:

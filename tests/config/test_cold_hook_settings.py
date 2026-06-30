@@ -78,7 +78,7 @@ def _registered_int_keys() -> set[str]:
 
 
 def _toml_home_user_settings_fields() -> set[str]:
-    """The TOML-home ``UserSettings`` fields (e.g. ``autoload``, ``orchestrator_bash_gate_enabled``).
+    """The TOML-home ``UserSettings`` fields (e.g. ``speak``, ``mr_reminder``).
 
     Cold readers consult these too, but they have a recognised TOML home under the
     #1775 partition, so they are intentionally NOT in ``COLD_HOOK_SETTINGS``.

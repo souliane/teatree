@@ -1,17 +1,21 @@
-"""``LocalPlayback`` / ``SpeakConfig`` parsing + ``[teatree.speak]`` resolution (#2060).
+"""``LocalPlayback`` / ``SpeakConfig`` parsing + DB-home ``speak`` resolution (#2060).
 
-The v3 schema: a ``[teatree.speak]`` sub-table with a ``local`` enum
-(``off`` / ``dm`` / ``all``) and a ``slack`` bool. The two axes are fully
-independent. Covers: defaults when absent, new-table parse, partial keys,
-a clean ``ValueError`` on a typo, and the per-overlay sub-table merge.
+The schema: a ``speak`` config with a ``local`` enum (``off`` / ``dm`` / ``all``)
+and a ``slack`` bool, fully independent. eliminate-~/.teatree.toml made ``speak``
+DB-home — it resolves from a JSON-dict ``ConfigSetting`` row (rebuilt bespoke via
+``speak_from_subtable``). Covers: defaults when absent, parse, partial keys, a clean
+``ValueError`` on a typo, and the per-overlay row merge.
 """
 
 from pathlib import Path
 
 import pytest
+from django.test import TestCase
 
-from teatree.config import get_effective_settings, load_config
+import teatree.config as config_facade
+from teatree.config import get_effective_settings
 from teatree.config_speak import resolve_speak
+from teatree.core.models import ConfigSetting
 from teatree.types import LocalPlayback, SpeakConfig
 
 
@@ -63,49 +67,44 @@ class TestSpeakConfigHelpers:
         assert SpeakConfig().to_dict() == {"local": "off", "slack": False}
 
 
-@pytest.fixture
-def config_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    cfg = tmp_path / ".teatree.toml"
-    monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
-    return cfg
+class TestSpeakDbResolution(TestCase):
+    """eliminate-~/.teatree.toml: ``speak`` resolves from a JSON-dict ``ConfigSetting`` row.
 
+    The stored dict is rebuilt bespoke by the resolver via ``speak_from_subtable`` —
+    the same builder the old ``[teatree.speak]`` reader used, so partial keys, unknown
+    keys, and the loud ``ValueError`` on a bad ``local`` are unchanged.
+    """
 
-def _write(cfg: Path, body: str) -> None:
-    cfg.write_text(body, encoding="utf-8")
+    @pytest.fixture(autouse=True)
+    def _sandbox(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(config_facade, "CONFIG_PATH", tmp_path / ".teatree.toml")
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
 
+    def test_default_when_no_row(self) -> None:
+        assert get_effective_settings().speak == SpeakConfig(local=LocalPlayback.OFF, slack=False)
 
-class TestNewTableResolution:
-    def test_default_when_absent(self, config_file: Path) -> None:
-        _write(config_file, "[teatree]\n")
-        assert load_config().user.speak == SpeakConfig(local=LocalPlayback.OFF, slack=False)
+    def test_row_parsed(self) -> None:
+        ConfigSetting.objects.set_value("speak", value={"local": "all", "slack": True})
+        assert get_effective_settings().speak == SpeakConfig(local=LocalPlayback.ALL, slack=True)
 
-    def test_default_when_file_missing(self, config_file: Path) -> None:
-        assert load_config().user.speak == SpeakConfig()
+    def test_partial_keys_default_the_rest(self) -> None:
+        ConfigSetting.objects.set_value("speak", value={"slack": True})
+        assert get_effective_settings().speak == SpeakConfig(local=LocalPlayback.OFF, slack=True)
 
-    def test_new_table_parsed(self, config_file: Path) -> None:
-        _write(config_file, '[teatree.speak]\nlocal = "all"\nslack = true\n')
-        assert load_config().user.speak == SpeakConfig(local=LocalPlayback.ALL, slack=True)
+    def test_unknown_keys_are_silently_inert(self) -> None:
+        ConfigSetting.objects.set_value("speak", value={"local": "dm", "slack_audio": True, "scope": "all"})
+        assert get_effective_settings().speak == SpeakConfig(local=LocalPlayback.DM, slack=False)
 
-    def test_new_table_partial_keys_default_the_rest(self, config_file: Path) -> None:
-        _write(config_file, "[teatree.speak]\nslack = true\n")
-        assert load_config().user.speak == SpeakConfig(local=LocalPlayback.OFF, slack=True)
-
-    def test_unknown_v2_keys_are_silently_inert(self, config_file: Path) -> None:
-        # Clean cutover: the removed v2 keys carry no meaning in v3 and are silently ignored.
-        _write(config_file, '[teatree.speak]\nlocal = "dm"\nslack_audio = true\nscope = "all"\n')
-        assert load_config().user.speak == SpeakConfig(local=LocalPlayback.DM, slack=False)
-
-    def test_v2_local_boolean_value_fails_clean_not_attributeerror(self, config_file: Path) -> None:
-        # `local` is reused with a new string type — a leftover v2 `local = true`
-        # is a misconfiguration that must fail loudly, not crash on `.strip()`.
-        _write(config_file, "[teatree.speak]\nlocal = true\n")
+    def test_local_boolean_value_raises_clean_valueerror(self) -> None:
+        # A corrupt ``local = true`` (bool) must fail loudly on read, not crash on .strip().
+        ConfigSetting.objects.set_value("speak", value={"local": True})
         with pytest.raises(ValueError, match="Invalid speak local"):
-            load_config()
+            get_effective_settings()
 
-    def test_invalid_local_raises_clean_valueerror(self, config_file: Path) -> None:
-        _write(config_file, '[teatree.speak]\nlocal = "everywhere"\n')
+    def test_invalid_local_raises_clean_valueerror(self) -> None:
+        ConfigSetting.objects.set_value("speak", value={"local": "everywhere"})
         with pytest.raises(ValueError, match="Invalid speak local"):
-            load_config()
+            get_effective_settings()
 
 
 class TestResolveSpeakDirect:
@@ -121,39 +120,27 @@ class TestResolveSpeakDirect:
         )
 
 
-class TestPerOverlayOverride:
-    def test_per_overlay_speak_sub_table_merges_onto_base(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        config_path = tmp_path / ".teatree.toml"
-        config_path.write_text(
-            (
-                "[teatree.speak]\n"
-                'local = "all"\n'
-                "[overlays.my-overlay]\n"
-                'class = "x.y:Z"\n'
-                "[overlays.my-overlay.speak]\n"
-                "slack = true\n"
-            ),
-            encoding="utf-8",
-        )
-        monkeypatch.setattr("teatree.config.CONFIG_PATH", config_path)
-        effective = get_effective_settings("my-overlay")
-        assert effective.speak == SpeakConfig(local=LocalPlayback.ALL, slack=True)
+class TestPerOverlaySpeakMerge(TestCase):
+    """eliminate-~/.teatree.toml: a per-overlay ``speak`` DB row MERGES onto the global base.
 
-    def test_per_overlay_local_override(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        config_path = tmp_path / ".teatree.toml"
-        config_path.write_text(
-            (
-                "[teatree.speak]\n"
-                "slack = true\n"
-                "[overlays.my-overlay]\n"
-                'class = "x.y:Z"\n'
-                "[overlays.my-overlay.speak]\n"
-                'local = "all"\n'
-            ),
-            encoding="utf-8",
-        )
-        monkeypatch.setattr("teatree.config.CONFIG_PATH", config_path)
-        effective = get_effective_settings("my-overlay")
-        assert effective.speak == SpeakConfig(local=LocalPlayback.ALL, slack=True)
+    The one non-generic structured override (``resolution._resolve_speak_db``): the
+    global ``speak`` row sets the base, the overlay-scope row overrides only the keys
+    it carries — the DB equivalent of the old ``[overlays.<name>.speak]`` sub-table merge.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _sandbox(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(config_facade, "CONFIG_PATH", tmp_path / ".teatree.toml")
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+
+    def test_overlay_row_inherits_global_local(self) -> None:
+        # Global sets local=all; the overlay row sets only slack → local is inherited.
+        ConfigSetting.objects.set_value("speak", value={"local": "all"})
+        ConfigSetting.objects.set_value("speak", value={"slack": True}, scope="my-overlay")
+        assert get_effective_settings("my-overlay").speak == SpeakConfig(local=LocalPlayback.ALL, slack=True)
+
+    def test_overlay_row_overrides_local(self) -> None:
+        # Global sets slack=true; the overlay row sets local=all → slack inherited, local overridden.
+        ConfigSetting.objects.set_value("speak", value={"slack": True})
+        ConfigSetting.objects.set_value("speak", value={"local": "all"}, scope="my-overlay")
+        assert get_effective_settings("my-overlay").speak == SpeakConfig(local=LocalPlayback.ALL, slack=True)

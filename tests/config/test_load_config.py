@@ -19,28 +19,33 @@ from django.test import TestCase
 import teatree.config as config_facade
 from teatree.config import Mode, OnBehalfPostMode, get_effective_settings, load_config
 from teatree.core.models import ConfigSetting
+from teatree.types import LocalPlayback
 
 from ._shared import _write_toml
 
 
-def test_load_config_reads_toml_home_fields(tmp_path: Path) -> None:
-    # autoload is TOML-home (read off the file). workspace_dir / privacy are DB-home
-    # now (eliminate-~/.teatree.toml): their ``[teatree]`` value is ignored on read so
-    # the fields keep their dataclass defaults at the file tier (workspace_dir resolves
-    # per-overlay via config.worktree_root()). review_skill is DB-home too.
+def test_load_config_ignores_db_home_settings_in_toml(tmp_path: Path) -> None:
+    # eliminate-~/.teatree.toml is COMPLETE: the carve-out is empty, so ``load_config``
+    # reads NO ``UserSettings`` field off the file — every field keeps its dataclass
+    # default at the file tier and resolves from the ``ConfigSetting`` store via
+    # ``get_effective_settings``. ``speak`` was the last to move: a ``[teatree.speak]``
+    # value is now ignored on read, so ``config.user.speak`` is the default (OFF). The
+    # raw dict is still carried (for the non-settings overlay/e2e tables).
     config_path = tmp_path / ".teatree.toml"
     _write_toml(
         config_path,
         """
 [teatree]
 workspace_dir = "/custom/workspace"
-autoload = true
 privacy = "strict"
+
+[teatree.speak]
+local = "dm"
 """,
     )
     config = load_config(config_path)
     assert config.user.workspace_dir == Path.home() / "workspace"
-    assert config.user.autoload is True
+    assert config.user.speak.local is LocalPlayback.OFF
     assert config.user.privacy == ""
     assert config.user.review_skill == ""
     assert "teatree" in config.raw
@@ -88,15 +93,15 @@ def test_agent_signature_defaults_off(tmp_path: Path) -> None:
 
 
 def test_toml_home_and_raw_keys_do_not_warn(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    # TOML-home carve-out fields, overlay discovery/messaging keys, and raw
-    # bootstrap keys are legitimate in the file — they must NOT trip the WARN.
-    # ``workspace_dir`` / ``statusline_chain`` are deliberately ABSENT here — they
-    # are DB-home now and warn on presence (see TestDbHomeTomlConflictWarning);
-    # this fixture covers only the keys that must STAY silent.
+    # Overlay discovery/messaging keys and raw bootstrap keys (``private_repos``) are
+    # legitimate in the file — they must NOT trip the WARN. eliminate-~/.teatree.toml
+    # emptied the TOML carve-out: a DB-home key absent from the DB store (here the
+    # ``[teatree.speak]`` sub-table, now DB-home, with no conflicting DB row) is also
+    # silent — it only warns on a value CONFLICT with a stored row.
     config_path = tmp_path / ".teatree.toml"
     _write_toml(
         config_path,
-        '[teatree]\nautoload = true\nprivate_repos = ["acme/x"]\n\n[overlays.myproj]\npath = "~/p"\n',
+        '[teatree]\nprivate_repos = ["acme/x"]\n\n[teatree.speak]\nlocal = "dm"\n\n[overlays.myproj]\npath = "~/p"\n',
     )
     with caplog.at_level("WARNING", logger="teatree.config"):
         load_config(config_path)
@@ -136,7 +141,9 @@ class TestDbHomeTomlConflictWarning(TestCase):
         ConfigSetting.objects.set_value("contribute", value=True)
         # ``workspace_dir`` omitted: it is the one DB-home key that warns on
         # presence (it silently relocates worktrees) — covered separately below.
-        _write_toml(self.config_path, "[teatree]\nautoload = true\n")
+        # The ``[teatree.speak]`` table is DB-home now (eliminate-~/.teatree.toml) but
+        # has no conflicting DB row, so it is silent (warns only on a value conflict).
+        _write_toml(self.config_path, '[teatree]\n\n[teatree.speak]\nlocal = "dm"\n')
         assert self._load_and_collect() == []
 
     def test_retired_workspace_dir_in_toml_warns_to_migrate(self) -> None:
@@ -355,11 +362,13 @@ def test_billing_cycle_defaults(tmp_path: Path) -> None:
 
 
 class TestAutoloadSetting:
-    """``autoload`` is TOML-home (#256): default OFF, ``[teatree] autoload`` enables, env wins.
+    """``autoload`` is DB-home (#256/#1775): default OFF at the file tier, ``T3_AUTOLOAD`` env wins.
 
-    A cold-hook-readable TOML-home bool resolved from the ``[teatree]`` table +
-    ``T3_AUTOLOAD`` env, never the DB store (the cold SessionStart hooks read it
-    pre-Django with tomllib).
+    eliminate-~/.teatree.toml moved ``autoload`` off the file: ``load_config`` no
+    longer reads it, so the file tier always returns the dataclass default (OFF) and
+    a ``[teatree] autoload`` value is ignored on read. Its authoritative tier is the
+    ``ConfigSetting`` store (covered in ``test_autoload_db``); ``T3_AUTOLOAD`` env
+    still wins via ``get_effective_settings``.
     """
 
     def test_default_is_off_with_empty_teatree_table(self, tmp_path: Path) -> None:
@@ -370,22 +379,12 @@ class TestAutoloadSetting:
     def test_default_is_off_with_no_config_file(self, tmp_path: Path) -> None:
         assert load_config(tmp_path / "nonexistent.toml").user.autoload is False
 
-    def test_toml_true_enables(self, tmp_path: Path) -> None:
+    def test_teatree_toml_value_is_ignored_at_file_tier(self, tmp_path: Path) -> None:
+        # DB-home: a ``[teatree] autoload`` value is ignored on read — ``load_config``
+        # keeps the dataclass default (OFF). The DB override is applied by
+        # ``get_effective_settings``, not ``load_config``.
         config_path = tmp_path / ".teatree.toml"
         _write_toml(config_path, "[teatree]\nautoload = true\n")
-        assert load_config(config_path).user.autoload is True
-
-    def test_quoted_string_true_does_not_engage(self, tmp_path: Path) -> None:
-        # Strict bool (#256 nit): a QUOTED ``"true"`` is a string, not a bare TOML
-        # boolean, so it must NOT engage autoload — matching the cold-read in
-        # ``teatree_settings.autoload_enabled``. RED on ``bool(...)`` (truthy string).
-        config_path = tmp_path / ".teatree.toml"
-        _write_toml(config_path, '[teatree]\nautoload = "true"\n')
-        assert load_config(config_path).user.autoload is False
-
-    def test_quoted_string_false_does_not_engage(self, tmp_path: Path) -> None:
-        config_path = tmp_path / ".teatree.toml"
-        _write_toml(config_path, '[teatree]\nautoload = "false"\n')
         assert load_config(config_path).user.autoload is False
 
     def test_env_override_enables_over_empty_toml(

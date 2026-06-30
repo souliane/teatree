@@ -24,9 +24,11 @@ Detail behind [BLUEPRINT.md](https://github.com/souliane/teatree/blob/main/BLUEP
 # Set it with `t3 <overlay> config_setting set workspace_dir <path> [--overlay <name>]`;
 # a value left here is ignored on read. T3_WORKSPACE_DIR env still overrides (back-compat).
 privacy = "strict"
-statusline_chain = []                      # extra statusline scripts (glob patterns) chained after the loop's zones (read by the bash statusline hook)
-orchestrator_bash_gate_enabled = true      # #115 kill-switch, read directly by the hook layer (pre-Django)
-autoload = false                           # #256 default-OFF teatree engagement; true = auto-engage every session (pre-Django cold-hook read)
+orchestrator_bash_gate_enabled = true      # #115 kill-switch, read directly by the hook layer (pre-Django, DB-first w/ TOML self-rescue)
+# statusline_chain is DB-home now (extra statusline scripts, glob patterns, chained after the loop's zones).
+# Set it with `t3 <overlay> config_setting set statusline_chain '[...]'`; a value left here is ignored on read (the bash hook reads the DB via the sqlite3 CLI).
+# autoload is DB-home now (#256 default-OFF teatree engagement; true = auto-engage every session).
+# Set it with `t3 <overlay> config_setting set autoload true`; a value left here is ignored on read. T3_AUTOLOAD env still overrides (cold-hook read).
 
 [overlays.myproject]
 path = "~/workspace/myproject"
@@ -53,14 +55,14 @@ url = "git@gitlab.com:org/my-service.git"
 branch = "feature/e2e-tests"
 e2e_dir = "e2e"  # subdirectory containing playwright.config.ts (default: "e2e")
 
-# Cross-repo "my open MRs" Slack reminder — used by `t3 <overlay> mr_reminder`.
-# Routes each open MR/PR to a channel by its repo slug (most-specific match
-# wins; an org-namespace prefix like "acme-engineering" routes acme-engineering/*).
-[mr_reminder]
-default_channel = "C_FALLBACK"        # optional: channel for an MR matching no pattern (omit to drop unrouted)
-[mr_reminder.channels]
-"souliane/teatree" = "C_TEATREE"      # exact owner/repo → channel id (or #channel-name)
-"acme-engineering" = "C_ACME"         # org-namespace prefix → channel for every repo under it
+# Cross-repo "my open MRs" Slack reminder (`t3 <overlay> mr_reminder`) is DB-home now
+# (eliminate-~/.teatree.toml). Routes each open MR/PR to a channel by repo slug
+# (most-specific wins; an org-namespace prefix like "acme-engineering" routes its repos).
+# A `[mr_reminder]` table left here is ignored on read; set it as a JSON dict:
+#   t3 <overlay> config_setting set mr_reminder \
+#     '{"default_channel":"C_FALLBACK","channels":{"souliane/teatree":"C_TEATREE","acme-engineering":"C_ACME"}}'
+# Likewise `speak` (#2060) is DB-home: t3 <overlay> config_setting set speak '{"local":"all","slack":true}'
+#   (per-overlay override: add --overlay <name>; it MERGES onto the global speak row).
 
 ```
 
@@ -124,16 +126,10 @@ The env var `T3_MODE` overrides the stored DB-home value. Unknown values raise
 **Setting-home partition ([#1775](https://github.com/souliane/teatree/issues/1775)).**
 Every non-derived `UserSettings` field has EXACTLY ONE home, declared in the
 typed registry `config/homes.py` (`SettingHome` ∈ {`DB`, `TOML`}, `SETTING_HOMES`):
-a field that CAN live in the DB is **DB-home**, and only the irreducible carve-out
-stays **TOML-home**. The two homes are disjoint (a fitness function asserts it) — a
-setting is never read from both tiers. A DB-home field resolves from `ConfigSetting`
-(global + overlay rows) + env only; a TOML-home field resolves from `[teatree]` +
-`[overlays.<name>]` + env only. The TOML carve-out is the three fields a non-Django
-or pre-Django reader needs (`speak` — the Stop hook re-reads the `[teatree.speak]`
-sub-table with tomllib and cannot reach the DB — and `autoload` — the cold SessionStart /
-UserPromptSubmit hooks read `[teatree] autoload` with tomllib to decide default-off
-engagement before any Django bootstrap (#256)), and the nested structured `mr_reminder`
-table.
+a field that CAN live in the DB is **DB-home**. As of eliminate-`~/.teatree.toml`
+the carve-out is **EMPTY** — every `UserSettings` field is DB-home. The two homes are
+disjoint (a fitness function asserts it) — a setting is never read from both tiers. A
+DB-home field resolves from `ConfigSetting` (global + overlay rows) + env only.
 (eliminate-`~/.teatree.toml` moved `check_updates` — its pre-Django reader
 `check_for_updates` now reads the DB via the Django-free `cold_reader` — `worktrees_dir`
 / `timezone` — the Django settings module hardcodes `TIME_ZONE` and configures
@@ -141,9 +137,19 @@ table.
 per-overlay-TOML-overridable fields `orchestrator_bash_gate_enabled` / `privacy` —
 per-overlay override now lives in a `ConfigSetting` overlay-scope row — `handover_mirror_path`
 — its pre-Django SessionStart reader reads the DB via `cold_reader`, which fails open to
-the same default bootstrap path `write_mirror` uses when unset — and `statusline_chain` —
+the same default bootstrap path `write_mirror` uses when unset — `statusline_chain` —
 the bash statusline hook reads it from the canonical sqlite via the `sqlite3` CLI +
-`json_each` — to the DB.)
+`json_each` — and `autoload` — the #256 engagement flag; its cold SessionStart /
+UserPromptSubmit readers (`teatree_settings.autoload_enabled` via `_cold_db_bool`,
+`statusline.sh` via the `sqlite3` CLI) read the DB ONLY, so a `[teatree] autoload`
+value is ignored on read and the how-to advisory points at
+`config_setting set autoload true` — and finally the last two, the nested structured
+tables `speak` / `mr_reminder` — stored as JSON-dict `ConfigSetting` rows
+(`parse_speak_setting` / `parse_mr_reminder_setting`) and rebuilt bespoke by the
+resolver (`resolution._BESPOKE_STRUCTURED_FIELDS`), with `speak` keeping its
+per-overlay MERGE; the cold Stop-hook `speak` reader uses `cold_reader.read_setting`
+— to the DB. The TOML file now retains only the NON-settings `[overlays.<name>]`
+overlay-definition and `[e2e_repos]` tables.)
 `workspace_dir` is **DB-home** and
 per-overlay overridable (it is read only after Django is up): it names the
 per-overlay **WORKTREE root** where ticket worktrees are created — worktrees
@@ -328,21 +334,23 @@ below mirrors it; consult the dataclass for type signatures and defaults.
 | `internal_publish_namespaces` | Destination allowlist (default `[]`) making the #1415/#1530 publish gates destination-aware: a target that prefix-matches is internal and skipped. #1672 unions it with `private_repos`, deciding the skip PER top-level segment — a chained/substituted public post or a raw-REST `api` segment forces the whole command SCANNED. FAIL-CLOSED (empty/unresolvable stay PUBLIC). `teatree.hooks.publish_destination`; env `T3_INTERNAL_PUBLISH_NAMESPACES` supplements. |
 | `owned_repos` | The repo SCOPE axis (orthogonal to `private_repos`/visibility and to `author_is_self`/collaboration): a forge-host-keyed dict `{normalized-host: [namespace-pattern, …]}` of the repos this overlay legitimately works on (`{"github.com": ["souliane", "acme-eng/widget-overlay"]}`). Host equality is matched EXACTLY before the namespace half (`slug_namespace_matches`), so a `gitlab.com` repo never matches a `github.com` scope. A `[overlays.<name>.owned_repos]` TOML table REPLACES the settings dict (authoritative-and-complete, no deep-merge). Sole-element `["*"]` is a whole-host wildcard (self-hosted forges only). `teatree.core.repo_scope`. |
 | `require_owned_repo_approval` | Opt-in (default `false`, ships INERT) for the unknown-repo gate (`teatree.core.gates.owned_repo_guard`): when `true` AND `owned_repos` non-empty, a push/merge to a repo no overlay owns is HELD for the operator. Fails CLOSED on a clean unknown verdict (opposite polarity to the visibility gate); enabling it therefore requires FIRST declaring the FULL owned host/namespace list (every private/customer forge the operator merges on) — a partial list would hold the operator's own private-forge merges as unknown. A **path-only** TOML overlay (`path` but no `class`) is skipped by `get_all_overlays` and cannot opt itself in; its repos go under an instantiable overlay's `owned_repos`. Opt in from private `~/.teatree.toml` (where brand/customer strings are allowed). Fails OPEN on a resolver exception / unresolvable host. Never-lockout: `[scope-push-ok: <reason>]` token + `[teatree] unknown_repo_push_gate_enabled = false` kill-switch. |
-| `speak` | #2060: text-to-speech `[teatree.speak]` sub-table — `local` enum (`off`/`dm`/`all`) + `slack` bool. See §10.1.1. |
+| `speak` | #2060: text-to-speech config — `local` enum (`off`/`dm`/`all`) + `slack` bool. DB-home (#1775): a JSON-dict `ConfigSetting` row (`config_setting set speak '{"local":"all","slack":true}'`). See §10.1.1. |
 
 `notify_on_behalf` is NOT in this registry — it is derived (read-only),
 set by `_apply_autonomy` under `autonomy = "notify"`, never a user toml key.
 
 ### 10.1.1 Local text-to-speech (#2060)
 
-The `[teatree.speak]` sub-table reads agent output aloud, gated on the macOS
-`say` binary (the whole feature is inert when it is absent). Per-overlay
-overridable via `[overlays.<name>.speak]`; ad-hoc local read via `t3 speak "…"`.
+The `speak` config reads agent output aloud, gated on the macOS `say` binary (the
+whole feature is inert when it is absent). DB-home (#1775, eliminate-~/.teatree.toml):
+a JSON-dict `ConfigSetting` row, rebuilt bespoke by the resolver. Per-overlay
+overridable via a `--overlay <name>` row that MERGES onto the global row; ad-hoc local
+read via `t3 speak "…"`. The cold Stop hook reads the global row via `cold_reader`.
 
-```toml
-[teatree.speak]
-local = "all"           # "off" (default) | "dm" | "all" — what plays through this machine's speakers
-slack = true            # false (default) | attach a spoken audio file to each Slack DM you receive
+```bash
+# local: "off" (default) | "dm" | "all" — what plays through this machine's speakers
+# slack: false (default) | attach a spoken audio file to each Slack DM you receive
+t3 <overlay> config_setting set speak '{"local": "all", "slack": true}'
 ```
 
 `local` is what plays through the speakers (macOS `say`): `off` nothing, `dm`
@@ -359,13 +367,14 @@ self-DM run through one shared `teatree.core.speak.deliver_user_dm` chokepoint.
 The two axes are fully independent. Slack never auto-plays, so local playback
 is never suppressed by `slack`. The Stop-hook in-client read fires whenever
 `local = all` — in-client turns are never Slack messages, so there is no
-double-play to suppress. No DB, no state.
+double-play to suppress. The config lives in the DB store (read cold via
+`cold_reader` on the Stop path); there is no other per-run state.
 
 **Away-gate.** When availability resolves to `away` (§5.6.3), `resolve_speak()`
 forces `local` to `off` while preserving the configured `slack` value — so no
 audio plays through the local speakers while the user is unreachable, but a
-Slack-attached rendition still reaches their phone. The user's
-`[teatree.speak]` config is never mutated; the gate is purely effective-value.
+Slack-attached rendition still reaches their phone. The user's stored `speak`
+config is never mutated; the gate is purely effective-value.
 Both local consumers (`speak()` and the local leg of `deliver_user_dm`)
 resolve through `resolve_speak()`, so this single chokepoint silences all local
 playback when away. The away check is exception-safe — a resolution failure is

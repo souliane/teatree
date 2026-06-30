@@ -12,7 +12,7 @@ host-stripped namespace matcher), keeping config a pure data layer.
 """
 
 from dataclasses import dataclass
-from typing import Any, TypedDict
+from typing import Any, TypedDict, cast
 
 
 class MrReminderConfigDict(TypedDict):
@@ -74,3 +74,17 @@ def resolve_mr_reminder(raw: dict[str, Any]) -> MrReminderConfig:
     if isinstance(table, dict):
         return mr_reminder_from_table(table)
     return MrReminderConfig()
+
+
+def parse_mr_reminder_setting(raw: object) -> MrReminderConfigDict:
+    """Validate + normalise a stored/JSON ``mr_reminder`` value to its canonical dict (#1775 DB-home).
+
+    The DB-home registry parser (``OVERLAY_OVERRIDABLE_SETTINGS``): ``config_setting
+    set mr_reminder`` validates the value through here and stores the canonical
+    :meth:`MrReminderConfig.to_dict` form (a JSON object) that round-trips back
+    through :func:`mr_reminder_from_table` on read.
+    """
+    if not isinstance(raw, dict):
+        msg = f"Invalid mr_reminder value {raw!r}; expected a JSON/TOML table"
+        raise TypeError(msg)
+    return mr_reminder_from_table(cast("dict[str, Any]", raw)).to_dict()

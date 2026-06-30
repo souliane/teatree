@@ -14,7 +14,8 @@ from pathlib import Path
 from typing import Any
 
 from teatree.config.enums import AgentRuntime, Autonomy, MissingIssuePolicy, Mode, OnBehalfPostMode, Speed, TeamsDisplay
-from teatree.config_mr_reminder import MrReminderConfig
+from teatree.config_mr_reminder import MrReminderConfig, parse_mr_reminder_setting
+from teatree.config_speak import parse_speak_setting
 from teatree.paths import DATA_DIR
 from teatree.types import DEFAULT_MR_TITLE_REGEX, SlackVoiceClassifierMode, SpeakConfig
 
@@ -67,21 +68,6 @@ def _parse_disk_cache_allowlist(raw: object) -> list[str]:
 
 
 _DEFAULT_ON_BEHALF_AUTO_ACTIONS = ("post_e2e_evidence",)
-
-
-def _parse_on_behalf_auto_actions(raw: object) -> list[str]:
-    """Coerce the on-behalf auto-proceed allowlist, falling back to the default carve-out.
-
-    A missing key (``None``) yields the curated default (``post_e2e_evidence`` —
-    the user's own E2E evidence posts auto-proceed); an explicit list (even
-    empty) is honoured verbatim so a user can re-gate evidence under a blocking
-    mode. Non-list scalars degrade to the default rather than raising. FILE-tier
-    parser (used only by ``load_config``); the override tier (per-overlay / DB)
-    uses the strict ``_parse_str_list``.
-    """
-    if not isinstance(raw, list):
-        return list(_DEFAULT_ON_BEHALF_AUTO_ACTIONS)
-    return [str(s) for s in raw]
 
 
 def _parse_env_bool(raw: str) -> bool:
@@ -425,16 +411,28 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     # reads it from the canonical sqlite via the ``sqlite3`` CLI + ``json_each``
     # (``_statusline_chain_db``) — no importable teatree python, no TOML parse.
     "statusline_chain": _parse_str_list,
+    # eliminate-~/.teatree.toml: ``autoload`` (#256 engagement flag). Read DB-only via
+    # ``cold_reader`` (Python hook ``teatree_settings.autoload_enabled``) and the
+    # ``sqlite3`` CLI (bash ``statusline.sh._autoload_db_value``); a ``[teatree]
+    # autoload`` TOML value is ignored on read. Strict bool, default OFF.
+    "autoload": _parse_strict_bool,
+    # eliminate-~/.teatree.toml: the last two carve-out fields — the nested
+    # structured tables ``speak`` / ``mr_reminder``. Each parser validates + stores
+    # the CANONICAL ``to_dict()`` JSON object; the resolver rebuilds the dataclass
+    # bespoke (``resolution._BESPOKE_STRUCTURED_FIELDS``) since a dict cannot
+    # flat-replace the dataclass field. The cold Stop-hook ``speak`` reader uses
+    # ``cold_reader.read_setting`` (a dict), so neither needs TOML.
+    "speak": parse_speak_setting,
+    "mr_reminder": parse_mr_reminder_setting,
 }
 
 # TOML-home keys that ALSO support a per-overlay ``[overlays.<name>]`` override.
 # eliminate-~/.teatree.toml emptied this: the per-overlay override of a setting now
-# lives entirely in the DB (an overlay-scoped ``ConfigSetting`` row). The last two
-# entries (``orchestrator_bash_gate_enabled``, ``privacy``) moved to the DB-home
-# registry above. ``speak`` was never here — its sub-table merges bespoke (see
-# ``_overlay_speak_override``); the remaining carve-out fields are global-only.
-# Discovery still unions this with the DB-home registry; with it empty the union is
-# just the DB-home registry.
+# lives entirely in the DB (an overlay-scoped ``ConfigSetting`` row). ``speak`` was
+# never here — its per-overlay override merges bespoke (now off the DB overlay-scope
+# row, ``resolution._resolve_speak_db``); every other field is DB-home. Discovery
+# still unions this with the DB-home registry; with it empty the union is just the
+# DB-home registry.
 TOML_OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {}
 
 # ``T3_*`` env vars that win over both the per-overlay override and the
@@ -531,9 +529,11 @@ class UserSettings:
     # Claude session does NOT auto-engage teatree — no skill auto-suggest, no
     # PreToolUse load-block, no loop scheduling — and SessionStart shows a
     # one-line how-to-start advisory instead. The owner flips it true to
-    # auto-activate every session. TOML-home: the cold SessionStart /
-    # UserPromptSubmit hooks read ``[teatree] autoload`` pre-Django with tomllib;
-    # ``T3_AUTOLOAD`` env wins. A DB row is ignored on read. Explicitly calling
+    # auto-activate every session. DB-home (eliminate-~/.teatree.toml): the cold
+    # SessionStart / UserPromptSubmit hooks read it DB-ONLY pre-Django via the
+    # Django-free ``cold_reader`` (``teatree_settings._cold_db_bool``) and the bash
+    # ``statusline.sh._autoload_db_value`` (sqlite3 CLI); ``T3_AUTOLOAD`` env wins, a
+    # ``[teatree] autoload`` TOML value is ignored on read. Explicitly calling
     # ``/teatree`` — or loading any ``t3:`` skill — engages teatree for the
     # session regardless of this default.
     autoload: bool = False
@@ -963,11 +963,14 @@ class UserSettings:
     # ``strict`` raises ``SlackVoiceMismatchError`` and refuses the post;
     # ``off`` disables the classifier entirely.
     slack_voice_classifier_mode: SlackVoiceClassifierMode = SlackVoiceClassifierMode.WARN
-    # #2060 The resolved [teatree.speak] sub-table — a local playback enum
-    # (off/dm/all) + a slack bool. See :class:`SpeakConfig` + blueprint §10.1.1.
+    # #2060 The resolved speak config — a local playback enum (off/dm/all) + a
+    # slack bool. DB-home (#1775, eliminate-~/.teatree.toml): stored as a JSON dict
+    # ConfigSetting (``parse_speak_setting``), rebuilt bespoke by the resolver; the
+    # cold Stop hook reads it via ``cold_reader``. See :class:`SpeakConfig`.
     speak: SpeakConfig = field(default_factory=SpeakConfig)
-    # The resolved [mr_reminder] slug→channel routing table for the
-    # cross-repo "my open MRs" reminder; empty default keeps it inert.
+    # The resolved slug→channel routing table for the cross-repo "my open MRs"
+    # reminder; empty default keeps it inert. DB-home (#1775): stored as a JSON dict
+    # ConfigSetting (``parse_mr_reminder_setting``), rebuilt bespoke by the resolver.
     mr_reminder: MrReminderConfig = field(default_factory=MrReminderConfig)
     # #1398 Pre-publish close-trailer scanner. fnmatch patterns over
     # ``namespace/repo``: when an MR/PR target repo matches one of these

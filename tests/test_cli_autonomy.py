@@ -218,10 +218,11 @@ class TestAutonomyKnobCollapsesGatesNotFloor(TestCase):
         assert settings.mode is Mode.AUTO
 
     def test_full_must_deny_relaxing_the_safety_floor(self) -> None:
-        """A full-autonomy overlay never relaxes the floor — TOML-home fields untouched."""
-        # ``autoload`` is the TOML-home representative untouched by the collapse
-        # (eliminate-~/.teatree.toml moved privacy to the DB).
-        self.isolated_resolution.write_text("[teatree]\nautoload = true\n", encoding="utf-8")
+        """A full-autonomy overlay never relaxes the floor — out-of-scope fields untouched."""
+        # ``autoload`` is DB-home now (eliminate-~/.teatree.toml) — seed it via a
+        # global ConfigSetting row; the autonomy collapse never touches it.
+        self.isolated_resolution.write_text("[teatree]\n", encoding="utf-8")
+        ConfigSetting.objects.set_value("autoload", value=True, scope="")
         runner.invoke(_app(), ["autonomy", "set", "full", "--overlay", "trusted"])
 
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
