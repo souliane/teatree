@@ -368,6 +368,65 @@ class TestForwardLookingMergedDoesNotSlipThrough:
         assert scanner.find_completion_block(_BARE_MERGED_STATE_MAP) is None
 
 
+# The residual over-exemption (#2849 left it open): a premature multi-deliverable
+# false-"done" whose every row reads "PR #N merged <trailing future/conditional>"
+# ("merged once CI passes", "merged on green") — the bare-MERGED leg matched the
+# id-adjacent "merged" and IGNORED everything after it, so a not-yet-landed row read
+# as on-target and the gate cleared. The trailing negative lookahead disqualifies the
+# leg when a future/conditional qualifier follows, so this premature claim MUST block.
+_TRAILING_CONDITIONAL_CLAIM = _two_row_claim("PR #41 merged once CI passes.", "PR #42 merged on green.")
+
+# Preservation anchor: a complete map whose rows are a genuine bare "PR #42 merged"
+# and "merged to main" (both past-tense, landed) must STILL clear — the lookahead is
+# scoped to a trailing qualifier and must not over-tighten the bare-MERGED leg or the
+# merged-to-target leg.
+_BARE_AND_MERGED_TO_MAIN_MAP = (
+    "I read the authoritative spec and its comments and enumerated every deliverable.\n"
+    "Both deliverables are merged and live — done.\n"
+    "- US-03 EURIBOR endpoint: PR #42 merged.\n"
+    "- US-05 product-items endpoint: merged to main.\n"
+    "The crucial deliverable (US-03) is verified on its correct surface.\n"
+)
+
+
+class TestTrailingConditionalMergedDoesNotCount:
+    """Anti-vacuous pair: trailing-conditional "merged" fires; a genuine landed map still clears."""
+
+    def test_trailing_conditional_merged_fires(self) -> None:
+        # The residual #2849 over-exemption: "PR #41 merged once CI passes" /
+        # "PR #42 merged on green" lean not-yet-landed. Reverting the trailing
+        # lookahead makes this return None — the RED-on-revert anchor for the fix.
+        verdict = scanner.find_completion_block(_TRAILING_CONDITIONAL_CLAIM)
+        assert verdict is not None
+        assert verdict.deliverable_count == 2
+        assert any("on-target evidence" in reason for reason in verdict.missing)
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            "merged pending approval",
+            "merged when CI passes",
+            "merged upon approval",
+            "merged as soon as CI is green",
+            "merged if the pipeline is green",
+            "merged unless CI fails",
+            "merged on ci",
+            "merged on the pipeline",
+        ],
+    )
+    def test_trailing_conditional_variants_fire(self, phrase: str) -> None:
+        verdict = scanner.find_completion_block(_two_row_claim(f"PR #41 {phrase}.", f"PR #42 {phrase}."))
+        assert verdict is not None
+        assert verdict.deliverable_count == 2
+        assert any("on-target evidence" in reason for reason in verdict.missing)
+
+    def test_genuine_landed_merged_map_still_clears(self) -> None:
+        # Preservation: bare "PR #42 merged" and "merged to main" rows are past-tense
+        # landed evidence — a complete map built on them does NOT fire. Stays GREEN
+        # when the lookahead is reverted, proving the fix did not over-tighten.
+        assert scanner.find_completion_block(_BARE_AND_MERGED_TO_MAIN_MAP) is None
+
+
 class TestFormatBlockMessage:
     def test_message_names_the_incomplete_legs(self) -> None:
         verdict = scanner.find_completion_block(_STRANDED_CLAIM)
