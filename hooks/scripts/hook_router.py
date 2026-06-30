@@ -83,6 +83,7 @@ from question_gates import last_assistant_turn as _last_assistant_turn
 from question_gates import read_transcript_entries as _read_transcript_entries
 from quote_verdict import QuoteVerdict
 from quote_verdict import resolve_high_verdict as _resolve_quote_verdict
+from raw_pid_kill_guard import handle_block_raw_pid_kill
 from secret_file_print_guard import handle_block_secret_file_print
 from state_files import append_line, read_lines
 from subagent_no_commit import handle_subagent_stop_no_commit
@@ -5974,42 +5975,6 @@ def handle_block_direct_commands(data: dict) -> bool:
     if reason is None:
         return False
     return emit_pretooluse_deny(reason)
-
-
-def handle_block_raw_pid_kill(data: dict) -> bool:
-    """Deny a Bash command that signals a process by a raw, guessed pid (#2225).
-
-    The agent has twice killed the WRONG, LIVE process by guessing which
-    ``claude`` pid 'looked dead'. A bare ``kill <pid>`` / ``kill -9 <pid>`` at a
-    command position is exactly that guessed-pid shape; it is denied so the agent
-    must go through the runnable ``t3 teatree safe-kill <pid> --hang-cause``
-    command (positive session/task id + non-live proof) instead. ``kill -0``
-    (the no-op liveness probe), ``pkill``/``killall`` (signal by name),
-    ``%job``/``$VAR``/``$(…)`` targets, and a ``kill`` token inside a comment /
-    string / as another command's argument are NOT flagged.
-
-    Because the gate sits on the broad ``Bash`` matcher, its deny is routed
-    through :func:`_fail_open_or_deny` so the always-allowed self-rescue commands
-    and the master ``[teatree] danger_gate_fail_open`` kill-switch keep it from
-    ever wedging a session (the never-lockout contract, #2349). Fails OPEN on any
-    import/internal error — a gate bug must never wedge the agent. The handler
-    bootstraps ``sys.path`` to import ``teatree`` from the sibling ``src/`` (#1314).
-    """
-    if data.get("tool_name") != "Bash":
-        return False
-    command = data.get("tool_input", {}).get("command", "")
-    if not command:
-        return False
-    try:
-        with _teatree_src_on_path():
-            from teatree.hooks import safe_kill_detect  # noqa: PLC0415
-
-            detection = safe_kill_detect.detect_raw_pid_kill(command)
-    except Exception:  # noqa: BLE001
-        return False
-    if not detection.is_raw_pid_kill:
-        return False
-    return _fail_open_or_deny(data, detection.message)
 
 
 # ── PreToolUse: block-out-of-band-merge (#126) ──────────────────────
