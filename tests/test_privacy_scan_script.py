@@ -9,6 +9,7 @@ invoke the script the same way ``run_script`` does so the entrypoint is
 exercised, not mocked.
 """
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -27,6 +28,25 @@ def _run(stdin: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         check=False,
+    )
+
+
+def _run_env(stdin: str, env_overrides: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    """Invoke the script with a hermetic env: real ``T3_BANNED_TERMS*`` cleared first.
+
+    Clearing the inherited banned-terms env keeps a developer's real
+    ``~/.teatree.toml`` / ``T3_BANNED_TERMS`` out of the assertion, so the test
+    exercises only the planted config/env it sets.
+    """
+    env = {k: v for k, v in os.environ.items() if k not in {"T3_BANNED_TERMS", "T3_BANNED_TERMS_CONFIG"}}
+    env.update(env_overrides)
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), "-"],
+        input=stdin,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
     )
 
 
@@ -294,3 +314,68 @@ class TestGitSshRemoteIsNotAnEmail:
         result = _run(line + "\n")
         assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
         assert "email" in result.stdout
+
+
+class TestPrivacyScanBannedTermsSource:
+    """The banned-terms source is unified onto the canonical ``[teatree].banned_terms``.
+
+    Before config-unify task #36 the public-leak pre-push gate sourced banned
+    terms ONLY from the ``T3_BANNED_TERMS`` env var (never set in practice, so
+    the detector was silently inert), while every other banned-terms gate read
+    ``[teatree].banned_terms`` from ``~/.teatree.toml``. These tests pin the
+    unified resolution: env override → TOML home → fail-closed (never a SILENT
+    empty ban list). All terms are SYNTHETIC, so this public test leaks nothing.
+    """
+
+    def _config(self, tmp_path: Path, body: str) -> Path:
+        config = tmp_path / ".teatree.toml"
+        config.write_text(body, encoding="utf-8")
+        return config
+
+    def test_toml_configured_term_is_now_a_finding(self, tmp_path: Path) -> None:
+        # The gap this closes: a configured brand term in the diff now trips the
+        # pre-push leak gate, where the env-only source left it invisible.
+        config = self._config(tmp_path, '[teatree]\nbanned_terms = ["acmeterm"]\n')
+        result = _run_env("a line mentioning acmeterm here\n", {"T3_BANNED_TERMS_CONFIG": str(config)})
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+        assert "banned_term" in result.stdout
+        assert "acmeterm" in result.stdout
+
+    def test_toml_configured_term_absent_from_input_is_clean(self, tmp_path: Path) -> None:
+        config = self._config(tmp_path, '[teatree]\nbanned_terms = ["acmeterm"]\n')
+        result = _run_env("a perfectly ordinary line of prose\n", {"T3_BANNED_TERMS_CONFIG": str(config)})
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    def test_env_var_overrides_the_toml_source(self, tmp_path: Path) -> None:
+        config = self._config(tmp_path, '[teatree]\nbanned_terms = ["fromtoml"]\n')
+        result = _run_env(
+            "a line mentioning envterm here\n",
+            {"T3_BANNED_TERMS_CONFIG": str(config), "T3_BANNED_TERMS": "envterm"},
+        )
+        assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
+        assert "envterm" in result.stdout
+
+    def test_unreadable_config_warns_loudly_and_never_silently_inert(self, tmp_path: Path) -> None:
+        # Anti-vacuity: a present-but-unset config is a load-bug-shaped UNSET, so
+        # the banned-terms detector must SAY it is inert on stderr rather than
+        # silently degrade to an empty ban list. (The other detectors still run,
+        # so the pre-push gate is never wedged.)
+        config = self._config(tmp_path, '[teatree]\nprivate_repos = ["acme/widget"]\n')
+        result = _run_env("a perfectly ordinary line of prose\n", {"T3_BANNED_TERMS_CONFIG": str(config)})
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "banned-terms" in result.stderr.lower()
+        assert "inert" in result.stderr.lower()
+
+    def test_no_config_and_no_env_is_a_silent_clean_no_op(self, tmp_path: Path) -> None:
+        result = _run_env(
+            "a perfectly ordinary line of prose\n",
+            {"T3_BANNED_TERMS_CONFIG": str(tmp_path / "absent.toml")},
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "inert" not in result.stderr.lower()
+
+    def test_explicit_empty_list_is_a_silent_deliberate_no_op(self, tmp_path: Path) -> None:
+        config = self._config(tmp_path, "[teatree]\nbanned_terms = []\n")
+        result = _run_env("a perfectly ordinary line of prose\n", {"T3_BANNED_TERMS_CONFIG": str(config)})
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "inert" not in result.stderr.lower()

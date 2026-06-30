@@ -96,6 +96,32 @@ def _load_terms(config: Path) -> tuple[str, ...]:
     return terms
 
 
+def resolve_banned_terms(config_path: Path, *, env_value: str = "") -> tuple[str, ...]:
+    """Resolve the canonical banned-terms list for a fail-closed scanner.
+
+    The single source-resolution every banned-terms scanner shares, so they
+    cannot diverge on WHERE the term list comes from. It mirrors the config-unify
+    never-lockout order for a SECRET cold setting — env override → the
+    ``[teatree].banned_terms`` TOML home — with NO DB tier: the list carries
+    customer/brand terms that must never reach the exportable ``ConfigSetting``
+    store, so it stays env/TOML-sourced exactly like ``private_repos``
+    (``BOOTSTRAP_FILE_ONLY_SETTINGS``).
+
+    A non-empty *env_value* (the documented ``T3_BANNED_TERMS`` override, the
+    secret-from-CI-secret path) wins, comma-split. Else the
+    ``[teatree].banned_terms`` array from *config_path* via :func:`_load_terms`,
+    which RAISES :class:`BannedTermsUnsetError` when the config is present but the
+    key is genuinely unset (or unreadable) — the fail-closed signal that an
+    unreadable source must never silently degrade to an empty ban list. A missing
+    config file is a clean no-op (a machine with no teatree config).
+    """
+    if env_value.strip():
+        return tuple(t.strip() for t in env_value.split(",") if t.strip())
+    if not config_path.is_file():
+        return ()
+    return _load_terms(config_path)
+
+
 def _load_allowlist(config: Path) -> tuple[str, ...]:
     """Return the ``banned_terms_allowlist`` carve-out array from the TOML config.
 
