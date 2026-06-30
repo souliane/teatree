@@ -18,6 +18,7 @@ import shutil
 from collections.abc import Callable
 from pathlib import Path
 
+from teatree.config import get_effective_settings
 from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to_fail
 
 CACHE_FILE = Path.home() / ".cache" / "teatree" / "url-titles.json"
@@ -108,8 +109,6 @@ def fetch_titles(prompt: str) -> list[str]:
     pre-Django, so there the DB tier is skipped (fail-safe) and env + the
     dataclass default govern — identical to the legacy behaviour.
     """
-    from teatree.config import get_effective_settings  # noqa: PLC0415
-
     if not get_effective_settings().hook_fetch_titles:
         return []
     jobs = _extract_jobs(prompt)
