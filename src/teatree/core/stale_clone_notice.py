@@ -21,6 +21,8 @@ import enum
 import logging
 from dataclasses import dataclass
 
+from teatree.core.notify import NotifyKind, notify_user
+
 logger = logging.getLogger(__name__)
 
 
@@ -75,8 +77,6 @@ def notify_stale_clone_skip(skip: StaleCloneSkip) -> bool:
     durable ``BotPing`` NOOP audit row and returns ``False``). Never raises —
     surfacing a stale clone must not break the update flow it rides on.
     """
-    from teatree.core.notify import NotifyKind, notify_user  # noqa: PLC0415
-
     try:
         return notify_user(
             stale_clone_message(skip),
