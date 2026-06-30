@@ -548,7 +548,9 @@ class Command(RubricCommands, TicketShowCommands, TyperCommand):
 
         request = ClearRequest(
             pr_id=pr_id,
-            slug=slug,
+            # Strip so the by-product verdict keys off the same normalized slug the
+            # merge gate resolves — whitespace can otherwise flip _looks_like_owner_repo.
+            slug=slug.strip(),
             reviewed_sha=reviewed_sha,
             reviewer_identity=reviewer_identity,
             gh_verify_result=gh_verify_result,
