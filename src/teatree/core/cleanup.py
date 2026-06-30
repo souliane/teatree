@@ -428,7 +428,14 @@ def _remove_git_worktree(
     # detached HEAD has no branch to delete (``branch_to_delete is None``).
     if target.branch_to_delete is not None and not git.branch_delete(str(repo_main), target.branch_to_delete):
         errors.append(f"git branch -D failed for {target.branch_to_delete}")
-    prek_hook.remove_stale_hooks(str(repo_main), wt_path)
+    # Best-effort, per-step isolated: a benign hook-cleanup raise (e.g. a
+    # vanished path/CWD mid-teardown, #2692) is surfaced — never propagated past
+    # this step, which would skip the DB drop, ``Worktree`` row delete and reap
+    # ordered after it in ``cleanup_worktree``.
+    try:
+        prek_hook.remove_stale_hooks(str(repo_main), wt_path)
+    except OSError as exc:
+        errors.append(f"stale prek hook cleanup failed for {wt_path}: {exc}")
     return errors
 
 

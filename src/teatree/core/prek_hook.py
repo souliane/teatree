@@ -170,6 +170,13 @@ def remove_stale_hooks(wt_path: str, removed_dir: str) -> list[str]:
 
 
 def _is_within(candidate: Path, parent: Path) -> bool:
+    # A PATH-resolved hook bakes the relative ``PREK="prek"`` (#1462); that is a
+    # PATH lookup, never a filesystem path inside ``parent``, so it is never
+    # "within". Short-circuiting also avoids ``resolve()`` anchoring a relative
+    # path against ``os.getcwd()`` — which raises FileNotFoundError once the
+    # worktree the process sits in has vanished mid-teardown (#2692).
+    if not candidate.is_absolute():
+        return False
     try:
         candidate.resolve().relative_to(parent)
     except ValueError:
