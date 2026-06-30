@@ -193,6 +193,13 @@ class Command(TyperCommand):
             str,
             typer.Option("--output", help="Write the TOML to this path instead of stdout."),
         ] = "",
+        include_private: Annotated[
+            bool,
+            typer.Option(
+                "--include-private",
+                help="Also export private/secret rows (terms/brands, token refs) — PERSONAL backup only, never share.",
+            ),
+        ] = False,
     ) -> None:
         """Dump the ``ConfigSetting`` store to TOML — the inverse of ``import``.
 
@@ -201,12 +208,24 @@ class Command(TyperCommand):
         back through ``import`` rebuilds the same store (``export -> import ->
         export`` is a fixed point). ``--overlay <name>`` scopes the dump to that one
         overlay; omitted, every scope is dumped. ``--output <path>`` writes a file;
-        omitted, the TOML goes to stdout. Only ``ConfigSetting`` rows are read, so
-        bootstrap-file-only and secret-ref keys never appear.
+        omitted, the TOML goes to stdout.
+
+        The secret guard withholds private rows by DEFAULT — a known-private key
+        (``SECRET_SETTINGS``) or any value carrying a customer/brand term — so a
+        SHARED export (auto-configuring a fresh teatree) cannot leak customer data
+        even though the private DB store keeps it. Each withheld row is named on
+        stderr; ``--include-private`` exports everything for a PERSONAL, never-shared
+        backup.
         """
-        toml_text = export_db_to_toml(overlay or None)
+        result = export_db_to_toml(overlay or None, include_private=include_private)
+        for row in result.redacted:
+            self.stderr.write(f"  withheld {row.key}  [{_scope_label(row.scope)}]  ({row.reason})")
+        if result.redacted:
+            self.stderr.write(
+                f"  {len(result.redacted)} private/tainted row(s) withheld; pass --include-private to include them."
+            )
         if output:
-            Path(output).expanduser().write_text(toml_text, encoding="utf-8")
+            Path(output).expanduser().write_text(result.toml, encoding="utf-8")
             self.stdout.write(f"  exported config store to {output}")
             return
-        self.stdout.write(toml_text, ending="")
+        self.stdout.write(result.toml, ending="")

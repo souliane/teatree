@@ -196,13 +196,13 @@ class TestExportDbToToml(TestCase):
     def test_global_rows_render_under_teatree_table(self) -> None:
         ConfigSetting.objects.set_value("mode", "auto")
         ConfigSetting.objects.set_value("issue_implementer_max_concurrent", 3)
-        doc = tomllib.loads(export_db_to_toml())
+        doc = tomllib.loads(export_db_to_toml(scan_terms=()).toml)
         assert doc["teatree"]["mode"] == "auto"
         assert doc["teatree"]["issue_implementer_max_concurrent"] == 3
 
     def test_overlay_rows_render_under_overlays_name_table(self) -> None:
         ConfigSetting.objects.set_value("mode", "interactive", scope="myproj")
-        doc = tomllib.loads(export_db_to_toml())
+        doc = tomllib.loads(export_db_to_toml(scan_terms=()).toml)
         assert doc["overlays"]["myproj"]["mode"] == "interactive"
         # An overlay-only store carries no global [teatree] table.
         assert "teatree" not in doc
@@ -213,7 +213,7 @@ class TestExportDbToToml(TestCase):
         ConfigSetting.objects.set_value("issue_implementer_max_concurrent", 5)
         ConfigSetting.objects.set_value("issue_implementer_label", "ready")
         ConfigSetting.objects.set_value("excluded_skills", ["foo", "bar"])
-        teatree = tomllib.loads(export_db_to_toml())["teatree"]
+        teatree = tomllib.loads(export_db_to_toml(scan_terms=()).toml)["teatree"]
         assert teatree["issue_implementer_enabled"] is True
         assert teatree["issue_implementer_max_concurrent"] == 5
         assert isinstance(teatree["issue_implementer_max_concurrent"], int)
@@ -224,13 +224,13 @@ class TestExportDbToToml(TestCase):
         ConfigSetting.objects.set_value("mode", "auto")  # global
         ConfigSetting.objects.set_value("mode", "interactive", scope="myproj")
         ConfigSetting.objects.set_value("mode", "auto", scope="other")
-        doc = tomllib.loads(export_db_to_toml(overlay="myproj"))
+        doc = tomllib.loads(export_db_to_toml(overlay="myproj", scan_terms=()).toml)
         assert doc["overlays"]["myproj"]["mode"] == "interactive"
         assert "teatree" not in doc
         assert "other" not in doc["overlays"]
 
     def test_empty_store_exports_empty_document(self) -> None:
-        assert export_db_to_toml().strip() == ""
+        assert export_db_to_toml(scan_terms=()).toml.strip() == ""
 
     def test_export_import_export_is_a_fixed_point(self) -> None:
         # Operational + cold-hook keys across global and overlay scopes survive an
@@ -243,14 +243,14 @@ class TestExportDbToToml(TestCase):
         ConfigSetting.objects.set_value("mode", "interactive", scope="myproj")
         ConfigSetting.objects.set_value("issue_implementer_enabled", value=True, scope="myproj")
 
-        first = export_db_to_toml()
+        first = export_db_to_toml(scan_terms=()).toml
         # Anti-vacuity: the fixed point is meaningless unless the first export
         # actually carried the seeded scopes.
         assert "[teatree]" in first
         assert "[overlays.myproj]" in first
         ConfigSetting.objects.all().delete()
         import_toml_into_db(tomllib.loads(first))
-        second = export_db_to_toml()
+        second = export_db_to_toml(scan_terms=()).toml
         assert second == first
 
 
@@ -281,6 +281,53 @@ class TestBannedTermsNeverEnterExportableStore(TestCase):
 
     def test_export_after_importing_a_planted_brand_never_dumps_it(self) -> None:
         import_toml_into_db({"teatree": {"banned_terms": ["acmebrand"], "mode": "auto"}})
-        dump = export_db_to_toml()
+        dump = export_db_to_toml(scan_terms=()).toml
         assert "acmebrand" not in dump
         assert "banned_terms" not in dump
+
+
+class TestExportSecretGuard(TestCase):
+    """The export secret guard withholds private rows from a SHARED config dump.
+
+    Two complementary defenses, BOTH required: the ``SECRET_SETTINGS`` private-key
+    denylist AND an active banned-term scan over every key+value (which catches a
+    non-listed key whose VALUE carries a customer term — the case a static keylist
+    can never enumerate). ``include_private`` bypasses both for a personal backup.
+    All terms here are SYNTHETIC, so this public test leaks nothing.
+    """
+
+    def test_private_key_is_withheld_by_default(self) -> None:
+        ConfigSetting.objects.set_value("banned_brands", ["acmebrand"])
+        ConfigSetting.objects.set_value("mode", "auto")
+        result = export_db_to_toml(scan_terms=())
+        doc = tomllib.loads(result.toml)
+        assert doc["teatree"]["mode"] == "auto"
+        assert "banned_brands" not in doc["teatree"]
+        assert [(r.key, r.reason) for r in result.redacted] == [("banned_brands", "private-key")]
+
+    def test_value_carrying_a_banned_term_is_withheld_by_content_scan(self) -> None:
+        ConfigSetting.objects.set_value("ban_close_trailers_on_namespaces", ["acmecorp"], scope="proj")
+        result = export_db_to_toml(scan_terms=("acmecorp",))
+        doc = tomllib.loads(result.toml)
+        assert "overlays" not in doc  # the scope's only row was withheld
+        assert len(result.redacted) == 1
+        assert result.redacted[0].key == "ban_close_trailers_on_namespaces"
+        assert result.redacted[0].reason == "banned-term:acmecorp"
+
+    def test_include_private_exports_everything(self) -> None:
+        ConfigSetting.objects.set_value("banned_brands", ["acmebrand"])
+        ConfigSetting.objects.set_value("ban_close_trailers_on_namespaces", ["acmecorp"])
+        result = export_db_to_toml(include_private=True, scan_terms=("acmecorp", "acmebrand"))
+        teatree = tomllib.loads(result.toml)["teatree"]
+        assert teatree["banned_brands"] == ["acmebrand"]
+        assert teatree["ban_close_trailers_on_namespaces"] == ["acmecorp"]
+        assert result.redacted == ()
+
+    def test_clean_rows_are_untouched_by_the_scan(self) -> None:
+        ConfigSetting.objects.set_value("mode", "auto")
+        ConfigSetting.objects.set_value("excluded_skills", ["foo"])
+        result = export_db_to_toml(scan_terms=("acmecorp",))
+        teatree = tomllib.loads(result.toml)["teatree"]
+        assert teatree["mode"] == "auto"
+        assert teatree["excluded_skills"] == ["foo"]
+        assert result.redacted == ()

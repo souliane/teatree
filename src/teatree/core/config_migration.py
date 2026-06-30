@@ -26,6 +26,8 @@ to a stream, so the management command renders it and ``t3 setup`` logs a one-li
 summary from the same outcome.
 """
 
+import contextlib
+import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -34,8 +36,10 @@ import tomlkit
 from tomlkit import items as tomlkit_items
 
 from teatree.config import COLD_HOOK_SETTINGS, OVERLAY_OVERRIDABLE_SETTINGS
+from teatree.config.secret_settings import SECRET_SETTINGS
 from teatree.core.models import ConfigSetting
 from teatree.core.models.config_setting import ConfigValue
+from teatree.hooks.term_match import matched_term
 
 GLOBAL_SCOPE = ""
 
@@ -115,32 +119,109 @@ def import_toml_into_db(raw: dict, *, clobber: bool = True) -> ConfigImportResul
     return result
 
 
-def export_db_to_toml(overlay: str | None = None) -> str:
+@dataclass(frozen=True)
+class RedactedRow:
+    """One export row withheld by the secret guard, with the reason it was dropped."""
+
+    scope: str
+    key: str
+    reason: str  # "private-key" or "banned-term:<term>"
+
+
+@dataclass(frozen=True)
+class ConfigExport:
+    """A config-store export: the TOML text plus the rows the secret guard withheld."""
+
+    toml: str
+    redacted: tuple[RedactedRow, ...]
+
+
+def _resolve_export_scan_terms() -> tuple[str, ...]:
+    """Banned terms + brands for the export content scan; fails safe to empty."""
+    from teatree.hooks.banned_terms_cli import resolve_banned_terms  # noqa: PLC0415
+    from teatree.hooks.banned_terms_scanner import resolve_config  # noqa: PLC0415
+    from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError, load_brand_terms  # noqa: PLC0415
+
+    config = resolve_config()
+    if config is None:
+        return ()
+    terms = list(resolve_banned_terms(config))
+    with contextlib.suppress(BannedTermsUnsetError):
+        terms.extend(load_brand_terms(config))
+    return tuple(terms)
+
+
+def _redaction_reason(key: str, value: ConfigValue, terms: tuple[str, ...]) -> str | None:
+    """Why this row must not be shared (private key, or a value carrying a banned term), else None."""
+    if key in SECRET_SETTINGS:
+        return "private-key"
+    hit = matched_term(f"{key} {json.dumps(value, default=str)}", terms)
+    return f"banned-term:{hit}" if hit else None
+
+
+def _exportable_rows(
+    rows: dict[str, ConfigValue],
+    scope: str,
+    *,
+    include_private: bool,
+    terms: tuple[str, ...],
+    redacted: list[RedactedRow],
+) -> dict[str, ConfigValue]:
+    """Drop secret/tainted rows (recording each in *redacted*) unless *include_private*."""
+    if include_private:
+        return rows
+    kept: dict[str, ConfigValue] = {}
+    for key, value in rows.items():
+        reason = _redaction_reason(key, value, terms)
+        if reason is None:
+            kept[key] = value
+        else:
+            redacted.append(RedactedRow(scope, key, reason))
+    return kept
+
+
+def export_db_to_toml(
+    overlay: str | None = None,
+    *,
+    include_private: bool = False,
+    scan_terms: tuple[str, ...] | None = None,
+) -> ConfigExport:
     """Serialise the ``ConfigSetting`` store back to TOML — the inverse of import.
 
     Global-scope rows render under ``[teatree]`` and each overlay scope under
-    ``[overlays.<name>]``. Each stored value is emitted as its native TOML scalar:
-    the ``JSONField`` already returns the canonical Python type ``set``/``import``
-    persisted, so export is value-identical to those writers' input and
+    ``[overlays.<name>]``. Each stored value is emitted as its native TOML scalar so
     ``export -> import -> export`` is a fixed point. With *overlay* the dump is
     scoped to that one overlay's ``[overlays.<name>]`` table; omitted, it dumps the
-    global scope plus every overlay scope. ONLY ``ConfigSetting`` rows are read —
-    bootstrap-file-only and secret-ref keys never live in the store, so they
-    cannot leak into the dump.
+    global scope plus every overlay scope.
+
+    By DEFAULT the secret guard withholds any row that is a known-private key
+    (``SECRET_SETTINGS``) OR whose key/value contains a banned customer/brand term
+    (``scan_terms``, resolved from the live config when not supplied) — so a SHARED
+    export cannot leak customer data even though the private DB store keeps it.
+    ``include_private`` exports everything for a personal, never-shared backup. The
+    withheld rows ride back on the result so the caller can warn what it dropped.
     """
+    terms = scan_terms if scan_terms is not None else _resolve_export_scan_terms()
+    redacted: list[RedactedRow] = []
     document = tomlkit.document()
     if overlay is not None:
-        _emit_overlay_tables(document, [overlay])
-        return tomlkit.dumps(document)
+        _emit_overlay_tables(document, [overlay], include_private=include_private, terms=terms, redacted=redacted)
+        return ConfigExport(tomlkit.dumps(document), tuple(redacted))
 
-    global_rows = ConfigSetting.objects.overrides_for_scope(GLOBAL_SCOPE)
+    global_rows = _exportable_rows(
+        ConfigSetting.objects.overrides_for_scope(GLOBAL_SCOPE),
+        GLOBAL_SCOPE,
+        include_private=include_private,
+        terms=terms,
+        redacted=redacted,
+    )
     if global_rows:
         document["teatree"] = _toml_table(global_rows)
     scopes = list(
         ConfigSetting.objects.exclude(scope=GLOBAL_SCOPE).order_by("scope").values_list("scope", flat=True).distinct()
     )
-    _emit_overlay_tables(document, scopes)
-    return tomlkit.dumps(document)
+    _emit_overlay_tables(document, scopes, include_private=include_private, terms=terms, redacted=redacted)
+    return ConfigExport(tomlkit.dumps(document), tuple(redacted))
 
 
 def _toml_table(rows: dict[str, ConfigValue]) -> tomlkit_items.Table:
@@ -151,17 +232,31 @@ def _toml_table(rows: dict[str, ConfigValue]) -> tomlkit_items.Table:
     return table
 
 
-def _emit_overlay_tables(document: tomlkit.TOMLDocument, scopes: list[str]) -> None:
-    """Attach an ``[overlays.<name>]`` sub-table for every non-empty *scope*.
+def _emit_overlay_tables(
+    document: tomlkit.TOMLDocument,
+    scopes: list[str],
+    *,
+    include_private: bool,
+    terms: tuple[str, ...],
+    redacted: list[RedactedRow],
+) -> None:
+    """Attach an ``[overlays.<name>]`` sub-table for every *scope* with exportable rows.
 
-    The ``overlays`` super-table is added only when at least one scope has rows, so
-    an empty store (or an ``--overlay`` filter that matches nothing) stays an empty
-    document rather than a bare ``[overlays]`` header.
+    The ``overlays`` super-table is added only when at least one scope has rows that
+    survive the secret guard, so an empty store (an ``--overlay`` filter that matches
+    nothing, or a scope whose every row was redacted) stays an empty document rather
+    than a bare ``[overlays]`` header.
     """
     overlays = tomlkit.table(is_super_table=True)
     emitted = False
     for scope in scopes:
-        rows = ConfigSetting.objects.overrides_for_scope(scope)
+        rows = _exportable_rows(
+            ConfigSetting.objects.overrides_for_scope(scope),
+            scope,
+            include_private=include_private,
+            terms=terms,
+            redacted=redacted,
+        )
         if rows:
             overlays[scope] = _toml_table(rows)
             emitted = True
