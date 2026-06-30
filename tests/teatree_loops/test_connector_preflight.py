@@ -72,51 +72,51 @@ def _seed(
 
 class TestRunLoopConnectorPreflight(TestCase):
     def test_clean_own_overlay_returns_none(self) -> None:
-        _seed("inbox", overlay="alpha")
+        _seed("probe-alpha", overlay="alpha")
         with _registered({"alpha": _CleanOverlay(), "beta": _SlackDownOverlay()}):
-            assert run_loop_connector_preflight("inbox") is None
+            assert run_loop_connector_preflight("probe-alpha") is None
 
     def test_unrelated_down_overlay_does_not_systemexit(self) -> None:
-        _seed("inbox", overlay="alpha")
+        _seed("probe-alpha", overlay="alpha")
         with _registered({"alpha": _CleanOverlay(), "beta": _SlackDownOverlay()}):
-            assert run_loop_connector_preflight("inbox") is None
+            assert run_loop_connector_preflight("probe-alpha") is None
 
     def test_own_down_overlay_systemexits(self) -> None:
-        _seed("review", overlay="beta")
+        _seed("probe-beta", overlay="beta")
         with _registered({"alpha": _CleanOverlay(), "beta": _SlackDownOverlay()}), pytest.raises(SystemExit) as excinfo:
-            run_loop_connector_preflight("review")
+            run_loop_connector_preflight("probe-beta")
         assert excinfo.value.code != 0
         assert "beta" in str(excinfo.value)
 
     def test_disabled_loop_skips_its_own_down_overlay(self) -> None:
-        _seed("review", overlay="beta", enabled=False)
+        _seed("probe-beta", overlay="beta", enabled=False)
         with _registered({"beta": _SlackDownOverlay()}):
-            assert run_loop_connector_preflight("review") is None
+            assert run_loop_connector_preflight("probe-beta") is None
 
     def test_cooling_loop_not_due_skips_its_own_down_overlay(self) -> None:
-        _seed("review", overlay="beta", delay_seconds=3600, last_run_at=timezone.now())
+        _seed("probe-beta", overlay="beta", delay_seconds=3600, last_run_at=timezone.now())
         with _registered({"beta": _SlackDownOverlay()}):
-            assert run_loop_connector_preflight("review") is None
+            assert run_loop_connector_preflight("probe-beta") is None
 
     def test_missing_loop_row_is_a_noop(self) -> None:
         with _registered({"beta": _SlackDownOverlay()}):
             assert run_loop_connector_preflight("does-not-exist") is None
 
     def test_blank_overlay_single_install_preflights_the_one_overlay(self) -> None:
-        _seed("review", overlay="")
+        _seed("probe-beta", overlay="")
         with _registered({"beta": _SlackDownOverlay()}), pytest.raises(SystemExit):
-            run_loop_connector_preflight("review")
+            run_loop_connector_preflight("probe-beta")
 
     def test_blank_overlay_multi_install_skips_when_ambient_unset(self) -> None:
-        _seed("review", overlay="")
+        _seed("probe-beta", overlay="")
         with (
             _registered({"alpha": _CleanOverlay(), "beta": _SlackDownOverlay()}),
             patch.dict(os.environ, {}, clear=False),
         ):
             os.environ.pop("T3_OVERLAY_NAME", None)
-            assert run_loop_connector_preflight("review") is None
+            assert run_loop_connector_preflight("probe-beta") is None
 
     def test_unknown_overlay_name_skips_rather_than_probing_the_fleet(self) -> None:
-        _seed("review", overlay="ghost")
+        _seed("probe-beta", overlay="ghost")
         with _registered({"alpha": _CleanOverlay(), "beta": _SlackDownOverlay()}):
-            assert run_loop_connector_preflight("review") is None
+            assert run_loop_connector_preflight("probe-beta") is None

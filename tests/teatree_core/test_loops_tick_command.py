@@ -217,16 +217,16 @@ class TestPerLoopConnectorIsolation(django.test.TestCase):
         return run_tick
 
     def test_unrelated_overlay_outage_does_not_systemexit_per_loop_tick(self) -> None:
-        self._seed("inbox", overlay="alpha")
-        run_tick = self._run_isolated(loop="inbox")
+        self._seed("probe-alpha", overlay="alpha")
+        run_tick = self._run_isolated(loop="probe-alpha")
         assert run_tick.called
 
     def test_disabled_loop_on_down_overlay_does_not_systemexit(self) -> None:
-        self._seed("review", overlay="beta", enabled=False)
-        run_tick = self._run_isolated(loop="review")
+        self._seed("probe-beta", overlay="beta", enabled=False)
+        run_tick = self._run_isolated(loop="probe-beta")
         assert run_tick.called
 
     def test_loop_on_own_down_overlay_still_systemexits(self) -> None:
-        self._seed("review", overlay="beta")
+        self._seed("probe-beta", overlay="beta")
         with pytest.raises(SystemExit):
-            self._run_isolated(loop="review")
+            self._run_isolated(loop="probe-beta")
