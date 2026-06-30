@@ -201,3 +201,13 @@ class TestInterpreterPinIsLoadBearing:
         assert result.returncode == 0, (
             f"availability_away_probe should import under {sys.executable}: {result.stderr.strip()}"
         )
+
+    def test_subagent_no_commit_sibling_cold_imports(self) -> None:
+        # The extracted SubagentStop no-commit sibling (#2384 Wave-2 PR1) must
+        # cold-import under a bare interpreter — its module-top state_files import
+        # and dual-identity alias resolve with hooks/scripts on sys.path and no
+        # Django, the way the live SubagentStop hook subprocess loads it.
+        result = _import_under(sys.executable, "subagent_no_commit")
+        assert result.returncode == 0, (
+            f"subagent_no_commit should cold-import under {sys.executable}: {result.stderr.strip()}"
+        )
