@@ -7890,7 +7890,8 @@ Usage: t3 teatree questions list [OPTIONS]
 ```
 Usage: t3 teatree questions answer [OPTIONS] QUESTION_ID TEXT
 
- Resolve a pending question with a user answer.
+ Resolve a pending question with a user answer (resumes a parked headless
+ task).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    question_id      INTEGER  [required]                                    │

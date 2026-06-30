@@ -27,6 +27,7 @@ from django.db import transaction
 from django_typer.management import TyperCommand, command, initialize
 
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
+from teatree.core.models.task_handoff import schedule_headless_resume
 from teatree.core.notify_question_drains import drain_deferred_questions
 
 
@@ -91,7 +92,7 @@ class Command(TyperCommand):
             typer.Option("--resolver", help="Identity of the resolver (audit trail)."),
         ] = "",
     ) -> str:
-        """Resolve a pending question with a user answer."""
+        """Resolve a pending question with a user answer (resumes a parked headless task)."""
         if not text.strip():
             self.stderr.write("answer text must not be empty")
             raise SystemExit(2)
@@ -109,6 +110,8 @@ class Command(TyperCommand):
                     answer_text=text,
                     resolver_id=resolver_id,
                 )
+                if row.parked_task is not None:
+                    schedule_headless_resume(row.parked_task, answer=text)
         except DeferredQuestionError as exc:
             self.stderr.write(str(exc))
             raise SystemExit(2) from exc

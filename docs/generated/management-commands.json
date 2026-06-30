@@ -561,7 +561,7 @@
           "name": "record"
         },
         {
-          "help": "Resolve a pending question with a user answer",
+          "help": "Resolve a pending question with a user answer (resumes a parked headless task)",
           "name": "answer"
         },
         {
