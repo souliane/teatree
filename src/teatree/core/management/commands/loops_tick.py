@@ -169,7 +169,16 @@ class Command(TyperCommand):
         ] = "",
         json_output: Annotated[bool, typer.Option("--json", help="Emit the tick report as JSON.")] = False,
     ) -> None:
-        run_connector_preflight(overlay)
+        # A per-loop tick (#2650) preflights ONLY its own overlay, gated on the
+        # loop being enabled + due — so one overlay's connector outage can't
+        # SystemExit an unrelated loop's tick (LOOP-PR-C). The master fan-out
+        # keeps the fleet-wide gate before dispatching every overlay's loops.
+        if loop:
+            from teatree.loops.connector_preflight import run_loop_connector_preflight  # noqa: PLC0415
+
+            run_loop_connector_preflight(loop)
+        else:
+            run_connector_preflight(overlay)
 
         from teatree.loop.session_identity import current_session_id, current_session_pid  # noqa: PLC0415
 

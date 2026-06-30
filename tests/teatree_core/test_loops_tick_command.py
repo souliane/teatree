@@ -13,10 +13,12 @@ import io
 from unittest.mock import patch
 
 import django.test
+import pytest
 from django.core.management import call_command
 
 from teatree.core.management.commands.loops_tick import _loop_table_jobs_builder
-from teatree.core.models import LoopLease
+from teatree.core.models import Loop, LoopLease, Worktree
+from teatree.core.overlay import OverlayBase, ProvisionStep
 from teatree.loop.tick import TickReport
 
 
@@ -24,6 +26,31 @@ def _run(**kwargs: object) -> str:
     out = io.StringIO()
     call_command("loops_tick", stdout=out, **kwargs)
     return out.getvalue()
+
+
+class _CleanOverlay(OverlayBase):
+    def get_repos(self) -> list[str]:
+        return ["backend"]
+
+    def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
+        _ = worktree
+        return []
+
+
+class _SlackDownOverlay(OverlayBase):
+    def get_repos(self) -> list[str]:
+        return ["backend"]
+
+    def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
+        _ = worktree
+        return []
+
+    def get_connector_preflight(self) -> list:
+        def _probe() -> None:
+            msg = "Slack auth.test failed: missing_scope"
+            raise RuntimeError(msg)
+
+        return [_probe]
 
 
 class TestLoopsTickOwnership(django.test.TestCase):
@@ -151,3 +178,55 @@ class TestLoopsTickPerLoop(django.test.TestCase):
         with patch("teatree.loops.master.build_loop_table_jobs", return_value=[]) as build:
             jobs_builder(TickRequest(), dt.datetime.now(dt.UTC))
         assert build.call_args.kwargs["only"] == "inbox"
+
+
+class TestPerLoopConnectorIsolation(django.test.TestCase):
+    """A per-loop tick preflights ONLY its own overlay — one outage can't take the fleet (LOOP-PR-C).
+
+    The bug: ``t3 loops tick --loop X`` (no ``--overlay``) ran the fleet-wide
+    ``run_connector_preflight("")`` BEFORE the enabled/due gate, so an unrelated
+    overlay's connector outage ``SystemExit``-ed loop ``X``'s tick — one outage
+    SystemExits the whole fleet of per-loop loops.
+    """
+
+    @staticmethod
+    def _seed(name: str, overlay: str, *, enabled: bool = True, last_run_at: dt.datetime | None = None) -> None:
+        Loop.objects.create(
+            name=name,
+            script=f"src/teatree/loops/{name}/loop.py",
+            delay_seconds=60,
+            overlay=overlay,
+            enabled=enabled,
+            last_run_at=last_run_at,
+        )
+
+    def _run_isolated(self, *, loop: str) -> object:
+        report = TickReport(started_at=dt.datetime.now(dt.UTC))
+        overlays = {"alpha": _CleanOverlay(), "beta": _SlackDownOverlay()}
+        with (
+            patch("teatree.core.connector_preflight.get_all_overlays", return_value=overlays),
+            patch("teatree.core.overlay_loader.get_all_overlay_names", return_value=list(overlays)),
+            patch.object(LoopLease.objects, "claim_ownership", return_value=(True, "me")),
+            patch.object(LoopLease.objects, "acquire", return_value=True),
+            patch.object(LoopLease.objects, "release"),
+            patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
+            patch("teatree.loop.tick.run_tick", return_value=report) as run_tick,
+            patch("teatree.loop.tick_piggyback.run_piggyback_cycles"),
+        ):
+            _run(loop=loop)
+        return run_tick
+
+    def test_unrelated_overlay_outage_does_not_systemexit_per_loop_tick(self) -> None:
+        self._seed("inbox", overlay="alpha")
+        run_tick = self._run_isolated(loop="inbox")
+        assert run_tick.called
+
+    def test_disabled_loop_on_down_overlay_does_not_systemexit(self) -> None:
+        self._seed("review", overlay="beta", enabled=False)
+        run_tick = self._run_isolated(loop="review")
+        assert run_tick.called
+
+    def test_loop_on_own_down_overlay_still_systemexits(self) -> None:
+        self._seed("review", overlay="beta")
+        with pytest.raises(SystemExit):
+            self._run_isolated(loop="review")
