@@ -293,7 +293,7 @@ Render a reusable prompt by name with its declared params (read-only; #2513).
 | Subcommand | Description |
 | --- | --- |
 | `record` | Record a deferred question (called by the PreToolUse away-mode hook) |
-| `answer` | Resolve a pending question with a user answer |
+| `answer` | Resolve a pending question with a user answer (resumes a parked headless task) |
 | `dismiss` | Dismiss a pending question without answering it |
 | `resurface` | Re-post the pending backlog to the user's Slack DM (away→present drain) |
 | `list` | List pending deferred questions, oldest first |
