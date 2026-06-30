@@ -314,6 +314,12 @@ stateDiagram-v2
 ```
 <!-- END GENERATED: pull-request-fsm -->
 
+These models are surfaced in a small Django admin dashboard. A rendered HTML
+snapshot of that dashboard is generated through Django's test client and
+drift-checked in CI, so it stays an always-fresh "screenshot":
+[docs/generated/dashboard/admin-index.html](docs/generated/dashboard/admin-index.html)
+(`scripts/hooks/generate_dashboard_snapshot.py`).
+
 Every state change goes through a method with code behind it. `Ticket`,
 `Worktree`, and `PullRequest` use `django-fsm`-style `@transition` decorators
 that declare the legal source and target states; `Ticket.code()` requires
