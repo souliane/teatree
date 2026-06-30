@@ -89,3 +89,89 @@ class TestHookDelegatesToManager:
             patch.object(LoopLease.objects, "live_foreign_owner", side_effect=RuntimeError("db hiccup")),
         ):
             assert router._db_live_foreign_owner("my-session", current_pid=4242) == ""
+
+
+_OWNER_PID = 4242
+_OTHER_ALIVE_PID = 5555
+
+
+def _seed_lease(slot: str, *, session_id: str, owner_pid: int | None, expires_delta_seconds: int) -> None:
+    now = timezone.now()
+    LoopLease.objects.create(
+        name=slot,
+        session_id=session_id,
+        owner_pid=owner_pid,
+        acquired_at=now,
+        lease_expires_at=now + dt.timedelta(seconds=expires_delta_seconds),
+    )
+
+
+class TestSameProcessReclaimAcrossSessionRotation:
+    """``claim_ownership`` self-heals a lease across a context-compaction session-id rotation (#2835).
+
+    Compaction rotates ``current_session_id()`` but does NOT restart the durable
+    session process, so ``current_session_pid()`` is unchanged. A live lease held
+    by ``(old_session, pid)`` whose pid is the requesting caller's own pid is a
+    same-process self-reclaim, not a hijack: it is RE-ANCHORED to the rotated
+    session id and the claim WINS, so every native ``/loop`` keeps ticking without
+    a manual ``t3 loop claim --take-over``. Cross-session mutual exclusion is
+    preserved — a DIFFERENT alive pid still BLOCKS.
+    """
+
+    @pytest.mark.parametrize("slot", ["loop-owner", "loop:dispatch", "t3-master"])
+    def test_same_pid_rotation_reanchors_and_grants(self, slot: str) -> None:
+        _seed_lease(slot, session_id="sessionA", owner_pid=_OWNER_PID, expires_delta_seconds=1800)
+        before = LoopLease.objects.get(name=slot).lease_expires_at
+
+        with patch("teatree.utils.singleton.pid_alive", side_effect=lambda pid: pid == _OWNER_PID):
+            won, owner = LoopLease.objects.claim_ownership(
+                slot, session_id="sessionB", owner_pid=_OWNER_PID, ttl_seconds=3600
+            )
+
+        assert won is True
+        assert owner == "sessionB"
+        row = LoopLease.objects.get(name=slot)
+        assert row.session_id == "sessionB", "the rotated session id must be re-anchored onto the lease"
+        assert row.owner_pid == _OWNER_PID
+        assert row.lease_expires_at is not None
+        assert row.lease_expires_at > before, "TTL must be refreshed"
+
+    def test_different_alive_pid_still_blocks(self) -> None:
+        _seed_lease("loop:dispatch", session_id="sessionA", owner_pid=_OWNER_PID, expires_delta_seconds=1800)
+
+        with patch("teatree.utils.singleton.pid_alive", side_effect=lambda pid: pid in {_OWNER_PID, _OTHER_ALIVE_PID}):
+            won, owner = LoopLease.objects.claim_ownership(
+                "loop:dispatch", session_id="sessionB", owner_pid=_OTHER_ALIVE_PID, ttl_seconds=3600
+            )
+
+        assert won is False
+        assert owner == "sessionA"
+        row = LoopLease.objects.get(name="loop:dispatch")
+        assert row.session_id == "sessionA", "a genuinely foreign live owner (different alive pid) must be preserved"
+        assert row.owner_pid == _OWNER_PID
+
+    def test_dead_pid_reclaim_still_works(self) -> None:
+        dead_pid = 999_999
+        _seed_lease("loop-owner", session_id="sessionA", owner_pid=dead_pid, expires_delta_seconds=-5)
+
+        with patch("teatree.utils.singleton.pid_alive", side_effect=lambda pid: pid == _OWNER_PID):
+            won, owner = LoopLease.objects.claim_ownership(
+                "loop-owner", session_id="sessionB", owner_pid=_OWNER_PID, ttl_seconds=3600
+            )
+
+        assert won is True
+        assert owner == "sessionB"
+        row = LoopLease.objects.get(name="loop-owner")
+        assert row.session_id == "sessionB"
+        assert row.owner_pid == _OWNER_PID
+
+    def test_ttl_expiry_reclaim_still_works(self) -> None:
+        _seed_lease("loop-owner", session_id="sessionA", owner_pid=None, expires_delta_seconds=-5)
+
+        won, owner = LoopLease.objects.claim_ownership(
+            "loop-owner", session_id="sessionB", owner_pid=None, ttl_seconds=3600
+        )
+
+        assert won is True
+        assert owner == "sessionB"
+        assert LoopLease.objects.get(name="loop-owner").session_id == "sessionB"
