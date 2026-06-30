@@ -176,8 +176,10 @@ behind Pydantic AI's OpenAI-compatible model class with a thin seam. It also
 **proxies concrete models**, so the same gateway serves both `<gateway>:auto`
 (let the router pick) and `<gateway>:<model>` (pin a concrete model through the
 same path) — one integration, both binding kinds. **OpenRouter** is the mature
-fallback (`openrouter/auto`, provider-exclusion, ZDR no-retention). **No Chinese
-models**; the cheap tier is gpt-oss-120b / Gemini Flash / Haiku.
+fallback (`openrouter/auto`, provider-exclusion, ZDR no-retention). Chinese models
+are allowed for teatree (the no-Chinese-models constraint is a client-work policy,
+not a teatree one); the cheap tier is gpt-oss-120b / Gemini Flash / Haiku, with
+strong open Chinese models (DeepSeek, Qwen, GLM) also in scope.
 
 **Critic-path correctness.** A generic difficulty-router optimizes cost/quality,
 not *honesty* — and the verification/critic slot needs honesty, not the cheapest
