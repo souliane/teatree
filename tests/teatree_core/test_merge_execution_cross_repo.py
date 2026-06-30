@@ -19,14 +19,18 @@ candidate it considered.
 """
 
 from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 
 import pytest
+from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.config import OverlayEntry
-from teatree.core.merge import MergePreconditionError, merge_ticket_pr
-from teatree.core.models import MergeClear
+from teatree.core.merge import MergePreconditionError, merge_ticket_pr, resolve_pr_repo_slug
+from teatree.core.merge.authorization import assert_review_verdict_gate
+from teatree.core.merge.pr_slug_resolution import _reconcile_slug_against_reviewed_sha
+from teatree.core.models import MergeAudit, MergeClear, ReviewVerdict, Ticket
 from tests.teatree_core.conftest import seed_merge_safe_verdict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -349,3 +353,121 @@ class TestCrossRepoCandidateProbe(TestCase):
         # No overlay-repo probe call was made.
         overlay_calls = [argv for argv in calls if _OVERLAY_REPO in " ".join(argv)]
         assert not overlay_calls, f"probe must not run when resolved repo's PR head matches: {overlay_calls}"
+
+
+class TestUrlFormCrossRepoClearVerdictStaysConsistent(TestCase):
+    """A url-form CLEAR keeps clear-time record and merge-time lookup consistent across repos (#2860).
+
+    When the CLEAR's ticket ``issue_url`` names the real downstream repo (Y),
+    ``resolve_pr_repo_slug`` returns Y at BOTH clear time (where the by-product
+    verdict is recorded) and merge time (where the gate's reconcile starts), and
+    ``_reconcile_slug_against_reviewed_sha`` is a no-op because Y's PR head already
+    equals ``reviewed_sha``. So the recorded slug and the looked-up slug match even
+    though Y differs from the running clone's ``origin`` — the contained boundary
+    the #2860 verdict-slug canonicalisation covers, exercised end to end here.
+    """
+
+    def test_recorded_verdict_slug_equals_merge_time_reconciled_lookup_slug(self) -> None:
+        ticket = Ticket.objects.create(
+            overlay="t3-teatree",
+            state=Ticket.State.IN_REVIEW,
+            issue_url=f"https://github.com/{_OVERLAY_REPO}/issues/159",
+        )
+        # The CLEAR slug is a bare workstream name; the real repo (Y) is resolved
+        # from the ticket issue_url, NOT the running clone's origin (X).
+        with patch("teatree.core.merge.pr_slug_resolution._project_repo_slug", return_value=_CLONE_ORIGIN):
+            issued = cast(
+                "dict[str, object]",
+                call_command(
+                    "ticket",
+                    "clear",
+                    "159",
+                    "downstream-overlay",
+                    reviewed_sha=_RIGHT_SHA,
+                    reviewer_identity="cold-reviewer",
+                    gh_verify_result="green",
+                    blast_class="logic",
+                    ticket_id=int(ticket.pk),
+                ),
+            )
+        assert issued["issued"]
+        clear = MergeClear.objects.get(pk=issued["clear_id"])
+        verdict = ReviewVerdict.objects.get(pk=issued["recorded_verdict_id"])
+        assert verdict.slug == _OVERLAY_REPO
+
+        initial = resolve_pr_repo_slug(clear)
+        assert initial == _OVERLAY_REPO
+        calls: list[list[str]] = []
+        with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_keyed_by_repo(calls)):
+            reconciled = _reconcile_slug_against_reviewed_sha(
+                initial_slug=initial,
+                pr_id=clear.pr_id,
+                reviewed_sha=clear.reviewed_sha,
+                host_kind="github",
+            )
+        # The merge-time lookup slug equals the clear-time record slug.
+        assert reconciled == verdict.slug
+        assert_review_verdict_gate(slug=reconciled, pr_id=clear.pr_id, head_sha=clear.reviewed_sha)
+
+
+class TestTicketlessWorkstreamCrossRepoClearFailsClosed(TestCase):
+    """The residual cross-repo desync (the #2860 boundary) fails CLOSED — never a silent mismerge.
+
+    A TICKETLESS CLEAR with a workstream slug for a PR that lives in a downstream
+    overlay repo resolves (``resolve_pr_repo_slug``) only to the running clone's
+    ``origin`` (X) — the real repo (Y) is discoverable solely by the forge-probing
+    ``_reconcile_slug_against_reviewed_sha`` at merge time. So the by-product
+    verdict is recorded under X while the #2829 gate looks it up under the
+    reconciled Y — a miss. Closing this consistently would need the forge probe to
+    run at CLEAR-issue time (coupling issuance to forge connectivity and breaking
+    the forge-free clear contract), so it is out of the tactical scope. It fails
+    CLOSED (a refusal, never a silent mismerge), which this pins.
+    """
+
+    def test_cross_repo_merge_refuses_when_verdict_is_under_clone_origin(self) -> None:
+        with patch("teatree.core.merge.pr_slug_resolution._project_repo_slug", return_value=_CLONE_ORIGIN):
+            issued = cast(
+                "dict[str, object]",
+                call_command(
+                    "ticket",
+                    "clear",
+                    "159",
+                    "fix-ensure-pr-default-branch-153",
+                    reviewed_sha=_RIGHT_SHA,
+                    reviewer_identity="cold-reviewer",
+                    gh_verify_result="green",
+                    blast_class="logic",
+                ),
+            )
+        assert issued["issued"]
+        verdict = ReviewVerdict.objects.get(pk=issued["recorded_verdict_id"])
+        # The verdict landed under the clone origin (X), not the real repo (Y).
+        assert verdict.slug == _CLONE_ORIGIN
+
+        candidate_entries = [
+            OverlayEntry(name="downstream", overlay_class="", project_path=Path("/clones/downstream-overlay")),
+        ]
+
+        def _remote_slug_for_path(repo: str = ".", remote: str = "origin") -> str:
+            del remote
+            return _OVERLAY_REPO if repo == "/clones/downstream-overlay" else ""
+
+        calls: list[list[str]] = []
+        with (
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_keyed_by_repo(calls)),
+            patch("teatree.core.merge.pr_slug_resolution._project_repo_slug", return_value=_CLONE_ORIGIN),
+            patch("teatree.core.merge.pr_slug_resolution.discover_overlays", return_value=candidate_entries),
+            patch("teatree.core.merge.pr_slug_resolution.git.remote_slug", side_effect=_remote_slug_for_path),
+        ):
+            merged = cast(
+                "dict[str, object]",
+                call_command("ticket", "merge", str(issued["clear_id"]), loop_identity="merge-loop"),
+            )
+
+        # The merge reconciled to the real repo (Y) and the #2829 gate found no
+        # verdict there (it is under X) — it FAILS CLOSED, never a silent mismerge.
+        assert not merged["merged"]
+        assert merged["escalated"]
+        clear = MergeClear.objects.get(pk=issued["clear_id"])
+        assert clear.consumed_at is None
+        assert not MergeAudit.objects.filter(clear=clear).exists()

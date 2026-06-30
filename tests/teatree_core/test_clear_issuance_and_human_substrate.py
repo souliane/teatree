@@ -1238,3 +1238,128 @@ class TestClearCanonicalizesVerdictSlug(TestCase):
         assert verdict.slug == "souliane/teatree"
         assert resolve_pr_repo_slug(clear) == "souliane/teatree"
         assert_review_verdict_gate(slug=verdict.slug, pr_id=clear.pr_id, head_sha=clear.reviewed_sha)
+
+    def test_whitespace_padded_slug_keys_verdict_where_merge_gate_resolves(self) -> None:
+        """Whitespace must not flip ``_looks_like_owner_repo`` and split the verdict key.
+
+        Record-time resolution keys off the request slug; the merge gate keys off
+        the persisted ``clear.slug`` (which ``issue()`` stores stripped). A padded
+        branch-name slug (``  fix/clear-slug  ``) momentarily passes the
+        ``owner/repo`` structural check while padded, so record-time would key the
+        verdict under the raw branch name — where the gate, resolving the stripped
+        slug to the ticket's repo, never queries. Stripping at request construction
+        keeps both sides on the identical normalized ``souliane/teatree``.
+        """
+        ticket = Ticket.objects.create(
+            overlay="t3-teatree",
+            state=Ticket.State.IN_REVIEW,
+            issue_url="https://github.com/souliane/teatree/issues/859",
+        )
+        result = cast(
+            "dict[str, object]",
+            call_command(
+                "ticket",
+                "clear",
+                "859",
+                "  fix/clear-slug  ",
+                reviewed_sha=_SHA,
+                reviewer_identity="cold-reviewer",
+                gh_verify_result="green",
+                blast_class="docs",
+                ticket_id=int(ticket.pk),
+            ),
+        )
+        assert result["issued"]
+        clear = MergeClear.objects.get(pk=result["clear_id"])
+        assert clear.slug == "fix/clear-slug"
+
+        resolved = resolve_pr_repo_slug(clear)
+        assert resolved == "souliane/teatree"
+
+        verdict = ReviewVerdict.objects.get(pk=result["recorded_verdict_id"])
+        assert verdict.slug == resolved
+        assert_review_verdict_gate(slug=resolved, pr_id=clear.pr_id, head_sha=clear.reviewed_sha)
+
+    def test_whitespace_padded_qualified_slug_records_verdict_unchanged(self) -> None:
+        """An already-qualified slug with surrounding whitespace records identically — no behaviour change."""
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        result = cast(
+            "dict[str, object]",
+            call_command(
+                "ticket",
+                "clear",
+                "860",
+                "  souliane/teatree  ",
+                reviewed_sha=_SHA,
+                reviewer_identity="cold-reviewer",
+                gh_verify_result="green",
+                blast_class="docs",
+                ticket_id=int(ticket.pk),
+            ),
+        )
+        assert result["issued"]
+        clear = MergeClear.objects.get(pk=result["clear_id"])
+        assert clear.slug == "souliane/teatree"
+        verdict = ReviewVerdict.objects.get(pk=result["recorded_verdict_id"])
+        assert verdict.slug == "souliane/teatree"
+        assert resolve_pr_repo_slug(clear) == "souliane/teatree"
+        assert_review_verdict_gate(slug=verdict.slug, pr_id=clear.pr_id, head_sha=clear.reviewed_sha)
+
+
+class TestClearResolvesVerdictSlugBeforeIssuing(TestCase):
+    """The verdict owner/repo is resolved BEFORE issuing — a resolution failure never orphans a CLEAR.
+
+    ``resolve_pr_repo_slug`` raises ``MergePreconditionError`` in a degenerate
+    environment (a workstream slug + no ticket ``issue_url`` + no resolvable clone
+    ``origin``). Resolving it AFTER ``MergeClear.issue()`` persisted the row left an
+    already-issued CLEAR orphaned behind a traceback; resolving up-front fails
+    cleanly with nothing persisted, while the happy path is byte-identical.
+    """
+
+    def test_unresolvable_slug_refuses_before_issuing_and_persists_nothing(self) -> None:
+        """No owner/repo resolvable → clean refusal, NO orphaned CLEAR, NO verdict row."""
+        with patch("teatree.core.merge.pr_slug_resolution._project_repo_slug", return_value=""):
+            result = cast(
+                "dict[str, object]",
+                call_command(
+                    "ticket",
+                    "clear",
+                    "159",
+                    "merge-candidate-working-repos",
+                    reviewed_sha=_SHA,
+                    reviewer_identity="cold-reviewer",
+                    gh_verify_result="green",
+                    blast_class="logic",
+                ),
+            )
+        assert not result["issued"]
+        error = cast("str", result["error"])
+        assert "could not resolve" in error.lower()
+        assert MergeClear.objects.count() == 0
+        assert ReviewVerdict.objects.count() == 0
+
+    def test_clone_origin_fallback_still_issues_and_records_verdict(self) -> None:
+        """The happy twin: a resolvable clone origin issues the CLEAR and records the verdict under it."""
+        with patch(
+            "teatree.core.merge.pr_slug_resolution._project_repo_slug",
+            return_value="souliane/teatree",
+        ):
+            result = cast(
+                "dict[str, object]",
+                call_command(
+                    "ticket",
+                    "clear",
+                    "160",
+                    "merge-candidate-working-repos",
+                    reviewed_sha=_SHA,
+                    reviewer_identity="cold-reviewer",
+                    gh_verify_result="green",
+                    blast_class="logic",
+                ),
+            )
+        assert result["issued"]
+        clear = MergeClear.objects.get(pk=result["clear_id"])
+        verdict = ReviewVerdict.objects.get(pk=result["recorded_verdict_id"])
+        assert verdict.slug == "souliane/teatree"
+        assert resolve_pr_repo_slug(clear) == "souliane/teatree"
+        assert_review_verdict_gate(slug=verdict.slug, pr_id=clear.pr_id, head_sha=clear.reviewed_sha)
