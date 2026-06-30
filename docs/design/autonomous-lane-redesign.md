@@ -1,223 +1,205 @@
-# Autonomous-lane redesign — stand on maintained engines, delete the bespoke durable-state layer
+# Autonomous-lane redesign — keep the SQLite orchestration, move the runtime to Pydantic AI
 
 > Status: **Draft / decision proposed — not yet adopted.** This is a design and
 > decision document to be reviewed before any behaviour migration. It changes no
-> runtime code. Each migration step below is its own later, separately-reviewed PR.
+> runtime code. The one migration seam below is a later, separately-reviewed PR.
 
 ## Why this document exists
 
 Teatree's autonomous lane (the `/loop`, the FSM, task leases and heartbeats,
-scheduling, crash-resume, retries) is hand-rolled. It works, and a lot of care
-has gone into it, but it is also where most of the fragility and most of the
-maintenance time lives — for a single maintainer. This document records a
-proposal to **delete that bespoke machinery and stand on serious, maintained
-durable-execution and agent-runtime engines instead.**
+scheduling, crash-resume, retries) is hand-rolled, and it does get fragile. An
+earlier draft of this document concluded that the fix was to delete that
+machinery and stand it on a heavier durable-execution engine. Working through the
+evidence, I no longer think that is the right call, and this document records the
+corrected position so the change of mind is legible rather than silent.
 
-The goal is explicitly *less code to own*, not *a nicer wrapper around the same
-machinery*. The failure mode this guards against is re-implementing the fragile
-parts behind new in-house ports and calling it a redesign.
+The short version: the orchestration layer stays. The one thing that moves is the
+autonomous-lane **agent runtime**, which goes from a bespoke, Claude-coupled
+runtime to **Pydantic AI**. Everything else — Django, SQLite, the loop, the FSM,
+the leases, the heartbeats, the cron, the crash-resume, the retries — is kept.
 
-## Premise — the fragility is the durable-workflow-state layer
+## The root cause is implementation discipline, not the durable-state layer
 
-The brittle, time-consuming part of the autonomous lane is the **hand-rolled
-durable-workflow-state layer**: the loop, the state machines, the task leases +
-heartbeats, the scheduling, the crash-resume, and the retries. Concretely, in
-the current code this is:
+The earlier draft assumed the fragility lived in the durable-workflow-state
+layer, so swapping that layer would fix it. I went back and looked at the last
+three systemic bugs I actually fixed, and the assumption does not hold:
 
-| Concern | Where it lives today (verified in `src/teatree/`) |
+| Bug | Was it a durable-state bug? |
 |---|---|
-| Loop / tick driver | `teatree.loop.tick.run_tick` + the scanner fan-out, one native `/loop` per enabled `Loop` row |
-| Scheduling / cron | `Loop` rows (`delay_seconds` / `daily_at`), `Loop.last_run_at` as the single cadence ledger, `CronCreate` registration |
-| Singleton / concurrency control | `LoopLease` (conditional-UPDATE CAS), the `loop-owner` lease, per-loop `loop:<name>` leases, the `LoopState` enable/pause/disable control plane |
-| State machines | `Ticket.State`, `Worktree.State` (`created → provisioned → services_up → ready`), the `ReviewLoop` FSM |
-| Task leases + heartbeats | `Task.claim(lease_seconds=…)`, `lease_expires_at`, `heartbeat_at`, `Task.renew_lease()` |
-| Crash-resume / recovery | `reap_stale_claims`, `reclaim_orphaned_claims`, `teatree.loop.tick_recovery`, `teatree.core.recovery_sweeps`, post-compaction snapshot recovery |
-| Queue | `django_tasks_db.DatabaseBackend` (django-tasks) |
-| Retries | re-dispatch on a failed `TaskAttempt` |
+| SQLite claim race — `select_for_update` was a no-op on the claim path, so two ticks could claim the same task | **Yes** — a genuine durable-state / concurrency bug. |
+| False-positive commit gates — a quality gate reporting pass when it had not actually run | No. A logic bug in the gate, nothing to do with durability. |
+| Unbounded timeout in the dream distiller — a step with no time bound could hang the pass | No. A missing timeout in one step, nothing to do with durability. |
 
-This is a meaningful amount of bespoke distributed-systems code — leases, CAS
-mutexes, heartbeat reapers, crash recovery, idempotency — for one person to keep
-correct. It is exactly the category of problem that mature durable-execution
-engines exist to solve, and solve better than a hand-rolled version can.
+Only **one of the three** was a durable-state bug. The other two were ordinary
+implementation defects that a different durable engine would not have touched. So
+the premise that swapping the durable engine fixes the fragility is wrong on its
+own evidence — it would, at best, address one bug in three.
 
-### Honest correction to the stated premise — the substrate is SQLite today
+What the three have in common is not the durable layer. It is **discipline**:
+changes that get half-built and abandoned mid-way, leaving a gate that does not
+gate, a lock that does not lock, a step with no bound. That is the actual fragility
+source, and no engine swap fixes it. Worse, a multi-step migration of the durable
+engine is *itself* the half-finished-implementation failure mode it claims to
+cure — a big rip-out is the single most likely thing to get abandoned half-done.
 
-An earlier framing of this proposal described DBOS as "a library over the
-Postgres teatree already runs." That is not accurate and should not be repeated:
-teatree's orchestration store is **SQLite** today, not Postgres
-(`src/teatree/settings.py`: `django.db.backends.sqlite3`, WAL +
-`transaction_mode=IMMEDIATE`), with a `django_tasks_db` DB-backed queue.
+The honest conclusion: the maintenance pain is real, but it is paid down by
+finishing changes and tightening gates and timeouts, not by replacing a layer
+that is mostly working.
 
-DBOS requires Postgres. So adopting it carries a real, named cost: **introduce a
-Postgres database** for the durable-execution substrate. That cost should be on
-the table honestly. What it is *not* is a new operated *service* — it is one
-database plus an in-process library. The distinction matters for the central
-decision below (DBOS vs Temporal), and it is the honest version of the argument,
-not a softened one.
+## Zero-ops SQLite is a virtue worth keeping
 
-## Goal
+For a single maintainer, the current store has one property that is easy to
+undervalue: **zero ops.** SQLite (WAL, `transaction_mode=IMMEDIATE`) with the
+`django_tasks_db` DB-backed queue is a file, not a service. Nothing to stand up,
+nothing to operate, nothing to back up beyond the file. Trading that away for a
+database server — to fix a fragility that is mostly not in the store — is a bad
+deal for a solo system at this load.
 
-Delete the bespoke loop / FSM / lease / heartbeat / cron / resume / retry layer
-and replace it with maintained engines, reducing the maintenance surface a solo
-maintainer carries. Keep the domain value (the skills and overlay logic) and the
-interactive cockpit (Claude Code) untouched.
+## What stays (the orchestration layer, kept whole)
 
-## Decision
+The orchestration layer is kept as-is. None of these rows change in this redesign:
 
-| Concern | Choice | What it deletes |
+| Concern | Where it lives today (in `src/teatree/`) | Status |
 |---|---|---|
-| Durable orchestration — scheduler + state machine + leases + heartbeats + resume + retries | **DBOS** — durable execution as a *library* over a Postgres database | The bespoke loop / FSM / lease / heartbeat / cron / resume layer. DBOS provides native cron scheduled workflows, Postgres-backed queues with per-worker + global concurrency limits and rate limiting, and automatic crash-recovery of interrupted workflows. |
-| Agent runtime | **Pydantic AI** — model-agnostic; ships an official DBOS durable-execution integration | The Claude-Code/Claude-SDK-coupled bespoke runtime (`teatree.agents.headless`, the `LoopWatchdog`, the in-house attempt/result plumbing). The interactive lane stays on Claude Code as the mature cockpit. |
-| Headless human-in-the-loop — park-question / stop / resume | A **DBOS durable wait** — suspend the workflow, await an external signal, resume | The bespoke park-and-resume machinery (the headless `needs_user_input` / resume-state / `DeferredQuestion` plumbing for autonomous runs). |
-| Eval | **pydantic-evals** — fits Pydantic AI, consumes OTel traces, deterministic scorers are free, `LLMJudge` built-in — with a thin transcript→dataset adapter | The bespoke eval harness (`teatree.eval`). Alternative noted: **inspect-ai**, if native `inspect score` stored-log regrade is wanted. |
-| Per-run agent control flow | **pydantic-graph** (optional) | Hand-rolled per-run branching, where it exists. |
+| Loop / tick driver | `teatree.loop.tick.run_tick` + the scanner fan-out, one native `/loop` per enabled `Loop` row | **Kept** |
+| Scheduling / cron | `Loop` rows (`delay_seconds` / `daily_at`), `Loop.last_run_at` as the cadence ledger | **Kept** |
+| Singleton / concurrency control | `LoopLease` (conditional-UPDATE CAS), the `loop-owner` lease, per-loop `loop:<name>` leases, `LoopState` | **Kept** |
+| State machines | `Ticket.State`, `Worktree.State` (`created → provisioned → services_up → ready`), the `ReviewLoop` FSM | **Kept** |
+| Task leases + heartbeats | `Task.claim(lease_seconds=…)`, `lease_expires_at`, `heartbeat_at`, `Task.renew_lease()` | **Kept** |
+| Crash-resume / recovery | `reap_stale_claims`, `reclaim_orphaned_claims`, `teatree.loop.tick_recovery`, `teatree.core.recovery_sweeps` | **Kept** |
+| Queue | `django_tasks_db.DatabaseBackend` (django-tasks) | **Kept** |
+| Retries | re-dispatch on a failed `TaskAttempt` | **Kept** |
+| Store | **SQLite** (WAL, `IMMEDIATE`) | **Kept** |
 
-The shape of the bet: every row replaces in-house distributed-systems or
-agent-plumbing code with a maintained engine that already does that job, and the
-"what it deletes" column is the actual point — the win is measured in bespoke
-code removed, not features added.
+The bespoke distributed-systems code here is real, and the SQLite claim race
+proved it can have subtle bugs. But the answer to a subtle bug in a working layer
+is to fix the bug and add a pinning test (which the claim-race fix did), not to
+replace the layer.
 
-## The key non-obvious call — DBOS over Temporal
+## The one architectural change — autonomous-lane runtime → Pydantic AI
 
-This is the one choice that needs defending, because the obvious answer is
-"Temporal."
+The single change this document proposes is to move the **autonomous-lane agent
+runtime** off the bespoke, Claude-SDK-coupled runtime
+(`teatree.agents.headless`, the `LoopWatchdog`, the in-house attempt/result
+plumbing) and onto **Pydantic AI**, running *inside* the unchanged orchestration.
 
-**Temporal is the most battle-tested durable-execution engine, and it is the
-right tool for a large team running high-throughput workflows.** It is not being
-dismissed on quality.
+What Pydantic AI buys, stated plainly:
 
-The problem is operational burden, which is the *exact thing this redesign is
-trying to reduce*. Self-hosting Temporal means standing up and operating:
+- **Model-agnostic.** Today the headless runtime is coupled to Claude. With a
+  provider layer behind the harness, the model becomes a config choice rather than
+  an architectural commitment — teatree can run the autonomous lane on the
+  cheapest meta-provider instead of being locked to one vendor. The model is a
+  setting, not the architecture.
+- **Deterministic, programmatic control of the agent loop.** The harness gives
+  explicit, testable control over the loop instead of a hand-rolled driver.
+- **Dogfooding.** It lets the personal system run on the same kind of harness I
+  reach for elsewhere, so the runtime is exercised in daily use.
 
-- the Temporal Server (its own set of long-running services),
-- a persistence database,
-- (historically) Elasticsearch for advanced visibility, and
-- the discipline that long-lived workflows demand — deterministic workflow code
-  and explicit versioning/patching so an in-flight workflow survives a code
-  change.
+Two things are explicitly preserved across this seam:
 
-For a solo maintainer, that *adds* a system to run and a class of bugs to learn.
-Adopting it to reduce maintenance would be self-defeating.
+- **The Actor-Critic / iterative-verify pattern stays** wherever multi-step
+  verification happens: a generator step produces a change, deterministic checks
+  (tests, linters, a sandbox) and an **independent critic model** look for
+  problems, and the generator corrects. This is **iterative verification with
+  deterministic tripwires** — not a generative multi-model "fusion" that merges
+  several model outputs. The pattern does not change; only the runtime under it
+  does.
+- **Claude Code stays the interactive cockpit, unchanged.** Only the autonomous
+  (headless) runtime moves. The interactive lane is not touched.
 
-**DBOS runs in-process as a library.** There is no separate orchestration
-service to operate — it persists workflow and step state to a Postgres database
-and recovers interrupted workflows automatically on restart. The cost it does
-add is honestly stated above: one Postgres database (teatree is on SQLite
-today). That is a database, not an operated service — a materially smaller
-operational footprint than Temporal's server + persistence + visibility stack.
+Type-safe outputs continue to be **Pydantic v2 models** at the runtime boundary,
+which is the natural fit once the runtime is Pydantic AI. If a given autonomous
+run wants explicit per-run control flow, **pydantic-graph** is available as an
+*optional* per-run structure — it is not a replacement for the orchestration FSM,
+which stays where it is.
 
-The usual argument *for* Temporal over DBOS is scale: DBOS is a library over a
-single Postgres, so its throughput ceiling is that one database. **At this
-system's load — one maintainer's autonomous lane — that ceiling is irrelevant.**
-Optimising the choice for a scale this system will not reach, at the cost of the
-operational simplicity it needs now, is the wrong trade.
+## Eval — keep the existing harness; pydantic-evals is a future maybe, not a decision
 
-**Escalation path if DBOS proves insufficient.** If DBOS hits a real stability
-or scale wall, the escape is **Temporal Cloud** — the managed, zero-ops Temporal
-— not self-hosted Temporal. That keeps the "no new operated service" property
-intact even in the failure case.
+The earlier draft proposed swapping the eval harness to pydantic-evals. That is
+**dropped as a committed decision.** Teatree's existing eval harness
+(`teatree.eval`, including the `$0` offline transcript regrade) is kept.
 
-### Honest risk
-
-DBOS is the **youngest option with the smallest ecosystem** of the durable-
-execution engines considered. That is a real risk and not worth glossing over.
-
-It is mitigated by the shape of the adoption: DBOS is a **thin library**, so
-lock-in is low and the cost of leaving is cheap — the workflows are ordinary
-functions with decorators, not a framework that owns the whole program. Combined
-with the Temporal-Cloud fallback, the downside of betting on the younger tool is
-bounded: if it does not work out, the exit is a contained rewrite of the
-workflow seams, not a re-architecture.
+pydantic-evals is recorded here only as a **possible future option, explicitly not
+decided now.** It is the weakest and most deferrable of the changes considered: it
+would trade a working thing for migration risk, with no problem in front of it
+that the current harness fails to handle. If a concrete eval need ever appears
+that the current harness genuinely cannot express, this can be reopened — but not
+before, and not as part of this redesign.
 
 ## Corrections to an earlier position
 
-Two earlier positions are explicitly superseded by this proposal. They are
-recorded here so the change of mind is legible rather than silent.
+An earlier draft of this document proposed adopting **DBOS** as a durable-execution
+library and **deleting the bespoke durable-state layer**, moving the store to
+**Postgres**. That position is **superseded.** Recording why, so the reversal is
+legible:
 
-1. **"Keep the existing state machine."** Superseded. Given the fragility
-   evidence and what durable-execution engines now provide as a library, the
-   state-machine / lease / resume layer *is* the fragility, and it is exactly
-   what DBOS deletes. Keeping it would keep the maintenance problem this redesign
-   exists to remove.
+1. **DBOS forces Postgres, which abandons zero-ops SQLite.** DBOS requires a
+   Postgres database. For a solo maintainer, giving up the file-based, no-service
+   SQLite store is a real operational cost paid to fix a problem that is mostly
+   not in the store.
+2. **The durable-state layer is not the root fragility — discipline is.** Of the
+   last three systemic bugs, only one was a durable-state bug; the other two were
+   ordinary half-finished-implementation defects (a gate that did not gate, a step
+   with no timeout). Swapping the durable engine would not have touched two of the
+   three.
+3. **A multi-step rip-out is the exact failure mode to avoid.** The fragility is
+   changes abandoned mid-way. A four-step engine migration is the single largest
+   such change one could take on — it is the disease, not the cure.
 
-2. **"Keep the custom eval harness."** Superseded. The harness's only remaining
-   moat was **$0 offline transcript regrade** (`t3 eval run --backend transcript`
-   re-grades a recorded run with no model spend). That capability is now matched
-   by maintained tools — pydantic-evals re-scores from stored traces, and
-   inspect-ai's `inspect score` re-grades a stored log without re-running the
-   model. Once the only differentiator is matched, maintaining a bespoke harness
-   is cost without benefit.
+DBOS / Postgres was considered and rejected for these reasons; this document does
+not advocate for it. (Temporal and other heavier durable-execution engines were
+considered in the same earlier pass and are out for the same reason: they add an
+operated service to a system whose virtue is having none.)
 
-Stating these as corrections, not as fresh conclusions, is deliberate: the
-earlier positions were reasonable on the evidence then available; the new
-evidence (the fragility itself, and the maturity of the durable-execution and
-eval tooling) is what moved them.
+Stating this as a correction rather than a fresh conclusion is deliberate: the
+earlier position was reasonable on the framing then in front of me; the evidence
+(the actual bug history, and what the engine swap would and would not fix) is what
+moved it.
 
-## Migration — strangler-fig, one reviewed PR at a time
+## Migration — one incremental seam behind the unchanged orchestration
 
-The migration is incremental. Each step removes a slice of bespoke code, ships
-as its own reviewed PR with a pinning test, and **keeps the Claude Code
-interactive path working throughout**. No step is a big-bang rewrite.
+Because the orchestration layer is kept, the migration is far smaller than the
+earlier four-step plan. It is **one seam**: the autonomous-lane runtime moves to
+Pydantic AI, *behind the unchanged loop / FSM / lease / cron layer.*
 
-1. **Durable state + scheduling onto DBOS first.** This is the highest-fragility
-   slice and the clearest win — the loop, the leases, the heartbeats, the cron,
-   the crash-resume. Doing it first retires the largest amount of bespoke
-   distributed-systems code and de-risks the rest. (This is also where the
-   Postgres dependency lands.)
-2. **Move the agent runtime to Pydantic AI**, using its DBOS integration so the
-   runtime work runs inside DBOS-durable workflows.
-3. **Fold headless HITL into a DBOS durable wait** — replace the bespoke park /
-   resume plumbing with suspend-await-signal-resume.
-4. **Move eval to pydantic-evals** (with the thin transcript→dataset adapter),
-   keeping inspect-ai as the documented alternative.
+- The runtime is replaced incrementally, as **separately-reviewed PRs**, each with
+  a **pinning test** that fixes current behaviour before the swap, so the change is
+  observable and reversible.
+- The orchestration code is not touched by these PRs — the runtime change sits
+  inside the existing leases and recovery, which keeps the blast radius small.
+- **This document changes no runtime code.** It stays a draft for independent
+  review; nothing here is implemented.
 
-Ordering rationale: durable state first because it carries the most fragility
-and unblocks the others; eval last because it is the most independent and the
-least risky to defer.
+Compared with the abandoned plan, this trades a big-bang engine migration for a
+single, contained runtime seam — which is the whole point of the corrected
+position: smaller changes, finished one at a time, are how this system gets more
+reliable, not larger ones.
 
-## Revisit triggers
+## What stays (summary)
 
-This decision should be reopened, not quietly worked around, if either of these
-fires:
-
-- **DBOS hits a real stability or scale wall** → escalate to **Temporal Cloud**
-  (managed, zero-ops), preserving the "no new operated service" property.
-- **pydantic-evals cannot express a needed eval** → adopt **inspect-ai** (native
-  `inspect score` stored-log regrade) for the eval lane.
-
-## What stays
-
-The redesign is deliberately narrow. These are kept as-is because they are
-mature or because they are the actual value:
-
-- **Django** — the mature data / domain layer.
-- **The skills + overlay domain logic** — the actual value of the system; none
-  of this is touched.
-- **Claude Code** — kept as the interactive cockpit. The interactive lane is not
-  migrated; only the autonomous (headless) runtime moves to Pydantic AI.
+- **Django + SQLite** — the orchestration store and domain layer, zero-ops, kept.
+- **The loop / FSM / leases / heartbeats / cron / crash-resume / retries** — kept.
+- **The Actor-Critic / iterative-verify pattern** — kept, now running on the new
+  runtime.
+- **The existing eval harness** — kept; pydantic-evals deferred as a maybe.
+- **Claude Code** — kept as the interactive cockpit, unchanged.
 
 ## Open questions & assumptions
 
-- **Assumption:** adopting DBOS means migrating teatree's orchestration store
-  from SQLite to Postgres. The migration plan treats that as part of step 1; the
-  cost/effort of the data move itself is not estimated here and should be sized
-  before step 1 is approved.
-- **Open question:** does DBOS's durable-wait primitive cover every shape of the
-  current headless HITL contract (park, stop, resume from the captured point,
-  idempotent re-entry), or only the common case? Step 3 should validate this
-  against the existing `needs_user_input` / resume-state behaviour before
-  deleting the bespoke path.
-- **Open question:** the transcript→dataset adapter for pydantic-evals assumes
-  the recorded-transcript format can be mapped to pydantic-evals `Case`s without
-  losing the deterministic-scorer coverage the current corpus has. This needs a
-  spike before step 4.
 - **Assumption:** the interactive Claude Code lane and the autonomous lane can be
-  cleanly separated at the runtime seam, so migrating the autonomous runtime to
-  Pydantic AI does not disturb the cockpit. Step 2 depends on this holding.
+  cleanly separated at the runtime seam, so moving the autonomous runtime to
+  Pydantic AI does not disturb the cockpit. The first migration PR depends on this
+  holding and should prove it with a pinning test before anything is deleted.
+- **Assumption:** the Actor-Critic verify pattern ports onto the Pydantic AI
+  runtime without losing the deterministic tripwires it relies on. Worth a small
+  spike inside the first seam PR.
+- **Open question:** which meta-provider becomes the default for the autonomous
+  lane once the model is a config choice. This is a settings decision, not an
+  architectural one, and can be made after the runtime seam lands.
 
 ## Decision status
 
-Proposed, pending independent review. Nothing here is implemented; no runtime
-code changes with this document. If the decision is accepted, the migration
-proceeds as the four separately-reviewed PRs above, each with its own pinning
-test.
+Proposed, pending independent review. Nothing here is implemented; no runtime code
+changes with this document. If accepted, the migration proceeds as the single
+runtime seam above, delivered as separately-reviewed PRs, each with its own
+pinning test.
