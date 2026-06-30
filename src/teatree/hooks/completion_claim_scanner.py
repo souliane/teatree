@@ -22,13 +22,17 @@ the handler).
 The detector is tuned HARD for precision over recall, mirroring the
 closure-reverify prime directive: a false fire would wedge a legitimate
 single-deliverable "done", so when in doubt it stays SILENT (returns "no fire").
-The two load-bearing no-fire guards. First, a single-deliverable claim (no
-second deliverable enumerated) never fires — the gate is scoped to
-multi-deliverable tickets, exactly the issue's scope. Second, a claim
-accompanied by a COMPLETE deliverable->on-target-evidence map clears: every
-enumerated deliverable carries on-target evidence (merged to target / verified
-on the correct surface / passing E2E), the authoritative spec was read, and the
-crucial deliverable is explicitly verified on its surface.
+The load-bearing no-fire guards. First, the turn must be rooted in real
+ticket/work-item/PR-delivery context (a delivery artifact — an MR/PR, a branch,
+a merge, a commit, E2E/pipeline, a ticket/issue, the merge target): a pure
+design-discussion turn whose "deliverables" are decision-table rows and whose
+"done" is design wording ("(locked)") has no such grounding and never fires.
+Second, a single-deliverable claim (no second deliverable enumerated) never
+fires — the gate is scoped to multi-deliverable tickets, exactly the issue's
+scope. Third, a claim accompanied by a COMPLETE deliverable->on-target-evidence
+map clears: every enumerated deliverable carries on-target evidence (merged to
+target / verified on the correct surface / passing E2E), the authoritative spec
+was read, and the crucial deliverable is explicitly verified on its surface.
 
 An honest "NOT done: <X> stranded/wrong-surface/missing" is the desired
 behaviour and must NEVER fire — it is the refusal the gate wants, not a claim.
@@ -152,6 +156,30 @@ _RECOMMENDATION_LINE_RE: Final[re.Pattern[str]] = re.compile(
     re.IGNORECASE,
 )
 
+# Delivery grounding: the gate fires only on a turn rooted in REAL
+# ticket/work-item/PR-delivery context. A done-claim about delivered work cites
+# delivery artifacts — an MR/PR, a branch, a merge, a commit, E2E/pipeline, a
+# ticket/issue/work-item, the merge target. A pure design-discussion turn — a
+# decision table whose rows are "Stack: X (locked)" / "Runtime: Y", with NO
+# delivery artifact anywhere — is NOT a multi-deliverable done-claim; its
+# "(locked)" / "done" wording is design vocabulary, so the gate must stay silent
+# (#2665 false positive: a 6-row design-decision table on a no-ticket turn was
+# read as "6 deliverables done" and demanded an evidence map though no delivered
+# work was claimed). Requiring grounding never weakens the gate's real job: the
+# stranded-incident claim and every genuine multi-deliverable false-done cite
+# MRs / merges / the merge target, so they stay grounded and keep firing.
+_DELIVERY_GROUNDING_RE: Final[re.Pattern[str]] = re.compile(
+    r"\b(?:mr|pr|merge requests?|pull requests?)\b|"
+    r"\bmerged?\b|\bmerge target\b|"
+    r"\bbranch(?:es)?\b|\bpushed?\b|\bcommit(?:s|ted|ting)?\b|"
+    r"\bdeliverables?\b|"
+    r"\b(?:passing )?e2e\b|\bpipeline\b|"
+    r"\b(?:ticket|issue|work[- ]items?)\b|"
+    r"\bon (?:the )?(?:merge )?target\b|"
+    r"\bon (?:main|master|develop|the default branch)\b",
+    re.IGNORECASE,
+)
+
 # Minimum enumerated lines for the multi-deliverable scope this gate targets.
 _MIN_DELIVERABLES: Final[int] = 2
 
@@ -191,6 +219,18 @@ def _has_completeness_claim(text: str) -> bool:
     return bool(_COMPLETENESS_CLAIM_RE.search(text))
 
 
+def _has_delivery_grounding(text: str) -> bool:
+    """True when the turn is rooted in real ticket/work-item/PR-delivery context.
+
+    The gate targets a done-claim about DELIVERED work, so it must see at least
+    one delivery artifact — an MR/PR, a branch, a merge, a commit, E2E/pipeline,
+    a ticket/issue/work-item, the merge target. A pure design-discussion turn (a
+    decision table, "(locked)" wording, no delivery artifact) lacks grounding and
+    never fires.
+    """
+    return bool(_DELIVERY_GROUNDING_RE.search(text))
+
+
 def _is_honest_refusal(text: str) -> bool:
     """True when ``text`` is the desired "NOT done: <X> stranded" refusal."""
     return bool(_NOT_DONE_REFUSAL_RE.search(text))
@@ -215,11 +255,14 @@ def _line_has_on_target_evidence(body: str) -> bool:
 def _no_claim_to_evaluate(text: str) -> bool:
     """True when there is no completeness claim to evaluate before line parsing.
 
-    Folds the three text-only pre-checks — empty text, no completeness verb, or
-    an honest "NOT done" refusal — so the main detector stays within the
-    return-count budget without a suppression.
+    Folds the text-only pre-checks — empty text, no completeness verb, an honest
+    "NOT done" refusal, or no delivery grounding (a turn with no ticket/PR-delivery
+    context is design discussion, not a done-claim about delivered work) — so the
+    main detector stays within the return-count budget without a suppression.
     """
-    return not text or not _has_completeness_claim(text) or _is_honest_refusal(text)
+    return (
+        not text or not _has_completeness_claim(text) or _is_honest_refusal(text) or not _has_delivery_grounding(text)
+    )
 
 
 def find_completion_block(text: str) -> CompletionVerdict | None:

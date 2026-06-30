@@ -166,6 +166,42 @@ class TestRecommendationProseNeverFires:
         assert scanner.find_completion_block(text) is not None
 
 
+# A PURE design-discussion turn (#2665 over-fire): a decision table whose rows are
+# locked design choices, with a "we're done / ready to go" sign-off — but NO active
+# ticket and NO delivery artifact (no MR/PR, branch, merge, commit, deliverable,
+# ticket, E2E). The gate read the 6 decision rows as "6 deliverables" and the
+# locked/done wording as a multi-deliverable completion claim, forcing the agent to
+# escape with [skip-completion-gate]. With no delivery grounding it must NOT fire.
+_DESIGN_DECISION_TABLE = (
+    "Locking in the design decisions for the integration factory:\n"
+    "- Stack: build directly on a thin Python harness on the Claude Agent SDK (locked)\n"
+    "- Runtime: no sandcastle runtime, build native from day one (locked)\n"
+    "- Hosting: run the model via Vertex aligned with the GCP infra (locked)\n"
+    "- Client libs: adopt FastMCP plus openapi-python-client (locked)\n"
+    "- Token budget: per-endpoint metering analysis (locked)\n"
+    "- Measurement: 10x baseline vs the manual approach (locked)\n"
+    "Everything is locked. We're done here — ready to go when you start the build.\n"
+)
+
+
+class TestDesignDecisionTableNeverFires:
+    """Anti-vacuous pair: the no-grounding design FP passes; a grounded claim fires."""
+
+    def test_design_decision_table_without_delivery_grounding_does_not_fire(self) -> None:
+        # The over-fire: a decision table + "we're done / ready to go" sign-off with
+        # NO ticket/PR-delivery context must NOT read as a completion claim. Reverting
+        # the delivery-grounding guard makes this fire — the RED-on-revert anchor.
+        assert scanner.find_completion_block(_DESIGN_DECISION_TABLE) is None
+
+    def test_delivery_grounded_multideliverable_claim_still_fires(self) -> None:
+        # Proves the grounding requirement did not neuter the gate: the same
+        # enumerated-and-claimed shape, once it cites real delivery artifacts (MRs,
+        # the merge target), still blocks.
+        verdict = scanner.find_completion_block(_STRANDED_CLAIM)
+        assert verdict is not None
+        assert verdict.deliverable_count == 3
+
+
 class TestFormatBlockMessage:
     def test_message_names_the_incomplete_legs(self) -> None:
         verdict = scanner.find_completion_block(_STRANDED_CLAIM)
