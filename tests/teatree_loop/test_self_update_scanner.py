@@ -583,3 +583,109 @@ class SelfUpdateScannerWiringTests(TestCase):
             jobs = build_default_jobs()
 
         assert any(j.scanner is fake_scanner and j.overlay == "" for j in jobs)
+
+
+class SelfUpdateScannerStaleNoticeTests(TestCase):
+    """A skipped dirty/detached clone emits a DURABLE user-facing notice (#2836).
+
+    The incident was a SILENT skip — the clone went stale and ``t3`` ran old
+    code. The scanner now routes a dirty / off-default skip through
+    ``notify_stale_clone_skip`` (a BotPing-backed bot→user DM). These tests spy
+    on that helper so they assert the durable-notice CONTRACT hermetically,
+    without resolving a real messaging backend. Anti-vacuity: the up-to-date
+    case proves a healthy clone emits NO notice (revert the ``scan`` wiring and
+    the dirty/feature cases go RED).
+    """
+
+    def setUp(self) -> None:
+        import tempfile  # noqa: PLC0415
+
+        self._tmp = Path(tempfile.mkdtemp(prefix="self_update_stale_notice_"))
+        self.addCleanup(_rmtree_safe, str(self._tmp))
+        self.origin = self._tmp / "origin.git"
+        _seed_origin_with_two_commits(self.origin)
+
+    def _scanner(self, clone: Path) -> SelfUpdateScanner:
+        return SelfUpdateScanner(
+            repos=(("teatree", clone),),
+            cadence_hours=1,
+            ci_status=_StubCiStatus(CiVerdict.GREEN),
+        )
+
+    def test_dirty_clone_skip_emits_durable_notice(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        from teatree.core.stale_clone_notice import StaleCloneReason  # noqa: PLC0415
+
+        clone = self._tmp / "teatree"
+        _clone_trailing_by_one_commit(origin=self.origin, clone=clone)
+        _make_tracked_dirty(clone)
+
+        with patch("teatree.core.stale_clone_notice.notify_stale_clone_skip") as spy:
+            self._scanner(clone).scan()
+
+        spy.assert_called_once()
+        skip = spy.call_args.args[0]
+        assert skip.reason is StaleCloneReason.DIRTY
+        assert skip.repo_path == str(clone)
+        assert skip.label == "teatree"
+
+    def test_feature_branch_skip_emits_off_default_notice(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        from teatree.core.stale_clone_notice import StaleCloneReason  # noqa: PLC0415
+
+        clone = self._tmp / "teatree"
+        _clone_trailing_by_one_commit(origin=self.origin, clone=clone)
+        _checkout_feature_branch(clone)
+
+        with patch("teatree.core.stale_clone_notice.notify_stale_clone_skip") as spy:
+            self._scanner(clone).scan()
+
+        spy.assert_called_once()
+        skip = spy.call_args.args[0]
+        assert skip.reason is StaleCloneReason.OFF_DEFAULT
+        assert skip.default_branch == "main"
+
+    def test_healthy_clone_emits_no_notice(self) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        clone = self._tmp / "teatree"
+        _clone_up_to_date(origin=self.origin, clone=clone)
+
+        with patch("teatree.core.stale_clone_notice.notify_stale_clone_skip") as spy:
+            self._scanner(clone).scan()
+
+        spy.assert_not_called()
+
+
+class OffDefaultReasonRoundTripTests(TestCase):
+    """The off-default skip reason round-trips through one shared format (#2844 #5).
+
+    Construction (``_pre_pull_gate``) and parsing (``_maybe_notify_stale_clone``)
+    must not desync: a format drift on either side that breaks the round-trip
+    turns this red, instead of silently degrading the surfaced default branch to
+    empty.
+    """
+
+    def test_construct_then_parse_recovers_the_default_branch(self) -> None:
+        from teatree.loop.scanners.self_update import _off_default_reason, _parse_off_default_branch  # noqa: PLC0415
+
+        for current, default_branch in [("feature", "main"), ("HEAD", "develop"), ("wip", "trunk")]:
+            reason = _off_default_reason(current, default_branch)
+            assert _parse_off_default_branch(reason) == default_branch, reason
+
+    def test_parse_is_defensive_against_non_matching_reasons(self) -> None:
+        from teatree.loop.scanners.self_update import _parse_off_default_branch  # noqa: PLC0415
+
+        # A reason that is not the off-default shape yields "" — never a crash
+        # or a misparsed branch (the dirty-tracked / CI skip reasons, etc.).
+        for reason in ["dirty_tracked:src/app.py", "ci_red", "no_origin_head", "", "branch=main"]:
+            assert _parse_off_default_branch(reason) == ""
+
+    def test_constructor_is_the_only_off_default_reason_source(self) -> None:
+        # Anti-drift: the gate must build the reason via the shared helper, so a
+        # future edit to the format flows to BOTH sites. Pin the exact shape.
+        from teatree.loop.scanners.self_update import _off_default_reason  # noqa: PLC0415
+
+        assert _off_default_reason("feature", "main") == "branch=feature!=main"

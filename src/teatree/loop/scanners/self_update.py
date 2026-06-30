@@ -57,6 +57,34 @@ _CI_SKIP_REASON: dict[CiVerdict, str] = {
     CiVerdict.UNKNOWN: "ci_unknown",
 }
 
+# The off-default skip reason is a structured ``branch=<current>!=<default>``
+# string carried on the outcome + persisted marker. Construction and parsing
+# share these two helpers so a format change cannot silently desync the two
+# sites (the constructor in ``_pre_pull_gate`` and the parser in
+# ``_maybe_notify_stale_clone``) — the recurrence #5 guards against.
+_OFF_DEFAULT_REASON_PREFIX = "branch="
+_OFF_DEFAULT_REASON_SEP = "!="
+
+
+def _off_default_reason(current: str, default_branch: str) -> str:
+    """Build the off-default skip reason ``branch=<current>!=<default>``."""
+    return f"{_OFF_DEFAULT_REASON_PREFIX}{current}{_OFF_DEFAULT_REASON_SEP}{default_branch}"
+
+
+def _parse_off_default_branch(reason: str) -> str:
+    """Extract the default branch from an off-default reason, ``""`` if it doesn't match.
+
+    Defensive: returns ``""`` unless *reason* is the exact
+    ``branch=<current>!=<default>`` shape :func:`_off_default_reason` produces,
+    so a format drift degrades to an empty default branch only when the shape
+    genuinely no longer matches — and the paired round-trip test goes red the
+    moment construction and parsing disagree.
+    """
+    head, sep, default_branch = reason.partition(_OFF_DEFAULT_REASON_SEP)
+    if sep and head.startswith(_OFF_DEFAULT_REASON_PREFIX):
+        return default_branch
+    return ""
+
 
 @dataclass(frozen=True, slots=True)
 class _PullOutcome:
@@ -110,6 +138,7 @@ class SelfUpdateScanner:
         signals: list[ScanSignal] = []
         for label, path in self.repos:
             outcome = self._process_one(label=label, path=path)
+            _maybe_notify_stale_clone(label=label, path=path, outcome=outcome)
             signals.append(_signal_from_outcome(label=label, outcome=outcome))
             logger.info(
                 "self_update %s outcome=%s reason=%s",
@@ -159,6 +188,44 @@ class SelfUpdateScanner:
             return False
         elapsed_hours = (timezone.now() - marker.last_pull_at).total_seconds() / 3600.0
         return elapsed_hours < self.cadence_hours
+
+
+def _maybe_notify_stale_clone(*, label: str, path: Path, outcome: _PullOutcome) -> None:
+    """Emit a durable notice when the clone was skipped as dirty / off-default (#2836).
+
+    Only the silently-stale skip classes notify: ``dirty_tracked`` and the
+    off-default ``branch=…`` reason (which includes a detached HEAD —
+    ``_current_branch`` returns ``HEAD`` when detached). CI-gated and
+    no-origin skips are expected waits, not a clone the operator must fix, so
+    they stay log-only. The notice is idempotent per (clone, reason, HEAD), so a
+    persistent skip is surfaced once rather than every tick.
+    """
+    if outcome.outcome != "skipped":
+        return
+    from teatree.core.stale_clone_notice import (  # noqa: PLC0415
+        StaleCloneReason,
+        StaleCloneSkip,
+        notify_stale_clone_skip,
+    )
+
+    reason = outcome.reason
+    if reason.startswith("dirty_tracked"):
+        kind, default_branch = StaleCloneReason.DIRTY, ""
+    elif reason.startswith(_OFF_DEFAULT_REASON_PREFIX):
+        kind = StaleCloneReason.OFF_DEFAULT
+        default_branch = _parse_off_default_branch(reason)
+    else:
+        return
+    notify_stale_clone_skip(
+        StaleCloneSkip(
+            label=label,
+            repo_path=str(path),
+            reason=kind,
+            head_sha=outcome.old_sha,
+            default_branch=default_branch,
+            detail=reason,
+        )
+    )
 
 
 def _record_marker(*, label: str, path: Path, outcome: _PullOutcome) -> _PullOutcome:
@@ -262,7 +329,7 @@ def _pre_pull_gate(*, repo: Path, pre_sha: str) -> _PullOutcome | None:
     if current != default_branch:
         return _PullOutcome(
             outcome="skipped",
-            reason=f"branch={current}!={default_branch}",
+            reason=_off_default_reason(current, default_branch),
             old_sha=pre_sha,
         )
     dirty = _tracked_dirty_paths(repo)

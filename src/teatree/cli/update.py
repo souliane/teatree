@@ -112,6 +112,11 @@ class RepoUpdate:
     new_sha: str = ""
     reason: str = ""
     advanced: int = 0
+    # The silently-stale skip class (``"dirty"`` / ``"off_default"`` / ``""``),
+    # driving the durable user-facing notice in ``_run_update`` (#2836). It is
+    # orthogonal to ``status``: both a primary FAILED and an overlay SKIPPED can
+    # be stale, and a no-origin/no-upstream config skip is NOT.
+    stale_kind: str = ""
 
     @property
     def is_error(self) -> bool:
@@ -236,6 +241,10 @@ def _check_default_branch(name: str, repo: Path, *, is_primary: bool) -> RepoUpd
     if default_branch is None:
         return RepoUpdate(name, UpdateStatus.SKIPPED, reason="no origin/HEAD (no remote / no upstream)")
     current = _current_branch(repo)
+    # A detached HEAD or a feature-branch checkout (the #2836 incident) is the
+    # silently-stale class; a default branch merely missing an upstream is a
+    # config quirk, not stale — only the former carries ``stale_kind``.
+    off_default = "off_default" if current != default_branch else ""
     if not _has_upstream(repo):
         if is_primary:
             _warn_primary_off_default(name, repo, current, default_branch)
@@ -246,8 +255,9 @@ def _check_default_branch(name: str, repo: Path, *, is_primary: bool) -> RepoUpd
                     f"on branch {current!r} with no upstream — running t3 is STALE; "
                     f"`git switch {default_branch} && git pull --ff-only`"
                 ),
+                stale_kind=off_default,
             )
-        return RepoUpdate(name, UpdateStatus.SKIPPED, reason="no upstream tracking branch")
+        return RepoUpdate(name, UpdateStatus.SKIPPED, reason="no upstream tracking branch", stale_kind=off_default)
     if current != default_branch:
         if is_primary:
             _warn_primary_off_default(name, repo, current, default_branch)
@@ -258,11 +268,13 @@ def _check_default_branch(name: str, repo: Path, *, is_primary: bool) -> RepoUpd
                     f"on branch {current!r}, not default {default_branch!r} — running t3 is STALE; "
                     f"`git switch {default_branch} && git pull --ff-only`"
                 ),
+                stale_kind="off_default",
             )
         return RepoUpdate(
             name,
             UpdateStatus.SKIPPED,
             reason=f"on branch {current!r}, not default {default_branch!r}",
+            stale_kind="off_default",
         )
     return None
 
@@ -292,6 +304,7 @@ def _check_clean(name: str, repo: Path, *, is_primary: bool) -> RepoUpdate | Non
         name,
         UpdateStatus.SKIPPED,
         reason=f"uncommitted tracked changes ({listed}) — running t3 may be STALE; resolve and re-run `t3 update`",
+        stale_kind="dirty",
     )
 
 
@@ -486,6 +499,34 @@ def run(ctx: typer.Context) -> None:
     _run_update()
 
 
+def _notify_if_stale(result: RepoUpdate, *, repo: Path) -> None:
+    """Emit a durable bot→user notice when a clone was skipped as stale (#2836).
+
+    The terminal warnings (:func:`_check_clean` / :func:`_warn_primary_off_default`)
+    scroll away; this records a durable, idempotent ``BotPing`` notice naming the
+    repo path + manual remediation so a stale editable clone is never invisible.
+    The safe update never auto-stashes/auto-checkouts to recover — the user does.
+    """
+    if not result.stale_kind:
+        return
+    from teatree.core.stale_clone_notice import (  # noqa: PLC0415
+        StaleCloneReason,
+        StaleCloneSkip,
+        notify_stale_clone_skip,
+    )
+
+    notify_stale_clone_skip(
+        StaleCloneSkip(
+            label=result.name,
+            repo_path=str(repo),
+            reason=StaleCloneReason(result.stale_kind),
+            head_sha=result.old_sha or _short_sha(repo),
+            default_branch=_default_branch(repo) or "",
+            detail=result.reason,
+        )
+    )
+
+
 def _run_update() -> None:
     """The actual update flow, factored out so the callback stays a thin shell."""
     repos = _collect_repos()
@@ -496,7 +537,9 @@ def _run_update() -> None:
     results: list[RepoUpdate] = []
     for name, path in repos:
         typer.echo(f"Updating {name} ({path}) ...")
-        results.append(update_repo(name, path, is_primary=name in _PRIMARY_REPO_NAMES))
+        result = update_repo(name, path, is_primary=name in _PRIMARY_REPO_NAMES)
+        results.append(result)
+        _notify_if_stale(result, repo=path)
 
     _reinstall_and_resetup(results)
     # Probe-gated and decoupled from the per-run UPDATED flag (#929): an

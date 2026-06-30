@@ -4444,6 +4444,8 @@ Usage: t3 teatree gate [OPTIONS] COMMAND [ARGS]...
 │                   (self-rescue).                                             │
 │ completion-claim  Completion-claim gate (on-target evidence before done)     │
 │                   kill-switch (self-rescue).                                 │
+│ main-clone        Main-clone working-tree mutation gate kill-switch          │
+│                   (self-rescue).                                             │
 │ memory-recall     Cold-tier memory recall injector kill-switch               │
 │                   (self-rescue).                                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -4690,6 +4692,59 @@ Usage: t3 teatree gate completion-claim disable [OPTIONS]
 
 ```
 Usage: t3 teatree gate completion-claim enable [OPTIONS]
+
+ Re-enable the gate.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree gate main-clone`
+
+```
+Usage: t3 teatree gate main-clone [OPTIONS] COMMAND [ARGS]...
+
+ Main-clone working-tree mutation gate kill-switch (self-rescue).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ status   Show whether the gate is enabled.                                   │
+│ disable  Disable the gate (self-rescue from a lockout).                      │
+│ enable   Re-enable the gate.                                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate main-clone status`
+
+```
+Usage: t3 teatree gate main-clone status [OPTIONS]
+
+ Show whether the gate is enabled.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate main-clone disable`
+
+```
+Usage: t3 teatree gate main-clone disable [OPTIONS]
+
+ Disable the gate (self-rescue from a lockout).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate main-clone enable`
+
+```
+Usage: t3 teatree gate main-clone enable [OPTIONS]
 
  Re-enable the gate.
 
