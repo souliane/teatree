@@ -150,17 +150,63 @@ def _edit_finding(core, data: dict) -> "MainCloneFinding | None":  # noqa: ANN00
     return core.edit_finding(file_path)
 
 
+def _effective_command_dir(command: str, cwd: "Path | None") -> "Path | None":
+    """Resolve the dir whose repo a git command actually targets, else the cwd.
+
+    Honours a leading ``cd``/``pushd`` and git's ``-C``/``--git-dir``
+    redirection. The gate must key off the repo the command MUTATES, not the ambient cwd:
+    ``git -C <main-clone> checkout feature`` run from a worktree cwd mutates the
+    MAIN CLONE (it must block), and ``git -C <worktree> checkout feature`` run
+    from a main-clone cwd mutates the WORKTREE (it must allow). Reuses the
+    canonical static resolver :func:`teatree.hooks._commit_repo_dir.resolve_commit_dir`
+    (cumulative ``-C``, last-wins ``--git-dir``, leading ``cd``; ``--work-tree``
+    correctly never selects the repo), so this gate and the publish gate agree
+    on git's directory semantics.
+
+    A ``--git-dir <X>/.git`` value resolves to the metadata dir; normalise it to
+    its enclosing repo root (``X``) so :func:`resolve_branch_and_root` can run
+    ``git`` from a working tree. Returns the unchanged *cwd* for a plain command
+    with no redirection, or ``None`` when the target cannot be pinned statically
+    (a substitution marker) — failing OPEN rather than guessing a repo.
+
+    LIMITATION (pinned by test): the bare ``GIT_DIR=<X>/.git git …`` /
+    ``GIT_WORK_TREE=`` ENVIRONMENT-variable redirection forms are not parsed
+    (only the ``-C``/``--git-dir`` ARG forms are), so they fall back to
+    cwd-keying — the common ``-C`` form, the recorded incident shape, is fully
+    handled.
+    """
+    try:
+        with teatree_src_on_path():
+            from teatree.hooks._commit_repo_dir import resolve_commit_dir  # noqa: PLC0415, PLC2701
+
+            resolved = resolve_commit_dir(command, cwd)
+    except Exception:  # noqa: BLE001 — a cold env without teatree fails OPEN to cwd-keying.
+        return cwd
+    if not isinstance(resolved, Path):
+        # The ``UNRESOLVABLE_REPO_DIR`` str sentinel (a ``-C`` value we cannot
+        # pin statically) or ``None`` (no redirect and no cwd) — either way
+        # there is no repo to key off, so don't block.
+        return None
+    return resolved.parent if resolved.name == ".git" else resolved
+
+
 def _git_finding(core, data: dict) -> "MainCloneFinding | None":  # noqa: ANN001
-    """Resolve a forbidden git command run in a managed main clone's cwd, else None."""
+    """Resolve a forbidden git command targeting a managed main clone, else None.
+
+    The targeted repo is the command's EFFECTIVE dir (honouring ``cd`` / ``-C``
+    / ``--git-dir`` redirection, :func:`_effective_command_dir`), not the
+    ambient cwd, so a ``-C <main-clone>`` redirection cannot bypass the gate and
+    a ``-C <worktree>`` redirection from a clone cwd is not falsely denied.
+    """
     from hook_router import _resolve_cwd_repo  # noqa: PLC0415, PLC2701
 
     command = data.get("tool_input", {}).get("command", "")
     if not isinstance(command, str) or not command:
         return None
-    cwd = _resolve_cwd_repo(data)
-    if cwd is None:
+    effective = _effective_command_dir(command, _resolve_cwd_repo(data))
+    if effective is None:
         return None
-    resolved = resolve_branch_and_root(str(cwd))
+    resolved = resolve_branch_and_root(str(effective))
     if resolved is None:
         return None
     _branch, repo_root = resolved

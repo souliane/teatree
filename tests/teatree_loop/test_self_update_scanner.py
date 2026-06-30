@@ -657,3 +657,35 @@ class SelfUpdateScannerStaleNoticeTests(TestCase):
             self._scanner(clone).scan()
 
         spy.assert_not_called()
+
+
+class OffDefaultReasonRoundTripTests(TestCase):
+    """The off-default skip reason round-trips through one shared format (#2844 #5).
+
+    Construction (``_pre_pull_gate``) and parsing (``_maybe_notify_stale_clone``)
+    must not desync: a format drift on either side that breaks the round-trip
+    turns this red, instead of silently degrading the surfaced default branch to
+    empty.
+    """
+
+    def test_construct_then_parse_recovers_the_default_branch(self) -> None:
+        from teatree.loop.scanners.self_update import _off_default_reason, _parse_off_default_branch  # noqa: PLC0415
+
+        for current, default_branch in [("feature", "main"), ("HEAD", "develop"), ("wip", "trunk")]:
+            reason = _off_default_reason(current, default_branch)
+            assert _parse_off_default_branch(reason) == default_branch, reason
+
+    def test_parse_is_defensive_against_non_matching_reasons(self) -> None:
+        from teatree.loop.scanners.self_update import _parse_off_default_branch  # noqa: PLC0415
+
+        # A reason that is not the off-default shape yields "" — never a crash
+        # or a misparsed branch (the dirty-tracked / CI skip reasons, etc.).
+        for reason in ["dirty_tracked:src/app.py", "ci_red", "no_origin_head", "", "branch=main"]:
+            assert _parse_off_default_branch(reason) == ""
+
+    def test_constructor_is_the_only_off_default_reason_source(self) -> None:
+        # Anti-drift: the gate must build the reason via the shared helper, so a
+        # future edit to the format flows to BOTH sites. Pin the exact shape.
+        from teatree.loop.scanners.self_update import _off_default_reason  # noqa: PLC0415
+
+        assert _off_default_reason("feature", "main") == "branch=feature!=main"

@@ -50,6 +50,8 @@ class TestIsSelfRescue:
             "t3 acme gate disable",
             "t3 acme gate skill-loading disable",
             "t3 acme gate config-overwrite disable",
+            "t3 acme gate main-clone disable",  # #2844 #3 — main-clone kill-switch self-rescue
+            "t3 t3-teatree gate main-clone disable",
             "t3 t3-teatree gate fail-open enable",
             "t3 acme db migrate",
             "python manage.py migrate",

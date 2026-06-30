@@ -27,6 +27,13 @@ class TestBlockedMutations:
         [
             "git checkout feature",
             "git switch feature",
+            # A lone ``-`` (toggle to the PREVIOUS branch) is a positional move
+            # target, not a flag — it lands the clone off the default just as a
+            # named branch does, the exact incident `git checkout -` slips into.
+            "git checkout -",
+            "git switch -",
+            # ``@{-1}`` is the spelled-out "previous branch" ref — also off-default.
+            "git checkout @{-1}",
             "git checkout -b new-feature",
             "git switch -c new-feature",
             "git checkout --detach",

@@ -20,7 +20,9 @@ from teatree.cli.teatree_gate import (
     COMPLETION_CLAIM_GATE_KEY,
     CONFIG_OVERWRITE_GATE_KEY,
     GATE_KEY,
+    MAIN_CLONE_GATE_KEY,
     MEMORY_RECALL_GATE_KEY,
+    _gate_key_is_enabled,
     completion_claim_gate_is_enabled,
     config_overwrite_gate_is_enabled,
     gate_is_enabled,
@@ -150,6 +152,33 @@ class TestMemoryRecallGate:
         assert memory_recall_gate_is_enabled() is False
         assert runner.invoke(app, ["gate", "memory-recall", "enable"]).exit_code == 0
         assert memory_recall_gate_is_enabled() is True
+
+
+class TestMainCloneGate:
+    """``t3 <overlay> gate main-clone disable|enable`` — the #2836 self-rescue (#2844 #3)."""
+
+    def test_disable_writes_false_and_is_reflected(self, app: typer.Typer, home: Path) -> None:
+        result = CliRunner().invoke(app, ["gate", "main-clone", "disable"])
+        assert result.exit_code == 0, result.output
+        document = tomlkit.parse((home / ".teatree.toml").read_text(encoding="utf-8"))
+        assert document["teatree"][MAIN_CLONE_GATE_KEY] is False
+        assert _gate_key_is_enabled(MAIN_CLONE_GATE_KEY) is False
+
+    def test_enabled_by_default_when_config_missing(self, home: Path) -> None:
+        assert _gate_key_is_enabled(MAIN_CLONE_GATE_KEY) is True
+
+    def test_status_reports_state(self, app: typer.Typer, home: Path) -> None:
+        runner = CliRunner()
+        assert "ENABLED" in runner.invoke(app, ["gate", "main-clone", "status"]).output
+        runner.invoke(app, ["gate", "main-clone", "disable"])
+        assert "DISABLED" in runner.invoke(app, ["gate", "main-clone", "status"]).output
+
+    def test_round_trips(self, app: typer.Typer, home: Path) -> None:
+        runner = CliRunner()
+        assert runner.invoke(app, ["gate", "main-clone", "disable"]).exit_code == 0
+        assert _gate_key_is_enabled(MAIN_CLONE_GATE_KEY) is False
+        assert runner.invoke(app, ["gate", "main-clone", "enable"]).exit_code == 0
+        assert _gate_key_is_enabled(MAIN_CLONE_GATE_KEY) is True
 
 
 class TestTomlPreservation:

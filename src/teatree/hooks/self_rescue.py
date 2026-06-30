@@ -9,9 +9,13 @@ matter how a gate's detection misbehaves:
 - DB migrate (``t3 <overlay> db migrate`` / ``worktree provision`` /
     ``manage.py migrate``): bring a wedged schema forward so the rest of the
     CLI (and the gates that shell it) work again.
-- Gate disables (``t3 <overlay> gate disable`` and
-    ``t3 <overlay> gate skill-loading disable``): the orchestrator-Bash and
-    skill-loading-on-task kill-switches (#1474).
+- Gate disables (``t3 <overlay> gate disable``,
+    ``t3 <overlay> gate skill-loading disable``,
+    ``t3 <overlay> gate config-overwrite disable``,
+    ``t3 <overlay> gate main-clone disable``): the orchestrator-Bash,
+    skill-loading-on-task, config-overwrite, and main-clone kill-switches
+    (#1474, #2836) — each must reach its own disable even if its gate
+    misdetects.
 - The fail-open toggle (``t3 <overlay> gate fail-open enable``): the master
     switch that flips every over-deny gate to fail-open at once.
 
@@ -101,6 +105,7 @@ SELF_RESCUE_ALLOWLIST: Final[tuple[tuple[_EntryToken, ...], ...]] = (
     ("t3", OVERLAY, "gate", "disable"),
     ("t3", OVERLAY, "gate", "skill-loading", "disable"),
     ("t3", OVERLAY, "gate", "config-overwrite", "disable"),
+    ("t3", OVERLAY, "gate", "main-clone", "disable"),
     ("t3", OVERLAY, "gate", "fail-open", "enable"),
     ("manage.py", "migrate"),
 )

@@ -57,6 +57,34 @@ _CI_SKIP_REASON: dict[CiVerdict, str] = {
     CiVerdict.UNKNOWN: "ci_unknown",
 }
 
+# The off-default skip reason is a structured ``branch=<current>!=<default>``
+# string carried on the outcome + persisted marker. Construction and parsing
+# share these two helpers so a format change cannot silently desync the two
+# sites (the constructor in ``_pre_pull_gate`` and the parser in
+# ``_maybe_notify_stale_clone``) — the recurrence #5 guards against.
+_OFF_DEFAULT_REASON_PREFIX = "branch="
+_OFF_DEFAULT_REASON_SEP = "!="
+
+
+def _off_default_reason(current: str, default_branch: str) -> str:
+    """Build the off-default skip reason ``branch=<current>!=<default>``."""
+    return f"{_OFF_DEFAULT_REASON_PREFIX}{current}{_OFF_DEFAULT_REASON_SEP}{default_branch}"
+
+
+def _parse_off_default_branch(reason: str) -> str:
+    """Extract the default branch from an off-default reason, ``""`` if it doesn't match.
+
+    Defensive: returns ``""`` unless *reason* is the exact
+    ``branch=<current>!=<default>`` shape :func:`_off_default_reason` produces,
+    so a format drift degrades to an empty default branch only when the shape
+    genuinely no longer matches — and the paired round-trip test goes red the
+    moment construction and parsing disagree.
+    """
+    head, sep, default_branch = reason.partition(_OFF_DEFAULT_REASON_SEP)
+    if sep and head.startswith(_OFF_DEFAULT_REASON_PREFIX):
+        return default_branch
+    return ""
+
 
 @dataclass(frozen=True, slots=True)
 class _PullOutcome:
@@ -183,9 +211,9 @@ def _maybe_notify_stale_clone(*, label: str, path: Path, outcome: _PullOutcome) 
     reason = outcome.reason
     if reason.startswith("dirty_tracked"):
         kind, default_branch = StaleCloneReason.DIRTY, ""
-    elif reason.startswith("branch="):
+    elif reason.startswith(_OFF_DEFAULT_REASON_PREFIX):
         kind = StaleCloneReason.OFF_DEFAULT
-        default_branch = reason.split("!=", 1)[1] if "!=" in reason else ""
+        default_branch = _parse_off_default_branch(reason)
     else:
         return
     notify_stale_clone_skip(
@@ -301,7 +329,7 @@ def _pre_pull_gate(*, repo: Path, pre_sha: str) -> _PullOutcome | None:
     if current != default_branch:
         return _PullOutcome(
             outcome="skipped",
-            reason=f"branch={current}!={default_branch}",
+            reason=_off_default_reason(current, default_branch),
             old_sha=pre_sha,
         )
     dirty = _tracked_dirty_paths(repo)

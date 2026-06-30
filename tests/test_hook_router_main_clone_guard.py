@@ -194,6 +194,105 @@ class TestTUpdateNotBlocked:
         assert _deny(capsys) is None
 
 
+class TestRedirectionKeysOffEffectiveRepo:
+    """``-C`` / ``--git-dir`` redirection keys the gate off the TARGETED repo (#2844 #2).
+
+    The gate must classify against the repo the command MUTATES, not the ambient
+    cwd: ``git -C <main-clone>`` from a worktree cwd mutates the clone (DENY),
+    and ``git -C <worktree>`` from a clone cwd mutates the worktree (ALLOW).
+    """
+
+    def test_dash_c_into_main_clone_from_worktree_cwd_is_denied(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The bypass: cwd is a worktree, but ``-C <main-clone>`` redirects the
+        # mutation INTO the main clone. Must block despite the benign cwd.
+        clone = _managed_main_clone(tmp_path / "teatree")
+        wt = _linked_worktree(clone, tmp_path / "wt")
+        event = _bash_event(f"git -C {clone} checkout feature", wt, "sess-c-bypass")
+        assert router.handle_block_main_clone_mutation(event) is True
+        deny = _deny(capsys)
+        assert deny is not None
+        assert deny["permissionDecision"] == "deny"
+
+    def test_cd_then_dash_c_into_main_clone_is_denied(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        # ``cd <worktree> && git -C <main-clone> checkout feature`` — both the
+        # leading cd and git's -C are honoured; the absolute -C wins → clone.
+        clone = _managed_main_clone(tmp_path / "teatree")
+        wt = _linked_worktree(clone, tmp_path / "wt")
+        event = _bash_event(f"cd {wt} && git -C {clone} checkout feature", wt, "sess-cd-c")
+        assert router.handle_block_main_clone_mutation(event) is True
+        assert _deny(capsys) is not None
+
+    def test_git_dir_into_main_clone_from_worktree_cwd_is_denied(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # ``--git-dir <main-clone>/.git`` targets the clone's refs; normalised to
+        # the enclosing clone root, the off-default checkout must block.
+        clone = _managed_main_clone(tmp_path / "teatree")
+        wt = _linked_worktree(clone, tmp_path / "wt")
+        event = _bash_event(f"git --git-dir {clone}/.git checkout feature", wt, "sess-gitdir")
+        assert router.handle_block_main_clone_mutation(event) is True
+        assert _deny(capsys) is not None
+
+    def test_dash_c_into_worktree_from_main_clone_cwd_is_allowed(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The mirror false-positive: cwd is the main clone, but ``-C <worktree>``
+        # redirects the mutation INTO the worktree — a legitimate op. Must allow.
+        clone = _managed_main_clone(tmp_path / "teatree")
+        wt = _linked_worktree(clone, tmp_path / "wt")
+        event = _bash_event(f"git -C {wt} checkout -b another", clone, "sess-c-mirror")
+        assert router.handle_block_main_clone_mutation(event) is False
+        assert _deny(capsys) is None
+
+    def test_git_dir_env_form_is_a_documented_cwd_keying_limitation(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # LIMITATION (pinned, not silent): the bare ``GIT_DIR=<clone>/.git git …``
+        # ENV-variable redirection form is not parsed — only the ``-C`` /
+        # ``--git-dir`` ARG forms are — so from a non-clone cwd it falls back to
+        # cwd-keying and is NOT caught. The common ``-C`` form (tested above) is.
+        clone = _managed_main_clone(tmp_path / "teatree")
+        wt = _linked_worktree(clone, tmp_path / "wt")
+        event = _bash_event(f"GIT_DIR={clone}/.git git checkout feature", wt, "sess-env")
+        assert router.handle_block_main_clone_mutation(event) is False
+        assert _deny(capsys) is None
+
+
+class TestNonStandardDefaultBranch:
+    """A clone whose real default is ``develop`` (no ``origin/HEAD``) is not over-blocked (#2844 #4)."""
+
+    def _develop_clone_without_origin_head(self, path: Path) -> Path:
+        # A managed clone sitting on ``develop`` with NO origin/HEAD pointer —
+        # the real default is neither origin/HEAD-resolvable nor in {main,master}.
+        path.mkdir(parents=True)
+        _git(path, "init", "-b", "develop")
+        _git(path, "remote", "add", "origin", _MANAGED_REMOTE)
+        (path / "app.py").write_text("x = 1\n")
+        _git(path, "add", "app.py")
+        _git(path, "commit", "-m", "init")
+        return path
+
+    def test_checkout_of_real_default_develop_is_allowed(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        clone = self._develop_clone_without_origin_head(tmp_path / "teatree")
+        event = _bash_event("git checkout develop", clone, "sess-develop-ok")
+        assert router.handle_block_main_clone_mutation(event) is False
+        assert _deny(capsys) is None
+
+    def test_checkout_of_other_branch_still_blocked_on_develop_clone(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The fallback adds ONLY the current branch (develop) to the safe set —
+        # an off-default switch is still blocked, so the gate is not weakened.
+        clone = self._develop_clone_without_origin_head(tmp_path / "teatree")
+        event = _bash_event("git checkout feature", clone, "sess-develop-feat")
+        assert router.handle_block_main_clone_mutation(event) is True
+        assert _deny(capsys) is not None
+
+
 class TestNeverLockout:
     def test_per_call_token_allows(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         clone = _managed_main_clone(tmp_path / "teatree")

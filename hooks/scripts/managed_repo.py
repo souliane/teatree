@@ -208,14 +208,38 @@ def resolve_branch_and_root(parent: str) -> tuple[str, str] | None:
 
 
 def default_branch(repo: Path) -> str | None:
-    """Resolve *repo*'s default branch from ``origin/HEAD`` (e.g. ``main``), else None."""
+    """Resolve *repo*'s default branch (e.g. ``main`` / ``develop``), else None.
+
+    Primary signal: ``origin/HEAD`` (the remote's default branch pointer). When
+    that pointer is UNSET — a clone created without ``git remote set-head``, or
+    one whose true default is ``develop``/``trunk`` and was never recorded —
+    fall back to the branch the clone is currently ON. A correctly-maintained
+    main clone sits on its own default branch, so its current branch is the best
+    remaining default signal; without this fallback the gate would over-block
+    ``git checkout develop`` (and ``t3 update``'s checkout) on such a clone,
+    since ``develop`` is neither ``origin/HEAD``-resolvable nor in the static
+    ``{main, master}`` protected set. The only branch the fallback ever adds to
+    the safe set is the one the clone is already on, so checking it out is a
+    no-op — it can never widen the gate to allow a NEW off-default switch.
+
+    A DETACHED HEAD has no symbolic branch name, so the fallback yields ``None``
+    (``HEAD`` is never a useful checkout target). Returns ``None`` only when
+    neither signal resolves — the gate then falls back to the protected set.
+    """
+    head = _git_text(repo, "symbolic-ref", "refs/remotes/origin/HEAD")
+    if head:
+        return head.rsplit("/", 1)[-1]
+    return _git_text(repo, "symbolic-ref", "--short", "HEAD") or None
+
+
+def _git_text(repo: Path, *args: str) -> str:
+    """Run a read-only ``git`` query in *repo*; ``""`` on any failure/timeout."""
     try:
-        out = subprocess.check_output(  # noqa: S603
-            ["git", "-C", str(repo), "--no-optional-locks", "symbolic-ref", "refs/remotes/origin/HEAD"],  # noqa: S607
+        return subprocess.check_output(  # noqa: S603
+            ["git", "-C", str(repo), "--no-optional-locks", *args],  # noqa: S607
             text=True,
             timeout=3,
             stderr=subprocess.DEVNULL,
         ).strip()
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
-        return None
-    return out.rsplit("/", 1)[-1] if out else None
+        return ""

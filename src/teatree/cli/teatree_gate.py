@@ -38,6 +38,7 @@ SKILL_GATE_KEY = "skill_loading_gate_enabled"
 PLAN_GATE_KEY = "plan_edit_gate_enabled"
 CONFIG_OVERWRITE_GATE_KEY = "config_overwrite_gate_enabled"
 COMPLETION_CLAIM_GATE_KEY = "completion_claim_gate_enabled"
+MAIN_CLONE_GATE_KEY = "main_clone_guard_gate_enabled"
 MEMORY_RECALL_GATE_KEY = "memory_recall_enabled"
 # Master fail-open switch (NEVER-LOCKOUT). Unlike the per-gate kill-switches
 # above (which default ENABLED and read ``is not False``), this is OFF by
@@ -289,6 +290,13 @@ def register_gate_commands(overlay_app: typer.Typer) -> None:
         name="completion-claim",
         key=COMPLETION_CLAIM_GATE_KEY,
         label="Completion-claim gate (on-target evidence before done)",
+    )
+
+    _register_keyed_gate(
+        gate_group,
+        name="main-clone",
+        key=MAIN_CLONE_GATE_KEY,
+        label="Main-clone working-tree mutation gate",
     )
 
     _register_keyed_gate(

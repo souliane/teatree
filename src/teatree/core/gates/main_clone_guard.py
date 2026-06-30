@@ -161,20 +161,37 @@ def _checkout_switch_blocked(subcommand: str, args: list[str], safe_branches: se
     """True iff a checkout/switch leaves the main clone off its default branch.
 
     A create/detach flag (``-b``/``-c``/``--detach`` …) or a pathspec restore
-    (``--`` operand) always blocks. Otherwise the first positional is the move
-    target: blocked unless it is the resolved default branch or a protected
-    branch. A bare ``git checkout`` with no positional moves nothing, so it
+    (``--`` operand) always blocks. Otherwise the first move target is the first
+    positional: blocked unless it is the resolved default branch or a protected
+    branch. A bare ``git checkout`` with no move target moves nothing, so it
     allows.
+
+    A lone ``-`` (``git checkout -`` / ``git switch -``, toggle to the PREVIOUS
+    branch) is a move target, not a flag — it lands the clone off the default
+    just as ``@{-1}`` does — so it is treated as a positional and blocks. This
+    is the exact incident class: ``git checkout -`` from a main-clone cwd
+    silently switches the clone to whatever it was last on.
     """
     move_flags = _CHECKOUT_MOVE_FLAGS if subcommand == "checkout" else _SWITCH_MOVE_FLAGS
     if any(arg in move_flags for arg in args):
         return True
     if "--" in args:
         return True
-    target = next((arg for arg in args if not arg.startswith("-")), None)
+    target = next((arg for arg in args if _is_move_target(arg)), None)
     if target is None:
         return False
     return target not in safe_branches
+
+
+def _is_move_target(arg: str) -> bool:
+    """Whether *arg* is a positional move target (a branch/ref), not a flag.
+
+    A bare ``-`` is git's "previous branch" shorthand — a positional, never a
+    flag — so it counts as a move target. Every other ``-``-prefixed token is a
+    flag (handled by the move-flag / ``--`` checks); a non-dash token is a
+    plain ref.
+    """
+    return arg == "-" or not arg.startswith("-")
 
 
 def _render(subcommand: str, args: list[str]) -> str:
