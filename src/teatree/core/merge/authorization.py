@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from teatree.core.author_trust import classify_author
 from teatree.core.merge.ci_rollup import fetch_pr_author
 from teatree.core.merge.errors import MergePreconditionError
+from teatree.core.models.review_verdict import HeadVerdictState, ReviewVerdict
 
 if TYPE_CHECKING:
     from teatree.core.models import MergeClear
@@ -301,6 +302,46 @@ def _assert_rubric_satisfied(clear: "MergeClear", head_sha: str) -> None:
         check_rubric_satisfied(ticket, head_sha, transition="merge")
     except RubricNotSatisfiedError as exc:
         raise MergePreconditionError(str(exc)) from exc
+
+
+def assert_review_verdict_gate(*, slug: str, pr_id: int, head_sha: str) -> None:
+    """Refuse the merge unless the effective verdict at the live head is merge_safe (#2829).
+
+    The single chokepoint :func:`teatree.core.merge.execution.execute_bound_merge`
+    runs this at its top, so NEITHER autonomous merge path — the keystone CLEAR
+    path nor the solo-overlay bypass — can reach the forge squash PUT without a
+    recorded INDEPENDENT cold-review (a non-self-attested
+    :class:`~teatree.core.models.review_verdict.ReviewVerdict`, since
+    ``ReviewVerdict.record`` forbids a maker/coding-agent/loop reviewer) that
+    vouches for the EXACT live head. ``ReviewVerdict.reviewed_sha`` +
+    ``is_stale_at`` give the head-SHA bind for free: a force-push moves the head,
+    every prior verdict (PASS and HOLD) goes stale, and the gate fails closed.
+
+    Newest-wins semantic (the user's chosen rule B): a later merge_safe overrides
+    an earlier HOLD, an even-later HOLD re-blocks. The two refusal classes carry
+    distinct messages — requirement (a): no non-stale merge_safe at the head
+    (fail closed on no verdict); requirement (b): the most-recent non-stale
+    verdict is a HOLD not superseded by a later merge_safe.
+    """
+    head = head_sha.strip().lower()
+    state = ReviewVerdict.objects.effective_state_at(slug=slug, pr_id=pr_id, head_sha=head)
+    if state is HeadVerdictState.NO_MERGE_SAFE:
+        msg = (
+            f"no recorded merge_safe ReviewVerdict at the live head {head} for {slug}#{pr_id} — "
+            f"refusing to merge (#2829). A merge requires an INDEPENDENT cold-review recorded "
+            f"against the exact reviewed tree (`t3 <overlay> ticket clear …` records it as a "
+            f"by-product, or `t3 <overlay> review record … --verdict merge_safe`). A force-push "
+            f"moves the head and staleness invalidates every prior verdict, so re-record at the "
+            f"new head."
+        )
+        raise MergePreconditionError(msg)
+    if state is HeadVerdictState.HOLD:
+        msg = (
+            f"an independent reviewer recorded a HOLD at this head ({head}) for {slug}#{pr_id} "
+            f"not superseded by a later merge_safe — refusing to merge (#2829). The newest "
+            f"non-stale verdict at the head is a HOLD; record a later merge_safe to override it."
+        )
+        raise MergePreconditionError(msg)
 
 
 def assert_public_repo_author_trusted(*, slug: str, pr_id: int, host_kind: str = "github") -> None:
