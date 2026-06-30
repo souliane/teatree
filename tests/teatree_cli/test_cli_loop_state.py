@@ -2,9 +2,11 @@
 
 from unittest.mock import patch
 
+from django.test import TestCase
 from typer.testing import CliRunner
 
 from teatree.cli.loop import loop_app
+from teatree.core.models import LoopState, LoopStatus
 
 runner = CliRunner()
 
@@ -45,3 +47,23 @@ class TestLoopStateCli:
             result = runner.invoke(loop_app, ["loop-state", "review"])
         assert result.exit_code == 0, result.stdout
         call.assert_called_once_with("loop_state", "status", "review")
+
+
+class TestLoopStateCommandIsReadOnly(TestCase):
+    """``t3 loop loop-state <name>`` is a strict READ, end-to-end (no mock).
+
+    It must report the durable status WITHOUT mutating it, and its output must
+    read as a status — not the mutation-verb "is now <status>" phrasing that an
+    operator can mistake for a pause/enable that just happened.
+    """
+
+    def test_loop_state_does_not_mutate_an_enabled_loop(self) -> None:
+        result = runner.invoke(loop_app, ["loop-state", "review"])
+        assert result.exit_code == 0, result.stdout
+        assert LoopState.objects.status_of("review") is LoopStatus.ENABLED
+        assert not LoopState.objects.filter(name="review").exists()
+
+    def test_loop_state_output_reads_as_a_status(self) -> None:
+        result = runner.invoke(loop_app, ["loop-state", "review"])
+        assert "is now" not in result.stdout
+        assert "ENABLED" in result.stdout

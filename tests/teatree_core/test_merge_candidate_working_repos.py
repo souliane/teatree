@@ -36,6 +36,7 @@ from teatree.config import OverlayEntry
 from teatree.core.merge import MergePreconditionError, merge_ticket_pr, pr_slug_resolution
 from teatree.core.models import MergeClear
 from teatree.core.overlay import OverlayBase
+from tests.teatree_core.conftest import seed_merge_safe_verdict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -189,6 +190,8 @@ class TestWorkingRepoCandidateEnumeration(TestCase):
     def test_probe_finds_working_repo_when_clone_origin_pr_is_unrelated(self) -> None:
         """End-to-end: a working-repo PR at the reviewed SHA merges via the probe."""
         clear = _working_repo_clear()
+        # The merge resolves to the working repo; seed the #2829 verdict there.
+        seed_merge_safe_verdict(slug=_WORKING_REPO_SLUG, pr_id=clear.pr_id, sha=clear.reviewed_sha)
         calls: list[list[str]] = []
 
         with (

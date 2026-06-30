@@ -113,6 +113,22 @@ class FinalStateMatcher:
 # assertion about the run's final assistant message (the end state).
 ExpectItem = Matcher | AnyOf | FinalStateMatcher
 
+#: The SINGLE SOURCE OF TRUTH for the matcher grammar, read by every place that has
+#: to agree on it: the loader compiles ``_OP_PATTERN`` from ``MATCHER_OPERATORS`` and
+#: keys its ``expect``-entry dispatch on ``MATCHER_KINDS``; the grader
+#: (``report._dispatch``) branches on the same operators; and the dream eval
+#: synthesizer prompt (``llm_eval_proposer``) enumerates BOTH so it can never tell
+#: the model to emit a shape the loader rejects. Hand-duplicating the grammar into
+#: the prompt is exactly what dropped every derived candidate in #2646 — these
+#: constants make a future operator/kind change touch one place and fan out, instead
+#: of silently re-opening the drift.
+#:
+#: ``MATCHER_OPERATORS`` are the operator tokens an ``op "value"`` expression may use
+#: (``contains`` substring / ``~`` regex). ``MATCHER_KINDS`` are the four
+#: ``expect``-entry kinds, ordered as the synthesizer prompt teaches them.
+MATCHER_OPERATORS: tuple[str, ...] = ("contains", "~")
+MATCHER_KINDS: tuple[str, ...] = ("tool_call", "no_tool_call_matching", "any_of", "final_state")
+
 #: Case aliases mapping a tool name's lowercase form to its canonical name. The
 #: single source of truth so the grader (``report._canonicalize_tool``) and the
 #: metered runner's toolset restriction (``api_runner.compute_disallowed_tools``)

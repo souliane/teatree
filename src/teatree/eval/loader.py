@@ -19,6 +19,8 @@ from teatree.agents.model_tiering import TIER_MODELS
 from teatree.eval.models import (
     CLEAN_ROOM_LANE,
     DEFAULT_MAX_TURNS,
+    MATCHER_KINDS,
+    MATCHER_OPERATORS,
     PERMITTED_LANES,
     AnyOf,
     EvalSpec,
@@ -39,7 +41,10 @@ DEFAULT_TOOLS: tuple[str, ...] = ("Bash",)
 DEFAULT_JUDGE_MODEL = "claude-sonnet-4-6"
 DEFAULT_JUDGE_MAX_OUTPUT_TOKENS = 512
 
-_OP_PATTERN = re.compile(r'^(contains|~)\s+"(.*)"$')
+# Compiled FROM the single-source-of-truth operator set (teatree.eval.models) so the
+# loader, the grader, and the dream synthesizer prompt cannot drift apart on which
+# operators an `op "value"` expression may use.
+_OP_PATTERN = re.compile(rf'^({"|".join(re.escape(op) for op in MATCHER_OPERATORS)})\s+"(.*)"$')
 
 
 class EvalSpecError(ValueError):
@@ -224,11 +229,8 @@ def _parse_matcher(item: object, spec_name: str, path: Path) -> ExpectItem:
         return _parse_negative(item_map, spec_name, path)
     if "final_state" in item_map:
         return _parse_final_state(item_map, spec_name, path)
-    raise EvalSpecError(
-        path,
-        None,
-        f"spec {spec_name!r}: expect entry must have `tool_call`, `no_tool_call_matching`, `any_of`, or `final_state`",
-    )
+    kinds = ", ".join(f"`{kind}`" for kind in MATCHER_KINDS)
+    raise EvalSpecError(path, None, f"spec {spec_name!r}: expect entry must have one of {kinds}")
 
 
 def _parse_final_state(item: Mapping[str, Any], spec_name: str, path: Path) -> FinalStateMatcher:

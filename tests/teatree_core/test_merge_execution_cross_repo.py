@@ -27,6 +27,7 @@ from django.test import TestCase
 from teatree.config import OverlayEntry
 from teatree.core.merge import MergePreconditionError, merge_ticket_pr
 from teatree.core.models import MergeClear
+from tests.teatree_core.conftest import seed_merge_safe_verdict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -120,6 +121,8 @@ class TestCrossRepoCandidateProbe(TestCase):
 
     def test_probe_finds_overlay_repo_when_clone_origin_pr_is_unrelated(self) -> None:
         clear = _cross_repo_clear()
+        # The merge resolves to the overlay repo; seed the #2829 verdict there.
+        seed_merge_safe_verdict(slug=_OVERLAY_REPO, pr_id=clear.pr_id, sha=clear.reviewed_sha)
         calls: list[list[str]] = []
         candidate_entries = [
             OverlayEntry(name="downstream", overlay_class="", project_path=Path("/clones/downstream-overlay")),
@@ -236,6 +239,8 @@ class TestCrossRepoCandidateProbe(TestCase):
         PR #N head matches ``reviewed_sha``, so the probe recovers it.
         """
         clear = _cross_repo_clear()
+        # The probe recovers the overlay repo as the merge target — seed there.
+        seed_merge_safe_verdict(slug=_OVERLAY_REPO, pr_id=clear.pr_id, sha=clear.reviewed_sha)
         calls: list[list[str]] = []
         candidate_entries = [
             OverlayEntry(name="downstream", overlay_class="", project_path=Path("/clones/downstream-overlay")),
@@ -306,6 +311,8 @@ class TestCrossRepoCandidateProbe(TestCase):
         proceeds with no extra ``gh`` calls.
         """
         clear = _cross_repo_clear()
+        # The clone origin is the resolved merge target here — seed the verdict there.
+        seed_merge_safe_verdict(slug=_CLONE_ORIGIN, pr_id=clear.pr_id, sha=clear.reviewed_sha)
         calls: list[list[str]] = []
         # The clone origin owns the matching SHA — no need to probe overlays.
         candidate_entries = [

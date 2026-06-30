@@ -60,6 +60,9 @@ def _entry_line(entry: LoopStatusEntry, now: dt.datetime) -> str:
     line = f"  {entry.name:<22} {enabled:<8} cadence {cadence:<7} last {age:<10} next {next_tick}"
     if entry.kind.value == "infra-slot":
         line += "  held" if entry.held else "  idle"
+    elif entry.held:
+        # A held mini-loop keeps enabled=True + a live countdown — the marker is its only "won't tick" signal.
+        line += "  held"
     return line
 
 

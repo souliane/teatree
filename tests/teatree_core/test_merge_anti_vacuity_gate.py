@@ -21,6 +21,7 @@ from django.test import TestCase
 from teatree.config import UserSettings
 from teatree.core.merge import MergePreconditionError, merge_ticket_pr
 from teatree.core.models import MergeClear, Ticket
+from tests.teatree_core.conftest import seed_merge_safe_verdict
 from tests.teatree_core.test_merge_execution import _GhStub
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -60,6 +61,9 @@ def _gate(*, required: bool) -> Iterator[None]:
 
 
 def _merge(clear: MergeClear) -> object:
+    # Seed the #2829 sibling verdict the real ``clear`` path records (the gate
+    # is downstream of the anti-vacuity check, so a refuse test is unaffected).
+    seed_merge_safe_verdict(slug=clear.slug, pr_id=clear.pr_id, sha=clear.reviewed_sha)
     with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_GhStub()):
         return merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
 

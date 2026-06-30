@@ -24,6 +24,7 @@ from django.test import TestCase
 from teatree.core.merge import MergePreconditionError, merge_ticket_pr
 from teatree.core.models import MergeAudit, MergeClear
 from tests.factories import _FORTY_HEX, MergeClearFactory, TicketFactory
+from tests.teatree_core.conftest import seed_merge_safe_verdict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -135,6 +136,8 @@ class TestNonGreenVerdictNeverMerges(TestCase):
     def test_green_verdict_clear_merges_through_the_keystone(self) -> None:
         clear = MergeClearFactory()
         ticket = clear.ticket
+        # Seed the #2829 sibling verdict the real ``clear`` path records.
+        seed_merge_safe_verdict(slug=clear.slug, pr_id=clear.pr_id, sha=clear.reviewed_sha)
         with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub_live_green):
             merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
         ticket.refresh_from_db()

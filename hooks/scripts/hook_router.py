@@ -5670,20 +5670,20 @@ def handle_enforce_structured_question(data: dict) -> bool | None:
     ``_is_classifier_relax_explanation`` and let it through, avoiding the
     infinite block → explain → block loop.
 
-    Context-aware: this gate exists because an inline question is invisible in
-    an autonomous/loop run (it reads as a log line, so the decision is lost). In
-    an attended interactive session a human IS reading the prose, so the gate is
-    pointless nagging. It therefore only enforces on a loop-driven turn —
-    ``_session_drives_loop`` is the same signal the loop-registration gate uses
-    (this session owns the tick, OR there is no live owner). When a *different*
-    live session owns the loop, this is the attended session and the gate is
-    skipped. DEGRADATION CONTRACT — FAIL SAFE: an unknown/unreadable ownership
-    signal yields a driver verdict (see ``_session_drives_loop``), so the gate
-    keeps firing.
+    Context-aware: an inline question is invisible in an autonomous/loop run (it
+    reads as a log line, so the decision is lost), but in an attended session a
+    human IS reading the prose, so the gate is pointless nagging. Two attended
+    signals skip it (mirroring ``handle_mirror_question_to_slack``): a LIVE USER
+    TURN — the user typed a prompt seconds ago in THIS session
+    (``_is_live_user_turn``), responding in real time, even when this session is
+    the SessionStart-designated tick-owner (``_session_drives_loop`` true); and a
+    NON-OWNER turn — a *different* live session owns the loop. It thus enforces
+    only on a genuine autonomous turn: a driver verdict AND no live user turn.
+    FAIL SAFE: unknown ownership or an ``_is_live_user_turn`` error keep it firing.
     """
     if data.get("stop_hook_active"):
         return None
-    if not _session_drives_loop(data.get("session_id", "")):
+    if _is_live_user_turn(data) or not _session_drives_loop(data.get("session_id", "")):
         return None
     turn = _last_assistant_turn(data.get("transcript_path", ""))
     if turn is None:

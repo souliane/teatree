@@ -18,6 +18,7 @@ can never carry — issuance refuses a non-green CLEAR) is recorded directly via
 drift apart.
 """
 
+import enum
 from dataclasses import dataclass
 from typing import ClassVar, TypedDict
 
@@ -30,6 +31,23 @@ from teatree.core.models.ticket import Ticket
 
 class ReviewVerdictError(ValueError):
     """A ``ReviewVerdict`` was rejected at record time — the contract failed."""
+
+
+class HeadVerdictState(enum.Enum):
+    """The effective (newest-wins) verdict state among a PR's non-stale verdicts at a head.
+
+    The merge gate's three outcomes (#2829): ``NO_MERGE_SAFE`` fails closed
+    (requirement a — no recorded independent merge_safe vouches for the live
+    head); ``HOLD`` re-blocks (requirement b — the most-recent non-stale
+    verdict is a HOLD not superseded by a later merge_safe); ``MERGE_SAFE``
+    allows (the latest verdict at the head is merge_safe). The "newest-wins"
+    rule is the user-chosen semantic: a later PASS overrides an earlier HOLD,
+    an even-later HOLD re-blocks.
+    """
+
+    NO_MERGE_SAFE = "no_merge_safe"
+    HOLD = "hold"
+    MERGE_SAFE = "merge_safe"
 
 
 class FindingDict(TypedDict):
@@ -103,6 +121,35 @@ class ReviewVerdictManager(models.Manager["ReviewVerdict"]):
         reports against the PR's live head.
         """
         return self.for_pr(slug, pr_id).first()
+
+    def effective_state_at(self, *, slug: str, pr_id: int, head_sha: str) -> "HeadVerdictState":
+        """The newest-wins verdict state among the NON-STALE verdicts at *head_sha* (#2829).
+
+        The effective verdict is the most-recent non-stale verdict by its
+        recorded timestamp: ALLOW iff a non-stale ``merge_safe`` exists whose
+        timestamp is ``>=`` every non-stale ``hold``'s (a later PASS overrides
+        an earlier HOLD; an even-later HOLD re-blocks). A ``>=`` (not ``>``)
+        comparison makes a same-timestamp tie resolve to PASS. *head_sha* is
+        normalised the way :meth:`ReviewVerdict.is_stale_at` stores it.
+
+        Returns :attr:`HeadVerdictState.NO_MERGE_SAFE` when no non-stale
+        merge_safe exists (fail closed), :attr:`HeadVerdictState.HOLD` when the
+        latest non-stale verdict is a HOLD, else
+        :attr:`HeadVerdictState.MERGE_SAFE`. Shared by the merge-time gate
+        (:func:`teatree.core.merge.authorization.assert_review_verdict_gate`)
+        and the solo-sweep predicate
+        (:func:`teatree.loop.scanners.pr_sweep_decision.has_independent_cold_review`)
+        so the two cannot drift.
+        """
+        head = head_sha.strip().lower()
+        non_stale = [verdict for verdict in self.for_pr(slug, pr_id) if not verdict.is_stale_at(head)]
+        merge_safe_times = [verdict.recorded_at for verdict in non_stale if verdict.is_merge_safe()]
+        if not merge_safe_times:
+            return HeadVerdictState.NO_MERGE_SAFE
+        hold_times = [verdict.recorded_at for verdict in non_stale if not verdict.is_merge_safe()]
+        if hold_times and max(hold_times) > max(merge_safe_times):
+            return HeadVerdictState.HOLD
+        return HeadVerdictState.MERGE_SAFE
 
 
 class ReviewVerdict(models.Model):

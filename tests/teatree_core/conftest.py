@@ -7,8 +7,36 @@ from unittest.mock import patch
 import pytest
 
 from teatree.core.models import Worktree
+from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.core.overlay import OverlayBase, ProvisionStep, RunCommands
 from teatree.core.overlay_loader import reset_overlay_cache
+
+
+def seed_merge_safe_verdict(
+    *,
+    slug: str,
+    pr_id: int,
+    sha: str,
+    reviewer: str = "cold-reviewer",
+) -> ReviewVerdict:
+    """Record the non-author MERGE_SAFE verdict the #2829 merge-verdict gate requires.
+
+    ``execute_bound_merge`` now refuses any merge that lacks a non-stale
+    independent ``merge_safe`` :class:`ReviewVerdict` at the live head. The
+    production ``t3 <overlay> ticket clear`` path records exactly this verdict
+    as a by-product of issuing the CLEAR; tests that build the CLEAR via
+    ``MergeClear.issue`` / ``.objects.create`` (bypassing that command) seed it
+    here so they still exercise the merge. Seeding is NOT a weakening — it
+    reproduces what the real clear path records, with a non-author reviewer.
+    """
+    return ReviewVerdict.record(
+        pr_id=pr_id,
+        slug=slug,
+        reviewed_sha=sha,
+        verdict=ReviewVerdict.Verdict.MERGE_SAFE,
+        reviewer_identity=reviewer,
+    )
+
 
 pytestmark = pytest.mark.filterwarnings(
     "ignore:In Typer, only the parameter 'autocompletion' is supported.*:DeprecationWarning",

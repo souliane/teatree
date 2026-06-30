@@ -437,10 +437,13 @@ Before opening a new MR/PR, check whether a sibling PR for the **same ticket** i
 gh pr list --repo <repo> --search "<ticket-ref> is:open" --json number,headRefName,baseRefName
 ```
 
+**First question is whether a second PR should exist at all.** Per [`../rules/SKILL.md`](../rules/SKILL.md) § "Fewest PRs for Related Work", related work ships as **one** PR — if the new commits serve the same goal as the sibling, add them to the sibling's branch (bundle), do not open a second PR. Splitting one coherent change into multiple/stacked PRs needs the user's explicit, up-front approval.
+
 If a sibling is open, **do not open a second PR targeting the default branch** — the two branches will diverge on the same files and the second one will need a painful 3-way merge. Pick one:
 
-1. **Wait for the sibling to merge**, then rebase the new work on the updated default branch and open the PR.
-2. **Stack on the sibling's branch** — set the new PR's base to the sibling's source branch (`gh pr create --base <sibling-branch>`). Update the base to the default branch after the sibling merges, so the stacked PR stays minimal.
+1. **Bundle into the sibling (default)** — add the commits to the sibling's branch (per `## Bundle Into an Existing Open PR` below). One coherent change, one PR.
+2. **Wait for the sibling to merge**, then rebase the new work on the updated default branch and open the PR — only when the new work is genuinely a *separate* concern.
+3. **Stack on the sibling's branch** — `gh pr create --base <sibling-branch>`. This splits related work across PRs, so use it **only with the user's explicit approval** (or when the two are genuinely disjoint concerns that merely share a base); update the base to the default branch after the sibling merges.
 
 **Never open two PRs on the same ticket targeting the default branch in parallel.** The only exception is when the two PRs touch genuinely disjoint files (different repos, different modules with no shared imports, no overlapping generated docs) — and even then, the second PR's description must name the sibling PR it races with.
 

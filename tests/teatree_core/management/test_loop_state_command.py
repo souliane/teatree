@@ -72,6 +72,33 @@ class TestLoopStateCommand(TestCase):
         assert payload["status"] == "enabled"
 
 
+class TestStatusSubcommandIsAReadNotAMutation(TestCase):
+    """``status`` is a strict READ — no mutation, and its output reads like one.
+
+    The shared ``_report`` printed ``OK    loop 'x' is now <status>.`` — the
+    mutation-verb phrasing — so a ``status`` read was indistinguishable from a
+    pause/enable that had just changed the loop. The read now prints a
+    status-shaped line, and never writes a ``LoopState`` row.
+    """
+
+    def test_status_leaves_an_enabled_loop_enabled_and_writes_no_row(self) -> None:
+        _run("status", "review")
+        assert LoopState.objects.status_of("review") is LoopStatus.ENABLED
+        assert not LoopState.objects.filter(name="review").exists()
+
+    def test_status_text_reads_as_a_status_not_a_mutation(self) -> None:
+        out = _run("status", "review")
+        assert "is now" not in out
+        assert "status:" in out.lower()
+        assert "ENABLED" in out
+
+    def test_status_reports_a_paused_loop_without_changing_it(self) -> None:
+        _run("pause", "review")
+        out = _run("status", "review")
+        assert "PAUSED" in out
+        assert LoopState.objects.status_of("review") is LoopStatus.PAUSED
+
+
 class TestLoopStateSetsLoopRowEnabled(TestCase):
     """``enable``/``disable`` must set ``Loop.enabled`` — the master-tick source of truth.
 

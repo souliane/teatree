@@ -56,7 +56,7 @@ Show the commit log to the user.
 
 ### 1a. Bundle Sibling Retro Branches (Default)
 
-When multiple local branches hold unpushed retro commits from the **same session** or same logical topic, **bundle them into a single PR by default** — do not open one PR per branch. Each PR costs a review cycle; the user's explicit policy is to minimise the number of PRs when commits belong together.
+When multiple local branches hold unpushed retro commits from the **same session** or same logical topic, **bundle them into a single PR by default** — do not open one PR per branch. Each PR costs a review cycle; the user's explicit policy is to minimise the number of PRs when commits belong together. This is the retro-commit instance of the general [`../rules/SKILL.md`](../rules/SKILL.md) § "Fewest PRs for Related Work" rule — related work ships as one PR, and splitting needs explicit user approval.
 
 **Detect siblings:**
 

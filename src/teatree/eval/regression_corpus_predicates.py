@@ -192,12 +192,18 @@ def _check_merge_precondition_maker_is_not_checker() -> bool:
 
 
 def _check_loop_owner_lease_pid_anchored() -> bool:
-    """#1604/#1722: an alive foreign owner past its TTL is never hijacked.
+    """#1604/#1722: an alive DIFFERENT-PROCESS foreign owner past its TTL is never hijacked.
 
     The pre-fix lease released on TTL lapse alone, so a fresh session stole a
-    busy owner's loop. The pid-anchored ``claim_ownership`` must:
-    * refuse a foreign claim while the owner's pid is alive (even past TTL), and
-    * grant the claim once the owner's pid is dead and the TTL has lapsed.
+    busy owner's loop. The pid-anchored ``claim_ownership`` must refuse a
+    DIFFERENT-process foreign claim while the owner's pid is alive (even past
+    TTL — a genuine hijack is always a different OS process), and grant the
+    claim once the owner's pid is dead and the TTL has lapsed.
+
+    A same-process claim with a rotated session id is NOT a hijack but a
+    post-compaction self-reclaim (#2835), so the foreign owner here is modelled
+    with a DIFFERENT alive pid (``os.getppid()``, the alive parent) than the
+    claiming process (``os.getpid()``).
     """
     from datetime import timedelta  # noqa: PLC0415
 
@@ -206,10 +212,10 @@ def _check_loop_owner_lease_pid_anchored() -> bool:
     from teatree.core.models import LoopLease  # noqa: PLC0415
 
     name = "regression-lease"
-    alive_pid = os.getpid()
+    foreign_alive_pid = os.getppid()
     LoopLease.objects.filter(name=name).delete()
-    LoopLease.objects.claim_ownership(name, session_id="owner-session", owner_pid=alive_pid, ttl_seconds=1800)
-    # Force the TTL to have lapsed; only the alive pid now protects the lease.
+    LoopLease.objects.claim_ownership(name, session_id="owner-session", owner_pid=foreign_alive_pid, ttl_seconds=1800)
+    # Force the TTL to have lapsed; only the alive foreign pid now protects the lease.
     LoopLease.objects.filter(name=name).update(lease_expires_at=timezone.now() - timedelta(seconds=10))
     won_against_alive, _ = LoopLease.objects.claim_ownership(
         name, session_id="thief-session", owner_pid=os.getpid(), ttl_seconds=1800
