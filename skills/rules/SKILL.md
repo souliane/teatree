@@ -700,6 +700,18 @@ When a PR targets a non-default branch, that is intentional — it means the PR 
 
 Destroying PR dependency chains wastes hours of carefully organized work.
 
+## Fewest PRs for Related Work — Splitting Requires Approval (Non-Negotiable)
+
+Ship a piece of **related** work as **one** PR. Do not preemptively carve a single coherent change into a chain of stacked or follow-up PRs. The user's standing policy: teatree ships related work in **as few PRs as possible**, and **splitting related work across multiple PRs needs the user's explicit, up-front approval**. Without that approval, the default is one PR.
+
+- The small-focused-PR habit is a human code-**review** convenience; it does not transfer to agent-driven, self-verified work. When the user is not reviewing PRs, splitting buys nothing and costs more — every extra PR multiplies CI runs, base-branch drift, stacked-rebase overhead, BLUEPRINT churn, and partial-merge states, and each seam is a fresh place for error.
+- "Related" is a judgment call: commits that serve **one goal** (one feature, one refactor, one migration — even across several files or several days) belong together. A migration that touches N fields is one PR, not N PRs.
+- Genuinely **unrelated** work still gets its own PR — this rule minimises PRs _within_ a coherent change, it does not bundle disjoint concerns.
+- When you believe a split is genuinely warranted (e.g. an enormous diff, or a risky change that benefits from landing a safe prerequisite first), **ask the user first** and proceed only on an explicit yes. If you proceed without asking, ship it as one PR.
+- Per-commit granularity inside one PR is encouraged — meaningful, self-contained commits on a single branch give you reviewable history without paying the multi-PR cost.
+
+This generalises the `/t3:contribute` "bundle into a single PR by default" rule from retro commits to **all** related work, and gates the stacking option in `/t3:ship` § "One Open PR Per Ticket" behind explicit approval.
+
 ## Always Create Tasks
 
 On **every prompt**, use `TaskCreate` to create tasks before doing any work — even for a single task. Mark each task `in_progress` when starting, `completed` when done. Never skip this. Visible task tracking prevents forgotten steps and shows the user your progress.
