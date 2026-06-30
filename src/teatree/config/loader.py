@@ -323,7 +323,6 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
     user = UserSettings(
         worktrees_dir=worktrees_dir,
         privacy=teatree.get("privacy", ""),
-        check_updates=teatree.get("check_updates", True),
         # Strict bool: only a real TOML boolean ``true`` engages autoload — a
         # quoted ``"true"`` / ``"false"`` string is ignored (matches the
         # cold-read in ``teatree_settings.autoload_enabled``).
@@ -472,9 +471,13 @@ def worktrees_dir() -> Path:
 def check_for_updates(*, force: bool = False) -> str | None:
     """Resolve a "new release available" notice from config + update_check.
 
-    Reads ``check_updates`` from user config and delegates to
-    :func:`teatree.update_check.run_update_check`. The implementation
-    lives in :mod:`teatree.update_check` (split out for module-health
-    LOC); this wrapper is the config-aware entry point.
+    Reads ``check_updates`` (DB-home #1775) from the ``ConfigSetting`` store via
+    the Django-free ``cold_reader`` — so the opt-out is honoured on the pre-Django
+    CLI paths that are this function's only readers (the root callback, the
+    plain-Typer ``t3 config check-update``), with no Django bootstrap. A missing
+    row fails open to ``True`` (the dataclass default). Delegates to
+    :func:`teatree.update_check.run_update_check` (split out for module-health LOC).
     """
-    return run_update_check(check_updates=_facade.load_config().user.check_updates, force=force)
+    from teatree.config import cold_reader  # noqa: PLC0415 — Django-free DB read on the pre-Django path
+
+    return run_update_check(check_updates=cold_reader.bool_setting("check_updates", default=True), force=force)

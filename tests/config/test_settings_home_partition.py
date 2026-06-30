@@ -21,7 +21,6 @@ _TOML_CARVE_OUT = frozenset(
         "speak",
         "mr_reminder",
         "handover_mirror_path",
-        "check_updates",
         "autoload",
         "statusline_chain",
         "worktrees_dir",
@@ -59,34 +58,33 @@ def test_db_home_and_toml_home_are_disjoint() -> None:
     assert db_home | toml_home == set(SETTING_HOMES)
 
 
-def test_toml_carve_out_is_exactly_the_ten_fields() -> None:
-    # The irreducible carve-out — non-Django / pre-Django readers, infra
-    # bootstrap, nested structured tables — is exactly these ten and no more.
-    # ``autoload`` joined the carve-out (#256, cold pre-Django engagement read);
-    # ``workspace_dir`` left it — it is now DB-home (per-overlay overridable,
-    # regroup-worktrees default, resolved by ``config.worktree_root()``).
+def test_toml_carve_out_is_exactly_the_nine_fields() -> None:
+    # The carve-out — non-Django / pre-Django readers, infra bootstrap, nested
+    # structured tables — is exactly these nine and no more. ``check_updates`` LEFT
+    # it (eliminate-~/.teatree.toml: its pre-Django reader now reads the DB via
+    # ``cold_reader``); ``workspace_dir`` is DB-home (per-overlay overridable).
     toml_home = {k for k, home in SETTING_HOMES.items() if home is SettingHome.TOML}
     assert toml_home == _TOML_CARVE_OUT
     assert "workspace_dir" not in toml_home
+    assert "check_updates" not in toml_home
 
 
 def test_autoload_is_toml_home_not_db() -> None:
     # #256: the cold SessionStart / UserPromptSubmit hooks read ``[teatree]
-    # autoload`` pre-Django, so it must be TOML-home (ignored from the DB store
-    # exactly like ``check_updates``), never DB-home.
+    # autoload`` pre-Django with tomllib to decide engagement, so it is TOML-home
+    # (a DB row is ignored on read), never DB-home.
     assert SETTING_HOMES["autoload"] is SettingHome.TOML
 
 
-def test_check_updates_is_toml_home_not_db() -> None:
-    # config-unify PR5 audit: ``check_updates``'s sole reader ``check_for_updates``
-    # runs only on PRE-DJANGO paths — the CLI root callback (parent ``t3`` process,
-    # every invocation; Django subcommands subprocess to manage.py) and the
-    # plain-Typer ``t3 config check-update``, neither of which bootstraps Django. A
-    # DB-home read there fails safe to the default, so a stored ``check_updates=false``
-    # would be silently ignored and the banner would reappear. It must stay TOML-home.
-    # The behavioural guard is ``test_check_for_updates`` §
-    # ``test_disabled_check_honoured_pre_django_without_network``.
-    assert SETTING_HOMES["check_updates"] is SettingHome.TOML
+def test_check_updates_is_db_home() -> None:
+    # eliminate-~/.teatree.toml: ``check_updates``'s sole reader ``check_for_updates``
+    # runs on PRE-DJANGO paths (the CLI root callback, the plain-Typer ``t3 config
+    # check-update``) — but it now reads the ``ConfigSetting`` store via the
+    # Django-free ``cold_reader``, so a stored ``check_updates=false`` IS honoured
+    # with no Django bootstrap. The "DB read fails safe to the default" concern that
+    # kept it TOML-home is closed by the cold reader. The behavioural guard is
+    # ``test_check_for_updates`` § ``test_disabled_check_honoured_pre_django_via_db``.
+    assert SETTING_HOMES["check_updates"] is SettingHome.DB
 
 
 def test_derived_fields_are_exactly_the_one_computed_value() -> None:

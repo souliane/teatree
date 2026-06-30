@@ -226,10 +226,13 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     so a later ``$HOME`` redirect leaves the suite reading the developer's real
     ``~/.teatree.toml``. A real ``check_updates`` flag in that host config let
     the ``[update] …`` banner prepend non-JSON to a CLI's stdout under the
-    previously default ``--exitfirst`` masked by ``-n auto``. Redirecting the
-    facade ``CONFIG_PATH`` at a hermetic per-test file (``check_updates =
-    false``, no other keys → all other settings default) closes it,
-    deterministically and host-independent. (The former host ``[loops.review]
+    previously default ``--exitfirst`` masked by ``-n auto``. That host-config
+    leak is closed two ways: the facade ``CONFIG_PATH`` is redirected at a hermetic
+    per-test file (no keys → all TOML-home settings default), and ``check_updates``
+    is DB-home (eliminate-~/.teatree.toml: ``check_for_updates`` reads it via the
+    Django-free ``cold_reader``), so under the isolated ``$HOME`` below — with no
+    canonical config DB — it fails open to its dataclass default, never the host
+    value. (The former host ``[loops.review]
     enabled = false`` leak is moot since #2702 removed the ``[loops]`` toml
     read; the ``T3_LOOPS_DISABLED`` env leak below is still cleared per test.)
     """
@@ -243,7 +246,7 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     config_dir = tmp_path / "t3-hermetic-config"
     config_dir.mkdir(parents=True, exist_ok=True)
     hermetic_config = config_dir / ".teatree.toml"
-    hermetic_config.write_text("[teatree]\ncheck_updates = false\n", encoding="utf-8")
+    hermetic_config.write_text("[teatree]\n", encoding="utf-8")
     import teatree.config as _config  # noqa: PLC0415 — patched per-test, import lazily
 
     monkeypatch.setattr(_config, "CONFIG_PATH", hermetic_config)

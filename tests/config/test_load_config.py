@@ -347,8 +347,9 @@ def test_billing_cycle_defaults(tmp_path: Path) -> None:
 class TestAutoloadSetting:
     """``autoload`` is TOML-home (#256): default OFF, ``[teatree] autoload`` enables, env wins.
 
-    Mirrors ``check_updates`` — a cold-hook-readable TOML-home bool resolved from
-    the ``[teatree]`` table + ``T3_AUTOLOAD`` env, never the DB store.
+    A cold-hook-readable TOML-home bool resolved from the ``[teatree]`` table +
+    ``T3_AUTOLOAD`` env, never the DB store (the cold SessionStart hooks read it
+    pre-Django with tomllib).
     """
 
     def test_default_is_off_with_empty_teatree_table(self, tmp_path: Path) -> None:

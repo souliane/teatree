@@ -388,6 +388,10 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "contribute_plugin_dir": _parse_strict_bool,
     "dream_propose_evals": _parse_strict_bool,
     "hook_fetch_titles": _parse_strict_bool,
+    # eliminate-~/.teatree.toml: ``check_updates``'s sole reader ``check_for_updates``
+    # runs pre-Django but now reads the DB via ``cold_reader`` (Django-free), so a
+    # stored ``check_updates=false`` IS honoured. DB-home, seeded by ``t3 setup``.
+    "check_updates": _parse_strict_bool,
 }
 
 # TOML-home keys that ALSO support a per-overlay ``[overlays.<name>]`` override.
@@ -496,11 +500,11 @@ class UserSettings:
     # Claude session does NOT auto-engage teatree — no skill auto-suggest, no
     # PreToolUse load-block, no loop scheduling — and SessionStart shows a
     # one-line how-to-start advisory instead. The owner flips it true to
-    # auto-activate every session. TOML-home like ``check_updates`` (the cold
-    # SessionStart / UserPromptSubmit hooks read it pre-Django, so it can never
-    # move into the DB store); ``T3_AUTOLOAD`` env wins. A DB row is ignored on
-    # read. Explicitly calling ``/teatree`` — or loading any ``t3:`` skill —
-    # engages teatree for the session regardless of this default.
+    # auto-activate every session. TOML-home: the cold SessionStart /
+    # UserPromptSubmit hooks read ``[teatree] autoload`` pre-Django with tomllib;
+    # ``T3_AUTOLOAD`` env wins. A DB row is ignored on read. Explicitly calling
+    # ``/teatree`` — or loading any ``t3:`` skill — engages teatree for the
+    # session regardless of this default.
     autoload: bool = False
     timezone: str = ""
     contribute: bool = False
