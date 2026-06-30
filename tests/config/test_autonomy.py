@@ -16,9 +16,9 @@ all DB-home, so this exercises the collapse via ``ConfigSetting`` rows: an
 overlay-scoped row is the per-overlay opinion (``hard_pinned``); a global-scope
 row is the global opinion (still wins for a gate, harmless for ``mode``).
 
-The safety/quality floor is out of scope by construction. ``privacy`` is
-TOML-home and untouched; ``orchestrator_bash_gate_enabled`` (TOML-home) is the
-never-lockout posture and is never relaxed by the collapse.
+The safety/quality floor is out of scope by construction. ``autoload`` (TOML-home)
+is untouched by the collapse; ``orchestrator_bash_gate_enabled`` (DB-home since
+eliminate-~/.teatree.toml) keeps its never-lockout default and is never relaxed.
 """
 
 from pathlib import Path
@@ -102,14 +102,17 @@ class TestAutonomyFullResolution(_AutonomyDbBase):
         assert settings.require_human_approval_to_answer is False
 
     def test_full_leaves_safety_floor_untouched(self) -> None:
+        # ``autoload`` is the TOML-home representative untouched by the collapse
+        # (eliminate-~/.teatree.toml moved privacy to the DB). orchestrator_bash_gate_enabled
+        # is DB-home now and keeps its default — also untouched by the collapse.
         _write_toml(
             self.config_path,
-            '[teatree]\nprivacy = "strict"\n\n[overlays.trusted]\nclass = "x:Y"\n',
+            '[teatree]\nautoload = true\n\n[overlays.trusted]\nclass = "x:Y"\n',
         )
         ConfigSetting.objects.set_value("autonomy", "full", scope="trusted")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
         settings = get_effective_settings()
-        assert settings.privacy == "strict"
+        assert settings.autoload is True
         assert settings.orchestrator_bash_gate_enabled is True
 
     def test_explicit_per_gate_override_wins_over_full(self) -> None:
@@ -177,12 +180,12 @@ class TestAutonomyNotifyTier(_AutonomyDbBase):
     def test_notify_leaves_safety_floor_untouched(self) -> None:
         _write_toml(
             self.config_path,
-            '[teatree]\nprivacy = "strict"\n\n[overlays.client]\nclass = "x:Y"\n',
+            '[teatree]\nautoload = true\n\n[overlays.client]\nclass = "x:Y"\n',
         )
         ConfigSetting.objects.set_value("autonomy", "notify", scope="client")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "client")
         settings = get_effective_settings()
-        assert settings.privacy == "strict"
+        assert settings.autoload is True
         assert settings.orchestrator_bash_gate_enabled is True
 
     def test_notify_isolated_from_full_overlay(self) -> None:

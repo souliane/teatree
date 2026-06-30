@@ -24,22 +24,24 @@ from ._shared import _write_toml
 
 
 def test_load_config_reads_toml_home_fields(tmp_path: Path) -> None:
-    # privacy is TOML-home (read off the file). workspace_dir is DB-home now:
-    # its ``[teatree]`` value is ignored on read so the field keeps its dataclass
-    # default at the file tier (resolved per-overlay via config.worktree_root()).
-    # review_skill is DB-home too and keeps its default at the file tier.
+    # autoload is TOML-home (read off the file). workspace_dir / privacy are DB-home
+    # now (eliminate-~/.teatree.toml): their ``[teatree]`` value is ignored on read so
+    # the fields keep their dataclass defaults at the file tier (workspace_dir resolves
+    # per-overlay via config.worktree_root()). review_skill is DB-home too.
     config_path = tmp_path / ".teatree.toml"
     _write_toml(
         config_path,
         """
 [teatree]
 workspace_dir = "/custom/workspace"
+autoload = true
 privacy = "strict"
 """,
     )
     config = load_config(config_path)
     assert config.user.workspace_dir == Path.home() / "workspace"
-    assert config.user.privacy == "strict"
+    assert config.user.autoload is True
+    assert config.user.privacy == ""
     assert config.user.review_skill == ""
     assert "teatree" in config.raw
 
@@ -67,10 +69,16 @@ def test_handover_mirror_path_defaults_under_xdg_state(tmp_path: Path, monkeypat
     )
 
 
-def test_handover_mirror_path_override(tmp_path: Path) -> None:
+def test_handover_mirror_path_toml_is_ignored_db_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # eliminate-~/.teatree.toml: ``handover_mirror_path`` is DB-home, so a
+    # ``[teatree]`` value is ignored on read — ``load_config`` returns the default
+    # (the DB override is applied by ``get_effective_settings``, not ``load_config``).
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     config_path = tmp_path / ".teatree.toml"
     _write_toml(config_path, '[teatree]\nhandover_mirror_path = "/custom/ho.md"\n')
-    assert load_config(config_path).user.handover_mirror_path == Path("/custom/ho.md")
+    assert (
+        load_config(config_path).user.handover_mirror_path == tmp_path / "state" / "teatree" / "handover" / "latest.md"
+    )
 
 
 def test_agent_signature_defaults_off(tmp_path: Path) -> None:
@@ -82,15 +90,13 @@ def test_agent_signature_defaults_off(tmp_path: Path) -> None:
 def test_toml_home_and_raw_keys_do_not_warn(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
     # TOML-home carve-out fields, overlay discovery/messaging keys, and raw
     # bootstrap keys are legitimate in the file — they must NOT trip the WARN.
-    # ``workspace_dir`` is deliberately ABSENT here — it is DB-home now and warns
-    # on presence (see TestDbHomeTomlConflictWarning); this fixture covers only
-    # the keys that must STAY silent.
+    # ``workspace_dir`` / ``statusline_chain`` are deliberately ABSENT here — they
+    # are DB-home now and warn on presence (see TestDbHomeTomlConflictWarning);
+    # this fixture covers only the keys that must STAY silent.
     config_path = tmp_path / ".teatree.toml"
     _write_toml(
         config_path,
-        '[teatree]\nprivacy = "strict"\n'
-        'statusline_chain = []\nprivate_repos = ["acme/x"]\n\n'
-        '[overlays.myproj]\npath = "~/p"\n',
+        '[teatree]\nautoload = true\nprivate_repos = ["acme/x"]\n\n[overlays.myproj]\npath = "~/p"\n',
     )
     with caplog.at_level("WARNING", logger="teatree.config"):
         load_config(config_path)
@@ -130,7 +136,7 @@ class TestDbHomeTomlConflictWarning(TestCase):
         ConfigSetting.objects.set_value("contribute", value=True)
         # ``workspace_dir`` omitted: it is the one DB-home key that warns on
         # presence (it silently relocates worktrees) — covered separately below.
-        _write_toml(self.config_path, '[teatree]\nprivacy = "strict"\n')
+        _write_toml(self.config_path, "[teatree]\nautoload = true\n")
         assert self._load_and_collect() == []
 
     def test_retired_workspace_dir_in_toml_warns_to_migrate(self) -> None:
@@ -272,10 +278,14 @@ def test_orchestrator_bash_gate_enabled_defaults_on(tmp_path: Path) -> None:
     assert load_config(config_path).user.orchestrator_bash_gate_enabled is True
 
 
-def test_orchestrator_bash_gate_enabled_can_be_disabled(tmp_path: Path) -> None:
+def test_orchestrator_bash_gate_enabled_toml_is_ignored_db_home(tmp_path: Path) -> None:
+    # eliminate-~/.teatree.toml: orchestrator_bash_gate_enabled is DB-home, so its
+    # ``[teatree]`` value is ignored on read and the dataclass default (True) stands at
+    # the file tier. The gate's authoritative read/write is the DB tier via teatree_gate
+    # (cold_reader / cold_writer) — see tests/teatree_cli/test_teatree_gate.
     config_path = tmp_path / ".teatree.toml"
     _write_toml(config_path, "[teatree]\norchestrator_bash_gate_enabled = false\n")
-    assert load_config(config_path).user.orchestrator_bash_gate_enabled is False
+    assert load_config(config_path).user.orchestrator_bash_gate_enabled is True
 
 
 def test_require_human_approval_to_merge_defaults_on(tmp_path: Path) -> None:
@@ -347,8 +357,9 @@ def test_billing_cycle_defaults(tmp_path: Path) -> None:
 class TestAutoloadSetting:
     """``autoload`` is TOML-home (#256): default OFF, ``[teatree] autoload`` enables, env wins.
 
-    Mirrors ``check_updates`` — a cold-hook-readable TOML-home bool resolved from
-    the ``[teatree]`` table + ``T3_AUTOLOAD`` env, never the DB store.
+    A cold-hook-readable TOML-home bool resolved from the ``[teatree]`` table +
+    ``T3_AUTOLOAD`` env, never the DB store (the cold SessionStart hooks read it
+    pre-Django with tomllib).
     """
 
     def test_default_is_off_with_empty_teatree_table(self, tmp_path: Path) -> None:

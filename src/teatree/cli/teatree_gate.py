@@ -7,8 +7,12 @@ misclassified as the main agent — the orchestrator (and, by sidechain
 misdetection, every sub-agent) can be locked out of Bash entirely.
 
 This module backs the always-reachable escape hatch. ``t3 <overlay> gate
-disable`` flips the durable kill-switch
-``[teatree] orchestrator_bash_gate_enabled = false`` in ``~/.teatree.toml``.
+disable`` flips the durable ``orchestrator_bash_gate_enabled`` kill-switch — DB-home
+since eliminate-~/.teatree.toml, so it writes the canonical config DB via the
+Django-free cold writer (falling back to ``[teatree]`` in ``~/.teatree.toml`` when
+no DB tier exists yet, e.g. a fresh pre-``t3 setup`` cold state) and the reader
+resolves it DB-first. The cold writer needs no Django, so the self-rescue still works
+when the heavier overlay machinery is wedged.
 The command is unconditionally runnable EVEN WHEN the gate is enabled, because
 the gate's heavy-Bash denylist (``_ORCHESTRATOR_HEAVY_BASH_RE``) does not match
 a ``t3 …`` command, and ``t3 …`` invocations are the orchestration prefix the
@@ -63,7 +67,7 @@ def _gate_key_is_enabled(key: str) -> bool:
     ``[teatree]`` TOML value. Fails OPEN to enabled on a missing/broken config + DB so the
     reported status matches the gate's own fail-open posture.
     """
-    if _is_cold_hook_gate_key(key):
+    if _is_db_tier_gate_key(key):
         from teatree.config import cold_reader  # noqa: PLC0415
 
         db_value = cold_reader.read_setting(key, scope="")
@@ -137,21 +141,25 @@ def danger_gate_fail_open_is_enabled() -> bool:
     return teatree.get(DANGER_GATE_FAIL_OPEN_KEY) is True
 
 
-def _is_cold_hook_gate_key(key: str) -> bool:
-    """Whether *key* is a seeded cold-hook gate (DB tier) vs a TOML-home gate.
+def _is_db_tier_gate_key(key: str) -> bool:
+    """Whether *key*'s authoritative tier is the canonical DB (vs TOML-only).
 
-    The cold-hook gates (``skill_loading`` / ``plan_edit`` / ``config_overwrite`` /
-    ``completion_claim`` / ``memory_recall``) are seeded into the canonical DB by ``t3
-    setup`` and read DB-first by the flipped hook reader (config-unify PR3), so ``t3 teatree gate``
-    must read/write that SAME DB tier or its toggle is shadowed by the seeded row.
-    ``orchestrator_bash_gate_enabled`` and ``danger_gate_fail_open`` are TOML-home (#1775,
-    never seeded), so they stay on TOML — the always-available Bash self-rescue. Membership
-    is derived from ``COLD_HOOK_SETTINGS`` (inline import — this module is pulled by
-    ``teatree.config`` at bootstrap) so it can never drift from the seeded registry.
+    Two families resolve from the DB: the seeded cold-hook gates (``skill_loading`` /
+    ``plan_edit`` / ``config_overwrite`` / ``completion_claim`` / ``memory_recall``,
+    in ``COLD_HOOK_SETTINGS``) and — since eliminate-~/.teatree.toml — the DB-home
+    ``UserSettings`` gate ``orchestrator_bash_gate_enabled`` (``SETTING_HOMES`` ==
+    ``DB``). Both are seeded into the canonical DB by ``t3 setup`` and read DB-first,
+    so ``t3 <overlay> gate`` must read/write that SAME DB tier or its toggle is
+    shadowed by the seeded row. ``danger_gate_fail_open`` is neither a cold-hook key
+    nor a ``UserSettings`` field, so it stays TOML-only — the always-available
+    Bash/gate self-rescue. Membership is derived from the live registries (inline
+    import — this module is pulled by ``teatree.config`` at bootstrap) so it can
+    never drift. A genuinely absent DB tier (fresh, pre-``t3 setup`` cold state)
+    still falls back to the ``~/.teatree.toml`` write/read in the callers below.
     """
-    from teatree.config import COLD_HOOK_SETTINGS  # noqa: PLC0415
+    from teatree.config import COLD_HOOK_SETTINGS, SETTING_HOMES, SettingHome  # noqa: PLC0415
 
-    return key in COLD_HOOK_SETTINGS
+    return key in COLD_HOOK_SETTINGS or SETTING_HOMES.get(key) is SettingHome.DB
 
 
 def _set_gate_key(key: str, *, enabled: bool) -> Path:
@@ -165,7 +173,7 @@ def _set_gate_key(key: str, *, enabled: bool) -> Path:
     a dead, shadowed TOML row. Only a genuinely absent DB tier (a fresh, pre-``t3 setup`` cold
     state) or a TOML-home gate key falls through to the ``~/.teatree.toml`` write.
     """
-    if _is_cold_hook_gate_key(key):
+    if _is_db_tier_gate_key(key):
         from teatree.config import cold_writer  # noqa: PLC0415
 
         if cold_writer.write_setting(key, enabled) is not cold_writer.WriteResult.NO_DB_TIER:

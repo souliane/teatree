@@ -218,13 +218,15 @@ class TestAutonomyKnobCollapsesGatesNotFloor(TestCase):
         assert settings.mode is Mode.AUTO
 
     def test_full_must_deny_relaxing_the_safety_floor(self) -> None:
-        """A full-autonomy overlay never relaxes privacy / never-lockout — the floor stays on."""
-        self.isolated_resolution.write_text('[teatree]\nprivacy = "strict"\n', encoding="utf-8")
+        """A full-autonomy overlay never relaxes the floor — TOML-home fields untouched."""
+        # ``autoload`` is the TOML-home representative untouched by the collapse
+        # (eliminate-~/.teatree.toml moved privacy to the DB).
+        self.isolated_resolution.write_text("[teatree]\nautoload = true\n", encoding="utf-8")
         runner.invoke(_app(), ["autonomy", "set", "full", "--overlay", "trusted"])
 
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
         settings = get_effective_settings()
-        assert settings.privacy == "strict"
+        assert settings.autoload is True
         # never-lockout / self-rescue posture (the orchestrator bash gate) untouched.
         assert settings.orchestrator_bash_gate_enabled is True
 

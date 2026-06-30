@@ -255,6 +255,13 @@ def _parse_strict_str(raw: object) -> str:
     return raw
 
 
+def _parse_handover_mirror_path(raw: object) -> Path:
+    # Path-typed field (consumed as ``.parent`` / ``.is_file()``), so it must resolve
+    # to a real ``Path`` — unlike the str-accessor fields. An empty value means "unset"
+    # → the default, matching the pre-DB TOML semantics (absent/empty fell back).
+    return Path(stored).expanduser() if (stored := _parse_strict_str(raw)) else _default_handover_mirror_path()
+
+
 def _parse_user_identity_aliases(raw: object) -> list[str]:
     """Coerce a TOML list of usernames/handles to ``list[str]``.
 
@@ -388,19 +395,47 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "contribute_plugin_dir": _parse_strict_bool,
     "dream_propose_evals": _parse_strict_bool,
     "hook_fetch_titles": _parse_strict_bool,
+    # eliminate-~/.teatree.toml: ``check_updates``'s sole reader ``check_for_updates``
+    # runs pre-Django but now reads the DB via ``cold_reader`` (Django-free), so a
+    # stored ``check_updates=false`` IS honoured. DB-home, seeded by ``t3 setup``.
+    "check_updates": _parse_strict_bool,
+    # eliminate-~/.teatree.toml: ``worktrees_dir`` / ``timezone`` were tagged
+    # "needed to open the DB", but Django ``settings.py`` hardcodes ``TIME_ZONE =
+    # "UTC"`` and configures ``DATABASES`` without reading either — so neither is a
+    # bootstrap dep. ``worktrees_dir`` resolves via ``loader.worktrees_dir()`` off
+    # the DB store (Django-side, like ``workspace_dir`` / ``worktree_root()``);
+    # stored as a path STRING. ``timezone`` has no live reader (DB-home for
+    # partition consistency).
+    "worktrees_dir": _parse_strict_str,
+    "timezone": _parse_strict_str,
+    # eliminate-~/.teatree.toml: the last two per-overlay-TOML-overridable carve-out
+    # fields move to DB-home (per-overlay via a ``ConfigSetting`` overlay-scope row).
+    # ``orchestrator_bash_gate_enabled``'s reader (``teatree_gate._gate_key_is_enabled``)
+    # is already DB-first via ``cold_reader`` (toml fallback for the cold self-rescue);
+    # ``privacy`` has no live production reader.
+    "orchestrator_bash_gate_enabled": _parse_strict_bool,
+    "privacy": _parse_strict_str,
+    # eliminate-~/.teatree.toml: ``handover_mirror_path``. The pre-Django reader
+    # (``hook_router`` SessionStart bootstrap) now reads the canonical sqlite via
+    # ``cold_reader`` — which fails open to ``_default_handover_mirror_path()``, the
+    # exact path ``write_mirror`` uses when unset — so the "read when the DB is
+    # unreachable" carve-out is satisfied without TOML. Stored as a path STRING.
+    "handover_mirror_path": _parse_handover_mirror_path,
+    # eliminate-~/.teatree.toml: ``statusline_chain``. The bash statusline hook now
+    # reads it from the canonical sqlite via the ``sqlite3`` CLI + ``json_each``
+    # (``_statusline_chain_db``) — no importable teatree python, no TOML parse.
+    "statusline_chain": _parse_str_list,
 }
 
 # TOML-home keys that ALSO support a per-overlay ``[overlays.<name>]`` override.
-# A TOML-home field's authoritative tier is the TOML tables + env (never the DB),
-# but a subset of them is per-overlay overridable in TOML. ``speak`` is omitted —
-# its sub-table merges bespoke (see ``_overlay_speak_override``); the others in the
-# carve-out are global-only. Discovery parses the union of this and the DB-home
-# registry so a ``[overlays.<name>]`` value for either is read off the table; the
-# resolver then keeps only TOML-home override keys.
-TOML_OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
-    "orchestrator_bash_gate_enabled": _parse_strict_bool,
-    "privacy": _parse_strict_str,
-}
+# eliminate-~/.teatree.toml emptied this: the per-overlay override of a setting now
+# lives entirely in the DB (an overlay-scoped ``ConfigSetting`` row). The last two
+# entries (``orchestrator_bash_gate_enabled``, ``privacy``) moved to the DB-home
+# registry above. ``speak`` was never here — its sub-table merges bespoke (see
+# ``_overlay_speak_override``); the remaining carve-out fields are global-only.
+# Discovery still unions this with the DB-home registry; with it empty the union is
+# just the DB-home registry.
+TOML_OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {}
 
 # ``T3_*`` env vars that win over both the per-overlay override and the
 # global setting. Mapped to ``(UserSettings field, parser)``.
@@ -496,11 +531,11 @@ class UserSettings:
     # Claude session does NOT auto-engage teatree — no skill auto-suggest, no
     # PreToolUse load-block, no loop scheduling — and SessionStart shows a
     # one-line how-to-start advisory instead. The owner flips it true to
-    # auto-activate every session. TOML-home like ``check_updates`` (the cold
-    # SessionStart / UserPromptSubmit hooks read it pre-Django, so it can never
-    # move into the DB store); ``T3_AUTOLOAD`` env wins. A DB row is ignored on
-    # read. Explicitly calling ``/teatree`` — or loading any ``t3:`` skill —
-    # engages teatree for the session regardless of this default.
+    # auto-activate every session. TOML-home: the cold SessionStart /
+    # UserPromptSubmit hooks read ``[teatree] autoload`` pre-Django with tomllib;
+    # ``T3_AUTOLOAD`` env wins. A DB row is ignored on read. Explicitly calling
+    # ``/teatree`` — or loading any ``t3:`` skill — engages teatree for the
+    # session regardless of this default.
     autoload: bool = False
     timezone: str = ""
     contribute: bool = False

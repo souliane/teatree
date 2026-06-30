@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 import teatree.config as _facade
-from teatree.config.settings import E2ERepo, TeaTreeConfig, UserSettings, _default_handover_mirror_path, _parse_str_list
+from teatree.config.settings import E2ERepo, TeaTreeConfig, UserSettings
 from teatree.config_mr_reminder import resolve_mr_reminder
 from teatree.config_speak import resolve_speak
 from teatree.paths import DATA_DIR, get_data_dir
@@ -306,38 +306,27 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
     _warn_migrated_keys_in_toml(raw, path)
 
     teatree = raw.get("teatree", {})
-    # ``workspace_dir`` is DB-home (#regroup): its ``[teatree]`` value is ignored on
-    # read (warned + migrate via ``config_setting import``); the field keeps its
-    # dataclass default here and ``config.worktree_root()`` resolves the per-overlay
-    # WORKTREE root, distinct from ``config.clone_root()`` (the clone root).
-    worktrees_dir = Path(teatree.get("worktrees_dir", str(DATA_DIR / "worktrees"))).expanduser()
+    # ``workspace_dir`` / ``worktrees_dir`` are DB-home: their ``[teatree]`` value is
+    # ignored on read (warned + migrate via ``config_setting import``); the fields keep
+    # their dataclass defaults here and ``config.worktree_root()`` / ``worktrees_dir()``
+    # resolve them off the store. (Django ``settings.py`` hardcodes ``TIME_ZONE`` and
+    # configures ``DATABASES`` without reading ``worktrees_dir`` / ``timezone``, so
+    # neither was ever a DB-open bootstrap dep.)
 
     # The hard partition (#1775): ``load_config`` builds ONLY the TOML-home fields
-    # (the irreducible carve-out — pre-Django readers, path/infra bootstrap,
-    # nested structured tables). Every DB-home field keeps its dataclass default
-    # at the file tier; its value comes from the ``ConfigSetting`` store via
-    # ``get_effective_settings``. ``on_behalf_post_mode`` is DB-home (so it keeps
-    # its default here). A DB-home key left in ``[teatree]`` / ``[overlays.<name>]``
-    # is ignored on read (its home is the DB); migrate it into the store with
-    # ``t3 <overlay> config_setting import``.
+    # (the carve-out — pre-Django readers, path/infra bootstrap, nested structured
+    # tables). Every DB-home field keeps its dataclass default at the file tier; its
+    # value comes from the ``ConfigSetting`` store via ``get_effective_settings``.
+    # ``on_behalf_post_mode`` is DB-home (so it keeps its default here). A DB-home key
+    # left in ``[teatree]`` / ``[overlays.<name>]`` is ignored on read (its home is the
+    # DB); migrate it into the store with ``t3 <overlay> config_setting import``.
     user = UserSettings(
-        worktrees_dir=worktrees_dir,
-        privacy=teatree.get("privacy", ""),
-        check_updates=teatree.get("check_updates", True),
         # Strict bool: only a real TOML boolean ``true`` engages autoload — a
         # quoted ``"true"`` / ``"false"`` string is ignored (matches the
         # cold-read in ``teatree_settings.autoload_enabled``).
         autoload=teatree.get("autoload", False) is True,
-        timezone=teatree.get("timezone", ""),
         speak=resolve_speak(teatree),
         mr_reminder=resolve_mr_reminder(raw),
-        orchestrator_bash_gate_enabled=bool(teatree.get("orchestrator_bash_gate_enabled", True)),
-        statusline_chain=_parse_str_list(teatree["statusline_chain"]) if "statusline_chain" in teatree else [],
-        handover_mirror_path=(
-            Path(str(teatree["handover_mirror_path"])).expanduser()
-            if teatree.get("handover_mirror_path")
-            else _default_handover_mirror_path()
-        ),
     )
 
     return TeaTreeConfig(user=user, raw=raw)
@@ -461,20 +450,42 @@ def worktree_root() -> Path:
 
 
 def worktrees_dir() -> Path:
-    """Canonical worktrees directory (where ticket worktrees are created)."""
+    """Canonical worktrees directory (where ticket worktrees are created).
+
+    DB-home (#1775): resolves env/Django override first, then the ``ConfigSetting``
+    store (overlay scope then global, stored as a path string), then the dataclass
+    default — the path-string accessor pattern ``workspace_dir`` /
+    ``worktree_root()`` use. Django-side (it reads ``django.conf.settings``), so it
+    reads the store directly, no ``cold_reader`` needed.
+    """
     from django.conf import settings  # noqa: PLC0415
+
+    from teatree.config.resolution import (  # noqa: PLC0415
+        _db_global_overrides,
+        _db_overlay_overrides,
+        _resolved_overlay_name,
+    )
 
     if hasattr(settings, "T3_WORKTREES_DIR"):
         return Path(settings.T3_WORKTREES_DIR)
-    return _facade.load_config().user.worktrees_dir
+    stored = _db_overlay_overrides(_resolved_overlay_name(None)).get("worktrees_dir")
+    if stored is None:
+        stored = _db_global_overrides().get("worktrees_dir")
+    if stored is not None:
+        return Path(str(stored)).expanduser()
+    return DATA_DIR / "worktrees"
 
 
 def check_for_updates(*, force: bool = False) -> str | None:
     """Resolve a "new release available" notice from config + update_check.
 
-    Reads ``check_updates`` from user config and delegates to
-    :func:`teatree.update_check.run_update_check`. The implementation
-    lives in :mod:`teatree.update_check` (split out for module-health
-    LOC); this wrapper is the config-aware entry point.
+    Reads ``check_updates`` (DB-home #1775) from the ``ConfigSetting`` store via
+    the Django-free ``cold_reader`` — so the opt-out is honoured on the pre-Django
+    CLI paths that are this function's only readers (the root callback, the
+    plain-Typer ``t3 config check-update``), with no Django bootstrap. A missing
+    row fails open to ``True`` (the dataclass default). Delegates to
+    :func:`teatree.update_check.run_update_check` (split out for module-health LOC).
     """
-    return run_update_check(check_updates=_facade.load_config().user.check_updates, force=force)
+    from teatree.config import cold_reader  # noqa: PLC0415 — Django-free DB read on the pre-Django path
+
+    return run_update_check(check_updates=cold_reader.bool_setting("check_updates", default=True), force=force)

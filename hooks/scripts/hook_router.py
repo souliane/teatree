@@ -4776,9 +4776,12 @@ def _claim_session_handover_from_file() -> tuple[str, str]:
         if str(src_dir) not in sys.path:
             sys.path.insert(0, str(src_dir))
             added = True
-        from teatree.config import load_config  # noqa: PLC0415
+        # eliminate-~/.teatree.toml: ``handover_mirror_path`` is DB-home. Read it
+        # Django-free via ``cold_reader`` (the canonical sqlite); an absent row /
+        # unreachable DB fails open through the parser to the default bootstrap path.
+        from teatree.config import _parse_handover_mirror_path, cold_reader  # noqa: PLC0415, PLC2701
 
-        path = load_config().user.handover_mirror_path
+        path = _parse_handover_mirror_path(cold_reader.str_setting("handover_mirror_path", default=""))
         text = path.read_text(encoding="utf-8").strip() if path.is_file() else ""
         if not text:
             return "", ""

@@ -46,15 +46,18 @@ class TestOverlayTomlOverrides:
         with pytest.raises(ValueError, match="Invalid t3 mode"):
             discover_overlays(config_path=config_path)
 
-    def test_orchestrator_bash_gate_overlay_toml_override(
+    def test_orchestrator_bash_gate_overlay_toml_is_ignored(
         self,
         config_file: Path,
         elsewhere: Path,
         no_installed_overlays: None,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        # orchestrator_bash_gate_enabled is TOML-home: a [overlays.<name>] value
-        # wins over the global [teatree] value.
+        # eliminate-~/.teatree.toml: orchestrator_bash_gate_enabled is DB-home now, so
+        # a [overlays.<name>] (and a global [teatree]) TOML value is IGNORED on read;
+        # with no DB row the dataclass default (True) stands. The per-overlay override
+        # lives in a ConfigSetting overlay row (see TestOverlayDbHomeOverrides); the
+        # gate's own reader is DB-first via cold_reader (test_teatree_gate covers it).
         del elsewhere, no_installed_overlays
         monkeypatch.setenv("T3_OVERLAY_NAME", "looseshell")
         _write_toml(
@@ -62,22 +65,24 @@ class TestOverlayTomlOverrides:
             "[teatree]\norchestrator_bash_gate_enabled = true\n\n"
             '[overlays.looseshell]\nclass = "x.y:Z"\norchestrator_bash_gate_enabled = false\n',
         )
-        assert get_effective_settings().orchestrator_bash_gate_enabled is False
+        assert get_effective_settings().orchestrator_bash_gate_enabled is True
 
-    def test_privacy_overlay_toml_override(
+    def test_privacy_overlay_toml_is_ignored(
         self,
         config_file: Path,
         elsewhere: Path,
         no_installed_overlays: None,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        # privacy is DB-home now: its [overlays.<name>] / [teatree] TOML value is
+        # ignored on read, so the default ("") stands without a DB row.
         del elsewhere, no_installed_overlays
         monkeypatch.setenv("T3_OVERLAY_NAME", "client")
         _write_toml(
             config_file,
             '[teatree]\nprivacy = "loose"\n\n[overlays.client]\nclass = "x.y:Z"\nprivacy = "strict"\n',
         )
-        assert get_effective_settings().privacy == "strict"
+        assert get_effective_settings().privacy == ""
 
 
 class TestOverlayDbHomeOverrides(TestCase):
@@ -185,6 +190,18 @@ class TestOverlayDbHomeOverrides(TestCase):
         ConfigSetting.objects.set_value("orchestrate_claim_enabled", value=True, scope="my-overlay")
         self._activate()
         assert get_effective_settings().orchestrate_claim_enabled is True
+
+    def test_overlay_can_override_orchestrator_bash_gate_enabled(self) -> None:
+        # eliminate-~/.teatree.toml: the former per-overlay-TOML override is now a DB
+        # overlay-scope row.
+        ConfigSetting.objects.set_value("orchestrator_bash_gate_enabled", value=False, scope="my-overlay")
+        self._activate()
+        assert get_effective_settings().orchestrator_bash_gate_enabled is False
+
+    def test_overlay_can_override_privacy(self) -> None:
+        ConfigSetting.objects.set_value("privacy", "strict", scope="my-overlay")
+        self._activate()
+        assert get_effective_settings().privacy == "strict"
 
     def test_overlay_can_override_issue_implementer_settings(self) -> None:
         ConfigSetting.objects.set_value("issue_implementer_enabled", value=True, scope="my-overlay")
