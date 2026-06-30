@@ -284,6 +284,18 @@ action is preceded by a ground-truth check —
 This is why swapping the durable store would not have helped this case, and why
 idempotent-against-ground-truth is the right and sufficient design.
 
+### What this enables later — best-of-N winner-merge (future, optional)
+
+Because the **t3 master** is the single integration authority, a hard ticket
+could optionally be raced across N parallel producers, the N results judged by
+the existing Actor-Critic, and only the winner merged by the t3 master.
+`reserve_to_t3_master` already serializes the merge, so there is nearly nothing
+to bolt on — the architecture supports this without new machinery. It is
+explicitly **optional and N× cost — for hard tickets only, never the default.**
+(Inspiration noted from a parallel-coding-agent tool that races agents and merges
+the winning diff; teatree's version is the autonomous one.) Recorded as a future
+option, not a committed feature.
+
 ---
 
 ## 6. Anti-duplication & engagement
