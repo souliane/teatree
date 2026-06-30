@@ -93,7 +93,11 @@ _DELIVERABLE_LINE_RE: Final[re.Pattern[str]] = re.compile(
 # on an unmerged feature branch is not mistaken for on-target evidence. The
 # MERGED-state leg binds the PR/MR id adjacently to "merged" (only a small copula
 # between), so forward-looking "PR #41 will be merged once CI passes" is not read as
-# a landed state.
+# a landed state. A trailing future/conditional qualifier ("merged once CI passes",
+# "merged on green", "merged pending approval", "merged when CI passes") likewise
+# leans not-yet-landed, so a negative lookahead after the bare-MERGED "merged" token
+# disqualifies it — applied ONLY to this leg, never to the merged-to-target /
+# on-main / merge-commit-SHA / origin-HEAD / fast-forward legs, which are past-tense.
 _ON_TARGET_EVIDENCE_RE: Final[re.Pattern[str]] = re.compile(
     r"\bmerged (?:to|into|onto) (?:the )?(?:merge )?target\b|"
     r"\bmerged to (?:main|master|develop|the default branch)\b|"
@@ -105,7 +109,8 @@ _ON_TARGET_EVIDENCE_RE: Final[re.Pattern[str]] = re.compile(
     r"\bevidence (?:posted|on target)\b|"
     r"\bmerge(?:d)? commit\s+[0-9a-f]{7,40}\b|"
     r"\b(?:squash[- ]?)?merged as\s+[0-9a-f]{7,40}\b|"
-    r"\b(?:pr|mr|pull request|merge request)\s*[#!]?\d+\b\s*(?:(?:is|was|has been|now)\s+|[:=]\s*)?merged\b|"
+    r"\b(?:pr|mr|pull request|merge request)\s*[#!]?\d+\b\s*(?:(?:is|was|has been|now)\s+|[:=]\s*)?merged\b"
+    r"(?!\s+(?:once|on\s+green|on\s+ci|on\s+the\s+pipeline|pending|when|upon|as\s+soon\s+as|if|unless)\b)|"
     r"\borigin/[\w./-]+\s+HEAD\s*(?:is|=|now|at)\s*[0-9a-f]{7,40}\b|"
     r"\bfast[- ]forwarded(?:\s+to)?\s+[0-9a-f]{7,40}\b",
     re.IGNORECASE,
