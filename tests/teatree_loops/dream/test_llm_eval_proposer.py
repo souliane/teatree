@@ -27,19 +27,17 @@ import pytest
 from django.test import TestCase
 
 from teatree.eval.discovery import SCENARIOS_DIR
-from teatree.eval.loader import _parse_matcher, load_eval_yaml
-from teatree.eval.models import UNDER_LOAD_LANE
+from teatree.eval.loader import _OP_PATTERN, _parse_matcher, load_eval_yaml
+from teatree.eval.models import MATCHER_KINDS, MATCHER_OPERATORS, UNDER_LOAD_LANE
 from teatree.loops.dream.llm_eval_proposer import (
-    _SYNTH_PROMPT_TEMPLATE,
     SpecSynthesizer,
     SynthesizedSpec,
-    _parse_synthesized,
     default_staging_dir,
     derive_eval_from_candidate,
-    sdk_spec_synthesizer,
     stage_derived_evals,
     stage_proposals_file,
 )
+from teatree.loops.dream.sdk_eval_synthesizer import _SYNTH_PROMPT_TEMPLATE, _parse_synthesized, sdk_spec_synthesizer
 
 _CANDIDATE: dict[str, object] = {
     "scenario_name": "derived_delegate_under_load",
@@ -251,9 +249,6 @@ def _json_objects_in(text: str) -> list[Mapping[str, object]]:
             objects.append(parsed)
         index = text.find("{", index + 1)
     return objects
-
-
-_MATCHER_KINDS = ("tool_call", "no_tool_call_matching", "any_of", "final_state")
 
 
 class DeriveEvalFromCandidateTestCase(TestCase):
@@ -527,9 +522,9 @@ class SynthPromptGrammarTestCase(TestCase):
         return _SYNTH_PROMPT_TEMPLATE.format(scenario_name="x_under_load", drift_rule="d", seed_citation="c", slice="s")
 
     def test_prompt_carries_a_loader_parseable_example_of_every_matcher_kind(self) -> None:
-        examples = [obj for obj in _json_objects_in(self._rendered_prompt()) if any(k in obj for k in _MATCHER_KINDS)]
-        kinds = {kind for obj in examples for kind in _MATCHER_KINDS if kind in obj}
-        assert kinds == set(_MATCHER_KINDS)
+        examples = [obj for obj in _json_objects_in(self._rendered_prompt()) if any(k in obj for k in MATCHER_KINDS)]
+        kinds = {kind for obj in examples for kind in MATCHER_KINDS if kind in obj}
+        assert kinds == set(MATCHER_KINDS)
         for example in examples:
             _parse_matcher(example, "prompt_example", Path("synthesizer-prompt"))
 
@@ -642,3 +637,45 @@ class ParseSynthesizedExtractsOneObjectTestCase(TestCase):
     def test_only_a_non_json_brace_raises_no_object(self) -> None:
         with pytest.raises(ValueError, match="no JSON object"):
             _parse_synthesized("the model mused {about it but emitted no object", {"scenario_name": "x"})
+
+
+class PromptGrammarTracksTheLoaderSingleSourceTestCase(TestCase):
+    """The synth prompt is GENERATED from the loader's grammar single source (#2646).
+
+    The drop-every-candidate bug was a synthesizer prompt that diverged from the
+    loader's strict grammar. The first fix hand-wrote the grammar into the prompt —
+    correct, but a SECOND copy that can silently drift the next time the loader's
+    operator/kind set changes. ``MATCHER_OPERATORS`` / ``MATCHER_KINDS`` are now the
+    one source both sides read: the loader's ``_OP_PATTERN`` is compiled from the
+    operator constant, and the prompt enumerates both constants. These lock the
+    coupling, so a future operator/kind added to the loader but missing from the
+    prompt fails here instead of re-opening the drift.
+    """
+
+    def _rendered_prompt(self) -> str:
+        return _SYNTH_PROMPT_TEMPLATE.format(scenario_name="x_under_load", drift_rule="d", seed_citation="c", slice="s")
+
+    def test_prompt_offers_every_loader_supported_operator(self) -> None:
+        rendered = self._rendered_prompt()
+        for operator in MATCHER_OPERATORS:
+            assert operator in rendered, f"prompt omits supported operator {operator!r}"
+
+    def test_prompt_names_every_loader_matcher_kind(self) -> None:
+        rendered = self._rendered_prompt()
+        for kind in MATCHER_KINDS:
+            assert kind in rendered, f"prompt omits matcher kind {kind!r}"
+
+    def test_loader_op_pattern_accepts_exactly_the_operator_constant(self) -> None:
+        # The pattern is compiled FROM MATCHER_OPERATORS — every declared operator
+        # parses and an undeclared one does not, so the regex and the constant (and
+        # therefore the prompt) cannot drift apart.
+        for operator in MATCHER_OPERATORS:
+            assert _OP_PATTERN.match(f'{operator} "x"') is not None, operator
+        assert _OP_PATTERN.match('startswith "x"') is None
+
+    def test_each_synthesized_matcher_kind_round_trips_through_the_loader(self) -> None:
+        # Belt-and-braces over the existing example-parity test: the kinds the prompt
+        # advertises are exactly the kinds the loader dispatches, with no orphan on
+        # either side.
+        kinds_in_prompt = {kind for kind in MATCHER_KINDS if kind in self._rendered_prompt()}
+        assert kinds_in_prompt == set(MATCHER_KINDS)
