@@ -546,36 +546,38 @@ class Command(RubricCommands, TicketShowCommands, TyperCommand):
             self.stdout.write(f"  CLEAR refused: {preflight_refusal}")
             return {"issued": False, "error": preflight_refusal}
 
+        request = ClearRequest(
+            pr_id=pr_id,
+            slug=slug,
+            reviewed_sha=reviewed_sha,
+            reviewer_identity=reviewer_identity,
+            gh_verify_result=gh_verify_result,
+            blast_class=blast_class,
+            ticket=resolved_ticket,
+            human_authorizer=human_authorize,
+            executing_loop_identity=executing_loop_identity,
+        )
+
+        # Resolve the verdict's owner/repo BEFORE issuing: resolve_pr_repo_slug
+        # fails closed in a degenerate environment (workstream slug, no ticket
+        # issue_url, no clone origin), and resolving it after MergeClear.issue()
+        # persisted the row would orphan an already-issued CLEAR behind a traceback.
+        # Issue runs only when resolution succeeds, so neither failure persists a row.
         try:
-            clear = MergeClear.issue(
-                ClearRequest(
-                    pr_id=pr_id,
-                    slug=slug,
-                    reviewed_sha=reviewed_sha,
-                    reviewer_identity=reviewer_identity,
-                    gh_verify_result=gh_verify_result,
-                    blast_class=blast_class,
-                    ticket=resolved_ticket,
-                    human_authorizer=human_authorize,
-                    executing_loop_identity=executing_loop_identity,
-                )
-            )
-        except ClearIssuanceError as exc:
+            verdict_slug = resolve_pr_repo_slug(request)
+            clear = MergeClear.issue(request)
+        except (MergePreconditionError, ClearIssuanceError) as exc:
             self.stdout.write(f"  CLEAR refused: {exc}")
             return {"issued": False, "error": str(exc)}
 
         self.stdout.write(f"  issued CLEAR {clear.pk} for {clear.slug}#{clear.pr_id}@{clear.reviewed_sha[:8]}")
-        # A CLEAR is a merge-safe judgment at the reviewed tree by construction
-        # (issuance refused any non-green verdict). Record the durable read-side
-        # sibling so a later `review status` lookup can answer "safe to approve
-        # at the current head?" without re-deriving the cold review.
-        #
-        # Key the verdict under the SAME owner/repo the merge gate resolves, not
-        # the raw workstream `clear.slug`: a bare slug would record where the gate
-        # never queries. An already-qualified slug resolves to itself.
+        # Record the durable read-side sibling (a merge-safe judgment by
+        # construction — issuance refused any non-green verdict) so a later
+        # `review status` answers "safe to approve at the current head?". Key it
+        # under verdict_slug — where the merge gate queries — not the workstream slug.
         verdict = ReviewVerdict.record(
             pr_id=clear.pr_id,
-            slug=resolve_pr_repo_slug(clear),
+            slug=verdict_slug,
             reviewed_sha=clear.reviewed_sha,
             verdict=ReviewVerdict.Verdict.MERGE_SAFE,
             reviewer_identity=clear.reviewer_identity,
