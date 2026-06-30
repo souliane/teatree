@@ -73,6 +73,7 @@ class MemoryPhaseRunner:
         reported in the summary, defaults that dir's verdict to PASS, and never crashes.
         """
         from teatree.loops.dream import gates  # noqa: PLC0415
+        from teatree.loops.dream.decay import ARCHIVE_DIRNAME  # noqa: PLC0415
         from teatree.memory_audit import discover_memory_dirs  # noqa: PLC0415
 
         memory_dirs = discover_memory_dirs()
@@ -98,6 +99,7 @@ class MemoryPhaseRunner:
                     clusters_recorded=clusters_recorded,
                     maintenance_performed=maintenance_performed,
                     persist=not dry_run,
+                    archive_dir=d / ARCHIVE_DIRNAME,
                 )
             except Exception as exc:  # noqa: BLE001
                 clauses.append(f"WARN gates raised: {type(exc).__name__}: {exc}")
