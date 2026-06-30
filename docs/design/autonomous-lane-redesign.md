@@ -88,11 +88,28 @@ a reliability fix:
 - **Strategic.** Going more headless and reducing single-vendor (Anthropic)
   coupling. The autonomous lane should be able to run on a model chosen by config
   rather than wired into one vendor's SDK.
-- **Measured cost.** About **92% of measured autonomous-lane spend is
-  cache-reads**, dominated by Claude Code's per-request overhead — the giant
-  system prompt and the ~48 skills re-read on every call. A lean headless runner
-  sheds most of that. This is the concrete, measured reason; the strategic reason
-  alone would not justify the move.
+- **Cost — a bet, not a proven saving.** About **92% of measured autonomous-lane
+  spend is cache-reads**, dominated by Claude Code's per-request overhead — the
+  giant system prompt and the ~48 skills re-read on every call. The tempting read
+  is "a lean headless runner sheds most of that." But be honest: a 92% cache-read
+  share is *also* exactly what you would see if caching is working **well** (cache
+  reads bill at roughly 0.1× input), so it is not by itself proof the spend is
+  sheddable. Two things make the saving conditional, not guaranteed:
+  - **The lane is largely subscription-absorbed today.** It runs as Claude Code
+    sessions / sub-agents on the Max seat, so much of its usage is already covered
+    by a flat seat. Moving it to a **metered** lean runner converts seat-covered
+    usage into **real cash spend** — a saving only if the lean runner's far-smaller
+    per-call context beats what the seat absorbs today.
+  - **The lean runner is not context-free.** It still injects the skill bundle per
+    subagent (`skill_injection.py`, a listed port in the table below), so the
+    per-call reduction is real but bounded, not a clean slate.
+  - **Open assumption to confirm first.** Whether the autonomous lane's *today*
+    cost basis is subscription-absorbed or already metered must be **confirmed**
+    before banking the saving. If it is subscription-absorbed today, the saving is
+    conditional on the token reduction outweighing the lost seat absorption.
+  Stated plainly: the cost case is a **bet** (lean-runner token reduction vs loss
+  of subscription absorption), and the strategic reason above is what carries the
+  move regardless of how that bet lands.
 
 **Be honest about the coupling surface — this is not a one-file seam.** The
 orchestration consumes an SDK-shaped contract, and the migration has to re-home
@@ -103,12 +120,16 @@ all of it. The real port surface:
 | `model_tiering.py` | Slot / honesty routing — picks the logical model slot per step | The orchestration decides the slot; the runtime must keep honouring it (see §3) |
 | `result_schema.py` | The `needs_user_input` envelope | The blocked-subagent escalation path depends on this exact shape |
 | `skill_injection.py` | The subagent skill preamble | Subagents must still receive their skill bundle headless |
+| `prompt.py` + `skill_bundle.py` | Subagent prompt construction and the skill bundle assembled into it | The headless prompt the runtime sends is built here; the port must rebuild the same prompt |
 | `outage_classifier.py` | Rate-limit / outage classification | Retry and backoff behaviour keys off this |
-| `headless.py` + attempt/result plumbing | The attempt loop, results, heartbeats | The lease/heartbeat contract the orchestration relies on |
+| `headless.py` + `attempt_recorder.py` + attempt/result plumbing | The attempt loop, attempt recording, results, heartbeats | The lease/heartbeat contract the orchestration relies on |
+| `headless_usage.py` | Per-run token/usage accounting | The cost measurement (§2's 92% figure) and metered-lane budgeting read this |
+| `handover.py` | Session handover plumbing | Cross-session handoff must keep working across the seam |
 
 Naming these as the port surface is the point: the migration succeeds only when
 each is re-homed behind Pydantic AI with a pinning test, not when a single entry
-point is swapped.
+point is swapped. (`skill_injection.py` is also why the cost case in §2 is a bet,
+not a certainty — the lean runner still injects a skill bundle per subagent.)
 
 Two things are preserved across the seam:
 
@@ -167,8 +188,12 @@ matters. (Cross-ref: the `/t3:rules` honesty-escalation rule.)
 
 **Two-lane cost picture.** Interactive Claude Code stays on the Max subscription —
 that is the cost arbitrage, a flat seat for interactive work. The factory /
-autonomous lane is the metered, routed one. The two lanes have different cost
-models on purpose.
+autonomous lane becomes the metered, routed one. The two lanes have different cost
+models on purpose — but note this is exactly the move that turns the §2 cost case
+into a **bet**: if the autonomous lane is subscription-absorbed today, putting it
+on the metered lane trades seat-absorbed usage for cash, and only pays off if the
+lean-runner token reduction outweighs that. The split is deliberate; the net
+saving is conditional, per §2.
 
 ---
 
@@ -196,22 +221,41 @@ sessions, or headless workers — race to merge. The results are merge conflicts
 duplicated work, and migration collisions. Nothing today serializes integration,
 so two producers can both think they own the finish line.
 
-### t3 master — the single privileged session
+### t3 master — holder of the global owner lease
 
-**t3 master** is the single privileged session, identified by the **t3 master
-lease**. The lease is **atomic**: holding it *is* being t3 master, and it grants
-all privileged roles together —
+**t3 master** is the session that holds the **t3 master lease** — the **global
+owner lease**, renamed from the former `loop-owner` / `GLOBAL_OWNER_SLOT`. Holding
+it *is* being t3 master, and it **reserves, indivisibly**:
 
-- owns the loops (drives `/t3:loops`),
-- hosts the orchestrator agent,
-- is the integration / merge authority,
-- may perform `reserve_to_t3_master` FSM transitions.
+- the **core loops** — the merge / integration loops (per the 2026-06-27
+  directive the merge loop is a core loop); exactly one t3 master runs these,
+- the **integration / merge authority**,
+- the **`reserve_to_t3_master`** transition rights.
 
-It **does not split.** There is no separate "loop owner" alongside it. (The old
-`loop-owner` lease and the `loop_owner` command are the *historical* name for
-this same privilege; this design renames and unifies them into the t3 master
-lease — `loop-owner` appears only as the thing being renamed, never as a live
-separate concept.)
+These three do **not** distribute: exactly one t3 master runs the core loops and
+owns integration. (The old `loop-owner` lease and `loop_owner` command are the
+*historical* name for this same global slot; this design renames and unifies them
+into the t3 master lease — `loop-owner` appears only as the thing being renamed,
+never as a live separate concept.)
+
+**Non-core loops stay per-loop-distributable.** The shipped per-loop ownership
+layer (#1834 — `PER_LOOP_OWNER_PREFIX = "loop:"`, `is_per_loop_owner_slot`,
+`owned_per_loop_slots` across `src/teatree/core/loop_lease_manager.py`,
+`src/teatree/loops/live.py`, `src/teatree/loop/loop_scoping.py`,
+`src/teatree/loops/claude_specs.py`) lets **different sessions own different
+loops** via `loop:<name>` slots. That layer is **preserved**: non-core loops can
+be distributed across sessions so different sessions drive different non-core
+loops for throughput.
+
+So #1834 is a **superset** of what the t3 master reserves: the t3 master takes
+only the **core subset** — the core (merge/integration) loops, the integration
+authority, and the reserved transitions. **Everything else — the non-core loops —
+remains per-loop-distributable** through the `loop:<name>` per-loop layer. Only
+the **global** slot is renamed to the t3 master lease; the per-loop slots keep
+their `loop:<name>` form.
+
+**"Core loops"** in this document means the merge / integration loops reserved to
+the t3 master. All other loops are non-core and use the per-loop layer.
 
 ### Topology — producers parallel, integration serialized
 
@@ -231,10 +275,13 @@ producer C ─┘     (hand-off queue)        merge authority
 transitions (merge, and the like). The `t3_` prefix is deliberate — it must not
 read like a git branch named "master".
 
-**Enforcement.** A transition is refused when it is reserved **and** the acting
-session's id is not the t3 master lease holder. This is enforced at the single
-`t3` CLI transition chokepoint — every FSM transition already goes through `t3`,
-never raw `gh`/`glab`, so there is exactly one place to check.
+**Enforcement.** A transition is refused when it is reserved **and** the actor
+neither holds the t3 master lease (by session id) **nor** presents the t3 master
+lease / fencing token explicitly (see "Authority vs work"). This is enforced at
+the single `t3` CLI transition chokepoint — every FSM transition already goes
+through `t3`, never raw `gh`/`glab`, so there is exactly one place to check. Note
+this FSM-transition check gives serialization of *who may initiate*, not mutual
+exclusion at the write; the fencing token (below) closes that at the git write.
 
 **Refuse is not a dead-end.** A refused unit transitions to a
 **ready-for-integration** hand-off state that the t3 master drains serially. The
@@ -243,28 +290,92 @@ producer is not stuck; it has handed off.
 ### Authority vs work
 
 `reserve_to_t3_master` means only the t3 master may **initiate** the merge — not
-that the master does the labour itself. The master **spawns a serialized
-merge-worker sub-agent** to do the work, so the master stays responsive.
+that the master does the labour itself. The master **spawns a merge-worker
+sub-agent** to do the work, so the master stays responsive.
 
-- The master's own sub-agents **share its session id**, so they pass the reserved
-  check. *(Pinning test required: confirm a spawned sub-agent's `t3` calls inherit
-  the parent session id used for the lease check. The whole serialization rests on
-  this, so it must be pinned, not assumed.)*
+**What enforces one-merge-at-a-time.** Seriality is the guarantee, so it needs a
+named lock, not just "serialized" as an adjective. The merge-worker takes a
+**single-holder merge-worker lease** (a singleton slot under the t3 master lease):
+the master drains the ready-for-integration queue **one unit at a time**, blocking
+on that lease per unit, and never dispatches a second merge-worker while one holds
+it. The serial drain is the lock.
+
+**Authority passed explicitly, not inherited (the session-id fallback).** The
+plan-A path is that the master's own sub-agents **share its session id** and so
+pass the reserved check; that assumption still needs a pinning test (see Risks).
+But the design does **not hinge** on it. The master passes its **t3 master
+lease / fencing token explicitly** to the spawned merge-worker, and the reserved
+check accepts **that token** — not only the inherited session id. So if the
+session-id pin ever fails, the master's own merge-worker is still authorised
+through the explicit token rather than being refused → enqueued → looping. The
+inherited session id is an optimisation; the explicit token is the authority of
+record.
+
 - A non-master session's agents are **refused → enqueue** to the hand-off.
-- **The human is never blocked.** To force a merge, claim the t3 master lease.
+- **The human is never blocked.** To force a merge, claim the t3 master lease
+  (see "Lease handoff and split-brain" below for how a mid-drain steal quiesces
+  the old master's in-flight work first).
+
+### Lease handoff and split-brain — fencing at the git write
+
+The ground-truth HEAD/merged checks below give **idempotency** (safe re-run of the
+*same* merge), **not mutual exclusion** between *different* units during a lease
+transition. With a TTL lease, two sessions can briefly both believe they are t3
+master — a lease-expiry TOCTOU, or a human "claiming the lease to force a merge"
+mid-drain while the old master's merge-worker is still pushing. The danger is the
+old master finishing unit X while the new master starts unit Y on `main`.
+
+The session-id check at the **FSM transition** does not close this — it fires once,
+at the transition, and a lease can expire (or be stolen) *after* the check passes
+but *before* the `git push`. So the fix is a **fencing / lease-generation token**:
+
+- The t3 master lease carries a **monotonically increasing generation number**.
+  Every **change of holder** (failover after expiry, or a human steal) increments
+  it; routine renewal by the *same* holder keeps the generation, so the master
+  never fences its own in-flight worker.
+- The merge-worker stamps the generation it was dispatched under, and the
+  generation is re-checked **at the git write itself** (the push / merge call),
+  not only at the FSM transition. A write whose token is **stale** (a newer
+  generation has been granted) is **fenced out** — refused at the push — even
+  though the FSM check passed earlier.
+
+**Lease TTL + failover.** The lease has a bounded TTL and is renewed by the live
+t3 master; if the master dies, the lease expires after the TTL and another session
+may claim it, taking a **higher generation**. Any straggler write from the dead
+master's worker carries the old generation and is fenced.
+
+**Human steal mid-drain.** When the human claims the lease mid-drain, the steal
+**waits for the in-flight drain to quiesce** — it does not start integrating until
+the current merge-worker finishes or is fenced. Concretely: the steal bumps the
+generation, and the old master's still-running worker is **fenced out at its next
+git write**, so it cannot land unit X under main concurrently with the new
+master's unit Y. The human is never blocked from *taking* the lease; the old
+worker is just prevented from *writing* under a superseded generation.
 
 ### Reconciliation — generic git, tech-stack-agnostic
 
 Reconciliation is **generic git** (serial rebase / resolve) plus the existing
-CI-green-before-merge gate. It is **tech-stack-agnostic** by design — this serves
-*all* overlays, not just teatree's Django.
+CI-green-before-merge gate. The **detection and integration** are
+tech-stack-agnostic by design — this serves *all* overlays, not just teatree's
+Django.
+
+**Caveat — the ceiling is git-clean + CI-green, not "correct".** What this
+guarantees is a clean merge that passes CI, **not** a semantically correct merge.
+Two changes can git-merge clean and stay CI-green while still being semantically
+in conflict where no test exercises the interaction. CI is the backstop the
+system has, not a proof of correctness — do not read green as "correct".
 
 **No proactive, stack-coupled conflict detectors.** Worked example: two Django
 migrations numbered `0028_*` git-merge clean but break the linear-migration
-graph. The design does **not** add a migration-graph detector. Instead, when the
-second unit is rebased onto the merged first, **Django's own check fails in CI**;
-the t3 master sees red and dispatches a fix. Any stack-specific reconciliation, if
-ever genuinely needed, lives behind an **overlay seam (opt-in)**, never in core.
+graph. This example only surfaces *because* Django ships a linear-migration check;
+the general guarantee is just git-clean + CI-green, with no equivalent backstop
+for conflicts no check covers. The design does **not** add a migration-graph
+detector. Instead, when the second unit is rebased onto the merged first,
+**Django's own check fails in CI**; the t3 master sees red and dispatches a fix.
+Note the asymmetry: **detection/integration is stack-agnostic, but the
+remediation is not** — the fix the master dispatches for a `0028_*` collision is
+itself Django-aware. Any stack-specific reconciliation, if ever genuinely needed,
+lives behind an **overlay seam (opt-in)**, never in core.
 
 **Do not predict "relatedness."** No attempt to guess which units will conflict.
 Let conflicts surface at the single integrator and resolve them serially. The
@@ -314,10 +425,28 @@ start work by hand.
 claim.** The one-worktree-per-ticket dedup already exists; this makes the worktree
 the anchor the claim hangs off.
 
-Plus a **thin, always-on minimal guard** whose only job is: *work that belongs to
-t3 is done through t3.* It fires **only** when the cwd touches a t3-owned unit — a
-provisioned-worktree marker, or a managed repo on a branch with a backing claim.
-Unrelated directories → it does nothing.
+But "provisioning is the claim" only covers work that goes **through**
+provisioning. The actual duplication root is the opposite case: a human opens a
+session **by hand** in a managed repo and starts hacking on a branch that
+**never registers a claim**. That hand-start is, by definition, **not** a t3-owned
+unit — so a guard that "fires only when the cwd touches a t3-owned unit" does
+nothing there, and the blind spot survives exactly where the duplication keeps
+happening.
+
+So the guard must **reach that root**, not just enforce "through t3" on units that
+are already owned. The **thin, always-on minimal guard** fires in **two** cases:
+
+- the cwd touches a **t3-owned unit** — a provisioned-worktree marker, or a
+  managed repo on a branch **with** a backing claim → enforce the "through t3"
+  invariant; and
+- the cwd is a **teatree-managed repo on a branch with NO backing claim** — an
+  **unclaimed hand-start** → **auto-claim** the branch (or prompt to claim it), so
+  the unit becomes visible to the loop's dedup before a second session can pick up
+  the same work.
+
+It stays **cheap and scoped to managed repos** — it keys off the managed-repo
+marker and a quick claim lookup, so **unrelated directories → it does nothing**
+and it never imposes on work outside teatree's managed repos.
 
 Crucially this is **not net-new machinery.** It reuses the existing
 **unconditional `PreToolUse` gate pattern** — the MR-metadata, AI-signature, and
@@ -358,9 +487,13 @@ Restated so the cutover is unambiguous:
 
 | Term | Meaning |
 |---|---|
-| **t3 master** | The single privileged session. |
-| **t3 master lease** | The atomic lease whose holder *is* t3 master; grants all privileged roles together (loops, orchestrator, integration/merge authority, `reserve_to_t3_master` transitions). Does not split. Renames+unifies the former `loop-owner` lease. |
+| **t3 master** | The session holding the t3 master (global owner) lease. |
+| **t3 master lease** | The **global owner lease** whose holder *is* t3 master. Reserves **indivisibly** the *core subset*: the **core loops** (merge/integration loops), the integration/merge authority, and the `reserve_to_t3_master` transition rights. These do not distribute. Renames+unifies the former `loop-owner` / `GLOBAL_OWNER_SLOT`. Only the **global** slot is renamed; the per-loop slots are untouched. |
+| **core loops** | The merge / integration loops reserved to the t3 master (the merge loop is a core loop per the 2026-06-27 directive). All other loops are **non-core**. |
+| **`loop:<name>` (per-loop ownership, #1834)** | The preserved per-loop lease layer (`PER_LOOP_OWNER_PREFIX = "loop:"`). **Non-core** loops use it and **can be distributed across sessions** — different sessions drive different non-core loops for throughput. #1834 is a superset; the t3 master reserves only the core subset. |
 | **`reserve_to_t3_master`** | The FSM guard field on integration-class transitions. `t3_` prefix is deliberate (not a git "master" branch). |
+| **fencing / lease-generation token** | The monotonic generation stamped on the t3 master lease and re-checked **at the git write** (push/merge), not only at the FSM transition. A stale-generation write is fenced out, preventing split-brain across a lease handoff. |
+| **merge-worker lease** | The single-holder slot under the t3 master lease that enforces one-merge-at-a-time; the master drains the hand-off queue serially behind it. |
 | **`/t3:loops`** | How teatree drives its loops — one native Claude `/loop` per enabled `Loop` row, each on its own cadence. |
 
 There is **no tick mechanism.** Teatree never drives itself "through a tick."
@@ -382,13 +515,20 @@ largely independent, which is the point:
    auto-load and skill-load manual engagement call it; remove the two parallel
    marker-writing paths. (Orchestration-only; independent of the runtime swap.)
 2. **Always-on anti-duplication guard** — add the minimal `PreToolUse` gate that
-   enforces "through t3" on t3-owned cwds and reads `autoload` via
-   `cold_reader`; migrate `autoload` DB-home. (Reuses the existing gate pattern.)
-3. **t3 master rename + unification** — rename the `loop-owner` lease to the t3
-   master lease; introduce `reserve_to_t3_master` and its enforcement at the `t3`
-   transition chokepoint; add the ready-for-integration hand-off and the
-   serialized merge-worker; pin the sub-agent-inherits-session-id assumption.
-   (Orchestration extension; independent of the runtime swap.)
+   enforces "through t3" on t3-owned cwds **and** auto-claims an unclaimed
+   hand-start on a managed-repo branch (closing the duplication root), and reads
+   `autoload` via `cold_reader`; migrate `autoload` DB-home. (Reuses the existing
+   gate pattern; stays scoped to managed repos.)
+3. **t3 master rename + unification** — rename the **global** `loop-owner` /
+   `GLOBAL_OWNER_SLOT` lease to the t3 master lease (core loops + integration
+   authority + reserved transitions reserved to it; the `loop:<name>` per-loop
+   layer (#1834) for non-core loops stays distributable); introduce
+   `reserve_to_t3_master` and its enforcement at the `t3` transition chokepoint;
+   add the ready-for-integration hand-off, the single-holder merge-worker lease,
+   and the fencing / lease-generation token checked at the git write; pass the
+   token explicitly to the merge-worker and pin the sub-agent-inherits-session-id
+   assumption as a secondary path. (Orchestration extension; independent of the
+   runtime swap.)
 4. **Runtime swap to Pydantic AI** — re-home the port surface from §2
    (`model_tiering`, `result_schema`, `skill_injection`, `outage_classifier`,
    attempt/result plumbing) behind Pydantic AI, inside the unchanged
@@ -420,8 +560,9 @@ that is the whole corrected premise.
 |---|---|
 | **OrcaRouter is the youngest option** | Thin OpenAI-compatible seam behind Pydantic AI's model class; OpenRouter is the mature fallback. Revisit if OrcaRouter's availability or behaviour proves unstable in the metered lane. |
 | **Critic path under a black-box router** | The verification/critic slot is bound to a concrete honest model (a Layer-2 binding value, not a new mechanism). Revisit if router opacity ever leaks into that slot. |
-| **Crash-mid-merge** | Idempotent integrate, each action gated on a ground-truth check (HEAD/merged?). The one place to invest care. |
-| **Sub-agent inherits parent session id** | The serialization rests on this; it must be confirmed by a pinning test in the t3 master step, not assumed. |
+| **Crash-mid-merge (resume)** | Idempotent integrate, each action gated on a ground-truth check (HEAD/merged?). Gives safe *re-run of the same merge*, not mutual exclusion. The one place to invest care. |
+| **Split-brain on lease handoff (mutual exclusion)** | Distinct from crash-resume: a TTL lease-expiry TOCTOU, or a human steal mid-drain, can leave two sessions both believing they are t3 master — old master finishing X racing new master starting Y on `main`. Mitigation: a **fencing / lease-generation token** re-checked **at the git write** (not just the FSM transition); bounded lease TTL + higher-generation failover; a human steal **waits for the in-flight drain to quiesce** and fences the old worker at its next push. Revisit if a straggler write ever lands under a superseded generation. |
+| **Sub-agent authority via inherited session id** | Plan A (sub-agent shares the parent session id) must be confirmed by a pinning test, not assumed. Plan B does not hinge on it: the master passes its **t3 master lease / fencing token explicitly** to the merge-worker and the reserved check accepts that token, so a failed pin does not strand the master's own merge-worker. |
 | **DBOS/Postgres reversal** | Recorded as a superseded position (§1) so the reasoning is legible if the question reopens. |
 
 ---
