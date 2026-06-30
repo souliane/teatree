@@ -175,3 +175,45 @@ class TestSameProcessReclaimAcrossSessionRotation:
         assert won is True
         assert owner == "sessionB"
         assert LoopLease.objects.get(name="loop-owner").session_id == "sessionB"
+
+
+class TestNoPingPongAcrossTicks:
+    """The FIRST live master holds the per-loop lease across several ticks; the loser SKIPs every round (#2650).
+
+    The two-session contention symptom: both sessions firing ``t3 loops tick
+    --loop <name>`` made the ``loop:<name>`` lease ping-pong, so ~half the loops
+    SKIPped each round. The sticky pid-anchored election keeps the FIRST live
+    claimant as master across EVERY subsequent tick — a normal (``take_over=
+    False``) tick from the loser never wins and never steals, and the master's
+    own per-tick re-claim (the heartbeat) keeps its lease from lapsing between
+    its ticks. This pins the no-ping-pong invariant the registration-side fix
+    relies on: even if a loser's cron somehow fires, the lease layer holds.
+    """
+
+    def test_first_live_master_holds_across_several_ticks(self) -> None:
+        slot = "loop:ship"
+        alive = {_OWNER_PID, _OTHER_ALIVE_PID}
+        with patch("teatree.utils.singleton.pid_alive", side_effect=lambda pid: pid in alive):
+            won, owner = LoopLease.objects.claim_ownership(
+                slot, session_id="master", owner_pid=_OWNER_PID, ttl_seconds=120
+            )
+            assert won is True
+            assert owner == "master"
+
+            for _ in range(5):
+                # The loser's per-tick claim SKIPs — a normal tick never takes over a live owner.
+                lost, holder = LoopLease.objects.claim_ownership(
+                    slot, session_id="loser", owner_pid=_OTHER_ALIVE_PID, ttl_seconds=120
+                )
+                assert lost is False, "the loser must SKIP — a normal tick never takes over a live master"
+                assert holder == "master"
+                # The master's per-tick re-claim is the heartbeat: it refreshes and keeps mastering.
+                refreshed, holder_after = LoopLease.objects.claim_ownership(
+                    slot, session_id="master", owner_pid=_OWNER_PID, ttl_seconds=120
+                )
+                assert refreshed is True
+                assert holder_after == "master"
+
+        row = LoopLease.objects.get(name=slot)
+        assert row.session_id == "master", "the lease must never ping-pong off the live first master"
+        assert row.owner_pid == _OWNER_PID

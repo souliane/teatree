@@ -8,9 +8,14 @@ non-owner / fresh session and a no-enabled-loops owner emit nothing. The seam
 ``/t3:loops`` skill, so the hook directives and the CLI affordance agree.
 """
 
+import contextlib
 import io
 import json
+import os
+import shutil
+import tempfile
 from pathlib import Path
+from unittest import mock
 
 import django.test
 import pytest
@@ -18,7 +23,7 @@ import pytest
 import hooks.scripts.hook_router as router
 from hooks.scripts import loop_registrations
 from hooks.scripts.loop_registrations import emit_loop_registrations, is_bare_loop_tick_prompt, loop_name_from_prompt
-from teatree.core.models import Loop, Prompt
+from teatree.core.models import Loop, LoopLease, Prompt
 from teatree.loops.claude_specs import ClaudeLoopSpec, loop_run_prompt
 
 
@@ -157,6 +162,110 @@ class TestOwnerSessionEmitsPerLoop:
         monkeypatch.setattr(loop_registrations, "_enabled_loop_specs", _two_specs)
         router.handle_enforce_loop_on_prompt({"session_id": "stranger"})
         assert capsys.readouterr().out == ""
+
+    def test_opted_in_loser_with_live_foreign_owner_registers_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A second OPTED-IN session that finds a LIVE different-session owner registers NOTHING (#2650).
+
+        The contention bug: BOTH an opted-in owner session AND an opted-in second
+        session emitted ``register_cron`` directives, so both registered native
+        ``/loop`` crons whose ``t3 loops tick --loop <name>`` runs then ping-ponged
+        the per-loop ``loop:<name>`` leases — ~half the loops SKIP every round. The
+        loser must back off AUTOMATICALLY: emit nothing AND write no pending marker,
+        so the PreToolUse nudge (which requires the marker) also stays silent. Only
+        the rightful owner's crons fire. Distinct from
+        :meth:`test_non_owner_session_emits_nothing`, which covers a session that
+        never opted into teatree at all (a colleague who merely cloned the repo).
+        """
+        state = tmp_path / "state"
+        state.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(router, "STATE_DIR", state)
+        monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(tmp_path / "data"))
+        monkeypatch.setenv("T3_AUTOLOAD", "1")
+        loser = "loser-session"
+        (state / f"{loser}.teatree-active").touch()  # the loser DID opt into teatree
+        monkeypatch.setattr(router, "_session_has_loop", lambda sid: False)
+        monkeypatch.setattr(loop_registrations, "_enabled_loop_specs", _two_specs)
+        # A DIFFERENT, live (alive pid) session already holds the tick-owner record.
+        router._write_loop_registry(
+            {
+                router._OWNER_LOOP: {
+                    "session_id": "master-session",
+                    "agent_id": "",
+                    "pid": os.getpid(),
+                    "heartbeat_ts": 0,
+                }
+            }
+        )
+
+        router.handle_enforce_loop_on_prompt({"session_id": loser})
+
+        assert capsys.readouterr().out == "", "a loser with a LIVE foreign owner must register NOTHING"
+        assert not (state / f"{loser}.loop-pending").is_file(), "the loser must write no pending marker (no nudge)"
+        # The loser must NOT have wrested the tick-owner record from the live master.
+        assert router._read_loop_registry()[router._OWNER_LOOP]["session_id"] == "master-session"
+
+
+class TestTakeOverReconcilesFileRegistry(django.test.TestCase):
+    """A DB ``--take-over`` reconciles a still-alive foreign file owner, then emits (#2851).
+
+    ``t3 loop claim --take-over`` writes ONLY the DB ``LoopLease`` row, never the
+    ``_OWNER_LOOP`` file registry. While the displaced owner stays alive in the
+    file registry, the new owner's ``_claim_loop_ownership`` must consult the DB
+    lease, see the hand-off, REWRITE the file registry to itself, and WIN — so
+    ``_session_owns_loop`` reads True in the SAME hook and the emit path registers
+    crons for the new owner. The flip side of
+    :meth:`TestOwnerSessionEmitsPerLoop.test_opted_in_loser_with_live_foreign_owner_registers_nothing`:
+    without the DB consult the new owner emits nothing and the loop stalls until
+    the displaced session ends (the HOLD finding on #2851). A ``django.test.TestCase``
+    because the take-over is recorded in the real DB ``LoopLease`` row the hook reads.
+    """
+
+    def test_db_take_over_reconciles_stale_file_owner_and_registers(self) -> None:
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        state = tmp / "state"
+        state.mkdir(parents=True, exist_ok=True)
+        new_owner = "new-owner-session"
+        (state / f"{new_owner}.teatree-active").touch()  # the new owner opted in
+        # An explicit ``t3 loop claim --take-over`` moved the LIVE DB lease to NEW.
+        won, _ = LoopLease.objects.claim_ownership(
+            "loop-owner", session_id=new_owner, take_over=True, owner_pid=os.getpid()
+        )
+        assert won
+
+        buf = io.StringIO()
+        with (
+            mock.patch.object(router, "STATE_DIR", state),
+            mock.patch.dict(os.environ, {"T3_LOOP_REGISTRY_DIR": str(tmp / "data"), "T3_AUTOLOAD": "1"}),
+            mock.patch.object(router, "_session_has_loop", return_value=False),
+            mock.patch.object(loop_registrations, "_enabled_loop_specs", _two_specs),
+            contextlib.redirect_stdout(buf),
+        ):
+            # The displaced owner is STILL ALIVE in the file registry.
+            router._write_loop_registry(
+                {
+                    router._OWNER_LOOP: {
+                        "session_id": "displaced-owner",
+                        "agent_id": "",
+                        "pid": os.getpid(),
+                        "heartbeat_ts": 0,
+                    }
+                }
+            )
+            router.handle_enforce_loop_on_prompt({"session_id": new_owner})
+            owns_loop = router._session_owns_loop(new_owner)
+            reconciled_owner = router._read_loop_registry()[router._OWNER_LOOP]["session_id"]
+
+        # The file registry is reconciled to NEW, so it owns the loop in this hook.
+        assert owns_loop is True
+        assert reconciled_owner == new_owner
+        # And the emit path registered one cron per enabled loop for NEW.
+        out = buf.getvalue()
+        assert out != "", "the reconciled new owner must register its crons"
+        loops = json.loads(out.splitlines()[0])["hookSpecificOutput"]["loops"]
+        assert len(loops) == 2
 
 
 def _prompt(name: str = "demo-prompt") -> Prompt:

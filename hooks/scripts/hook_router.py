@@ -56,6 +56,8 @@ from deny_circuit_breaker import deny_circuit_breaker_threshold as _deny_circuit
 from deny_circuit_breaker import deny_is_ux_gate as _deny_is_ux_gate  # noqa: F401
 from deny_circuit_breaker import reset_deny_streak as _reset_deny_streak
 from django_bootstrap import bootstrap_teatree_django
+from loop_owner_db import db_lease_consult_disabled as _db_lease_consult_disabled
+from loop_owner_db import db_owner_is_current_session as _db_owner_is_current_session
 from loop_registrations import emit_loop_registrations, is_bare_loop_tick_prompt, loop_name_from_prompt
 from loop_state_self_pump_gate import db_loop_state_suppresses_self_pump
 from main_clone_guard import handle_block_main_clone_mutation
@@ -886,9 +888,17 @@ def _claim_loop_ownership(session_id: str) -> None:
         registry = _prune_dead_owner(box[0])
         owner = registry.get(_OWNER_LOOP)
         if owner is not None and owner.get("session_id") != session_id:
-            box[0] = registry
-            return
-        if owner is None:
+            # A foreign, still-alive session holds the file registry. The DB is the
+            # take-over authority (#2851): when ``t3 loop claim --take-over`` already
+            # moved the LIVE DB lease to THIS session, reconcile the stale file
+            # registry (fall through to rewrite ``_OWNER_LOOP``) and WIN the claim, so
+            # the new owner emits cron registrations. A foreign/unowned DB lease (or a
+            # disabled consult) backs off as before — a live foreign owner is never
+            # stolen without an explicit DB hand-off.
+            if not _db_owner_is_current_session(session_id):
+                box[0] = registry
+                return
+        elif owner is None:
             db_live = _db_live_foreign_owner(session_id, current_pid=current_pid)
             if db_live:
                 box[0] = registry
@@ -899,15 +909,11 @@ def _claim_loop_ownership(session_id: str) -> None:
 def handle_enforce_loop_on_prompt(data: dict) -> None:
     """On first prompt, the loop OWNER registers one ``/loop`` per enabled DB Loop (#2650).
 
-    One ``/loop`` per ENABLED ``Loop`` row, each on its own cadence.  Only the
-    owner session (``_loop_auto_load_active`` + ``_claim_loop_ownership``) registers.
-    Directive building lives in the bare sibling :mod:`loop_registrations`.
-    Fail-open: zero enabled loops emits nothing, so the PreToolUse nudge never
-    fires when there is nothing to register.
-
-    ``_session_has_loop`` is the sole registration gate.  A fresh
-    ``tick-meta.json`` from a prior session (e.g. after release + claim) must
-    NOT suppress registration — that was the #2714 stall bug.
+    One ``/loop`` per ENABLED ``Loop`` row, each on its own cadence; directive
+    building lives in the bare sibling :mod:`loop_registrations`. Fail-open:
+    zero enabled loops emits nothing. ``_session_has_loop`` is the sole
+    re-registration gate — a fresh ``tick-meta.json`` after release+claim must
+    NOT suppress registration (the #2714 stall bug).
     """
     session_id = data.get("session_id", "")
     if not session_id:
@@ -915,6 +921,16 @@ def handle_enforce_loop_on_prompt(data: dict) -> None:
     if not _loop_auto_load_active(session_id):
         return
     _claim_loop_ownership(session_id)
+    # STICKY ELECTION (#2650): only the OWNER registers. A session that did NOT
+    # win/hold the tick-owner record (a DIFFERENT live session owns it) registers
+    # NOTHING and writes no pending marker — the loser backs off automatically, so
+    # two sessions never register competing crons that ping-pong the per-loop
+    # ``loop:<name>`` leases (~half the loops SKIP every round). ``_session_owns_loop``
+    # reads what ``_claim_loop_ownership`` just decided under the flock (file owner +
+    # the #1604 ``_pid_is_foreign`` DB cross-check); the PreToolUse nudge keys on the
+    # absent marker so it stays silent too, matching its ``_session_drives_loop`` exempt.
+    if not _session_owns_loop(session_id):
+        return
     _ensure_state_dir()
     _cleanup_stale_pending(session_id)
     pending = _state_file(session_id, "loop-pending")
@@ -4162,14 +4178,6 @@ _OWNER_LOOP = "t3-loop-tick-owner"
 
 # Overridable for tests; the controlling terminal otherwise.
 _TTY_PATH = "/dev/tty"
-
-# Skips the ``LoopLease`` DB cross-check (and its ``django.setup()``);
-# collapses to the same fail-open value an absent DB already yields.
-_SKIP_DB_LEASE_CONSULT_ENV = "T3_LOOP_SKIP_DB_LEASE_CONSULT"
-
-
-def _db_lease_consult_disabled() -> bool:
-    return os.environ.get(_SKIP_DB_LEASE_CONSULT_ENV) == "1"
 
 
 def _loop_registry_path() -> Path:
