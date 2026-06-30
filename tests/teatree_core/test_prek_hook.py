@@ -18,6 +18,7 @@ with a path inside that worktree, so the OTHER worktrees' pushes keep running
 the hook to completion (the acceptance criterion).
 """
 
+import os
 import re
 import shutil
 import subprocess
@@ -26,6 +27,11 @@ from pathlib import Path
 import pytest
 
 from teatree.core import prek_hook
+
+
+def _vanished_cwd() -> str:
+    raise FileNotFoundError(2, "No such file or directory")
+
 
 _GIT_BIN = shutil.which("git") or "/usr/bin/git"
 
@@ -132,6 +138,32 @@ class TestRemoveStaleHooks:
 
         assert hook.exists(), "a PATH-resolved hook is never stale and must survive any teardown"
         assert cleaned == []
+
+
+class TestRemoveStaleHooksSurvivesVanishedAnchor:
+    """souliane/teatree#2692 — a PATH-resolved hook must not crash teardown on a vanished CWD.
+
+    Classifying a hook bakes its ``PREK=`` value through ``_is_within``. For a
+    PATH-hardened hook that value is the relative ``"prek"`` (#1462), so
+    ``Path("prek").resolve()`` resolves against ``os.getcwd()`` — which raises
+    ``FileNotFoundError`` once the worktree the process is sitting in has been
+    removed earlier in the same teardown. The throw aborted ``cleanup_worktree``
+    before the DB drop / row delete / reap steps ran.
+    """
+
+    def test_keeps_path_resolved_hook_when_cwd_is_gone(self, main_clone: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        hook = _write_stale_hook(main_clone, "pre-push", "prek")
+        monkeypatch.setattr(os, "getcwd", _vanished_cwd)
+
+        cleaned = prek_hook.remove_stale_hooks(str(main_clone), str(main_clone.parent / "torn-down-wt"))
+
+        assert hook.exists(), "PATH-resolved hook must survive teardown even with a vanished CWD"
+        assert cleaned == []
+
+    def test_is_within_relative_candidate_never_resolves(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(os, "getcwd", _vanished_cwd)
+
+        assert prek_hook._is_within(Path("prek"), Path("/removed/worktree")) is False
 
 
 @pytest.mark.skipif(shutil.which("prek") is None, reason="prek not on PATH")

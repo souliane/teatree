@@ -776,6 +776,73 @@ class TestCleanupWorktreeSurvivesMissingProvisionTimebox(TestCase):
         assert result.clean is True
 
 
+class TestCleanupWorktreeSurvivesVanishedHookPath(TestCase):
+    """souliane/teatree#2692 — teardown completes ALL steps when hook-cleanup raises.
+
+    The benign prek hook-cleanup step (``_remove_git_worktree`` →
+    ``prek_hook.remove_stale_hooks``) resolves a PATH-hardened hook's relative
+    ``PREK="prek"`` value, which raises ``FileNotFoundError`` once the process
+    CWD has vanished mid-teardown (the worktree dir was removed earlier in the
+    same run). That throw aborted ``cleanup_worktree`` before the DB drop and
+    ``Worktree`` row delete — leaving an orphaned DB and DB row. Hook cleanup is
+    best-effort: its failure is surfaced, never propagated, so the later steps run.
+    """
+
+    def _make_worktree(self, *, db_name: str = "wt_2692") -> Worktree:
+        ticket = Ticket.objects.create(
+            issue_url="https://gitlab.com/org/repo/-/issues/2692",
+            state=Ticket.State.IN_REVIEW,
+        )
+        return Worktree.objects.create(
+            overlay="test",
+            ticket=ticket,
+            repo_path="org/repo",
+            branch="fix-2692",
+            db_name=db_name,
+            extra={"worktree_path": "/tmp/wt/org/repo"},
+        )
+
+    @_patch_overlay
+    @_patch_config
+    def test_db_drop_and_row_delete_still_run_when_hook_cleanup_raises(
+        self,
+        mock_config: MagicMock,
+        mock_overlay: MagicMock,
+    ) -> None:
+        """A ``FileNotFoundError`` from hook cleanup is surfaced, not propagated.
+
+        Anti-vacuous: it pins that the DB-drop step IS invoked and the
+        ``Worktree`` row IS deleted (the two steps the abort skipped), and that
+        the hook-cleanup failure is recorded in ``errors`` rather than swallowed.
+        """
+        _mock_workspace(mock_config)
+        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_overlay.return_value.reap_worktree_external_resources.return_value = []
+
+        wt = self._make_worktree(db_name="wt_2692")
+        wt_id = wt.pk
+
+        with (
+            patch("teatree.core.cleanup.git") as mock_git,
+            patch("teatree.core.cleanup.drop_db") as mock_drop,
+            patch("teatree.core.runners.worktree_start.docker_compose_down"),
+            patch(
+                "teatree.core.cleanup.prek_hook.remove_stale_hooks",
+                side_effect=FileNotFoundError(2, "No such file or directory"),
+            ),
+        ):
+            _no_unpushed(mock_git)
+            mock_git.status_porcelain.return_value = ""
+            mock_git.unsynced_commits.return_value = []
+            result = cleanup_worktree(wt, strict_hygiene=False)
+
+        mock_drop.assert_called_once()
+        assert mock_drop.call_args.args == ("wt_2692",)
+        assert not Worktree.objects.filter(pk=wt_id).exists()
+        assert result.clean is False
+        assert any("hook" in e.lower() for e in result.errors)
+
+
 class TestCleanupWorktreeLoudTeardown(TestCase):
     """#877 — teardown failures surface in ``CleanupResult.errors``.
 
