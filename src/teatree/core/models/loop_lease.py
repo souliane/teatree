@@ -44,9 +44,12 @@ alive but BUSY past the tick TTL fires no Stop self-pump, so no tick
 re-claims and the lease TTL-lapses while the owner process is still alive.
 ``claim_ownership`` therefore treats a non-empty owner whose ``owner_pid``
 is alive as a LIVE owner — protected past its TTL against any non-
-``take_over`` claim — so the loop stays with the existing session and
-transfers ONLY on that session's process termination or an explicit
-``t3 loop claim --take-over``. The TTL is the FALLBACK release, used only
+``take_over`` claim from a DIFFERENT process — so the loop stays with the
+existing process and transfers ONLY on that process's termination or an
+explicit ``t3 loop claim --take-over``. A same-process session-id rotation
+(#2835: context compaction rotates the id but not the process) is NOT a
+transfer: the lease is re-anchored to the new session id and the same
+process keeps the loop. The TTL is the FALLBACK release, used only
 when ``owner_pid`` is null or dead. An anonymous caller (``session_id ==
 ""``, e.g. a Bash-tool tick that never sees the id, #1107) never persists
 ownership: it runs the tick when unowned but can never write the phantom
