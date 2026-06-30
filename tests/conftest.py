@@ -1,8 +1,10 @@
 """Shared fixtures for teatree script tests."""
 
 import importlib.util
+import json
 import os
 import tempfile
+import time
 import types
 from collections.abc import Iterator
 from pathlib import Path
@@ -228,11 +230,16 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     the ``[update] …`` banner prepend non-JSON to a CLI's stdout under the
     previously default ``--exitfirst`` masked by ``-n auto``. That host-config
     leak is closed two ways: the facade ``CONFIG_PATH`` is redirected at a hermetic
-    per-test file (no keys → all TOML-home settings default), and ``check_updates``
-    is DB-home (eliminate-~/.teatree.toml: ``check_for_updates`` reads it via the
-    Django-free ``cold_reader``), so under the isolated ``$HOME`` below — with no
-    canonical config DB — it fails open to its dataclass default, never the host
-    value. (The former host ``[loops.review]
+    per-test file (no keys → all TOML-home settings default), and the update-check
+    cache is redirected (below) at a hermetic per-test "up to date" verdict so the
+    banner can never fire. The cache redirect — not a ``check_updates=false`` config
+    seed — is the lever because ``check_updates`` is DB-home (eliminate-~/.teatree.toml:
+    ``check_for_updates`` reads it via the Django-free ``cold_reader``) and fails OPEN to
+    its dataclass default ``True`` under an isolated ``$HOME`` with no config DB, and the
+    only locations the cold reader resolves a DB are under ``tmp_path`` (caught by
+    ``test_paths``' stale-``db.sqlite3`` scan) or ``T3_CONFIG_DB`` (which outranks the
+    ``XDG_DATA_HOME`` DBs other tests seed) — so a config seed cannot be placed without
+    breaking those tests. (The former host ``[loops.review]
     enabled = false`` leak is moot since #2702 removed the ``[loops]`` toml
     read; the ``T3_LOOPS_DISABLED`` env leak below is still cleared per test.)
     """
@@ -259,6 +266,20 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     # readers resolve under the isolated ``$HOME`` and never read a host DB.
     monkeypatch.delenv("T3_CONFIG_DB", raising=False)
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    # Redirect the update-check cache at a hermetic per-test dir holding a fresh
+    # "up to date" verdict (empty message) so ``run_update_check`` short-circuits on the
+    # cache before its network/subprocess ``gh`` call. ``check_updates`` fails OPEN to
+    # ``True`` here (DB-home, no config DB), so without this a leaked subprocess mock in
+    # the same xdist worker turns the ``gh`` result into a bogus ``[update] …`` banner
+    # that prepends non-JSON to a CLI's captured output. The cache file is ``*.json`` (not
+    # ``db.sqlite3``), so it never trips ``test_paths``' stale-DB scan. Update-check tests
+    # set their own ``DATA_DIR`` per test, overriding this.
+    update_cache_dir = config_dir / "update-check-cache"
+    update_cache_dir.mkdir(parents=True, exist_ok=True)
+    (update_cache_dir / "update-check.json").write_text(
+        json.dumps({"ts": time.time(), "message": ""}), encoding="utf-8"
+    )
+    monkeypatch.setattr("teatree.update_check.DATA_DIR", update_cache_dir)
     # Default to per-worktree postgres for test isolation (override in specific tests)
     monkeypatch.setenv("T3_SHARE_DB_SERVER", "false")
     monkeypatch.delenv("T3_WORKSPACE_DIR", raising=False)
