@@ -10,6 +10,7 @@ non-owner / fresh session and a no-enabled-loops owner emit nothing. The seam
 
 import io
 import json
+import os
 from pathlib import Path
 
 import django.test
@@ -157,6 +158,49 @@ class TestOwnerSessionEmitsPerLoop:
         monkeypatch.setattr(loop_registrations, "_enabled_loop_specs", _two_specs)
         router.handle_enforce_loop_on_prompt({"session_id": "stranger"})
         assert capsys.readouterr().out == ""
+
+    def test_opted_in_loser_with_live_foreign_owner_registers_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A second OPTED-IN session that finds a LIVE different-session owner registers NOTHING (#2650).
+
+        The contention bug: BOTH an opted-in owner session AND an opted-in second
+        session emitted ``register_cron`` directives, so both registered native
+        ``/loop`` crons whose ``t3 loops tick --loop <name>`` runs then ping-ponged
+        the per-loop ``loop:<name>`` leases — ~half the loops SKIP every round. The
+        loser must back off AUTOMATICALLY: emit nothing AND write no pending marker,
+        so the PreToolUse nudge (which requires the marker) also stays silent. Only
+        the rightful owner's crons fire. Distinct from
+        :meth:`test_non_owner_session_emits_nothing`, which covers a session that
+        never opted into teatree at all (a colleague who merely cloned the repo).
+        """
+        state = tmp_path / "state"
+        state.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(router, "STATE_DIR", state)
+        monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(tmp_path / "data"))
+        monkeypatch.setenv("T3_AUTOLOAD", "1")
+        loser = "loser-session"
+        (state / f"{loser}.teatree-active").touch()  # the loser DID opt into teatree
+        monkeypatch.setattr(router, "_session_has_loop", lambda sid: False)
+        monkeypatch.setattr(loop_registrations, "_enabled_loop_specs", _two_specs)
+        # A DIFFERENT, live (alive pid) session already holds the tick-owner record.
+        router._write_loop_registry(
+            {
+                router._OWNER_LOOP: {
+                    "session_id": "master-session",
+                    "agent_id": "",
+                    "pid": os.getpid(),
+                    "heartbeat_ts": 0,
+                }
+            }
+        )
+
+        router.handle_enforce_loop_on_prompt({"session_id": loser})
+
+        assert capsys.readouterr().out == "", "a loser with a LIVE foreign owner must register NOTHING"
+        assert not (state / f"{loser}.loop-pending").is_file(), "the loser must write no pending marker (no nudge)"
+        # The loser must NOT have wrested the tick-owner record from the live master.
+        assert router._read_loop_registry()[router._OWNER_LOOP]["session_id"] == "master-session"
 
 
 def _prompt(name: str = "demo-prompt") -> Prompt:

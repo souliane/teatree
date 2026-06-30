@@ -889,15 +889,11 @@ def _claim_loop_ownership(session_id: str) -> None:
 def handle_enforce_loop_on_prompt(data: dict) -> None:
     """On first prompt, the loop OWNER registers one ``/loop`` per enabled DB Loop (#2650).
 
-    One ``/loop`` per ENABLED ``Loop`` row, each on its own cadence.  Only the
-    owner session (``_loop_auto_load_active`` + ``_claim_loop_ownership``) registers.
-    Directive building lives in the bare sibling :mod:`loop_registrations`.
-    Fail-open: zero enabled loops emits nothing, so the PreToolUse nudge never
-    fires when there is nothing to register.
-
-    ``_session_has_loop`` is the sole registration gate.  A fresh
-    ``tick-meta.json`` from a prior session (e.g. after release + claim) must
-    NOT suppress registration — that was the #2714 stall bug.
+    One ``/loop`` per ENABLED ``Loop`` row, each on its own cadence; directive
+    building lives in the bare sibling :mod:`loop_registrations`. Fail-open:
+    zero enabled loops emits nothing. ``_session_has_loop`` is the sole
+    re-registration gate — a fresh ``tick-meta.json`` after release+claim must
+    NOT suppress registration (the #2714 stall bug).
     """
     session_id = data.get("session_id", "")
     if not session_id:
@@ -905,6 +901,16 @@ def handle_enforce_loop_on_prompt(data: dict) -> None:
     if not _loop_auto_load_active(session_id):
         return
     _claim_loop_ownership(session_id)
+    # STICKY ELECTION (#2650): only the OWNER registers. A session that did NOT
+    # win/hold the tick-owner record (a DIFFERENT live session owns it) registers
+    # NOTHING and writes no pending marker — the loser backs off automatically, so
+    # two sessions never register competing crons that ping-pong the per-loop
+    # ``loop:<name>`` leases (~half the loops SKIP every round). ``_session_owns_loop``
+    # reads what ``_claim_loop_ownership`` just decided under the flock (file owner +
+    # the #1604 ``_pid_is_foreign`` DB cross-check); the PreToolUse nudge keys on the
+    # absent marker so it stays silent too, matching its ``_session_drives_loop`` exempt.
+    if not _session_owns_loop(session_id):
+        return
     _ensure_state_dir()
     _cleanup_stale_pending(session_id)
     pending = _state_file(session_id, "loop-pending")
