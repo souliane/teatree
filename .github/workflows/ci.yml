@@ -48,7 +48,9 @@
 #                              test-path-mirror (ratchet gate)
 #   5. Test suite            — test, test-shim
 #   6. Architecture / quality fitness gates — mutation-diff, mutation-full,
-#                              banned-terms-tree
+#                              banned-terms-tree, overlay-leak-tree
+#                              (the two tree gates run on push, schedule AND PR
+#                              so a leak is caught before merge — #44)
 #   7. Security & supply chain — uv-audit, sbom, uv-audit-advisory
 #
 # THE METERED AI EVAL DOES NOT RUN HERE
@@ -657,21 +659,26 @@ jobs:
         if: steps.gate.outputs.run_mutation == 'true'
         run: uv run t3 mutation run --all
 
-  # GATE (push + schedule only): full-tree scan for committed customer brand names;
-  # runs daily and on push-to-main; skipped on PRs (diff-only gate handles PRs).
+  # GATE (push + schedule + PR): full-tree scan for committed customer brand
+  # names. Runs daily, on push-to-main, AND on every PR so a brand committed by
+  # a PR is caught BEFORE merge instead of turning main RED on landing (#44).
   banned-terms-tree:
-    # Full-tree banned-brand backstop (souliane/teatree#1570). The
+    # Full-tree banned-brand backstop (souliane/teatree#1570, #44). The
     # diff/payload banned-terms gate only ever sees a *change*; a brand
     # name ALREADY committed never appears in a post-landing diff. This
     # job scans every git-tracked file's content for the high-confidence
-    # brand list on push-to-main and on a daily schedule, failing CI if a
-    # brand is present. The public repo ships with no brands; the list is
-    # supplied from the TEATREE_BANNED_BRANDS secret so no tenant name is
-    # ever committed. ``--require-brands`` makes a MISSING secret a LOUD
-    # failure (exit 2 = misconfigured) instead of a silent clean no-op — the
-    # job stays RED until the secret is wired (intended). Local dev omits the
-    # flag and stays green.
-    if: github.event_name == 'push' || github.event_name == 'schedule'
+    # brand list on push-to-main, on a daily schedule, and on PRs, failing
+    # CI if a brand is present. The public repo ships with no brands; the
+    # list is supplied from the TEATREE_BANNED_BRANDS secret so no tenant
+    # name is ever committed.
+    #
+    # push/schedule keep ``--require-brands`` so a MISSING secret stays a LOUD
+    # exit-2 failure on main. The PR step drops it and adds a fork-safe
+    # explicit-empty fallback: a same-repo PR reads the secret (full brand +
+    # terminology coverage), while a fork PR — which cannot read secrets —
+    # still runs the always-on terminology pass instead of false-redding on
+    # the unset-list refusal.
+    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
@@ -682,23 +689,35 @@ jobs:
         with:
           python-version: "3.13"
       - run: uv sync
-      - name: Full-tree banned-brand scan
+      - name: Full-tree banned-brand scan (push/schedule — require brands)
+        if: github.event_name != 'pull_request'
         env:
           TEATREE_BANNED_BRANDS: ${{ secrets.TEATREE_BANNED_BRANDS }}
         run: uv run t3 banned-terms scan-tree --repo-root . --require-brands
+      - name: Full-tree banned-brand + terminology scan (PR — brands optional)
+        if: github.event_name == 'pull_request'
+        env:
+          TEATREE_BANNED_BRANDS: ${{ secrets.TEATREE_BANNED_BRANDS }}
+          T3_BANNED_TERMS_CONFIG: dev/ci/pr-empty-brands.toml
+        run: uv run t3 banned-terms scan-tree --repo-root .
 
-  # GATE (push + schedule only): full-tree overlay-leak scan. The pre-commit
+  # GATE (push + schedule + PR): full-tree overlay-leak scan. The pre-commit
   # `no-overlay-leak` hook only sees STAGED files; an overlay-scoped name or a
   # real-shaped Slack/forge opaque id ALREADY committed never appears in a
   # staged diff. This job walks every scanned root (src/teatree, docs, skills,
   # agents, tests, scripts + top-level README/BLUEPRINT/AGENTS) for the
-  # configured term list AND the always-on opaque-ID pass. `--require-terms`
-  # makes a MISSING TEATREE_OVERLAY_LEAK_TERMS secret a LOUD failure (exit 2 =
-  # misconfigured) instead of a silent inert no-op — the job stays RED until the
-  # secret is wired (intended); the opaque-ID pass runs regardless. Local dev
+  # configured term list AND the always-on opaque-ID pass. It runs on every PR
+  # too (#44) so a leak introduced by a PR is caught BEFORE merge instead of
+  # turning main RED on landing.
+  #
+  # push/schedule keep ``--require-terms`` so a MISSING
+  # TEATREE_OVERLAY_LEAK_TERMS secret stays a LOUD exit-2 failure on main. The
+  # PR step drops it: a same-repo PR reads the secret (full term + opaque-ID
+  # coverage), while a fork PR — which cannot read secrets — still runs the
+  # always-on opaque-ID pass (term pass inert, never a false exit-2). Local dev
   # omits the flag and stays green.
   overlay-leak-tree:
-    if: github.event_name == 'push' || github.event_name == 'schedule'
+    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -709,10 +728,16 @@ jobs:
         with:
           python-version: "3.13"
       - run: uv sync
-      - name: Full-tree overlay-leak scan
+      - name: Full-tree overlay-leak scan (push/schedule — require terms)
+        if: github.event_name != 'pull_request'
         env:
           TEATREE_OVERLAY_LEAK_TERMS: ${{ secrets.TEATREE_OVERLAY_LEAK_TERMS }}
         run: uv run python scripts/hooks/check_no_overlay_leak.py --require-terms
+      - name: Full-tree overlay-leak scan (PR — terms optional)
+        if: github.event_name == 'pull_request'
+        env:
+          TEATREE_OVERLAY_LEAK_TERMS: ${{ secrets.TEATREE_OVERLAY_LEAK_TERMS }}
+        run: uv run python scripts/hooks/check_no_overlay_leak.py
 
   # ── 7. Security & supply chain ─────────────────────────────────────────────
 
