@@ -9,7 +9,9 @@ host machine and are out of scope for the git-sync behaviour under test.
 The stubs are recording callables, not ``Mock()`` assertions on call_args.
 """
 
+import os
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -1081,6 +1083,90 @@ class TestStaleCloneNotice:
             update_mod._run_update()
 
         spy.assert_not_called()
+
+
+# Regression for #2844: the stale-clone notice writes a ``BotPing`` through
+# ``teatree.core.notify``, whose module-scope ``teatree.core.models`` import
+# needs a configured Django. ``t3 update`` is a top-level typer command that
+# never bootstraps Django, so the notify import raised ``ImproperlyConfigured``
+# at IMPORT time — before ``notify_stale_clone_skip``'s own try/except could
+# catch it — aborting the whole run whenever any tracked repo was stale.
+_STALE_NOTICE_SUBPROCESS = """
+import sys
+from pathlib import Path
+
+from django.conf import settings
+
+# Mirror the real `t3 update` process: Django is NOT bootstrapped here.
+assert not settings.configured, "precondition: Django must be unconfigured"
+
+from teatree.cli.update import RepoUpdate, UpdateStatus, _notify_if_stale
+
+result = RepoUpdate(
+    "clone", UpdateStatus.SKIPPED, old_sha="abc1234", reason="tracked dirty", stale_kind="dirty"
+)
+_notify_if_stale(result, repo=Path(sys.argv[1]))
+
+# The fix bootstraps Django before touching the ORM-backed notify path.
+assert settings.configured, "ensure_django() must run before the notify import"
+print("STALE-NOTICE-OK")
+"""
+
+
+class TestStaleNoticeNeverCrashesUpdate:
+    """``_notify_if_stale`` must survive a process where Django was never set up (#2844)."""
+
+    def test_stale_notice_does_not_crash_unconfigured_django_process(self, tmp_path: Path) -> None:
+        """Faithful reproduction: run the stale path in a fresh, Django-unconfigured process.
+
+        In-process, pytest has already configured Django, so the crash can only
+        be reproduced in a subprocess that mirrors the real ``t3 update`` runtime
+        (no ``django.setup()``). RED before the fix: the subprocess dies with
+        ``ImproperlyConfigured`` (non-zero exit). GREEN after: it bootstraps
+        Django and exits 0.
+        """
+        repo = tmp_path / "stale-clone"  # an existing dir → `_default_branch` degrades to None, not a crash
+        repo.mkdir()
+        env = {k: v for k, v in os.environ.items() if k != "DJANGO_SETTINGS_MODULE"}
+        env["XDG_DATA_HOME"] = str(tmp_path / "xdg")  # isolate the self-DB from the real one
+
+        proc = subprocess.run(
+            [sys.executable, "-c", _STALE_NOTICE_SUBPROCESS, str(repo)],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert proc.returncode == 0, f"`t3 update` stale path crashed:\n{proc.stderr}"
+        assert "STALE-NOTICE-OK" in proc.stdout
+        assert "ImproperlyConfigured" not in proc.stderr
+
+    def test_notify_failure_degrades_to_a_warning_never_propagates(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A failing notify path must degrade to a plain warning, not abort the update.
+
+        RED before the fix: ``notify_stale_clone_skip`` raising propagates out of
+        ``_notify_if_stale`` (no surrounding try/except). GREEN after: it is
+        caught and surfaced as a ``WARN`` line naming the stale repo path.
+        """
+        from unittest.mock import patch  # noqa: PLC0415
+
+        result = update_mod.RepoUpdate(
+            "clone", update_mod.UpdateStatus.SKIPPED, old_sha="abc1234", reason="tracked dirty", stale_kind="dirty"
+        )
+
+        with patch(
+            "teatree.core.stale_clone_notice.notify_stale_clone_skip",
+            side_effect=RuntimeError("notify backend down"),
+        ):
+            update_mod._notify_if_stale(result, repo=tmp_path)  # must NOT raise
+
+        out = capsys.readouterr().out
+        assert "WARN" in out
+        assert str(tmp_path) in out
+        assert "re-run `t3 update`" in out
 
 
 if __name__ == "__main__":

@@ -54,6 +54,7 @@ codes").  Precedent: ``cli/setup/clone.py`` ``validate_repo`` → ``raise typer.
 """
 
 import enum
+import logging
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -62,7 +63,10 @@ import typer
 
 from teatree.self_update import ReinstallResult, SubprocessRunner, ensure_self_db_migrated, reinstall_running_editable
 from teatree.utils.dep_drift import editable_source_path, find_missing_dependencies
+from teatree.utils.django_bootstrap import ensure_django
 from teatree.utils.run import CompletedProcess, run_allowed_to_fail
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "ReinstallResult",
@@ -506,25 +510,44 @@ def _notify_if_stale(result: RepoUpdate, *, repo: Path) -> None:
     scroll away; this records a durable, idempotent ``BotPing`` notice naming the
     repo path + manual remediation so a stale editable clone is never invisible.
     The safe update never auto-stashes/auto-checkouts to recover — the user does.
+
+    ``t3 update`` is a top-level typer command that never bootstraps Django, yet
+    the notice writes its ``BotPing`` through :mod:`teatree.core.notify` — whose
+    module-scope :mod:`teatree.core.models` import needs a configured Django
+    (#2844 hoisted it to satisfy the intra-core deferred-import ratchet). So
+    :func:`ensure_django` runs first, before the notify import touches the ORM.
+    The whole block is FAIL-SAFE: the durable audit row is best-effort (the loud
+    terminal warning already printed), so a bootstrap/notify failure degrades to
+    a plain warning — ``t3 update`` must never crash just because it could not
+    record the stale-clone notice (mirrors :func:`notify_stale_clone_skip`'s own
+    "never raises" contract, which the import-time failure here sits outside of).
     """
     if not result.stale_kind:
         return
-    from teatree.core.stale_clone_notice import (  # noqa: PLC0415
-        StaleCloneReason,
-        StaleCloneSkip,
-        notify_stale_clone_skip,
-    )
-
-    notify_stale_clone_skip(
-        StaleCloneSkip(
-            label=result.name,
-            repo_path=str(repo),
-            reason=StaleCloneReason(result.stale_kind),
-            head_sha=result.old_sha or _short_sha(repo),
-            default_branch=_default_branch(repo) or "",
-            detail=result.reason,
+    try:
+        ensure_django()
+        from teatree.core.stale_clone_notice import (  # noqa: PLC0415
+            StaleCloneReason,
+            StaleCloneSkip,
+            notify_stale_clone_skip,
         )
-    )
+
+        notify_stale_clone_skip(
+            StaleCloneSkip(
+                label=result.name,
+                repo_path=str(repo),
+                reason=StaleCloneReason(result.stale_kind),
+                head_sha=result.old_sha or _short_sha(repo),
+                default_branch=_default_branch(repo) or "",
+                detail=result.reason,
+            )
+        )
+    except Exception:
+        logger.exception("Could not record the durable stale-clone notice for %s (%s)", result.name, repo)
+        typer.echo(
+            f"WARN  Could not record the durable stale-clone notice for {result.name} ({repo}); "
+            "resolve the stale clone, then re-run `t3 update`."
+        )
 
 
 def _run_update() -> None:
