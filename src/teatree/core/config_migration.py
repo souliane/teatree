@@ -145,7 +145,15 @@ def _resolve_export_scan_terms() -> tuple[str, ...]:
     config = resolve_config()
     if config is None:
         return ()
-    terms = list(resolve_banned_terms(config))
+    # Each source fails safe to empty INDEPENDENTLY: a config present but with
+    # banned_terms (or banned_brands) genuinely unset raises BannedTermsUnsetError,
+    # and the export must never crash on it (the DEFAULT machine state). Two
+    # separate suppress blocks so an unset banned_terms list does not also drop the
+    # brand-term redaction (and vice versa) — a shared export still scans for
+    # whichever list IS configured.
+    terms: list[str] = []
+    with contextlib.suppress(BannedTermsUnsetError):
+        terms.extend(resolve_banned_terms(config))
     with contextlib.suppress(BannedTermsUnsetError):
         terms.extend(load_brand_terms(config))
     return tuple(terms)

@@ -12,7 +12,11 @@ value the user has since changed via ``config_setting set`` — it seeds only ke
 absent from the store and leaves present rows untouched.
 """
 
+import os
+import tempfile
 import tomllib
+from pathlib import Path
+from unittest import mock
 
 from django.test import TestCase
 
@@ -331,3 +335,34 @@ class TestExportSecretGuard(TestCase):
         assert teatree["mode"] == "auto"
         assert teatree["excluded_skills"] == ["foo"]
         assert result.redacted == ()
+
+
+class TestExportScanTermsResolveFailsSafe(TestCase):
+    """``export_db_to_toml(scan_terms=None)`` fails SAFE when the live config has no terms.
+
+    The DEFAULT machine state — a ``~/.teatree.toml`` present but with
+    ``banned_terms`` unset and no ``T3_BANNED_TERMS`` env — makes
+    ``resolve_banned_terms`` raise ``BannedTermsUnsetError``. The export's
+    live-resolve path (``scan_terms=None``, the production ``config_setting
+    export`` caller) must degrade to an EMPTY scan-term list rather than
+    propagate the raise. Every other export test passes ``scan_terms``
+    explicitly, so this live-resolve path is otherwise uncovered.
+    """
+
+    def test_export_does_not_crash_when_config_lacks_banned_terms(self) -> None:
+        ConfigSetting.objects.set_value("mode", "auto")
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "teatree.toml"
+            # A config that EXISTS but carries neither banned_terms nor
+            # banned_brands — the default state both resolvers raise on.
+            config_path.write_text('[teatree]\nmode = "auto"\n', encoding="utf-8")
+            # Full env minus the two override vars so neither resolver short-
+            # circuits on an env value; point the scanner at our config file.
+            env = {k: v for k, v in os.environ.items() if k not in {"T3_BANNED_TERMS", "TEATREE_BANNED_BRANDS"}}
+            env["T3_BANNED_TERMS_CONFIG"] = str(config_path)
+            with mock.patch.dict(os.environ, env, clear=True):
+                export = export_db_to_toml()  # scan_terms=None -> live resolve
+        doc = tomllib.loads(export.toml)
+        assert doc["teatree"]["mode"] == "auto"
+        # No terms resolved => nothing to redact; the export is valid and complete.
+        assert export.redacted == ()

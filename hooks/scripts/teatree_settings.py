@@ -17,9 +17,11 @@ targets the DB tier: ``config_setting set`` for the overridable keys, and ``t3
 canonical DB via :func:`teatree.config.cold_writer.write_setting`, falling back to TOML
 only in the pre-``t3 setup`` cold state). So a ``t3 teatree gate`` toggle stays authoritative
 over a seeded row instead of being shadowed by it. The TOML fallback preserves a value
-the import never seeds — critically the TOML-home keys ``autoload`` and
-``orchestrator_bash_gate_enabled`` (#1775) — so a missing/unreadable DB row never
-silently flips a gate's verdict.
+the import never seeds — critically the never-seeded TOML-home key ``autoload`` (read by
+the cold pre-Django hooks via tomllib, #256) — so a missing/unreadable DB row never
+silently flips a gate's verdict. (``orchestrator_bash_gate_enabled`` is DB-home as of the
+eliminate-~/.teatree.toml cutover and IS seeded by ``import_toml_into_db``, so it is no
+longer in this never-seeded set.)
 """
 
 import os
