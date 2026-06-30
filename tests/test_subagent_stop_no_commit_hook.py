@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 import hooks.scripts.hook_router as router
+from hooks.scripts import subagent_no_commit
 from hooks.scripts.hook_router import _T3_TEMP_PREFIX, handle_pre_compact, handle_subagent_stop_no_commit
 
 _GIT_ENV = {
@@ -161,7 +162,7 @@ class TestFailsOpen:
         def _boom(*_args: object) -> None:
             raise RuntimeError
 
-        monkeypatch.setattr(router, "_record_no_commit_signal", _boom)
+        monkeypatch.setattr(subagent_no_commit, "_record_no_commit_signal", _boom)
         # The handler must swallow the error from the recording path.
         handle_subagent_stop_no_commit({"session_id": "sess-f", "cwd": str(clone)})
 
