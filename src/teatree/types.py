@@ -279,10 +279,36 @@ DEFAULT_MR_TITLE_REGEX = (
 
 @dataclass(frozen=True, slots=True)
 class ProvisionStep:
+    """One unit of work in a worktree's provisioning sequence.
+
+    ``subprocess_only`` is the thread-safety contract that decides how
+    :func:`teatree.core.step_runner.run_provision_steps` executes the callable
+    (souliane/teatree#2244):
+
+    - ``False`` (default) — the callable MAY touch the ORM (mutate the
+        ``Worktree`` row, query a model). Django DB connections are per-thread,
+        so it runs **in-process**, never on a worker thread. A worker-thread
+        time-box here would write on a connection invisible to the caller
+        ("database table is locked" under a test transaction). The cost: an
+        in-process callable has no wall-clock ceiling, so it must not block
+        indefinitely on a subprocess.
+    - ``True`` — the callable is a **pure subprocess shellout that touches no
+        ORM** (``uv sync``, ``uv pip install -e``). It is time-boxed on a daemon
+        worker thread by the configured ``provision_step_timeout_seconds``
+        ceiling, so a child blocked forever on its PIPE (a network stall) aborts
+        loud with an actionable alert instead of hanging the whole provision.
+
+    The default is the correctness-safe one: an unmarked step keeps the
+    ORM-safe in-process behaviour. A step only lands on a worker thread by
+    affirmatively asserting it is subprocess-only — so the dangerous mistake
+    (an ORM callable on a worker thread) is opt-in and never accidental.
+    """
+
     name: str
     callable: Callable[[], None]
     required: bool = True
     description: str = ""
+    subprocess_only: bool = False
 
 
 # ── Sync types (shared vocabulary between core and backends) ─────────

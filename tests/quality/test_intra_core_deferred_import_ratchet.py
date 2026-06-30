@@ -57,7 +57,26 @@ _TACH = _REPO_ROOT / "tach.toml"
 # so `task.py`'s `park_for_user_input` edge into it must stay function-scoped —
 # the same genuine `task.py`↔helper module-level cycle the #2009 `task_repair`
 # deferral pins. One deferral, banked here; not a new severable edge.
-_FROZEN_INTRA_CORE_DEFERRED = 182
+# Rose 182→183 (#2826 / #2244 subprocess_only time-box): `step_runner` gains a
+# THIRD function-scoped `from teatree.core.provision_timebox import
+# run_timeboxed_callable` (in `_timeboxed_subprocess_callable_step`), joining the
+# pre-existing `run_timeboxed_step` / `alert_provision_user` deferrals. This edge
+# is load-bearing and CANNOT become a top-level (or declared tach sub-node) edge:
+#   1. it breaks a real `step_runner`↔`provision_timebox` module-level cycle —
+#      `provision_timebox` imports `StepResult`/`run_callable_step` from
+#      `step_runner` at module scope, so the reverse edge must be deferred;
+#   2. it serves the #2664 stale-base degradation — `step_runner` must import
+#      even when `provision_timebox` is ABSENT on a stale checkout, and a
+#      PRESENT-but-internally-broken module must re-raise at CALL time (pinned by
+#      `test_*_propagates_when_module_present_but_internally_broken`). A module-top
+#      import would move that detection to `step_runner`-import time, breaking
+#      those tests and taking down every `step_runner` consumer instead of
+#      localising the failure to the provision/teardown path.
+# Cycle-removal (relocating the shared primitives) still can't lift it to module
+# scope because of (2), and a tach sub-node edge needs a top-level import whose
+# bidirectional pair tach's acyclic guard rejects — so the deferral stays.
+# One deferral, banked here; not a new severable edge.
+_FROZEN_INTRA_CORE_DEFERRED = 183
 
 
 def _function_scoped_intra_core_imports(source: Path) -> int:

@@ -149,16 +149,24 @@ class TeatreeOverlay(OverlayBase):
                     continue
                 run_checked(["uv", "pip", "install", "-e", str(overlay_worktree)], cwd=repo)
 
+        # Both steps are pure subprocess shellouts (uv sync / uv pip install) that
+        # touch no ORM, so they are time-boxed on a worker thread (subprocess_only)
+        # — a network stall aborts loud instead of hanging the provision silently
+        # (souliane/teatree#2244). The teatree overlay declares NO db_import strategy,
+        # so these are the ONLY provision steps it runs; without the bound the
+        # dogfooding path had no ceiling/heartbeat/alert at all.
         return [
             ProvisionStep(
                 name="sync-dependencies",
                 callable=sync_deps,
                 description="Install Python dependencies with uv sync",
+                subprocess_only=True,
             ),
             ProvisionStep(
                 name="install-overlays-editable",
                 callable=install_overlays_editable,
                 description="Install discovered overlays editable from their ticket worktrees",
+                subprocess_only=True,
             ),
         ]
 

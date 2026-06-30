@@ -221,6 +221,19 @@ class TestGetProvisionSteps(TestCase):
 
         assert [step.name for step in steps] == ["sync-dependencies", "install-overlays-editable"]
 
+    def test_both_steps_are_subprocess_only_so_they_are_time_boxed(self) -> None:
+        """Both steps are pure subprocess shellouts → ``subprocess_only`` so a stall aborts loud (#2244).
+
+        The teatree overlay declares NO ``db_import`` strategy, so these are the
+        ONLY provision steps it runs. Without the flag the dogfooding path would
+        have no ceiling/heartbeat/alert — a network stall on ``uv sync`` would
+        hang silently.
+        """
+        overlay = TeatreeOverlay()
+        steps = overlay.get_provision_steps(self.worktree)
+
+        assert all(step.subprocess_only for step in steps)
+
     def test_sync_step_runs_uv_sync_in_on_disk_worktree(self) -> None:
         """`uv sync` must run in the on-disk worktree path, not in the repo identifier."""
         overlay = TeatreeOverlay()
