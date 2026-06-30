@@ -12,6 +12,7 @@ Covers must-fire / must-NOT-fire directions for:
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -57,9 +58,10 @@ def _isolation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(router, "_TTY_PATH", str(tmp_path / "fake-tty"))
     monkeypatch.setenv("TEATREE_BASH_ENV_FILE", str(tmp_path / "no-bash-env"))
-    # Hermetic HOME: ``_autoload_enabled`` reads ``~/.teatree.toml``; a clean home
-    # keeps the default-OFF (#256) path deterministic regardless of the
-    # developer's own config.
+    # Hermetic HOME: ``_autoload_enabled`` is DB-home (eliminate-~/.teatree.toml) —
+    # it reads ``T3_AUTOLOAD`` env first, else the canonical ConfigSetting sqlite. A
+    # clean home with no DB keeps the default-OFF (#256) path deterministic
+    # regardless of the developer's own config.
     clean_home = tmp_path / "home"
     clean_home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("HOME", str(clean_home))
@@ -557,6 +559,30 @@ class TestLoopAutoLoadOptInGate:
 _BASH = shutil.which("bash") or "/bin/bash"
 
 
+def _seed_autoload_db(path: Path, *, autoload: object) -> None:
+    """Build a real ``teatree_config_setting`` sqlite carrying a GLOBAL ``autoload`` row.
+
+    Mirrors the Django-migration shape (JSON-encoded ``value``) so both the cold
+    Python reader (``teatree_settings._cold_db_bool``) and the bash statusline gate
+    (``statusline.sh._autoload_db_value``) resolve it — autoload is DB-home now
+    (eliminate-~/.teatree.toml), read DB-only, never from ``[teatree] autoload`` TOML.
+    """
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute(
+            "CREATE TABLE teatree_config_setting ("
+            "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', "
+            "key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'autoload', ?)",
+            (json.dumps(autoload),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 class TestStatuslineGating:
     def _run_statusline(
         self,
@@ -608,14 +634,15 @@ class TestStatuslineGating:
         out = self._run_statusline("teatree-sess", state_dir, extra_env={"T3_AUTOLOAD": "1"})
         assert out != ""
 
-    def test_marker_and_toml_opt_in_produces_output(self, tmp_path: Path) -> None:
+    def test_marker_and_db_opt_in_produces_output(self, tmp_path: Path) -> None:
+        # ``autoload`` is DB-home now (eliminate-~/.teatree.toml): the statusline gate
+        # reads the canonical ConfigSetting sqlite (via T3_CONFIG_DB), not TOML.
         state_dir = tmp_path / "state"
         state_dir.mkdir(parents=True, exist_ok=True)
         (state_dir / "teatree-sess.teatree-active").touch()
-        home = tmp_path / "opted-in-home"
-        home.mkdir(parents=True, exist_ok=True)
-        (home / ".teatree.toml").write_text("[teatree]\nautoload = true\n", encoding="utf-8")
-        out = self._run_statusline("teatree-sess", state_dir, home=home)
+        db = tmp_path / "db.sqlite3"
+        _seed_autoload_db(db, autoload=True)
+        out = self._run_statusline("teatree-sess", state_dir, extra_env={"T3_CONFIG_DB": str(db)})
         assert out != ""
 
 
@@ -623,7 +650,12 @@ class TestStatuslineGating:
 
 
 class TestAutoloadEnabledHelper:
-    """``autoload_enabled`` — env-first, then ``[teatree] autoload``, default OFF, fail-closed."""
+    """``autoload_enabled`` — env-first, then the DB-home ``autoload`` ConfigSetting, default OFF, fail-closed.
+
+    eliminate-~/.teatree.toml: ``autoload`` is DB-home, read DB-only via the
+    Django-free ``_cold_db_bool`` — a ``[teatree] autoload`` TOML value is ignored on
+    read (no TOML fallback). ``T3_AUTOLOAD`` env still wins.
+    """
 
     @pytest.fixture(autouse=True)
     def _no_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -645,26 +677,26 @@ class TestAutoloadEnabledHelper:
         monkeypatch.setenv("T3_AUTOLOAD", "false")
         assert autoload_enabled() is False
 
-    def test_toml_true_enables(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        home = tmp_path / "h"
-        home.mkdir()
-        (home / ".teatree.toml").write_text("[teatree]\nautoload = true\n", encoding="utf-8")
-        monkeypatch.setenv("HOME", str(home))
+    def test_db_true_enables(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # DB-home: a stored GLOBAL ``autoload`` row engages autoload.
+        db = tmp_path / "db.sqlite3"
+        _seed_autoload_db(db, autoload=True)
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
         assert autoload_enabled() is True
 
-    def test_broken_config_fails_closed_off(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        home = tmp_path / "h"
-        home.mkdir()
-        (home / ".teatree.toml").write_text("not = = valid toml\n", encoding="utf-8")
-        monkeypatch.setenv("HOME", str(home))
+    def test_broken_db_fails_closed_off(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A corrupt/unreadable DB fails CLOSED (OFF) — it never raises.
+        garbage = tmp_path / "corrupt.sqlite3"
+        garbage.write_bytes(b"this is not a sqlite database at all")
+        monkeypatch.setenv("T3_CONFIG_DB", str(garbage))
         assert autoload_enabled() is False
 
-    def test_quoted_string_true_is_ignored(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # A quoted "true" (a string, not a bare bool) must not enable autoload.
-        home = tmp_path / "h"
-        home.mkdir()
-        (home / ".teatree.toml").write_text('[teatree]\nautoload = "true"\n', encoding="utf-8")
-        monkeypatch.setenv("HOME", str(home))
+    def test_non_bool_db_value_is_ignored(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Strict bool (DB-home): a stored JSON string ``"true"`` is not a real bool,
+        # so it must not enable autoload — it falls through to the default (OFF).
+        db = tmp_path / "db.sqlite3"
+        _seed_autoload_db(db, autoload="true")
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
         assert autoload_enabled() is False
 
 
@@ -727,7 +759,9 @@ class TestAutoloadSessionStart:
         handle_session_start_bootstrap({"session_id": "off-sess"})
         ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
         assert "run /teatree" in ctx
-        assert "autoload = true" in ctx
+        # eliminate-~/.teatree.toml: autoload is DB-home, so the auto-start how-to
+        # points at the config_setting store, not a [teatree] TOML value.
+        assert "config_setting set autoload true" in ctx
         assert "t3 loops tick" not in ctx
         assert _read_loop_registry() == {}
 

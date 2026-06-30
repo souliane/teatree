@@ -21,6 +21,7 @@ import teatree.config as config_facade
 from teatree.config import get_effective_settings
 from teatree.config.enums import Mode, OnBehalfPostMode
 from teatree.core.models import ConfigSetting
+from teatree.types import LocalPlayback
 
 from ._shared import _write_toml
 
@@ -66,6 +67,20 @@ class TestDbHomeIgnoresToml(TestCase):
         ConfigSetting.objects.set_value("repo_mode", "solo")
         assert get_effective_settings().repo_mode == "solo"
 
+    def test_autoload_db_home_resolves_from_db_row(self) -> None:
+        # eliminate-~/.teatree.toml: the #256 engagement flag ``autoload`` is DB-home
+        # now — a global ``ConfigSetting`` row resolves it (the DB is its sole home).
+        _write_toml(self.config_path, "[teatree]\n")
+        ConfigSetting.objects.set_value("autoload", value=True)
+        assert get_effective_settings().autoload is True
+
+    def test_autoload_db_home_ignores_a_teatree_toml_value(self) -> None:
+        # A ``[teatree] autoload`` value is ignored on read (its home is the DB):
+        # with no DB row the resolved value is the dataclass default (False), never
+        # the TOML ``true``.
+        _write_toml(self.config_path, "[teatree]\nautoload = true\n")
+        assert get_effective_settings().autoload is False
+
 
 class TestTomlHomeIgnoresDb(TestCase):
     @pytest.fixture(autouse=True)
@@ -76,24 +91,24 @@ class TestTomlHomeIgnoresDb(TestCase):
         self.monkeypatch = monkeypatch
 
     def test_toml_home_field_resolves_from_teatree_table(self) -> None:
-        # ``autoload`` is the TOML-home bool representative (eliminate-~/.teatree.toml
-        # moved orchestrator_bash_gate_enabled to the DB). Default False; a [teatree]
-        # ``true`` proves the field resolves off the file.
-        _write_toml(self.config_path, "[teatree]\nautoload = true\n")
-        assert get_effective_settings().autoload is True
+        # ``speak`` is the surviving TOML-home representative (eliminate-~/.teatree.toml
+        # moved autoload to the DB). Default OFF; a [teatree.speak] sub-table proves
+        # the field resolves off the file.
+        _write_toml(self.config_path, '[teatree]\n\n[teatree.speak]\nlocal = "dm"\n')
+        assert get_effective_settings().speak.local is LocalPlayback.DM
 
     def test_toml_home_field_ignores_a_config_setting_row(self) -> None:
         # A ConfigSetting row for a TOML-home key is ignored on read — the
-        # [teatree] value is the sole authority.
-        _write_toml(self.config_path, "[teatree]\nautoload = true\n")
-        ConfigSetting.objects.set_value("autoload", value=False)
-        assert get_effective_settings().autoload is True
+        # [teatree.speak] value is the sole authority.
+        _write_toml(self.config_path, '[teatree]\n\n[teatree.speak]\nlocal = "dm"\n')
+        ConfigSetting.objects.set_value("speak", value={"local": "off"})
+        assert get_effective_settings().speak.local is LocalPlayback.DM
 
     def test_toml_home_field_default_with_no_row_and_no_table_value(self) -> None:
         _write_toml(self.config_path, "[teatree]\n")
-        ConfigSetting.objects.set_value("autoload", value=True)
-        # Still the dataclass default (False) — the DB row never applies.
-        assert get_effective_settings().autoload is False
+        ConfigSetting.objects.set_value("speak", value={"local": "all"})
+        # Still the dataclass default (OFF) — the DB row never applies.
+        assert get_effective_settings().speak.local is LocalPlayback.OFF
 
     def test_statusline_chain_resolves_from_db_not_teatree(self) -> None:
         # eliminate-~/.teatree.toml: statusline_chain is DB-home — the bash
@@ -127,16 +142,17 @@ class TestOverlayScopeLayering(TestCase):
     # ``test_overlay_scoped_toml_value_beats_global_toml_for_toml_home`` is obsolete.)
 
     def test_overlay_db_row_for_toml_home_key_is_ignored(self) -> None:
-        # Critical: an [overlays.<name>] DB-key row is ignored on read for a
-        # TOML-home key — the TOML value (or default) is the sole authority.
-        # ``autoload`` is the TOML-home representative.
+        # Critical: an overlay-scope ConfigSetting row for a TOML-home key is
+        # ignored on read — the TOML value (or default) is the sole authority.
+        # ``speak`` is the surviving TOML-home representative (eliminate-~/.teatree.toml
+        # moved autoload to the DB).
         _write_toml(
             self.config_path,
-            '[teatree]\nautoload = true\n\n[overlays.my-overlay]\nclass = "x.y:Z"\n',
+            '[teatree]\n\n[teatree.speak]\nlocal = "dm"\n\n[overlays.my-overlay]\nclass = "x.y:Z"\n',
         )
-        ConfigSetting.objects.set_value("autoload", value=False, scope="my-overlay")
+        ConfigSetting.objects.set_value("speak", value={"local": "off"}, scope="my-overlay")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "my-overlay")
-        assert get_effective_settings().autoload is True
+        assert get_effective_settings().speak.local is LocalPlayback.DM
 
 
 class TestDbHomeKeyInOverlayTomlIsLoud(TestCase):
@@ -178,10 +194,11 @@ class TestDbHomeKeyInOverlayTomlIsLoud(TestCase):
 
     def test_no_warning_when_overlay_toml_has_only_toml_home_keys(self) -> None:
         # A clean overlay table (no DB-home key) emits no DB-home drop warning.
-        # ``autoload`` is TOML-home and not a per-overlay DB-home key.
+        # ``speak`` is the surviving TOML-home representative (eliminate-~/.teatree.toml
+        # moved autoload to the DB), exercised as the [overlays.<name>.speak] subtable.
         _write_toml(
             self.config_path,
-            '[teatree]\n\n[overlays.my-overlay]\nclass = "x.y:Z"\nautoload = true\n',
+            '[teatree]\n\n[overlays.my-overlay]\nclass = "x.y:Z"\n\n[overlays.my-overlay.speak]\nslack = true\n',
         )
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "my-overlay")
         logger = logging.getLogger("teatree.config")

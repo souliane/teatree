@@ -321,10 +321,6 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
     # left in ``[teatree]`` / ``[overlays.<name>]`` is ignored on read (its home is the
     # DB); migrate it into the store with ``t3 <overlay> config_setting import``.
     user = UserSettings(
-        # Strict bool: only a real TOML boolean ``true`` engages autoload — a
-        # quoted ``"true"`` / ``"false"`` string is ignored (matches the
-        # cold-read in ``teatree_settings.autoload_enabled``).
-        autoload=teatree.get("autoload", False) is True,
         speak=resolve_speak(teatree),
         mr_reminder=resolve_mr_reminder(raw),
     )

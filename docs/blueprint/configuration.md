@@ -24,9 +24,11 @@ Detail behind [BLUEPRINT.md](https://github.com/souliane/teatree/blob/main/BLUEP
 # Set it with `t3 <overlay> config_setting set workspace_dir <path> [--overlay <name>]`;
 # a value left here is ignored on read. T3_WORKSPACE_DIR env still overrides (back-compat).
 privacy = "strict"
-statusline_chain = []                      # extra statusline scripts (glob patterns) chained after the loop's zones (read by the bash statusline hook)
-orchestrator_bash_gate_enabled = true      # #115 kill-switch, read directly by the hook layer (pre-Django)
-autoload = false                           # #256 default-OFF teatree engagement; true = auto-engage every session (pre-Django cold-hook read)
+orchestrator_bash_gate_enabled = true      # #115 kill-switch, read directly by the hook layer (pre-Django, DB-first w/ TOML self-rescue)
+# statusline_chain is DB-home now (extra statusline scripts, glob patterns, chained after the loop's zones).
+# Set it with `t3 <overlay> config_setting set statusline_chain '[...]'`; a value left here is ignored on read (the bash hook reads the DB via the sqlite3 CLI).
+# autoload is DB-home now (#256 default-OFF teatree engagement; true = auto-engage every session).
+# Set it with `t3 <overlay> config_setting set autoload true`; a value left here is ignored on read. T3_AUTOLOAD env still overrides (cold-hook read).
 
 [overlays.myproject]
 path = "~/workspace/myproject"
@@ -128,12 +130,10 @@ a field that CAN live in the DB is **DB-home**, and only the irreducible carve-o
 stays **TOML-home**. The two homes are disjoint (a fitness function asserts it) — a
 setting is never read from both tiers. A DB-home field resolves from `ConfigSetting`
 (global + overlay rows) + env only; a TOML-home field resolves from `[teatree]` +
-`[overlays.<name>]` + env only. The TOML carve-out is the three fields a non-Django
+`[overlays.<name>]` + env only. The TOML carve-out is the two fields a non-Django
 or pre-Django reader needs (`speak` — the Stop hook re-reads the `[teatree.speak]`
-sub-table with tomllib and cannot reach the DB — and `autoload` — the cold SessionStart /
-UserPromptSubmit hooks read `[teatree] autoload` with tomllib to decide default-off
-engagement before any Django bootstrap (#256)), and the nested structured `mr_reminder`
-table.
+sub-table with tomllib and cannot reach the DB — and the nested structured `mr_reminder`
+table).
 (eliminate-`~/.teatree.toml` moved `check_updates` — its pre-Django reader
 `check_for_updates` now reads the DB via the Django-free `cold_reader` — `worktrees_dir`
 / `timezone` — the Django settings module hardcodes `TIME_ZONE` and configures
@@ -141,9 +141,13 @@ table.
 per-overlay-TOML-overridable fields `orchestrator_bash_gate_enabled` / `privacy` —
 per-overlay override now lives in a `ConfigSetting` overlay-scope row — `handover_mirror_path`
 — its pre-Django SessionStart reader reads the DB via `cold_reader`, which fails open to
-the same default bootstrap path `write_mirror` uses when unset — and `statusline_chain` —
+the same default bootstrap path `write_mirror` uses when unset — `statusline_chain` —
 the bash statusline hook reads it from the canonical sqlite via the `sqlite3` CLI +
-`json_each` — to the DB.)
+`json_each` — and `autoload` — the #256 engagement flag; its cold SessionStart /
+UserPromptSubmit readers (`teatree_settings.autoload_enabled` via `_cold_db_bool`,
+`statusline.sh` via the `sqlite3` CLI) read the DB ONLY, so a `[teatree] autoload`
+value is ignored on read and the how-to advisory points at
+`config_setting set autoload true` — to the DB.)
 `workspace_dir` is **DB-home** and
 per-overlay overridable (it is read only after Django is up): it names the
 per-overlay **WORKTREE root** where ticket worktrees are created — worktrees

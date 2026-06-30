@@ -16,9 +16,10 @@ all DB-home, so this exercises the collapse via ``ConfigSetting`` rows: an
 overlay-scoped row is the per-overlay opinion (``hard_pinned``); a global-scope
 row is the global opinion (still wins for a gate, harmless for ``mode``).
 
-The safety/quality floor is out of scope by construction. ``autoload`` (TOML-home)
-is untouched by the collapse; ``orchestrator_bash_gate_enabled`` (DB-home since
-eliminate-~/.teatree.toml) keeps its never-lockout default and is never relaxed.
+The safety/quality floor is out of scope by construction. ``autoload`` (DB-home
+since eliminate-~/.teatree.toml) is untouched by the collapse;
+``orchestrator_bash_gate_enabled`` (DB-home too) keeps its never-lockout default
+and is never relaxed.
 """
 
 from pathlib import Path
@@ -102,13 +103,15 @@ class TestAutonomyFullResolution(_AutonomyDbBase):
         assert settings.require_human_approval_to_answer is False
 
     def test_full_leaves_safety_floor_untouched(self) -> None:
-        # ``autoload`` is the TOML-home representative untouched by the collapse
-        # (eliminate-~/.teatree.toml moved privacy to the DB). orchestrator_bash_gate_enabled
-        # is DB-home now and keeps its default — also untouched by the collapse.
+        # ``autoload`` is DB-home now (eliminate-~/.teatree.toml) — seed it via a
+        # global ConfigSetting row; it is untouched by the autonomy collapse.
+        # orchestrator_bash_gate_enabled is DB-home too and keeps its default — also
+        # untouched by the collapse.
         _write_toml(
             self.config_path,
-            '[teatree]\nautoload = true\n\n[overlays.trusted]\nclass = "x:Y"\n',
+            '[teatree]\n\n[overlays.trusted]\nclass = "x:Y"\n',
         )
+        ConfigSetting.objects.set_value("autoload", value=True, scope="")
         ConfigSetting.objects.set_value("autonomy", "full", scope="trusted")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
         settings = get_effective_settings()
@@ -178,10 +181,13 @@ class TestAutonomyNotifyTier(_AutonomyDbBase):
         assert get_effective_settings().notify_on_behalf is True
 
     def test_notify_leaves_safety_floor_untouched(self) -> None:
+        # ``autoload`` is DB-home now (eliminate-~/.teatree.toml) — seed it via a
+        # global ConfigSetting row; it survives the notify collapse.
         _write_toml(
             self.config_path,
-            '[teatree]\nautoload = true\n\n[overlays.client]\nclass = "x:Y"\n',
+            '[teatree]\n\n[overlays.client]\nclass = "x:Y"\n',
         )
+        ConfigSetting.objects.set_value("autoload", value=True, scope="")
         ConfigSetting.objects.set_value("autonomy", "notify", scope="client")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "client")
         settings = get_effective_settings()

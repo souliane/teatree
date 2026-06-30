@@ -69,21 +69,6 @@ def _parse_disk_cache_allowlist(raw: object) -> list[str]:
 _DEFAULT_ON_BEHALF_AUTO_ACTIONS = ("post_e2e_evidence",)
 
 
-def _parse_on_behalf_auto_actions(raw: object) -> list[str]:
-    """Coerce the on-behalf auto-proceed allowlist, falling back to the default carve-out.
-
-    A missing key (``None``) yields the curated default (``post_e2e_evidence`` —
-    the user's own E2E evidence posts auto-proceed); an explicit list (even
-    empty) is honoured verbatim so a user can re-gate evidence under a blocking
-    mode. Non-list scalars degrade to the default rather than raising. FILE-tier
-    parser (used only by ``load_config``); the override tier (per-overlay / DB)
-    uses the strict ``_parse_str_list``.
-    """
-    if not isinstance(raw, list):
-        return list(_DEFAULT_ON_BEHALF_AUTO_ACTIONS)
-    return [str(s) for s in raw]
-
-
 def _parse_env_bool(raw: str) -> bool:
     """Coerce a ``T3_*`` env string to a bool for ``ENV_SETTING_OVERRIDES``.
 
@@ -425,6 +410,11 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     # reads it from the canonical sqlite via the ``sqlite3`` CLI + ``json_each``
     # (``_statusline_chain_db``) — no importable teatree python, no TOML parse.
     "statusline_chain": _parse_str_list,
+    # eliminate-~/.teatree.toml: ``autoload`` (#256 engagement flag). Read DB-only via
+    # ``cold_reader`` (Python hook ``teatree_settings.autoload_enabled``) and the
+    # ``sqlite3`` CLI (bash ``statusline.sh._autoload_db_value``); a ``[teatree]
+    # autoload`` TOML value is ignored on read. Strict bool, default OFF.
+    "autoload": _parse_strict_bool,
 }
 
 # TOML-home keys that ALSO support a per-overlay ``[overlays.<name>]`` override.
@@ -531,9 +521,11 @@ class UserSettings:
     # Claude session does NOT auto-engage teatree — no skill auto-suggest, no
     # PreToolUse load-block, no loop scheduling — and SessionStart shows a
     # one-line how-to-start advisory instead. The owner flips it true to
-    # auto-activate every session. TOML-home: the cold SessionStart /
-    # UserPromptSubmit hooks read ``[teatree] autoload`` pre-Django with tomllib;
-    # ``T3_AUTOLOAD`` env wins. A DB row is ignored on read. Explicitly calling
+    # auto-activate every session. DB-home (eliminate-~/.teatree.toml): the cold
+    # SessionStart / UserPromptSubmit hooks read it DB-ONLY pre-Django via the
+    # Django-free ``cold_reader`` (``teatree_settings._cold_db_bool``) and the bash
+    # ``statusline.sh._autoload_db_value`` (sqlite3 CLI); ``T3_AUTOLOAD`` env wins, a
+    # ``[teatree] autoload`` TOML value is ignored on read. Explicitly calling
     # ``/teatree`` — or loading any ``t3:`` skill — engages teatree for the
     # session regardless of this default.
     autoload: bool = False

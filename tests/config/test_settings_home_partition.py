@@ -19,7 +19,6 @@ _TOML_CARVE_OUT = frozenset(
     {
         "speak",
         "mr_reminder",
-        "autoload",
     }
 )
 
@@ -52,12 +51,13 @@ def test_db_home_and_toml_home_are_disjoint() -> None:
     assert db_home | toml_home == set(SETTING_HOMES)
 
 
-def test_toml_carve_out_is_exactly_the_three_fields() -> None:
-    # The carve-out — pre-Django readers + the nested structured table — is exactly
-    # these three and no more. eliminate-~/.teatree.toml has moved ``check_updates``,
-    # ``worktrees_dir`` / ``timezone``, the two former per-overlay-TOML-overridable
-    # fields (``orchestrator_bash_gate_enabled`` / ``privacy``), ``handover_mirror_path``,
-    # and ``statusline_chain`` to the DB.
+def test_toml_carve_out_is_exactly_the_two_fields() -> None:
+    # The carve-out — the pre-Django ``speak`` reader + the nested ``mr_reminder``
+    # structured table — is exactly these two and no more. eliminate-~/.teatree.toml
+    # has moved ``check_updates``, ``worktrees_dir`` / ``timezone``, the two former
+    # per-overlay-TOML-overridable fields (``orchestrator_bash_gate_enabled`` /
+    # ``privacy``), ``handover_mirror_path``, ``statusline_chain``, and the #256
+    # engagement flag ``autoload`` to the DB.
     toml_home = {k for k, home in SETTING_HOMES.items() if home is SettingHome.TOML}
     assert toml_home == _TOML_CARVE_OUT
     moved_to_db = (
@@ -67,6 +67,7 @@ def test_toml_carve_out_is_exactly_the_three_fields() -> None:
         "timezone",
         "handover_mirror_path",
         "statusline_chain",
+        "autoload",
     )
     for moved in moved_to_db:
         assert moved not in toml_home
@@ -104,11 +105,13 @@ def test_statusline_chain_is_db_home() -> None:
     assert SETTING_HOMES["statusline_chain"] is SettingHome.DB
 
 
-def test_autoload_is_toml_home_not_db() -> None:
-    # #256: the cold SessionStart / UserPromptSubmit hooks read ``[teatree]
-    # autoload`` pre-Django with tomllib to decide engagement, so it is TOML-home
-    # (a DB row is ignored on read), never DB-home.
-    assert SETTING_HOMES["autoload"] is SettingHome.TOML
+def test_autoload_is_db_home() -> None:
+    # eliminate-~/.teatree.toml: the #256 engagement flag ``autoload`` is DB-home.
+    # Its cold pre-Django readers — ``teatree_settings._cold_db_bool`` (Python) and
+    # the bash ``statusline.sh._autoload_db_value`` (sqlite3 CLI) — read the
+    # canonical sqlite directly, so it needs no TOML; a ``[teatree] autoload`` value
+    # is ignored on read.
+    assert SETTING_HOMES["autoload"] is SettingHome.DB
 
 
 def test_check_updates_is_db_home() -> None:

@@ -100,9 +100,9 @@ _statusline_chain_db() {
 # colleague who merely clones the repo never sees the loop statusline. ``autoload``
 # is the ONE owner flag (it engages the session AND arms its loops). Mirrors
 # hook_router._autoload_enabled — env T3_AUTOLOAD first, then the canonical
-# ConfigSetting DB (config-unify PR3), then the [teatree] autoload TOML value
-# (autoload is TOML-home #1775, never seeded into the DB, so the TOML read
-# preserves a configured opt-in); fails closed (silent OFF) on absence.
+# ConfigSetting DB read via the sqlite3 CLI (_autoload_db_value). eliminate-~/.teatree.toml:
+# autoload is DB-home, so a [teatree] autoload TOML value is ignored on read (no TOML
+# fallback); fails closed (silent OFF) on absence.
 autoload_enabled() {
     local env_val="${T3_AUTOLOAD:-}"
     if [ -n "$env_val" ]; then
@@ -113,21 +113,7 @@ autoload_enabled() {
     fi
     case "$(_autoload_db_value)" in
         true) return 0 ;;
-        false) return 1 ;;
     esac
-    local toml="$HOME/.teatree.toml"
-    [ -r "$toml" ] || return 1
-    local in_teatree=false
-    local line
-    while IFS= read -r line; do
-        case "$line" in
-            "["*) [[ "$line" =~ ^\[teatree\] ]] && in_teatree=true || in_teatree=false; continue ;;
-        esac
-        $in_teatree || continue
-        if [[ "$line" =~ ^[[:space:]]*autoload[[:space:]]*=[[:space:]]*true ]]; then
-            return 0
-        fi
-    done < "$toml"
     return 1
 }
 

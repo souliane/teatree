@@ -4802,9 +4802,11 @@ def _merge_session_start_context(context: str, session_id: str, source: str) -> 
 
 
 # #256 one-line how-to-start advisory for a default-off, not-yet-engaged session.
+# eliminate-~/.teatree.toml: autoload is DB-home, so the auto-start opt-in is set via
+# the ConfigSetting store, not a [teatree] TOML value (which is ignored on read).
 _TEATREE_NOT_ACTIVE_ADVISORY = (
     "teatree is installed but not active in this session — run /teatree to start it "
-    "(or set [teatree] autoload = true to start it automatically)."
+    "(or run `t3 <overlay> config_setting set autoload true` to start it automatically)."
 )
 
 
