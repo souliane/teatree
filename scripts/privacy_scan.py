@@ -18,12 +18,15 @@ Exit codes:
 import json
 import re
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
+from teatree.hooks.banned_terms_cli import resolve_banned_terms
+from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
 from teatree.hooks.opaque_id import find_opaque_ids
 from teatree.hooks.privacy_diff_comments import scan_diff as _scan_diff_comments
 
@@ -78,12 +81,36 @@ def _is_ssh_git_remote(line: str, match: re.Match[str]) -> bool:
 _ALLOW_MARKER = "privacy-scan:allow"
 
 
-def _build_banned_re(banned_terms: str) -> re.Pattern[str] | None:
-    terms = [t.strip() for t in banned_terms.split(",") if t.strip()]
-    if not terms:
+def _build_banned_re(terms: Sequence[str]) -> re.Pattern[str] | None:
+    cleaned = [t.strip() for t in terms if t.strip()]
+    if not cleaned:
         return None
-    escaped = [re.escape(t) for t in terms]
+    escaped = [re.escape(t) for t in cleaned]
     return re.compile(r"\b(?:" + "|".join(escaped) + r")\b", re.IGNORECASE)
+
+
+def _resolve_scan_terms(env_value: str, config_path: Path) -> tuple[str, ...]:
+    """Resolve the banned-terms list from the canonical source, fail-closed.
+
+    Reuses the shared :func:`resolve_banned_terms` so the public-leak scan reads
+    the SAME ``[teatree].banned_terms`` list the commit/posting gates do (the
+    ``T3_BANNED_TERMS`` env value still overrides). A present-but-unset or
+    unreadable config is the load-bug-shaped UNSET that must NOT silently degrade
+    to an empty ban list (that would quietly disable the gate on a config typo):
+    the banned-terms detector is reported INERT on stderr — the other detectors
+    still run, so the pre-push gate is never wedged — instead of going silently
+    inert. ``banned_terms = []`` is the deliberate, silent opt-out.
+    """
+    try:
+        return resolve_banned_terms(config_path, env_value=env_value)
+    except BannedTermsUnsetError:
+        print(
+            "Privacy scan: WARNING — banned-terms detector INERT: [teatree].banned_terms is "
+            f"present-but-unset or unreadable in {config_path} (the other detectors still run; "
+            "set `banned_terms = []` to opt out deliberately).",
+            file=sys.stderr,
+        )
+        return ()
 
 
 def _scan_line(line: str, banned_re: re.Pattern[str] | None) -> list[tuple[str, str]]:
@@ -154,14 +181,24 @@ def _plain_summary(findings: list[dict[str, str | int]]) -> str:
 @app.command()
 def main(
     input_file: str = typer.Argument("-", help="File to scan (- for stdin, or a file path)"),
-    banned_terms: str = typer.Option("", envvar="T3_BANNED_TERMS", help="Comma-separated banned terms"),
+    banned_terms: str = typer.Option(
+        "",
+        envvar="T3_BANNED_TERMS",
+        help="Comma-separated banned terms (overrides the [teatree].banned_terms config source).",
+    ),
+    banned_terms_config: str = typer.Option(
+        "",
+        envvar="T3_BANNED_TERMS_CONFIG",
+        help="Path to the TOML carrying [teatree].banned_terms (default: ~/.teatree.toml).",
+    ),
     *,
     strict: bool = typer.Option(True, help="Strict mode (exit 1 on any finding). Use --no-strict for warnings only."),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ) -> None:
     """Scan text for privacy-sensitive patterns."""
     text = sys.stdin.read() if input_file == "-" else Path(input_file).read_text(encoding="utf-8")
-    banned_re = _build_banned_re(banned_terms)
+    config_path = Path(banned_terms_config).expanduser() if banned_terms_config else Path.home() / ".teatree.toml"
+    banned_re = _build_banned_re(_resolve_scan_terms(banned_terms, config_path))
     all_findings: list[dict[str, str | int]] = []
 
     for lineno, line in enumerate(text.splitlines(), 1):

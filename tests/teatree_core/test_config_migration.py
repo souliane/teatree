@@ -16,6 +16,7 @@ import tomllib
 
 from django.test import TestCase
 
+from teatree.config import COLD_HOOK_SETTINGS, OVERLAY_OVERRIDABLE_SETTINGS
 from teatree.core.config_migration import export_db_to_toml, import_toml_into_db
 from teatree.core.models import ConfigSetting
 
@@ -251,3 +252,35 @@ class TestExportDbToToml(TestCase):
         import_toml_into_db(tomllib.loads(first))
         second = export_db_to_toml()
         assert second == first
+
+
+class TestBannedTermsNeverEnterExportableStore(TestCase):
+    """The secret banned-terms/brands list can never reach the exportable DB store.
+
+    The list carries customer/brand terms, so it stays env/TOML-sourced exactly
+    like ``private_repos`` — never a ``ConfigSetting`` row. ``import_toml_into_db``
+    only writes keys in the overridable + cold-hook registries, and ``banned_terms``
+    / ``banned_brands`` are in NEITHER, so a planted ``[teatree].banned_terms`` is
+    skipped on import and can therefore never be dumped by ``config_setting export``.
+    All terms here are SYNTHETIC, so this public test leaks nothing.
+    """
+
+    def test_banned_terms_keys_are_not_in_any_db_writable_registry(self) -> None:
+        for key in ("banned_terms", "banned_brands", "banned_terms_allowlist"):
+            assert key not in OVERLAY_OVERRIDABLE_SETTINGS
+            assert key not in COLD_HOOK_SETTINGS
+
+    def test_import_skips_planted_banned_terms_so_no_row_exists(self) -> None:
+        raw = {"teatree": {"banned_terms": ["acmebrand"], "banned_brands": ["acmebrand"], "mode": "auto"}}
+        result = import_toml_into_db(raw)
+        assert ConfigSetting.objects.filter(key="banned_terms").exists() is False
+        assert ConfigSetting.objects.filter(key="banned_brands").exists() is False
+        # Only the legitimate operational key landed.
+        assert ConfigSetting.objects.get_effective("mode") == "auto"
+        assert result.skipped >= 2
+
+    def test_export_after_importing_a_planted_brand_never_dumps_it(self) -> None:
+        import_toml_into_db({"teatree": {"banned_terms": ["acmebrand"], "mode": "auto"}})
+        dump = export_db_to_toml()
+        assert "acmebrand" not in dump
+        assert "banned_terms" not in dump
