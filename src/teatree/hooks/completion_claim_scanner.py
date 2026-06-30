@@ -90,7 +90,10 @@ _DELIVERABLE_LINE_RE: Final[re.Pattern[str]] = re.compile(
 # STRONGEST possible proof a deliverable landed — you only obtain a merge SHA
 # AFTER the merge lands. Each hex SHA is anchored to a merge cue (merge commit /
 # merged as / origin-HEAD / fast-forwarded), never matched bare, so a SHA quoted
-# on an unmerged feature branch is not mistaken for on-target evidence.
+# on an unmerged feature branch is not mistaken for on-target evidence. The
+# MERGED-state leg binds the PR/MR id adjacently to "merged" (only a small copula
+# between), so forward-looking "PR #41 will be merged once CI passes" is not read as
+# a landed state.
 _ON_TARGET_EVIDENCE_RE: Final[re.Pattern[str]] = re.compile(
     r"\bmerged (?:to|into|onto) (?:the )?(?:merge )?target\b|"
     r"\bmerged to (?:main|master|develop|the default branch)\b|"
@@ -102,7 +105,7 @@ _ON_TARGET_EVIDENCE_RE: Final[re.Pattern[str]] = re.compile(
     r"\bevidence (?:posted|on target)\b|"
     r"\bmerge(?:d)? commit\s+[0-9a-f]{7,40}\b|"
     r"\b(?:squash[- ]?)?merged as\s+[0-9a-f]{7,40}\b|"
-    r"\b(?:pr|mr|pull request|merge request)\b[^.\n]*\bmerged\b|"
+    r"\b(?:pr|mr|pull request|merge request)\s*[#!]?\d+\b\s*(?:(?:is|was|has been|now)\s+|[:=]\s*)?merged\b|"
     r"\borigin/[\w./-]+\s+HEAD\s*(?:is|=|now|at)\s*[0-9a-f]{7,40}\b|"
     r"\bfast[- ]forwarded(?:\s+to)?\s+[0-9a-f]{7,40}\b",
     re.IGNORECASE,

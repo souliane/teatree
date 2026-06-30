@@ -18,6 +18,8 @@ the real ``hook_router`` Stop handler exercised through a real transcript JSONL
 written under ``tmp_path`` (only stdin/stdout cross the boundary).
 """
 
+import pytest
+
 from teatree.hooks import completion_claim_scanner as scanner
 
 # A complete, on-target deliverable->evidence map for a multi-deliverable ticket:
@@ -291,6 +293,79 @@ class TestMergeShaEvidenceClears:
         assert verdict is not None
         assert verdict.deliverable_count == 2
         assert any("on-target evidence" in reason for reason in verdict.missing)
+
+
+# The reviewer's forward-looking slip-through (#2842 must not re-open): a premature
+# multi-deliverable false-"done" whose every row is FORWARD-LOOKING ("will be merged
+# once CI passes") with NOTHING actually merged. The loose MERGED-state alternation
+# `(?:pr|mr|...)[^.\n]*merged` let the wide id-to-"merged" gap swallow "will be", so
+# the row read as a landed state and the gate cleared. With the id bound adjacently
+# to "merged" (only a small copula allowed between), no row carries on-target
+# evidence, so this premature claim MUST block.
+_FORWARD_LOOKING_SLIP_THROUGH = (
+    "I read the authoritative spec and enumerated every deliverable.\n"
+    "Everything is done and ready to merge.\n"
+    "- US-03: PR #41 will be merged once CI passes.\n"
+    "- US-05: PR #42 will be merged once CI passes.\n"
+    "The crucial deliverable US-03 is verified on its correct surface.\n"
+)
+
+# A genuine MERGED-state map whose ONLY on-target evidence is the bare MERGED token
+# (no merge-commit SHA, no origin/HEAD, no fast-forward) — proves the tightening
+# preserved genuine present-state recognition and did not over-tighten the leg away.
+_BARE_MERGED_STATE_MAP = (
+    "I read the authoritative spec and its comments and enumerated every deliverable.\n"
+    "Both deliverables are merged and live — done.\n"
+    "- US-03 EURIBOR endpoint: PR #42 merged.\n"
+    "- US-05 product-items endpoint: MR !41 is merged.\n"
+    "The crucial deliverable (US-03) is verified on its correct surface.\n"
+)
+
+
+def _two_row_claim(row_a: str, row_b: str) -> str:
+    # Spec-read and crucial-surface legs are pre-satisfied so the ONLY open leg is the
+    # on-target evidence of the two enumerated rows — isolating the MERGED-state regex.
+    return (
+        "I read the authoritative spec and enumerated every deliverable.\n"
+        "Everything is done and ready to merge.\n"
+        f"- US-03: {row_a}\n"
+        f"- US-05: {row_b}\n"
+        "The crucial deliverable US-03 is verified on its correct surface.\n"
+    )
+
+
+class TestForwardLookingMergedDoesNotSlipThrough:
+    """Anti-vacuous pair: the forward-looking slip-through fires; a genuine bare MERGED-state map still clears."""
+
+    def test_forward_looking_slip_through_fires(self) -> None:
+        # The reviewer's exact input: every row "will be merged once CI passes" with
+        # nothing landed. Reverting the alternation to the loose `[^.\n]*merged` makes
+        # this return None — the RED-on-revert anchor for the tightening.
+        verdict = scanner.find_completion_block(_FORWARD_LOOKING_SLIP_THROUGH)
+        assert verdict is not None
+        assert verdict.deliverable_count == 2
+        assert any("on-target evidence" in reason for reason in verdict.missing)
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            "will be merged once CI passes",
+            "is about to be merged",
+            "gets merged on green",
+            "remains to be merged",
+        ],
+    )
+    def test_forward_looking_variants_fire(self, phrase: str) -> None:
+        verdict = scanner.find_completion_block(_two_row_claim(f"PR #41 {phrase}.", f"PR #42 {phrase}."))
+        assert verdict is not None
+        assert verdict.deliverable_count == 2
+        assert any("on-target evidence" in reason for reason in verdict.missing)
+
+    def test_genuine_bare_merged_state_still_clears(self) -> None:
+        # Preservation: a real "PR #42 merged" / "MR !41 is merged" row (the bare
+        # MERGED state, no SHA) is still recognised as on-target, so a complete map
+        # built only on MERGED-state evidence does NOT fire. Guards over-tightening.
+        assert scanner.find_completion_block(_BARE_MERGED_STATE_MAP) is None
 
 
 class TestFormatBlockMessage:
