@@ -159,6 +159,51 @@ def render_cli_reference_deterministic(app: typer.Typer, *, base_name: str = "t3
     return "\n".join(line.rstrip() for line in markdown.splitlines()).rstrip("\n") + "\n"
 
 
+def _resolve_command_path(
+    click_app: click.Command, parts: list[str], *, base_name: str
+) -> tuple[click.Command, click.Context]:
+    """Navigate from the app root to the command named by *parts*.
+
+    Returns the command plus its context chain (each ``info_name`` set) so help
+    renders under the right ``t3 <sub> …`` program name. Mirrors the traversal in
+    :func:`_walk`, resolving overlay proxies to their real leaf at each hop.
+    """
+    path = " ".join([base_name, *parts])
+    cmd = _resolve_proxy_leaf(click_app) or click_app
+    ctx = click.Context(cmd, info_name=base_name)
+    for part in parts:
+        if not isinstance(cmd, click.Group):
+            msg = f"{path}: '{part}' has no subcommands"
+            raise KeyError(msg)
+        sub = cmd.get_command(ctx, part)
+        if sub is None:
+            msg = f"{path}: unknown command '{part}'"
+            raise KeyError(msg)
+        cmd = _resolve_proxy_leaf(sub) or sub
+        ctx = click.Context(cmd, info_name=part, parent=ctx)
+    return cmd, ctx
+
+
+def render_help_blocks(app: typer.Typer, paths: list[list[str]], *, base_name: str = "t3") -> str:
+    """Render the ``--help`` output of each command path in *paths* deterministically.
+
+    The CLI analog of :func:`render_cli_reference_deterministic` for a CURATED set
+    of commands rather than the whole tree: each entry of *paths* is the token list
+    under *base_name* (``[]`` → ``t3``, ``["loop"]`` → ``t3 loop``). The bytes are
+    identical across environments — the same #2599 seam (pinned width, no env-derived
+    sizing, home-rooted dotfile defaults folded to ``~``) the full reference uses.
+    """
+    click_app = get_command(app)
+    sections: list[str] = []
+    with _pinned_render_environment(), _tilde_path_defaults(click_app):
+        for parts in paths:
+            cmd, ctx = _resolve_command_path(click_app, parts, base_name=base_name)
+            name = " ".join([base_name, *parts])
+            sections.append(f"## `{name}`\n\n```\n{_get_help_text(cmd, ctx)}\n```")
+    doc = _normalize_home_paths("\n\n".join(sections))
+    return "\n".join(line.rstrip() for line in doc.splitlines()).rstrip("\n") + "\n"
+
+
 def command_paths(app: typer.Typer, *, base_name: str = "t3") -> set[str]:
     """Every resolvable command path in *app*, e.g. ``{"t3 loop tick", …}``.
 
