@@ -39,7 +39,7 @@ from pathlib import Path
 
 from teatree.config import get_effective_settings
 from teatree.core.notify import NotifyKind, notify_user
-from teatree.core.step_runner import StepResult, run_callable_step
+from teatree.core.step_runner import StepResult
 from teatree.utils.run import run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
@@ -258,46 +258,6 @@ def _join_callable_on_ceiling(  # noqa: PLR0913 — each kwarg is a documented s
     return False, duration
 
 
-# ast-grep-ignore: ac-django-no-complexity-suppressions
-def run_timeboxed_callable(  # noqa: PLR0913 — each kwarg is a documented opt-in / test seam.
-    name: str,
-    fn: Callable[[], object],
-    *,
-    timeout: float | None = None,
-    repo: str = "",
-    heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
-    heartbeat: Callable[[str], object] | None = None,
-) -> StepResult:
-    """The callable sibling of :func:`run_timeboxed_step` (#2244).
-
-    Provision steps that are Python callables (the overlay's migrate / seed,
-    each wrapping an inner ``compose run``) shell out with no wall-clock bound,
-    so a child blocked on its PIPE hangs the whole provision with no output. On
-    overrunning the ceiling this returns a FAILED :class:`StepResult` naming the
-    step and fires the loud user alert — it never hangs. A clean return is
-    interpreted exactly as :func:`teatree.core.step_runner.run_callable_step`
-    does (``CompletedProcess`` → success/failure, exception → FAILED), so the
-    contract is identical whether or not the step overran.
-    """
-    ceiling = timeout if timeout is not None else resolve_step_timeout_seconds()
-    captured: dict[str, StepResult] = {}
-    timed_out, duration = _join_callable_on_ceiling(
-        name,
-        lambda: captured.__setitem__("result", run_callable_step(name, fn)),
-        ceiling=ceiling,
-        repo=repo,
-        heartbeat_interval=heartbeat_interval,
-        heartbeat=heartbeat,
-        overrun_detail=(
-            f"exceeded {ceiling}s and was aborted — a child process is blocked "
-            "(a hung `compose run` or a missing DB source); never hangs"
-        ),
-    )
-    if timed_out:
-        return StepResult(name=name, success=False, duration=duration, error=f"timed out after {ceiling}s")
-    return captured["result"]
-
-
 @dataclass(slots=True)
 class _DbImportOutcome:
     """What the time-boxed ``db_import`` thread captured for the main thread."""
@@ -316,7 +276,7 @@ def run_timeboxed_db_import(  # noqa: PLR0913 — each kwarg is a documented opt
     heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
     heartbeat: Callable[[str], object] | None = None,
 ) -> bool:
-    """The DB-import sibling of :func:`run_timeboxed_callable`, for a bool callable (#2244).
+    """The DB-import sibling of :func:`run_timeboxed_step`, for a bool callable (#2244).
 
     Returns the import's own bool on a clean return. On a wall-clock overrun —
     the silent-hang root cause when no DSLR snapshot exists and a child blocks on
