@@ -34,8 +34,9 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
-from teatree.core.merge import MergePreconditionError, assert_merge_preconditions, merge_ticket_pr
-from teatree.core.models import ConfigSetting, MergeAudit, MergeClear, Ticket
+from teatree.core.merge import MergePreconditionError, assert_merge_preconditions, merge_ticket_pr, resolve_pr_repo_slug
+from teatree.core.merge.authorization import assert_review_verdict_gate
+from teatree.core.models import ConfigSetting, MergeAudit, MergeClear, ReviewVerdict, Ticket
 from tests.teatree_core.conftest import seed_merge_safe_verdict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -1169,3 +1170,71 @@ class TestRequireHumanApprovalFalseStandingGrantNonSubstrate(TestCase):
             pytest.raises(MergePreconditionError, match="head moved"),
         ):
             _assert_preconditions(clear, human_authorized="owner:adrien")
+
+
+class TestClearCanonicalizesVerdictSlug(TestCase):
+    """A bare/workstream CLEAR slug records the by-product verdict where the #2829 gate looks it up."""
+
+    def test_bare_slug_clear_records_verdict_under_resolved_owner_repo(self) -> None:
+        """`ticket clear` with a bare repo slug keys its verdict under ``resolve_pr_repo_slug``.
+
+        Pre-fix the verdict was recorded under the raw ``clear.slug`` ("teatree"),
+        but ``assert_review_verdict_gate`` looks it up under
+        ``resolve_pr_repo_slug(clear)`` ("souliane/teatree") — so a bare slug was
+        silently unmergeable ("no recorded merge_safe ReviewVerdict at the live
+        head") even though the independent cold review WAS recorded.
+        """
+        ticket = Ticket.objects.create(
+            overlay="t3-teatree",
+            state=Ticket.State.IN_REVIEW,
+            issue_url="https://github.com/souliane/teatree/issues/859",
+        )
+        result = cast(
+            "dict[str, object]",
+            call_command(
+                "ticket",
+                "clear",
+                "859",
+                "teatree",
+                reviewed_sha=_SHA,
+                reviewer_identity="cold-reviewer",
+                gh_verify_result="green",
+                blast_class="docs",
+                ticket_id=int(ticket.pk),
+            ),
+        )
+        assert result["issued"]
+        clear = MergeClear.objects.get(pk=result["clear_id"])
+        assert clear.slug == "teatree"
+
+        resolved = resolve_pr_repo_slug(clear)
+        assert resolved == "souliane/teatree"
+
+        verdict = ReviewVerdict.objects.get(pk=result["recorded_verdict_id"])
+        assert verdict.slug == resolved
+
+        assert_review_verdict_gate(slug=resolved, pr_id=clear.pr_id, head_sha=clear.reviewed_sha)
+
+    def test_qualified_slug_clear_records_verdict_unchanged(self) -> None:
+        """An already-qualified ``owner/repo`` clear keys the verdict identically — no behaviour change."""
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        result = cast(
+            "dict[str, object]",
+            call_command(
+                "ticket",
+                "clear",
+                "860",
+                "souliane/teatree",
+                reviewed_sha=_SHA,
+                reviewer_identity="cold-reviewer",
+                gh_verify_result="green",
+                blast_class="docs",
+                ticket_id=int(ticket.pk),
+            ),
+        )
+        assert result["issued"]
+        clear = MergeClear.objects.get(pk=result["clear_id"])
+        verdict = ReviewVerdict.objects.get(pk=result["recorded_verdict_id"])
+        assert verdict.slug == "souliane/teatree"
+        assert resolve_pr_repo_slug(clear) == "souliane/teatree"
+        assert_review_verdict_gate(slug=verdict.slug, pr_id=clear.pr_id, head_sha=clear.reviewed_sha)
