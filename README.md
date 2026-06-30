@@ -181,20 +181,32 @@ full `Ticket.State` set is `not_started → scoped → started → planned → c
 reviewed → shipped → in_review → merged → retrospected → delivered`, plus
 `ignored` for work that is consciously skipped.
 
-**Worktree** — one repo checkout inside a ticket's workspace.
+**Worktree** — one repo checkout inside a ticket's workspace. This diagram is
+generated from the `Worktree` model's `@transition` decorators; edit the model,
+not the diagram (`scripts/hooks/generate_fsm_diagrams.py`).
 
+<!-- BEGIN GENERATED: worktree-fsm -->
 ```mermaid
 stateDiagram-v2
-  [*] --> created
-  created --> provisioned: provision
-  provisioned --> services_up: start
-  services_up --> ready: verify
-  ready --> provisioned: db_refresh
-  services_up --> provisioned: db_refresh
-  ready --> created: teardown
-  services_up --> created: teardown
-  provisioned --> created: teardown
+    [*] --> created
+    created --> created : teardown
+    created --> provisioned : provision
+    provisioned --> created : teardown
+    provisioned --> provisioned : db_refresh
+    provisioned --> provisioned : provision
+    provisioned --> services_up : start_services
+    services_up --> created : teardown
+    services_up --> provisioned : db_refresh
+    services_up --> provisioned : stop_services
+    services_up --> services_up : start_services
+    services_up --> ready : verify
+    ready --> created : teardown
+    ready --> provisioned : db_refresh
+    ready --> provisioned : stop_services
+    ready --> services_up : start_services
+    ready --> ready : verify
 ```
+<!-- END GENERATED: worktree-fsm -->
 
 **Task** — claimable work unit with lease and heartbeat.
 

@@ -393,19 +393,31 @@ Key methods on `OverlayBase`: `get_repos()`, `get_required_ports()`, `get_port_e
 
 ## Lifecycle State Machine
 
+Generated from the `Worktree` model's `@transition` decorators — edit the model,
+not this block (`scripts/hooks/generate_fsm_diagrams.py`).
+
+<!-- BEGIN GENERATED: worktree-fsm -->
 ```mermaid
 stateDiagram-v2
-    provisioned --> provisioned : db_refresh
-    services_up --> provisioned : db_refresh
-    ready --> provisioned : db_refresh
-    created --> provisioned : provision
-    provisioned --> services_up : start_services
+    [*] --> created
     created --> created : teardown
+    created --> provisioned : provision
     provisioned --> created : teardown
-    ready --> created : teardown
+    provisioned --> provisioned : db_refresh
+    provisioned --> provisioned : provision
+    provisioned --> services_up : start_services
     services_up --> created : teardown
+    services_up --> provisioned : db_refresh
+    services_up --> provisioned : stop_services
+    services_up --> services_up : start_services
     services_up --> ready : verify
+    ready --> created : teardown
+    ready --> provisioned : db_refresh
+    ready --> provisioned : stop_services
+    ready --> services_up : start_services
+    ready --> ready : verify
 ```
+<!-- END GENERATED: worktree-fsm -->
 
 The `services_up → ready` transition runs `OverlayBase.get_readiness_probes()`. A worktree is **only** "ready to use" once probes pass — `services_up` alone proves processes launched, not that they serve traffic.
 

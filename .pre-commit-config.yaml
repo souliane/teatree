@@ -260,6 +260,19 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [commit-msg]
+      - id: generate-fsm-diagrams
+        name: Generate the worktree-lifecycle FSM diagram from the model
+        language: system
+        entry: uv run python scripts/hooks/generate_fsm_diagrams.py
+        pass_filenames: false
+        files: ^src/teatree/core/(models/worktree\.py|diagrams\.py)$
+      - id: fsm-diagrams-sync
+        name: Worktree FSM diagram in sync with the Worktree model
+        language: system
+        entry: uv run python scripts/hooks/check_fsm_diagrams_sync.py
+        pass_filenames: false
+        always_run: true
+        stages: [commit-msg]
       - id: generate-management-commands-doc
         name: Generate management-commands reference doc
         language: system

@@ -339,6 +339,18 @@ jobs:
       - run: uv run python scripts/hooks/generate_antipattern_catalog.py
         env:
           ANTIPATTERN_CATALOG_NO_STAGE: "1"
+      # Check the worktree-lifecycle FSM diagram is in sync with the model
+      # BEFORE regenerating it. The sync check reads the COMMITTED consumers, so
+      # it catches drift in README + SKILL.md (which the docs/generated diff
+      # below does NOT cover). It must run first: the generator REWRITES those
+      # files on disk (FSM_DIAGRAMS_NO_STAGE only skips git-add), so a check run
+      # after the generator would see freshly-repaired files and pass vacuously.
+      - run: uv run python scripts/hooks/check_fsm_diagrams_sync.py
+      # Belt-and-suspenders: regenerate (NO_STAGE) so the docs/generated diff
+      # below also catches a stale committed canonical diagram.
+      - run: uv run python scripts/hooks/generate_fsm_diagrams.py
+        env:
+          FSM_DIAGRAMS_NO_STAGE: "1"
       - run: git diff --exit-code docs/generated
       # A strict build is the second half of the gate: a broken link or
       # missing nav target fails CI instead of shipping a broken site.
