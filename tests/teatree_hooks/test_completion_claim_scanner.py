@@ -427,6 +427,81 @@ class TestTrailingConditionalMergedDoesNotCount:
         assert scanner.find_completion_block(_BARE_AND_MERGED_TO_MAIN_MAP) is None
 
 
+# The residual leaks the prior fix left open (#2665): the bare-MERGED leg's
+# trailing lookahead only knew a handful of qualifiers and was anchored with a
+# bare ``\s+`` right after "merged", so (1) future/conditional SYNONYMS it did not
+# enumerate ("merged awaiting approval", "merged subject to approval", "merged
+# following approval", "merged provided/assuming CI passes", "merged contingent on
+# approval", the bare "merged on pipeline") read as landed evidence, and (2) any
+# punctuation between "merged" and an otherwise-covered qualifier ("merged,
+# pending", "merged (pending …)", "merged: once …") defeated the lookahead. Each is
+# a premature not-yet-landed row that MUST disqualify the leg so the claim blocks.
+_MERGED_QUALIFIER_LEAK_PHRASES = [
+    "merged awaiting approval",
+    "merged subject to approval",
+    "merged following approval",
+    "merged provided CI passes",
+    "merged assuming CI passes",
+    "merged contingent on approval",
+    "merged on pipeline",
+    "merged, pending approval",
+    "merged (pending approval)",
+    "merged: once CI passes",
+]
+
+# Preservation: a complete map whose rows are genuine landed evidence with the
+# DELIBERATE non-conditional qualifiers "after" and "to" ("merged after the
+# refactor landed", "merged to main") must STILL clear — neither is conditional, so
+# the widened lookahead must leave them on-target.
+_MERGED_QUALIFIER_PRESERVATION_MAP = (
+    "I read the authoritative spec and its comments and enumerated every deliverable.\n"
+    "Both deliverables are merged and live — done.\n"
+    "- US-03 EURIBOR endpoint: PR #42 merged after the refactor landed.\n"
+    "- US-05 product-items endpoint: merged to main.\n"
+    "The crucial deliverable (US-03) is verified on its correct surface.\n"
+)
+
+
+class TestMergedQualifierSynonymsAndPunctuationDoNotCount:
+    """Anti-vacuous pair: synonym/punctuation 'merged' qualifiers fire; genuine landed rows still clear."""
+
+    @pytest.mark.parametrize("phrase", _MERGED_QUALIFIER_LEAK_PHRASES)
+    def test_future_conditional_qualifier_leak_fires(self, phrase: str) -> None:
+        # The residual leaks: each future/conditional qualifier — whether an
+        # uncaught synonym, the bare "on pipeline", or one reached past a comma /
+        # open-paren / colon — leans not-yet-landed, so no row carries on-target
+        # evidence and the premature multi-deliverable claim MUST block. Reverting
+        # the widened alternations + generalized separator makes these return None.
+        verdict = scanner.find_completion_block(_two_row_claim(f"PR #41 {phrase}.", f"PR #42 {phrase}."))
+        assert verdict is not None
+        assert verdict.deliverable_count == 2
+        assert any("on-target evidence" in reason for reason in verdict.missing)
+
+    @pytest.mark.parametrize(
+        "row",
+        [
+            "PR #42 merged",
+            "MR !41 MERGED",
+            "PR #42 is merged",
+            "PR #42: merged",
+            "merged to main",
+            "on main",
+            "PR #42 merged after the refactor landed",
+        ],
+    )
+    def test_genuine_landed_rows_still_clear(self, row: str) -> None:
+        # Preservation guardrails: each genuine landed-state row is past-tense
+        # on-target evidence, so a complete map built only on it does NOT fire. The
+        # deliberate non-conditional qualifiers "after"/"to" stay on-target. These
+        # stay GREEN when the change is reverted, isolating the leak fix.
+        assert scanner.find_completion_block(_two_row_claim(f"{row}.", f"{row}.")) is None
+
+    def test_after_and_to_qualifiers_preservation_map_clears(self) -> None:
+        # The full preservation map: "merged after the refactor landed" and "merged
+        # to main" are landed evidence, so the complete on-target map clears.
+        assert scanner.find_completion_block(_MERGED_QUALIFIER_PRESERVATION_MAP) is None
+
+
 class TestFormatBlockMessage:
     def test_message_names_the_incomplete_legs(self) -> None:
         verdict = scanner.find_completion_block(_STRANDED_CLAIM)
