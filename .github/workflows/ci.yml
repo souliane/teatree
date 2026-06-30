@@ -365,6 +365,12 @@ jobs:
       - run: uv run python scripts/hooks/generate_dashboard_snapshot.py
         env:
           DASHBOARD_SNAPSHOT_NO_STAGE: "1"
+      # Regenerate the representative CLI-output fixture (NO_STAGE, same reason)
+      # so the docs/generated diff gate catches a stale committed fixture. A pure
+      # command-tree render — no DB needed. See souliane/teatree#12.
+      - run: uv run python scripts/hooks/generate_cli_output_snapshot.py
+        env:
+          CLI_OUTPUT_SNAPSHOT_NO_STAGE: "1"
       - run: git diff --exit-code docs/generated
       # A strict build is the second half of the gate: a broken link or
       # missing nav target fails CI instead of shipping a broken site.

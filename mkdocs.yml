@@ -72,6 +72,7 @@ nav:
       - Claude Code Internals: claude-code-internals.md
   - Reference:
       - CLI Reference: generated/cli-reference.md
+      - Representative CLI Output: generated/cli/representative-output.md
       - Overlay API: overlay-api.md
       - Overlay Extension Points: generated/overlay-extension-points.md
       - Skill Delegation Matrix: generated/skill-delegation-matrix.md
@@ -80,5 +81,5 @@ nav:
       - Worktree Lifecycle: generated/diagrams/worktree-lifecycle.md
       - PullRequest Lifecycle: generated/diagrams/pull-request-lifecycle.md
       - Ticket Lifecycle: generated/diagrams/ticket-lifecycle.md
-      - Admin Dashboard: generated/dashboard/admin-dashboard.md
+      - Admin Dashboard: dashboard.md
   - Contributing: contributing.md

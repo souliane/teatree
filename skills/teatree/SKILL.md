@@ -70,7 +70,7 @@ t3 <overlay> followup sync            # Daily ticket/PR sync
 - **Task** — claimable work unit with lease, heartbeat, parent chain
 - **TaskAttempt** — execution result with exit code, structured output
 
-These models are surfaced in a small Django admin dashboard. A rendered, drift-checked HTML snapshot of it — generated through Django's test client by `scripts/hooks/generate_dashboard_snapshot.py` — lives at [docs/generated/dashboard/admin-index.html](../../docs/generated/dashboard/admin-index.html) as an always-fresh "screenshot".
+These models are surfaced in a small Django admin dashboard. A rendered, drift-checked HTML snapshot of it — generated through Django's test client by `scripts/hooks/generate_dashboard_snapshot.py` — lives at [docs/generated/dashboard/admin-index.html](../../docs/generated/dashboard/admin-index.html) as an always-fresh "screenshot". The CLI front door gets the same treatment: the deterministically-rendered output of `t3 --help` + `t3 loop --help` (via `scripts/hooks/generate_cli_output_snapshot.py`) is captured at [docs/generated/cli/representative-output.md](../../docs/generated/cli/representative-output.md), the curated complement to the exhaustive CLI reference.
 
 ## Overlay API
 

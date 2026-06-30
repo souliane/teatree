@@ -320,6 +320,13 @@ drift-checked in CI, so it stays an always-fresh "screenshot":
 [docs/generated/dashboard/admin-index.html](docs/generated/dashboard/admin-index.html)
 (`scripts/hooks/generate_dashboard_snapshot.py`).
 
+The CLI gets the same treatment: the rendered output of the canonical `t3`
+commands (`t3 --help`, `t3 loop --help`) is captured deterministically and
+drift-checked, an always-fresh fixture that complements the exhaustive CLI
+reference:
+[docs/generated/cli/representative-output.md](docs/generated/cli/representative-output.md)
+(`scripts/hooks/generate_cli_output_snapshot.py`).
+
 Every state change goes through a method with code behind it. `Ticket`,
 `Worktree`, and `PullRequest` use `django-fsm`-style `@transition` decorators
 that declare the legal source and target states; `Ticket.code()` requires
