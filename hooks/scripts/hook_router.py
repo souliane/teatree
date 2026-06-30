@@ -56,6 +56,8 @@ from deny_circuit_breaker import deny_circuit_breaker_threshold as _deny_circuit
 from deny_circuit_breaker import deny_is_ux_gate as _deny_is_ux_gate  # noqa: F401
 from deny_circuit_breaker import reset_deny_streak as _reset_deny_streak
 from django_bootstrap import bootstrap_teatree_django
+from loop_owner_db import db_lease_consult_disabled as _db_lease_consult_disabled
+from loop_owner_db import db_owner_is_current_session as _db_owner_is_current_session
 from loop_registrations import emit_loop_registrations, is_bare_loop_tick_prompt, loop_name_from_prompt
 from loop_state_self_pump_gate import db_loop_state_suppresses_self_pump
 from memory_recall import handle_recall_cold_memory
@@ -876,9 +878,17 @@ def _claim_loop_ownership(session_id: str) -> None:
         registry = _prune_dead_owner(box[0])
         owner = registry.get(_OWNER_LOOP)
         if owner is not None and owner.get("session_id") != session_id:
-            box[0] = registry
-            return
-        if owner is None:
+            # A foreign, still-alive session holds the file registry. The DB is the
+            # take-over authority (#2851): when ``t3 loop claim --take-over`` already
+            # moved the LIVE DB lease to THIS session, reconcile the stale file
+            # registry (fall through to rewrite ``_OWNER_LOOP``) and WIN the claim, so
+            # the new owner emits cron registrations. A foreign/unowned DB lease (or a
+            # disabled consult) backs off as before — a live foreign owner is never
+            # stolen without an explicit DB hand-off.
+            if not _db_owner_is_current_session(session_id):
+                box[0] = registry
+                return
+        elif owner is None:
             db_live = _db_live_foreign_owner(session_id, current_pid=current_pid)
             if db_live:
                 box[0] = registry
@@ -4285,14 +4295,6 @@ _OWNER_LOOP = "t3-loop-tick-owner"
 
 # Overridable for tests; the controlling terminal otherwise.
 _TTY_PATH = "/dev/tty"
-
-# Skips the ``LoopLease`` DB cross-check (and its ``django.setup()``);
-# collapses to the same fail-open value an absent DB already yields.
-_SKIP_DB_LEASE_CONSULT_ENV = "T3_LOOP_SKIP_DB_LEASE_CONSULT"
-
-
-def _db_lease_consult_disabled() -> bool:
-    return os.environ.get(_SKIP_DB_LEASE_CONSULT_ENV) == "1"
 
 
 def _loop_registry_path() -> Path:
