@@ -19,6 +19,7 @@ from django.test import TestCase, override_settings
 from teatree.core.provision_timebox import (
     detect_migration_conflict,
     resolve_step_timeout_seconds,
+    run_timeboxed_callable,
     run_timeboxed_db_import,
     run_timeboxed_step,
 )
@@ -129,6 +130,58 @@ class TestRunStepUsesTimebox(TestCase):
         assert result.success is False
         assert "timed out" in result.error
         assert mock_notify.called
+
+
+class TestRunTimeboxedCallable(TestCase):
+    """An ORM-free subprocess callable is wall-clock bounded (#2244).
+
+    The ``subprocess_only`` provision steps (``uv sync`` / ``uv pip install -e``,
+    each shelling out) abort loud with a named step when a child blocks on its
+    PIPE, never hanging. A clean return is interpreted exactly as
+    ``run_callable_step`` does.
+    """
+
+    @patch("teatree.core.provision_timebox.notify_user")
+    def test_overrun_aborts_and_names_step(self, mock_notify: MagicMock) -> None:
+        release = threading.Event()
+        result = run_timeboxed_callable(
+            "sync-dependencies", lambda: release.wait(timeout=3), timeout=0.1, heartbeat_interval=0.05
+        )
+        release.set()
+        assert result.success is False
+        assert result.name == "sync-dependencies"
+        assert "timed out" in result.error
+        assert mock_notify.called
+        assert "sync-dependencies" in mock_notify.call_args.args[0]
+
+    @patch("teatree.core.provision_timebox.notify_user")
+    def test_clean_completed_process_is_interpreted(self, mock_notify: MagicMock) -> None:
+        ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="done", stderr="")
+        result = run_timeboxed_callable("sync-dependencies", lambda: ok, timeout=5)
+        assert result.success is True
+        assert result.stdout == "done"
+        assert not mock_notify.called
+
+    @patch("teatree.core.provision_timebox.notify_user")
+    def test_failed_completed_process_is_a_failure(self, mock_notify: MagicMock) -> None:
+        bad = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="boom")
+        result = run_timeboxed_callable("sync-dependencies", lambda: bad, timeout=5)
+        assert result.success is False
+        assert "boom" in result.error
+
+    @patch("teatree.core.provision_timebox.notify_user")
+    def test_heartbeat_fires_while_running(self, mock_notify: MagicMock) -> None:
+        _ = mock_notify
+        beats: list[str] = []
+
+        def slow_then_finish() -> None:
+            time.sleep(0.2)
+
+        run_timeboxed_callable(
+            "sync-dependencies", slow_then_finish, timeout=5, heartbeat_interval=0.05, heartbeat=beats.append
+        )
+        assert beats, "expected at least one heartbeat while the callable ran"
+        assert any("sync-dependencies" in b for b in beats)
 
 
 class TestRunTimeboxedDbImport(TestCase):

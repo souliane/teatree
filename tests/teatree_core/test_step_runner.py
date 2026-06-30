@@ -1,6 +1,7 @@
 """Tests for the structured step execution engine."""
 
 import subprocess
+import threading
 from functools import partial
 from unittest.mock import MagicMock, patch
 
@@ -297,3 +298,103 @@ class TestRunProvisionSteps(TestCase):
     def test_failed_required_step_none_when_all_pass(self) -> None:
         report = ProvisionReport(steps=[StepResult(name="ok", success=True)])
         assert report.failed_required_step is None
+
+
+class TestSubprocessOnlyStepIsTimeBoxed(TestCase):
+    """An ORM-free subprocess provision step that blocks on its PIPE aborts loud (#2244 — the HOLD).
+
+    A ``subprocess_only`` step (``uv sync`` / ``uv pip install -e`` — the ONLY
+    provision steps the teatree dogfood overlay runs, since it declares no
+    ``db_import`` strategy) shells out via ``run_checked(..., capture_output=True)``
+    with no wall-clock bound. A child blocked forever on its PIPE — a network
+    stall — would hang the whole provision silently with no ceiling, heartbeat,
+    or alert. The step must be time-boxed on a worker thread (safe — it touches
+    no ORM): on the ceiling it fails LOUD / non-zero and fires the actionable
+    alert, never returns ``ok`` and never hangs.
+
+    ANTI-VACUITY: revert the ``run_provision_steps`` guard (route every callable
+    back through the in-process ``run_callable_step``) and this goes RED — the
+    blocking callable runs unbounded in-process, returns, and the step is
+    recorded SUCCESS with no alert.
+    """
+
+    @patch("teatree.core.provision_timebox.notify_user")
+    @patch("teatree.core.provision_timebox.resolve_step_timeout_seconds", return_value=0.1)
+    def test_blocking_subprocess_step_aborts_loud_and_alerts(
+        self, mock_ceiling: MagicMock, mock_notify: MagicMock
+    ) -> None:
+        _ = mock_ceiling
+        release = threading.Event()
+
+        def uv_sync_blocked_on_pipe() -> None:
+            # Models ``run_checked(["uv", "sync"], capture_output=True)`` with the
+            # child blocked forever on its PIPE — never returns until released.
+            release.wait(timeout=3)
+
+        steps = [
+            ProvisionStep(
+                name="sync-dependencies",
+                callable=uv_sync_blocked_on_pipe,
+                required=True,
+                subprocess_only=True,
+            ),
+            ProvisionStep(name="after", callable=lambda: None, required=True),
+        ]
+        report = run_provision_steps(steps)
+        release.set()
+
+        assert report.success is False
+        assert report.failed_step == "sync-dependencies"
+        assert "timed out" in report.steps[0].error
+        assert len(report.steps) == 1  # halted on the timed-out required step; "after" never ran
+        assert mock_notify.called
+        assert "sync-dependencies" in mock_notify.call_args.args[0]
+
+
+class TestOrmStepRunsInProcess(TestCase):
+    """A default (non-``subprocess_only``) step runs on the CALLING thread, never a worker (#2244).
+
+    ORM-touching callables mutate the ``Worktree`` row, and Django DB
+    connections are per-thread — so they must NOT run on a worker thread (the
+    "database table is locked" abort the #2244 narrowing fixed). The default
+    ``subprocess_only=False`` keeps them in-process.
+    """
+
+    def test_default_step_runs_on_the_calling_thread(self) -> None:
+        ran_on: dict[str, int] = {}
+        steps = [
+            ProvisionStep(name="orm-step", callable=lambda: ran_on.__setitem__("tid", threading.get_ident())),
+        ]
+        run_provision_steps(steps)
+        assert ran_on["tid"] == threading.get_ident()
+
+
+class TestSubprocessOnlyStepSurvivesMissingProvisionTimebox(TestCase):
+    """The subprocess_only path degrades to a plain run when the time-box is absent (#2664).
+
+    A worktree torn down from a stale base cannot import ``provision_timebox``;
+    the subprocess_only callable path must degrade to a plain in-process run,
+    never abort the caller. A PRESENT-but-internally-broken module re-raises.
+    """
+
+    def test_subprocess_step_runs_when_module_absent(self) -> None:
+        ran: list[str] = []
+        steps = [
+            ProvisionStep(name="noop", callable=partial(ran.append, "noop"), required=True, subprocess_only=True),
+        ]
+
+        with provision_timebox_unimportable():
+            report = run_provision_steps(steps)
+
+        assert ran == ["noop"]
+        assert report.success is True
+
+    def test_subprocess_step_propagates_when_module_present_but_internally_broken(self) -> None:
+        steps = [
+            ProvisionStep(name="noop", callable=lambda: None, required=True, subprocess_only=True),
+        ]
+
+        with provision_timebox_internally_broken(), pytest.raises(ModuleNotFoundError) as exc_info:
+            run_provision_steps(steps)
+
+        assert exc_info.value.name == BROKEN_DEPENDENCY_NAME
