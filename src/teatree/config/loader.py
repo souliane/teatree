@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 import teatree.config as _facade
-from teatree.config.settings import E2ERepo, TeaTreeConfig, UserSettings, _default_handover_mirror_path, _parse_str_list
+from teatree.config.settings import E2ERepo, TeaTreeConfig, UserSettings, _parse_str_list
 from teatree.config_mr_reminder import resolve_mr_reminder
 from teatree.config_speak import resolve_speak
 from teatree.paths import DATA_DIR, get_data_dir
@@ -328,11 +328,6 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         speak=resolve_speak(teatree),
         mr_reminder=resolve_mr_reminder(raw),
         statusline_chain=_parse_str_list(teatree["statusline_chain"]) if "statusline_chain" in teatree else [],
-        handover_mirror_path=(
-            Path(str(teatree["handover_mirror_path"])).expanduser()
-            if teatree.get("handover_mirror_path")
-            else _default_handover_mirror_path()
-        ),
     )
 
     return TeaTreeConfig(user=user, raw=raw)

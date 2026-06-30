@@ -255,6 +255,13 @@ def _parse_strict_str(raw: object) -> str:
     return raw
 
 
+def _parse_handover_mirror_path(raw: object) -> Path:
+    # Path-typed field (consumed as ``.parent`` / ``.is_file()``), so it must resolve
+    # to a real ``Path`` — unlike the str-accessor fields. An empty value means "unset"
+    # → the default, matching the pre-DB TOML semantics (absent/empty fell back).
+    return Path(stored).expanduser() if (stored := _parse_strict_str(raw)) else _default_handover_mirror_path()
+
+
 def _parse_user_identity_aliases(raw: object) -> list[str]:
     """Coerce a TOML list of usernames/handles to ``list[str]``.
 
@@ -408,6 +415,12 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     # ``privacy`` has no live production reader.
     "orchestrator_bash_gate_enabled": _parse_strict_bool,
     "privacy": _parse_strict_str,
+    # eliminate-~/.teatree.toml: ``handover_mirror_path``. The pre-Django reader
+    # (``hook_router`` SessionStart bootstrap) now reads the canonical sqlite via
+    # ``cold_reader`` — which fails open to ``_default_handover_mirror_path()``, the
+    # exact path ``write_mirror`` uses when unset — so the "read when the DB is
+    # unreachable" carve-out is satisfied without TOML. Stored as a path STRING.
+    "handover_mirror_path": _parse_handover_mirror_path,
 }
 
 # TOML-home keys that ALSO support a per-overlay ``[overlays.<name>]`` override.

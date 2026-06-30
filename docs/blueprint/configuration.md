@@ -128,20 +128,22 @@ a field that CAN live in the DB is **DB-home**, and only the irreducible carve-o
 stays **TOML-home**. The two homes are disjoint (a fitness function asserts it) — a
 setting is never read from both tiers. A DB-home field resolves from `ConfigSetting`
 (global + overlay rows) + env only; a TOML-home field resolves from `[teatree]` +
-`[overlays.<name>]` + env only. The TOML carve-out is the five fields a non-Django
+`[overlays.<name>]` + env only. The TOML carve-out is the four fields a non-Django
 or pre-Django reader needs (`speak` — the Stop hook re-reads the `[teatree.speak]`
-sub-table with tomllib and cannot reach the DB — `handover_mirror_path` — the
-SessionStart bootstrap path read precisely when the DB is unreachable — `autoload`
-— the cold SessionStart / UserPromptSubmit hooks read `[teatree] autoload` with
-tomllib to decide default-off engagement before any Django bootstrap (#256) — and
-`statusline_chain` — read straight from `~/.teatree.toml` by the **bash** statusline
-hook, which has no path to the DB), and the nested structured `mr_reminder` table.
+sub-table with tomllib and cannot reach the DB — `autoload` — the cold SessionStart /
+UserPromptSubmit hooks read `[teatree] autoload` with tomllib to decide default-off
+engagement before any Django bootstrap (#256) — and `statusline_chain` — read straight
+from `~/.teatree.toml` by the **bash** statusline hook, which has no path to the DB),
+and the nested structured `mr_reminder` table.
 (eliminate-`~/.teatree.toml` moved `check_updates` — its pre-Django reader
 `check_for_updates` now reads the DB via the Django-free `cold_reader` — `worktrees_dir`
 / `timezone` — the Django settings module hardcodes `TIME_ZONE` and configures
-`DATABASES` without reading either, so neither was a bootstrap dep — and the last two
+`DATABASES` without reading either, so neither was a bootstrap dep — the two former
 per-overlay-TOML-overridable fields `orchestrator_bash_gate_enabled` / `privacy` —
-per-overlay override now lives in a `ConfigSetting` overlay-scope row — to the DB.)
+per-overlay override now lives in a `ConfigSetting` overlay-scope row — and
+`handover_mirror_path` — its pre-Django SessionStart reader reads the DB via
+`cold_reader`, which fails open to the same default bootstrap path `write_mirror` uses
+when unset — to the DB.)
 `workspace_dir` is **DB-home** and
 per-overlay overridable (it is read only after Django is up): it names the
 per-overlay **WORKTREE root** where ticket worktrees are created — worktrees

@@ -17,8 +17,7 @@ set`` refuses to write one.
 The TOML-home set is the carve-out — a field stays here ONLY when a NON-DJANGO /
 PRE-DJANGO reader needs it (the DB is then unreachable) or it is a nested table with
 no flat ``ConfigSetting`` shape. The pre-Django readers: ``speak`` (the Stop hook
-re-reads ``[teatree.speak]`` with tomllib), ``handover_mirror_path`` (the SessionStart
-bootstrap path read when the DB is unreachable), ``autoload`` (the cold SessionStart /
+re-reads ``[teatree.speak]`` with tomllib), ``autoload`` (the cold SessionStart /
 UserPromptSubmit hooks read ``[teatree] autoload`` pre-Django to decide engagement,
 #256), and ``statusline_chain`` (the bash statusline hook reads it straight from
 ``~/.teatree.toml``). The nested structured table with no flat
@@ -27,7 +26,9 @@ scalar shape: ``mr_reminder``. Every other field is DB-home — it resolves from
 value (which is ignored on read and the resolver warns on). ``workspace_dir`` and
 ``worktrees_dir`` are DB-home (resolved Django-side off the store — Django ``settings.py``
 hardcodes ``TIME_ZONE`` and configures ``DATABASES`` without reading either, so neither
-was ever a DB-open bootstrap dep); ``timezone`` is DB-home too (no live reader).
+was ever a DB-open bootstrap dep); ``timezone`` is DB-home too (no live reader);
+``handover_mirror_path`` is DB-home (its pre-Django SessionStart reader uses
+``cold_reader``, which fails open to the default bootstrap path, so it needs no TOML).
 
 :data:`DERIVED_FIELDS` is the one value the resolver COMPUTES rather than
 reads (``notify_on_behalf`` derived by the autonomy collapse); it has
@@ -52,24 +53,26 @@ class SettingHome(StrEnum):
 # from the partition. ``notify_on_behalf`` is ORed in by the autonomy collapse.
 DERIVED_FIELDS: frozenset[str] = frozenset({"notify_on_behalf"})
 
-# The TOML-home carve-out (exactly these five):
+# The TOML-home carve-out (exactly these four):
 # - non-Django / pre-Django readers (read via tomllib or a bash grep, no DB):
 #   ``speak`` (the Stop hook re-reads the ``[teatree.speak]`` sub-table with tomllib
-#   — it cannot reach the Django DB), ``handover_mirror_path`` (the SessionStart
-#   bootstrap path read precisely when the DB is unreachable), ``autoload`` (the
-#   cold SessionStart / UserPromptSubmit hooks read ``[teatree] autoload`` with
-#   tomllib to decide default-off engagement, before any Django bootstrap — #256),
-#   and ``statusline_chain`` (the bash statusline hook reads ``[teatree]
+#   — it cannot reach the Django DB), ``autoload`` (the cold SessionStart /
+#   UserPromptSubmit hooks read ``[teatree] autoload`` with tomllib to decide
+#   default-off engagement, before any Django bootstrap — #256), and
+#   ``statusline_chain`` (the bash statusline hook reads ``[teatree]
 #   statusline_chain`` straight from ``~/.teatree.toml``).
 # - nested structured table with no flat ConfigSetting shape: ``mr_reminder``
 #
 # eliminate-~/.teatree.toml LEFT the carve-out: ``check_updates`` (cold_reader on
 # its pre-Django path); ``worktrees_dir`` / ``timezone`` (Django ``settings.py``
 # hardcodes ``TIME_ZONE = "UTC"`` and configures ``DATABASES`` without reading
-# either, so neither was a bootstrap dep); and ``orchestrator_bash_gate_enabled`` /
-# ``privacy`` — the last two per-overlay-TOML-overridable fields, now DB-home (the
+# either, so neither was a bootstrap dep); ``orchestrator_bash_gate_enabled`` /
+# ``privacy`` (the last two per-overlay-TOML-overridable fields, now DB-home — the
 # gate reader ``teatree_gate._gate_key_is_enabled`` is already DB-first via
-# ``cold_reader`` with a TOML self-rescue fallback; ``privacy`` has no live reader).
+# ``cold_reader`` with a TOML self-rescue fallback; ``privacy`` has no live reader);
+# and ``handover_mirror_path`` (the SessionStart bootstrap reader now reads the
+# canonical sqlite via ``cold_reader``, which fails open to the same default path
+# ``write_mirror`` uses when unset — so it needs no TOML even when Django is down).
 #
 # ``workspace_dir`` / ``worktrees_dir`` are DB-home (resolved Django-side off the
 # ``ConfigSetting`` store): worktrees regroup under a per-overlay default
@@ -81,7 +84,6 @@ _TOML_HOME: frozenset[str] = frozenset(
     {
         "speak",
         "mr_reminder",
-        "handover_mirror_path",
         "autoload",
         "statusline_chain",
     }

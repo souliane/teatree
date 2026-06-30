@@ -69,10 +69,16 @@ def test_handover_mirror_path_defaults_under_xdg_state(tmp_path: Path, monkeypat
     )
 
 
-def test_handover_mirror_path_override(tmp_path: Path) -> None:
+def test_handover_mirror_path_toml_is_ignored_db_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # eliminate-~/.teatree.toml: ``handover_mirror_path`` is DB-home, so a
+    # ``[teatree]`` value is ignored on read — ``load_config`` returns the default
+    # (the DB override is applied by ``get_effective_settings``, not ``load_config``).
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     config_path = tmp_path / ".teatree.toml"
     _write_toml(config_path, '[teatree]\nhandover_mirror_path = "/custom/ho.md"\n')
-    assert load_config(config_path).user.handover_mirror_path == Path("/custom/ho.md")
+    assert (
+        load_config(config_path).user.handover_mirror_path == tmp_path / "state" / "teatree" / "handover" / "latest.md"
+    )
 
 
 def test_agent_signature_defaults_off(tmp_path: Path) -> None:

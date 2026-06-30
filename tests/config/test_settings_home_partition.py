@@ -19,7 +19,6 @@ _TOML_CARVE_OUT = frozenset(
     {
         "speak",
         "mr_reminder",
-        "handover_mirror_path",
         "autoload",
         "statusline_chain",
     }
@@ -54,15 +53,15 @@ def test_db_home_and_toml_home_are_disjoint() -> None:
     assert db_home | toml_home == set(SETTING_HOMES)
 
 
-def test_toml_carve_out_is_exactly_the_five_fields() -> None:
+def test_toml_carve_out_is_exactly_the_four_fields() -> None:
     # The carve-out — pre-Django/bash readers + the nested structured tables — is
-    # exactly these five and no more. eliminate-~/.teatree.toml has moved
-    # ``check_updates``, ``worktrees_dir`` / ``timezone``, and the last two
+    # exactly these four and no more. eliminate-~/.teatree.toml has moved
+    # ``check_updates``, ``worktrees_dir`` / ``timezone``, the two former
     # per-overlay-TOML-overridable fields (``orchestrator_bash_gate_enabled`` /
-    # ``privacy``) to the DB.
+    # ``privacy``), and ``handover_mirror_path`` to the DB.
     toml_home = {k for k, home in SETTING_HOMES.items() if home is SettingHome.TOML}
     assert toml_home == _TOML_CARVE_OUT
-    for moved in ("workspace_dir", "check_updates", "worktrees_dir", "timezone"):
+    for moved in ("workspace_dir", "check_updates", "worktrees_dir", "timezone", "handover_mirror_path"):
         assert moved not in toml_home
 
 
@@ -80,6 +79,15 @@ def test_per_overlay_toml_fields_collapsed_to_db_home() -> None:
     # row, not ``[overlays.<name>]``. The gate reader is DB-first (cold_reader).
     assert SETTING_HOMES["orchestrator_bash_gate_enabled"] is SettingHome.DB
     assert SETTING_HOMES["privacy"] is SettingHome.DB
+
+
+def test_handover_mirror_path_is_db_home() -> None:
+    # eliminate-~/.teatree.toml: the SessionStart bootstrap reader
+    # (``hook_router``) now reads ``handover_mirror_path`` via the Django-free
+    # ``cold_reader``, which fails open to ``_default_handover_mirror_path()`` —
+    # the exact path ``write_mirror`` uses when unset — so the "read when the DB
+    # is unreachable" carve-out is satisfied without TOML.
+    assert SETTING_HOMES["handover_mirror_path"] is SettingHome.DB
 
 
 def test_autoload_is_toml_home_not_db() -> None:

@@ -24,7 +24,7 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from teatree.config import load_config
+from teatree.config import get_effective_settings
 
 if TYPE_CHECKING:
     from teatree.core.models.session_handover import SessionHandover
@@ -84,7 +84,7 @@ def resolve_target_session(explicit_to: str) -> str:
 
 def mirror_path() -> Path:
     """The configured XDG file mirror path for the latest hand-off."""
-    return load_config().user.handover_mirror_path
+    return get_effective_settings().handover_mirror_path
 
 
 def write_mirror(handover: "SessionHandover", path: Path | None = None) -> Path:
