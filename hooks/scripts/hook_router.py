@@ -86,6 +86,9 @@ from question_gates import read_transcript_entries as _read_transcript_entries
 from quote_verdict import QuoteVerdict
 from quote_verdict import resolve_high_verdict as _resolve_quote_verdict
 from raw_pid_kill_guard import handle_block_raw_pid_kill
+from raw_review_post_guard import REVIEW_POST_ENDPOINT_RE as _REVIEW_POST_ENDPOINT_RE  # noqa: F401
+from raw_review_post_guard import handle_block_raw_review_post
+from raw_review_post_guard import is_raw_review_write as _is_raw_review_write  # noqa: F401
 from secret_file_print_guard import handle_block_secret_file_print
 from state_files import append_line, read_lines
 from subagent_no_commit import handle_subagent_stop_no_commit
@@ -6123,33 +6126,21 @@ def handle_block_out_of_band_merge(data: dict) -> bool:
     return emit_pretooluse_deny(_OUT_OF_BAND_MERGE_REASON)
 
 
-# ── PreToolUse: block-raw-review-post (#1164) ────────────────────────
+# ── shared effective-HTTP-method regexes (#1164 raw-review-post gate extracted) ──
 #
-# Sub-agents have repeatedly posted MR/PR review comments by shelling out
-# to a raw forge REST POST — ``glab api projects/.../merge_requests/<n>/
-# discussions -X POST`` (or ``.../notes``, or the GitHub ``.../pulls/<n>/
-# comments``) — bypassing the sanctioned ``t3 <overlay> review post-comment``
-# / ``post-draft-note`` path that enforces draft-default (#1207), dedup, and
-# on-behalf approval (#960). RED-CARD, 5x recurrence. This gate closes the
-# bypass at the Bash boundary: a WRITE to a review discussion/notes/comments
-# endpoint is denied; plain GET reads pass through.
+# The raw-review-post deny gate was extracted whole into the bare sibling
+# ``hooks/scripts/raw_review_post_guard.py`` (#2384 Wave-2 router split, PR6);
+# the router re-exports ``handle_block_raw_review_post`` (+ the
+# ``is_raw_review_write`` helper and the ``REVIEW_POST_ENDPOINT_RE`` constant a
+# conformance test reads) at the router head, so ``_HANDLERS`` is unchanged.
 #
-# Conservative by construction: it matches ONLY the review-comment endpoints
-# (discussions / notes / comments) and classifies the command by its EFFECTIVE
-# HTTP method — the one gh (2.87.3) / glab (1.80.4) actually send. Both CLIs
-# resolve repeated ``-X``/``--method`` flags LAST-WINS (empirically verified:
-# ``-X GET -X POST`` POSTs, ``--method GET --method PATCH`` PATCHes), and when
-# NO method flag is given they default to POST if a request-body/field flag is
-# present, else GET. A command is a READ iff its effective method is GET —
-# only then does the forge send ``-f`` as a query parameter rather than a body
-# write, so a comment cannot be created (#1568). Every other effective method
-# (POST/PUT/PATCH/DELETE/…) is a write. A bare read (``glab api
-# .../discussions``) and any non-review endpoint pass through untouched. Fails
-# OPEN on an internal parse error — a gate bug must never wedge the fleet.
+# These three regexes STAY here because handlers that remain in the router read
+# them too: ``_effective_method_is_write`` (the gh/glab last-wins method
+# classifier serving the AI-signature / MR-metadata / out-of-band-merge gates)
+# uses ``_REVIEW_POST_METHOD_RE`` + ``_REVIEW_POST_BODY_FLAG_RE``, and both the
+# out-of-band-merge gate and the extracted sibling read ``_GLAB_GH_API_RE``. The
+# sibling back-imports all three lazily so there is exactly one definition.
 
-_REVIEW_POST_ENDPOINT_RE = re.compile(
-    r"(?:merge_requests|pulls|issues)/\d+/(?:discussions|notes|comments)\b",
-)
 # Two captured forms of the gh/glab HTTP-method flag, both empirically valid
 # against gh (2.87.3) / glab (1.80.4): the spaced/``=`` form (``-X PUT``,
 # ``--method=POST``) and the pflag NO-SPACE shorthand (``-XPUT``). The
@@ -6164,64 +6155,9 @@ _REVIEW_POST_METHOD_RE = re.compile(
 _REVIEW_POST_BODY_FLAG_RE = re.compile(
     r"(?:^|\s)(?:-f|--field|-F|--raw-field|--input|-d|--data)\b",
 )
-_REVIEW_POST_DENY_REASON = (
-    "BLOCKED: raw `glab api`/`gh api` POST to a review discussion/notes/comments "
-    "endpoint bypasses the sanctioned review-post CLI. To CREATE a note use "
-    "`t3 <overlay> review post-comment` (draft by default, #1207) or `post-draft-note`; "
-    "to EDIT use `t3 <overlay> review update-note`; to REMOVE use `delete-discussion` (MR) "
-    "or `delete-issue-note` (issue/work-item) — the CLI enforces draft-default, dedup, and "
-    "on-behalf approval, which a direct REST write skips. Read-only GETs are unaffected."
-)
 
 
 _GLAB_GH_API_RE = re.compile(r"\b(?:glab|gh)\s+api\b")
-
-
-def _is_raw_review_write(command: str) -> bool:
-    """Whether *command* is a raw forge REST WRITE to a review-comment endpoint.
-
-    True only when the command targets a ``.../discussions``, ``.../notes``,
-    or ``.../comments`` endpoint AND its EFFECTIVE HTTP method is not GET. The
-    effective method models gh/glab semantics: the LAST ``-X``/``--method``
-    value wins (so ``-X GET -X POST`` is a POST write, ``-X POST -X GET`` is a
-    GET read); with no method flag the forge defaults to POST when a body/field
-    flag is present, else GET. A forced GET sends body flags as query params
-    and cannot create a comment, so it is the only read (#1568).
-
-    Uses a word-boundary regex (not plain ``in``) so ``glab  api`` /
-    ``gh  api`` double-space variants are caught (F4).
-    """
-    if not _GLAB_GH_API_RE.search(command):
-        return False
-    if not _REVIEW_POST_ENDPOINT_RE.search(command):
-        return False
-    methods = [m.upper() for pair in _REVIEW_POST_METHOD_RE.findall(command) for m in pair if m]
-    if methods:
-        is_read = methods[-1] == "GET"
-    elif _REVIEW_POST_BODY_FLAG_RE.search(command):
-        is_read = False
-    else:
-        is_read = True
-    return not is_read
-
-
-def handle_block_raw_review_post(data: dict) -> bool:
-    """Deny a raw ``glab api``/``gh api`` WRITE to a review-comment endpoint.
-
-    Forces the sanctioned ``t3 <overlay> review post-comment`` /
-    ``post-draft-note`` path (draft-default + dedup + on-behalf approval),
-    which a direct REST write skips. Conservative: a command is denied only
-    when its effective HTTP method (last ``-X``/``--method`` wins; default POST
-    when a body flag is present) is not GET. Reads — bare, explicit-GET, or
-    write-then-GET — and non-review endpoints pass through. Returns True when a
-    deny was emitted (caller stops the handler chain).
-    """
-    if data.get("tool_name") != "Bash":
-        return False
-    command = data.get("tool_input", {}).get("command", "")
-    if not command or not _is_raw_review_write(command):
-        return False
-    return emit_pretooluse_deny(_REVIEW_POST_DENY_REASON)
 
 
 # ── PreToolUse: mirror-question-to-slack ─────────────────────────────
