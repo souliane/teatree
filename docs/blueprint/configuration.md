@@ -7,18 +7,22 @@ Detail behind [BLUEPRINT.md](https://github.com/souliane/teatree/blob/main/BLUEP
 ### 10.1 ~/.teatree.toml
 
 ```toml
-# ~/.teatree.toml holds ONLY the TOML-home carve-out + overlay discovery /
-# messaging / raw-table keys (#1775). The operational knobs — mode, the
-# approval gates, on_behalf_post_mode, repo_mode, the cadence/threshold dials,
-# … — are DB-home and live in the ConfigSetting store; a value for one of them
-# left in [teatree] / [overlays.<name>] is IGNORED on read. Set them with
+# ~/.teatree.toml is now a pre-migration FALLBACK only (#1775,
+# eliminate-~/.teatree.toml). Every UserSettings field is DB-home, and the last
+# NON-settings config — the [overlays.<name>] overlay-definition tables and the
+# [e2e_repos] tables — is DB-home too (the `overlays` / `e2e_repos` registries,
+# one JSON-dict ConfigSetting row each; loader._inject_db_registries overrides
+# config.raw from the store). A value left in any of these tables is IGNORED on
+# read once the matching DB row exists; with every value migrated, the file can be
+# DELETED and teatree boots fully from the DB. Set settings with
 # `t3 <overlay> config_setting set` (see below). `t3 setup` auto-migrates an
 # existing config into the store on every run (non-clobbering: it seeds only keys
 # absent from the store, so a value you later change via `config_setting set`
 # survives); `t3 <overlay> config_setting import` is the manual equivalent (it
-# refreshes every operational key from the file). `config_setting export` is the
-# inverse — it dumps the store back to TOML ([teatree] + [overlays.<name>]) so the
-# pair is a full round-trip interchange.
+# refreshes every operational key from the file — including the overlays / e2e_repos
+# registries). `config_setting export` is the inverse — it dumps the store back to
+# TOML ([teatree] + [overlays.<name>] + [e2e_repos.<name>]) so the pair is a full
+# round-trip interchange.
 [teatree]
 # workspace_dir is DB-home now (per-overlay; default ~/workspace/t3-workspaces/<overlay>/).
 # Set it with `t3 <overlay> config_setting set workspace_dir <path> [--overlay <name>]`;
@@ -148,8 +152,14 @@ tables `speak` / `mr_reminder` — stored as JSON-dict `ConfigSetting` rows
 (`parse_speak_setting` / `parse_mr_reminder_setting`) and rebuilt bespoke by the
 resolver (`resolution._BESPOKE_STRUCTURED_FIELDS`), with `speak` keeping its
 per-overlay MERGE; the cold Stop-hook `speak` reader uses `cold_reader.read_setting`
-— to the DB. The TOML file now retains only the NON-settings `[overlays.<name>]`
-overlay-definition and `[e2e_repos]` tables.)
+— to the DB. The last NON-`UserSettings` config — the `[overlays]` overlay-definition
+registry and the `[e2e_repos]` registry — is DB-home too: each is stored as one JSON-dict
+`ConfigSetting` row (`config/registries.py`, `REGISTRY_SETTINGS`) and
+`loader._inject_db_registries` overrides `config.raw["overlays"]` / `config.raw["e2e_repos"]`
+from the store via the Django-free `cold_reader`, so every existing reader
+(`discover_overlays`, `load_e2e_repos`) is untouched and an absent `~/.teatree.toml` boots a
+fully DB-configured teatree. The TOML tables are consulted ONLY as a pre-migration fallback,
+so the file can be deleted once `config_setting import` has run.)
 `workspace_dir` is **DB-home** and
 per-overlay overridable (it is read only after Django is up): it names the
 per-overlay **WORKTREE root** where ticket worktrees are created — worktrees
@@ -252,10 +262,14 @@ upserted so a re-run is idempotent), skipping bootstrap-file-only and unknown ke
 It walks BOTH tiers — every operational `[teatree]` key into the GLOBAL scope and
 every operational `[overlays.<name>]` key into THAT overlay's scope (the DB twin of
 the per-overlay TOML override), so an install with both a global and a per-overlay
-value for a DB-home key migrates both in one pass. The overlay's own `path` / `url`
-discovery keys are not settings and are skipped. Run it once after upgrading to the
-partition so an existing install's DB-home keys keep applying (they are otherwise
-ignored on read).
+value for a DB-home key migrates both in one pass. `import` also seeds the two
+NON-`UserSettings` registries: the `[overlays]` overlay-definition keys (the overlay's
+own `path` / `class` / messaging keys — everything that is NOT a setting) into one global
+`overlays` row, and `[e2e_repos]` into one global `e2e_repos` row. `set` / `get` admit
+those two keys too (their parser registry is `REGISTRY_SETTINGS`, kept separate from
+`OVERLAY_OVERRIDABLE_SETTINGS` so the resolver's per-field coercion never sees them). Run
+it once after upgrading to the partition so an existing install's DB-home keys keep
+applying (they are otherwise ignored on read).
 
 A DB-home key left in `[teatree]` / `[overlays.<name>]` after the migration is
 ignored on read. This is loud only when it actually **conflicts** with the store:

@@ -7773,9 +7773,10 @@ Usage: t3 teatree config_setting set [OPTIONS] KEY VALUE
  Upsert the DB override row for *key* (in *overlay*'s scope or global) to
  *value*.
 
- Refuses a key not in ``OVERLAY_OVERRIDABLE_SETTINGS``, a *value* that is
- not valid JSON, and a *value* that JSON-parses but is invalid for the
- setting's type, leaving the store untouched on any error.
+ Refuses a key in neither ``OVERLAY_OVERRIDABLE_SETTINGS`` nor
+ ``REGISTRY_SETTINGS``, a *value* that is not valid JSON, and a *value* that
+ JSON-parses but is invalid for the setting's type, leaving the store
+ untouched on any error.
 
  ``--overlay <name>`` scopes the row to one overlay (the DB twin of a
  per-overlay TOML override); omitted, it writes the global scope.
@@ -7809,8 +7810,9 @@ Usage: t3 teatree config_setting get [OPTIONS] KEY
  in the requested scope it is reported as the ``db`` source; otherwise the
  value falls through to the file/env layer and is reported as the
  ``file/env`` source. ``--overlay <name>`` reads that overlay's scope.
- Refuses a key not in ``OVERLAY_OVERRIDABLE_SETTINGS`` so a typo is loud,
- not a silent ``file/env`` answer for a non-setting.
+ Refuses a key in neither ``OVERLAY_OVERRIDABLE_SETTINGS`` nor
+ ``REGISTRY_SETTINGS`` so a typo is loud, not a silent ``file/env`` answer
+ for a non-setting.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    key      TEXT  UserSettings field name to read (must be overridable).   │
