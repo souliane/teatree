@@ -58,7 +58,7 @@
     },
     {
       "name": "loops",
-      "summary": "Show t3 loop status and trigger DB-configured loops \u2014 which loops are running vs stalled, the cadence/next-tick of each, loop ownership, and how to trigger a master tick"
+      "summary": "Show t3 loop status and trigger DB-configured loops \u2014 which loops are running vs stalled, the cadence/next-tick of each, loop ownership, and how to trigger a per-loop tick"
     },
     {
       "name": "next",
