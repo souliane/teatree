@@ -23,11 +23,13 @@ regresses to the subscription OAuth token.
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
 import yaml
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _GH_CI = _REPO_ROOT / ".github" / "workflows" / "ci.yml"
 _GH_EVAL = _REPO_ROOT / ".github" / "workflows" / "eval.yml"
+_GH_EVAL_WEEKLY_REUSABLE = _REPO_ROOT / ".github" / "workflows" / "eval-weekly-reusable.yml"
 _GITLAB_CI = _REPO_ROOT / ".gitlab-ci.yml"
 
 _FLAG = "--require-executed"
@@ -290,4 +292,74 @@ class TestGitLabRequireExecutedUnconditional:
         manual_rules = cast("list[dict[str, Any]]", config["eval-manual"]["rules"])
         assert not any("RUN_EVAL" in rule.get("if", "") for rule in manual_rules), (
             "eval-manual must be unguarded (the manual run always runs, no-PR guard bypassed)."
+        )
+
+
+def _workflow_triggers(config: dict[str, Any]) -> dict[str, Any]:
+    # PyYAML parses the unquoted `on:` workflow key as the boolean True (YAML 1.1).
+    return cast("dict[str, Any]", config.get("on", config.get(True)))
+
+
+def _efforts_input_default(path: Path) -> str | None:
+    config = cast("dict[str, Any]", yaml.safe_load(path.read_text(encoding="utf-8")))
+    triggers = _workflow_triggers(config)
+    for trigger in ("workflow_dispatch", "workflow_call"):
+        inputs = cast("dict[str, Any]", triggers.get(trigger, {})).get("inputs", {})
+        if "efforts" in inputs:
+            return cast("str | None", inputs["efforts"].get("default"))
+    msg = f"{path.name} declares no efforts input."
+    raise AssertionError(msg)
+
+
+def _matrix_step_efforts_env(path: Path) -> str:
+    jobs = cast("dict[str, Any]", yaml.safe_load(path.read_text(encoding="utf-8"))["jobs"])
+    for step in cast("list[dict[str, Any]]", jobs["prepare"]["steps"]):
+        if step.get("id") == "matrix":
+            return cast("str", step["env"]["EVAL_EFFORTS"])
+    msg = f"{path.name} prepare job has no matrix step wiring EVAL_EFFORTS."
+    raise AssertionError(msg)
+
+
+_EFFORTS_WORKFLOWS = [_GH_EVAL, _GH_EVAL_WEEKLY_REUSABLE]
+
+
+class TestEffortsAxisEmptyIsSingleTier:
+    """A blank efforts field is single-tier; only the scheduled cron fans all three.
+
+    A blank `efforts` field must produce a SINGLE-tier matrix (no effort axis, lane
+    default) — the documented "empty = single tier" behaviour. The old
+    `default: "low,medium,high"` plus the blanket `inputs.efforts || 'low,medium,high'`
+    coercion silently fanned every blank run across all three tiers, tripling the
+    metered API spend. The 3-tier default is now keyed on the schedule EVENT, so the
+    weekly cron still fans low,medium,high while a blank manual run stays single-tier.
+    """
+
+    @pytest.mark.parametrize("path", _EFFORTS_WORKFLOWS, ids=lambda p: p.name)
+    def test_efforts_input_default_is_empty(self, path: Path) -> None:
+        assert _efforts_input_default(path) == "", (
+            f"{path.name}: the efforts input default must be empty, so a blank manual "
+            "dispatch field is a single-tier run — not a 3x-cost fan across every tier."
+        )
+
+    @pytest.mark.parametrize("path", _EFFORTS_WORKFLOWS, ids=lambda p: p.name)
+    def test_three_tier_default_is_keyed_on_the_schedule_event(self, path: Path) -> None:
+        expr = _matrix_step_efforts_env(path)
+        assert "inputs.efforts" in expr, f"{path.name}: an explicit efforts input must still win."
+        assert "github.event_name == 'schedule'" in expr, (
+            f"{path.name}: the 3-tier efforts default must be keyed on the schedule event, so "
+            "ONLY the weekly cron fans low,medium,high — a blank manual run stays single-tier."
+        )
+        assert "low,medium,high" in expr, f"{path.name}: the scheduled run must still fan the three tiers."
+
+    @pytest.mark.parametrize("path", _EFFORTS_WORKFLOWS, ids=lambda p: p.name)
+    def test_blank_efforts_is_not_blanket_coerced_to_all_tiers(self, path: Path) -> None:
+        # The bug: `inputs.efforts || 'low,medium,high'` coerced EVERY blank efforts —
+        # manual OR scheduled — to all three tiers, so the "empty = single tier" path
+        # was unreachable from the manual UI. The 3-tier fallback must be gated on the
+        # event, never an unconditional `|| 'low,medium,high'`.
+        expr = "".join(_matrix_step_efforts_env(path).split())
+        assert "inputs.efforts||'low,medium,high'" not in expr, (
+            f"{path.name}: efforts must not be blanket-coerced to all three tiers — a blank "
+            "manual field would then fan 3x (the money-burning bug). Gate the 3-tier fallback "
+            "on github.event_name == 'schedule'."
         )
