@@ -17,6 +17,7 @@ from collections.abc import Mapping
 
 from teatree.eval.models import MATCHER_KINDS, MATCHER_OPERATORS
 from teatree.loops.dream._teeth_check import ToolCallShape
+from teatree.loops.dream.json_scan import first_content_bearing_object
 from teatree.loops.dream.llm_eval_proposer import SynthesizedSpec
 
 _SYNTH_SYSTEM_PROMPT = (
@@ -138,39 +139,17 @@ async def _collect_synth_turn(prompt: str) -> str:
     return "\n".join(parts)
 
 
-def _extract_json_object(raw: str) -> Mapping[str, object] | None:
-    """The FIRST balanced JSON object in *raw*, tolerating prose and trailing objects.
-
-    The object analogue of :func:`teatree.loops.dream.sdk_distiller._extract_json_array`:
-    rather than spanning the first ``{`` to the last ``}`` (which captures multiple
-    objects or a trailing fragment and makes ``json.loads`` raise ``Extra data``), it
-    scans each ``{`` with :meth:`json.JSONDecoder.raw_decode` and returns the first
-    that decodes to a mapping — so a reply carrying prose plus more than one object
-    yields its first object instead of crashing the whole derivation phase.
-    """
-    import json  # noqa: PLC0415
-
-    decoder = json.JSONDecoder()
-    index = raw.find("{")
-    while index != -1:
-        try:
-            parsed, _ = decoder.raw_decode(raw, index)
-        except json.JSONDecodeError:
-            index = raw.find("{", index + 1)
-        else:
-            return parsed
-    return None
-
-
 def _parse_synthesized(raw: str, candidate: Mapping[str, object]) -> SynthesizedSpec:
     """Parse the synthesizer's JSON object into a :class:`SynthesizedSpec`.
 
-    Extracts the first balanced JSON object (via :func:`_extract_json_object`), so
-    surrounding prose or a trailing second object no longer raises ``Extra data``. A
-    missing required key or a non-list ``expect`` raises, so a malformed reply DROPS
-    the candidate rather than staging a partial scenario.
+    Extracts the first CONTENT-bearing balanced JSON object (via the shared
+    :func:`~teatree.loops.dream.json_scan.first_content_bearing_object`), so
+    surrounding prose or a trailing second object no longer raises ``Extra data`` and
+    a prose empty ``{}`` appearing before the real object no longer wins over it
+    (#2861). A missing required key or a non-list ``expect`` raises, so a malformed
+    reply DROPS the candidate rather than staging a partial scenario.
     """
-    payload = _extract_json_object(raw)
+    payload = first_content_bearing_object(raw)
     if payload is None:
         msg = "synthesizer returned no JSON object"
         raise ValueError(msg)
