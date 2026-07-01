@@ -4,7 +4,7 @@
 --loop <name>`` runs ONE enabled, due loop — the per-loop primitive each native
 Claude ``/loop`` fires (#2650). There is NO master tick: ``t3 loops tick`` with no
 ``--loop`` is a hard error. Per-loop management — add / edit / enable / disable —
-is via ``t3 loop enable/disable`` + the Django admin (``Loop`` rows: name /
+is via ``t3 loop enable`` / ``t3 loop disable`` + the Django admin (``Loop`` rows: name /
 prompt / delay / enabled). ORM access lives in the ``loops_tick`` / ``loops_list``
 management commands, not a plain typer command.
 """
