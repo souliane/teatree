@@ -13,6 +13,7 @@ import json
 from io import StringIO
 from unittest.mock import patch
 
+import pytest
 from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
@@ -21,7 +22,7 @@ from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage, Token
 from teatree.core.models.config_setting import ConfigSetting
 from teatree.credential_config import LIST_SETTING, TokenKind
 from teatree.llm.rate_limits import MeteredKeySnapshot, RateLimitProbeError, RateLimitSnapshot
-from teatree.token_report import TokenReport, TokenStatus, render_table
+from teatree.token_report import TokenAccountPayload, TokenAccountRow, TokenReport, TokenStatus, render_table
 
 
 def _snapshot(*, org: str, u5h: float = 0.1, u7d: float = 0.1, status_7d: str = "allowed") -> RateLimitSnapshot:
@@ -105,6 +106,37 @@ def _configure(kind: TokenKind, paths: list[str], scope: str = "") -> None:
     ConfigSetting.objects.set_value(LIST_SETTING[kind], paths, scope=scope)
 
 
+class TestTokenAccountPayloadShape:
+    """The token-free JSON row shape (``TokenAccountPayload``) that ``as_dict`` emits."""
+
+    def _row(self, **overrides: object) -> TokenAccountRow:
+        base: dict[str, object] = {
+            "pass_path": "anthropic/x/oauth",
+            "kind": TokenKind.OAUTH,
+            "scopes": ("",),
+            "organization_id": "org-x",
+            "utilization_5h": 0.1,
+            "utilization_7d": 0.2,
+            "weekly_reset": None,
+            "status": TokenStatus.HEALTHY,
+        }
+        return TokenAccountRow(**(base | overrides))
+
+    def test_as_dict_keys_match_the_payload_typeddict(self) -> None:
+        payload: TokenAccountPayload = self._row().as_dict()
+        assert set(payload) == set(TokenAccountPayload.__annotations__)
+
+    def test_oauth_row_payload_carries_utilization_not_per_minute_fields(self) -> None:
+        payload = self._row().as_dict()
+        assert payload["kind"] == "oauth"
+        assert payload["status"] == "healthy"
+        assert payload["utilization_5h"] == pytest.approx(0.1)
+        assert payload["requests_remaining"] is None
+
+    def test_weekly_reset_local_is_a_dash_when_absent(self) -> None:
+        assert self._row(weekly_reset=None).weekly_reset_local == "—"
+
+
 class TokenReportRowsTest(TestCase):
     def test_classifies_health_across_scopes_and_kinds(self) -> None:
         _configure(TokenKind.OAUTH, ["anthropic/oauth/healthy", "anthropic/oauth/warning"])
@@ -179,6 +211,35 @@ class TokenReportRowsTest(TestCase):
         assert secrets.calls == []
 
     def test_no_configured_accounts_yields_no_rows(self) -> None:
+        assert TokenReport(reader=FakeReader({}), secret_reader=RecordingSecretReader({})).rows() == []
+
+
+class OAuthUnhappyRowsTest(TestCase):
+    """The OAuth ``_row_for`` unhappy branches: no stored token, and a probe failure."""
+
+    def test_oauth_account_with_no_stored_token_is_missing(self) -> None:
+        _configure(TokenKind.OAUTH, ["anthropic/oauth/missing"])
+        secrets = RecordingSecretReader({"anthropic/oauth/missing": ""})
+        rows = TokenReport(reader=FakeReader({}), secret_reader=secrets).rows()
+        assert rows[0].status is TokenStatus.MISSING
+
+    def test_oauth_probe_failure_is_unreachable(self) -> None:
+        _configure(TokenKind.OAUTH, ["anthropic/oauth/down"])
+        secrets = RecordingSecretReader({"anthropic/oauth/down": "TOK-down"})
+        reader = FakeReader({}, unreachable={"TOK-down"})
+        rows = TokenReport(reader=reader, secret_reader=secrets).rows()
+        assert rows[0].status is TokenStatus.UNREACHABLE
+
+    def test_render_delegates_to_the_table_renderer(self) -> None:
+        _configure(TokenKind.OAUTH, ["anthropic/oauth/healthy"])
+        secrets = RecordingSecretReader({"anthropic/oauth/healthy": "TOK"})
+        reader = FakeReader({"TOK": _snapshot(org="org-x")})
+        out = TokenReport(reader=reader, secret_reader=secrets).render()
+        assert "anthropic/oauth/healthy" in out
+        assert "HEALTHY" in out
+
+    def test_a_non_list_config_value_yields_no_accounts(self) -> None:
+        ConfigSetting.objects.set_value(LIST_SETTING[TokenKind.OAUTH], "not-a-list")
         assert TokenReport(reader=FakeReader({}), secret_reader=RecordingSecretReader({})).rows() == []
 
 

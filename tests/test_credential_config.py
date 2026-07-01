@@ -19,16 +19,18 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models import AnthropicActivePick, AnthropicTokenUsage, ConfigSetting
-from teatree.core.models.anthropic_token_usage import HEALTH_TTL, TokenHealthReading
+from teatree.core.models.anthropic_token_usage import HEALTH_TTL, REJECTED_STATUS, TokenHealthReading
 from teatree.credential_config import (
     AllTokensExhaustedError,
     PassPathSelector,
     TokenKind,
+    reading_from,
+    reading_from_metered,
     resolve_api_key_credential,
     resolve_subscription_credential,
 )
 from teatree.llm.credentials import AnthropicApiKeyCredential, AnthropicSubscriptionCredential
-from teatree.llm.rate_limits import MeteredKeySnapshot, RateLimitSnapshot
+from teatree.llm.rate_limits import MeteredKeySnapshot, RateLimitProbeError, RateLimitSnapshot
 
 _OAUTH_BUILTIN = "anthropic/oauth-token"
 _API_KEY_BUILTIN = "anthropic/api-key"
@@ -95,6 +97,28 @@ def _seed_fresh_healthy_row(pass_path: str) -> AnthropicTokenUsage:
         reset_7d=None,
     )
     return AnthropicTokenUsage.objects.record(pass_path, reading, now=timezone.now())
+
+
+class TestReadingTranslation:
+    """The pure snapshot -> ``TokenHealthReading`` translations the selector applies."""
+
+    def test_reading_from_maps_the_unified_snapshot_fields(self) -> None:
+        reading = reading_from(_snapshot(u5=0.3, u7=0.8, s7="allowed_warning"))
+        assert isinstance(reading, TokenHealthReading)
+        assert reading.utilization_5h == pytest.approx(0.3)
+        assert reading.utilization_7d == pytest.approx(0.8)
+        assert reading.status_7d == "allowed_warning"
+        assert not reading.is_exhausted
+
+    def test_reading_from_metered_out_of_credits_maps_to_a_rejected_window(self) -> None:
+        reading = reading_from_metered(_metered(out_of_credits=True))
+        assert reading.status_7d == REJECTED_STATUS
+        assert reading.is_exhausted, "an out-of-credits metered key is the same exhaustion signal routing refuses"
+
+    def test_reading_from_metered_funded_is_not_exhausted(self) -> None:
+        reading = reading_from_metered(_metered(out_of_credits=False))
+        assert reading.status_7d == ""
+        assert not reading.is_exhausted
 
 
 class TestSelectorDefaultPath(TestCase):
@@ -181,6 +205,69 @@ class TestSelectorRouting(TestCase):
         message = str(caught.value)
         assert "exhausted" in message
         assert soon.isoformat() in message, "the loud error names the soonest an account frees up"
+
+
+class TestSelectorSkipsUnusableCandidates(TestCase):
+    def test_cached_fresh_but_exhausted_candidate_is_skipped_without_a_probe(self) -> None:
+        ConfigSetting.objects.set_value(_OAUTH_SETTING, ["anthropic/a/oauth", "anthropic/b/oauth"])
+        exhausted = TokenHealthReading(
+            organization_id="org-1",
+            utilization_5h=0.97,
+            utilization_7d=0.1,
+            status_5h="allowed",
+            status_7d="allowed",
+            reset_5h=timezone.now() + dt.timedelta(hours=2),
+            reset_7d=None,
+        )
+        AnthropicTokenUsage.objects.record("anthropic/a/oauth", exhausted, now=timezone.now())
+        reader = _FakeReader({"anthropic/b/oauth": _snapshot()})
+        with _pass_echoes_path():
+            chosen = PassPathSelector(reader=reader).select(TokenKind.OAUTH)
+        assert chosen == "anthropic/b/oauth"
+        assert reader.calls == ["anthropic/b/oauth"], "the cached exhausted account is skipped, not re-probed"
+
+    def test_candidate_whose_credential_cannot_resolve_is_skipped(self) -> None:
+        ConfigSetting.objects.set_value(_OAUTH_SETTING, ["anthropic/a/oauth", "anthropic/b/oauth"])
+        reader = _FakeReader({"anthropic/b/oauth": _snapshot()})
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch(
+                "teatree.llm.credentials.read_pass",
+                side_effect=lambda path: "" if path == "anthropic/a/oauth" else path,
+            ),
+        ):
+            chosen = PassPathSelector(reader=reader).select(TokenKind.OAUTH)
+        assert chosen == "anthropic/b/oauth", "an unresolvable credential is skipped for the next candidate"
+        assert reader.calls == ["anthropic/b/oauth"], "the unresolvable account is never probed"
+
+    def test_cached_fresh_healthy_candidate_is_returned_without_a_probe(self) -> None:
+        ConfigSetting.objects.set_value(_OAUTH_SETTING, ["anthropic/a/oauth"])
+        _seed_fresh_healthy_row("anthropic/a/oauth")
+        reader = _FakeReader({})
+        with _pass_echoes_path():
+            chosen = PassPathSelector(reader=reader).select(TokenKind.OAUTH)
+        assert chosen == "anthropic/a/oauth"
+        assert reader.calls == [], "a fresh healthy cached candidate is returned from the cache, never re-probed"
+
+    def test_candidate_whose_probe_transport_fails_is_skipped(self) -> None:
+        ConfigSetting.objects.set_value(_OAUTH_SETTING, ["anthropic/a/oauth", "anthropic/b/oauth"])
+
+        class _RaisingReader:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def __call__(self, token: str, *, is_oauth: bool) -> RateLimitSnapshot:
+                self.calls.append(token)
+                if token == "anthropic/a/oauth":
+                    msg = "probe failed"
+                    raise RateLimitProbeError(msg)
+                return _snapshot()
+
+        reader = _RaisingReader()
+        with _pass_echoes_path():
+            chosen = PassPathSelector(reader=reader).select(TokenKind.OAUTH)
+        assert chosen == "anthropic/b/oauth", "a probe transport failure makes the candidate unusable, not fatal"
+        assert reader.calls == ["anthropic/a/oauth", "anthropic/b/oauth"]
 
 
 class TestSelectorStickiness(TestCase):

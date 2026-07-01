@@ -5,6 +5,18 @@ from django.db import IntegrityError, transaction
 from django.test import TestCase
 
 from teatree.core.models import AnthropicActivePick
+from teatree.core.models.anthropic_active_pick import AnthropicActivePickManager
+
+
+class TestActivePickManager(TestCase):
+    def test_objects_is_the_active_pick_manager(self) -> None:
+        assert isinstance(AnthropicActivePick.objects, AnthropicActivePickManager)
+
+    def test_manager_set_pick_and_pick_for_round_trip(self) -> None:
+        manager = AnthropicActivePick.objects
+        assert isinstance(manager, AnthropicActivePickManager)
+        manager.set_pick("api_key", "ov", "anthropic/x/api")
+        assert manager.pick_for("api_key", "ov") == "anthropic/x/api"
 
 
 class TestActivePick(TestCase):
@@ -29,6 +41,10 @@ class TestActivePick(TestCase):
         assert AnthropicActivePick.objects.pick_for("oauth", "overlay-a") == "anthropic/a/oauth"
         assert AnthropicActivePick.objects.pick_for("oauth", "overlay-b") == "anthropic/b/oauth"
         assert AnthropicActivePick.objects.pick_for("api_key", "overlay-a") == "anthropic/a/api"
+
+    def test_str_distinguishes_global_and_overlay_scopes(self) -> None:
+        assert "global" in str(AnthropicActivePick(kind="oauth", scope="", pass_path="p"))
+        assert "overlay:ov" in str(AnthropicActivePick(kind="oauth", scope="ov", pass_path="p"))
 
     def test_kind_scope_pair_is_unique(self) -> None:
         AnthropicActivePick.objects.create(kind="oauth", scope="x", pass_path="p1")

@@ -11,7 +11,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.models import AnthropicTokenUsage
-from teatree.core.models.anthropic_token_usage import HEALTH_TTL, TokenHealthReading
+from teatree.core.models.anthropic_token_usage import HEALTH_TTL, AnthropicTokenUsageManager, TokenHealthReading
 
 _NOW = dt.datetime(2026, 7, 1, 12, 0, tzinfo=dt.UTC)
 
@@ -75,6 +75,18 @@ class TestValidUntilPolicy:
         assert _reading(s7="rejected").valid_until(_NOW) == _NOW + HEALTH_TTL
 
 
+class TestTokenUsageManager(TestCase):
+    def test_objects_is_the_token_usage_manager(self) -> None:
+        assert isinstance(AnthropicTokenUsage.objects, AnthropicTokenUsageManager)
+
+    def test_manager_record_upserts_via_the_manager_class(self) -> None:
+        manager = AnthropicTokenUsage.objects
+        assert isinstance(manager, AnthropicTokenUsageManager)
+        row = manager.record("anthropic/mgr/oauth", _reading(u5=0.5), now=_NOW)
+        assert row.pass_path == "anthropic/mgr/oauth"
+        assert row.valid_until == _NOW + HEALTH_TTL
+
+
 class TestRecordUpsert(TestCase):
     def test_record_creates_a_row_with_the_computed_valid_until(self) -> None:
         row = AnthropicTokenUsage.objects.record("anthropic/acct/oauth", _reading(u5=0.30, u7=0.80), now=_NOW)
@@ -108,3 +120,11 @@ class TestRowHealthAccessors(TestCase):
     def test_earliest_reset_is_none_when_no_window_is_known(self) -> None:
         row = AnthropicTokenUsage.objects.record("anthropic/acct/oauth", _reading(), now=_NOW)
         assert row.earliest_reset is None
+
+    def test_str_includes_pass_path_and_both_utilizations(self) -> None:
+        rendered = str(
+            AnthropicTokenUsage(pass_path="anthropic/x/oauth", utilization_5h=0.3, utilization_7d=0.8, valid_until=_NOW)
+        )
+        assert "anthropic/x/oauth" in rendered
+        assert "5h=0.30" in rendered
+        assert "7d=0.80" in rendered

@@ -9,8 +9,10 @@ appear on the returned snapshot.
 """
 
 import datetime as dt
+import inspect
 import json
 from collections.abc import Mapping
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -19,6 +21,7 @@ from teatree.llm.rate_limits import (
     MeteredKeySnapshot,
     ProbeResponse,
     RateLimitProbeError,
+    RateLimitReader,
     RateLimitSnapshot,
     read_api_key_status,
     read_rate_limits,
@@ -139,6 +142,21 @@ class TestHeaderParsing:
         assert snap.retry_after is None
         assert snap.unified_5h_reset is None
 
+    def test_naive_reset_timestamp_is_assumed_utc(self) -> None:
+        snap = _read(200, {_5H_RESET: "2026-07-01T18:00:00"})
+        assert snap.unified_5h_reset == dt.datetime(2026, 7, 1, 18, 0, tzinfo=dt.UTC)
+
+
+class TestDefaultTransport:
+    """The default ``httpx``-backed transport (used when no transport is injected)."""
+
+    def test_default_transport_posts_via_httpx_and_folds_the_response(self) -> None:
+        fake = httpx.Response(200, headers=_FULL_HEADERS, text="{}")
+        with patch("teatree.llm.rate_limits.httpx.post", return_value=fake) as post_mock:
+            snap = read_rate_limits("tok", is_oauth=False)
+        assert post_mock.call_count == 1
+        assert snap.organization_id == "org-abc123"
+
 
 class TestFailureModes:
     @pytest.mark.parametrize("status", [400, 401, 403, 500, 529])
@@ -176,6 +194,25 @@ class TestRequestSigningAndTokenSafety:
         read_rate_limits("t", is_oauth=False, transport=transport)
         assert transport.body["model"] == "claude-haiku-4-5"
         assert transport.body["max_tokens"] == 1
+
+
+class TestRateLimitReaderProtocol:
+    """The injected reader seam a selector depends on (``RateLimitReader``)."""
+
+    def test_a_conforming_callable_satisfies_the_reader_seam(self) -> None:
+        def fake(token: str, *, is_oauth: bool) -> RateLimitSnapshot:
+            assert token
+            assert is_oauth
+            return RateLimitSnapshot.from_headers(_FULL_HEADERS)
+
+        reader: RateLimitReader = fake
+        assert reader("tok", is_oauth=True).organization_id == "org-abc123"
+
+    def test_production_read_rate_limits_matches_the_reader_seam(self) -> None:
+        reader: RateLimitReader = read_rate_limits
+        params = inspect.signature(reader).parameters
+        assert "token" in params
+        assert params["is_oauth"].kind is inspect.Parameter.KEYWORD_ONLY
 
 
 class TestMeteredApiKeyReader:
