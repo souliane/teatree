@@ -7,9 +7,9 @@ leaves the live process importing the old modules. When
 :class:`teatree.core.models.pending_reinstall.PendingReinstall` row; this
 module applies it.
 
-``drain_pending_reinstall`` is called as the first owner-tick step of the
-``loops_tick`` master tick — a fresh per-tick subprocess, before any scanner
-code imports — so the
+``drain_pending_reinstall`` is called as an early step of the ``loops_tick``
+per-loop command (lease-guarded, at most once per drain-throttle window) — a
+fresh per-tick subprocess, before any scanner code imports — so the
 ``uv tool install --editable <src> --reinstall`` + ``t3 setup`` + self-DB
 migrate runs in a process that has not yet imported the about-to-change
 code (no mixed-code window). It is a no-op when nothing is pending, and

@@ -123,8 +123,8 @@ def _detector_auto_fix(detector: SelfImproveDetector) -> Callable[[DetectorRepor
     (``report.auto_fix``). A detector without ``rerender`` contributes no
     callable, so the ladder's auto-fix rung is a no-op for it. This is the
     fallback for a directly-constructed detector with no injected global seam:
-    both live orchestration entry points — the dedicated ``loop_self_improve``
-    slot and the tick piggyback — inject the real
+    the live orchestration entry point — the dedicated ``loop_self_improve``
+    slot — injects the real
     ``teatree.loop.phases.render.self_improve_rerender`` seam as the global
     ``auto_fix_callable`` instead, because a directly-constructed
     ``StaleStatuslineEntryDetector`` cannot supply it (its default ``rerender``

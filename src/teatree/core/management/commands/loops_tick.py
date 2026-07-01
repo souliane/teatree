@@ -50,8 +50,8 @@ type ReportDict = dict[str, Any]
 
 #: The dedicated lease slot the reinstall drain acquires so parallel per-loop
 #: ticks never both re-anchor the same pending reinstall; its short TTL doubles as
-#: a throttle (a re-tick inside the window loses the CAS and skips), the same
-#: CAS-as-throttle shape the retired tick piggyback used. Never released.
+#: a throttle (a re-tick inside the window loses the CAS and skips) — the
+#: CAS-as-throttle shape (claim-if-stale, never released).
 _REINSTALL_DRAIN_SLOT = "loop-reinstall"
 _REINSTALL_DRAIN_THROTTLE_SECONDS = 60
 

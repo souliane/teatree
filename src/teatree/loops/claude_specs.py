@@ -106,7 +106,7 @@ def enabled_loop_specs() -> list[ClaudeLoopSpec]:
     Routes through :func:`teatree.loop.loop_state_db.loop_enabled` (``Loop.enabled``
     AND not ``LoopState``-held) so a ``t3 loop pause`` / ``disable`` loop is NOT
     mirrored as a firing no-op cron — the registered cron set never drifts from the
-    enabled-and-un-held set the master actually dispatches (#2584). Keying on
+    enabled-and-un-held set the loop-table fan-out actually dispatches (#2584). Keying on
     ``Loop.enabled`` alone (the prior bug) left a paused loop firing every cadence.
     """
     from teatree.core.models import Loop  # noqa: PLC0415

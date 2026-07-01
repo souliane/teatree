@@ -258,9 +258,9 @@ def self_improve_rerender(_report: object) -> None:
     """Action-ladder ``auto_fix_callable`` adapter for the statusline self-heal (#2625).
 
     Bridges the ladder's ``Callable[[DetectorReport], None]`` signature to the
-    parameterless idle re-render. Every orchestration entry point that drives the
+    parameterless idle re-render. The orchestration entry point that drives the
     cheap self-improve tier injects this as the ladder's ``auto_fix_callable`` — the
-    dedicated ``loop_self_improve`` slot and the tick piggyback alike — so the
+    dedicated ``loop_self_improve`` slot — so the
     domain-layer ``StaleStatuslineEntryDetector`` never reaches up into this
     orchestration render seam itself (which would invert the tach-enforced DAG).
     The ladder only invokes it once a whitelisted ``auto_fix`` report reaches the

@@ -1,4 +1,4 @@
-"""Loop scanners — pure-Python signal collectors for the fat loop tick.
+"""Loop scanners — pure-Python signal collectors for the loop tick.
 
 Each scanner exposes a :class:`Scanner` (Protocol) implementation that returns
 a list of :class:`ScanSignal` records. The tick orchestrator (``loop.tick``)

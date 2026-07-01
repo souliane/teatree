@@ -38,7 +38,7 @@ def review_loop_enabled() -> bool:
     ``LoopState`` row durably stops review claims across a restart; an absent row
     or a runnable one leaves them running. This is the discovery-time claim gate,
     not a loop-run decision — it fails OPEN to enabled by design (#79 / #1913), so
-    it intentionally does NOT read the ``Loop.enabled`` column (the master tick,
+    it intentionally does NOT read the ``Loop.enabled`` column (the loop tick,
     the dream cron gate, and the #2650 cron mirror gate on that combined verdict;
     this chokepoint suppresses over-claiming and must never silently swallow every
     review on an unreadable or absent row). There is no env kill-switch and no

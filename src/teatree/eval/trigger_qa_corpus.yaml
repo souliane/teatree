@@ -75,7 +75,7 @@
 - skill: loops
   should_fire:
     - "which loops are running and is the loop ticking?"
-    - "trigger a loop / run the loops master tick"
+    - "trigger a loop / run a loop tick"
   should_not_fire:
     - "open a pull request for the finished branch"
     - "render the ship prompt with these args"

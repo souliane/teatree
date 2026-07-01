@@ -1,6 +1,6 @@
 """Overlay provision-smoke harness — exercise an overlay's provision path end-to-end (#1308).
 
-The fat loop reaches for an overlay's provision path only when the user
+The loop reaches for an overlay's provision path only when the user
 needs E2E, so latent CLI bugs accumulate quietly between runs and
 surface as a cascade at the worst possible time (mid-E2E session).
 This module owns the testable smoke runner that exercises the
