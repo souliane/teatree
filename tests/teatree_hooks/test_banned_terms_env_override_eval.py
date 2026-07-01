@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 from hooks.scripts.hook_router import handle_banned_terms_pretool
+from teatree.hooks import _repo_visibility
 from teatree.hooks.banned_terms_scanner import has_override, scan_text
 
 
@@ -91,10 +92,15 @@ class TestBannedTermGenuineGuardIntact:
 
     @pytest.mark.usefixtures("_term_config")
     def test_banned_term_in_post_without_override_is_blocked(
-        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         monkeypatch.delenv("ALLOW_BANNED_TERM", raising=False)
-        data = _bash('gh issue create --title t --body "acmecorp ships next week"')
+        # The leak gate enforces ONLY on an affirmatively-public target (#1415), so
+        # the genuine-violation guard posts to the public teatree repo with the
+        # probe confirming it public.
+        monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "viscache"))
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        data = _bash('gh issue create -R souliane/teatree --title t --body "acmecorp ships next week"')
         blocked = handle_banned_terms_pretool(data)
         assert blocked is True
         out = json.loads(capsys.readouterr().out)
@@ -110,12 +116,18 @@ class TestBannedTermGenuineGuardIntact:
 
     @pytest.mark.usefixtures("_term_config")
     def test_override_on_decoy_segment_does_not_bypass_chained_publish(
-        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         # The override leads a harmless echo; bash scopes it to that command, so
-        # it must NOT vouch for the banned-term publish chained after it.
+        # it must NOT vouch for the banned-term publish chained after it. The
+        # publish targets the affirmatively-public teatree repo so the leak gate
+        # fires (#1415) and the missing override on that segment blocks.
         monkeypatch.delenv("ALLOW_BANNED_TERM", raising=False)
-        data = _bash('ALLOW_BANNED_TERM=1 echo hi && gh issue create --title t --body "acmecorp ships"')
+        monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "viscache"))
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        data = _bash(
+            'ALLOW_BANNED_TERM=1 echo hi && gh issue create -R souliane/teatree --title t --body "acmecorp ships"'
+        )
         blocked = handle_banned_terms_pretool(data)
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"

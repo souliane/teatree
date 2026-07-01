@@ -390,8 +390,14 @@ class TestBypassClosures:
 
 
 class TestHookHandlerEndToEnd:
-    def test_high_match_emits_deny_and_breaks_chain(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        data = _bash('gh pr create --title t --body "## User mandate\nplease ship now"')
+    def test_high_match_emits_deny_and_breaks_chain(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The leak gate scopes to an affirmatively-public target (#1213), so the
+        # deny row posts to the genuinely-public ``souliane/teatree`` with the probe
+        # confirming it public.
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        data = _bash('gh pr create --repo souliane/teatree --title t --body "## User mandate\nplease ship now"')
         blocked = handle_quote_scanner_pretool(data)
         assert blocked is True
         decision = json.loads(capsys.readouterr().out)
@@ -889,9 +895,12 @@ class TestRound3BypassClosures:
         assert has_quote_ok_override("Bash", {"command": cmd}) is False
 
     def test_override_after_unspaced_semicolon_blocks_end_to_end(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        cmd = 'gh issue comment 1 --body "## User mandate\nbody";echo --quote-ok'
+        # Affirmatively-public target so the leak gate fires (#1213); the point is
+        # that the ``--quote-ok`` after the unspaced ``;`` does NOT bypass the deny.
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        cmd = 'gh issue comment 1 --repo souliane/teatree --body "## User mandate\nbody";echo --quote-ok'
         blocked = handle_quote_scanner_pretool(_bash(cmd))
         assert blocked is True
         decision = json.loads(capsys.readouterr().out)
@@ -1224,24 +1233,27 @@ class TestPrivateRepoCarveOut:
         assert "WARNING" in captured.err
         assert _ledger_lines(tmp_path)[-1]["decision"] == "warn-private-repo"
 
-    def test_private_repo_posting_command_with_cwd_target_downgrades(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    def test_private_repo_posting_command_with_cwd_target_skips_silently(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         repo = tmp_path / "repo"
         repo.mkdir()
         _git_init_remote(repo, "git@gitlab.com:acmecorp-engineering/product.git")
-        # gh issue create (no --repo) from a private CWD resolves the target
-        # from the CWD origin and applies the carve-out.
+        # gh issue create (no --repo) from a NON-public CWD resolves the target
+        # from the CWD origin; the leak gate scopes to affirmatively-public targets
+        # only (#1213), so a private-repo post is SKIPPED silently -- allowed with
+        # no deny and no warning (bias hard toward not firing).
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PRIVATE")
         data = {
             "tool_name": "Bash",
             "tool_input": {"command": 'gh issue create --title t --body "the user said: ship it now"'},
             "cwd": str(repo),
         }
         blocked = handle_quote_scanner_pretool(data)
-        assert blocked is False  # downgraded, not denied
+        assert blocked is False  # skipped, not denied
         captured = capsys.readouterr()
         assert captured.out == ""  # no deny JSON
-        assert "WARNING" in captured.err
+        assert "WARNING" not in captured.err  # silent skip, no downgrade warning
 
     def test_explicit_public_repo_still_denies(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]

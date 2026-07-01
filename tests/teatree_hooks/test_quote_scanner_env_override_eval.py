@@ -27,6 +27,7 @@ from pathlib import Path
 import pytest
 
 from hooks.scripts.hook_router import handle_quote_scanner_pretool
+from teatree.hooks import _repo_visibility
 from teatree.hooks.quote_scanner import extract_publish_payload, has_quote_ok_override, scan_text
 
 
@@ -77,8 +78,14 @@ class TestQuoteScannerGenuineGuardsIntact:
         assert handle_quote_scanner_pretool(data) is False
         assert capsys.readouterr().err == ""
 
-    def test_actual_user_quote_without_override_is_blocked(self, capsys: pytest.CaptureFixture[str]) -> None:
-        data = _bash('gh pr create --title t --body "## User mandate\nplease ship now"')
+    def test_actual_user_quote_without_override_is_blocked(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The leak gate enforces ONLY on an affirmatively-public target (#1213), so
+        # the genuine-violation guard posts to the public teatree repo with the
+        # probe confirming it public.
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        data = _bash('gh pr create -R souliane/teatree --title t --body "## User mandate\nplease ship now"')
         assert handle_quote_scanner_pretool(data) is True
         out = json.loads(capsys.readouterr().out)
         assert out["permissionDecision"] == "deny"
