@@ -57,6 +57,19 @@ def _pin_config(config: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("T3_BANNED_TERMS_CONFIG", str(config))
 
 
+@pytest.fixture(autouse=True)
+def _confirm_public_probe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The leak gate enforces ONLY on an affirmatively-PUBLIC target (#1415), so the
+    # must-BLOCK rows post to a resolvable target the probe confirms public. The
+    # config-allowlisted (``private_repos``) and internal-namespace targets resolve
+    # NON-public BEFORE the probe, so their must-SKIP rows are unaffected by this
+    # pin. Isolate the visibility cache so a stale entry never masks the pin. A
+    # per-test ``probe_visibility`` setattr (the commit-path visibility rows)
+    # overrides this default.
+    monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "viscache"))
+    monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+
+
 def _bash(command: str) -> dict[str, object]:
     return {"tool_name": "Bash", "tool_input": {"command": command}}
 
@@ -1252,7 +1265,9 @@ class TestHookHandlerEndToEnd:
         assert capsys.readouterr().out == ""
 
     def test_banned_term_body_blocks(self, capsys: pytest.CaptureFixture[str]) -> None:
-        blocked = handle_banned_terms_pretool(_bash('gh issue create --title t --body "ship to acmecorp"'))
+        blocked = handle_banned_terms_pretool(
+            _bash('gh issue create -R souliane/teatree --title t --body "ship to acmecorp"')
+        )
         assert blocked is True
         decision = json.loads(capsys.readouterr().out)
         assert decision["permissionDecision"] == "deny"
@@ -1261,7 +1276,9 @@ class TestHookHandlerEndToEnd:
     def test_body_file_is_read_and_blocks(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         body_file = tmp_path / "issue_body.md"
         body_file.write_text("This affects acmecorp's deployment.\n", encoding="utf-8")
-        blocked = handle_banned_terms_pretool(_bash(f"gh pr create --title t --body-file {body_file}"))
+        blocked = handle_banned_terms_pretool(
+            _bash(f"gh pr create -R souliane/teatree --title t --body-file {body_file}")
+        )
         assert blocked is True
         decision = json.loads(capsys.readouterr().out)
         assert decision["permissionDecision"] == "deny"
@@ -1315,7 +1332,7 @@ class TestHookHandlerEndToEnd:
         # walker, the file went unread, and the term slipped through.)
         body_file = tmp_path / "issue_body.md"
         body_file.write_text("This affects acmecorp's deployment.\n", encoding="utf-8")
-        blocked = handle_banned_terms_pretool(_bash(f"gh pr create --title t -F {body_file}"))
+        blocked = handle_banned_terms_pretool(_bash(f"gh pr create -R souliane/teatree --title t -F {body_file}"))
         assert blocked is True
         decision = json.loads(capsys.readouterr().out)
         assert decision["permissionDecision"] == "deny"
@@ -1341,7 +1358,7 @@ class TestHookHandlerEndToEnd:
         # ``--body-file`` form: its file body is read and a banned term blocks.
         body_file = tmp_path / "issue_body.md"
         body_file.write_text("This affects acmecorp's deployment.\n", encoding="utf-8")
-        blocked = handle_banned_terms_pretool(_bash(f"gh pr create --title t -F{body_file}"))
+        blocked = handle_banned_terms_pretool(_bash(f"gh pr create -R souliane/teatree --title t -F{body_file}"))
         assert blocked is True
         decision = json.loads(capsys.readouterr().out)
         assert decision["permissionDecision"] == "deny"
@@ -1356,12 +1373,16 @@ class TestHookHandlerEndToEnd:
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
     def test_gh_pr_comment_with_banned_term_blocks(self, capsys: pytest.CaptureFixture[str]) -> None:
-        blocked = handle_banned_terms_pretool(_bash('gh pr comment 5 --body "acmecorp asked for this"'))
+        blocked = handle_banned_terms_pretool(
+            _bash('gh pr comment 5 -R souliane/teatree --body "acmecorp asked for this"')
+        )
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
     def test_glab_mr_note_with_banned_term_blocks(self, capsys: pytest.CaptureFixture[str]) -> None:
-        blocked = handle_banned_terms_pretool(_bash('glab mr note 5 --message "acmecorp wants this"'))
+        blocked = handle_banned_terms_pretool(
+            _bash('glab mr note 5 -R souliane/teatree --message "acmecorp wants this"')
+        )
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
@@ -1399,7 +1420,9 @@ class TestHookHandlerEndToEnd:
             raise banned_terms_scanner.CommandFailedError(["check"], 1, "", "ImportError")
 
         monkeypatch.setattr(banned_terms_scanner, "run_allowed_to_fail", _crash)
-        blocked = handle_banned_terms_pretool(_bash('gh issue create --title t --body "ship next week"'))
+        blocked = handle_banned_terms_pretool(
+            _bash('gh issue create -R souliane/teatree --title t --body "ship next week"')
+        )
         assert blocked is True
         decision = json.loads(capsys.readouterr().out)
         assert decision["permissionDecision"] == "deny"
@@ -1545,7 +1568,9 @@ class TestBannedTermPublishFormsMustBlock:
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
     def test_gh_pr_create_inline_body_banned_term_blocks(self, capsys: pytest.CaptureFixture[str]) -> None:
-        blocked = handle_banned_terms_pretool(_bash('gh pr create --title "feat" --body "Deploy to acmecorp cluster"'))
+        blocked = handle_banned_terms_pretool(
+            _bash('gh pr create -R souliane/teatree --title "feat" --body "Deploy to acmecorp cluster"')
+        )
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
@@ -1554,13 +1579,15 @@ class TestBannedTermPublishFormsMustBlock:
     ) -> None:
         body_file = tmp_path / "pr_body.md"
         body_file.write_text("This PR fixes the acmecorp integration.\n", encoding="utf-8")
-        blocked = handle_banned_terms_pretool(_bash(f"gh pr create --title t --body-file {body_file}"))
+        blocked = handle_banned_terms_pretool(
+            _bash(f"gh pr create -R souliane/teatree --title t --body-file {body_file}")
+        )
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
     def test_gh_issue_create_inline_body_banned_term_blocks(self, capsys: pytest.CaptureFixture[str]) -> None:
         blocked = handle_banned_terms_pretool(
-            _bash('gh issue create --title "Bug" --body "acmecorp reports this error"')
+            _bash('gh issue create -R souliane/teatree --title "Bug" --body "acmecorp reports this error"')
         )
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
@@ -1570,13 +1597,15 @@ class TestBannedTermPublishFormsMustBlock:
     ) -> None:
         body_file = tmp_path / "issue_body.md"
         body_file.write_text("acmecorp's deployment is broken.\n", encoding="utf-8")
-        blocked = handle_banned_terms_pretool(_bash(f"gh issue create --title t --body-file {body_file}"))
+        blocked = handle_banned_terms_pretool(
+            _bash(f"gh issue create -R souliane/teatree --title t --body-file {body_file}")
+        )
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
     def test_glab_mr_create_inline_description_banned_term_blocks(self, capsys: pytest.CaptureFixture[str]) -> None:
         blocked = handle_banned_terms_pretool(
-            _bash('glab mr create --title "feat" --description "Update acmecorp config"')
+            _bash('glab mr create -R souliane/teatree --title "feat" --description "Update acmecorp config"')
         )
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
@@ -1586,7 +1615,9 @@ class TestBannedTermPublishFormsMustBlock:
     ) -> None:
         body_file = tmp_path / "mr_body.md"
         body_file.write_text("This MR updates the acmecorp adapter.\n", encoding="utf-8")
-        blocked = handle_banned_terms_pretool(_bash(f"glab mr create --title t --description-file {body_file}"))
+        blocked = handle_banned_terms_pretool(
+            _bash(f"glab mr create -R souliane/teatree --title t --description-file {body_file}")
+        )
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
@@ -1751,12 +1782,13 @@ class TestLeadingEnvOverride:
 
 @pytest.mark.integration
 class TestDestinationAwareGate:
-    """The gate scans only PUBLIC targets (#1415 destination-awareness).
+    """The gate scans only affirmatively-PUBLIC targets (#1415 destination-awareness).
 
-    FAIL-CLOSED: a banned term posted to the genuinely-public
-    ``souliane/teatree`` is still blocked; the same term posted to a
-    configured internal namespace is allowed; an unresolvable destination
-    stays blocked.
+    A banned term posted to the probe-confirmed-public ``souliane/teatree`` is
+    blocked; the same term posted to a configured internal namespace is allowed.
+    A ``curl`` transport carrying no resolvable repo destination is NOT a
+    ``gh``/``glab`` publish the visibility scope covers, so it keeps scanning
+    (the ALL-SEGMENTS anti-leak posture) and stays blocked.
     """
 
     def test_banned_term_to_public_repo_is_blocked(self, capsys: pytest.CaptureFixture[str]) -> None:
@@ -1793,8 +1825,9 @@ class TestDestinationAwareGate:
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
     def test_banned_term_unparseable_destination_still_blocks(self, capsys: pytest.CaptureFixture[str]) -> None:
-        # A Slack-bound ``chat.postMessage`` curl has no resolvable repo
-        # destination → PUBLIC (fail-closed) → still blocked.
+        # A Slack-bound ``chat.postMessage`` curl is not a ``gh``/``glab`` publish
+        # the visibility scope covers; it forces a scan (ALL-SEGMENTS anti-leak) and
+        # the term is still blocked.
         cmd = "curl -d text=acmecorp https://slack.com/api/chat.postMessage"
         blocked = handle_banned_terms_pretool(_bash(cmd))
         assert blocked is True

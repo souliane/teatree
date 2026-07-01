@@ -19,17 +19,18 @@ Every carve-out above conditions its downgrade on a PROVABLY-internal landing
 repo or a PROVABLY-own configured URL — never on the destination SLUG TEXT
 alone. A slug-text downgrade (a term that merely matches the resolved
 destination's own repo slug) would fail OPEN: this deny path is reached ONLY
-after ``publish_destination.gate_skips_destination`` already returned False, so
-the destination is NOT provably-internal (it is PUBLIC or unknown-visibility) —
-exactly the surface the fail-closed design protects. An org/repo slug is
-attacker-controllable (``<term>-eng/tracker``), so downgrading on slug text
-would let a genuinely-public repo named after the term silence the leak block.
-The #2597 false positive (a status comment to the overlay's OWN private tracker)
-is therefore resolved the SOUND way instead: declaring that tracker in
-``[teatree] private_repos`` / ``internal_publish_namespaces`` makes
-``gate_skips_destination`` skip the WHOLE gate for it (the overlay name on a
-provably-private surface is not a leak), and the #1657 NOTE below points the
-operator at that config when an in-hook probe cannot prove visibility.
+after ``public_visibility.gate_skips_for_visibility`` already returned False, so
+the destination is affirmatively PUBLIC (an unknown/private target skips the
+gate before reaching here) — exactly the surface the leak block protects. An
+org/repo slug is attacker-controllable (``<term>-eng/tracker``), so downgrading
+on slug text would let a genuinely-public repo named after the term silence the
+leak block. The #2597 false positive (a status comment to the overlay's OWN
+private tracker) is resolved the SOUND way instead: a private/unknown tracker is
+NOT affirmatively public, so ``gate_skips_for_visibility`` skips the WHOLE gate
+for it; declaring it in ``[teatree] private_repos`` /
+``internal_publish_namespaces`` makes the skip reliable offline, and the #1657
+NOTE below points the operator at that config when an in-hook probe cannot
+prove visibility.
 
 Anything not downgraded hard-blocks, after emitting the #1657 unknown-visibility
 NOTE when the target's visibility could not be resolved in-hook.

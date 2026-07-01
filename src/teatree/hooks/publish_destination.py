@@ -1,44 +1,40 @@
-"""Destination-aware gate skip for the pre-publish gates (publish-surface purpose).
+"""Publish-destination resolution + classification for the pre-publish gates.
 
-The banned-terms (#1415) and bare-reference (#1530) gates exist to stop
-leaks on PUBLIC surfaces. Firing on EVERY publish command -- including
-writes to an INTERNAL/PRIVATE repo or namespace -- over-blocks: a private
-repo's own customer/domain terms and bare cross-references are exactly
-what its issues/PRs are supposed to carry.
+The banned-terms (#1415), quote-scanner (#1213) and bare-reference (#1530)
+gates exist to stop leaks on PUBLIC surfaces. This module RESOLVES a publish
+command's target repo/namespace and CLASSIFIES it; the visibility-scoped SKIP
+decision the leak gates call lives in :mod:`teatree.hooks.public_visibility`.
 
-:func:`resolve_publish_destination` extracts the target repo/namespace
-from the COMMAND ITSELF (the ``--repo``/``-R`` flag, the ``api`` URL path,
-or the cwd git remote) and :func:`is_public_destination` classifies THAT
-resolved target FAIL-CLOSED against an INTERNAL DENYLIST: a destination is
-PUBLIC (gate scans/blocks) UNLESS it is PROVABLY internal -- its namespace
-matches the config-driven ``[teatree] internal_publish_namespaces`` allowlist
-(or the ``T3_INTERNAL_PUBLISH_NAMESPACES`` env var), the
-``[teatree] private_repos`` allowlist, or the day-cached ``gh``/``glab``
-live-visibility probe returns a CONFIRMED-PRIVATE verdict. Every OTHER target
--- a genuinely-public non-teatree repo (a user's other public repos), a
-third-party repo, an UNKNOWN-visibility target, or an UNRESOLVABLE target --
-stays PUBLIC and is SCANNED. This is the only safe default: an allowlist of
-"surfaces to scan" would fail OPEN on a public repo nobody remembered to list,
-leaking an internal term unscanned onto a public surface. Resolving the target
-from the command rather than the harness cwd is what lets a post FROM a public
-clone TO a provably-private repo skip the public-leak scan instead of
-over-blocking. With nothing configured and no probe-resolvable private verdict,
-every destination stays PUBLIC, so behaviour is conservative for unconfigured
-users. :func:`gate_skips_destination` is the composed predicate the gates call.
+:func:`resolve_publish_destination` / :func:`_destination_from_words` extract
+the target repo/namespace from the COMMAND ITSELF (the ``--repo``/``-R`` flag,
+the ``gh``/``glab api`` URL path, a forge URL positional, ``GH_REPO``, the
+``t3 review`` project positional, or the cwd git remote).
+
+Two classifiers over that target, with OPPOSITE fail directions for two
+consumers:
+
+- :func:`is_public_destination` -- FAIL-CLOSED. A destination is PUBLIC (the
+    caller scans) UNLESS it is PROVABLY internal (an ``internal_publish_namespaces``
+    / ``private_repos`` allowlist match, or a CONFIRMED-PRIVATE probe verdict).
+    An unknown/unresolvable target stays PUBLIC. This conservative classifier is
+    consumed by the FSM-level :mod:`teatree.core.gates.privacy_gate`.
+- :func:`public_visibility.is_affirmatively_public` -- FAIL-OPEN. A destination
+    is public ONLY on a CONFIRMED-PUBLIC probe verdict for a non-allowlisted
+    slug; a private/internal/unknown/unresolvable target is NON-public. The
+    PreToolUse leak gates (#1415/#1213) use this so they enforce ONLY on an
+    affirmatively-public repo and never false-block a non-public one.
 
 The hook process is overlay-agnostic and cannot import ``OverlayConfig``; it
 reads the internal denylist from ``~/.teatree.toml`` DIRECTLY (the
 ``internal_publish_namespaces`` / ``private_repos`` readers in
-:mod:`teatree.hooks._repo_visibility` and this module). The canonical public
-teatree repo needs no entry -- it is public, so the fail-closed default already
-scans it.
+:mod:`teatree.hooks._repo_visibility` and this module).
 
 The shared command-parsing helpers (``_extract_repo_flag``, the
 eligible-verb sets) live in :mod:`teatree.hooks.publish_surface` and the
 repo-target resolution (``slug_for_cwd``, ``_config_path``) in
 :mod:`teatree.hooks._repo_visibility`; this module reuses them so the
-repo-target resolution stays in one place across both the private-repo
-carve-out and the destination skip.
+repo-target resolution stays in one place across the private-repo carve-out,
+the FSM privacy gate, and the affirmative-public leak-gate scope.
 """
 
 import os
@@ -48,9 +44,7 @@ from pathlib import Path, PurePosixPath
 from typing import Final
 
 from teatree.hooks._command_parser import first_segment_words
-from teatree.hooks._gh_glab_hiding import command_segments, token_has_substitution_marker, token_is_transport_construct
-from teatree.hooks._publish_detection import segment_is_api_read as _segment_is_api_read
-from teatree.hooks._publish_detection import segment_is_api_write as _segment_is_api_write
+from teatree.hooks._gh_glab_hiding import token_has_substitution_marker, token_is_transport_construct
 from teatree.hooks._repo_visibility import (
     _config_path,
     forge_qualified_slug,
@@ -347,9 +341,9 @@ def _destination_from_words(words: list[str], cwd: Path | None) -> Destination |
     """Resolve the publish destination of one command segment's word list.
 
     The visibility-independent half of :func:`resolve_publish_destination`,
-    factored out so :func:`gate_skips_destination` can resolve a destination
-    PER top-level segment (the ALL-SEGMENTS invariant) rather than only from
-    the first segment.
+    factored out so :func:`public_visibility.gate_skips_for_visibility` can
+    resolve a destination PER top-level segment (the ALL-SEGMENTS invariant)
+    rather than only from the first segment.
     """
     if not words:
         return None
@@ -384,12 +378,13 @@ def resolve_publish_destination(command: str, cwd: Path | None = None) -> Destin
         with no ``--repo`` flag -- the CURRENT repo, via the git remote of
         ``cwd``.
 
-    Resolves only the FIRST command segment; :func:`gate_skips_destination`
-    is the multi-segment predicate. Returns ``None`` when the target cannot
-    be determined (a non-publish command, a ``curl``/Slack surface, a
-    flagless API call, or a flagless create with no resolvable git remote).
-    ``None`` is the caller's signal to treat the destination as PUBLIC and
-    scan (fail-closed).
+    Resolves only the FIRST command segment;
+    :func:`public_visibility.gate_skips_for_visibility` is the multi-segment
+    predicate. Returns ``None`` when the target cannot be determined (a
+    non-publish command, a ``curl``/Slack surface, a flagless API call, or a
+    flagless create with no resolvable git remote). ``None`` is the fail-closed
+    signal for :func:`is_public_destination` (treat as PUBLIC) and the
+    fail-open signal for the affirmative-public scope (treat as NON-public).
     """
     return _destination_from_words(first_segment_words(command), cwd)
 
@@ -528,94 +523,3 @@ def is_public_destination(dest: Destination | None, *, config_path: Path | None 
     # the GitHub default. A host-qualified slug is unchanged.
     probe_slug = forge_qualified_slug(slug, dest.forge)
     return not slug_is_private(probe_slug)
-
-
-def _api_write_targets_internal_repo(words: list[str], *, config_path: Path | None = None) -> bool:
-    """Return True iff a raw ``api`` WRITE segment provably targets an internal repo.
-
-    A ``gh api`` / ``glab api`` write carries its body only to the endpoint its
-    URL path names. When that path resolves to a repo slug
-    (``repos/<owner>/<repo>`` / ``projects/<ns>%2F<repo>``) that is provably
-    internal, the write cannot leak to a public surface -- updating an MR
-    description on a private customer project is the canonical case. The slug
-    must come from the URL path itself (``via="api"``): an ``-R`` flag does not
-    constrain a raw endpoint. An unresolvable path (a shell variable, a
-    flagless call, an ambiguous unknown flag, a non-repo endpoint) or a
-    public/unknown-visibility slug stays fail-closed.
-    """
-    if not words or words[0] not in {"gh", "glab"}:
-        return False
-    dest = _destination_from_api(words, words[0])
-    if dest is None or dest.via != "api":
-        return False
-    return not is_public_destination(dest, config_path=config_path)
-
-
-def gate_skips_destination(command: str, cwd: Path | None, *, config_path: Path | None = None) -> bool:
-    """Return True iff a publish-surface gate should SKIP scanning ``command``.
-
-    The banned-terms / bare-reference gates scan only PUBLIC targets. The
-    skip is the ALL-SEGMENTS inversion that mirrors
-    :func:`publish_surface.command_is_pure_private_gh_glab_post`: skip ONLY
-    when EVERY top-level segment is provably safe to skip and there is at
-    least one publish segment. A single public, unresolvable, ``api`` WRITE, or
-    substitution/transport-carrying segment makes the WHOLE command scan
-    (fail-closed). Otherwise a chained or substituted public post hides
-    behind a leading internal segment and is never scanned.
-
-    A segment is skip-safe when it is one of:
-
-    - a publish segment whose destination resolves to a provably-INTERNAL
-        repo/namespace, which carries no substitution/transport construct;
-    - a raw ``gh``/``glab api`` WRITE whose URL path itself resolves to a
-        provably-INTERNAL repo (:func:`_api_write_targets_internal_repo`) --
-        the body lands only on that private project's surface, so updating
-        e.g. a private customer MR description is not a public leak. An api
-        WRITE with an unresolvable path (shell variable, non-repo endpoint)
-        or a public/unknown target still fails closed;
-    - a read-only ``gh``/``glab api`` GET (:func:`_segment_is_api_read`) --
-        a read posts NO body, so it can never leak content regardless of the
-        repo its URL names, and is skip-safe without resolving a destination; or
-    - a segment that is PROVABLY a recognised navigation / local-only /
-        git-transport command (:func:`_segment_is_skip_inert` -- its leading
-        executable is in the closed ``_SKIP_INERT_LEADERS`` allowlist, e.g.
-        ``cd``/``echo``/``git push``, with no forge token or
-        substitution/transport construct).
-
-    Every OTHER segment is NOT skip-safe and makes the whole command scan
-    (fail-closed): a raw ``gh api`` / ``glab api`` WRITE whose URL does not
-    prove an internal repo target (it carries a body to an arbitrary
-    endpoint), a
-    ``$(...)`` / process-substitution / redirection construct, a PUBLIC or
-    unresolvable publish destination, and -- the closed inversion -- ANY
-    segment whose leading word is an UNRECOGNISED executable (an interpreter
-    ``sh``/``bash``/``eval``, an ``ssh``/``xargs`` wrapper, a build/script
-    runner ``make``/``npm``/``python``/``./release.sh``, ...). Such a segment
-    resolves to no destination and is not a recognised inert leader, so it
-    could shell out to a hidden public post with no forge token in its own
-    argv; skipping on the strength of a sibling internal segment is exactly the
-    leak this guards. This mirrors the commit chain's prove-pure-or-fail-closed
-    inversion rather than enumerating transports.
-    """
-    segments = command_segments(command)
-    if not segments:
-        return False
-    saw_internal_publish = False
-    for words in segments:
-        if _segment_carries_substitution_or_transport(words):
-            return False
-        if _segment_is_api_write(words):
-            if not _api_write_targets_internal_repo(words, config_path=config_path):
-                return False
-            saw_internal_publish = True
-            continue
-        if _segment_is_api_read(words):
-            continue
-        dest = _destination_from_words(words, cwd)
-        if dest is not None:
-            if is_public_destination(dest, config_path=config_path):
-                return False
-            saw_internal_publish = True
-        elif not _segment_is_skip_inert(words):
-            return False
-    return saw_internal_publish

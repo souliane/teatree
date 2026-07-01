@@ -35,6 +35,13 @@ _PRIVATE_REPO_WARNING = (
     "private-repo commit; downgraded to warn (#126). Verify the content is paraphrased.\n"
 )
 
+# The non-public-destination SKIP reuses the ``warning`` channel with an EMPTY
+# string so the router's ``_quote_scanner_high_io`` prints nothing (a no-op
+# ``stderr.write("")``) yet takes the allow (non-deny) branch — the leak gate
+# enforces ONLY on an affirmatively-public target (#1415/#1213), so a HIGH match
+# whose repo target is not affirmatively public is silently allowed.
+_NON_PUBLIC_SKIP = ""
+
 
 @dataclass(frozen=True)
 class QuoteVerdict:
@@ -51,7 +58,16 @@ class QuoteVerdict:
 
 
 def resolve_high_verdict(command: str, cwd: Path | None) -> QuoteVerdict:
-    """Resolve a HIGH quote-scanner result to a deny / downgrade verdict.
+    """Resolve a HIGH quote-scanner result to a deny / skip / downgrade verdict.
+
+    A HIGH match whose repo target is NOT affirmatively PUBLIC is SKIPPED
+    entirely (#1415/#1213 -- the leak gate enforces ONLY on an affirmatively-
+    public target). ``gate_skips_for_visibility`` resolves the command's own
+    target (the ``--repo``/``-R`` flag, the ``gh``/``glab api`` URL path, or the
+    cwd remote) and skips a private/internal/unknown/unresolvable one; the skip
+    verdict is silent (empty ``warning``, ``allow-nonpublic-destination`` ledger
+    label). This is checked BEFORE the private-commit downgrade so a private
+    post never reaches the ``command_targets_private_only`` warn.
 
     A HIGH match whose destination is provably PRIVATE downgrades to a warn (#126
     -- a private repo cannot leak to the public). The check is body-INDEPENDENT
@@ -70,8 +86,10 @@ def resolve_high_verdict(command: str, cwd: Path | None) -> QuoteVerdict:
     default env/home one (the live gate passes no explicit config; tests pin it
     via ``T3_BANNED_TERMS_CONFIG``).
     """
-    from teatree.hooks import publish_surface  # noqa: PLC0415
+    from teatree.hooks import public_visibility, publish_surface  # noqa: PLC0415
 
+    if public_visibility.gate_skips_for_visibility(command, cwd):
+        return QuoteVerdict(deny=False, warning=_NON_PUBLIC_SKIP, decision="allow-nonpublic-destination")
     if publish_surface.command_targets_private_only(command, cwd):
         return QuoteVerdict(deny=False, warning=_PRIVATE_REPO_WARNING, decision="warn-private-repo")
     return QuoteVerdict(deny=True, warning=None, decision="deny")

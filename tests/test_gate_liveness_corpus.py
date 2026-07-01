@@ -46,6 +46,7 @@ import pytest
 
 import hooks.scripts.hook_router as router
 from teatree.core.overlay import OverlayBase, OverlayConfig
+from teatree.hooks import _repo_visibility
 
 # ── environment & invocation context ────────────────────────────────────
 
@@ -436,12 +437,20 @@ def _ai_sig_allow(ctx: GateContext) -> dict:
 # verbatim user quote denies; a clean body allows.
 
 
+# The leak gates (#1415/#1213) enforce ONLY on an affirmatively-PUBLIC target, so
+# the must-DENY rows post to the genuinely-public ``souliane/teatree`` with the
+# probe pinned public (and a cold visibility cache) for a deterministic fire.
+def _pin_public_probe(ctx: GateContext) -> None:
+    ctx.monkeypatch.setenv("T3_DATA_DIR", str(ctx.tmp_path / "viscache"))
+    ctx.monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+
+
 def _quote_bash_deny(ctx: GateContext) -> dict:
-    return _bash(f'gh issue create --title t --body "{_HIGH_QUOTE}"')
+    return _bash(f'gh issue create --repo souliane/teatree --title t --body "{_HIGH_QUOTE}"')
 
 
 def _quote_bash_allow(ctx: GateContext) -> dict:
-    return _bash('gh issue create --title t --body "Routine status update."')
+    return _bash('gh issue create --repo souliane/teatree --title t --body "Routine status update."')
 
 
 # quote-scanner Slack-MCP arm (mcp__*slack* send) — now reachable via the
@@ -540,14 +549,15 @@ def _arrange_banned_terms(ctx: GateContext) -> None:
     cfg.write_text(_BANNED_TERM_TOML, encoding="utf-8")
     ctx.monkeypatch.setenv("T3_BANNED_TERMS_CONFIG", str(cfg))
     ctx.monkeypatch.delenv("ALLOW_BANNED_TERM", raising=False)
+    _pin_public_probe(ctx)
 
 
 def _banned_bash_deny(ctx: GateContext) -> dict:
-    return _bash(f'gh issue create --title t --body "{_BANNED_BODY}"')
+    return _bash(f'gh issue create --repo souliane/teatree --title t --body "{_BANNED_BODY}"')
 
 
 def _banned_bash_allow(ctx: GateContext) -> dict:
-    return _bash('gh issue create --title t --body "Rolling out the integration."')
+    return _bash('gh issue create --repo souliane/teatree --title t --body "Rolling out the integration."')
 
 
 # block-uncovered-diff (PreToolUse Bash): a non-draft gh pr create whose diff
@@ -835,6 +845,7 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         matched="Bash",
         deny_input=_quote_bash_deny,
         allow_input=_quote_bash_allow,
+        arrange=_pin_public_probe,
     ),
     GateRow(
         gate_id="quote-scanner-slack-mcp",
