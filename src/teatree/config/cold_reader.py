@@ -67,10 +67,18 @@ def canonical_config_db(env: Mapping[str, str] = os.environ, home: Path | None =
     return base / "teatree" / "db.sqlite3"
 
 
-def _fetch_one(db: Path, query: str, parameters_bindings: tuple[object, ...]) -> tuple[object, ...] | None:
+_QUERY_ERROR: object = object()
+
+
+def _execute_readonly(db: Path, query: str, parameters_bindings: tuple[object, ...]) -> object:
     """Run a read-only single-row `query` with the quiescent-WAL fallback.
 
-    Fails open to `None` on any sqlite error or a missing row.
+    Returns the fetched row (a tuple), `None` when the query ran cleanly but
+    matched no row, or the `_QUERY_ERROR` sentinel on ANY sqlite error (a failed
+    open, a locked DB, an absent table, a malformed query). Callers that fail
+    open to a default collapse the sentinel to that default; `row_exists`
+    distinguishes it from a clean empty result.
+
     The canonical DB is WAL-mode (`settings.SQLITE_WRITE_SERIALIZATION_OPTIONS`),
     so its file header is permanently WAL-format. When the DB is quiescent — no
     teatree process holding it, the standalone bash/statusline cold case this
@@ -81,28 +89,33 @@ def _fetch_one(db: Path, query: str, parameters_bindings: tuple[object, ...]) ->
     `SQLITE_CANTOPEN`, falls back to `immutable=1`, which opens the sidecar-less
     WAL-format file and reads the last-checkpointed value (correct, as no writer
     is active — see `teatree.paths._sqlite_snapshot`). A locked DB
-    (`SQLITE_BUSY`), an absent table, and every other error keep failing open to
-    `None`; `immutable=1` is the fallback ONLY for `SQLITE_CANTOPEN`, never a lock
-    bypass. Shared by `_fetch_value_row` (the `teatree_config_setting` store) and
-    `loop_status` (the `teatree_loop_state` control plane) so both cold reads run
-    through one WAL-aware sqlite path.
+    (`SQLITE_BUSY`), an absent table, and every other error keep resolving to the
+    sentinel; `immutable=1` is the fallback ONLY for `SQLITE_CANTOPEN`, never a
+    lock bypass. Shared by `_fetch_value_row`, `loop_status`, and `row_exists` so
+    every cold read runs through one WAL-aware sqlite path.
     """
     for uri_parameters in ("mode=ro", "immutable=1"):
         try:
             conn = _open_readonly(db, uri_parameters)
         except sqlite3.Error:
-            return None
+            return _QUERY_ERROR
         try:
             return conn.execute(query, parameters_bindings).fetchone()
         except sqlite3.OperationalError as exc:
             if uri_parameters == "mode=ro" and exc.sqlite_errorcode == sqlite3.SQLITE_CANTOPEN:
                 continue  # quiescent WAL: no sidecars → retry with immutable=1
-            return None
+            return _QUERY_ERROR
         except sqlite3.Error:
-            return None
+            return _QUERY_ERROR
         finally:
             conn.close()
-    return None
+    return _QUERY_ERROR
+
+
+def _fetch_one(db: Path, query: str, parameters_bindings: tuple[object, ...]) -> tuple[object, ...] | None:
+    """Read-only single-row `query`; fails open to `None` on any error or a missing row."""
+    row = _execute_readonly(db, query, parameters_bindings)
+    return None if row is _QUERY_ERROR else cast("tuple[object, ...] | None", row)
 
 
 def _fetch_value_row(db: Path, scope: str, key: str) -> tuple[object, ...] | None:
@@ -268,6 +281,35 @@ def loop_status(
         return default
     status = row[0]
     return status if isinstance(status, str) and status else default
+
+
+def row_exists(
+    query: str,
+    parameters_bindings: tuple[object, ...] = (),
+    *,
+    on_error: bool,
+    env: Mapping[str, str] = os.environ,
+    db_path: Path | None = None,
+) -> bool:
+    """Whether `query` (a `SELECT … LIMIT 1` existence probe) returns any row.
+
+    Django-free existence check for the cold hot-path (e.g. the UserPromptSubmit
+    inject handlers deciding whether to boot Django at all). Semantics are
+    "confirmed": a DB that opens and runs the query cleanly returns `True` iff a
+    row matched, else `False`. Anything that leaves the answer UNCONFIRMED — a
+    missing DB file, a locked DB, an absent table, a malformed query — resolves
+    to `on_error`. A hot-path caller passes `on_error=True` to FAIL OPEN (treat
+    an unconfirmable probe as "assume there is work") so a pending row is never
+    silently dropped and the caller falls back to booting Django + the real ORM
+    query. Reuses the shared WAL-aware `_execute_readonly` path.
+    """
+    db = db_path if db_path is not None else canonical_config_db(env=env)
+    if not db.exists():
+        return on_error
+    row = _execute_readonly(db, query, parameters_bindings)
+    if row is _QUERY_ERROR:
+        return on_error
+    return row is not None
 
 
 def main(argv: Sequence[str] | None = None) -> int:

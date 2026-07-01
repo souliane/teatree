@@ -354,6 +354,58 @@ class TestLoopStatus:
         assert loop_status("dispatch", db_path=db) == "paused"
 
 
+class TestRowExists:
+    """`row_exists` is the Django-free existence probe backing the UPS fast path."""
+
+    def test_true_when_a_row_matches(self, tmp_path: Path) -> None:
+        db = tmp_path / "db.sqlite3"
+        _make_db(db, [("", "mode", "auto")])
+        q = "SELECT 1 FROM teatree_config_setting WHERE key=? LIMIT 1"
+        assert cold_reader.row_exists(q, ("mode",), on_error=True, db_path=db) is True
+
+    def test_false_when_query_runs_but_matches_nothing(self, tmp_path: Path) -> None:
+        # Confirmed empty → False regardless of on_error (anti-vacuous: on_error=True).
+        db = tmp_path / "db.sqlite3"
+        _make_db(db, [("", "mode", "auto")])
+        q = "SELECT 1 FROM teatree_config_setting WHERE key=? LIMIT 1"
+        assert cold_reader.row_exists(q, ("absent",), on_error=True, db_path=db) is False
+
+    def test_missing_db_returns_on_error(self, tmp_path: Path) -> None:
+        q = "SELECT 1 FROM teatree_config_setting LIMIT 1"
+        missing = tmp_path / "nope.sqlite3"
+        assert cold_reader.row_exists(q, on_error=True, db_path=missing) is True
+        assert cold_reader.row_exists(q, on_error=False, db_path=missing) is False
+
+    def test_missing_table_returns_on_error(self, tmp_path: Path) -> None:
+        db = tmp_path / "fresh.sqlite3"
+        sqlite3.connect(db).close()  # exists, but no such table
+        q = "SELECT 1 FROM teatree_deferred_question LIMIT 1"
+        assert cold_reader.row_exists(q, on_error=True, db_path=db) is True
+        assert cold_reader.row_exists(q, on_error=False, db_path=db) is False
+
+    def test_locked_db_returns_on_error(self, tmp_path: Path) -> None:
+        db = tmp_path / "db.sqlite3"
+        _make_db(db, [("", "mode", "auto")])
+        writer = sqlite3.connect(db)
+        writer.isolation_level = None
+        writer.execute("BEGIN EXCLUSIVE")  # blocks the RO reader's SHARED lock
+        try:
+            q = "SELECT 1 FROM teatree_config_setting LIMIT 1"
+            assert cold_reader.row_exists(q, on_error=True, db_path=db) is True
+            assert cold_reader.row_exists(q, on_error=False, db_path=db) is False
+        finally:
+            writer.rollback()
+            writer.close()
+
+    def test_quiescent_wal_db_confirms_cleanly(self, tmp_path: Path) -> None:
+        db = tmp_path / "wal.sqlite3"
+        _make_db(db, [("", "mode", "auto")], wal=True)
+        _remove_wal_sidecars(db)
+        q = "SELECT 1 FROM teatree_config_setting WHERE key=? LIMIT 1"
+        assert cold_reader.row_exists(q, ("mode",), on_error=False, db_path=db) is True
+        assert cold_reader.row_exists(q, ("absent",), on_error=True, db_path=db) is False
+
+
 class TestMainEntry:
     @pytest.fixture(autouse=True)
     def _canonical_db(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

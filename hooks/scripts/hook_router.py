@@ -104,6 +104,7 @@ from teatree_settings import teatree_bool_setting as _teatree_bool_setting
 from teatree_settings import teatree_int_setting as _teatree_int_setting
 from turn_inspect import current_turn_tool_commands
 from unknown_repo_push_gate import handle_block_unknown_repo_push
+from ups_fastpath import has_pending_chat_work, has_pending_question_work, record_presence
 
 STATE_DIR = Path(
     os.environ.get(
@@ -657,12 +658,11 @@ def handle_record_presence(data: dict) -> None:
     # genuine user content beyond it proves presence and must stamp.
     if _is_bare_loop_prompt(prompt):
         return
-    if not bootstrap_teatree_django():
-        return
+    # Write the heartbeat in pure stdlib — the write never needed Django (the
+    # module import did), so a live-presence stamp no longer boots django.setup()
+    # on every user prompt (#22). Byte-identical to ``PresenceHeartbeat.record``.
     try:
-        from teatree.core.availability import PRESENCE  # noqa: PLC0415
-
-        PRESENCE.record(session_id=str(data.get("session_id", "")))
+        record_presence(str(data.get("session_id", "")))
     except Exception:  # noqa: BLE001 — heartbeat is best-effort; never block the prompt.
         return
 
@@ -6302,7 +6302,10 @@ def handle_inject_pending_questions(data: dict) -> None:
     - Backlog leg (#58): the still-pending questions are listed so the
     agent prioritises work that does NOT depend on those answers.
     """
-    if not bootstrap_teatree_django():
+    # Django-free pre-check (#22): skip the ~8s django.setup() on the common
+    # empty-backlog turn (the has-work probe short-circuits the boot). Fails OPEN
+    # (boots Django) on any unreadable-DB error, so a row is never dropped.
+    if not (has_pending_question_work() and bootstrap_teatree_django()):
         return
     try:
         from teatree.core.availability import pending_questions_count  # noqa: PLC0415
@@ -6371,7 +6374,10 @@ def handle_inject_pending_chat(data: dict) -> None:
     session_id = data.get("session_id", "")
     if not session_id:
         return
-    if not bootstrap_teatree_django():
+    # Django-free pre-check (#22): skip the ~8s django.setup() when the drain
+    # queue is empty (the has-work probe short-circuits the boot). Fails OPEN
+    # (boots Django) on any unreadable-DB error, so a queued reply is never dropped.
+    if not (has_pending_chat_work() and bootstrap_teatree_django()):
         return
     try:
         from teatree.core.models.pending_chat_injection import PendingChatInjection  # noqa: PLC0415
