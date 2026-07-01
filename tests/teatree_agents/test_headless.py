@@ -26,7 +26,7 @@ from teatree.agents.headless import (
     run_headless,
 )
 from teatree.agents.headless_usage import _safe_float, _safe_int
-from teatree.agents.model_tiering import TIER_MODELS
+from teatree.agents.model_tiering import TIER_EFFORT, TIER_MODELS
 from teatree.config import AgentRuntime
 from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket
 from teatree.llm.anthropic_limits import LimitCause
@@ -1039,6 +1039,27 @@ class TestBuildOptions(TestCase):
         options = self._options_for_phase("coding")
         assert options.permission_mode == "bypassPermissions"
 
+    def test_frontier_phase_pins_adaptive_thinking_and_xhigh_effort(self) -> None:
+        # Opus 4.8 omits thinking by default; a frontier reasoning phase pins
+        # adaptive thinking explicitly AND the frontier-tier effort (xhigh).
+        options = self._options_for_phase("coding")
+        assert options.thinking == {"type": "adaptive"}
+        assert options.effort == TIER_EFFORT["frontier"]
+
+    def test_balanced_phase_pins_adaptive_thinking_and_high_effort(self) -> None:
+        # A balanced (Sonnet) phase supports thinking and carries the balanced-tier
+        # effort (high).
+        options = self._options_for_phase("testing")
+        assert options.thinking == {"type": "adaptive"}
+        assert options.effort == TIER_EFFORT["balanced"]
+
+    def test_cheap_phase_leaves_thinking_and_effort_unset(self) -> None:
+        # requesting_review resolves to the Haiku tier, which rejects both levers —
+        # neither thinking nor effort is pinned, so the SDK defaults apply.
+        options = self._options_for_phase("requesting_review")
+        assert options.thinking is None
+        assert options.effort is None
+
     def test_system_prompt_appends_claude_code_preset(self) -> None:
         # A plain-str system_prompt REPLACES the claude_code preset (the SDK maps
         # it to --system-prompt); a headless run must APPEND to the preset (the
@@ -1058,8 +1079,9 @@ class TestBuildOptionsSpawnModelFloor(TestCase):
     """``_build_options`` routes the SDK model through ``resolve_spawn_model``.
 
     The model is the most-capable-wins floor merge of the per-phase tier and the
-    per-skill MODEL floors of the loaded skills (MODEL only — effort is a
-    session-wide interactive pin and never reaches a headless SDK run).
+    per-skill MODEL floors of the loaded skills. The per-skill floor is MODEL only:
+    effort is per-abstract-TIER (via ``resolve_spawn_effort``), and the separate
+    ``session_effort`` interactive pin never leaks into a headless SDK run.
     """
 
     @classmethod
@@ -1094,18 +1116,27 @@ class TestBuildOptionsSpawnModelFloor(TestCase):
         # requesting_review's cheap phase default stands; the inherit floor is a no-op.
         assert options.model == TIER_MODELS["cheap"]
 
-    def test_never_sets_effort(self) -> None:
-        # Effort is session-wide only — a headless SDK run must NEVER carry an
-        # effort pin, even when session_effort is configured.
+    def test_session_effort_does_not_leak_into_headless(self) -> None:
+        # A headless SDK run's effort comes from the per-TIER map, never from the
+        # interactive ``session_effort`` pin. A cheap phase carries no tier effort,
+        # so it stays unset even with session_effort configured — proving the
+        # interactive pin does not leak into the sub-agent spawn.
         options = self._options(
-            "reviewing",
-            skills=["code-review"],
-            config_body=(
-                '[agent]\nsession_effort = "xhigh"\nsession_model = "fable"\n'
-                '[agent.skill_models]\ncode-review = "opus"\n'
-            ),
+            "requesting_review",
+            skills=[],
+            config_body='[agent]\nsession_effort = "xhigh"\nsession_model = "fable"\n',
         )
         assert options.effort is None
+
+    def test_per_tier_effort_reaches_headless_spawn(self) -> None:
+        # The counterpart: a frontier phase DOES carry the per-tier effort onto the
+        # headless spawn (the axis session_effort must not be confused with).
+        options = self._options(
+            "coding",
+            skills=[],
+            config_body='[agent.tier_effort]\nfrontier = "max"\n',
+        )
+        assert options.effort == "max"
 
 
 class TestRuntimeChildEnv:

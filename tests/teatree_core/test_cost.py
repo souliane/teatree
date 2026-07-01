@@ -49,6 +49,14 @@ class TestTierResolution:
         assert tier_of_model("claude-sonnet-4-6") == "sonnet"
         assert tier_of_model("claude-haiku-4-5") == "haiku"
 
+    def test_sonnet_5_maps_to_sonnet_tier_and_price(self) -> None:
+        # The balanced tier's model is now Sonnet 5; the substring-keyed lookup
+        # resolves it to the ``sonnet`` tier (same $3/$15 sticker) with no new
+        # PRICE_TABLE entry.
+        assert tier_of_model("claude-sonnet-5") == "sonnet"
+        assert price_for_model("claude-sonnet-5").input_per_mtok == pytest.approx(3.0)
+        assert price_for_model("claude-sonnet-5").output_per_mtok == pytest.approx(15.0)
+
     def test_unknown_and_none_fall_back_to_reasoning_tier(self) -> None:
         assert tier_of_model(None) == "opus"
         assert tier_of_model("some-future-model") == "opus"
@@ -86,6 +94,7 @@ class TestTierRank:
     def test_dated_ids_rank_like_their_tier(self) -> None:
         assert tier_rank("claude-fable-5[1m]") == tier_rank("fable")
         assert tier_rank("claude-sonnet-4-6") == tier_rank("sonnet")
+        assert tier_rank("claude-sonnet-5") == tier_rank("balanced")
         assert tier_rank("claude-opus-4-8") == tier_rank("frontier")
         assert tier_rank("claude-haiku-4-5") == tier_rank("cheap")
 

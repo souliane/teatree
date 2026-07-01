@@ -457,7 +457,7 @@ class TestJudgeBlock:
         spec = load_eval_yaml(_write(tmp_path, body))[0]
         assert spec.judge is not None
         assert spec.judge.rubric == "The explanation is faithful to the diff."
-        assert spec.judge.model == "claude-sonnet-4-6"
+        assert spec.judge.model == "claude-sonnet-5"
         assert spec.judge.max_output_tokens == 512
         assert spec.matchers == ()
 

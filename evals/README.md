@@ -800,7 +800,7 @@ to an LLM judge by adding a `judge:` block:
     rubric: |
       The explanation names every file it changed and does not claim a change
       it did not make.
-    model: haiku            # optional, default "claude-sonnet-4-6" (the run tier)
+    model: haiku            # optional, default "claude-sonnet-5" (the run tier)
     max_output_tokens: 512  # optional cap on the judge reply
 ```
 
