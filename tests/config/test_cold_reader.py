@@ -15,6 +15,7 @@ import pytest
 
 import teatree.paths
 from teatree.config import cold_reader
+from teatree.config.cold_reader import loop_status
 
 Row = tuple[str, str, object]
 
@@ -315,33 +316,33 @@ class TestLoopStatus:
     def test_reads_seeded_status(self, tmp_path: Path) -> None:
         db = tmp_path / "db.sqlite3"
         _make_loop_state_db(db, [("dispatch", "paused"), ("review", "disabled")])
-        assert cold_reader.loop_status("dispatch", db_path=db) == "paused"
-        assert cold_reader.loop_status("review", db_path=db) == "disabled"
+        assert loop_status("dispatch", db_path=db) == "paused"
+        assert loop_status("review", db_path=db) == "disabled"
 
     def test_absent_row_returns_enabled_default(self, tmp_path: Path) -> None:
         # The manager's absent-row fall-through: an empty table means every loop
         # runs. Anti-vacuous: default="enabled" differs from a would-be None.
         db = tmp_path / "db.sqlite3"
         _make_loop_state_db(db, [("review", "paused")])
-        assert cold_reader.loop_status("dispatch", db_path=db) == "enabled"
+        assert loop_status("dispatch", db_path=db) == "enabled"
 
     def test_custom_default_honoured_on_absent_row(self, tmp_path: Path) -> None:
         db = tmp_path / "db.sqlite3"
         _make_loop_state_db(db, [])
-        assert cold_reader.loop_status("dispatch", default="sentinel", db_path=db) == "sentinel"
+        assert loop_status("dispatch", default="sentinel", db_path=db) == "sentinel"
 
     def test_missing_db_fails_open_to_default(self, tmp_path: Path) -> None:
-        assert cold_reader.loop_status("dispatch", db_path=tmp_path / "nope.sqlite3") == "enabled"
+        assert loop_status("dispatch", db_path=tmp_path / "nope.sqlite3") == "enabled"
 
     def test_missing_table_fails_open_to_default(self, tmp_path: Path) -> None:
         db = tmp_path / "fresh.sqlite3"
         sqlite3.connect(db).close()  # exists but has no teatree_loop_state table
-        assert cold_reader.loop_status("dispatch", db_path=db) == "enabled"
+        assert loop_status("dispatch", db_path=db) == "enabled"
 
     def test_reads_via_t3_config_db_env(self, tmp_path: Path) -> None:
         db = tmp_path / "db.sqlite3"
         _make_loop_state_db(db, [("dispatch", "disabled")])
-        assert cold_reader.loop_status("dispatch", env={"T3_CONFIG_DB": str(db)}) == "disabled"
+        assert loop_status("dispatch", env={"T3_CONFIG_DB": str(db)}) == "disabled"
 
     def test_quiescent_wal_db_readable(self, tmp_path: Path) -> None:
         # The realistic cold state: a WAL-format DB with no live writer and no
@@ -350,7 +351,7 @@ class TestLoopStatus:
         _make_loop_state_db(db, [("dispatch", "paused")], wal=True)
         _remove_wal_sidecars(db)
         assert not db.with_name(db.name + "-wal").exists()
-        assert cold_reader.loop_status("dispatch", db_path=db) == "paused"
+        assert loop_status("dispatch", db_path=db) == "paused"
 
 
 class TestMainEntry:
