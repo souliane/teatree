@@ -27,6 +27,7 @@ starts — accepted, not a defect.
 import os
 import shutil
 import sys
+from pathlib import Path
 
 import typer
 
@@ -59,6 +60,44 @@ loop_app = typer.Typer(
     ),
     no_args_is_help=True,
 )
+
+
+@loop_app.command("tick")
+def tick_command(
+    *,
+    statusline_file: Path = typer.Option(
+        None,
+        "--statusline-file",
+        help="Override the statusline output path (test hook).",
+    ),
+    overlay: str = typer.Option(
+        "",
+        "--overlay",
+        help="Restrict scanning to the named overlay (default: scan every registered overlay).",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit the tick report as JSON."),
+) -> None:
+    """Run one user-manual full-scan tick by hand: scan every overlay, dispatch, render.
+
+    NOT the loop driver (#2650): the automated loop is per-loop
+    (``t3 loops tick --loop <name>``). This is the by-hand diagnostic — it claims no
+    owner lease and is not gated by the DB ``Loop`` table, so it scans the full
+    default scanner set regardless of which loops are enabled. Delegates to the
+    ``loop_tick`` management command; the system never uses it to drive itself
+    (autonomous-lane redesign §7).
+    """
+    ensure_django()
+
+    from django.core.management import call_command  # noqa: PLC0415
+
+    kwargs: dict[str, str | bool | None] = {}
+    if statusline_file is not None:
+        kwargs["statusline_file"] = str(statusline_file)
+    if overlay:
+        kwargs["overlay"] = overlay
+    if json_output:
+        kwargs["json_output"] = True
+    call_command("loop_tick", **kwargs)
 
 
 @loop_app.command("status")

@@ -3142,6 +3142,8 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ tick           Run one user-manual full-scan tick by hand: scan every        │
+│                overlay, dispatch, render.                                    │
 │ status         Show the loop's last-rendered statusline.                     │
 │ pending-spawn  List pending Tasks (read-only probe; legacy — prefer          │
 │                ``claim-next``).                                              │
@@ -3190,6 +3192,32 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │                then drains a bounded batch of the fresh remainder, and       │
 │                stands down while a real `db_worker` holds the                │
 │                `teatree-worker` singleton.                                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop tick`
+
+```
+Usage: t3 loop tick [OPTIONS]
+
+ Run one user-manual full-scan tick by hand: scan every overlay, dispatch,
+ render.
+
+ NOT the loop driver (#2650): the automated loop is per-loop
+ (``t3 loops tick --loop <name>``). This is the by-hand diagnostic — it claims
+ no
+ owner lease and is not gated by the DB ``Loop`` table, so it scans the full
+ default scanner set regardless of which loops are enabled. Delegates to the
+ ``loop_tick`` management command; the system never uses it to drive itself
+ (autonomous-lane redesign §7).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --statusline-file        PATH  Override the statusline output path (test     │
+│                                hook).                                        │
+│ --overlay                TEXT  Restrict scanning to the named overlay        │
+│                                (default: scan every registered overlay).     │
+│ --json                         Emit the tick report as JSON.                 │
+│ --help                         Show this message and exit.                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

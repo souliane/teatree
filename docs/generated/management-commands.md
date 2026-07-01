@@ -218,6 +218,10 @@ Pause, resume, disable, enable, or inspect a mini-loop's durable state (#1913).
 | `enable` | Return *name* to ENABLED (alias of resume) — both planes |
 | `status` | Read *name*'s durable state (ENABLED when no row exists) WITHOUT mutating it |
 
+## `loop_tick`
+
+Run one user-manual full-scan tick: scan every overlay once, dispatch, render the statusline.
+
 ## `loops_list`
 
 List DB-configured autonomous loops (read-only; #1796).

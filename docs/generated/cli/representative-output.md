@@ -107,6 +107,8 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ tick           Run one user-manual full-scan tick by hand: scan every        │
+│                overlay, dispatch, render.                                    │
 │ status         Show the loop's last-rendered statusline.                     │
 │ pending-spawn  List pending Tasks (read-only probe; legacy — prefer          │
 │                ``claim-next``).                                              │

@@ -1,8 +1,9 @@
-"""Tests for the ``t3 loop`` CLI commands (non-Django: start, stop, status, cadence).
+"""Tests for the ``t3 loop`` CLI commands (non-Django: start, stop, status, tick, cadence).
 
-Per-loop tick behaviour lives in ``teatree_core/test_loops_tick_command.py`` — the
-tick is a Django management command, and ``t3 loops tick --loop <name>`` is the
-only tick surface (the bare ``t3 loop tick`` master shim is retired, #2650).
+The automated per-loop tick (``t3 loops tick --loop <name>``) lives in
+``teatree_core/test_loops_tick_command.py``. ``t3 loop tick`` here is the restored
+user-manual full-scan diagnostic (autonomous-lane redesign §7) — it delegates to
+the ``loop_tick`` management command, not the master-tick-free ``loops_tick``.
 """
 
 import time
@@ -19,12 +20,35 @@ from teatree.cli.loop_slack_answer import _slack_answer_cadence_for_loop_slot
 runner = CliRunner()
 
 
-class TestTickCommandRemoved:
-    def test_bare_loop_tick_command_is_gone(self) -> None:
-        # The `t3 loop tick` bare-master shim is retired with the master tick
-        # (#2650); the per-loop surface is `t3 loops tick --loop <name>`.
-        result = runner.invoke(loop_app, ["tick"])
-        assert result.exit_code != 0
+class TestTickCommandDelegation:
+    """``t3 loop tick`` — the restored user-manual full-scan tick (autonomous-lane redesign §7).
+
+    Delegates to the ``loop_tick`` management command (NOT the per-loop
+    ``loops_tick``), so it scans by hand without an owner lease or a ``--loop``.
+    """
+
+    def test_no_flags_delegates_to_loop_tick(self) -> None:
+        with (
+            patch("django.setup"),
+            patch("django.core.management.call_command") as call_mock,
+        ):
+            result = runner.invoke(loop_app, ["tick"])
+        assert result.exit_code == 0
+        call_mock.assert_called_once_with("loop_tick")
+
+    def test_flags_forwarded_to_loop_tick(self) -> None:
+        with (
+            patch("django.setup"),
+            patch("django.core.management.call_command") as call_mock,
+        ):
+            result = runner.invoke(
+                loop_app,
+                ["tick", "--overlay", "teatree", "--json", "--statusline-file", "/tmp/sl.txt"],
+            )
+        assert result.exit_code == 0
+        call_mock.assert_called_once_with(
+            "loop_tick", statusline_file="/tmp/sl.txt", overlay="teatree", json_output=True
+        )
 
 
 class TestPendingSpawnCommandDelegation:

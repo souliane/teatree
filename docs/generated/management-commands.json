@@ -422,6 +422,11 @@
       ]
     },
     {
+      "help": "Run one user-manual full-scan tick: scan every overlay once, dispatch, render the statusline.",
+      "name": "loop_tick",
+      "subcommands": []
+    },
+    {
       "help": "List DB-configured autonomous loops (read-only; #1796).",
       "name": "loops_list",
       "subcommands": []
