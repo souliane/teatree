@@ -58,6 +58,7 @@ from direct_command_guard import BLOCKED_COMMANDS as _BLOCKED_COMMANDS  # noqa: 
 from direct_command_guard import deny_match as _deny_match  # noqa: F401
 from direct_command_guard import handle_block_direct_commands
 from django_bootstrap import bootstrap_teatree_django
+from engagement import engage
 from loop_owner_db import db_lease_consult_disabled as _db_lease_consult_disabled
 from loop_owner_db import db_owner_is_current_session as _db_owner_is_current_session
 from loop_registrations import emit_loop_registrations, is_bare_loop_tick_prompt, loop_name_from_prompt
@@ -495,7 +496,7 @@ _AMBIENT_CONTEXT_RE = re.compile(
 # open tags, or a malicious agent). ``_strip_ambient_context`` runs on
 # EVERY ``UserPromptSubmit`` and is net-new hot-path cost, so the input is
 # capped before the regexes run — bounding the worst case well under the
-# 5s ``UserPromptSubmit`` timeout (hooks/CLAUDE.md "hooks must be fast").
+# 30s ``UserPromptSubmit`` timeout (hooks/CLAUDE.md "hooks must be fast").
 # Genuine task intent sits early in the prompt (the harness appends ambient
 # blocks), so a 64 KiB cap never truncates intent — mirrors the 512-char
 # token windows used elsewhere in this file.
@@ -1263,7 +1264,7 @@ def _skill_gate_targets_code_work(data: dict) -> bool:
 def _skill_loading_exempt(session_id: str) -> bool:
     """True when the skill-load gate must NOT fire for this session's code work.
 
-    NEVER-LOCKOUT (#1918): a loop-registration / loop-owner bootstrap turn
+    NEVER-LOCKOUT (#1918): a loop-registration / t3-master bootstrap turn
     routinely surfaces a resolvable intent skill (the bare word ``loops`` is a
     hard intent trigger) in ``<session>.pending`` while doing genuine code work
     during teatree's own Django setup. Blocking that to demand an unrelated
@@ -3469,7 +3470,7 @@ def handle_track_skill_usage(data: dict) -> None:
     if skill_name:
         _record_skills(skills_file, existing, _resolve_skill_closure([skill_name]))
         if _skill_load_activates_teatree([skill_name]):
-            _state_file(session_id, "teatree-active").touch()
+            engage(session_id)
         _maybe_engage_t3(session_id, [skill_name])
         return
 
@@ -3486,7 +3487,7 @@ def handle_track_skill_usage(data: dict) -> None:
             loaded.append(name)
     _record_skills(skills_file, existing, _resolve_skill_closure(loaded))
     if _skill_load_activates_teatree(loaded):
-        _state_file(session_id, "teatree-active").touch()
+        engage(session_id)
     _maybe_engage_t3(session_id, loaded)
 
 
@@ -4277,7 +4278,7 @@ def _prune_dead_owner(registry: dict[str, dict]) -> dict[str, dict]:
 
 
 def _emit_osc_title() -> None:
-    """Best-effort set the terminal tab title for the loop-owner session.
+    """Best-effort set the terminal tab title for the t3-master session.
 
     The interactive-TTY guard IS the openability of the controlling
     terminal: a non-interactive/headless session has no writable tty, so
@@ -4313,7 +4314,7 @@ _RENAME_REMINDER = (
 # The loop is no longer a fixed roster of long-lived sub-agents that a
 # coordinator must keep alive / re-spawn on death/compaction. It is
 # driven by the machine-wide ``t3 loops tick`` cron (#676): each tick the
-# loop-owner session atomically claims pending DB work (WS1
+# t3-master session atomically claims pending DB work (WS1
 # ``t3 loop claim-next`` — conditional-UPDATE CAS) and spawns a FRESH,
 # BOUNDED sub-agent for just that unit, which returns. Statelessness
 # across ticks IS the compaction-proofing — a worker dying mid-task
@@ -4363,7 +4364,7 @@ _TICK_DISPATCH_NON_OWNER_DIRECTIVE = (
     "TEATREE LOOP — tick-driven; another session owns the tick.\n\n"
     "Another live session is the teatree loop-tick owner (owner session "
     "{owner_session}). Do NOT arm a competing `t3 loops tick` cron and do "
-    "NOT spawn loop sub-agents. The loop-owner gate (#1073) is now a HARD "
+    "NOT spawn loop sub-agents. The t3-master gate (#1073) is now a HARD "
     "gate: a non-owner `t3 loops tick` will SKIP before any scanner / Slack "
     "DM-drain / dispatch runs at all — it does NOT execute the tick. "
     "Stay idle with respect to the loop. (If you ARE the user's main "
@@ -4392,7 +4393,7 @@ def _tick_owner_record(session_id: str, agent_id: str) -> dict[str, dict]:
 
 
 def _db_live_foreign_owner(session_id: str, current_pid: int | None) -> str:
-    """Return the session id of a genuinely LIVE foreign ``loop-owner`` DB lease, or ``""``.
+    """Return the session id of a genuinely LIVE foreign ``t3-master`` DB lease, or ``""``.
 
     #1604: called when the file registry has no entry for the tick-owner
     (empty after prune / fail-safe) to detect registry/DB desync. The
@@ -4410,18 +4411,18 @@ def _db_live_foreign_owner(session_id: str, current_pid: int | None) -> str:
     try:
         from teatree.core.models import LoopLease  # noqa: PLC0415
 
-        return LoopLease.objects.live_foreign_owner("loop-owner", session_id=session_id, current_pid=current_pid)
+        return LoopLease.objects.live_foreign_owner("t3-master", session_id=session_id, current_pid=current_pid)
     except Exception:  # noqa: BLE001
         return ""
 
 
 def _evict_stale_db_lease_owner(session_id: str, current_pid: int | None) -> None:
-    """Conditionally evict the ``LoopLease`` ``loop-owner`` row (#1604).
+    """Conditionally evict the ``LoopLease`` ``t3-master`` row (#1604).
 
     #1380 (#1107 follow-up). Context compaction rotates the Claude
     ``session_id``. The file registry's ``t3-loop-tick-owner`` slot is
     rewritten to the new id, but the DB ``LoopLease`` row name=
-    ``loop-owner`` still carries the OLD id with an unexpired
+    ``t3-master`` still carries the OLD id with an unexpired
     ``lease_expires_at``. ``CLAUDE_SESSION_ID`` is empty in Bash-tool
     subprocesses (#1107) so the next ``t3 loops tick`` resolves the NEW
     id via the registry fallback and the ``claim_ownership`` CAS fails
@@ -4450,7 +4451,7 @@ def _evict_stale_db_lease_owner(session_id: str, current_pid: int | None) -> Non
     except Exception:  # noqa: BLE001
         return
     try:
-        LoopLease.objects.evict_stale_owner("loop-owner", keep_session_id=session_id, current_pid=current_pid)
+        LoopLease.objects.evict_stale_owner("t3-master", keep_session_id=session_id, current_pid=current_pid)
     except Exception:  # noqa: BLE001
         return
 
@@ -4591,11 +4592,11 @@ def _mcp_connectivity_advisory() -> str | None:
     """Return the #2282 advisory when any MCP server is enabled.
 
     Uses the cheap, network-free ``~/.claude.json`` reader (NOT the live probe)
-    so the SessionStart hot path stays inside its 3s budget: the live
-    ``claude mcp list`` probe would blow it, so session start only nudges the
-    agent to run ``t3 doctor check`` (which does the bounded probe) when there
-    is something to verify. Any import / read failure returns None so the
-    directive never blocks SessionStart.
+    to keep the network probe off the every-session SessionStart hot path: even
+    within the 30s hook budget a slow or hung MCP endpoint would stall every
+    session start, so session start nudges the agent to run ``t3 doctor check``
+    (the bounded probe) only when there is something to verify. Any import /
+    read failure returns None so the directive never blocks SessionStart.
     """
     src_dir = Path(__file__).resolve().parents[2] / "src"
     added = False
@@ -4715,8 +4716,7 @@ def handle_session_start_bootstrap(data: dict) -> None:
         return
     source = data.get("source", "")
     if _autoload_enabled():
-        _ensure_state_dir()
-        _state_file(session_id, "teatree-active").touch()
+        engage(session_id)
     elif not _teatree_active(session_id):
         advisory = "" if source in {"compact", "resume"} else _TEATREE_NOT_ACTIVE_ADVISORY
         _emit_session_start_context(_merge_session_start_context(advisory, session_id, source))
@@ -4768,12 +4768,12 @@ def handle_session_start_bootstrap(data: dict) -> None:
             context = _TICK_DISPATCH_OWNER_DIRECTIVE
             emit_osc = True
 
-    # #1380 / #1604: conditionally evict any stale DB ``loop-owner`` row.
+    # #1380 / #1604: conditionally evict any stale DB ``t3-master`` row.
     # Runs when the registry had no entry (fresh machine or dead-owner prune)
     # and the DB also showed no live foreign lease, OR (#1838 PR#7a) on a
     # compaction resume — the eviction ORPHANS the stale lease (``session_id=""``)
     # synchronously before any tick, so the lead's next ``t3 loops tick``
-    # re-anchors ``loop-owner`` uncontested and no maker pane can win the
+    # re-anchors ``t3-master`` uncontested and no maker pane can win the
     # compaction-window CAS race against the rotated lead session. (The eviction
     # only orphans; it does NOT itself re-claim — the re-claim is the lead's next
     # tick.) The eviction is conditional on liveness either way
@@ -5067,7 +5067,7 @@ def _pause_suppresses_self_pump() -> bool:
 def _self_pump_suppressed(session_id: str) -> bool:
     """Is the Stop self-pump gated off for this session (#959)?
 
-    The self-pump is a SINGLETON bound to the ONE designated loop-owner
+    The self-pump is a SINGLETON bound to the ONE designated t3-master
     session (the ``_OWNER_LOOP`` record — set at SessionStart, released
     at SessionEnd, transferable across sessions). WS4's "per-agent,
     decoupled from the tick-owner" model leaked the loop into EVERY
@@ -5944,7 +5944,7 @@ _SLACK_POST_TIMEOUT_SECONDS = 2.0
 def _slack_http_poster():  # noqa: ANN202 — Poster protocol from the lazily-imported leaf.
     """Build the hook-budget Slack poster: ``SlackHttpClient.post``, no retry.
 
-    The mirror runs synchronously inside the ~5s hook timeout, so the client
+    The mirror runs synchronously inside the ~30s hook timeout, so the client
     carries the short per-call timeout and NO retry (a retry-with-backoff could
     blow the budget). This is the router's platform→domain edge (the router is
     tach-invisible), injected into the pure leaf.
@@ -6339,7 +6339,7 @@ def handle_inject_pending_questions(data: dict) -> None:
 # BLUEPRINT §17.1 invariant 2 / §5.6). The user only reads Slack DMs;
 # their reply to the overlay bot lands here as a ``PendingChatInjection``
 # row. The next ``UserPromptSubmit`` drain reads unconsumed rows for the
-# loop-owner session and emits them into ``additionalContext`` — the
+# t3-master session and emits them into ``additionalContext`` — the
 # agent sees the message as if the user had typed it in chat.
 
 
@@ -6349,7 +6349,7 @@ def handle_inject_pending_chat(data: dict) -> None:
     **Drain eligibility:** ANY interactive Claude Code session that
     receives a ``UserPromptSubmit`` event may drain the queue. The
     original implementation gated on ``_session_owns_loop`` (mirroring
-    the §5.6 ``handle_loop_self_pump`` discipline), but the loop-owner
+    the §5.6 ``handle_loop_self_pump`` discipline), but the t3-master
     record points at the autonomous ``t3 loop start`` session — which
     never receives ``UserPromptSubmit`` events — so the gate prevented
     the queue from ever draining (32 unconsumed rows observed in

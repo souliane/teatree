@@ -231,7 +231,7 @@ class TestTakeOverReconcilesFileRegistry(django.test.TestCase):
         (state / f"{new_owner}.teatree-active").touch()  # the new owner opted in
         # An explicit ``t3 loop claim --take-over`` moved the LIVE DB lease to NEW.
         won, _ = LoopLease.objects.claim_ownership(
-            "loop-owner", session_id=new_owner, take_over=True, owner_pid=os.getpid()
+            "t3-master", session_id=new_owner, take_over=True, owner_pid=os.getpid()
         )
         assert won
 

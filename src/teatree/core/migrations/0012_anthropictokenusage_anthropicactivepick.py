@@ -6,7 +6,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0010_worktree_compose_project"),
+        ("core", "0011_looplease_generation"),
     ]
 
     operations = [

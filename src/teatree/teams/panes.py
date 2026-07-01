@@ -87,7 +87,7 @@ class TeammatePane:
 
         Then the claim runs the namespace guard (:func:`assert_pane_claim_allowed`),
         so a pane can never claim anything but its own ``team:<role>`` slot — the
-        loop-owner collision is impossible by construction. The existing
+        t3-master collision is impossible by construction. The existing
         ``Task.claim`` CAS is the spawn primitive, so a spawned pane participates
         in the same lease lifecycle (``renew_lease`` heartbeat,
         ``reclaim_orphaned_claims`` / ``reap_stale_claims`` recovery) as any

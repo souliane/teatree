@@ -4,7 +4,7 @@ The heavy-Bash gate (#115, ``handle_enforce_orchestrator_boundary``) enforces th
 LOAD-BEARING slice of the orchestrator-decides / loop-executes topology: it
 DENIES the main agent tying its session up on a long/heavy foreground command,
 and deliberately leaves Edit/Write and short Bash alone (4.x-class agents inspect
-freely). The user's standing directive is broader: the loop-owner orchestrator
+freely). The user's standing directive is broader: the t3-master orchestrator
 does ONLY orchestration (spawn / collect / route / decide / advance the FSM /
 communicate) and never, in the foreground, investigates, diagnoses, fixes, writes
 code, or does git/CI archaeology — all of that is delegated to a sub-agent in a
@@ -29,7 +29,7 @@ never a deny:
     diff``, ``gh``/``glab`` CI verbs, or a foreground test run — steers the
     orchestrator without ever hard-blocking a borderline call.
 
-Scope: ONLY the live loop-owner session (the session holding the ``loop-owner``
+Scope: ONLY the live t3-master session (the session holding the ``t3-master``
 ``LoopLease``); a non-owner interactive session and every sub-agent pass
 untouched. Off-ramps (any one suppresses the nudge): a per-call
 ``[orchestration-ok: <reason>]`` token (mirroring ``[fg-ok:]`` /
@@ -55,7 +55,7 @@ from teatree_settings import teatree_bool_setting
 sys.modules.setdefault("orchestrator_investigation_gate", sys.modules[__name__])
 sys.modules.setdefault("hooks.scripts.orchestrator_investigation_gate", sys.modules[__name__])
 
-# Investigation/archaeology Bash shapes the loop-owner should DELEGATE, not run
+# Investigation/archaeology Bash shapes the t3-master should DELEGATE, not run
 # inline. Read-only ORIENTATION that routes the next dispatch stays unflagged:
 # ``git status``, ``git diff --stat``/``--name-only``, ``gh pr view``/``pr
 # list``, ``glab mr view``/``mr list``, and ``git log --oneline -n`` are the grey
@@ -90,7 +90,7 @@ _INVESTIGATION_EDIT_TOOLS = frozenset({"Edit", "Write", "NotebookEdit"})
 
 
 def _orchestrator_investigation_gate_enabled() -> bool:
-    """Whether the loop-owner investigation NUDGE is enabled (default True).
+    """Whether the t3-master investigation NUDGE is enabled (default True).
 
     Reads ``[teatree] orchestrator_investigation_gate_enabled`` from
     ``~/.teatree.toml`` via the shared bare-boolean reader: fails OPEN to enabled
@@ -101,9 +101,9 @@ def _orchestrator_investigation_gate_enabled() -> bool:
 
 
 def _session_is_loop_owner(session_id: str) -> bool:
-    """True iff ``session_id`` holds the live ``loop-owner`` ``LoopLease``.
+    """True iff ``session_id`` holds the live ``t3-master`` ``LoopLease``.
 
-    The nudge is scoped to the loop-owner session only — a non-owner interactive
+    The nudge is scoped to the t3-master session only — a non-owner interactive
     session inspects freely. Reuses the canonical pid-anchored liveness predicate
     (``LoopLeaseQuerySet.ownership_status``) so this never re-derives the
     "live owner" rule. Fails OPEN to NOT-owner (returns False) on a missing
@@ -113,9 +113,10 @@ def _session_is_loop_owner(session_id: str) -> bool:
     if not session_id or not bootstrap_teatree_django():
         return False
     try:
+        from teatree.core.loop_lease_manager import T3_MASTER_SLOT  # noqa: PLC0415
         from teatree.core.models import LoopLease  # noqa: PLC0415 — Django model; importable only after django.setup().
 
-        status = LoopLease.objects.ownership_status("loop-owner")
+        status = LoopLease.objects.ownership_status(T3_MASTER_SLOT)
     except Exception:  # noqa: BLE001 — crash-proof: a broken resolver must never make the nudge fire on a non-owner.
         return False
     return status.is_live and status.owner_session == session_id
@@ -165,17 +166,17 @@ def _orchestration_ok_haystack(data: dict) -> str:
 
 
 def handle_enforce_orchestrator_investigation_boundary(data: dict) -> bool:
-    """NUDGE the loop-owner away from foreground investigation/diagnosis/fix work.
+    """NUDGE the t3-master away from foreground investigation/diagnosis/fix work.
 
     Structural enforcement of the broader boundary the heavy-Bash gate (#115)
-    leaves to skill prose: the loop-owner orchestrator does ONLY orchestration and
+    leaves to skill prose: the t3-master orchestrator does ONLY orchestration and
     delegates investigation / diagnosis / fixing / code-writing / git archaeology
     / test runs to a sub-agent in a worktree.
 
     This is a WARN, never a deny — it writes a one-line stderr nudge and ALWAYS
     returns ``False`` (the call proceeds). A warn is the only never-lockout-safe
     enforcement for a boundary this broad. Off-ramps that suppress the nudge: it
-    fires ONLY for the live loop-owner session (not sub-agents, not a non-owner
+    fires ONLY for the live t3-master session (not sub-agents, not a non-owner
     interactive session); a per-call ``[orchestration-ok: <reason>]`` token; and
     the out-of-repo kill-switch ``[teatree]
     orchestrator_investigation_gate_enabled = false``.
@@ -193,7 +194,7 @@ def handle_enforce_orchestrator_investigation_boundary(data: dict) -> bool:
         return False
     sys.stderr.write(
         "[orchestration-boundary] This looks like "
-        f"{signal} from the loop-owner orchestrator. The orchestrator does ONLY "
+        f"{signal} from the t3-master orchestrator. The orchestrator does ONLY "
         "orchestration (spawn / collect / route / decide / advance the FSM / "
         "communicate); investigation, diagnosis, fixing, code edits, git/CI "
         "archaeology, and test runs belong in a sub-agent in a worktree "

@@ -124,7 +124,7 @@ class TestAnySessionDrains:
 
     The original implementation gated the drain on ``_session_owns_loop``,
     matching the §5.6 self-pump owner discipline. That was the wrong
-    invariant for the inbound bridge: the loop-owner record points at the
+    invariant for the inbound bridge: the t3-master record points at the
     autonomous ``t3 loop start`` session, which never receives
     ``UserPromptSubmit`` events. User DMs land in the interactive Claude
     Code session — a non-owner session — so the queue piled up unconsumed
@@ -146,7 +146,7 @@ class TestAnySessionDrains:
         this RED — the message stays in ``out`` empty and the row's
         ``consumed_at`` stays ``None``.
         """
-        _own_loop("the-loop-owner")
+        _own_loop("the-t3-master")
         PendingChatInjection.record(
             channel="D0DEMOTEAM1",
             slack_ts="1700000000.0001",
@@ -165,7 +165,7 @@ class TestAnySessionDrains:
 
     def test_non_owner_drains_multiple_rows(self, capsys: pytest.CaptureFixture[str]) -> None:
         """Regression: the full backlog drains for a non-owner session."""
-        _own_loop("loop-owner-elsewhere")
+        _own_loop("t3-master-elsewhere")
         PendingChatInjection.record(channel="D", slack_ts="1.0", text="reply one")
         PendingChatInjection.record(channel="D", slack_ts="2.0", text="reply two")
 
@@ -177,7 +177,7 @@ class TestAnySessionDrains:
         assert PendingChatInjection.objects.filter(consumed_at__isnull=True).count() == 0
 
     def test_drain_works_when_no_owner_registered(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """No loop-owner record exists ⇒ the queue still drains.
+        """No t3-master record exists ⇒ the queue still drains.
 
         Models a fresh interactive session before ``t3 loop start`` has
         claimed the registry. The user's queued reply must still surface.

@@ -50,14 +50,14 @@ def _non_owner_session_id() -> str | None:
 
     Mirrors ``hook_router._session_owns_loop``: when teatree is not
     running inside a session at all (e.g. a manual CLI invocation), the
-    env var is missing and the loop-owner gate skips its check rather
+    env var is missing and the t3-master gate skips its check rather
     than refusing every CLI call.
     """
     return os.environ.get("CLAUDE_SESSION_ID") or os.environ.get("T3_LOOP_SESSION_ID")
 
 
 def _session_owns_loop(session_id: str | None) -> bool:
-    """Loop-owner gate; ``None`` session ⇒ assume owner (CLI/manual use).
+    """t3-master gate; ``None`` session ⇒ assume owner (CLI/manual use).
 
     Inside a Claude Code session the env var is set; outside (tests,
     direct CLI) it isn't and the gate is bypassed — same shape as the

@@ -6,7 +6,7 @@ the OS pid: ``loops_tick`` re-acquires the per-tick mutex with a fresh
 ticks and any session running ``t3 loops tick`` would win the unowned CAS
 and do loop work (the #1073 hijack). The session id is stable across a
 session's ticks and across context compaction, so it is the correct
-identity for the persistent ``loop-owner`` claim.
+identity for the persistent ``t3-master`` claim.
 
 This is the single source of truth for that primitive; both
 ``teatree.loop.session_identity`` (the loop-side callers) and
@@ -20,13 +20,13 @@ re-exporters are allowed to reach.
 session id ONLY in the hook JSON payload, never as an env var inside a
 Bash-tool subprocess, so in agent-driven mode both env vars are empty and
 ``current_session_id()`` returned ``""`` → ``t3 loop claim`` hard-refused
-→ loop-owner could never be claimed → every owner-gated slot (#1075
+→ t3-master could never be claimed → every owner-gated slot (#1075
 reactive answer, self-improve, the claim-next spawn pump) was permanently
 dead (131 user DMs reacted/answered never). The precedence is now:
 
     ``CLAUDE_SESSION_ID`` → ``T3_LOOP_SESSION_ID`` → loop-registry → ``""``
 
-The durable session *pid* (the loop-owner lease anchor) resolves with a
+The durable session *pid* (the t3-master lease anchor) resolves with a
 parallel precedence so an env-restricted subprocess that cannot read the
 registry still gets the long-lived session pid rather than the transient
 tick-shell pid (#1722):
@@ -121,7 +121,7 @@ def _pid_from_loop_registry() -> int | None:
 def current_session_pid() -> int | None:
     """The owning *session* process pid, or ``None`` when not resolvable (#1073).
 
-    The persistent ``loop-owner`` lease is anchored to the session that
+    The persistent ``t3-master`` lease is anchored to the session that
     started the loop, so its ``owner_pid`` must be that session's
     long-lived process — NOT ``os.getppid()`` of the ephemeral tick
     subprocess. ``t3 loop tick`` runs inside a Bash-tool shell that the
@@ -159,7 +159,7 @@ def current_session_id() -> str:
     the test/manual override. When both are absent (#1107: agent-driven
     Bash-tool subprocesses never see the id as an env var) the loop
     registry's ``t3-loop-tick-owner`` record is the lowest-precedence
-    fallback. Empty string means anonymous (no session) — the loop-owner
+    fallback. Empty string means anonymous (no session) — the t3-master
     gate treats an anonymous caller as a non-owner whenever a live owner
     exists.
     """

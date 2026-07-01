@@ -3,7 +3,7 @@
 The headline #1107 root cause: Claude Code delivers the session id only in
 the hook JSON payload, NOT as an env var inside Bash-tool subprocesses, so
 ``current_session_id()`` returned ``""`` in agent-driven mode → ``t3 loop
-claim`` hard-refused → loop-owner could never be claimed → every
+claim`` hard-refused → t3-master could never be claimed → every
 owner-gated slot was permanently dead (the 131-DM incident).
 
 The fix adds a third, lowest-precedence fallback: read the loop-registry
@@ -99,7 +99,7 @@ class TestSessionIdRegistryFallback:
 
 
 class TestCurrentSessionPid:
-    """The durable owning-session pid for the loop-owner lease anchor (#1706).
+    """The durable owning-session pid for the t3-master lease anchor (#1706).
 
     The lease ``owner_pid`` must be the long-lived session process, not
     ``os.getppid()`` of the transient Bash-tool tick subprocess. The
@@ -203,7 +203,7 @@ class TestLoopClaimSucceedsViaRegistrySessionId:
             call_command("loop_owner", "claim", "--take-over", stdout=out)
 
         assert "OK    claimed" in out.getvalue()
-        status = LoopLease.objects.ownership_status("loop-owner")
+        status = LoopLease.objects.ownership_status("t3-master")
         assert status.is_live is True
         assert status.owner_session == "sess-abc"
 
@@ -230,7 +230,7 @@ class TestLoopClaimSucceedsViaRegistrySessionId:
         ):
             call_command("loop_owner", "claim", "--take-over", stdout=out)
 
-        row = LoopLease.objects.get(name="loop-owner")
+        row = LoopLease.objects.get(name="t3-master")
         assert row.owner_pid == durable_session_pid, (
             "take-over must anchor on the durable session pid, not os.getppid() of the transient shell"
         )
@@ -270,7 +270,7 @@ class TestEnvInvisibleRegistryAnchorsDurablePid:
         ):
             call_command("loop_owner", "claim", "--take-over", stdout=out)
 
-        row = LoopLease.objects.get(name="loop-owner")
+        row = LoopLease.objects.get(name="t3-master")
         assert row.owner_pid == durable_session_pid, (
             "with the registry unreadable, the lease must anchor on the env-propagated durable "
             "session pid, never os.getppid() of the transient tick shell"
@@ -288,10 +288,10 @@ class TestEnvInvisibleRegistryAnchorsDurablePid:
         ):
             call_command("loop_owner", "claim", "--take-over", stdout=out)
 
-        row = LoopLease.objects.get(name="loop-owner")
+        row = LoopLease.objects.get(name="t3-master")
         row.lease_expires_at = timezone.now() - timedelta(seconds=5)
         row.save(update_fields=["lease_expires_at"])
 
-        won, owner = LoopLease.objects.claim_ownership("loop-owner", session_id="fresh-session")
+        won, owner = LoopLease.objects.claim_ownership("t3-master", session_id="fresh-session")
         assert won is False, "an alive owner past its TTL must NOT be stealable by a fresh session"
         assert owner == "owner-sess"

@@ -14,7 +14,7 @@ claude-spec``), so the hook and the skill can never disagree on a loop's
 
 Crash-proof / fail-open / silent: any failure to bootstrap Django or query the
 seam yields ZERO specs, so the handler stays silent — never an exception into the
-5s ``UserPromptSubmit`` hook. Zero enabled loops likewise emits nothing (there is
+30s ``UserPromptSubmit`` hook. Zero enabled loops likewise emits nothing (there is
 nothing to register).
 """
 

@@ -113,7 +113,7 @@ _CHECKS: tuple[RegressionCheck, ...] = (
         needs_db=True,
     ),
     RegressionCheck(
-        failure_class="loop-owner hijack / pid-anchored lease",
+        failure_class="t3-master hijack / pid-anchored lease",
         origin="https://github.com/souliane/teatree/pull/1724",
         invariant="an alive foreign owner past TTL is never hijacked; a dead owner is reclaimable",
         predicate=_check_loop_owner_lease_pid_anchored,

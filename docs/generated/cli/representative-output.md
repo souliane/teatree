@@ -111,16 +111,16 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │ pending-spawn  List pending Tasks (read-only probe; legacy — prefer          │
 │                ``claim-next``).                                              │
 │ spawn-claim    Claim a Task by id (legacy — prefer atomic ``claim-next``).   │
-│ start          Spawn a Claude Code session; the loop-owner registers each    │
+│ start          Spawn a Claude Code session; the t3-master registers each     │
 │                enabled loop's ``/loop``.                                     │
 │ stop           Print the slot id to stop in the Claude Code session.         │
-│ claim          Claim the session-scoped loop-owner slot for this Claude      │
+│ claim          Claim the session-scoped t3-master slot for this Claude       │
 │                session (#1073).                                              │
-│ owner          Show which session owns the loop-owner slot AND this          │
-│                session's own id (#1073).                                     │
+│ owner          Show which session owns the t3-master slot AND this session's │
+│                own id (#1073).                                               │
 │ whoami         Print this Claude session's own id — what a hand-off ``--to`` │
 │                targets.                                                      │
-│ release        Release this session's loop-owner claim (#1073).              │
+│ release        Release this session's t3-master claim (#1073).               │
 │ claim-next     Atomically claim the oldest pending dispatchable Task, then   │
 │                emit it.                                                      │
 │ list           Print LIVE loop status: each loop's enabled state, cadence,   │
@@ -138,12 +138,12 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │ claude-spec    Print the native Claude `/loop` spec (slot_id, cron, prompt)  │
 │                for one DB Loop.                                              │
 │ self-improve   Self-improving monitor — scheduled smell detection with a     │
-│                tiered action ladder. Runs in the same loop-owner session as  │
+│                tiered action ladder. Runs in the same t3-master session as   │
 │                `t3 loop tick` on a separate LoopLease so a long self-improve │
 │                cycle never blocks a fast regular tick (BLUEPRINT § 5.7).     │
 │ slack-answer   Reactive, token-cheap Slack-answer loop — the third `/loop`   │
 │                slot. Runs on a tight cadence (default 20s) in the same       │
-│                loop-owner session as `t3 loop tick`, on a separate LoopLease │
+│                t3-master session as `t3 loop tick`, on a separate LoopLease  │
 │                so a long answer cycle never blocks a fast regular tick.      │
 │                Complementary to the inbound prompt-drain, never a            │
 │                double-answer (#1014).                                        │

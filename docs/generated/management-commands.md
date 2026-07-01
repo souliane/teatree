@@ -185,14 +185,14 @@ Print LIVE loop status computed from the DB (read-only; #1744).
 
 ## `loop_owner`
 
-Claim, inspect, or release the session-scoped loop-owner slot (#1073).
+Claim, inspect, or release the session-scoped t3-master slot (#1073).
 
 | Subcommand | Description |
 | --- | --- |
-| `claim` | Claim the loop-owner slot for this session |
-| `owner` | Show which session owns the loop-owner slot |
+| `claim` | Claim the t3-master slot for this session |
+| `owner` | Show which session owns the t3-master slot |
 | `whoami` | Print this Claude session's own id |
-| `release` | Release this session's loop-owner claim (CAS — non-owner is a no-op) |
+| `release` | Release this session's t3-master claim (CAS — non-owner is a no-op) |
 
 ## `loop_self_improve`
 

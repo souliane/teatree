@@ -3159,16 +3159,16 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │ pending-spawn  List pending Tasks (read-only probe; legacy — prefer          │
 │                ``claim-next``).                                              │
 │ spawn-claim    Claim a Task by id (legacy — prefer atomic ``claim-next``).   │
-│ start          Spawn a Claude Code session; the loop-owner registers each    │
+│ start          Spawn a Claude Code session; the t3-master registers each     │
 │                enabled loop's ``/loop``.                                     │
 │ stop           Print the slot id to stop in the Claude Code session.         │
-│ claim          Claim the session-scoped loop-owner slot for this Claude      │
+│ claim          Claim the session-scoped t3-master slot for this Claude       │
 │                session (#1073).                                              │
-│ owner          Show which session owns the loop-owner slot AND this          │
-│                session's own id (#1073).                                     │
+│ owner          Show which session owns the t3-master slot AND this session's │
+│                own id (#1073).                                               │
 │ whoami         Print this Claude session's own id — what a hand-off ``--to`` │
 │                targets.                                                      │
-│ release        Release this session's loop-owner claim (#1073).              │
+│ release        Release this session's t3-master claim (#1073).               │
 │ claim-next     Atomically claim the oldest pending dispatchable Task, then   │
 │                emit it.                                                      │
 │ list           Print LIVE loop status: each loop's enabled state, cadence,   │
@@ -3186,12 +3186,12 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │ claude-spec    Print the native Claude `/loop` spec (slot_id, cron, prompt)  │
 │                for one DB Loop.                                              │
 │ self-improve   Self-improving monitor — scheduled smell detection with a     │
-│                tiered action ladder. Runs in the same loop-owner session as  │
+│                tiered action ladder. Runs in the same t3-master session as   │
 │                `t3 loop tick` on a separate LoopLease so a long self-improve │
 │                cycle never blocks a fast regular tick (BLUEPRINT § 5.7).     │
 │ slack-answer   Reactive, token-cheap Slack-answer loop — the third `/loop`   │
 │                slot. Runs on a tight cadence (default 20s) in the same       │
-│                loop-owner session as `t3 loop tick`, on a separate LoopLease │
+│                t3-master session as `t3 loop tick`, on a separate LoopLease  │
 │                so a long answer cycle never blocks a fast regular tick.      │
 │                Complementary to the inbound prompt-drain, never a            │
 │                double-answer (#1014).                                        │
@@ -3290,13 +3290,13 @@ Usage: t3 loop spawn-claim [OPTIONS] TASK_ID
 ```
 Usage: t3 loop start [OPTIONS]
 
- Spawn a Claude Code session; the loop-owner registers each enabled loop's
+ Spawn a Claude Code session; the t3-master registers each enabled loop's
  ``/loop``.
 
  Looks for ``claude`` on ``PATH`` and spawns it (with the interactive session
  model/effort pins). Under #2650 the live set of native Claude ``/loop``s
  mirrors the ENABLED ``Loop`` rows — ONE ``/loop`` per loop firing
- ``t3 loops tick --loop <name>`` — and the SessionStart loop-owner hook
+ ``t3 loops tick --loop <name>`` — and the SessionStart t3-master hook
  registers them automatically, so there is no single fat slot to pass on the
  command line. When ``claude`` is unavailable or the caller is already inside a
  Claude Code session, prints the per-loop registration guidance instead.
@@ -3328,7 +3328,7 @@ Usage: t3 loop stop [OPTIONS]
 ```
 Usage: t3 loop claim [OPTIONS]
 
- Claim the session-scoped loop-owner slot for this Claude session (#1073).
+ Claim the session-scoped t3-master slot for this Claude session (#1073).
 
  Without ``--take-over`` a live claimant blocks the claim. With it,
  the claim is unconditional — the hijacking session's next ``t3 loop
@@ -3338,8 +3338,8 @@ Usage: t3 loop claim [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --take-over              Evict a live claimant — the chat-only user's loop   │
 │                          hand-off (#1073).                                   │
-│ --slot             TEXT  Loop-owner slot name (default: loop-owner).         │
-│                          [default: loop-owner]                               │
+│ --slot             TEXT  t3-master slot name (default: t3-master).           │
+│                          [default: t3-master]                                │
 │ --json                   Emit JSON.                                          │
 │ --help                   Show this message and exit.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -3350,11 +3350,11 @@ Usage: t3 loop claim [OPTIONS]
 ```
 Usage: t3 loop owner [OPTIONS]
 
- Show which session owns the loop-owner slot AND this session's own id (#1073).
+ Show which session owns the t3-master slot AND this session's own id (#1073).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --slot        TEXT  Loop-owner slot name (default: loop-owner).              │
-│                     [default: loop-owner]                                    │
+│ --slot        TEXT  t3-master slot name (default: t3-master).                │
+│                     [default: t3-master]                                     │
 │ --json              Emit JSON.                                               │
 │ --help              Show this message and exit.                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -3378,14 +3378,14 @@ Usage: t3 loop whoami [OPTIONS]
 ```
 Usage: t3 loop release [OPTIONS]
 
- Release this session's loop-owner claim (#1073).
+ Release this session's t3-master claim (#1073).
 
  CAS on session id — a non-owner release is a no-op and never evicts
  a live owner.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --slot        TEXT  Loop-owner slot name (default: loop-owner).              │
-│                     [default: loop-owner]                                    │
+│ --slot        TEXT  t3-master slot name (default: t3-master).                │
+│                     [default: t3-master]                                     │
 │ --json              Emit JSON.                                               │
 │ --help              Show this message and exit.                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -3536,7 +3536,7 @@ Usage: t3 loop claude-spec [OPTIONS] NAME
 Usage: t3 loop self-improve [OPTIONS] COMMAND [ARGS]...
 
  Self-improving monitor — scheduled smell detection with a tiered action
- ladder. Runs in the same loop-owner session as `t3 loop tick` on a separate
+ ladder. Runs in the same t3-master session as `t3 loop tick` on a separate
  LoopLease so a long self-improve cycle never blocks a fast regular tick
  (BLUEPRINT § 5.7).
 
@@ -3588,7 +3588,7 @@ Usage: t3 loop self-improve start [OPTIONS]
  Print the ``/loop <cadence>`` slot definition for the self-improve monitor.
 
  Mirrors ``t3 loop start --print-only``: it prints the slash command
- the user pastes inside the loop-owner Claude Code session to register
+ the user pastes inside the t3-master Claude Code session to register
  the second ``/loop`` slot.  The cheap tier runs by default; override
  via ``T3_SELF_IMPROVE_CHEAP_CADENCE`` (seconds).
 
@@ -3603,7 +3603,7 @@ Usage: t3 loop self-improve start [OPTIONS]
 Usage: t3 loop slack-answer [OPTIONS] COMMAND [ARGS]...
 
  Reactive, token-cheap Slack-answer loop — the third `/loop` slot. Runs on a
- tight cadence (default 20s) in the same loop-owner session as `t3 loop tick`,
+ tight cadence (default 20s) in the same t3-master session as `t3 loop tick`,
  on a separate LoopLease so a long answer cycle never blocks a fast regular
  tick. Complementary to the inbound prompt-drain, never a double-answer
  (#1014).
@@ -3652,7 +3652,7 @@ Usage: t3 loop slack-answer start [OPTIONS]
  Print the ``/loop <cadence>`` slot definition for the Slack-answer loop.
 
  Mirrors ``t3 loop self-improve start``: prints the slash command the
- user pastes inside the loop-owner Claude Code session to register the
+ user pastes inside the t3-master Claude Code session to register the
  third ``/loop`` slot. Override the cadence via ``T3_SLACK_ANSWER_CADENCE``
  (seconds; floor 15).
 
@@ -3705,7 +3705,7 @@ Usage: t3 loops tick [OPTIONS]
  Run the master ONCE: run every enabled, due loop (each on its own cadence),
  then render.
 
- The master claims the singleton ``loop-owner`` lease and dispatches only the
+ The master claims the singleton ``t3-master`` lease and dispatches only the
  loops whose DB row is enabled and due. With ``--loop <name>`` it scopes to
  that
  single enabled, due row instead — the per-loop primitive each native Claude
@@ -6780,7 +6780,7 @@ Usage: t3 teatree handover create [OPTIONS]
 
  Hand this session's full durable state to another session.
 
- No ``--to`` → the live ``loop-owner`` slot holder; if none, parked
+ No ``--to`` → the live ``t3-master`` slot holder; if none, parked
  for whichever session starts next. Always persists the
  :class:`SessionHandover` row AND mirrors it to the XDG file.
 

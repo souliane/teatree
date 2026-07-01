@@ -2,7 +2,7 @@
 
 Reuses the durable-state snapshot the PreCompact hook already builds (active
 tickets, worktree paths/branches, in-flight sub-agents, open PRs,
-approach/decisions, failing tests, loaded skills, loop-owner status) — that
+approach/decisions, failing tests, loaded skills, t3-master status) — that
 snapshot is the hand-off payload, so a hand-off and a post-compaction
 recovery carry identical state. The hook writes it to
 ``${STATE_DIR}/t3-snapshot-<session>-precompact.md``; this module reads that
@@ -16,7 +16,7 @@ bootstrapping a brand-new session whose process predates any DB read.
 Target resolution (``create``):
 
 - explicit ``to_session`` → that session.
-- otherwise the LIVE ``loop-owner`` slot holder (``t3 loop owner``).
+- otherwise the LIVE ``t3-master`` slot holder (``t3 loop owner``).
 - otherwise ``""`` — parked for whichever session starts next to claim.
 """
 
@@ -71,14 +71,16 @@ def resolve_target_session(explicit_to: str) -> str:
 
     ``""`` means "park for the next session to claim". The live loop owner
     is read via the same :class:`~teatree.core.models.LoopLease`
-    ``loop-owner`` slot the loop-owner CLI uses, so a no-target hand-off
+    ``t3-master`` slot the t3-master CLI uses, so a no-target hand-off
     lands on whichever session is actively driving the loop.
     """
     if explicit_to:
         return explicit_to
     from teatree.core.models import LoopLease  # noqa: PLC0415
 
-    status = LoopLease.objects.ownership_status("loop-owner")
+    # The t3-master owner slot (``T3_MASTER_SLOT``); the tach boundary forbids
+    # importing it here, so the literal is repeated at this read site.
+    status = LoopLease.objects.ownership_status("t3-master")
     return status.owner_session if status.is_live else ""
 
 

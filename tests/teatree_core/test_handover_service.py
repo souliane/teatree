@@ -52,7 +52,7 @@ class TestResolveTargetSession(TestCase):
         assert handover.resolve_target_session("explicit-id") == "explicit-id"
 
     def test_no_target_resolves_to_live_loop_owner(self) -> None:
-        LoopLease.objects.claim_ownership("loop-owner", session_id="owner-X", owner_pid=os.getpid())
+        LoopLease.objects.claim_ownership("t3-master", session_id="owner-X", owner_pid=os.getpid())
         assert handover.resolve_target_session("") == "owner-X"
 
     def test_no_target_no_live_owner_parks_for_next(self) -> None:
@@ -86,7 +86,7 @@ class TestCreateHandover(TestCase):
         self.enterContext(_tmp_env("XDG_STATE_HOME"))
 
     def test_create_persists_row_and_mirror_to_loop_owner(self) -> None:
-        LoopLease.objects.claim_ownership("loop-owner", session_id="owner-X", owner_pid=os.getpid())
+        LoopLease.objects.claim_ownership("t3-master", session_id="owner-X", owner_pid=os.getpid())
         row, mirror = handover.create_handover(from_session="hand-er", explicit_to="")
         assert row.to_session == "owner-X"
         assert SessionHandover.objects.filter(pk=row.pk).exists()

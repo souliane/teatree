@@ -124,7 +124,7 @@ def _cadence_for_loop(name: str) -> int:
         return slack_answer_cadence_seconds()
     if name == "loop-self-improve":
         return self_improve_cadence_seconds()
-    if name == "loop-owner":
+    if name == "t3-master":
         return loop_owner_ttl_seconds()
     if name == "loop-drain-queue":
         return drain_cadence_seconds()
@@ -183,12 +183,12 @@ def loop_owner_anchor(status: "OwnershipStatus", this_session: str) -> tuple[str
     """Return ``(zone, line)`` for the foreign-hijack RED line (#1073, #1156).
 
     #1156 narrowed this to only the foreign-hijack RED case. The dim
-    ``loop-owner=THIS session ✓`` and ``loop-owner=unclaimed`` lines were
+    ``t3-master=THIS session ✓`` and ``t3-master=unclaimed`` lines were
     replaced by :func:`live_loops_anchor`, which renders one line per
     live :class:`teatree.core.models.LoopLease` row.
 
     A *different* live session owns it → ``("action_needed",
-    "loop-owner=session <short8> (NOT this session)")`` — RED, because a
+    "t3-master=session <short8> (NOT this session)")`` — RED, because a
     foreign owner is exactly the #1073 hijack the user must see.
 
     Anything else (this session owns it, or no live owner) → ``("anchors",
@@ -201,13 +201,13 @@ def loop_owner_anchor(status: "OwnershipStatus", this_session: str) -> tuple[str
     if this_session and status.owner_session == this_session:
         return "anchors", ""
     short8 = status.owner_session[:8]
-    return "action_needed", f"loop-owner=session {short8} (NOT this session)"
+    return "action_needed", f"t3-master=session {short8} (NOT this session)"
 
 
 def _live_lease_chunks(*, colorize: bool = False) -> list[str]:
     """Return one ``<short-name> <next-tick>`` chunk per live LoopLease this session shows.
 
-    The ``loop-owner`` lease is excluded: it is a session-ownership token,
+    The ``t3-master`` lease is excluded: it is a session-ownership token,
     not a work loop, and its countdown is meaningless in the shared zones
     file (the per-session owner badge in ``statusline.sh`` replaces that
     signal). The transient per-loop tick mutex ``loop-tick:<name>`` (#2650) is
@@ -233,7 +233,7 @@ def _live_lease_chunks(*, colorize: bool = False) -> list[str]:
             colorize=colorize,
         )
         for name, acquired_at in leases
-        if name != "loop-owner" and not is_transient_tick_mutex(name) and per_loop_chunk_visible(name, owned_per_loop)
+        if name != "t3-master" and not is_transient_tick_mutex(name) and per_loop_chunk_visible(name, owned_per_loop)
     ]
 
 

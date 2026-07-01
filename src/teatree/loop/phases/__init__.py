@@ -21,7 +21,7 @@ carrying the work inline:
 *   :func:`render_phase` — the closing stage: project the dispatched
     actions into statusline zones, refresh the ``tick-meta.json`` /
     ``open-prs.json`` sidecars, plan the admit budget, fold in the
-    live-loop / open-PR / loop-owner anchors, and write the statusline.
+    live-loop / open-PR / t3-master anchors, and write the statusline.
 """
 
 from teatree.loop.phases.act import act_phase

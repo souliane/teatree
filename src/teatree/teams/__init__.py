@@ -4,7 +4,7 @@ The WORK-team is the optional, pane-backed work-execution + context-
 specialisation layer that sits ON TOP of the loops (which stay on the lead
 session — no loop ever lives on a teammate). It declares three roles —
 CORE-MAKER, OVERLAY-MAKER, REVIEWER — each with a canonical ``claimed_by``
-key in the ``team:<role>`` namespace (disjoint from the loop-owner / per-loop /
+key in the ``team:<role>`` namespace (disjoint from the t3-master / per-loop /
 infra slots), and each maker role a declarative overlay-seam claim filter that
 partitions the backlog (CORE → ``overlay == ""``, OVERLAY → ``overlay != ""``).
 

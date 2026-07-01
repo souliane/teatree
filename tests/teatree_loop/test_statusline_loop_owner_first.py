@@ -8,7 +8,7 @@ Two coupled contracts:
     :class:`~teatree.core.models.LoopLease` set), so the word was redundant
     with the tick token. The line now leads with the first loop chunk.
 
-2.  ``hooks/scripts/statusline.sh`` PREPENDS the per-session ``loop-owner:``
+2.  ``hooks/scripts/statusline.sh`` PREPENDS the per-session ``t3-master:``
     badge to the front of the loop line (and to a stand-alone line when no
     loop line is present), so the user reads ownership first.
 """

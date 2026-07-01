@@ -8,8 +8,8 @@ from django.db.models import Q
 from django.utils import timezone
 
 from teatree.core.loop_lease_manager import (
-    GLOBAL_OWNER_SLOT,
     PER_LOOP_OWNER_PREFIX,
+    T3_MASTER_SLOT,
     LoopLeaseManager,
     LoopLeaseQuerySet,
     OwnershipStatus,
@@ -27,8 +27,8 @@ if TYPE_CHECKING:
     from teatree.core.models.worktree import Worktree
 
 __all__ = [
-    "GLOBAL_OWNER_SLOT",
     "PER_LOOP_OWNER_PREFIX",
+    "T3_MASTER_SLOT",
     "IncomingEventManager",
     "LoopLeaseManager",
     "LoopLeaseQuerySet",

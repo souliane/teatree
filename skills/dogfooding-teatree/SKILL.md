@@ -82,7 +82,7 @@ you're investigating.
 `render()` writes the per-overlay zone blocks (`anchors` dim grey,
 `action_needed` bright red, `in_flight` bright cyan) plus the single
 dedicated loop line at the top (`<name> <Nm> · … · waiting: N questions`,
-from `live_loops_anchor`; the per-session `loop-owner:` badge is prepended to
+from `live_loops_anchor`; the per-session `t3-master:` badge is prepended to
 the front by `statusline.sh`). There is no `loop running` state word — the
 `tick <Nm>` chunk already carries loop liveness. The per-loop next-tick
 countdown lives on **that loop line** (#130), composed by the renderer from

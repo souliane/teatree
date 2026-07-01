@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING
 
 from django.utils import timezone
 
-from teatree.core.loop_lease_manager import is_per_loop_owner_slot
+from teatree.core.loop_lease_manager import T3_MASTER_SLOT, is_per_loop_owner_slot
 from teatree.core.models.loop_lease import LoopLease
 from teatree.loop.loop_state_db import loop_held_in_db
 from teatree.loop.statusline_loops import _cadence_for_loop as cadence_for_loop
@@ -39,7 +39,6 @@ INFRA_SLOTS: tuple[str, ...] = (
     "loop-drain-queue",
 )
 
-OWNER_SLOT = "loop-owner"
 TICK_SLOT = "loop-tick"
 STALL_FACTOR = 2
 
@@ -55,7 +54,7 @@ class LoopOwnerStatus:
     owner_pid: int | None
     pid_is_alive: bool
     is_live: bool
-    slot: str = OWNER_SLOT
+    slot: str = T3_MASTER_SLOT
 
     @property
     def is_claimed(self) -> bool:
@@ -124,7 +123,7 @@ def build_report(*, now: dt.datetime | None = None) -> LoopStatusReport:
     leases = {row.name: row for row in LoopLease.objects.all()}
     infra = tuple(_infra_entry(slot, leases.get(slot)) for slot in INFRA_SLOTS)
     mini = _mini_entries()
-    owner = _owner_status(leases.get(OWNER_SLOT), moment, slot=OWNER_SLOT)
+    owner = _owner_status(leases.get(T3_MASTER_SLOT), moment, slot=T3_MASTER_SLOT)
     per_loop_owners = _per_loop_owners(leases, moment)
     tick_cadence = cadence_for_loop(TICK_SLOT)
     return LoopStatusReport(
@@ -254,8 +253,8 @@ def _last_tick_at(infra: tuple[LoopStatusEntry, ...], mini: tuple[LoopStatusEntr
 
 __all__ = [
     "INFRA_SLOTS",
-    "OWNER_SLOT",
     "STALL_FACTOR",
+    "T3_MASTER_SLOT",
     "TICK_SLOT",
     "LoopKind",
     "LoopOwnerStatus",

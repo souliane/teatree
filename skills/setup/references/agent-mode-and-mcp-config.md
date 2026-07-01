@@ -113,7 +113,7 @@ through the single chokepoint `teatree.core.mcp_connectivity.check_mcp_connectiv
 
 | Surface | Where |
 |---------|-------|
-| Session start | The `SessionStart` hook surfaces a run-the-check advisory whenever any MCP server is enabled (a cheap, network-free `~/.claude.json` read — the live probe would exceed the 3s hook budget). |
+| Session start | The `SessionStart` hook surfaces a run-the-check advisory whenever any MCP server is enabled (a cheap, network-free `~/.claude.json` read — even within the 30s hook budget the live `claude mcp list` probe is kept off the every-session start path, where a slow or hung MCP endpoint would stall every session; the probe is deferred to `t3 doctor check` below). |
 | `t3 doctor check` | The `_check_mcp_connectivity` gate live-probes (`claude mcp list`) and FAILs on any enabled-but-disconnected server or provider mismatch. |
 | Account switch | `t3 setup recover-account-switch` re-runs the same check after a `/login`, so a switch that left an enabled MCP disconnected exits non-zero. |
 

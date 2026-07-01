@@ -15,7 +15,7 @@ is exactly one loop per distinct agent identity across all sessions.
 singleton entirely, which leaked the loop into every fresh/unrelated
 Claude session (a brand-new blog-writing session immediately started
 pumping ``t3 loop tick``). The self-pump is now a SINGLETON bound to the
-ONE designated loop-owner session (the ``_OWNER_LOOP`` record): a
+ONE designated t3-master session (the ``_OWNER_LOOP`` record): a
 non-owner session's Stop hook is a clean no-op. The per-agent
 consolidation registry remains the *second-layer* dedup *within* the
 owner session's actor space — so these tests establish loop ownership
@@ -127,7 +127,7 @@ class TestExactlyOnePerAgentIdentity:
         WS4 had decoupled the self-pump from the tick-owner so *any* agent
         with pending work pumped its own loop. That leaked the loop into
         every fresh/unrelated Claude session. The self-pump is now a
-        singleton bound to the one designated loop-owner session — a
+        singleton bound to the one designated t3-master session — a
         distinct agent in a non-owner session stays idle w.r.t. the loop.
         Real registry (not the ``_own_loop`` stub) so the owner gate's
         actual ``_OWNER_LOOP`` lookup is exercised end to end.

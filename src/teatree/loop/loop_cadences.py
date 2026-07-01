@@ -38,7 +38,7 @@ def self_improve_cadence_seconds() -> int:
 
 
 def loop_owner_ttl_seconds() -> int:
-    """The persistent ``loop-owner`` claim TTL (``T3_LOOP_OWNER_TTL``, default 1800s, floor 60).
+    """The persistent ``t3-master`` claim TTL (``T3_LOOP_OWNER_TTL``, default 1800s, floor 60).
 
     A blank or non-integer override degrades to the default rather than crashing
     the tick; the 60s floor keeps a fat-fingered tiny TTL from making the owner

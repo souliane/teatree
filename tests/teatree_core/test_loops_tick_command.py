@@ -1,9 +1,9 @@
 """``manage.py loops_tick`` — the single tick surface (#1796 / #2777 cutover).
 
 Drives the real command via ``call_command`` with the dispatch pipeline and
-backends mocked. Asserts the singleton ``loop-owner`` ownership gate (non-owner
+backends mocked. Asserts the singleton ``t3-master`` ownership gate (non-owner
 SKIPs) and that the won path runs ``run_tick`` with the DB-``Loop``-driven jobs
-builder. After #2777 the bare master claims ``loop-owner`` + ``loop-tick`` (the
+builder. After #2777 the bare master claims ``t3-master`` + ``loop-tick`` (the
 slots the retired ``loop_tick`` command held), so the self-pump cutover is
 behaviour-preserving.
 """
@@ -64,12 +64,13 @@ class TestLoopsTickOwnership(django.test.TestCase):
         assert "SKIP" in out
         run_tick.assert_not_called()
 
-    def test_bare_master_claims_loop_owner_and_loop_tick_never_t3_master(self) -> None:
-        """#2777 L1: bare master claims the unified ``loop-owner`` + ``loop-tick`` slots.
+    def test_bare_master_claims_t3_master_and_loop_tick(self) -> None:
+        """The bare master claims the unified ``t3-master`` + ``loop-tick`` slots.
 
-        RED on main: the bare master claimed ``t3-master`` + ``t3-master-tick`` (a
-        slot the live session's lease + the self-pump cutover did not share), so no
-        ``loop-owner`` row was written.
+        After the autonomous-lane §8.3 rename the singleton owner slot is
+        ``t3-master`` (the former ``loop-owner``). The bare master and the live
+        session's lease + the self-pump cutover must all share that ONE owner
+        slot, so no orphaned pre-rename ``loop-owner`` row is left behind.
         """
         report = TickReport(started_at=dt.datetime.now(dt.UTC))
         with (
@@ -80,21 +81,21 @@ class TestLoopsTickOwnership(django.test.TestCase):
             patch("teatree.loop.tick_piggyback.run_piggyback_cycles"),
         ):
             _run()
-        assert LoopLease.objects.get(name="loop-owner").session_id == "owner-session"
+        assert LoopLease.objects.get(name="t3-master").session_id == "owner-session"
         # The per-tick mutex row exists (acquired then released → owner blanked).
         assert LoopLease.objects.filter(name="loop-tick").exists()
-        assert not LoopLease.objects.filter(name="t3-master").exists()
-        assert not LoopLease.objects.filter(name="t3-master-tick").exists()
+        # Clean cutover: the pre-rename owner slot name is never written.
+        assert not LoopLease.objects.filter(name="loop-owner").exists()
 
-    def test_master_skip_names_the_loop_owner_slot(self) -> None:
-        """#2777 L2: the SKIP remedy interpolates the REAL slot (``loop-owner``)."""
+    def test_master_skip_names_the_t3_master_slot(self) -> None:
+        """The SKIP remedy interpolates the REAL slot (``t3-master``)."""
         with (
             patch("teatree.core.connector_preflight.run_connector_preflight"),
             patch.object(LoopLease.objects, "claim_ownership", return_value=(False, "other-session")),
             patch("teatree.loop.tick.run_tick") as run_tick,
         ):
             out = _run()
-        assert "t3 loop claim --slot loop-owner --take-over" in out
+        assert "t3 loop claim --slot t3-master --take-over" in out
         run_tick.assert_not_called()
 
     def test_won_owner_runs_master_tick_with_loop_table_builder(self) -> None:
@@ -137,7 +138,7 @@ class TestLoopsTickPerLoop(django.test.TestCase):
         ):
             _run(loop="inbox")
         # A disjoint per-loop owner key (``loop:<name>``), never the singleton
-        # ``loop-owner`` — so the N per-loop ``/loop``s run in parallel, not
+        # ``t3-master`` — so the N per-loop ``/loop``s run in parallel, not
         # serialised on one master lease.
         assert captured["slot"] == "loop:inbox"
         # The reactive piggyback cycles belong to the master fan-out, NOT a

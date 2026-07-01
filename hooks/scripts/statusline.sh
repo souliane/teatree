@@ -16,11 +16,11 @@
 #     summary of this session's harness TODO list, the live Agent-Teams roster
 #     (the ACTIVE mates of the team this session leads, read from the harness
 #     team config), and a
-#     per-session loop-owner badge — the skills summary is populated by
+#     per-session t3-master badge — the skills summary is populated by
 #     hook_router.py into ${state_dir}/<session_id>.skills, the TODO summary is
 #     counted directly from the harness's OWN task store
 #     (${CLAUDE_TASKS_DIR:-~/.claude/tasks}/<session_id>/*.json — teatree keeps
-#     no mirror of it), the badge from loop-registry.json. The loop-owner badge shows "you ✓" (green) when this
+#     no mirror of it), the badge from loop-registry.json. The t3-master badge shows "you ✓" (green) when this
 #     session owns the loop, "owner·pid<PID>" (yellow, neutral) when a
 #     different session owns it, or "unclaimed" (dim) when the registry has
 #     no live owner. Unlike the shared loop line, this badge is resolved
@@ -256,8 +256,8 @@ g_usage=""
 g_updates=""
 g_resource=""
 
-# Per-session loop-owner badge — resolved from loop-registry.json so each
-# terminal shows its own ownership context, not the shared loop-owner chunk
+# Per-session t3-master badge — resolved from loop-registry.json so each
+# terminal shows its own ownership context, not the shared t3-master chunk
 # that live_loops_anchor() intentionally omits. Gated on jq + session_id;
 # fails open (no badge) on any read error or missing registry.
 _loop_owner_badge=""
@@ -269,11 +269,11 @@ if command -v jq >/dev/null 2>&1 && [ -n "${session_id:-}" ]; then
         _owner_sid="${_owner_sid:-}"
         _owner_pid="${_owner_pid:-}"
         if [ "$_owner_sid" = "$session_id" ]; then
-            _loop_owner_badge="${_LBL}loop-owner:${_RST} ${_GRN}you ✓${_RST}"
+            _loop_owner_badge="${_LBL}t3-master:${_RST} ${_GRN}you ✓${_RST}"
         elif [ -n "$_owner_sid" ]; then
-            _loop_owner_badge="${_LBL}loop-owner:${_RST} ${_YLW}${_owner_sid:0:8}·pid${_owner_pid}${_RST}"
+            _loop_owner_badge="${_LBL}t3-master:${_RST} ${_YLW}${_owner_sid:0:8}·pid${_owner_pid}${_RST}"
         else
-            _loop_owner_badge="${_LBL}loop-owner: unclaimed${_RST}"
+            _loop_owner_badge="${_LBL}t3-master: unclaimed${_RST}"
         fi
     fi
 fi
@@ -295,7 +295,7 @@ if [ -n "$ctx_pct" ] && [ "$ctx_pct" != "empty" ]; then
     [ -n "$g_context" ] && g_context="${g_context}${isep}"
     g_context="${g_context}${_LBL}ctx=${_RST}$(color_pct "$ctx_pct")"
 fi
-# The per-session loop-owner badge does NOT go in g_context — it is
+# The per-session t3-master badge does NOT go in g_context — it is
 # loop-specific info and belongs on the loop line region (appended after the
 # cat'd zones file below), so all loop state has one visual home.
 if [ -n "$five_hour_pct" ] && [ "$five_hour_pct" != "empty" ]; then
@@ -641,7 +641,7 @@ fi
 [ "$_skills_on_own_line" = "1" ] && printf '%s\n' "$_skills_segment"
 
 # The zones file holds the dedicated loop line (and the per-overlay anchors).
-# The per-session loop-owner badge is PREPENDED to that loop line so the user
+# The per-session t3-master badge is PREPENDED to that loop line so the user
 # reads ownership first and all loop state shares one visual home. If the zones
 # file has no loop line (loops not currently live), the badge is still surfaced
 # on its own trailing line so per-session ownership context is never lost.
