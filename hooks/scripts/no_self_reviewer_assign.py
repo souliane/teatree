@@ -4,7 +4,7 @@ Reviewers must NEVER be directly assigned on an MR — least of all the user's
 OWN MR (this happened on the user's MRs and is forbidden). Review is
 *requested* via the Slack/approval channel only; teatree has NO legitimate
 direct-assignment path, so the gate blocks the action itself rather than
-attempting a fragile, network-bound author lookup inside a 3-5s hook.
+attempting a fragile, network-bound author lookup inside a 30s hook.
 
 The gate watches every reviewer-assignment surface:
 

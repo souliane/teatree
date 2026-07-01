@@ -27,7 +27,7 @@ import subprocess  # noqa: S404 — reads a trusted local ``t3`` binary, fixed a
 # 'pause everything' (#1913). Mirrors :data:`teatree.loops.dispatch.loop.MINI_LOOP`'s name.
 _DISPATCH_LOOP_NAME = "dispatch"
 
-# A short bound — the Stop hook is timeout-capped (8s in hooks.json) and a
+# A short bound — the Stop hook is timeout-capped (30s in hooks.json) and a
 # read-only ``loop loop-state`` query is sub-second. Mirrors
 # ``hook_router._SELF_PUMP_PENDING_TIMEOUT``.
 _LOOP_STATE_READ_TIMEOUT = 5

@@ -495,7 +495,7 @@ _AMBIENT_CONTEXT_RE = re.compile(
 # open tags, or a malicious agent). ``_strip_ambient_context`` runs on
 # EVERY ``UserPromptSubmit`` and is net-new hot-path cost, so the input is
 # capped before the regexes run — bounding the worst case well under the
-# 5s ``UserPromptSubmit`` timeout (hooks/CLAUDE.md "hooks must be fast").
+# 30s ``UserPromptSubmit`` timeout (hooks/CLAUDE.md "hooks must be fast").
 # Genuine task intent sits early in the prompt (the harness appends ambient
 # blocks), so a 64 KiB cap never truncates intent — mirrors the 512-char
 # token windows used elsewhere in this file.
@@ -4591,11 +4591,11 @@ def _mcp_connectivity_advisory() -> str | None:
     """Return the #2282 advisory when any MCP server is enabled.
 
     Uses the cheap, network-free ``~/.claude.json`` reader (NOT the live probe)
-    so the SessionStart hot path stays inside its 3s budget: the live
-    ``claude mcp list`` probe would blow it, so session start only nudges the
-    agent to run ``t3 doctor check`` (which does the bounded probe) when there
-    is something to verify. Any import / read failure returns None so the
-    directive never blocks SessionStart.
+    to keep the network probe off the every-session SessionStart hot path: even
+    within the 30s hook budget a slow or hung MCP endpoint would stall every
+    session start, so session start nudges the agent to run ``t3 doctor check``
+    (the bounded probe) only when there is something to verify. Any import /
+    read failure returns None so the directive never blocks SessionStart.
     """
     src_dir = Path(__file__).resolve().parents[2] / "src"
     added = False
@@ -5944,7 +5944,7 @@ _SLACK_POST_TIMEOUT_SECONDS = 2.0
 def _slack_http_poster():  # noqa: ANN202 — Poster protocol from the lazily-imported leaf.
     """Build the hook-budget Slack poster: ``SlackHttpClient.post``, no retry.
 
-    The mirror runs synchronously inside the ~5s hook timeout, so the client
+    The mirror runs synchronously inside the ~30s hook timeout, so the client
     carries the short per-call timeout and NO retry (a retry-with-backoff could
     blow the budget). This is the router's platform→domain edge (the router is
     tach-invisible), injected into the pure leaf.
