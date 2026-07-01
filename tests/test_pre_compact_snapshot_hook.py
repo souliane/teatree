@@ -67,7 +67,7 @@ class TestPreCompactSnapshotFromDurableState:
         body = snapshot.read_text(encoding="utf-8")
         assert "agent-abc-123" in body
         # #786 WS3: tick-owner snapshot — no roster name, no spawn brief.
-        assert "loop-tick OWNER" in body
+        assert "loop OWNER" in body
         assert "t3 loops tick" in body
         assert "t3 loop claim-next" in body
 
@@ -226,7 +226,7 @@ class TestPreCompactSessionStartRoundTrip:
         # #1452: recovery context lives under hookSpecificOutput, not at top level.
         ctx = output["hookSpecificOutput"]["additionalContext"]
         assert "xrev-7" in ctx
-        assert "loop-tick OWNER" in ctx
+        assert "loop OWNER" in ctx
         assert "PRE-COMPACTION SNAPSHOTS RECOVERED" in ctx
 
 
