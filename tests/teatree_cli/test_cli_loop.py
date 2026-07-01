@@ -13,7 +13,7 @@ from unittest.mock import patch
 import pytest
 from typer.testing import CliRunner
 
-from teatree.cli.loop import loop_app
+from teatree.cli.loop import _self_improve_cadence_for_loop_slot, loop_app
 from teatree.cli.loop_drain_queue import _drain_cadence_for_loop_slot
 from teatree.cli.loop_slack_answer import _slack_answer_cadence_for_loop_slot
 
@@ -437,6 +437,39 @@ class TestDrainQueueStartCommand:
 
         assert result.exit_code == 0
         call.assert_called_once_with("loop_drain_queue", json_output=True)
+
+
+class TestSelfImproveCadenceParser:
+    @pytest.mark.parametrize(
+        ("env_value", "expected"),
+        [
+            ("1800", "30m"),
+            ("90", "90s"),
+            ("60", "1m"),
+            ("", "30m"),
+            ("garbage", "30m"),
+            ("5", "1m"),  # clamped to 60s floor
+        ],
+    )
+    def test_parses_t3_self_improve_cadence(
+        self, env_value: str, expected: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("T3_SELF_IMPROVE_CHEAP_CADENCE", env_value)
+        assert _self_improve_cadence_for_loop_slot() == expected
+
+    def test_default_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_SELF_IMPROVE_CHEAP_CADENCE", raising=False)
+        assert _self_improve_cadence_for_loop_slot() == "30m"
+
+
+class TestSelfImproveStartCommand:
+    def test_start_emits_the_self_improve_slot_line(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_SELF_IMPROVE_CHEAP_CADENCE", "1800")
+        result = runner.invoke(loop_app, ["self-improve", "start"])
+
+        assert result.exit_code == 0
+        assert "/loop 30m Run `t3 loop self-improve run --tier cheap`." in result.stdout
+        assert "T3_SELF_IMPROVE_CHEAP_CADENCE" in result.stdout
 
 
 # ast-grep-ignore: ac-django-no-pytest-django-db

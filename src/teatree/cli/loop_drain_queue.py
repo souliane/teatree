@@ -8,10 +8,9 @@ back by ``teatree.cli.loop`` and registered via
 ``loop_app.add_typer(..., name="drain-queue")``.
 """
 
-import os
-
 import typer
 
+from teatree.loop.loop_cadences import reactive_slot
 from teatree.utils.django_bootstrap import ensure_django
 
 drain_queue_app = typer.Typer(
@@ -59,15 +58,8 @@ def drain_queue_status_command() -> None:
 
 
 def _drain_cadence_for_loop_slot() -> str:
-    """Read ``T3_QUEUE_DRAIN_CADENCE`` (seconds, default 30, floor 10)."""
-    raw = os.environ.get("T3_QUEUE_DRAIN_CADENCE", "30").strip() or "30"
-    try:
-        seconds = max(10, int(raw))
-    except ValueError:
-        seconds = 30
-    if seconds % 60 == 0:
-        return f"{seconds // 60}m"
-    return f"{seconds}s"
+    """The drain-queue ``/loop`` cadence token — delegates to the shared reactive-slot seam."""
+    return reactive_slot("loop-drain-queue").cadence()
 
 
 @drain_queue_app.command("start")
@@ -79,8 +71,7 @@ def drain_queue_start_command() -> None:
     drain-queue ``/loop`` slot. Override the cadence via ``T3_QUEUE_DRAIN_CADENCE``
     (seconds; floor 10).
     """
-    cadence = _drain_cadence_for_loop_slot()
-    register_command = f"/loop {cadence} Run `t3 loop drain-queue run`."
+    register_command = reactive_slot("loop-drain-queue").loop_directive()
     typer.echo("Run this in your interactive Claude Code session to register the drain-queue loop:")
     typer.echo(f"    {register_command}")
     typer.echo("")

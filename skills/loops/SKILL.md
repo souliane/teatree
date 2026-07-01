@@ -86,7 +86,7 @@ Flipping the DB row is only half the job: the live set of native Claude `/loop`s
 
 ## Reactive infra loops (not DB `Loop` rows)
 
-Three tight-cadence reactive slots run as their OWN dedicated native Claude `/loop`s, separate from the DB-configured domain loops above. They are self-contained cycle commands (not scanner ticks), registered once at owner session start with `t3 loop <slot> start` (which prints the `/loop <cadence> Run …` line to paste), and their cadence is env-overridable:
+Three tight-cadence reactive slots run as their OWN dedicated native Claude `/loop`s, separate from the DB-configured domain loops above. They are self-contained cycle commands (not scanner ticks). The **t3-master** session AUTO-registers all three at session start — the owner bootstrap (`hooks/scripts/loop_registrations.py`) emits one `/loop <cadence> Run …` directive per slot, reading the same `teatree.loop.loop_cadences` seam that `t3 loop <slot> start` prints, so you can also register or re-print any single slot by hand. Their cadence is env-overridable:
 
 ```bash
 t3 loop slack-answer start    # /loop 20s Run `t3 loop slack-answer run`.       (T3_SLACK_ANSWER_CADENCE, floor 15s)

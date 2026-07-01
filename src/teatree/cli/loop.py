@@ -39,6 +39,7 @@ from teatree.cli.loop_owner import register as register_loop_owner
 from teatree.cli.loop_slack_answer import slack_answer_app
 from teatree.cli.loop_state import register as register_loop_state
 from teatree.config import cadence_seconds
+from teatree.loop.loop_cadences import reactive_slot
 from teatree.loop.statusline import default_path
 from teatree.utils.django_bootstrap import ensure_django
 
@@ -326,15 +327,8 @@ def self_improve_status_command(
 
 
 def _self_improve_cadence_for_loop_slot() -> str:
-    """Read ``T3_SELF_IMPROVE_CHEAP_CADENCE`` (seconds, default 1800)."""
-    raw = os.environ.get("T3_SELF_IMPROVE_CHEAP_CADENCE", "1800").strip() or "1800"
-    try:
-        seconds = max(60, int(raw))
-    except ValueError:
-        seconds = 1800
-    if seconds % 60 == 0:
-        return f"{seconds // 60}m"
-    return f"{seconds}s"
+    """The ``loop-self-improve`` ``/loop`` cadence token — the reactive slot is the single source of truth."""
+    return reactive_slot("loop-self-improve").cadence()
 
 
 @self_improve_app.command("start")
@@ -346,8 +340,7 @@ def self_improve_start_command() -> None:
     the second ``/loop`` slot.  The cheap tier runs by default; override
     via ``T3_SELF_IMPROVE_CHEAP_CADENCE`` (seconds).
     """
-    cadence = _self_improve_cadence_for_loop_slot()
-    register_command = f"/loop {cadence} Run `t3 loop self-improve run --tier cheap`."
+    register_command = reactive_slot("loop-self-improve").loop_directive()
     typer.echo("Run this in your interactive Claude Code session to register the self-improve loop:")
     typer.echo(f"    {register_command}")
     typer.echo("")
