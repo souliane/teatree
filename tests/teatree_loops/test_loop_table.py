@@ -1,4 +1,4 @@
-"""teatree.loops.loop_table — DB ``Loop``-table-driven master fan-out (#1796).
+"""teatree.loops.loop_table — DB ``Loop``-table-driven loop-table fan-out (#1796).
 
 The cutover gate: which loops fan out a tick is decided by the ``Loop`` rows
 (enabled + ``is_due``), not code cadence. Integration-first against the real DB;
@@ -59,7 +59,7 @@ class TestBuildLoopTableJobs(django.test.TestCase):
 
     def test_off_live_tick_loop_is_never_picked_up(self) -> None:
         # An off_live_tick loop (the heavy ``dream`` pass, #1933 § 3) is enabled
-        # and due, yet the live master tick must NEVER invoke its build_jobs or
+        # and due, yet the live loop tick must NEVER invoke its build_jobs or
         # bump its last_run_at — it is driven by its own low-frequency cron.
         now = timezone.now()
         Loop.objects.create(name="m-dream", delay_seconds=60, prompt=_prompt())  # enabled + never run -> due

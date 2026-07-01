@@ -58,9 +58,9 @@ class FreshMigrateSeedsDefaultLoops(TransactionTestCase):
         assert not loops.filter(enabled=True).exists()
 
     def test_slack_answer_is_not_seeded(self) -> None:
-        # ``slack_answer`` has no registry MiniLoop (it runs only via the
-        # won-tick piggyback cycle); a seeded row would be an orphan the
-        # master tick can never fan out.
+        # ``slack_answer`` has no registry MiniLoop (it runs only via its
+        # dedicated ``loop-slack-answer`` ``/loop`` slot); a seeded row would be
+        # an orphan the loop-table fan-out can never dispatch.
         assert not Loop.objects.filter(name="slack_answer").exists()
 
     def test_each_script_loop_points_at_its_own_module(self) -> None:

@@ -295,7 +295,7 @@ class TestInfraEntries(django.test.TestCase):
 class TestMiniEntriesHeldFromLoopState(django.test.TestCase):
     """``_mini_entries`` routes ``held`` through the ``LoopState`` control tier (#1913).
 
-    The master tick gates on ``loop_enabled`` (``Loop.enabled`` AND not
+    The loop tick gates on ``loop_enabled`` (``Loop.enabled`` AND not
     ``loop_held_in_db``). A PAUSED loop keeps ``Loop.enabled=True`` (pause does
     not flip the row), so before this fix the snapshot showed it as
     ``enabled=True, held=False`` with a live countdown — masking that the tick
