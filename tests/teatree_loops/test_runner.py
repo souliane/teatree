@@ -7,6 +7,8 @@ production loops.
 """
 
 import datetime as dt
+from collections.abc import Iterator
+from contextlib import contextmanager
 from unittest.mock import patch
 
 import django.test
@@ -14,12 +16,26 @@ import pytest
 from django.utils import timezone
 
 from teatree.core.models import Loop, LoopState, Prompt
+from teatree.core.tasks import execute_loop
 from teatree.loops.base import MiniLoop
-from teatree.loops.runner import LoopRunnerDaemon, compute_beat_seconds, enqueue_due_loops
+from teatree.loops.runner import LoopRunnerDaemon, compute_beat_seconds, drain_loop_queue, enqueue_due_loops
+
+#: The production TASKS backend (mirrors ``teatree.settings``) so an ``enqueue``
+#: lands a real ``django_tasks_db`` DB row a ``Worker`` can drain. The suite's
+#: default ``DummyBackend`` never touches the DB, so ``drain_loop_queue`` would
+#: find nothing to drain under it.
+_DB_TASKS = {"default": {"BACKEND": "django_tasks_db.DatabaseBackend", "QUEUES": ["default", "loop-runner"]}}
 
 
 def _mini(name: str) -> MiniLoop:
     return MiniLoop(name=name, default_cadence_seconds=60, build_jobs=lambda n=name, **_: [f"job-{n}"])
+
+
+def _silent_mini(name: str) -> MiniLoop:
+    # No scanner jobs, so the REAL run_tick reaches the cadence CAS
+    # (mark_run_if_unchanged bumps last_run_at) then renders an idle tick — no
+    # scan/act phase and no model call, keeping the drain end-to-end but cheap.
+    return MiniLoop(name=name, default_cadence_seconds=60, build_jobs=lambda **_: [])
 
 
 def _prompt(name: str = "demo-prompt") -> Prompt:
@@ -143,3 +159,52 @@ class TestLoopRunnerDaemonSupervision(django.test.SimpleTestCase):
         )
         daemon.run_once()
         assert order == ["beat", "drain"]
+
+
+@django.test.override_settings(USE_TZ=True, TASKS=_DB_TASKS)
+class TestDrainRunsThePerLoopTickEndToEnd(django.test.TransactionTestCase):
+    """The real beat → enqueue → drain → loops_tick → CAS machine, no stub (#2876).
+
+    End-to-end proof that ``drain_loop_queue``'s ``django_tasks_db.Worker`` wiring
+    actually drains the dedicated ``loop-runner`` queue and RUNS the per-loop tick.
+    Every other test injects/stubs the drain, so nothing proved the
+    ``Worker(queue_names=[LOOP_RUNNER_QUEUE], batch=True, backend_name=…, max_tasks=…)``
+    kwargs are right — a wrong queue-filter or Worker kwarg would silently drain
+    NOTHING (loops never tick) with CI green. Here the beat body, the enqueue, the
+    Worker, ``loops_tick`` and the ``mark_run_if_unchanged`` CAS are all REAL; only
+    the unstoppable externals (overlay backends, the connector preflight) and the
+    loop registry are patched, exactly as the sibling per-loop-tick tests do.
+
+    ``TransactionTestCase`` (not ``TestCase``): the Worker's ``BEGIN EXCLUSIVE`` row
+    claim cannot nest inside ``TestCase``'s outer transaction.
+    """
+
+    @contextmanager
+    def _real_tick_env(self) -> Iterator[None]:
+        # Only the unstoppable externals are patched: the loop registry (a silent
+        # stub loop), the overlay backends, and the connector preflight. The Worker,
+        # the enqueue, loops_tick and the CAS all run for real.
+        with (
+            patch("teatree.loops.loop_table.iter_loops", return_value=(_silent_mini("lr-e2e"),)),
+            patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
+            patch("teatree.loops.connector_preflight.run_loop_connector_preflight"),
+        ):
+            yield
+
+    def test_drain_runs_the_enqueued_tick_and_bumps_last_run_at_exactly_once(self) -> None:
+        Loop.objects.create(name="lr-e2e", delay_seconds=60, prompt=_prompt())  # never run -> due
+        with self._real_tick_env():
+            # The REAL beat enqueues one execute_loop onto the loop-runner queue …
+            assert enqueue_due_loops() == ["lr-e2e"]
+            # … and the REAL django_tasks_db Worker drains it and runs loops_tick.
+            drain_loop_queue()
+        first = Loop.objects.get(name="lr-e2e").last_run_at
+        assert first is not None  # loops_tick actually RAN via the drained task → CAS bumped the anchor
+
+        # A redelivered tick (django-tasks is at-least-once) is a no-op: the row is
+        # no longer due, so a second drain never re-bumps the anchor — the cadence
+        # advance is exactly-once, guarded by the mark_run_if_unchanged CAS.
+        with self._real_tick_env():
+            execute_loop.enqueue("lr-e2e")
+            drain_loop_queue()
+        assert Loop.objects.get(name="lr-e2e").last_run_at == first

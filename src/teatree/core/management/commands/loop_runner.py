@@ -4,9 +4,9 @@ Acquires the ``loop-runner`` flock singleton (:func:`teatree.utils.singleton.sin
 so at most one runner exists per box, then runs the supervised beat daemon
 (:class:`teatree.loops.runner.LoopRunnerDaemon`). A second invocation while a
 runner is alive refuses immediately with a non-zero exit (the ``flock`` is the
-lock; the pid in the file is diagnostic only). ``--once`` runs a single beat and
-returns — the foreground / test variant that supersedes the removed
-``t3 loops run`` continuous runner (#2880).
+lock; the pid in the file is diagnostic only). ``t3 loop-runner --once`` runs a
+single beat and returns — the foreground / test variant that supersedes the removed
+foreground ``loops run`` continuous runner (#2880).
 """
 
 from typing import Annotated

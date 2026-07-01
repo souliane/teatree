@@ -11,14 +11,20 @@ A standalone infrastructure hook (like the sibling SessionStart ``bootstrap-cli.
 rather than a router handler: ``hook_router.py`` is a grandfathered shrink-only
 god-module, so a new SessionStart trigger lives here instead of growing it.
 
-Default-OFF and crash-proof / fail-open / silent: any failure to bootstrap Django,
-read the setting, probe the flock, or spawn yields a no-op — never an exception
-into the SessionStart hook. On a fully-headless box with no Claude session ever
-opening, the operator starts ``t3 loop-runner`` once from a login profile (a
-dotfile, not a system scheduler); this hook only covers the session-present case.
+Default-OFF and crash-proof / fail-open / silent: any failure to read the
+``loop_runner_enabled`` flag, probe the flock, or spawn yields a no-op — never an
+exception into the SessionStart hook. The enable check boots NO Django (#2879
+parity): the DB-home flag is read via the Django-free ``teatree.config.cold_reader``
+stdlib-sqlite path, so a fresh, non-engaged session (contra #256) never pays a full
+``django.setup()`` on the session-start critical path just to read a default-OFF
+flag — exactly the second cold-boot cost #2879 removed from the Stop hook. On a
+fully-headless box with no Claude session ever opening, the operator starts
+``t3 loop-runner`` once from a login profile (a dotfile, not a system scheduler);
+this hook only covers the session-present case.
 """
 
 import argparse
+import os
 import shutil
 import subprocess  # noqa: S404 — trusted internal spawn of the `t3` CLI (hook convention)
 import sys
@@ -30,16 +36,42 @@ sys.modules.setdefault("loop_runner_supervisor", sys.modules[__name__])
 sys.modules.setdefault("hooks.scripts.loop_runner_supervisor", sys.modules[__name__])
 
 
+#: Truthy tokens for the ``T3_LOOP_RUNNER_ENABLED`` env override — mirrors the
+#: hot-path ``teatree.config.settings._parse_env_bool`` and the ``autoload`` cold reader.
+_ENABLED_TRUTHY: frozenset[str] = frozenset({"1", "true", "yes", "on"})
+
+
+def _enabled_scope_chain() -> tuple[str, ...]:
+    """Overlay-then-global scope chain for ``loop_runner_enabled`` (global-only when unset).
+
+    The flag is per-overlay overridable (``config_setting set … --overlay <name>``),
+    so an overlay-scope row must win over the global one — exactly as
+    ``get_effective_settings`` resolves it. ``T3_OVERLAY_NAME`` names the active
+    overlay (the same env var the config resolver keys on); with none set the chain
+    is global-only.
+    """
+    overlay = os.environ.get("T3_OVERLAY_NAME", "").strip()
+    return (overlay, "") if overlay else ("",)
+
+
 def _loop_runner_enabled() -> bool:
-    """Whether ``loop_runner_enabled`` resolves on; fail-OFF on any error."""
+    """Whether ``loop_runner_enabled`` resolves on — Django-free cold read, fail-OFF.
+
+    #2879 parity: read the DB-home flag WITHOUT booting Django.
+    ``T3_LOOP_RUNNER_ENABLED`` env wins (matching the hot-path
+    ``ENV_SETTING_OVERRIDES``); otherwise the ``ConfigSetting`` store is read via the
+    stdlib-only ``teatree.config.cold_reader`` (overlay scope, then global — the flag
+    is per-overlay overridable), defaulting OFF. A ``[teatree]`` TOML value is DB-home
+    and ignored on read, so there is no TOML fallback (as with ``autoload``). Any read
+    error → OFF, so a missing/unreadable DB never crashes the session (fail-open).
+    """
+    env = os.environ.get("T3_LOOP_RUNNER_ENABLED", "").strip().lower()
+    if env:
+        return env in _ENABLED_TRUTHY
     try:
-        from django_bootstrap import bootstrap_teatree_django  # noqa: PLC0415
+        from teatree.config.cold_reader import bool_setting  # noqa: PLC0415
 
-        if not bootstrap_teatree_django():
-            return False
-        from teatree.config import get_effective_settings  # noqa: PLC0415
-
-        return bool(get_effective_settings().loop_runner_enabled)
+        return bool_setting("loop_runner_enabled", default=False, scope_chain=_enabled_scope_chain())
     except Exception:  # noqa: BLE001 — fast hook must never raise; silent fail-off.
         return False
 

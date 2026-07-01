@@ -156,8 +156,8 @@ class LoopRunnerDaemon:
     def run_once(self) -> None:
         """Run a single beat + drain and return — the foreground / test variant.
 
-        The ``--once`` variant that supersedes the removed ``t3 loops run`` foreground
-        runner (#2880): no supervisor, no sleep, no respawn.
+        The ``t3 loop-runner --once`` variant that supersedes the removed foreground
+        ``loops run`` runner (#2880): no supervisor, no sleep, no respawn.
         """
         self._beat()
         self._drain()
