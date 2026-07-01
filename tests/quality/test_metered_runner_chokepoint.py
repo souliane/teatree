@@ -23,6 +23,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from django.test import TestCase
 
 from teatree.eval.backends import API_BACKEND, TRANSCRIPT_BACKEND, make_runner
 from teatree.eval.judge import ClaudeJudge
@@ -140,7 +141,7 @@ def _graded_run() -> EvalRun:
     )
 
 
-class TestEveryMeteredEntrypointFailsLoudWithoutAKey:
+class TestEveryMeteredEntrypointFailsLoudWithoutAKey(TestCase):
     """Behavioral anti-vacuity (#2707 finding 4): each metered entrypoint fails loud keyless.
 
     The AST-shape gate above proves the runner is built only through the

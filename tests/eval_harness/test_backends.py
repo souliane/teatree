@@ -1,6 +1,7 @@
 """Pluggable eval execution backends (SDK fresh-run vs recorded transcript)."""
 
 import os
+from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import patch
 
@@ -35,6 +36,14 @@ def _spec(
 
 
 class TestMakeRunner:
+    @pytest.fixture(autouse=True)
+    def _bypass_credential_routing(self) -> Iterator[None]:
+        # ``make_runner`` builds its credential through the config-aware factory, which
+        # reads the ``ConfigSetting`` store. Bypass it to the default credential so this
+        # lane is exercised DB-free — per-account routing has its own tests.
+        with patch("teatree.credential_config.resolve_api_key_credential", lambda **_: AnthropicApiKeyCredential()):
+            yield
+
     def test_api_backend_builds_in_process_api_runner(self) -> None:
         with patch.dict(os.environ, {API_KEY_ENV: "sk-test"}, clear=False):
             assert isinstance(make_runner(API_BACKEND), ApiInProcessRunner)

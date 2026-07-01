@@ -42,7 +42,6 @@ from teatree.eval.api_runner import (
 )
 from teatree.eval.isolation import isolated_claude_env
 from teatree.eval.models import EvalRun, EvalSpec
-from teatree.llm.credentials import AnthropicApiKeyCredential
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -164,8 +163,12 @@ class ClaudeJudge:
         # forced to require a key. isolated_claude_env then strips the conflicting
         # OAuth token from the judge child's env using the same credential's spec,
         # so the judge authenticates on the metered API exclusively — never the
-        # subscription.
-        AnthropicApiKeyCredential().export()
+        # subscription. Imported at call time (not module top) to keep the eval CLI
+        # import chain Django-free — ``credential_config`` pulls in the routing
+        # models, which cannot be created before ``django.setup()``.
+        from teatree.credential_config import resolve_api_key_credential  # noqa: PLC0415
+
+        resolve_api_key_credential().export()
         if self._budget is not None:
             self._budget.consume()
         prompt = build_judge_prompt(spec, run)

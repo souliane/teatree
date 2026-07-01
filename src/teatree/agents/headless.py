@@ -43,8 +43,9 @@ from teatree.agents.skill_bundle import resolve_skill_bundle
 from teatree.config import AgentRuntime, get_effective_settings
 from teatree.core.models import Task, TaskAttempt, Ticket
 from teatree.core.models.worktree import Worktree
+from teatree.credential_config import resolve_api_key_credential, resolve_subscription_credential
 from teatree.llm.anthropic_limits import LimitMatch, classify_limit, classify_rate_limit_type
-from teatree.llm.credentials import AnthropicApiKeyCredential, AnthropicSubscriptionCredential, CredentialError
+from teatree.llm.credentials import CredentialError
 from teatree.skill_support.loading import SkillLoadingPolicy
 from teatree.types import SkillMetadata
 
@@ -282,7 +283,7 @@ def run_headless(
         return _record_failure(task, error="claude is not installed")
 
     try:
-        child_env = _runtime_child_env(runtime)
+        child_env = _runtime_child_env(runtime, scope=_overlay_scope(task))
     except CredentialError as exc:
         logger.warning("Refusing dispatch for task %s: %s", task.pk, exc)
         return _record_failure(task, error=str(exc))
@@ -325,7 +326,16 @@ def _outcome_failure(task: Task, outcome: _SdkOutcome) -> TaskAttempt | None:
     return None
 
 
-def _runtime_child_env(runtime: AgentRuntime) -> dict[str, str] | None:
+def _overlay_scope(task: Task) -> str:
+    """The overlay the credential selector routes for — the task's ticket overlay.
+
+    Empty (the ``GLOBAL_SCOPE`` sentinel) when the ticket carries no overlay, so the
+    selector falls back to the global routing list.
+    """
+    return task.ticket.overlay or ""
+
+
+def _runtime_child_env(runtime: AgentRuntime, *, scope: str = "") -> dict[str, str] | None:
     """The child-process env that pins the credential for a headless ``runtime``.
 
     ``sdk_apikey`` forces the metered ``ANTHROPIC_API_KEY`` (stripping the
@@ -334,13 +344,15 @@ def _runtime_child_env(runtime: AgentRuntime) -> dict[str, str] | None:
     CLI rides the plan, not the meter. Any other runtime returns ``None`` — the
     ambient env is used unchanged (``interactive`` is dispatched in-session and
     ``api`` is refused upstream, so the runner only sees a headless runtime here).
-    Raises :class:`CredentialError` when the selected token resolves from neither
-    the env nor the ``pass`` store, so a misconfigured headless run fails loud.
+    *scope* is the overlay the per-account routing selector picks an account for, so
+    two overlays ride distinct subscription accounts. Raises :class:`CredentialError`
+    when the selected token resolves from neither the env nor the ``pass`` store (or
+    every configured account is exhausted), so a misconfigured headless run fails loud.
     """
     if runtime is AgentRuntime.SDK_APIKEY:
-        return AnthropicApiKeyCredential().child_env(os.environ)
+        return resolve_api_key_credential(scope=scope).child_env(os.environ)
     if runtime is AgentRuntime.SDK_OAUTH:
-        return AnthropicSubscriptionCredential().child_env(os.environ)
+        return resolve_subscription_credential(scope=scope).child_env(os.environ)
     return None
 
 

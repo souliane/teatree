@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from django.test import TestCase
 
 from teatree.cli.eval.docker import (
     ARTIFACTS_MOUNT,
@@ -25,7 +26,7 @@ def _completed(returncode: int) -> MagicMock:
     return proc
 
 
-class TestRunEvalInDocker:
+class TestRunEvalInDocker(TestCase):
     def test_builds_image_when_absent_then_runs(self) -> None:
         with (
             patch(f"{_MODULE}.shutil.which", return_value="/usr/bin/docker"),
@@ -182,7 +183,7 @@ class TestWritableArtifactsMount:
         assert ARTIFACTS_MOUNT not in " ".join(command)
 
 
-class TestAuthPassthroughIntoContainer:
+class TestAuthPassthroughIntoContainer(TestCase):
     """The metered AI lane authenticates in-container via the host's API key.
 
     The value is forwarded with docker's ``-e VARNAME`` pass-through form (no
@@ -241,7 +242,7 @@ class TestAuthPassthroughIntoContainer:
         return command[index - 1 : index + 1]
 
 
-class TestMeteredBenchmarkLaneFailsLoudBeforeDocker:
+class TestMeteredBenchmarkLaneFailsLoudBeforeDocker(TestCase):
     """``t3 eval benchmark`` is always api-metered, so the Docker pre-export fires for it too.
 
     The benchmark argv starts ``benchmark`` and carries no literal ``api`` token,
@@ -283,7 +284,7 @@ class TestMeteredBenchmarkLaneFailsLoudBeforeDocker:
         assert command[index - 1 : index + 1] == ["-e", "ANTHROPIC_API_KEY"]
 
 
-class TestDockerResolvesKeyFromPassForSdkLane:
+class TestDockerResolvesKeyFromPassForSdkLane(TestCase):
     """Local ``--backend api --docker`` auto-resolves the API key from pass.
 
     The container authenticates from the host's ``ANTHROPIC_API_KEY`` via the

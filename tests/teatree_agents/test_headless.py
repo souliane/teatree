@@ -1108,8 +1108,14 @@ class TestBuildOptionsSpawnModelFloor(TestCase):
         assert options.effort is None
 
 
-class TestRuntimeChildEnv:
-    """``_runtime_child_env`` pins the credential for the chosen headless runtime."""
+class TestRuntimeChildEnv(TestCase):
+    """``_runtime_child_env`` pins the credential for the chosen headless runtime.
+
+    DB access: the credential is now built through the config-aware factory
+    (``teatree.credential_config``), which reads the ``ConfigSetting`` routing list.
+    The empty table yields no override, so the child-env assertions are unchanged —
+    ``TestCase`` just provides the DB the (no-op) config read needs.
+    """
 
     def test_sdk_oauth_pins_subscription_and_strips_api_key(self) -> None:
         with patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "oauth-x", "ANTHROPIC_API_KEY": "key-y"}):
