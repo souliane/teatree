@@ -2518,6 +2518,94 @@ class TestGitCommitStdinBodyResolution:
         assert capsys.readouterr().out == ""
 
 
+class TestGhGlabStdinBodyResolution:
+    """``gh``/``glab --body-file -`` stdin heredoc / piped bodies are RESOLVED and scanned (#1415).
+
+    The over-block this fixes: a ``gh pr create --body-file - <<EOF … EOF`` (or
+    ``glab mr note … --body-file -``) whose body is fed on stdin hard-blocked with
+    the "body file is missing or unresolvable" message — the ``-`` was read as an
+    unreadable file named ``-`` and the fail-closed sentinel preempted the scan,
+    even though the heredoc/piped body is fully present at scan time. Only ``git
+    commit -F -`` resolved its stdin body; gh/glab did not. The fix resolves the
+    in-command stdin body so a CLEAN post PASSES and a REAL banned term in that
+    same readable body BLOCKS with the banned-term reason (not the unresolvable
+    one) — the resolution ADDS coverage, never weakens it. A genuinely-OPAQUE
+    stdin (``cat file | gh pr create --body-file -``) is a PUBLIC post the gate
+    cannot read, so it stays hard-blocked (unlike a LOCAL git commit, which
+    downgrades).
+    """
+
+    def _deny(self, command: str, cwd: Path, capsys: pytest.CaptureFixture[str]) -> str | None:
+        event = {"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(cwd)}
+        blocked = handle_banned_terms_pretool(event)
+        out = capsys.readouterr().out
+        return json.loads(out)["permissionDecisionReason"] if blocked else None
+
+    def test_gh_heredoc_stdin_clean_body_passes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # USED-TO-FALSE-BLOCK ("body file is missing or unresolvable"), now PASSES:
+        # the heredoc body IS present at scan time and scans clean.
+        repo = _public_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        cmd = "gh pr create --title t --body-file - <<'EOF'\nclean pr body about shipping\nEOF"
+        assert self._deny(cmd, repo, capsys) is None
+
+    def test_gh_heredoc_stdin_banned_term_blocks_as_banned_not_unresolvable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # ANTI-VACUITY: a REAL banned term in the SAME readable heredoc body blocks
+        # with the BANNED-TERM reason. Before the fix it blocked with the WRONG
+        # "could not be read" reason (the sentinel preempted the scan) — asserting
+        # the reason distinguishes the added coverage from the old fail-closed.
+        repo = _public_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        cmd = "gh pr create --title t --body-file - <<'EOF'\nrolling out acmecorp integration\nEOF"
+        reason = self._deny(cmd, repo, capsys)
+        assert reason is not None
+        assert "banned term 'acmecorp'" in reason
+        assert "could not be read" not in reason
+
+    def test_glab_note_heredoc_stdin_clean_body_passes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repo = _public_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        cmd = "glab mr note 1 --body-file - <<'EOF'\nclean review note here\nEOF"
+        assert self._deny(cmd, repo, capsys) is None
+
+    def test_piped_printf_gh_clean_body_passes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repo = _public_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        cmd = "printf '%s' 'a perfectly clean pr body' | gh pr create --title t --body-file -"
+        assert self._deny(cmd, repo, capsys) is None
+
+    def test_piped_printf_gh_banned_term_still_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # ANTI-VACUITY: the piped writer's body is scanned, so a banned term blocks.
+        repo = _public_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        cmd = "printf '%s' 'ship acmecorp today' | gh pr create --title t --body-file -"
+        reason = self._deny(cmd, repo, capsys)
+        assert reason is not None
+        assert "banned term 'acmecorp'" in reason
+
+    def test_opaque_stdin_gh_post_stays_hard_blocked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # A genuinely-opaque stdin (no heredoc, no printf/echo writer) feeding a
+        # PUBLIC gh post is unreadable at scan time — it stays hard-blocked (a
+        # public post never downgrades the way a local commit does).
+        repo = _public_repo(tmp_path)
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        reason = self._deny("cat body.txt | gh pr create --title t --body-file -", repo, capsys)
+        assert reason is not None
+        assert "could not be read" in reason
+
+
 class TestAbsoluteBodyFileResolvesRegardlessOfCwd:
     """An absolute ``--body-file`` written by a prior step is read at scan time (#2369 case 1).
 

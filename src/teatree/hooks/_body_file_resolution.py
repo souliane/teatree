@@ -279,12 +279,18 @@ def unredirected_heredoc_bodies(command: str) -> list[str]:
     ]
 
 
-# Stdin spellings of git's commit-message file flag: ``git commit -F -`` (and
-# the long ``--file -`` / ``--file=-`` forms). ``-`` means "read the commit
-# message from STDIN", so the body lives in whatever feeds the command's stdin
-# (an in-command heredoc or a piped ``printf``/``echo`` writer), NOT in a file
-# named ``-`` on disk.
+# Stdin spellings of a body-file flag: ``git commit -F -`` and the gh/glab
+# ``--body-file -`` / ``-F -`` / ``--file -`` forms (plus the ``--file=-``
+# equals spelling). ``-`` means "read the body/message from STDIN", so the body
+# lives in whatever feeds the command's stdin (an in-command heredoc or a piped
+# ``printf``/``echo`` writer), NOT in a file named ``-`` on disk.
 STDIN_DASH: Final[str] = "-"
+
+# Leaders whose ``-F -`` / ``--file -`` / ``--body-file -`` reads its
+# body/message from stdin rather than a file named ``-``: git's commit-message
+# flag and gh/glab's body-file short/long forms. The stdin body is resolved from
+# the in-command heredoc / piped writer instead of fail-closing on ``-`` (#1415).
+_STDIN_BODY_LEADERS: Final[frozenset[str]] = frozenset({"git", "gh", "glab"})
 
 
 def _segments_with_leading_separator(tokens: list[Token]) -> list[tuple[str | None, list[str]]]:
@@ -312,41 +318,56 @@ def _segments_with_leading_separator(tokens: list[Token]) -> list[tuple[str | No
     return out
 
 
-def _segment_reads_commit_message_from_stdin(words: list[str]) -> bool:
-    """Return True iff ``words`` is a ``git ... commit`` reading its message from stdin.
+def _reads_dash_stdin(words: list[str], flags: frozenset[str]) -> bool:
+    """Return True iff a body-file ``flag`` in ``words`` points at stdin (``-``).
 
-    The message comes from stdin when the commit carries ``-F -`` (or the long
-    ``--file -`` / ``--file=-`` form). A bare ``git commit`` opens an editor, and
-    ``-F <file>`` / ``-m`` read elsewhere, so neither pairs with a pipe.
+    Covers the space-separated (``--body-file -``), equals (``--file=-``), and
+    git-glued short (``-F-``) spellings.
     """
-    if not words or PurePosixPath(words[0]).name != "git" or "commit" not in words:
-        return False
     for i, word in enumerate(words):
-        if word in {"-F", "--file"} and i + 1 < len(words) and words[i + 1] == STDIN_DASH:
+        if word in flags and i + 1 < len(words) and words[i + 1] == STDIN_DASH:
             return True
-        if word == "--file=-":
+        if any(word == f"{flag}=-" for flag in flags):
             return True
         if attached_value(word, "-F") == STDIN_DASH:
             return True
     return False
 
 
-def piped_stdin_writer_body(tokens: list[Token]) -> str | None:
-    """Return the body a ``printf``/``echo`` writer pipes into a ``git commit -F -``.
+def _segment_reads_body_from_stdin(words: list[str]) -> bool:
+    """Return True iff a git-commit / gh / glab segment reads its body from stdin.
 
-    For ``printf '%s' 'msg' | git commit -F -`` the writer's operands ARE the
-    commit message fed to git's stdin — at PreToolUse scan time that is the only
-    place the message lives (the commit has not run). Returns the joined operands
-    of a ``printf``/``echo`` segment sitting immediately upstream (via a ``|``
-    pipe) of a ``git commit`` reading its message from stdin, else ``None``. The
-    operands are joined verbatim and scanned as a conservative SUPERSET (a banned
-    term / user quote in the real body is a substring of the join), never
-    re-executed.
+    git's commit message comes from stdin on ``-F -`` / ``--file -`` /
+    ``--file=-``; a gh/glab post body on ``--body-file -`` / ``-F -`` / ``--file
+    -``. A bare ``git commit`` opens an editor and ``-F <file>`` / ``-m`` read
+    elsewhere, so neither pairs with a pipe.
+    """
+    if not words:
+        return False
+    leader = PurePosixPath(words[0]).name
+    if leader == "git":
+        return "commit" in words and _reads_dash_stdin(words, frozenset({"-F", "--file"}))
+    if leader in {"gh", "glab"}:
+        return _reads_dash_stdin(words, frozenset({"-F", "--file", "--body-file"}))
+    return False
+
+
+def piped_stdin_writer_body(tokens: list[Token]) -> str | None:
+    """Return the body a ``printf``/``echo`` writer pipes into a stdin body reader.
+
+    For ``printf '%s' 'msg' | git commit -F -`` (or ``… | gh pr create
+    --body-file -``) the writer's operands ARE the body fed to the reader's stdin
+    — at PreToolUse scan time that is the only place the body lives (the command
+    has not run). Returns the joined operands of a ``printf``/``echo`` segment
+    sitting immediately upstream (via a ``|`` pipe) of a git-commit / gh / glab
+    segment reading its body from stdin, else ``None``. The operands are joined
+    verbatim and scanned as a conservative SUPERSET (a banned term / user quote
+    in the real body is a substring of the join), never re-executed.
     """
     segments = _segments_with_leading_separator(tokens)
     for idx in range(1, len(segments)):
         separator, words = segments[idx]
-        if separator != "|" or not _segment_reads_commit_message_from_stdin(words):
+        if separator != "|" or not _segment_reads_body_from_stdin(words):
             continue
         _, prev_words = segments[idx - 1]
         if prev_words and PurePosixPath(prev_words[0]).name in _REDIRECT_WRITER_COMMANDS:
@@ -514,36 +535,36 @@ def walk_body_file_flags(words: list[str], payloads: list[str], *, leader: str, 
         i += 1
 
 
-def _append_git_stdin_commit_body(payloads: list[str], ctx: BodyFileContext) -> None:
-    """Resolve the message a ``git commit -F -`` reads from STDIN (#1415).
+def _append_stdin_body(payloads: list[str], ctx: BodyFileContext, *, fail_closed: bool) -> None:
+    """Resolve a ``… -F -`` / ``--body-file -`` body read from STDIN (#1415).
 
-    ``-F -`` is not a file named ``-`` — git reads the commit message from
-    stdin, so the body lives in whatever feeds the command's stdin at scan
-    time:
+    ``-`` is not a file named ``-`` — the body/message comes from stdin, so it
+    lives in whatever feeds the command's stdin at scan time:
 
-    - a piped ``printf``/``echo`` writer (``printf 'msg' | git commit -F -``) →
-        its operands are appended (``ctx.stdin_piped_body``) and SCANNED, so a
-        real banned term / user quote in the body still blocks;
-    - a heredoc (``git commit -F - <<EOF … EOF``) → the body is already appended
-        globally by :func:`_command_parser.extract_bash_payload`
+    - a piped ``printf``/``echo`` writer (``printf 'msg' | gh pr create
+        --body-file -``) → its operands are appended (``ctx.stdin_piped_body``)
+        and SCANNED, so a real banned term / user quote in the body still blocks;
+    - a heredoc (``gh pr create --body-file - <<EOF … EOF``) → the body is already
+        appended globally by :func:`_command_parser.extract_bash_payload`
         (``ctx.has_unredirected_heredoc``), so this contributes nothing (no
-        double-count) and emits NO sentinel;
-    - genuinely-opaque stdin (``cat file | git commit -F -``, an interactive
-        editor) → the message is unreadable at scan time. It is a LOCAL commit
-        (no leak until push, and the pre-push gate re-scans commit messages), so
-        the generic fail-closed sentinel is emitted: the destination-aware
-        gates DOWNGRADE it to a warning for a local commit rather than
-        hard-blocking, while a chained PUBLIC post still defeats that downgrade.
+        double-count) and emits NO sentinel — the heredoc content is scanned;
+    - genuinely-opaque stdin (``cat file | gh pr create --body-file -``, an
+        interactive editor) → the body is unreadable at scan time, so the generic
+        fail-closed sentinel is emitted when ``fail_closed``. A PUBLIC gh/glab
+        post the gate cannot read hard-blocks; a LOCAL git commit's sentinel is
+        later DOWNGRADED to a warning by the destination-aware carve-out (the
+        pre-push gate re-scans commit messages). ``fail_closed`` False appends
+        nothing (the quote scanner's drafted-but-absent posture).
 
-    Resolving the readable stdin sources is the #1415 fix: a clean ``git commit
-    -F -`` heredoc/piped message is no longer hard-blocked merely for being
-    unreadable as a file named ``-``.
+    Extending this from ``git commit -F -`` to gh/glab ``--body-file -`` is the
+    #1415 fix: a clean heredoc/piped gh/glab body is no longer hard-blocked as an
+    unreadable file named ``-`` (previously only git resolved its stdin body).
     """
     if ctx.stdin_piped_body is not None:
         payloads.append(ctx.stdin_piped_body)
     elif ctx.has_unredirected_heredoc:
         return
-    else:
+    elif fail_closed:
         payloads.append(FAIL_CLOSED_SENTINEL)
 
 
@@ -552,10 +573,12 @@ def _append_file_payload(
 ) -> None:
     """Append the body referenced by a ``-F``/``--file``/``--body-file`` path.
 
-    A ``git commit -F -`` (``leader == "git"`` and ``path == "-"``) reads its
-    message from STDIN, not a file named ``-``; it is resolved by
-    :func:`_append_git_stdin_commit_body` (the in-command heredoc / piped writer,
-    else a downgrade-eligible fail-closed sentinel for the LOCAL commit).
+    A stdin body reference (``path == "-"`` on a git-commit / gh / glab leader —
+    ``git commit -F -``, ``gh pr create --body-file -``) reads its body/message
+    from STDIN, not a file named ``-``; it is resolved by
+    :func:`_append_stdin_body` (the in-command heredoc / piped writer, else a
+    fail-closed sentinel — always for git's LOCAL commit, else per the
+    destination-aware ``fail_closed`` policy for a gh/glab post).
 
     For a real path the resolution order is: the on-disk file (as-is, then
     relative to ``ctx.base`` -- the commit's repo dir), then an in-command body
@@ -581,8 +604,10 @@ def _append_file_payload(
     scanner keeps a drafted-but-absent ``gh``/``glab`` body file as
     "needs-inline", not a fail-closed HIGH (#126).
     """
-    if leader == "git" and path == STDIN_DASH:
-        _append_git_stdin_commit_body(payloads, ctx)
+    if path == STDIN_DASH and leader in _STDIN_BODY_LEADERS:
+        # git's commit-message stdin ALWAYS fails closed on opaque input (#1207);
+        # gh/glab's body-file stdin follows the destination-aware fail_closed policy.
+        _append_stdin_body(payloads, ctx, fail_closed=leader == "git" or fail_closed)
         return
     content = read_file_arg(path, ctx.base)
     if content is None:
