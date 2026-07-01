@@ -1,10 +1,10 @@
 """Periodic backlog-sweep scanner — #2419.
 
-Companion to the ``backlog-sweep`` skill: once the sweep's verdicts prove
+Companion to the ``sweeping-tickets`` skill: once the sweep's verdicts prove
 trustworthy, the loop fires a low-frequency ``backlog_sweep`` task that
-triages the issue backlog (superseded / stale / regressive / still-valid
-against current ``main``) without depending on an external cron. The
-scanner mirrors the shape of
+consolidates the issue tracker (shipped / consolidate-into-epic /
+regressive / still-standalone against current ``main``) without depending
+on an external cron. The scanner mirrors the shape of
 :mod:`teatree.loop.scanners.scanning_news` but bakes in two safety
 properties from day one because the sweep is destructive-capable (it can
 propose closing issues):
@@ -15,10 +15,10 @@ propose closing issues):
     scans when invoked — the on/off decision lives at the wiring layer
     (``teatree.loop.global_scanner_factories._backlog_sweep_scanner``).
 * **Ask-gate in the directive.** The queued task carries an ASK-GATE
-    marker so the dispatched sweep records close proposals and surfaces
-    the batch for explicit approval — it never mass-closes unattended.
-    Only the high-confidence merged-PR-superseded class auto-closes (the
-    skill's own discipline).
+    marker so the dispatched sweep records close/fold proposals and
+    surfaces the batch for explicit approval — it never mass-closes or
+    mass-folds unattended. Only the high-confidence shipped-by-merged-PR
+    class auto-closes (the skill's own discipline).
 
 Other invariants mirror ``scanning_news``:
 
@@ -88,7 +88,7 @@ class BacklogSweepScanner:
     """
 
     overlay_name: str
-    skill: str = "backlog-sweep"
+    skill: str = "sweeping-tickets"
     cadence_hours: int = 168
     require_approval: bool = True
     name: str = "backlog_sweep"

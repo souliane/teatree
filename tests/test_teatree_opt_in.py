@@ -355,7 +355,7 @@ _CROSS_CUTTING_SKILLS = [
     "loops",
 ]
 # Genuinely teatree-specific skills keep the transitive opt-in.
-_TEATREE_SPECIFIC_SKILLS = ["teatree-dogfood", "teatree-batch", "teatree-plan"]
+_TEATREE_SPECIFIC_SKILLS = ["dogfooding-teatree", "teatree-batch"]
 
 
 class TestRealClosureMarkerActivation:

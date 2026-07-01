@@ -242,7 +242,7 @@ class TestDetectIntentIntegration:
     """Test intent detection against real SKILL.md trigger patterns.
 
     After #1189 phase 2 only the 6 retained skills (``debug``, ``retro``,
-    ``ticket``, ``teatree``, ``teatree-dogfood``, ``workspace``) carry
+    ``ticket``, ``teatree``, ``dogfooding-teatree``, ``workspace``) carry
     ``triggers:``. Assertions for the dropped 16 class-(a) skills have been
     removed; phases 3-4 will rework these for prose-scan loading.
     """

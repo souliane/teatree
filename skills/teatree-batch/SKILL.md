@@ -11,7 +11,7 @@ metadata:
 
 # TeaTree — Batch Mode (Unattended Ticket Processing)
 
-Follows after prioritization (see `/teatree-plan`). Use when the user says "batch mode", "work unattended", "tackle tickets", or "quick wins".
+Works the open issue tracker unattended, one ticket at a time. Use when the user says "batch mode", "work unattended", "tackle tickets", or "quick wins".
 
 ## Prerequisites
 
@@ -20,7 +20,7 @@ Load `ac-python` and `ac-django` — all code must follow their review checklist
 ## Workflow
 
 1. **Run a codebase health audit** (load `ac-reviewing-codebase` in a sub-agent). Scope: all repos in the user's workspace directories. This finds actionable items beyond the issue tracker: god-modules, broken CI gates, missing coverage, stale branches.
-2. **Fetch the prioritized board** (see `/teatree-plan` § 6) and sort by effort (quick wins first).
+2. **Fetch "what's next"** — the repo's open issues plus any tracking epics from `/t3:sweeping-tickets` (an epic groups related work; pick its highest-value unchecked item) — and sort by effort (quick wins first). There is no board to sync; the tracker is just the open issues + the epics.
 3. **For each ticket**, in order. The main conversation acts as the **orchestrator only** — it queues tickets, spawns one delivery sub-agent per ticket, records the structured result, and moves on. It holds no per-ticket implementation context (see § Rules "Singleton delivery sub-agent"):
    - The orchestrator reads only enough of the issue to decide routing. A ticket that needs design decisions or user input is skipped and the next one starts.
    - One delivery sub-agent owns the ticket's full cycle: it creates a worktree via `t3 teatree workspace ticket <ticket_url>` (uses `$T3_WORKSPACE_DIR`), implements to `ac-python`/`ac-django` standards (when a teatree change affects the overlay API, the corresponding overlay fix lands in the same session), runs tests + lint, and self-reviews with a `t3:reviewer` sub-agent.

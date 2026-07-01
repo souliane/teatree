@@ -207,13 +207,13 @@ def _agent(prompt: str, *, run_in_background: bool = False) -> dict:
 
 def _arrange_skill_loading(ctx: GateContext) -> None:
     ctx.monkeypatch.setenv("T3_SKILL_SEARCH_DIRS", str(_REPO_SKILLS_DIR))
-    ctx.write_state("pending", "teatree-plan\n")
+    ctx.write_state("pending", "code\n")
     ctx.write_state("skills", "")
 
 
 def _arrange_skill_loading_on_task(ctx: GateContext) -> None:
     ctx.monkeypatch.setenv("T3_SKILL_SEARCH_DIRS", str(_REPO_SKILLS_DIR))
-    ctx.write_state("pending", "teatree-plan\n")
+    ctx.write_state("pending", "code\n")
     ctx.write_state("skills", "")
 
 
@@ -1035,7 +1035,7 @@ def test_gate_allows_real_must_allow_payload(
     """(b) The gate ALLOWS its real must-ALLOW payload.
 
     No row is xfailed here anymore: the plan-tracker mismatch (#167) is fixed,
-    so a real ``teatree-plan`` /plan clears both plan gates and every gate's
+    so loading a real skill clears both plan gates and every gate's
     must-ALLOW payload passes through.
     """
     _mark_xfail(request, row.allow_phantom_reason)

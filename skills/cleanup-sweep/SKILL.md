@@ -36,7 +36,7 @@ item it could NOT auto-decide as a machine-readable record. This skill is the
 **judgment** layer over that EMIT: for each uncertain item it decides
 **salvage-to-fresh-PR**, **delete-redundant**, **post-merge-to-new-PR**, **skip**,
 or **keep-with-warning** — then calls the CLI to do the destructive step. It is the
-worktree/branch/stash counterpart of `/t3:backlog-sweep` (issues) and
+worktree/branch/stash counterpart of `/t3:sweeping-tickets` (issues) and
 `/t3:sweeping-prs` (open PRs).
 
 **Core principle — the outcome invariant.** Every stale item the sweep ACTS on (one
@@ -64,7 +64,7 @@ carry the #706/#835 data-loss guards. The skill owns the *decision*; the CLI own
 
 **When NOT to use:** plain "create a worktree" / "start the servers" / "refresh the DB"
 (that is `/t3:workspace`); updating open PRs (`/t3:sweeping-prs`); triaging the issue
-backlog (`/t3:backlog-sweep`). This skill is only the *judgment over stale local items*.
+tracker (`/t3:sweeping-tickets`). This skill is only the *judgment over stale local items*.
 
 ## The Workflow
 
@@ -301,4 +301,4 @@ Given `t3 <overlay> workspace emit` returns these records, the routing is fixed:
   Gate A is the collaboration axis.
 - `/t3:ship` § "Bundle Into an Existing Open PR" — the alternative delivery path when
   salvaged work belongs in an already-open PR rather than a fresh one.
-- `/t3:backlog-sweep`, `/t3:sweeping-prs` — the issue and open-PR counterparts of this sweep.
+- `/t3:sweeping-tickets`, `/t3:sweeping-prs` — the issue and open-PR counterparts of this sweep.

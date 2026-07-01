@@ -1115,10 +1115,10 @@ Notes on the load-bearing cases:
   (`non_overlay_task_does_not_require_overlay_skill`,
   `non_overlay_review_does_not_load_overlay_skill`).
 - **Planning** (`overlay_planning_loads_planning_and_overlay_skill`): planning
-  an overlay change loads the core planning skill plus the overlay workspace
-  skill before any plan file is written. Per [#1640](https://github.com/souliane/teatree/issues/1640)
-  the planning signal is *implementation* planning (architecture-design), not
-  `teatree-plan` board prioritization.
+  an overlay change loads the core planning skill (`architecture-design`)
+  plus the overlay workspace skill before any plan file is written. Per
+  [#1640](https://github.com/souliane/teatree/issues/1640) the planning
+  signal is *implementation* planning, not ticket-tracker prioritization.
 
 #### Anti-vacuity
 
@@ -1382,7 +1382,7 @@ parent/child uuids, a sidechain marker, cwd, git branch, and folds hook
 outcomes in as `attachment` events (`hook` / `hook_success` / `hook_*`, carrying
 `hookEvent` / `exitCode` / `command` / privacy-sensitive `stdout`/`stderr`)
 rather than as a separate stream. A `Skill` tool call carries `input.skill`
-(e.g. `t3:teatree-plan`). The parser is fail-soft: a missing field or an
+(e.g. `t3:code`). The parser is fail-soft: a missing field or an
 unrecognised hook discriminator yields a best-effort event rather than raising,
 because the on-disk schema drifts between Claude Code versions.
 
