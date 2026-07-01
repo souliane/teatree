@@ -18,7 +18,7 @@ from django.db import migrations, models
 # ``arch_review`` is the single prompt-backed default. Every loop is seeded
 # PAUSED (``enabled=False``) — turning one on is a deliberate operator action.
 # ``slack_answer`` is intentionally absent (no registry MiniLoop; it runs only
-# via the won-tick piggyback cycle).
+# via its dedicated ``loop-slack-answer`` ``/loop`` slot).
 _ARCH_REVIEW_PROMPT_BODY = (
     "Run an architectural review of the codebase using the ac-reviewing-codebase skill. "
     "Dispatch a sub-agent that loads /ac-reviewing-codebase and performs a holistic, "

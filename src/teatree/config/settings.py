@@ -1049,7 +1049,7 @@ class UserSettings:
     # with ``claim=True`` so the lead does the thin per-unit claim+spawn the
     # manifest already computes (the #786-N4 claim-is-the-spawn boundary). When
     # off (the default) the dormant ``claim=False`` path is kept EXACTLY, so the
-    # fat loop's behaviour is unchanged. Mirrors ``issue_implementer_enabled``;
+    # loop's behaviour is unchanged. Mirrors ``issue_implementer_enabled``;
     # per-overlay overridable and ``T3_ORCHESTRATE_CLAIM_ENABLED`` env wins over
     # both.
     orchestrate_claim_enabled: bool = False

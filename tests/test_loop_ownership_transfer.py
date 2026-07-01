@@ -245,7 +245,7 @@ def _race_round(
 
 def _is_owner_directive(ctx: str) -> bool:
     low = ctx.lower()
-    return "loop-tick owner" in low and "stay idle" not in low
+    return "loop owner" in low and "stay idle" not in low
 
 
 def _is_non_owner_directive(ctx: str) -> bool:

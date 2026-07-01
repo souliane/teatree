@@ -1,9 +1,9 @@
 """Per-loop connector preflight — scope the gate to ONE loop's overlay (LOOP-PR-C).
 
 :func:`teatree.core.connector_preflight.run_connector_preflight` is the
-fleet-wide gate: the master tick runs it once before fanning every overlay's
-loops out. A per-loop tick (``t3 loops tick --loop <name>``) must NOT inherit
-that fleet scope — probing every overlay there means one overlay's connector
+fleet-wide gate: it probes every overlay's connectors at once. A per-loop tick
+(``t3 loops tick --loop <name>``) must NOT inherit that fleet scope — probing
+that whole fleet there means one overlay's connector
 outage ``SystemExit``-s an unrelated loop's tick, taking the whole fleet of
 per-loop loops down on a single outage.
 

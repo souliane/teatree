@@ -240,7 +240,7 @@ class TestLoopSeed(TestCase):
     def test_orphan_slack_answer_row_is_not_seeded(self) -> None:
         # #2584: ``slack_answer`` has no registry MiniLoop, so the autonomous
         # fan-out can never run it — the seed never creates a ``slack_answer``
-        # Loop row. It runs only via the won-tick piggyback cycle.
+        # Loop row. It runs only via its dedicated ``loop-slack-answer`` ``/loop`` slot.
         assert not Loop.objects.filter(name="slack_answer").exists()
 
     def test_daily_loops_seeded_with_schedule(self) -> None:

@@ -1,8 +1,9 @@
-"""Tests for the ``t3 loop`` CLI commands (non-Django: start, stop, status, cadence).
+"""Tests for the ``t3 loop`` CLI commands (non-Django: start, stop, status, tick, cadence).
 
-Tick-specific tests live in ``teatree_core/test_loops_tick_fat_behaviour.py`` since
-tick is now a Django management command. ``t3 loop tick`` is a migration shim that
-delegates to the bare master ``loops_tick`` (#2777 cutover).
+The automated per-loop tick (``t3 loops tick --loop <name>``) lives in
+``teatree_core/test_loops_tick_command.py``. ``t3 loop tick`` here is the restored
+user-manual full-scan diagnostic (autonomous-lane redesign §7) — it delegates to
+the ``loop_tick`` management command, not the master-tick-free ``loops_tick``.
 """
 
 import time
@@ -12,42 +13,42 @@ from unittest.mock import patch
 import pytest
 from typer.testing import CliRunner
 
-from teatree.cli.loop import loop_app
+from teatree.cli.loop import _self_improve_cadence_for_loop_slot, loop_app
+from teatree.cli.loop_drain_queue import _drain_cadence_for_loop_slot
 from teatree.cli.loop_slack_answer import _slack_answer_cadence_for_loop_slot
 
 runner = CliRunner()
 
 
 class TestTickCommandDelegation:
-    def test_delegates_to_management_command(self, tmp_path: Path) -> None:
-        with (
-            patch("django.setup"),
-            patch("django.core.management.call_command") as call_mock,
-        ):
-            result = runner.invoke(loop_app, ["tick", "--statusline-file", str(tmp_path / "sl.txt")])
+    """``t3 loop tick`` — the restored user-manual full-scan tick (autonomous-lane redesign §7).
 
-        assert result.exit_code == 0
-        call_mock.assert_called_once_with("loops_tick", statusline_file=str(tmp_path / "sl.txt"))
+    Delegates to the ``loop_tick`` management command (NOT the per-loop
+    ``loops_tick``), so it scans by hand without an owner lease or a ``--loop``.
+    """
 
-    def test_passes_overlay_and_json_flags(self) -> None:
-        with (
-            patch("django.setup"),
-            patch("django.core.management.call_command") as call_mock,
-        ):
-            result = runner.invoke(loop_app, ["tick", "--overlay", "myoverlay", "--json"])
-
-        assert result.exit_code == 0
-        call_mock.assert_called_once_with("loops_tick", overlay="myoverlay", json_output=True)
-
-    def test_no_args_calls_with_empty_kwargs(self) -> None:
+    def test_no_flags_delegates_to_loop_tick(self) -> None:
         with (
             patch("django.setup"),
             patch("django.core.management.call_command") as call_mock,
         ):
             result = runner.invoke(loop_app, ["tick"])
-
         assert result.exit_code == 0
-        call_mock.assert_called_once_with("loops_tick")
+        call_mock.assert_called_once_with("loop_tick")
+
+    def test_flags_forwarded_to_loop_tick(self) -> None:
+        with (
+            patch("django.setup"),
+            patch("django.core.management.call_command") as call_mock,
+        ):
+            result = runner.invoke(
+                loop_app,
+                ["tick", "--overlay", "teatree", "--json", "--statusline-file", "/tmp/sl.txt"],
+            )
+        assert result.exit_code == 0
+        call_mock.assert_called_once_with(
+            "loop_tick", statusline_file="/tmp/sl.txt", overlay="teatree", json_output=True
+        )
 
 
 class TestPendingSpawnCommandDelegation:
@@ -396,6 +397,79 @@ class TestSlackAnswerStartCommand:
 
         assert result.exit_code == 0
         call.assert_called_once_with("loop_slack_answer", json_output=True)
+
+
+class TestDrainQueueCadenceParser:
+    @pytest.mark.parametrize(
+        ("env_value", "expected"),
+        [
+            ("30", "30s"),
+            ("60", "1m"),
+            ("", "30s"),
+            ("garbage", "30s"),
+            ("5", "10s"),  # clamped to 10s floor
+            ("10", "10s"),
+        ],
+    )
+    def test_parses_t3_queue_drain_cadence(
+        self, env_value: str, expected: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("T3_QUEUE_DRAIN_CADENCE", env_value)
+        assert _drain_cadence_for_loop_slot() == expected
+
+    def test_default_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_QUEUE_DRAIN_CADENCE", raising=False)
+        assert _drain_cadence_for_loop_slot() == "30s"
+
+
+class TestDrainQueueStartCommand:
+    def test_start_emits_the_drain_slot_line(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_QUEUE_DRAIN_CADENCE", "30")
+        result = runner.invoke(loop_app, ["drain-queue", "start"])
+
+        assert result.exit_code == 0
+        assert "/loop 30s Run `t3 loop drain-queue run`." in result.stdout
+        assert "T3_QUEUE_DRAIN_CADENCE" in result.stdout
+
+    def test_run_delegates_to_management_command(self) -> None:
+        with patch("django.core.management.call_command") as call:
+            result = runner.invoke(loop_app, ["drain-queue", "run", "--json"])
+
+        assert result.exit_code == 0
+        call.assert_called_once_with("loop_drain_queue", json_output=True)
+
+
+class TestSelfImproveCadenceParser:
+    @pytest.mark.parametrize(
+        ("env_value", "expected"),
+        [
+            ("1800", "30m"),
+            ("90", "90s"),
+            ("60", "1m"),
+            ("", "30m"),
+            ("garbage", "30m"),
+            ("5", "1m"),  # clamped to 60s floor
+        ],
+    )
+    def test_parses_t3_self_improve_cadence(
+        self, env_value: str, expected: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("T3_SELF_IMPROVE_CHEAP_CADENCE", env_value)
+        assert _self_improve_cadence_for_loop_slot() == expected
+
+    def test_default_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_SELF_IMPROVE_CHEAP_CADENCE", raising=False)
+        assert _self_improve_cadence_for_loop_slot() == "30m"
+
+
+class TestSelfImproveStartCommand:
+    def test_start_emits_the_self_improve_slot_line(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_SELF_IMPROVE_CHEAP_CADENCE", "1800")
+        result = runner.invoke(loop_app, ["self-improve", "start"])
+
+        assert result.exit_code == 0
+        assert "/loop 30m Run `t3 loop self-improve run --tier cheap`." in result.stdout
+        assert "T3_SELF_IMPROVE_CHEAP_CADENCE" in result.stdout
 
 
 # ast-grep-ignore: ac-django-no-pytest-django-db

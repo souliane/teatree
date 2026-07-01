@@ -12,6 +12,22 @@ from teatree.hooks import _repo_visibility, banned_terms_scanner
 from teatree.hooks._command_parser import is_fail_closed_sentinel
 
 
+@pytest.fixture(autouse=True)
+def _public_teatree_probe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The leak gate enforces ONLY on an affirmatively-PUBLIC target (#1415), so a
+    # must-BLOCK row toward the genuinely-public ``souliane/teatree`` needs the
+    # probe to CONFIRM it public. Delegate every other slug to the real probe so a
+    # per-test ``_resolve_probe_tool``/``probe_visibility`` shim still governs it
+    # (an unknown/unresolvable target then SKIPS). Isolate the visibility cache.
+    monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "viscache"))
+    real_probe = _repo_visibility.probe_visibility
+    monkeypatch.setattr(
+        _repo_visibility,
+        "probe_visibility",
+        lambda slug: "PUBLIC" if "souliane/teatree" in slug else real_probe(slug),
+    )
+
+
 @pytest.mark.integration
 def test_banned_terms_hook_expands_tilde_config_path(tmp_path: Path) -> None:
     home = tmp_path / "home"
@@ -80,12 +96,13 @@ def _git(cwd: Path, *args: str) -> None:
 
 
 @pytest.mark.integration
-def test_banned_terms_block_emits_visibility_unknown_note_and_still_denies(
+def test_banned_terms_skips_customer_term_to_unknown_visibility_target(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # A private-LOOKING target whose visibility is UNKNOWN in-hook (no probe
-    # tool resolvable, not in the allowlist) must STILL hard-block, and emit a
-    # diagnostic stderr NOTE pointing the operator at [teatree] private_repos.
+    # A target whose visibility is UNKNOWN in-hook (no probe tool resolvable, not
+    # in the allowlist) is NOT affirmatively public, so the leak gate SKIPS it
+    # entirely (#1415): the post is allowed with no deny. Bias hard toward not
+    # firing -- an unresolvable target is never treated as public.
     home = Path(os.environ["HOME"])  # the conftest-isolated HOME
     (home / ".teatree.toml").write_text('[teatree]\nbanned_terms = ["acmewidget"]\n', encoding="utf-8")
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
@@ -96,9 +113,9 @@ def test_banned_terms_block_emits_visibility_unknown_note_and_still_denies(
     _git(repo, "init", "-b", "main")
     _git(repo, "remote", "add", "origin", "git@github.com:acme/secret-product.git")
 
-    # The probe tool is unreachable in-hook -> visibility "unknown" -> the
-    # block stands. Patching the resolver (not PATH) keeps the shell scanner's
-    # ``bash``/``grep`` reachable so the banned-term match still fires.
+    # The probe tool is unreachable in-hook -> visibility "unknown" -> the gate
+    # skips. Patching the resolver (not PATH) keeps the shell scanner's
+    # ``bash``/``grep`` reachable so a fire, if it happened, would find the term.
     monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
     monkeypatch.delenv("GH_REPO", raising=False)
 
@@ -110,12 +127,8 @@ def test_banned_terms_block_emits_visibility_unknown_note_and_still_denies(
     blocked = handle_banned_terms_pretool(data)
     captured = capsys.readouterr()
 
-    assert blocked is True
-    decision = json.loads(captured.out)
-    assert decision["permissionDecision"] == "deny"
-    assert "banned-terms" in decision["permissionDecisionReason"]
-    assert "acme/secret-product" in captured.err
-    assert "private_repos" in captured.err
+    assert blocked is False
+    assert captured.out == ""  # no deny JSON
 
 
 def test_banned_terms_allowed_when_target_resolvable_private(
@@ -923,14 +936,14 @@ def test_kill_switch_default_on_still_blocks_a_public_post(
     assert json.loads(captured.out)["permissionDecision"] == "deny"
 
 
-# ── #1415 internal-denylist scoping (fail-closed) ────────────────────────────
+# ── #1415 visibility scoping (affirmative-public) ────────────────────────────
 #
 # The reported over-block fired on a publish to a PRIVATE internal remote the
-# user had not declared. The fix is config-driven and FAIL-CLOSED: a target named
-# in ``internal_publish_namespaces`` (the denylist) SKIPS the scan, while EVERY
-# non-internal target -- the public teatree repo, a USER-OWNED non-teatree PUBLIC
-# repo, an unknown/unresolvable target -- still SCANS. An allowlist of "surfaces
-# to scan" would fail OPEN on a public repo nobody listed and leak unscanned.
+# user had not declared. The leak gate enforces ONLY on an affirmatively-PUBLIC
+# target: a target named in ``internal_publish_namespaces`` SKIPS, and so does an
+# unknown/unresolvable one (bias hard toward not firing). ONLY a target the probe
+# CONFIRMS public -- the public teatree repo, a USER-OWNED non-teatree PUBLIC repo
+# -- SCANS. A private/internal/unknown repo must never be falsely blocked.
 
 _DENYLIST_CONFIG = '[teatree]\nbanned_terms = ["customercorp"]\ninternal_publish_namespaces = ["internal-eng"]\n'
 
@@ -983,12 +996,12 @@ def test_live_hook_blocks_customer_term_to_user_owned_non_teatree_public_repo(
     assert decision["permissionDecision"] == "deny"
 
 
-def test_live_hook_blocks_customer_term_to_unknown_visibility_non_denylisted_repo(
+def test_live_hook_skips_customer_term_to_unknown_visibility_non_denylisted_repo(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # MUST-FIRE: a non-denylisted target whose visibility the in-hook probe cannot
-    # resolve (the common cold-hook state) stays PUBLIC and is scanned -- detection
-    # failure never opens the gate.
+    # MUST-SKIP: a non-denylisted target whose visibility the in-hook probe cannot
+    # resolve (the common cold-hook state) is NOT affirmatively public, so the leak
+    # gate SKIPS it (#1415) -- an unknown target is never treated as public.
     home = Path(os.environ["HOME"])
     _write_home_config(home, _DENYLIST_CONFIG, monkeypatch, tmp_path)
     monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
@@ -1002,17 +1015,17 @@ def test_live_hook_blocks_customer_term_to_unknown_visibility_non_denylisted_rep
     blocked = handle_banned_terms_pretool(data)
     captured = capsys.readouterr()
 
-    assert blocked is True
-    decision = json.loads(captured.out)
-    assert decision["permissionDecision"] == "deny"
+    assert blocked is False
+    assert captured.out == ""  # no deny JSON
 
 
-def test_live_hook_scans_unresolvable_target_failsafe(
+def test_live_hook_skips_unresolvable_target(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # FAIL-SAFE: a publish whose target cannot be resolved from the command (a
-    # flagless create whose cwd has NO git remote -> destination None) keeps
-    # scanning and blocks the term. An unparsable target is never a silent bypass.
+    # MUST-SKIP: a publish whose target cannot be resolved from the command (a
+    # flagless create whose cwd has NO git remote -> destination None) is not
+    # affirmatively public, so the gate SKIPS it. Bias hard toward not firing:
+    # an unresolvable ``gh``/``glab`` publish is never treated as a public leak.
     home = Path(os.environ["HOME"])
     _write_home_config(home, _DENYLIST_CONFIG, monkeypatch, tmp_path)
     monkeypatch.setattr(_repo_visibility, "_resolve_probe_tool", lambda _tool: None)
@@ -1030,9 +1043,8 @@ def test_live_hook_scans_unresolvable_target_failsafe(
     blocked = handle_banned_terms_pretool(data)
     captured = capsys.readouterr()
 
-    assert blocked is True
-    decision = json.loads(captured.out)
-    assert decision["permissionDecision"] == "deny"
+    assert blocked is False
+    assert captured.out == ""  # no deny JSON
 
 
 def test_posting_body_file_resolves_against_cwd(tmp_path: Path) -> None:

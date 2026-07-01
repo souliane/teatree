@@ -146,8 +146,8 @@ class Command(TyperCommand):
         if enforce_cadence:
             # The ONE cadence ledger: the dream Loop row's is_due / last_run_at, gated
             # by the single enable verdict (Loop.enabled + LoopState) — never a second
-            # cadence ledger. dream is off_live_tick, so the master never bumps this
-            # row; t3 dream tick owns its last_run_at alone.
+            # cadence ledger. dream is off_live_tick, so the live tick never bumps
+            # this row; t3 dream tick owns its last_run_at alone.
             row = Loop.objects.filter(name=MINI_LOOP.name).first()
             if row is None or not loop_enabled(MINI_LOOP.name):
                 self.stdout.write("SKIP  dream loop disabled (no enabled Loop row / LoopState hold).")

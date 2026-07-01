@@ -125,7 +125,7 @@ def _run_banned_terms_pretool(data: dict) -> bool:
 
     from hook_router import _resolve_cwd_repo, emit_pretooluse_deny  # noqa: PLC0415, PLC2701
 
-    from teatree.hooks import banned_terms_scanner, publish_destination, publish_surface  # noqa: PLC0415
+    from teatree.hooks import banned_terms_scanner, public_visibility, publish_surface  # noqa: PLC0415
 
     tool_name = data.get("tool_name", "")
     raw_input = data.get("tool_input", {}) or {}
@@ -150,7 +150,7 @@ def _run_banned_terms_pretool(data: dict) -> bool:
         return False
 
     skipped = banned_terms_scanner.has_override(tool_name, tool_input) or (
-        tool_name == "Bash" and publish_destination.gate_skips_destination(command, cwd_repo)
+        tool_name == "Bash" and public_visibility.gate_skips_for_visibility(command, cwd_repo)
     )
     term = None if skipped else banned_terms_scanner.scan_text(payload)
     if term is None:

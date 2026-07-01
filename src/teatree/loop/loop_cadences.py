@@ -2,21 +2,20 @@
 
 The dedicated loop-line dashboard (:mod:`teatree.loop.statusline_loops`, a low
 presentation module) colors each loop's next-tick countdown against that loop's
-own cadence, so it must resolve every loop's cadence. The readers used to live
-up-stack on :mod:`teatree.loop.tick_piggyback` / :mod:`teatree.loop.queue_drain`
-(the orchestration top), forcing ``statusline_loops`` to *defer*-import UP into
-them — a back-edge hidden from tach's acyclic guard.
-
-These readers depend on nothing but ``os.environ``, so they belong at the bottom
-of the ``teatree.loop`` layer. Pulling them into this leaf lets ``statusline_loops``
-reach them via an eager DOWN edge; ``tick_piggyback`` / ``queue_drain`` re-export
-them so every existing import path (the ``loops_tick`` management command resolves
-``_loop_owner_ttl_seconds`` from ``tick_piggyback``) is unchanged.
+own cadence, so it must resolve every loop's cadence. These readers depend on
+nothing but ``os.environ``, so they live at the bottom of the ``teatree.loop``
+layer and every consumer reaches them via an eager DOWN edge: the ``loops_tick``
+per-loop tick command (``loop_owner_ttl_seconds``), the reactive drain-queue
+command (``drain_cadence_seconds``), and ``statusline_loops`` — no back-edge, no
+re-export shim.
 """
 
 import os
+from collections.abc import Callable
+from dataclasses import dataclass
 
 _LOOP_OWNER_TTL_DEFAULT = 1800
+_SECONDS_PER_MINUTE = 60
 
 
 def slack_answer_cadence_seconds() -> int:
@@ -62,9 +61,65 @@ def drain_cadence_seconds() -> int:
         return 30
 
 
+@dataclass(frozen=True, slots=True)
+class ReactiveSlot:
+    """A reactive infra ``/loop`` slot — sub-minute, so it registers via the ``/loop <duration>`` form (#2650).
+
+    The three reactive slots (Slack-answer, self-improve, drain-queue) have NO DB
+    ``Loop`` row: their sub-minute cadence cannot be a minute-granular cron
+    (:func:`teatree.loops.claude_specs.cron_for_loop` floors to whole minutes), so
+    each is its OWN dedicated ``/loop`` on a *duration* cadence. This bundles a
+    slot's cadence reader (the SoT for its throttle seconds, above) with the
+    ``t3 loop <slot> run`` it fires, so ``t3 loop <slot> start`` AND the
+    owner-session bootstrap (:mod:`hooks.scripts.loop_registrations`) register the
+    SAME ``/loop`` — there is no master tick to piggyback the cycles onto, so the
+    owner registers these three directly.
+    """
+
+    slot_id: str
+    cadence_seconds: Callable[[], int]
+    run_command: str
+
+    def cadence(self) -> str:
+        """The ``/loop`` duration token — ``<N>m`` when minute-aligned, else ``<N>s``."""
+        seconds = self.cadence_seconds()
+        if seconds % _SECONDS_PER_MINUTE == 0:
+            return f"{seconds // _SECONDS_PER_MINUTE}m"
+        return f"{seconds}s"
+
+    def loop_directive(self) -> str:
+        """The ``/loop <duration> Run `...`.`` slash command that registers this reactive slot."""
+        return f"/loop {self.cadence()} Run `{self.run_command}`."
+
+
+#: The three reactive infra ``/loop`` slots, in registration order — the single
+#: source of truth both ``t3 loop <slot> start`` and the owner bootstrap read.
+REACTIVE_SLOTS: tuple[ReactiveSlot, ...] = (
+    ReactiveSlot("loop-slack-answer", slack_answer_cadence_seconds, "t3 loop slack-answer run"),
+    ReactiveSlot("loop-self-improve", self_improve_cadence_seconds, "t3 loop self-improve run --tier cheap"),
+    ReactiveSlot("loop-drain-queue", drain_cadence_seconds, "t3 loop drain-queue run"),
+)
+
+_REACTIVE_BY_SLOT: dict[str, ReactiveSlot] = {slot.slot_id: slot for slot in REACTIVE_SLOTS}
+
+
+def reactive_slot(slot_id: str) -> ReactiveSlot:
+    """The reactive slot for ``loop-slack-answer`` / ``loop-self-improve`` / ``loop-drain-queue``."""
+    return _REACTIVE_BY_SLOT[slot_id]
+
+
+def reactive_slot_directives() -> list[str]:
+    """The ``/loop <duration>`` registrations for all three reactive infra loops (owner-session bootstrap)."""
+    return [slot.loop_directive() for slot in REACTIVE_SLOTS]
+
+
 __all__ = [
+    "REACTIVE_SLOTS",
+    "ReactiveSlot",
     "drain_cadence_seconds",
     "loop_owner_ttl_seconds",
+    "reactive_slot",
+    "reactive_slot_directives",
     "self_improve_cadence_seconds",
     "slack_answer_cadence_seconds",
 ]

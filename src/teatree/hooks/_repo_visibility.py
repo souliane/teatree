@@ -386,16 +386,27 @@ def forge_qualified_slug(slug: str, forge: str) -> str:
     return f"{canonical_host}/{slug}"
 
 
-def slug_is_private(slug: str) -> bool:
-    """Resolve whether ``slug`` is a private repo (cache -> probe -> cache write)."""
+def slug_visibility(slug: str) -> str | None:
+    """Resolve ``slug``'s visibility verdict (upper-cased), or ``None`` (cache -> probe -> cache).
+
+    ``None`` is the fail-safe unknown -- an absent probe tool, an unrecognised
+    slug, or a probe error. Callers read a ``"PRIVATE"`` verdict (the carve-out)
+    or a ``"PUBLIC"`` one (the affirmative-public leak-gate scope in
+    :mod:`teatree.hooks.public_visibility`); every other verdict, and ``None``,
+    is neither.
+    """
     cached = _read_visibility_cache(slug)
     if cached is not None:
-        return cached == "PRIVATE"
+        return cached
     verdict = probe_visibility(slug)
-    if verdict is None:
-        return False
-    _write_visibility_cache(slug, verdict)
-    return verdict == "PRIVATE"
+    if verdict is not None:
+        _write_visibility_cache(slug, verdict)
+    return verdict
+
+
+def slug_is_private(slug: str) -> bool:
+    """Return True iff ``slug``'s visibility verdict is ``"PRIVATE"``."""
+    return slug_visibility(slug) == "PRIVATE"
 
 
 def _strip_host_prefix(slug: str) -> str:

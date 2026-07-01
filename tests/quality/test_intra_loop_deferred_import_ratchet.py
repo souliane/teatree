@@ -93,9 +93,13 @@ _TACH = _REPO_ROOT / "tach.toml"
 # removing the one function-scoped ``from teatree.loop_enabled import ...`` edge
 # (target ``teatree.loop_enabled`` matched the ``teatree.loop`` prefix), dropping
 # the count 29 -> 28.
+# The master-tick removal (#2650) deletes ``teatree.loop.tick_piggyback`` — whose
+# two function-scoped ``teatree.loop``-targeting imports (the deferred
+# ``self_improve.schedule`` and ``queue_drain`` edges) go with it — dropping the
+# count 28 -> 26.
 # SHRINK-ONLY: lower this as later carves convert remaining deferred edges into
 # declared tach sub-node edges; never raise it.
-_FROZEN_INTRA_LOOP_DEFERRED = 28
+_FROZEN_INTRA_LOOP_DEFERRED = 26
 
 
 def _function_scoped_intra_loop_imports(source: Path) -> int:
@@ -566,15 +570,3 @@ class TestLoopSlackAnswerNode:
 
     def test_parent_loop_declares_slack_answer(self) -> None:
         assert "teatree.loop.slack_answer" in _depends_on("teatree.loop")
-
-    def test_tick_piggyback_does_not_defer_import_slack_answer(self) -> None:
-        # The `run_slack_answer_cycle` import is now an eager module-header import
-        # in tick_piggyback; no function-scoped `from teatree.loop.slack_answer`
-        # may remain (the deferred down-edge PR hoists).
-        source = (_LOOP_ROOT / "tick_piggyback.py").read_text(encoding="utf-8")
-        deferred = [
-            line.strip()
-            for line in source.splitlines()
-            if line.lstrip().startswith("from teatree.loop.slack_answer") and line != line.lstrip()
-        ]
-        assert deferred == [], f"tick_piggyback.py still defers a slack_answer import: {deferred}"

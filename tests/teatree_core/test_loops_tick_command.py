@@ -1,11 +1,11 @@
-"""``manage.py loops_tick`` — the single tick surface (#1796 / #2777 cutover).
+"""``manage.py loops_tick`` — the single PER-LOOP tick surface (#2650).
 
 Drives the real command via ``call_command`` with the dispatch pipeline and
-backends mocked. Asserts the singleton ``t3-master`` ownership gate (non-owner
-SKIPs) and that the won path runs ``run_tick`` with the DB-``Loop``-driven jobs
-builder. After #2777 the bare master claims ``t3-master`` + ``loop-tick`` (the
-slots the retired ``loop_tick`` command held), so the self-pump cutover is
-behaviour-preserving.
+backends mocked. There is NO master tick: bare ``t3 loops tick`` (no ``--loop``)
+is a hard error, and the per-loop tick claims the disjoint ``loop:<name>`` owner
+lease + ``loop-tick:<name>`` mutex, re-anchors a deferred reinstall behind the
+``loop-reinstall`` lease, installs the statusline schedules reader, and runs
+``run_tick`` scoped to that one loop — never a reactive piggyback cycle.
 """
 
 import datetime as dt
@@ -16,7 +16,6 @@ import django.test
 import pytest
 from django.core.management import call_command
 
-from teatree.core.management.commands.loops_tick import _loop_table_jobs_builder
 from teatree.core.models import Loop, LoopLease, Worktree
 from teatree.core.overlay import OverlayBase, ProvisionStep
 from teatree.loop.tick import TickReport
@@ -53,73 +52,41 @@ class _SlackDownOverlay(OverlayBase):
         return [_probe]
 
 
-class TestLoopsTickOwnership(django.test.TestCase):
-    def test_non_owner_session_skips(self) -> None:
+class TestBareTickRefused(django.test.TestCase):
+    """``t3 loops tick`` with no ``--loop`` is a hard error — there is no master tick (#2650)."""
+
+    def test_bare_tick_exits_nonzero_and_claims_no_lease(self) -> None:
+        err = io.StringIO()
         with (
-            patch("teatree.core.connector_preflight.run_connector_preflight"),
-            patch.object(LoopLease.objects, "claim_ownership", return_value=(False, "other-session")),
+            patch.object(LoopLease.objects, "claim_ownership") as claim,
             patch("teatree.loop.tick.run_tick") as run_tick,
+            pytest.raises(SystemExit) as exc,
         ):
-            out = _run()
-        assert "SKIP" in out
+            call_command("loops_tick", stderr=err)
+        assert exc.value.code == 2
+        # No fan-out, no lease claim — the bare path never reaches the tick body.
+        claim.assert_not_called()
         run_tick.assert_not_called()
 
-    def test_bare_master_claims_t3_master_and_loop_tick(self) -> None:
-        """The bare master claims the unified ``t3-master`` + ``loop-tick`` slots.
+    def test_bare_tick_message_points_at_per_loop_usage(self) -> None:
+        err = io.StringIO()
+        with pytest.raises(SystemExit):
+            call_command("loops_tick", stderr=err)
+        message = err.getvalue()
+        assert "--loop" in message
+        assert "no master tick" in message.lower()
 
-        After the autonomous-lane §8.3 rename the singleton owner slot is
-        ``t3-master`` (the former ``loop-owner``). The bare master and the live
-        session's lease + the self-pump cutover must all share that ONE owner
-        slot, so no orphaned pre-rename ``loop-owner`` row is left behind.
-        """
-        report = TickReport(started_at=dt.datetime.now(dt.UTC))
-        with (
-            patch.dict("os.environ", {"CLAUDE_SESSION_ID": "owner-session"}),
-            patch("teatree.core.connector_preflight.run_connector_preflight"),
-            patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
-            patch("teatree.loop.tick.run_tick", return_value=report),
-            patch("teatree.loop.tick_piggyback.run_piggyback_cycles"),
-        ):
-            _run()
-        assert LoopLease.objects.get(name="t3-master").session_id == "owner-session"
-        # The per-tick mutex row exists (acquired then released → owner blanked).
-        assert LoopLease.objects.filter(name="loop-tick").exists()
-        # Clean cutover: the pre-rename owner slot name is never written.
-        assert not LoopLease.objects.filter(name="loop-owner").exists()
-
-    def test_master_skip_names_the_t3_master_slot(self) -> None:
-        """The SKIP remedy interpolates the REAL slot (``t3-master``)."""
-        with (
-            patch("teatree.core.connector_preflight.run_connector_preflight"),
-            patch.object(LoopLease.objects, "claim_ownership", return_value=(False, "other-session")),
-            patch("teatree.loop.tick.run_tick") as run_tick,
-        ):
-            out = _run()
-        assert "t3 loop claim --slot t3-master --take-over" in out
-        run_tick.assert_not_called()
-
-    def test_won_owner_runs_master_tick_with_loop_table_builder(self) -> None:
-        report = TickReport(started_at=dt.datetime.now(dt.UTC))
-        with (
-            patch("teatree.core.connector_preflight.run_connector_preflight"),
-            patch.object(LoopLease.objects, "claim_ownership", return_value=(True, "me")),
-            patch.object(LoopLease.objects, "acquire", return_value=True),
-            patch.object(LoopLease.objects, "release"),
-            patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
-            patch("teatree.loop.tick.run_tick", return_value=report) as run_tick,
-            patch("teatree.loop.tick_piggyback.run_piggyback_cycles") as piggyback,
-        ):
-            _run()
-        assert run_tick.called
-        assert run_tick.call_args.kwargs["jobs_builder"] is _loop_table_jobs_builder
-        # The full master fan-out also runs the won-tick reactive piggyback cycles.
-        piggyback.assert_called_once()
+    def test_blank_loop_flag_is_also_refused(self) -> None:
+        err = io.StringIO()
+        with pytest.raises(SystemExit) as exc:
+            call_command("loops_tick", loop="   ", stderr=err)
+        assert exc.value.code == 2
 
 
 class TestLoopsTickPerLoop(django.test.TestCase):
     """``t3 loops tick --loop <name>`` — one enabled DB Loop per native ``/loop`` (#2650)."""
 
-    def test_loop_flag_claims_the_per_loop_lease(self) -> None:
+    def test_loop_flag_claims_the_per_loop_owner_lease(self) -> None:
         report = TickReport(started_at=dt.datetime.now(dt.UTC))
         captured: dict[str, str] = {}
 
@@ -128,31 +95,39 @@ class TestLoopsTickPerLoop(django.test.TestCase):
             return (True, "me")
 
         with (
-            patch("teatree.core.connector_preflight.run_connector_preflight"),
             patch.object(LoopLease.objects, "claim_ownership", side_effect=_claim),
             patch.object(LoopLease.objects, "acquire", return_value=True),
             patch.object(LoopLease.objects, "release"),
             patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
             patch("teatree.loop.tick.run_tick", return_value=report),
-            patch("teatree.loop.tick_piggyback.run_piggyback_cycles") as piggyback,
         ):
             _run(loop="inbox")
-        # A disjoint per-loop owner key (``loop:<name>``), never the singleton
-        # ``t3-master`` — so the N per-loop ``/loop``s run in parallel, not
-        # serialised on one master lease.
+        # A disjoint per-loop owner key (``loop:<name>``), never a singleton owner
+        # — so the N per-loop ``/loop``s run in parallel, not serialised.
         assert captured["slot"] == "loop:inbox"
-        # The reactive piggyback cycles belong to the master fan-out, NOT a
-        # single-loop tick — never amplified once per enabled loop.
-        piggyback.assert_not_called()
+
+    def test_loop_flag_acquires_the_per_loop_tick_mutex(self) -> None:
+        report = TickReport(started_at=dt.datetime.now(dt.UTC))
+        acquired: list[str] = []
+
+        def _acquire(slot: str, **_: object) -> bool:
+            acquired.append(slot)
+            return True
+
+        with (
+            patch.object(LoopLease.objects, "claim_ownership", return_value=(True, "me")),
+            patch.object(LoopLease.objects, "acquire", side_effect=_acquire),
+            patch.object(LoopLease.objects, "release"),
+            patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
+            patch("teatree.loop.tick.run_tick", return_value=report),
+        ):
+            _run(loop="inbox")
+        # The per-loop tick mutex is ``loop-tick:<name>`` (never the bare master
+        # ``loop-tick``), so ticks of the same loop serialise but distinct loops do not.
+        assert "loop-tick:inbox" in acquired
 
     def test_per_loop_skip_names_the_real_per_loop_slot(self) -> None:
-        """#2777 L2: a per-loop SKIP interpolates the per-loop ``loop:<name>`` slot.
-
-        RED on main: the remedy was the bare ``t3 loop claim --take-over`` (the
-        wrong slot — a per-loop hand-off needs ``--slot loop:dispatch``).
-        """
         with (
-            patch("teatree.core.connector_preflight.run_connector_preflight"),
             patch.object(LoopLease.objects, "claim_ownership", return_value=(False, "other-session")),
             patch("teatree.loop.tick.run_tick") as run_tick,
         ):
@@ -163,32 +138,54 @@ class TestLoopsTickPerLoop(django.test.TestCase):
     def test_loop_flag_scopes_the_jobs_builder_to_that_one_loop(self) -> None:
         report = TickReport(started_at=dt.datetime.now(dt.UTC))
         with (
-            patch("teatree.core.connector_preflight.run_connector_preflight"),
             patch.object(LoopLease.objects, "claim_ownership", return_value=(True, "me")),
             patch.object(LoopLease.objects, "acquire", return_value=True),
             patch.object(LoopLease.objects, "release"),
             patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
             patch("teatree.loop.tick.run_tick", return_value=report) as run_tick,
-            patch("teatree.loop.tick_piggyback.run_piggyback_cycles"),
         ):
             _run(loop="inbox")
         from teatree.loop.tick import TickRequest  # noqa: PLC0415
 
         jobs_builder = run_tick.call_args.kwargs["jobs_builder"]
-        assert jobs_builder is not _loop_table_jobs_builder
-        with patch("teatree.loops.master.build_loop_table_jobs", return_value=[]) as build:
+        with patch("teatree.loops.loop_table.build_loop_table_jobs", return_value=[]) as build:
             jobs_builder(TickRequest(), dt.datetime.now(dt.UTC))
         assert build.call_args.kwargs["only"] == "inbox"
 
 
-class TestPerLoopConnectorIsolation(django.test.TestCase):
-    """A per-loop tick preflights ONLY its own overlay — one outage can't take the fleet (LOOP-PR-C).
+class TestPerLoopRehomedMasterSteps(django.test.TestCase):
+    """The former master-only steps now ride each per-loop tick (master-tick removal)."""
 
-    The bug: ``t3 loops tick --loop X`` (no ``--overlay``) ran the fleet-wide
-    ``run_connector_preflight("")`` BEFORE the enabled/due gate, so an unrelated
-    overlay's connector outage ``SystemExit``-ed loop ``X``'s tick — one outage
-    SystemExits the whole fleet of per-loop loops.
-    """
+    def _run_won(self, **extra_patches: object) -> None:
+        report = TickReport(started_at=dt.datetime.now(dt.UTC))
+        with (
+            patch.object(LoopLease.objects, "claim_ownership", return_value=(True, "me")),
+            patch.object(LoopLease.objects, "acquire", return_value=True),
+            patch.object(LoopLease.objects, "release"),
+            patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
+            patch("teatree.loop.tick.run_tick", return_value=report),
+        ):
+            _run(loop="inbox")
+
+    def test_per_loop_tick_drains_a_pending_reinstall(self) -> None:
+        with patch("teatree.loop.self_update_reinstall.drain_pending_reinstall") as drain:
+            self._run_won()
+        # The reinstall drain rides the per-loop tick (behind the lease guard),
+        # not a removed master step.
+        drain.assert_called_once()
+
+    def test_per_loop_tick_installs_then_resets_the_schedules_reader(self) -> None:
+        with patch("teatree.loop.statusline.set_mini_loop_schedules_reader") as set_reader:
+            self._run_won()
+        # Installed for the render (the live DB reader), then reset to None so the
+        # process-global seam never leaks — so the statusline loop line keeps its
+        # per-loop countdowns without a master tick.
+        assert set_reader.call_count == 2
+        assert set_reader.call_args_list[-1].args == (None,)
+
+
+class TestPerLoopConnectorIsolation(django.test.TestCase):
+    """A per-loop tick preflights ONLY its own overlay — one outage can't take the fleet (LOOP-PR-C)."""
 
     @staticmethod
     def _seed(name: str, overlay: str, *, enabled: bool = True, last_run_at: dt.datetime | None = None) -> None:
@@ -212,7 +209,6 @@ class TestPerLoopConnectorIsolation(django.test.TestCase):
             patch.object(LoopLease.objects, "release"),
             patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
             patch("teatree.loop.tick.run_tick", return_value=report) as run_tick,
-            patch("teatree.loop.tick_piggyback.run_piggyback_cycles"),
         ):
             _run(loop=loop)
         return run_tick

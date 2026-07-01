@@ -33,7 +33,7 @@ from django.utils import timezone
 #: The single machine-wide t3-master owner lease slot — the global owner
 #: lease whose holder IS the t3 master (autonomous-lane redesign §8.3,
 #: renamed from the former ``loop-owner`` / ``GLOBAL_OWNER_SLOT``; #1073).
-#: This is the DEFAULT the master ``loops_tick`` gate claims; its
+#: This is the DEFAULT owner slot ``t3 loop owner`` claims; its
 #: pid-anchored, hijack-guarded semantics are unchanged. Per-loop owners
 #: live in the ``loop:<name>`` namespace below — a disjoint key space, so a
 #: per-loop claim can never collide with or evict the global owner.

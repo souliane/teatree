@@ -216,9 +216,9 @@ class SchedulerAutoFixAdapterTests(TestCase):
         """Without a global ``auto_fix_callable``, the ladder gets the detector's own rerender.
 
         The fallback for a directly-constructed detector with no injected seam.
-        Both live orchestration entry points (the dedicated ``loop_self_improve``
-        slot and the tick piggyback) inject the real seam as the global callable
-        instead — covered by ``test_explicit_global_callable_wins_over_per_detector``.
+        The dedicated ``loop_self_improve`` slot injects the real seam as the
+        global callable instead — covered by
+        ``test_explicit_global_callable_wins_over_per_detector``.
         """
         from teatree.loop.self_improve import schedule  # noqa: PLC0415
 
@@ -243,7 +243,7 @@ class SchedulerAutoFixAdapterTests(TestCase):
         rerender.assert_called_once()
 
     def test_explicit_global_callable_wins_over_per_detector(self) -> None:
-        """A piggyback-style global ``auto_fix_callable`` takes precedence over the adapter."""
+        """An injected global ``auto_fix_callable`` takes precedence over the adapter."""
         from teatree.loop.self_improve import schedule  # noqa: PLC0415
 
         captured: dict[str, object] = {}

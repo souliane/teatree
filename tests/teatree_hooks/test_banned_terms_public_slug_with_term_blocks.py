@@ -1,20 +1,18 @@
-"""A banned term on a slug-carries-term destination still BLOCKS unless private.
+"""A banned term on a slug-carries-term destination BLOCKS only when public.
 
 The #2597 carve-out downgraded a banned-term block to a warn whenever the
 resolved destination slug carried the term as a whole-token run -- with NO
-visibility check. Because the banned-terms deny path is only reached AFTER
-``gate_skips_destination`` has already returned False (the destination is NOT
-provably-internal -- it is PUBLIC or unknown-visibility), the slug-text
-downgrade fired precisely on the destinations the fail-closed design protects.
-An org/repo slug is attacker-controllable (``<term>-eng/tracker``), so a
-genuinely-public repo whose slug carries the term could silence the leak block.
+visibility check. An org/repo slug is attacker-controllable (``<term>-eng/tracker``),
+so a genuinely-public repo whose slug carries the term could silence the leak
+block.
 
-These tests pin the HARD invariant: a downgrade is permissible ONLY when the
-destination is PROVABLY internal. A PUBLIC destination, and an UNKNOWN-visibility
-destination (indeterminate probe -> fail closed), both BLOCK even when the slug
-carries the term. The companion ``TestProvablyPrivateDestinationStillAllowed``
-proves the #2597 false positive is still resolved the sound (config) way, so the
-fix did not simply block everything.
+These tests pin the HARD invariant on the PUBLIC surface the leak gate now
+scopes to: a CONFIRMED-PUBLIC destination BLOCKS even when the slug carries the
+term (the slug-text match must not vouch for a public leak). An
+UNKNOWN-visibility destination is NOT affirmatively public, so the gate SKIPS it
+entirely (#1415 -- bias hard toward not firing). The companion
+``TestProvablyPrivateDestinationStillAllowed`` proves a provably-private
+destination is likewise skipped via the config allowlist.
 
 Synthetic terms only (``apple`` / ``democorp`` / ``othercorp``) -- the
 overlay-leak-tree runs on PRs.
@@ -103,7 +101,7 @@ class TestPublicSlugCarryingTermStillBlocks:
         assert term in decision["permissionDecisionReason"]
 
     @pytest.mark.parametrize(("command", "term"), _SLUG_CARRIES_TERM_EXPLOITS)
-    def test_unknown_visibility_destination_blocks(
+    def test_unknown_visibility_destination_skips(
         self,
         command: str,
         term: str,
@@ -111,24 +109,22 @@ class TestPublicSlugCarryingTermStillBlocks:
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
     ) -> None:
-        # Indeterminate probe (tool absent in-hook). Fail CLOSED: an
-        # unknown-visibility destination is NOT provably-internal, so the
-        # slug-text match must never downgrade the block.
+        # Indeterminate probe (tool absent in-hook). An unknown-visibility
+        # destination is NOT affirmatively public, so the leak gate SKIPS it
+        # entirely (#1415) -- the post is allowed, bias hard toward not firing.
         _pin_probe(monkeypatch, None)
         blocked = handle_banned_terms_pretool(_bash(command))
-        assert blocked is True, "a banned term on an UNKNOWN-visibility slug-carries-term destination must BLOCK"
-        decision = json.loads(capsys.readouterr().out)
-        assert decision["permissionDecision"] == "deny"
-        assert term in decision["permissionDecisionReason"]
+        assert blocked is False, "a banned term on an UNKNOWN-visibility destination must SKIP"
+        assert capsys.readouterr().out == ""  # no deny JSON
 
 
 class TestProvablyPrivateDestinationStillAllowed:
     """The #2597 false positive is resolved the SOUND (config) way.
 
-    A provably-internal destination (declared in ``private_repos``) has the WHOLE
-    banned-terms gate skipped by ``gate_skips_destination`` -- the overlay name on
-    its own private surface is not a leak. This proves the fix did not block
-    everything; it blocks only on non-provably-internal destinations.
+    A provably-private destination (declared in ``private_repos``) has the WHOLE
+    banned-terms gate skipped by ``gate_skips_for_visibility`` -- the overlay name
+    on its own private surface is not a leak. This proves the gate blocks only on
+    an affirmatively-public destination.
     """
 
     def test_private_tracker_in_allowlist_is_allowed_offline(

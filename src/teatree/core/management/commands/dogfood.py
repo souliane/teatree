@@ -1,6 +1,6 @@
 """``t3 dogfood`` — overlay-smoke management commands (#1308).
 
-The fat loop reaches for an overlay's provision path only when the user
+The loop reaches for an overlay's provision path only when the user
 needs E2E, so latent CLI bugs accumulate quietly between runs and
 surface as a cascade at the worst possible time.
 ``t3 dogfood overlay-provision-smoke`` exercises the canonical

@@ -179,24 +179,21 @@ class TestThresholdConfig:
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db(transaction=True)
-class TestPiggybackWiring:
-    def test_piggyback_runs_expire_then_drain_behind_the_lease(self) -> None:
-        from teatree.loop.queue_drain import _piggyback_drain_queue  # noqa: PLC0415
+class TestDrainQueueCommand:
+    """``manage.py loop_drain_queue`` — the dedicated reactive drain ``/loop`` (replaces the piggyback)."""
 
+    def test_command_runs_expire_then_drain_behind_the_lease(self) -> None:
         refresh_followup_snapshot.enqueue()
 
-        _piggyback_drain_queue()
+        call_command("loop_drain_queue")
 
         assert DBTaskResult.objects.get().status == TaskResultStatus.SUCCESSFUL
-        assert LoopLease.objects.filter(name="loop-drain-queue").exists()
 
-    def test_piggyback_skips_when_lease_is_held(self) -> None:
-        from teatree.loop.queue_drain import _piggyback_drain_queue  # noqa: PLC0415
-
+    def test_command_skips_when_lease_is_held(self) -> None:
         LoopLease.objects.acquire("loop-drain-queue", owner="other", lease_seconds=300)
         refresh_followup_snapshot.enqueue()
 
-        _piggyback_drain_queue()
+        call_command("loop_drain_queue")
 
         assert DBTaskResult.objects.get().status == TaskResultStatus.READY
 

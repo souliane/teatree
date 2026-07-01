@@ -76,7 +76,15 @@ _TACH = _REPO_ROOT / "tach.toml"
 # scope because of (2), and a tach sub-node edge needs a top-level import whose
 # bidirectional pair tach's acyclic guard rejects — so the deferral stays.
 # One deferral, banked here; not a new severable edge.
-_FROZEN_INTRA_CORE_DEFERRED = 183
+# Rose 183→184 (#2650 master-tick removal): the reactive queue drain gains its
+# own `loop_drain_queue` management command, whose `handle()` defers
+# `from teatree.core.models import LoopLease` — the SAME conventional
+# management-command deferral its siblings `loop_slack_answer` / `loop_self_improve`
+# use. A command module is imported at app-discovery time, so a module-top models
+# import risks AppRegistryNotReady; the models import must wait until `handle()`
+# runs. Parallel structure with the existing reactive-loop commands; not a new
+# severable edge.
+_FROZEN_INTRA_CORE_DEFERRED = 184
 
 
 def _function_scoped_intra_core_imports(source: Path) -> int:
