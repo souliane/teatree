@@ -67,8 +67,8 @@ def canonical_config_db(env: Mapping[str, str] = os.environ, home: Path | None =
     return base / "teatree" / "db.sqlite3"
 
 
-def _fetch_value_row(db: Path, scope: str, key: str) -> tuple[object, ...] | None:
-    """Read the `(scope, key)` value row read-only, with the quiescent-WAL fallback.
+def _fetch_one(db: Path, query: str, parameters_bindings: tuple[object, ...]) -> tuple[object, ...] | None:
+    """Run a read-only single-row `query` with the quiescent-WAL fallback.
 
     Fails open to `None` on any sqlite error or a missing row.
     The canonical DB is WAL-mode (`settings.SQLITE_WRITE_SERIALIZATION_OPTIONS`),
@@ -83,20 +83,19 @@ def _fetch_value_row(db: Path, scope: str, key: str) -> tuple[object, ...] | Non
     is active — see `teatree.paths._sqlite_snapshot`). A locked DB
     (`SQLITE_BUSY`), an absent table, and every other error keep failing open to
     `None`; `immutable=1` is the fallback ONLY for `SQLITE_CANTOPEN`, never a lock
-    bypass.
+    bypass. Shared by `_fetch_value_row` (the `teatree_config_setting` store) and
+    `loop_status` (the `teatree_loop_state` control plane) so both cold reads run
+    through one WAL-aware sqlite path.
     """
-    for parameters in ("mode=ro", "immutable=1"):
+    for uri_parameters in ("mode=ro", "immutable=1"):
         try:
-            conn = _open_readonly(db, parameters)
+            conn = _open_readonly(db, uri_parameters)
         except sqlite3.Error:
             return None
         try:
-            return conn.execute(
-                "SELECT value FROM teatree_config_setting WHERE scope=? AND key=?",
-                (scope, key),
-            ).fetchone()
+            return conn.execute(query, parameters_bindings).fetchone()
         except sqlite3.OperationalError as exc:
-            if parameters == "mode=ro" and exc.sqlite_errorcode == sqlite3.SQLITE_CANTOPEN:
+            if uri_parameters == "mode=ro" and exc.sqlite_errorcode == sqlite3.SQLITE_CANTOPEN:
                 continue  # quiescent WAL: no sidecars → retry with immutable=1
             return None
         except sqlite3.Error:
@@ -104,6 +103,15 @@ def _fetch_value_row(db: Path, scope: str, key: str) -> tuple[object, ...] | Non
         finally:
             conn.close()
     return None
+
+
+def _fetch_value_row(db: Path, scope: str, key: str) -> tuple[object, ...] | None:
+    """Read the `(scope, key)` value row from `teatree_config_setting`, fail-open to `None`."""
+    return _fetch_one(
+        db,
+        "SELECT value FROM teatree_config_setting WHERE scope=? AND key=?",
+        (scope, key),
+    )
 
 
 def read_setting(
@@ -228,6 +236,38 @@ def overlay_then_global(
     """
     value = _read_chain(key, (overlay, _GLOBAL_SCOPE), db_path=db_path)
     return value if value is not None else default
+
+
+_RUNNABLE_LOOP_STATUS = "enabled"
+
+
+def loop_status(
+    name: str,
+    *,
+    default: str = _RUNNABLE_LOOP_STATUS,
+    env: Mapping[str, str] = os.environ,
+    db_path: Path | None = None,
+) -> str:
+    """Durable status of loop `name` from `teatree_loop_state`, or `default` on absence/failure.
+
+    The Django-free cold twin of `LoopState.objects.status_of`: an absent row —
+    or an unreadable DB — resolves to the runnable `enabled` default, exactly as
+    the model manager's absent-row fall-through does (there is no seeded-defaults
+    migration; an empty table means every loop runs). Fails OPEN to `default` for
+    every path — missing DB file, absent table (fresh install), locked DB, a
+    non-str status — so the caller never suppresses on an unreadable control
+    plane. Reuses `canonical_config_db` + the WAL-aware `_fetch_one` so it targets
+    the same PRIMARY `~/.local/share/teatree/db.sqlite3` the installed `t3` writes,
+    even from inside a worktree.
+    """
+    db = db_path if db_path is not None else canonical_config_db(env=env)
+    if not db.exists():
+        return default
+    row = _fetch_one(db, "SELECT status FROM teatree_loop_state WHERE name=?", (name,))
+    if row is None:
+        return default
+    status = row[0]
+    return status if isinstance(status, str) and status else default
 
 
 def main(argv: Sequence[str] | None = None) -> int:
