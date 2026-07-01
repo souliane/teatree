@@ -56,8 +56,11 @@ class _RecordingRunner:
 
 @pytest.fixture
 def recording_runner() -> Iterator[type[_RecordingRunner]]:
+    # Bypass the config-aware credential factory (which reads the DB) to the default
+    # credential, keeping the lane exercised DB-free; routing has its own tests.
     _RecordingRunner.last_effort = None
     with (
+        patch("teatree.credential_config.resolve_api_key_credential", lambda **_: AnthropicApiKeyCredential()),
         patch.object(AnthropicApiKeyCredential, "export", return_value="sk-test"),
         patch("teatree.eval.backends.ApiInProcessRunner", _RecordingRunner),
     ):

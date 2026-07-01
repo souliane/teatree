@@ -47,7 +47,6 @@ from teatree.eval.model_resolution import resolve_eval_model
 from teatree.eval.models import EvalRun, EvalSpec
 from teatree.eval.subagent_transcript import is_subagent_transcript, subagent_run
 from teatree.eval.transcript import extract_terminal_reason, extract_text_blocks, extract_tool_calls, parse_stream_json
-from teatree.llm.credentials import AnthropicApiKeyCredential
 
 API_BACKEND = "api"
 TRANSCRIPT_BACKEND = "transcript"
@@ -107,8 +106,13 @@ def make_runner(  # noqa: PLR0913 — each kwarg threads one runner-construction
         # ANTHROPIC_API_KEY is resolvable, and export it so the isolated child env
         # and docker pass-through carry it — the metered lane never falls back to
         # the subscription. isolated_claude_env then strips the conflicting OAuth
-        # token from the child env using the same credential's spec.
-        AnthropicApiKeyCredential().export()
+        # token from the child env using the same credential's spec. Imported at
+        # call time (not module top) to keep the eval CLI import chain Django-free —
+        # ``credential_config`` pulls in the routing models, which cannot be created
+        # before ``django.setup()`` (the plain ``import teatree.cli`` bootstrap path).
+        from teatree.credential_config import resolve_api_key_credential  # noqa: PLC0415
+
+        resolve_api_key_credential().export()
         return ApiInProcessRunner(
             max_turns_override=max_turns_override,
             require_executed=require_executed,

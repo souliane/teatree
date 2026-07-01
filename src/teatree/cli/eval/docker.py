@@ -157,7 +157,12 @@ def run_eval_in_docker(eval_args: list[str], *, artifacts_dir: Path | None = Non
     if shutil.which("docker") is None:
         raise DockerUnavailableError
     if _requests_api_lane(eval_args):
-        AnthropicApiKeyCredential().export()
+        # Imported at call time (not module top) to keep the eval CLI import chain
+        # Django-free — ``credential_config`` pulls in the routing models, which
+        # cannot be created before ``django.setup()`` (plain ``import teatree.cli``).
+        from teatree.credential_config import resolve_api_key_credential  # noqa: PLC0415
+
+        resolve_api_key_credential().export()
     root = _repo_root()
     if not _image_present():
         build_code = _build_image(root)

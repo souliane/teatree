@@ -32,7 +32,10 @@ _PASSING_CALL = (EvalToolCall(name="Bash", input={"command": "git worktree add .
 
 @pytest.fixture(autouse=True)
 def _hermetic_api() -> "Iterator[None]":
+    # Bypass the config-aware credential factory (which reads the DB) to the default
+    # credential so these CLI lanes run DB-free; per-account routing has its own tests.
     with (
+        patch("teatree.credential_config.resolve_api_key_credential", lambda **_: AnthropicApiKeyCredential()),
         patch.object(AnthropicApiKeyCredential, "export", return_value="sk-test"),
         patch.dict("os.environ", {"T3_EVAL_IN_CONTAINER": "1"}),
     ):
