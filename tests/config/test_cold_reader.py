@@ -39,6 +39,23 @@ def _make_db(path: Path, rows: Iterable[Row], *, wal: bool = False) -> None:
         conn.close()
 
 
+def _make_loop_state_db(path: Path, rows: Iterable[tuple[str, str]], *, wal: bool = False) -> None:
+    """Build a real `teatree_loop_state` DB matching the Django migration."""
+    conn = sqlite3.connect(path)
+    try:
+        if wal:
+            conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(
+            "CREATE TABLE teatree_loop_state ("
+            "id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, "
+            "status TEXT NOT NULL, created_at TEXT, updated_at TEXT)"
+        )
+        conn.executemany("INSERT INTO teatree_loop_state (name, status) VALUES (?, ?)", list(rows))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _remove_wal_sidecars(db: Path) -> None:
     """Delete the ``-wal``/``-shm`` companions of `db`.
 
@@ -290,6 +307,50 @@ class TestOverlayThenGlobal:
         db = tmp_path / "db.sqlite3"
         _make_db(db, [("", "other", "x")])
         assert cold_reader.overlay_then_global("mode", "myoverlay", default="fallback", db_path=db) == "fallback"
+
+
+class TestLoopStatus:
+    """`loop_status` is the Django-free cold twin of `LoopState.objects.status_of`."""
+
+    def test_reads_seeded_status(self, tmp_path: Path) -> None:
+        db = tmp_path / "db.sqlite3"
+        _make_loop_state_db(db, [("dispatch", "paused"), ("review", "disabled")])
+        assert cold_reader.loop_status("dispatch", db_path=db) == "paused"
+        assert cold_reader.loop_status("review", db_path=db) == "disabled"
+
+    def test_absent_row_returns_enabled_default(self, tmp_path: Path) -> None:
+        # The manager's absent-row fall-through: an empty table means every loop
+        # runs. Anti-vacuous: default="enabled" differs from a would-be None.
+        db = tmp_path / "db.sqlite3"
+        _make_loop_state_db(db, [("review", "paused")])
+        assert cold_reader.loop_status("dispatch", db_path=db) == "enabled"
+
+    def test_custom_default_honoured_on_absent_row(self, tmp_path: Path) -> None:
+        db = tmp_path / "db.sqlite3"
+        _make_loop_state_db(db, [])
+        assert cold_reader.loop_status("dispatch", default="sentinel", db_path=db) == "sentinel"
+
+    def test_missing_db_fails_open_to_default(self, tmp_path: Path) -> None:
+        assert cold_reader.loop_status("dispatch", db_path=tmp_path / "nope.sqlite3") == "enabled"
+
+    def test_missing_table_fails_open_to_default(self, tmp_path: Path) -> None:
+        db = tmp_path / "fresh.sqlite3"
+        sqlite3.connect(db).close()  # exists but has no teatree_loop_state table
+        assert cold_reader.loop_status("dispatch", db_path=db) == "enabled"
+
+    def test_reads_via_t3_config_db_env(self, tmp_path: Path) -> None:
+        db = tmp_path / "db.sqlite3"
+        _make_loop_state_db(db, [("dispatch", "disabled")])
+        assert cold_reader.loop_status("dispatch", env={"T3_CONFIG_DB": str(db)}) == "disabled"
+
+    def test_quiescent_wal_db_readable(self, tmp_path: Path) -> None:
+        # The realistic cold state: a WAL-format DB with no live writer and no
+        # sidecars. The shared `_fetch_one` immutable=1 fallback reads it.
+        db = tmp_path / "wal.sqlite3"
+        _make_loop_state_db(db, [("dispatch", "paused")], wal=True)
+        _remove_wal_sidecars(db)
+        assert not db.with_name(db.name + "-wal").exists()
+        assert cold_reader.loop_status("dispatch", db_path=db) == "paused"
 
 
 class TestMainEntry:
