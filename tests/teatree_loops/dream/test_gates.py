@@ -22,6 +22,7 @@ from django.test import SimpleTestCase, TestCase
 
 from teatree.core.models import DreamQaProbe
 from teatree.loops.dream import gates, reindex
+from teatree.loops.dream.acceptance import persist_probe_results, run_acceptance_pass
 from teatree.loops.dream.decay import ArchivedMemory
 from teatree.loops.dream.gates import (
     ComplianceRemediationView,
@@ -31,9 +32,7 @@ from teatree.loops.dream.gates import (
     QaProbe,
     derive_probes,
     evaluate_gates,
-    persist_probe_results,
     probe_answerable,
-    run_acceptance_pass,
     snapshot_memory_dir,
 )
 

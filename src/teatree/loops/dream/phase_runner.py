@@ -72,7 +72,7 @@ class MemoryPhaseRunner:
         a lossy consolidation into a success. A gate-evaluation failure for one dir is
         reported in the summary, defaults that dir's verdict to PASS, and never crashes.
         """
-        from teatree.loops.dream import gates  # noqa: PLC0415
+        from teatree.loops.dream import acceptance, gates  # noqa: PLC0415
         from teatree.loops.dream.decay import ARCHIVE_DIRNAME  # noqa: PLC0415
         from teatree.memory_audit import discover_memory_dirs  # noqa: PLC0415
 
@@ -89,7 +89,7 @@ class MemoryPhaseRunner:
         clauses: list[str] = []
         for d in memory_dirs:
             try:
-                report = gates.run_acceptance_pass(
+                report = acceptance.run_acceptance_pass(
                     before[d],
                     gates.snapshot_memory_dir(d),
                     overlay="",
