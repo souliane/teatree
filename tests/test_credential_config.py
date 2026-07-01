@@ -28,7 +28,7 @@ from teatree.credential_config import (
     resolve_subscription_credential,
 )
 from teatree.llm.credentials import AnthropicApiKeyCredential, AnthropicSubscriptionCredential
-from teatree.llm.rate_limits import RateLimitSnapshot
+from teatree.llm.rate_limits import MeteredKeySnapshot, RateLimitSnapshot
 
 _OAUTH_BUILTIN = "anthropic/oauth-token"
 _API_KEY_BUILTIN = "anthropic/api-key"
@@ -48,6 +48,18 @@ def _snapshot(
         unified_7d_utilization=u7,
         unified_7d_reset=reset,
         retry_after=None,
+    )
+
+
+def _metered(*, out_of_credits: bool = False) -> MeteredKeySnapshot:
+    return MeteredKeySnapshot(
+        organization_id="org-1",
+        out_of_credits=out_of_credits,
+        requests_remaining=None if out_of_credits else 4999,
+        requests_limit=None if out_of_credits else 5000,
+        tokens_remaining=None if out_of_credits else 990000,
+        input_tokens_remaining=None,
+        output_tokens_remaining=None,
     )
 
 
@@ -135,6 +147,25 @@ class TestSelectorRouting(TestCase):
             chosen = PassPathSelector(reader=reader).select(TokenKind.OAUTH, scope="overlay-x")
         assert chosen == "anthropic/other/oauth", "own account exhausted → borrow another overlay's healthy account"
 
+    def test_out_of_credits_api_key_is_treated_as_exhausted(self) -> None:
+        # An out-of-credits metered key must not be routed to — routing collapses the
+        # credit signal onto the same exhaustion refusal the selector already enforces.
+        ConfigSetting.objects.set_value(_API_KEY_SETTING, ["anthropic/metered/api"])
+        with (
+            _pass_echoes_path(),
+            patch("teatree.credential_config.read_api_key_status", return_value=_metered(out_of_credits=True)),
+            pytest.raises(AllTokensExhaustedError),
+        ):
+            PassPathSelector().select(TokenKind.API_KEY)
+
+    def test_funded_api_key_is_routed(self) -> None:
+        ConfigSetting.objects.set_value(_API_KEY_SETTING, ["anthropic/a/api", "anthropic/b/api"])
+        with (
+            _pass_echoes_path(),
+            patch("teatree.credential_config.read_api_key_status", return_value=_metered()),
+        ):
+            assert PassPathSelector().select(TokenKind.API_KEY) == "anthropic/a/api"
+
     def test_all_accounts_exhausted_raises_naming_the_earliest_reset(self) -> None:
         soon = timezone.now() + dt.timedelta(hours=1)
         later = timezone.now() + dt.timedelta(hours=5)
@@ -204,7 +235,7 @@ class TestFactoryWiring(TestCase):
         ConfigSetting.objects.set_value(_API_KEY_SETTING, ["anthropic/metered/api"])
         with (
             _pass_echoes_path(),
-            patch("teatree.credential_config.read_rate_limits", return_value=_snapshot()),
+            patch("teatree.credential_config.read_api_key_status", return_value=_metered()),
         ):
             assert resolve_api_key_credential().resolve() == "anthropic/metered/api"
 

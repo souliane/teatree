@@ -9,12 +9,20 @@ appear on the returned snapshot.
 """
 
 import datetime as dt
+import json
 from collections.abc import Mapping
 
 import httpx
 import pytest
 
-from teatree.llm.rate_limits import ProbeResponse, RateLimitProbeError, RateLimitSnapshot, read_rate_limits
+from teatree.llm.rate_limits import (
+    MeteredKeySnapshot,
+    ProbeResponse,
+    RateLimitProbeError,
+    RateLimitSnapshot,
+    read_api_key_status,
+    read_rate_limits,
+)
 
 _ORG = "anthropic-organization-id"
 _RETRY_AFTER = "retry-after"
@@ -24,6 +32,12 @@ _5H_RESET = "anthropic-ratelimit-unified-5h-reset"
 _7D_STATUS = "anthropic-ratelimit-unified-7d-status"
 _7D_UTIL = "anthropic-ratelimit-unified-7d-utilization"
 _7D_RESET = "anthropic-ratelimit-unified-7d-reset"
+
+_REQUESTS_REMAINING = "anthropic-ratelimit-requests-remaining"
+_REQUESTS_LIMIT = "anthropic-ratelimit-requests-limit"
+_TOKENS_REMAINING = "anthropic-ratelimit-tokens-remaining"
+_INPUT_TOKENS_REMAINING = "anthropic-ratelimit-input-tokens-remaining"
+_OUTPUT_TOKENS_REMAINING = "anthropic-ratelimit-output-tokens-remaining"
 
 _FULL_HEADERS = {
     _ORG: "org-abc123",
@@ -35,6 +49,30 @@ _FULL_HEADERS = {
     _7D_UTIL: "0.80",
     _7D_RESET: "2026-07-08T00:00:00+00:00",
 }
+
+_METERED_HEADERS = {
+    _ORG: "org-metered",
+    _REQUESTS_REMAINING: "4999",
+    _REQUESTS_LIMIT: "5000",
+    _TOKENS_REMAINING: "990000",
+    _INPUT_TOKENS_REMAINING: "480000",
+    _OUTPUT_TOKENS_REMAINING: "95000",
+}
+
+# The exact out-of-credits body the live API returns for a depleted metered key.
+_CREDIT_BALANCE_BODY = json.dumps(
+    {
+        "type": "error",
+        "error": {
+            "type": "invalid_request_error",
+            "message": "Your credit balance is too low to access the Anthropic API. "
+            "You can purchase credits or upgrade in Plans & Billing.",
+        },
+    }
+)
+_OTHER_400_BODY = json.dumps(
+    {"type": "error", "error": {"type": "invalid_request_error", "message": "max_tokens: must be >= 1"}}
+)
 
 
 class _RecordingTransport:
@@ -54,6 +92,11 @@ class _RecordingTransport:
 def _read(status: int, headers: Mapping[str, str], *, is_oauth: bool = False) -> RateLimitSnapshot:
     transport = _RecordingTransport(ProbeResponse(status_code=status, headers=headers))
     return read_rate_limits("secret-token", is_oauth=is_oauth, transport=transport)
+
+
+def _read_api_key(status: int, headers: Mapping[str, str], *, body: str = "") -> MeteredKeySnapshot:
+    transport = _RecordingTransport(ProbeResponse(status_code=status, headers=headers, body=body))
+    return read_api_key_status("sk-ant-metered", transport=transport)
 
 
 class TestHeaderParsing:
@@ -133,3 +176,60 @@ class TestRequestSigningAndTokenSafety:
         read_rate_limits("t", is_oauth=False, transport=transport)
         assert transport.body["model"] == "claude-haiku-4-5"
         assert transport.body["max_tokens"] == 1
+
+
+class TestMeteredApiKeyReader:
+    def test_funded_key_parses_per_minute_headroom(self) -> None:
+        snap = _read_api_key(200, _METERED_HEADERS)
+        assert snap.out_of_credits is False
+        assert snap.organization_id == "org-metered"
+        assert snap.requests_remaining == 4999
+        assert snap.requests_limit == 5000
+        assert snap.tokens_remaining == 990000
+        assert snap.input_tokens_remaining == 480000
+        assert snap.output_tokens_remaining == 95000
+
+    def test_missing_metered_headers_degrade_to_none(self) -> None:
+        snap = _read_api_key(200, {})
+        assert snap.out_of_credits is False
+        assert snap.requests_remaining is None
+        assert snap.tokens_remaining is None
+
+    def test_credit_balance_400_body_maps_to_out_of_credits(self) -> None:
+        snap = _read_api_key(400, {_ORG: "org-broke"}, body=_CREDIT_BALANCE_BODY)
+        assert snap.out_of_credits is True
+        assert snap.organization_id == "org-broke"
+        assert snap.requests_remaining is None
+
+    def test_credit_balance_match_is_case_insensitive(self) -> None:
+        body = json.dumps({"error": {"message": "Your CREDIT BALANCE is too low."}})
+        assert _read_api_key(400, {}, body=body).out_of_credits is True
+
+    def test_other_400_without_credit_message_raises(self) -> None:
+        with pytest.raises(RateLimitProbeError):
+            _read_api_key(400, {}, body=_OTHER_400_BODY)
+
+    def test_unparseable_400_body_raises(self) -> None:
+        with pytest.raises(RateLimitProbeError):
+            _read_api_key(400, {}, body="<html>gateway error</html>")
+
+    @pytest.mark.parametrize("status", [401, 403, 429, 500, 529])
+    def test_non_200_non_credit_status_raises(self, status: int) -> None:
+        with pytest.raises(RateLimitProbeError):
+            _read_api_key(status, _METERED_HEADERS)
+
+    def test_transport_network_error_raises_probe_error(self) -> None:
+        def boom(_headers: Mapping[str, str], _body: Mapping[str, object]) -> ProbeResponse:
+            msg = "no route to host"
+            raise httpx.ConnectError(msg)
+
+        with pytest.raises(RateLimitProbeError):
+            read_api_key_status("sk", transport=boom)
+
+    def test_metered_probe_signs_with_x_api_key_not_bearer(self) -> None:
+        transport = _RecordingTransport(ProbeResponse(status_code=200, headers=_METERED_HEADERS))
+        snapshot = read_api_key_status("sk-ant-super-secret", transport=transport)
+        assert transport.headers["x-api-key"] == "sk-ant-super-secret"
+        assert "authorization" not in transport.headers
+        assert "anthropic-beta" not in transport.headers
+        assert "sk-ant-super-secret" not in repr(snapshot), "the key must never be carried on the snapshot"

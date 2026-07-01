@@ -36,7 +36,7 @@ from enum import StrEnum
 from django.utils import timezone
 
 from teatree.core.models.anthropic_active_pick import AnthropicActivePick
-from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage, TokenHealthReading
+from teatree.core.models.anthropic_token_usage import REJECTED_STATUS, AnthropicTokenUsage, TokenHealthReading
 from teatree.core.models.config_setting import GLOBAL_SCOPE, ConfigSetting
 from teatree.llm.credentials import (
     AnthropicApiKeyCredential,
@@ -44,7 +44,15 @@ from teatree.llm.credentials import (
     Credential,
     CredentialError,
 )
-from teatree.llm.rate_limits import RateLimitProbeError, RateLimitReader, RateLimitSnapshot, read_rate_limits
+from teatree.llm.rate_limits import (
+    MeteredKeyReader,
+    MeteredKeySnapshot,
+    RateLimitProbeError,
+    RateLimitReader,
+    RateLimitSnapshot,
+    read_api_key_status,
+    read_rate_limits,
+)
 
 
 class TokenKind(StrEnum):
@@ -82,8 +90,11 @@ class PassPathSelector:
     sticky pick) never probes.
     """
 
-    def __init__(self, *, reader: RateLimitReader | None = None) -> None:
+    def __init__(
+        self, *, reader: RateLimitReader | None = None, api_key_reader: MeteredKeyReader | None = None
+    ) -> None:
         self._reader = reader
+        self._api_key_reader = api_key_reader
 
     def select(self, kind: TokenKind, scope: str = GLOBAL_SCOPE) -> str | None:
         """The ``pass_path`` override for *kind* in *scope*, or ``None`` for the built-in.
@@ -142,12 +153,24 @@ class PassPathSelector:
             token = credential.resolve()
         except CredentialError:
             return None
-        reader = self._reader or read_rate_limits
         try:
-            snapshot = reader(token, is_oauth=kind is TokenKind.OAUTH)
+            reading = self._health_reading(kind, token)
         except RateLimitProbeError:
             return None
-        return AnthropicTokenUsage.objects.record(pass_path, reading_from(snapshot), now=now)
+        return AnthropicTokenUsage.objects.record(pass_path, reading, now=now)
+
+    def _health_reading(self, kind: TokenKind, token: str) -> TokenHealthReading:
+        """Probe *token* the way its *kind* authenticates and fold it into a cache reading.
+
+        OAuth reads the unified 5h/7d windows; a metered API key reads its credit state
+        (funded / out-of-credits), mapped onto the same exhaustion signal so routing
+        refuses a depleted key.
+        """
+        if kind is TokenKind.API_KEY:
+            api_key_reader = self._api_key_reader or read_api_key_status
+            return reading_from_metered(api_key_reader(token))
+        reader = self._reader or read_rate_limits
+        return reading_from(reader(token, is_oauth=True))
 
     @staticmethod
     def _configured_paths(kind: TokenKind, scope: str) -> list[str]:
@@ -187,6 +210,24 @@ def reading_from(snapshot: RateLimitSnapshot) -> TokenHealthReading:
         status_7d=snapshot.unified_7d_status,
         reset_5h=snapshot.unified_5h_reset,
         reset_7d=snapshot.unified_7d_reset,
+    )
+
+
+def reading_from_metered(snapshot: MeteredKeySnapshot) -> TokenHealthReading:
+    """Translate a metered API-key status into the domain cache's value object.
+
+    A standard key exposes no dollar balance and no unified windows, so the routing
+    verdict rides the credit flag: an out-of-credits key is recorded with a rejected 7d
+    status — exactly the exhaustion signal the selector already refuses to route to.
+    """
+    return TokenHealthReading(
+        organization_id=snapshot.organization_id,
+        utilization_5h=0.0,
+        utilization_7d=0.0,
+        status_5h="",
+        status_7d=REJECTED_STATUS if snapshot.out_of_credits else "",
+        reset_5h=None,
+        reset_7d=None,
     )
 
 

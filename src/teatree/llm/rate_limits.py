@@ -1,24 +1,37 @@
-r"""Read an Anthropic token's unified rate-limit health (``teatree.llm.rate_limits``).
+r"""Read an Anthropic token's rate-limit health (``teatree.llm.rate_limits``).
 
 FOUNDATION-pure: HTTP + header parsing only — no DB, no teatree-domain import. One
-tiny ``POST /v1/messages`` (``claude-haiku-4-5``, ``max_tokens=1``) returns the
-account's unified rate-limit headers, which :func:`read_rate_limits` folds into a
-frozen :class:`RateLimitSnapshot`. A **429 still carries these headers**, so a 200
-and a 429 are treated ALIKE (both yield a snapshot); only a network error or a
-non-429 error status is a failure (:class:`RateLimitProbeError`).
+tiny ``POST /v1/messages`` (``claude-haiku-4-5``, ``max_tokens=1``) is signed with the
+token and its response is folded into a frozen result.
 
-The token is used ONLY to sign the request header — it is never logged and never
-stored on the returned snapshot. The HTTP call is injected (:class:`Transport`) so
-tests drive canned ``(status, headers)`` pairs with no real network; the default
-transport uses ``httpx``.
+Two credential shapes are probed differently, because Anthropic reports their headroom
+differently:
 
-The header names follow Anthropic's ``anthropic-ratelimit-unified-<window>-<field>``
-convention and are centralised as module constants so a naming drift is a one-line
-fix. ``utilization`` is a 0.0-1.0 fraction; ``*-reset`` is an RFC 3339 timestamp
-parsed to a tz-aware UTC ``datetime``; ``retry-after`` is whole seconds.
+*   A **subscription OAuth** token (``authorization: Bearer`` + ``anthropic-beta:
+    oauth-2025-04-20``) emits the ``anthropic-ratelimit-unified-{5h,7d}-*`` headers.
+    :func:`read_rate_limits` folds them into a :class:`RateLimitSnapshot`; a **429 still
+    carries these headers**, so a 200 and a 429 are treated ALIKE.
+*   A **metered API key** (``x-api-key`` — NO ``Bearer``, NO oauth beta) does NOT emit
+    the unified windows. A funded key returns 200 with the standard per-minute
+    ``anthropic-ratelimit-{requests,tokens}-*`` headers; an out-of-credits key returns a
+    400 whose body says the credit balance is too low. :func:`read_api_key_status` folds
+    those into a :class:`MeteredKeySnapshot` (funded vs out-of-credits + per-minute
+    headroom) — the exact prepaid dollar balance is NOT available to a standard key.
+
+For both, only a network error or an unexpected status is a failure
+(:class:`RateLimitProbeError`). The token is used ONLY to sign the request header — it is
+never logged and never stored on the returned result. The HTTP call is injected
+(:class:`Transport`) so tests drive canned ``(status, headers, body)`` triples with no
+real network; the default transport uses ``httpx``.
+
+The header names follow Anthropic's response-header conventions and are centralised as
+module constants so a naming drift is a one-line fix. ``utilization`` is a 0.0-1.0
+fraction; ``*-reset`` is an RFC 3339 timestamp parsed to a tz-aware UTC ``datetime``;
+``retry-after`` is whole seconds.
 """
 
 import datetime as dt
+import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Protocol
@@ -36,6 +49,12 @@ _PROBE_TIMEOUT_SECONDS = 20.0
 _OK = 200
 _RATE_LIMITED = 429
 
+# A metered API key that is out of credits answers the probe with a 400 whose body
+# names the credit balance — matched on the message text, NOT the bare status (other
+# 400s exist), so only a genuine credit-balance error becomes OUT_OF_CREDITS.
+_CREDIT_ERROR_STATUS = 400
+_CREDIT_BALANCE_MARKER = "credit balance"
+
 # Unified rate-limit response headers (lower-cased; the reader lower-cases every
 # incoming header key so a case-variant or an httpx.Headers both resolve).
 _ORG_ID = "anthropic-organization-id"
@@ -46,6 +65,13 @@ _5H_RESET = "anthropic-ratelimit-unified-5h-reset"
 _7D_STATUS = "anthropic-ratelimit-unified-7d-status"
 _7D_UTILIZATION = "anthropic-ratelimit-unified-7d-utilization"
 _7D_RESET = "anthropic-ratelimit-unified-7d-reset"
+
+# Metered API-key per-minute headers (a funded key emits these on the 200 probe).
+_REQUESTS_REMAINING = "anthropic-ratelimit-requests-remaining"
+_REQUESTS_LIMIT = "anthropic-ratelimit-requests-limit"
+_TOKENS_REMAINING = "anthropic-ratelimit-tokens-remaining"
+_INPUT_TOKENS_REMAINING = "anthropic-ratelimit-input-tokens-remaining"
+_OUTPUT_TOKENS_REMAINING = "anthropic-ratelimit-output-tokens-remaining"
 
 
 class RateLimitProbeError(RuntimeError):
@@ -59,10 +85,15 @@ class RateLimitProbeError(RuntimeError):
 
 @dataclass(frozen=True)
 class ProbeResponse:
-    """The status code + response headers of one rate-limit probe (no body)."""
+    """The status code, response headers, and body text of one rate-limit probe.
+
+    *body* is the raw response text — read only on the metered path to detect the
+    out-of-credits ``400`` (the OAuth path never needs it), so it defaults to ``""``.
+    """
 
     status_code: int
     headers: Mapping[str, str]
+    body: str = ""
 
 
 #: The injected HTTP seam. Given the request headers + JSON body, perform the
@@ -94,7 +125,7 @@ class RateLimitSnapshot:
     @classmethod
     def from_headers(cls, headers: Mapping[str, str]) -> "RateLimitSnapshot":
         """Fold a case-insensitive header map into the snapshot (missing → defaults)."""
-        lower = {key.lower(): value for key, value in headers.items()}
+        lower = _lower_headers(headers)
         return cls(
             organization_id=lower.get(_ORG_ID, ""),
             unified_5h_status=lower.get(_5H_STATUS, ""),
@@ -107,6 +138,56 @@ class RateLimitSnapshot:
         )
 
 
+@dataclass(frozen=True)
+class MeteredKeySnapshot:
+    """A metered API key's credit state + per-minute rate-limit headroom.
+
+    A metered key does NOT emit the unified ``*-5h`` / ``*-7d`` windows an OAuth
+    subscription does. A funded key (HTTP 200) reports the standard per-minute
+    ``anthropic-ratelimit-{requests,tokens}-*`` headers; an out-of-credits key is
+    signalled by the 400 "credit balance is too low" body. The exact prepaid dollar
+    balance is not exposed to a standard key, so :attr:`out_of_credits` (funded vs
+    depleted) is the coarsest feasible credit signal. Token-free, like
+    :class:`RateLimitSnapshot`: an ``int | None`` field is ``None`` when its header is
+    absent.
+    """
+
+    organization_id: str
+    out_of_credits: bool
+    requests_remaining: int | None
+    requests_limit: int | None
+    tokens_remaining: int | None
+    input_tokens_remaining: int | None
+    output_tokens_remaining: int | None
+
+    @classmethod
+    def funded(cls, headers: Mapping[str, str]) -> "MeteredKeySnapshot":
+        """A funded key's per-minute headroom, parsed from the 200 response headers."""
+        lower = _lower_headers(headers)
+        return cls(
+            organization_id=lower.get(_ORG_ID, ""),
+            out_of_credits=False,
+            requests_remaining=_parse_int(lower.get(_REQUESTS_REMAINING)),
+            requests_limit=_parse_int(lower.get(_REQUESTS_LIMIT)),
+            tokens_remaining=_parse_int(lower.get(_TOKENS_REMAINING)),
+            input_tokens_remaining=_parse_int(lower.get(_INPUT_TOKENS_REMAINING)),
+            output_tokens_remaining=_parse_int(lower.get(_OUTPUT_TOKENS_REMAINING)),
+        )
+
+    @classmethod
+    def depleted(cls, headers: Mapping[str, str]) -> "MeteredKeySnapshot":
+        """An out-of-credits key: only the org id survives; no per-minute headroom."""
+        return cls(
+            organization_id=_lower_headers(headers).get(_ORG_ID, ""),
+            out_of_credits=True,
+            requests_remaining=None,
+            requests_limit=None,
+            tokens_remaining=None,
+            input_tokens_remaining=None,
+            output_tokens_remaining=None,
+        )
+
+
 class RateLimitReader(Protocol):
     """The reader seam a routing selector injects — :func:`read_rate_limits` satisfies it.
 
@@ -116,6 +197,12 @@ class RateLimitReader(Protocol):
     """
 
     def __call__(self, token: str, *, is_oauth: bool) -> RateLimitSnapshot: ...
+
+
+#: The metered-key reader seam a routing selector / reporter injects —
+#: :func:`read_api_key_status` satisfies it. A metered key has no ``is_oauth`` axis
+#: (it is always ``x-api-key``), so the seam is a plain ``(token) -> MeteredKeySnapshot``.
+type MeteredKeyReader = Callable[[str], MeteredKeySnapshot]
 
 
 def read_rate_limits(
@@ -143,6 +230,30 @@ def read_rate_limits(
     return RateLimitSnapshot.from_headers(response.headers)
 
 
+def read_api_key_status(token: str, *, transport: Transport | None = None) -> MeteredKeySnapshot:
+    """Probe a metered API *key* once and return its :class:`MeteredKeySnapshot`.
+
+    A metered key authenticates with ``x-api-key`` (no ``Bearer``, no oauth beta) and
+    does NOT emit the unified windows: a funded key returns 200 with the per-minute
+    headers, an out-of-credits key returns a 400 whose body says the credit balance is
+    too low (matched on the message, not the bare status). Any other status — or a
+    transport error — raises :class:`RateLimitProbeError`. The key signs the request and
+    is never logged.
+    """
+    call = transport or _httpx_transport
+    try:
+        response = call(_api_key_headers(token), _PROBE_BODY)
+    except httpx.HTTPError as exc:
+        msg = f"api-key probe transport failed: {type(exc).__name__}"
+        raise RateLimitProbeError(msg) from exc
+    if response.status_code == _OK:
+        return MeteredKeySnapshot.funded(response.headers)
+    if response.status_code == _CREDIT_ERROR_STATUS and _is_credit_balance_error(response.body):
+        return MeteredKeySnapshot.depleted(response.headers)
+    msg = f"api-key probe returned status {response.status_code}"
+    raise RateLimitProbeError(msg)
+
+
 _PROBE_BODY: Mapping[str, object] = {
     "model": _PROBE_MODEL,
     "max_tokens": 1,
@@ -161,9 +272,32 @@ def _request_headers(token: str, *, is_oauth: bool) -> dict[str, str]:
     return headers
 
 
+def _api_key_headers(token: str) -> dict[str, str]:
+    return {
+        "x-api-key": token,
+        "anthropic-version": _ANTHROPIC_VERSION,
+        "content-type": "application/json",
+    }
+
+
+def _is_credit_balance_error(body: str) -> bool:
+    """Whether a probe body is the metered "credit balance is too low" 400 error."""
+    try:
+        payload = json.loads(body)
+    except (ValueError, TypeError):
+        return False
+    error = payload.get("error") if isinstance(payload, dict) else None
+    message = error.get("message", "") if isinstance(error, dict) else ""
+    return _CREDIT_BALANCE_MARKER in str(message).lower()
+
+
 def _httpx_transport(headers: Mapping[str, str], body: Mapping[str, object]) -> ProbeResponse:
     response = httpx.post(_API_URL, headers=dict(headers), json=dict(body), timeout=_PROBE_TIMEOUT_SECONDS)
-    return ProbeResponse(status_code=response.status_code, headers=response.headers)
+    return ProbeResponse(status_code=response.status_code, headers=response.headers, body=response.text)
+
+
+def _lower_headers(headers: Mapping[str, str]) -> dict[str, str]:
+    return {key.lower(): value for key, value in headers.items()}
 
 
 def _parse_fraction(raw: str | None) -> float:

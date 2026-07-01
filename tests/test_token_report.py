@@ -20,7 +20,7 @@ from django.utils import timezone
 from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage, TokenHealthReading
 from teatree.core.models.config_setting import ConfigSetting
 from teatree.credential_config import LIST_SETTING, TokenKind
-from teatree.llm.rate_limits import RateLimitProbeError, RateLimitSnapshot
+from teatree.llm.rate_limits import MeteredKeySnapshot, RateLimitProbeError, RateLimitSnapshot
 from teatree.token_report import TokenReport, TokenStatus, render_table
 
 
@@ -38,6 +38,25 @@ def _snapshot(*, org: str, u5h: float = 0.1, u7d: float = 0.1, status_7d: str = 
     )
 
 
+def _metered(
+    *,
+    org: str,
+    out_of_credits: bool = False,
+    requests_remaining: int = 4999,
+    requests_limit: int = 5000,
+    tokens_remaining: int = 990000,
+) -> MeteredKeySnapshot:
+    return MeteredKeySnapshot(
+        organization_id=org,
+        out_of_credits=out_of_credits,
+        requests_remaining=None if out_of_credits else requests_remaining,
+        requests_limit=None if out_of_credits else requests_limit,
+        tokens_remaining=None if out_of_credits else tokens_remaining,
+        input_tokens_remaining=None,
+        output_tokens_remaining=None,
+    )
+
+
 class FakeReader:
     """Maps token -> snapshot; a token in *unreachable* raises like a transport failure."""
 
@@ -48,6 +67,22 @@ class FakeReader:
 
     def __call__(self, token: str, *, is_oauth: bool) -> RateLimitSnapshot:
         self.calls.append((token, is_oauth))
+        if token in self._unreachable:
+            msg = "probe failed"
+            raise RateLimitProbeError(msg)
+        return self._snapshots[token]
+
+
+class FakeApiKeyReader:
+    """Maps an API key -> metered snapshot; a key in *unreachable* raises like a transport failure."""
+
+    def __init__(self, snapshots: dict[str, MeteredKeySnapshot], *, unreachable: set[str] | None = None) -> None:
+        self._snapshots = snapshots
+        self._unreachable = unreachable or set()
+        self.calls: list[str] = []
+
+    def __call__(self, token: str) -> MeteredKeySnapshot:
+        self.calls.append(token)
         if token in self._unreachable:
             msg = "probe failed"
             raise RateLimitProbeError(msg)
@@ -90,10 +125,11 @@ class TokenReportRowsTest(TestCase):
                 "TOK-warning": _snapshot(org="org-warning", u5h=0.85, u7d=0.2),
                 "TOK-exhausted": _snapshot(org="org-exhausted", u5h=0.2, u7d=0.995),
             },
-            unreachable={"TOK-unreachable"},
         )
+        api_key_reader = FakeApiKeyReader({}, unreachable={"TOK-unreachable"})
 
-        rows = {row.pass_path: row for row in TokenReport(reader=reader, secret_reader=secrets).rows()}
+        report = TokenReport(reader=reader, secret_reader=secrets, api_key_reader=api_key_reader)
+        rows = {row.pass_path: row for row in report.rows()}
 
         assert rows["anthropic/oauth/healthy"].status is TokenStatus.HEALTHY
         assert rows["anthropic/oauth/warning"].status is TokenStatus.WARNING
@@ -103,9 +139,9 @@ class TokenReportRowsTest(TestCase):
         assert rows["anthropic/oauth/healthy"].overlays_label == "global"
         assert rows["anthropic/oauth/exhausted"].overlays_label == "teatree"
         assert rows["anthropic/oauth/healthy"].organization_id == "org-healthy"
-        # OAuth accounts are probed with the oauth beta header, API-key ones without.
+        # OAuth accounts probe with the oauth beta header; metered keys go through their own reader.
         assert ("TOK-healthy", True) in reader.calls
-        assert ("TOK-unreachable", False) in reader.calls
+        assert "TOK-unreachable" in api_key_reader.calls
 
     def test_probe_upserts_the_shared_health_cache(self) -> None:
         _configure(TokenKind.OAUTH, ["anthropic/oauth/healthy"])
@@ -144,6 +180,62 @@ class TokenReportRowsTest(TestCase):
 
     def test_no_configured_accounts_yields_no_rows(self) -> None:
         assert TokenReport(reader=FakeReader({}), secret_reader=RecordingSecretReader({})).rows() == []
+
+
+class ApiKeyReportRowsTest(TestCase):
+    """Metered API-key rows: credit state + per-minute remaining, not weekly utilization."""
+
+    def _api_key_report(
+        self,
+        path: str,
+        token: str,
+        snapshot: MeteredKeySnapshot | None,
+        *,
+        unreachable: set[str] | None = None,
+    ) -> TokenReport:
+        _configure(TokenKind.API_KEY, [path])
+        secrets = RecordingSecretReader({path: token})
+        snapshots = {token: snapshot} if snapshot is not None else {}
+        api_key_reader = FakeApiKeyReader(snapshots, unreachable=unreachable)
+        return TokenReport(reader=FakeReader({}), secret_reader=secrets, api_key_reader=api_key_reader)
+
+    def test_funded_key_is_healthy_and_shows_per_minute_remaining(self) -> None:
+        report = self._api_key_report("anthropic/apikey/funded", "TOK-funded", _metered(org="org-metered"))
+        row = report.rows()[0]
+        assert row.status is TokenStatus.HEALTHY
+        assert row.organization_id == "org-metered"
+        assert row.requests_remaining == 4999
+        assert row.tokens_remaining == 990000
+        payload = row.as_dict()
+        assert payload["requests_remaining"] == 4999
+        assert payload["tokens_remaining"] == 990000
+        assert payload["utilization_5h"] is None, "api-key rows carry no weekly utilization"
+
+    def test_funded_key_renders_remaining_and_never_emits_the_key(self) -> None:
+        report = self._api_key_report("anthropic/apikey/funded", "SUPER-SECRET-API-KEY", _metered(org="org-metered"))
+        out = render_table(report.rows())
+        assert "HEALTHY" in out
+        assert "req 4999/5000" in out
+        assert "tok 990000" in out
+        assert "credit state" in out, "the caption explains the metered columns"
+        assert "SUPER-SECRET-API-KEY" not in out
+
+    def test_out_of_credits_key_is_an_alarming_row(self) -> None:
+        report = self._api_key_report(
+            "anthropic/apikey/broke", "TOK-broke", _metered(org="org-broke", out_of_credits=True)
+        )
+        row = report.rows()[0]
+        assert row.status is TokenStatus.OUT_OF_CREDITS
+        assert row.as_dict()["status"] == "out_of_credits"
+        assert "! OUT_OF_CREDITS" in render_table([row])
+
+    def test_probe_failure_is_unreachable(self) -> None:
+        report = self._api_key_report("anthropic/apikey/down", "TOK-down", None, unreachable={"TOK-down"})
+        assert report.rows()[0].status is TokenStatus.UNREACHABLE
+
+    def test_missing_key_is_missing(self) -> None:
+        report = self._api_key_report("anthropic/apikey/missing", "", None)
+        assert report.rows()[0].status is TokenStatus.MISSING
 
 
 class TokenReportRenderTest(TestCase):
@@ -215,3 +307,21 @@ class TokensCommandTest(TestCase):
         assert payload[0]["pass_path"] == "anthropic/oauth/exhausted"
         assert payload[0]["status"] == "exhausted"
         assert "SECRET-CLI-TOKEN" not in out
+
+    def test_api_key_json_reports_credit_state_and_hides_key(self) -> None:
+        _configure(TokenKind.API_KEY, ["anthropic/apikey/funded"])
+        secrets = RecordingSecretReader({"anthropic/apikey/funded": "SECRET-CLI-API-KEY"})
+        api_key_reader = FakeApiKeyReader({"SECRET-CLI-API-KEY": _metered(org="org-cli-metered")})
+        buf = StringIO()
+        with (
+            patch("teatree.token_report.read_pass", secrets),
+            patch("teatree.token_report.read_api_key_status", api_key_reader),
+        ):
+            call_command("tokens", json_output=True, stdout=buf)
+        payload = json.loads(buf.getvalue())
+        assert payload[0]["kind"] == "api_key"
+        assert payload[0]["status"] == "healthy"
+        assert payload[0]["requests_remaining"] == 4999
+        assert payload[0]["tokens_remaining"] == 990000
+        assert payload[0]["utilization_5h"] is None
+        assert "SECRET-CLI-API-KEY" not in buf.getvalue()
