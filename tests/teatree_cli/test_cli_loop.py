@@ -1,8 +1,8 @@
 """Tests for the ``t3 loop`` CLI commands (non-Django: start, stop, status, cadence).
 
-Tick-specific tests live in ``teatree_core/test_loops_tick_fat_behaviour.py`` since
-tick is now a Django management command. ``t3 loop tick`` is a migration shim that
-delegates to the bare master ``loops_tick`` (#2777 cutover).
+Per-loop tick behaviour lives in ``teatree_core/test_loops_tick_command.py`` — the
+tick is a Django management command, and ``t3 loops tick --loop <name>`` is the
+only tick surface (the bare ``t3 loop tick`` master shim is retired, #2650).
 """
 
 import time
@@ -13,41 +13,18 @@ import pytest
 from typer.testing import CliRunner
 
 from teatree.cli.loop import loop_app
+from teatree.cli.loop_drain_queue import _drain_cadence_for_loop_slot
 from teatree.cli.loop_slack_answer import _slack_answer_cadence_for_loop_slot
 
 runner = CliRunner()
 
 
-class TestTickCommandDelegation:
-    def test_delegates_to_management_command(self, tmp_path: Path) -> None:
-        with (
-            patch("django.setup"),
-            patch("django.core.management.call_command") as call_mock,
-        ):
-            result = runner.invoke(loop_app, ["tick", "--statusline-file", str(tmp_path / "sl.txt")])
-
-        assert result.exit_code == 0
-        call_mock.assert_called_once_with("loops_tick", statusline_file=str(tmp_path / "sl.txt"))
-
-    def test_passes_overlay_and_json_flags(self) -> None:
-        with (
-            patch("django.setup"),
-            patch("django.core.management.call_command") as call_mock,
-        ):
-            result = runner.invoke(loop_app, ["tick", "--overlay", "myoverlay", "--json"])
-
-        assert result.exit_code == 0
-        call_mock.assert_called_once_with("loops_tick", overlay="myoverlay", json_output=True)
-
-    def test_no_args_calls_with_empty_kwargs(self) -> None:
-        with (
-            patch("django.setup"),
-            patch("django.core.management.call_command") as call_mock,
-        ):
-            result = runner.invoke(loop_app, ["tick"])
-
-        assert result.exit_code == 0
-        call_mock.assert_called_once_with("loops_tick")
+class TestTickCommandRemoved:
+    def test_bare_loop_tick_command_is_gone(self) -> None:
+        # The `t3 loop tick` bare-master shim is retired with the master tick
+        # (#2650); the per-loop surface is `t3 loops tick --loop <name>`.
+        result = runner.invoke(loop_app, ["tick"])
+        assert result.exit_code != 0
 
 
 class TestPendingSpawnCommandDelegation:
@@ -396,6 +373,46 @@ class TestSlackAnswerStartCommand:
 
         assert result.exit_code == 0
         call.assert_called_once_with("loop_slack_answer", json_output=True)
+
+
+class TestDrainQueueCadenceParser:
+    @pytest.mark.parametrize(
+        ("env_value", "expected"),
+        [
+            ("30", "30s"),
+            ("60", "1m"),
+            ("", "30s"),
+            ("garbage", "30s"),
+            ("5", "10s"),  # clamped to 10s floor
+            ("10", "10s"),
+        ],
+    )
+    def test_parses_t3_queue_drain_cadence(
+        self, env_value: str, expected: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("T3_QUEUE_DRAIN_CADENCE", env_value)
+        assert _drain_cadence_for_loop_slot() == expected
+
+    def test_default_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_QUEUE_DRAIN_CADENCE", raising=False)
+        assert _drain_cadence_for_loop_slot() == "30s"
+
+
+class TestDrainQueueStartCommand:
+    def test_start_emits_the_drain_slot_line(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_QUEUE_DRAIN_CADENCE", "30")
+        result = runner.invoke(loop_app, ["drain-queue", "start"])
+
+        assert result.exit_code == 0
+        assert "/loop 30s Run `t3 loop drain-queue run`." in result.stdout
+        assert "T3_QUEUE_DRAIN_CADENCE" in result.stdout
+
+    def test_run_delegates_to_management_command(self) -> None:
+        with patch("django.core.management.call_command") as call:
+            result = runner.invoke(loop_app, ["drain-queue", "run", "--json"])
+
+        assert result.exit_code == 0
+        call.assert_called_once_with("loop_drain_queue", json_output=True)
 
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
