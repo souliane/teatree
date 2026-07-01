@@ -12,7 +12,7 @@ Every line is one JSON envelope keyed by ``type``:
 ``assistant`` carries ``message.content[]`` blocks (``thinking`` / ``text`` /
 ``tool_use``); a ``tool_use`` block carries ``name``, ``input``, ``id`` and a
 ``caller`` object. A ``Skill`` tool call carries ``input.skill`` (e.g.
-``t3:teatree-plan``).
+``t3:code``).
 
 ``user`` carries ``message.content`` as a str (a real prompt) or a list of
 ``tool_result`` blocks.

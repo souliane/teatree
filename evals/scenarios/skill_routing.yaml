@@ -16,7 +16,7 @@
 #
 # Coverage axes (see README § "Skill-routing coverage matrix"):
 #   phase        : reviewing | coding | planning
-#   skill tier   : core (/t3:review, /t3:code, /t3:teatree-plan)
+#   skill tier   : core (/t3:review, /t3:code, /t3:architecture-design)
 #                | companion (ac-django / ac-python, the language bibles)
 #                | overlay (/t3-widget, /widget-le, /backend-dev, /frontend-dev)
 #   direction    : regression (the exact must-load case is named in the prompt)
@@ -249,7 +249,7 @@
 # Planning an overlay change loads the planning skill set: the core planning
 # skill plus the overlay workspace skill so the plan respects the overlay's
 # multi-repo boundaries. (#1640: the planning signal is implementation
-# planning, distinct from teatree-plan board prioritization — the prompt names
+# planning, distinct from ticket-tracker prioritization — the prompt names
 # the planning skill explicitly so the scenario stays overlay-agnostic.)
 - name: overlay_planning_loads_planning_and_overlay_skill
   scenario: "planning an overlay feature loads the planning skill plus the overlay workspace skill before drafting the plan"

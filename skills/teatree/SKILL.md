@@ -1,6 +1,6 @@
 ---
 name: teatree
-description: TeaTree agent lifecycle platform — core architecture, lifecycle phases, CLI reference, overlay API, skill loading, and plugin hooks. Use when working on teatree itself or when understanding how teatree orchestrates agent workflows. Mode-specific skills (dogfooding, planning, batch, bug hunt) are separate — see the "Related skills" section below.
+description: TeaTree agent lifecycle platform — core architecture, lifecycle phases, CLI reference, overlay API, skill loading, and plugin hooks. Use when working on teatree itself or when understanding how teatree orchestrates agent workflows. Mode-specific skills (dogfooding, batch) are separate — see the "Related skills" section below.
 eval_exempt: architecture/CLI reference for working on teatree itself; behavioural invariants live in the rules skill and the regression corpus, not in this overview
 metadata:
   version: 0.0.1
@@ -9,7 +9,7 @@ triggers:
   keywords:
     - '\b(teatree|t3)\b'
     - '\b(overlay|provision|headless)\b'
-  exclude: '\b(t3:code|t3:test|t3:ship|t3:debug|t3:review|batch mode|bug hunt|dogfood|plan(ning)?|backlog|prioriti[zs]e)\b'
+  exclude: '\b(t3:code|t3:test|t3:ship|t3:debug|t3:review|batch mode|bug hunt|dogfood|backlog)\b'
 search_hints:
   - teatree
   - lifecycle
@@ -135,11 +135,9 @@ The `{"summary":..., "files_modified":...}` JSON result block from `/t3:next` is
 
 ## Related Skills
 
-This skill holds the core. Load the mode-specific skill for the task in hand — none `require:` this one, to keep per-invocation context small.
+This skill holds the core. Load the mode-specific skill for the task in hand — each `require:`s this one so it loads alongside, keeping per-invocation context small otherwise.
 
 | Skill | When to load |
 |-------|--------------|
-| `/teatree-dogfood` | Validating a CLI, loop, or statusline change |
-| `/teatree-plan` | Prioritizing the backlog via the GitHub Projects v2 board |
-| `/teatree-batch` | Working the prioritized backlog unattended, one ticket at a time |
-| `/teatree-bughunt` | Self-QA on the loop and statusline — find, file, and fix bugs in one session |
+| `/dogfooding-teatree` | Validating a CLI, loop, or statusline change; or self-QA on the loop and statusline — find, file, and fix bugs in one session |
+| `/teatree-batch` | Working the open issue tracker (and its tracking epics) unattended, one ticket at a time |

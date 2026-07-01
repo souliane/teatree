@@ -7,7 +7,7 @@ active core overlay on a single trigger: cadence
 behaviour, not coupled to delivery velocity.
 
 The sweep is destructive-capable (it can propose closing issues), so two
-safety properties are baked in from day one (the ``t3:backlog-sweep``
+safety properties are baked in from day one (the ``t3:sweeping-tickets``
 skill § "Scheduling via the loop"):
 
 * **Default-OFF.** ``backlog_sweep_disabled`` defaults *true* — unlike the
@@ -42,7 +42,7 @@ TEST_OVERLAY_NAME = "t3-teatree"
 def _scanner(
     *,
     overlay_name: str = TEST_OVERLAY_NAME,
-    skill: str = "backlog-sweep",
+    skill: str = "sweeping-tickets",
     cadence_hours: int = 168,
     require_approval: bool = True,
 ) -> BacklogSweepScanner:
@@ -87,7 +87,7 @@ class BacklogSweepScannerTests(TestCase):
         signal = signals[0]
         assert signal.kind == "backlog_sweep.queued"
         assert signal.payload["overlay"] == TEST_OVERLAY_NAME
-        assert signal.payload["skill"] == "backlog-sweep"
+        assert signal.payload["skill"] == "sweeping-tickets"
         assert signal.payload["phase"] == BACKLOG_SWEEP_PHASE
         assert signal.payload["trigger"] == "bootstrap"
 
@@ -233,7 +233,7 @@ class BacklogSweepAskGateTests(TestCase):
         assert task is not None
         assert "ASK-GATE" not in task.execution_reason
         # The skill name is still present so the dispatcher routes correctly.
-        assert "backlog-sweep" in task.execution_reason
+        assert "sweeping-tickets" in task.execution_reason
 
 
 class BacklogSweepWiringTests(TestCase):
@@ -274,7 +274,7 @@ class BacklogSweepWiringTests(TestCase):
         ):
             scanner = _backlog_sweep_scanner()
         assert scanner is not None
-        assert scanner.skill == "backlog-sweep"
+        assert scanner.skill == "sweeping-tickets"
         assert scanner.cadence_hours == 168
 
     def test_core_config_propagates_to_scanner_kwargs(self) -> None:
