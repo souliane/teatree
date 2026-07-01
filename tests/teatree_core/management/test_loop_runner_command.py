@@ -14,7 +14,9 @@ from unittest.mock import patch
 import django.test
 import pytest
 from django.core.management import call_command
+from django_typer.management import TyperCommand
 
+from teatree.core.management.commands.loop_runner import Command
 from teatree.loops.runner import LOOP_RUNNER_SINGLETON
 from teatree.utils.singleton import singleton
 
@@ -27,6 +29,13 @@ class TestLoopRunnerCommand(django.test.TestCase):
         patcher = patch("teatree.utils.singleton.default_pid_path", lambda _name: pid_path)
         patcher.start()
         self.addCleanup(patcher.stop)
+
+    def test_command_is_a_typer_command_owning_the_cadence(self) -> None:
+        # The mgmt command is a django-typer TyperCommand exposing ``handle`` and
+        # advertising itself as the OS-cron-free cadence owner (#2876).
+        assert issubclass(Command, TyperCommand)
+        assert callable(Command.handle)
+        assert "no OS cron" in Command.help
 
     def test_second_runner_refused_while_singleton_held(self) -> None:
         with singleton(LOOP_RUNNER_SINGLETON), pytest.raises(SystemExit) as exc:

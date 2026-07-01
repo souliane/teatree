@@ -149,6 +149,23 @@ class TestLoopRunnerDaemonSupervision(django.test.SimpleTestCase):
         assert calls["n"] == 2  # crashed on the 1st beat, respawned, ran the 2nd
         assert any("respawn" in line.lower() for line in logs.output)
 
+    def test_default_stop_runs_until_externally_signalled(self) -> None:
+        # No injected stop → the default ``_never`` predicate (always False): the
+        # supervisor keeps beating and never self-exits. Only a signal
+        # (KeyboardInterrupt/SystemExit — not a beat Exception) breaks the loop,
+        # so a KeyboardInterrupt-raising beat propagates straight out of ``run``.
+        def signalled_beat() -> None:
+            raise KeyboardInterrupt
+
+        daemon = LoopRunnerDaemon(
+            beat=signalled_beat,
+            drain=lambda: None,
+            beat_seconds=lambda: 0.0,
+            sleep=lambda _s: None,
+        )
+        with pytest.raises(KeyboardInterrupt):
+            daemon.run()
+
     def test_run_once_beats_then_drains_once(self) -> None:
         order: list[str] = []
         daemon = LoopRunnerDaemon(
