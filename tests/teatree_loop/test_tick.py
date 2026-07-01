@@ -1151,7 +1151,7 @@ def test_reviewer_pr_signal_surfaces_in_statusline() -> None:
 
 
 class TestLoopOwnerAnchorWiring(django.test.TestCase):
-    """``run_tick`` writes the #1073 loop-owner segment on BOTH paths."""
+    """``run_tick`` writes the #1073 t3-master segment on BOTH paths."""
 
     def test_empty_jobs_path_renders_loop_owner_anchor(self) -> None:
         import tempfile  # noqa: PLC0415
@@ -1159,12 +1159,12 @@ class TestLoopOwnerAnchorWiring(django.test.TestCase):
 
         from teatree.core.models import LoopLease  # noqa: PLC0415
 
-        LoopLease.objects.claim_ownership("loop-owner", session_id="owner-sess")
+        LoopLease.objects.claim_ownership("t3-master", session_id="owner-sess")
         with tempfile.TemporaryDirectory() as d:
             sl = Path(d) / "sl.txt"
             with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "owner-sess"}):
                 run_tick(TickRequest(scanners=[]), statusline_path=sl)
-            # loop-owner is excluded from the shared consolidated loop line;
+            # t3-master is excluded from the shared consolidated loop line;
             # its badge is rendered per-session in statusline.sh instead
             # (you ✓ / owner·pid / unclaimed). With only the owner lease live,
             # no work loop, and no mini-loop reader injected on this direct
@@ -1180,13 +1180,13 @@ class TestLoopOwnerAnchorWiring(django.test.TestCase):
 
         from teatree.core.models import LoopLease  # noqa: PLC0415
 
-        LoopLease.objects.claim_ownership("loop-owner", session_id="other-sess")
+        LoopLease.objects.claim_ownership("t3-master", session_id="other-sess")
         scanner = _FixedScanner(name="s", out=[ScanSignal(kind="my_pr.open", summary="x")])
         with tempfile.TemporaryDirectory() as d:
             sl = Path(d) / "sl.txt"
             with patch.dict("os.environ", {"CLAUDE_SESSION_ID": "intruder"}):
                 run_tick(TickRequest(scanners=[scanner]), statusline_path=sl, colorize=False)
-            assert "loop-owner=session other-se (NOT this session)" in sl.read_text(encoding="utf-8")
+            assert "t3-master=session other-se (NOT this session)" in sl.read_text(encoding="utf-8")
 
     def test_anchor_failure_is_fail_open_no_crash(self) -> None:
         import tempfile  # noqa: PLC0415

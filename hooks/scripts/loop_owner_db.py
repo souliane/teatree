@@ -1,8 +1,8 @@
-"""Loop-owner DB ``LoopLease`` reads for the hook gates (#2851).
+"""t3-master DB ``LoopLease`` reads for the hook gates (#2851).
 
 Self-contained leaf (ZERO dependency on ``hook_router``, mirroring
 ``django_bootstrap``): the shrink-only ``hook_router`` god-module cannot grow,
-so the loop-owner DB-lease read concern — the skip-consult env knob and the
+so the t3-master DB-lease read concern — the skip-consult env knob and the
 take-over reconcile read — lives here and is imported back into the router.
 ``_db_live_foreign_owner`` stays in the router (its tests patch the router's
 ``_db_lease_consult_disabled`` / ``bootstrap_teatree_django`` bindings).
@@ -22,7 +22,7 @@ def db_lease_consult_disabled() -> bool:
 
 
 def db_owner_is_current_session(session_id: str) -> bool:
-    """Whether the LIVE DB ``loop-owner`` lease is held by ``session_id`` (#2851).
+    """Whether the LIVE DB ``t3-master`` lease is held by ``session_id`` (#2851).
 
     The take-over reconcile READ. ``t3 loop claim --take-over`` writes ONLY the
     DB ``LoopLease`` row, never the ``_OWNER_LOOP`` file registry, so a displaced
@@ -42,9 +42,10 @@ def db_owner_is_current_session(session_id: str) -> bool:
     if not bootstrap_teatree_django():
         return False
     try:
+        from teatree.core.loop_lease_manager import T3_MASTER_SLOT  # noqa: PLC0415
         from teatree.core.models import LoopLease  # noqa: PLC0415
 
-        status = LoopLease.objects.ownership_status("loop-owner")
+        status = LoopLease.objects.ownership_status(T3_MASTER_SLOT)
     except Exception:  # noqa: BLE001
         return False
     return status.is_live and status.owner_session == session_id

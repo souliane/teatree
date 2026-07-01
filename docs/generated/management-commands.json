@@ -359,15 +359,15 @@
       "subcommands": []
     },
     {
-      "help": "Claim, inspect, or release the session-scoped loop-owner slot (#1073).",
+      "help": "Claim, inspect, or release the session-scoped t3-master slot (#1073).",
       "name": "loop_owner",
       "subcommands": [
         {
-          "help": "Claim the loop-owner slot for this session",
+          "help": "Claim the t3-master slot for this session",
           "name": "claim"
         },
         {
-          "help": "Show which session owns the loop-owner slot",
+          "help": "Show which session owns the t3-master slot",
           "name": "owner"
         },
         {
@@ -375,7 +375,7 @@
           "name": "whoami"
         },
         {
-          "help": "Release this session's loop-owner claim (CAS \u2014 non-owner is a no-op)",
+          "help": "Release this session's t3-master claim (CAS \u2014 non-owner is a no-op)",
           "name": "release"
         }
       ]

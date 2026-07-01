@@ -4,13 +4,13 @@
 The heavy-Bash gate (#115) DENIES only the load-bearing slice of the
 orchestrator-decides / loop-executes topology (no long/heavy foreground Bash).
 This nudge enforces the BROADER boundary the heavy-Bash gate leaves to skill
-prose: the loop-owner orchestrator does ONLY orchestration and delegates
+prose: the t3-master orchestrator does ONLY orchestration and delegates
 investigation / diagnosis / fixing / code edits / git archaeology / test runs to
 a sub-agent in a worktree. It is the broad WARN-only complement to the narrow
 Agent-dispatch DENY.
 
 It is a WARN, never a deny — the only never-lockout-safe enforcement for a
-boundary this broad. It fires ONLY for the live loop-owner session (not
+boundary this broad. It fires ONLY for the live t3-master session (not
 sub-agents, not a non-owner interactive session), and is suppressed by a per-call
 ``[orchestration-ok: <reason>]`` token or the out-of-repo kill-switch ``[teatree]
 orchestrator_investigation_gate_enabled = false``.
@@ -161,7 +161,7 @@ class TestInvestigationSignalClassification:
 class TestNudgeIsWarnOnlyNeverDenies:
     """The handler NEVER returns ``True`` — it cannot lock out the orchestrator.
 
-    A loop-owner running investigation work gets a stderr nudge and the call
+    A t3-master running investigation work gets a stderr nudge and the call
     PROCEEDS (``False``). This is the strongest possible never-lockout guarantee:
     the gate has no deny path at all.
     """
@@ -197,7 +197,7 @@ class TestNudgeIsWarnOnlyNeverDenies:
 
 
 class TestNudgeScopedToLoopOwnerOnly(TestCase):
-    """The nudge fires ONLY for the live loop-owner session.
+    """The nudge fires ONLY for the live t3-master session.
 
     A real ``LoopLease`` row drives ``_session_is_loop_owner`` (via the canonical
     ``ownership_status`` predicate) — RED/GREEN proof that a non-owner interactive
@@ -208,7 +208,7 @@ class TestNudgeScopedToLoopOwnerOnly(TestCase):
     def _claim_owner(session_id: str, *, live: bool = True) -> None:
         expires = timezone.now() + (timedelta(hours=1) if live else timedelta(seconds=-5))
         LoopLease.objects.create(
-            name="loop-owner",
+            name="t3-master",
             owner=session_id,
             session_id=session_id,
             owner_pid=None,

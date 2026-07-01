@@ -1,7 +1,7 @@
 """``manage.py loops_tick`` — one master tick driven by the DB ``Loop`` table (#1796).
 
 The single tick surface for ``t3 loops tick``. Bare (master) it claims the
-singleton ``loop-owner`` lease (master election: the owning session re-claims
+singleton ``t3-master`` lease (master election: the owning session re-claims
 every tick, a non-owner SKIPs), drains any deferred self-update reinstall, then
 runs the shared :func:`teatree.loop.tick.run_tick` pipeline with the
 DB-``Loop``-driven ``jobs_builder`` so only enabled, due loops fan out. Reap +
@@ -14,7 +14,7 @@ and the won-tick piggyback cycles.
 ``--loop <name>`` (#2650) is the per-loop primitive each native Claude ``/loop``
 fires: it scopes the jobs builder to that ONE enabled, due row, claims the
 disjoint per-loop ``loop:<name>`` lease (so the N per-loop loops run in parallel
-instead of serialising on ``loop-owner``), and SKIPs the master-only steps (the
+instead of serialising on ``t3-master``), and SKIPs the master-only steps (the
 reinstall drain, the schedules reader, the piggyback cycles) — those belong to
 the full fan-out, not a single-loop tick.
 """
@@ -31,7 +31,7 @@ from django_typer.management import TyperCommand
 
 from teatree.core.backend_factory import code_host_from_overlay, iter_overlay_backends, messaging_from_overlay
 from teatree.core.connector_preflight import run_connector_preflight
-from teatree.core.loop_lease_manager import PER_LOOP_TICK_MUTEX_PREFIX, per_loop_owner_slot
+from teatree.core.loop_lease_manager import PER_LOOP_TICK_MUTEX_PREFIX, T3_MASTER_SLOT, per_loop_owner_slot
 from teatree.core.models import LoopLease
 from teatree.loop.tick_piggyback import _loop_owner_ttl_seconds
 
@@ -42,11 +42,10 @@ if TYPE_CHECKING:
     from teatree.loop.tick import TickReport, TickRequest
     from teatree.loops.base import BuildJobsContext
 
-# The single machine-wide master slots: the persistent owner lease the master
-# session re-claims every tick (its TTL is its sole release — never released in a
-# finally), and the per-tick mutex acquired+released each beat. Per-loop ticks use
-# the disjoint ``loop:<name>`` / ``loop-tick:<name>`` namespaces.
-_MASTER_SLOT = "loop-owner"
+# The single machine-wide master tick mutex acquired+released each beat. The
+# persistent owner lease the master re-claims every tick is the canonical
+# ``T3_MASTER_SLOT`` (its TTL is its sole release — never released in a finally).
+# Per-loop ticks use the disjoint ``loop:<name>`` / ``loop-tick:<name>`` namespaces.
 _MASTER_TICK_MUTEX = "loop-tick"
 
 type ReportDict = dict[str, Any]
@@ -162,7 +161,7 @@ class Command(TyperCommand):
                 help=(
                     "Run ONE enabled, due DB Loop by name (#2650) — what each native Claude `/loop` "
                     "fires. Claims the disjoint per-loop `loop:<name>` lease (not the singleton "
-                    "`loop-owner`) so the per-loop loops run in parallel, and skips the master "
+                    "`t3-master`) so the per-loop loops run in parallel, and skips the master "
                     "piggyback cycles. Default (empty) is the full master fan-out."
                 ),
             ),
@@ -183,7 +182,7 @@ class Command(TyperCommand):
         from teatree.loop.session_identity import current_session_id, current_session_pid  # noqa: PLC0415
 
         is_master = not loop
-        owner_slot = _MASTER_SLOT if is_master else per_loop_owner_slot(loop)
+        owner_slot = T3_MASTER_SLOT if is_master else per_loop_owner_slot(loop)
         tick_mutex = _MASTER_TICK_MUTEX if is_master else f"{PER_LOOP_TICK_MUTEX_PREFIX}{loop}"
 
         session_id = current_session_id()

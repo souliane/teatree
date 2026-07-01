@@ -18,7 +18,7 @@ slack_answer_app = typer.Typer(
     name="slack-answer",
     help=(
         "Reactive, token-cheap Slack-answer loop — the third `/loop` slot. "
-        "Runs on a tight cadence (default 20s) in the same loop-owner "
+        "Runs on a tight cadence (default 20s) in the same t3-master "
         "session as `t3 loop tick`, on a separate LoopLease so a long "
         "answer cycle never blocks a fast regular tick. Complementary to "
         "the inbound prompt-drain, never a double-answer (#1014)."
@@ -74,7 +74,7 @@ def slack_answer_start_command() -> None:
     """Print the ``/loop <cadence>`` slot definition for the Slack-answer loop.
 
     Mirrors ``t3 loop self-improve start``: prints the slash command the
-    user pastes inside the loop-owner Claude Code session to register the
+    user pastes inside the t3-master Claude Code session to register the
     third ``/loop`` slot. Override the cadence via ``T3_SLACK_ANSWER_CADENCE``
     (seconds; floor 15).
     """

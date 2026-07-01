@@ -854,7 +854,7 @@ class TestCpuSegment:
 
 
 class TestLoopOwnerBadge:
-    """Per-session loop-owner badge in the g_context header group.
+    """Per-session t3-master badge in the g_context header group.
 
     The badge reads ``loop-registry.json`` at display time so each terminal
     reflects its own session's ownership relationship — unlike the shared
@@ -870,7 +870,7 @@ class TestLoopOwnerBadge:
         )
 
     def test_you_badge_when_owner_matches_session(self, tmp_path: Path) -> None:
-        """Same session owns the loop → green ``loop-owner: you ✓``."""
+        """Same session owns the loop → green ``t3-master: you ✓``."""
         state_dir = tmp_path / "state"
         state_dir.mkdir()
         registry_dir = tmp_path / "registry"
@@ -884,15 +884,15 @@ class TestLoopOwnerBadge:
 
         assert result.returncode == 0, result.stderr
         plain = _strip_ansi(result.stdout)
-        assert "loop-owner: you ✓" in plain, plain
+        assert "t3-master: you ✓" in plain, plain
         # The badge belongs on the loop-specific line, NOT the context header.
         header = plain.splitlines()[0]
-        assert "loop-owner:" not in header, header
+        assert "t3-master:" not in header, header
         # Green SGR present in the raw (non-stripped) output.
         assert "\033[1;32m" in result.stdout, "expected green SGR for owner=you"
 
     def test_badge_renders_on_loop_line_not_header(self, tmp_path: Path) -> None:
-        """The per-session loop-owner badge sits on the loop line region, not g_context."""
+        """The per-session t3-master badge sits on the loop line region, not g_context."""
         state_dir = tmp_path / "state"
         state_dir.mkdir()
         registry_dir = tmp_path / "registry"
@@ -910,13 +910,13 @@ class TestLoopOwnerBadge:
         assert result.returncode == 0, result.stderr
         plain = _strip_ansi(result.stdout)
         lines = plain.splitlines()
-        # The header (line 1) carries model/ctx but not the loop-owner badge.
+        # The header (line 1) carries model/ctx but not the t3-master badge.
         assert "model=Claude Opus" in lines[0], lines[0]
-        assert "loop-owner:" not in lines[0], lines[0]
+        assert "t3-master:" not in lines[0], lines[0]
         # The badge rides the loop line, ahead of the tick chunk.
         loop_line = next(line for line in lines if "tick 5m" in line)
-        assert "loop-owner: you ✓" in loop_line, loop_line
-        assert loop_line.index("loop-owner:") < loop_line.index("tick 5m"), loop_line
+        assert "t3-master: you ✓" in loop_line, loop_line
+        assert loop_line.index("t3-master:") < loop_line.index("tick 5m"), loop_line
 
     def test_badge_rides_colorized_production_loop_line(self, tmp_path: Path) -> None:
         r"""The badge must ride the loop line even when it is ANSI-colorized.
@@ -947,12 +947,12 @@ class TestLoopOwnerBadge:
         plain = _strip_ansi(result.stdout)
         lines = plain.splitlines()
         loop_line = next(line for line in lines if "tick 5m" in line)
-        assert "loop-owner: you ✓" in loop_line, loop_line
+        assert "t3-master: you ✓" in loop_line, loop_line
         # The badge leads the loop line, ahead of the tick chunk.
-        assert loop_line.index("loop-owner:") < loop_line.index("tick 5m"), loop_line
+        assert loop_line.index("t3-master:") < loop_line.index("tick 5m"), loop_line
         # The badge shares the loop line — never spilled onto its own trailing line.
-        assert sum(1 for line in lines if "loop-owner:" in line) == 1, plain
-        badge_line = next(line for line in lines if "loop-owner:" in line)
+        assert sum(1 for line in lines if "t3-master:" in line) == 1, plain
+        badge_line = next(line for line in lines if "t3-master:" in line)
         assert "tick 5m" in badge_line, plain
 
     def test_badge_leads_loop_line_with_multiple_chunks(self, tmp_path: Path) -> None:
@@ -974,9 +974,9 @@ class TestLoopOwnerBadge:
         assert result.returncode == 0, result.stderr
         plain = _strip_ansi(result.stdout)
         loop_line = next(line for line in plain.splitlines() if "tick 5m" in line)
-        # ``loop-owner:`` is first; every loop chunk follows it.
-        assert loop_line.lstrip().startswith("loop-owner:"), loop_line
-        assert loop_line.index("loop-owner:") < loop_line.index("tick 5m"), loop_line
+        # ``t3-master:`` is first; every loop chunk follows it.
+        assert loop_line.lstrip().startswith("t3-master:"), loop_line
+        assert loop_line.index("t3-master:") < loop_line.index("tick 5m"), loop_line
         assert loop_line.index("tick 5m") < loop_line.index("dispatch 2m"), loop_line
 
     def test_badge_not_glued_to_overlay_anchor_when_no_loop_line(self, tmp_path: Path) -> None:
@@ -999,9 +999,9 @@ class TestLoopOwnerBadge:
         plain = _strip_ansi(result.stdout)
         # The overlay anchor must NOT have the badge prepended to it.
         anchor_line = next(line for line in plain.splitlines() if "[acme]" in line)
-        assert "loop-owner:" not in anchor_line, anchor_line
+        assert "t3-master:" not in anchor_line, anchor_line
         # The badge surfaces on its own line so ownership context is never lost.
-        badge_line = next(line for line in plain.splitlines() if "loop-owner:" in line)
+        badge_line = next(line for line in plain.splitlines() if "t3-master:" in line)
         assert "[acme]" not in badge_line, badge_line
 
     def test_foreign_owner_badge_shows_short_sid_and_pid(self, tmp_path: Path) -> None:
@@ -1020,12 +1020,12 @@ class TestLoopOwnerBadge:
         assert result.returncode == 0, result.stderr
         plain = _strip_ansi(result.stdout)
         assert "abcdef01·pid4242" in plain, plain
-        assert "loop-owner:" in plain, plain
+        assert "t3-master:" in plain, plain
         # Yellow SGR present (neutral — a foreign owner is normal from a non-owner terminal).
         assert "\033[1;33m" in result.stdout, "expected yellow SGR for foreign owner"
 
     def test_unclaimed_badge_when_registry_has_no_owner(self, tmp_path: Path) -> None:
-        """Readable registry but no owner key → dim ``loop-owner: unclaimed``."""
+        """Readable registry but no owner key → dim ``t3-master: unclaimed``."""
         state_dir = tmp_path / "state"
         state_dir.mkdir()
         registry_dir = tmp_path / "registry"
@@ -1041,7 +1041,7 @@ class TestLoopOwnerBadge:
 
         assert result.returncode == 0, result.stderr
         plain = _strip_ansi(result.stdout)
-        assert "loop-owner: unclaimed" in plain, plain
+        assert "t3-master: unclaimed" in plain, plain
 
     def test_badge_absent_when_registry_missing(self, tmp_path: Path) -> None:
         """No registry file → NO badge (fail-open)."""
@@ -1058,7 +1058,7 @@ class TestLoopOwnerBadge:
 
         assert result.returncode == 0, result.stderr
         plain = _strip_ansi(result.stdout)
-        assert "loop-owner" not in plain, plain
+        assert "t3-master" not in plain, plain
 
     def test_badge_absent_when_no_session_id(self, tmp_path: Path) -> None:
         """No session_id in payload → NO badge (cannot determine ownership)."""
@@ -1075,7 +1075,7 @@ class TestLoopOwnerBadge:
 
         assert result.returncode == 0, result.stderr
         plain = _strip_ansi(result.stdout)
-        assert "loop-owner" not in plain, plain
+        assert "t3-master" not in plain, plain
 
 
 class TestTeamRoster:

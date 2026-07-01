@@ -437,7 +437,7 @@ class TestStaleLeaseEvictionOnSessionRotation(TestCase):
 
     Compaction rotates the session id. The hook updates the file
     registry to the new id, but the live ``LoopLease`` row name=
-    ``loop-owner`` still carries the OLD id with an unexpired
+    ``t3-master`` still carries the OLD id with an unexpired
     ``lease_expires_at``. ``CLAUDE_SESSION_ID`` is empty in Bash-tool
     subprocesses (#1107), so the next ``t3 loop tick`` resolves the new
     id via the file registry and the CAS in ``claim_ownership`` fails:
@@ -468,14 +468,14 @@ class TestStaleLeaseEvictionOnSessionRotation(TestCase):
 
         # Claim with the pid that the hook will see as ``current_pid``
         # (``os.getppid()`` in the hook body, same value in this call).
-        LoopLease.objects.claim_ownership("loop-owner", session_id="old-session", owner_pid=os.getppid())
-        assert LoopLease.objects.get(name="loop-owner").session_id == "old-session"
+        LoopLease.objects.claim_ownership("t3-master", session_id="old-session", owner_pid=os.getppid())
+        assert LoopLease.objects.get(name="t3-master").session_id == "old-session"
 
         handle_session_start_bootstrap({"session_id": "new-session", "agent_id": "a"})
 
         # The stale same-pid lease is orphaned so the next tick from the
         # new session CAS-claims it cleanly.
-        row = LoopLease.objects.get(name="loop-owner")
+        row = LoopLease.objects.get(name="t3-master")
         assert row.session_id == ""
         assert row.acquired_at is None
         assert row.lease_expires_at is None
@@ -483,14 +483,14 @@ class TestStaleLeaseEvictionOnSessionRotation(TestCase):
     def test_same_session_restart_does_not_evict_own_lease(self) -> None:
         from teatree.core.models import LoopLease  # noqa: PLC0415
 
-        LoopLease.objects.claim_ownership("loop-owner", session_id="owner-1")
-        expiry_before = LoopLease.objects.get(name="loop-owner").lease_expires_at
+        LoopLease.objects.claim_ownership("t3-master", session_id="owner-1")
+        expiry_before = LoopLease.objects.get(name="t3-master").lease_expires_at
 
         handle_session_start_bootstrap({"session_id": "owner-1", "agent_id": "a"})
 
         # Same-session restart (post-compaction-same-id, or hook re-fire):
         # the session keeps its own claim, no orphaning.
-        row = LoopLease.objects.get(name="loop-owner")
+        row = LoopLease.objects.get(name="t3-master")
         assert row.session_id == "owner-1"
         assert row.lease_expires_at == expiry_before
 
@@ -501,26 +501,26 @@ class TestStaleLeaseEvictionOnSessionRotation(TestCase):
         # slot. The new session is told to stay idle — it must NOT
         # orphan the DB row (only an *owner* writes the DB).
         _write_loop_registry({_OWNER_LOOP: {"session_id": "live-owner", "agent_id": "a", "pid": os.getpid()}})
-        LoopLease.objects.claim_ownership("loop-owner", session_id="live-owner")
+        LoopLease.objects.claim_ownership("t3-master", session_id="live-owner")
 
         handle_session_start_bootstrap({"session_id": "outsider", "agent_id": "b"})
 
         # Non-owner branch fired (registry shows the existing owner) —
         # the DB row is untouched.
-        assert LoopLease.objects.get(name="loop-owner").session_id == "live-owner"
+        assert LoopLease.objects.get(name="t3-master").session_id == "live-owner"
 
     def test_eviction_after_rotation_unblocks_claim_ownership(self) -> None:
         """End-to-end repro of the #1107 follow-up bug (post-compaction same pid).
 
         Pre-fix sequence:
 
-        1. ``old-session`` holds an unexpired DB ``loop-owner`` claim.
+        1. ``old-session`` holds an unexpired DB ``t3-master`` claim.
         2. Compaction rotates the live session id to ``new-session``
             (same OS process — ``owner_pid`` matches).
         3. ``SessionStart`` writes the new id to the file registry.
         4. ``t3 loop tick`` resolves ``new-session`` via the registry
             fallback (#1107) and calls
-            ``claim_ownership("loop-owner", session_id="new-session")``
+            ``claim_ownership("t3-master", session_id="new-session")``
             — DB still says ``old-session``, lease unexpired, CAS fails.
         5. Tick skips ("loop not owned by this session"); the user must
             run ``t3 loop claim --take-over`` to recover.
@@ -532,9 +532,9 @@ class TestStaleLeaseEvictionOnSessionRotation(TestCase):
         # (1) old session is the DB lease holder, unexpired, same pid
         # (post-compaction: the OS process did not change).
         LoopLease.objects.claim_ownership(
-            "loop-owner", session_id="old-session", ttl_seconds=1800, owner_pid=os.getppid()
+            "t3-master", session_id="old-session", ttl_seconds=1800, owner_pid=os.getppid()
         )
-        row = LoopLease.objects.get(name="loop-owner")
+        row = LoopLease.objects.get(name="t3-master")
         assert row.session_id == "old-session"
         assert row.lease_expires_at is not None
         assert row.lease_expires_at > timezone.now() + timedelta(seconds=60)
@@ -543,12 +543,12 @@ class TestStaleLeaseEvictionOnSessionRotation(TestCase):
         handle_session_start_bootstrap({"session_id": "new-session", "agent_id": "a"})
 
         # (4) new session's first tick CAS-claims cleanly (no take-over)
-        won, owner = LoopLease.objects.claim_ownership("loop-owner", session_id="new-session")
+        won, owner = LoopLease.objects.claim_ownership("t3-master", session_id="new-session")
         assert won is True
         assert owner == "new-session"
 
 
-# ── Issue #1604: new-session hijacks live loop-owner lease on registry desync ──
+# ── Issue #1604: new-session hijacks live t3-master lease on registry desync ──
 
 
 class TestNewSessionHijackFix(TestCase):
@@ -576,7 +576,7 @@ class TestNewSessionHijackFix(TestCase):
         wins the next CAS and hijacks the live incumbent's loop.
 
         Post-fix: the ``owner is None`` branch consults
-        ``LoopLease.objects.ownership_status("loop-owner")`` before
+        ``LoopLease.objects.ownership_status("t3-master")`` before
         deciding; if the DB lease is LIVE and foreign it emits
         ``_TICK_DISPATCH_NON_OWNER_DIRECTIVE`` and does NOT evict.
         """
@@ -585,8 +585,8 @@ class TestNewSessionHijackFix(TestCase):
         # Registry is empty (desync: the live incumbent's registry entry
         # was pruned by a failed import or race).
         # DB lease is LIVE and foreign (different session, unexpired).
-        LoopLease.objects.claim_ownership("loop-owner", session_id="live-incumbent", ttl_seconds=1800)
-        row = LoopLease.objects.get(name="loop-owner")
+        LoopLease.objects.claim_ownership("t3-master", session_id="live-incumbent", ttl_seconds=1800)
+        row = LoopLease.objects.get(name="t3-master")
         assert row.session_id == "live-incumbent"
         assert row.lease_expires_at is not None
         assert row.lease_expires_at > timezone.now() + timedelta(seconds=60)
@@ -594,7 +594,7 @@ class TestNewSessionHijackFix(TestCase):
         handle_session_start_bootstrap({"session_id": "new-session", "agent_id": "b"})
 
         # INV1: the live foreign lease must be untouched.
-        row = LoopLease.objects.get(name="loop-owner")
+        row = LoopLease.objects.get(name="t3-master")
         assert row.session_id == "live-incumbent", "HIJACK: new-session evicted the live incumbent's DB lease"
         assert row.lease_expires_at is not None
 
@@ -611,12 +611,12 @@ class TestNewSessionHijackFix(TestCase):
         assert _read_loop_registry() == {}
 
         # A foreign session holds a live DB lease.
-        LoopLease.objects.claim_ownership("loop-owner", session_id="live-foreign", ttl_seconds=1800)
+        LoopLease.objects.claim_ownership("t3-master", session_id="live-foreign", ttl_seconds=1800)
 
         handle_session_start_bootstrap({"session_id": "new-session", "agent_id": "b"})
 
         # The new session must not have claimed the DB lease.
-        row = LoopLease.objects.get(name="loop-owner")
+        row = LoopLease.objects.get(name="t3-master")
         assert row.session_id == "live-foreign", "HIJACK: new session claimed ownership despite live foreign DB lease"
 
     def test_live_foreign_lease_null_pid_stays_idle(self) -> None:
@@ -624,11 +624,11 @@ class TestNewSessionHijackFix(TestCase):
         from teatree.core.models import LoopLease  # noqa: PLC0415
 
         # Claim with null pid (unknown — old code paths).
-        LoopLease.objects.claim_ownership("loop-owner", session_id="foreign", ttl_seconds=1800, owner_pid=None)
+        LoopLease.objects.claim_ownership("t3-master", session_id="foreign", ttl_seconds=1800, owner_pid=None)
 
         handle_session_start_bootstrap({"session_id": "new-session", "agent_id": "b"})
 
-        row = LoopLease.objects.get(name="loop-owner")
+        row = LoopLease.objects.get(name="t3-master")
         assert row.session_id == "foreign"
 
     def test_live_dead_pid_lease_is_evicted(self) -> None:
@@ -636,11 +636,11 @@ class TestNewSessionHijackFix(TestCase):
         from teatree.core.models import LoopLease  # noqa: PLC0415
 
         # PID 999999 is almost certainly dead.
-        LoopLease.objects.claim_ownership("loop-owner", session_id="dead-owner", ttl_seconds=1800, owner_pid=999999)
+        LoopLease.objects.claim_ownership("t3-master", session_id="dead-owner", ttl_seconds=1800, owner_pid=999999)
 
         handle_session_start_bootstrap({"session_id": "new-session", "agent_id": "b"})
 
-        row = LoopLease.objects.get(name="loop-owner")
+        row = LoopLease.objects.get(name="t3-master")
         assert row.session_id == "", "expected dead-pid lease to be evicted"
         assert row.lease_expires_at is None
 
@@ -654,14 +654,14 @@ class TestNewSessionHijackFix(TestCase):
         """
         from teatree.core.models import LoopLease  # noqa: PLC0415
 
-        LoopLease.objects.claim_ownership("loop-owner", session_id="expired-owner", ttl_seconds=1, owner_pid=None)
-        row = LoopLease.objects.get(name="loop-owner")
+        LoopLease.objects.claim_ownership("t3-master", session_id="expired-owner", ttl_seconds=1, owner_pid=None)
+        row = LoopLease.objects.get(name="t3-master")
         row.lease_expires_at = timezone.now() - timedelta(seconds=5)
         row.save(update_fields=["lease_expires_at"])
 
         handle_session_start_bootstrap({"session_id": "new-session", "agent_id": "b"})
 
-        row = LoopLease.objects.get(name="loop-owner")
+        row = LoopLease.objects.get(name="t3-master")
         assert row.session_id == "", "expected expired lease to be evicted"
 
     def test_no_db_lease_new_session_claims(self) -> None:
@@ -673,7 +673,7 @@ class TestNewSessionHijackFix(TestCase):
         handle_session_start_bootstrap({"session_id": "fresh-session", "agent_id": "a"})
 
         # Session claimed the DB lease on its first tick.
-        won, _ = LoopLease.objects.claim_ownership("loop-owner", session_id="fresh-session")
+        won, _ = LoopLease.objects.claim_ownership("t3-master", session_id="fresh-session")
         assert won is True
 
     def test_same_session_restart_no_registry_keeps_db_claim(self) -> None:
@@ -682,12 +682,12 @@ class TestNewSessionHijackFix(TestCase):
 
         assert _read_loop_registry() == {}
         # The session already holds the DB lease from a previous start.
-        LoopLease.objects.claim_ownership("loop-owner", session_id="same-session", owner_pid=os.getppid())
+        LoopLease.objects.claim_ownership("t3-master", session_id="same-session", owner_pid=os.getppid())
 
         handle_session_start_bootstrap({"session_id": "same-session", "agent_id": "a"})
 
         # It won the same-session branch — DB claim preserved.
-        row = LoopLease.objects.get(name="loop-owner")
+        row = LoopLease.objects.get(name="t3-master")
         assert row.session_id == "same-session"
 
     def test_live_foreign_lease_directive_names_owner(self) -> None:
@@ -697,7 +697,7 @@ class TestNewSessionHijackFix(TestCase):
 
         from teatree.core.models import LoopLease  # noqa: PLC0415
 
-        LoopLease.objects.claim_ownership("loop-owner", session_id="live-owner", ttl_seconds=1800)
+        LoopLease.objects.claim_ownership("t3-master", session_id="live-owner", ttl_seconds=1800)
 
         captured = io.StringIO()
         old_stdout = sys.stdout
@@ -721,7 +721,7 @@ class TestNewSessionHijackFix(TestCase):
             handle_session_start_bootstrap({"session_id": "new-session", "agent_id": "a"})
 
         # Session fell through to the owner path (fail-open).
-        won, _ = LoopLease.objects.claim_ownership("loop-owner", session_id="new-session")
+        won, _ = LoopLease.objects.claim_ownership("t3-master", session_id="new-session")
         assert won is True
 
     def test_alive_owner_pid_expired_ttl_keeps_loop_with_incumbent(self) -> None:
@@ -737,8 +737,8 @@ class TestNewSessionHijackFix(TestCase):
         from teatree.core.models import LoopLease  # noqa: PLC0415
 
         # Incumbent: alive process pid, but its TTL has lapsed (busy > TTL).
-        LoopLease.objects.claim_ownership("loop-owner", session_id="incumbent", ttl_seconds=1, owner_pid=os.getpid())
-        row = LoopLease.objects.get(name="loop-owner")
+        LoopLease.objects.claim_ownership("t3-master", session_id="incumbent", ttl_seconds=1, owner_pid=os.getpid())
+        row = LoopLease.objects.get(name="t3-master")
         row.lease_expires_at = timezone.now() - timedelta(seconds=30)
         row.save(update_fields=["lease_expires_at"])
 
@@ -748,21 +748,21 @@ class TestNewSessionHijackFix(TestCase):
 
         handle_session_start_bootstrap({"session_id": "new-session", "agent_id": "b"})
 
-        row = LoopLease.objects.get(name="loop-owner")
+        row = LoopLease.objects.get(name="t3-master")
         assert row.session_id == "incumbent", "HIJACK: new-session took over an alive owner's expired-TTL lease"
 
 
-# ── Issue #1838 PR#7a: evict-on-compact orphans the stale loop-owner lease ──
+# ── Issue #1838 PR#7a: evict-on-compact orphans the stale t3-master lease ──
 
 
 class TestEvictOnCompactReanchorsLoopOwner(TestCase):
-    """The lead's ``SessionStart(source=compact)`` orphans the stale ``loop-owner`` lease.
+    """The lead's ``SessionStart(source=compact)`` orphans the stale ``t3-master`` lease.
 
     The compaction window is the race the maker-only pane layer must close: the
     lead's session id rotates during compaction, and a pane could try to claim
-    ``loop-owner`` in that window. The fix calls ``evict_stale_owner`` (keep the
+    ``t3-master`` in that window. The fix calls ``evict_stale_owner`` (keep the
     lead session, current pid) SYNCHRONOUSLY on ``source == "compact"`` — BEFORE
-    any tick — which ORPHANS the stale same-pid ``loop-owner`` lease
+    any tick — which ORPHANS the stale same-pid ``t3-master`` lease
     (``session_id=""``) so the lead's next ``t3 loop tick`` re-anchors it
     uncontested and no pane can win the compaction-window CAS. (The eviction only
     orphans; the re-claim is the lead's next tick.) ``evict_stale_owner``'s safety
@@ -786,7 +786,7 @@ class TestEvictOnCompactReanchorsLoopOwner(TestCase):
 
         The registry already records the lead session as owner (the
         same-session-restart ``else`` branch, where the rotation-only eviction
-        does NOT run). A DB ``loop-owner`` row carries an OLD rotated id with the
+        does NOT run). A DB ``t3-master`` row carries an OLD rotated id with the
         SAME pid (post-compaction same process). Without evict-on-compact the
         stale row would linger and the lead's next tick CAS would fail. The
         compact eviction recognises the same-pid lease as a safe self-reclaim
@@ -796,13 +796,13 @@ class TestEvictOnCompactReanchorsLoopOwner(TestCase):
 
         _write_loop_registry({_OWNER_LOOP: {"session_id": "lead", "agent_id": "a", "pid": os.getpid()}})
         LoopLease.objects.claim_ownership(
-            "loop-owner", session_id="old-rotated-id", owner_pid=os.getppid(), ttl_seconds=1800
+            "t3-master", session_id="old-rotated-id", owner_pid=os.getppid(), ttl_seconds=1800
         )
 
         handle_session_start_bootstrap({"session_id": "lead", "agent_id": "a", "source": "compact"})
 
-        row = LoopLease.objects.get(name="loop-owner")
-        assert row.session_id == "", "compact resume must re-anchor the stale same-pid loop-owner lease"
+        row = LoopLease.objects.get(name="t3-master")
+        assert row.session_id == "", "compact resume must re-anchor the stale same-pid t3-master lease"
         assert row.owner_pid is None
         assert row.lease_expires_at is None
 
@@ -819,19 +819,19 @@ class TestEvictOnCompactReanchorsLoopOwner(TestCase):
 
         _write_loop_registry({_OWNER_LOOP: {"session_id": "lead", "agent_id": "a", "pid": os.getpid()}})
         LoopLease.objects.claim_ownership(
-            "loop-owner", session_id="old-rotated-id", owner_pid=os.getppid(), ttl_seconds=1800
+            "t3-master", session_id="old-rotated-id", owner_pid=os.getppid(), ttl_seconds=1800
         )
 
         handle_session_start_bootstrap({"session_id": "lead", "agent_id": "a"})
 
-        row = LoopLease.objects.get(name="loop-owner")
+        row = LoopLease.objects.get(name="t3-master")
         assert row.session_id == "old-rotated-id", "non-compact start must NOT run the synchronous compact eviction"
 
     def test_compact_preserves_a_live_foreign_lease(self) -> None:
         """A LIVE foreign lease is preserved even on a compact resume (safety table).
 
         The pane never wins by hijacking a genuinely live foreign owner. When a
-        different session holds a live (alive-pid) ``loop-owner`` lease, the
+        different session holds a live (alive-pid) ``t3-master`` lease, the
         compact eviction's safety decision table keeps it — the lead stays idle
         rather than stealing the claim.
         """
@@ -839,10 +839,10 @@ class TestEvictOnCompactReanchorsLoopOwner(TestCase):
 
         _write_loop_registry({_OWNER_LOOP: {"session_id": "other-live-lead", "agent_id": "x", "pid": os.getpid()}})
         LoopLease.objects.claim_ownership(
-            "loop-owner", session_id="other-live-lead", owner_pid=os.getpid(), ttl_seconds=1800
+            "t3-master", session_id="other-live-lead", owner_pid=os.getpid(), ttl_seconds=1800
         )
 
         handle_session_start_bootstrap({"session_id": "lead", "agent_id": "a", "source": "compact"})
 
-        row = LoopLease.objects.get(name="loop-owner")
+        row = LoopLease.objects.get(name="t3-master")
         assert row.session_id == "other-live-lead", "a LIVE foreign lease must be preserved on a compact resume"

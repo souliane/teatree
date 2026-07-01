@@ -40,7 +40,7 @@ class TestHandoverCreate:
         assert row.to_session == ""
 
     def test_no_target_hands_to_live_loop_owner(self) -> None:
-        LoopLease.objects.claim_ownership("loop-owner", session_id="owner-X", owner_pid=os.getpid())
+        LoopLease.objects.claim_ownership("t3-master", session_id="owner-X", owner_pid=os.getpid())
         out = _call("handover", "create", json_output=True)
         data = json.loads(out)
         assert data["to_session"] == "owner-X"
@@ -100,7 +100,7 @@ class TestLoopWhoamiAndOwnerDisplay:
         assert "you are: this-session" in out
 
     def test_loop_owner_json_includes_you_and_owner_flag(self) -> None:
-        LoopLease.objects.claim_ownership("loop-owner", session_id="this-session", owner_pid=os.getpid())
+        LoopLease.objects.claim_ownership("t3-master", session_id="this-session", owner_pid=os.getpid())
         data = json.loads(_call("loop_owner", "owner", json_output=True))
         assert data["you"] == "this-session"
         assert data["you_are_owner"] is True

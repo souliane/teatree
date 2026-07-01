@@ -8,7 +8,7 @@ The LIVE-spawn layer that consumes PR#7a's safety machinery, staying DEFAULT-OFF
 that re-attaches across claims. The hard REVIEWER prohibition: the helper RAISES
 for ``REVIEWER`` (or any ``team:reviewer`` slot) — reviewer panes are never
 spawnable. ``claim_maker_pane`` lets a CORE_MAKER / OVERLAY_MAKER pane claim a
-``team:<role>`` unit through ``assert_pane_claim_allowed`` (never loop-owner) and
+``team:<role>`` unit through ``assert_pane_claim_allowed`` (never t3-master) and
 the ``live_owner_blocks_pane`` pre-work check, under the ``teams_max_panes`` cap,
 using the role's overlay-seam claim filter. Nothing runs when the feature is off.
 """
@@ -21,7 +21,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.config.settings import UserSettings
-from teatree.core.loop_lease_manager import GLOBAL_OWNER_SLOT
+from teatree.core.loop_lease_manager import T3_MASTER_SLOT
 from teatree.core.models import Session, Task, Ticket
 from teatree.teams.guardrails import LoopOwnerCollisionError
 from teatree.teams.pane_spawn import (
@@ -196,14 +196,14 @@ class TestNeverClaimsLoopOwner(TestCase):
         from teatree.teams.guardrails import assert_pane_claim_allowed  # noqa: PLC0415
 
         with pytest.raises(LoopOwnerCollisionError):
-            assert_pane_claim_allowed(GLOBAL_OWNER_SLOT)
+            assert_pane_claim_allowed(T3_MASTER_SLOT)
 
     def test_claimed_pane_slot_is_in_the_team_namespace(self) -> None:
         _pending_task(overlay="")
         pane = claim_maker_pane(role=TeamRole.CORE_MAKER, settings=_ENABLED, session_id="s1")
         assert pane is not None
         assert pane.claim_slot.startswith("team:")
-        assert pane.claim_slot != GLOBAL_OWNER_SLOT
+        assert pane.claim_slot != T3_MASTER_SLOT
 
 
 class TestLiveForeignOwnerSkips(TestCase):

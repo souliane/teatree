@@ -105,7 +105,7 @@ class TestOwnerLiveness(django.test.TestCase):
     def test_alive_pid_is_live_even_past_ttl(self) -> None:
         now = timezone.now()
         LoopLease.objects.create(
-            name="loop-owner",
+            name="t3-master",
             session_id="busy",
             owner_pid=_LIVE_PID,
             lease_expires_at=now - dt.timedelta(hours=1),
@@ -117,7 +117,7 @@ class TestOwnerLiveness(django.test.TestCase):
     def test_unexpired_ttl_is_live_even_with_dead_pid(self) -> None:
         now = timezone.now()
         LoopLease.objects.create(
-            name="loop-owner",
+            name="t3-master",
             session_id="fresh",
             owner_pid=_DEAD_PID,
             lease_expires_at=now + dt.timedelta(minutes=30),
@@ -129,7 +129,7 @@ class TestOwnerLiveness(django.test.TestCase):
     def test_dead_pid_and_expired_ttl_is_not_live(self) -> None:
         now = timezone.now()
         LoopLease.objects.create(
-            name="loop-owner",
+            name="t3-master",
             session_id="gone",
             owner_pid=_DEAD_PID,
             lease_expires_at=now - dt.timedelta(hours=1),
@@ -141,7 +141,7 @@ class TestOwnerLiveness(django.test.TestCase):
     def test_null_pid_owner_decided_by_ttl(self) -> None:
         now = timezone.now()
         LoopLease.objects.create(
-            name="loop-owner",
+            name="t3-master",
             session_id="nopid",
             owner_pid=None,
             lease_expires_at=now - dt.timedelta(hours=1),
@@ -161,13 +161,13 @@ class TestPerLoopOwners(django.test.TestCase):
     """The additive per-loop owning-session health layer (#1834).
 
     ``build_report`` surfaces one :class:`LoopOwnerStatus` per ``loop:<name>``
-    lease, disjoint from the global ``loop-owner`` row, with the same
+    lease, disjoint from the global ``t3-master`` row, with the same
     pid-anchored liveness. Empty under the single-owner default.
     """
 
     def test_no_per_loop_leases_means_empty(self) -> None:
         now = timezone.now()
-        LoopLease.objects.create(name="loop-owner", session_id="global", owner_pid=_LIVE_PID, lease_expires_at=now)
+        LoopLease.objects.create(name="t3-master", session_id="global", owner_pid=_LIVE_PID, lease_expires_at=now)
         report = build_report(now=now)
         assert report.per_loop_owners == ()
 
@@ -205,12 +205,12 @@ class TestPerLoopOwners(django.test.TestCase):
 
     def test_global_owner_row_is_not_a_per_loop_owner(self) -> None:
         now = timezone.now()
-        LoopLease.objects.create(name="loop-owner", session_id="g", owner_pid=_LIVE_PID, lease_expires_at=now)
+        LoopLease.objects.create(name="t3-master", session_id="g", owner_pid=_LIVE_PID, lease_expires_at=now)
         # The infra-slot leases use ``-`` not ``:`` so they are also excluded.
         LoopLease.objects.create(name="loop-tick", owner="t", acquired_at=now)
         report = build_report(now=now)
         assert report.per_loop_owners == ()
-        assert report.owner.slot == "loop-owner"
+        assert report.owner.slot == "t3-master"
 
 
 @django.test.override_settings(USE_TZ=True)

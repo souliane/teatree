@@ -1,13 +1,13 @@
 """Manager/queryset for the machine-wide ``LoopLease`` rows (#1073/#786/#54).
 
-Split out of ``teatree.core.managers`` so the loop-owner claim concern —
+Split out of ``teatree.core.managers`` so the t3-master claim concern —
 the pid-anchored ``claim_ownership`` CAS, the conditional ``evict_stale_owner``
 decision table, and the read-only ``OwnershipStatus`` snapshot — lives in
 one self-describing module. ``teatree.core.managers`` re-exports the public
 symbols so existing ``from teatree.core.managers import …`` call sites are
 unchanged.
 
-Loop-owner liveness is PID-ANCHORED, not TTL-anchored: an owner that is
+t3-master liveness is PID-ANCHORED, not TTL-anchored: an owner that is
 alive but BUSY past the tick TTL fires no Stop self-pump, so no tick
 re-claims and its lease TTL-lapses while the owner process is still alive.
 ``claim_ownership`` therefore treats a non-empty owner whose ``owner_pid``
@@ -26,21 +26,24 @@ from datetime import datetime, timedelta
 from typing import NamedTuple
 
 from django.db import models
-from django.db.models import Q
+from django.db.models import F, Q
+from django.db.models.expressions import Combinable
 from django.utils import timezone
 
-#: The single machine-wide loop-owner slot (#1073). This is the DEFAULT
-#: that the master ``loops_tick`` gate claims; its pid-anchored, hijack-guarded
-#: semantics are unchanged. Per-loop owners live in the ``loop:<name>``
-#: namespace below — a disjoint key space, so a per-loop claim can never
-#: collide with or evict the global owner.
-GLOBAL_OWNER_SLOT = "loop-owner"
+#: The single machine-wide t3-master owner lease slot — the global owner
+#: lease whose holder IS the t3 master (autonomous-lane redesign §8.3,
+#: renamed from the former ``loop-owner`` / ``GLOBAL_OWNER_SLOT``; #1073).
+#: This is the DEFAULT the master ``loops_tick`` gate claims; its
+#: pid-anchored, hijack-guarded semantics are unchanged. Per-loop owners
+#: live in the ``loop:<name>`` namespace below — a disjoint key space, so a
+#: per-loop claim can never collide with or evict the global owner.
+T3_MASTER_SLOT = "t3-master"
 
 #: Prefix for the additive per-loop owning-session layer (#1834). A
 #: dedicated loop (PR#3) claims ``loop:<name>`` (e.g. ``loop:dispatch``)
 #: so two dedicated loops can be owned by two different sessions
 #: concurrently. The prefix keeps the per-loop keys in their own namespace,
-#: disjoint from ``GLOBAL_OWNER_SLOT`` and from the infra-slot leases
+#: disjoint from ``T3_MASTER_SLOT`` and from the infra-slot leases
 #: (``loop-tick`` / ``loop-self-improve`` / …), which use ``-`` not ``:``.
 PER_LOOP_OWNER_PREFIX = "loop:"
 
@@ -52,7 +55,7 @@ def per_loop_owner_slot(loop_name: str) -> str:
     every per-loop claim/read/compare normalizes UP to it at the boundary
     so a bare ``dispatch`` and a qualified ``loop:dispatch`` can never be
     treated as two different slots. The global single-owner slot is the
-    reserved :data:`GLOBAL_OWNER_SLOT` constant, never produced by this
+    reserved :data:`T3_MASTER_SLOT` constant, never produced by this
     function, so the two layers occupy disjoint key space.
 
     An already-qualified ``loop:dispatch`` is returned unchanged
@@ -93,17 +96,23 @@ def is_per_loop_tick_mutex(slot: str) -> bool:
 
 
 class OwnershipStatus(NamedTuple):
-    """Read-only snapshot of a session-scoped loop-owner claim (#1073/#1604).
+    """Read-only snapshot of a session-scoped t3-master claim (#1073/#1604).
 
     ``is_live`` is the predicate callers branch on. It is pid-anchored
     (matching ``claim_ownership``'s liveness): ``True`` iff a non-empty
     session holds a claim that is either unexpired OR whose ``owner_pid``
     is still alive, keyed on ``session_id`` rather than ``owner``.
+
+    ``generation`` is the current fencing / lease-generation token
+    (autonomous-lane redesign §5) — the value a merge-worker dispatched now
+    would stamp and later re-check at its git write. A missing row reports
+    generation ``0``.
     """
 
     owner_session: str
     expires_at: datetime | None
     is_live: bool
+    generation: int = 0
 
 
 class LoopLeaseQuerySet(models.QuerySet):
@@ -116,7 +125,7 @@ class LoopLeaseQuerySet(models.QuerySet):
         ttl_seconds: int = 1800,
         take_over: bool = False,
     ) -> tuple[bool, str]:
-        """Claim/refresh the persistent session-scoped loop-owner row (#1073).
+        """Claim/refresh the persistent session-scoped t3-master row (#1073).
 
         Returns ``(won, current_owner_session)``. Ownership liveness is
         PID-ANCHORED: a live owner is a non-empty ``session_id`` whose lease
@@ -143,7 +152,7 @@ class LoopLeaseQuerySet(models.QuerySet):
         session id but does not restart the durable session process, so the
         live lease is still ours; it is RE-ANCHORED to the rotated session
         id and the claim WINS. This is slot-agnostic, so the master
-        ``loop-owner``, ``t3-master``, and every ``loop:<name>`` per-loop
+        ``t3-master`` and every ``loop:<name>`` per-loop
         slot self-heal on their next tick without a manual ``t3 loop claim
         --take-over``. Otherwise the existing backend-agnostic
         conditional-UPDATE CAS runs (correct on the
@@ -176,11 +185,16 @@ class LoopLeaseQuerySet(models.QuerySet):
         self.get_or_create(name=name)
 
         if take_over:
+            prior = self.filter(name=name).values_list("session_id", flat=True).first() or ""
             self.filter(name=name).update(
                 session_id=session_id,
                 owner_pid=owner_pid,
                 acquired_at=now,
                 lease_expires_at=expires,
+                # A steal that installs a DIFFERENT holder bumps the fencing
+                # generation (§5) so the old holder's in-flight worker is fenced
+                # at its next git write; re-taking one's own claim keeps it.
+                generation=self._generation_after(holder_changed=prior != session_id),
             )
             current = self.filter(name=name).values_list("session_id", flat=True).first() or ""
             return True, current
@@ -203,7 +217,9 @@ class LoopLeaseQuerySet(models.QuerySet):
                 # live lease is still ours. Re-anchor it to the rotated session id
                 # and refresh the TTL so the slot self-heals on the next tick. The
                 # CAS re-asserts the exact stored pid so a concurrent claim that
-                # already moved the lease off it is never clobbered.
+                # already moved the lease off it is never clobbered. The
+                # generation is KEPT — a same-process rotation is not a transfer
+                # (§5), so the master never fences its own worker across a compaction.
                 won = self.filter(name=name, owner_pid=stored_pid).update(
                     session_id=session_id,
                     owner_pid=owner_pid,
@@ -216,6 +232,7 @@ class LoopLeaseQuerySet(models.QuerySet):
             # indeterminate null pid within its TTL) blocks the claim — no write.
             return False, live_owner
 
+        prior_session = (row or {}).get("session_id") or ""
         won = (
             self.filter(name=name)
             .filter(
@@ -229,10 +246,46 @@ class LoopLeaseQuerySet(models.QuerySet):
                 owner_pid=owner_pid,
                 acquired_at=now,
                 lease_expires_at=expires,
+                # Reclaiming an unowned/expired slot from a DIFFERENT prior holder
+                # is a holder change → bump the fencing generation (§5). A same-
+                # session refresh keeps it (the per-tick heartbeat is not a transfer).
+                generation=self._generation_after(holder_changed=prior_session != session_id),
             )
         )
         current = self.filter(name=name).values_list("session_id", flat=True).first() or ""
         return won == 1, current
+
+    @staticmethod
+    def _generation_after(*, holder_changed: bool) -> Combinable:
+        """The ``generation=`` value for a winning claim write (§5 fencing token).
+
+        A holder change increments the token; a same-holder refresh / same-process
+        self-reclaim keeps it via an identity ``F("generation")``. The write always
+        carries a ``generation=`` expression, and the ``F`` reference makes it
+        atomic against the row's live value — so a concurrent refresh between the
+        pre-read and this write cannot desync the counter.
+        """
+        return F("generation") + 1 if holder_changed else F("generation")
+
+    def fencing_generation(self, name: str) -> int:
+        """Current fencing / lease-generation token for ``name`` (§5).
+
+        The value a merge-worker dispatched now would stamp. A missing row
+        reports ``0`` — an unclaimed slot has never changed hands.
+        """
+        return self.filter(name=name).values_list("generation", flat=True).first() or 0
+
+    def token_is_current(self, name: str, token: int) -> bool:
+        """Whether ``token`` still matches the live fencing generation (§5).
+
+        The git-write fencing check: a merge-worker's write is admitted only
+        while no newer generation has been granted. A stale token (a higher
+        generation was installed by a failover or a human steal after the worker
+        was dispatched) is fenced out. Equality is exact because the generation
+        only ever increases, so a worker can never legitimately hold a token
+        above the current one.
+        """
+        return token == self.fencing_generation(name)
 
     @staticmethod
     def _session_lease_is_live(
@@ -410,7 +463,7 @@ class LoopLeaseQuerySet(models.QuerySet):
         return 0
 
     def heartbeat_ownership(self, name: str, *, session_id: str, ttl_seconds: int = 1800) -> bool:
-        """Extend the loop-owner lease IFF this session still holds it (#1073).
+        """Extend the t3-master lease IFF this session still holds it (#1073).
 
         CAS on ``session_id``: a row another session took over (or that
         expired and was reclaimed) no longer matches, so this returns
@@ -427,7 +480,7 @@ class LoopLeaseQuerySet(models.QuerySet):
         return refreshed == 1
 
     def ownership_status(self, name: str) -> OwnershipStatus:
-        """Read-only snapshot of the named loop-owner claim (#1073/#1604).
+        """Read-only snapshot of the named t3-master claim (#1073/#1604).
 
         ``is_live`` is pid-anchored via :meth:`_session_lease_is_live`: it
         is ``True`` iff a non-empty session holds a claim that is either
@@ -436,16 +489,18 @@ class LoopLeaseQuerySet(models.QuerySet):
         owner-past-TTL window the #1604 fix targets. A missing row reports
         ``("", None, False)`` — unclaimed.
         """
-        row = self.filter(name=name).values("session_id", "lease_expires_at", "owner_pid").first()
+        row = self.filter(name=name).values("session_id", "lease_expires_at", "owner_pid", "generation").first()
         if row is None:
-            return OwnershipStatus(owner_session="", expires_at=None, is_live=False)
+            return OwnershipStatus(owner_session="", expires_at=None, is_live=False, generation=0)
         session = row["session_id"] or ""
         expires_at = row["lease_expires_at"]
         is_live = self._session_lease_is_live(session, row["owner_pid"], expires_at, timezone.now())
-        return OwnershipStatus(owner_session=session, expires_at=expires_at, is_live=is_live)
+        return OwnershipStatus(
+            owner_session=session, expires_at=expires_at, is_live=is_live, generation=row["generation"]
+        )
 
     def release_ownership(self, name: str, *, session_id: str) -> bool:
-        """Release the loop-owner claim iff held by ``session_id`` (CAS).
+        """Release the t3-master claim iff held by ``session_id`` (CAS).
 
         A non-owner release is a no-op (0 rows) so it can never evict a
         live owner — the chat-only user's ``t3 loop release`` only ever

@@ -11,8 +11,8 @@ compare qualifies a bare role UP to ``team:<role>`` at the boundary, so a bare
 ``core-maker`` and a qualified ``team:core-maker`` can never be treated as two
 different slots. An already-qualified key is returned unchanged (idempotent).
 
-The ``team:`` namespace is provably disjoint from the loop-owner slot
-(``loop-owner``), the per-loop owner prefix (``loop:``), and the infra leases
+The ``team:`` namespace is provably disjoint from the t3-master slot
+(``t3-master``), the per-loop owner prefix (``loop:``), and the infra leases
 (``loop-tick`` / ``loop-self-improve`` / … — the hyphen namespace), so a team
 claim can never collide with or evict a loop owner. The two key spaces are
 disjoint structurally (``team:`` vs ``loop:`` / ``loop-*``), pinned by a test.
@@ -29,7 +29,7 @@ from enum import Enum
 from django.db.models import Q
 
 #: Prefix for the WORK-team claim namespace. A teammate's ``claimed_by`` value
-#: is ``team:<role>`` — disjoint from ``GLOBAL_OWNER_SLOT`` (``loop-owner``),
+#: is ``team:<role>`` — disjoint from ``T3_MASTER_SLOT`` (``t3-master``),
 #: ``PER_LOOP_OWNER_PREFIX`` (``loop:``), and the infra-slot leases
 #: (``loop-tick`` / …, which use ``-`` not ``:``). The colon-prefixed
 #: ``team:`` and ``loop:`` are mutually non-prefixing, so the two key spaces
@@ -94,7 +94,7 @@ def team_claim_slot(role: "TeamRole | str") -> str:
     ``team:<role>`` form at the boundary, and an already-qualified
     ``team:core-maker`` is returned unchanged (idempotent) so a call site may
     pass either form without double-prefixing. Surrounding whitespace is
-    stripped. The ``team:`` namespace is disjoint from every loop-owner / infra
+    stripped. The ``team:`` namespace is disjoint from every t3-master / infra
     slot, so a team claim never collides with a loop owner.
     """
     name = role.value if isinstance(role, TeamRole) else role.strip()

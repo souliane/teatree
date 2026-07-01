@@ -398,6 +398,56 @@ class TestRealClosureMarkerActivation:
         assert _is_marked_active("tt-direct")
 
 
+# ── engage(): the single engagement seam (redesign §8.1) ──────────────
+
+
+class TestEngageIsTheSingleSeam:
+    """Both engagement paths write ``.teatree-active`` through one routine.
+
+    Pins the autonomous-lane redesign §6/§8.1 invariant: auto-loading does
+    exactly what manual engagement does — a single ``engage(session)`` writer,
+    not two parallel marker touches that can drift.
+    """
+
+    def test_engage_marks_active(self) -> None:
+        router.engage("eng-sess")
+        assert _is_marked_active("eng-sess")
+
+    def test_engage_creates_state_dir(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        missing = tmp_path / "not-yet"
+        monkeypatch.setattr(router, "STATE_DIR", missing)
+        router.engage("dir-sess")
+        assert (missing / "dir-sess.teatree-active").is_file()
+
+    def test_engage_empty_session_is_noop(self) -> None:
+        router.engage("")
+        assert not any(router.STATE_DIR.glob("*.teatree-active"))
+
+    def test_engage_is_idempotent(self) -> None:
+        router.engage("idem-sess")
+        router.engage("idem-sess")
+        assert _is_marked_active("idem-sess")
+
+    def test_autoload_bootstrap_engages_through_the_seam(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        seen: list[str] = []
+        monkeypatch.setattr(router, "engage", seen.append)
+        handle_session_start_bootstrap({"session_id": "auto-sess"})
+        assert seen == ["auto-sess"]
+
+    def test_skill_load_engages_through_the_seam(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(router, "_resolve_skill_closure", lambda skills: skills)
+        seen: list[str] = []
+        monkeypatch.setattr(router, "engage", seen.append)
+        handle_track_skill_usage(
+            {
+                "session_id": "skill-sess",
+                "tool_name": "Skill",
+                "tool_input": {"skill": "t3:teatree"},
+            }
+        )
+        assert seen == ["skill-sess"]
+
+
 # ── Risk-6: mid-session ownership claim from prompt handler ───────────
 
 

@@ -1,4 +1,4 @@
-"""``t3 loop claim/owner/release`` — pilot the session-scoped loop-owner (#1073).
+"""``t3 loop claim/owner/release`` — pilot the session-scoped t3-master (#1073).
 
 Split out of ``cli.loop`` (module-health: that file owns the tick / start /
 dashboard / self-improve concerns; loop-ownership hand-off is a distinct
@@ -49,10 +49,10 @@ def register(loop_app: typer.Typer) -> None:
             "--take-over",
             help="Evict a live claimant — the chat-only user's loop hand-off (#1073).",
         ),
-        slot: str = typer.Option("loop-owner", "--slot", help="Loop-owner slot name (default: loop-owner)."),
+        slot: str = typer.Option("t3-master", "--slot", help="t3-master slot name (default: t3-master)."),
         json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
     ) -> None:
-        """Claim the session-scoped loop-owner slot for this Claude session (#1073).
+        """Claim the session-scoped t3-master slot for this Claude session (#1073).
 
         Without ``--take-over`` a live claimant blocks the claim. With it,
         the claim is unconditional — the hijacking session's next ``t3 loop
@@ -64,10 +64,10 @@ def register(loop_app: typer.Typer) -> None:
     @loop_app.command("owner")
     def owner_command(
         *,
-        slot: str = typer.Option("loop-owner", "--slot", help="Loop-owner slot name (default: loop-owner)."),
+        slot: str = typer.Option("t3-master", "--slot", help="t3-master slot name (default: t3-master)."),
         json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
     ) -> None:
-        """Show which session owns the loop-owner slot AND this session's own id (#1073)."""
+        """Show which session owns the t3-master slot AND this session's own id (#1073)."""
         _delegate("owner", slot=slot, json_output=json_output)
 
     @loop_app.command("whoami")
@@ -81,10 +81,10 @@ def register(loop_app: typer.Typer) -> None:
     @loop_app.command("release")
     def release_command(
         *,
-        slot: str = typer.Option("loop-owner", "--slot", help="Loop-owner slot name (default: loop-owner)."),
+        slot: str = typer.Option("t3-master", "--slot", help="t3-master slot name (default: t3-master)."),
         json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
     ) -> None:
-        """Release this session's loop-owner claim (#1073).
+        """Release this session's t3-master claim (#1073).
 
         CAS on session id — a non-owner release is a no-op and never evicts
         a live owner.

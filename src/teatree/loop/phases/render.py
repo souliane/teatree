@@ -2,7 +2,7 @@
 
 The closing stage of a tick: project the dispatched actions into the
 statusline zones, refresh the ``tick-meta.json`` freshness header and the
-``open-prs.json`` cache, fold in the live-loop / open-PR / loop-owner
+``open-prs.json`` cache, fold in the live-loop / open-PR / t3-master
 anchors, and write the rendered statusline. The idle (no-jobs) tick takes
 the same closing stage with an empty zone set so even a quiet tick keeps
 the running-loops and open-PR anchors live.
@@ -45,9 +45,9 @@ def render_phase(
     An active tick (``jobs`` non-empty) projects the dispatched actions into
     statusline zones, refreshes ``tick-meta.json``, plans the admit budget,
     and surfaces any scanner errors. An idle tick (empty ``jobs``) renders an
-    empty zone set carrying only the live-loop / open-PR / loop-owner anchors
+    empty zone set carrying only the live-loop / open-PR / t3-master anchors
     so a quiet tick still keeps the dashboard live. Both paths write the
-    open-PR cache, fold in the open-PR + loop-owner anchors, and render.
+    open-PR cache, fold in the open-PR + t3-master anchors, and render.
     """
     if jobs:
         zones = zones_for(report.actions, colorize=colorize, identity_aliases=_identity_aliases_for_request(request))
@@ -204,23 +204,24 @@ def _populate_open_prs_in_anchors(zones: StatuslineZones, *, target: Path | None
 
 
 def _populate_loop_owner_anchor(zones: StatuslineZones) -> None:
-    """Append the foreign-hijack loop-owner RED line.
+    """Append the foreign-hijack t3-master RED line.
 
     The live-loops anchor (the single dedicated loop line folding all live
     LoopLease rows) is populated separately by
     :func:`teatree.loop.rendering._populate_live_loops_anchor`. This function
     is responsible only for the foreign-hijack RED line surfaced when a
-    different live session holds ``loop-owner``.
+    different live session holds ``t3-master``.
 
     Fails open: any import/query error degrades to a no-op so a broken
-    loop-owner read can never blank the statusline.
+    t3-master read can never blank the statusline.
     """
     try:
+        from teatree.core.loop_lease_manager import T3_MASTER_SLOT  # noqa: PLC0415
         from teatree.core.models import LoopLease  # noqa: PLC0415
         from teatree.loop.session_identity import current_session_id  # noqa: PLC0415
         from teatree.loop.statusline import loop_owner_anchor  # noqa: PLC0415
 
-        status = LoopLease.objects.ownership_status("loop-owner")
+        status = LoopLease.objects.ownership_status(T3_MASTER_SLOT)
         zone, line = loop_owner_anchor(status, current_session_id())
     except Exception:  # noqa: BLE001
         return
@@ -231,7 +232,7 @@ def _populate_loop_owner_anchor(zones: StatuslineZones) -> None:
 def rerender_statusline(target: Path | None = None, *, colorize: bool | None = None) -> Path:
     """Re-render the statusline from current state without a full tick (#2625).
 
-    Runs the idle (no-jobs) render path — the live-loop, open-PR, and loop-owner
+    Runs the idle (no-jobs) render path — the live-loop, open-PR, and t3-master
     anchors over an empty zone set — so a stale merged-PR / terminal-ticket URL
     drops out of the rendered file. This is the idempotent self-heal seam the
     domain-layer ``StaleStatuslineEntryDetector`` cannot reach itself (it would

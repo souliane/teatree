@@ -950,7 +950,7 @@ class, where it is pinned, and the originating fix:
 | substrate-merge human-authorize floor | `regression_corpus` (merge precondition) | [#1498](https://github.com/souliane/teatree/pull/1498) |
 | substrate-merge full-autonomy carve-out | `regression_corpus` (merge precondition) | [#1748](https://github.com/souliane/teatree/issues/1748) |
 | maker≠checker at merge time | `regression_corpus` (merge precondition) | [#1601](https://github.com/souliane/teatree/pull/1601) |
-| loop-owner hijack / pid-anchored lease | `regression_corpus` (lease claim) | [#1724](https://github.com/souliane/teatree/pull/1724) |
+| t3-master hijack / pid-anchored lease | `regression_corpus` (lease claim) | [#1724](https://github.com/souliane/teatree/pull/1724) |
 | account-switch detect-invalidate-reprobe (`/login`) | `regression_corpus` (full switch-and-verify cycle) | [#1916](https://github.com/souliane/teatree/issues/1916) |
 | orchestrator boundary — long work + foreground edit | `scenarios/orchestrator_boundary.yaml` | [#1446](https://github.com/souliane/teatree/pull/1446) |
 | structured-question — AskUserQuestion, one decision | `scenarios/rules.yaml` | [#1622](https://github.com/souliane/teatree/pull/1622) |
