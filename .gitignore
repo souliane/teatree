@@ -22,6 +22,7 @@ docs/plan
 # design/decision doc (ADR) under docs/design/ is carved back in explicitly.
 docs/design/*
 !docs/design/autonomous-lane-redesign.md
+!docs/design/own-loop-scheduler.md
 tach_module_graph.dot
 htmlcov/
 # mkdocs build output
