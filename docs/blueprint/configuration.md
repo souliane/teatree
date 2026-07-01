@@ -470,14 +470,28 @@ architecture-design = "fable"
 **`session_model` / `session_effort` (interactive main agent only).** Injected
 as `--model` / `--effort` into the interactive `claude` spawn argv by
 `t3 loop start` (`cli/loop.py`'s `os.execv`), so the main agent runs at the
-pinned model/effort without a manual `/model`. **Effort is settable only
-session-wide** — never per-sub-agent (the Agent tool has no effort param) and
-never on `claude -p` headless (`--model` only). The effort scale is the strict
-CLI scale `low | medium | high | xhigh | max` (`max` > `xhigh`; there is **no**
-`off`); an off-scale value is a hard `ValueError` at parse and a `t3 doctor`
-FAIL. "ultracode" (xhigh + auto dynamic workflows) is a session/settings
-concept, not a value here. A model sentinel (`""` / `"default"` / `"inherit"`)
-means inherit the default (no flag).
+pinned model/effort without a manual `/model`. This is the interactive
+main-agent axis; the per-sub-agent reasoning effort is separate — a headless SDK
+spawn gets its effort from its phase's abstract tier (`[agent.tier_effort]`, see
+below), and `session_effort` never leaks into it (the in-session Agent tool has
+no effort param). The effort scale is the strict CLI scale
+`low | medium | high | xhigh | max` (`max` > `xhigh`; there is **no** `off`); an
+off-scale value is a hard `ValueError` at parse and a `t3 doctor` FAIL.
+"ultracode" (xhigh + auto dynamic workflows) is a session/settings concept, not
+a value here. A model sentinel (`""` / `"default"` / `"inherit"`) means inherit
+the default (no flag).
+
+**`[agent.tier_effort]` (per-abstract-tier spawn effort).** The effort parallel
+of `[agent.tier_models]`: overrides the reasoning effort an abstract tier spawns
+with, merged OVER the shipped `model_tiering.TIER_EFFORT`
+(`{"frontier": "xhigh", "balanced": "high"}`; `cheap`/Haiku is absent → no
+effort). `resolve_spawn_effort(phase)` resolves phase → tier → effort through the
+same `[agent.phase_models]` override mechanism as the model, so a phase
+downgraded to a cheaper tier drops model and effort together. Each value must be
+a member of the effort scale (an off-scale or non-string value is dropped, the
+same tolerance as `tier_models`). The headless SDK builder pins the result as
+`ClaudeAgentOptions.effort=`; with this table absent the spawn effort is the
+shipped per-tier default.
 
 **`[agent.phase_models]` (per-phase sub-agent tier).** The shipped default pins
 `planning → opus` and downgrades mechanical phases (`reviewing`/`requesting_review`/`testing`/`shipping`

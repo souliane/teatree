@@ -267,6 +267,43 @@ class TestTierModelsParse:
         assert AgentConfig().tier_models == {}
 
 
+class TestTierEffortParse:
+    """``[agent.tier_effort]`` override parsing — the per-tier reasoning-effort dial."""
+
+    def test_parsed_from_agent_subtable(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        _write(cfg, '[agent.tier_effort]\nfrontier = "max"\nbalanced = "xhigh"\n')
+        resolved = resolve_agent_config(config_path=cfg)
+        assert resolved.tier_effort == {"frontier": "max", "balanced": "xhigh"}
+
+    def test_case_and_whitespace_normalised(self, tmp_path: Path) -> None:
+        # Mirrors ``parse_effort`` normalisation (lower + strip) so the stored
+        # override is always a canonical EFFORT_SCALE member.
+        cfg = tmp_path / ".teatree.toml"
+        _write(cfg, '[agent.tier_effort]\nfrontier = "  XHIGH  "\n')
+        assert resolve_agent_config(config_path=cfg).tier_effort == {"frontier": "xhigh"}
+
+    def test_off_scale_and_non_string_values_dropped(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        _write(cfg, '[agent.tier_effort]\nfrontier = "off"\nbalanced = "high"\ncheap = 5\n')
+        # An off-scale value ("off") and a non-string value are dropped (matches
+        # tier_models tolerance); only the valid scale value survives.
+        assert resolve_agent_config(config_path=cfg).tier_effort == {"balanced": "high"}
+
+    def test_absent_tier_effort_is_empty(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        _write(cfg, '[agent]\nsession_model = "fable"\n')
+        assert resolve_agent_config(config_path=cfg).tier_effort == {}
+
+    def test_non_table_tier_effort_falls_back_to_empty(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        _write(cfg, '[agent]\ntier_effort = "oops"\n')
+        assert resolve_agent_config(config_path=cfg).tier_effort == {}
+
+    def test_default_config_has_empty_tier_effort(self) -> None:
+        assert AgentConfig().tier_effort == {}
+
+
 class TestPhaseFanoutParse:
     """``[agent.phase_fanout]`` opt-in parsing (teatree#2229)."""
 

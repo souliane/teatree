@@ -64,7 +64,7 @@ plus the extras that let it run automatically and gate CI. A minimal scenario:
 - name: checking_is_read_only          # unique across the corpus
   scenario: "/t3:checking is a read-only glance — never posts or transitions"
   agent_path: skills/checking/SKILL.md
-  model: haiku                         # defaults to claude-sonnet-4-6
+  model: haiku                         # defaults to claude-sonnet-5
   max_turns: 3                         # defaults to 30
   tools: [Bash]                        # defaults to [Bash]
   prompt: >-

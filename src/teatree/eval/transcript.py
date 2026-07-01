@@ -60,7 +60,7 @@ _DATE_SUFFIX_RE = re.compile(r"-\d{8}$")
 #: without a new entry and is NOT part of this set.
 _SHORT_ALIAS_TO_BASE: dict[str, str] = {
     "opus": "claude-opus-4-8",
-    "sonnet": "claude-sonnet-4-6",
+    "sonnet": "claude-sonnet-5",
     "haiku": "claude-haiku-4-5",
 }
 

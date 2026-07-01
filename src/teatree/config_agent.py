@@ -21,15 +21,27 @@ the existing ``[agent.phase_models]`` table)::
     [agent.tier_models]           # override the concrete model id of an abstract tier
     frontier = "claude-opus-4-9"  # adopt a new frontier model with one config line
 
-The per-skill floor is MODEL only — effort is settable session-wide (on the
-interactive loop spawn) and never per-sub-agent, so there is deliberately no
-``skill_effort`` axis.
+    [agent.tier_effort]           # override the reasoning effort of an abstract tier
+    balanced = "xhigh"            # raise the balanced-tier spawn effort with one line
+
+The per-skill floor is MODEL only — there is deliberately no ``skill_effort``
+axis. The reasoning-effort dial is per-ABSTRACT-TIER instead, via the
+``[agent.tier_effort]`` table below (which reaches every sub-agent spawn through
+:func:`teatree.agents.model_tiering.resolve_spawn_effort`), while
+``session_effort`` remains the separate interactive main-agent pin.
 
 The ``[agent.tier_models]`` table mirrors ``[agent.skill_models]``: each entry
 overrides the concrete model id a tier resolves to, merged OVER the
 :data:`teatree.agents.model_tiering.TIER_MODELS` shipped default. It is the
 config escape hatch for the "single source of truth" model constant — adopting a
 new model is one TOML line, with no code edit.
+
+The ``[agent.tier_effort]`` table mirrors ``[agent.tier_models]`` exactly: each
+entry overrides the reasoning effort an abstract tier spawns with, merged OVER
+the :data:`teatree.agents.model_tiering.TIER_EFFORT` shipped default. Each value
+must be a member of :data:`EFFORT_SCALE` (an off-scale value is dropped, matching
+the ``tier_models`` tolerance), so a malformed override never poisons the shipped
+per-tier effort.
 
 :data:`_INHERIT_SENTINELS` lives here (foundation) rather than in
 :mod:`teatree.agents.model_tiering` (domain) so a model value can be normalised
@@ -94,6 +106,12 @@ class AgentConfig:
         line. Empty by default → the shipped :data:`TIER_MODELS` stands unchanged.
         Mirrors ``skill_models`` (a typed ``[agent.tier_models]`` sub-table); a
         non-table value or a non-string entry value yields no override.
+    *   ``tier_effort`` — abstract-tier-name → reasoning effort, merged OVER
+        :data:`teatree.agents.model_tiering.TIER_EFFORT`. The per-tier reasoning
+        dial that reaches every sub-agent spawn. Empty by default → the shipped
+        :data:`TIER_EFFORT` stands unchanged. Mirrors ``tier_models`` (a typed
+        ``[agent.tier_effort]`` sub-table); a non-table value, a non-string entry,
+        or a value off :data:`EFFORT_SCALE` yields no override.
     *   ``session_model`` — the interactive main-agent ``--model`` pin, or
         ``None`` to inherit the user's default.
     *   ``session_effort`` — the interactive main-agent ``--effort`` pin (a
@@ -135,6 +153,7 @@ class AgentConfig:
     phase_fanout: dict[str, bool | int] = field(default_factory=dict)
     honesty_model: str = "fable"
     tier_models: dict[str, str] = field(default_factory=dict)
+    tier_effort: dict[str, str] = field(default_factory=dict)
 
 
 def _phase_fanout_from(raw: object) -> dict[str, bool | int]:
@@ -191,6 +210,25 @@ def _tier_models_from(raw: object) -> dict[str, str]:
     return resolved
 
 
+def _tier_effort_from(raw: object) -> dict[str, str]:
+    """Normalise the ``[agent.tier_effort]`` table into a tier → effort override map.
+
+    Mirrors :func:`_tier_models_from` exactly (non-table → empty, per-entry
+    tolerance), with one added gate: each value must be a member of
+    :data:`EFFORT_SCALE` (case- and whitespace-insensitive). A non-string, blank,
+    or off-scale value is skipped — the same fail-to-defaults tolerance — so a
+    malformed override never poisons the shipped
+    :data:`teatree.agents.model_tiering.TIER_EFFORT` default.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    resolved: dict[str, str] = {}
+    for tier, effort in raw.items():
+        if isinstance(effort, str) and effort.strip().lower() in EFFORT_SCALE:
+            resolved[str(tier)] = effort.strip().lower()
+    return resolved
+
+
 def _fable_fallback_from(raw: object) -> str:
     """Normalise the ``[agent] fable_fallback`` value to a non-empty model id.
 
@@ -233,6 +271,7 @@ def _agent_config_from_table(agent: Mapping[str, object]) -> AgentConfig:
         phase_fanout=_phase_fanout_from(agent.get("phase_fanout")),
         honesty_model=_honesty_model_from(agent.get("honesty_model")),
         tier_models=_tier_models_from(agent.get("tier_models")),
+        tier_effort=_tier_effort_from(agent.get("tier_effort")),
     )
 
 
