@@ -136,8 +136,9 @@ def test_rerender_statusline_preserves_the_open_prs_cache(tmp_path: Path) -> Non
 def test_self_improve_rerender_adapter_invokes_the_render_seam(monkeypatch: pytest.MonkeyPatch) -> None:
     """The action-ladder ``auto_fix_callable`` adapter bridges to ``rerender_statusline``.
 
-    Both live orchestration entry points (the dedicated ``loop_self_improve`` slot
-    and the tick piggyback) inject this as the ladder's ``auto_fix_callable``.
+    The dedicated ``loop_self_improve`` slot injects this as the ladder's
+    ``auto_fix_callable`` — the sole live orchestration entry point since the
+    master-tick removal (#2650).
     """
     from teatree.loop.phases import render as render_module  # noqa: PLC0415
 
