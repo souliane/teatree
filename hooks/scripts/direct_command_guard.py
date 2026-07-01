@@ -37,6 +37,7 @@ never Django / ``teatree.core``.
 
 import re
 import sys
+from pathlib import PurePosixPath
 
 # Alias the bare and ``hooks.scripts.`` identities so the handler the router
 # re-exports and a test patching a helper here operate on ONE module object.
@@ -216,6 +217,65 @@ def _has_shell_chain(command: str) -> bool:
     return bool(_SHELL_CHAIN_RE.search(command))
 
 
+# Leaders whose heredoc body is post/commit DATA (a PR/issue/MR body or a commit
+# message), never executed — so a blocked-tool phrase inside such a heredoc is
+# documentation, not an invocation, and must not trip the denylist. A heredoc fed
+# to an INTERPRETER (``bash <<EOF docker compose up EOF``) is NOT in this set, so
+# its body stays scanned and a real bypass piped to a shell still blocks.
+_FORGE_HEREDOC_LEADERS: frozenset[str] = frozenset({"gh", "glab", "git"})
+
+# A heredoc: ``<<['"]?DELIM['"]?`` on a command line, then a body up to a line
+# that is just DELIM. ``body`` is the content between the intro line and the
+# closing delimiter.
+_HEREDOC_BODY_RE = re.compile(
+    r"<<-?\s*['\"]?(?P<delim>\w+)['\"]?[^\n]*\n(?P<body>.*?)\n[ \t]*(?P=delim)\b",
+    re.DOTALL,
+)
+
+# Command separators that end one command and begin the next.
+_CMD_SEP_SPLIT_RE = re.compile(r"\|\||&&|[;|&\n]")
+
+
+def _heredoc_owner_leader(prefix: str) -> str:
+    """Return the executable leading the command that introduces a heredoc.
+
+    ``prefix`` is the command text up to the ``<<`` operator; a heredoc attaches
+    to the command on its line, so the owner is the first non-env-assignment
+    token of the last command segment in ``prefix`` (after the final
+    ``;``/``|``/``&&``/``||``/newline). The basename is returned so a path-form
+    leader (``/usr/bin/gh``) matches a bare ``gh``.
+    """
+    last_segment = _CMD_SEP_SPLIT_RE.split(prefix)[-1]
+    for token in last_segment.split():
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", token):
+            continue
+        return PurePosixPath(token).name
+    return ""
+
+
+def _strip_forge_heredoc_bodies(command: str) -> str:
+    """Blank heredoc bodies fed to a ``gh``/``glab``/``git`` command.
+
+    A heredoc feeding a forge/git posting command (``gh pr create --body-file -
+    <<EOF … EOF``, ``git commit -F - <<EOF … EOF``) is the PR/issue/MR body or
+    commit message — pure DATA the command never executes. A blocked-tool phrase
+    inside it (``docker compose up`` documented in a PR body) is text, not an
+    invocation, so it must not trip the denylist. Only forge/git-owned heredocs
+    are blanked: a heredoc fed to an interpreter (``bash <<EOF docker compose up
+    EOF``) keeps its body scanned, so a real bypass piped to a shell still blocks.
+    """
+
+    def blank(match: "re.Match[str]") -> str:
+        if _heredoc_owner_leader(command[: match.start()]) not in _FORGE_HEREDOC_LEADERS:
+            return match.group(0)
+        body_start = match.start("body") - match.start()
+        body_end = match.end("body") - match.start()
+        whole = match.group(0)
+        return whole[:body_start] + " " + whole[body_end:]
+
+    return _HEREDOC_BODY_RE.sub(blank, command)
+
+
 def deny_match(command: str) -> str | None:
     """Return a deny reason for *command*, or None if it should pass through."""
     # Checked FIRST — even before t3/read-only bypass — because agents must
@@ -229,17 +289,23 @@ def deny_match(command: str) -> str | None:
     # must inspect the full command rather than short-circuiting on the prefix.
     if not _has_shell_chain(command) and (_T3_CMD_PREFIX_RE.match(stripped) or _READONLY_CMD_PREFIX_RE.match(stripped)):
         return None
-    # Scan VALUE/CONFIG patterns against the raw command so that quoting the
-    # value (e.g. ``git -c "core.hooksPath=/dev/null"``) cannot evade the gate.
+    # A heredoc feeding a gh/glab/git posting command is the PR/commit BODY —
+    # pure data. Blank those bodies before the denylist scans so a blocked-tool
+    # phrase documented in a body (``docker compose up`` in a PR description) is
+    # not read as an invocation; a heredoc fed to an interpreter keeps its body.
+    scan_command = _strip_forge_heredoc_bodies(command)
+    # Scan VALUE/CONFIG patterns against the (body-stripped) raw command so that
+    # quoting the value (e.g. ``git -c "core.hooksPath=/dev/null"``) cannot evade
+    # the gate — a real bypass is never inside a forge heredoc body.
     for pattern, reason in _RAW_SCAN_BLOCKED:
-        if pattern.search(command):
+        if pattern.search(scan_command):
             return reason + " If `t3` fails, fix the CLI — do not work around it."
     # Scan TOOL-INVOCATION patterns against a quote-stripped copy so that a
     # blocked tool name that appears only inside a quoted commit message or grep
     # argument (e.g. ``git commit -m 'fix: handle pip install edge case'``) does
     # not false-block the command.  Real blocked invocations are unquoted and
     # still match the stripped target.
-    quote_stripped = _QUOTED_LITERAL_RE.sub(" ", command)
+    quote_stripped = _QUOTED_LITERAL_RE.sub(" ", scan_command)
     for pattern, reason in _QUOTE_STRIPPED_BLOCKED:
         if pattern.search(quote_stripped):
             return reason + " If `t3` fails, fix the CLI — do not work around it."
