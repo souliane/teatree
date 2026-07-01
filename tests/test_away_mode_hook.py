@@ -51,9 +51,11 @@ def _force_away(monkeypatch: pytest.MonkeyPatch) -> None:
 
     The mode resolver normally reads from disk; for these unit-tests
     we force the resolver result so the hook is exercised under a
-    deterministic state without touching the user's real config.
+    deterministic state without touching the user's real config. The
+    question-defer path reads the defers-questions predicate (#2544 —
+    ``away`` and ``autonomous_away`` both defer).
     """
-    monkeypatch.setattr(router, "_resolved_away_mode", lambda: True)
+    monkeypatch.setattr(router, "_resolved_defers_questions", lambda: True)
 
 
 class TestAwayModeConversion:
@@ -106,7 +108,7 @@ class TestPresentModeDoesNotIntercept:
     def test_present_mode_skips_the_handler(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        monkeypatch.setattr(router, "_resolved_away_mode", lambda: False)
+        monkeypatch.setattr(router, "_resolved_defers_questions", lambda: False)
         result = handle_route_away_mode_question(_ask_payload("Should I ship?"))
         assert result is False
         assert _stdout(capsys) == {}

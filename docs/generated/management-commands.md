@@ -13,6 +13,7 @@ Edit the source command, not this file.
 | `present` | Force present-mode (interactive questions) until *until* — or forever |
 | `auto` | Clear the manual override; the cron schedule decides again |
 | `show` | Print the current resolved mode and which layer decided it |
+| `autonomous-away` | Force autonomous-away — defer questions but KEEP self-pumping (#2544) |
 
 ## `checking`
 

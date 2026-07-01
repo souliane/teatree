@@ -167,7 +167,11 @@ def resolve_speak() -> SpeakConfig:
 
 
 def _is_away() -> bool:
-    """Whether availability resolves to ``away`` — never raises.
+    """Whether availability puts the user away — silences local TTS; never raises.
+
+    True for holiday-``away`` AND ``autonomous_away`` (#2544): both mean the
+    user is not at the keyboard, so playing to an empty room is pointless. Only
+    LOCAL playback is gated — the Slack arm still reaches the user's phone.
 
     A resolution failure degrades to NOT away (returns ``False``): the
     away-gate must never suppress local audio on a transient error.
@@ -175,7 +179,7 @@ def _is_away() -> bool:
     from teatree.core import availability  # noqa: PLC0415
 
     try:
-        return availability.resolve_mode().mode == availability.MODE_AWAY
+        return availability.resolve_mode().defers_questions
     except Exception as exc:  # noqa: BLE001 — a resolution failure must never mute local audio
         logger.debug("availability resolution failed; treating as present: %s", exc)
         return False

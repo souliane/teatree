@@ -23,6 +23,12 @@ Load `/t3:availability` when the user wants to:
 - Answer or dismiss the deferred-question backlog.
 - Debug why the agent is or isn't intercepting `AskUserQuestion`.
 
+## The three modes (#2544)
+
+- **`present`** — reachable: `AskUserQuestion` runs interactively, the self-pump runs.
+- **`away`** — holiday: questions defer to the durable backlog AND the self-pump pauses (the factory stops self-driving too).
+- **`autonomous_away`** — unattended run: questions defer like `away`, but the self-pump keeps the factory running like `present`. Use this for a long unattended run so a permanent `away` doesn't silently stop the loop.
+
 ## Mode resolution (single deterministic precedence)
 
 `teatree.core.availability.resolve_mode()` returns the effective mode by:
@@ -40,9 +46,16 @@ Load `/t3:availability` when the user wants to:
 # Show the effective mode and the layer that decided it.
 t3 teatree availability show
 
-# Force away-mode for the rest of the day (or forever).
+# Force away-mode for the rest of the day (or forever). Holiday-away:
+# questions defer AND the self-pump pauses (the factory stops self-driving).
 t3 teatree availability away --until 2026-05-18T22:00:00+02:00
 t3 teatree availability away
+
+# Autonomous-away (#2544): defer questions but KEEP the self-pump running —
+# the unattended-run state. Use this instead of `away` for a long autonomous
+# run so questions queue durably while the loop keeps working.
+t3 teatree availability autonomous-away
+t3 teatree availability autonomous-away --until 2026-05-18T22:00:00+02:00
 
 # Force present-mode (cancel an `away` override). On an away→present
 # transition this auto-drains the deferred backlog to the user's Slack DM.

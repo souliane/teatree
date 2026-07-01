@@ -19,6 +19,10 @@
         {
           "help": "Print the current resolved mode and which layer decided it",
           "name": "show"
+        },
+        {
+          "help": "Force autonomous-away \u2014 defer questions but KEEP self-pumping (#2544)",
+          "name": "autonomous-away"
         }
       ]
     },

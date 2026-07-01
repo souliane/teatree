@@ -1,4 +1,4 @@
-"""Away-mode read for the bare-``python3`` Stop/PreToolUse hooks (#2559, fast-hooks).
+"""Availability-mode read for the bare-``python3`` Stop/PreToolUse hooks (#2559, #2544, fast-hooks).
 
 The harness invokes the hooks as a bare ``python3`` with NO ``uv`` env, so
 teatree's dependencies are not importable and ``django.setup()`` cannot run in
@@ -9,16 +9,24 @@ and the lever returned ``False`` (never away) — silently neutering
 
 Fast path (fast-hooks): the availability decision is FILE / TOML based, not a
 Django concern. Its top precedence tier — an unexpired manual override written by
-``t3 <overlay> availability away|present`` — is a plain JSON file, and the default
-(no configured schedule) is ``present``. Both are resolved here in pure stdlib, so
-the common cases (a manual pause, or no schedule at all) never shell out. Only the
-cron-window ``[teatree.availability].windows`` schedule tier — which needs
-``croniter``, absent from the bare hook — falls back to the ``t3`` subprocess
-(``availability show``) for an exact evaluation in the editable install's child
-process. This removes the ~2.5s Django cold-boot the subprocess paid on EVERY
-Stop/away-gate hot path (the recurring TIMEOUT) for all but the rare configured-
-schedule session, while keeping the resolved ``away`` DECISION identical to
-``teatree.core.availability.resolve_mode`` at every tier.
+``t3 <overlay> availability away|autonomous-away|present`` — is a plain JSON
+file, and the default (no configured schedule) is ``present``. Both are resolved
+here in pure stdlib, so the common cases (a manual pause, or no schedule at all)
+never shell out. Only the cron-window ``[teatree.availability].windows`` schedule
+tier — which needs ``croniter``, absent from the bare hook — falls back to the
+``t3`` subprocess (``availability show``) for an exact evaluation in the editable
+install's child process. This removes the ~2.5s Django cold-boot the subprocess
+paid on EVERY Stop/away-gate hot path (the recurring TIMEOUT) for all but the
+rare configured-schedule session, while keeping the resolved mode DECISION
+identical to ``teatree.core.availability.resolve_mode`` at every tier.
+
+Three availability modes (#2544): ``present``, ``away`` (holiday — defers
+questions AND pauses the self-pump), and ``autonomous_away`` (unattended run —
+defers questions like ``away`` but keeps the self-pump running like ``present``).
+The two behaviours ``away`` used to conflate are split into two predicates,
+mirroring ``teatree.core.availability.Resolution.defers_questions`` /
+``.pauses_self_pump``: :func:`resolved_defers_questions` (``away`` +
+``autonomous_away``) and :func:`resolved_pauses_self_pump` (``away`` only).
 
 DB-home resolution is reused from ``teatree.config.cold_reader``
 (``canonical_config_db().parent`` is the PRIMARY data dir the installed ``t3``
@@ -52,7 +60,18 @@ _DEFAULT_OVERLAY_ALIAS = "teatree"
 
 MODE_PRESENT = "present"
 MODE_AWAY = "away"
-_VALID_MODES = frozenset({MODE_PRESENT, MODE_AWAY})
+# Autonomous-away (#2544): unattended run — questions defer exactly like
+# holiday-``away`` but the Stop self-pump keeps firing exactly like ``present``.
+MODE_AUTONOMOUS_AWAY = "autonomous_away"
+_VALID_MODES = frozenset({MODE_PRESENT, MODE_AWAY, MODE_AUTONOMOUS_AWAY})
+
+# Modes in which the user is unreachable NOW — questions defer to the durable
+# backlog. Mirrors ``teatree.core.availability._DEFERRING_MODES``.
+_DEFERRING_MODES = frozenset({MODE_AWAY, MODE_AUTONOMOUS_AWAY})
+# Modes that pause the Stop self-pump — only holiday-``away``. Mirrors
+# ``teatree.core.availability._PAUSING_MODES``. Kept in parity with the core
+# resolver by ``tests/teatree_hooks/test_availability_away_probe.py``.
+_PAUSING_MODES = frozenset({MODE_AWAY})
 
 _OVERRIDE_FILENAME = "availability_override.json"
 
@@ -68,8 +87,8 @@ class _Override:
         return self.until is None or now < self.until
 
 
-def resolved_away_mode() -> bool:
-    """True when the resolved availability mode is ``away`` (fast, no Django boot).
+def resolved_mode_token() -> str:
+    """The resolved availability mode string, fast stdlib path first (#2544, #2559).
 
     Resolves the same precedence chain as
     :func:`teatree.core.availability.resolve_mode`: an unexpired manual override
@@ -81,19 +100,39 @@ def resolved_away_mode() -> bool:
 
     FAIL SAFE for the caller: an unreadable override, an unresolvable data dir,
     an absent ``t3``, a failed subprocess, or unparsable output all resolve to
-    ``False`` (not away). The self-pump's ``_pause_suppresses_self_pump`` then
-    applies its own suppress-on-raise rule on top; this function never raises.
+    ``""`` (unknown — every predicate below treats it as non-deferring,
+    non-pausing, same net effect as ``present``). This function never raises.
     """
     override_mode = _active_override_mode(datetime.now(tz=UTC))
     if override_mode is not None:
-        return override_mode == MODE_AWAY
+        return override_mode
     if _schedule_has_windows():
-        return _subprocess_reports_away()
-    return False
+        return _subprocess_mode_token()
+    return MODE_PRESENT
+
+
+def resolved_away_mode() -> bool:
+    """True when the resolved availability mode is exactly ``away`` (fast, no Django boot).
+
+    Kept as the ``away``-only predicate the self-pump pause has always used —
+    only holiday-``away`` pauses the loop. ``autonomous_away`` keeps the factory
+    running, so it is deliberately excluded here.
+    """
+    return resolved_mode_token() == MODE_AWAY
+
+
+def resolved_defers_questions() -> bool:
+    """True when the resolved mode defers questions — ``away`` or ``autonomous_away`` (#2544)."""
+    return resolved_mode_token() in _DEFERRING_MODES
+
+
+def resolved_pauses_self_pump() -> bool:
+    """True when the resolved mode pauses the Stop self-pump — ``away`` only (#2544)."""
+    return resolved_mode_token() in _PAUSING_MODES
 
 
 def _active_override_mode(now: datetime) -> str | None:
-    """The active manual-override mode (``present``/``away``), or ``None`` when none is active.
+    """The active manual-override mode, or ``None`` when none is active.
 
     Stdlib port of ``availability.load_override`` + ``Override.is_active``: an
     absent / expired / unparsable override yields ``None`` so the caller falls
@@ -190,22 +229,22 @@ def _schedule_has_windows() -> bool:
     return any(isinstance(entry, str) and entry.strip() for entry in windows)
 
 
-def _subprocess_reports_away() -> bool:
-    """True when ``t3 <overlay> availability show`` resolves to ``away`` (schedule tier).
+def _subprocess_mode_token() -> str:
+    """The resolved mode from ``t3 <overlay> availability show`` (schedule tier).
 
     The exact-evaluation fallback for the configured-schedule case: the editable
     install boots Django in the child ``t3`` process and evaluates the cron
     windows + live-presence upgrade via ``resolve_mode``. FAIL SAFE — an absent
-    ``t3``, a failed subprocess, or unparsable output resolves to ``False``.
+    ``t3``, a failed subprocess, or unparsable output resolves to ``""``.
     """
     t3_bin = shutil.which("t3")
     if not t3_bin:
-        return False
+        return ""
     for overlay in _overlay_candidates():
         out = _availability_show(t3_bin, overlay)
         if out is not None:
-            return _line_reports_away(out)
-    return False
+            return _mode_token(out)
+    return ""
 
 
 def _overlay_candidates() -> list[str]:
@@ -240,14 +279,22 @@ def _availability_show(t3_bin: str, overlay: str) -> str | None:
     return result.stdout
 
 
-def _line_reports_away(text: str) -> bool:
-    """True when an ``availability: mode=… source=…`` line resolves to ``away``."""
+def _mode_token(text: str) -> str:
+    """The ``mode=…`` value from an ``availability: mode=… source=…`` line, or ``""``."""
     for raw in text.splitlines():
         for token in raw.split():
             key, sep, value = token.partition("=")
             if sep and key.strip() == "mode":
-                return value.strip().lower() == MODE_AWAY
-    return False
+                return value.strip().lower()
+    return ""
 
 
-__all__ = ["resolved_away_mode"]
+__all__ = [
+    "MODE_AUTONOMOUS_AWAY",
+    "MODE_AWAY",
+    "MODE_PRESENT",
+    "resolved_away_mode",
+    "resolved_defers_questions",
+    "resolved_mode_token",
+    "resolved_pauses_self_pump",
+]

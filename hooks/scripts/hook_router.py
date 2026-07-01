@@ -46,6 +46,7 @@ if "hook_router" not in sys.modules:
     sys.modules["hook_router"] = sys.modules[__name__]
 
 from availability_away_probe import resolved_away_mode as resolved_away_mode_stdlib
+from availability_away_probe import resolved_defers_questions as _resolved_defers_questions
 from banned_terms_gate import handle_banned_terms_pretool
 from completion_claim_gate import handle_completion_claim_gate
 from config_overwrite_guard import handle_block_config_overwrite
@@ -5042,21 +5043,16 @@ def _resolve_loop_env(name: str) -> str:
 def _pause_suppresses_self_pump() -> bool:
     """True when an explicit user pause must win over the standing loop directive.
 
-    The self-pump is teatree's own re-firing Stop directive (#2247/#2250): it
-    re-emits ``{"decision": "block", ...}`` to resume the loop every turn while
-    consolidated work remains. When the user has explicitly paused —
-    availability resolves to ``away`` via the same ``resolve_mode`` chain the
-    AskUserQuestion deferral honours (a manual ``t3 teatree availability away``
-    override, or an out-of-window schedule) — that nag must SUPPRESS, so an
-    explicit pause wins over the goal exactly as it does for the agent.
+    The self-pump is teatree's own re-firing Stop directive (#2247/#2250). Only
+    holiday-``away`` pauses it — ``_resolved_away_mode`` is ``away``-only, so
+    ``autonomous_away`` (#2544, defers questions but keeps the factory running)
+    is correctly NOT a pause here.
 
-    FAIL SAFE — suppress on indeterminate: ``_resolved_away_mode`` already
-    collapses a missing/unimportable ``teatree`` or an availability-read error
-    to ``False`` ("not away"), which here would mean "keep pumping". That is the
-    UNSAFE direction for a Stop hook: an indeterminate signal must allow the
-    stop (suppress the nag), never loop through a possible pause. So this
-    predicate treats away AND any availability-resolution error as suppress; it
-    pumps ONLY when availability resolves cleanly to ``present``.
+    FAIL SAFE — suppress on indeterminate: ``_resolved_away_mode`` collapses a
+    missing/unimportable ``teatree`` or a read error to ``False`` ("not away"),
+    which here would mean "keep pumping" — the UNSAFE direction for a Stop hook.
+    So an away mode AND any resolution error both suppress; it pumps ONLY when
+    availability resolves cleanly to a non-pausing mode.
     """
     try:
         return _resolved_away_mode()
@@ -6252,7 +6248,7 @@ def handle_route_away_mode_question(data: dict) -> bool:
     """
     if data.get("tool_name") != "AskUserQuestion":
         return False
-    if not _resolved_away_mode():
+    if not _resolved_defers_questions():
         return False
     if _is_live_user_turn(data):
         # The user is driving THIS turn (a fresh same-session prompt seconds
