@@ -33,7 +33,7 @@ from unittest.mock import patch
 from django.test import SimpleTestCase, TestCase
 
 from teatree.core.models import ConsolidatedMemory
-from teatree.loops.dream import decay, gates, reindex
+from teatree.loops.dream import acceptance, decay, gates, reindex
 from teatree.loops.dream.decay import BudgetTier, DecayPolicy, _MemoryFile, decay_memories, ledger_durable_home_resolver
 
 _NOW = datetime(2026, 6, 16, 12, tzinfo=UTC)
@@ -719,7 +719,7 @@ class OverBudgetDecayEndToEndTestCase(TestCase):
         after: gates.MemorySnapshot,
         archived: Sequence[decay.ArchivedMemory],
     ) -> gates.DreamQaReport:
-        return gates.run_acceptance_pass(
+        return acceptance.run_acceptance_pass(
             before,
             after,
             overlay="acme",

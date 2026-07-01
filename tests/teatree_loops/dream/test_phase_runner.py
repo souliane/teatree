@@ -60,7 +60,7 @@ class MemoryPhaseRunnerTestCase(TestCase):
         with (
             self._patch_dirs(),
             patch(
-                "teatree.loops.dream.gates.run_acceptance_pass",
+                "teatree.loops.dream.acceptance.run_acceptance_pass",
                 side_effect=RuntimeError("gate boom"),
             ),
         ):

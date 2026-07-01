@@ -672,7 +672,7 @@ class DreamAcceptanceGateWiringTestCase(TestCase):
             patch("teatree.loops.dream.engine.run_consolidation", return_value=_ok_result()),
             patch("teatree.loops.dream.promote.promote_proposals_file", return_value=[]),
             patch("teatree.memory_audit.discover_memory_dirs", return_value=[self.memdir]),
-            patch("teatree.loops.dream.gates.run_acceptance_pass", return_value=report),
+            patch("teatree.loops.dream.acceptance.run_acceptance_pass", return_value=report),
             patch.dict(
                 "os.environ",
                 {
