@@ -16,7 +16,7 @@ changed) so the ``eval-pr`` workflow's eval job is skipped cleanly, no API spend
 import argparse
 import sys
 
-from teatree.eval.changed_scenarios import names_for_changed, select_changed_scenario_names
+from teatree.eval.changed_scenarios import names_for_changed, select_changed_scenarios
 
 __all__ = ["main", "names_for_changed"]
 
@@ -25,10 +25,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--skip-code", type=int, default=1, help="Exit code when no scenario file changed.")
     args = parser.parse_args(argv)
-    names = select_changed_scenario_names(sys.stdin)
-    if not names:
+    selection = select_changed_scenarios(sys.stdin)
+    # Surface the cap when it bites (#2737) so the CI log shows a corpus-wide PR's
+    # truncated coverage instead of only the scenarios that will run.
+    if note := selection.truncation_note():
+        print(note, file=sys.stderr)
+    if not selection.names:
         return args.skip_code
-    for name in names:
+    for name in selection.names:
         print(name)
     return 0
 

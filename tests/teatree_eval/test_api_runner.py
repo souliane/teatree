@@ -1435,6 +1435,7 @@ class TestComputeDisallowedTools:
             "AskUserQuestion",
             "Bash",
             "BashOutput",
+            "DesignSync",
             "Edit",
             "EnterPlanMode",
             "ExitPlanMode",
@@ -1448,6 +1449,7 @@ class TestComputeDisallowedTools:
             "PushNotification",
             "Read",
             "ReadMcpResource",
+            "RemoteTrigger",
             "SendMessage",
             "Task",
             "TaskCreate",
@@ -1459,12 +1461,17 @@ class TestComputeDisallowedTools:
             "Write",
         }
         assert set(KNOWN_BUILTIN_TOOLS) == expected
-        assert len(KNOWN_BUILTIN_TOOLS) == 26
+        assert len(KNOWN_BUILTIN_TOOLS) == 28
         assert "MultiEdit" not in KNOWN_BUILTIN_TOOLS
         for escape_tool in ("PushNotification", "ToolSearch", "AskUserQuestion"):
             assert escape_tool in KNOWN_BUILTIN_TOOLS
         for team_tool in ("SendMessage", "TaskCreate", "TaskUpdate"):
             assert team_tool in KNOWN_BUILTIN_TOOLS
+        # #2601: DesignSync/RemoteTrigger are real CLI built-ins (binary-confirmed),
+        # so the "complete set" must carry them or the denylist-complement is not
+        # exhaustive over them.
+        for extra_builtin in ("DesignSync", "RemoteTrigger"):
+            assert extra_builtin in KNOWN_BUILTIN_TOOLS
 
     def test_monitor_is_a_builtin_disallowed_for_a_non_monitor_scenario(self, tmp_path: Path) -> None:
         # Monitor IS a built-in now (background scenarios declare it), so a scenario
