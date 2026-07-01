@@ -3,12 +3,15 @@ from contextlib import ExitStack, contextmanager
 from unittest.mock import MagicMock, patch
 
 import pytest
+from django.conf import settings
 from django.test import TestCase, override_settings
 
 import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
 from teatree.core.tasks import (
+    LOOP_RUNNER_QUEUE,
     drain_headless_queue,
+    execute_loop,
     execute_provision,
     execute_retrospect,
     execute_ship,
@@ -879,3 +882,17 @@ class TestConsumePendingPhaseTasksNormalizesPhase(TestCase):
 
         zombie.refresh_from_db()
         assert zombie.status == Task.Status.COMPLETED
+
+
+class TestExecuteLoopTask(TestCase):
+    """teatree.core.tasks.execute_loop — the unit the loop-runner beat enqueues (#2876)."""
+
+    def test_delegates_to_the_per_loop_tick_path(self) -> None:
+        with patch("django.core.management.call_command") as call_command_mock:
+            result = execute_loop.func("inbox")
+        call_command_mock.assert_called_once_with("loops_tick", loop="inbox")
+        assert result == {"loop": "inbox"}
+
+    def test_runs_on_the_dedicated_loop_runner_queue(self) -> None:
+        assert execute_loop.queue_name == LOOP_RUNNER_QUEUE
+        assert LOOP_RUNNER_QUEUE in settings.TASKS["default"]["QUEUES"]

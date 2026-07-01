@@ -109,7 +109,16 @@ def enabled_loop_specs() -> list[ClaudeLoopSpec]:
     enabled-and-un-held set the loop-table fan-out actually dispatches (#2584). Keying on
     ``Loop.enabled`` alone (the prior bug) left a paused loop firing every cadence.
     """
+    from teatree.config import get_effective_settings  # noqa: PLC0415
     from teatree.core.models import Loop  # noqa: PLC0415
     from teatree.loop.loop_state_db import loop_enabled  # noqa: PLC0415
 
+    # #2876 decision 6 — when the self-owned loop-runner daemon owns the cadence,
+    # the native `/loop` cron driver stands down entirely: zero rows are mirrored,
+    # so the owner-session bootstrap emits NO `CronCreate` and the two drivers never
+    # both fire. Default-OFF: the native crons drive as today until the operator
+    # opts into the daemon. (The reactive-slot `/loop <duration>` registrations are
+    # a separate seam and are not CronCreate, so they are unaffected here.)
+    if get_effective_settings().loop_runner_enabled:
+        return []
     return [claude_loop_spec(loop) for loop in Loop.objects.enabled() if loop_enabled(loop.name)]

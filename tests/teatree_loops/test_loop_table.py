@@ -15,7 +15,7 @@ from django.utils import timezone
 
 from teatree.core.models import Loop, LoopState, Prompt
 from teatree.loops.base import MiniLoop
-from teatree.loops.loop_table import build_loop_table_jobs
+from teatree.loops.loop_table import admitted_loop_names, build_loop_table_jobs
 
 if TYPE_CHECKING:
     from teatree.loop.job_identity import _ScannerJob
@@ -331,3 +331,74 @@ class TestCadenceClaimIsAtomic(django.test.TestCase):
         produced = ("job-m-race" in master_jobs) + ("job-m-race" in concurrent["jobs"])
         assert produced == 1, f"loop driven {produced}x (master={master_jobs}, per_loop={concurrent['jobs']})"
         assert Loop.objects.get(name="m-race").last_run_at == now
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestAdmittedLoopNames(django.test.TestCase):
+    """teatree.loops.loop_table.admitted_loop_names — the loop-runner beat's no-CAS verdict (#2876).
+
+    The beat's pre-filter reuses the SAME unified verdict ``build_loop_table_jobs``
+    gates on (enabled + due + un-held, off_live_tick skipped) but claims no cadence
+    anchor — the CAS belongs to the per-loop tick the beat enqueues.
+    """
+
+    def test_returns_enabled_and_due_only(self) -> None:
+        now = timezone.now()
+        Loop.objects.create(name="ad-due", delay_seconds=60, prompt=_prompt())  # never run -> due
+        Loop.objects.create(name="ad-cooling", delay_seconds=60, prompt=_prompt(), last_run_at=now)  # not due
+        Loop.objects.create(name="ad-disabled", delay_seconds=60, prompt=_prompt(), enabled=False)  # disabled
+        registry = (_mini("ad-due"), _mini("ad-cooling"), _mini("ad-disabled"))
+        with patch("teatree.loops.loop_table.iter_loops", return_value=registry):
+            names = admitted_loop_names(now)
+        assert names == ["ad-due"]
+
+    def test_skips_loopstate_paused_and_disabled(self) -> None:
+        now = timezone.now()
+        Loop.objects.create(name="ad-paused", delay_seconds=60, prompt=_prompt())
+        Loop.objects.create(name="ad-held-off", delay_seconds=60, prompt=_prompt())
+        LoopState.objects.pause("ad-paused")
+        LoopState.objects.disable("ad-held-off")
+        registry = (_mini("ad-paused"), _mini("ad-held-off"))
+        with patch("teatree.loops.loop_table.iter_loops", return_value=registry):
+            names = admitted_loop_names(now)
+        assert names == []
+
+    def test_skips_off_live_tick_loop(self) -> None:
+        now = timezone.now()
+        Loop.objects.create(name="ad-dream", delay_seconds=60, prompt=_prompt())  # enabled + due
+        off = MiniLoop(name="ad-dream", default_cadence_seconds=60, build_jobs=lambda **_: [], off_live_tick=True)
+        with patch("teatree.loops.loop_table.iter_loops", return_value=(off,)):
+            names = admitted_loop_names(now)
+        assert names == []
+
+    def test_does_not_consume_the_cadence_anchor(self) -> None:
+        # The beat only ASKS the verdict — it must never bump last_run_at (the CAS
+        # claim belongs to the per-loop tick the beat enqueues).
+        now = timezone.now()
+        Loop.objects.create(name="ad-anchor", delay_seconds=60, prompt=_prompt())
+        with patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("ad-anchor"),)):
+            names = admitted_loop_names(now)
+        assert names == ["ad-anchor"]
+        assert Loop.objects.get(name="ad-anchor").last_run_at is None
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestAtLeastOnceDoubleDeliveryIsACasNoOp(django.test.TestCase):
+    """A redelivered per-loop tick is a no-op via the ``mark_run_if_unchanged`` CAS (#2876).
+
+    ``execute_loop`` runs ``build_loop_table_jobs(only=name)``. Two deliveries for
+    the same loop reach that path twice; the first claims the anchor and dispatches,
+    the second reads the already-bumped anchor, finds the row not-due, and dispatches
+    nothing — the cadence CAS, not the queue, is the idempotency guard.
+    """
+
+    def test_second_delivery_dispatches_nothing_and_leaves_the_anchor(self) -> None:
+        now = timezone.now()
+        Loop.objects.create(name="dd-once", delay_seconds=60, prompt=_prompt())  # never run -> due
+        with patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("dd-once"),)):
+            first = build_loop_table_jobs({}, now=now, only="dd-once")
+            claimed = Loop.objects.get(name="dd-once").last_run_at
+            second = build_loop_table_jobs({}, now=now, only="dd-once")
+        assert "job-dd-once" in first
+        assert second == []  # redelivery is a no-op
+        assert Loop.objects.get(name="dd-once").last_run_at == claimed  # anchor unchanged by the redelivery

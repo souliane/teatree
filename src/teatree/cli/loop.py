@@ -57,7 +57,12 @@ loop_app = typer.Typer(
         "are paused until the next session start (no OS daemon — accepted, not a "
         "defect). A per-agent Stop-hook self-pump re-continues the loop automatically "
         "while consolidated work remains — exactly one consolidation loop per agent "
-        "identity, deduped across all sessions (#786 WS4); it idles when none."
+        "identity, deduped across all sessions (#786 WS4); it idles when none. "
+        "OPTIONAL daemon (#2876, default OFF): `t3 loop-runner` is a self-owned "
+        "singleton that can own the cadence instead of the native `/loop` crons, so "
+        "the DB loops run with no Claude session open. It is opt-in — enable with "
+        "`config_setting set loop_runner_enabled true` and start it once from a login "
+        "profile; the default stays the session-bound native `/loop` crons above."
     ),
     no_args_is_help=True,
 )

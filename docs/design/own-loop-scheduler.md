@@ -1,18 +1,21 @@
 # Self-owned singleton loop-runner — replace the native `/loop` cron driver with a Django-native background worker
 
-> **Status: Draft / decision proposed — not adopted (#2876).** This is an
-> architecture decision record. It changes **no runtime code**: every step below
-> is its own later, separately-reviewed PR carrying a pinning test that fixes
-> current behaviour first. **Do not merge** this document ahead of independent
-> review.
+> **Status: Adopted (#2876) — driver scope; transport + cached-resume owned by
+> [#2565](https://github.com/souliane/teatree/issues/2565).** This ADR's *driver*
+> half is implemented in #2876: the self-owned singleton `t3 loop-runner` daemon
+> that owns the tick cadence, shipped default-OFF behind `loop_runner_enabled`
+> (§8 cutover). §9 records the resolved decisions. The runtime / model-binding
+> half — the provider-agnostic harness and the OpenAI-compatible router — and
+> cached-resume fidelity are **not** decided here: they are owned by the companion
+> epic #2565 and its ADR
+> [`autonomous-lane-redesign.md`](autonomous-lane-redesign.md), which this doc
+> consumes in lockstep and does not re-decide.
 >
 > **Scope:** the loop *driver* only — what owns the tick cadence and how a tick
 > is dispatched. The DB `Loop` config, the leases, the enabled+due verdict, the
-> silent tick, the scanners, and the statusline are unchanged. The runtime /
-> model-binding half (the provider-agnostic harness and the OpenAI-compatible
-> router) is owned by the companion ADR
-> [`autonomous-lane-redesign.md`](autonomous-lane-redesign.md); this doc consumes
-> it and does not re-decide it. Interactive Claude Code stays unchanged.
+> silent tick, the scanners, and the statusline are unchanged, and the existing
+> Claude-SDK dispatch path (`headless.py`) is untouched — the beat decides only
+> WHEN a tick fires, never WHAT it does. Interactive Claude Code stays unchanged.
 
 Related: BLUEPRINT.md §5.6 (Loop Topology) and [loop-topology.md](../blueprint/loop-topology.md);
 §17.4 (orchestrator-decides / loop-executes, [factory-architecture.md](../blueprint/factory-architecture.md));
@@ -341,31 +344,45 @@ cutover is a setting flip, not a stop-the-world.
 
 ---
 
-## 9. Open questions / risks
+## 9. Resolved decisions (#2876)
 
-1. **Beat interval floor.** What is the right coarse beat (30s? 60s?)? Too tight
-   burns idle CPU; too loose adds latency to the shortest DB cadence. Proposed:
-   default 30s, `min(Loop.delay_seconds)/2` clamp — needs owner sign-off.
-2. **Runner lifecycle / supervision.** The flock singleton guarantees *at most
-   one*, not *at least one*. What restarts the worker if the process dies — a
-   user-level `t3 loop-runner` invoked from shell profile, a self-relaunch on
-   `SessionStart`, or left to the operator? Cross-platform "keep it running"
-   without OS cron/launchd/systemd is the open part (flock covers "only one",
-   not "always up").
-3. **Cached-resume fidelity across backends.** Prompt-cache semantics differ by
-   provider behind the OpenAI-compatible router. Do all target backends expose a
-   usable cache marker, and what is the fallback when one does not (re-pay
-   context vs refuse)? The `cache_read_tokens` metric will tell us, but the
-   acceptance bar needs setting.
-4. **Model-binding ownership.** §6 defers the runtime/router decision to
-   `autonomous-lane-redesign.md`. If that ADR shifts, §5-6 here follow — confirm
-   the two stay in lockstep rather than duplicating the decision.
-5. **`t3 loops run` fate.** The existing `--interval` runner (`loops.py:84-110`)
-   overlaps the worker. Fold it into `t3 loop-runner` (rename), or keep it as the
-   test/foreground variant? Leaning: keep it as `--once`/foreground for tests,
-   make the daemon the singleton-wrapped default.
-6. **Interactive vs headless coexistence.** With the daemon owning the cadence,
-   what happens when a Claude session is *also* open — do the native `/loop`
-   crons and the daemon both fire? The default-OFF switch (§8) prevents it during
-   migration, but the end state needs one owner: proposed that when
-   `loop_runner_enabled` is on, `SessionStart` skips `CronCreate` entirely.
+The six open questions in the draft are resolved below and implemented in #2876
+(driver scope). Cached-resume and the transport (items 3–4) stay owned by #2565;
+the rest ship here.
+
+1. **Beat interval — `max(5, min(30, min_enabled_delay_seconds / 2))`.** The
+   coarse beat is half the shortest ENABLED interval cadence, capped at a 30s
+   ceiling and floored at 5s (no busy spin). Daily-only (`daily_at`) loops do
+   **not** lower the beat, and with no enabled interval loop the beat sits at the
+   30s ceiling. Implemented in `teatree.loops.runner.compute_beat_seconds`.
+2. **Supervision — "at least one" with NO OS scheduler.** No
+   cron/launchd/systemd. Three layers compose: the flock singleton gives
+   *at-most-one*; the supervised daemon (`LoopRunnerDaemon.run`) respawns a
+   crashed beat worker after a short backoff; and the `SessionStart` resurrector
+   (`hooks/scripts/loop_runner_supervisor.py` → `resurrect_loop_runner`)
+   re-launches the whole daemon whenever the flock is free. A fully-headless box
+   starts `t3 loop-runner` once from a login profile — a dotfile, not a system
+   scheduler. The beat enqueues onto a dedicated `loop-runner` django-tasks
+   queue so a per-loop tick never blocks behind a heavy default-queue
+   FSM/headless job.
+3. **Cached-resume fidelity — owned by #2565.** Prompt-cache semantics differ by
+   provider behind the OpenAI-compatible router, so the fallback policy — *re-pay
+   context and log the cost, never refuse* — lands in #2565 alongside the
+   transport that owns the cache marker. This driver ADR does not decide it.
+4. **Model-binding ownership — lockstep with #2565.** §5–6 defer the
+   runtime/router decision to `autonomous-lane-redesign.md` (#2565); they follow
+   it rather than duplicating it. The existing Claude-SDK dispatch path stays the
+   only transport this PR touches.
+5. **`t3 loops run` fate — already removed by #2880.** The `--interval`
+   foreground runner was excised by #2880 (the master-tick removal), so there is
+   nothing left to fold. The foreground / test variant is now
+   `t3 loop-runner --once` (a single beat + drain — no supervisor, no sleep, no
+   respawn), and the supervised daemon is the singleton-wrapped default.
+6. **Interactive vs headless coexistence — one owner (decision 6).** When
+   `loop_runner_enabled` is ON, `SessionStart` emits ZERO `CronCreate`:
+   `teatree.loops.claude_specs.enabled_loop_specs()` returns empty, so the daemon
+   is the sole cadence owner and the two drivers never both fire. Default-OFF
+   keeps the native `/loop` crons mirroring the enabled rows exactly as today.
+   (Scoped boundary: the three always-on reactive `/loop <duration>` infra slots
+   are *not* `CronCreate` and are out of scope here — they keep their own
+   sub-minute registration; folding them onto the daemon is a later step.)

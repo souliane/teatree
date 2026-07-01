@@ -287,6 +287,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "contribute": _parse_strict_bool,
     "excluded_skills": _parse_str_list,
     "loop_cadence_seconds": _parse_strict_int,
+    "loop_runner_enabled": _parse_strict_bool,
     "teams_enabled": _parse_strict_bool,
     "teams_max_panes": _parse_overridable_positive_int(1),
     "teams_idle_minutes": _parse_overridable_positive_int(30),
@@ -448,6 +449,7 @@ ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_ISSUE_IMPLEMENTER_ENABLED": ("issue_implementer_enabled", _parse_env_bool),
     "T3_LOOP_AUTO_UPDATE": ("auto_update_reinstall", _parse_env_bool),
     "T3_ORCHESTRATE_CLAIM_ENABLED": ("orchestrate_claim_enabled", _parse_env_bool),
+    "T3_LOOP_RUNNER_ENABLED": ("loop_runner_enabled", _parse_env_bool),
     "T3_TEAMS_ENABLED": ("teams_enabled", _parse_env_bool),
     "T3_TEAMS_MAX_PANES": ("teams_max_panes", _parse_env_positive_int(1)),
     "T3_TEAMS_IDLE_MINUTES": ("teams_idle_minutes", _parse_env_positive_int(30)),
@@ -560,6 +562,14 @@ class UserSettings:
     speed: Speed = Speed.MEDIUM
     # Loop tick interval in seconds (BLUEPRINT § 5.6). Default 12 minutes.
     loop_cadence_seconds: int = 720
+    # #2876 — selects the loop *driver*. When false (the default, fail-OFF) the
+    # native Claude `/loop` crons own the tick cadence exactly as today. When true
+    # the self-owned singleton `t3 loop-runner` daemon owns the cadence and the
+    # SessionStart CronCreate path stands down, so the two drivers never both fire.
+    # DB-home (#1775): resolved from the `ConfigSetting` store (global + overlay
+    # rows) + `T3_LOOP_RUNNER_ENABLED` env; a `[teatree]`/`[overlays.<name>]` TOML
+    # value is ignored on read. Set via `config_setting set loop_runner_enabled`.
+    loop_runner_enabled: bool = False
     # #1838 Track-B PR#6 — the inert agent-teams WORK layer. When false (the
     # default, fail-OFF), the team-role registry (`teatree.teams.roles`) is
     # PURE DATA referenced by nothing in the loop/dispatch/claim path: the

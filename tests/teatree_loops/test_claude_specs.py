@@ -109,3 +109,25 @@ class TestEnabledLoopSpecs(django.test.TestCase):
     def test_no_enabled_rows_yields_no_specs(self) -> None:
         Loop.objects.create(name="off", delay_seconds=60, prompt=_prompt(), enabled=False)
         assert enabled_loop_specs() == []
+
+
+@django.test.override_settings(USE_TZ=True)
+class TestLoopRunnerDriverGate(django.test.TestCase):
+    """#2876 decision 6 — the daemon owns the cadence, so the native /loop crons stand down.
+
+    ``enabled_loop_specs`` is the CronCreate source the owner-session bootstrap reads;
+    gating it on ``loop_runner_enabled`` makes SessionStart emit ZERO CronCreate when
+    the daemon is on, so the two drivers never both fire. Default-OFF: the native
+    crons mirror the enabled rows exactly as today.
+    """
+
+    def test_default_off_mirrors_enabled_rows(self) -> None:
+        Loop.objects.create(name="lr-a", delay_seconds=60, prompt=_prompt())
+        assert [spec.slot_id for spec in enabled_loop_specs()] == [loop_slot_id("lr-a")]
+
+    def test_runner_enabled_skips_all_croncreate(self) -> None:
+        from teatree.core.models import ConfigSetting  # noqa: PLC0415
+
+        Loop.objects.create(name="lr-b", delay_seconds=60, prompt=_prompt())
+        ConfigSetting.objects.set_value("loop_runner_enabled", value=True)
+        assert enabled_loop_specs() == []
