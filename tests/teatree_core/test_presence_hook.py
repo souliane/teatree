@@ -11,12 +11,21 @@ from pathlib import Path
 
 import pytest
 
+import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import _LOOP_PROMPT, _is_live_user_turn, handle_record_presence
 from teatree.core import availability
 
 
 @pytest.fixture
 def presence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> availability.PresenceHeartbeat:
+    # #22: the handler now writes the heartbeat in pure stdlib via
+    # ``ups_fastpath.record_presence`` — to ``canonical_config_db().parent /
+    # availability_presence`` — instead of booting Django to call ``PRESENCE.record``.
+    # ``T3_CONFIG_DB`` pins that PRIMARY data dir at ``tmp_path`` (the write path), and
+    # ``availability.PRESENCE`` (read by ``last_seen`` / ``_is_live_user_turn``) is
+    # pointed at the SAME file, so write and read coincide exactly as they do in
+    # production (``canonical_config_db().parent == teatree.paths.DATA_DIR``).
+    monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "db.sqlite3"))
     target = tmp_path / "availability_presence"
     heartbeat = availability.PresenceHeartbeat(locate=lambda: target)
     monkeypatch.setattr(availability, "PRESENCE", heartbeat)
@@ -59,10 +68,10 @@ class TestRecordPresenceHook:
     def test_record_failure_never_raises(
         self, presence: availability.PresenceHeartbeat, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        def _boom(*_args: object, **_kwargs: object) -> Path:
+        def _boom(*_args: object, **_kwargs: object) -> None:
             raise OSError
 
-        monkeypatch.setattr(presence, "record", _boom)
+        monkeypatch.setattr(router, "record_presence", _boom)
         # Fail-open: the hook swallows the error so the prompt is never blocked.
         assert handle_record_presence({"prompt": "hi", "session_id": "s1"}) is None
 

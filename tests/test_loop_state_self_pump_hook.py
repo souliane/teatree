@@ -13,33 +13,25 @@ absent state leaves the self-pump behaviour unchanged (no regression), and an
 unreadable control plane fails OPEN (the availability/ownership gates still
 decide) so the Stop hook can never crash.
 
-#2559 changed the READ MECHANISM: the bare-``python3`` Stop hook cannot
-``django.setup()``, so the gate no longer reads the ``LoopState`` row through the
-ORM in-process — it shells out to ``t3 loop loop-state dispatch --json`` (the
-``t3`` child carries its own venv and bootstraps Django). So these tests stub the
-``t3`` subprocess (the external boundary) rather than writing an ORM row, which a
-child ``t3`` process would not see in the pytest-django transactional test DB.
+fast-hooks changed the READ MECHANISM again: the bare-``python3`` Stop hook
+cannot ``django.setup()`` and no longer shells out to ``t3 loop loop-state`` (that
+child booted Django, ~3s per Stop — the recurring TIMEOUT). It now reads the
+``teatree_loop_state`` row DIRECTLY via the Django-free
+``teatree.config.cold_reader.loop_status``. So these tests build a REAL
+``teatree_loop_state`` sqlite DB and point ``cold_reader`` at it via
+``T3_CONFIG_DB`` (no mocks — the fail-open and status semantics run against real
+sqlite), rather than stubbing a subprocess.
 """
 
-import json
 import os
-import subprocess
-import sys
+import sqlite3
 import time
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import _OWNER_LOOP, _write_loop_registry, handle_loop_self_pump
-
-# ``hook_router`` binds the gate function via a bare ``from
-# loop_state_self_pump_gate import …`` (its own dir on sys.path), so the live
-# instance is ``sys.modules["loop_state_self_pump_gate"]`` — a SEPARATE object
-# from ``hooks.scripts.loop_state_self_pump_gate`` (the dual identity called out
-# in ``hooks/CLAUDE.md``). Patch the instance the router actually calls.
-gate = sys.modules["loop_state_self_pump_gate"]
 
 
 @pytest.fixture(autouse=True)
@@ -72,46 +64,46 @@ def _fake_pending(monkeypatch: pytest.MonkeyPatch, entries: list[dict]) -> None:
     monkeypatch.setattr(router, "_consolidated_pending_work", lambda: entries)
 
 
-def _fake_loop_state(
+def _loop_state_db(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     *,
     dispatch_status: str | None = None,
-    crash: bool = False,
-) -> dict[str, int]:
-    """Stub the gate's ``t3 loop loop-state dispatch --json`` subprocess.
+    other_loop: tuple[str, str] | None = None,
+) -> None:
+    """Build a real ``teatree_loop_state`` DB and point ``cold_reader`` at it.
 
-    *dispatch_status* is the durable status the ``t3`` child reports for the
-    ``dispatch`` loop (``enabled`` / ``paused`` / ``disabled``); ``None`` (the
-    default) means "loop not queried in this case" — a non-``dispatch`` query
-    returns ENABLED. *crash* simulates an unreadable control plane (the read
-    raises) so the gate fails OPEN. Returns a probe counter so a test can prove
-    the gate short-circuits BEFORE the ``pending-spawn`` subprocess.
+    *dispatch_status* seeds the ``dispatch`` row (``enabled`` / ``paused`` /
+    ``disabled``); ``None`` leaves the table with no ``dispatch`` row (the
+    absent-row → ``enabled`` fall-through). *other_loop* optionally seeds an
+    unrelated ``(name, status)`` row to prove the gate keys only on ``dispatch``.
+    ``T3_CONFIG_DB`` makes ``cold_reader.canonical_config_db`` resolve this DB.
     """
-    counter = {"loop_state_calls": 0}
-
-    monkeypatch.setattr(gate, "shutil", SimpleNamespace(which=lambda _name: "/usr/local/bin/t3"))
-
-    def _run(argv: list[str], *_args: object, **_kwargs: object) -> SimpleNamespace:
-        if crash:
-            msg = "control plane unreadable"
-            raise OSError(msg)
-        joined = " ".join(argv)
-        if "loop-state" in joined:
-            counter["loop_state_calls"] += 1
-            # The argv is ``t3 loop loop-state <name> --json``; report the
-            # requested loop's status (ENABLED for any loop other than dispatch).
-            name = argv[3] if len(argv) > 3 else ""
-            status = dispatch_status if (name == "dispatch" and dispatch_status) else "enabled"
-            return SimpleNamespace(returncode=0, stdout=json.dumps({"name": name, "status": status}), stderr="")
-        return SimpleNamespace(returncode=1, stdout="", stderr="")
-
-    monkeypatch.setattr(gate, "subprocess", SimpleNamespace(run=_run, TimeoutExpired=subprocess.TimeoutExpired))
-    return counter
+    db = tmp_path / "loopstate.sqlite3"
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(
+            "CREATE TABLE teatree_loop_state ("
+            "id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, "
+            "status TEXT NOT NULL, created_at TEXT, updated_at TEXT)"
+        )
+        rows = []
+        if dispatch_status is not None:
+            rows.append(("dispatch", dispatch_status))
+        if other_loop is not None:
+            rows.append(other_loop)
+        conn.executemany("INSERT INTO teatree_loop_state (name, status) VALUES (?, ?)", rows)
+        conn.commit()
+    finally:
+        conn.close()
+    monkeypatch.setenv("T3_CONFIG_DB", str(db))
 
 
 class TestSelfPumpHonoursDbLoopState:
-    def test_db_paused_dispatch_loop_makes_owner_stop_hook_a_noop(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _fake_loop_state(monkeypatch, dispatch_status="paused")
+    def test_db_paused_dispatch_loop_makes_owner_stop_hook_a_noop(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _loop_state_db(tmp_path, monkeypatch, dispatch_status="paused")
         _own_loop("owner-1")
         _fake_pending(monkeypatch, [{"task_id": 4, "subagent": "x", "phase": "coding", "issue_url": "u"}])
 
@@ -119,8 +111,10 @@ class TestSelfPumpHonoursDbLoopState:
 
         assert result is not True  # paused: no block, the session may end
 
-    def test_db_disabled_dispatch_loop_makes_owner_stop_hook_a_noop(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _fake_loop_state(monkeypatch, dispatch_status="disabled")
+    def test_db_disabled_dispatch_loop_makes_owner_stop_hook_a_noop(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _loop_state_db(tmp_path, monkeypatch, dispatch_status="disabled")
         _own_loop("owner-1")
         _fake_pending(monkeypatch, [{"task_id": 4, "subagent": "x", "phase": "coding", "issue_url": "u"}])
 
@@ -128,8 +122,10 @@ class TestSelfPumpHonoursDbLoopState:
 
         assert result is not True
 
-    def test_db_paused_dispatch_loop_does_not_probe_pending_work(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _fake_loop_state(monkeypatch, dispatch_status="paused")
+    def test_db_paused_dispatch_loop_does_not_probe_pending_work(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _loop_state_db(tmp_path, monkeypatch, dispatch_status="paused")
         _own_loop("owner-1")
         probed = {"called": False}
 
@@ -144,10 +140,10 @@ class TestSelfPumpHonoursDbLoopState:
         assert probed["called"] is False  # gate checked BEFORE the pending probe
         assert result is not True
 
-    def test_empty_state_leaves_owner_pumping(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # No durable row → ``t3`` reports ENABLED → no regression: the owner with
-        # pending work pumps.
-        _fake_loop_state(monkeypatch, dispatch_status="enabled")
+    def test_absent_row_leaves_owner_pumping(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # No durable ``dispatch`` row → cold_reader resolves the runnable
+        # ``enabled`` default → no regression: the owner with pending work pumps.
+        _loop_state_db(tmp_path, monkeypatch, dispatch_status=None)
         _own_loop("owner-1")
         _fake_pending(monkeypatch, [{"task_id": 4, "subagent": "x", "phase": "coding", "issue_url": "u"}])
 
@@ -155,8 +151,10 @@ class TestSelfPumpHonoursDbLoopState:
 
         assert result is True
 
-    def test_db_enabled_dispatch_loop_leaves_owner_pumping(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _fake_loop_state(monkeypatch, dispatch_status="enabled")
+    def test_db_enabled_dispatch_loop_leaves_owner_pumping(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _loop_state_db(tmp_path, monkeypatch, dispatch_status="enabled")
         _own_loop("owner-1")
         _fake_pending(monkeypatch, [{"task_id": 4, "subagent": "x", "phase": "coding", "issue_url": "u"}])
 
@@ -164,12 +162,14 @@ class TestSelfPumpHonoursDbLoopState:
 
         assert result is True
 
-    def test_paused_other_loop_does_not_suppress_the_pump(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # The self-pump drives the always-on ``dispatch`` loop; the gate queries
-        # ONLY ``dispatch`` — a paused UNRELATED loop is invisible to it, so the
-        # pump still fires. ``_fake_loop_state`` reports ENABLED for any non-
-        # dispatch loop, so a dispatch query here resolves runnable.
-        _fake_loop_state(monkeypatch, dispatch_status="enabled")
+    def test_paused_other_loop_does_not_suppress_the_pump(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The self-pump drives the always-on ``dispatch`` loop; the gate keys
+        # ONLY on ``dispatch`` — a paused UNRELATED loop is invisible to it, so
+        # the pump still fires. Anti-vacuous: a real ``paused`` row exists, just
+        # for a different loop.
+        _loop_state_db(tmp_path, monkeypatch, dispatch_status="enabled", other_loop=("review", "paused"))
         _own_loop("owner-1")
         _fake_pending(monkeypatch, [{"task_id": 4, "subagent": "x", "phase": "coding", "issue_url": "u"}])
 
@@ -177,11 +177,12 @@ class TestSelfPumpHonoursDbLoopState:
 
         assert result is True
 
-    def test_control_plane_read_failure_fails_open_pump_proceeds(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # A Stop hook must be crash-proof: if the control-plane read raises, the
-        # gate fails OPEN (defers to env/availability/ownership) and the pump
-        # runs. Mirrors the #2559 stdlib read failing safe.
-        _fake_loop_state(monkeypatch, crash=True)
+    def test_missing_db_fails_open_pump_proceeds(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A Stop hook must be crash-proof: an unreadable control plane (the DB
+        # file does not exist) makes cold_reader fail OPEN to the runnable
+        # default, so the gate defers to env/availability/ownership and the pump
+        # runs.
+        monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "does-not-exist.sqlite3"))
         _own_loop("owner-1")
         _fake_pending(monkeypatch, [{"task_id": 4, "subagent": "x", "phase": "coding", "issue_url": "u"}])
 
@@ -189,10 +190,12 @@ class TestSelfPumpHonoursDbLoopState:
 
         assert result is True
 
-    def test_t3_absent_fails_open_pump_proceeds(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # No ``t3`` binary on PATH ⇒ the control plane is genuinely unreadable ⇒
-        # fail OPEN, the pump runs (the other gates still decide).
-        monkeypatch.setattr(gate, "shutil", SimpleNamespace(which=lambda _name: None))
+    def test_absent_table_fails_open_pump_proceeds(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A fresh DB with no ``teatree_loop_state`` table (pre-migration cold
+        # state) also fails OPEN to the runnable default.
+        db = tmp_path / "fresh.sqlite3"
+        sqlite3.connect(db).close()
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
         _own_loop("owner-1")
         _fake_pending(monkeypatch, [{"task_id": 4, "subagent": "x", "phase": "coding", "issue_url": "u"}])
 

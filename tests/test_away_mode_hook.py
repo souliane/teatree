@@ -168,6 +168,10 @@ class TestLoopTurnDefersThroughRealPredicateInvariant9:
 
     @pytest.fixture(autouse=True)
     def _empty_presence(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # #22: handle_record_presence writes via ups_fastpath.record_presence to
+        # canonical_config_db().parent — pin it at tmp_path so that write and the
+        # PRESENCE read below coincide (as they do in production).
+        monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "db.sqlite3"))
         target = tmp_path / "availability_presence"
         monkeypatch.setattr(availability, "PRESENCE", PresenceHeartbeat(locate=lambda: target))
 
@@ -198,6 +202,10 @@ class TestSelfPumpTurnWithFreshUserPromptRendersLive:
 
     @pytest.fixture(autouse=True)
     def _isolated_presence(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # #22: handle_record_presence writes via ups_fastpath.record_presence to
+        # canonical_config_db().parent — pin it at tmp_path so that write and the
+        # PRESENCE read below coincide (as they do in production).
+        monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "db.sqlite3"))
         target = tmp_path / "availability_presence"
         monkeypatch.setattr(availability, "PRESENCE", PresenceHeartbeat(locate=lambda: target))
 
@@ -244,6 +252,10 @@ class TestWalkThroughSecondQuestionStaysLive:
 
     @pytest.fixture(autouse=True)
     def _isolated_presence(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # #22: handle_record_presence writes via ups_fastpath.record_presence to
+        # canonical_config_db().parent — pin it at tmp_path so that write and the
+        # PRESENCE read below coincide (as they do in production).
+        monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "db.sqlite3"))
         target = tmp_path / "availability_presence"
         monkeypatch.setattr(availability, "PRESENCE", PresenceHeartbeat(locate=lambda: target))
 
