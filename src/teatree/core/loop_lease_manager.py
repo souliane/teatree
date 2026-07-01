@@ -26,7 +26,8 @@ from datetime import datetime, timedelta
 from typing import NamedTuple
 
 from django.db import models
-from django.db.models import Q
+from django.db.models import F, Q
+from django.db.models.expressions import Combinable
 from django.utils import timezone
 
 #: The single machine-wide loop-owner slot (#1073). This is the DEFAULT
@@ -99,11 +100,17 @@ class OwnershipStatus(NamedTuple):
     (matching ``claim_ownership``'s liveness): ``True`` iff a non-empty
     session holds a claim that is either unexpired OR whose ``owner_pid``
     is still alive, keyed on ``session_id`` rather than ``owner``.
+
+    ``generation`` is the current fencing / lease-generation token
+    (autonomous-lane redesign §5) — the value a merge-worker dispatched now
+    would stamp and later re-check at its git write. A missing row reports
+    generation ``0``.
     """
 
     owner_session: str
     expires_at: datetime | None
     is_live: bool
+    generation: int = 0
 
 
 class LoopLeaseQuerySet(models.QuerySet):
@@ -176,11 +183,16 @@ class LoopLeaseQuerySet(models.QuerySet):
         self.get_or_create(name=name)
 
         if take_over:
+            prior = self.filter(name=name).values_list("session_id", flat=True).first() or ""
             self.filter(name=name).update(
                 session_id=session_id,
                 owner_pid=owner_pid,
                 acquired_at=now,
                 lease_expires_at=expires,
+                # A steal that installs a DIFFERENT holder bumps the fencing
+                # generation (§5) so the old holder's in-flight worker is fenced
+                # at its next git write; re-taking one's own claim keeps it.
+                generation=self._generation_after(holder_changed=prior != session_id),
             )
             current = self.filter(name=name).values_list("session_id", flat=True).first() or ""
             return True, current
@@ -203,7 +215,9 @@ class LoopLeaseQuerySet(models.QuerySet):
                 # live lease is still ours. Re-anchor it to the rotated session id
                 # and refresh the TTL so the slot self-heals on the next tick. The
                 # CAS re-asserts the exact stored pid so a concurrent claim that
-                # already moved the lease off it is never clobbered.
+                # already moved the lease off it is never clobbered. The
+                # generation is KEPT — a same-process rotation is not a transfer
+                # (§5), so the master never fences its own worker across a compaction.
                 won = self.filter(name=name, owner_pid=stored_pid).update(
                     session_id=session_id,
                     owner_pid=owner_pid,
@@ -216,6 +230,7 @@ class LoopLeaseQuerySet(models.QuerySet):
             # indeterminate null pid within its TTL) blocks the claim — no write.
             return False, live_owner
 
+        prior_session = (row or {}).get("session_id") or ""
         won = (
             self.filter(name=name)
             .filter(
@@ -229,10 +244,46 @@ class LoopLeaseQuerySet(models.QuerySet):
                 owner_pid=owner_pid,
                 acquired_at=now,
                 lease_expires_at=expires,
+                # Reclaiming an unowned/expired slot from a DIFFERENT prior holder
+                # is a holder change → bump the fencing generation (§5). A same-
+                # session refresh keeps it (the per-tick heartbeat is not a transfer).
+                generation=self._generation_after(holder_changed=prior_session != session_id),
             )
         )
         current = self.filter(name=name).values_list("session_id", flat=True).first() or ""
         return won == 1, current
+
+    @staticmethod
+    def _generation_after(*, holder_changed: bool) -> Combinable:
+        """The ``generation=`` value for a winning claim write (§5 fencing token).
+
+        A holder change increments the token; a same-holder refresh / same-process
+        self-reclaim keeps it via an identity ``F("generation")``. The write always
+        carries a ``generation=`` expression, and the ``F`` reference makes it
+        atomic against the row's live value — so a concurrent refresh between the
+        pre-read and this write cannot desync the counter.
+        """
+        return F("generation") + 1 if holder_changed else F("generation")
+
+    def fencing_generation(self, name: str) -> int:
+        """Current fencing / lease-generation token for ``name`` (§5).
+
+        The value a merge-worker dispatched now would stamp. A missing row
+        reports ``0`` — an unclaimed slot has never changed hands.
+        """
+        return self.filter(name=name).values_list("generation", flat=True).first() or 0
+
+    def token_is_current(self, name: str, token: int) -> bool:
+        """Whether ``token`` still matches the live fencing generation (§5).
+
+        The git-write fencing check: a merge-worker's write is admitted only
+        while no newer generation has been granted. A stale token (a higher
+        generation was installed by a failover or a human steal after the worker
+        was dispatched) is fenced out. Equality is exact because the generation
+        only ever increases, so a worker can never legitimately hold a token
+        above the current one.
+        """
+        return token == self.fencing_generation(name)
 
     @staticmethod
     def _session_lease_is_live(
@@ -436,13 +487,15 @@ class LoopLeaseQuerySet(models.QuerySet):
         owner-past-TTL window the #1604 fix targets. A missing row reports
         ``("", None, False)`` — unclaimed.
         """
-        row = self.filter(name=name).values("session_id", "lease_expires_at", "owner_pid").first()
+        row = self.filter(name=name).values("session_id", "lease_expires_at", "owner_pid", "generation").first()
         if row is None:
-            return OwnershipStatus(owner_session="", expires_at=None, is_live=False)
+            return OwnershipStatus(owner_session="", expires_at=None, is_live=False, generation=0)
         session = row["session_id"] or ""
         expires_at = row["lease_expires_at"]
         is_live = self._session_lease_is_live(session, row["owner_pid"], expires_at, timezone.now())
-        return OwnershipStatus(owner_session=session, expires_at=expires_at, is_live=is_live)
+        return OwnershipStatus(
+            owner_session=session, expires_at=expires_at, is_live=is_live, generation=row["generation"]
+        )
 
     def release_ownership(self, name: str, *, session_id: str) -> bool:
         """Release the loop-owner claim iff held by ``session_id`` (CAS).

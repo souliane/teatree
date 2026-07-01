@@ -72,6 +72,15 @@ class LoopLease(models.Model):
     owner_pid = models.IntegerField(null=True, blank=True, default=None)
     acquired_at = models.DateTimeField(null=True, blank=True)
     lease_expires_at = models.DateTimeField(null=True, blank=True)
+    # Fencing / lease-generation token (autonomous-lane redesign §5). A
+    # monotonically increasing counter bumped on every CHANGE of holder
+    # (failover after expiry, or a human take-over steal); a same-holder
+    # per-tick refresh and a same-process self-reclaim across a compaction
+    # session-id rotation (#2835) both KEEP it, so the master never fences its
+    # own in-flight worker. A merge-worker stamps the generation it was
+    # dispatched under; a git write carrying a stale generation is fenced out,
+    # closing the split-brain window a TTL lease alone leaves open.
+    generation = models.PositiveIntegerField(default=0)
 
     objects = LoopLeaseManager()
 

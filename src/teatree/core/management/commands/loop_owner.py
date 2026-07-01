@@ -112,6 +112,7 @@ def _owner(slot: str, *, json_output: bool, stdout_write) -> None:  # noqa: ANN0
                     "you_are_owner": bool(you) and status.is_live and you == status.owner_session,
                     "expires_at": status.expires_at.isoformat() if status.expires_at else "",
                     "is_live": status.is_live,
+                    "generation": status.generation,
                 },
                 indent=2,
             )

@@ -294,7 +294,8 @@ def _make_alias(tmp_path: Path) -> str:
                 session_id VARCHAR(255) NOT NULL DEFAULT '',
                 owner_pid INTEGER NULL,
                 acquired_at DATETIME NULL,
-                lease_expires_at DATETIME NULL
+                lease_expires_at DATETIME NULL,
+                generation INTEGER UNSIGNED NOT NULL DEFAULT 0
             )
             """
         )
