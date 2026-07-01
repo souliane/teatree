@@ -93,6 +93,36 @@ class SdkDistillerParseTestCase(SimpleTestCase):
         assert len(clusters) == 1
         assert clusters[0].source_files == ["/feedback_x.md"]
 
+    def test_prose_scalar_array_before_the_real_cluster_array_does_not_win(self) -> None:
+        # #2861 RED: a syntactically-valid scalar array in prose BEFORE the real cluster
+        # array made the balanced scan return [1,2,3], which classified ALL_ENTRIES_DROPPED
+        # instead of distilling the clusters. The object-bearing preference must pick the
+        # real array.
+        payload = (
+            "Considering rules [1, 2, 3] I produce: "
+            '[{"rule":"do x","source_files":["/feedback_x.md"],'
+            '"is_binding":true,"verified_citation":"x","durable_destination":"d.md"}]'
+        )
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value=payload):
+            result = sdk_distiller.sdk_distill(_extract_with_one_snippet())
+        assert len(result.clusters) == 1
+        assert result.empty_reason is None
+        assert result.clusters[0].source_files == ["/feedback_x.md"]
+
+    def test_prose_empty_array_before_the_real_cluster_array_does_not_win(self) -> None:
+        # #2861 RED: an empty array in prose BEFORE the real cluster array made the scan
+        # return [] and mis-classify NOTHING_TO_CONSOLIDATE (broken-as-healthy). The
+        # object-bearing preference must skip the empty array and distil the real one.
+        payload = (
+            "There is nothing here [] but actually: "
+            '[{"rule":"do x","source_files":["/feedback_x.md"],'
+            '"is_binding":false,"verified_citation":"x","durable_destination":""}]'
+        )
+        with patch.object(sdk_distiller, "_run_distiller_turn", return_value=payload):
+            result = sdk_distiller.sdk_distill(_extract_with_one_snippet())
+        assert len(result.clusters) == 1
+        assert result.empty_reason is None
+
     def test_fenced_non_array_falls_through_to_the_balanced_scan(self) -> None:
         # A ```json fence wrapping a JSON object (not an array) is not the result; the
         # scan must fall through to the real array that follows in prose.

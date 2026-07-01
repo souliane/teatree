@@ -292,11 +292,13 @@ class Command(TyperCommand):
     def _run_automation_asks_phase(self, *, since: "dt.datetime | None", dry_run: bool, force_all_phases: bool) -> str:
         """Phase 3d — promote recurring automatable user asks to a fix-and-merge (#2663; never raises).
 
-        The "improve-with-new-stuff" sibling of the compliance accountant. Runs only
-        when the default-OFF ``automation_asks`` toggle is on (env / toml) OR the
-        ``--full`` pipeline is requested — it PROMOTES fixes (a checkbox + scheduled
-        coding task under the standing umbrella), mirroring the compliance posture. The
-        detect → classify → promote work lives in
+        The "improve-with-new-stuff" sibling of the compliance accountant. Gated by an
+        OR (``if not force_all_phases and not automation_asks_enabled()``): it runs when
+        the ``--full`` pipeline is requested OR the default-OFF ``automation_asks`` toggle
+        is on (env / toml). ``--full`` alone therefore triggers it — UNLIKE the compliance
+        phase's AND-gate, which additionally requires its own toggle even under ``--full``.
+        It PROMOTES fixes (a checkbox + scheduled coding task under the standing umbrella).
+        The detect → classify → promote work lives in
         :func:`teatree.loops.dream.automation_ask.run_automation_asks_phase`; this rebuilds
         the same bounded extract the engine distils (for the grounding guard), wires the
         resolved backlog host, and fault-isolates the phase.

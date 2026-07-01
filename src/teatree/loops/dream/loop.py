@@ -171,10 +171,12 @@ def compliance_enabled(*, config_path: Path | None = None) -> bool:
 
 #: Phase 3d — the automatable-ask promoter (#2663), the "improve-with-new-stuff"
 #: sibling of the compliance accountant. It PROMOTES recurring manual user asks to a
-#: fix-and-merge (a checkbox + scheduled coding task), so it is default OFF and
-#: ``--full``-gated, mirroring the compliance / Pass-2 memory-promotion posture. Opt in
-#: with ``T3_DREAM_AUTOMATION_ASKS=1`` / ``[loops.dream] automation_asks = true``;
-#: absent, the dream pass never promotes an ask (no behaviour change).
+#: fix-and-merge (a checkbox + scheduled coding task). Gated by an OR at the call site
+#: (``if not force_all_phases and not automation_asks_enabled()``): it runs on ``--full``
+#: OR when opted in with ``T3_DREAM_AUTOMATION_ASKS=1`` / ``[loops.dream] automation_asks
+#: = true`` — so ``--full`` alone triggers it, whereas the compliance phase's AND-gate
+#: additionally requires its own toggle even under ``--full``. Absent both, the dream
+#: pass never promotes an ask (no behaviour change).
 _AUTOMATION_ASKS = ("automation_asks", "T3_DREAM_AUTOMATION_ASKS")
 
 

@@ -101,14 +101,8 @@ class LooksLikeUserAskTestCase(TestCase):
     def test_operational_drop_everything_is_flagged(self) -> None:
         assert looks_like_user_ask('{"type":"user","text":"drop everything and look at this"}')
 
-    def test_operational_production_blocker_is_flagged(self) -> None:
-        assert looks_like_user_ask('{"type":"user","text":"there is a production blocker on checkout"}')
-
     def test_operational_rollback_is_flagged(self) -> None:
         assert looks_like_user_ask('{"type":"user","text":"we need a rollback of that change"}')
-
-    def test_operational_wedged_is_flagged(self) -> None:
-        assert looks_like_user_ask('{"type":"user","text":"the loop is wedged again"}')
 
     def test_role_user_shape_is_flagged(self) -> None:
         assert looks_like_user_ask('{"role":"user","content":"please run the suite"}')
@@ -122,6 +116,20 @@ class LooksLikeUserAskTestCase(TestCase):
 
     def test_user_question_without_directive_is_not_flagged(self) -> None:
         assert not looks_like_user_ask('{"type":"user","text":"what does this function return?"}')
+
+    # #2732: bare incident-STATE words describe a situation, not a request — they
+    # over-matched on incident chatter that carried no user ask, so they no longer flag.
+    def test_incident_production_state_is_not_flagged(self) -> None:
+        assert not looks_like_user_ask('{"type":"user","text":"there is a production issue on checkout"}')
+
+    def test_incident_broken_state_is_not_flagged(self) -> None:
+        assert not looks_like_user_ask('{"type":"user","text":"the checkout page is broken right now"}')
+
+    def test_incident_blocker_state_is_not_flagged(self) -> None:
+        assert not looks_like_user_ask('{"type":"user","text":"there is a blocker on the release train"}')
+
+    def test_incident_wedged_state_is_not_flagged(self) -> None:
+        assert not looks_like_user_ask('{"type":"user","text":"the pipeline looks wedged today"}')
 
 
 class UserAskLinesTestCase(TestCase):
