@@ -115,7 +115,7 @@ class TestOwnedPerLoopSlotsQuery:
         LoopLease.objects.create(name="loop:review", session_id="sess-B", lease_expires_at=now)
         # Infra leases and the global owner are a different namespace (``-``).
         LoopLease.objects.create(name="loop-tick", owner="t", acquired_at=now)
-        LoopLease.objects.create(name="loop-owner", session_id="sess-A", lease_expires_at=now)
+        LoopLease.objects.create(name="t3-master", session_id="sess-A", lease_expires_at=now)
 
     def test_returns_only_this_sessions_per_loop_slots(self) -> None:
         self._seed()
@@ -189,7 +189,7 @@ class TestTickMutexNotDoubleRendered:
     The bug: the currently-ticking loop showed under two indistinguishable
     namespaces — the transient tick mutex (rendered ``tick:<name>`` after the
     ``loop-`` strip) AND its durable per-loop owner lease (``loop:<name>``) — so
-    ``resource_pressure`` appeared twice on the loop-owner line. The transient
+    ``resource_pressure`` appeared twice on the t3-master line. The transient
     mutex must be dropped; the loop is represented by its ``loop:<name>`` chunk
     alone.
     """

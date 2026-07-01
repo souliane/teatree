@@ -27,7 +27,7 @@ def _non_owner_session_id() -> str | None:
 
 
 def _session_owns_loop(session_id: str | None) -> bool:
-    """Loop-owner gate; ``None`` session ⇒ assume owner (CLI/manual use).
+    """t3-master gate; ``None`` session ⇒ assume owner (CLI/manual use).
 
     Reads the same ``loop-registry.json`` ``_OWNER_LOOP`` record the
     hook_router writes at SessionStart — identical shape to

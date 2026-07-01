@@ -2,7 +2,7 @@
 
 The WORK-team (Track B) declares three roles — CORE_MAKER, OVERLAY_MAKER,
 REVIEWER — each with a canonical ``claimed_by`` key in the ``team:<role>``
-namespace (disjoint from the loop-owner / per-loop / infra slots), and each
+namespace (disjoint from the t3-master / per-loop / infra slots), and each
 maker role a declarative overlay-seam claim filter (CORE → ``overlay == ""``,
 OVERLAY → ``overlay != ""``). This PR ships the registry DARK: nothing in the
 loop / dispatch / claim path references it yet (see ``test_inert.py``).
@@ -10,7 +10,7 @@ loop / dispatch / claim path references it yet (see ``test_inert.py``).
 
 import pytest
 
-from teatree.core.loop_lease_manager import GLOBAL_OWNER_SLOT, PER_LOOP_OWNER_PREFIX, per_loop_owner_slot
+from teatree.core.loop_lease_manager import PER_LOOP_OWNER_PREFIX, T3_MASTER_SLOT, per_loop_owner_slot
 from teatree.core.models import Ticket
 from teatree.teams.roles import TEAM_CLAIM_PREFIX, TeamRole, is_team_claim_slot, team_claim_slot
 from tests.factories import TicketFactory
@@ -52,7 +52,7 @@ class TestIsTeamClaimSlot:
         assert is_team_claim_slot(team_claim_slot(TeamRole.REVIEWER)) is True
 
     def test_false_for_non_team_keys(self) -> None:
-        assert is_team_claim_slot(GLOBAL_OWNER_SLOT) is False
+        assert is_team_claim_slot(T3_MASTER_SLOT) is False
         assert is_team_claim_slot(per_loop_owner_slot("dispatch")) is False
         assert is_team_claim_slot("loop-tick") is False
         assert is_team_claim_slot("") is False
@@ -68,7 +68,7 @@ class TestDisjointness:
 
     def test_no_team_slot_collides_with_the_global_owner_slot(self) -> None:
         for role in TeamRole:
-            assert team_claim_slot(role) != GLOBAL_OWNER_SLOT
+            assert team_claim_slot(role) != T3_MASTER_SLOT
 
     def test_no_team_slot_collides_with_a_per_loop_owner_slot(self) -> None:
         # team:<role> is never produced by per_loop_owner_slot and vice versa.
@@ -77,7 +77,7 @@ class TestDisjointness:
             assert not slot.startswith(PER_LOOP_OWNER_PREFIX)
             assert per_loop_owner_slot(role.value) != slot
 
-    @pytest.mark.parametrize("infra_slot", ["loop-tick", "loop-self-improve", "loop-owner"])
+    @pytest.mark.parametrize("infra_slot", ["loop-tick", "loop-self-improve", "t3-master"])
     def test_no_team_slot_collides_with_an_infra_slot(self, infra_slot: str) -> None:
         # Infra leases use the hyphen namespace (`loop-*`), never the colon.
         for role in TeamRole:

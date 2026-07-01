@@ -18,7 +18,7 @@ class TestCadenceForLoop:
             ("T3_QUEUE_DRAIN_CADENCE", "30", "loop-drain-queue", 30),
             ("T3_SLACK_ANSWER_CADENCE", "20", "loop-slack-answer", 20),
             ("T3_SELF_IMPROVE_CHEAP_CADENCE", "1800", "loop-self-improve", 1800),
-            ("T3_LOOP_OWNER_TTL", "1800", "loop-owner", 1800),
+            ("T3_LOOP_OWNER_TTL", "1800", "t3-master", 1800),
         ],
     )
     def test_named_slot_resolves_its_own_cadence(

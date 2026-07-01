@@ -1,4 +1,4 @@
-"""Fencing / lease-generation token on the loop-owner lease (autonomous-lane redesign §5).
+"""Fencing / lease-generation token on the t3-master lease (autonomous-lane redesign §5).
 
 The generation is bumped on every CHANGE of holder (a failover reclaim of an
 expired lease, or a human take-over steal) and KEPT on a same-holder per-tick

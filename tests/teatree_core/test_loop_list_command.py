@@ -118,35 +118,35 @@ class TestLoopListText(django.test.TestCase):
 class TestLoopOwnerLine(django.test.TestCase):
     def test_live_owner_pid_reported_alive(self) -> None:
         LoopLease.objects.create(
-            name="loop-owner",
+            name="t3-master",
             session_id="sess-live",
             owner_pid=_LIVE_PID,
             acquired_at=timezone.now(),
             lease_expires_at=timezone.now() + dt.timedelta(minutes=30),
         )
         output = _run()
-        line = next(ln for ln in output.splitlines() if ln.startswith("loop-owner:"))
+        line = next(ln for ln in output.splitlines() if ln.startswith("t3-master:"))
         assert "sess-live" in line
         assert "alive" in line
         assert "live" in line
 
     def test_dead_owner_pid_reported_dead_and_stale(self) -> None:
         LoopLease.objects.create(
-            name="loop-owner",
+            name="t3-master",
             session_id="sess-dead",
             owner_pid=_DEAD_PID,
             acquired_at=timezone.now() - dt.timedelta(hours=2),
             lease_expires_at=timezone.now() - dt.timedelta(hours=1),
         )
         output = _run()
-        line = next(ln for ln in output.splitlines() if ln.startswith("loop-owner:"))
+        line = next(ln for ln in output.splitlines() if ln.startswith("t3-master:"))
         assert "sess-dead" in line
         assert "dead/unknown" in line
         assert "stale" in line
 
     def test_unclaimed_owner_reported(self) -> None:
         output = _run()
-        line = next(ln for ln in output.splitlines() if ln.startswith("loop-owner:"))
+        line = next(ln for ln in output.splitlines() if ln.startswith("t3-master:"))
         assert "unclaimed" in line
 
 
@@ -157,7 +157,7 @@ class TestLoopListJson(django.test.TestCase):
         fired = timezone.now() - dt.timedelta(seconds=120)
         _make_loop("dispatch", 300, last_run_at=fired)
         LoopLease.objects.create(
-            name="loop-owner",
+            name="t3-master",
             session_id="sess-json",
             owner_pid=_LIVE_PID,
             acquired_at=timezone.now(),
@@ -342,7 +342,7 @@ class TestLoopListPerLoopOwners(django.test.TestCase):
         ``per_loop_owners`` key is added — byte-identical to today.
         """
         LoopLease.objects.create(
-            name="loop-owner",
+            name="t3-master",
             session_id="sess-global",
             owner_pid=_LIVE_PID,
             acquired_at=timezone.now(),

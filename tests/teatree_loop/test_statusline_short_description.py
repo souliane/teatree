@@ -49,7 +49,7 @@ class TestShortDescriptionInScanner:
             overlay="teatree",
             issue_url="https://example.com/issues/541",
             state=Ticket.State.STARTED,
-            short_description="fix loop-owner hijack",
+            short_description="fix t3-master hijack",
             extra={"issue_title": "Loop owner ownership hijack — original tracker title"},
         )
 
@@ -57,7 +57,7 @@ class TestShortDescriptionInScanner:
 
         assert len(signals) == 1
         payload = signals[0].payload
-        assert payload["title"] == "fix loop-owner hijack", payload
+        assert payload["title"] == "fix t3-master hijack", payload
 
     def test_falls_back_to_issue_title_when_short_description_blank(self) -> None:
         from teatree.loop.scanners.active_tickets import ActiveTicketsScanner  # noqa: PLC0415

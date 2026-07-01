@@ -436,7 +436,7 @@ class TestSkillLoadingLockoutDimension:
 class TestSkillLoadingGateExemptDuringLoopBootstrap:
     """The skill-load gate must NOT fire during a loop-registration bootstrap turn (#1918).
 
-    When the loop-registration / loop-owner bootstrap turn surfaces a resolvable
+    When the loop-registration / t3-master bootstrap turn surfaces a resolvable
     intent skill (the bare word ``loops`` is a hard intent trigger), it lands in
     ``<session>.pending``. The very next genuine code-work call in the same turn
     (``uv run pytest``, ``manage.py``, a ``.py`` edit — routine during teatree's

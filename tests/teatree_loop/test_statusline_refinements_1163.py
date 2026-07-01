@@ -221,12 +221,12 @@ class TestLiveLoopsAnchor:
     """
 
     def test_returns_one_line_naming_each_loop(self) -> None:
-        # loop-owner is excluded from the shared line — its badge is
+        # t3-master is excluded from the shared line — its badge is
         # per-session in statusline.sh. The other two loops appear.
         leases = [
             ("loop-tick", None),
             ("loop-slack-answer", None),
-            ("loop-owner", None),
+            ("t3-master", None),
         ]
         with (
             patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
@@ -239,7 +239,7 @@ class TestLiveLoopsAnchor:
         assert "loops live" not in lines[0]
         assert "tick" in lines[0]
         assert "slack-answer" in lines[0]
-        # loop-owner excluded from the shared line (per-session badge in sh).
+        # t3-master excluded from the shared line (per-session badge in sh).
         assert "owner" not in lines[0]
 
     def test_no_live_leases_returns_empty(self) -> None:
@@ -258,12 +258,12 @@ class TestZonesForIntegratesLoopsAnchor:
     """``zones_for`` surfaces the consolidated loop summary in the anchors zone."""
 
     def test_zones_for_appends_consolidated_loop_line(self, tmp_path: Path) -> None:
-        # loop-owner lease present but excluded from the shared line
+        # t3-master lease present but excluded from the shared line
         # (per-session badge in statusline.sh replaces it).
         with (
             patch(
                 "teatree.loop.statusline_loops._live_loop_leases",
-                return_value=[("loop-tick", None), ("loop-owner", None)],
+                return_value=[("loop-tick", None), ("t3-master", None)],
             ),
             patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
         ):
@@ -274,7 +274,7 @@ class TestZonesForIntegratesLoopsAnchor:
         assert "loop running" not in body
         assert "loops live" not in body
         assert "tick" in body
-        # loop-owner absent from the shared zones file.
+        # t3-master absent from the shared zones file.
         assert "owner" not in body
         # Per-loop dump tokens absent.
         assert "loop:tick" not in body

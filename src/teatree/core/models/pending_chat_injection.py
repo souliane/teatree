@@ -72,7 +72,7 @@ class PendingChatInjection(models.Model):
     """One Slack DM from the user waiting to be injected into the next prompt.
 
     The scanner inserts a row per new message; the ``UserPromptSubmit``
-    drain reads unconsumed rows for the loop-owner session, emits them
+    drain reads unconsumed rows for the t3-master session, emits them
     into ``additionalContext``, and stamps ``consumed_at`` so a re-fire
     of the hook is a clean no-op. ``answered_at`` is the orthogonal gate:
     set when the agent actually replies to the user (via

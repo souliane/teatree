@@ -23,7 +23,7 @@ Two distinct hand-offs share this skill:
 
 ## Session → session hand-off
 
-The hand-off payload is the SAME durable-state snapshot the PreCompact hook builds (active tickets, worktree paths/branches, in-flight sub-agent ids+tasks, open PRs, approach/decisions, failing tests, loaded skills, loop-owner status). A `SessionHandover` DB row is the source of truth; an XDG file (`[teatree] handover_mirror_path`, default `${XDG_STATE_HOME:-~/.local/state}/teatree/handover/latest.md`) mirrors it for human-readability and brand-new-session bootstrap.
+The hand-off payload is the SAME durable-state snapshot the PreCompact hook builds (active tickets, worktree paths/branches, in-flight sub-agent ids+tasks, open PRs, approach/decisions, failing tests, loaded skills, t3-master status). A `SessionHandover` DB row is the source of truth; an XDG file (`[teatree] handover_mirror_path`, default `${XDG_STATE_HOME:-~/.local/state}/teatree/handover/latest.md`) mirrors it for human-readability and brand-new-session bootstrap.
 
 ### Hand off this session's work
 
@@ -32,7 +32,7 @@ t3 <overlay> handover create            # hand to the LIVE loop owner; if none, 
 t3 <overlay> handover create --to <id>  # hand to a specific session id
 ```
 
-No `--to` resolves the target to the live `loop-owner` slot holder; if there is no live owner the hand-off is parked for whichever session starts next to claim. The row is always persisted AND mirrored to the XDG file.
+No `--to` resolves the target to the live `t3-master` slot holder; if there is no live owner the hand-off is parked for whichever session starts next to claim. The row is always persisted AND mirrored to the XDG file.
 
 ### Know your own session id
 

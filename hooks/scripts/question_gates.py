@@ -8,7 +8,7 @@ chains rather than growing the router. Two cohesive concerns.
 ``is_user_directed_question`` is the #807 detection heuristic: does the final
 assistant prose pose a decision question directed at the user? Used by the Stop
 gate ``handle_enforce_structured_question`` (which keeps the routing decision —
-loop-ownership, transcript parsing, the block emit).
+loop ownership, transcript parsing, the block emit).
 
 ``handle_warn_batched_questions`` is the one-decision-per-call advisory: warn
 (never block) when an ``AskUserQuestion`` call batches more than one question.

@@ -1,6 +1,6 @@
 """DB lease for machine-wide loop ownership (#786 WS2; trimmed in #54).
 
-Replaces the ``utils.singleton`` flock/pidfile loop-owner guard. A flock
+Replaces the ``utils.singleton`` flock/pidfile t3-master guard. A flock
 dies with its process and is invisible to any other process; a DB lease
 row is queryable and reapable by expiry. Compaction-survival is NOT a
 "renew" mechanism: each tick performs a fresh acquire (and the tick-owner
@@ -16,18 +16,18 @@ SQLite, where ``has_select_for_update_skip_locked`` is ``False`` and that
 clause is silently dropped (the #786 B1 lesson). Exactly one of N
 concurrent ticks wins the CAS; the losers see 0 rows updated and skip.
 
-#1073 deliberate exception — the ``loop-owner`` row is PERSISTENT, not
+#1073 deliberate exception — the ``t3-master`` row is PERSISTENT, not
 per-tick. The "each tick performs a fresh acquire … a stale lease simply
 expires" doctrine above is exact for the ``loop-tick`` concurrency mutex,
 but it is precisely why a pid-keyed identity hijacks: between two ticks
 ``loop-tick`` rests ``owner=""``, so ANY session running ``t3 loop tick``
 wins the unowned CAS and does loop work (drains the user's DMs, dispatches
-reviewers). The fix is a second well-known row, ``loop-owner``, holding a
+reviewers). The fix is a second well-known row, ``t3-master``, holding a
 session-scoped claim (``session_id`` column) that the owning session
 *refreshes every tick* via ``claim_ownership`` — that per-tick re-claim IS
 its heartbeat, so it is still expiry-reapable (a dead owner's claim lapses
 after the TTL and the next session reclaims it) with NO renew() method and
-NO background timer (#54 doctrine preserved). ``loop-owner`` is never
+NO background timer (#54 doctrine preserved). ``t3-master`` is never
 released in the tick ``finally`` (only ``loop-tick`` is); the TTL is the
 sole release. The CAS shape is name-parameterized so the in-flight
 reactive-Slack-answer loop (#1063/#1069) reuses it via
@@ -39,7 +39,7 @@ different live pid → KEEP) from a post-compaction same-session restart
 (same pid → safe to evict). A null ``owner_pid`` is treated conservatively
 as "owner process unknown → KEEP" (INV4: bias toward preservation).
 
-Loop-owner liveness is PID-ANCHORED, not TTL-anchored. An owner that is
+t3-master liveness is PID-ANCHORED, not TTL-anchored. An owner that is
 alive but BUSY past the tick TTL fires no Stop self-pump, so no tick
 re-claims and the lease TTL-lapses while the owner process is still alive.
 ``claim_ownership`` therefore treats a non-empty owner whose ``owner_pid``

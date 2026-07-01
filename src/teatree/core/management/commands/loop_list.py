@@ -4,7 +4,7 @@ Backs the read-only ``t3 loop list``. Unlike ``t3 loop status`` (which prints
 the statusline file written at the *last* tick, so its countdowns are stale),
 this rebuilds the state on every call from the cadence ledger, the mini-loop
 registry + ``[loops]`` config, and the infra-slot leases — including the
-PID-anchored loop-owner liveness. ORM access lives here (a management command,
+PID-anchored t3-master liveness. ORM access lives here (a management command,
 not a plain typer command) per the project's "anything touching the ORM is a
 management command" rule.
 

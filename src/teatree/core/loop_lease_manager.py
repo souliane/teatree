@@ -1,13 +1,13 @@
 """Manager/queryset for the machine-wide ``LoopLease`` rows (#1073/#786/#54).
 
-Split out of ``teatree.core.managers`` so the loop-owner claim concern —
+Split out of ``teatree.core.managers`` so the t3-master claim concern —
 the pid-anchored ``claim_ownership`` CAS, the conditional ``evict_stale_owner``
 decision table, and the read-only ``OwnershipStatus`` snapshot — lives in
 one self-describing module. ``teatree.core.managers`` re-exports the public
 symbols so existing ``from teatree.core.managers import …`` call sites are
 unchanged.
 
-Loop-owner liveness is PID-ANCHORED, not TTL-anchored: an owner that is
+t3-master liveness is PID-ANCHORED, not TTL-anchored: an owner that is
 alive but BUSY past the tick TTL fires no Stop self-pump, so no tick
 re-claims and its lease TTL-lapses while the owner process is still alive.
 ``claim_ownership`` therefore treats a non-empty owner whose ``owner_pid``
@@ -30,18 +30,20 @@ from django.db.models import F, Q
 from django.db.models.expressions import Combinable
 from django.utils import timezone
 
-#: The single machine-wide loop-owner slot (#1073). This is the DEFAULT
-#: that the master ``loops_tick`` gate claims; its pid-anchored, hijack-guarded
-#: semantics are unchanged. Per-loop owners live in the ``loop:<name>``
-#: namespace below — a disjoint key space, so a per-loop claim can never
-#: collide with or evict the global owner.
-GLOBAL_OWNER_SLOT = "loop-owner"
+#: The single machine-wide t3-master owner lease slot — the global owner
+#: lease whose holder IS the t3 master (autonomous-lane redesign §8.3,
+#: renamed from the former ``loop-owner`` / ``GLOBAL_OWNER_SLOT``; #1073).
+#: This is the DEFAULT the master ``loops_tick`` gate claims; its
+#: pid-anchored, hijack-guarded semantics are unchanged. Per-loop owners
+#: live in the ``loop:<name>`` namespace below — a disjoint key space, so a
+#: per-loop claim can never collide with or evict the global owner.
+T3_MASTER_SLOT = "t3-master"
 
 #: Prefix for the additive per-loop owning-session layer (#1834). A
 #: dedicated loop (PR#3) claims ``loop:<name>`` (e.g. ``loop:dispatch``)
 #: so two dedicated loops can be owned by two different sessions
 #: concurrently. The prefix keeps the per-loop keys in their own namespace,
-#: disjoint from ``GLOBAL_OWNER_SLOT`` and from the infra-slot leases
+#: disjoint from ``T3_MASTER_SLOT`` and from the infra-slot leases
 #: (``loop-tick`` / ``loop-self-improve`` / …), which use ``-`` not ``:``.
 PER_LOOP_OWNER_PREFIX = "loop:"
 
@@ -53,7 +55,7 @@ def per_loop_owner_slot(loop_name: str) -> str:
     every per-loop claim/read/compare normalizes UP to it at the boundary
     so a bare ``dispatch`` and a qualified ``loop:dispatch`` can never be
     treated as two different slots. The global single-owner slot is the
-    reserved :data:`GLOBAL_OWNER_SLOT` constant, never produced by this
+    reserved :data:`T3_MASTER_SLOT` constant, never produced by this
     function, so the two layers occupy disjoint key space.
 
     An already-qualified ``loop:dispatch`` is returned unchanged
@@ -94,7 +96,7 @@ def is_per_loop_tick_mutex(slot: str) -> bool:
 
 
 class OwnershipStatus(NamedTuple):
-    """Read-only snapshot of a session-scoped loop-owner claim (#1073/#1604).
+    """Read-only snapshot of a session-scoped t3-master claim (#1073/#1604).
 
     ``is_live`` is the predicate callers branch on. It is pid-anchored
     (matching ``claim_ownership``'s liveness): ``True`` iff a non-empty
@@ -123,7 +125,7 @@ class LoopLeaseQuerySet(models.QuerySet):
         ttl_seconds: int = 1800,
         take_over: bool = False,
     ) -> tuple[bool, str]:
-        """Claim/refresh the persistent session-scoped loop-owner row (#1073).
+        """Claim/refresh the persistent session-scoped t3-master row (#1073).
 
         Returns ``(won, current_owner_session)``. Ownership liveness is
         PID-ANCHORED: a live owner is a non-empty ``session_id`` whose lease
@@ -150,7 +152,7 @@ class LoopLeaseQuerySet(models.QuerySet):
         session id but does not restart the durable session process, so the
         live lease is still ours; it is RE-ANCHORED to the rotated session
         id and the claim WINS. This is slot-agnostic, so the master
-        ``loop-owner``, ``t3-master``, and every ``loop:<name>`` per-loop
+        ``t3-master`` and every ``loop:<name>`` per-loop
         slot self-heal on their next tick without a manual ``t3 loop claim
         --take-over``. Otherwise the existing backend-agnostic
         conditional-UPDATE CAS runs (correct on the
@@ -461,7 +463,7 @@ class LoopLeaseQuerySet(models.QuerySet):
         return 0
 
     def heartbeat_ownership(self, name: str, *, session_id: str, ttl_seconds: int = 1800) -> bool:
-        """Extend the loop-owner lease IFF this session still holds it (#1073).
+        """Extend the t3-master lease IFF this session still holds it (#1073).
 
         CAS on ``session_id``: a row another session took over (or that
         expired and was reclaimed) no longer matches, so this returns
@@ -478,7 +480,7 @@ class LoopLeaseQuerySet(models.QuerySet):
         return refreshed == 1
 
     def ownership_status(self, name: str) -> OwnershipStatus:
-        """Read-only snapshot of the named loop-owner claim (#1073/#1604).
+        """Read-only snapshot of the named t3-master claim (#1073/#1604).
 
         ``is_live`` is pid-anchored via :meth:`_session_lease_is_live`: it
         is ``True`` iff a non-empty session holds a claim that is either
@@ -498,7 +500,7 @@ class LoopLeaseQuerySet(models.QuerySet):
         )
 
     def release_ownership(self, name: str, *, session_id: str) -> bool:
-        """Release the loop-owner claim iff held by ``session_id`` (CAS).
+        """Release the t3-master claim iff held by ``session_id`` (CAS).
 
         A non-owner release is a no-op (0 rows) so it can never evict a
         live owner — the chat-only user's ``t3 loop release`` only ever

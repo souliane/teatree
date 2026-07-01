@@ -1,4 +1,4 @@
-"""``manage.py loop_owner`` — pilot the session-scoped loop-owner claim (#1073).
+"""``manage.py loop_owner`` — pilot the session-scoped t3-master claim (#1073).
 
 Backs ``t3 loop claim/owner/release``. The chat-only user uses this to
 hand the loop off when a foreign session has hijacked it: ``claim
@@ -28,9 +28,9 @@ from django_typer.management import TyperCommand, command
 
 
 def _refresh_loop_owner_statusline() -> None:
-    """Re-render the statusline after a global ``loop-owner`` ownership change.
+    """Re-render the statusline after a global ``t3-master`` ownership change.
 
-    The foreign-hijack RED anchor reads the DB ``loop-owner`` lease, but the
+    The foreign-hijack RED anchor reads the DB ``t3-master`` lease, but the
     rendered zones file is rewritten only on a tick or an explicit re-render —
     so a ``claim``/``take-over`` that transfers the lease to THIS session left
     the stale pre-claim RED line (written by this session's own earlier foreign
@@ -51,7 +51,7 @@ def _refresh_loop_owner_statusline() -> None:
 def _claim(slot: str, *, take_over: bool, json_output: bool, stdout_write) -> None:  # noqa: ANN001
     import os  # noqa: PLC0415
 
-    from teatree.core.loop_lease_manager import GLOBAL_OWNER_SLOT, is_per_loop_owner_slot  # noqa: PLC0415
+    from teatree.core.loop_lease_manager import T3_MASTER_SLOT, is_per_loop_owner_slot  # noqa: PLC0415
     from teatree.core.models import LoopLease  # noqa: PLC0415
     from teatree.loop.session_identity import current_session_id, current_session_pid  # noqa: PLC0415
 
@@ -63,7 +63,7 @@ def _claim(slot: str, *, take_over: bool, json_output: bool, stdout_write) -> No
         else:
             stdout_write(f"ERROR  {msg}")
         raise SystemExit(2)
-    # Record the durable SESSION pid for the ``loop-owner`` slot — and for a
+    # Record the durable SESSION pid for the ``t3-master`` slot — and for a
     # per-loop ``loop:<name>`` owner (#1834), which is a persistent
     # session-scoped owner of the same kind — so ``evict_stale_owner`` / the
     # pid-anchored liveness check can tell a post-compaction same-process
@@ -77,12 +77,12 @@ def _claim(slot: str, *, take_over: bool, json_output: bool, stdout_write) -> No
     # ``os.getppid()`` is the fallback only for a direct in-session call.
     # Other infra slots (e.g. ``loop-slack-answer-owner``) are per-tick
     # ephemeral and don't need it.
-    pid_anchored = slot == "loop-owner" or is_per_loop_owner_slot(slot)
+    pid_anchored = slot == T3_MASTER_SLOT or is_per_loop_owner_slot(slot)
     owner_pid = (current_session_pid() or os.getppid()) if pid_anchored else None
     won, owner = LoopLease.objects.claim_ownership(
         slot, session_id=session_id, take_over=take_over, owner_pid=owner_pid
     )
-    if won and slot == GLOBAL_OWNER_SLOT:
+    if won and slot == T3_MASTER_SLOT:
         # The lease now names THIS session — clear any stale foreign-hijack
         # anchor the rendered statusline still carries from before the claim.
         _refresh_loop_owner_statusline()
@@ -153,7 +153,7 @@ def _release(slot: str, *, json_output: bool, stdout_write) -> None:  # noqa: AN
 
 
 class Command(TyperCommand):
-    help = "Claim, inspect, or release the session-scoped loop-owner slot (#1073)."
+    help = "Claim, inspect, or release the session-scoped t3-master slot (#1073)."
 
     @command(name="claim")
     def claim(
@@ -165,21 +165,21 @@ class Command(TyperCommand):
         ] = False,
         slot: Annotated[
             str,
-            typer.Option("--slot", help="Loop-owner slot name (default: loop-owner)."),
-        ] = "loop-owner",
+            typer.Option("--slot", help="t3-master slot name (default: t3-master)."),
+        ] = "t3-master",
         json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
     ) -> None:
-        """Claim the loop-owner slot for this session."""
+        """Claim the t3-master slot for this session."""
         _claim(slot, take_over=take_over, json_output=json_output, stdout_write=self.stdout.write)
 
     @command(name="owner")
     def owner(
         self,
         *,
-        slot: Annotated[str, typer.Option("--slot", help="Loop-owner slot name (default: loop-owner).")] = "loop-owner",
+        slot: Annotated[str, typer.Option("--slot", help="t3-master slot name (default: t3-master).")] = "t3-master",
         json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
     ) -> None:
-        """Show which session owns the loop-owner slot."""
+        """Show which session owns the t3-master slot."""
         _owner(slot, json_output=json_output, stdout_write=self.stdout.write)
 
     @command(name="whoami")
@@ -195,8 +195,8 @@ class Command(TyperCommand):
     def release(
         self,
         *,
-        slot: Annotated[str, typer.Option("--slot", help="Loop-owner slot name (default: loop-owner).")] = "loop-owner",
+        slot: Annotated[str, typer.Option("--slot", help="t3-master slot name (default: t3-master).")] = "t3-master",
         json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
     ) -> None:
-        """Release this session's loop-owner claim (CAS — non-owner is a no-op)."""
+        """Release this session's t3-master claim (CAS — non-owner is a no-op)."""
         _release(slot, json_output=json_output, stdout_write=self.stdout.write)

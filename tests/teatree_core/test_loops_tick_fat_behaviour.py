@@ -244,7 +244,7 @@ class TestLoopTickCommand(TestCase):
 
 
 class TestLoopOwnerGate(TestCase):
-    """#1073 — the session-scoped loop-owner gate is a hard SKIP.
+    """#1073 — the session-scoped t3-master gate is a hard SKIP.
 
     The pre-#1073 behaviour was: a non-owner ``t3 loop tick`` would still
     run every scanner and merely *find nothing to claim*. That let a
@@ -256,8 +256,8 @@ class TestLoopOwnerGate(TestCase):
     def test_non_owner_session_skips_full_tick(self) -> None:
         from teatree.core.models import LoopLease  # noqa: PLC0415
 
-        # A live owner already holds the persistent loop-owner claim.
-        LoopLease.objects.claim_ownership("loop-owner", session_id="owner-session")
+        # A live owner already holds the persistent t3-master claim.
+        LoopLease.objects.claim_ownership("t3-master", session_id="owner-session")
         stdout = StringIO()
         with (
             patch.dict("os.environ", {"CLAUDE_SESSION_ID": "intruder-session"}),
@@ -272,14 +272,14 @@ class TestLoopOwnerGate(TestCase):
         # #1107 Prong B anti-#1073: a non-owner SKIP must NOT piggyback.
         piggyback_mock.assert_not_called()
         output = stdout.getvalue()
-        assert "SKIP  loop slot 'loop-owner' not owned by this session" in output
+        assert "SKIP  loop slot 't3-master' not owned by this session" in output
         assert "owner is session owner-session" in output
-        assert "t3 loop claim --slot loop-owner --take-over" in output
+        assert "t3 loop claim --slot t3-master --take-over" in output
 
     def test_non_owner_skip_json_is_contract_shaped(self) -> None:
         from teatree.core.models import LoopLease  # noqa: PLC0415
 
-        LoopLease.objects.claim_ownership("loop-owner", session_id="owner-session")
+        LoopLease.objects.claim_ownership("t3-master", session_id="owner-session")
         stdout = StringIO()
         with (
             patch.dict("os.environ", {"CLAUDE_SESSION_ID": "intruder-session"}),
@@ -293,14 +293,14 @@ class TestLoopOwnerGate(TestCase):
         assert payload["errors"] == {}
         assert payload["actions"] == []
         assert payload["skipped"] is True
-        assert "loop slot 'loop-owner' not owned by this session" in payload["skipped_reason"]
+        assert "loop slot 't3-master' not owned by this session" in payload["skipped_reason"]
 
     def test_non_owner_skip_refreshes_tick_meta(self) -> None:
         import tempfile  # noqa: PLC0415
 
         from teatree.core.models import LoopLease  # noqa: PLC0415
 
-        LoopLease.objects.claim_ownership("loop-owner", session_id="owner-session")
+        LoopLease.objects.claim_ownership("t3-master", session_id="owner-session")
         with tempfile.TemporaryDirectory() as d:
             sl = Path(d) / "statusline.txt"
             meta = sl.with_name("tick-meta.json")
@@ -326,11 +326,11 @@ class TestLoopOwnerGate(TestCase):
         run_tick_mock.assert_called_once()
         # #1107 Prong B: the won-owner success path fires the piggyback.
         piggyback_mock.assert_called_once()
-        row = LoopLease.objects.get(name="loop-owner")
+        row = LoopLease.objects.get(name="t3-master")
         assert row.session_id == "owner-session"
         assert row.lease_expires_at is not None
         # `loop-tick` (the per-tick mutex) is released in the finally;
-        # `loop-owner` is NEVER released — its TTL is its sole lifecycle.
+        # `t3-master` is NEVER released — its TTL is its sole lifecycle.
         assert LoopLease.objects.get(name="loop-tick").owner == ""
 
     def test_owner_reclaim_bumps_lease_expiry_each_tick(self) -> None:
@@ -343,9 +343,9 @@ class TestLoopOwnerGate(TestCase):
             patch("teatree.loop.tick.run_tick", return_value=report),
         ):
             call_command("loops_tick", stdout=StringIO())
-            first = LoopLease.objects.get(name="loop-owner").lease_expires_at
+            first = LoopLease.objects.get(name="t3-master").lease_expires_at
             call_command("loops_tick", stdout=StringIO())
-            second = LoopLease.objects.get(name="loop-owner").lease_expires_at
+            second = LoopLease.objects.get(name="t3-master").lease_expires_at
         assert second >= first
 
     def test_first_tick_auto_claims_when_unowned(self) -> None:
@@ -360,14 +360,14 @@ class TestLoopOwnerGate(TestCase):
             call_command("loops_tick", stdout=StringIO())
 
         run_tick_mock.assert_called_once()
-        assert LoopLease.objects.get(name="loop-owner").session_id == "fresh-session"
+        assert LoopLease.objects.get(name="t3-master").session_id == "fresh-session"
 
     def test_take_over_ends_hijack_within_one_tick(self) -> None:
         from teatree.core.models import LoopLease  # noqa: PLC0415
 
         report = _build_report()
         # Hijacker owns the loop and ticks happily.
-        LoopLease.objects.claim_ownership("loop-owner", session_id="hijacker")
+        LoopLease.objects.claim_ownership("t3-master", session_id="hijacker")
         with (
             patch.dict("os.environ", {"CLAUDE_SESSION_ID": "hijacker"}),
             patch("teatree.core.backend_factory.iter_overlay_backends", return_value=[]),
@@ -377,7 +377,7 @@ class TestLoopOwnerGate(TestCase):
             rt1.assert_called_once()
 
         # The chat-only user runs `t3 loop claim --take-over` from main.
-        won, _ = LoopLease.objects.claim_ownership("loop-owner", session_id="main", take_over=True)
+        won, _ = LoopLease.objects.claim_ownership("t3-master", session_id="main", take_over=True)
         assert won is True
 
         # The hijacker's very next tick SKIPs — no restart needed.
@@ -388,14 +388,14 @@ class TestLoopOwnerGate(TestCase):
         ):
             call_command("loops_tick", stdout=stdout)
         rt2.assert_not_called()
-        assert "loop slot 'loop-owner' not owned by this session" in stdout.getvalue()
+        assert "loop slot 't3-master' not owned by this session" in stdout.getvalue()
 
     def test_anonymous_session_skips_when_live_owner(self) -> None:
         import tempfile  # noqa: PLC0415
 
         from teatree.core.models import LoopLease  # noqa: PLC0415
 
-        LoopLease.objects.claim_ownership("loop-owner", session_id="owner-session")
+        LoopLease.objects.claim_ownership("t3-master", session_id="owner-session")
         stdout = StringIO()
         # Drop ONLY the session-id vars (anonymous session) — never
         # ``clear=True`` the whole environment: that wipes ``$HOME`` and
@@ -410,7 +410,7 @@ class TestLoopOwnerGate(TestCase):
             call_command("loops_tick", "--statusline-file", str(Path(d) / "sl.txt"), stdout=stdout)
 
         run_tick_mock.assert_not_called()
-        assert "loop slot 'loop-owner' not owned by this session" in stdout.getvalue()
+        assert "loop slot 't3-master' not owned by this session" in stdout.getvalue()
 
     def test_owner_ttl_env_override_is_parsed_defensively(self) -> None:
         from teatree.core.management.commands.loops_tick import _loop_owner_ttl_seconds  # noqa: PLC0415
@@ -428,10 +428,10 @@ class TestLoopOwnerGate(TestCase):
 
 
 class TestLoopTickClaimsGlobalOwnerAndRunsFatTick(TestCase):
-    """``t3 loop tick`` claims the GLOBAL ``loop-owner`` slot and drives ``run_tick``.
+    """``t3 loop tick`` claims the GLOBAL ``t3-master`` slot and drives ``run_tick``.
 
     LOOP-PR-A removed the #1838 dedicated-loop ``--slot`` scoped path; the only tick
-    the command runs is the fat ``loop-owner`` tick over ``build_loop_table_jobs``.
+    the command runs is the fat ``t3-master`` tick over ``build_loop_table_jobs``.
     """
 
     def test_claims_global_owner_and_runs_fat_tick(self) -> None:
@@ -446,7 +446,7 @@ class TestLoopTickClaimsGlobalOwnerAndRunsFatTick(TestCase):
             call_command("loops_tick", stdout=StringIO())
 
         fat_run_tick.assert_called_once()
-        assert LoopLease.objects.get(name="loop-owner").session_id == "owner-session"
+        assert LoopLease.objects.get(name="t3-master").session_id == "owner-session"
         assert not LoopLease.objects.filter(name__startswith="loop:").exists()
 
     def test_slot_option_is_gone(self) -> None:
@@ -498,7 +498,7 @@ class TestLeaseOwnerPidIsDurableSessionNotTickSubprocess(TestCase):
         ):
             call_command("loops_tick", stdout=StringIO())
 
-        row = LoopLease.objects.get(name="loop-owner")
+        row = LoopLease.objects.get(name="t3-master")
         assert row.session_id == "owner-session"
         assert row.owner_pid == durable_session_pid, (
             "lease must anchor on the durable session pid from the registry, "
@@ -529,11 +529,11 @@ class TestLeaseOwnerPidIsDurableSessionNotTickSubprocess(TestCase):
 
         # Simulate the owner going busy/idle past the TTL: the lease lapses
         # but the session process (durable_session_pid) is still alive.
-        row = LoopLease.objects.get(name="loop-owner")
+        row = LoopLease.objects.get(name="t3-master")
         row.lease_expires_at = dt.datetime.now(tz=dt.UTC) - dt.timedelta(seconds=120)
         row.save(update_fields=["lease_expires_at"])
 
-        won, current = LoopLease.objects.claim_ownership("loop-owner", session_id="fresh-session")
+        won, current = LoopLease.objects.claim_ownership("t3-master", session_id="fresh-session")
         assert won is False, "HIJACK: a fresh session stole an alive owner's expired-TTL loop"
         assert current == "owner-session"
 
@@ -603,7 +603,7 @@ class TestNonOwnerDoesNotDrainReactionsOrDispatchReviewer(TestCase):
     ``build_default_jobs``. That scanner drains ``slack-reactions.jsonl``
     (atomic rename + unlink, destroying the file) and creates a
     ``ReviewAssignment`` row that dispatches ``t3:reviewer``. #1078's
-    session-scoped ``loop-owner`` gate SKIPs a NON-OWNER session BEFORE
+    session-scoped ``t3-master`` gate SKIPs a NON-OWNER session BEFORE
     ``run_tick`` runs, so the scanner never executes for a foreign
     session.
 
@@ -628,7 +628,7 @@ class TestNonOwnerDoesNotDrainReactionsOrDispatchReviewer(TestCase):
         overlay_backends = [OverlayBackends(name="hijacked", messaging=backend)]
 
         # A different session legitimately owns the loop.
-        LoopLease.objects.claim_ownership("loop-owner", session_id="owner-session")
+        LoopLease.objects.claim_ownership("t3-master", session_id="owner-session")
 
         with tempfile.TemporaryDirectory() as d:
             data_dir = Path(d) / "teatree"

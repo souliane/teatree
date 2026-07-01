@@ -19,7 +19,7 @@ from teatree.core.models import LoopLease
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
-_SLOT = "loop-owner"
+_SLOT = "t3-master"
 
 
 @dataclass(frozen=True)
@@ -80,7 +80,7 @@ class TestHookDelegatesToManager:
             result = router._db_live_foreign_owner("my-session", current_pid=4242)
 
         assert result == "owner-x"
-        manager_call.assert_called_once_with("loop-owner", session_id="my-session", current_pid=4242)
+        manager_call.assert_called_once_with("t3-master", session_id="my-session", current_pid=4242)
 
     def test_envelope_fails_open_on_manager_error(self) -> None:
         with (
@@ -118,7 +118,7 @@ class TestSameProcessReclaimAcrossSessionRotation:
     preserved — a DIFFERENT alive pid still BLOCKS.
     """
 
-    @pytest.mark.parametrize("slot", ["loop-owner", "loop:dispatch", "t3-master"])
+    @pytest.mark.parametrize("slot", ["t3-master", "loop:dispatch"])
     def test_same_pid_rotation_reanchors_and_grants(self, slot: str) -> None:
         _seed_lease(slot, session_id="sessionA", owner_pid=_OWNER_PID, expires_delta_seconds=1800)
         before = LoopLease.objects.get(name=slot).lease_expires_at
@@ -152,29 +152,29 @@ class TestSameProcessReclaimAcrossSessionRotation:
 
     def test_dead_pid_reclaim_still_works(self) -> None:
         dead_pid = 999_999
-        _seed_lease("loop-owner", session_id="sessionA", owner_pid=dead_pid, expires_delta_seconds=-5)
+        _seed_lease("t3-master", session_id="sessionA", owner_pid=dead_pid, expires_delta_seconds=-5)
 
         with patch("teatree.utils.singleton.pid_alive", side_effect=lambda pid: pid == _OWNER_PID):
             won, owner = LoopLease.objects.claim_ownership(
-                "loop-owner", session_id="sessionB", owner_pid=_OWNER_PID, ttl_seconds=3600
+                "t3-master", session_id="sessionB", owner_pid=_OWNER_PID, ttl_seconds=3600
             )
 
         assert won is True
         assert owner == "sessionB"
-        row = LoopLease.objects.get(name="loop-owner")
+        row = LoopLease.objects.get(name="t3-master")
         assert row.session_id == "sessionB"
         assert row.owner_pid == _OWNER_PID
 
     def test_ttl_expiry_reclaim_still_works(self) -> None:
-        _seed_lease("loop-owner", session_id="sessionA", owner_pid=None, expires_delta_seconds=-5)
+        _seed_lease("t3-master", session_id="sessionA", owner_pid=None, expires_delta_seconds=-5)
 
         won, owner = LoopLease.objects.claim_ownership(
-            "loop-owner", session_id="sessionB", owner_pid=None, ttl_seconds=3600
+            "t3-master", session_id="sessionB", owner_pid=None, ttl_seconds=3600
         )
 
         assert won is True
         assert owner == "sessionB"
-        assert LoopLease.objects.get(name="loop-owner").session_id == "sessionB"
+        assert LoopLease.objects.get(name="t3-master").session_id == "sessionB"
 
 
 class TestNoPingPongAcrossTicks:

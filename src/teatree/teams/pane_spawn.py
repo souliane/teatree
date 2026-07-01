@@ -25,7 +25,7 @@ the ``teams_max_panes`` cap, a CORE_MAKER / OVERLAY_MAKER pane claims a
 ``team:<role>`` unit using its overlay-seam claim filter
 (:attr:`TeamRole.task_claim_filter`). The claim goes through
 :func:`teatree.teams.guardrails.assert_pane_claim_allowed` (a pane can never
-claim loop-owner) after the :func:`teatree.teams.guardrails.live_owner_blocks_pane`
+claim t3-master) after the :func:`teatree.teams.guardrails.live_owner_blocks_pane`
 pre-work check (SKIP during another session's live loop). DEFAULT-OFF: nothing
 runs when ``teams_enabled`` is false.
 """
@@ -196,7 +196,7 @@ def claim_maker_pane(
     to today). Then :func:`live_owner_blocks_pane` SKIPs during ANOTHER session's
     live loop. Then the ``teams_max_panes`` budget cap raises above the cap. Then
     :func:`assert_pane_claim_allowed` on the ``team:<role>`` slot fails closed for
-    a non-team slot (a pane can never claim loop-owner / infra). Finally
+    a non-team slot (a pane can never claim t3-master / infra). Finally
     ``claim_next_pending``'s CAS is narrowed by the role's overlay-seam filter.
 
     The claim heartbeats via the existing lease (``Task.renew_lease``) so a dead

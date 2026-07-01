@@ -1,6 +1,6 @@
 """Integration tests for the tick piggyback safety net (#1107 Prong B).
 
-Defense-in-depth for the #1107 incident: even when loop-owner can never be
+Defense-in-depth for the #1107 incident: even when t3-master can never be
 claimed (the pure-cron / no-session state Prong A cannot rescue), a won
 ``t3 loop tick`` must still drive the reactive Slack-answer cycle and the
 self-improve monitor so user DMs get :eyes:/answered and smells get
@@ -93,7 +93,7 @@ class TestTickPiggybackSlackAnswer:
         Pure-cron incident state — no session env vars AND no loop-registry
         — so Prong A cannot resolve an owner; this proves B is an
         independent safety net (the auto-claim-for-free CAS still wins the
-        unowned ``loop-owner`` for an anonymous caller).
+        unowned ``t3-master`` for an anonymous caller).
         """
         row = PendingChatInjection.record(channel="C9", slack_ts="9.0", text="thanks!")
         assert row is not None
@@ -252,7 +252,7 @@ class TestTickPiggybackOwnerGate:
         stay GREEN after the fix, not a vacuous test. Mirrors
         ``test_loops_tick_fat_behaviour.TestLoopOwnerGate``.
         """
-        LoopLease.objects.claim_ownership("loop-owner", session_id="owner-session")
+        LoopLease.objects.claim_ownership("t3-master", session_id="owner-session")
         row = PendingChatInjection.record(channel="C9", slack_ts="9.0", text="thanks!")
         assert row is not None
         backend = RecordingBackend()
@@ -266,7 +266,7 @@ class TestTickPiggybackOwnerGate:
 
         row.refresh_from_db()
         assert "SKIP" in out.getvalue()
-        assert "loop slot 'loop-owner' not owned by this session" in out.getvalue()
+        assert "loop slot 't3-master' not owned by this session" in out.getvalue()
         assert row.eyes_reacted_at is None
         assert backend.reactions == []
 

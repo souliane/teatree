@@ -192,7 +192,7 @@ def _stdin_is_terminal() -> bool:
 _REGISTER_GUIDANCE = (
     "Under #2650 there is no single fat `/loop`: each ENABLED loop is its own native Claude "
     "`/loop` firing `t3 loops tick --loop <name>` on its own cadence, registered automatically "
-    "by the loop-owner session at start. Inspect or mirror a loop's spec (slot_id + cron + "
+    "by the t3-master session at start. Inspect or mirror a loop's spec (slot_id + cron + "
     "prompt) with `t3 loop claude-spec <name>`; the `/t3:loops` skill drives CronCreate (enable) "
     "/ CronList→CronDelete (disable) with it."
 )
@@ -207,12 +207,12 @@ def start_command(
         help="Print the per-loop registration guidance instead of spawning a Claude Code session.",
     ),
 ) -> None:
-    """Spawn a Claude Code session; the loop-owner registers each enabled loop's ``/loop``.
+    """Spawn a Claude Code session; the t3-master registers each enabled loop's ``/loop``.
 
     Looks for ``claude`` on ``PATH`` and spawns it (with the interactive session
     model/effort pins). Under #2650 the live set of native Claude ``/loop``s
     mirrors the ENABLED ``Loop`` rows — ONE ``/loop`` per loop firing
-    ``t3 loops tick --loop <name>`` — and the SessionStart loop-owner hook
+    ``t3 loops tick --loop <name>`` — and the SessionStart t3-master hook
     registers them automatically, so there is no single fat slot to pass on the
     command line. When ``claude`` is unavailable or the caller is already inside a
     Claude Code session, prints the per-loop registration guidance instead.
@@ -221,21 +221,21 @@ def start_command(
     With no session open the loop is paused until the next session start.
     """
     if print_only or os.environ.get("CLAUDECODE") or not _stdin_is_terminal():
-        typer.echo("Start a Claude Code session; the loop-owner registers each enabled loop's `/loop` automatically.")
+        typer.echo("Start a Claude Code session; the t3-master registers each enabled loop's `/loop` automatically.")
         typer.echo("")
         typer.echo(_REGISTER_GUIDANCE)
         return
 
     claude_bin = shutil.which("claude")
     if not claude_bin:
-        typer.echo("`claude` not found on PATH. Install Claude Code, then start a session — the loop-owner")
+        typer.echo("`claude` not found on PATH. Install Claude Code, then start a session — the t3-master")
         typer.echo("registers each enabled loop's `/loop` automatically.")
         typer.echo("")
         typer.echo(_REGISTER_GUIDANCE)
         raise typer.Exit(code=1)
 
     argv = [claude_bin, *_session_pin_flags()]
-    typer.echo("Starting Claude Code — the loop-owner session registers each enabled loop's `/loop`…")
+    typer.echo("Starting Claude Code — the t3-master session registers each enabled loop's `/loop`…")
     os.execv(claude_bin, argv)  # noqa: S606  # Path comes from shutil.which; no shell, no user-controlled input.
 
 
@@ -280,7 +280,7 @@ self_improve_app = typer.Typer(
     name="self-improve",
     help=(
         "Self-improving monitor — scheduled smell detection with a tiered "
-        "action ladder. Runs in the same loop-owner session as `t3 loop tick` "
+        "action ladder. Runs in the same t3-master session as `t3 loop tick` "
         "on a separate LoopLease so a long self-improve cycle never blocks a "
         "fast regular tick (BLUEPRINT § 5.7)."
     ),
@@ -347,7 +347,7 @@ def self_improve_start_command() -> None:
     """Print the ``/loop <cadence>`` slot definition for the self-improve monitor.
 
     Mirrors ``t3 loop start --print-only``: it prints the slash command
-    the user pastes inside the loop-owner Claude Code session to register
+    the user pastes inside the t3-master Claude Code session to register
     the second ``/loop`` slot.  The cheap tier runs by default; override
     via ``T3_SELF_IMPROVE_CHEAP_CADENCE`` (seconds).
     """
@@ -370,7 +370,7 @@ def self_improve_start_command() -> None:
 
 loop_app.add_typer(self_improve_app, name="self-improve")
 
-# #1073 — the session-scoped loop-owner hand-off CLI lives in its own
+# #1073 — the session-scoped t3-master hand-off CLI lives in its own
 # module (split by concern; keeps this file under the module-health
 # function budget). It registers flat `t3 loop claim/owner/release`.
 register_loop_owner(loop_app)

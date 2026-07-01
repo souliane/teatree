@@ -1,7 +1,7 @@
 """``t3 <overlay> handover`` — hand all current work to another session.
 
 Reuses the PreCompact durable-state snapshot as the hand-off payload and
-the ``loop-owner`` slot for the default target. ``create`` persists a
+the ``t3-master`` slot for the default target. ``create`` persists a
 :class:`~teatree.core.models.SessionHandover` row (source of truth) and
 mirrors it to the XDG file; ``whoami`` prints this session's id;
 ``claim-on-start`` is the SessionStart-hook entry point that atomically
@@ -40,7 +40,7 @@ class Command(TyperCommand):
     ) -> None:
         """Hand this session's full durable state to another session.
 
-        No ``--to`` → the live ``loop-owner`` slot holder; if none, parked
+        No ``--to`` → the live ``t3-master`` slot holder; if none, parked
         for whichever session starts next. Always persists the
         :class:`SessionHandover` row AND mirrors it to the XDG file.
         """

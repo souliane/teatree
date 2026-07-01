@@ -54,7 +54,7 @@ class TestPaneSpawnAndState(_TeamsEnabledMixin):
 
     def test_spawn_rejects_a_non_team_slot_collision(self) -> None:
         # The pane spawn path runs the claim-namespace guard — it can never
-        # claim a loop-owner slot. REVIEWER carries a real ``team:<role>`` key,
+        # claim a t3-master slot. REVIEWER carries a real ``team:<role>`` key,
         # so the guard passes; the guard rejection is exercised in
         # test_guardrails. Here we assert the spawned claim is always a team slot.
         ticket = _ticket()

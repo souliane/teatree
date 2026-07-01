@@ -1,18 +1,18 @@
 """``t3 loop claim --take-over`` refreshes the foreign-hijack statusline anchor.
 
-The split-brain bug: the per-session loop-owner badge (``statusline.sh``) reads
+The split-brain bug: the per-session t3-master badge (``statusline.sh``) reads
 the LIVE ``loop-registry.json``, while the foreign-hijack RED anchor
 (:func:`teatree.loop.phases.render._populate_loop_owner_anchor`) reads the DB
-``loop-owner`` lease and is only ever re-rendered on a tick or an explicit
+``t3-master`` lease and is only ever re-rendered on a tick or an explicit
 re-render. A take-over mutates the DB lease but, pre-fix, never re-rendered the
-zones file — so after ``t3 loop claim --slot loop-owner --take-over`` the stale
+zones file — so after ``t3 loop claim --slot t3-master --take-over`` the stale
 pre-take-over RED line (correctly written while the OLD session owned the lease)
 persisted alongside the now-live current-session badge:
 
-    loop-owner: <new>·pid<pid> · loop-owner=session <old> (NOT this session)
+    t3-master: <new>·pid<pid> · t3-master=session <old> (NOT this session)
 
 The fix re-renders the statusline from inside the claim command on a won global
-``loop-owner`` claim, recomputing the anchor against the just-written owner
+``t3-master`` claim, recomputing the anchor against the just-written owner
 (which is THIS session), so the stale RED clears in the same command that
 transferred ownership.
 """
@@ -60,8 +60,8 @@ class TestTakeOverRefreshesStatusline(TestCase):
         with tempfile.TemporaryDirectory() as td, mock.patch.dict(os.environ, _isolated_env(td)):
             _clear_session_env()
 
-            # 1. The OLD session holds a live ``loop-owner`` lease.
-            LoopLease.objects.claim_ownership("loop-owner", session_id=_OLD_SESSION, owner_pid=os.getpid())
+            # 1. The OLD session holds a live ``t3-master`` lease.
+            LoopLease.objects.claim_ownership("t3-master", session_id=_OLD_SESSION, owner_pid=os.getpid())
 
             # 2. The NEW session renders the statusline while the OLD session
             #    still owns it → the foreign-hijack RED line is written.
@@ -73,9 +73,9 @@ class TestTakeOverRefreshesStatusline(TestCase):
 
             # 3. The NEW session takes the loop over via the user hand-off command.
             call_command(
-                "loop_owner", "claim", take_over=True, slot="loop-owner", json_output=True, stdout=io.StringIO()
+                "loop_owner", "claim", take_over=True, slot="t3-master", json_output=True, stdout=io.StringIO()
             )
-            assert LoopLease.objects.get(name="loop-owner").session_id == _NEW_SESSION
+            assert LoopLease.objects.get(name="t3-master").session_id == _NEW_SESSION
 
             # 4. The rendered statusline no longer carries the stale foreign-hijack
             #    line (RED pre-fix — take-over never re-rendered; GREEN post-fix).
@@ -88,11 +88,11 @@ class TestTakeOverRefreshesStatusline(TestCase):
         # fix clears a STALE anchor, it must not suppress real hijack detection.
         with tempfile.TemporaryDirectory() as td, mock.patch.dict(os.environ, _isolated_env(td)):
             _clear_session_env()
-            LoopLease.objects.claim_ownership("loop-owner", session_id=_OLD_SESSION, owner_pid=os.getpid())
+            LoopLease.objects.claim_ownership("t3-master", session_id=_OLD_SESSION, owner_pid=os.getpid())
             os.environ["CLAUDE_SESSION_ID"] = _NEW_SESSION
 
             rerender_statusline()
 
             rendered = default_path().read_text(encoding="utf-8")
             assert _RED_MARKER in rendered
-            assert f"loop-owner=session {_OLD_SESSION[:8]} {_RED_MARKER}" in rendered
+            assert f"t3-master=session {_OLD_SESSION[:8]} {_RED_MARKER}" in rendered

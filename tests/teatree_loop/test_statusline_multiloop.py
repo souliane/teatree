@@ -2,8 +2,8 @@
 
 History:
 
-*   Pre-#1156 the statusline rendered a verbose ``loop-owner=THIS session ✓``
-    or ``loop-owner=unclaimed`` line plus the foreign-hijack RED line.
+*   Pre-#1156 the statusline rendered a verbose ``t3-master=THIS session ✓``
+    or ``t3-master=unclaimed`` line plus the foreign-hijack RED line.
 *   #1156 collapsed the dim doctrine into one line per LIVE LoopLease row
     (``loop:tick``, ``loop:owner``, …).
 *   A later refit replaced that per-loop dump with a single consolidated
@@ -80,14 +80,14 @@ class TestLiveLoopsAnchor:
 
     def test_per_loop_dump_format_gone(self) -> None:
         """The pre-refit per-loop dump (``loop:tick`` / ``loop:owner``) is gone."""
-        _make_lease("loop-owner", expires_in=timedelta(minutes=30), session_id="sess-A")
+        _make_lease("t3-master", expires_in=timedelta(minutes=30), session_id="sess-A")
         _make_lease("loop-tick", expires_in=timedelta(minutes=30), session_id="sess-A")
 
         lines = live_loops_anchor()
         joined = "\n".join(lines)
         # The verbose pre-#1156 lines are still gone.
-        assert "loop-owner=THIS session" not in joined, repr(joined)
-        assert "loop-owner=unclaimed" not in joined, repr(joined)
+        assert "t3-master=THIS session" not in joined, repr(joined)
+        assert "t3-master=unclaimed" not in joined, repr(joined)
         # The per-loop dump (``loop:tick`` / ``loop:owner``) is gone too.
         assert "loop:tick" not in joined, repr(joined)
         assert "loop:owner" not in joined, repr(joined)
@@ -99,7 +99,7 @@ class TestForeignHijackStillRed:
     """The #1073 foreign-hijack RED line is preserved through every refit."""
 
     def test_foreign_owner_still_emits_red_action_needed(self) -> None:
-        """A foreign session owning ``loop-owner`` still routes to action_needed."""
+        """A foreign session owning ``t3-master`` still routes to action_needed."""
         from teatree.core.managers import OwnershipStatus  # noqa: PLC0415
         from teatree.loop.statusline import loop_owner_anchor  # noqa: PLC0415
 
@@ -131,7 +131,7 @@ class TestPopulateLoopsAnchorIntegration:
         assert "tick" in joined, repr(joined)
         assert "self-improve" in joined, repr(joined)
         # Verbose dim owner lines must NOT appear.
-        assert "loop-owner=THIS session" not in joined, repr(joined)
-        assert "loop-owner=unclaimed" not in joined, repr(joined)
+        assert "t3-master=THIS session" not in joined, repr(joined)
+        assert "t3-master=unclaimed" not in joined, repr(joined)
         # Per-loop dump form also gone.
         assert "loop:tick" not in joined, repr(joined)

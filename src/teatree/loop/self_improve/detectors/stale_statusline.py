@@ -49,7 +49,7 @@ def _default_rerender() -> None:
     """Sentinel default for a directly-constructed detector — never the real heal.
 
     The detector lives in the ``domain`` layer; an actual re-render composes the
-    live-loop / open-PR / loop-owner anchors, which live in the ``orchestration``
+    live-loop / open-PR / t3-master anchors, which live in the ``orchestration``
     layer (``teatree.loop.phases.render.rerender_statusline``). Reaching up to it
     from here would invert the tach-enforced dependency DAG, so the orchestration
     caller injects the real seam as the action-ladder ``auto_fix_callable``

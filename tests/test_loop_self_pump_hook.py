@@ -113,7 +113,7 @@ class TestLoopSelfPump:
 
         reason = _decision(capsys)["reason"]
         # #2777 cutover: the self-pump fires the bare master `t3 loops tick`
-        # (claims loop-owner + loop-tick — behaviour-preserving vs the retired
+        # (claims t3-master + loop-tick — behaviour-preserving vs the retired
         # `t3 loop tick`), not the legacy fat-tick spelling.
         assert "T3_LOOP_SESSION_ID=owner-1 T3_LOOP_SESSION_PID=4242 t3 loops tick" in reason
 
@@ -129,7 +129,7 @@ class TestLoopSelfPump:
         assert result is not True  # idle: no block, session may end
 
     # #959: the self-pump is a SINGLETON bound to the one designated
-    # loop-owner session (the ``_OWNER_LOOP`` record set at SessionStart).
+    # t3-master session (the ``_OWNER_LOOP`` record set at SessionStart).
     # The WS4 "per-agent, decoupled from the tick-owner" decoupling leaked
     # the loop into every fresh/unrelated session: a brand-new blog-writing
     # session immediately started pumping ``t3 loop tick`` / ``claim-next``.
