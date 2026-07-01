@@ -75,7 +75,7 @@ def _scoped_jobs_builder(only: str) -> "Callable[[TickRequest, dt.datetime], lis
     """
 
     def builder(request: "TickRequest", started_at: dt.datetime) -> "list[_ScannerJob]":
-        from teatree.loops.master import build_loop_table_jobs  # noqa: PLC0415
+        from teatree.loops.loop_table import build_loop_table_jobs  # noqa: PLC0415
 
         return build_loop_table_jobs(_scanner_context(request), now=started_at, only=only)
 

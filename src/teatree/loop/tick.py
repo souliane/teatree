@@ -144,8 +144,8 @@ def run_tick(
     overlay name. *now* and *statusline_path* are test overrides; *colorize*
     defaults to ``True`` unless ``NO_COLOR`` is set. *jobs_builder* is the
     source of scanner jobs for the no-``scanners`` path: the ``loops_tick``
-    master tick command injects the DB ``Loop``-table fan-out
-    (:func:`teatree.loops.master.build_loop_table_jobs`) so each enabled,
+    per-loop command injects the DB ``Loop``-table fan-out
+    (:func:`teatree.loops.loop_table.build_loop_table_jobs`) so each enabled,
     due ``Loop`` row is the single source of which scanners run a live tick;
     the default falls back to :func:`build_default_jobs`. The seam keeps
     :mod:`teatree.loop` from importing :mod:`teatree.loops` up-stack.

@@ -1,4 +1,4 @@
-"""teatree.loops.master — DB ``Loop``-table-driven master fan-out (#1796).
+"""teatree.loops.loop_table — DB ``Loop``-table-driven master fan-out (#1796).
 
 The cutover gate: which loops fan out a tick is decided by the ``Loop`` rows
 (enabled + ``is_due``), not code cadence. Integration-first against the real DB;
@@ -15,7 +15,7 @@ from django.utils import timezone
 
 from teatree.core.models import Loop, LoopState, Prompt
 from teatree.loops.base import MiniLoop
-from teatree.loops.master import build_loop_table_jobs
+from teatree.loops.loop_table import build_loop_table_jobs
 
 if TYPE_CHECKING:
     from teatree.loop.job_identity import _ScannerJob
@@ -38,7 +38,7 @@ class TestBuildLoopTableJobs(django.test.TestCase):
         Loop.objects.create(name="m-a", delay_seconds=60, prompt=_prompt())  # never run -> due
         Loop.objects.create(name="m-b", delay_seconds=60, prompt=_prompt(), last_run_at=now)  # cooling -> not due
         Loop.objects.create(name="m-c", delay_seconds=60, prompt=_prompt(), enabled=False)  # due but disabled
-        with patch("teatree.loops.master.iter_loops", return_value=(_mini("m-a"), _mini("m-b"), _mini("m-c"))):
+        with patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("m-a"), _mini("m-b"), _mini("m-c"))):
             jobs = build_loop_table_jobs({}, now=now)
         assert "job-m-a" in jobs
         assert "job-m-b" not in jobs
@@ -47,13 +47,13 @@ class TestBuildLoopTableJobs(django.test.TestCase):
     def test_marks_last_run_for_dispatched_loop(self) -> None:
         now = timezone.now()
         Loop.objects.create(name="m-d", delay_seconds=60, prompt=_prompt())
-        with patch("teatree.loops.master.iter_loops", return_value=(_mini("m-d"),)):
+        with patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("m-d"),)):
             build_loop_table_jobs({}, now=now)
         assert Loop.objects.get(name="m-d").last_run_at == now
 
     def test_skips_registry_loop_with_no_row(self) -> None:
         now = timezone.now()
-        with patch("teatree.loops.master.iter_loops", return_value=(_mini("m-orphan"),)):
+        with patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("m-orphan"),)):
             jobs = build_loop_table_jobs({}, now=now)
         assert jobs == []
 
@@ -69,7 +69,7 @@ class TestBuildLoopTableJobs(django.test.TestCase):
             build_jobs=lambda **_: ["job-m-dream"],
             off_live_tick=True,
         )
-        with patch("teatree.loops.master.iter_loops", return_value=(off,)):
+        with patch("teatree.loops.loop_table.iter_loops", return_value=(off,)):
             jobs = build_loop_table_jobs({}, now=now)
         assert "job-m-dream" not in jobs
         assert jobs == []
@@ -83,7 +83,7 @@ class TestBuildLoopTableJobs(django.test.TestCase):
         now = timezone.now()
         Loop.objects.create(name="m-only", delay_seconds=60, prompt=_prompt())  # enabled + due
         Loop.objects.create(name="m-other", delay_seconds=60, prompt=_prompt())  # enabled + due
-        with patch("teatree.loops.master.iter_loops", return_value=(_mini("m-only"), _mini("m-other"))):
+        with patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("m-only"), _mini("m-other"))):
             jobs = build_loop_table_jobs({}, now=now, only="m-only")
         assert "job-m-only" in jobs
         assert "job-m-other" not in jobs
@@ -93,7 +93,7 @@ class TestBuildLoopTableJobs(django.test.TestCase):
     def test_only_filter_still_honours_enabled_and_due(self) -> None:
         now = timezone.now()
         Loop.objects.create(name="m-disabled", delay_seconds=60, prompt=_prompt(), enabled=False)
-        with patch("teatree.loops.master.iter_loops", return_value=(_mini("m-disabled"),)):
+        with patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("m-disabled"),)):
             jobs = build_loop_table_jobs({}, now=now, only="m-disabled")
         assert jobs == []
 
@@ -104,7 +104,7 @@ class TestBuildLoopTableJobs(django.test.TestCase):
         boom = MiniLoop(
             name="m-boom", default_cadence_seconds=60, build_jobs=lambda **_: (_ for _ in ()).throw(RuntimeError("x"))
         )
-        with patch("teatree.loops.master.iter_loops", return_value=(boom, _mini("m-ok"))):
+        with patch("teatree.loops.loop_table.iter_loops", return_value=(boom, _mini("m-ok"))):
             jobs = build_loop_table_jobs({}, now=now)
         assert "job-m-ok" in jobs
         # The anchor is now claimed atomically BEFORE build_jobs, so a loop that
@@ -134,7 +134,7 @@ class TestMasterHonoursLoopState(django.test.TestCase):
         now = timezone.now()
         Loop.objects.create(name="m-paused", delay_seconds=60, prompt=_prompt())
         LoopState.objects.pause("m-paused")
-        with patch("teatree.loops.master.iter_loops", return_value=(_mini("m-paused"),)):
+        with patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("m-paused"),)):
             jobs = build_loop_table_jobs({}, now=now)
         assert jobs == []
         assert Loop.objects.get(name="m-paused").last_run_at is None
@@ -143,7 +143,7 @@ class TestMasterHonoursLoopState(django.test.TestCase):
         now = timezone.now()
         Loop.objects.create(name="m-disabled-state", delay_seconds=60, prompt=_prompt())
         LoopState.objects.disable("m-disabled-state")
-        with patch("teatree.loops.master.iter_loops", return_value=(_mini("m-disabled-state"),)):
+        with patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("m-disabled-state"),)):
             jobs = build_loop_table_jobs({}, now=now)
         assert jobs == []
         assert Loop.objects.get(name="m-disabled-state").last_run_at is None
@@ -158,7 +158,7 @@ class TestMasterHonoursLoopState(django.test.TestCase):
         registry = (_mini("m-env-a"), _mini("m-env-b"))
         with (
             patch.dict("os.environ", {"T3_LOOPS_DISABLED": "all"}),
-            patch("teatree.loops.master.iter_loops", return_value=registry),
+            patch("teatree.loops.loop_table.iter_loops", return_value=registry),
         ):
             jobs = build_loop_table_jobs({}, now=now)
         assert "job-m-env-a" in jobs
@@ -174,7 +174,7 @@ class TestMasterHonoursLoopState(django.test.TestCase):
         registry = (_mini("m-named-off"), _mini("m-named-on"))
         with (
             patch.dict("os.environ", {"T3_LOOPS_DISABLED": "m-named-off"}),
-            patch("teatree.loops.master.iter_loops", return_value=registry),
+            patch("teatree.loops.loop_table.iter_loops", return_value=registry),
         ):
             jobs = build_loop_table_jobs({}, now=now)
         assert "job-m-named-off" in jobs
@@ -188,7 +188,7 @@ class TestMasterHonoursLoopState(django.test.TestCase):
         now = timezone.now()
         Loop.objects.create(name="m-anchor", delay_seconds=60, prompt=_prompt())
         LoopState.objects.pause("m-anchor")
-        with patch("teatree.loops.master.iter_loops", return_value=(_mini("m-anchor"),)):
+        with patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("m-anchor"),)):
             build_loop_table_jobs({}, now=now)
         assert Loop.objects.get(name="m-anchor").last_run_at is None
 
@@ -210,7 +210,7 @@ class TestMasterColumnIsLoadBearing(django.test.TestCase):
         now = timezone.now()
         Loop.objects.create(name="m-alias", delay_seconds=60, script="src/teatree/loops/m-target/loop.py")
         registry = (_mini("m-alias"), _mini("m-target"))
-        with patch("teatree.loops.master.iter_loops", return_value=registry):
+        with patch("teatree.loops.loop_table.iter_loops", return_value=registry):
             jobs = build_loop_table_jobs({}, now=now)
         assert "job-m-target" in jobs
         assert "job-m-alias" not in jobs
@@ -220,7 +220,7 @@ class TestMasterColumnIsLoadBearing(django.test.TestCase):
         # its own jobs.
         now = timezone.now()
         Loop.objects.create(name="m-self", delay_seconds=60, script="src/teatree/loops/m-self/loop.py")
-        with patch("teatree.loops.master.iter_loops", return_value=(_mini("m-self"),)):
+        with patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("m-self"),)):
             jobs = build_loop_table_jobs({}, now=now)
         assert "job-m-self" in jobs
 
@@ -234,8 +234,8 @@ class TestMasterColumnIsLoadBearing(django.test.TestCase):
         Loop.objects.create(name="m-good", delay_seconds=60, script="src/teatree/loops/m-good/loop.py")
         registry = (_mini("m-stale"), _mini("m-good"))
         with (
-            patch("teatree.loops.master.iter_loops", return_value=registry),
-            self.assertLogs("teatree.loops.master", level="ERROR") as logs,
+            patch("teatree.loops.loop_table.iter_loops", return_value=registry),
+            self.assertLogs("teatree.loops.loop_table", level="ERROR") as logs,
         ):
             jobs = build_loop_table_jobs({}, now=now)
         assert "job-m-good" in jobs
@@ -252,7 +252,7 @@ class TestMasterColumnIsLoadBearing(django.test.TestCase):
         # the column is read (prompt-backed) and the row's own loop fans out.
         now = timezone.now()
         Loop.objects.create(name="m-prompt", delay_seconds=60, prompt=_prompt())
-        with patch("teatree.loops.master.iter_loops", return_value=(_mini("m-prompt"),)):
+        with patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("m-prompt"),)):
             jobs = build_loop_table_jobs({}, now=now)
         assert "job-m-prompt" in jobs
 
@@ -320,12 +320,12 @@ class TestCadenceClaimIsAtomic(django.test.TestCase):
         def master_build_jobs(**_: object) -> list[str]:
             fired["n"] += 1
             if fired["n"] == 1:
-                with patch("teatree.loops.master.iter_loops", return_value=(per_loop_mini,)):
+                with patch("teatree.loops.loop_table.iter_loops", return_value=(per_loop_mini,)):
                     concurrent["jobs"] = build_loop_table_jobs({}, now=now, only="m-race")
             return ["job-m-race"]
 
         master_mini = MiniLoop(name="m-race", default_cadence_seconds=60, build_jobs=master_build_jobs)
-        with patch("teatree.loops.master.iter_loops", return_value=(master_mini,)):
+        with patch("teatree.loops.loop_table.iter_loops", return_value=(master_mini,)):
             master_jobs = build_loop_table_jobs({}, now=now, only=None)
 
         produced = ("job-m-race" in master_jobs) + ("job-m-race" in concurrent["jobs"])

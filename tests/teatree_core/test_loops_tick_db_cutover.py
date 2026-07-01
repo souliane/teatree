@@ -18,7 +18,7 @@ from django.utils import timezone
 
 from teatree.core.models import Loop, Prompt
 from teatree.loops.base import MiniLoop
-from teatree.loops.master import build_loop_table_jobs
+from teatree.loops.loop_table import build_loop_table_jobs
 
 
 def _mini(name: str) -> MiniLoop:
@@ -38,7 +38,7 @@ class TestLiveTickReadsLoopTable(django.test.TestCase):
         Loop.objects.create(name="ct-off", delay_seconds=60, prompt=_prompt(), enabled=False)
         from unittest.mock import patch  # noqa: PLC0415
 
-        with patch("teatree.loops.master.iter_loops", return_value=(_mini("ct-on"), _mini("ct-off"))):
+        with patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("ct-on"), _mini("ct-off"))):
             jobs = build_loop_table_jobs({}, now=now)
         assert "job-ct-on" in jobs
         assert "job-ct-off" not in jobs
@@ -50,7 +50,7 @@ class TestLiveTickReadsLoopTable(django.test.TestCase):
         Loop.objects.create(name="ct-b", delay_seconds=60, prompt=_prompt())
         from unittest.mock import patch  # noqa: PLC0415
 
-        with patch("teatree.loops.master.iter_loops", return_value=(_mini("ct-a"), _mini("ct-b"))):
+        with patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("ct-a"), _mini("ct-b"))):
             jobs = build_loop_table_jobs({}, now=now, only="ct-a")
         assert jobs == ["job-ct-a"]
 
@@ -67,7 +67,7 @@ class TestLiveTickReadsLoopTable(django.test.TestCase):
         Loop.objects.create(name="ct-bump", delay_seconds=60, prompt=_prompt())
         from unittest.mock import patch  # noqa: PLC0415
 
-        with patch("teatree.loops.master.iter_loops", return_value=(_mini("ct-bump"),)):
+        with patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("ct-bump"),)):
             build_loop_table_jobs({}, now=now)
         assert Loop.objects.get(name="ct-bump").last_run_at == now
 
@@ -78,7 +78,7 @@ class TestLiveTickReadsLoopTable(django.test.TestCase):
         )
         from unittest.mock import patch  # noqa: PLC0415
 
-        with patch("teatree.loops.master.iter_loops", return_value=(_mini("ct-cool"),)):
+        with patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("ct-cool"),)):
             jobs = build_loop_table_jobs({}, now=now)
         assert jobs == []
 
@@ -104,7 +104,7 @@ class TestTickPreservesOperationalPause(django.test.TestCase):
         for name in ("p-a", "p-b", "p-c"):
             Loop.objects.create(name=name, delay_seconds=60, prompt=_prompt(), enabled=False)
         registry = (_mini("p-a"), _mini("p-b"), _mini("p-c"))
-        with patch("teatree.loops.master.iter_loops", return_value=registry):
+        with patch("teatree.loops.loop_table.iter_loops", return_value=registry):
             jobs = build_loop_table_jobs({}, now=now)
         assert jobs == []
         for name in ("p-a", "p-b", "p-c"):
