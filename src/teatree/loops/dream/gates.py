@@ -52,7 +52,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from teatree.loops.dream import reindex
+from teatree.loops.dream import decay, reindex
 
 if TYPE_CHECKING:
     from teatree.loops.dream.decay import ArchivedMemory
@@ -523,6 +523,7 @@ def run_acceptance_pass(  # noqa: PLR0913 — kwargs-only §4 pass inputs; the c
     clusters_recorded: int = 0,
     maintenance_performed: bool = False,
     persist: bool = True,
+    archive_dir: Path | None = None,
     compliance_remediations: Sequence[ComplianceRemediationView] | None = None,
 ) -> DreamQaReport:
     """Run the §4 acceptance gates for one memory dir and persist the probe corpus.
@@ -531,8 +532,8 @@ def run_acceptance_pass(  # noqa: PLR0913 — kwargs-only §4 pass inputs; the c
     BEFORE snapshot, reads the recorded prior-session pass-rate as the monotonicity
     / interference baseline, computes the durable-home set for the consolidation
     gate as the pruned index lines whose lesson is still findable in the AFTER
-    snapshot (transfer-before-prune) OR whose pointer targets a file archived this
-    pass (a restorable durable home, #2723), threads the caller's *maintenance_performed*
+    snapshot (transfer-before-prune) OR whose pointer targets a file in the durable
+    ``archive/`` cold store (*archive_dir*, this/prior pass, #2723), threads the caller's *maintenance_performed*
     signal (file-side phases did real cross-link / re-index / decay work) into the
     consolidation gate so a quiet 0-cluster maintenance pass still counts as
     consolidation, runs all seven gates, and — unless *persist* is
@@ -547,8 +548,8 @@ def run_acceptance_pass(  # noqa: PLR0913 — kwargs-only §4 pass inputs; the c
     prior_rate, had_prior = _prior_pass_rate(overlay)
     now_rate = _pass_rate(probes, snapshot_after, None)
     pruned_lines = snapshot_before.index_lines - snapshot_after.index_lines
-    archived_names = {a.source.name for a in archived}
-    homed_index_lines = {ln for ln in pruned_lines if snapshot_after.contains(ln) or _line_targets(ln, archived_names)}
+    homed_names = {a.source.name for a in archived} | decay.cold_archive_names(archive_dir)
+    homed_index_lines = {ln for ln in pruned_lines if snapshot_after.contains(ln) or _line_targets(ln, homed_names)}
     remediations = compliance_remediations if compliance_remediations is not None else _compliance_remediations(overlay)
     report = evaluate_gates(
         snapshot_before=snapshot_before,

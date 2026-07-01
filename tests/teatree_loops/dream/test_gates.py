@@ -576,6 +576,58 @@ class TestRunAcceptancePass(TestCase):
         )
         assert report.passed, [g.detail for g in report.gate_results if not g.passed]
 
+    def test_pruned_pointer_to_a_cold_archived_file_is_homed(self) -> None:
+        # A memory archived in a PRIOR pass lives in archive/ (lesson preserved). The
+        # before-index still pointed at it; this pass re-indexed and dropped the stale
+        # pointer. `archived` is EMPTY (nothing archived THIS pass), so the cold-store
+        # residency (archive_dir) is what homes the pruned line — a confirmed durable
+        # home, not a loss. Without the archive_dir homing the pass falsely failed gate
+        # (c) and the success marker was starved on every quiet maintenance night.
+        d = Path(tempfile.mkdtemp()) / "memory"
+        (d / "archive").mkdir(parents=True)
+        (d / "archive" / "feedback_gamma.md").write_text("archived gamma body", encoding="utf-8")
+        before = _snapshot(
+            {"feedback_live.md": "x" * 50},
+            index="- feedback_live.md — live\n- feedback_gamma.md — gamma archived a prior pass\n",
+        )
+        after = _snapshot({"feedback_live.md": "x" * 50}, index="- feedback_live.md — live\n")
+        report = run_acceptance_pass(
+            before,
+            after,
+            overlay="acme",
+            archived=[],
+            schema_before=0,
+            schema_after=0,
+            maintenance_performed=True,
+            archive_dir=d / "archive",
+        )
+        consolidation = next(g for g in report.gate_results if g.name == "consolidation")
+        assert consolidation.passed, consolidation.detail
+
+    def test_pruned_pointer_to_a_genuinely_lost_file_stays_unhomed(self) -> None:
+        # Teeth: the same shape but feedback_gamma.md is NOT in the cold store (a real
+        # deletion, lesson nowhere). The consolidation gate must STILL fail — the fix
+        # homes only files actually preserved in archive/, never a genuine loss.
+        d = Path(tempfile.mkdtemp()) / "memory"
+        (d / "archive").mkdir(parents=True)  # cold store exists but is EMPTY
+        before = _snapshot(
+            {"feedback_live.md": "x" * 50},
+            index="- feedback_live.md — live\n- feedback_gamma.md — gamma lost with no durable home\n",
+        )
+        after = _snapshot({"feedback_live.md": "x" * 50}, index="- feedback_live.md — live\n")
+        report = run_acceptance_pass(
+            before,
+            after,
+            overlay="acme",
+            archived=[],
+            schema_before=0,
+            schema_after=0,
+            maintenance_performed=True,
+            archive_dir=d / "archive",
+        )
+        consolidation = next(g for g in report.gate_results if g.name == "consolidation")
+        assert not consolidation.passed  # a real loss is never laundered into a pass
+
 
 class TestReportRender(SimpleTestCase):
     def test_render_names_each_failing_gate(self) -> None:

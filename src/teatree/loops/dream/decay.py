@@ -69,7 +69,7 @@ from typing import cast
 #: regardless of references (a fresh lesson is never stale). Generous on purpose.
 DEFAULT_RETENTION_DAYS = 30
 
-_ARCHIVE_DIRNAME = "archive"
+ARCHIVE_DIRNAME = "archive"
 _INDEX_NAME = "MEMORY.md"
 #: The COLD archive index (#2723), written by this phase in the MAIN memory dir so the
 #: gate snapshot globs it as a memory body (an archived entry's signature stays findable
@@ -221,6 +221,22 @@ def ledger_durable_home_resolver() -> HomeResolver:
         return any(target and target in destination for destination in destinations for target in targets)
 
     return _has_home
+
+
+def cold_archive_names(archive_dir: Path | None) -> set[str]:
+    """Memory filenames preserved in the durable ``archive/`` cold store.
+
+    A file MOVED to ``archive/`` — this pass, a PRIOR pass, or absorbed by the merge
+    phase — keeps its full body there and its signature in ``MEMORY_ARCHIVE.md``: a
+    confirmed durable home, exactly the §2 transfer-before-prune destination (#2723).
+    The §4 consolidation gate homes a pruned hot-index pointer at such a file against
+    this set, so a stale pointer to an already-archived memory is not flagged a loss —
+    unlike a pointer at a genuinely deleted memory, which has no cold-store entry. A
+    ``None`` / missing dir is the empty set (no cold home is known).
+    """
+    if archive_dir is None or not archive_dir.is_dir():
+        return set()
+    return {md.name for md in archive_dir.glob("*.md")}
 
 
 def _source_path_strings(source_files: object) -> set[str]:
@@ -547,7 +563,7 @@ def decay_memories(
     index_path = memory_dir / _INDEX_NAME
     index_text = index_path.read_text(encoding="utf-8") if index_path.is_file() else ""
     retention = timedelta(days=settings.retention_days)
-    archive_dir = memory_dir / _ARCHIVE_DIRNAME
+    archive_dir = memory_dir / ARCHIVE_DIRNAME
 
     home_tier = list(_stale_candidates(files, index_text, moment, retention, resolver))
     archived: list[ArchivedMemory] = [
@@ -572,12 +588,14 @@ def decay_memories(
 
 
 __all__ = [
+    "ARCHIVE_DIRNAME",
     "DEFAULT_RETENTION_DAYS",
     "ArchivedMemory",
     "BudgetTier",
     "DecayPolicy",
     "DecayResult",
     "HomeResolver",
+    "cold_archive_names",
     "decay_memories",
     "ledger_durable_home_resolver",
 ]
