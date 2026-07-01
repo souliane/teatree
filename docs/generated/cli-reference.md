@@ -18,6 +18,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 commands.                                                    │
 │ cost            Show cycle-to-date SDK-equivalent spend vs the monthly       │
 │                 credit.                                                      │
+│ tokens          Show per-account Anthropic 5h / weekly token utilization +   │
+│                 status.                                                      │
 │ speak           Read text aloud through the local speakers per  (no-op       │
 │                 unless local = all).                                         │
 │ ui              Browse and run every t3 command in an interactive terminal   │
@@ -159,6 +161,19 @@ Usage: t3 sessions [OPTIONS]
 Usage: t3 cost [OPTIONS]
 
  Show cycle-to-date SDK-equivalent spend vs the monthly credit.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit the structured report as JSON.                          │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 tokens`
+
+```
+Usage: t3 tokens [OPTIONS]
+
+ Show per-account Anthropic 5h / weekly token utilization + status.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --json          Emit the structured report as JSON.                          │

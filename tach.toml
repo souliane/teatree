@@ -69,6 +69,11 @@ layer = "domain"
 depends_on = ["teatree.core.models", "teatree.llm"]
 
 [[modules]]
+path = "teatree.token_report"
+layer = "domain"
+depends_on = ["teatree.core.models", "teatree.credential_config", "teatree.llm", "teatree.utils"]
+
+[[modules]]
 path = "teatree.teams"
 layer = "domain"
 depends_on = ["teatree.core", "teatree.core.models", "teatree.core.loop_lease_manager", "teatree.config", "teatree.agents", "teatree.skill_support", "teatree.utils"]
@@ -385,6 +390,7 @@ depends_on = [
   "teatree.loops",
   "teatree.messaging",
   "teatree.paths",
+  "teatree.token_report",
   "teatree.types",
   "teatree.utils",
   "teatree.visual_qa"

@@ -21,6 +21,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 commands.                                                    │
 │ cost            Show cycle-to-date SDK-equivalent spend vs the monthly       │
 │                 credit.                                                      │
+│ tokens          Show per-account Anthropic 5h / weekly token utilization +   │
+│                 status.                                                      │
 │ speak           Read text aloud through the local speakers per  (no-op       │
 │                 unless local = all).                                         │
 │ ui              Browse and run every t3 command in an interactive terminal   │

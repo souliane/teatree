@@ -54,7 +54,7 @@ class TokenKind(StrEnum):
     API_KEY = "api_key"
 
 
-_LIST_SETTING: dict[TokenKind, str] = {
+LIST_SETTING: dict[TokenKind, str] = {
     TokenKind.OAUTH: "anthropic_oauth_pass_paths",
     TokenKind.API_KEY: "anthropic_api_key_pass_paths",
 }
@@ -147,12 +147,12 @@ class PassPathSelector:
             snapshot = reader(token, is_oauth=kind is TokenKind.OAUTH)
         except RateLimitProbeError:
             return None
-        return AnthropicTokenUsage.objects.record(pass_path, _reading_from(snapshot), now=now)
+        return AnthropicTokenUsage.objects.record(pass_path, reading_from(snapshot), now=now)
 
     @staticmethod
     def _configured_paths(kind: TokenKind, scope: str) -> list[str]:
         """The candidate list for *kind*, overlay scope then global (overlay wins whole)."""
-        setting = _LIST_SETTING[kind]
+        setting = LIST_SETTING[kind]
         stored = ConfigSetting.objects.get_effective(setting, scope=scope)
         if not stored and scope != GLOBAL_SCOPE:
             stored = ConfigSetting.objects.get_effective(setting)
@@ -161,7 +161,7 @@ class PassPathSelector:
     @staticmethod
     def _all_configured_paths(kind: TokenKind) -> list[str]:
         """Every configured ``pass`` entry for *kind* across all scopes, order-preserving deduped."""
-        setting = _LIST_SETTING[kind]
+        setting = LIST_SETTING[kind]
         seen: dict[str, None] = {}
         for stored in ConfigSetting.objects.filter(key=setting).values_list("value", flat=True):
             for path in _as_path_list(stored):
@@ -177,7 +177,7 @@ class PassPathSelector:
         return f"all configured Anthropic {kind.value} accounts are exhausted{when}"
 
 
-def _reading_from(snapshot: RateLimitSnapshot) -> TokenHealthReading:
+def reading_from(snapshot: RateLimitSnapshot) -> TokenHealthReading:
     """Translate a foundation ``RateLimitSnapshot`` into the domain cache's value object."""
     return TokenHealthReading(
         organization_id=snapshot.organization_id,

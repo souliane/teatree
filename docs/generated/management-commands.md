@@ -408,6 +408,10 @@ The ``ticket rubric-set`` / ``rubric-grade`` commands, mounted via MRO inheritan
 
 Generate Ticket.short_description (#1156).
 
+## `tokens`
+
+Show per-account Anthropic 5h / weekly token utilization + status.
+
 ## `tool`
 
 | Subcommand | Description |
