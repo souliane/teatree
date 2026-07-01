@@ -1,11 +1,16 @@
 # test-path: cross-cutting — tests hooks/scripts/loop_registrations.py (hooks/); no src/teatree/ mirror.
-"""Owner session registers one native Claude ``/loop`` per enabled DB Loop (#2650).
+"""Owner session auto-registers the background loops at session start (#2650).
 
-The owner session's ``UserPromptSubmit`` handler emits ONE ``register_cron``
-directive per ENABLED ``Loop`` row (replacing the single fat-tick cron); a
-non-owner / fresh session and a no-enabled-loops owner emit nothing. The seam
-``teatree.loops.claude_specs`` is the single source of truth, shared with the
-``/t3:loops`` skill, so the hook directives and the CLI affordance agree.
+The owner session's ``UserPromptSubmit`` handler emits two families: ONE
+``register_cron`` directive per ENABLED ``Loop`` row (DB loops) AND one
+``/loop <duration>`` directive per always-on reactive infra slot (Slack-answer,
+self-improve, drain-queue). A non-owner / fresh session emits nothing; an owner
+with NO enabled DB loops still auto-registers the three reactive slots — they have
+no DB row and no master tick to piggyback on, so the owner drives them directly.
+The seams ``teatree.loops.claude_specs`` (DB loops) and
+``teatree.loop.loop_cadences`` (reactive slots) are the single sources of truth,
+shared with the ``/t3:loops`` skill and the ``t3 loop <slot> start`` CLI, so the
+hook directives and the CLI affordances agree.
 """
 
 import contextlib
@@ -53,17 +58,29 @@ class TestEmitLoopRegistrations:
         assert "t3-loop-inbox" in text
         assert "t3-loop-ship" in text
 
-    def test_no_enabled_loops_emits_nothing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_no_db_loops_still_auto_registers_the_three_reactive_slots(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # No enabled DB loop, but the three always-on reactive slots have no DB
+        # row of their own — the owner registers each as its own ``/loop`` (#2650),
+        # so a fresh owner session with an empty Loop table still drives them.
         monkeypatch.setattr(loop_registrations, "_enabled_loop_specs", list)
         out = io.StringIO()
         emitted = emit_loop_registrations(out)
-        assert emitted is False
-        assert out.getvalue() == ""
+        text = out.getvalue()
 
-    def test_fail_open_silent_when_seam_unavailable(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # The seam accessor swallows errors and returns []; the public entry
-        # point then stays silent — never an exception into the fast hook.
+        assert emitted is True
+        # No DB loops => no structured ``register_cron`` directive, only the
+        # reactive ``/loop`` prose.
+        assert "hookSpecificOutput" not in text
+        assert "t3 loop slack-answer run" in text
+        assert "t3 loop self-improve run --tier cheap" in text
+        assert "t3 loop drain-queue run" in text
+
+    def test_fail_open_silent_when_both_seams_unavailable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Each seam accessor swallows errors and returns []; with NEITHER a DB
+        # loop NOR a resolvable reactive slot, the public entry point stays silent
+        # — never an exception into the fast hook.
         monkeypatch.setattr(loop_registrations, "_enabled_loop_specs", list)
+        monkeypatch.setattr(loop_registrations, "_reactive_slot_directives", list)
         out = io.StringIO()
         assert emit_loop_registrations(out) is False
         assert out.getvalue() == ""
@@ -113,12 +130,26 @@ class TestOwnerSessionEmitsPerLoop:
         loops = directive["hookSpecificOutput"]["loops"]
         assert [entry["slot_id"] for entry in loops] == ["t3-loop-inbox", "t3-loop-ship"]
 
-    def test_owner_with_no_enabled_loops_emits_nothing(
+    def test_owner_with_no_db_loops_still_auto_registers_the_three_reactive_slots(
         self, owner_session: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
+        """A FRESH owner with an empty Loop table auto-registers all three reactive slots (#2650).
+
+        This is the merge gate for master-tick removal: with no master tick to
+        piggyback the reactive cycles onto, the owner bootstrap must drive
+        Slack-answer / self-improve / drain-queue itself, each as its own
+        ``/loop``.  Runs the REAL ``teatree.loop.loop_cadences`` seam end-to-end.
+        """
         monkeypatch.setattr(loop_registrations, "_enabled_loop_specs", list)
         router.handle_enforce_loop_on_prompt({"session_id": owner_session})
-        assert capsys.readouterr().out == ""
+        out = capsys.readouterr().out
+
+        assert "t3 loop slack-answer run" in out
+        assert "t3 loop self-improve run --tier cheap" in out
+        assert "t3 loop drain-queue run" in out
+        # Sub-minute cadence => the ``/loop <duration>`` form, never a cron directive.
+        assert "/loop " in out
+        assert "hookSpecificOutput" not in out
 
     def test_owner_emits_when_tick_meta_fresh_but_session_has_no_cron(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -283,3 +314,21 @@ class TestSeamDrivesDirectivesFromTheDb(django.test.TestCase):
         slot_ids = {entry["slot_id"] for entry in directives}
         assert "t3-loop-hook-on" in slot_ids
         assert "t3-loop-hook-off" not in slot_ids
+
+
+class TestReactiveSlotSeam:
+    """The reactive ``/loop`` directives resolve end-to-end from the real seam (#2650).
+
+    ``teatree.loop.loop_cadences.reactive_slot_directives`` is a pure ``os.environ``
+    read (no DB), so the three always-on infra loops resolve even when the DB is
+    unreachable — only the DB-loop directives would fall away.
+    """
+
+    def test_real_seam_yields_the_three_reactive_loop_directives(self) -> None:
+        directives = loop_registrations._reactive_slot_directives()
+        blob = "\n".join(directives)
+        assert len(directives) == 3
+        assert all(directive.startswith("/loop ") for directive in directives)
+        assert "t3 loop slack-answer run" in blob
+        assert "t3 loop self-improve run --tier cheap" in blob
+        assert "t3 loop drain-queue run" in blob

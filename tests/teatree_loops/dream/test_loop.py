@@ -36,7 +36,7 @@ from teatree.loops.dream.loop import (
     propose_evals_enabled,
     reindex_enabled,
 )
-from teatree.loops.master import build_loop_table_jobs
+from teatree.loops.loop_table import build_loop_table_jobs
 from teatree.loops.registry import iter_loops
 
 NOW = dt.datetime(2026, 6, 11, 4, tzinfo=dt.UTC)

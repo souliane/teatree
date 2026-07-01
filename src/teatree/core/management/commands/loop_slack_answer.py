@@ -6,9 +6,9 @@ a fast regular tick or a self-improve cycle, refuses to run when this
 session is not the loop owner, runs :func:`run_slack_answer_cycle`, and
 prints a one-line summary (or the JSON report when ``--json`` is passed).
 
-This is the third ``/loop`` slot: a tight-cadence reactive complement to
-the 720s fat tick — a quick ack / status question gets a reply in
-seconds at near-zero token cost, instead of waiting a full tick.
+This is a reactive ``/loop`` slot: a tight-cadence complement to the slower
+per-loop ticks — a quick ack / status question gets a reply in seconds at
+near-zero token cost, instead of waiting a full loop cadence.
 """
 
 import datetime as dt

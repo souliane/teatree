@@ -264,7 +264,7 @@ class TestStatuslineHook:
         Even with a populated ``.crons`` state file and a ``tick-meta.json``
         next-tick epoch present, the header this hook builds must carry NO
         ``loops:`` / ``tick→`` / wakeup fragment. The single loop line is
-        rendered by the fat loop into the zones file (``live_loops_anchor``)
+        rendered by the loop tick into the zones file (``live_loops_anchor``)
         and cat'd verbatim — duplicating it in the header is the pollution
         the dashboard rework removed.
         """

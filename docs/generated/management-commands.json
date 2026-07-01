@@ -354,6 +354,11 @@
       ]
     },
     {
+      "help": "Run one reactive DB-queue drain cycle (expire stale READY jobs, then drain a bounded batch).",
+      "name": "loop_drain_queue",
+      "subcommands": []
+    },
+    {
       "help": "Print LIVE loop status computed from the DB (read-only; #1744).",
       "name": "loop_list",
       "subcommands": []
@@ -417,12 +422,17 @@
       ]
     },
     {
+      "help": "Run one user-manual full-scan tick: scan every overlay once, dispatch, render the statusline.",
+      "name": "loop_tick",
+      "subcommands": []
+    },
+    {
       "help": "List DB-configured autonomous loops (read-only; #1796).",
       "name": "loops_list",
       "subcommands": []
     },
     {
-      "help": "Run one master tick: run every enabled, due loop (DB-configured); render statusline.",
+      "help": "Run ONE enabled, due DB Loop by name (--loop) \u2014 the per-loop primitive each native Claude `/loop` fires.",
       "name": "loops_tick",
       "subcommands": []
     },

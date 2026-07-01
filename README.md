@@ -393,8 +393,9 @@ reads, so no overlay context is needed.
 
 ### 2. Loop & Statusline
 
-A long-running `/loop` slot in the interactive Claude Code session drives the
-day. Every ~12 minutes the loop runs `t3 loop tick`, which fans out to
+A set of long-running `/loop` slots in the interactive Claude Code session drives
+the day — one `/loop` per enabled DB `Loop` row (#2650), each firing
+`t3 loops tick --loop <name>` on its own cadence. Those ticks fan out to
 scanners that watch assigned issues, open PRs, PRs assigned for review, Slack
 mentions, the Notion → GitLab bridge, and the local task queue. Findings render
 to `${XDG_DATA_HOME:-~/.local/share}/teatree/statusline.txt` (three zones:
@@ -403,13 +404,13 @@ that file in <10ms, so live status sits at the top of every session without
 polling.
 
 ```bash
-# Spawn a Claude Code session with the loop pre-registered:
+# Spawn the loop-owner session (registers one /loop per enabled loop):
 t3 loop start
 
-# Or, from inside an existing session, register manually:
-/loop 12m !t3 loop tick
+# Or, from inside an existing session, register one loop's /loop manually:
+/loop 12m Run `t3 loops tick --loop dispatch`.
 
-# Out of band, run one tick or read the last-rendered statusline:
+# Out of band, run one by-hand full-scan tick or read the last-rendered statusline:
 t3 loop tick
 t3 loop status
 
@@ -588,7 +589,7 @@ graph LR
 | `e2e-review` | Reviewer-side quality gate for Playwright end-to-end specs. Load when reviewing a new or changed E2E test, deciding whether a spec is ready to land, or adopting an outside Playwright suite. Judges specs against Playwright's published best practices — user-visible behaviour over implementation, resilient role/label/test-id locators, web-first auto-retrying assertions instead of hard waits, per-test isolation, page-object structure, and runnable evidence — and tells the implementer what to fix before approval. |
 | `followup` | Daily follow-up — batch process new tickets, check/advance ticket statuses, remind about PRs waiting for review |
 | `handover` | Use when the user wants to hand all current work from one Claude session to another (or to a not-yet-existing session) with a single command, or to transfer an in-flight TeaTree task from Claude to another runtime, or asks whether it is time to switch because Claude usage is getting high. |
-| `loops` | Show t3 loop status and trigger DB-configured loops — which loops are running vs stalled, the cadence/next-tick of each, loop ownership, and how to trigger a master tick |
+| `loops` | Show t3 loop status and trigger DB-configured loops — which loops are running vs stalled, the cadence/next-tick of each, loop ownership, and how to trigger a per-loop tick |
 | `next` | Wrap up the current session — retro, structured result, pipeline handoff. |
 | `platforms` | Platform-specific API recipes for GitLab, GitHub, Slack, and X (Twitter). Auto-loaded as a dependency by skills that interact with these platforms. |
 | `prompts` | Trigger and manage reusable prompts — list the prompts in the DB, render one by name with its templated params, and point to the admin for authoring + version history |
@@ -712,7 +713,7 @@ path = "~/workspace/my-overlay"
 | `privacy` | `""` | Named privacy-scan profile applied before pushes |
 | `contribute` | `false` | Allow `t3:retro` to write fixes into core skills |
 | `excluded_skills` | `[]` | Skills excluded on top of the built-in exclusions |
-| `loop_cadence_seconds` | `720` | Seconds between `t3 loop tick` runs |
+| `loop_cadence_seconds` | `720` | Default cadence (seconds) for a loop's ticks |
 | `require_human_approval_to_merge` | `true` | In `auto` mode, merge still needs a 👍 / `/merge` |
 | `require_human_approval_to_answer` | `true` | `t3:answerer` drafts a reply and DMs for approval |
 | `agent_signature` | `false` | Whether posts made on your behalf carry an AI signature |

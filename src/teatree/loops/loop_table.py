@@ -1,6 +1,6 @@
-"""Master tick fan-out — dispatch each row via its OWN load-bearing column (#1796, #2513, #2584).
+"""Loop-table fan-out — dispatch each row via its OWN load-bearing column (#1796, #2513, #2584).
 
-The cutover from the fat code-cadence tick: the master no longer consults a
+The cutover from the code-cadence tick: the fan-out no longer consults a
 code-cadence ledger to decide whether a mini-loop should fire — the DB ``Loop``
 row carries cadence + the enable toggle, and ``Loop.last_run_at`` is the single
 cadence ledger. #2584 closes the gap the #2513 cutover opened: a loop runs this
@@ -16,7 +16,7 @@ mirror resolve through ``teatree.loop.loop_state_db.loop_enabled``, so no
 enable-decision site drifts into a tier-subset.
 
 **The ``script``/``prompt`` column is LOAD-BEARING (#2513 regression fix).** The
-master no longer selects an admitted row's behaviour by a name-only registry
+fan-out no longer selects an admitted row's behaviour by a name-only registry
 lookup (the regression that left the DB ``script`` column dead). For each admitted
 row it READS the column: a **script** row's ``script`` is resolved to the loop's
 OWN name (:func:`teatree.loops.run.parse_script_loop_name`) and THAT loop's
@@ -31,15 +31,15 @@ NEVER picked up here — the live tick must not invoke its ``build_jobs`` or bum
 its ``last_run_at``; it is driven by its own low-frequency cron. The
 ``LoopsConfig.is_enabled`` check runs BEFORE the cadence claim so a held loop is
 neither dispatched nor cadence-bumped — its anchor is preserved, not silently
-consumed. The master then ATOMICALLY claims an admitted loop's ``last_run_at``
+consumed. The fan-out then ATOMICALLY claims an admitted loop's ``last_run_at``
 (a compare-and-swap on the anchor it read, :meth:`LoopManager.mark_run_if_unchanged`)
-BEFORE building its jobs, so a master tick and a per-loop tick that read the same
-anchor cannot both drive the loop — exactly one wins the claim and dispatches.
+BEFORE building its jobs, so two ticks that read the same anchor cannot both
+drive the loop — exactly one wins the claim and dispatches.
 
-This is the ``jobs_builder`` the master tick (``t3 loops tick``) injects into the
-shared :func:`teatree.loop.tick.run_tick` pipeline, so reap + scan + act + render
-are reused unchanged — only the gate (which loops run, on whose cadence) moves
-from code into the DB rows + the unified verdict.
+This is the ``jobs_builder`` the per-loop tick (``t3 loops tick --loop <name>``)
+injects into the shared :func:`teatree.loop.tick.run_tick` pipeline, so reap +
+scan + act + render are reused unchanged — only the gate (which loops run, on
+whose cadence) moves from code into the DB rows + the unified verdict.
 """
 
 import datetime as dt
@@ -64,7 +64,7 @@ def _resolve_dispatch_loop(row: "Loop", registry_by_name: dict[str, MiniLoop]) -
     looked up in the per-tick registry; a stale/shared ``script`` (not the
     per-loop module shape) raises
     :class:`teatree.loops.run.UnresolvableScriptError` LOUDLY, and a name with no
-    registry entry raises ``KeyError`` — both surface as a loud failure the master
+    registry entry raises ``KeyError`` — both surface as a loud failure the fan-out
     logs and skips, never a silent no-op. A **prompt** row dispatches its own
     registered mini-loop.
     """
@@ -94,16 +94,16 @@ def build_loop_table_jobs(
 
     Each admitted row's cadence anchor is claimed atomically
     (:meth:`LoopManager.mark_run_if_unchanged`, a CAS on the ``last_run_at`` the
-    row was read with) BEFORE its jobs are built, so a master tick and a per-loop
-    tick that read the same anchor never both drive the loop — the loser's CAS
-    matches 0 rows and it skips. The dispatch target is then read from the row's
-    OWN ``script``/``prompt`` column (#2513): a script row's ``script`` resolves
-    to the loop it names, a prompt row dispatches its own loop. A row whose
-    ``script`` does not resolve to a real registered loop module raises — that one
-    loop is logged and skipped (never aborts the master tick, never a silent
-    no-op). Because the anchor is claimed before ``build_jobs``, a row that wins
-    the claim but then raises has already advanced its anchor (it is simply not
-    re-driven until its cadence elapses again).
+    row was read with) BEFORE its jobs are built, so two ticks that read the same
+    anchor never both drive the loop — the loser's CAS matches 0 rows and it
+    skips. The dispatch target is then read from the row's OWN ``script``/``prompt``
+    column (#2513): a script row's ``script`` resolves to the loop it names, a
+    prompt row dispatches its own loop. A row whose ``script`` does not resolve to
+    a real registered loop module raises — that one loop is logged and skipped
+    (never aborts the tick, never a silent no-op). Because the anchor is claimed
+    before ``build_jobs``, a row that wins the claim but then raises has already
+    advanced its anchor (it is simply not re-driven until its cadence elapses
+    again).
     """
     from teatree.core.models import Loop  # noqa: PLC0415
     from teatree.loops.config import LoopsConfig  # noqa: PLC0415
@@ -123,12 +123,12 @@ def build_loop_table_jobs(
             continue
         if not config.is_enabled(loop):
             continue
-        # Atomically claim the cadence anchor BEFORE building jobs so a master
-        # tick and a per-loop tick that read the same ``last_run_at`` cannot both
-        # drive the loop (lost-update double-drive). The loser's CAS matches 0
-        # rows and it skips. The anchor advances ahead of ``build_jobs`` — benign
-        # for a raising loop (it is not re-driven until its cadence elapses again),
-        # the price of atomicity.
+        # Atomically claim the cadence anchor BEFORE building jobs so two ticks
+        # that read the same ``last_run_at`` cannot both drive the loop
+        # (lost-update double-drive). The loser's CAS matches 0 rows and it skips.
+        # The anchor advances ahead of ``build_jobs`` — benign for a raising loop
+        # (it is not re-driven until its cadence elapses again), the price of
+        # atomicity.
         if not Loop.objects.mark_run_if_unchanged(loop.name, previous_last_run_at=row.last_run_at, now=now):
             continue
         try:

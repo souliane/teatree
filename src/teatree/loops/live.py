@@ -176,7 +176,7 @@ def _mini_entries() -> tuple[LoopStatusEntry, ...]:
     + code-cadence ledger). One read here re-points BOTH the statusline and
     ``t3 loop list`` since both consume :func:`build_report`.
 
-    ``held`` is read from the ``LoopState`` control tier the master tick gates on
+    ``held`` is read from the ``LoopState`` control tier the loop tick gates on
     (``loop_enabled`` = ``Loop.enabled`` AND not :func:`loop_held_in_db`), so a
     PAUSED loop — which keeps ``Loop.enabled=True`` and a live cadence anchor — is
     surfaced as held rather than masquerading as a running, counting-down loop.

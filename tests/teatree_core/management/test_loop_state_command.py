@@ -105,7 +105,7 @@ class TestLoopStateSetsLoopRowEnabled(TestCase):
     The #2584 unified verdict gates a loop on BOTH ``Loop.enabled`` AND the
     ``LoopState`` control plane. Writing only the ``LoopState`` kill-switch left
     ``Loop.enabled`` stale, so ``t3 loop enable <name>`` reported success while
-    the master tick's ``not row.enabled`` gate kept skipping the loop. These pin
+    the loop tick's ``not row.enabled`` gate kept skipping the loop. These pin
     both columns moving together.
     """
 

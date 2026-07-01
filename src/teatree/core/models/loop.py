@@ -11,9 +11,10 @@ sub-agent dispatch, ``description`` is human context, and ``overlay`` names the
 backend the loop runs against (generically — the stored value is a backend name,
 not a hard-coded overlay).
 
-Every loop is autonomous — its own row, its own cadence. There is no single fat
-main tick: the master session (#1796) runs every enabled loop on its own
-schedule. Cadence is expressed three ways: ``delay_seconds`` is a fixed interval
+Every loop is autonomous — its own row, its own cadence. There is no single
+shared tick (#2650): each enabled loop runs on its own schedule as its own
+native Claude ``/loop`` firing ``t3 loops tick --loop <name>``. Cadence is
+expressed three ways: ``delay_seconds`` is a fixed interval
 between runs (e.g. ``inbox`` every 60s); ``daily_at`` is a once-per-day local
 time (e.g. ``news`` at 08:00, ``dream`` at night) that overrides the interval,
 making the loop due once per day on or after that wall-clock time; with neither
@@ -32,10 +33,10 @@ from django.utils import timezone
 
 
 class LoopManager(models.Manager["Loop"]):
-    """Read/transition surface the master uses to drive the autonomous loops."""
+    """Read/transition surface each loop tick uses to drive the autonomous loops."""
 
     def enabled(self) -> "models.QuerySet[Loop]":
-        """The enabled loops — the candidate set the master considers each pass."""
+        """The enabled loops — the candidate set the loop-table fan-out considers each pass."""
         return self.filter(enabled=True)
 
     def due(self, now: dt.datetime) -> "list[Loop]":
@@ -53,7 +54,7 @@ class LoopManager(models.Manager["Loop"]):
     def mark_run_if_unchanged(self, name: str, *, previous_last_run_at: dt.datetime | None, now: dt.datetime) -> bool:
         """Atomically claim the cadence anchor: bump ``last_run_at`` iff still ``previous_last_run_at``.
 
-        The lost-update guard for the master/per-loop double-drive (#2777
+        The lost-update guard against a double-drive (#2777
         follow-up): two ticks that read the SAME ``last_run_at`` would each build
         the loop's jobs and each ``mark_run``, dispatching the loop twice. This is
         the same compare-and-swap shape as
@@ -70,7 +71,7 @@ class LoopManager(models.Manager["Loop"]):
     def set_enabled(self, name: str, *, enabled: bool) -> int:
         """Set the ``enabled`` toggle for *name*; return the number of rows updated.
 
-        ``Loop.enabled`` is the row-level source of truth the #2584 master tick
+        ``Loop.enabled`` is the row-level source of truth the #2584 loop tick
         reads (``not row.enabled`` skips a loop, independent of the durable
         ``LoopState`` control plane). The ``enable`` / ``disable`` loop verbs move
         this column in lock-step with their ``LoopState`` write so both planes

@@ -4,7 +4,7 @@ After the #2513 cutover :func:`teatree.loops.schedule.mini_loop_schedules`
 derives its ``(name, next_fire_at, cadence_seconds)`` tuples from the DB
 ``Loop`` table (each row's ``enabled`` / cadence / ``last_run_at`` →
 ``next_run_at``) — the SAME live snapshot ``t3 loop list`` renders — so the
-statusline's next-fire numbers stay in lockstep with the master tick's own
+statusline's next-fire numbers stay in lockstep with the loop tick's own
 cadence gate (:meth:`teatree.core.models.Loop.is_due`). Also covers the
 injection seam that bridges this up-stack reader into the statusline without
 violating the tach module graph.
@@ -120,7 +120,7 @@ class TestSeamRendersMiniLoopsOnStatusline(django.test.TestCase):
 
 @django.test.override_settings(USE_TZ=True)
 class TestMiniLoopCadenceMatchesMasterGate(django.test.TestCase):
-    """The statusline next-fire stays in lockstep with the master tick gate.
+    """The statusline next-fire stays in lockstep with the loop tick gate.
 
     The same ``last_run + cadence`` boundary :meth:`Loop.is_due` uses to decide
     whether the master fires a loop is the boundary the statusline counts down to:

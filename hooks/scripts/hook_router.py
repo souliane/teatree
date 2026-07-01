@@ -3821,11 +3821,10 @@ def _durable_session_snapshot(session_id: str, data: dict | None = None) -> str:
             "",
             "## Loop assignment",
             (
-                "This session is the loop-tick OWNER. The loop is tick-driven "
-                "(#786 WS3): there is no roster of long-lived sub-agents to "
-                "resume — re-arm by ensuring the `t3 loops tick` cron is "
-                "registered for this session; each tick atomically claims the "
-                "next pending unit via `t3 loop claim-next`."
+                "This session is the loop OWNER. The loops are tick-driven and PER-LOOP (#786 WS3, #2650): there is "
+                "no master tick and no roster of long-lived sub-agents to resume — re-arm by ensuring each enabled "
+                "loop's own native `/loop` (firing `t3 loops tick --loop <name>`) is registered for this session; "
+                "each per-loop tick atomically claims the next pending unit via `t3 loop claim-next`."
             ),
         ]
         for _name, entry in sorted(owned):
@@ -4313,27 +4312,27 @@ _RENAME_REMINDER = (
 #
 # The loop is no longer a fixed roster of long-lived sub-agents that a
 # coordinator must keep alive / re-spawn on death/compaction. It is
-# driven by the machine-wide ``t3 loops tick`` cron (#676): each tick the
-# t3-master session atomically claims pending DB work (WS1
-# ``t3 loop claim-next`` — conditional-UPDATE CAS) and spawns a FRESH,
-# BOUNDED sub-agent for just that unit, which returns. Statelessness
-# across ticks IS the compaction-proofing — a worker dying mid-task
-# leaves its Task reclaimable; the next tick re-dispatches it. The
-# loop-tick *executor* mutex is the WS2 ``LoopLease`` row; this
-# Django-free hook registry only records which *session* is the
-# tick-owner (one record, never a roster) so the #758/#810 Stop-hook
-# self-pump can gate on it without a Django bootstrap in the hot path.
+# driven PER-LOOP (#2650): one native Claude ``/loop`` per enabled DB
+# ``Loop`` row, each firing ``t3 loops tick --loop <name>`` on its own
+# cadence — there is no master tick. Each per-loop tick atomically claims
+# pending DB work (WS1 ``t3 loop claim-next`` — conditional-UPDATE CAS)
+# and spawns a FRESH, BOUNDED sub-agent for just that unit, which returns.
+# Statelessness across ticks IS the compaction-proofing — a worker dying
+# mid-task leaves its Task reclaimable; the next tick re-dispatches it. The
+# per-loop *executor* mutex is the WS2 ``LoopLease`` ``loop:<name>`` row;
+# this Django-free hook registry only records which *session* owns a loop
+# (one record, never a roster) so the #758/#810 Stop-hook self-pump can
+# gate on it without a Django bootstrap in the hot path.
 
 _TICK_DISPATCH_OWNER_DIRECTIVE = (
-    "TEATREE LOOP — tick-driven, no roster to spawn.\n\n"
-    "This session is the teatree loop-tick OWNER. The loop is NOT a set of "
-    "long-lived sub-agents you spawn or keep alive: it is the recurring "
-    "`t3 loops tick` cron. Each tick, claim the next pending unit atomically "
-    "with `t3 loop claim-next` and spawn ONE fresh, bounded sub-agent for "
-    "just that unit (it does the work and returns). No persistent loop "
-    "roster, nothing to re-spawn on compaction — a worker dying mid-task "
-    "leaves its Task reclaimable and the next tick re-dispatches it. Ensure "
-    "the `t3 loops tick` cron is registered for this session." + _RENAME_REMINDER
+    "TEATREE LOOP — tick-driven per-loop, no roster to spawn.\n\n"
+    "This session is a teatree loop OWNER. The loop is NOT a set of long-lived sub-agents you spawn or keep alive, "
+    "and there is NO master tick: each enabled loop is its own native Claude `/loop` firing "
+    "`t3 loops tick --loop <name>` on its own cadence. Each per-loop tick, claim the next pending unit atomically "
+    "with `t3 loop claim-next` and spawn ONE fresh, bounded sub-agent for just that unit (it does the work and "
+    "returns). No persistent loop roster, nothing to re-spawn on compaction — a worker dying mid-task leaves its "
+    "Task reclaimable and the next tick re-dispatches it. Ensure each enabled loop's `/loop` is registered for "
+    "this session." + _RENAME_REMINDER
 )
 
 _ACCOUNT_SWITCH_DIRECTIVE = (
@@ -4361,15 +4360,16 @@ _MCP_CONNECTIVITY_DIRECTIVE = (
 )
 
 _TICK_DISPATCH_NON_OWNER_DIRECTIVE = (
-    "TEATREE LOOP — tick-driven; another session owns the tick.\n\n"
-    "Another live session is the teatree loop-tick owner (owner session "
-    "{owner_session}). Do NOT arm a competing `t3 loops tick` cron and do "
-    "NOT spawn loop sub-agents. The t3-master gate (#1073) is now a HARD "
-    "gate: a non-owner `t3 loops tick` will SKIP before any scanner / Slack "
-    "DM-drain / dispatch runs at all — it does NOT execute the tick. "
-    "Stay idle with respect to the loop. (If you ARE the user's main "
-    "session and a foreign session has hijacked the loop, run `t3 loop "
-    "claim --take-over` and the hijacker's next tick SKIPs within one tick.)"
+    "TEATREE LOOP — tick-driven per-loop; another session owns the loop.\n\n"
+    "Another live session owns the teatree loop(s) (owner session "
+    "{owner_session}). Do NOT register competing per-loop `/loop`s and do "
+    "NOT spawn loop sub-agents. The per-loop owner gate (#1073) is a HARD "
+    "gate: a non-owner `t3 loops tick --loop <name>` will SKIP before any "
+    "scanner / Slack DM-drain / dispatch runs at all — it does NOT execute the "
+    "tick. Stay idle with respect to the loop. (If you ARE the user's main "
+    "session and a foreign session has hijacked a loop, run `t3 loop "
+    "claim --slot loop:<name> --take-over` and the hijacker's next tick SKIPs "
+    "within one tick.)"
 )
 
 
@@ -5145,13 +5145,13 @@ def _loop_self_pump(data: dict) -> bool | None:
     session_pid = os.getppid()
     reason = (
         "TEATREE LOOP SELF-PUMP — consolidated work remains; continue the loop "
-        f"without waiting for an external prompt. Run `T3_LOOP_SESSION_ID={session_id} "
-        f"T3_LOOP_SESSION_PID={session_pid} "
-        "t3 loops tick`, then "
-        "repeatedly `t3 loop claim-next` and spawn ONE fresh, bounded sub-agent "
-        "(Agent tool) for each claimed unit until it returns nothing — the "
-        "claim is atomic (#786 WS1), so no separate post-spawn claim step and "
-        "no double-dispatch. Outstanding now:\n" + _format_pending_summary(pending)
+        "without waiting for an external prompt. Repeatedly run "
+        f"`T3_LOOP_SESSION_ID={session_id} T3_LOOP_SESSION_PID={session_pid} "
+        "t3 loop claim-next` and spawn ONE fresh, bounded sub-agent (Agent tool) "
+        "for each claimed unit until it returns nothing — the claim is atomic "
+        "(#786 WS1), so no separate post-spawn claim step and no double-dispatch "
+        "(the per-loop `/loop`s do the scanning; the self-pump only drains the "
+        "already-pending work). Outstanding now:\n" + _format_pending_summary(pending)
     )
     json.dump({"decision": "block", "reason": reason}, sys.stdout)
     return True

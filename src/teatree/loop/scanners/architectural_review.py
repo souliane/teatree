@@ -1,6 +1,6 @@
 """Periodic architectural-review scanner — #1136 / #1152.
 
-The fat loop has long wanted a recurring "step back and review the
+The loop has long wanted a recurring "step back and review the
 codebase" cadence that fires on either a time-based interval (default 7
 days) or a merge-count interval (default 25 merges since last review).
 The architectural review is a teatree-CORE platform behaviour — it

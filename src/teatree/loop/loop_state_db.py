@@ -41,7 +41,7 @@ def loop_held_in_db(name: str) -> bool:
 def loop_enabled(name: str) -> bool:
     """The single enable verdict over the DB: ``Loop.enabled`` AND not ``LoopState``-held.
 
-    The ONE function every enable-decision site routes through — the master tick,
+    The ONE function every enable-decision site routes through — the loop tick,
     the dream cron gate, the review-claim chokepoint, and the #2650 cron mirror —
     so the four can never drift back into a tier-subset verdict (one site keying on
     ``Loop.enabled`` alone, another on ``LoopState`` alone). A loop is enabled iff

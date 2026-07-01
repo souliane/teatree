@@ -45,12 +45,13 @@ class TestSeedDefaultLoops(django.test.TestCase):
         assert {spec.name for spec in DEFAULT_LOOPS} <= names
 
     def test_seeded_loop_table_matches_iter_loops(self) -> None:
-        # No orphan seed row that the master fan-out / iter_loops can never run
+        # No orphan seed row that the per-loop fan-out / iter_loops can never run
         # (#2584). Every seeded ``Loop`` name must have a registry ``MiniLoop``
         # (so ``build_loop_table_jobs`` can resolve it) and every registry loop
-        # must be seeded. ``slack_answer`` used to break this — it was in the
-        # seed + migration 0087 but had no registry MiniLoop (it runs only via
-        # the piggyback cycle, ``tick_piggyback``).
+        # must be seeded. The reactive infra loops (``slack_answer`` /
+        # ``self_improve`` / ``drain_queue``) are intentionally NOT seeded — they
+        # have no registry MiniLoop and each runs as its own dedicated ``/loop``
+        # (``t3 loop <slot> run``), never a per-loop tick.
         seed_default_loops_and_prompts()
         seeded = {spec.name for spec in DEFAULT_LOOPS}
         registry = {loop.name for loop in iter_loops()}

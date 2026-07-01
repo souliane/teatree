@@ -48,8 +48,8 @@ Top-level commands (no overlay needed): `t3 startoverlay`, `t3 docs`, `t3 agent`
 Overlay-scoped commands require `t3 <overlay> <subcommand>` (e.g., `t3 teatree`):
 
 ```bash
-t3 loop start                         # Spawn Claude Code session with the fat loop
-t3 loop tick                          # Run one loop tick (scans all overlays)
+t3 loop start                         # Spawn the loop-owner session (registers each enabled loop's /loop)
+t3 loops tick --loop <name>           # Run one enabled loop's tick (per-loop only; bare `t3 loops tick` is a hard error, #2650)
 t3 loop status                        # Show the loop's last-rendered statusline
 t3 <overlay> resetdb                  # Drop and recreate the SQLite database
 t3 <overlay> worktree provision          # Provision worktree (ports, DB, overlay steps)

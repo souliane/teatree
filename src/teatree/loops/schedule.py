@@ -9,14 +9,14 @@ own next-tick countdown. The infra ``LoopLease`` rows are read in
 forbids :mod:`teatree.loop` from importing :mod:`teatree.loops`, so this
 module owns the read and is wired into the statusline via the
 :func:`teatree.loop.statusline.set_mini_loop_schedules_reader` injection seam
-(installed by the ``loops_tick`` master tick command), mirroring the
+(installed by each per-loop ``loops_tick`` command), mirroring the
 ``jobs_builder`` seam :func:`teatree.loop.tick.run_tick` already uses.
 
 The next-fire instant comes from :func:`teatree.loops.live.build_report` — the
 same live snapshot ``t3 loop list`` renders (#1744), computed from the ``Loop``
 table's ``last_run_at`` cadence anchor — so the statusline countdown,
-``t3 loop list``, and the master tick gate
-(:func:`teatree.loops.master.build_loop_table_jobs` via ``Loop.is_due``) all read
+``t3 loop list``, and the loop-table fan-out gate
+(:func:`teatree.loops.loop_table.build_loop_table_jobs` via ``Loop.is_due``) all read
 one source of truth: a loop reads ``due`` exactly when the gate would fire it.
 """
 
@@ -32,7 +32,7 @@ def mini_loop_schedules() -> list[tuple[str, dt.datetime | None, int]]:
     resolved cadence; ``None`` when the loop has never fired (no marker row) —
     the statusline renders that as ``due``. ``cadence_seconds`` is that resolved
     cadence — the denominator the statusline colors each chunk's imminence
-    against. The filter mirrors the master tick's ``loop_enabled`` verdict
+    against. The filter mirrors the loop tick's ``loop_enabled`` verdict
     (``Loop.enabled`` AND not held): a disabled row OR a ``LoopState``-held
     (paused/disabled) loop is omitted, so the statusline never shows a live
     countdown for a loop the tick will skip. The snapshot already returns

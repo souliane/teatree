@@ -6,10 +6,10 @@ here (a management command, not a plain typer command) per the project's
 
 The ``enable``/``disable``/``resume`` verbs move TWO planes in lock-step inside
 one transaction: the durable ``LoopState`` control tier (#1913) AND the
-row-level ``Loop.enabled`` column that the #2584 master tick reads as its source
+row-level ``Loop.enabled`` column that the #2584 loop tick reads as its source
 of truth (``not row.enabled`` skips a loop). Before this, ``enable`` wrote only
 ``LoopState`` and left ``Loop.enabled`` stale, so the verb reported "now enabled"
-while the master never ticked the loop. ``pause`` is the reversible control-plane
+while the loop was never ticked. ``pause`` is the reversible control-plane
 hold only — it does NOT flip the durable ``Loop.enabled`` row (a paused loop
 returns to running with ``resume`` without re-enabling a row that may have been
 deliberately ``disable``d).

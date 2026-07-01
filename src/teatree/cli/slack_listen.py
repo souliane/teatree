@@ -54,7 +54,7 @@ def listen_command(
     """Run the Socket Mode receiver for all (or one) slack-enabled overlays.
 
     Maintains one WebSocket per overlay, writes events to a JSONL queue
-    file that the fat loop tick drains. Runs until SIGTERM or SIGINT.
+    file that the drain-queue loop drains. Runs until SIGTERM or SIGINT.
     """
     logging.basicConfig(
         level=logging.INFO,

@@ -2,8 +2,8 @@
 
 After LOOP-PR-A the loop-run sites share ONE combined verdict
 (``teatree.loop.loop_state_db.loop_enabled`` = ``Loop.enabled`` AND not
-``LoopState``-held): (1) **master**:
-``teatree.loops.master.build_loop_table_jobs`` (the live fat tick's fan-out,
+``LoopState``-held): (1) **fan-out**:
+``teatree.loops.loop_table.build_loop_table_jobs`` (the live loop-table fan-out,
 composing ``Loop.enabled`` + ``LoopsConfig.is_enabled``); (2) **registration**:
 ``teatree.loops.claude_specs.enabled_loop_specs`` (the #2650 cron mirror).
 
@@ -34,7 +34,7 @@ from teatree.core.models import Loop, LoopState, Prompt
 from teatree.loop.review_claim_signals import review_loop_enabled
 from teatree.loops.base import MiniLoop
 from teatree.loops.config import LoopsConfig
-from teatree.loops.master import build_loop_table_jobs
+from teatree.loops.loop_table import build_loop_table_jobs
 
 _REVIEW = "review"
 
@@ -62,8 +62,8 @@ def _ensure_loop(name: str, *, enabled: bool = True) -> None:
 
 
 def _master_runs(name: str, *, now: object) -> bool:
-    """True iff the master fan-out emits *name*'s job (the live-tick verdict)."""
-    with patch("teatree.loops.master.iter_loops", return_value=(_mini(name),)):
+    """True iff the loop-table fan-out emits *name*'s job (the live-tick verdict)."""
+    with patch("teatree.loops.loop_table.iter_loops", return_value=(_mini(name),)):
         jobs = build_loop_table_jobs({}, now=now)
     return f"job-{name}" in jobs
 

@@ -8,10 +8,9 @@ mirroring the inline ``self-improve`` subapp's shape. The assembled
 registered via ``loop_app.add_typer(..., name="slack-answer")``.
 """
 
-import os
-
 import typer
 
+from teatree.loop.loop_cadences import reactive_slot
 from teatree.utils.django_bootstrap import ensure_django
 
 slack_answer_app = typer.Typer(
@@ -58,15 +57,8 @@ def slack_answer_status_command() -> None:
 
 
 def _slack_answer_cadence_for_loop_slot() -> str:
-    """Read ``T3_SLACK_ANSWER_CADENCE`` (seconds, default 20, floor 15)."""
-    raw = os.environ.get("T3_SLACK_ANSWER_CADENCE", "20").strip() or "20"
-    try:
-        seconds = max(15, int(raw))
-    except ValueError:
-        seconds = 20
-    if seconds % 60 == 0:
-        return f"{seconds // 60}m"
-    return f"{seconds}s"
+    """The Slack-answer ``/loop`` cadence token — delegates to the shared reactive-slot seam."""
+    return reactive_slot("loop-slack-answer").cadence()
 
 
 @slack_answer_app.command("start")
@@ -78,8 +70,7 @@ def slack_answer_start_command() -> None:
     third ``/loop`` slot. Override the cadence via ``T3_SLACK_ANSWER_CADENCE``
     (seconds; floor 15).
     """
-    cadence = _slack_answer_cadence_for_loop_slot()
-    register_command = f"/loop {cadence} Run `t3 loop slack-answer run`."
+    register_command = reactive_slot("loop-slack-answer").loop_directive()
     typer.echo("Run this in your interactive Claude Code session to register the Slack-answer loop:")
     typer.echo(f"    {register_command}")
     typer.echo("")

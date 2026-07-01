@@ -152,8 +152,8 @@ t3 slack listen --overlay <name>   # single overlay
 t3 slack status                    # check if the listener is running
 ```
 
-The listener writes inbound events to a JSONL queue. The fat loop tick
-(`t3 loop tick`) drains the queue and surfaces mentions/DMs in the
+The listener writes inbound events to a JSONL queue. The drain-queue loop
+(`t3 loop drain-queue run`) drains the queue and surfaces mentions/DMs in the
 statusline. The Claude Code hook mirrors `AskUserQuestion` prompts to
 Slack DM so you can answer from your phone.
 

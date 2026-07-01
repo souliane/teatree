@@ -4,8 +4,8 @@ Each script-backed ``Loop`` row's ``script`` is its OWN module
 ``src/teatree/loops/<name>/loop.py`` (the file exposing that loop's ``MINI_LOOP``)
 — the ``script`` column is PER-LOOP and load-bearing, never a value shared across
 rows. :func:`parse_script_loop_name` is the single normalization seam that maps
-such a path UP to the loop name the master tick dispatches
-(:func:`teatree.loops.master.build_loop_table_jobs`).
+such a path UP to the loop name the loop-table fan-out dispatches
+(:func:`teatree.loops.loop_table.build_loop_table_jobs`).
 
 This module is a pure path↔name helper, NOT a dispatch seam: there is no central
 runner and no shared tick. The DB ``Loop`` table is the single source of truth and
