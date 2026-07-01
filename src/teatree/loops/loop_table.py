@@ -52,6 +52,7 @@ from teatree.loops.registry import iter_loops
 
 if TYPE_CHECKING:
     from teatree.core.models import Loop
+    from teatree.loops.config import LoopsConfig
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,44 @@ def _resolve_dispatch_loop(row: "Loop", registry_by_name: dict[str, MiniLoop]) -
 
     target = parse_script_loop_name(row.script) if row.script else row.name
     return registry_by_name[target]
+
+
+def _loop_admitted(row: "Loop | None", loop: MiniLoop, config: "LoopsConfig", now: dt.datetime) -> bool:
+    """The unified enabled+due verdict for one loop — the three gates, no cadence claim.
+
+    A loop is admitted iff it is NOT ``off_live_tick`` (the heavy ``dream`` pass is
+    driven by its own low-frequency cron), it HAS a ``Loop`` row that is ``enabled``
+    and ``is_due(now)``, AND ``LoopsConfig.is_enabled`` agrees (the durable
+    ``LoopState`` control tier — a ``t3 loop pause`` / ``disable`` hold, #2584). The
+    single source of truth both :func:`build_loop_table_jobs` and the loop-runner
+    beat (:func:`admitted_loop_names`) gate on, so the verdict can never drift.
+    """
+    if loop.off_live_tick:
+        return False
+    if row is None or not row.enabled or not row.is_due(now):
+        return False
+    return config.is_enabled(loop)
+
+
+def admitted_loop_names(now: dt.datetime, *, only: str | None = None) -> list[str]:
+    """Names of every loop the unified verdict admits (enabled + due + un-held) — NO cadence claim.
+
+    The loop-runner beat's pre-filter (#2876): it asks the SAME three-gate verdict
+    :func:`build_loop_table_jobs` uses (via :func:`_loop_admitted`) but never claims
+    the cadence anchor. The atomic ``mark_run_if_unchanged`` CAS stays in the
+    per-loop tick the beat enqueues, so an at-least-once double delivery is a no-op
+    there — the beat only ASKS which rows are due, it never drives one.
+    """
+    from teatree.core.models import Loop  # noqa: PLC0415
+    from teatree.loops.config import LoopsConfig  # noqa: PLC0415
+
+    config = LoopsConfig.load()
+    rows = {row.name: row for row in Loop.objects.all()}
+    return [
+        loop.name
+        for loop in iter_loops()
+        if (only is None or loop.name == only) and _loop_admitted(rows.get(loop.name), loop, config, now)
+    ]
 
 
 def build_loop_table_jobs(
@@ -116,13 +155,9 @@ def build_loop_table_jobs(
     for loop in registry:
         if only is not None and loop.name != only:
             continue
-        if loop.off_live_tick:
+        if not _loop_admitted(rows.get(loop.name), loop, config, now):
             continue
-        row = rows.get(loop.name)
-        if row is None or not row.enabled or not row.is_due(now):
-            continue
-        if not config.is_enabled(loop):
-            continue
+        row = rows[loop.name]
         # Atomically claim the cadence anchor BEFORE building jobs so two ticks
         # that read the same ``last_run_at`` cannot both drive the loop
         # (lost-update double-drive). The loser's CAS matches 0 rows and it skips.

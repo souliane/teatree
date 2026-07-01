@@ -13,6 +13,13 @@ from teatree.core.runners import RetroExecutor, ShipExecutor, WorktreeProvisione
 
 logger = logging.getLogger(__name__)
 
+#: The dedicated django-tasks queue the loop-runner beat enqueues per-loop ticks
+#: onto (#2876). Draining ONLY this queue keeps a fast loop tick from blocking
+#: behind a heavy default-queue FSM/headless task. Kept in sync with the
+#: ``TASKS["default"]["QUEUES"]`` allowlist in ``teatree.settings`` by a parity
+#: test; ``teatree.loops.runner`` imports it (loops -> core) for the drain filter.
+LOOP_RUNNER_QUEUE = "loop-runner"
+
 
 def _persist_intake_landscape(ticket: Ticket) -> None:
     """Bake the intake landscape survey into a durable artifact (#2541).
@@ -334,3 +341,22 @@ def execute_ship(ticket_id: int) -> TransitionResult:
         ticket.save()
 
     return {"ticket_id": ticket_id, "ok": True, "detail": result.detail}
+
+
+@task(queue_name=LOOP_RUNNER_QUEUE)
+def execute_loop(name: str) -> dict[str, str]:
+    """Run one per-loop tick — the same ``t3 loops tick --loop <name>`` path a native /loop fires (#2876).
+
+    The unit the loop-runner beat enqueues per admitted ``Loop`` row. It delegates
+    to the unchanged ``loops_tick`` management command, so the driver moves from the
+    native Claude ``/loop`` cron to the daemon while WHAT a tick does is identical.
+
+    Idempotency: at-least-once delivery from django-tasks means this can fire more
+    than once for the same loop. The per-loop tick's ``mark_run_if_unchanged`` CAS
+    on ``Loop.last_run_at`` makes a redelivered run a no-op — the second read finds
+    the anchor already bumped, the row not-due, and dispatches nothing.
+    """
+    from django.core.management import call_command  # noqa: PLC0415
+
+    call_command("loops_tick", loop=name)
+    return {"loop": name}
