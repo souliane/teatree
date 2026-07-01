@@ -18,14 +18,14 @@ review using the ``ac-reviewing-codebase`` skill.
 **No orphan rows (#2584).** Every name in :data:`DEFAULT_LOOPS` has a registry
 ``MiniLoop`` (a ``teatree.loops.<name>.loop`` package exposing ``MINI_LOOP``), so
 the seeded ``Loop``-table set equals :func:`teatree.loops.registry.iter_loops`.
-``slack_answer`` is intentionally NOT a default Loop row: it has no registry
-``MiniLoop`` — the autonomous ``build_loop_table_jobs`` / ``iter_loops`` fan-out
-can never run it. It runs ONLY via the won-tick piggyback cycle
-(:func:`teatree.loop.tick_piggyback.run_piggyback_cycles` →
-``teatree.loop.slack_answer.cycle.run_slack_answer_cycle``), behind its own
-``loop-slack-answer`` lease. Seeding a ``slack_answer`` Loop row would create an
-orphan the master tick can never fan out (the 19-vs-18 seed/registry mismatch
-this module's parity test pins).
+The reactive infra loops (``slack_answer``, ``self_improve``, ``drain_queue``)
+are intentionally NOT default Loop rows: they have no registry ``MiniLoop`` — the
+per-loop ``build_loop_table_jobs`` / ``iter_loops`` fan-out can never run them.
+Each runs as its OWN dedicated native Claude ``/loop`` firing its own
+``t3 loop <slot> run`` command (``teatree.cli.loop*``), behind its own dedicated
+``LoopLease`` (``loop-slack-answer`` / ``loop-self-improve`` / ``loop-drain-queue``).
+Seeding one as a ``Loop`` row would create an orphan a per-loop tick could never
+fan out (the seed/registry parity this module's test pins).
 """
 
 import datetime as dt
@@ -107,9 +107,10 @@ DEFAULT_LOOPS: tuple[LoopSeedSpec, ...] = (
         "Auto-frees host disk and RAM when they cross the pressure threshold; "
         "checks every 1m on its own ~5m internal cadence.",
     ),
-    # NOTE: ``slack_answer`` is intentionally absent — it has no registry
-    # MiniLoop and runs only via the won-tick piggyback cycle (see the module
-    # docstring). A seeded row would be an orphan the master tick can never run.
+    # NOTE: the reactive infra loops (``slack_answer`` / ``self_improve`` /
+    # ``drain_queue``) are intentionally absent — they have no registry MiniLoop
+    # and each runs as its own dedicated `/loop` (`t3 loop <slot> run`), never via
+    # a per-loop tick (see the module docstring). A seeded row would be an orphan.
     LoopSeedSpec(
         "dispatch",
         300,

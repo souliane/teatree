@@ -179,6 +179,10 @@ Print one DB Loop's native Claude /loop spec: slot_id, cron, prompt (#2650).
 | `claim-next` | Atomically claim the oldest pending dispatchable Task, then emit it |
 | `spawn-claim` | Mark the Task as claimed so the next tick doesn't surface it |
 
+## `loop_drain_queue`
+
+Run one reactive DB-queue drain cycle (expire stale READY jobs, then drain a bounded batch).
+
 ## `loop_list`
 
 Print LIVE loop status computed from the DB (read-only; #1744).
@@ -220,7 +224,7 @@ List DB-configured autonomous loops (read-only; #1796).
 
 ## `loops_tick`
 
-Run one master tick: run every enabled, due loop (DB-configured); render statusline.
+Run ONE enabled, due DB Loop by name (--loop) — the per-loop primitive each native Claude `/loop` fires.
 
 ## `memory`
 

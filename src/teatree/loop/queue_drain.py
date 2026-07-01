@@ -22,22 +22,21 @@ provision/ship/teardown jobs that have been queued for days. FAILED is
 reversible — the row, its args, and the reason are all preserved; nothing is
 hard-deleted.
 
-Both are wired into the won-owner tick via :mod:`teatree.loop.tick_piggyback`
-behind a dedicated ``LoopLease`` CAS, and the drain refuses to run while a real
-``db_worker`` holds the machine-wide ``teatree-worker`` flock singleton — so the
-two drainers never compete for the same rows.
+Both are driven by the dedicated reactive drain-queue ``/loop``
+(``t3 loop drain-queue run`` → the ``loop_drain_queue`` management command →
+:func:`expire_then_drain`, behind the ``loop-drain-queue`` ``LoopLease``), and the
+drain refuses to run while a real ``db_worker`` holds the machine-wide
+``teatree-worker`` flock singleton — so the two drainers never compete for the
+same rows.
 """
 
 import datetime as dt
 import logging
 import os
-import uuid
 
 from django.core.exceptions import SuspiciousOperation
 from django.db.utils import OperationalError
 from django.utils import timezone
-
-from teatree.loop.loop_cadences import drain_cadence_seconds
 
 logger = logging.getLogger(__name__)
 
@@ -221,18 +220,3 @@ def expire_then_drain() -> dict[str, int | dict[str, int]]:
     retired = expire_stale_ready_jobs()
     drained = drain_ready_batch()
     return {"retired": retired, "drained": drained}
-
-
-def _piggyback_drain_queue() -> None:
-    """Drive one expire-then-drain pass behind the dedicated ``loop-drain-queue`` lease.
-
-    Mirrors the other tick-piggyback cycles: a per-tick-unique owner with a
-    cadence-length lease that is never released, so the lease TTL doubles as
-    the throttle — a re-tick inside the cadence window loses the CAS and skips.
-    """
-    from teatree.core.models import LoopLease  # noqa: PLC0415
-
-    owner = f"tickdrain-{os.getpid()}-{uuid.uuid4().hex}"
-    if not LoopLease.objects.acquire("loop-drain-queue", owner=owner, lease_seconds=drain_cadence_seconds()):
-        return
-    expire_then_drain()

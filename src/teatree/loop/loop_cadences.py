@@ -2,16 +2,12 @@
 
 The dedicated loop-line dashboard (:mod:`teatree.loop.statusline_loops`, a low
 presentation module) colors each loop's next-tick countdown against that loop's
-own cadence, so it must resolve every loop's cadence. The readers used to live
-up-stack on :mod:`teatree.loop.tick_piggyback` / :mod:`teatree.loop.queue_drain`
-(the orchestration top), forcing ``statusline_loops`` to *defer*-import UP into
-them — a back-edge hidden from tach's acyclic guard.
-
-These readers depend on nothing but ``os.environ``, so they belong at the bottom
-of the ``teatree.loop`` layer. Pulling them into this leaf lets ``statusline_loops``
-reach them via an eager DOWN edge; ``tick_piggyback`` / ``queue_drain`` re-export
-them so every existing import path (the ``loops_tick`` management command resolves
-``_loop_owner_ttl_seconds`` from ``tick_piggyback``) is unchanged.
+own cadence, so it must resolve every loop's cadence. These readers depend on
+nothing but ``os.environ``, so they live at the bottom of the ``teatree.loop``
+layer and every consumer reaches them via an eager DOWN edge: the ``loops_tick``
+per-loop tick command (``loop_owner_ttl_seconds``), the reactive drain-queue
+command (``drain_cadence_seconds``), and ``statusline_loops`` — no back-edge, no
+re-export shim.
 """
 
 import os

@@ -44,20 +44,22 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 branch.                                                      │
 │ assess          Codebase health assessment.                                  │
 │ overlay         Dev-mode overlay install/uninstall.                          │
-│ loop            Manage the tick-driven fat loop. Session-bound by design: it │
-│                 runs only while a Claude Code session is open. The recurring │
-│                 `t3 loop tick` cron is the driver — each tick the single     │
-│                 tick-owner session atomically claims the next pending unit   │
-│                 (`t3 loop claim-next`) and spawns one fresh bounded          │
-│                 sub-agent for it. There is no roster of long-lived loop      │
-│                 sub-agents to re-spawn (#786 WS3): if the owner session      │
-│                 dies, the next open session becomes tick-owner and keeps     │
-│                 ticking; with zero sessions open the loop is paused until    │
-│                 the next session start (no OS daemon — accepted, not a       │
-│                 defect). A per-agent Stop-hook self-pump re-continues the    │
-│                 loop automatically while consolidated work remains — exactly │
-│                 one consolidation loop per agent identity, deduped across    │
-│                 all sessions (#786 WS4); it idles when none.                 │
+│ loop            Manage the tick-driven autonomous loops. Session-bound by    │
+│                 design: they run only while a Claude Code session is open.   │
+│                 Under #2650 each enabled DB `Loop` row is its own native     │
+│                 Claude `/loop` firing `t3 loops tick --loop <name>` on its   │
+│                 own cadence — there is no master tick. Each per-loop tick    │
+│                 atomically claims the next pending unit (`t3 loop            │
+│                 claim-next`) and spawns one fresh bounded sub-agent for it.  │
+│                 There is no roster of long-lived loop sub-agents to re-spawn │
+│                 (#786 WS3): if a loop's owner session dies, the next open    │
+│                 session claims its slot and keeps ticking; with zero         │
+│                 sessions open the loops are paused until the next session    │
+│                 start (no OS daemon — accepted, not a defect). A per-agent   │
+│                 Stop-hook self-pump re-continues the loop automatically      │
+│                 while consolidated work remains — exactly one consolidation  │
+│                 loop per agent identity, deduped across all sessions (#786   │
+│                 WS4); it idles when none.                                    │
 │ loops           Manage DB-configured autonomous loops (#1796).               │
 │ mcp             Read-only MCP server exposing teatree's structured search    │
 │                 (stdio).                                                     │
@@ -88,23 +90,23 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 ```
 Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 
- Manage the tick-driven fat loop. Session-bound by design: it runs only while a
- Claude Code session is open. The recurring `t3 loop tick` cron is the driver —
- each tick the single tick-owner session atomically claims the next pending
- unit (`t3 loop claim-next`) and spawns one fresh bounded sub-agent for it.
- There is no roster of long-lived loop sub-agents to re-spawn (#786 WS3): if
- the owner session dies, the next open session becomes tick-owner and keeps
- ticking; with zero sessions open the loop is paused until the next session
- start (no OS daemon — accepted, not a defect). A per-agent Stop-hook self-pump
- re-continues the loop automatically while consolidated work remains — exactly
- one consolidation loop per agent identity, deduped across all sessions (#786
- WS4); it idles when none.
+ Manage the tick-driven autonomous loops. Session-bound by design: they run
+ only while a Claude Code session is open. Under #2650 each enabled DB `Loop`
+ row is its own native Claude `/loop` firing `t3 loops tick --loop <name>` on
+ its own cadence — there is no master tick. Each per-loop tick atomically
+ claims the next pending unit (`t3 loop claim-next`) and spawns one fresh
+ bounded sub-agent for it. There is no roster of long-lived loop sub-agents to
+ re-spawn (#786 WS3): if a loop's owner session dies, the next open session
+ claims its slot and keeps ticking; with zero sessions open the loops are
+ paused until the next session start (no OS daemon — accepted, not a defect). A
+ per-agent Stop-hook self-pump re-continues the loop automatically while
+ consolidated work remains — exactly one consolidation loop per agent identity,
+ deduped across all sessions (#786 WS4); it idles when none.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ tick           Run one tick: scan in parallel, dispatch, render statusline.  │
 │ status         Show the loop's last-rendered statusline.                     │
 │ pending-spawn  List pending Tasks (read-only probe; legacy — prefer          │
 │                ``claim-next``).                                              │
@@ -136,14 +138,22 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │ claude-spec    Print the native Claude `/loop` spec (slot_id, cron, prompt)  │
 │                for one DB Loop.                                              │
 │ self-improve   Self-improving monitor — scheduled smell detection with a     │
-│                tiered action ladder. Runs in the same t3-master session as   │
-│                `t3 loop tick` on a separate LoopLease so a long self-improve │
-│                cycle never blocks a fast regular tick (BLUEPRINT § 5.7).     │
+│                tiered action ladder. Runs as its own dedicated `/loop` slot  │
+│                on a separate `loop-self-improve` LoopLease so a long         │
+│                self-improve cycle never blocks a fast per-loop tick          │
+│                (BLUEPRINT § 5.7).                                            │
 │ slack-answer   Reactive, token-cheap Slack-answer loop — the third `/loop`   │
 │                slot. Runs on a tight cadence (default 20s) in the same       │
 │                t3-master session as `t3 loop tick`, on a separate LoopLease  │
 │                so a long answer cycle never blocks a fast regular tick.      │
 │                Complementary to the inbound prompt-drain, never a            │
 │                double-answer (#1014).                                        │
+│ drain-queue    Reactive DB-queue drain loop — a `/loop` slot that keeps the  │
+│                django-tasks DB queue advancing without an always-on          │
+│                `db_worker`. Runs on a tight cadence (default 30s) on the     │
+│                `loop-drain-queue` LoopLease: it retires stale READY jobs,    │
+│                then drains a bounded batch of the fresh remainder, and       │
+│                stands down while a real `db_worker` holds the                │
+│                `teatree-worker` singleton.                                   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
