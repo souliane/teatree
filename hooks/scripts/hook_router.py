@@ -58,6 +58,7 @@ from direct_command_guard import BLOCKED_COMMANDS as _BLOCKED_COMMANDS  # noqa: 
 from direct_command_guard import deny_match as _deny_match  # noqa: F401
 from direct_command_guard import handle_block_direct_commands
 from django_bootstrap import bootstrap_teatree_django
+from engagement import engage
 from loop_owner_db import db_lease_consult_disabled as _db_lease_consult_disabled
 from loop_owner_db import db_owner_is_current_session as _db_owner_is_current_session
 from loop_registrations import emit_loop_registrations, is_bare_loop_tick_prompt, loop_name_from_prompt
@@ -3469,7 +3470,7 @@ def handle_track_skill_usage(data: dict) -> None:
     if skill_name:
         _record_skills(skills_file, existing, _resolve_skill_closure([skill_name]))
         if _skill_load_activates_teatree([skill_name]):
-            _state_file(session_id, "teatree-active").touch()
+            engage(session_id)
         _maybe_engage_t3(session_id, [skill_name])
         return
 
@@ -3486,7 +3487,7 @@ def handle_track_skill_usage(data: dict) -> None:
             loaded.append(name)
     _record_skills(skills_file, existing, _resolve_skill_closure(loaded))
     if _skill_load_activates_teatree(loaded):
-        _state_file(session_id, "teatree-active").touch()
+        engage(session_id)
     _maybe_engage_t3(session_id, loaded)
 
 
@@ -4715,8 +4716,7 @@ def handle_session_start_bootstrap(data: dict) -> None:
         return
     source = data.get("source", "")
     if _autoload_enabled():
-        _ensure_state_dir()
-        _state_file(session_id, "teatree-active").touch()
+        engage(session_id)
     elif not _teatree_active(session_id):
         advisory = "" if source in {"compact", "resume"} else _TEATREE_NOT_ACTIVE_ADVISORY
         _emit_session_start_context(_merge_session_start_context(advisory, session_id, source))
