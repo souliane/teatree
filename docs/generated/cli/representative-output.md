@@ -154,6 +154,8 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │                never touched; no mutation).                                  │
 │ claude-spec    Print the native Claude `/loop` spec (slot_id, cron, prompt)  │
 │                for one DB Loop.                                              │
+│ verify-cron    Verify-by-reread: confirm NAME's CronCreate registration      │
+│                against a CronList snapshot.                                  │
 │ self-improve   Self-improving monitor — scheduled smell detection with a     │
 │                tiered action ladder. Runs as its own dedicated `/loop` slot  │
 │                on a separate `loop-self-improve` LoopLease so a long         │

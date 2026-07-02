@@ -5,20 +5,28 @@ Slack review-request message to get an emoji reaction so reviewers can see
 the state change at a glance (``:tada:`` on merge, ``:arrows_counterclockwise:``
 on rework, …).  The review permalink stored on each PR entry gives us the
 Slack ``channel`` and ``timestamp`` needed for ``reactions.add``.
+
+``add_reaction`` is the raw API call; :func:`add_reaction_verified` (#1192)
+wraps it with an immediate verify-by-reread — a fresh ``reactions.get`` call
+confirms the emoji is actually visible before the caller trusts the write.
+The FSM-facing entry points below (``add_reactions_for_transition``,
+``add_approval_reaction``) go through the verified wrapper.
 """
 
 import json
 import logging
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import httpx
 
 from teatree.backends.slack.react_errors import SlackReactionError, build_react_error_message
 from teatree.core.overlay_loader import get_overlay
+from teatree.core.verify_by_reread import verify_by_reread
 
 if TYPE_CHECKING:
     from teatree.core.models import PullRequest, Ticket
+    from teatree.types import RawAPIDict
 
 _APPROVAL_EMOJI = "white_check_mark"
 
@@ -106,6 +114,80 @@ def add_reaction(token: str, channel_id: str, timestamp: str, emoji: str) -> boo
     raise SlackReactionError(error, build_react_error_message(error, channel_id, timestamp))
 
 
+def _reaction_present(message: "RawAPIDict", emoji: str) -> bool:
+    """True when *emoji* is present (any reactor, count > 0) in a ``reactions.get`` message block."""
+    reactions = message.get("reactions")
+    if not isinstance(reactions, list):
+        return False
+    for raw in reactions:
+        if not isinstance(raw, dict):
+            continue
+        reaction = cast("RawAPIDict", raw)
+        if reaction.get("name") != emoji:
+            continue
+        users = reaction.get("users")
+        count = reaction.get("count")
+        if (isinstance(users, list) and users) or (isinstance(count, int) and count > 0):
+            return True
+    return False
+
+
+def _reread_reaction_present(token: str, channel_id: str, timestamp: str, emoji: str) -> bool:
+    """Independent ``reactions.get`` read — never trust ``reactions.add``'s own response.
+
+    Raises on a transport failure or a Slack ``ok:false`` so
+    :func:`teatree.core.verify_by_reread.verify_by_reread` normalizes it to an
+    ``not_confirmed`` outcome rather than a crash; the caller has already
+    posted the reaction, so a broken reread must degrade, never raise.
+    """
+    response = httpx.get(
+        "https://slack.com/api/reactions.get",
+        headers={"Authorization": f"Bearer {token}"},
+        params={"channel": channel_id, "timestamp": timestamp},
+        timeout=10.0,
+    )
+    response.raise_for_status()
+    try:
+        payload = response.json()
+    except (json.JSONDecodeError, ValueError) as exc:
+        msg = f"Slack reactions.get returned a non-JSON 2xx body for {channel_id}/{timestamp}: {exc}"
+        raise RuntimeError(msg) from exc
+    if not payload.get("ok"):
+        msg = f"Slack reactions.get error={payload.get('error', '')!r} for {channel_id}/{timestamp}"
+        raise RuntimeError(msg)
+    message = payload.get("message") or {}
+    return _reaction_present(message, emoji)
+
+
+def add_reaction_verified(token: str, channel_id: str, timestamp: str, emoji: str) -> bool:
+    """``add_reaction`` plus an immediate verify-by-reread that the emoji actually landed (#1192).
+
+    ``add_reaction``'s own ``ok: true`` (or ``already_reacted``) response is
+    necessary but not sufficient — Slack has been observed to accept a
+    ``reactions.add`` call whose effect is not yet visible on a subsequent
+    read. This wraps the raw post with an independent ``reactions.get``
+    re-read via :func:`teatree.core.verify_by_reread.verify_by_reread` before
+    trusting the write. Returns ``False`` both when the write itself failed
+    and when the reread could not confirm it — either way the caller may
+    safely retry on the next tick, since ``reactions.add`` is idempotent.
+    """
+    if not add_reaction(token, channel_id, timestamp, emoji):
+        return False
+    outcome = verify_by_reread(
+        label=f"slack_reaction:{channel_id}:{timestamp}:{emoji}",
+        reread=lambda: _reread_reaction_present(token, channel_id, timestamp, emoji),
+    )
+    if not outcome.confirmed:
+        logger.warning(
+            "Slack reactions.add(%s) on %s/%s not confirmed by reread: %s",
+            emoji,
+            channel_id,
+            timestamp,
+            outcome.reason,
+        )
+    return outcome.confirmed
+
+
 def _iter_pr_permalinks(ticket: "Ticket") -> list[str]:
     """Collect non-empty ``review_permalink`` values from the ticket's PRs."""
     extra = ticket.extra if isinstance(ticket.extra, dict) else {}
@@ -161,7 +243,7 @@ def add_reactions_for_transition(ticket: "Ticket", transition_name: str) -> int:
             continue
         channel_id, timestamp = parsed
         try:
-            success = add_reaction(token, channel_id, timestamp, emoji)
+            success = add_reaction_verified(token, channel_id, timestamp, emoji)
         except SlackReactionError as exc:
             # A Slack auth gap (missing_scope, restricted channel, …)
             # must surface to a human, but not roll back the FSM
@@ -214,7 +296,7 @@ def add_approval_reaction(pull_request: "PullRequest") -> int:
 
     channel_id, timestamp = parsed
     try:
-        success = add_reaction(token, channel_id, timestamp, _APPROVAL_EMOJI)
+        success = add_reaction_verified(token, channel_id, timestamp, _APPROVAL_EMOJI)
     except SlackReactionError as exc:
         # Approval reaction is FSM-coupled: a Slack auth gap surfaces in
         # the log but must not roll back the approve() transition.

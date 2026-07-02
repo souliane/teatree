@@ -18,6 +18,8 @@ from teatree.loops.claude_specs import (
     enabled_loop_specs,
     loop_run_prompt,
     loop_slot_id,
+    spec_registered,
+    verify_loop_registered,
 )
 
 
@@ -109,6 +111,75 @@ class TestEnabledLoopSpecs(django.test.TestCase):
     def test_no_enabled_rows_yields_no_specs(self) -> None:
         Loop.objects.create(name="off", delay_seconds=60, prompt=_prompt(), enabled=False)
         assert enabled_loop_specs() == []
+
+
+class TestSpecRegistered:
+    """``spec_registered`` — verify-by-reread against a harness ``CronList`` snapshot (#1192)."""
+
+    def test_true_when_a_job_prompt_contains_the_token(self) -> None:
+        spec = claude_loop_spec(Loop(name="ship", delay_seconds=300, script="s"))
+        jobs = [{"id": "abc", "prompt": spec.prompt, "cron": spec.cron}]
+        assert spec_registered(spec, jobs) is True
+
+    def test_false_when_no_job_matches(self) -> None:
+        spec = claude_loop_spec(Loop(name="ship", delay_seconds=300, script="s"))
+        jobs = [{"id": "abc", "prompt": "Run `t3 loops tick --loop review` in Bash."}]
+        assert spec_registered(spec, jobs) is False
+
+    def test_false_on_empty_snapshot(self) -> None:
+        spec = claude_loop_spec(Loop(name="ship", delay_seconds=300, script="s"))
+        assert spec_registered(spec, []) is False
+
+    def test_prefix_name_does_not_false_match(self) -> None:
+        # `ship` must not match a `ship-fast` job's backtick-terminated token —
+        # the same disambiguation the enable/disable skill relies on.
+        ship = claude_loop_spec(Loop(name="ship", delay_seconds=300, script="s"))
+        ship_fast_job = {"prompt": loop_run_prompt("ship-fast")}
+        assert spec_registered(ship, [ship_fast_job]) is False
+
+    def test_non_dict_and_non_string_prompt_entries_are_skipped_not_raised(self) -> None:
+        spec = claude_loop_spec(Loop(name="ship", delay_seconds=300, script="s"))
+        jobs = ["not-a-dict", {"prompt": 42}, {"no_prompt_key": True}]
+        assert spec_registered(spec, jobs) is False
+
+    def test_false_when_the_spec_prompt_itself_carries_no_token(self) -> None:
+        # A hand-built spec that doesn't follow the standard template has no
+        # token to match against — degrade to "not found", never raise.
+        malformed = ClaudeLoopSpec(slot_id="t3-loop-x", cron="* * * * *", prompt="no token here")
+        assert spec_registered(malformed, [{"prompt": "anything"}]) is False
+
+    def test_false_when_a_stale_job_matches_the_prompt_but_not_the_cron(self) -> None:
+        # A stale native job keeps a matching prompt after the loop's cadence
+        # changed in the DB — matching prompt-only would report a job firing
+        # on the WRONG schedule as "confirmed" (codex review, #1192).
+        spec = claude_loop_spec(Loop(name="ship", delay_seconds=300, script="s"))
+        stale_job = {"prompt": spec.prompt, "cron": "*/999 * * * *"}
+        assert spec_registered(spec, [stale_job]) is False
+
+    def test_true_when_no_other_job_matches_and_cron_agrees(self) -> None:
+        spec = claude_loop_spec(Loop(name="ship", delay_seconds=300, script="s"))
+        stale_job = {"prompt": spec.prompt, "cron": "*/999 * * * *"}
+        fresh_job = {"prompt": spec.prompt, "cron": spec.cron}
+        assert spec_registered(spec, [stale_job, fresh_job]) is True
+
+    def test_true_when_job_omits_cron_field(self) -> None:
+        # An unconfirmed harness snapshot shape degrades to "don't contradict
+        # the prompt match" rather than a false negative.
+        spec = claude_loop_spec(Loop(name="ship", delay_seconds=300, script="s"))
+        assert spec_registered(spec, [{"prompt": spec.prompt}]) is True
+
+
+class TestVerifyLoopRegistered:
+    def test_confirmed_when_registered(self) -> None:
+        spec = claude_loop_spec(Loop(name="ship", delay_seconds=300, script="s"))
+        outcome = verify_loop_registered(spec, [{"prompt": spec.prompt}])
+        assert outcome.confirmed is True
+
+    def test_not_confirmed_when_missing_carries_a_reason(self) -> None:
+        spec = claude_loop_spec(Loop(name="ship", delay_seconds=300, script="s"))
+        outcome = verify_loop_registered(spec, [])
+        assert outcome.confirmed is False
+        assert spec.slot_id in outcome.reason
 
 
 @django.test.override_settings(USE_TZ=True)
