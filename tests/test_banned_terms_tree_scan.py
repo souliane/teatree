@@ -19,9 +19,11 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from rich.console import Console
 from typer.main import get_command
 from typer.testing import CliRunner
 
+from teatree.cli import banned_terms as banned_terms_cli
 from teatree.cli.banned_terms import banned_terms_app
 from teatree.core import banned_terms_tree
 from teatree.hooks import banned_terms_tree_scan
@@ -588,11 +590,15 @@ class TestScanTreeCliSummaryIsBrandAgnostic:
 
     @pytest.fixture(autouse=True)
     def _force_color(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Exercise the color-forced path on every run (not just a dev shell
-        # that happens to set it) — an ANSI-wrapped "docs/note.md" or
-        # "banned-term finding(s)" breaks a plain substring match otherwise
-        # (souliane/teatree#2359).
-        monkeypatch.setenv("FORCE_COLOR", "1")
+        # banned_terms.py's `_console = Console()` is a module-level singleton;
+        # its color_system is resolved once from os.environ at import time and
+        # cached, so a runtime monkeypatch.setenv("FORCE_COLOR", ...) never
+        # reaches it. Reconstruct the singleton with force_terminal pinned
+        # directly instead, so the color-forced path is exercised on every
+        # run (not just a dev shell that happens to set it) — an ANSI-wrapped
+        # "docs/note.md" or "banned-term finding(s)" breaks a plain substring
+        # match otherwise (souliane/teatree#2359).
+        monkeypatch.setattr(banned_terms_cli, "_console", Console(force_terminal=True))
 
     def test_terminology_only_summary_does_not_say_brand(self, tmp_path: Path) -> None:
         # A conflated-terminology hit whose ONLY finding is a terminology
