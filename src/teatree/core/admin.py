@@ -16,7 +16,8 @@ from teatree.core.models import (
 
 @admin.register(Ticket)
 class TicketAdmin(admin.ModelAdmin):
-    list_display = ("id", "state", "variant", "issue_url")
+    list_display = ("id", "state", "variant", "issue_url", "repo_namespaced_key")
+    search_fields = ("issue_url", "repo_namespaced_key")
 
 
 @admin.register(Worktree)

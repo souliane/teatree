@@ -402,10 +402,10 @@ The ``ticket rubric-set`` / ``rubric-grade`` commands, mounted via MRO inheritan
 
 | Subcommand | Description |
 | --- | --- |
+| `context` | Durable per-ticket knowledge store (#627, repo-namespaced key #2293) |
 | `show` | Show a ticket's state plus the per-phase ``attempt N/max`` budget (#2009) |
 | `transition` | Transition a ticket to a new state |
 | `plan` | Record a PlanArtifact and advance the ticket STARTED → PLANNED |
-| `context` | Durable per-ticket knowledge store (#627) |
 | `clear` | Issue a per-diff CLEAR — the orchestrator's only merge output (BLUEPRINT §17.4.2) |
 | `merge` | Execute the missing IN_REVIEW → MERGED keystone transition (BLUEPRINT §17.4) |
 | `comment` | Post a comment to an issue or work item by its URL |

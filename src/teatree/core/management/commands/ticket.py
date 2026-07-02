@@ -3,15 +3,15 @@
 import logging
 from typing import Annotated, TypedDict
 
-import click
 import typer
 from django.db import transaction
 from django_fsm import TransitionNotAllowed
-from django_typer.management import TyperCommand, command, group
+from django_typer.management import TyperCommand, command
 
 from teatree.core.gates.owned_repo_guard import MergeKeystoneResult, escalated_merge_result, merge_clear_refusal
 from teatree.core.gates.schema_guard import SelfDbMigrationError, require_current_schema
 from teatree.core.management.commands._clear_preflight import clear_preflight_refusal
+from teatree.core.management.commands._context_commands import ContextCommands
 from teatree.core.management.commands._plan_gate_commands import (
     PlanAdvanceError,
     PlanReconcileResult,
@@ -60,11 +60,6 @@ class ClearIssueResult(TypedDict, total=False):
     ticket_id: int
     recorded_verdict_id: int
     error: str
-
-
-class ContextResult(TypedDict, total=False):
-    ticket_id: int
-    context: str
 
 
 class DodOverrideResult(TypedDict, total=False):
@@ -117,7 +112,7 @@ _ALLOWED_TRANSITIONS = {
 }
 
 
-class Command(RubricCommands, TicketShowCommands, TyperCommand):
+class Command(RubricCommands, TicketShowCommands, ContextCommands, TyperCommand):
     @command()
     def transition(self, ticket_id: int, transition_name: str) -> dict[str, object]:
         """Transition a ticket to a new state.
@@ -415,51 +410,6 @@ class Command(RubricCommands, TicketShowCommands, TyperCommand):
         except Ticket.DoesNotExist:
             self.stderr.write(f"  Ticket {ticket_id} not found")
             raise SystemExit(1) from None
-
-    @group(help="Durable per-ticket knowledge store (#627).")
-    def context(self) -> None:
-        """Group root — forces sub-commands to be addressed by name."""
-
-    @context.command(name="show")
-    def context_show(self, ticket_id: int) -> ContextResult:
-        """Print the ticket's durable context store."""
-        ticket = self._resolve_ticket(ticket_id)
-        self.stdout.write(ticket.context or "(empty)")
-        return {"ticket_id": int(ticket.pk), "context": ticket.context}
-
-    @context.command(name="add")
-    def context_add(self, ticket_id: int, entry: str) -> ContextResult:
-        """Append a timestamped ``<key>: <value>`` line to the context store.
-
-        Append-only: parallel sessions never overwrite each other (open
-        question 2). A blank entry is refused with a nonzero exit.
-        """
-        ticket = self._resolve_ticket(ticket_id)
-        try:
-            updated = ticket.append_context(entry)
-        except ValueError as exc:
-            self.stderr.write(f"  refused: {exc}")
-            raise SystemExit(1) from exc
-        self.stdout.write(f"  appended to ticket {ticket.pk} context")
-        return {"ticket_id": int(ticket.pk), "context": updated}
-
-    @context.command(name="edit")
-    def context_edit(self, ticket_id: int) -> ContextResult:
-        """Open the full context store in ``$EDITOR`` and replace it.
-
-        Unlike ``add``, ``edit`` is a full-field rewrite — for pruning stale
-        entries or restructuring. An aborted edit (editor exits without
-        saving) leaves the store untouched.
-        """
-        ticket = self._resolve_ticket(ticket_id)
-        edited = click.edit(ticket.context)
-        if edited is None:
-            self.stdout.write(f"  edit aborted — ticket {ticket.pk} context unchanged")
-            return {"ticket_id": int(ticket.pk), "context": ticket.context}
-        ticket.context = edited
-        ticket.save(update_fields=["context"])
-        self.stdout.write(f"  ticket {ticket.pk} context replaced")
-        return {"ticket_id": int(ticket.pk), "context": edited}
 
     @command()
     # ast-grep-ignore: ac-django-no-complexity-suppressions

@@ -765,6 +765,10 @@
       "name": "ticket",
       "subcommands": [
         {
+          "help": "Durable per-ticket knowledge store (#627, repo-namespaced key #2293)",
+          "name": "context"
+        },
+        {
           "help": "Show a ticket's state plus the per-phase ``attempt N/max`` budget (#2009)",
           "name": "show"
         },
@@ -775,10 +779,6 @@
         {
           "help": "Record a PlanArtifact and advance the ticket STARTED \u2192 PLANNED",
           "name": "plan"
-        },
-        {
-          "help": "Durable per-ticket knowledge store (#627)",
-          "name": "context"
         },
         {
           "help": "Issue a per-diff CLEAR \u2014 the orchestrator's only merge output (BLUEPRINT \u00a717.4.2)",

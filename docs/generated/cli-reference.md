@@ -7647,7 +7647,7 @@ Usage: t3 teatree ticket create-sub [OPTIONS]
 ```
 Usage: t3 teatree ticket context [OPTIONS] COMMAND [ARGS]...
 
- Durable per-ticket knowledge store (#627).
+ Durable per-ticket knowledge store (#627, repo-namespaced key #2293).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -7666,8 +7666,12 @@ Usage: t3 teatree ticket context show [OPTIONS] TICKET_ID
 
  Print the ticket's durable context store.
 
+ ``ticket_id`` accepts the internal DB pk, the full issue URL, the
+ bare issue number, or the repo-namespaced key (``owner/repo#42``) —
+ the same identifier set as ``pr create`` (#694, #2293).
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    ticket_id      INTEGER  [required]                                      │
+│ *    ticket_id      TEXT  [required]                                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -7683,10 +7687,11 @@ Usage: t3 teatree ticket context add [OPTIONS] TICKET_ID ENTRY
 
  Append-only: parallel sessions never overwrite each other (open
  question 2). A blank entry is refused with a nonzero exit.
+ ``ticket_id`` accepts the same identifier set as ``context show``.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    ticket_id      INTEGER  [required]                                      │
-│ *    entry          TEXT     [required]                                      │
+│ *    ticket_id      TEXT  [required]                                         │
+│ *    entry          TEXT  [required]                                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -7702,10 +7707,11 @@ Usage: t3 teatree ticket context edit [OPTIONS] TICKET_ID
 
  Unlike ``add``, ``edit`` is a full-field rewrite — for pruning stale
  entries or restructuring. An aborted edit (editor exits without
- saving) leaves the store untouched.
+ saving) leaves the store untouched. ``ticket_id`` accepts the same
+ identifier set as ``context show``.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    ticket_id      INTEGER  [required]                                      │
+│ *    ticket_id      TEXT  [required]                                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │

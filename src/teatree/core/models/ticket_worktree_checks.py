@@ -8,10 +8,13 @@ stays under the module-health LOC cap.
 
 from typing import TYPE_CHECKING
 
+from django.apps import apps
+
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 
 if TYPE_CHECKING:
+    from teatree.core.models.ticket import Ticket
     from teatree.core.models.worktree import Worktree
 
 
@@ -55,6 +58,29 @@ def worktree_tracked_dirty_path(worktree: "Worktree") -> str | None:
         return None
     tracked_dirty = any(line and not line.startswith("??") for line in porcelain.splitlines())
     return repo_path if tracked_dirty else None
+
+
+def collect_dirty_worktree_paths(ticket: "Ticket") -> list[str]:
+    """Return the on-disk paths of every ``ticket`` worktree with uncommitted tracked changes.
+
+    Backs ``Ticket._refuse_if_worktree_dirty`` (#884 preflight, moved out here
+    in the #1983 LOC-ratchet split): a worktree with uncommitted *tracked*
+    changes must not let its ticket's FSM advance — the agent has to commit
+    or discard first. We do NOT auto-stash: teatree worktrees share one
+    ``.git`` so a stash is repo-global and would clobber an unrelated
+    branch's work (the foreign-stash hazard, near-miss class #806).
+
+    Untracked-only files do not block (the #925 distinction): a
+    fast-forward never conflicts with untracked scratch, and the loop
+    legitimately leaves scratch files around — only a tracked modification
+    is the refusal trigger, via :func:`worktree_tracked_dirty_path`.
+    """
+    worktree_model = apps.get_model("core", "Worktree")
+    return [
+        path
+        for wt in worktree_model.objects.filter(ticket=ticket)
+        if (path := worktree_tracked_dirty_path(wt)) is not None
+    ]
 
 
 def _resolve_base_branch(repo_path: str) -> str:

@@ -58,13 +58,17 @@ class _OverlayFilterMixin:
 
 class TicketQuerySet(_OverlayFilterMixin, models.QuerySet):
     def resolve(self, ref: str) -> "Ticket":
-        """Resolve a ticket from a numeric pk, an issue number, or an issue URL.
+        """Resolve a ticket from a pk, an issue number, an issue URL, or a repo key.
 
         Accepts a numeric pk (``"314"`` — direct DB lookup), a full issue URL
         (``"https://github.com/owner/repo/issues/466"`` — exact match on
-        ``issue_url``), or a bare issue number when no pk exists (``"466"`` —
+        ``issue_url``), a bare issue number when no pk exists (``"466"`` —
         matches an ``issue_url`` ending in ``/466`` *or* one stored as the
-        bare string ``"466"``, #707). Shared by
+        bare string ``"466"``, #707), or the collision-free repo-namespaced
+        key (``"owner/repo#466"`` — exact match on ``repo_namespaced_key``,
+        #2293). The bare-number fallback stays ambiguous by construction (a
+        digit alone carries no repo information) — pass the repo-namespaced
+        key or the full URL when two repos share an issue number. Shared by
         ``pr create`` and ``lifecycle visit-phase`` so both accept the same
         identifier set (#694) — callers naturally pass the forge issue number
         and must not silently hit ``DoesNotExist``.
@@ -82,9 +86,12 @@ class TicketQuerySet(_OverlayFilterMixin, models.QuerySet):
                 if ticket is not None:
                     return ticket
                 raise
+        keyed = self.filter(repo_namespaced_key=ref).first()
+        if keyed is not None:
+            return keyed
         ticket = self.filter(issue_url=ref).first()
         if ticket is None:
-            msg = f"No ticket matching {ref!r} (looked up by pk and issue_url)"
+            msg = f"No ticket matching {ref!r} (looked up by pk, issue_url, and repo_namespaced_key)"
             raise ticket_model.DoesNotExist(msg)
         return ticket
 

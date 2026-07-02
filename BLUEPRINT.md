@@ -82,6 +82,8 @@ Five core lifecycle models in `teatree.core.models/`, all FSM-driven (`django-fs
 
 `Ticket` also carries a `Role` enum (`AUTHOR` / `REVIEWER`) orthogonal to its state. The reviewer role drives the §5.6 `reviewer_prs` scanner (`Ticket(role="reviewer", issue_url=<pr_url>)`) and short-circuits to `delivered` once the review work completes; the author role is the default lifecycle.
 
+**Repo-namespaced ticket key ([#2293](https://github.com/souliane/teatree/issues/2293)).** `Ticket.repo_namespaced_key` is a collision-free `<repo-slug>#<issue-number>` computed from `issue_url` on save (issue-only — GitLab issues and merge requests are separate numbering sequences in the same project, so a PR/MR URL never feeds this key), backed by a partial unique constraint mirroring `issue_url`'s. `TicketManager.resolve()` and `t3 <overlay> ticket context show|add|edit` (the durable per-ticket context store, [#627](https://github.com/souliane/teatree/issues/627)) accept it alongside pk / bare issue number / full issue URL, so `owner/repo#42` never risks landing on a different repo's issue #42.
+
 **State machines** (one row per `Ticket` is the unit of work):
 
 | Model | States |
