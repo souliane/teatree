@@ -14,9 +14,7 @@ from teatree.core.models import PendingChatInjection, Task
 from teatree.loop.slack_answer.cycle import (
     SlackAnswerReport,
     _default_resolver,
-    _default_self_user_id,
     _delegate_needs_work,
-    _drop_self_authored,
     _handle_ack,
     _process_unit,
     _react_eyes_once,
@@ -318,44 +316,3 @@ class TestDefaultResolver:
         ) as factory:
             assert _default_resolver("") is None
         factory.assert_called_once_with(None)
-
-
-class TestDefaultSelfUserId:
-    def test_delegates_to_resolve_user_id_with_overlay(self) -> None:
-        with patch(
-            "teatree.core.notify.resolve_user_id",
-            return_value="U-CONFIGURED",
-        ) as resolve:
-            assert _default_self_user_id("acme") == "U-CONFIGURED"
-        resolve.assert_called_once_with(overlay="acme")
-
-
-class TestDropSelfAuthored:
-    """Branch coverage for #1941's per-row self-author filter."""
-
-    def test_resolver_exception_keeps_the_row_fail_open(self) -> None:
-        row = PendingChatInjection.record(channel="C1", slack_ts="1.0", text="fix it", user_id="U-USER")
-        assert row is not None
-        report = SlackAnswerReport()
-
-        def _boom(_overlay: str) -> str:
-            msg = "slack config unreachable"
-            raise RuntimeError(msg)
-
-        kept = _drop_self_authored([row], _boom, report)
-
-        assert kept == [row]
-        assert report.self_skipped == 0
-
-    def test_cas_lost_row_is_dropped_not_kept_or_counted(self) -> None:
-        # A concurrent cycle already stamped loop_replied_at first: the CAS
-        # loses, so the row is neither re-queued (kept) nor double-counted.
-        row = PendingChatInjection.record(channel="C1", slack_ts="1.0", text="fix it", user_id="U-USER")
-        assert row is not None
-        report = SlackAnswerReport()
-
-        with patch.object(type(row), "mark_loop_replied", return_value=False):
-            kept = _drop_self_authored([row], lambda _overlay: "U-USER", report)
-
-        assert kept == []
-        assert report.self_skipped == 0
