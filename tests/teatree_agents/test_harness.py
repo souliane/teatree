@@ -12,6 +12,7 @@ same way :class:`FakeHarnessSession` proves it for the generic seam.
 """
 
 import asyncio
+import json
 import os
 from collections.abc import AsyncIterator
 from unittest.mock import patch
@@ -20,9 +21,11 @@ import pytest
 from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ResultMessage, TextBlock
 from django.test import TestCase
 from pydantic_ai import Agent
+from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 
+import teatree.agents.harness as harness_mod
 import teatree.agents.headless as headless_mod
 from teatree.agents.harness import (
     ClaudeSdkHarness,
@@ -77,6 +80,22 @@ def test_pydantic_ai_harness_open_enters_and_exits_the_agent() -> None:
     assert after == 0
 
 
+def test_pydantic_ai_harness_open_seeds_the_session_with_injected_history() -> None:
+    # (#2886) The harness-level `history` constructor param threads through
+    # `open()` into the opened session, unchanged.
+    seed_agent = Agent(TestModel(custom_output_text="seed"))
+    seed_history = asyncio.run(seed_agent.run("seed")).all_messages()
+    harness = PydanticAiHarness(model=TestModel(), history=seed_history)
+    options = ClaudeAgentOptions()
+
+    async def drive() -> list[ModelMessage]:
+        async with harness.open(options) as session:
+            assert isinstance(session, PydanticAiHarnessSession)
+            return session.history
+
+    assert asyncio.run(drive()) == seed_history
+
+
 class TestResolveHarness(TestCase):
     @pytest.fixture(autouse=True)
     def _isolate_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -107,6 +126,51 @@ class TestResolveHarness(TestCase):
         ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
         with patch.dict(os.environ, {"T3_AGENT_HARNESS": "claude_sdk"}):
             assert isinstance(resolve_harness(), ClaudeSdkHarness)
+
+
+class TestResolveHarnessRehydratesPydanticAiThread(TestCase):
+    """``resolve_harness(task)`` seeds the resumed harness with the parked thread (#2886)."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_AGENT_HARNESS", raising=False)
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+
+    def setUp(self) -> None:
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+        self.ticket = Ticket.objects.create()
+        self.session = Session.objects.create(ticket=self.ticket)
+        self.parked = Task.objects.create(ticket=self.ticket, session=self.session)
+        self.resumed = Task.objects.create(ticket=self.ticket, session=self.session, parent_task=self.parked)
+
+    def test_no_task_opens_an_empty_conversation(self) -> None:
+        harness = resolve_harness()
+        assert isinstance(harness, PydanticAiHarness)
+        assert harness._history is None
+
+    def test_task_with_no_parked_ancestor_opens_an_empty_conversation(self) -> None:
+        harness = resolve_harness(self.resumed)
+        assert isinstance(harness, PydanticAiHarness)
+        assert harness._history is None
+
+    def test_parked_ancestor_thread_is_rehydrated_and_consumed(self) -> None:
+        from teatree.agents.pydantic_ai_resume import persist_parked_thread  # noqa: PLC0415
+
+        agent = Agent(TestModel(custom_output_text="hi"))
+        result = asyncio.run(agent.run("hello"))
+        persist_parked_thread(self.parked, result.all_messages())
+
+        harness = resolve_harness(self.resumed)
+
+        assert isinstance(harness, PydanticAiHarness)
+        assert harness._history == result.all_messages()
+        # Single-use: a second resolve for the same chain finds nothing left.
+        harness_again = resolve_harness(self.resumed)
+        assert harness_again._history is None
+
+    def test_claude_sdk_backend_ignores_task_entirely(self) -> None:
+        ConfigSetting.objects.set_value("agent_harness", "claude_sdk")
+        assert isinstance(resolve_harness(self.resumed), ClaudeSdkHarness)
 
 
 class TestDriveThroughInjectedHarness(TestCase):
@@ -205,6 +269,75 @@ class TestRunHeadlessDrivesPydanticAiHarness(TestCase):
         assert TaskAttempt.objects.filter(task=self.task).count() == 1
 
 
+class TestRunHeadlessCachedResumeParity(TestCase):
+    """End-to-end park -> resume through the REAL ``resolve_harness`` (#2886).
+
+    Unlike ``TestRunHeadlessDrivesPydanticAiHarness`` (which injects a fixed
+    harness, bypassing resolution), this drives ``run_headless`` through the
+    genuine ``resolve_harness(task)`` seam for BOTH the parking dispatch and
+    the resumed continuation — proving the persisted thread actually reaches
+    the resumed session's first turn, not just that the plumbing types check.
+    """
+
+    def setUp(self) -> None:
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+        self.ticket = Ticket.objects.create()
+        self.session = Session.objects.create(ticket=self.ticket, agent_id="agent-1")
+        self.task = Task.objects.create(
+            ticket=self.ticket,
+            session=self.session,
+            phase="coding",
+            execution_target=Task.ExecutionTarget.HEADLESS,
+        )
+
+    def test_resumed_dispatch_rehydrates_the_parked_conversation(self) -> None:
+        park_json = json.dumps({"summary": "blocked", "needs_user_input": True, "user_input_reason": "need it"})
+        finish_json = json.dumps({"summary": "done", "files_modified": ["a.py"]})
+        responses = [park_json, finish_json]
+        captured_message_counts: list[int] = []
+
+        async def stream_fn(messages: object, _info: AgentInfo) -> AsyncIterator[str]:
+            await asyncio.sleep(0)
+            captured_message_counts.append(len(messages))
+            yield responses[len(captured_message_counts) - 1]
+
+        with (
+            patch.object(
+                harness_mod.PydanticAiHarness,
+                "_resolve_model",
+                lambda self, options: FunctionModel(stream_function=stream_fn),
+            ),
+            patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
+        ):
+            park_attempt = run_headless(self.task, phase="coding", overlay_skill_metadata={})
+
+        self.task.refresh_from_db()
+        assert park_attempt.result["needs_user_input"] is True
+        self.ticket.refresh_from_db()
+        assert str(self.task.pk) in self.ticket.extra.get("pydantic_ai_threads", {})
+
+        from teatree.core.models.task_handoff import schedule_headless_resume  # noqa: PLC0415
+
+        resumed_task = schedule_headless_resume(self.task, answer="go ahead")
+
+        with (
+            patch.object(
+                harness_mod.PydanticAiHarness,
+                "_resolve_model",
+                lambda self, options: FunctionModel(stream_function=stream_fn),
+            ),
+            patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
+        ):
+            resume_attempt = run_headless(resumed_task, phase="coding", overlay_skill_metadata={})
+
+        assert resume_attempt.result["summary"] == "done"
+        # The resumed turn's model call carried more messages than a bare
+        # first prompt would — the rehydrated park thread landed on it.
+        assert captured_message_counts[1] > 1
+        self.ticket.refresh_from_db()
+        assert str(self.task.pk) not in self.ticket.extra.get("pydantic_ai_threads", {})
+
+
 class TestPydanticAiHarnessSession:
     """The ``pydantic_ai`` session adapter — query/receive_response/interrupt."""
 
@@ -248,6 +381,41 @@ class TestPydanticAiHarnessSession:
         asyncio.run(drive())
         # Two full request/response exchanges recorded in history.
         assert len(session._history) == 4
+
+    def test_seeded_history_is_sent_on_the_first_turn(self) -> None:
+        # (#2886) A resumed session is constructed with a prior conversation —
+        # the FIRST run_stream must already carry it, proving cached-resume
+        # parity with ClaudeSDKClient's `--resume` continuation.
+        captured: list[int] = []
+
+        async def stream_fn(messages: object, _info: AgentInfo) -> AsyncIterator[str]:
+            await asyncio.sleep(0)
+            captured.append(len(messages))
+            yield "ack"
+
+        seed_agent = Agent(TestModel(custom_output_text="seed turn"))
+        seed_result = asyncio.run(seed_agent.run("seed prompt"))
+        seed_history = seed_result.all_messages()
+
+        agent = Agent(FunctionModel(stream_function=stream_fn))
+        session = PydanticAiHarnessSession(agent, model_name="test", history=seed_history)
+
+        assert session.history == seed_history
+
+        async def drive() -> None:
+            await session.query("continue")
+            _ = [m async for m in session.receive_response()]
+
+        asyncio.run(drive())
+
+        # The model saw the seeded turn's messages PLUS the new prompt.
+        assert captured == [len(seed_history) + 1]
+        assert len(session.history) > len(seed_history)
+
+    def test_no_history_seed_starts_empty(self) -> None:
+        agent = Agent(TestModel(custom_output_text="unused"))
+        session = PydanticAiHarnessSession(agent, model_name="test")
+        assert session.history == []
 
     def test_interrupt_before_any_query_is_a_safe_no_op(self) -> None:
         agent = Agent(TestModel())

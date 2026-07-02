@@ -17,6 +17,15 @@ vocabulary (``AssistantMessage`` / ``ResultMessage``) from :meth:`HarnessSession
 so the driver (:func:`teatree.agents.headless._collect`) never special-cases the
 transport — that vocabulary IS the seam's provider-agnostic contract, proved by
 the ``FakeHarnessSession`` test double yielding the identical shape.
+
+[#2886](https://github.com/souliane/teatree/issues/2886) brings the
+``pydantic_ai`` backend to park/resume parity with ``ClaudeSdkHarness``'s
+SDK-native ``--resume <session_id>``: :class:`PydanticAiHarnessSession` can be
+SEEDED with a prior ``message_history`` (constructor param, threaded through
+:class:`PydanticAiHarness`), and :func:`resolve_harness` rehydrates that
+history from the durable store (:mod:`teatree.agents.pydantic_ai_resume`) when
+given the resuming ``Task``. The transport stays pure/injectable — persistence
+lives in the sibling module, never inside the harness classes themselves.
 """
 
 import asyncio
@@ -31,12 +40,15 @@ from pydantic_ai.models.openai import OpenAIChatModel, OpenAIChatModelSettings, 
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from teatree.agents.model_tiering import DEFAULT_TIER, HARNESS_EFFORT_SCALE, resolve_tier
+from teatree.agents.pydantic_ai_resume import rehydrate_thread_for_resume
 from teatree.config import AgentHarness, get_effective_settings
 from teatree.llm.credentials import resolve_orca_router_provider_config
 
 if TYPE_CHECKING:
     from pydantic_ai.messages import ModelMessage
     from pydantic_ai.result import StreamedRunResult
+
+    from teatree.core.models import Task
 
 
 class HarnessSession(Protocol):
@@ -128,16 +140,34 @@ class PydanticAiHarnessSession:
     disambiguates them. Swallowing the latter would silently report an empty
     result instead of the runtime-breach ``stuck_reason`` the watchdog contract
     requires.
+
+    ``history`` (#2886) SEEDS ``_history`` from a prior conversation — a
+    resumed park carries the rehydrated ``list[ModelMessage]`` in here so the
+    FIRST ``run_stream`` on the resumed session already includes it, matching
+    ``ClaudeSDKClient``'s ``--resume`` continuation contract. The
+    :attr:`history` property exposes the accumulated conversation so a caller
+    (:func:`headless._collect`) can persist it back out on a subsequent park.
     """
 
-    def __init__(self, agent: Agent[None, str], *, model_name: str) -> None:
+    def __init__(
+        self,
+        agent: Agent[None, str],
+        *,
+        model_name: str,
+        history: "list[ModelMessage] | None" = None,
+    ) -> None:
         self._agent = agent
         self._model_name = model_name
-        self._history: list[ModelMessage] = []
+        self._history: list[ModelMessage] = list(history) if history else []
         self._pending_prompt: str | None = None
         self._active_task: asyncio.Task[str] | None = None
         self._active_stream: StreamedRunResult[None, str] | None = None
         self._interrupted = False
+
+    @property
+    def history(self) -> "list[ModelMessage]":
+        """The accumulated conversation so far (seed + every completed turn)."""
+        return self._history
 
     async def query(self, prompt: str) -> None:
         self._pending_prompt = prompt
@@ -214,10 +244,17 @@ class PydanticAiHarness:
     pydantic_ai's own :class:`~pydantic_ai.models.test.TestModel` /
     :class:`~pydantic_ai.models.function.FunctionModel` doubles, with no network
     and no :class:`~teatree.llm.credentials.CredentialError` risk.
+
+    *history* (#2886) is the rehydrated conversation of a RESUMED park, if
+    any — passed straight through to the opened :class:`PydanticAiHarnessSession`
+    so its first turn already carries the prior context. ``None``/absent (the
+    default, and every non-resumed dispatch) opens a fresh empty conversation,
+    byte-identical to before cached-resume existed.
     """
 
-    def __init__(self, *, model: Model | None = None) -> None:
+    def __init__(self, *, model: Model | None = None, history: "list[ModelMessage] | None" = None) -> None:
         self._model = model
+        self._history = history
 
     def _resolve_model(self, options: ClaudeAgentOptions) -> Model:
         if self._model is not None:
@@ -238,10 +275,10 @@ class PydanticAiHarness:
         # exit — a bare ``Agent(...)`` never closes it, leaking a client per
         # dispatch until GC.
         async with agent:
-            yield PydanticAiHarnessSession(agent, model_name=model.model_name)
+            yield PydanticAiHarnessSession(agent, model_name=model.model_name, history=self._history)
 
 
-def resolve_harness() -> Harness:
+def resolve_harness(task: "Task | None" = None) -> Harness:
     """Return the headless transport backend selected by ``agent_harness``.
 
     Defaults to :class:`ClaudeSdkHarness` (today's behaviour, byte-identical).
@@ -249,7 +286,21 @@ def resolve_harness() -> Harness:
     ([#2885](https://github.com/souliane/teatree/issues/2885)) — its OrcaRouter
     credential resolves LAZILY inside ``open``, so selecting it here never itself
     requires a live credential.
+
+    *task* (#2886, optional — every pre-existing call site keeps working with
+    none) is the task ABOUT TO DISPATCH. When the resolved backend is
+    ``pydantic_ai`` and *task* is given, the resumable ancestor's persisted
+    thread (:func:`~teatree.agents.pydantic_ai_resume.rehydrate_thread_for_resume`)
+    is rehydrated and threaded into the constructed harness — a DB read only,
+    never a network call, so this never itself requires a live credential
+    either. Absent *task* (or no parked ancestor) opens a fresh conversation.
     """
     if get_effective_settings().agent_harness is AgentHarness.PYDANTIC_AI:
-        return PydanticAiHarness()
+        history = rehydrate_thread_for_resume(task) if task is not None else []
+        return PydanticAiHarness(history=history or None)
     return ClaudeSdkHarness()
+
+
+def pydantic_ai_thread(session: HarnessSession) -> "list[ModelMessage] | None":
+    """The session's conversation when *session* is pydantic_ai-backed, else ``None`` (#2886)."""
+    return session.history if isinstance(session, PydanticAiHarnessSession) else None

@@ -126,6 +126,14 @@ class TicketExtra(TypedDict, total=False):
     dream_gap_key: str
     dream_memory_cluster_key: str
     dream_umbrella_url: str
+    # #2886: durable pydantic_ai harness conversation store for cached-resume
+    # parity with claude_sdk's ``--resume <session>``. Keyed by the PARKED
+    # ``Task.pk`` (the same identifier ``_get_resume_session_id`` walks the
+    # ``parent_task`` chain for), each value the JSON-mode dump of a
+    # ``pydantic_ai`` ``list[ModelMessage]``. Single-use: a resume consumes
+    # (pops) its entry, so the map never accumulates stale threads. See
+    # ``teatree.agents.pydantic_ai_resume``.
+    pydantic_ai_threads: dict[str, list[object]]
 
 
 class ReviewSkillRun(TypedDict, total=False):
