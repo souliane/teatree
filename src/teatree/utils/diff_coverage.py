@@ -145,6 +145,82 @@ class DiffCoverageReport:
         return "\n".join(rows)
 
 
+def _typing_protocol_bindings(tree: ast.Module) -> tuple[set[str], set[str]]:
+    """Return ``(protocol_names, typing_module_aliases)`` bound to ``typing.Protocol``.
+
+    ``protocol_names`` is every local name that ``from typing import
+    Protocol [as X]`` binds to ``typing.Protocol`` directly.
+    ``typing_module_aliases`` is every local name that ``import typing [as
+    X]`` binds, so an ``<alias>.Protocol`` attribute access can be resolved
+    back to ``typing.Protocol``. A same-named symbol imported from anywhere
+    else (``from custom import Protocol``, ``class Foo(custom.Protocol)``)
+    binds neither set, so :func:`_inherits_protocol` correctly refuses it —
+    a bare name/attribute match with no import-provenance check would
+    wrongly exempt an unrelated class that merely happens to be named
+    ``Protocol`` (souliane/teatree#2888 review findings).
+
+    Two scoping rules, both closing a review-found gap:
+
+    - **Module level only** (``tree.body``, not :func:`ast.walk`): an
+    ``import``/``from … import`` nested inside a function or class body is
+    not visible at the module's top level where a class base is resolved,
+    so it must not bind these sets.
+    - **Last import wins, in source order**: imports are walked in the order
+    they appear, and any later import of the *same local name* from a
+    different origin (``from typing import Protocol`` then later ``from
+    custom import Protocol``, or ``import typing as t`` then later ``import
+    custom as t``) removes the earlier binding — the name no longer resolves
+    to ``typing.Protocol`` at any later point in the file, exactly as
+    Python's own name resolution rebinds it. A non-import rebinding (a plain
+    assignment or a ``def``/``class`` redefining the same name) is not
+    tracked — that shape already trips ruff's redefinition lint (``F811``),
+    a mandatory gate, so it is out of scope here.
+    """
+    protocol_names: set[str] = set()
+    typing_aliases: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                bound = alias.asname or alias.name
+                if node.module == "typing" and alias.name == "Protocol":
+                    protocol_names.add(bound)
+                else:
+                    protocol_names.discard(bound)
+                typing_aliases.discard(bound)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                bound = alias.asname or alias.name
+                if alias.name == "typing":
+                    typing_aliases.add(bound)
+                else:
+                    typing_aliases.discard(bound)
+                protocol_names.discard(bound)
+    return protocol_names, typing_aliases
+
+
+def _inherits_protocol(node: ast.ClassDef, protocol_names: set[str], typing_aliases: set[str]) -> bool:
+    """Whether *node* directly subclasses ``typing.Protocol`` (either import form).
+
+    A source-level heuristic (no cross-file type resolution, matching the
+    rest of this module): matches a base name bound by ``from typing import
+    Protocol`` (``protocol_names``) or an attribute access whose object is
+    bound by ``import typing`` (``typing_aliases``). A Protocol subclassing
+    another *custom* Protocol base (not itself importing from ``typing``) is
+    not detected — narrower is the safe default for a gate exemption.
+    """
+    for base in node.bases:
+        if isinstance(base, ast.Name) and base.id in protocol_names:
+            return True
+        if (
+            isinstance(base, ast.Attribute)
+            and base.attr == "Protocol"
+            and isinstance(base.value, ast.Name)
+            and base.value.id in typing_aliases
+        ):
+            return True
+    return False
+
+
 def _changed_production_symbols(diff: str, repo_root: Path, scope: CoverageScope) -> dict[str, set[str]]:
     """Return ``{file_path: {public top-level symbols defined on added lines}}``.
 
@@ -152,11 +228,19 @@ def _changed_production_symbols(diff: str, repo_root: Path, scope: CoverageScope
     statement falls on a line the diff adds. The mutation/revert check
     targets the importable public API surface a regression test must
     call (§17.6): private ``_``-prefixed helpers are exercised through
-    their public callers, and framework-registered entrypoints (a
+    their public callers, framework-registered entrypoints (a
     ``@…command``/route-decorated callback) are tested through the
-    framework, not by importing the callback by name — so decorated
-    top-level defs are excluded to avoid penalising that established
-    Typer-CLI test pattern. Only files inside the coverage ``source``
+    framework, not by importing the callback by name, and a ``typing.
+    Protocol`` class (souliane/teatree#2888) is a structural type contract
+    with no revertible runtime behavior of its own — its conformance is
+    checked by the type checker (``ty``/mypy) against each concrete
+    implementation, not by a test importing the Protocol by name. Requiring
+    that import produced the ad-hoc ``test_concrete_impls_satisfy_the_
+    harness_protocols`` binding test in ``tests/teatree_agents/
+    test_harness.py`` (#2565/#2885) purely to appease this check; this
+    exemption generalizes that fix into the gate itself. So decorated
+    top-level defs and Protocol classes are excluded to avoid penalising
+    those established patterns. Only files inside the coverage ``source``
     scope are considered — the symbol check matches the line-coverage
     check's file set.
     """
@@ -172,11 +256,14 @@ def _changed_production_symbols(diff: str, repo_root: Path, scope: CoverageScope
             tree = ast.parse(source_file.read_text(encoding="utf-8"))
         except SyntaxError:
             continue
+        protocol_names, typing_aliases = _typing_protocol_bindings(tree)
         names: set[str] = set()
         for node in tree.body:
             if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
                 continue
             if node.lineno not in lines or node.name.startswith("_") or node.decorator_list:
+                continue
+            if isinstance(node, ast.ClassDef) and _inherits_protocol(node, protocol_names, typing_aliases):
                 continue
             names.add(node.name)
         if names:

@@ -217,10 +217,13 @@ class TestMutationRevertSymbolCheck:
 class TestSymbolScopeRules:
     """The mutation/revert check targets the public importable API only.
 
-    Private ``_`` helpers (tested via their public callers) and
-    framework-decorated entrypoints (tested through the framework, not by
-    importing the callback by name) are excluded — they would otherwise
-    false-positive on the established Typer-CLI test pattern.
+    Private ``_`` helpers (tested via their public callers), framework-
+    decorated entrypoints (tested through the framework, not by importing
+    the callback by name), and ``typing.Protocol`` classes (a structural
+    type contract with no revertible runtime behavior — conformance is
+    checked by the type checker, not a test import; souliane/teatree#2888)
+    are excluded — they would otherwise false-positive on established
+    patterns.
     """
 
     def test_private_helper_not_required_to_be_referenced(self, git_repo: Path) -> None:
@@ -264,6 +267,132 @@ class TestSymbolScopeRules:
         # `inner` is nested, not a public importable unit — only `outer`
         # is required, and it is imported.
         assert unreferenced_changed_symbols(diff, repo_root=git_repo) == set()
+
+    def test_protocol_class_not_required_to_be_referenced(self, git_repo: Path) -> None:
+        (git_repo / "shipped.py").write_text(
+            "from typing import Protocol\n\n\nclass Thing(Protocol):\n    def one(self) -> None: ...\n",
+            encoding="utf-8",
+        )
+        diff = _worktree_diff(git_repo, "shipped.py")
+        # Thing is a structural type contract (souliane/teatree#2888) — its
+        # conformance is checked by the type checker against each concrete
+        # implementation, not by a test importing the Protocol by name. No
+        # test file changed in this diff at all, and the class is still
+        # clean (generalizes the ad-hoc test_harness.py binding-test
+        # workaround into the gate itself).
+        assert unreferenced_changed_symbols(diff, repo_root=git_repo) == set()
+
+    def test_protocol_class_via_attribute_form_not_required_to_be_referenced(self, git_repo: Path) -> None:
+        (git_repo / "shipped.py").write_text(
+            "import typing\n\n\nclass Thing(typing.Protocol):\n    def one(self) -> None: ...\n",
+            encoding="utf-8",
+        )
+        diff = _worktree_diff(git_repo, "shipped.py")
+        # `typing.Protocol` (attribute access form) is recognized the same
+        # as `from typing import Protocol`.
+        assert unreferenced_changed_symbols(diff, repo_root=git_repo) == set()
+
+    def test_non_protocol_class_still_required_to_be_referenced(self, git_repo: Path) -> None:
+        (git_repo / "shipped.py").write_text(
+            "class Thing:\n    def one(self) -> None:\n        return None\n", encoding="utf-8"
+        )
+        diff = _worktree_diff(git_repo, "shipped.py")
+        # An ordinary class (no Protocol base) is unaffected by the
+        # exemption — still flagged when no changed test references it.
+        assert "Thing" in unreferenced_changed_symbols(diff, repo_root=git_repo)
+
+    def test_custom_protocol_subclass_not_recognized_by_name_heuristic(self, git_repo: Path) -> None:
+        (git_repo / "shipped.py").write_text(
+            "from typing import Protocol\n\n\n"
+            "class Base(Protocol):\n    def one(self) -> None: ...\n\n\n"
+            "class Thing(Base):\n    def two(self) -> None: ...\n",
+            encoding="utf-8",
+        )
+        diff = _worktree_diff(git_repo, "shipped.py")
+        # Base is exempt (direct Protocol base), but Thing subclasses Base
+        # (not literally named `Protocol`) — the source-level heuristic
+        # deliberately does not resolve transitive Protocol inheritance, so
+        # Thing still requires a changed-test reference.
+        missing = unreferenced_changed_symbols(diff, repo_root=git_repo)
+        assert "Base" not in missing
+        assert "Thing" in missing
+
+    def test_attribute_form_requires_typing_module_not_any_dot_protocol(self, git_repo: Path) -> None:
+        (git_repo / "shipped.py").write_text(
+            "import custom\n\n\nclass Thing(custom.Protocol):\n    def one(self) -> None:\n        return None\n",
+            encoding="utf-8",
+        )
+        diff = _worktree_diff(git_repo, "shipped.py")
+        # `custom.Protocol` is an ordinary attribute access ending in
+        # `.Protocol`, but `custom` is not `typing` — an unrelated class
+        # merely named `Protocol` must not bypass the anti-vacuity check
+        # (review finding on souliane/teatree#2888: a bare `.attr ==
+        # "Protocol"` match with no import-provenance check wrongly
+        # exempted this).
+        assert "Thing" in unreferenced_changed_symbols(diff, repo_root=git_repo)
+
+    def test_name_form_requires_import_from_typing_not_any_protocol_name(self, git_repo: Path) -> None:
+        (git_repo / "custom.py").write_text("class Protocol:\n    pass\n", encoding="utf-8")
+        (git_repo / "shipped.py").write_text(
+            "from custom import Protocol\n\n\n"
+            "class Thing(Protocol):\n    def one(self) -> None:\n        return None\n",
+            encoding="utf-8",
+        )
+        diff = _worktree_diff(git_repo, "shipped.py", "custom.py")
+        # `Protocol` imported from a module other than `typing` is an
+        # unrelated symbol that merely shares the name — the bare-name
+        # heuristic must resolve import provenance, not just the token.
+        missing = unreferenced_changed_symbols(diff, repo_root=git_repo)
+        assert "Thing" in missing
+
+    def test_function_local_typing_import_does_not_exempt_module_level_class(self, git_repo: Path) -> None:
+        (git_repo / "shipped.py").write_text(
+            "def helper() -> None:\n    from typing import Protocol\n    return Protocol\n\n\n"
+            "class Thing(Protocol):\n    def one(self) -> None:\n        return None\n",
+            encoding="utf-8",
+        )
+        diff = _worktree_diff(git_repo, "shipped.py")
+        # `from typing import Protocol` nested inside a function body is not
+        # visible at module scope — it must not leak into the bindings used
+        # to resolve `Thing`'s top-level `Protocol` base (this file would
+        # actually raise NameError at class-definition time, since `Protocol`
+        # is never bound at module scope; the gate only ever parses source
+        # statically via `ast`, so that is irrelevant here — the point is
+        # purely to prove function scoping is respected). Review finding on
+        # souliane/teatree#2888: an `ast.walk`-based scan ignored
+        # function/class scoping entirely, so this base was wrongly exempted.
+        assert "Thing" in unreferenced_changed_symbols(diff, repo_root=git_repo)
+
+    def test_later_reimport_of_protocol_name_removes_typing_binding(self, git_repo: Path) -> None:
+        (git_repo / "custom.py").write_text("class Protocol:\n    pass\n", encoding="utf-8")
+        (git_repo / "shipped.py").write_text(
+            "from typing import Protocol\nfrom custom import Protocol\n\n\n"
+            "class Thing(Protocol):\n    def one(self) -> None:\n        return None\n",
+            encoding="utf-8",
+        )
+        diff = _worktree_diff(git_repo, "shipped.py", "custom.py")
+        # The second import rebinds the local name `Protocol` away from
+        # `typing.Protocol` — Python's own name resolution means only the
+        # LAST import wins, so `Thing(Protocol)` no longer resolves to a
+        # typing Protocol at the point of the class statement (review
+        # finding on souliane/teatree#2888).
+        missing = unreferenced_changed_symbols(diff, repo_root=git_repo)
+        assert "Thing" in missing
+
+    def test_later_reimport_of_typing_alias_removes_binding(self, git_repo: Path) -> None:
+        (git_repo / "custom.py").write_text("class Protocol:\n    pass\n", encoding="utf-8")
+        (git_repo / "shipped.py").write_text(
+            "import typing as t\nimport custom as t\n\n\n"
+            "class Thing(t.Protocol):\n    def one(self) -> None:\n        return None\n",
+            encoding="utf-8",
+        )
+        diff = _worktree_diff(git_repo, "shipped.py", "custom.py")
+        # Same rebinding rule for the module-alias form: the second `import
+        # custom as t` shadows the first `import typing as t`, so `t` no
+        # longer resolves to the `typing` module at the point `t.Protocol`
+        # is used as a base (review finding on souliane/teatree#2888).
+        missing = unreferenced_changed_symbols(diff, repo_root=git_repo)
+        assert "Thing" in missing
 
     def test_syntax_error_in_changed_file_is_skipped(self, git_repo: Path) -> None:
         (git_repo / "broken.py").write_text("def x(:\n    pass\n", encoding="utf-8")
