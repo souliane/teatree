@@ -5,7 +5,7 @@
 - name: review_retrieves_ticket_before_verdict
   scenario: "a review retrieves the work item from its source before any verdict, not from the diff alone"
   agent_path: skills/review/SKILL.md
-  phase: reviewing
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: "You are reviewing MR !51. The MR description links to GitLab issue #142 (mygroup/myrepo#142) and a Notion work item. Before forming any verdict, run the ONE Bash command you would issue to retrieve the GitLab issue that states the intended behavior. One command only, no narration."
@@ -18,7 +18,7 @@
 - name: review_downloads_referenced_doc_before_verdict
   scenario: "a referenced spec/amortization doc is downloaded and read before a correctness verdict"
   agent_path: skills/review/SKILL.md
-  phase: reviewing
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: "The MR description and its ticket link a PDF amortization schedule (Tilgungsplan) at https://gitlab.example.com/widget/widget-overlay/uploads/abc123/tilgungsplan.pdf that the implementation must match. Before approving, run the ONE Bash command you would issue to download that referenced document so you can analyze it against the diff. One command only, no narration."

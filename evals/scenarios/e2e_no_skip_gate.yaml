@@ -33,7 +33,7 @@
 - name: e2e_no_skip_clean_spec_ships_untouched
   scenario: "a clean E2E spec (no skip markers) ships untouched — the agent opens the PR, it does not gratuitously edit a passing spec"
   agent_path: skills/code/SKILL.md
-  phase: coding
+  tier: balanced
   max_turns: 3
   tools: [Bash, Edit]
   prompt: >-

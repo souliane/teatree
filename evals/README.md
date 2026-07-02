@@ -1212,9 +1212,12 @@ YAML list of one or more specs.
 - name: worktree_first
   scenario: agent must create a worktree before editing the canonical clone
   agent_path: skills/code/SKILL.md
-  phase: coding           # optional — resolve the model from this FSM phase's tier
-  # tier: balanced        # optional — OR pin an abstract tier directly
-  # model: claude-...     # optional — OR pin a concrete model (the escape hatch)
+  tier: balanced           # the shipped catalog always pins tier explicitly —
+  # phase: coding          # never bare `phase:` (coding/reviewing/planning/
+  #                        # debugging/retrospecting resolve to frontier/Opus —
+  #                        # see "The shipped catalog never opts into the
+  #                        # frontier tier" below)
+  # model: claude-...      # optional — OR pin a concrete model[@effort] (the escape hatch)
   max_turns: 3            # optional, default 30 (the generous DEFAULT_MAX_TURNS)
   tools: [Bash]           # optional, default [Bash]
   prompt: >-
@@ -1301,6 +1304,64 @@ Supported matcher operators:
 A scalar arg value that is not a string (a boolean / number such as Bash's
 `run_in_background: true`) is compared against the operator as its `str()`
 form, so `args.run_in_background: ~ "(?i)true"` matches.
+
+### The shipped catalog never opts into the `frontier` tier
+
+`phase:`/`tier:` are resolved abstractly (see "Fields" above), and
+`DEFAULT_PHASE_MODELS` maps several phases (`planning` / `coding` / `reviewing`
+/ `debugging` / `retrospecting`) to the `frontier` tier — Opus. The metered CI
+lane's single shared credential (subscription OAuth by default) is right-sized
+for a `balanced`-tier (Sonnet 5) run, not for a suite that silently mixes in
+Opus calls: souliane/teatree run 28515055436 confirmed a `frontier`-resolving
+scenario is exactly as capable of draining the shared account's usage window as
+any other, and there is no reason for the automated eval lane specifically to
+pay Opus's cost/latency premium over Sonnet 5. So **every scenario currently
+shipped under `evals/scenarios/` pins `tier: balanced` explicitly** (never bare
+`phase: coding`/`reviewing`/`planning`/`debugging`/`retrospecting`, which would
+silently resolve to `frontier`) — `tier` wins over `phase` in the resolution
+precedence, so the shipped catalog can never reach `frontier` by any path.
+`tests/eval_replay/test_catalog_never_resolves_frontier.py` pins this
+catalog-wide: it resolves every shipped scenario through
+`resolve_eval_model` and fails if any lands on the `frontier` tier's model id.
+`scripts/eval/corpus_gen/model.py::infer_tier_or_phase` enforces the same rule
+for the generated scenarios (reading `DEFAULT_PHASE_MODELS` rather than
+duplicating its frontier set, so a future frontier phase is caught
+automatically). A scenario that genuinely needs to exercise `frontier`-tier
+behavior (a benchmark cell, a deliberate model-regression check) still reaches
+it via `--models`/`--benchmark`/an explicit `model: claude-opus-4-8` pin — this
+rule is about the catalog's OWN default resolution path, not about removing
+`frontier` from the tier system.
+
+### Per-scenario effort escalation — the sanctioned lever for a flaky-on-reasoning-depth scenario
+
+When a specific scenario is flaky because it needs more reasoning depth (not
+because of CI concurrency, a cap, or a genuine behavioral gap the skill prose
+should close), the sanctioned fix is a **per-scenario** `model: claude-sonnet-
+5@<effort>` pin (`EFFORT_SCALE`: `low` / `medium` / `high` / `xhigh` / `max`) —
+never a blanket bump of the whole CI leg's `--effort` flag. Raising the
+lane-wide `--effort` (or the `efforts` matrix input) re-runs every scenario in
+that leg at the higher tier, multiplying cost and wall-clock for scenarios that
+were never flaky, when the actual fix only needs one scenario to think harder.
+The `model@effort` escape hatch (`model_variant.py`) already exists for exactly
+this — set the ONE flaky scenario's own `model: claude-sonnet-5@xhigh` (it wins
+over the lane's `--effort` default per the resolution precedence above) and
+leave the rest of the catalog at the lane's default effort.
+
+This also generally beats reaching for Opus on a hard scenario: qualitatively,
+Sonnet 5 at a given reasoning-effort level tends to match or beat Opus 4.8's
+pass rate at the same or a lower cost across the effort scale, so raising a
+Sonnet-5 scenario's OWN effort is normally the right first lever before
+escalating to a heavier/more expensive model tier — that is internal
+cost/pass-rate observation, not a citable external benchmark, so treat it as a
+starting heuristic rather than a guarantee for any specific scenario.
+
+As of this change, **no scenario ships a per-scenario effort pin** — the
+catalog stays at the lane's default effort end to end. Do not invent a
+scenario-specific `@xhigh` pin speculatively; add one only when a SPECIFIC
+scenario shows concrete evidence of reasoning-depth flakiness (a live metered
+run's per-scenario trial history, or a historical CI log showing that
+scenario — and not its siblings — failing repeatedly at the lane's default
+effort with no cap/concurrency cause).
 
 ## Adding a scenario
 

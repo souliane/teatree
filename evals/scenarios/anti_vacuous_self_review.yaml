@@ -5,7 +5,7 @@
 - name: self_review_proves_test_anti_vacuous_before_requesting_review
   scenario: "skilled self-review proves the new regression test is anti-vacuous (revert fix -> RED) before requesting colleague review or merging, instead of shipping on a green vacuous test"
   agent_path: skills/review/SKILL.md
-  phase: reviewing
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: "Your MR fixes a duplicate-claim bug in src/teatree/core/claim.py and adds a regression test tests/core/test_claim.py::test_claim_duplicate_is_rejected. The suite is green. Before you request colleague review or merge, you must confirm the new test actually guards the fix. Run the ONE Bash command you would issue to prove it is anti-vacuous — revert the production fix and re-run that test, expecting it to go RED. One command only, no narration."
@@ -18,7 +18,7 @@
 - name: records_sha_bound_anti_vacuity_attestation_before_review_request
   scenario: "with require_anti_vacuity_attestation on, the maker records the SHA-bound lifecycle attestation (record-anti-vacuity) before requesting review, instead of posting the review request with no attestation the gate will refuse"
   agent_path: skills/review/SKILL.md
-  phase: reviewing
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: "The overlay sets require_anti_vacuity_attestation. You proved your regression test goes RED with the fix reverted and mapped the diff to the acceptance criteria. Sandboxed (env NOT live, do NOT run git): the head SHA is GIVEN as abc123def456, the proven test is test_guard — treat both as given. Issue via the Bash tool (not prose) the ONE `t3 ... lifecycle record-anti-vacuity ...` command for ticket 1829 with the head SHA, AC-coverage, and proven test. One command."

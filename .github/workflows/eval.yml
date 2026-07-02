@@ -238,6 +238,26 @@ jobs:
       # `fail-fast: false` so a red shard does not cancel the other shards
       # mid-run — each leg's verdict is independent signal.
       fail-fast: false
+      # THROTTLE: every leg authenticates with the SAME single
+      # CLAUDE_CODE_OAUTH_TOKEN repo secret (one subscription account, a
+      # depleting 5h/7d usage window). Run 28515055436 (2026-07-01,
+      # workflow_dispatch) fanned ~57 legs (3 efforts x clean_room's 15 shards +
+      # under_load's 4) SIMULTANEOUSLY against that one account: its own leg's
+      # log shows the first ~10 scenarios complete real, successful, multi-second
+      # round-trip trials, then EVERY remaining scenario in EVERY leg fails
+      # `(0/3)` in ~1s each with "metered $0.00 (no metered calls)" — the
+      # account's shared window was drained by its ~56 concurrent siblings mid-run,
+      # not a dead token (the "auth failure" wording in that message is stale/
+      # misleading — see `resolve_eval_credential`). `max-parallel: 2` makes the
+      # fan-out QUEUE against the account's rate limit instead of slamming it all
+      # at once. The exact per-account concurrent-request ceiling for Claude
+      # subscription OAuth is not published anywhere citable, so 2 is a
+      # deliberately conservative starting point (raise it later with empirical
+      # evidence from a green run, e.g. a live probe of how many concurrent legs
+      # stay green) rather than a measured optimum. `--parallel` (in-job scenario
+      # concurrency) is unrelated and stays unset (sequential within a leg); this
+      # caps how many LEGS run at once across the whole matrix.
+      max-parallel: 2
       # `include` with the prepare job's `{lane, shard}` objects: each leg meters
       # exactly its lane's `index/total` shard, bounded by the LANE's per-shard
       # ceiling (clean_room ≤14, under_load ≤4 — #2683), so EVERY leg fits the
