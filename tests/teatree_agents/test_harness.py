@@ -16,11 +16,24 @@ import pytest
 from django.test import TestCase
 
 import teatree.agents.headless as headless_mod
-from teatree.agents.harness import ClaudeSdkHarness, resolve_harness
+from teatree.agents.harness import ClaudeSdkHarness, Harness, HarnessSession, resolve_harness
 from teatree.agents.headless import LoopWatchdog, TaskUsage, _build_options, _drive_with_heartbeat, run_headless
 from teatree.config import get_effective_settings
 from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket
-from tests.teatree_agents._sdk_fake import FakeHarness, assistant_text, result_message
+from tests.teatree_agents._sdk_fake import FakeHarness, FakeHarnessSession, assistant_text, result_message
+
+
+def test_concrete_impls_satisfy_the_harness_protocols() -> None:
+    # The Protocol-typed bindings are load-bearing, not decorative: they assert
+    # conformance at type-check time — ClaudeSdkHarness IS a Harness, the session
+    # double IS a HarnessSession — while the runtime asserts pin the seam's methods.
+    harness: Harness = ClaudeSdkHarness()
+    session: HarnessSession = FakeHarnessSession([result_message(session_id="s1")])
+
+    assert callable(harness.open)
+    assert callable(session.query)
+    assert callable(session.receive_response)
+    assert callable(session.interrupt)
 
 
 class TestResolveHarness(TestCase):
