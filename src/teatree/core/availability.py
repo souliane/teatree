@@ -1,10 +1,17 @@
 """Availability mode resolution — 24/7 dual question-mode (#58, §17.3 C3).
 
-Two question modes (BLUEPRINT §17.1 invariant 9 / §17.3 C3 / §5.6.3):
+Three availability modes (BLUEPRINT §17.1 invariant 9 / §17.3 C3 / §5.6.3):
 
-* ``present`` — the user is reachable; ``AskUserQuestion`` runs interactively.
-* ``away`` — the user is unreachable; the ``AskUserQuestion`` PreToolUse hook
-    converts the tool call into a :class:`DeferredQuestion` row.
+* ``present`` — the user is reachable; ``AskUserQuestion`` runs interactively
+    and the self-pump keeps the loop moving.
+* ``away`` — the user is on holiday; the ``AskUserQuestion`` PreToolUse hook
+    converts the tool call into a :class:`DeferredQuestion` row AND the
+    self-pump pauses (an explicit "stop self-driving too").
+* ``autonomous_away`` (#2544) — the user is unreachable but the factory must
+    keep running unattended: questions defer exactly like ``away`` yet the
+    self-pump keeps firing exactly like ``present``. The two behaviours
+    ``away`` conflated are split by :func:`mode_defers_questions` (away +
+    autonomous_away) and :func:`mode_pauses_self_pump` (away only).
 
 Mode resolution is a deterministic single-precedence chain (no fallback
 mystery):
@@ -58,7 +65,21 @@ logger = logging.getLogger(__name__)
 
 MODE_PRESENT = "present"
 MODE_AWAY = "away"
-_VALID_MODES = frozenset({MODE_PRESENT, MODE_AWAY})
+# Autonomous-away (#2544): the user is unreachable (questions defer, exactly
+# like holiday-away) but the factory keeps self-driving (the self-pump is NOT
+# paused, exactly like present). It exists because a permanent holiday-``away``
+# silently killed long unattended runs — ``away`` conflated "defer my questions"
+# with "stop self-pumping", so an unattended operator got both-or-neither.
+MODE_AUTONOMOUS_AWAY = "autonomous_away"
+_VALID_MODES = frozenset({MODE_PRESENT, MODE_AWAY, MODE_AUTONOMOUS_AWAY})
+
+# Modes in which the user is unreachable NOW: questions defer to the durable
+# backlog, local TTS is silenced, and returning to present drains the backlog.
+_DEFERRING_MODES = frozenset({MODE_AWAY, MODE_AUTONOMOUS_AWAY})
+# Modes that pause teatree's own self-pump (the standing keep-going directive).
+# Only holiday-``away`` pauses; autonomous-away keeps the factory running.
+_PAUSING_MODES = frozenset({MODE_AWAY})
+
 
 # How recently a ``UserPromptSubmit`` must have landed for the user to count
 # as demonstrably present. A live prompt within this window upgrades a
@@ -233,6 +254,16 @@ class Resolution:
     mode: str
     source: str  # "override" | "live" | "schedule" | "default"
 
+    @property
+    def defers_questions(self) -> bool:
+        """``AskUserQuestion`` defers to the durable backlog — away + autonomous-away (#2544)."""
+        return self.mode in _DEFERRING_MODES
+
+    @property
+    def pauses_self_pump(self) -> bool:
+        """The Stop self-pump is suppressed — holiday-``away`` only (#2544)."""
+        return self.mode in _PAUSING_MODES
+
 
 _MISSING_OVERRIDE: object = object()
 
@@ -333,8 +364,9 @@ def write_override(
     optional aware-datetime; ``None`` means the override never expires
     on its own (it is cleared explicitly with :func:`clear_override`).
 
-    Setting ``present`` from a prior effective mode of ``away`` is the
-    canonical away→present transition: it auto-drains the deferred-question
+    Setting ``present`` from a prior deferring mode (``away`` /
+    ``autonomous_away``) is the canonical away→present transition: it
+    auto-drains the deferred-question
     backlog to the user's Slack DM (the user reads Slack, not the CLI), so
     returning never silently swallows questions and never depends on the
     agent remembering to run ``t3 teatree questions resurface``. The drain only
@@ -364,7 +396,7 @@ def write_override(
     except BaseException:
         tmp_path.unlink(missing_ok=True)
         raise
-    if prior_mode == MODE_AWAY:
+    if prior_mode in _DEFERRING_MODES:
         _drain_on_return(user_id=user_id, overlay=overlay)
     return target
 
@@ -565,6 +597,7 @@ def iter_pending_questions(*, using: str | None = None) -> Iterable[DeferredQues
 
 __all__ = [
     "LIVE_TURN_FRESHNESS",
+    "MODE_AUTONOMOUS_AWAY",
     "MODE_AWAY",
     "MODE_PRESENT",
     "PRESENCE",

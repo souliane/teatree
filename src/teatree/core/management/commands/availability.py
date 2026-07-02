@@ -3,8 +3,10 @@
 Three subcommands manipulate the durable override file that takes
 priority over the cron schedule (BLUEPRINT §17.1 invariant 9 / §5.6.3):
 
-* ``t3 teatree availability away [--until ISO8601]`` — force the agent into
-    away-mode (deferred questions) until the optional expiry.
+* ``t3 teatree availability away [--until ISO8601]`` — holiday-away: defer
+    questions AND pause the self-pump, until the optional expiry.
+* ``t3 teatree availability autonomous-away [--until ISO8601]`` — unattended
+    run: defer questions but KEEP self-pumping (#2544).
 * ``t3 teatree availability present [--until ISO8601]`` — force the agent
     into present-mode (interactive questions).
 * ``t3 teatree availability auto`` — clear the override; the cron schedule
@@ -20,7 +22,14 @@ from typing import Annotated
 import typer
 from django_typer.management import TyperCommand, command, initialize
 
-from teatree.core.availability import MODE_AWAY, MODE_PRESENT, clear_override, resolve_mode, write_override
+from teatree.core.availability import (
+    MODE_AUTONOMOUS_AWAY,
+    MODE_AWAY,
+    MODE_PRESENT,
+    clear_override,
+    resolve_mode,
+    write_override,
+)
 
 
 def _parse_until(raw: str) -> datetime | None:
@@ -58,6 +67,23 @@ class Command(TyperCommand):
         """Force away-mode (deferred questions) until *until* — or forever."""
         write_override(MODE_AWAY, until=_parse_until(until))
         return _render(prefix="set away. ")
+
+    @command(name="autonomous-away")
+    def autonomous_away(
+        self,
+        until: Annotated[
+            str,
+            typer.Option(help="ISO8601 timestamp when the override expires (e.g. 2026-05-19T18:00:00+02:00)."),
+        ] = "",
+    ) -> str:
+        """Force autonomous-away — defer questions but KEEP self-pumping (#2544).
+
+        Unlike ``away`` (which also pauses the factory), autonomous-away is the
+        unattended-run state: ``AskUserQuestion`` calls defer to the durable
+        backlog while the Stop self-pump keeps driving the loop.
+        """
+        write_override(MODE_AUTONOMOUS_AWAY, until=_parse_until(until))
+        return _render(prefix="set autonomous-away. ")
 
     @command()
     def present(

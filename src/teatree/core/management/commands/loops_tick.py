@@ -7,7 +7,17 @@ firing this command scoped to its own row on its own cadence. Invoking
 ``t3 loops tick`` with NO ``--loop`` is a hard error pointing at the per-loop
 usage, so neither a human nor an agent can start a fat fan-out tick.
 
-Each per-loop tick scopes the jobs builder to that ONE enabled, due row, claims
+Each per-loop tick first reconciles availability (#2544): both drivers that fire
+this command — the loop-runner daemon's ``execute_loop`` task
+(``call_command("loops_tick", loop=name)``) and the legacy native Claude
+``/loop`` cron (which runs ``t3 loops tick --loop <name>``) — converge here, so
+consulting :func:`teatree.core.availability.resolve_mode` in ONE place reconciles
+both drivers identically. When the resolved mode's ``pauses_self_pump`` is true
+(holiday-``away`` only), the tick is skipped silently (parked) before any lease
+is claimed or overlay is preflighted; ``autonomous_away`` defers questions like
+``away`` but does NOT pause here, so an unattended run keeps self-pumping.
+
+Otherwise the tick scopes the jobs builder to that ONE enabled, due row, claims
 the disjoint per-loop ``loop:<name>`` lease (so the N per-loop loops run in
 parallel instead of serialising on a single owner) plus the ``loop-tick:<name>``
 mutex, preflights ONLY that loop's overlay (so one overlay's connector outage
@@ -34,6 +44,7 @@ from typing import TYPE_CHECKING, Annotated, Any
 import typer
 from django_typer.management import TyperCommand
 
+from teatree.core import availability
 from teatree.core.backend_factory import code_host_from_overlay, iter_overlay_backends, messaging_from_overlay
 from teatree.core.loop_lease_manager import PER_LOOP_TICK_MUTEX_PREFIX, per_loop_owner_slot
 from teatree.core.models import LoopLease
@@ -192,6 +203,22 @@ class Command(TyperCommand):
                 "`t3 loop enable <name>` + register its `/loop` (see `/t3:loops`)."
             )
             raise SystemExit(2)
+
+        # Availability reconciliation (#2544): both drivers of a per-loop tick —
+        # the loop-runner daemon's `execute_loop` task and the legacy native
+        # Claude `/loop` cron — converge on THIS command (`call_command
+        # ("loops_tick", loop=name)` vs `t3 loops tick --loop <name>`), so gating
+        # here reconciles both with zero duplicated logic. Only holiday-`away`
+        # pauses the self-pump; `autonomous_away` defers questions but keeps the
+        # factory self-pumping, so it must NOT park here.
+        resolution = availability.resolve_mode()
+        if resolution.pauses_self_pump:
+            self._emit_skip(
+                f"availability={resolution.mode} ({resolution.source}) — self-pump paused, tick parked",
+                json_output=json_output,
+                statusline_file=statusline_file,
+            )
+            return
 
         # A per-loop tick (#2650) preflights ONLY its own overlay, gated on the
         # loop being enabled + due — so one overlay's connector outage can't

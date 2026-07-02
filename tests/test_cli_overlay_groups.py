@@ -31,6 +31,10 @@ def _pr_subcommands() -> set[str]:
     return {name for name, _desc in DJANGO_GROUPS["pr"].subcommands}
 
 
+def _availability_subcommands() -> set[str]:
+    return {name for name, _desc in DJANGO_GROUPS["availability"].subcommands}
+
+
 def test_ticket_group_exposes_comment() -> None:
     assert "comment" in _ticket_subcommands()
 
@@ -82,3 +86,11 @@ def test_honesty_group_dispatches_to_core() -> None:
 def test_honesty_subcommands_map_to_real_command_methods() -> None:
     for name in _honesty_subcommands():
         assert hasattr(HonestyCommand, name.replace("-", "_")), name
+
+
+def test_availability_group_exposes_autonomous_away() -> None:
+    # #2544: the management command grew an `autonomous-away` subcommand, but
+    # without a DJANGO_GROUPS bridge entry `t3 <overlay> availability
+    # autonomous-away` returned "No such command" even though the feature
+    # (and its docs) shipped — exactly the class of regression this guards.
+    assert "autonomous-away" in _availability_subcommands()
