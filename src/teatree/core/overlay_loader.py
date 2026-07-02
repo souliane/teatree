@@ -29,7 +29,6 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "OverlayConfigResolver",
     "frontend_repos_for_overlay",
-    "get_all_overlay_names",
     "get_all_overlays",
     "get_overlay",
     "get_overlay_for_repo",
@@ -39,6 +38,7 @@ __all__ = [
     "infer_overlay_for_url",
     "reset_overlay_cache",
     "resolve_overlay_name",
+    "ticket_repo_is_overlay_own",
 ]
 
 
@@ -154,23 +154,6 @@ def get_all_overlays() -> "dict[str, OverlayBase]":
     return dict(_discover_overlays())
 
 
-def get_all_overlay_names() -> list[str]:
-    """Return all overlay names, including path-only TOML entries.
-
-    Unlike ``get_all_overlays()``, this includes TOML entries that declare a
-    ``path`` but no ``class`` — they can't be instantiated as OverlayBase but
-    should appear when listing overlays known to teatree (for ticket filtering, etc.).
-    """
-    from teatree.config import load_config  # noqa: PLC0415
-
-    names = set(_discover_overlays())
-    config = load_config()
-    for name, cfg in config.raw.get("overlays", {}).items():
-        if cfg.get("path"):
-            names.add(name)
-    return sorted(names)
-
-
 class OverlayConfigResolver:
     """Resolve a per-overlay config field, path-only-symmetrically.
 
@@ -181,8 +164,8 @@ class OverlayConfigResolver:
     reached through the CLI subprocess bridge), so ``get_overlay`` raises
     ``Overlay not found`` for it even though it is a known, registered overlay.
     For that case the field is read straight from the ``[overlays.<name>]``
-    TOML table — the same config surface :func:`get_all_overlay_names` already
-    trusts for path-only entries.
+    TOML table — the same config surface :meth:`all_names` already trusts for
+    path-only entries.
 
     Every field a gate resolves per overlay (frontend repos for the local-E2E
     gate, ``owned_repos`` for the fail-CLOSED scope gate) is registered in
@@ -190,6 +173,24 @@ class OverlayConfigResolver:
     one of those gates reads through ``get_all_overlays()`` alone (where it is
     invisible). The symmetry fitness test pins that registry.
     """
+
+    @classmethod
+    def all_names(cls) -> list[str]:
+        """Return all overlay names, including path-only TOML entries.
+
+        Unlike ``get_all_overlays()``, this includes TOML entries that declare
+        a ``path`` but no ``class`` — they can't be instantiated as
+        OverlayBase but should appear when listing overlays known to teatree
+        (for ticket filtering, etc.).
+        """
+        from teatree.config import load_config  # noqa: PLC0415
+
+        names = set(_discover_overlays())
+        config = load_config()
+        for name, cfg in config.raw.get("overlays", {}).items():
+            if cfg.get("path"):
+                names.add(name)
+        return sorted(names)
 
     @classmethod
     def _resolve(cls, name: str | None, attr: str, empty: _FieldT) -> _FieldT:
@@ -330,7 +331,7 @@ def resolve_overlay_name(name: str) -> str | None:
 
     if not name:
         return None
-    known = set(get_all_overlay_names())
+    known = set(OverlayConfigResolver.all_names())
     if name in known:
         return name
     return _match_canonical_ep(name, known)
@@ -444,6 +445,57 @@ def infer_overlay_for_url(url: str) -> str:
     if full_matches:
         return full_matches[0] if len(full_matches) == 1 else ""
     return bare_matches[0] if len(bare_matches) == 1 else ""
+
+
+def ticket_repo_is_overlay_own(ticket: "Ticket") -> bool:
+    """True iff *ticket*'s issue lives in its overlay's OWN primary repo(s).
+
+    Distinguishes an overlay's canonical repos (``get_repos()``) from its
+    broader ``get_workspace_repos()`` routing set. An overlay may declare a
+    sibling project's repo(s) in its own ``workspace_repos`` purely so
+    ``infer_overlay_for_url`` / the lifecycle machinery has *some* overlay to
+    dispatch tickets through, when that sibling project's own repo-ownership
+    config does not enumerate its own meta/tooling repo. A ticket reached
+    only through that routing convenience is not "this overlay's own
+    codebase" for a gate that means to scope to it (e.g. the review_skill
+    evidence gate, #1539 / #2895).
+
+    Uses the same two-tier slug matching :func:`infer_overlay_for_url`
+    already uses (:func:`_full_slug_owns` / :func:`_bare_name_owns`), just
+    scoped to ``get_repos()`` instead of ``get_workspace_repos()``.
+
+    Fails OPEN (returns ``True``, i.e. "treat as the overlay's own repo") on
+    every undeterminable case — no ``issue_url``, an unparsable URL, an
+    unresolvable overlay, or a ``get_repos()`` that raises or returns nothing
+    — so a caller that narrows behaviour based on this function never widens
+    the narrowing beyond the specific routed-through case it targets.
+    """
+    if not ticket.issue_url:
+        return True
+    url_slug = _url_to_slug(ticket.issue_url)
+    if not url_slug:
+        return True
+
+    try:
+        overlay = get_overlay_for_ticket(ticket)
+    except ImproperlyConfigured:
+        return True
+
+    try:
+        repos = [r for r in overlay.get_repos() or [] if isinstance(r, str)]
+    except Exception:
+        logger.warning(
+            "Overlay %r get_repos() failed during ticket repo-ownership check",
+            ticket.overlay,
+            exc_info=True,
+        )
+        return True
+
+    return (
+        not repos
+        or any(_full_slug_owns(repo, url_slug) for repo in repos)
+        or any(_bare_name_owns(repo, url_slug) for repo in repos)
+    )
 
 
 def _overlay_repo_slugs_for_inference() -> "list[tuple[str, list[str]]]":

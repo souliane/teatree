@@ -52,7 +52,7 @@ def _registered(overlays: dict[str, OverlayBase]) -> Iterator[None]:
     with (
         patch("teatree.core.connector_preflight.get_all_overlays", return_value=overlays),
         patch("teatree.loops.connector_preflight.get_all_overlays", return_value=overlays),
-        patch("teatree.core.overlay_loader.get_all_overlay_names", return_value=list(overlays)),
+        patch("teatree.core.overlay_loader.OverlayConfigResolver.all_names", return_value=list(overlays)),
     ):
         yield
 
