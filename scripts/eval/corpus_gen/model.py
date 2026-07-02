@@ -15,6 +15,8 @@ disjunction (``any_of`` — at least one positive branch holds). ``op`` is
 import dataclasses
 import json
 
+from teatree.agents.model_tiering import DEFAULT_PHASE_MODELS
+
 POSITIVE = "positive"
 NEGATIVE = "negative"
 ANY_OF = "any_of"
@@ -172,6 +174,15 @@ def infer_tier_or_phase(agent_path: str) -> str:
     tier at run time) or, when no phase fits, the ``balanced`` tier. The single
     ``teatree.agents.model_tiering.TIER_MODELS`` constant owns the concrete model
     ids — this emits an ABSTRACT tier/phase only, never a model id.
+
+    A phase that :data:`teatree.agents.model_tiering.DEFAULT_PHASE_MODELS`
+    resolves to the ``frontier`` tier (``coding``/``reviewing``/``planning``/
+    ``debugging``/``retrospecting``) is pinned to ``tier: balanced`` instead of
+    emitted as ``phase:`` — a shipped scenario silently riding Opus throttled the
+    metered CI eval lane's shared subscription-OAuth account (souliane/teatree
+    run 28515055436). Reading ``DEFAULT_PHASE_MODELS`` (never duplicating its
+    frontier set here) keeps this in lockstep with production phase tiering, so
+    a future frontier phase is caught automatically rather than by memory.
     """
     p = agent_path.lower()
     phase = None
@@ -189,7 +200,7 @@ def infer_tier_or_phase(agent_path: str) -> str:
         phase = "shipping"
     elif "/retro/" in p:
         phase = "retrospecting"
-    if phase is not None:
+    if phase is not None and DEFAULT_PHASE_MODELS.get(phase) != "frontier":
         return f"  phase: {phase}"
     return "  tier: balanced"
 

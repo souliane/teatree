@@ -40,7 +40,7 @@
 - name: hold_colleague_product_repo_mr
   scenario: "a teammate-authored acme-product MR is colleague work — the agent holds it for review, never auto-merging"
   agent_path: skills/review/SKILL.md
-  phase: reviewing
+  tier: balanced
   max_turns: 4
   tools: [Bash]
   prompt: >-

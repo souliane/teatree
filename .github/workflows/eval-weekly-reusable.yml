@@ -181,6 +181,20 @@ jobs:
     strategy:
       # A red shard does not cancel the others — each leg's verdict is independent.
       fail-fast: false
+      # THROTTLE: this reusable workflow independently fans the SAME {lane, shard}
+      # matrix shape as the host's own `eval.yml` — and souliane/teatree run
+      # 28515055436 proved that fanning many legs simultaneously against ONE
+      # shared credential drains its rate limit mid-run (every leg's remaining
+      # scenarios fast-fail `(0/3)` with a misleading "auth failure" once the
+      # window is gone — see `eval.yml`'s matrix comment for the full log
+      # evidence). This lane authenticates via the EXCLUSIVE metered
+      # `anthropic-api-key` (per-token billing, no depleting usage window like
+      # the host's subscription OAuth lane), but a large simultaneous fan-out can
+      # still collide on the API's own per-account rate limit — so the same
+      # conservative queue applies here for consistency and safety. Not
+      # empirically tuned for this specific credential; raise it later with
+      # evidence from a green run.
+      max-parallel: 2
       matrix:
         include: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     # FAIL LOUD on a hang. The eval step is bounded to 80min x 2 attempts; 180min
