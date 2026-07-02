@@ -18,6 +18,11 @@ stage or by ``prek run --all-files``) is never mistaken for the commit message â
 that coupling was the bug behind task #35, where a ``fix(db)`` commit was gated
 because the first line of a staged source file was read as the "commit type".
 
+A commit mid-``git merge`` is exempt regardless of message or staged files
+(mirroring ``check_module_health.py``'s own merge exemption): its staged tree
+carries every upstream commit's changes in one shot, so it would otherwise
+false-block on virtually any non-BLUEPRINT upstream source commit.
+
 See: souliane/teatree#8
 """
 
@@ -45,6 +50,25 @@ def _staged_files() -> list[str]:
         check=False,
     )
     return result.stdout.strip().splitlines()
+
+
+def _is_merge_commit() -> bool:
+    """True mid-``git merge`` (``MERGE_HEAD`` exists), mirroring ``check_module_health.py``.
+
+    A merge commit's staged tree carries every upstream commit's changes at
+    once, including a ``src/`` change from a commit that never touched
+    BLUEPRINT.md on its own â€” a routine ``git merge origin/main`` would
+    otherwise false-block on virtually any non-BLUEPRINT upstream source
+    commit, since the commit-type exemption can't apply (a merge's default
+    message matches no ``fix:``/``refactor:``/etc. prefix).
+    """
+    result = subprocess.run(
+        ["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0
 
 
 def _is_blueprint(path: str) -> bool:
@@ -107,6 +131,9 @@ def _commit_message() -> str:
 
 
 def main() -> int:
+    if _is_merge_commit():
+        return 0
+
     msg = _commit_message()
 
     # Skip for commit types that don't need blueprint changes.

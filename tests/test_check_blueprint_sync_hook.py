@@ -16,11 +16,20 @@ argument that is a ``src/`` path was mis-read as the commit message, so the
 gated.
 """
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
 from scripts.hooks import check_blueprint_sync as hook
+
+
+@dataclass
+class _RunOptions:
+    """``TestMain._run``'s optional invocation flags."""
+
+    argv_is_src: bool = False
+    is_merge_commit: bool = False
 
 
 class TestIsBlueprint:
@@ -130,18 +139,20 @@ class TestMain:
         *,
         message: str,
         staged: list[str],
-        argv_is_src: bool = False,
+        options: _RunOptions | None = None,
     ) -> int:
+        options = options or _RunOptions()
         msg_file = tmp_path / "COMMIT_EDITMSG"
         msg_file.write_text(message + "\n", encoding="utf-8")
         # Git's canonical commit-msg path always carries the real message.
         monkeypatch.setattr(hook, "_git_commit_editmsg_path", lambda: str(msg_file))
-        if argv_is_src:
+        if options.argv_is_src:
             # Simulate the buggy invocation: a staged src path as argv[1].
             monkeypatch.setattr(hook.sys, "argv", ["check_blueprint_sync.py", "src/teatree/x.py"])
         else:
             monkeypatch.setattr(hook.sys, "argv", ["check_blueprint_sync.py", str(msg_file)])
         monkeypatch.setattr(hook, "_staged_files", lambda: staged)
+        monkeypatch.setattr(hook, "_is_merge_commit", lambda: options.is_merge_commit)
         return hook.main()
 
     def test_src_without_blueprint_fails(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -214,7 +225,7 @@ class TestMain:
             tmp_path,
             message="fix(db): reconcile renumbered migration records",
             staged=["src/teatree/db.py"],
-            argv_is_src=True,
+            options=_RunOptions(argv_is_src=True),
         )
         assert rc == 0
 
@@ -229,6 +240,38 @@ class TestMain:
             tmp_path,
             message="feat(db): a new capability",
             staged=["src/teatree/db.py"],
-            argv_is_src=True,
+            options=_RunOptions(argv_is_src=True),
+        )
+        assert rc == 1
+
+    def test_merge_commit_is_exempt_even_with_src_and_no_blueprint(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # A merge commit's default message ("Merge branch 'origin/main' into
+        # <branch>") matches no exempt prefix, and its staged tree carries
+        # every upstream commit's src/ changes without necessarily carrying a
+        # matching BLUEPRINT update in the SAME commit — merging any non-
+        # BLUEPRINT upstream source commit would otherwise always false-block.
+        rc = self._run(
+            monkeypatch,
+            tmp_path,
+            message="Merge branch 'origin/main' into some-branch",
+            staged=["src/teatree/config_agent.py"],
+            options=_RunOptions(is_merge_commit=True),
+        )
+        assert rc == 0
+
+    def test_non_merge_commit_with_unexempt_message_still_gated(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # The merge exemption must not over-correct: an ordinary (non-merge)
+        # commit with a message that happens to start with "Merge" is still
+        # gated when it isn't actually mid-merge.
+        rc = self._run(
+            monkeypatch,
+            tmp_path,
+            message="Merge in the new config helper",
+            staged=["src/teatree/config_agent.py"],
+            options=_RunOptions(is_merge_commit=False),
         )
         assert rc == 1
