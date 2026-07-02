@@ -10,9 +10,10 @@ import pytest
 from teatree.eval.api_runner import MAX_BUDGET_USD, ApiInProcessRunner
 from teatree.eval.backends import API_BACKEND, TRANSCRIPT_BACKEND, TranscriptRunner, UnknownBackendError, make_runner
 from teatree.eval.models import EvalSpec, Matcher
-from teatree.llm.credentials import AnthropicApiKeyCredential
+from teatree.llm.credentials import AnthropicSubscriptionCredential
 
-API_KEY_ENV = AnthropicApiKeyCredential().spec.env_var
+# The DEFAULT eval lane rides the subscription OAuth token (reverses #2707).
+OAUTH_ENV = AnthropicSubscriptionCredential().spec.env_var
 
 FIXTURES = Path(__file__).parents[2] / "evals" / "fixtures"
 
@@ -38,24 +39,25 @@ def _spec(
 class TestMakeRunner:
     @pytest.fixture(autouse=True)
     def _bypass_credential_routing(self) -> Iterator[None]:
-        # ``make_runner`` builds its credential through the config-aware factory, which
-        # reads the ``ConfigSetting`` store. Bypass it to the default credential so this
-        # lane is exercised DB-free — per-account routing has its own tests.
-        with patch("teatree.credential_config.resolve_api_key_credential", lambda **_: AnthropicApiKeyCredential()):
+        # ``make_runner`` resolves its credential through ``resolve_eval_credential``,
+        # which reads the ``eval_credential`` setting (DB) and the routing store.
+        # Bypass it to the DEFAULT (subscription OAuth) credential so this lane is
+        # exercised DB-free — the credential-KIND selection has its own tests.
+        with patch("teatree.credential_config.resolve_eval_credential", lambda **_: AnthropicSubscriptionCredential()):
             yield
 
     def test_api_backend_builds_in_process_api_runner(self) -> None:
-        with patch.dict(os.environ, {API_KEY_ENV: "sk-test"}, clear=False):
+        with patch.dict(os.environ, {OAUTH_ENV: "oauth-test"}, clear=False):
             assert isinstance(make_runner(API_BACKEND), ApiInProcessRunner)
 
     def test_api_backend_default_budget_is_the_cheap_cap(self) -> None:
-        with patch.dict(os.environ, {API_KEY_ENV: "sk-test"}, clear=False):
+        with patch.dict(os.environ, {OAUTH_ENV: "oauth-test"}, clear=False):
             runner = make_runner(API_BACKEND)
         assert isinstance(runner, ApiInProcessRunner)
         assert runner._max_budget_usd == pytest.approx(float(MAX_BUDGET_USD))
 
     def test_api_backend_threads_the_budget_override(self) -> None:
-        with patch.dict(os.environ, {API_KEY_ENV: "sk-test"}, clear=False):
+        with patch.dict(os.environ, {OAUTH_ENV: "oauth-test"}, clear=False):
             runner = make_runner(API_BACKEND, max_budget_usd=2.0)
         assert isinstance(runner, ApiInProcessRunner)
         assert runner._max_budget_usd == pytest.approx(2.0)
@@ -68,17 +70,17 @@ class TestMakeRunner:
         with pytest.raises(UnknownBackendError):
             make_runner("magic")
 
-    def test_api_backend_resolves_api_key_from_pass_when_env_absent(self) -> None:
-        # The host api runner authenticates from ANTHROPIC_API_KEY via the isolated
-        # env copy; make_runner must export it from pass so the operator need not.
-        # (Local default: just works.)
+    def test_api_backend_resolves_the_credential_from_pass_when_env_absent(self) -> None:
+        # The host api runner authenticates from the SELECTED eval credential
+        # (default OAuth) via the isolated env copy; make_runner must export it from
+        # pass so the operator need not. (Local default: just works.)
         with (
             patch.dict(os.environ, {}, clear=False),
-            patch("teatree.llm.credentials.read_pass", return_value="sk-pass-key"),
+            patch("teatree.llm.credentials.read_pass", return_value="oauth-pass-token"),
         ):
-            os.environ.pop(API_KEY_ENV, None)
+            os.environ.pop(OAUTH_ENV, None)
             make_runner(API_BACKEND)
-            assert os.environ.get(API_KEY_ENV) == "sk-pass-key"
+            assert os.environ.get(OAUTH_ENV) == "oauth-pass-token"
 
     def test_transcript_backend_does_not_touch_pass(self) -> None:
         # The transcript lane runs no model — it must not read the secret store.
@@ -86,7 +88,7 @@ class TestMakeRunner:
             patch.dict(os.environ, {}, clear=False),
             patch("teatree.llm.credentials.read_pass") as read_pass,
         ):
-            os.environ.pop(API_KEY_ENV, None)
+            os.environ.pop(OAUTH_ENV, None)
             make_runner(TRANSCRIPT_BACKEND)
             read_pass.assert_not_called()
 

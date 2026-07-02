@@ -20,7 +20,9 @@ The short version of the split:
   transcript-replay, corpus-grade, and the fixture replay of `scenarios/*.yaml`).
 - **evals** — a live model + grader, run on a cadence and fail-loud (the
   `--backend api` AI lane, `--judge`/`judge:` oracles, `benchmark`,
-  `skill-prose-judge`). The `sdk` backend RUNS the model fresh, metered
-  EXCLUSIVELY on `ANTHROPIC_API_KEY` (never the subscription OAuth token, which a
-  full run would throttle — #2707); the `transcript` backend REUSES a recorded
-  run and authenticates nothing.
+  `skill-prose-judge`). The `api` backend RUNS the model fresh on the credential
+  the `eval_credential` knob selects — DEFAULT the subscription OAuth token
+  (reversing #2707; no per-token bill, so the CI lane is right-sized — single
+  effort tier, smaller trial count, per-account OAuth routing — to stay inside the
+  plan's usage window), with the metered `ANTHROPIC_API_KEY` still selectable; the
+  `transcript` backend REUSES a recorded run and authenticates nothing.

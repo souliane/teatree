@@ -22,7 +22,7 @@ from teatree.cli.eval.single_trial import EscalationConfig, SingleTrialGates, ma
 from teatree.eval.api_runner import ApiInProcessRunner
 from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, Matcher
 from teatree.eval.report import MatcherResult, ScenarioResult
-from teatree.llm.credentials import AnthropicApiKeyCredential
+from teatree.llm.credentials import AnthropicSubscriptionCredential
 
 SENTINEL = "SECRET_TRANSCRIPT_LEAK_single_trial"
 
@@ -173,10 +173,11 @@ def _result(name: str, *, passed: bool) -> ScenarioResult:
 
 
 class TestMakeEscalationRunner(TestCase):
-    def test_builds_a_metered_api_runner_carrying_the_lane_effort(self) -> None:
-        # Escalation always RUNS the model fresh, so it is the metered api backend
-        # regardless of the initial backend, and it carries the lane effort.
-        with patch.object(AnthropicApiKeyCredential, "export", return_value="sk-test"):
+    def test_builds_a_fresh_run_api_runner_carrying_the_lane_effort(self) -> None:
+        # Escalation always RUNS the model fresh, so it is the api backend regardless
+        # of the initial backend, and it carries the lane effort. It resolves the
+        # default eval credential (subscription OAuth, #2707 reversal).
+        with patch.object(AnthropicSubscriptionCredential, "export", return_value="oauth-test"):
             runner = make_escalation_runner(max_budget_usd=2.0, effort="high")
         assert isinstance(runner, ApiInProcessRunner)
 

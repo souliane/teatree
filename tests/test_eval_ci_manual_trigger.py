@@ -60,12 +60,14 @@ class TestGitHubEvalTriggers:
 
     def test_backend_is_fixed_to_api_for_trials(self) -> None:
         inputs = cast("dict[str, Any]", _gh_on()["workflow_dispatch"]["inputs"])
-        assert "backend" not in inputs, "`--trials 3` is always a fresh metered SDK run."
+        assert "backend" not in inputs, "`--trials` is always a fresh SDK run — the backend is never an input."
 
         commands = "\n".join(
             step.get("with", {}).get("command", "") for step in cast("list[dict[str, Any]]", _gh_eval_job()["steps"])
         )
-        assert "--trials 3" in commands
+        # Trials is now a right-sizing input (default 2, was a hard-coded 3) threaded
+        # via the EVAL_TRIALS env var so the subscription lane stays inside the window.
+        assert '--trials "$EVAL_TRIALS"' in commands
         assert "--backend api" in commands
 
     def test_eval_job_runs_the_suite(self) -> None:

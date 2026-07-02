@@ -154,26 +154,28 @@ class ClaudeJudge:
             return JudgeVerdict(passed=True, skipped=True, rationale="run skipped")
         if shutil.which("claude") is None:
             return JudgeVerdict(passed=True, skipped=True, rationale="claude binary not on PATH")
-        # The judge is itself a billed Claude call, so route it through the SAME
-        # credential chokepoint as make_runner: export the metered ANTHROPIC_API_KEY
-        # (env wins, else the pass store) and FAIL LOUD with CredentialError when no
-        # key is resolvable. This runs only past the skip guards above — a
-        # transcript-grade-only / keyless SKIP path (no judge block, skipped run, no
-        # claude binary) grades no model, so it never reaches here and is never
-        # forced to require a key. isolated_claude_env then strips the conflicting
-        # OAuth token from the judge child's env using the same credential's spec,
-        # so the judge authenticates on the metered API exclusively — never the
-        # subscription. Imported at call time (not module top) to keep the eval CLI
-        # import chain Django-free — ``credential_config`` pulls in the routing
-        # models, which cannot be created before ``django.setup()``.
-        from teatree.credential_config import resolve_api_key_credential  # noqa: PLC0415
+        # The judge is itself a Claude call, so route it through the SAME credential
+        # chokepoint as make_runner: resolve the SELECTED eval credential (the
+        # ``eval_credential`` knob — default subscription OAuth, #2707 reversal),
+        # export it (env wins, else the pass store), and FAIL LOUD with
+        # CredentialError when none is resolvable. This runs only past the skip guards
+        # above — a transcript-grade-only / keyless SKIP path (no judge block, skipped
+        # run, no claude binary) grades no model, so it never reaches here and is
+        # never forced to require a credential. isolated_claude_env then strips the
+        # conflicting credential from the judge child's env using the same
+        # credential's spec, so the judge authenticates on the SELECTED eval
+        # credential exclusively. Imported at call time (not module top) to keep the
+        # eval CLI import chain Django-free — ``credential_config`` pulls in the
+        # routing models + settings, which cannot be created before ``django.setup()``.
+        from teatree.credential_config import resolve_eval_credential  # noqa: PLC0415
 
-        resolve_api_key_credential().export()
+        credential = resolve_eval_credential()
+        credential.export()
         if self._budget is not None:
             self._budget.consume()
         prompt = build_judge_prompt(spec, run)
         try:
-            structured = asyncio.run(_drive_judge(prompt, spec.judge.model))
+            structured = asyncio.run(_drive_judge(prompt, spec.judge.model, credential.spec.conflicting_vars))
         except TimeoutError:
             return JudgeVerdict(passed=False, skipped=False, rationale="judge timed out")
         except Exception as exc:
@@ -184,8 +186,8 @@ class ClaudeJudge:
         return _verdict_from_structured(structured)
 
 
-async def _drive_judge(prompt: str, judge_model: str) -> StructuredVerdict | None:
-    with isolated_claude_env() as (env, cwd):
+async def _drive_judge(prompt: str, judge_model: str, conflicting_vars: tuple[str, ...]) -> StructuredVerdict | None:
+    with isolated_claude_env(conflicting_vars) as (env, cwd):
         options = _judge_options(model=judge_model, cwd=cwd, env=env)
         return await asyncio.wait_for(_judge_result(prompt, options), timeout=WATCHDOG_SECONDS)
 

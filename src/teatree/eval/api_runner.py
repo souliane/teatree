@@ -74,6 +74,14 @@ from teatree.eval.toolset import (
 )
 from teatree.eval.under_load import build_system_prompt, build_user_prompt
 from teatree.llm.anthropic_limits import CreditExhaustedError, LimitCause, classify_limit
+from teatree.llm.credentials import AnthropicApiKeyCredential
+
+#: The runner's default credential-conflict strip set — the metered lane's conflicts
+#: (strip the subscription OAuth token), read off the credential class (its single
+#: source of truth). ``make_runner`` overrides it with the SELECTED eval credential's
+#: ``spec.conflicting_vars``; a direct construction keeps the pre-#2707-reversal
+#: metered strip so isolation-only tests are unchanged.
+_DEFAULT_CONFLICTING_VARS = AnthropicApiKeyCredential().spec.conflicting_vars
 
 #: Env var names for the metered lane's GENEROUS, configurable resource caps. A
 #: truncated run measures the cap, not behaviour (the first full metered run lost
@@ -353,7 +361,8 @@ def load_agent_definition(agent_path: str, agent_sections: tuple[str, ...] = ())
 class ApiInProcessRunner:
     """Run an :class:`EvalSpec` via the in-process Agent SDK and capture tool calls."""
 
-    def __init__(
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
+    def __init__(  # noqa: PLR0913 — each kwarg is one runner-construction knob (workspace / turns / require / budget / effort / credential-conflicts); the list mirrors ``make_runner``'s contract.
         self,
         *,
         workspace: Path | None = None,
@@ -361,6 +370,7 @@ class ApiInProcessRunner:
         require_executed: bool = False,
         max_budget_usd: float = float(MAX_BUDGET_USD),
         effort: EffortLevel | None = None,
+        conflicting_vars: tuple[str, ...] = _DEFAULT_CONFLICTING_VARS,
     ) -> None:
         self._workspace = workspace or Path.cwd()
         self._max_turns_override = max_turns_override
@@ -369,6 +379,12 @@ class ApiInProcessRunner:
         #: Lane-level representative reasoning effort. Applied when a scenario
         #: declares no ``model@effort`` of its own (a declared effort wins).
         self._effort = effort
+        #: The SELECTED eval credential's conflicting vars — the credential the
+        #: isolated child must NOT fall back to (the metered API key strips the
+        #: OAuth token; the subscription OAuth strips the API key). ``make_runner``
+        #: passes the resolved eval credential's ``spec.conflicting_vars``; the
+        #: default preserves the pre-#2707-reversal metered strip for direct callers.
+        self._conflicting_vars = conflicting_vars
 
     def _resolve_max_turns(self, spec: EvalSpec) -> int:
         """Override wins; else a clean-room budget is floored to :data:`CLEAN_ROOM_MIN_TURNS`."""
@@ -508,7 +524,7 @@ class ApiInProcessRunner:
         install + shared ``.git`` (a neutral cwd does NOT block that) and does
         destructive git work on it — the corruption this isolation prevents.
         """
-        with isolated_claude_env() as (env, cwd):
+        with isolated_claude_env(self._conflicting_vars) as (env, cwd):
             if spec.fixture:
                 with provision_git_fixture(spec.fixture) as repo:
                     yield repo, str(repo), env

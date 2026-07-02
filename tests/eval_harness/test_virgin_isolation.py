@@ -33,7 +33,7 @@ from teatree.eval.isolation import isolated_claude_env
 from teatree.eval.judge import ClaudeJudge
 from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, JudgeSpec, Matcher
 from teatree.eval.system_prompt_file import resolve_system_prompt
-from teatree.llm.credentials import AnthropicApiKeyCredential
+from teatree.llm.credentials import AnthropicSubscriptionCredential
 
 
 def _runner_spec(tmp_path: Path) -> EvalSpec:
@@ -210,9 +210,10 @@ class TestJudgeIsolation(TestCase):
         with (
             patch("teatree.eval.judge.shutil.which", return_value="/usr/bin/claude"),
             patch("teatree.eval.judge.query", query),
-            # The billed judge call routes through the credential chokepoint; stub
-            # the export so the isolation assertions (not auth) are what is tested.
-            patch.object(AnthropicApiKeyCredential, "export", return_value="sk-test"),
+            # The judge call routes through the eval-credential chokepoint (default
+            # subscription OAuth); stub the export so the isolation assertions (not
+            # auth) are what is tested, and no real `pass` lookup hangs the run.
+            patch.object(AnthropicSubscriptionCredential, "export", return_value="oauth-test"),
         ):
             ClaudeJudge().grade(_judge_spec(), _judge_run())
         return captured
@@ -230,10 +231,15 @@ class TestJudgeIsolation(TestCase):
         assert not (Path(options.env["HOME"]) / ".claude").exists()
         assert Path(options.cwd) != Path.cwd()
 
-    def test_options_preserve_api_key_in_env(self) -> None:
-        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-judge"}, clear=False):
+    def test_options_preserve_the_oauth_token_and_strip_the_api_key(self) -> None:
+        # The default judge lane rides the subscription OAuth token (reverses #2707),
+        # so its isolated child env keeps CLAUDE_CODE_OAUTH_TOKEN and strips the
+        # conflicting ANTHROPIC_API_KEY.
+        with patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "oauth-judge", "ANTHROPIC_API_KEY": "sk-judge"}):
             captured = self._grade()
-        assert captured["options"].env["ANTHROPIC_API_KEY"] == "sk-judge"
+        env = captured["options"].env
+        assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "oauth-judge"
+        assert "ANTHROPIC_API_KEY" not in env
 
 
 CANARY = "T3-CANARY-DO-NOT-LEAK-7f3a2b"

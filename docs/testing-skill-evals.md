@@ -100,17 +100,23 @@ negative; only `_pass` is GREEN.
 |------|-------------|------|------|
 | **matchers** | GRADE a transcript, no model | free | every PR |
 | **transcript** (default) | REUSE an already-recorded RUN, then GRADE | $0 extra | in-session via `/t3:running-evals` |
-| **sdk** | RUN the model fresh, then GRADE | metered on `ANTHROPIC_API_KEY` | weekly CI + explicit `t3 eval run` |
+| **api** | RUN the model fresh, then GRADE | on the `eval_credential` credential (default subscription OAuth) | weekly CI + explicit `t3 eval run` |
 
-The metered `sdk` lane authenticates **EXCLUSIVELY** via the metered
-`ANTHROPIC_API_KEY` — never the subscription `CLAUDE_CODE_OAUTH_TOKEN`
-([#2707](https://github.com/souliane/teatree/issues/2707)): the subscription's
-depleting usage window would throttle a full ~211-scenario run and the throttled
-cells get mislabeled, so the metered API is the only auth source. With no key
-available the lane fails loud (`CredentialError`) rather than running on the
-subscription. The `transcript`/`matchers` lanes run no model, so they
-authenticate nothing. The `sdk` lane never runs silently; it runs only when
-passed explicitly.
+The fresh-run `api` lane authenticates with the credential the `eval_credential`
+knob selects, resolved through `resolve_eval_credential` — **defaulting to the
+subscription `CLAUDE_CODE_OAUTH_TOKEN`**, reversing
+[#2707](https://github.com/souliane/teatree/issues/2707)'s metered-exclusive lock
+(the metered lane drained ~$100/day without finishing; subscription OAuth draws no
+per-token bill). TRADEOFF: the subscription's depleting 5h/7d window is shared with
+the main loop, so the CI lane is RIGHT-SIZED — a single effort tier (not
+`low,medium,high`), a smaller trial count (2), and per-account OAuth routing
+(`anthropic_oauth_pass_paths`) — so a full fan-out cannot throttle the window or
+starve the loop. The metered `ANTHROPIC_API_KEY` stays selectable
+(`config_setting set eval_credential metered_api_key`, or `T3_EVAL_CREDENTIAL`).
+With no credential available the lane fails loud (`CredentialError`) rather than
+authenticating as nothing; the credential layer strips whichever credential is not
+selected. The `transcript`/`matchers` lanes run no model, so they authenticate
+nothing. The `api` lane never runs silently; it runs only when passed explicitly.
 
 ## How to run
 

@@ -16,6 +16,7 @@ from teatree.config.enums import (
     AgentHarness,
     AgentRuntime,
     Autonomy,
+    EvalCredential,
     MissingIssuePolicy,
     Mode,
     OnBehalfPostMode,
@@ -74,6 +75,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "speed": Speed.parse,
     "agent_runtime": AgentRuntime.parse,
     "agent_harness": AgentHarness.parse,
+    "eval_credential": EvalCredential.parse,
     "contribute": _parse_strict_bool,
     "excluded_skills": _parse_str_list,
     "loop_cadence_seconds": _parse_strict_int,
@@ -238,6 +240,7 @@ ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_SPEED": ("speed", Speed.parse),
     "T3_AGENT_RUNTIME": ("agent_runtime", AgentRuntime.parse),
     "T3_AGENT_HARNESS": ("agent_harness", AgentHarness.parse),
+    "T3_EVAL_CREDENTIAL": ("eval_credential", EvalCredential.parse),
     "T3_ON_BEHALF_POST_MODE": ("on_behalf_post_mode", OnBehalfPostMode.parse),
     "T3_MISSING_ISSUE_POLICY": ("missing_issue_ref_policy", MissingIssuePolicy.parse),
     "T3_ON_BEHALF_AUTO_ACTIONS": ("on_behalf_auto_actions", _parse_env_str_list),
@@ -318,6 +321,14 @@ class UserSettings:
     # ``resolve_harness`` refuses it until implemented (the ``AgentRuntime.API``
     # precedent). Per-overlay overridable; ``T3_AGENT_HARNESS`` env wins.
     agent_harness: AgentHarness = AgentHarness.CLAUDE_SDK
+    # Which Anthropic credential the automated eval lane (the metered ``api``
+    # backend + the LLM judge) authenticates with. ``subscription_oauth`` (default,
+    # reverses #2707) rides the plan's OAuth token — no per-token bill, but a
+    # depleting usage window, so the CI lane is right-sized (single effort tier,
+    # smaller trial count, per-account routing via ``anthropic_oauth_pass_paths``).
+    # ``metered_api_key`` rides the metered key (per-token cost, no window) and stays
+    # selectable. Per-overlay overridable; ``T3_EVAL_CREDENTIAL`` env wins over both.
+    eval_credential: EvalCredential = EvalCredential.SUBSCRIPTION_OAUTH
     # How much parallel work the orchestrator drives at once. The
     # conservative ``MEDIUM`` baseline means NO orchestrator fan-out — only
     # the intrinsic loop + PR sweep + per-overlay ``max_concurrent_auto_starts``

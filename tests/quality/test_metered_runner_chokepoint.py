@@ -28,7 +28,7 @@ from django.test import TestCase
 from teatree.eval.backends import API_BACKEND, TRANSCRIPT_BACKEND, make_runner
 from teatree.eval.judge import ClaudeJudge
 from teatree.eval.models import EvalRun, EvalSpec, JudgeSpec, Matcher
-from teatree.llm.credentials import AnthropicApiKeyCredential, CredentialError
+from teatree.llm.credentials import AnthropicApiKeyCredential, AnthropicSubscriptionCredential, CredentialError
 
 _SRC_ROOT = Path(__file__).resolve().parents[2] / "src" / "teatree"
 
@@ -142,20 +142,23 @@ def _graded_run() -> EvalRun:
 
 
 class TestEveryMeteredEntrypointFailsLoudWithoutAKey(TestCase):
-    """Behavioral anti-vacuity (#2707 finding 4): each metered entrypoint fails loud keyless.
+    """Behavioral anti-vacuity (#2707 finding 4): each eval entrypoint fails loud with no credential.
 
     The AST-shape gate above proves the runner is built only through the
     chokepoint, but it would still pass if ``export()`` were removed from the
     chokepoint — the enforcement could silently regress. These tests close that
-    hole: with NO ``ANTHROPIC_API_KEY`` and an empty ``pass`` store, EACH metered
-    entrypoint — (a) the api runner factory, (b) ``t3 eval benchmark`` Docker
-    pre-check, (c) the metered judge — raises :class:`CredentialError` BEFORE doing
-    any work. Removing the ``export`` from any one entrypoint turns its test RED.
+    hole: with NEITHER credential in the env and an empty ``pass`` store, EACH
+    fresh-run entrypoint — (a) the api runner factory, (b) ``t3 eval benchmark``
+    Docker pre-check, (c) the judge — raises :class:`CredentialError` BEFORE doing
+    any work. The default eval credential is the subscription OAuth token (reversing
+    #2707), so BOTH vars are cleared. Removing the ``export`` from any one
+    entrypoint turns its test RED.
     """
 
     @staticmethod
     def _no_key() -> None:
         os.environ.pop(AnthropicApiKeyCredential.spec.env_var, None)
+        os.environ.pop(AnthropicSubscriptionCredential.spec.env_var, None)
 
     def test_api_runner_factory_fails_loud(self) -> None:
         with (

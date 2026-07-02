@@ -18,7 +18,7 @@ import pytest
 
 from teatree.cli.eval.multi_trial import run_model_matrix_lane, run_pass_at_k_lane
 from teatree.eval.models import EvalRun, EvalSpec
-from teatree.llm.credentials import AnthropicApiKeyCredential
+from teatree.llm.credentials import AnthropicSubscriptionCredential
 
 
 def _spec(name: str = "s", model: str = "claude-opus-4-8") -> EvalSpec:
@@ -56,12 +56,13 @@ class _RecordingRunner:
 
 @pytest.fixture
 def recording_runner() -> Iterator[type[_RecordingRunner]]:
-    # Bypass the config-aware credential factory (which reads the DB) to the default
-    # credential, keeping the lane exercised DB-free; routing has its own tests.
+    # Bypass the eval-credential resolver (which reads the settings + DB) to the
+    # default subscription credential, keeping the lane exercised DB-free; the
+    # credential-KIND selection has its own tests.
     _RecordingRunner.last_effort = None
     with (
-        patch("teatree.credential_config.resolve_api_key_credential", lambda **_: AnthropicApiKeyCredential()),
-        patch.object(AnthropicApiKeyCredential, "export", return_value="sk-test"),
+        patch("teatree.credential_config.resolve_eval_credential", lambda **_: AnthropicSubscriptionCredential()),
+        patch.object(AnthropicSubscriptionCredential, "export", return_value="oauth-test"),
         patch("teatree.eval.backends.ApiInProcessRunner", _RecordingRunner),
     ):
         yield _RecordingRunner
