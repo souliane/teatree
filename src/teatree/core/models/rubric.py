@@ -5,8 +5,8 @@ a durable, mechanical record instead of vibes. Each ticket carries a :class:`Rub
 of N :class:`RubricCriterion` rows; an independent verifier (the grader, ``!= maker``)
 records a per-criterion PASS/FAIL bound to the reviewed tree's SHA. The rubric is
 "satisfied" only when EVERY criterion is PASS by a non-maker grader at the current
-head — :meth:`Rubric.is_fully_passed_at`. It is the highest-value lever from the
-Fable-5 loop-design thread: a verifier sub-agent grading a checklist beats
+head — :meth:`Rubric.is_fully_passed_at`. It is the highest-value lever identified
+in an earlier loop-design retro: a verifier sub-agent grading a checklist beats
 self-critique.
 
 The record follows the durable, compaction-surviving pattern of

@@ -62,7 +62,6 @@ class ModelPrice:
 # model id to its tier (:func:`price_for_model`), so a future dated release of
 # the same tier prices correctly without a new entry.
 PRICE_TABLE: dict[str, ModelPrice] = {
-    "fable": ModelPrice(input_per_mtok=10.0, output_per_mtok=50.0),
     "opus": ModelPrice(input_per_mtok=5.0, output_per_mtok=25.0),
     "sonnet": ModelPrice(input_per_mtok=3.0, output_per_mtok=15.0),
     "haiku": ModelPrice(input_per_mtok=1.0, output_per_mtok=5.0),
@@ -75,18 +74,17 @@ _DEFAULT_TIER = "opus"
 # Capability order, weakest to strongest, for the per-skill model floor merge
 # (:func:`teatree.agents.model_tiering.resolve_spawn_model`). Expressed in the
 # ABSTRACT tiers (``cheap`` < ``balanced`` < ``frontier``) — the
-# :data:`teatree.agents.model_tiering.TIER_MODELS` keys — plus ``fable`` above
-# them (the most-honest escalation/kill-switch tier, priced above frontier).
-# Distinct from pricing: an unknown full id ranks ABOVE every known tier here
-# (treated as most-capable so a below-floor never silently downgrades a spawn),
-# whereas :func:`tier_of_model` prices an unknown id at the conservative tier.
-_CAPABILITY_ORDER: tuple[str, ...] = ("cheap", "balanced", "frontier", "fable")
+# :data:`teatree.agents.model_tiering.TIER_MODELS` keys. Distinct from pricing:
+# an unknown full id ranks ABOVE every known tier here (treated as most-capable
+# so a below-floor never silently downgrades a spawn), whereas
+# :func:`tier_of_model` prices an unknown id at the conservative tier.
+_CAPABILITY_ORDER: tuple[str, ...] = ("cheap", "balanced", "frontier")
 
 # The underlying model FAMILY each abstract tier maps to, so :func:`tier_rank`
 # ranks an old short-name (``opus``) or a concrete dated id (``claude-opus-4-8``)
 # identically to the abstract tier it belongs to (``frontier``). Keyed by the
 # family substring; checked after the abstract tier names so an explicit
-# ``frontier`` wins without depending on family. ``fable`` is its own rank.
+# ``frontier`` wins without depending on family.
 _FAMILY_TO_TIER: dict[str, str] = {"haiku": "cheap", "sonnet": "balanced", "opus": "frontier"}
 
 # A floor whose capability cannot otherwise be inferred defaults to this abstract
@@ -124,15 +122,15 @@ def tier_rank(model: str | None) -> int:
     """Capability rank of a model id / tier name, for the per-skill floor merge.
 
     Ranks against :data:`_CAPABILITY_ORDER` (``cheap`` 0 < ``balanced`` <
-    ``frontier`` < ``fable``). A value is recognised three ways, in order: an
-    abstract tier name (``frontier``), a model FAMILY (``opus`` short-name or a
-    dated ``claude-opus-4-8`` id, mapped via :data:`_FAMILY_TO_TIER`), and
-    ``fable`` (its own top rank). ``None`` and the inherit sentinels (empty
-    string) rank as :data:`_DEFAULT_CAPABILITY_TIER` (``frontier``) so a floor
-    below the inherited default never silently downgrades a phase. An
-    unrecognised full id ranks ABOVE every known tier (most-capable), the
-    opposite of :func:`tier_of_model`'s conservative pricing fallback: an unknown
-    spawn target is assumed strong so a lower floor never wins over it.
+    ``frontier``). A value is recognised two ways, in order: an abstract tier
+    name (``frontier``), or a model FAMILY (``opus`` short-name or a dated
+    ``claude-opus-4-8`` id, mapped via :data:`_FAMILY_TO_TIER`). ``None`` and the
+    inherit sentinels (empty string) rank as :data:`_DEFAULT_CAPABILITY_TIER`
+    (``frontier``) so a floor below the inherited default never silently
+    downgrades a phase. An unrecognised full id ranks ABOVE every known tier
+    (most-capable), the opposite of :func:`tier_of_model`'s conservative pricing
+    fallback: an unknown spawn target is assumed strong so a lower floor never
+    wins over it.
     """
     if not model:
         return _CAPABILITY_ORDER.index(_DEFAULT_CAPABILITY_TIER)

@@ -167,7 +167,7 @@ t3 eval list                                # show available scenarios as a rich
 t3 eval --free-only                           # the free deterministic lanes only (no AI lane)
 t3 eval --docker                              # run the gate inside the CI image (dev/Dockerfile.test) for parity
 t3 eval run --backend api                       # fresh-run Agent-SDK lane — DEFAULTS to the container (dev/Dockerfile.test), authed on the eval_credential knob (DEFAULT subscription OAuth, reversing #2707; metered_api_key still selectable)
-t3 eval benchmark --models claude-opus-4-8@xhigh,claude-fable-5@medium  # cost/pass-rate compare — DEFAULTS to the container; --local for a host check
+t3 eval benchmark --models claude-opus-4-8@xhigh,claude-sonnet-5@medium  # cost/pass-rate compare — DEFAULTS to the container; --local for a host check
 t3 eval run                                 # run all (DEFAULT backend = transcript, $0 extra — reuses a recorded run)
 t3 eval run worktree_first                  # run one
 t3 eval run --format json                   # JSON output
@@ -709,7 +709,7 @@ option when building `ClaudeAgentOptions`.
 
 ### Benchmark (`t3 eval benchmark`)
 
-`t3 eval benchmark --models claude-opus-4-8@xhigh,claude-fable-5@medium`
+`t3 eval benchmark --models claude-opus-4-8@xhigh,claude-sonnet-5@medium`
 answers "which variant is worth its cost": it runs the suite once per
 `model@effort` variant on the metered Agent-SDK runner (the all-skipped gate
 always armed), persists the matrix record into the run-history ledger, and

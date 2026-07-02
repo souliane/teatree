@@ -52,65 +52,11 @@ class TestAgentConfigDefaults:
         assert cfg.session_model is None
         assert cfg.session_effort is None
 
-    def test_default_fable_kill_switch_is_enabled_with_opus_fallback(self) -> None:
-        # Absent key == enabled, so existing Fable-pinned users keep Fable; the
-        # fallback baseline is opus (Opus 4.8) per teatree#2237.
-        cfg = AgentConfig()
-        assert cfg.fable_enabled is True
-        assert cfg.fable_fallback == "opus"
-
-    def test_default_honesty_model_is_fable(self) -> None:
-        # The most-honest model an honesty-critical escalation routes to is Fable
-        # by default (teatree#2263); a one-line config edit retargets it.
-        assert AgentConfig().honesty_model == "fable"
-
-
-class TestFableKillSwitchParse:
-    """``[agent] fable_enabled`` / ``fable_fallback`` parsing (teatree#2237)."""
-
-    def test_fable_enabled_false_parsed(self, tmp_path: Path) -> None:
-        cfg = tmp_path / ".teatree.toml"
-        _write(cfg, "[agent]\nfable_enabled = false\n")
-        assert resolve_agent_config(config_path=cfg).fable_enabled is False
-
-    def test_fable_enabled_true_parsed(self, tmp_path: Path) -> None:
-        cfg = tmp_path / ".teatree.toml"
-        _write(cfg, "[agent]\nfable_enabled = true\n")
-        assert resolve_agent_config(config_path=cfg).fable_enabled is True
-
-    def test_absent_fable_enabled_defaults_to_enabled(self, tmp_path: Path) -> None:
-        cfg = tmp_path / ".teatree.toml"
-        _write(cfg, '[agent]\nsession_model = "fable"\n')
-        assert resolve_agent_config(config_path=cfg).fable_enabled is True
-
-    def test_fable_fallback_parsed(self, tmp_path: Path) -> None:
-        cfg = tmp_path / ".teatree.toml"
-        _write(cfg, '[agent]\nfable_fallback = "sonnet"\n')
-        assert resolve_agent_config(config_path=cfg).fable_fallback == "sonnet"
-
-    def test_fable_fallback_normalised_through_inherit_path(self, tmp_path: Path) -> None:
-        # The fallback is normalised through ``_normalize_model`` (whitespace
-        # stripped); it is a model id, so it shares that boundary.
-        cfg = tmp_path / ".teatree.toml"
-        _write(cfg, '[agent]\nfable_fallback = "  opus  "\n')
-        assert resolve_agent_config(config_path=cfg).fable_fallback == "opus"
-
-    def test_absent_fable_fallback_defaults_to_opus(self, tmp_path: Path) -> None:
-        cfg = tmp_path / ".teatree.toml"
-        _write(cfg, "[agent]\nfable_enabled = false\n")
-        assert resolve_agent_config(config_path=cfg).fable_fallback == "opus"
-
-    def test_missing_file_keeps_enabled_with_opus_fallback(self, tmp_path: Path) -> None:
-        resolved = resolve_agent_config(config_path=tmp_path / "nope.toml")
-        assert resolved.fable_enabled is True
-        assert resolved.fable_fallback == "opus"
-
-    def test_missing_agent_section_keeps_enabled_with_opus_fallback(self, tmp_path: Path) -> None:
-        cfg = tmp_path / ".teatree.toml"
-        _write(cfg, '[teatree]\nmode = "interactive"\n')
-        resolved = resolve_agent_config(config_path=cfg)
-        assert resolved.fable_enabled is True
-        assert resolved.fable_fallback == "opus"
+    def test_default_honesty_model_is_opus(self) -> None:
+        # The most-honest model an honesty-critical escalation routes to defaults
+        # to opus (teatree#2263, #2237 removal) — requiring no operator opt-in;
+        # a stronger/different escalation target is a one-line config edit.
+        assert AgentConfig().honesty_model == "opus"
 
 
 class TestHonestyModelParse:
@@ -118,50 +64,50 @@ class TestHonestyModelParse:
 
     def test_honesty_model_parsed(self, tmp_path: Path) -> None:
         cfg = tmp_path / ".teatree.toml"
-        _write(cfg, '[agent]\nhonesty_model = "opus"\n')
-        assert resolve_agent_config(config_path=cfg).honesty_model == "opus"
+        _write(cfg, '[agent]\nhonesty_model = "sonnet"\n')
+        assert resolve_agent_config(config_path=cfg).honesty_model == "sonnet"
 
     def test_honesty_model_normalised_through_inherit_path(self, tmp_path: Path) -> None:
         cfg = tmp_path / ".teatree.toml"
-        _write(cfg, '[agent]\nhonesty_model = "  fable  "\n')
-        assert resolve_agent_config(config_path=cfg).honesty_model == "fable"
+        _write(cfg, '[agent]\nhonesty_model = "  opus  "\n')
+        assert resolve_agent_config(config_path=cfg).honesty_model == "opus"
 
-    def test_absent_honesty_model_defaults_to_fable(self, tmp_path: Path) -> None:
+    def test_absent_honesty_model_defaults_to_opus(self, tmp_path: Path) -> None:
         cfg = tmp_path / ".teatree.toml"
-        _write(cfg, "[agent]\nfable_enabled = true\n")
-        assert resolve_agent_config(config_path=cfg).honesty_model == "fable"
+        _write(cfg, '[agent]\nsession_model = "opus"\n')
+        assert resolve_agent_config(config_path=cfg).honesty_model == "opus"
 
-    def test_sentinel_honesty_model_falls_back_to_fable(self, tmp_path: Path) -> None:
+    def test_sentinel_honesty_model_falls_back_to_opus(self, tmp_path: Path) -> None:
         # An inherit-sentinel value normalises to None → falls back to a concrete
-        # model id (fable), never the sentinel (the escalation must route).
+        # model id (opus), never the sentinel (the escalation must route).
         cfg = tmp_path / ".teatree.toml"
         _write(cfg, '[agent]\nhonesty_model = "inherit"\n')
-        assert resolve_agent_config(config_path=cfg).honesty_model == "fable"
+        assert resolve_agent_config(config_path=cfg).honesty_model == "opus"
 
-    def test_missing_file_keeps_fable(self, tmp_path: Path) -> None:
-        assert resolve_agent_config(config_path=tmp_path / "nope.toml").honesty_model == "fable"
+    def test_missing_file_keeps_opus(self, tmp_path: Path) -> None:
+        assert resolve_agent_config(config_path=tmp_path / "nope.toml").honesty_model == "opus"
 
 
 class TestSkillModelsParse:
     def test_parsed_from_agent_subtable(self, tmp_path: Path) -> None:
         cfg = tmp_path / ".teatree.toml"
-        _write(cfg, '[agent.skill_models]\n"code-review" = "opus"\narchitecture-design = "fable"\n')
+        _write(cfg, '[agent.skill_models]\n"code-review" = "opus"\narchitecture-design = "haiku"\n')
         resolved = resolve_agent_config(config_path=cfg)
-        assert resolved.skill_models == {"code-review": "opus", "architecture-design": "fable"}
+        assert resolved.skill_models == {"code-review": "opus", "architecture-design": "haiku"}
 
     def test_inherit_sentinels_map_to_none(self, tmp_path: Path) -> None:
         cfg = tmp_path / ".teatree.toml"
         _write(
             cfg,
-            '[agent.skill_models]\na = ""\nb = "default"\nc = "inherit"\nd = "fable"\n',
+            '[agent.skill_models]\na = ""\nb = "default"\nc = "inherit"\nd = "haiku"\n',
         )
         resolved = resolve_agent_config(config_path=cfg)
         # Sentinels collapse to None (inherit); only a real floor survives.
-        assert resolved.skill_models == {"a": None, "b": None, "c": None, "d": "fable"}
+        assert resolved.skill_models == {"a": None, "b": None, "c": None, "d": "haiku"}
 
     def test_absent_skill_models_is_empty(self, tmp_path: Path) -> None:
         cfg = tmp_path / ".teatree.toml"
-        _write(cfg, '[agent]\nsession_model = "fable"\n')
+        _write(cfg, '[agent]\nsession_model = "haiku"\n')
         assert resolve_agent_config(config_path=cfg).skill_models == {}
 
     def test_non_table_skill_models_falls_back_to_empty(self, tmp_path: Path) -> None:
@@ -173,8 +119,8 @@ class TestSkillModelsParse:
 class TestSessionModelParse:
     def test_session_model_parsed(self, tmp_path: Path) -> None:
         cfg = tmp_path / ".teatree.toml"
-        _write(cfg, '[agent]\nsession_model = "fable"\n')
-        assert resolve_agent_config(config_path=cfg).session_model == "fable"
+        _write(cfg, '[agent]\nsession_model = "haiku"\n')
+        assert resolve_agent_config(config_path=cfg).session_model == "haiku"
 
     @pytest.mark.parametrize("sentinel", ["", "default", "inherit"])
     def test_session_model_sentinels_map_to_none(self, tmp_path: Path, sentinel: str) -> None:
@@ -218,14 +164,14 @@ class TestComposesWithPhaseModels:
         _write(
             cfg,
             "[agent]\n"
-            'session_model = "fable"\n'
+            'session_model = "haiku"\n'
             'session_effort = "xhigh"\n'
-            'phase_models.planning = "fable"\n'
+            'phase_models.planning = "haiku"\n'
             "[agent.skill_models]\n"
             'code-review = "opus"\n',
         )
         resolved = resolve_agent_config(config_path=cfg)
-        assert resolved.session_model == "fable"
+        assert resolved.session_model == "haiku"
         assert resolved.session_effort == "xhigh"
         assert resolved.skill_models == {"code-review": "opus"}
 
@@ -255,7 +201,7 @@ class TestTierModelsParse:
 
     def test_absent_tier_models_is_empty(self, tmp_path: Path) -> None:
         cfg = tmp_path / ".teatree.toml"
-        _write(cfg, '[agent]\nsession_model = "fable"\n')
+        _write(cfg, '[agent]\nsession_model = "haiku"\n')
         assert resolve_agent_config(config_path=cfg).tier_models == {}
 
     def test_non_table_tier_models_falls_back_to_empty(self, tmp_path: Path) -> None:
@@ -292,7 +238,7 @@ class TestTierEffortParse:
 
     def test_absent_tier_effort_is_empty(self, tmp_path: Path) -> None:
         cfg = tmp_path / ".teatree.toml"
-        _write(cfg, '[agent]\nsession_model = "fable"\n')
+        _write(cfg, '[agent]\nsession_model = "haiku"\n')
         assert resolve_agent_config(config_path=cfg).tier_effort == {}
 
     def test_non_table_tier_effort_falls_back_to_empty(self, tmp_path: Path) -> None:
@@ -334,7 +280,7 @@ class TestPhaseFanoutParse:
 
     def test_absent_phase_fanout_is_empty(self, tmp_path: Path) -> None:
         cfg = tmp_path / ".teatree.toml"
-        _write(cfg, '[agent]\nsession_model = "fable"\n')
+        _write(cfg, '[agent]\nsession_model = "haiku"\n')
         assert resolve_agent_config(config_path=cfg).phase_fanout == {}
 
     def test_non_table_phase_fanout_falls_back_to_empty(self, tmp_path: Path) -> None:
@@ -359,8 +305,8 @@ class TestPhaseFanoutParse:
         _write(
             cfg,
             "[agent]\n"
-            'session_model = "fable"\n'
-            'phase_models.planning = "fable"\n'
+            'session_model = "haiku"\n'
+            'phase_models.planning = "haiku"\n'
             "[agent.skill_models]\n"
             'code-review = "opus"\n'
             "[agent.phase_fanout]\n"
@@ -368,7 +314,7 @@ class TestPhaseFanoutParse:
             '"author:planning" = 4\n',
         )
         resolved = resolve_agent_config(config_path=cfg)
-        assert resolved.session_model == "fable"
+        assert resolved.session_model == "haiku"
         assert resolved.skill_models == {"code-review": "opus"}
         assert resolved.phase_fanout == {"reviewer:reviewing": True, "author:planning": 4}
 
@@ -398,6 +344,6 @@ class TestMalformedAndMissing:
 
     def test_default_config_path_used_when_none(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         cfg = tmp_path / ".teatree.toml"
-        _write(cfg, '[agent]\nsession_model = "fable"\n')
+        _write(cfg, '[agent]\nsession_model = "haiku"\n')
         monkeypatch.setattr(config_agent, "CONFIG_PATH", cfg)
-        assert resolve_agent_config().session_model == "fable"
+        assert resolve_agent_config().session_model == "haiku"

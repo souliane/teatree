@@ -209,11 +209,11 @@ class TestStartCommandSessionPins:
         argv = self._spawn_argv(
             monkeypatch,
             tmp_path,
-            '[agent]\nsession_model = "fable"\nsession_effort = "xhigh"\n',
+            '[agent]\nsession_model = "opus"\nsession_effort = "xhigh"\n',
         )
         assert argv[0] == "/usr/bin/claude"
         assert "--model" in argv
-        assert argv[argv.index("--model") + 1] == "fable"
+        assert argv[argv.index("--model") + 1] == "opus"
         assert "--effort" in argv
         assert argv[argv.index("--effort") + 1] == "xhigh"
         # #2650: no fat `/loop` slot — just the binary + pins.
@@ -226,9 +226,9 @@ class TestStartCommandSessionPins:
         assert "--model" not in argv
 
     def test_only_model_injected_when_only_model_set(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        argv = self._spawn_argv(monkeypatch, tmp_path, '[agent]\nsession_model = "fable"\n')
+        argv = self._spawn_argv(monkeypatch, tmp_path, '[agent]\nsession_model = "opus"\n')
         assert "--model" in argv
-        assert argv[argv.index("--model") + 1] == "fable"
+        assert argv[argv.index("--model") + 1] == "opus"
         assert "--effort" not in argv
 
     def test_no_pins_when_unconfigured(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -238,42 +238,11 @@ class TestStartCommandSessionPins:
         # #2650: no pins, no fat `/loop` slot — just the binary.
         assert argv == ["/usr/bin/claude"]
 
-    def test_fable_session_model_downgrades_to_opus_when_disabled(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        # teatree#2237: the kill-switch downgrades the session --model pin too.
-        argv = self._spawn_argv(
-            monkeypatch,
-            tmp_path,
-            '[agent]\nfable_enabled = false\nsession_model = "fable"\n',
-        )
-        assert "--model" in argv
-        assert argv[argv.index("--model") + 1] == "opus"
-
-    def test_fable_full_id_session_model_downgrades_when_disabled(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        argv = self._spawn_argv(
-            monkeypatch,
-            tmp_path,
-            '[agent]\nfable_enabled = false\nsession_model = "claude-fable-5"\n',
-        )
-        assert argv[argv.index("--model") + 1] == "opus"
-
-    def test_fable_session_model_downgrades_to_fallback_override(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        argv = self._spawn_argv(
-            monkeypatch,
-            tmp_path,
-            '[agent]\nfable_enabled = false\nfable_fallback = "sonnet"\nsession_model = "fable"\n',
-        )
-        assert argv[argv.index("--model") + 1] == "sonnet"
-
-    def test_fable_session_model_kept_when_enabled(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        # Toggle ON (and absent): the Fable session pin is byte-identical to today.
-        argv = self._spawn_argv(monkeypatch, tmp_path, '[agent]\nsession_model = "fable"\n')
-        assert argv[argv.index("--model") + 1] == "fable"
+    def test_session_model_passes_through_unchanged(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        # #2237 removal: no kill-switch downgrade step — session_model is emitted
+        # exactly as configured, whatever value the operator wrote.
+        argv = self._spawn_argv(monkeypatch, tmp_path, '[agent]\nsession_model = "claude-sonnet-5"\n')
+        assert argv[argv.index("--model") + 1] == "claude-sonnet-5"
 
 
 class TestStopCommand:

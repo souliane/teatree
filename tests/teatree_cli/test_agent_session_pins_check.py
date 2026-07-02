@@ -37,7 +37,7 @@ class TestAgentSessionPinsCheck:
     ) -> None:
         cfg = _write(
             tmp_path,
-            '[agent]\nsession_model = "fable"\nsession_effort = "xhigh"\n[agent.skill_models]\ncode-review = "opus"\n',
+            '[agent]\nsession_model = "opus"\nsession_effort = "xhigh"\n[agent.skill_models]\ncode-review = "opus"\n',
         )
         _patch_config(monkeypatch, cfg)
         assert _check_agent_session_pins() is True
@@ -76,13 +76,13 @@ class TestAgentSessionPinsCheck:
     def test_unknown_skill_floor_model_warns(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        # A floor naming no known tier substring (a real typo) — fabel ≠ fable.
-        cfg = _write(tmp_path, '[agent.skill_models]\ncode-review = "fabel"\n')
+        # A floor naming no known tier substring — a real typo, no substring match.
+        cfg = _write(tmp_path, '[agent.skill_models]\ncode-review = "opsu"\n')
         _patch_config(monkeypatch, cfg)
         assert _check_agent_session_pins() is True
         out = capsys.readouterr().out
         assert "WARN" in out
-        assert "fabel" in out
+        assert "opsu" in out
         assert "code-review" in out
 
     def test_tier_substring_superstring_is_not_warned(
@@ -100,7 +100,7 @@ class TestAgentSessionPinsCheck:
     ) -> None:
         cfg = _write(
             tmp_path,
-            '[agent.skill_models]\na = "haiku"\nb = "sonnet"\nc = "opus"\nd = "fable"\n',
+            '[agent.skill_models]\na = "haiku"\nb = "sonnet"\nc = "opus"\n',
         )
         _patch_config(monkeypatch, cfg)
         assert _check_agent_session_pins() is True
@@ -110,38 +110,7 @@ class TestAgentSessionPinsCheck:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         # A dated full id whose tier substring is recognised is fine.
-        cfg = _write(tmp_path, '[agent]\nsession_model = "claude-fable-5"\n')
-        _patch_config(monkeypatch, cfg)
-        assert _check_agent_session_pins() is True
-        assert capsys.readouterr().out == ""
-
-    def test_unknown_fable_fallback_warns_when_disabled(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        # teatree#2237: a typo'd fallback would silently downgrade Fable to an
-        # unknown model when the kill-switch is off — WARN on it.
-        cfg = _write(tmp_path, '[agent]\nfable_enabled = false\nfable_fallback = "opsu"\n')
-        _patch_config(monkeypatch, cfg)
-        assert _check_agent_session_pins() is True
-        out = capsys.readouterr().out
-        assert "WARN" in out
-        assert "fable_fallback" in out
-        assert "opsu" in out
-
-    def test_valid_fable_fallback_does_not_warn(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        cfg = _write(tmp_path, '[agent]\nfable_enabled = false\nfable_fallback = "opus"\n')
-        _patch_config(monkeypatch, cfg)
-        assert _check_agent_session_pins() is True
-        assert capsys.readouterr().out == ""
-
-    def test_bad_fable_fallback_silent_when_enabled(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        # The fallback never applies while Fable is enabled, so a typo there is
-        # not surfaced — no WARN.
-        cfg = _write(tmp_path, '[agent]\nfable_enabled = true\nfable_fallback = "opsu"\n')
+        cfg = _write(tmp_path, '[agent]\nsession_model = "claude-opus-4-9"\n')
         _patch_config(monkeypatch, cfg)
         assert _check_agent_session_pins() is True
         assert capsys.readouterr().out == ""

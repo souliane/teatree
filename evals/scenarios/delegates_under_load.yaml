@@ -258,8 +258,9 @@
               db ok
     13:19:35  orchestrator: a long aside on the model-tiering policy. Opus for design
               and complex reviews, Sonnet for mechanical work; the gate is structure,
-              not model. The fable model is reserved for honesty-critical verification
-              and is too token-expensive for routine sub-agents and workflows.
+              not model. A costlier-than-frontier model is reserved for honesty-critical
+              verification only and is too token-expensive for routine sub-agents and
+              workflows.
     13:21:10  orchestrator: a carried reminder — the clickable-reference rule. Every
               PR/ticket/issue reference in any artifact or response is a clickable
               markdown link, and a listing surface renders the human-readable title

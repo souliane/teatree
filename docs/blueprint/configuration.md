@@ -451,20 +451,17 @@ spawn inputs, not overridable `UserSettings`.
 
 ```toml
 [agent]
-session_model = "fable"           # interactive main-agent --model pin (so you never run /model by hand)
+session_model = "opus"            # interactive main-agent --model pin (so you never run /model by hand)
 session_effort = "xhigh"          # interactive main-agent --effort pin (strict CLI scale)
-# fable_enabled = false           # the single Fable kill-switch: flip to false to revert EVERY
-                                  # Fable pin to the Opus 4.8 baseline (default true == keep Fable)
-# fable_fallback = "opus"         # the model Fable downgrades to when disabled (default "opus" = Opus 4.8)
 
 [agent.phase_models]              # per-PHASE model tier for the spawned sub-agent (model_tiering)
-planning = "fable"                # pin a phase up; "" / "default" / "inherit" opts out
+planning = "frontier"             # pin a phase up; "" / "default" / "inherit" opts out
 reviewing = "sonnet"
 testing = ""                      # explicit inherit (no --model)
 
 [agent.skill_models]              # per-COMPANION-SKILL model floor (MODEL only, no effort axis)
 code-review = "opus"              # a loaded skill RAISES the spawn model to at least this tier
-architecture-design = "fable"
+architecture-design = "opus"
 ```
 
 **`session_model` / `session_effort` (interactive main agent only).** Injected
@@ -502,32 +499,24 @@ inherit. Override any phase here; a sentinel opts it out.
 skill name to a model floor. When a dispatch loads that skill,
 `model_tiering.resolve_spawn_model` raises the spawn model to the most capable
 of the phase tier and every loaded skill's floor (most-capable-wins via
-`cost.tier_rank`, capability order `haiku < sonnet < opus < fable`; a floor only
+`cost.tier_rank`, capability order `haiku < sonnet < opus`; a floor only
 RAISES, never downgrades). **MODEL only** — there is deliberately no per-skill
 effort axis. With this table absent the spawn model is byte-for-byte the
 per-phase tier. On an *inheriting* phase (`coding`/`debugging`, whose phase tier
 is `None`) a floor raises the spawn model only when it is *strictly stronger*
 than the assumed-opus inherited default — `tier_rank(None)` equals
 `tier_rank("opus")`, so an `opus`-or-weaker floor is silently dropped (the phase
-still inherits) and only a `fable` floor pins it up. `t3 doctor` WARNs on a floor
-that names no known tier (likely a typo) since an unknown id ranks most-capable.
+still inherits) and only a floor naming an unrecognised (assumed most-capable)
+id pins it up. `t3 doctor` WARNs on a floor that names no known tier (likely a
+typo) since an unknown id ranks most-capable.
 
-**`fable_enabled` / `fable_fallback` (the single Fable kill-switch, teatree#2237).**
-Fable can be wired through several independent pins above (`session_model`, any
-`phase_models.<phase>`, any `skill_models.<skill>`). If Fable becomes
-unavailable, reverting to the Opus 4.8 baseline is **one flip**:
-`fable_enabled = false`. With it off, every resolved model value that is Fable —
-recognised by tier (`cost.tier_of_model`), so both the short alias `fable` and
-the full id `claude-fable-5` match — transparently downgrades to `fable_fallback`
-at the single resolution chokepoint (`model_tiering._downgrade_fable`, applied at
-the end of `resolve_spawn_model` covering every sub-agent spawn, plus the
-`session_model` `--model` pin in `cli/loop.py`). `fable_fallback` defaults to
-`"opus"` (the tier/cost machinery maps it to `claude-opus-4-8`), so Opus 4.8
-compatibility is preserved by construction. **The default is enabled** — an
-absent `fable_enabled` key counts as `true`, so existing configs that pin Fable
-keep resolving to Fable, byte-for-byte unchanged; only the explicit
-`fable_enabled = false` flips the revert. Non-Fable pins (`sonnet`, `haiku`,
-`opus`) and inheriting phases (`None`) pass through untouched either way.
+Teatree deliberately carries no standalone "most expensive model" kill-switch
+([#2237](https://github.com/souliane/teatree/issues/2237) removed the prior
+single-toggle downgrade): the per-tier/per-phase routing above is already
+explicit-opt-in — `TIER_MODELS` never NAMES a costlier-than-frontier model id by
+default, so nothing routes to one without an operator writing the id into
+`session_model` / `phase_models.<phase>` / `skill_models.<skill>` /
+`honesty_model` themselves.
 
 ### 10.2 Django Settings (framework-level, in teatree's settings.py)
 

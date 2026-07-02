@@ -98,7 +98,6 @@ Use `Ctrl+F`/`grep` to jump to a rule. Sections are grouped below by theme; numb
 41. [Session Scope Management](#session-scope-management)
 42. [Skill Auto-Loading Must Work](#skill-auto-loading-must-work)
 43. [Escalate Honesty-Critical Verification to the Most-Honest Model](#escalate-honesty-critical-verification-to-the-most-honest-model)
-43a. [Never Pass `fable` as a Workflow/Agent Model Override](#never-pass-fable-as-a-workflowagent-model-override)
 44. [Re-Validate a Reused Guard in a New Destructive Context](#re-validate-a-reused-guard-in-a-new-destructive-context)
 
 ## Invoke Skills Before ANY Response
@@ -1060,7 +1059,7 @@ The user should never have to manually call a teatree or overlay skill. Skills m
 
 ## Escalate Honesty-Critical Verification to the Most-Honest Model
 
-When ANY of these holds, record an honesty escalation **before the next verification/review/grading spawn**, so that work routes to the most-honest model (today Fable):
+When ANY of these holds, record an honesty escalation **before the next verification/review/grading spawn**, so that work routes to the most-honest configured model (`[agent] honesty_model`, default Opus — requires no operator opt-in):
 
 1. the user explicitly asks you to be honest;
 2. you judge you have been dishonest;
@@ -1073,19 +1072,9 @@ Record it with:
 t3 <overlay> honesty escalate --reason <user_asked|self_assessed_dishonest|accused_of_lying|shipped_incomplete> [--task <id>]
 ```
 
-The escalation is **situational and auto-clears** — it is NOT a standing reviewer-model change. It is session-scoped, idempotent (re-firing the same trigger is a no-op), and bounded by a 6-hour safety-net TTL; the primary clear is an honest, verified-complete landing (a fully-passed rubric grade). Rationale: models learn honesty over time, so the most-honest model is the right one to _verify_ a moment the agent's own honesty is in question. The firing is yours to judge (it is prompt-level, SDK-portable — not a CLI-only flag); the consequence (raise → kill-switch → auto-clear) is deterministic. Trigger #4 also has a deterministic backstop: when the rubric done-gate refuses a merge, it records the `shipped_incomplete` escalation for you.
+The escalation is **situational and auto-clears** — it is NOT a standing reviewer-model change. It is session-scoped, idempotent (re-firing the same trigger is a no-op), and bounded by a 6-hour safety-net TTL; the primary clear is an honest, verified-complete landing (a fully-passed rubric grade). Rationale: models learn honesty over time, so the most-honest model is the right one to _verify_ a moment the agent's own honesty is in question. The firing is yours to judge (it is prompt-level, SDK-portable — not a CLI-only flag); the consequence (raise → auto-clear) is deterministic. Trigger #4 also has a deterministic backstop: when the rubric done-gate refuses a merge, it records the `shipped_incomplete` escalation for you.
 
-**When Fable is disabled, the honesty-escalation target falls back to Opus.** "the most-honest model (today Fable)" above is the default; when the operator has set `[teatree] fable_enabled = false` (the #2237 kill switch — Fable is expensive and access-gated, and is currently unavailable), the routing downgrades every Fable pin to **Opus**. So an honesty escalation under a disabled-Fable config routes the verification to Opus, not to an unavailable model. This is automatic for teatree's own `model_tiering` — see the next rule for the surface it does NOT cover.
-
-## Never Pass `fable` as a Workflow/Agent Model Override
-
-A teatree Workflow's `model:` / `effort:` per-stage override is resolved DIRECTLY by the Workflow runtime — it does **not** route through teatree's `model_tiering`, so it **bypasses** the `[teatree] fable_enabled = false` kill switch. Picking the right model per stage is encouraged (`model:`/`effort:` overrides help) — but **never pass `fable`**:
-
-- Fable is (a) disabled by operator decision (`fable_enabled = false`), (b) very expensive, and (c) currently unavailable (access-gated). An explicit `model: 'fable'` in a Workflow/Agent call will fail ("Fable is currently unavailable") and/or burn money against the operator's explicit decision.
-- For an honesty-critical / final-verification stage that would normally escalate to the most-honest model, fall back to **Opus** (the kill-switch fallback) — never `fable` — until the operator re-enables Fable AND it is available again.
-- Underlying teatree gap (the kill switch should also clamp Workflow/Agent `model:` overrides, not just phase/skill routing) is tracked as a backlog item; until it lands, this rule is the behavioural guard.
-
-**Failure mode this prevents.** A Workflow's `final-review` stage was written with `model: 'fable'` and failed with "Fable is currently unavailable" — after the operator had already disabled Fable everywhere via `model_tiering`. The override bypassed the kill switch.
+**Pick the escalation (and any per-stage override) target deliberately — cost is the operator's decision, not the agent's default.** Teatree carries no standalone "most expensive model" kill-switch: the per-phase/per-tier routing (`model_tiering.py`'s `TIER_MODELS`/`TIER_EFFORT`) is already explicit-opt-in, so nothing routes to a costlier-than-frontier model unless the operator names that model id themselves in config. This applies equally to a teatree Workflow's `model:`/`effort:` per-stage override (resolved DIRECTLY by the Workflow runtime, not through `model_tiering`) — pick the model per stage deliberately, and default to the resolved `honesty_model` / phase tier rather than reaching for whatever the most expensive available model happens to be.
 
 ## Re-Validate a Reused Guard in a New Destructive Context
 

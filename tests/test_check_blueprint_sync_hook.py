@@ -163,12 +163,12 @@ class TestMain:
         assert rc == 0
 
     def test_src_with_appendix_blueprint_passes(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        # The key teatree#2237 case: documenting in a docs/blueprint/ appendix
-        # satisfies the sync gate, so a feat commit need not touch BLUEPRINT.md.
+        # Documenting in a docs/blueprint/ appendix satisfies the sync gate, so a
+        # feat commit need not touch BLUEPRINT.md.
         rc = self._run(
             monkeypatch,
             tmp_path,
-            message="feat(agent): single-toggle Fable kill-switch",
+            message="feat(agent): single-toggle model pin override",
             staged=["src/teatree/config_agent.py", "docs/blueprint/configuration.md"],
         )
         assert rc == 0

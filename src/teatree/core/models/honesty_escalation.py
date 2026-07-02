@@ -1,10 +1,10 @@
 """Durable session/task-scoped honesty-critical escalation signal (#2263).
 
 A row of this model marks that the next verification/review/grading spawn for a
-session should route to the most-honest model (today Fable, config-driven via
-``[agent] honesty_model``). It is *situational* — not a standing phase floor —
-and *auto-clearing*: a row is active only while it is uncleared AND inside its
-TTL window, so a forgotten row never pins Fable forever.
+session should route to the most-honest configured model (``[agent]
+honesty_model``, default Opus). It is *situational* — not a standing phase floor
+— and *auto-clearing*: a row is active only while it is uncleared AND inside its
+TTL window, so a forgotten row never escalates forever.
 
 Four triggers write a row (the firing is mostly agent-judgment, the consequence
 is deterministic):

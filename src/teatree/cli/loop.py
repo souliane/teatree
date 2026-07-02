@@ -250,17 +250,11 @@ def _session_pin_flags() -> list[str]:
     byte-for-byte today's behaviour. Effort is validated at parse time
     (``config_agent.resolve_agent_config``), so an off-scale value fails loudly
     rather than reaching the CLI.
-
-    The ``session_model`` pin passes through the same Fable kill-switch
-    (``_downgrade_fable``) the headless spawn chokepoint uses (teatree#2237), so
-    a Fable session pin downgrades to the Opus 4.8 baseline when
-    ``[agent] fable_enabled = false`` — the one flip reverts every surface.
     """
-    from teatree.agents.model_tiering import _downgrade_fable  # noqa: PLC0415
     from teatree.config_agent import resolve_agent_config  # noqa: PLC0415
 
     cfg = resolve_agent_config()
-    session_model = _downgrade_fable(cfg.session_model, cfg)
+    session_model = cfg.session_model
     flags: list[str] = []
     if session_model:
         flags.extend(["--model", session_model])

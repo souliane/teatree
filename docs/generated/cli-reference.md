@@ -8395,7 +8395,7 @@ Usage: t3 teatree honesty escalate [OPTIONS]
  most-honest model.
 
  The next ``(reviewing|requesting_review|testing)`` spawn for this session
- resolves to `` honesty_model`` (today Fable). Situational and
+ resolves to `` honesty_model`` (default Opus). Situational and
  auto-clearing — not a standing reviewer change.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮

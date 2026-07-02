@@ -129,9 +129,9 @@ class TestTeammateModelFloor(TestCase):
         assert self._pane_model("opus") == "opus"
 
     def test_more_capable_model_is_not_downgraded(self) -> None:
-        # Fable ranks above opus (the most-honest tier) and does not auto-compact;
-        # the floor only raises, never lowers, so it is kept.
-        assert self._pane_model("claude-fable-5") == "claude-fable-5"
+        # An unrecognised model id ranks ABOVE every known tier (most-capable
+        # fallback); the floor only raises, never lowers, so it is kept.
+        assert self._pane_model("claude-hypothetical-9") == "claude-hypothetical-9"
 
 
 class TestMakerClaimOverlaySeamRouting(TestCase):
