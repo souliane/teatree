@@ -7779,12 +7779,15 @@ Usage: t3 teatree availability [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ away     Set manual away-mode override (questions queue as DeferredQuestion  │
-│          rows).                                                              │
-│ present  Set manual present-mode override (questions ask interactively).     │
-│ auto     Clear manual override and fall back to schedule/default.            │
-│ show     Print the currently resolved mode and source                        │
-│          (override/schedule/default).                                        │
+│ away             Set manual away-mode override (questions queue as           │
+│                  DeferredQuestion rows).                                     │
+│ autonomous-away  Set manual autonomous-away override (questions queue; the   │
+│                  self-pump keeps running, #2544).                            │
+│ present          Set manual present-mode override (questions ask             │
+│                  interactively).                                             │
+│ auto             Clear manual override and fall back to schedule/default.    │
+│ show             Print the currently resolved mode and source                │
+│                  (override/schedule/default).                                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -7794,6 +7797,24 @@ Usage: t3 teatree availability [OPTIONS] COMMAND [ARGS]...
 Usage: t3 teatree availability away [OPTIONS]
 
  Force away-mode (deferred questions) until *until* — or forever.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --until        TEXT  ISO8601 timestamp when the override expires (e.g.       │
+│                      2026-05-19T18:00:00+02:00).                             │
+│ --help               Show this message and exit.                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree availability autonomous-away`
+
+```
+Usage: t3 teatree availability autonomous-away [OPTIONS]
+
+ Force autonomous-away — defer questions but KEEP self-pumping (#2544).
+
+ Unlike ``away`` (which also pauses the factory), autonomous-away is the
+ unattended-run state: ``AskUserQuestion`` calls defer to the durable
+ backlog while the Stop self-pump keeps driving the loop.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --until        TEXT  ISO8601 timestamp when the override expires (e.g.       │

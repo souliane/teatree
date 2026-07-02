@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, Annotated, Any
 import typer
 from django_typer.management import TyperCommand
 
+from teatree.core import availability
 from teatree.core.backend_factory import code_host_from_overlay, iter_overlay_backends, messaging_from_overlay
 from teatree.core.loop_lease_manager import PER_LOOP_TICK_MUTEX_PREFIX, per_loop_owner_slot
 from teatree.core.models import LoopLease
@@ -210,9 +211,7 @@ class Command(TyperCommand):
         # here reconciles both with zero duplicated logic. Only holiday-`away`
         # pauses the self-pump; `autonomous_away` defers questions but keeps the
         # factory self-pumping, so it must NOT park here.
-        from teatree.core.availability import resolve_mode  # noqa: PLC0415
-
-        resolution = resolve_mode()
+        resolution = availability.resolve_mode()
         if resolution.pauses_self_pump:
             self._emit_skip(
                 f"availability={resolution.mode} ({resolution.source}) — self-pump paused, tick parked",
