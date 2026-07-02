@@ -70,14 +70,20 @@ class TestGitHubOAuthLaneIsRightSized:
         assert default == "high", "the single representative tier is `high`."
 
     def test_matrix_effort_fallback_is_a_single_tier(self) -> None:
-        # The scheduled cron run passes no inputs, so the `|| '<fallback>'` on the
-        # matrix step is what sizes it — it must also be a single tier, not the old
-        # low,medium,high 3x axis.
+        # The scheduled cron run passes no inputs, so the fallback on the matrix
+        # step is what sizes it. The SCHEDULED branch legitimately fans all three
+        # (low,medium,high — the weekly run measures pass-rate vs effort across the
+        # whole suite); every OTHER trigger (a manual run with a blank `efforts`
+        # field) must fall back to the single 'high' tier, never the unconditional
+        # 3x low,medium,high axis (souliane/teatree#2878).
         text = _GH_EVAL.read_text(encoding="utf-8")
         assert "inputs.efforts || 'low,medium,high'" not in text, (
-            "the matrix effort fallback must not restore the 3x low,medium,high axis."
+            "the matrix effort fallback must not restore the UNCONDITIONAL 3x low,medium,high axis."
         )
-        assert "inputs.efforts || 'high'" in text
+        assert "github.event_name == 'schedule'" in text, (
+            "the 3-tier fallback must be gated on the schedule event, not a blanket coercion."
+        )
+        assert "|| 'high'" in text, "the non-schedule fallback must resolve to the single 'high' tier."
 
     def test_trials_input_defaults_below_three(self) -> None:
         default = int(_gh_inputs()["trials"]["default"])
