@@ -1,12 +1,18 @@
 # Autonomous-lane architecture — keep the SQLite orchestration, move the runtime to Pydantic AI, bind the model layer, and make one t3 master own integration
 
-> **Status: Draft / decision proposed — not adopted.** This is an architecture
-> decision record for teatree's autonomous lane. It changes **no runtime code**:
-> every behaviour described as a migration step below is its own later,
-> separately-reviewed PR, each carrying a pinning test that fixes current
-> behaviour before the change. **Do not merge** this document ahead of independent
-> review — the point of writing it down is to get the decision looked at before
-> any code moves.
+> **Status: Adopted — migration in progress (§8).** The strangler-fig migration
+> below is underway, each step its own separately-reviewed PR with a pinning
+> test, the interactive Claude Code path working throughout. Shipped so far:
+> step 1 (engagement unification) and the step-3 fencing-token primitive
+> ([#2872](https://github.com/souliane/teatree/issues/2872)); step 4's PR-1, the
+> Harness/HarnessSession protocol seam
+> ([#2883](https://github.com/souliane/teatree/issues/2883)); and step 4's PR-2,
+> `PydanticAiHarness` + the OrcaRouter BYOK provider
+> ([#2885](https://github.com/souliane/teatree/issues/2885)). Step 2 (the
+> always-on anti-duplication guard) and the remainder of step 3 (the full
+> ``t3 master`` rename + ``reserve_to_t3_master`` enforcement) are tracked, not
+> yet shipped — see epic [#2565](https://github.com/souliane/teatree/issues/2565)
+> for the live status of every step.
 >
 > **Scope:** teatree's autonomous lane only. Teatree-internal and self-contained;
 > nothing here is an overlay or customer concern. The interactive Claude Code
@@ -571,7 +577,8 @@ that is the whole corrected premise.
 
 ## 11. Decision status
 
-Proposed, pending independent review. Nothing here is implemented; no runtime
-code changes with this document. If accepted, the migration proceeds as the
-ordered, separately-reviewed PRs of §8, each with its own pinning test, with the
-interactive Claude Code path working throughout.
+Adopted. The migration is proceeding as the ordered, separately-reviewed PRs of
+§8, each with its own pinning test, with the interactive Claude Code path
+working throughout — see the header banner above for exactly which steps have
+shipped and epic [#2565](https://github.com/souliane/teatree/issues/2565) for
+the live status of every step.

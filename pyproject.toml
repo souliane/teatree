@@ -45,6 +45,14 @@ dependencies = [
   # A RUNTIME command path, so it must be in the installed tool env, not only
   # the dev group — same class as the ``coverage`` / ``pyyaml`` runtime deps.
   "pillow>=11",
+  # ``teatree.agents.harness.PydanticAiHarness``
+  # ([#2885](https://github.com/souliane/teatree/issues/2885)) is a headless
+  # dispatch RUNTIME command path (``agent_harness=pydantic_ai``), so — same
+  # class as the ``coverage`` / ``pyyaml`` runtime deps above — it must be in
+  # the installed tool env, not only the dev group. The ``[openai]`` extra is
+  # OrcaRouter's BYOK provider: an OpenAI-compatible endpoint behind
+  # ``pydantic_ai.models.openai.OpenAIChatModel``.
+  "pydantic-ai-slim[openai]>=2.3",
   # ``teatree.eval.loader`` imports ``yaml`` at module load, and that module
   # is reached from ``teatree.cli.__init__`` — so a missing ``pyyaml`` crashes
   # EVERY ``t3`` invocation, which in turn makes the §17.6 gate-15

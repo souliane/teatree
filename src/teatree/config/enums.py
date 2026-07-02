@@ -413,10 +413,13 @@ class AgentHarness(StrEnum):
     *   :attr:`CLAUDE_SDK` (default) — the ``claude-agent-sdk`` transport
         (:class:`~teatree.agents.harness.ClaudeSdkHarness`, wrapping
         ``ClaudeSDKClient``). Byte-identical to the transport before the seam.
-    *   :attr:`PYDANTIC_AI` — a future provider-agnostic transport over a
-        configurable OpenAI-compatible router. Not yet implemented —
-        :func:`~teatree.agents.harness.resolve_harness` refuses it with a clear
-        ``NotImplementedError`` (mirroring the :attr:`AgentRuntime.API` precedent).
+    *   :attr:`PYDANTIC_AI` — the provider-agnostic transport
+        (:class:`~teatree.agents.harness.PydanticAiHarness`,
+        [#2885](https://github.com/souliane/teatree/issues/2885)): a
+        ``pydantic_ai.Agent`` targeting OrcaRouter's BYOK, OpenAI-compatible,
+        metered endpoint. Its OrcaRouter credential resolves lazily inside
+        ``open``, so selecting this value never itself requires a live
+        credential.
 
     ``agent_harness`` is a DB-home setting: opt in via ``t3 <overlay>
     config_setting set agent_harness pydantic_ai`` (per-overlay overridable with

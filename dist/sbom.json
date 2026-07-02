@@ -46,8 +46,8 @@
       "version": "4.13.0"
     },
     {
-      "bom-ref": "requirements-L14",
-      "description": "requirements line 14: asgiref==3.11.1",
+      "bom-ref": "requirements-L16",
+      "description": "requirements line 16: asgiref==3.11.1",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -61,8 +61,8 @@
       "version": "3.11.1"
     },
     {
-      "bom-ref": "requirements-L18",
-      "description": "requirements line 18: attrs==26.1.0",
+      "bom-ref": "requirements-L20",
+      "description": "requirements line 20: attrs==26.1.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -76,8 +76,8 @@
       "version": "26.1.0"
     },
     {
-      "bom-ref": "requirements-L22",
-      "description": "requirements line 22: certifi==2026.4.22",
+      "bom-ref": "requirements-L24",
+      "description": "requirements line 24: certifi==2026.4.22",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -91,8 +91,8 @@
       "version": "2026.4.22"
     },
     {
-      "bom-ref": "requirements-L26",
-      "description": "requirements line 26: cffi==2.0.0 ; platform_python_implementation != 'PyPy'",
+      "bom-ref": "requirements-L29",
+      "description": "requirements line 29: cffi==2.0.0 ; platform_python_implementation != 'PyPy'",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -106,8 +106,23 @@
       "version": "2.0.0"
     },
     {
-      "bom-ref": "requirements-L28",
-      "description": "requirements line 28: claude-agent-sdk==0.2.94",
+      "bom-ref": "requirements-L31",
+      "description": "requirements line 31: charset-normalizer==3.4.7",
+      "externalReferences": [
+        {
+          "comment": "implicit dist url",
+          "type": "distribution",
+          "url": "https://pypi.org/simple/charset-normalizer/"
+        }
+      ],
+      "name": "charset-normalizer",
+      "purl": "pkg:pypi/charset-normalizer@3.4.7",
+      "type": "library",
+      "version": "3.4.7"
+    },
+    {
+      "bom-ref": "requirements-L33",
+      "description": "requirements line 33: claude-agent-sdk==0.2.94",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -121,8 +136,8 @@
       "version": "0.2.94"
     },
     {
-      "bom-ref": "requirements-L30",
-      "description": "requirements line 30: click==8.3.3",
+      "bom-ref": "requirements-L35",
+      "description": "requirements line 35: click==8.3.3",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -136,8 +151,8 @@
       "version": "8.3.3"
     },
     {
-      "bom-ref": "requirements-L35",
-      "description": "requirements line 35: colorama==0.4.6 ; sys_platform == 'win32'",
+      "bom-ref": "requirements-L40",
+      "description": "requirements line 40: colorama==0.4.6 ; sys_platform == 'win32'",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -151,8 +166,8 @@
       "version": "0.4.6"
     },
     {
-      "bom-ref": "requirements-L37",
-      "description": "requirements line 37: coverage==7.14.0",
+      "bom-ref": "requirements-L44",
+      "description": "requirements line 44: coverage==7.14.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -166,8 +181,8 @@
       "version": "7.14.0"
     },
     {
-      "bom-ref": "requirements-L39",
-      "description": "requirements line 39: croniter==6.2.2",
+      "bom-ref": "requirements-L46",
+      "description": "requirements line 46: croniter==6.2.2",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -181,8 +196,8 @@
       "version": "6.2.2"
     },
     {
-      "bom-ref": "requirements-L41",
-      "description": "requirements line 41: cryptography==49.0.0",
+      "bom-ref": "requirements-L48",
+      "description": "requirements line 48: cryptography==49.0.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -196,8 +211,23 @@
       "version": "49.0.0"
     },
     {
-      "bom-ref": "requirements-L43",
-      "description": "requirements line 43: django==6.0.6",
+      "bom-ref": "requirements-L50",
+      "description": "requirements line 50: distro==1.9.0",
+      "externalReferences": [
+        {
+          "comment": "implicit dist url",
+          "type": "distribution",
+          "url": "https://pypi.org/simple/distro/"
+        }
+      ],
+      "name": "distro",
+      "purl": "pkg:pypi/distro@1.9.0",
+      "type": "library",
+      "version": "1.9.0"
+    },
+    {
+      "bom-ref": "requirements-L52",
+      "description": "requirements line 52: django==6.0.6",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -211,8 +241,8 @@
       "version": "6.0.6"
     },
     {
-      "bom-ref": "requirements-L53",
-      "description": "requirements line 53: django-fsm-2==4.2.4",
+      "bom-ref": "requirements-L62",
+      "description": "requirements line 62: django-fsm-2==4.2.4",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -226,8 +256,8 @@
       "version": "4.2.4"
     },
     {
-      "bom-ref": "requirements-L55",
-      "description": "requirements line 55: django-linear-migrations==2.19.0",
+      "bom-ref": "requirements-L64",
+      "description": "requirements line 64: django-linear-migrations==2.19.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -241,8 +271,8 @@
       "version": "2.19.0"
     },
     {
-      "bom-ref": "requirements-L57",
-      "description": "requirements line 57: django-rich==2.2.0",
+      "bom-ref": "requirements-L66",
+      "description": "requirements line 66: django-rich==2.2.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -256,8 +286,8 @@
       "version": "2.2.0"
     },
     {
-      "bom-ref": "requirements-L59",
-      "description": "requirements line 59: django-stubs-ext==6.0.4",
+      "bom-ref": "requirements-L68",
+      "description": "requirements line 68: django-stubs-ext==6.0.4",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -271,8 +301,8 @@
       "version": "6.0.4"
     },
     {
-      "bom-ref": "requirements-L64",
-      "description": "requirements line 64: django-tasks==0.12.0",
+      "bom-ref": "requirements-L73",
+      "description": "requirements line 73: django-tasks==0.12.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -286,8 +316,8 @@
       "version": "0.12.0"
     },
     {
-      "bom-ref": "requirements-L68",
-      "description": "requirements line 68: django-tasks-db==0.12.0",
+      "bom-ref": "requirements-L77",
+      "description": "requirements line 77: django-tasks-db==0.12.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -301,8 +331,8 @@
       "version": "0.12.0"
     },
     {
-      "bom-ref": "requirements-L70",
-      "description": "requirements line 70: django-typer==3.7.2",
+      "bom-ref": "requirements-L79",
+      "description": "requirements line 79: django-typer==3.7.2",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -316,8 +346,38 @@
       "version": "3.7.2"
     },
     {
-      "bom-ref": "requirements-L72",
-      "description": "requirements line 72: h11==0.16.0",
+      "bom-ref": "requirements-L81",
+      "description": "requirements line 81: genai-prices==0.0.69",
+      "externalReferences": [
+        {
+          "comment": "implicit dist url",
+          "type": "distribution",
+          "url": "https://pypi.org/simple/genai-prices/"
+        }
+      ],
+      "name": "genai-prices",
+      "purl": "pkg:pypi/genai-prices@0.0.69",
+      "type": "library",
+      "version": "0.0.69"
+    },
+    {
+      "bom-ref": "requirements-L83",
+      "description": "requirements line 83: griffelib==2.1.0",
+      "externalReferences": [
+        {
+          "comment": "implicit dist url",
+          "type": "distribution",
+          "url": "https://pypi.org/simple/griffelib/"
+        }
+      ],
+      "name": "griffelib",
+      "purl": "pkg:pypi/griffelib@2.1.0",
+      "type": "library",
+      "version": "2.1.0"
+    },
+    {
+      "bom-ref": "requirements-L85",
+      "description": "requirements line 85: h11==0.16.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -331,8 +391,8 @@
       "version": "0.16.0"
     },
     {
-      "bom-ref": "requirements-L76",
-      "description": "requirements line 76: httpcore==1.0.9",
+      "bom-ref": "requirements-L90",
+      "description": "requirements line 90: httpcore==1.0.9",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -346,8 +406,23 @@
       "version": "1.0.9"
     },
     {
-      "bom-ref": "requirements-L78",
-      "description": "requirements line 78: httpx==0.28.1",
+      "bom-ref": "requirements-L92",
+      "description": "requirements line 92: httpcore2==2.3.0",
+      "externalReferences": [
+        {
+          "comment": "implicit dist url",
+          "type": "distribution",
+          "url": "https://pypi.org/simple/httpcore2/"
+        }
+      ],
+      "name": "httpcore2",
+      "purl": "pkg:pypi/httpcore2@2.3.0",
+      "type": "library",
+      "version": "2.3.0"
+    },
+    {
+      "bom-ref": "requirements-L94",
+      "description": "requirements line 94: httpx==0.28.1",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -361,8 +436,8 @@
       "version": "0.28.1"
     },
     {
-      "bom-ref": "requirements-L82",
-      "description": "requirements line 82: httpx-sse==0.4.3",
+      "bom-ref": "requirements-L101",
+      "description": "requirements line 101: httpx-sse==0.4.3",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -376,8 +451,23 @@
       "version": "0.4.3"
     },
     {
-      "bom-ref": "requirements-L84",
-      "description": "requirements line 84: idna==3.15",
+      "bom-ref": "requirements-L103",
+      "description": "requirements line 103: httpx2==2.3.0",
+      "externalReferences": [
+        {
+          "comment": "implicit dist url",
+          "type": "distribution",
+          "url": "https://pypi.org/simple/httpx2/"
+        }
+      ],
+      "name": "httpx2",
+      "purl": "pkg:pypi/httpx2@2.3.0",
+      "type": "library",
+      "version": "2.3.0"
+    },
+    {
+      "bom-ref": "requirements-L105",
+      "description": "requirements line 105: idna==3.15",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -391,8 +481,23 @@
       "version": "3.15"
     },
     {
-      "bom-ref": "requirements-L88",
-      "description": "requirements line 88: jsonschema==4.26.0",
+      "bom-ref": "requirements-L111",
+      "description": "requirements line 111: jiter==0.16.0",
+      "externalReferences": [
+        {
+          "comment": "implicit dist url",
+          "type": "distribution",
+          "url": "https://pypi.org/simple/jiter/"
+        }
+      ],
+      "name": "jiter",
+      "purl": "pkg:pypi/jiter@0.16.0",
+      "type": "library",
+      "version": "0.16.0"
+    },
+    {
+      "bom-ref": "requirements-L113",
+      "description": "requirements line 113: jsonschema==4.26.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -406,8 +511,8 @@
       "version": "4.26.0"
     },
     {
-      "bom-ref": "requirements-L90",
-      "description": "requirements line 90: jsonschema-specifications==2025.9.1",
+      "bom-ref": "requirements-L115",
+      "description": "requirements line 115: jsonschema-specifications==2025.9.1",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -421,8 +526,23 @@
       "version": "2025.9.1"
     },
     {
-      "bom-ref": "requirements-L92",
-      "description": "requirements line 92: markdown-it-py==4.2.0",
+      "bom-ref": "requirements-L117",
+      "description": "requirements line 117: logfire-api==4.37.0",
+      "externalReferences": [
+        {
+          "comment": "implicit dist url",
+          "type": "distribution",
+          "url": "https://pypi.org/simple/logfire-api/"
+        }
+      ],
+      "name": "logfire-api",
+      "purl": "pkg:pypi/logfire-api@4.37.0",
+      "type": "library",
+      "version": "4.37.0"
+    },
+    {
+      "bom-ref": "requirements-L119",
+      "description": "requirements line 119: markdown-it-py==4.2.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -436,8 +556,8 @@
       "version": "4.2.0"
     },
     {
-      "bom-ref": "requirements-L94",
-      "description": "requirements line 94: mcp==1.27.2",
+      "bom-ref": "requirements-L121",
+      "description": "requirements line 121: mcp==1.27.2",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -451,8 +571,8 @@
       "version": "1.27.2"
     },
     {
-      "bom-ref": "requirements-L98",
-      "description": "requirements line 98: mdurl==0.1.2",
+      "bom-ref": "requirements-L125",
+      "description": "requirements line 125: mdurl==0.1.2",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -466,8 +586,38 @@
       "version": "0.1.2"
     },
     {
-      "bom-ref": "requirements-L100",
-      "description": "requirements line 100: pillow==12.2.0",
+      "bom-ref": "requirements-L127",
+      "description": "requirements line 127: openai==2.44.0",
+      "externalReferences": [
+        {
+          "comment": "implicit dist url",
+          "type": "distribution",
+          "url": "https://pypi.org/simple/openai/"
+        }
+      ],
+      "name": "openai",
+      "purl": "pkg:pypi/openai@2.44.0",
+      "type": "library",
+      "version": "2.44.0"
+    },
+    {
+      "bom-ref": "requirements-L129",
+      "description": "requirements line 129: opentelemetry-api==1.43.0",
+      "externalReferences": [
+        {
+          "comment": "implicit dist url",
+          "type": "distribution",
+          "url": "https://pypi.org/simple/opentelemetry-api/"
+        }
+      ],
+      "name": "opentelemetry-api",
+      "purl": "pkg:pypi/opentelemetry-api@1.43.0",
+      "type": "library",
+      "version": "1.43.0"
+    },
+    {
+      "bom-ref": "requirements-L131",
+      "description": "requirements line 131: pillow==12.2.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -481,8 +631,8 @@
       "version": "12.2.0"
     },
     {
-      "bom-ref": "requirements-L102",
-      "description": "requirements line 102: pycparser==3.0 ; implementation_name != 'PyPy' and platform_python_implementation != 'PyPy'",
+      "bom-ref": "requirements-L133",
+      "description": "requirements line 133: pycparser==3.0 ; implementation_name != 'PyPy' and platform_python_implementation != 'PyPy'",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -496,8 +646,8 @@
       "version": "3.0"
     },
     {
-      "bom-ref": "requirements-L104",
-      "description": "requirements line 104: pydantic==2.13.4",
+      "bom-ref": "requirements-L135",
+      "description": "requirements line 135: pydantic==2.13.4",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -511,8 +661,23 @@
       "version": "2.13.4"
     },
     {
-      "bom-ref": "requirements-L108",
-      "description": "requirements line 108: pydantic-core==2.46.4",
+      "bom-ref": "requirements-L143",
+      "description": "requirements line 143: pydantic-ai-slim==2.3.0",
+      "externalReferences": [
+        {
+          "comment": "implicit dist url",
+          "type": "distribution",
+          "url": "https://pypi.org/simple/pydantic-ai-slim/"
+        }
+      ],
+      "name": "pydantic-ai-slim",
+      "purl": "pkg:pypi/pydantic-ai-slim@2.3.0",
+      "type": "library",
+      "version": "2.3.0"
+    },
+    {
+      "bom-ref": "requirements-L145",
+      "description": "requirements line 145: pydantic-core==2.46.4",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -526,8 +691,23 @@
       "version": "2.46.4"
     },
     {
-      "bom-ref": "requirements-L110",
-      "description": "requirements line 110: pydantic-settings==2.14.2",
+      "bom-ref": "requirements-L147",
+      "description": "requirements line 147: pydantic-graph==2.3.0",
+      "externalReferences": [
+        {
+          "comment": "implicit dist url",
+          "type": "distribution",
+          "url": "https://pypi.org/simple/pydantic-graph/"
+        }
+      ],
+      "name": "pydantic-graph",
+      "purl": "pkg:pypi/pydantic-graph@2.3.0",
+      "type": "library",
+      "version": "2.3.0"
+    },
+    {
+      "bom-ref": "requirements-L149",
+      "description": "requirements line 149: pydantic-settings==2.14.2",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -541,8 +721,8 @@
       "version": "2.14.2"
     },
     {
-      "bom-ref": "requirements-L112",
-      "description": "requirements line 112: pygments==2.20.0",
+      "bom-ref": "requirements-L151",
+      "description": "requirements line 151: pygments==2.20.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -556,8 +736,8 @@
       "version": "2.20.0"
     },
     {
-      "bom-ref": "requirements-L114",
-      "description": "requirements line 114: pyjwt==2.13.0",
+      "bom-ref": "requirements-L153",
+      "description": "requirements line 153: pyjwt==2.13.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -571,8 +751,8 @@
       "version": "2.13.0"
     },
     {
-      "bom-ref": "requirements-L116",
-      "description": "requirements line 116: python-dateutil==2.9.0.post0",
+      "bom-ref": "requirements-L155",
+      "description": "requirements line 155: python-dateutil==2.9.0.post0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -586,8 +766,8 @@
       "version": "2.9.0.post0"
     },
     {
-      "bom-ref": "requirements-L118",
-      "description": "requirements line 118: python-dotenv==1.2.2",
+      "bom-ref": "requirements-L157",
+      "description": "requirements line 157: python-dotenv==1.2.2",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -601,8 +781,8 @@
       "version": "1.2.2"
     },
     {
-      "bom-ref": "requirements-L120",
-      "description": "requirements line 120: python-multipart==0.0.32",
+      "bom-ref": "requirements-L159",
+      "description": "requirements line 159: python-multipart==0.0.32",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -616,8 +796,8 @@
       "version": "0.0.32"
     },
     {
-      "bom-ref": "requirements-L122",
-      "description": "requirements line 122: pywin32==311 ; sys_platform == 'win32'",
+      "bom-ref": "requirements-L161",
+      "description": "requirements line 161: pywin32==311 ; sys_platform == 'win32'",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -631,8 +811,8 @@
       "version": "311"
     },
     {
-      "bom-ref": "requirements-L124",
-      "description": "requirements line 124: pyyaml==6.0.3",
+      "bom-ref": "requirements-L163",
+      "description": "requirements line 163: pyyaml==6.0.3",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -646,8 +826,8 @@
       "version": "6.0.3"
     },
     {
-      "bom-ref": "requirements-L126",
-      "description": "requirements line 126: referencing==0.37.0",
+      "bom-ref": "requirements-L165",
+      "description": "requirements line 165: referencing==0.37.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -661,8 +841,38 @@
       "version": "0.37.0"
     },
     {
-      "bom-ref": "requirements-L130",
-      "description": "requirements line 130: rich==15.0.0",
+      "bom-ref": "requirements-L169",
+      "description": "requirements line 169: regex==2026.6.28",
+      "externalReferences": [
+        {
+          "comment": "implicit dist url",
+          "type": "distribution",
+          "url": "https://pypi.org/simple/regex/"
+        }
+      ],
+      "name": "regex",
+      "purl": "pkg:pypi/regex@2026.6.28",
+      "type": "library",
+      "version": "2026.6.28"
+    },
+    {
+      "bom-ref": "requirements-L171",
+      "description": "requirements line 171: requests==2.33.1",
+      "externalReferences": [
+        {
+          "comment": "implicit dist url",
+          "type": "distribution",
+          "url": "https://pypi.org/simple/requests/"
+        }
+      ],
+      "name": "requests",
+      "purl": "pkg:pypi/requests@2.33.1",
+      "type": "library",
+      "version": "2.33.1"
+    },
+    {
+      "bom-ref": "requirements-L173",
+      "description": "requirements line 173: rich==15.0.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -676,8 +886,8 @@
       "version": "15.0.0"
     },
     {
-      "bom-ref": "requirements-L134",
-      "description": "requirements line 134: rpds-py==0.30.0",
+      "bom-ref": "requirements-L177",
+      "description": "requirements line 177: rpds-py==0.30.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -691,8 +901,8 @@
       "version": "0.30.0"
     },
     {
-      "bom-ref": "requirements-L138",
-      "description": "requirements line 138: shellingham==1.5.4",
+      "bom-ref": "requirements-L181",
+      "description": "requirements line 181: shellingham==1.5.4",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -706,8 +916,8 @@
       "version": "1.5.4"
     },
     {
-      "bom-ref": "requirements-L140",
-      "description": "requirements line 140: six==1.17.0",
+      "bom-ref": "requirements-L183",
+      "description": "requirements line 183: six==1.17.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -721,8 +931,8 @@
       "version": "1.17.0"
     },
     {
-      "bom-ref": "requirements-L142",
-      "description": "requirements line 142: sniffio==1.3.1",
+      "bom-ref": "requirements-L185",
+      "description": "requirements line 185: sniffio==1.3.1",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -736,8 +946,8 @@
       "version": "1.3.1"
     },
     {
-      "bom-ref": "requirements-L144",
-      "description": "requirements line 144: sqlparse==0.5.5",
+      "bom-ref": "requirements-L189",
+      "description": "requirements line 189: sqlparse==0.5.5",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -751,8 +961,8 @@
       "version": "0.5.5"
     },
     {
-      "bom-ref": "requirements-L146",
-      "description": "requirements line 146: sse-starlette==3.4.4",
+      "bom-ref": "requirements-L191",
+      "description": "requirements line 191: sse-starlette==3.4.4",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -766,8 +976,8 @@
       "version": "3.4.4"
     },
     {
-      "bom-ref": "requirements-L148",
-      "description": "requirements line 148: starlette==1.3.1",
+      "bom-ref": "requirements-L193",
+      "description": "requirements line 193: starlette==1.3.1",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -781,8 +991,23 @@
       "version": "1.3.1"
     },
     {
-      "bom-ref": "requirements-L152",
-      "description": "requirements line 152: tomlkit==0.15.0",
+      "bom-ref": "requirements-L197",
+      "description": "requirements line 197: tiktoken==0.13.0",
+      "externalReferences": [
+        {
+          "comment": "implicit dist url",
+          "type": "distribution",
+          "url": "https://pypi.org/simple/tiktoken/"
+        }
+      ],
+      "name": "tiktoken",
+      "purl": "pkg:pypi/tiktoken@0.13.0",
+      "type": "library",
+      "version": "0.13.0"
+    },
+    {
+      "bom-ref": "requirements-L199",
+      "description": "requirements line 199: tomlkit==0.15.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -796,8 +1021,38 @@
       "version": "0.15.0"
     },
     {
-      "bom-ref": "requirements-L154",
-      "description": "requirements line 154: typer==0.25.1",
+      "bom-ref": "requirements-L201",
+      "description": "requirements line 201: tqdm==4.68.3",
+      "externalReferences": [
+        {
+          "comment": "implicit dist url",
+          "type": "distribution",
+          "url": "https://pypi.org/simple/tqdm/"
+        }
+      ],
+      "name": "tqdm",
+      "purl": "pkg:pypi/tqdm@4.68.3",
+      "type": "library",
+      "version": "4.68.3"
+    },
+    {
+      "bom-ref": "requirements-L203",
+      "description": "requirements line 203: truststore==0.10.4",
+      "externalReferences": [
+        {
+          "comment": "implicit dist url",
+          "type": "distribution",
+          "url": "https://pypi.org/simple/truststore/"
+        }
+      ],
+      "name": "truststore",
+      "purl": "pkg:pypi/truststore@0.10.4",
+      "type": "library",
+      "version": "0.10.4"
+    },
+    {
+      "bom-ref": "requirements-L207",
+      "description": "requirements line 207: typer==0.25.1",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -811,8 +1066,8 @@
       "version": "0.25.1"
     },
     {
-      "bom-ref": "requirements-L156",
-      "description": "requirements line 156: typing-extensions==4.15.0",
+      "bom-ref": "requirements-L209",
+      "description": "requirements line 209: typing-extensions==4.15.0",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -826,8 +1081,8 @@
       "version": "4.15.0"
     },
     {
-      "bom-ref": "requirements-L165",
-      "description": "requirements line 165: typing-inspection==0.4.2",
+      "bom-ref": "requirements-L220",
+      "description": "requirements line 220: typing-inspection==0.4.2",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -841,8 +1096,8 @@
       "version": "0.4.2"
     },
     {
-      "bom-ref": "requirements-L170",
-      "description": "requirements line 170: tzdata==2026.2 ; sys_platform == 'win32'",
+      "bom-ref": "requirements-L227",
+      "description": "requirements line 227: tzdata==2026.2 ; sys_platform == 'win32'",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -856,8 +1111,23 @@
       "version": "2026.2"
     },
     {
-      "bom-ref": "requirements-L172",
-      "description": "requirements line 172: uvicorn==0.49.0 ; sys_platform != 'emscripten'",
+      "bom-ref": "requirements-L229",
+      "description": "requirements line 229: urllib3==2.7.0",
+      "externalReferences": [
+        {
+          "comment": "implicit dist url",
+          "type": "distribution",
+          "url": "https://pypi.org/simple/urllib3/"
+        }
+      ],
+      "name": "urllib3",
+      "purl": "pkg:pypi/urllib3@2.7.0",
+      "type": "library",
+      "version": "2.7.0"
+    },
+    {
+      "bom-ref": "requirements-L231",
+      "description": "requirements line 231: uvicorn==0.49.0 ; sys_platform != 'emscripten'",
       "externalReferences": [
         {
           "comment": "implicit dist url",
@@ -873,139 +1143,199 @@
   ],
   "dependencies": [
     {
-      "ref": "requirements-L100"
+      "ref": "requirements-L101"
     },
     {
-      "ref": "requirements-L102"
+      "ref": "requirements-L103"
     },
     {
-      "ref": "requirements-L104"
+      "ref": "requirements-L105"
     },
     {
-      "ref": "requirements-L108"
+      "ref": "requirements-L111"
     },
     {
-      "ref": "requirements-L110"
+      "ref": "requirements-L113"
     },
     {
-      "ref": "requirements-L112"
+      "ref": "requirements-L115"
     },
     {
-      "ref": "requirements-L114"
+      "ref": "requirements-L117"
     },
     {
-      "ref": "requirements-L116"
+      "ref": "requirements-L119"
     },
     {
-      "ref": "requirements-L118"
+      "ref": "requirements-L121"
     },
     {
-      "ref": "requirements-L120"
+      "ref": "requirements-L125"
     },
     {
-      "ref": "requirements-L122"
+      "ref": "requirements-L127"
     },
     {
-      "ref": "requirements-L124"
+      "ref": "requirements-L129"
     },
     {
-      "ref": "requirements-L126"
+      "ref": "requirements-L131"
     },
     {
-      "ref": "requirements-L130"
+      "ref": "requirements-L133"
     },
     {
-      "ref": "requirements-L134"
+      "ref": "requirements-L135"
     },
     {
-      "ref": "requirements-L138"
+      "ref": "requirements-L143"
     },
     {
-      "ref": "requirements-L14"
+      "ref": "requirements-L145"
     },
     {
-      "ref": "requirements-L140"
+      "ref": "requirements-L147"
     },
     {
-      "ref": "requirements-L142"
+      "ref": "requirements-L149"
     },
     {
-      "ref": "requirements-L144"
+      "ref": "requirements-L151"
     },
     {
-      "ref": "requirements-L146"
+      "ref": "requirements-L153"
     },
     {
-      "ref": "requirements-L148"
+      "ref": "requirements-L155"
     },
     {
-      "ref": "requirements-L152"
+      "ref": "requirements-L157"
     },
     {
-      "ref": "requirements-L154"
+      "ref": "requirements-L159"
     },
     {
-      "ref": "requirements-L156"
+      "ref": "requirements-L16"
+    },
+    {
+      "ref": "requirements-L161"
+    },
+    {
+      "ref": "requirements-L163"
     },
     {
       "ref": "requirements-L165"
     },
     {
-      "ref": "requirements-L170"
+      "ref": "requirements-L169"
     },
     {
-      "ref": "requirements-L172"
+      "ref": "requirements-L171"
     },
     {
-      "ref": "requirements-L18"
+      "ref": "requirements-L173"
     },
     {
-      "ref": "requirements-L22"
+      "ref": "requirements-L177"
     },
     {
-      "ref": "requirements-L26"
+      "ref": "requirements-L181"
     },
     {
-      "ref": "requirements-L28"
+      "ref": "requirements-L183"
+    },
+    {
+      "ref": "requirements-L185"
+    },
+    {
+      "ref": "requirements-L189"
+    },
+    {
+      "ref": "requirements-L191"
+    },
+    {
+      "ref": "requirements-L193"
+    },
+    {
+      "ref": "requirements-L197"
+    },
+    {
+      "ref": "requirements-L199"
+    },
+    {
+      "ref": "requirements-L20"
+    },
+    {
+      "ref": "requirements-L201"
+    },
+    {
+      "ref": "requirements-L203"
+    },
+    {
+      "ref": "requirements-L207"
+    },
+    {
+      "ref": "requirements-L209"
+    },
+    {
+      "ref": "requirements-L220"
+    },
+    {
+      "ref": "requirements-L227"
+    },
+    {
+      "ref": "requirements-L229"
+    },
+    {
+      "ref": "requirements-L231"
+    },
+    {
+      "ref": "requirements-L24"
+    },
+    {
+      "ref": "requirements-L29"
     },
     {
       "ref": "requirements-L3"
     },
     {
-      "ref": "requirements-L30"
+      "ref": "requirements-L31"
+    },
+    {
+      "ref": "requirements-L33"
     },
     {
       "ref": "requirements-L35"
     },
     {
-      "ref": "requirements-L37"
+      "ref": "requirements-L40"
     },
     {
-      "ref": "requirements-L39"
+      "ref": "requirements-L44"
     },
     {
-      "ref": "requirements-L41"
+      "ref": "requirements-L46"
     },
     {
-      "ref": "requirements-L43"
+      "ref": "requirements-L48"
     },
     {
       "ref": "requirements-L5"
     },
     {
-      "ref": "requirements-L53"
+      "ref": "requirements-L50"
     },
     {
-      "ref": "requirements-L55"
+      "ref": "requirements-L52"
     },
     {
-      "ref": "requirements-L57"
-    },
-    {
-      "ref": "requirements-L59"
+      "ref": "requirements-L62"
     },
     {
       "ref": "requirements-L64"
+    },
+    {
+      "ref": "requirements-L66"
     },
     {
       "ref": "requirements-L68"
@@ -1014,25 +1344,22 @@
       "ref": "requirements-L7"
     },
     {
-      "ref": "requirements-L70"
+      "ref": "requirements-L73"
     },
     {
-      "ref": "requirements-L72"
+      "ref": "requirements-L77"
     },
     {
-      "ref": "requirements-L76"
+      "ref": "requirements-L79"
     },
     {
-      "ref": "requirements-L78"
+      "ref": "requirements-L81"
     },
     {
-      "ref": "requirements-L82"
+      "ref": "requirements-L83"
     },
     {
-      "ref": "requirements-L84"
-    },
-    {
-      "ref": "requirements-L88"
+      "ref": "requirements-L85"
     },
     {
       "ref": "requirements-L90"
@@ -1042,9 +1369,6 @@
     },
     {
       "ref": "requirements-L94"
-    },
-    {
-      "ref": "requirements-L98"
     },
     {
       "ref": "root-component"

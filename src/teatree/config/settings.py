@@ -316,10 +316,9 @@ class UserSettings:
     # (#2565). Orthogonal to ``agent_runtime`` (interactive/headless + credential):
     # once a run IS headless, this picks the transport that opens the agent session
     # behind the ``teatree.agents.harness.Harness`` protocol. ``claude_sdk``
-    # (default, today's behaviour) is the ``claude-agent-sdk`` backend; a future
-    # ``pydantic_ai`` provider-agnostic backend is reserved and
-    # ``resolve_harness`` refuses it until implemented (the ``AgentRuntime.API``
-    # precedent). Per-overlay overridable; ``T3_AGENT_HARNESS`` env wins.
+    # (default, today's behaviour) is the ``claude-agent-sdk`` backend;
+    # ``pydantic_ai`` (#2885) is the OrcaRouter-BYOK, OpenAI-compatible backend.
+    # Per-overlay overridable; ``T3_AGENT_HARNESS`` env wins.
     agent_harness: AgentHarness = AgentHarness.CLAUDE_SDK
     # Which Anthropic credential the automated eval lane (the metered ``api``
     # backend + the LLM judge) authenticates with. ``subscription_oauth`` (default,

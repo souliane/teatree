@@ -22,6 +22,24 @@ effort exactly as :func:`resolve_phase_model` resolves phase → tier → model
 effort by default — ``cheap`` (Haiku, which rejects the lever) is absent, so its
 spawns emit no effort and inherit the SDK default.
 
+**Harness-scoped effort ([#2885](https://github.com/souliane/teatree/issues/2885)).**
+:data:`TIER_MODELS` is harness-INDEPENDENT by design: both the ``claude_sdk`` and
+``pydantic_ai`` headless harnesses (:mod:`teatree.agents.harness`) ultimately
+target the SAME concrete Claude model catalog — OrcaRouter (the ``pydantic_ai``
+harness's BYOK provider) proxies those identical models rather than a distinct
+one, so one shared table is the honest shape; a future harness with a genuinely
+different model catalog is the trigger to fork it. The reasoning-EFFORT dial is
+different: the two harnesses' supported effort vocabularies are not identical —
+the ``claude-agent-sdk`` CLI's scale tops out at ``max``
+(:data:`teatree.config_agent.EFFORT_SCALE`), while ``pydantic_ai``'s OpenAI-compatible
+``ReasoningEffort`` tops out at ``xhigh`` (no ``max``) — so :func:`resolve_tier_effort`
+/ :func:`resolve_spawn_effort` validate their resolved value against the ACTIVE
+harness's :data:`HARNESS_EFFORT_SCALE` entry and drop an out-of-range value (falling
+back to the shipped default) rather than ever handing a harness an effort string it
+does not understand. The shipped :data:`TIER_EFFORT` values (``xhigh`` / ``high``)
+are valid on both scales today, so this is a no-op for the shipped defaults; it only
+narrows an operator's ``[agent.tier_effort]`` override.
+
 The mapping is config-driven via ``~/.teatree.toml``::
 
     [agent]
@@ -46,8 +64,8 @@ import tomllib
 from collections.abc import Iterable
 from pathlib import Path
 
-from teatree.config import CONFIG_PATH
-from teatree.config_agent import _INHERIT_SENTINELS, resolve_agent_config
+from teatree.config import CONFIG_PATH, AgentHarness, get_effective_settings
+from teatree.config_agent import _INHERIT_SENTINELS, EFFORT_SCALE, resolve_agent_config
 from teatree.core.cost import tier_of_model, tier_rank
 
 # THE SINGLE SOURCE OF TRUTH for concrete model ids. This is the ONLY place a
@@ -71,6 +89,24 @@ TIER_MODELS: dict[str, str] = {
 TIER_EFFORT: dict[str, str] = {
     "frontier": "xhigh",
     "balanced": "high",
+}
+
+# HARNESS-SCOPED effort vocabularies ([#2885](https://github.com/souliane/teatree/issues/2885)):
+# the set of effort strings each headless harness (:mod:`teatree.agents.harness`)
+# actually understands. :func:`resolve_tier_effort` / :func:`resolve_spawn_effort`
+# drop a resolved value that is not a member of the ACTIVE harness's set (falling
+# back to the shipped :data:`TIER_EFFORT` default) rather than ever handing a
+# harness an effort string outside its own scale.
+#
+# ``claude_sdk`` -> :data:`teatree.config_agent.EFFORT_SCALE` (the
+# ``claude-agent-sdk`` CLI's own scale, unchanged — the config-time validator in
+# ``config_agent.py`` already gates ``[agent.tier_effort]`` overrides against this
+# same set). ``pydantic_ai`` -> the OpenAI-compatible ``ReasoningEffort`` /
+# ``ThinkingLevel`` vocabulary pydantic_ai exposes (``minimal`` instead of
+# ``claude_sdk``'s absent floor rung, no ``max`` ceiling rung).
+HARNESS_EFFORT_SCALE: dict[AgentHarness, frozenset[str]] = {
+    AgentHarness.CLAUDE_SDK: EFFORT_SCALE,
+    AgentHarness.PYDANTIC_AI: frozenset({"minimal", "low", "medium", "high", "xhigh"}),
 }
 
 # The default tier for a phase NOT in :data:`DEFAULT_PHASE_MODELS`, and the
@@ -125,7 +161,9 @@ def resolve_tier(tier: str, *, config_path: Path | None = None) -> str:
     return merged.get(tier, tier)
 
 
-def resolve_tier_effort(tier: str, *, config_path: Path | None = None) -> str | None:
+def resolve_tier_effort(
+    tier: str, *, harness: AgentHarness | None = None, config_path: Path | None = None
+) -> str | None:
     """Resolve an abstract *tier* name to its reasoning EFFORT — the effort parallel of :func:`resolve_tier`.
 
     Reads :data:`TIER_EFFORT`, with each entry OVERRIDABLE via the
@@ -135,10 +173,28 @@ def resolve_tier_effort(tier: str, *, config_path: Path | None = None) -> str | 
     a tier with no effort entry (the ``cheap``/Haiku tier, or a ``phase_models``
     override that named a concrete model id) means "pin no effort, inherit the SDK
     default", never "pass a bogus value to ``--effort``".
+
+    HARNESS-SCOPED ([#2885](https://github.com/souliane/teatree/issues/2885)): the
+    resolved value is validated against :data:`HARNESS_EFFORT_SCALE` for *harness*
+    (default: the resolved ``agent_harness`` DB-home setting) and dropped — falling
+    back to the merged default — when it is outside that harness's vocabulary. The
+    shipped defaults (``xhigh`` / ``high``) are valid on every harness's scale today,
+    so this only narrows an off-harness ``[agent.tier_effort]`` override (e.g. a
+    ``claude_sdk``-only ``"max"`` reaching a ``pydantic_ai`` spawn).
     """
+    harness = harness if harness is not None else get_effective_settings().agent_harness
+    allowed = HARNESS_EFFORT_SCALE[harness]
     config = resolve_agent_config(config_path=config_path)
     merged = {**TIER_EFFORT, **config.tier_effort}
-    return merged.get(tier)
+    resolved = merged.get(tier)
+    if resolved is not None and resolved not in allowed:
+        # The override is off the active harness's scale — fall back to the
+        # shipped default; if even THAT is somehow off-scale (not the case for
+        # any shipped tier today), drop to None rather than emit a bogus value.
+        resolved = TIER_EFFORT.get(tier)
+        if resolved is not None and resolved not in allowed:
+            resolved = None
+    return resolved
 
 
 def resolve_phase_model(phase: str, *, config_path: Path | None = None) -> str | None:
@@ -223,7 +279,9 @@ def resolve_spawn_model(
     return winner
 
 
-def resolve_spawn_effort(phase: str, *, config_path: Path | None = None) -> str | None:
+def resolve_spawn_effort(
+    phase: str, *, harness: AgentHarness | None = None, config_path: Path | None = None
+) -> str | None:
     """Resolve the spawn EFFORT for *phase* — phase → tier → effort, the effort parallel of :func:`resolve_spawn_model`.
 
     Mirrors :func:`resolve_phase_model`'s resolution, swapping the model constant
@@ -238,15 +296,21 @@ def resolve_spawn_effort(phase: str, *, config_path: Path | None = None) -> str 
     a sentinel override — so those spawns inherit the SDK default effort. There is
     no per-skill effort axis: unlike :func:`resolve_spawn_model`, skill floors and
     the honesty escalation raise only the MODEL, never the phase's effort tier.
+
+    *harness* threads straight through to :func:`resolve_tier_effort` (default:
+    the resolved ``agent_harness`` setting), so the caller building
+    ``ClaudeAgentOptions`` for the CURRENTLY ACTIVE harness — whichever backend
+    :func:`teatree.agents.harness.resolve_harness` will hand those options to —
+    always gets a value that harness understands.
     """
     overrides = _load_phase_model_overrides(config_path)
     if phase in overrides:
         value = overrides[phase].strip()
         if value.lower() in _INHERIT_SENTINELS:
             return None
-        return resolve_tier_effort(value, config_path=config_path)
+        return resolve_tier_effort(value, harness=harness, config_path=config_path)
     tier = DEFAULT_PHASE_MODELS.get(phase, DEFAULT_TIER)
-    return resolve_tier_effort(tier, config_path=config_path)
+    return resolve_tier_effort(tier, harness=harness, config_path=config_path)
 
 
 def model_supports_thinking(model: str | None) -> bool:

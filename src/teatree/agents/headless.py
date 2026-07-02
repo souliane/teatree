@@ -30,7 +30,7 @@ from django.db.models import Sum
 from django.utils import timezone
 
 from teatree.agents._headless_options import _build_options
-from teatree.agents.harness import Harness, HarnessSession, resolve_harness
+from teatree.agents.harness import ClaudeSdkHarness, Harness, HarnessSession, resolve_harness
 from teatree.agents.headless_usage import _attempt_usage
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA
 from teatree.agents.skill_bundle import resolve_skill_bundle
@@ -253,16 +253,10 @@ def run_headless(
 
     skills = resolve_skill_bundle(phase=phase, overlay_skill_metadata=overlay_skill_metadata)
 
-    # The SDK spawns the ``claude`` CLI child; keep the same provisioning gate
-    # the ``claude -p`` runner used.
-    if shutil.which("claude") is None:
-        return _record_failure(task, error="claude is not installed")
-
-    try:
-        child_env = _runtime_child_env(runtime, scope=_overlay_scope(task))
-    except CredentialError as exc:
-        logger.warning("Refusing dispatch for task %s: %s", task.pk, exc)
-        return _record_failure(task, error=str(exc))
+    child_env_result = _resolve_child_env_or_failure(task, harness, runtime)
+    if isinstance(child_env_result, TaskAttempt):
+        return child_env_result
+    child_env = child_env_result
 
     budget_breach = TicketBudget.from_settings().breach_reason(task.ticket)
     if budget_breach is not None:
@@ -274,7 +268,14 @@ def run_headless(
     system_context = build_system_context(task, skills=skills, lifecycle_skill=lifecycle_skill)
     options = _build_options(task, system_context, phase=phase, skills=skills, env=child_env)
 
-    outcome = asyncio.run(_drive_with_heartbeat(task, prompt, options, harness))
+    try:
+        outcome = asyncio.run(_drive_with_heartbeat(task, prompt, options, harness))
+    except CredentialError as exc:
+        # A non-ClaudeSdkHarness resolves its own credential lazily inside
+        # ``harness.open`` — this is the same "fail loud, record it" contract
+        # the eager ``child_env`` catch above gives the ClaudeSdkHarness.
+        logger.warning("Refusing dispatch for task %s: %s", task.pk, exc)
+        return _record_failure(task, error=str(exc))
 
     failure = _outcome_failure(task, outcome)
     if failure is not None:
@@ -285,11 +286,14 @@ def run_headless(
 def _resolve_backend_or_failure(task: Task, runtime: AgentRuntime) -> Harness | TaskAttempt:
     """Resolve the headless transport, or a recorded failure for an unimplemented backend.
 
-    Refuses the two not-yet-built selections loud and early, so neither reaches
-    the SDK boundary: the ``agent_runtime=api`` raw-Messages runner, and the
-    reserved ``agent_harness=pydantic_ai`` transport (via
-    :func:`~teatree.agents.harness.resolve_harness`). Folding both into one
-    helper keeps ``run_headless`` within its early-return budget.
+    Refuses the not-yet-built ``agent_runtime=api`` raw-Messages runner loud and
+    early, so it never reaches the SDK boundary. ``agent_harness`` selection
+    itself (:func:`~teatree.agents.harness.resolve_harness`) never fails here —
+    both the ``claude_sdk`` and ``pydantic_ai`` backends
+    ([#2885](https://github.com/souliane/teatree/issues/2885)) are shipped;
+    ``NotImplementedError`` is still caught below as a forward-compatible guard
+    for a FUTURE reserved backend value. Folding these into one helper keeps
+    ``run_headless`` within its early-return budget.
     """
     if runtime is AgentRuntime.API:
         return _record_failure(
@@ -300,6 +304,34 @@ def _resolve_backend_or_failure(task: Task, runtime: AgentRuntime) -> Harness | 
     try:
         return resolve_harness()
     except NotImplementedError as exc:
+        return _record_failure(task, error=str(exc))
+
+
+def _resolve_child_env_or_failure(
+    task: Task, harness: Harness, runtime: AgentRuntime
+) -> dict[str, str] | TaskAttempt | None:
+    """Resolve the ``claude`` CLI child env for a :class:`~teatree.agents.harness.ClaudeSdkHarness` dispatch.
+
+    Only the ``ClaudeSdkHarness`` spawns the bundled ``claude`` CLI child and
+    needs its Anthropic credential env — the ``claude`` binary provisioning
+    check and ``agent_runtime``-keyed credential resolution are both scoped to
+    it. Any OTHER harness (e.g. ``PydanticAiHarness``,
+    [#2885](https://github.com/souliane/teatree/issues/2885)) resolves its OWN
+    credential lazily inside ``harness.open`` — this returns ``None``
+    unconditionally for it (no CLI child, no child env), and that harness's
+    ``CredentialError`` is caught by the broad guard around the drive call in
+    ``run_headless``.
+    """
+    if not isinstance(harness, ClaudeSdkHarness):
+        return None
+    # The SDK spawns the ``claude`` CLI child; keep the same provisioning gate
+    # the ``claude -p`` runner used.
+    if shutil.which("claude") is None:
+        return _record_failure(task, error="claude is not installed")
+    try:
+        return _runtime_child_env(runtime, scope=_overlay_scope(task))
+    except CredentialError as exc:
+        logger.warning("Refusing dispatch for task %s: %s", task.pk, exc)
         return _record_failure(task, error=str(exc))
 
 
