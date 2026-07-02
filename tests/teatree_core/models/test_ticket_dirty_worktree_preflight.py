@@ -235,3 +235,42 @@ class TestWorktreeTrackedDirtyPathFailOpen(TestCase):
         err = CommandFailedError(["git", "status", "--porcelain"], 128, "", "not a git repository")
         with patch.object(checks_mod.git, "status_porcelain", side_effect=err):
             assert worktree_tracked_dirty_path(wt) is None
+
+
+class TestCollectDirtyWorktreePaths(TestCase):
+    """Direct coverage of the #1983 extraction backing ``_refuse_if_worktree_dirty``."""
+
+    @pytest.fixture(autouse=True)
+    def _inject_tmp_path(self, tmp_path: Path) -> None:
+        self._tmp_path = tmp_path
+
+    def test_returns_the_repo_path_for_a_tracked_dirty_worktree(self) -> None:
+        from teatree.core.models.ticket_worktree_checks import collect_dirty_worktree_paths  # noqa: PLC0415
+
+        ticket = Ticket.objects.create()
+        repo_dir = self._tmp_path / "repo"
+        _init_repo_with_branch(repo_dir, branch="feature", commits_ahead=1)
+        Worktree.objects.create(
+            ticket=ticket,
+            repo_path=str(repo_dir),
+            branch="feature",
+            extra={"worktree_path": str(repo_dir)},
+        )
+        (repo_dir / "f0.txt").write_text("uncommitted tracked change\n")
+
+        assert collect_dirty_worktree_paths(ticket) == [str(repo_dir)]
+
+    def test_returns_empty_for_a_clean_worktree(self) -> None:
+        from teatree.core.models.ticket_worktree_checks import collect_dirty_worktree_paths  # noqa: PLC0415
+
+        ticket = Ticket.objects.create()
+        repo_dir = self._tmp_path / "repo"
+        _init_repo_with_branch(repo_dir, branch="feature", commits_ahead=1)
+        Worktree.objects.create(
+            ticket=ticket,
+            repo_path=str(repo_dir),
+            branch="feature",
+            extra={"worktree_path": str(repo_dir)},
+        )
+
+        assert collect_dirty_worktree_paths(ticket) == []

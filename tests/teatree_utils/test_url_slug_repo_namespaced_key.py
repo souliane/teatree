@@ -9,7 +9,7 @@ never feed this key (see the module docstring on the issue-only regexes).
 
 import pytest
 
-from teatree.utils.url_slug import repo_namespaced_key
+from teatree.utils.url_slug import repo_namespaced_key, repo_namespaced_key_from_path
 
 
 @pytest.mark.parametrize(
@@ -49,3 +49,12 @@ def test_different_repos_sharing_an_issue_number_never_collide() -> None:
     assert first != second
     assert first == "acme-eng/bugs#2242"
     assert second == "acme-product/repo#2242"
+
+
+def test_from_path_parses_a_bare_url_path() -> None:
+    """``repo_namespaced_key`` is a thin ``urlparse().path`` wrapper around this."""
+    assert repo_namespaced_key_from_path("/acme-eng/widgets/issues/42") == "acme-eng/widgets#42"
+
+
+def test_from_path_returns_empty_for_a_pr_shaped_path() -> None:
+    assert repo_namespaced_key_from_path("/acme-eng/widgets/pull/42") == ""

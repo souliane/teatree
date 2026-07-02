@@ -7,7 +7,15 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
+from teatree.core.management.commands._context_commands import ContextCommands, ContextResult
+from teatree.core.management.commands.ticket import Command
 from teatree.core.models import Ticket
+
+
+class TicketContextCommandWiringTest(TestCase):
+    def test_context_commands_mixin_is_wired_into_the_ticket_command(self) -> None:
+        """The #2293 MRO-split regression: a removed base silently drops the CLI group."""
+        assert ContextCommands in Command.__mro__
 
 
 class TicketContextShowTest(TestCase):
@@ -18,7 +26,7 @@ class TicketContextShowTest(TestCase):
             context="\n\n[2026-05-18 09:00] dev_lr_id = 5842",
         )
         result = cast(
-            "dict[str, object]",
+            "ContextResult",
             call_command("ticket", "context", "show", str(ticket.pk)),
         )
         assert result == {
@@ -38,7 +46,7 @@ class TicketContextShowTest(TestCase):
             context="notes",
         )
         result = cast(
-            "dict[str, object]",
+            "ContextResult",
             call_command("ticket", "context", "show", "https://github.com/acme-eng/widgets/issues/42"),
         )
         assert result == {
@@ -54,7 +62,7 @@ class TicketContextShowTest(TestCase):
             context="notes",
         )
         result = cast(
-            "dict[str, object]",
+            "ContextResult",
             call_command("ticket", "context", "show", "acme-eng/widgets#42"),
         )
         assert result["ticket_id"] == int(ticket.pk)
@@ -77,11 +85,11 @@ class TicketContextShowTest(TestCase):
         )
 
         bugs_result = cast(
-            "dict[str, object]",
+            "ContextResult",
             call_command("ticket", "context", "show", "acme-eng/bugs#2242"),
         )
         product_result = cast(
-            "dict[str, object]",
+            "ContextResult",
             call_command("ticket", "context", "show", "acme-product/repo#2242"),
         )
 
@@ -101,7 +109,7 @@ class TicketContextAddTest(TestCase):
     def test_add_appends_timestamped_block(self) -> None:
         ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/2")
         result = cast(
-            "dict[str, object]",
+            "ContextResult",
             call_command("ticket", "context", "add", str(ticket.pk), "dev_lr_id: 5842"),
         )
         ticket.refresh_from_db()
@@ -121,7 +129,7 @@ class TicketContextAddTest(TestCase):
     def test_add_resolves_by_repo_namespaced_key(self) -> None:
         ticket = Ticket.objects.create(overlay="test", issue_url="https://github.com/acme-eng/widgets/issues/42")
         result = cast(
-            "dict[str, object]",
+            "ContextResult",
             call_command("ticket", "context", "add", "acme-eng/widgets#42", "dev_lr_id: 5842"),
         )
         ticket.refresh_from_db()
@@ -138,7 +146,7 @@ class TicketContextEditTest(TestCase):
         )
         with patch("teatree.core.management.commands._context_commands.click.edit", return_value="new full body"):
             result = cast(
-                "dict[str, object]",
+                "ContextResult",
                 call_command("ticket", "context", "edit", str(ticket.pk)),
             )
         ticket.refresh_from_db()
