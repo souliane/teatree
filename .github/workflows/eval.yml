@@ -193,13 +193,16 @@ jobs:
       # Empty `lane` input (scheduled runs and the default manual run) = every
       # permitted lane, sharded into budget-safe legs on the lane-aware ceiling
       # (clean_room ~182 → ~13 shards of ≤14, under_load 14 → 4 shards of ≤4 —
-      # #2683). The `efforts` axis (default 'low,medium,high', also for the
-      # scheduled cron run) fans each {lane, shard} leg across the three reasoning-
-      # effort tiers, so the weekly run measures pass-rate vs effort across the
-      # whole suite; an empty `efforts` keeps the single-tier matrix. An unknown
-      # lane or effort fails loud here rather than producing an empty/invalid
-      # matrix. Both inputs are routed through `env:` vars (never inlined) and
-      # validated by lane_matrix.py.
+      # #2683). The `efforts` axis defaults to a SINGLE tier ('high', also for
+      # the scheduled cron run) — right-sizing the subscription lane (#2707
+      # reversal) so a full 3-tier fan-out cannot throttle the plan's usage
+      # window / starve the loop. Pass a comma-separated list (e.g.
+      # 'low,medium,high') to fan each {lane, shard} leg across multiple
+      # reasoning-effort tiers instead (a `metered_api_key` run has no window
+      # to throttle); an empty `efforts` keeps the single-tier matrix. An
+      # unknown lane or effort fails loud here rather than producing an
+      # empty/invalid matrix. Both inputs are routed through `env:` vars
+      # (never inlined) and validated by lane_matrix.py.
       - name: Compute the lane+shard+effort matrix
         id: matrix
         env:
@@ -269,18 +272,20 @@ jobs:
       - name: Migrate the self-DB (the eval run-history ledger persists into it)
         run: uv run python -m teatree migrate --no-input
       # Bounded retry on a transient model/network flake; a real miss repeats and still fails fast.
-      # `--docker` routes the metered lane THROUGH the CI container (dev/Dockerfile.test, which
-      # ships the Claude CLI) — "all metered eval in Docker" holds in CI too. The runner has
+      # `--docker` routes the fresh-run lane THROUGH the CI container (dev/Dockerfile.test, which
+      # ships the Claude CLI) — "all fresh-run eval in Docker" holds in CI too. The runner has
       # Docker, so the run builds (cached) and runs the suite in-container; the host's
-      # ANTHROPIC_API_KEY is forwarded in via docker's `-e` pass-through.
-      # `--backend api` keeps CI on the metered in-process Agent-SDK path explicitly.
-      # This workflow always runs `--trials 3`, which cannot be served by the
-      # transcript backend, so there is intentionally no backend input. Auth is
-      # the metered API key (`ANTHROPIC_API_KEY`) EXCLUSIVELY — never the
-      # subscription OAuth token, which a full run would throttle (#2707).
+      # SELECTED credential (below) is forwarded in via docker's `-e` pass-through.
+      # `--backend api` keeps CI on the in-process Agent-SDK path explicitly; `EVAL_TRIALS`
+      # (default 2, below) drives `--trials`, so there is intentionally no backend input.
+      # Auth rides the `eval_credential` knob (`T3_EVAL_CREDENTIAL`, below) — DEFAULT the
+      # subscription OAuth token (reverses #2707; no per-token bill, right-sized fan-out
+      # to fit the plan's usage window), with the metered ANTHROPIC_API_KEY still
+      # selectable via the `credential` input.
       # `--require-executed` is passed UNCONDITIONALLY (never key-gated): a collected-but-
       # all-skipped run exits non-zero, so the suite can never pass green with zero coverage.
-      # The end-of-run cost summary (report.py `_cost_summary`) prints the API spend.
+      # The end-of-run cost summary (report.py `_cost_summary`) prints the spend ($0 on
+      # the subscription lane; API spend on a metered_api_key run).
       #
       # `--transcript-html` makes THIS run emit the per-trial transcript report
       # itself, written from its own in-memory results — NO separate render step
