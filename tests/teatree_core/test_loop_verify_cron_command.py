@@ -13,12 +13,19 @@ import django.test
 import pytest
 from django.core.management import call_command
 
+from teatree.core.management.commands.loop_verify_cron import Command
 from teatree.core.models import Loop, Prompt
 
 
 def _prompt(name: str = "demo-prompt") -> Prompt:
     prompt, _ = Prompt.objects.get_or_create(name=name, defaults={"body": "do x"})
     return prompt
+
+
+class TestCommandClass:
+    def test_help_names_verify_by_reread_and_the_ticket(self) -> None:
+        assert "Verify-by-reread" in Command.help
+        assert "#1192" in Command.help
 
 
 def _run(*args: str, **kwargs: object) -> str:

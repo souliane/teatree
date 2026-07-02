@@ -2,11 +2,21 @@
 
 from unittest.mock import patch
 
+import typer
 from typer.testing import CliRunner
 
 from teatree.cli.loop import loop_app
+from teatree.cli.loop_verify_cron import register
 
 runner = CliRunner()
+
+
+class TestRegister:
+    def test_attaches_verify_cron_command_onto_the_given_app(self) -> None:
+        app = typer.Typer()
+        register(app)
+        names = {command.name for command in app.registered_commands}
+        assert "verify-cron" in names
 
 
 class TestLoopVerifyCronCli:
