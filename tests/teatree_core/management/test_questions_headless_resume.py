@@ -17,7 +17,7 @@ resume child never double-queues.
 import pytest
 from django.core.management import call_command
 
-from teatree.agents.headless import _get_resume_session_id
+from teatree.agents._headless_options import _get_resume_session_id
 from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 

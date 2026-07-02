@@ -33,7 +33,7 @@ runs when ``teams_enabled`` is false.
 from claude_agent_sdk import ClaudeAgentOptions
 from claude_agent_sdk.types import SystemPromptPreset
 
-from teatree.agents.headless import _MAX_TURNS, _PERMISSION_MODE, _get_resume_session_id, _resolve_task_cwd
+from teatree.agents._headless_options import _MAX_TURNS, _PERMISSION_MODE, _get_resume_session_id, _resolve_task_cwd
 from teatree.agents.model_tiering import resolve_spawn_model
 from teatree.agents.prompt import build_system_context, build_task_prompt
 from teatree.agents.skill_bundle import resolve_skill_bundle

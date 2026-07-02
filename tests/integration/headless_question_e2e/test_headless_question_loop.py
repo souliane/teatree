@@ -18,7 +18,8 @@ from unittest.mock import patch
 import pytest
 
 import teatree.agents.headless as headless_mod
-from teatree.agents.headless import _get_resume_session_id, run_headless
+from teatree.agents._headless_options import _get_resume_session_id
+from teatree.agents.headless import run_headless
 from teatree.core import notify as notify_module
 from teatree.core.models import BotPing, ConfigSetting, DeferredQuestion, PendingChatInjection, Session, Task, Ticket
 from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner

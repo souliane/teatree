@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from teatree.agents.headless import _get_resume_session_id
+from teatree.agents._headless_options import _get_resume_session_id
 from teatree.core.models import ConfigSetting, PendingChatInjection, Session, Task, TaskAttempt, Ticket
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.loop.scanners.askuserquestion_reply import AskUserQuestionReplyScanner

@@ -13,7 +13,7 @@ from django.test import SimpleTestCase
 from teatree.loops.dream import sdk_distiller
 from teatree.loops.dream.engine import ConsolidationExtract, DistillEmptyReason, WeightedSnippet
 from teatree.loops.dream.sdk_distiller import deterministic_cluster_key
-from tests.teatree_agents._sdk_fake import FakeSdkClient, assistant_text
+from tests.teatree_agents._sdk_fake import FakeHarnessSession, assistant_text
 
 
 def _extract_with_one_snippet() -> ConsolidationExtract:
@@ -203,8 +203,8 @@ class SdkDistillerParseTestCase(SimpleTestCase):
             ]
         )
 
-        def _make_client(*, options: object = None, **_: object) -> FakeSdkClient:
-            return FakeSdkClient([assistant_text(reply)])
+        def _make_client(*, options: object = None, **_: object) -> FakeHarnessSession:
+            return FakeHarnessSession([assistant_text(reply)])
 
         with (
             patch("shutil.which", return_value="/usr/bin/claude"),
@@ -213,7 +213,7 @@ class SdkDistillerParseTestCase(SimpleTestCase):
             clusters = sdk_distiller.sdk_distiller(_extract_with_one_snippet())
         assert len(clusters) == 1
         assert clusters[0].cluster_key == deterministic_cluster_key(["/feedback_x.md"])
-        assert "BINDING: x" in FakeSdkClient.last_prompt
+        assert "BINDING: x" in FakeHarnessSession.last_prompt
 
     def test_sdk_turn_failure_raises(self) -> None:
         with (
