@@ -873,6 +873,62 @@ class TestMarkdownBacktickBodyResolves:
         assert FAIL_CLOSED_SENTINEL not in payload
 
 
+class TestOrdinaryWordsDoNotLookLikeOpaqueForgeTransport:
+    """An ordinary English word carrying ``gh``/``glab``/``curl`` mid-word is not a forge marker.
+
+    ``command_has_opaque_forge_transport`` flags a segment as an unscannable
+    interpreter wrapper (``sh -c "gh ..."``) when a forge-tool marker appears
+    in one of its tokens. The marker check used raw substring containment
+    (``marker in token``), which matched "gh" inside ordinary words like
+    "though", "night", "light", "right" -- so a clean ``t3 review
+    post-comment`` NOTE merely containing one of these words was misclassified
+    as hiding a forge call, and the gate appended the fail-closed sentinel to
+    its OWN clean payload (#1415). ``t3`` is not in ``_PARSEABLE_FORGE_LEADERS``
+    (it is not itself a forge tool), so every ``t3 review`` post reached this
+    check. The fix matches a marker only at a token WORD BOUNDARY.
+    """
+
+    def _payload(self, note: str) -> str | None:
+        command = f'''t3 review post-comment my-org/repo 7 --file x.py --line 1 -m "{note}"'''
+        return banned_terms_scanner.extract_publish_payload("Bash", {"command": command})
+
+    @pytest.mark.parametrize(
+        "word",
+        ["though", "night", "light", "right", "weight", "eight", "sigh", "high", "thought"],
+    )
+    def test_word_containing_gh_substring_does_not_fail_closed(self, word: str) -> None:
+        payload = self._payload(f"clean note, {word} still applies here")
+        assert payload is not None
+        assert FAIL_CLOSED_SENTINEL not in payload
+        assert word in payload
+
+    def test_word_containing_gh_substring_does_not_block_a_real_banned_term(self) -> None:
+        # The fix only stops the false-positive opaque-transport sentinel; a
+        # genuine banned term in the same note must still be scanned/matched.
+        payload = self._payload("though this mentions acmecorp directly")
+        assert payload is not None
+        assert "acmecorp" in payload
+        assert FAIL_CLOSED_SENTINEL not in payload
+
+    def test_opaque_wrapper_hiding_a_real_gh_token_still_fails_closed(self) -> None:
+        # Regression guard: the word-boundary fix must not weaken detection of
+        # an ACTUAL forge call hidden inside an opaque interpreter argument.
+        cmd = 'glab mr create -R acme-internal/x --title ok && sh -c "gh pr create -R o/public --body acmecorp"'
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert FAIL_CLOSED_SENTINEL in payload
+
+    def test_path_form_gh_marker_still_fails_closed(self) -> None:
+        # A path-qualified marker (``/usr/bin/gh``) is still bounded by ``/``
+        # on one side and end-of-token on the other, so it must still match.
+        # The leading ``glab mr create`` segment is what makes the whole
+        # command register as a publish in the first place.
+        cmd = 'glab mr create -R acme-internal/x --title ok && sh -c "/usr/bin/gh pr create --body acmecorp"'
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": cmd})
+        assert payload is not None
+        assert FAIL_CLOSED_SENTINEL in payload
+
+
 class TestMixedCommandSubstitutionBodyStillFailsClosed:
     """A body whose ``$(...)`` substitution content the gate cannot read fails closed.
 

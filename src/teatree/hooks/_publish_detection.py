@@ -97,9 +97,30 @@ _LEADER_PUBLISH_SUBSTRINGS: Final[tuple[tuple[str, str], ...]] = (
     ("curl", "chat.postMessage"),
 )
 
-# Forge-tool markers detected as a SUBSTRING of any token, so a forge call
-# hidden inside a quoted interpreter argument is recognised as a transport.
+# Forge-tool markers detected as a WORD within any token, so a forge call
+# hidden inside a quoted interpreter argument (``sh -c "gh pr create ..."``,
+# one token after tokenization) is recognised as a transport.
 _FORGE_TOOL_MARKERS: Final[tuple[str, ...]] = ("gh", "glab", "curl")
+
+# Matches a marker only at a WORD boundary within the token, never inside a
+# longer run of word characters. A raw substring check (``marker in token``)
+# false-positived on ordinary English words carrying ``gh`` mid-word --
+# "though", "night", "light", "right", "weight", "eight" -- which a
+# ``t3 review post-comment`` NOTE (or any other publish body) legitimately
+# contains, wrongly classifying the whole segment as an opaque forge
+# transport and injecting the fail-closed sentinel into its own clean payload
+# (#1415). ``\b`` still matches a marker glued to punctuation/path separators
+# (`` "gh issue create ..." `` starts the token, ``/usr/bin/gh`` ends it), so
+# the opaque-wrapper detection (``sh -c "gh ..."``) is unaffected.
+_FORGE_TOOL_MARKER_RE: Final[re.Pattern[str]] = re.compile(
+    "|".join(rf"\b{re.escape(marker)}\b" for marker in _FORGE_TOOL_MARKERS)
+)
+
+
+def _token_carries_forge_marker(token: str) -> bool:
+    """Return True iff ``token`` contains a forge-tool marker as a whole word."""
+    return bool(_FORGE_TOOL_MARKER_RE.search(token))
+
 
 # Title / commit-subject flags (#1544). A title (``gh``/``glab`` ``--title``)
 # or git-commit subject is a forge surface distinct from the description body.
@@ -310,7 +331,7 @@ def segment_is_opaque_forge_transport(words: list[str]) -> bool:
     rest = _strip_cd_env_prefix(words)
     if not rest or rest[0] in _PARSEABLE_FORGE_LEADERS:
         return False
-    carries_forge = any(any(marker in token for marker in _FORGE_TOOL_MARKERS) for token in rest)
+    carries_forge = any(_token_carries_forge_marker(token) for token in rest)
     carries_substitution = any(token_has_substitution_marker(token) for token in rest)
     return carries_forge or carries_substitution
 
@@ -412,7 +433,7 @@ def _segment_is_opaque_forge_transport_raw(words: list[str], raws: list[str]) ->
         return False
     skipped = len(words) - len(rest_words)
     rest_raws = raws[skipped:]
-    carries_forge = any(any(marker in token for marker in _FORGE_TOOL_MARKERS) for token in rest_words)
+    carries_forge = any(_token_carries_forge_marker(token) for token in rest_words)
     carries_live_substitution = any(_raw_has_live_substitution(raw) for raw in rest_raws)
     return carries_forge or carries_live_substitution
 
