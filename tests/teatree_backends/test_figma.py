@@ -8,8 +8,13 @@ from PIL import Image
 
 from teatree.backends.figma import (
     FigmaClient,
+    FigmaComment,
+    FigmaCommentClientMeta,
+    FigmaComponentEntry,
     FigmaComponentMetadata,
     FigmaFrameRef,
+    FigmaNode,
+    FigmaStyleEntry,
     build_side_by_side_comparison,
     download_image,
 )
@@ -67,7 +72,7 @@ class TestGetNode:
 class TestListFrameChildren:
     def test_returns_frame_refs_for_children(self) -> None:
         client = FigmaClient(token="fake")
-        document = {
+        document: FigmaNode = {
             "id": "1:1",
             "children": [
                 {"id": "1:2", "name": "Header", "type": "FRAME"},
@@ -155,9 +160,11 @@ class TestGetComments:
 class TestGetNodeComments:
     def test_filters_by_client_meta_node_id(self) -> None:
         client = FigmaClient(token="fake")
-        comments = [
-            {"id": "c1", "client_meta": {"node_id": "1:2"}, "message": "on frame"},
-            {"id": "c2", "client_meta": {"node_id": "1:3"}, "message": "elsewhere"},
+        on_frame: FigmaCommentClientMeta = {"node_id": "1:2"}
+        elsewhere: FigmaCommentClientMeta = {"node_id": "1:3"}
+        comments: list[FigmaComment] = [
+            {"id": "c1", "client_meta": on_frame, "message": "on frame"},
+            {"id": "c2", "client_meta": elsewhere, "message": "elsewhere"},
             {"id": "c3", "message": "no client_meta at all"},
         ]
 
@@ -170,19 +177,22 @@ class TestGetNodeComments:
 class TestGetComponentMetadata:
     def test_extracts_components_sets_and_styles(self) -> None:
         client = FigmaClient(token="fake")
+        button: FigmaComponentEntry = {"name": "Button"}
+        button_variants: FigmaComponentEntry = {"name": "Button variants"}
+        primary_blue: FigmaStyleEntry = {"name": "Primary/Blue"}
         file_data = {
-            "components": {"1:2": {"name": "Button"}},
-            "componentSets": {"1:1": {"name": "Button variants"}},
-            "styles": {"S:1": {"name": "Primary/Blue"}},
+            "components": {"1:2": button},
+            "componentSets": {"1:1": button_variants},
+            "styles": {"S:1": primary_blue},
         }
 
         with patch.object(client, "get_file", return_value=file_data):
             metadata = client.get_component_metadata("abc123")
 
         assert metadata == FigmaComponentMetadata(
-            components={"1:2": {"name": "Button"}},
-            component_sets={"1:1": {"name": "Button variants"}},
-            styles={"S:1": {"name": "Primary/Blue"}},
+            components={"1:2": button},
+            component_sets={"1:1": button_variants},
+            styles={"S:1": primary_blue},
         )
 
     def test_defaults_to_empty_when_keys_missing(self) -> None:
