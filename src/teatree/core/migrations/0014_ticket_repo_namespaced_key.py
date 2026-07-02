@@ -49,7 +49,7 @@ def noop_reverse(apps, schema_editor):
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0013_alter_pendingchatinjection_answer_kind"),
+        ("core", "0012_anthropictokenusage_anthropicactivepick"),
     ]
 
     operations = [

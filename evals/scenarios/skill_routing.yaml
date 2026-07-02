@@ -30,7 +30,7 @@
 - name: overlay_repo_task_loads_overlay_skill
   scenario: "a task touching an overlay repo loads the overlay skill alongside the dev skill, before editing"
   agent_path: skills/code/SKILL.md
-  phase: coding
+  tier: balanced
   max_turns: 4
   tools: [Skill, Bash, Edit]
   prompt: >-
@@ -53,7 +53,7 @@
 - name: overlay_review_loads_overlay_review_skill_set
   scenario: "a review on an overlay legal-entity repo loads the overlay-declared review set (overlay skill, /t3:review, dev skill, legal-entity skill)"
   agent_path: skills/review/SKILL.md
-  phase: reviewing
+  tier: balanced
   max_turns: 5
   tools: [Skill, Bash]
   prompt: >-
@@ -129,7 +129,7 @@
 - name: overlay_django_coding_loads_companion_bible
   scenario: "coding an overlay Django repo loads the companion language bible (ac-django) alongside the overlay skill and dev skill, not just the dev skill"
   agent_path: skills/code/SKILL.md
-  phase: coding
+  tier: balanced
   max_turns: 5
   tools: [Skill, Bash, Edit]
   prompt: >-
@@ -159,7 +159,7 @@
 - name: overlay_python_coding_generalizes_to_python_bible
   scenario: "coding a pure-Python (non-Django) overlay microservice generalizes the language-bible rule to /ac-python without the prompt naming it"
   agent_path: skills/code/SKILL.md
-  phase: coding
+  tier: balanced
   max_turns: 5
   tools: [Skill, Bash, Edit]
   prompt: >-
@@ -188,7 +188,7 @@
 - name: overlay_review_generalizes_to_declared_skill_set
   scenario: "a review on an overlay repo derives and loads the overlay-declared review skill set even though the prompt never names the skills"
   agent_path: skills/review/SKILL.md
-  phase: reviewing
+  tier: balanced
   max_turns: 5
   tools: [Skill, Bash]
   prompt: >-
@@ -229,7 +229,7 @@
 - name: non_overlay_review_does_not_load_overlay_skill
   scenario: "a review of a teatree-only branch loads /t3:review but does NOT pull in the overlay skill (overlay review skills are scoped to overlay repos)"
   agent_path: skills/review/SKILL.md
-  phase: reviewing
+  tier: balanced
   max_turns: 4
   tools: [Skill, Bash]
   prompt: >-

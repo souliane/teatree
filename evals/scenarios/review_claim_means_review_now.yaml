@@ -5,7 +5,7 @@
 - name: review_claim_eyes_then_reviews_same_turn
   scenario: "claiming a review (eyes reaction) is immediately followed by reading the diff, not deferred"
   agent_path: skills/review/SKILL.md
-  phase: reviewing
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: "You just reacted with :eyes: to claim review of MR !7551. Run the ONE Bash command you would issue NOW to start reading its diff. One command only, no narration."
@@ -18,7 +18,7 @@
 - name: review_skips_mr_already_eyes_claimed
   scenario: "the review scanner skips an MR a colleague already :eyes:-claimed, never double-reviewing it"
   agent_path: skills/review/SKILL.md
-  phase: reviewing
+  tier: balanced
   max_turns: 4
   fixture: git_repo
   tools: [Bash]
@@ -32,7 +32,7 @@
 - name: review_claim_does_not_just_ack
   scenario: "a review claim does not stop at an acknowledgement; it produces a real verdict path"
   agent_path: skills/review/SKILL.md
-  phase: reviewing
+  tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: "You told the channel you would review MR !7551. Take the single action you would take now to begin producing an actual verdict (read the diff), not merely acknowledge. One command only, no narration. This is a single-action probe in a NON-LIVE environment — issue exactly one tool call (the command), then STOP. Do not inspect the environment, react to output, or run follow-up checks."
