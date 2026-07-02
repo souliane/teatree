@@ -146,15 +146,35 @@ def _loop_token(prompt: str) -> str | None:
     return match.group(0) if match else None
 
 
+def _cron_matches(job: Mapping[str, object], expected_cron: str) -> bool:
+    """True unless *job* names a schedule that disagrees with *expected_cron*.
+
+    A stale native job can keep a matching ``prompt`` after the loop's
+    cadence changed in the DB — prompt-token matching alone would then
+    report ``confirmed`` for a job firing on the WRONG schedule, defeating
+    the point of verification (codex review, #1192). ``CronCreate`` takes
+    its schedule as ``cron=...``, so a ``CronList`` snapshot is expected to
+    echo it back under the same key; a job that omits the key degrades to
+    "schedule unknown, don't contradict the prompt match" rather than a
+    false negative against a harness snapshot shape we haven't confirmed.
+    """
+    cron = job.get("cron")
+    if not isinstance(cron, str) or not cron:
+        return True
+    return cron == expected_cron
+
+
 def spec_registered(spec: ClaudeLoopSpec, jobs: Iterable[Mapping[str, object]]) -> bool:
     """True when *jobs* (a harness ``CronList`` snapshot) contains *spec*'s registration.
 
     Matches by the same backtick-terminated ``t3 loops tick --loop <name>``
     token the enable/disable skill uses to disambiguate one loop's cron from
     another (a bare ``--loop ship`` substring would also match
-    ``--loop ship-fast``). A non-dict job, or one whose ``prompt`` field is not
-    a string, is skipped rather than raising — a harness snapshot with
-    unexpected shape degrades to "not found", never a crash.
+    ``--loop ship-fast``), AND — when the job names a schedule — that it
+    agrees with *spec*'s expected cron (:func:`_cron_matches`). A non-dict
+    job, or one whose ``prompt`` field is not a string, is skipped rather
+    than raising — a harness snapshot with unexpected shape degrades to
+    "not found", never a crash.
     """
     token = _loop_token(spec.prompt)
     if token is None:
@@ -163,7 +183,7 @@ def spec_registered(spec: ClaudeLoopSpec, jobs: Iterable[Mapping[str, object]]) 
         if not isinstance(job, Mapping):
             continue
         prompt = job.get("prompt")
-        if isinstance(prompt, str) and token in prompt:
+        if isinstance(prompt, str) and token in prompt and _cron_matches(job, spec.cron):
             return True
     return False
 

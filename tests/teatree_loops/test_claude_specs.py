@@ -148,6 +148,26 @@ class TestSpecRegistered:
         malformed = ClaudeLoopSpec(slot_id="t3-loop-x", cron="* * * * *", prompt="no token here")
         assert spec_registered(malformed, [{"prompt": "anything"}]) is False
 
+    def test_false_when_a_stale_job_matches_the_prompt_but_not_the_cron(self) -> None:
+        # A stale native job keeps a matching prompt after the loop's cadence
+        # changed in the DB — matching prompt-only would report a job firing
+        # on the WRONG schedule as "confirmed" (codex review, #1192).
+        spec = claude_loop_spec(Loop(name="ship", delay_seconds=300, script="s"))
+        stale_job = {"prompt": spec.prompt, "cron": "*/999 * * * *"}
+        assert spec_registered(spec, [stale_job]) is False
+
+    def test_true_when_no_other_job_matches_and_cron_agrees(self) -> None:
+        spec = claude_loop_spec(Loop(name="ship", delay_seconds=300, script="s"))
+        stale_job = {"prompt": spec.prompt, "cron": "*/999 * * * *"}
+        fresh_job = {"prompt": spec.prompt, "cron": spec.cron}
+        assert spec_registered(spec, [stale_job, fresh_job]) is True
+
+    def test_true_when_job_omits_cron_field(self) -> None:
+        # An unconfirmed harness snapshot shape degrades to "don't contradict
+        # the prompt match" rather than a false negative.
+        spec = claude_loop_spec(Loop(name="ship", delay_seconds=300, script="s"))
+        assert spec_registered(spec, [{"prompt": spec.prompt}]) is True
+
 
 class TestVerifyLoopRegistered:
     def test_confirmed_when_registered(self) -> None:
