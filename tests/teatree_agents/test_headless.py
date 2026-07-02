@@ -13,13 +13,13 @@ from django.test import TestCase, override_settings
 
 import teatree.agents.harness as harness_mod
 import teatree.agents.headless as headless_mod
+from teatree.agents._headless_options import _get_resume_session_id
 from teatree.agents.harness import ClaudeSdkHarness
 from teatree.agents.headless import (
     LoopWatchdog,
     TaskUsage,
     TicketBudget,
     _drive_with_heartbeat,
-    _get_resume_session_id,
     _limit_match,
     _parse_result,
     _runtime_child_env,
@@ -605,7 +605,7 @@ class TestResolveTaskCwd(TestCase):
     def test_worktree_with_real_repo_path_is_returned(self) -> None:
         import tempfile  # noqa: PLC0415
 
-        from teatree.agents.headless import _resolve_task_cwd  # noqa: PLC0415
+        from teatree.agents._headless_options import _resolve_task_cwd  # noqa: PLC0415
         from teatree.core.models.worktree import Worktree  # noqa: PLC0415
 
         ticket = Ticket.objects.create()
@@ -616,7 +616,7 @@ class TestResolveTaskCwd(TestCase):
             assert _resolve_task_cwd(task) == repo_dir
 
     def test_worktree_with_missing_repo_path_returns_none(self) -> None:
-        from teatree.agents.headless import _resolve_task_cwd  # noqa: PLC0415
+        from teatree.agents._headless_options import _resolve_task_cwd  # noqa: PLC0415
         from teatree.core.models.worktree import Worktree  # noqa: PLC0415
 
         ticket = Ticket.objects.create()

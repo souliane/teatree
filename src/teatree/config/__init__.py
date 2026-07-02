@@ -52,6 +52,14 @@ from teatree.config.resolution import (
     cadence_seconds,
     get_effective_settings,
 )
+from teatree.config.setting_parsers import (
+    _default_handover_mirror_path,
+    _parse_disk_cache_allowlist,
+    _parse_env_bool,
+    _parse_handover_mirror_path,
+    _parse_str_list,
+    _parse_user_identity_aliases,
+)
 from teatree.config.settings import (
     ENV_SETTING_OVERRIDES,
     OVERLAY_OVERRIDABLE_SETTINGS,
@@ -60,12 +68,6 @@ from teatree.config.settings import (
     OverlayEntry,
     TeaTreeConfig,
     UserSettings,
-    _default_handover_mirror_path,
-    _parse_disk_cache_allowlist,
-    _parse_env_bool,
-    _parse_handover_mirror_path,
-    _parse_str_list,
-    _parse_user_identity_aliases,
 )
 from teatree.config_mr_reminder import MrReminderConfig, mr_reminder_from_table, resolve_mr_reminder
 from teatree.config_speak import resolve_speak, speak_from_subtable

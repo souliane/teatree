@@ -10,7 +10,7 @@ from django_typer.management import TyperCommand, command
 from rich.console import Console
 from rich.table import Table
 
-from teatree.agents.headless import UUID_RE
+from teatree.agents._headless_options import UUID_RE
 from teatree.agents.prompt import build_interactive_context
 from teatree.agents.skill_bundle import resolve_skill_bundle
 from teatree.core.management.commands.tasks_session_view import (
