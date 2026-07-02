@@ -61,7 +61,7 @@ core/        # Django app — models, FSM, managers, sync, runners, management c
 agents/      # Headless executor (in-process claude-agent-sdk)
 loop/        # /loop topology — tick, scanners, dispatch, statusline
 mcp/         # Read-only structured-search MCP server (serializers + search + FastMCP wiring); `t3 mcp serve`
-backends/    # Pluggable external service integrations; per-forge subpackages github/ gitlab/ slack/ (+ flat notion, sentry)
+backends/    # Pluggable external service integrations; per-forge subpackages github/ gitlab/ slack/ (+ flat notion, sentry, figma)
 config/      # Settings load + overlay discovery
 utils/       # Pure utilities (git, git_remote remote-URL parsing [#2404], ports, db, secrets, compose contract, ...)
 skill_support/  # Skill metadata, loading policy, deps resolution, schema/ref validation
