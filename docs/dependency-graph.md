@@ -4,6 +4,12 @@
 graph TD
     teatree.project --> teatree.paths
     teatree.llm --> teatree.utils
+    teatree.credential_config --> teatree.core.models
+    teatree.credential_config --> teatree.llm
+    teatree.token_report --> teatree.core.models
+    teatree.token_report --> teatree.credential_config
+    teatree.token_report --> teatree.llm
+    teatree.token_report --> teatree.utils
     teatree.teams --> teatree.core
     teatree.teams --> teatree.core.models
     teatree.teams --> teatree.core.loop_lease_manager
@@ -65,6 +71,7 @@ graph TD
     teatree.agents --> teatree.core
     teatree.agents --> teatree.core.modelkit
     teatree.agents --> teatree.core.models
+    teatree.agents --> teatree.credential_config
     teatree.agents --> teatree.skill_support
     teatree.agents --> teatree.utils
     teatree.agents --> teatree.config
@@ -137,11 +144,13 @@ graph TD
     teatree.cli --> teatree.cli.eval
     teatree.cli.eval --> teatree.cli._format_opts
     teatree.cli.eval --> teatree.core
+    teatree.cli.eval --> teatree.credential_config
     teatree.cli.eval --> teatree.eval
     teatree.cli.eval --> teatree.utils
     teatree.cli.eval --> teatree.claude_sessions
     teatree.cli.eval --> teatree.llm
     teatree.eval --> teatree.core
+    teatree.eval --> teatree.credential_config
     teatree.eval --> teatree.hooks
     teatree.eval --> teatree.pricing
     teatree.eval --> teatree.utils
@@ -159,6 +168,7 @@ graph TD
     teatree.core.management --> teatree.loops
     teatree.core.management --> teatree.messaging
     teatree.core.management --> teatree.paths
+    teatree.core.management --> teatree.token_report
     teatree.core.management --> teatree.types
     teatree.core.management --> teatree.utils
     teatree.core.management --> teatree.visual_qa

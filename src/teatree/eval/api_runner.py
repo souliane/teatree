@@ -192,7 +192,7 @@ WATCHDOG_SECONDS = resolve_watchdog_seconds()
 #: thread a generous cap so a finishing scenario is measured, not truncated. See
 #: :data:`CleanRoomConfig.max_budget_usd` and ``METERED_DEFAULT_BUDGET_USD``.
 MAX_BUDGET_USD = "0.10"
-FALLBACK_MODEL = "claude-sonnet-4-6"
+FALLBACK_MODEL = "claude-sonnet-5"
 EMPTY_SETTINGS = '{"hooks":{}}'
 
 #: Typed alias callers may ``raise``/``except`` against. The SDK raises a bare

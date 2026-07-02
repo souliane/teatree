@@ -178,7 +178,7 @@ class JudgeSpec:
     """
 
     rubric: str
-    model: str = "claude-sonnet-4-6"
+    model: str = "claude-sonnet-5"
     max_output_tokens: int = 512
 
 

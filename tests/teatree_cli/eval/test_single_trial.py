@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from django.test import TestCase
 
 from teatree.cli.eval.app_helpers import write_single_trial_reports
 from teatree.cli.eval.single_trial import EscalationConfig, SingleTrialGates, make_escalation_runner, run_single_trial
@@ -171,7 +172,7 @@ def _result(name: str, *, passed: bool) -> ScenarioResult:
     )
 
 
-class TestMakeEscalationRunner:
+class TestMakeEscalationRunner(TestCase):
     def test_builds_a_metered_api_runner_carrying_the_lane_effort(self) -> None:
         # Escalation always RUNS the model fresh, so it is the metered api backend
         # regardless of the initial backend, and it carries the lane effort.

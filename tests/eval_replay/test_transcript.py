@@ -232,7 +232,7 @@ class TestRequestedModelPresent:
 
     def test_short_alias_with_effort_request_matches_full_key(self) -> None:
         stream = (
-            '{"type":"result","subtype":"success","model_usage":{"claude-sonnet-4-6-20251001":{"input_tokens":80}}}\n'
+            '{"type":"result","subtype":"success","model_usage":{"claude-sonnet-5-20260514":{"input_tokens":80}}}\n'
         )
         events = parse_stream_json(stream)
         assert requested_model_present(events, "sonnet@high") is True

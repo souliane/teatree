@@ -14,6 +14,14 @@ via ``[agent.tier_models]``); :data:`DEFAULT_PHASE_MODELS` maps each FSM phase t
 a tier, and :func:`resolve_phase_model` / :func:`resolve_spawn_model` resolve
 phase → tier → concrete model id.
 
+The reasoning-effort dial is the parallel single-source constant
+:data:`TIER_EFFORT` (abstract tier → effort), read via
+:func:`resolve_tier_effort`; :func:`resolve_spawn_effort` resolves phase → tier →
+effort exactly as :func:`resolve_phase_model` resolves phase → tier → model
+(same ``phase_models`` override mechanism). Only the reasoning tiers carry an
+effort by default — ``cheap`` (Haiku, which rejects the lever) is absent, so its
+spawns emit no effort and inherit the SDK default.
+
 The mapping is config-driven via ``~/.teatree.toml``::
 
     [agent]
@@ -23,6 +31,9 @@ The mapping is config-driven via ``~/.teatree.toml``::
 
     [agent.tier_models]
     frontier = "claude-opus-4-9"         # adopt a new frontier model, one line
+
+    [agent.tier_effort]
+    balanced = "xhigh"                   # raise the balanced-tier effort, one line
 
 A ``phase_models`` override may name a TIER (resolved through
 :func:`resolve_tier`) or a concrete model id (passed through unchanged), so a
@@ -46,8 +57,20 @@ from teatree.core.cost import tier_of_model, tier_rank
 # config line — no scenario, test, or dispatch edit.
 TIER_MODELS: dict[str, str] = {
     "frontier": "claude-opus-4-8",
-    "balanced": "claude-sonnet-4-6",
+    "balanced": "claude-sonnet-5",
     "cheap": "claude-haiku-4-5",
+}
+
+# THE SINGLE SOURCE OF TRUTH for per-tier reasoning EFFORT — the parallel of
+# :data:`TIER_MODELS` for the effort axis. Abstract tier name -> CLI effort level
+# (a member of :data:`teatree.config_agent.EFFORT_SCALE`). Overridable per tier
+# via ``[agent.tier_effort]`` (merged OVER this default). Only the reasoning tiers
+# carry an effort: ``cheap`` (Haiku, which rejects the effort/thinking levers) is
+# deliberately ABSENT, so :func:`resolve_tier_effort` returns ``None`` for it and
+# its spawns inherit the SDK default effort (emit no ``--effort``).
+TIER_EFFORT: dict[str, str] = {
+    "frontier": "xhigh",
+    "balanced": "high",
 }
 
 # The default tier for a phase NOT in :data:`DEFAULT_PHASE_MODELS`, and the
@@ -62,6 +85,12 @@ DEFAULT_TIER = "balanced"
 # most-honest escalation tier — deliberately NOT a member of :data:`TIER_MODELS`
 # (it is access-gated/disabled), so it never appears as a routine phase tier.
 _FABLE_TIER = "fable"
+
+# The :func:`teatree.core.cost.tier_of_model` tier key whose models do NOT accept
+# an adaptive-thinking pin: Haiku (the ``cheap`` tier) rejects the ``thinking`` /
+# ``effort`` reasoning levers the Opus/Sonnet/Fable tiers accept. Matched on the
+# tier so any future dated Haiku id is covered (:func:`model_supports_thinking`).
+_NON_THINKING_TIER = "haiku"
 
 # Default phase -> abstract TIER mapping. The genuine-reasoning phases
 # (planning, coding, debugging, reviewing, retrospecting) get ``frontier``; the
@@ -102,6 +131,22 @@ def resolve_tier(tier: str, *, config_path: Path | None = None) -> str:
     config = resolve_agent_config(config_path=config_path)
     merged = {**TIER_MODELS, **config.tier_models}
     return merged.get(tier, tier)
+
+
+def resolve_tier_effort(tier: str, *, config_path: Path | None = None) -> str | None:
+    """Resolve an abstract *tier* name to its reasoning EFFORT — the effort parallel of :func:`resolve_tier`.
+
+    Reads :data:`TIER_EFFORT`, with each entry OVERRIDABLE via the
+    ``[agent.tier_effort]`` config table (merged OVER the shipped default). Unlike
+    :func:`resolve_tier` — which passes an unknown *tier* through unchanged so a
+    caller may hand it a concrete model id — an unknown tier here returns ``None``:
+    a tier with no effort entry (the ``cheap``/Haiku tier, or a ``phase_models``
+    override that named a concrete model id) means "pin no effort, inherit the SDK
+    default", never "pass a bogus value to ``--effort``".
+    """
+    config = resolve_agent_config(config_path=config_path)
+    merged = {**TIER_EFFORT, **config.tier_effort}
+    return merged.get(tier)
 
 
 def resolve_phase_model(phase: str, *, config_path: Path | None = None) -> str | None:
@@ -163,8 +208,9 @@ def resolve_spawn_model(
     ``phase_models`` override that opts the phase out of tiering) AND no skill
     floor applies — the caller then passes no ``--model`` and the user's default
     model applies. Every other phase resolves to a concrete model id (phase →
-    tier → model). MODEL only: there is no per-skill effort axis (effort is a
-    session-wide pin set on the interactive loop spawn).
+    tier → model). MODEL only: there is no per-skill effort axis — the reasoning
+    effort is per-abstract-TIER, resolved separately for the same spawn by
+    :func:`resolve_spawn_effort`.
 
     The resolved winner passes through :func:`_downgrade_fable` last: with the
     ``[agent] fable_enabled`` kill-switch off (teatree#2237), a Fable winner
@@ -186,6 +232,51 @@ def resolve_spawn_model(
     ):
         winner = resolve_tier(config.honesty_model, config_path=config_path)
     return _downgrade_fable(winner, config)
+
+
+def resolve_spawn_effort(phase: str, *, config_path: Path | None = None) -> str | None:
+    """Resolve the spawn EFFORT for *phase* — phase → tier → effort, the effort parallel of :func:`resolve_spawn_model`.
+
+    Mirrors :func:`resolve_phase_model`'s resolution, swapping the model constant
+    for the effort constant: the same ``[agent] phase_models`` override mechanism
+    picks the abstract tier, then :func:`resolve_tier_effort` maps that tier to its
+    reasoning effort. So a ``phase_models`` override to a cheaper tier lowers BOTH
+    the model and the effort in lock-step, and a sentinel override (empty /
+    ``default`` / ``inherit``) returns ``None`` (pin no ``--effort``).
+
+    ``None`` is returned whenever the resolved tier has no effort entry — the
+    ``cheap``/Haiku phases, a phase pinned to a concrete model id (not a tier), or
+    a sentinel override — so those spawns inherit the SDK default effort. There is
+    no per-skill effort axis: unlike :func:`resolve_spawn_model`, skill floors and
+    the honesty escalation raise only the MODEL, never the phase's effort tier.
+    """
+    overrides = _load_phase_model_overrides(config_path)
+    if phase in overrides:
+        value = overrides[phase].strip()
+        if value.lower() in _INHERIT_SENTINELS:
+            return None
+        return resolve_tier_effort(value, config_path=config_path)
+    tier = DEFAULT_PHASE_MODELS.get(phase, DEFAULT_TIER)
+    return resolve_tier_effort(tier, config_path=config_path)
+
+
+def model_supports_thinking(model: str | None) -> bool:
+    """Whether *model* accepts an explicit adaptive-thinking pin — fail-SAFE.
+
+    Production spawns set ``thinking={"type": "adaptive"}`` EXPLICITLY so the
+    Opus-4.8 reasoning phases deterministically think — Opus 4.8 runs WITHOUT
+    thinking when the option is omitted (unlike Sonnet 5, which defaults to
+    adaptive). The cheap/Haiku tier rejects the ``thinking`` / ``effort`` levers,
+    so this GUARD returns ``False`` for a Haiku model (matched on the tier via
+    :func:`teatree.core.cost.tier_of_model`, so a future dated Haiku id is
+    covered). ``None`` (the inherit sentinel — the caller adds no ``--model`` and
+    the user's own default applies) also returns ``False``: the inherited model
+    is unknown here, so the safe choice is to leave the SDK default rather than
+    force a pin the default might reject.
+    """
+    if not model:
+        return False
+    return tier_of_model(model) != _NON_THINKING_TIER
 
 
 def _is_verification_phase(phase: str) -> bool:

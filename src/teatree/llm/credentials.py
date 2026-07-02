@@ -21,6 +21,17 @@ The pieces are named provider-agnostically (``Credential`` / ``CredentialSpec`` 
 Claude today, other providers (OpenRouter, …) later — with no rework at the call
 sites. Dependency-injected sources keep the whole surface unit-testable without
 touching the real environment or the ``pass`` store.
+
+A credential's ``pass_path`` MAY be overridden per instance by an INJECTED
+``pass_path_override`` (a plain string) — the resolved per-account ``pass`` entry
+an operator routes to. This module stays foundation-pure: it never reads the
+config store itself. The DB-config read (``ConfigSetting``, the per-overlay routing
+lists ``anthropic_oauth_pass_paths`` / ``anthropic_api_key_pass_paths``, overlay
+scope then global) lives in the domain-layer factory ``teatree.credential_config``,
+whose selector picks a healthy account and injects its ``pass`` path here. ``spec``
+stays a static constant
+the module-load consumers (``cli/eval/docker.py``, ``eval/isolation.py``) read
+safely; only ``_effective_spec`` applies the injected override at resolve time.
 """
 
 import dataclasses
@@ -97,13 +108,23 @@ class Credential:
 
     Subclasses supply :attr:`spec`. *sources* are injected (default: env then
     ``pass``) so the whole behaviour is unit-testable with fakes — no real
-    environment or ``pass`` store needed.
+    environment or ``pass`` store needed. *pass_path_override*, when given, is the
+    per-account ``pass`` entry that replaces :attr:`spec`'s built-in ``pass_path``
+    at RESOLVE time; it is a plain string injected by the domain-layer factory
+    (``teatree.credential_config``), so this foundation module never reads the
+    config store itself. ``None`` (the default) leaves the built-in ``pass_path``.
     """
 
     spec: CredentialSpec
 
-    def __init__(self, *, sources: Sequence[CredentialSource] = _DEFAULT_SOURCES) -> None:
+    def __init__(
+        self,
+        *,
+        sources: Sequence[CredentialSource] = _DEFAULT_SOURCES,
+        pass_path_override: str | None = None,
+    ) -> None:
         self._sources = tuple(sources)
+        self._pass_path_override = pass_path_override
 
     @property
     def sources(self) -> tuple[CredentialSource, ...]:
@@ -113,17 +134,31 @@ class Credential:
     def resolve(self) -> str:
         """Return the credential value from the first source that yields one.
 
-        Sources are consulted in order (env wins, then ``pass``); the first
-        non-empty value wins and later sources are not consulted. When none
-        yields a value, raise :class:`CredentialError` naming the fix — never a
-        silent empty string that would let a metered invocation authenticate as
-        nothing or fall back to a different credential.
+        Sources are consulted in order (env wins, then ``pass``) against the
+        EFFECTIVE spec (``spec`` with any injected pass_path override applied);
+        the first non-empty value wins and later sources are not
+        consulted. When none yields a value, raise :class:`CredentialError`
+        naming the fix — never a silent empty string that would let a metered
+        invocation authenticate as nothing or fall back to a different credential.
         """
+        spec = self._effective_spec()
         for source in self._sources:
-            value = source.lookup(self.spec)
+            value = source.lookup(spec)
             if value:
                 return value
-        raise CredentialError(self._missing_message())
+        raise CredentialError(self._missing_message(spec))
+
+    def _effective_spec(self) -> CredentialSpec:
+        """:attr:`spec` with any injected ``pass_path`` override applied.
+
+        Only ``pass_path`` is overridable — ``env_var`` and ``conflicting_vars``
+        are the credential's fixed identity, so :meth:`export` / :meth:`child_env`
+        keep reading them off the static :attr:`spec`. With no injected override the
+        static ``spec`` stands unchanged.
+        """
+        if self._pass_path_override:
+            return dataclasses.replace(self.spec, pass_path=self._pass_path_override)
+        return self.spec
 
     def export(self) -> str:
         """Resolve the credential, write it into ``os.environ``, and return it.
@@ -155,10 +190,11 @@ class Credential:
         child[self.spec.env_var] = value
         return child
 
-    def _missing_message(self) -> str:
+    @staticmethod
+    def _missing_message(spec: CredentialSpec) -> str:
         return (
-            f"no {self.spec.env_var} credential available. Set {self.spec.env_var} in the "
-            f"environment, or store it locally with `pass insert {self.spec.pass_path}`. "
+            f"no {spec.env_var} credential available. Set {spec.env_var} in the "
+            f"environment, or store it locally with `pass insert {spec.pass_path}`. "
             "Metered evals authenticate EXCLUSIVELY via the metered API key — they never "
             "fall back to the subscription OAuth token (a full run would throttle it)."
         )
@@ -169,7 +205,10 @@ class AnthropicApiKeyCredential(Credential):
 
     The credential the metered eval lane authenticates with EXCLUSIVELY ([#2707]).
     Its child env sets ``ANTHROPIC_API_KEY`` and removes ``CLAUDE_CODE_OAUTH_TOKEN``
-    so the SDK / bundled CLI can never bill the subscription.
+    so the SDK / bundled CLI can never bill the subscription. The ``pass_path``
+    default (``anthropic/api-key``) is overridable per account via an injected
+    ``pass_path_override`` — selected from the ``anthropic_api_key_pass_paths``
+    routing list by ``teatree.credential_config.resolve_api_key_credential``.
     """
 
     spec = CredentialSpec(
@@ -183,7 +222,11 @@ class AnthropicSubscriptionCredential(Credential):
     """The subscription OAuth token — strips the metered API key.
 
     The credential the NON-eval Claude invocations legitimately ride. Its child
-    env sets ``CLAUDE_CODE_OAUTH_TOKEN`` and removes ``ANTHROPIC_API_KEY``.
+    env sets ``CLAUDE_CODE_OAUTH_TOKEN`` and removes ``ANTHROPIC_API_KEY``. The
+    ``pass_path`` default (``anthropic/oauth-token``) is overridable per account
+    via an injected ``pass_path_override`` — selected from the
+    ``anthropic_oauth_pass_paths`` routing list by
+    ``teatree.credential_config.resolve_subscription_credential``.
     """
 
     spec = CredentialSpec(

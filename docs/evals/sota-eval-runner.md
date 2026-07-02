@@ -92,7 +92,7 @@ Each item below names the integration point, the exact API param/field, a doc ci
 ### 4.3 Cheaper, distinct-tier, low-effort judge (impact: High)
 
 - **Integration point:** `DEFAULT_JUDGE_MODEL` (`loader.py:35`), `JudgeSpec.model` default (`models.py:165`), `_judge_options` (`judge.py:178-192`).
-- **API param:** `effort="low"` on the judge's `CleanRoomConfig`; per the effort doc, `low` is recommended for "simple classification tasks" and Sonnet 4.6 should be set to `medium` explicitly to avoid latency (<https://platform.claude.com/docs/en/build-with-claude/effort>).
+- **API param:** `effort="low"` on the judge's `CleanRoomConfig`; per the effort doc, `low` is recommended for "simple classification tasks" and Sonnet 5 should be set to `medium` explicitly to avoid latency (<https://platform.claude.com/docs/en/build-with-claude/effort>).
 - **Doc:** "best practice to use a different model to evaluate than the model used to generate" — <https://platform.claude.com/docs/en/test-and-evaluate/develop-tests>.
 - **Action:** default judge to `claude-haiku-4-5` (or any tier ≠ the run model + its `FALLBACK_MODEL`) at `effort="low"`; add a `JudgeSpec.effort` field for per-scenario opt-up. Gate behind a judge-vs-judge agreement check on the existing corpus (`confusion_matrix.py`, `corpus_grade.py` already exist) before flipping the default.
 - **Win:** 3× cheaper judge input/output + faster (Haiku is the fastest tier) + removes self-preference bias, at unchanged verdict quality for the overwhelming majority of rubrics.

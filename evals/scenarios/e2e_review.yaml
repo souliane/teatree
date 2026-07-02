@@ -19,7 +19,7 @@
     e2e-review reviewer records a HOLD verdict (HARD GATE H3 — evidence
     legibility), it does NOT record a merge_safe/VERIFIED verdict or approve the PR
   agent_path: skills/e2e-review/SKILL.md
-  model: claude-sonnet-4-6
+  model: claude-sonnet-5
   max_turns: 4
   tools: [Bash]
   prompt: >-
