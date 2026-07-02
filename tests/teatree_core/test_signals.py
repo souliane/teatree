@@ -40,6 +40,11 @@ IMMEDIATE_BACKEND = {
     "TASKS": {
         "default": {
             "BACKEND": "django_tasks.backends.immediate.ImmediateBackend",
+            # Mirror the QUEUES allowlist from tests/django_settings.py — importing
+            # teatree.core.tasks (a headless-task side effect) constructs the
+            # module-level `execute_loop` task at import time, which validates its
+            # "loop-runner" queue_name against this backend's queues immediately.
+            "QUEUES": ["default", "loop-runner"],
         },
     },
 }
@@ -361,13 +366,13 @@ class TestApprovalReactionOnTransition(TestCase):
         class _Overlay:
             config = _Cfg()
 
-        def _fake_add_reaction(token: str, channel: str, ts: str, emoji: str) -> bool:
+        def _fake_add_reaction_verified(token: str, channel: str, ts: str, emoji: str) -> bool:
             recorded.append((channel, ts, emoji))
             return True
 
         with (
             patch.object(slack_reactions, "get_overlay", return_value=_Overlay()),
-            patch.object(slack_reactions, "add_reaction", _fake_add_reaction),
+            patch.object(slack_reactions, "add_reaction_verified", _fake_add_reaction_verified),
         ):
             posted = slack_reactions.add_approval_reaction(pr)
 

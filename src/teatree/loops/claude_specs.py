@@ -25,10 +25,23 @@ a bare ``--loop ship`` substring would also match ``--loop ship-fast``). To
 disable a loop the skill ``CronList``s, matches the job whose prompt equals this
 spec's ``prompt`` — equivalently, contains that exact backtick-terminated token —
 and ``CronDelete``s it by the harness job id.
+
+**Verify-by-reread (#1192).** A CLI cannot call ``CronCreate`` itself, so it
+cannot confirm the registration landed either — the agent's own harness call
+is the only truth. :func:`spec_registered` and :func:`verify_loop_registered`
+close that gap on the READ side: given a ``CronList`` snapshot the agent
+fetches after calling ``CronCreate``, they confirm the loop's registration is
+actually present, using the same backtick-terminated-token match the
+enable/disable skill already uses. ``t3 loop verify-cron <name>`` is the CLI
+surface (:mod:`teatree.cli.loop_verify_cron`).
 """
 
+import re
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
+
+from teatree.core.verify_by_reread import RereadOutcome, verify_by_reread
 
 if TYPE_CHECKING:
     from teatree.core.models import Loop
@@ -122,3 +135,68 @@ def enabled_loop_specs() -> list[ClaudeLoopSpec]:
     if get_effective_settings().loop_runner_enabled:
         return []
     return [claude_loop_spec(loop) for loop in Loop.objects.enabled() if loop_enabled(loop.name)]
+
+
+_LOOP_TOKEN_RE = re.compile(r"`t3 loops tick --loop [^\s`]+`")
+
+
+def _loop_token(prompt: str) -> str | None:
+    """The backtick-terminated ``t3 loops tick --loop <name>`` token embedded in *prompt*."""
+    match = _LOOP_TOKEN_RE.search(prompt)
+    return match.group(0) if match else None
+
+
+def _cron_matches(job: Mapping[str, object], expected_cron: str) -> bool:
+    """True unless *job* names a schedule that disagrees with *expected_cron*.
+
+    A stale native job can keep a matching ``prompt`` after the loop's
+    cadence changed in the DB — prompt-token matching alone would then
+    report ``confirmed`` for a job firing on the WRONG schedule, defeating
+    the point of verification (codex review, #1192). ``CronCreate`` takes
+    its schedule as ``cron=...``, so a ``CronList`` snapshot is expected to
+    echo it back under the same key; a job that omits the key degrades to
+    "schedule unknown, don't contradict the prompt match" rather than a
+    false negative against a harness snapshot shape we haven't confirmed.
+    """
+    cron = job.get("cron")
+    if not isinstance(cron, str) or not cron:
+        return True
+    return cron == expected_cron
+
+
+def spec_registered(spec: ClaudeLoopSpec, jobs: Iterable[Mapping[str, object]]) -> bool:
+    """True when *jobs* (a harness ``CronList`` snapshot) contains *spec*'s registration.
+
+    Matches by the same backtick-terminated ``t3 loops tick --loop <name>``
+    token the enable/disable skill uses to disambiguate one loop's cron from
+    another (a bare ``--loop ship`` substring would also match
+    ``--loop ship-fast``), AND — when the job names a schedule — that it
+    agrees with *spec*'s expected cron (:func:`_cron_matches`). A non-dict
+    job, or one whose ``prompt`` field is not a string, is skipped rather
+    than raising — a harness snapshot with unexpected shape degrades to
+    "not found", never a crash.
+    """
+    token = _loop_token(spec.prompt)
+    if token is None:
+        return False
+    for job in jobs:
+        if not isinstance(job, Mapping):
+            continue
+        prompt = job.get("prompt")
+        if isinstance(prompt, str) and token in prompt and _cron_matches(job, spec.cron):
+            return True
+    return False
+
+
+def verify_loop_registered(spec: ClaudeLoopSpec, jobs: Iterable[Mapping[str, object]]) -> RereadOutcome:
+    """Verify-by-reread (#1192): confirm *spec*'s ``CronCreate`` registration is visible.
+
+    ``jobs`` is the harness ``CronList`` snapshot the agent fetches right
+    after calling ``CronCreate`` — this never calls the harness itself (a CLI
+    cannot), it only judges a snapshot the caller already has in hand.
+    """
+    jobs_list = list(jobs)
+    return verify_by_reread(
+        label=f"cron_registration:{spec.slot_id}",
+        reread=lambda: spec_registered(spec, jobs_list),
+    )

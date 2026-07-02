@@ -38,6 +38,7 @@ from teatree.cli.loop_list import list_command
 from teatree.cli.loop_owner import register as register_loop_owner
 from teatree.cli.loop_slack_answer import slack_answer_app
 from teatree.cli.loop_state import register as register_loop_state
+from teatree.cli.loop_verify_cron import register as register_verify_cron
 from teatree.config import cadence_seconds
 from teatree.loop.loop_cadences import reactive_slot
 from teatree.loop.statusline import default_path
@@ -390,3 +391,8 @@ register_loop_state(loop_app)
 # ``/loop`` spec (slot_id + cron + prompt) the ``/t3:loops`` enable/disable skill
 # mirrors via CronCreate/CronDelete. Split off (same module-health reason).
 register_claude_spec(loop_app)
+
+# #1192 — flat ``t3 loop verify-cron <name>``: verify-by-reread a loop's
+# CronCreate registration against a CronList snapshot. Split off (same
+# module-health reason).
+register_verify_cron(loop_app)

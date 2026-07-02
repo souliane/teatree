@@ -75,6 +75,7 @@ Flipping the DB row is only half the job: the live set of native Claude `/loop`s
 1. `t3 loop enable X` — flips `Loop.enabled=True` + `LoopState=ENABLED`.
 2. `t3 loop claude-spec X --json` — read `{slot_id, cron, prompt}`.
 3. Call `CronCreate(cron=<cron>, prompt=<prompt>, recurring=true)` — register the native `/loop`.
+4. **Verify-by-reread (#1192):** `CronCreate`'s own success is not proof the registration is visible. Call `CronList`, save its JSON output, then `t3 loop verify-cron X --cron-list-json <path>` (or pipe: `... | t3 loop verify-cron X --cron-list-json -`). Exits 0 and prints `confirmed: ...` when the loop's registration is present in the snapshot; exits non-zero with a reason when it is not — retry the `CronCreate` in that case.
 
 **To disable a loop `X` and stop its `/loop`:**
 
