@@ -345,6 +345,55 @@ class TestSymbolScopeRules:
         missing = unreferenced_changed_symbols(diff, repo_root=git_repo)
         assert "Thing" in missing
 
+    def test_function_local_typing_import_does_not_exempt_module_level_class(self, git_repo: Path) -> None:
+        (git_repo / "shipped.py").write_text(
+            "def helper() -> None:\n    from typing import Protocol\n    return Protocol\n\n\n"
+            "class Thing(Protocol):\n    def one(self) -> None:\n        return None\n",
+            encoding="utf-8",
+        )
+        diff = _worktree_diff(git_repo, "shipped.py")
+        # `from typing import Protocol` nested inside a function body is not
+        # visible at module scope — it must not leak into the bindings used
+        # to resolve `Thing`'s top-level `Protocol` base (this file would
+        # actually raise NameError at class-definition time, since `Protocol`
+        # is never bound at module scope; the gate only ever parses source
+        # statically via `ast`, so that is irrelevant here — the point is
+        # purely to prove function scoping is respected). Review finding on
+        # souliane/teatree#2888: an `ast.walk`-based scan ignored
+        # function/class scoping entirely, so this base was wrongly exempted.
+        assert "Thing" in unreferenced_changed_symbols(diff, repo_root=git_repo)
+
+    def test_later_reimport_of_protocol_name_removes_typing_binding(self, git_repo: Path) -> None:
+        (git_repo / "custom.py").write_text("class Protocol:\n    pass\n", encoding="utf-8")
+        (git_repo / "shipped.py").write_text(
+            "from typing import Protocol\nfrom custom import Protocol\n\n\n"
+            "class Thing(Protocol):\n    def one(self) -> None:\n        return None\n",
+            encoding="utf-8",
+        )
+        diff = _worktree_diff(git_repo, "shipped.py", "custom.py")
+        # The second import rebinds the local name `Protocol` away from
+        # `typing.Protocol` — Python's own name resolution means only the
+        # LAST import wins, so `Thing(Protocol)` no longer resolves to a
+        # typing Protocol at the point of the class statement (review
+        # finding on souliane/teatree#2888).
+        missing = unreferenced_changed_symbols(diff, repo_root=git_repo)
+        assert "Thing" in missing
+
+    def test_later_reimport_of_typing_alias_removes_binding(self, git_repo: Path) -> None:
+        (git_repo / "custom.py").write_text("class Protocol:\n    pass\n", encoding="utf-8")
+        (git_repo / "shipped.py").write_text(
+            "import typing as t\nimport custom as t\n\n\n"
+            "class Thing(t.Protocol):\n    def one(self) -> None:\n        return None\n",
+            encoding="utf-8",
+        )
+        diff = _worktree_diff(git_repo, "shipped.py", "custom.py")
+        # Same rebinding rule for the module-alias form: the second `import
+        # custom as t` shadows the first `import typing as t`, so `t` no
+        # longer resolves to the `typing` module at the point `t.Protocol`
+        # is used as a base (review finding on souliane/teatree#2888).
+        missing = unreferenced_changed_symbols(diff, repo_root=git_repo)
+        assert "Thing" in missing
+
     def test_syntax_error_in_changed_file_is_skipped(self, git_repo: Path) -> None:
         (git_repo / "broken.py").write_text("def x(:\n    pass\n", encoding="utf-8")
         diff = _worktree_diff(git_repo, "broken.py")

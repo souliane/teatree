@@ -157,15 +157,44 @@ def _typing_protocol_bindings(tree: ast.Module) -> tuple[set[str], set[str]]:
     binds neither set, so :func:`_inherits_protocol` correctly refuses it —
     a bare name/attribute match with no import-provenance check would
     wrongly exempt an unrelated class that merely happens to be named
-    ``Protocol`` (souliane/teatree#2888 review finding).
+    ``Protocol`` (souliane/teatree#2888 review findings).
+
+    Two scoping rules, both closing a review-found gap:
+
+    - **Module level only** (``tree.body``, not :func:`ast.walk`): an
+    ``import``/``from … import`` nested inside a function or class body is
+    not visible at the module's top level where a class base is resolved,
+    so it must not bind these sets.
+    - **Last import wins, in source order**: imports are walked in the order
+    they appear, and any later import of the *same local name* from a
+    different origin (``from typing import Protocol`` then later ``from
+    custom import Protocol``, or ``import typing as t`` then later ``import
+    custom as t``) removes the earlier binding — the name no longer resolves
+    to ``typing.Protocol`` at any later point in the file, exactly as
+    Python's own name resolution rebinds it. A non-import rebinding (a plain
+    assignment or a ``def``/``class`` redefining the same name) is not
+    tracked — that shape already trips ruff's redefinition lint (``F811``),
+    a mandatory gate, so it is out of scope here.
     """
     protocol_names: set[str] = set()
     typing_aliases: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module == "typing":
-            protocol_names.update(alias.asname or alias.name for alias in node.names if alias.name == "Protocol")
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                bound = alias.asname or alias.name
+                if node.module == "typing" and alias.name == "Protocol":
+                    protocol_names.add(bound)
+                else:
+                    protocol_names.discard(bound)
+                typing_aliases.discard(bound)
         elif isinstance(node, ast.Import):
-            typing_aliases.update(alias.asname or alias.name for alias in node.names if alias.name == "typing")
+            for alias in node.names:
+                bound = alias.asname or alias.name
+                if alias.name == "typing":
+                    typing_aliases.add(bound)
+                else:
+                    typing_aliases.discard(bound)
+                protocol_names.discard(bound)
     return protocol_names, typing_aliases
 
 
