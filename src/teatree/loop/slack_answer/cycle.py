@@ -57,6 +57,8 @@ _ACK_EMOJI = "white_check_mark"
 _COALESCE_WINDOW_SECONDS = 90
 
 type MessagingResolver = Callable[[str], MessagingBackend | None]
+# Overlay name → the Slack user id configured for that overlay (#1941).
+type SelfUserIdResolver = Callable[[str], str]
 
 
 @dataclass(slots=True)
@@ -135,12 +137,51 @@ class SlackAnswerReport:
     delegated: int = 0
     errors: int = 0
     skipped_no_backend: int = 0
+    self_skipped: int = 0
 
 
 def _default_resolver(overlay: str) -> MessagingBackend | None:
     from teatree.core.backend_factory import messaging_from_overlay  # noqa: PLC0415
 
     return messaging_from_overlay(overlay or None)
+
+
+def _default_self_user_id(overlay: str) -> str:
+    from teatree.core.notify import resolve_user_id  # noqa: PLC0415
+
+    return resolve_user_id(overlay=overlay or "")
+
+
+def _drop_self_authored(
+    rows: list[PendingChatInjection],
+    resolver: SelfUserIdResolver,
+    report: SlackAnswerReport,
+) -> list[PendingChatInjection]:
+    """Skip DMs the user authored themselves; retire them from the queue (#1941).
+
+    A message whose Slack author is the configured ``slack_user_id`` is by
+    definition NOT an inbound question — it is the user's own instruction or an
+    on-behalf outbound echo (the "Sent using <@app>" posts). The reactive
+    answerer must never react/reply/schedule an answering task for it. Each such
+    row is stamped ``loop_replied_at`` (``AnswerKind.SELF``) so it leaves
+    ``loop_unreplied()`` instead of re-filling the batch every cycle; the
+    prompt-drain still surfaces it into context (``consumed_at`` untouched).
+    A resolver failure for a row's overlay is fail-open — the row is kept
+    (better a spurious answer than silently dropping a real one).
+    """
+    kept: list[PendingChatInjection] = []
+    for row in rows:
+        try:
+            self_id = resolver(row.overlay) if row.user_id else ""
+        except Exception as exc:  # noqa: BLE001 — resolver failure ⇒ keep the row (fail-open)
+            logger.warning("self-author resolve failed for overlay %r: %s", row.overlay, exc)
+            self_id = ""
+        if self_id and row.user_id == self_id:
+            if row.mark_self_skipped():
+                report.self_skipped += 1
+        else:
+            kept.append(row)
+    return kept
 
 
 def verify_reply_visible(backend: MessagingBackend, *, channel: str, thread_root: str) -> bool:
@@ -325,21 +366,26 @@ def _process_unit(
 def run_slack_answer_cycle(
     *,
     messaging_resolver: MessagingResolver | None = None,
+    self_user_id_resolver: SelfUserIdResolver | None = None,
     now: dt.datetime | None = None,
 ) -> SlackAnswerReport:
     """Run one bounded reactive Slack-answer cycle (DI-able, deterministic).
 
     *messaging_resolver* maps an overlay name to its
     :class:`MessagingBackend` (defaults to the per-overlay factory);
-    tests inject a recording fake. *now* is accepted for signature
-    symmetry with ``schedule.run_tier`` (the model CAS uses
-    ``timezone.now`` internally).
+    *self_user_id_resolver* maps an overlay name to its configured
+    ``slack_user_id`` (defaults to :func:`teatree.core.notify.resolve_user_id`)
+    so the loop can skip the user's own outbound DMs (#1941). Tests inject
+    recording fakes. *now* is accepted for signature symmetry with
+    ``schedule.run_tier`` (the model CAS uses ``timezone.now`` internally).
     """
     del now  # reserved for symmetry; the CAS stamps use timezone.now()
     resolver = messaging_resolver or _default_resolver
+    self_user_resolver = self_user_id_resolver or _default_self_user_id
     report = SlackAnswerReport()
 
     rows = list(PendingChatInjection.loop_unreplied()[:_BATCH])
+    rows = _drop_self_authored(rows, self_user_resolver, report)
     units = _coalesce(rows)
     for unit in units:
         report.processed += len(unit.rows)

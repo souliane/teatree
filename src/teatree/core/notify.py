@@ -353,16 +353,21 @@ def _feature_enabled() -> bool:
     return bool(getattr(settings_, "notify_user_via_bot", True))
 
 
-def resolve_user_id() -> str:
+def resolve_user_id(overlay: str | None = None) -> str:
     """Resolve the Slack user id to DM (overlay override → global → empty).
 
     Mirrors ``backend_factory._messaging_from_toml`` (which reads the
     same ``slack_user_id`` key off the overlay table) so a single global
     fallback isn't required — every routing path agrees on the same
     resolution order.
+
+    *overlay* pins the lookup to a specific overlay instead of the active
+    ``T3_OVERLAY_NAME`` env — used by the reactive Slack-answer loop, which
+    processes rows spanning overlays and must resolve each row's own user id
+    (#1941). ``overlay=""`` skips the overlay layer (global only).
     """
     cfg = load_config().raw
-    overlay_name = os.environ.get("T3_OVERLAY_NAME", "")
+    overlay_name = overlay if overlay is not None else os.environ.get("T3_OVERLAY_NAME", "")
     overlays = cfg.get("overlays") or {}
     if overlay_name and isinstance(overlays.get(overlay_name), dict):
         user_id = overlays[overlay_name].get("slack_user_id", "")
