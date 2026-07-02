@@ -16,6 +16,14 @@ import httpx
 from PIL import Image
 
 
+class FigmaComponentPropertyDefinition(TypedDict, total=False):
+    """A single variant property definition on a Figma ``COMPONENT_SET`` node."""
+
+    type: str
+    defaultValue: object
+    variantOptions: list[str]
+
+
 class FigmaNode(TypedDict, total=False):
     """Subset of a Figma document node that teatree reads."""
 
@@ -23,6 +31,7 @@ class FigmaNode(TypedDict, total=False):
     name: str
     type: str
     children: list["FigmaNode"]
+    componentPropertyDefinitions: dict[str, FigmaComponentPropertyDefinition]
 
 
 class FigmaComponentEntry(TypedDict, total=False):
@@ -103,11 +112,16 @@ class FigmaComponentMetadata:
 
     ``styles`` covers Figma's color/text/effect/grid styles, the closest REST-level
     equivalent to design tokens (the ``variables`` API is Enterprise-only).
+    ``variant_properties`` maps each ``COMPONENT_SET`` node id to its
+    ``componentPropertyDefinitions`` — the root ``componentSets`` map carries only
+    key/name/description, so the variant properties themselves are read from the
+    document tree, keyed by node id.
     """
 
     components: dict[str, FigmaComponentEntry]
     component_sets: dict[str, FigmaComponentEntry]
     styles: dict[str, FigmaStyleEntry]
+    variant_properties: dict[str, dict[str, FigmaComponentPropertyDefinition]]
 
 
 class FigmaClient:
@@ -182,10 +196,12 @@ class FigmaClient:
 
     def get_component_metadata(self, file_key: str) -> FigmaComponentMetadata:
         file_data = self.get_file(file_key)
+        document = file_data.get("document")
         return FigmaComponentMetadata(
             components=file_data.get("components") or {},
             component_sets=file_data.get("componentSets") or {},
             styles=file_data.get("styles") or {},
+            variant_properties=_collect_variant_properties(document) if document else {},
         )
 
     def _client(self) -> httpx.Client:
@@ -194,6 +210,18 @@ class FigmaClient:
             headers={"X-Figma-Token": self.token},
             timeout=30.0,
         )
+
+
+def _collect_variant_properties(node: FigmaNode) -> dict[str, dict[str, FigmaComponentPropertyDefinition]]:
+    """Recursively collect ``componentPropertyDefinitions`` from every ``COMPONENT_SET`` node."""
+    found: dict[str, dict[str, FigmaComponentPropertyDefinition]] = {}
+    if node.get("type") == "COMPONENT_SET":
+        definitions = node.get("componentPropertyDefinitions")
+        if definitions:
+            found[node["id"]] = definitions
+    for child in node.get("children", []):
+        found.update(_collect_variant_properties(child))
+    return found
 
 
 def download_image(url: str, dest: Path) -> Path:

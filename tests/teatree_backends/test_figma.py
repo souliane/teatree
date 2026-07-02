@@ -12,6 +12,7 @@ from teatree.backends.figma import (
     FigmaCommentClientMeta,
     FigmaComponentEntry,
     FigmaComponentMetadata,
+    FigmaComponentPropertyDefinition,
     FigmaFrameRef,
     FigmaNode,
     FigmaStyleEntry,
@@ -193,14 +194,51 @@ class TestGetComponentMetadata:
             components={"1:2": button},
             component_sets={"1:1": button_variants},
             styles={"S:1": primary_blue},
+            variant_properties={},
         )
+
+    def test_extracts_variant_properties_from_nested_component_set_nodes(self) -> None:
+        client = FigmaClient(token="fake")
+        size_prop: FigmaComponentPropertyDefinition = {"type": "VARIANT", "variantOptions": ["Small", "Large"]}
+        document: FigmaNode = {
+            "id": "0:0",
+            "type": "DOCUMENT",
+            "children": [
+                {
+                    "id": "0:1",
+                    "type": "CANVAS",
+                    "children": [
+                        {
+                            "id": "1:1",
+                            "name": "Button",
+                            "type": "COMPONENT_SET",
+                            "componentPropertyDefinitions": {"Size": size_prop},
+                        },
+                        {"id": "1:2", "name": "Empty", "type": "COMPONENT_SET"},
+                    ],
+                },
+            ],
+        }
+        file_data = {"document": document, "components": {}, "componentSets": {}, "styles": {}}
+
+        with patch.object(client, "get_file", return_value=file_data):
+            metadata = client.get_component_metadata("abc123")
+
+        assert metadata.variant_properties == {"1:1": {"Size": size_prop}}
+
+    def test_variant_properties_empty_when_document_absent(self) -> None:
+        client = FigmaClient(token="fake")
+        with patch.object(client, "get_file", return_value={"name": "My File"}):
+            metadata = client.get_component_metadata("abc123")
+
+        assert metadata.variant_properties == {}
 
     def test_defaults_to_empty_when_keys_missing(self) -> None:
         client = FigmaClient(token="fake")
         with patch.object(client, "get_file", return_value={"name": "My File"}):
             metadata = client.get_component_metadata("abc123")
 
-        assert metadata == FigmaComponentMetadata(components={}, component_sets={}, styles={})
+        assert metadata == FigmaComponentMetadata(components={}, component_sets={}, styles={}, variant_properties={})
 
 
 class TestClientFactory:

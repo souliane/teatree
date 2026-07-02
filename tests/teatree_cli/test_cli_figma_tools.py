@@ -101,7 +101,10 @@ class TestFigmaCommentsCLI:
 class TestFigmaComponentsCLI:
     def test_prints_component_metadata_as_json(self) -> None:
         metadata = FigmaComponentMetadata(
-            components={"1:2": {"name": "Button"}}, component_sets={}, styles={"S:1": {"name": "Primary"}}
+            components={"1:2": {"name": "Button"}},
+            component_sets={},
+            styles={"S:1": {"name": "Primary"}},
+            variant_properties={"1:1": {"Size": {"type": "VARIANT", "variantOptions": ["Small", "Large"]}}},
         )
         with (
             patch("teatree.cli.figma_tools.read_pass", return_value="tok"),
@@ -115,6 +118,7 @@ class TestFigmaComponentsCLI:
             "components": {"1:2": {"name": "Button"}},
             "component_sets": {},
             "styles": {"S:1": {"name": "Primary"}},
+            "variant_properties": {"1:1": {"Size": {"type": "VARIANT", "variantOptions": ["Small", "Large"]}}},
         }
 
 

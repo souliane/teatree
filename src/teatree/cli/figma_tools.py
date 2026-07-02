@@ -3,7 +3,8 @@
 Split out of ``cli/tools.py`` per the module-health function cap (see
 ``triage_tools.py``): every command here is a thin front-end over
 ``teatree.backends.figma.FigmaClient``. Commands register onto the shared
-``tool_app`` so ``t3 tool figma-*`` is a single coherent namespace.
+``tool_app`` so ``t3 tool figma-screenshot`` and its siblings form a single
+coherent namespace.
 
 Importing this module has the side effect of registering the commands;
 ``cli/__init__`` imports it after ``tool_app`` is constructed.
