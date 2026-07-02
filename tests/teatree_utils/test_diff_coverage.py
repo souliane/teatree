@@ -217,10 +217,13 @@ class TestMutationRevertSymbolCheck:
 class TestSymbolScopeRules:
     """The mutation/revert check targets the public importable API only.
 
-    Private ``_`` helpers (tested via their public callers) and
-    framework-decorated entrypoints (tested through the framework, not by
-    importing the callback by name) are excluded — they would otherwise
-    false-positive on the established Typer-CLI test pattern.
+    Private ``_`` helpers (tested via their public callers), framework-
+    decorated entrypoints (tested through the framework, not by importing
+    the callback by name), and ``typing.Protocol`` classes (a structural
+    type contract with no revertible runtime behavior — conformance is
+    checked by the type checker, not a test import; souliane/teatree#2888)
+    are excluded — they would otherwise false-positive on established
+    patterns.
     """
 
     def test_private_helper_not_required_to_be_referenced(self, git_repo: Path) -> None:
@@ -264,6 +267,55 @@ class TestSymbolScopeRules:
         # `inner` is nested, not a public importable unit — only `outer`
         # is required, and it is imported.
         assert unreferenced_changed_symbols(diff, repo_root=git_repo) == set()
+
+    def test_protocol_class_not_required_to_be_referenced(self, git_repo: Path) -> None:
+        (git_repo / "shipped.py").write_text(
+            "from typing import Protocol\n\n\nclass Thing(Protocol):\n    def one(self) -> None: ...\n",
+            encoding="utf-8",
+        )
+        diff = _worktree_diff(git_repo, "shipped.py")
+        # Thing is a structural type contract (souliane/teatree#2888) — its
+        # conformance is checked by the type checker against each concrete
+        # implementation, not by a test importing the Protocol by name. No
+        # test file changed in this diff at all, and the class is still
+        # clean (generalizes the ad-hoc test_harness.py binding-test
+        # workaround into the gate itself).
+        assert unreferenced_changed_symbols(diff, repo_root=git_repo) == set()
+
+    def test_protocol_class_via_attribute_form_not_required_to_be_referenced(self, git_repo: Path) -> None:
+        (git_repo / "shipped.py").write_text(
+            "import typing\n\n\nclass Thing(typing.Protocol):\n    def one(self) -> None: ...\n",
+            encoding="utf-8",
+        )
+        diff = _worktree_diff(git_repo, "shipped.py")
+        # `typing.Protocol` (attribute access form) is recognized the same
+        # as `from typing import Protocol`.
+        assert unreferenced_changed_symbols(diff, repo_root=git_repo) == set()
+
+    def test_non_protocol_class_still_required_to_be_referenced(self, git_repo: Path) -> None:
+        (git_repo / "shipped.py").write_text(
+            "class Thing:\n    def one(self) -> None:\n        return None\n", encoding="utf-8"
+        )
+        diff = _worktree_diff(git_repo, "shipped.py")
+        # An ordinary class (no Protocol base) is unaffected by the
+        # exemption — still flagged when no changed test references it.
+        assert "Thing" in unreferenced_changed_symbols(diff, repo_root=git_repo)
+
+    def test_custom_protocol_subclass_not_recognized_by_name_heuristic(self, git_repo: Path) -> None:
+        (git_repo / "shipped.py").write_text(
+            "from typing import Protocol\n\n\n"
+            "class Base(Protocol):\n    def one(self) -> None: ...\n\n\n"
+            "class Thing(Base):\n    def two(self) -> None: ...\n",
+            encoding="utf-8",
+        )
+        diff = _worktree_diff(git_repo, "shipped.py")
+        # Base is exempt (direct Protocol base), but Thing subclasses Base
+        # (not literally named `Protocol`) — the source-level heuristic
+        # deliberately does not resolve transitive Protocol inheritance, so
+        # Thing still requires a changed-test reference.
+        missing = unreferenced_changed_symbols(diff, repo_root=git_repo)
+        assert "Base" not in missing
+        assert "Thing" in missing
 
     def test_syntax_error_in_changed_file_is_skipped(self, git_repo: Path) -> None:
         (git_repo / "broken.py").write_text("def x(:\n    pass\n", encoding="utf-8")

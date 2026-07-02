@@ -145,6 +145,23 @@ class DiffCoverageReport:
         return "\n".join(rows)
 
 
+def _inherits_protocol(node: ast.ClassDef) -> bool:
+    """Whether *node* directly subclasses ``typing.Protocol`` (either import form).
+
+    A source-level heuristic (no type resolution, matching the rest of this
+    module): matches a base named ``Protocol`` (``from typing import
+    Protocol``) or an attribute access ending in ``.Protocol`` (``class
+    Foo(typing.Protocol)``). A Protocol subclassing another *custom* Protocol
+    base (not literally named ``Protocol``) is not detected — narrower is
+    the safe default for a gate exemption.
+    """
+    return any(
+        (isinstance(base, ast.Name) and base.id == "Protocol")
+        or (isinstance(base, ast.Attribute) and base.attr == "Protocol")
+        for base in node.bases
+    )
+
+
 def _changed_production_symbols(diff: str, repo_root: Path, scope: CoverageScope) -> dict[str, set[str]]:
     """Return ``{file_path: {public top-level symbols defined on added lines}}``.
 
@@ -152,11 +169,19 @@ def _changed_production_symbols(diff: str, repo_root: Path, scope: CoverageScope
     statement falls on a line the diff adds. The mutation/revert check
     targets the importable public API surface a regression test must
     call (§17.6): private ``_``-prefixed helpers are exercised through
-    their public callers, and framework-registered entrypoints (a
+    their public callers, framework-registered entrypoints (a
     ``@…command``/route-decorated callback) are tested through the
-    framework, not by importing the callback by name — so decorated
-    top-level defs are excluded to avoid penalising that established
-    Typer-CLI test pattern. Only files inside the coverage ``source``
+    framework, not by importing the callback by name, and a ``typing.
+    Protocol`` class (souliane/teatree#2888) is a structural type contract
+    with no revertible runtime behavior of its own — its conformance is
+    checked by the type checker (``ty``/mypy) against each concrete
+    implementation, not by a test importing the Protocol by name. Requiring
+    that import produced the ad-hoc ``test_concrete_impls_satisfy_the_
+    harness_protocols`` binding test in ``tests/teatree_agents/
+    test_harness.py`` (#2565/#2885) purely to appease this check; this
+    exemption generalizes that fix into the gate itself. So decorated
+    top-level defs and Protocol classes are excluded to avoid penalising
+    those established patterns. Only files inside the coverage ``source``
     scope are considered — the symbol check matches the line-coverage
     check's file set.
     """
@@ -177,6 +202,8 @@ def _changed_production_symbols(diff: str, repo_root: Path, scope: CoverageScope
             if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
                 continue
             if node.lineno not in lines or node.name.startswith("_") or node.decorator_list:
+                continue
+            if isinstance(node, ast.ClassDef) and _inherits_protocol(node):
                 continue
             names.add(node.name)
         if names:
