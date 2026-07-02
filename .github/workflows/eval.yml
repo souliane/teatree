@@ -1,22 +1,21 @@
 # ============================================================
-# METERED BEHAVIORAL-EVAL WORKFLOW — standalone, off the PR path
+# BEHAVIORAL-EVAL WORKFLOW — standalone, off the PR path
 # ============================================================
 #
-# The behavioral-eval suite (`t3 eval run --backend api`) runs the metered
-# in-process Agent-SDK suite (the SDK spawns the `claude` CLI child internally,
-# so `shutil.which("claude")` is still the provisioning gate) — it is metered
-# (API cost), reaches the network, and varies by
-# model. It MUST NOT run on every push or every PR. This workflow is fully
-# independent of the main CI (`ci.yml`): triggering it never runs the rest of
-# the pipeline, and a PR run never triggers this workflow.
+# The behavioral-eval suite (`t3 eval run --backend api`) runs the in-process
+# Agent-SDK suite (the SDK spawns the `claude` CLI child internally, so
+# `shutil.which("claude")` is still the provisioning gate) — it runs a live model,
+# reaches the network, and varies by model. It MUST NOT run on every push or every
+# PR. This workflow is fully independent of the main CI (`ci.yml`): triggering it
+# never runs the rest of the pipeline, and a PR run never triggers this workflow.
 #
 # Cadence:
 #   * schedule  — once a week (Monday 06:00 UTC). Guarded: the scheduled run
 #     SKIPS CLEANLY (exit 0, with a clear log line) when NO PR merged in the
-#     lookback window since the last run — nothing new to test, no API spend.
+#     lookback window since the last run — nothing new to test, no spend.
 #   * workflow_dispatch — manual, on-demand, always on the api backend
-#     and an optional `lane` input. ALWAYS runs (force) — the no-PR guard is
-#     bypassed for a manual run.
+#     with optional `lane` / `credential` / `efforts` / `trials` inputs. ALWAYS
+#     runs (force) — the no-PR guard is bypassed for a manual run.
 #
 # LANE+SHARD FAN-OUT (souliane/teatree#2492, #2683):
 #   The FULL suite (~196 scenarios x 3 trials) does not finish in a single 2x80min
@@ -55,16 +54,28 @@
 #   off the per-PR path. A maintainer can also run it on the host against the
 #   accumulated ledger: `t3 eval run --backend api --local --gate-cost-bounds`.
 #
-# AUTH — ANTHROPIC_API_KEY (metered, EXCLUSIVE — never the subscription token)
-#   The metered backend authenticates EXCLUSIVELY from `ANTHROPIC_API_KEY`, the
-#   metered API key. It is wired from the repo secret of the same name as a pure
-#   env var (no `~/.claude.json`, no keychain, no `/login`) and authenticates the
-#   in-process Agent-SDK's `claude` child on the metered API. The subscription
-#   `CLAUDE_CODE_OAUTH_TOKEN` is intentionally NOT used here (#2707): the
-#   subscription is rate-limited by a depleting usage window, so a full
-#   211-scenario run would throttle and the throttled cells would be mislabeled.
-#   The metered API has no such window. The isolation env strips any inherited
-#   OAuth token so the in-container SDK can never bill the subscription.
+# AUTH — the `eval_credential` knob (default subscription OAuth, reverses #2707)
+#   The `credential` input picks which credential the eval lane rides, wired into
+#   the eval step as `T3_EVAL_CREDENTIAL`; every eval chokepoint (make_runner, the
+#   judge, the docker `-e` passthrough) resolves it through
+#   `resolve_eval_credential`. Both repo secrets are wired so the knob is a pure
+#   config flip:
+#     * DEFAULT `subscription_oauth` — the plan's `CLAUDE_CODE_OAUTH_TOKEN` (repo
+#       secret). Draws no per-token bill, so the metered lane that drained
+#       ~$100/day is retired as the default. TRADEOFF: the subscription is
+#       rate-limited by a depleting 5h/7d window shared with the main loop — so a
+#       full fan-out (~196 scenarios x 3 trials x 3 efforts) would THROTTLE the
+#       window mid-run (the same "fails without finishing" symptom, now on the plan)
+#       AND starve the loop (AllTokensExhaustedError). MITIGATED by right-sizing:
+#       the `efforts` default is a SINGLE tier (`high`, not `low,medium,high`), the
+#       `trials` default is 2 (was 3), and per-account OAuth routing
+#       (`anthropic_oauth_pass_paths`) spreads load across subscription accounts.
+#     * `metered_api_key` — the `ANTHROPIC_API_KEY` repo secret (per-token cost, no
+#       usage window). Still selectable via the `credential` input; raise `efforts`
+#       / `trials` for a metered run since it has no window to throttle.
+#   docker forwards ONLY the selected credential's var into the container, and the
+#   isolation env strips the conflicting one, so the lane authenticates exclusively
+#   with the selected credential.
 #
 # NO-SILENT-GREEN ENFORCEMENT (souliane/teatree#1811 follow-up)
 #   The runner SKIPs every scenario when `claude` is not on PATH, and a fully-
@@ -74,9 +85,9 @@
 #        eval step — a missing binary FAILS the job, it does not skip.
 #     2. It passes `--require-executed` unconditionally, so a collected-but-
 #        all-skipped run exits non-zero.
-#   The API key is wired from the `ANTHROPIC_API_KEY` repo secret. Until that
-#   secret is set the job correctly fails RED (the metered backend can
-#   authenticate nothing) — that loud failure is intended, not a regression.
+#   The selected credential is wired from its repo secret. Until that secret is set
+#   the job correctly fails RED (the backend can authenticate nothing) — that loud
+#   failure is intended, not a regression.
 #
 # PUBLISH + FAILURE NOTIFICATION (souliane/teatree#2704)
 #   After the shard fan-out, the `publish` job merges every shard's SANITIZED
@@ -91,11 +102,11 @@
 # The FREE deterministic TESTS (eval-skill-triggers commit-stage,
 # eval-pinned-regressions push-stage) are unaffected — they gate every push via
 # prek and the regression corpus is asserted every PR via pytest. Only the
-# metered in-process Agent-SDK eval (the SDK spawns the `claude` CLI child
-# internally, so `shutil.which("claude")` is still the provisioning gate) lives here.
+# in-process Agent-SDK eval (the SDK spawns the `claude` CLI child internally, so
+# `shutil.which("claude")` is still the provisioning gate) lives here.
 # ============================================================
 
-name: Metered eval
+name: Behavioral eval
 
 on:
   schedule:
@@ -108,10 +119,20 @@ on:
         required: false
         default: ""
         type: string
-      efforts:
-        description: "Comma-separated reasoning-effort tiers to fan the matrix across (e.g. 'low,medium,high'); empty = no effort axis (single tier at the lane default). The weekly cron still fans all three."
+      credential:
+        description: "Eval credential (subscription_oauth | metered_api_key). Default subscription_oauth (reverses #2707). subscription_oauth draws no per-token bill but a depleting usage window — keep the fan-out small; metered_api_key is per-token cost, no window."
         required: false
-        default: ""
+        default: "subscription_oauth"
+        type: string
+      efforts:
+        description: "Comma-separated reasoning-effort tiers to fan the matrix across (e.g. 'low,medium,high'); empty = no effort axis. Default 'high' — a SINGLE representative tier, right-sizing the subscription lane so a full fan-out cannot throttle the plan's usage window / starve the loop. The weekly cron still fans all three (low,medium,high)."
+        required: false
+        default: "high"
+        type: string
+      trials:
+        description: "Trials per scenario (pass@k). Default 2 — smaller than the pre-#2707-reversal 3 to keep the subscription lane inside the usage window. Raise it for a metered_api_key run (no window)."
+        required: false
+        default: "2"
         type: string
 
 jobs:
@@ -172,21 +193,34 @@ jobs:
       # Empty `lane` input (scheduled runs and the default manual run) = every
       # permitted lane, sharded into budget-safe legs on the lane-aware ceiling
       # (clean_room ~182 → ~13 shards of ≤14, under_load 14 → 4 shards of ≤4 —
-      # #2683). The `efforts` axis fans each {lane, shard} leg across the reasoning-
-      # effort tiers it lists. The SCHEDULED cron run defaults to all three
-      # (low,medium,high), so the weekly run measures pass-rate vs effort across the
-      # whole suite; a MANUAL run with an empty `efforts` field keeps the single-tier
-      # matrix (lane default) — the documented "empty = single tier". The 3-tier
-      # default is keyed on the schedule EVENT (not a blanket `|| 'low,medium,high'`,
-      # which would fan a blank manual field 3x and triple the metered spend), so a
-      # blank workflow_dispatch field is a single-tier run. An unknown lane or effort
-      # fails loud here rather than producing an empty/invalid matrix. Both inputs are
-      # routed through `env:` vars (never inlined) and validated by lane_matrix.py.
+      # #2683). The `efforts` axis defaults to a SINGLE tier ('high') — right-
+      # sizing the subscription lane (#2707 reversal) so a full 3-tier fan-out
+      # cannot throttle the plan's usage window / starve the loop. The SCHEDULED
+      # cron run is the exception: it still fans all three (low,medium,high), so
+      # the weekly run measures pass-rate vs effort across the whole suite. The
+      # 3-tier default is keyed on the schedule EVENT (not a blanket
+      # `|| 'low,medium,high'`, which would fan a blank manual field 3x and
+      # triple the spend) — a manual workflow_dispatch run with an empty
+      # `efforts` field falls back to the single 'high' tier. Pass a comma-
+      # separated list (e.g. 'low,medium,high') to fan each {lane, shard} leg
+      # across multiple reasoning-effort tiers instead (a `metered_api_key` run
+      # has no window to throttle). An unknown lane or effort fails loud here
+      # rather than producing an empty/invalid matrix. Both inputs are routed
+      # through `env:` vars (never inlined) and validated by lane_matrix.py.
       - name: Compute the lane+shard+effort matrix
         id: matrix
         env:
           EVAL_LANE: ${{ inputs.lane || '' }}
-          EVAL_EFFORTS: ${{ inputs.efforts || (github.event_name == 'schedule' && 'low,medium,high' || '') }}
+          # Default a SINGLE effort tier ('high') for a manual/blank run — the
+          # subscription lane (#2707 reversal) rides a depleting usage window, so
+          # 3x the effort axis would throttle it mid-run and starve the loop. The
+          # SCHEDULED cron is the exception: it keeps fanning all three
+          # (low,medium,high) to measure pass-rate vs effort across the whole
+          # suite. The 3-tier default is keyed on the schedule EVENT (not a
+          # blanket `|| 'low,medium,high'`, which would fan a blank manual field
+          # 3x and triple the spend). Override the `efforts` input explicitly
+          # for a metered_api_key run, which has no window to throttle.
+          EVAL_EFFORTS: ${{ inputs.efforts || (github.event_name == 'schedule' && 'low,medium,high' || 'high') }}
         run: |
           MATRIX="$(uv run python scripts/eval/lane_matrix.py --lane "$EVAL_LANE" --efforts "$EVAL_EFFORTS")"
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
@@ -247,18 +281,20 @@ jobs:
       - name: Migrate the self-DB (the eval run-history ledger persists into it)
         run: uv run python -m teatree migrate --no-input
       # Bounded retry on a transient model/network flake; a real miss repeats and still fails fast.
-      # `--docker` routes the metered lane THROUGH the CI container (dev/Dockerfile.test, which
-      # ships the Claude CLI) — "all metered eval in Docker" holds in CI too. The runner has
+      # `--docker` routes the fresh-run lane THROUGH the CI container (dev/Dockerfile.test, which
+      # ships the Claude CLI) — "all fresh-run eval in Docker" holds in CI too. The runner has
       # Docker, so the run builds (cached) and runs the suite in-container; the host's
-      # ANTHROPIC_API_KEY is forwarded in via docker's `-e` pass-through.
-      # `--backend api` keeps CI on the metered in-process Agent-SDK path explicitly.
-      # This workflow always runs `--trials 3`, which cannot be served by the
-      # transcript backend, so there is intentionally no backend input. Auth is
-      # the metered API key (`ANTHROPIC_API_KEY`) EXCLUSIVELY — never the
-      # subscription OAuth token, which a full run would throttle (#2707).
+      # SELECTED credential (below) is forwarded in via docker's `-e` pass-through.
+      # `--backend api` keeps CI on the in-process Agent-SDK path explicitly; `EVAL_TRIALS`
+      # (default 2, below) drives `--trials`, so there is intentionally no backend input.
+      # Auth rides the `eval_credential` knob (`T3_EVAL_CREDENTIAL`, below) — DEFAULT the
+      # subscription OAuth token (reverses #2707; no per-token bill, right-sized fan-out
+      # to fit the plan's usage window), with the metered ANTHROPIC_API_KEY still
+      # selectable via the `credential` input.
       # `--require-executed` is passed UNCONDITIONALLY (never key-gated): a collected-but-
       # all-skipped run exits non-zero, so the suite can never pass green with zero coverage.
-      # The end-of-run cost summary (report.py `_cost_summary`) prints the API spend.
+      # The end-of-run cost summary (report.py `_cost_summary`) prints the spend ($0 on
+      # the subscription lane; API spend on a metered_api_key run).
       #
       # `--transcript-html` makes THIS run emit the per-trial transcript report
       # itself, written from its own in-memory results — NO separate render step
@@ -284,10 +320,21 @@ jobs:
           SUFFIX="${EVAL_LANE}-${EVAL_SHARD//\//-}"
           [ -n "$EVAL_EFFORT" ] && SUFFIX="${SUFFIX}-${EVAL_EFFORT}"
           echo "suffix=$SUFFIX" >> "$GITHUB_OUTPUT"
-      - name: Metered behavioral eval suite (in Docker; pass@k; --require-executed always armed)
+      - name: Behavioral eval suite (in Docker; pass@k; --require-executed always armed)
         uses: nick-fields/retry@ad984534de44a9489a53aefd81eb77f87c70dc60  # v4
         env:
+          # Both credentials are wired so the `credential` knob is a pure config flip.
+          # The DEFAULT lane (subscription_oauth, #2707 reversal) authenticates via
+          # CLAUDE_CODE_OAUTH_TOKEN; a metered_api_key run authenticates via
+          # ANTHROPIC_API_KEY. `T3_EVAL_CREDENTIAL` selects which one every eval
+          # chokepoint (make_runner, the judge, the docker `-e` passthrough) resolves,
+          # and docker forwards only the SELECTED credential's var into the container.
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          T3_EVAL_CREDENTIAL: ${{ inputs.credential || 'subscription_oauth' }}
+          # Trials per scenario — default 2 (smaller than the pre-#2707-reversal 3) so
+          # the subscription lane stays inside the plan's usage window.
+          EVAL_TRIALS: ${{ inputs.trials || '2' }}
           # This leg meters exactly ONE shard of ONE lane (the matrix values), so the
           # per-shard subset is bounded by the LANE's ceiling — clean_room ≤14,
           # under_load ≤4 (#2683) — and fits the 2x80min budget where the full suite,
@@ -331,7 +378,7 @@ jobs:
           command: |
             EFFORT_FLAG=""
             [ -n "$EVAL_EFFORT" ] && EFFORT_FLAG="--effort $EVAL_EFFORT"
-            uv run t3 eval run --trials 3 --require any --backend api \
+            uv run t3 eval run --trials "$EVAL_TRIALS" --require any --backend api \
               --lane "$EVAL_LANE" --shard "$EVAL_SHARD" $EFFORT_FLAG \
               --require-executed --docker \
               --transcript-html "$RUNNER_TEMP/eval-transcripts.html" \

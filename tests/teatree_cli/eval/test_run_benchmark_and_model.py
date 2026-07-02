@@ -22,7 +22,7 @@ from teatree.agents.model_tiering import TIER_MODELS, resolve_tier
 from teatree.cli import app
 from teatree.cli.eval.app_helpers import BENCHMARK_TIERS
 from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, Matcher
-from teatree.llm.credentials import AnthropicApiKeyCredential
+from teatree.llm.credentials import AnthropicSubscriptionCredential
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -31,12 +31,13 @@ _PASSING_CALL = (EvalToolCall(name="Bash", input={"command": "git worktree add .
 
 
 @pytest.fixture(autouse=True)
-def _hermetic_api() -> "Iterator[None]":
-    # Bypass the config-aware credential factory (which reads the DB) to the default
-    # credential so these CLI lanes run DB-free; per-account routing has its own tests.
+def _hermetic_credential() -> "Iterator[None]":
+    # Bypass the eval-credential resolver (which reads the settings + DB) to the
+    # default subscription credential so these CLI lanes run DB-free; the
+    # credential-KIND selection has its own tests.
     with (
-        patch("teatree.credential_config.resolve_api_key_credential", lambda **_: AnthropicApiKeyCredential()),
-        patch.object(AnthropicApiKeyCredential, "export", return_value="sk-test"),
+        patch("teatree.credential_config.resolve_eval_credential", lambda **_: AnthropicSubscriptionCredential()),
+        patch.object(AnthropicSubscriptionCredential, "export", return_value="oauth-test"),
         patch.dict("os.environ", {"T3_EVAL_IN_CONTAINER": "1"}),
     ):
         yield

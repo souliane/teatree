@@ -12,12 +12,14 @@ import datetime as dt
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
 from django.utils import timezone
 
+from teatree.config import EvalCredential
 from teatree.core.models import AnthropicActivePick, AnthropicTokenUsage, ConfigSetting
 from teatree.core.models.anthropic_token_usage import HEALTH_TTL, REJECTED_STATUS, TokenHealthReading
 from teatree.credential_config import (
@@ -27,6 +29,7 @@ from teatree.credential_config import (
     reading_from,
     reading_from_metered,
     resolve_api_key_credential,
+    resolve_eval_credential,
     resolve_subscription_credential,
 )
 from teatree.llm.credentials import AnthropicApiKeyCredential, AnthropicSubscriptionCredential
@@ -329,3 +332,40 @@ class TestFactoryWiring(TestCase):
     def test_resolvers_return_the_expected_credential_classes(self) -> None:
         assert isinstance(resolve_api_key_credential(), AnthropicApiKeyCredential)
         assert isinstance(resolve_subscription_credential(), AnthropicSubscriptionCredential)
+
+
+class TestResolveEvalCredential(TestCase):
+    """``resolve_eval_credential`` picks the credential KIND the eval lane rides (#2707 reversal).
+
+    THE single seam every eval chokepoint routes through — flipping the knob must
+    switch the whole lane at once. The default reverses #2707: the eval lane rides
+    the subscription OAuth token, not the metered API key.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolate_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("teatree.config.CONFIG_PATH", tmp_path / ".teatree.toml")
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        monkeypatch.delenv("T3_EVAL_CREDENTIAL", raising=False)
+
+    def test_default_setting_rides_the_subscription_oauth_token(self) -> None:
+        credential = resolve_eval_credential()
+        assert isinstance(credential, AnthropicSubscriptionCredential)
+        assert credential.spec.env_var == "CLAUDE_CODE_OAUTH_TOKEN"
+        assert credential.spec.conflicting_vars == ("ANTHROPIC_API_KEY",)
+
+    def test_stored_metered_setting_rides_the_api_key(self) -> None:
+        ConfigSetting.objects.set_value("eval_credential", "metered_api_key")
+        credential = resolve_eval_credential()
+        assert isinstance(credential, AnthropicApiKeyCredential)
+        assert credential.spec.env_var == "ANTHROPIC_API_KEY"
+        assert credential.spec.conflicting_vars == ("CLAUDE_CODE_OAUTH_TOKEN",)
+
+    def test_explicit_kind_wins_over_the_setting(self) -> None:
+        ConfigSetting.objects.set_value("eval_credential", "subscription_oauth")
+        assert isinstance(resolve_eval_credential(kind=EvalCredential.METERED_API_KEY), AnthropicApiKeyCredential)
+
+    def test_env_var_wins_over_the_store(self) -> None:
+        ConfigSetting.objects.set_value("eval_credential", "subscription_oauth")
+        with patch.dict(os.environ, {"T3_EVAL_CREDENTIAL": "metered_api_key"}):
+            assert isinstance(resolve_eval_credential(), AnthropicApiKeyCredential)

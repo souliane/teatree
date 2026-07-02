@@ -97,9 +97,7 @@ class TestResolve:
         assert _API_KEY_ENV in message, "the error must name the env var the user can set"
         assert _API_KEY_PASS in message, "the error must name the pass entry the user can insert"
         assert "pass insert" in message, "the error must give the exact `pass insert` fix"
-        assert "subscription" in message.lower(), (
-            "the error must state metered evals never fall back to the subscription"
-        )
+        assert _OAUTH_ENV in message, "the error must name the conflicting credential this one never falls back to"
 
 
 class TestChildEnv:

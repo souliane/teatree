@@ -4,17 +4,27 @@ The eval harness grades an :class:`~teatree.eval.models.EvalRun` regardless of
 HOW the run was produced — the matchers only see captured tool calls and text
 blocks. That makes the *execution* swappable.
 
-Two backends, one ``EvalRunner`` protocol. The metered ``api`` backend bills the
-metered ``ANTHROPIC_API_KEY`` — EXCLUSIVELY, never the subscription
-``CLAUDE_CODE_OAUTH_TOKEN`` (a full run would throttle the subscription's usage
-window and mislabel the throttled cells). The ``transcript`` backend runs no
-model, so it authenticates nothing.
+Two backends, one ``EvalRunner`` protocol. The fresh-run ``api`` backend
+authenticates with the credential the ``eval_credential`` knob selects — the
+subscription ``CLAUDE_CODE_OAUTH_TOKEN`` by DEFAULT (reversing
+[#2707](https://github.com/souliane/teatree/issues/2707)) or, when the knob is set
+to ``metered_api_key``, the metered ``ANTHROPIC_API_KEY``. The credential kind is
+resolved through the single seam ``teatree.credential_config.resolve_eval_credential``
+so flipping the knob switches every eval chokepoint at once (no per-call-site edit).
+The ``transcript`` backend runs no model, so it authenticates nothing.
+
+The default subscription lane draws no per-token bill but rides the plan's
+depleting 5h/7d usage window — so the CI eval lane MUST be right-sized (a single
+effort tier, a smaller trial count, per-account routing via
+``anthropic_oauth_pass_paths``) or a full fan-out throttles the window mid-run AND
+starves the main loop (same token). The metered lane has no such window (per-token
+cost instead) and stays selectable via the knob.
 
 :class:`~teatree.eval.api_runner.ApiInProcessRunner` (``backend="api"``) RUNS the
 model fresh in-process via ``claude-agent-sdk`` (the SDK spawns the ``claude``
-CLI child). It spends metered API time; the per-invocation ``max_budget_usd``
-circuit breaker bounds that spend. This is the automated path the CI eval job
-uses.
+CLI child). The per-invocation ``max_budget_usd`` circuit breaker bounds the spend
+(a hard cost cap on the metered lane; a usage-window guard on the subscription
+lane). This is the automated path the CI eval job uses.
 
 :class:`TranscriptRunner` (``backend="transcript"``) REUSES an already-recorded
 run — it grades an on-disk transcript that a previous subscription-covered turn
@@ -75,15 +85,16 @@ def make_runner(  # noqa: PLR0913 — each kwarg threads one runner-construction
 ) -> EvalRunner:
     """Build the eval runner for *backend*.
 
-    ``"api"`` → the in-process Agent-SDK runner that RUNS the model fresh, billed
-    on the metered ``ANTHROPIC_API_KEY`` (never the subscription OAuth token).
-    Resolves ``ANTHROPIC_API_KEY`` first (env wins for CI, else exports it from the
-    ``pass`` store for local) via the canonical credential layer
-    (:class:`~teatree.llm.credentials.AnthropicApiKeyCredential`) so the runner's
-    isolated-env copy and the docker pass-through both carry it without a manual
-    ``export``; a missing key fails loud with
-    :class:`~teatree.llm.credentials.CredentialError` rather than throttling the
-    subscription.
+    ``"api"`` → the in-process Agent-SDK runner that RUNS the model fresh, on the
+    credential the ``eval_credential`` knob selects (default subscription OAuth,
+    reversing #2707; ``metered_api_key`` for the metered key). Resolves it through
+    ``resolve_eval_credential`` (env wins for CI, else exports it from the ``pass``
+    store for local) so the runner's isolated-env copy and the docker pass-through
+    both carry it without a manual ``export``, and hands the runner the credential's
+    ``spec.conflicting_vars`` so the isolated child strips the OTHER credential; a
+    missing credential fails loud with
+    :class:`~teatree.llm.credentials.CredentialError` rather than authenticating as
+    nothing.
     ``"transcript"`` → the transcript-ingest runner that REUSES an
     already-recorded run; it runs no model, so it resolves no credential.
 
@@ -102,22 +113,26 @@ def make_runner(  # noqa: PLR0913 — each kwarg threads one runner-construction
     ignores it.
     """
     if backend == API_BACKEND:
-        # Fail loud (CredentialError) before building the metered runner if no
-        # ANTHROPIC_API_KEY is resolvable, and export it so the isolated child env
-        # and docker pass-through carry it — the metered lane never falls back to
-        # the subscription. isolated_claude_env then strips the conflicting OAuth
-        # token from the child env using the same credential's spec. Imported at
-        # call time (not module top) to keep the eval CLI import chain Django-free —
-        # ``credential_config`` pulls in the routing models, which cannot be created
-        # before ``django.setup()`` (the plain ``import teatree.cli`` bootstrap path).
-        from teatree.credential_config import resolve_api_key_credential  # noqa: PLC0415
+        # Resolve the SELECTED eval credential (the ``eval_credential`` knob — default
+        # subscription OAuth, reversing #2707) and export it, so the isolated child
+        # env and the docker pass-through carry it; a missing credential fails loud
+        # with CredentialError before the runner exists. The runner is then handed the
+        # credential's ``spec.conflicting_vars`` so ``isolated_claude_env`` strips the
+        # OTHER credential (the OAuth lane strips the API key; the metered lane strips
+        # the OAuth token) — "use THIS eval credential, exclusively". Imported at call
+        # time (not module top) to keep the eval CLI import chain Django-free —
+        # ``credential_config`` pulls in the routing models + settings, which cannot be
+        # created before ``django.setup()`` (the plain ``import teatree.cli`` path).
+        from teatree.credential_config import resolve_eval_credential  # noqa: PLC0415
 
-        resolve_api_key_credential().export()
+        credential = resolve_eval_credential()
+        credential.export()
         return ApiInProcessRunner(
             max_turns_override=max_turns_override,
             require_executed=require_executed,
             max_budget_usd=max_budget_usd,
             effort=effort,
+            conflicting_vars=credential.spec.conflicting_vars,
         )
     if backend == TRANSCRIPT_BACKEND:
         return TranscriptRunner(transcript_dir=transcript_dir or Path.cwd())

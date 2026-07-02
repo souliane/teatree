@@ -4,6 +4,7 @@
 graph TD
     teatree.project --> teatree.paths
     teatree.llm --> teatree.utils
+    teatree.credential_config --> teatree.config
     teatree.credential_config --> teatree.core.models
     teatree.credential_config --> teatree.llm
     teatree.token_report --> teatree.core.models

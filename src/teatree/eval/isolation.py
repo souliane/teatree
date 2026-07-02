@@ -11,23 +11,25 @@ teatree gate enforces it. That biases every real eval result.
 :func:`isolated_claude_env` yields the ``(env, cwd)`` pair both invoke paths pass
 into the SDK options: a copy of the parent environment with ``HOME`` (and the
 related config-dir vars) redirected at a freshly created, ``.claude``-free temp
-directory, and that same directory as a neutral cwd. The metered ``ANTHROPIC_API_KEY``
-and ``PATH`` survive untouched so the SDK backend's auth keeps working; only the
-personal-context discovery roots move.
+directory, and that same directory as a neutral cwd. The SELECTED eval credential
+(``CLAUDE_CODE_OAUTH_TOKEN`` for the default subscription lane, ``ANTHROPIC_API_KEY``
+for the metered lane) and ``PATH`` survive untouched so the SDK backend's auth keeps
+working; only the personal-context discovery roots move.
 
-Critically, the child env STRIPS the subscription ``CLAUDE_CODE_OAUTH_TOKEN``: the
-metered eval lane authenticates EXCLUSIVELY via ``ANTHROPIC_API_KEY``, and the
-bundled CLI prefers the API key only when the OAuth token is NOT also present — so
-leaving the OAuth token in the child env would let the SDK bill the subscription
-(which a full run throttles). The "which vars conflict with the metered API key"
-policy is owned by :class:`~teatree.llm.credentials.AnthropicApiKeyCredential`
-(its ``spec.conflicting_vars``), so this helper strips exactly that set rather than
-hard-coding the name — one source of truth for the credential policy. The key
-itself is exported upstream by ``make_runner`` (the credential's ``export()``), so
-it is already present in ``os.environ`` and survives the copy untouched. The
-redirect is the belt to the SDK options' suspenders (``setting_sources=[]`` + a
-plain-string ``system_prompt`` + empty ``settings``), keeping the run virgin even
-if those are loosened.
+Critically, the child env STRIPS the *conflicting* credential — the one the
+selected eval credential must not fall back to. Which var is stripped is the
+caller's decision: it passes ``conflicting_vars`` (the selected credential's
+``spec.conflicting_vars``), so the OAuth lane strips ``ANTHROPIC_API_KEY`` and the
+metered lane strips ``CLAUDE_CODE_OAUTH_TOKEN``. This is what makes "use THIS eval
+credential, exclusively" hold — the bundled CLI prefers a credential only when the
+others are absent. The credential itself is exported upstream by ``make_runner`` /
+the judge (the credential's ``export()``), so it is already present in ``os.environ``
+and survives the copy untouched. The strip set defaults to the metered lane's
+conflicts (strip the OAuth token) for a caller that passes none — preserving the
+pre-#2707-reversal behaviour for non-eval callers — while the eval chokepoints pass
+the resolved eval credential's set. The redirect is the belt to the SDK options'
+suspenders (``setting_sources=[]`` + a plain-string ``system_prompt`` + empty
+``settings``), keeping the run virgin even if those are loosened.
 """
 
 import os
@@ -40,28 +42,32 @@ from teatree.llm.credentials import AnthropicApiKeyCredential
 
 _HOME_ANCHORED_VARS = ("HOME", "XDG_CONFIG_HOME", "CLAUDE_CONFIG_DIR")
 
-#: The credentials the metered API key conflicts with — stripped from the child
-#: env so the bundled CLI cannot bill the subscription. Owned by the credential
-#: layer (one source of truth), not hard-coded here.
-_METERED_CONFLICTING_VARS = AnthropicApiKeyCredential().spec.conflicting_vars
+#: The strip set a caller gets when it passes no ``conflicting_vars`` — the metered
+#: lane's conflicts (strip the subscription OAuth token). Non-eval callers of
+#: :func:`isolated_claude_env` (e.g. ``ticket_short_describe``) keep this default; the
+#: eval chokepoints pass the SELECTED eval credential's ``spec.conflicting_vars``.
+_DEFAULT_CONFLICTING_VARS = AnthropicApiKeyCredential().spec.conflicting_vars
 
 
 @contextmanager
-def isolated_claude_env() -> Iterator[tuple[dict[str, str], str]]:
+def isolated_claude_env(
+    conflicting_vars: tuple[str, ...] = _DEFAULT_CONFLICTING_VARS,
+) -> Iterator[tuple[dict[str, str], str]]:
     """Yield ``(env, cwd)`` that runs ``claude`` free of the developer's context.
 
     ``env`` is the parent environment with the home-anchored discovery roots
-    pointed at a private empty directory and every credential that conflicts with
-    the metered ``ANTHROPIC_API_KEY`` (the subscription ``CLAUDE_CODE_OAUTH_TOKEN``)
-    stripped — so the metered SDK can never bill the subscription. ``cwd`` is that
-    directory. The directory is removed when the context exits.
+    pointed at a private empty directory and every var in *conflicting_vars* (the
+    credential the selected eval credential must not fall back to) stripped — so the
+    SDK / bundled CLI authenticates with exactly the selected eval credential and
+    can never fall back to a conflicting one. ``cwd`` is that directory. The
+    directory is removed when the context exits.
     """
     with tempfile.TemporaryDirectory(prefix="t3-eval-virgin-home-") as home:
         env = dict(os.environ)
         env["HOME"] = home
         env["XDG_CONFIG_HOME"] = str(Path(home) / ".config")
         env["CLAUDE_CONFIG_DIR"] = str(Path(home) / ".claude")
-        for conflicting in _METERED_CONFLICTING_VARS:
+        for conflicting in conflicting_vars:
             env.pop(conflicting, None)
         yield env, home
 

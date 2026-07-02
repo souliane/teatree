@@ -26,7 +26,7 @@ from teatree.eval.judge import (
     resolve_judge_budget_usd,
 )
 from teatree.eval.models import EvalRun, EvalSpec, EvalToolCall, JudgeSpec, Matcher
-from teatree.llm.credentials import AnthropicApiKeyCredential, CredentialError
+from teatree.llm.credentials import AnthropicSubscriptionCredential, CredentialError
 
 
 def _spec(*, judge: JudgeSpec | None = None) -> EvalSpec:
@@ -123,10 +123,10 @@ class TestClaudeJudgeGrade(TestCase):
         with (
             patch("teatree.eval.judge.shutil.which", return_value="/usr/bin/claude"),
             patch("teatree.eval.judge.query", query),
-            # The billed judge call routes through the credential chokepoint; the
-            # host has no key, so stub the export (its own coverage lives in
-            # TestJudgeAuthenticatesViaTheApiKeyChokepoint).
-            patch.object(AnthropicApiKeyCredential, "export", return_value="sk-test"),
+            # The judge call routes through the eval-credential chokepoint (default
+            # subscription OAuth); the host has no token, so stub the export (its own
+            # coverage lives in TestJudgeAuthenticatesViaTheEvalCredentialChokepoint).
+            patch.object(AnthropicSubscriptionCredential, "export", return_value="oauth-test"),
         ):
             verdict = ClaudeJudge(**kwargs).grade(spec, _run())
         return verdict, captured
@@ -198,7 +198,7 @@ class TestClaudeJudgeGrade(TestCase):
         with (
             patch("teatree.eval.judge.shutil.which", return_value="/usr/bin/claude"),
             patch("teatree.eval.judge.query", query),
-            patch.object(AnthropicApiKeyCredential, "export", return_value="sk-test"),
+            patch.object(AnthropicSubscriptionCredential, "export", return_value="oauth-test"),
         ):
             ClaudeJudge(budget=budget).grade(spec, _run())
             with pytest.raises(JudgeBudgetExceededError):
@@ -222,7 +222,7 @@ class TestClaudeJudgeGrade(TestCase):
         with (
             patch("teatree.eval.judge.shutil.which", return_value="/usr/bin/claude"),
             patch("teatree.eval.judge.query", _over_budget),
-            patch.object(AnthropicApiKeyCredential, "export", return_value="sk-test"),
+            patch.object(AnthropicSubscriptionCredential, "export", return_value="oauth-test"),
         ):
             verdict = ClaudeJudge().grade(spec, _run())
         assert verdict.passed is False
@@ -241,7 +241,7 @@ class TestClaudeJudgeGrade(TestCase):
         with (
             patch("teatree.eval.judge.shutil.which", return_value="/usr/bin/claude"),
             patch("teatree.eval.judge.query", _boom),
-            patch.object(AnthropicApiKeyCredential, "export", return_value="sk-test"),
+            patch.object(AnthropicSubscriptionCredential, "export", return_value="oauth-test"),
             pytest.raises(RuntimeError, match="kaboom"),
         ):
             ClaudeJudge().grade(spec, _run())
@@ -267,7 +267,7 @@ class TestClaudeJudgeGrade(TestCase):
             patch("teatree.eval.judge.shutil.which", return_value="/usr/bin/claude"),
             patch("teatree.eval.judge.query", _slow),
             patch("teatree.eval.judge.WATCHDOG_SECONDS", 0.01),
-            patch.object(AnthropicApiKeyCredential, "export", return_value="sk-test"),
+            patch.object(AnthropicSubscriptionCredential, "export", return_value="oauth-test"),
         ):
             verdict = ClaudeJudge().grade(spec, _run())
         assert verdict.passed is False
@@ -275,31 +275,31 @@ class TestClaudeJudgeGrade(TestCase):
         assert "timed out" in verdict.rationale
 
 
-class TestJudgeAuthenticatesViaTheApiKeyChokepoint(TestCase):
-    """The metered judge is a billed Claude call, so it routes through the SAME credential chokepoint.
+class TestJudgeAuthenticatesViaTheEvalCredentialChokepoint(TestCase):
+    """The judge is a Claude call, so it routes through the SAME eval-credential chokepoint.
 
-    A judge that actually grades (past the skip guards) makes a metered model
-    call, so it must export the metered ``ANTHROPIC_API_KEY`` and fail loud with
-    :class:`~teatree.llm.credentials.CredentialError` when no key is resolvable —
-    consistent with :func:`teatree.eval.backends.make_runner`. A SKIP path (no
-    judge block / skipped run / no ``claude`` binary) grades NO model, so it must
-    NOT resolve any credential — a stored-transcript grade with no model call is
-    never forced to require a key. Removing the export from ``grade`` turns the
-    fail-loud test RED.
+    A judge that actually grades (past the skip guards) makes a model call, so it
+    must export the SELECTED eval credential (default subscription OAuth, #2707
+    reversal) and fail loud with :class:`~teatree.llm.credentials.CredentialError`
+    when none is resolvable — consistent with
+    :func:`teatree.eval.backends.make_runner`. A SKIP path (no judge block / skipped
+    run / no ``claude`` binary) grades NO model, so it must NOT resolve any
+    credential — a stored-transcript grade with no model call is never forced to
+    require one. Removing the export from ``grade`` turns the fail-loud test RED.
     """
 
-    def test_grading_call_exports_the_api_key_before_the_billed_call(self) -> None:
+    def test_grading_call_exports_the_credential_before_the_billed_call(self) -> None:
         spec = _spec(judge=JudgeSpec(rubric="x"))
         query, _ = _fake_query([_result(structured_output={"verdict": "PASS", "reason": "ok"})])
         with (
             patch("teatree.eval.judge.shutil.which", return_value="/usr/bin/claude"),
             patch("teatree.eval.judge.query", query),
-            patch.object(AnthropicApiKeyCredential, "export", return_value="sk-test") as export,
+            patch.object(AnthropicSubscriptionCredential, "export", return_value="oauth-test") as export,
         ):
             ClaudeJudge().grade(spec, _run())
         export.assert_called_once_with()
 
-    def test_grading_call_fails_loud_when_no_api_key_is_resolvable(self) -> None:
+    def test_grading_call_fails_loud_when_no_credential_is_resolvable(self) -> None:
         # claude present + a real run to grade, but no env key and an empty pass
         # store → the billed judge call must fail loud, never authenticate as
         # nothing. The export is reached only after the skip guards.
@@ -311,19 +311,19 @@ class TestJudgeAuthenticatesViaTheApiKeyChokepoint(TestCase):
             patch.dict("os.environ", {}, clear=False),
             patch("teatree.llm.credentials.read_pass", return_value=""),
         ):
-            os.environ.pop(AnthropicApiKeyCredential.spec.env_var, None)
+            os.environ.pop(AnthropicSubscriptionCredential.spec.env_var, None)
             with pytest.raises(CredentialError):
                 ClaudeJudge().grade(spec, _run())
 
     def test_no_judge_block_never_resolves_a_credential(self) -> None:
-        with patch.object(AnthropicApiKeyCredential, "export") as export:
+        with patch.object(AnthropicSubscriptionCredential, "export") as export:
             verdict = ClaudeJudge().grade(_spec(), _run())
         assert verdict.skipped is True
         export.assert_not_called()
 
     def test_skipped_run_never_resolves_a_credential(self) -> None:
         spec = _spec(judge=JudgeSpec(rubric="x"))
-        with patch.object(AnthropicApiKeyCredential, "export") as export:
+        with patch.object(AnthropicSubscriptionCredential, "export") as export:
             verdict = ClaudeJudge().grade(spec, _run(terminal_reason="skipped: no transcript"))
         assert verdict.skipped is True
         export.assert_not_called()
@@ -334,7 +334,7 @@ class TestJudgeAuthenticatesViaTheApiKeyChokepoint(TestCase):
         spec = _spec(judge=JudgeSpec(rubric="x"))
         with (
             patch("teatree.eval.judge.shutil.which", return_value=None),
-            patch.object(AnthropicApiKeyCredential, "export") as export,
+            patch.object(AnthropicSubscriptionCredential, "export") as export,
         ):
             verdict = ClaudeJudge().grade(spec, _run())
         assert verdict.skipped is True
