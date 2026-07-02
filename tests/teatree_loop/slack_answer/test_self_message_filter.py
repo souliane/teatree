@@ -17,8 +17,8 @@ from teatree.loop.slack_answer.cycle import run_slack_answer_cycle
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
-_USER_UID = "U0A72P7CK0A"
-_COLLEAGUE_UID = "UCOLLEAGUE"
+_USER_UID = "U-USER"
+_COLLEAGUE_UID = "U-COLLEAGUE"
 # An imperative → classifier route NEEDS_WORK → would create an answering Task.
 _WORK_TEXT = "fix the login bug"
 
