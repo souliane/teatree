@@ -35,13 +35,11 @@ from pathlib import Path
 
 from teatree.eval.backends import API_BACKEND
 from teatree.utils.django_bootstrap import ensure_django
+from teatree.utils.eval_container import IN_CONTAINER_ENV_VAR
 from teatree.utils.run import run_allowed_to_fail, run_streamed
 
 DOCKER_IMAGE = "teatree-test"
 _DOCKERFILE = "dev/Dockerfile.test"
-#: Env marker set on the container so the in-container ``t3 eval`` re-invocation
-#: runs the metered/benchmark command in-process instead of re-routing to docker.
-IN_CONTAINER_ENV_VAR = "T3_EVAL_IN_CONTAINER"
 #: The ``eval_credential`` knob env override. Forwarded into the container (when set
 #: on the host) so the in-container ``make_runner`` re-invocation resolves the SAME
 #: credential KIND — CI wires it so the choice is deterministic without depending on

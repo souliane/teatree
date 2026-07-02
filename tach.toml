@@ -66,7 +66,7 @@ depends_on = ["teatree.utils"]
 [[modules]]
 path = "teatree.credential_config"
 layer = "domain"
-depends_on = ["teatree.config", "teatree.core.models", "teatree.llm"]
+depends_on = ["teatree.config", "teatree.core.models", "teatree.llm", "teatree.utils"]
 
 [[modules]]
 path = "teatree.token_report"
