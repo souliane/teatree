@@ -33,6 +33,7 @@ from teatree.cli._doctor_checks import (
     _check_skills,
     _check_stale_path_t3,
     _check_stale_uv_venv,
+    _check_teatree_mcp_registration,
 )
 from teatree.cli._doctor_plugin_repair import (
     _do_ensure_plugin_registered,
@@ -77,6 +78,7 @@ __all__ = (
     "_check_skills",
     "_check_stale_path_t3",
     "_check_stale_uv_venv",
+    "_check_teatree_mcp_registration",
     "_do_ensure_plugin_registered",
     "_ensure_plugin_registered",
     "_find_host_project_root",
@@ -582,6 +584,12 @@ def check() -> bool:
     # the live `claude mcp list` probe reflects the post-recovery state. An
     # enabled-but-disconnected MCP is a hard FAIL; `claude` absent degrades to a WARN.
     ok = _check_mcp_connectivity() and ok
+
+    # Teatree's own structured-search MCP server registration (#2863). WARN-only
+    # (never gates the exit code) — the resolved main clone can legitimately lag
+    # a merged change until the next `t3 update`. Runs after the general MCP
+    # connectivity gate — it reuses the same live `claude mcp list` probe.
+    _check_teatree_mcp_registration()
 
     _check_singletons()
     _check_legacy_overlay_alias()

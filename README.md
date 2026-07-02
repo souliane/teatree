@@ -371,6 +371,7 @@ t3 mutation run                 # scoped mutation testing — mutate only the hi
 t3 ui                           # browse and run the whole command tree in a terminal UI (needs `uv sync --group ui`)
 t3 admin                        # run the Django admin for the teatree project on a local dev server
 t3 mcp serve                    # serve teatree's structured search (tickets, worktrees, tasks, loop stats, incoming events) as a read-only MCP server over stdio
+                                 # registered automatically via the plugin-bundled .mcp.json (surfaces as mcp__teatree__* tools) — `t3 setup`/`t3 doctor check` verify it
 t3 dream run [--since <iso>] [--dry-run]  # run one memory-consolidation pass NOW (ignores cadence)
 t3 dream tick                   # cadence-gated cron entry point (~04:00 schedule, decoupled from live loop)
 ```

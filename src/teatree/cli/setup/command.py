@@ -17,6 +17,7 @@ from teatree.cli.dep_drift_repair import repair_dep_drift as _repair_dep_drift
 from teatree.cli.doctor import agent_skill_dirs
 from teatree.cli.setup.apm import ApmInstaller, strip_apm_hooks
 from teatree.cli.setup.clone import find_main_clone, validate_repo
+from teatree.cli.setup.mcp_registrar import McpServerRegistrar
 from teatree.cli.setup.plugin_registrar import PluginRegistrar
 from teatree.cli.setup.skill_linker import CORE_EXCLUDED_SKILLS, SkillLinker
 from teatree.cli.setup.tool_installer import ToolInstaller
@@ -93,6 +94,11 @@ def run(
 
     if not skip_plugin:
         PluginRegistrar(repo).install()
+        # Confirm the structured-search MCP server (`t3 mcp serve`, #1023) is
+        # still wired via the plugin-bundled `.mcp.json` (#2863) — read-only,
+        # idempotent, warns loudly rather than silently regressing agents back
+        # to shelling out to the CLI for structured reads.
+        McpServerRegistrar(repo).verify()
 
     # Per-overlay Slack-bot IM provisioning (#1342) — open
     # ``conversations.open`` once for every Slack-bot overlay that has no
