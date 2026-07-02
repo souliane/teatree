@@ -86,10 +86,6 @@ class PendingChatInjection(models.Model):
         SIMPLE = "simple", "Simple"
         DELEGATED = "delegated", "Delegated"
         QUESTION_REPLY = "question_reply", "Question reply"
-        # The reactive answerer skips a DM the user authored themselves — an
-        # instruction or an on-behalf outbound echo, never an inbound question
-        # for the loop to answer (#1941). Stamped so the row leaves the queue.
-        SELF = "self", "Self-authored (skipped)"
 
     overlay = models.CharField(max_length=64, blank=True, default="")
     channel = models.CharField(max_length=64)
@@ -266,17 +262,6 @@ class PendingChatInjection(models.Model):
         if updated:
             self.refresh_from_db(fields=["loop_replied_at", "answer_kind"])
         return bool(updated)
-
-    def mark_self_skipped(self) -> bool:
-        """Retire a row the user authored themselves from the answerer queue (#1941).
-
-        Stamps ``loop_replied_at`` with the ``SELF`` kind so the row exits
-        ``loop_unreplied()`` and never yields an answering task, while leaving
-        ``consumed_at`` / ``answered_at`` untouched — the prompt-drain still
-        surfaces the user's own DM into context; only the reactive auto-answerer
-        skips it. Single-use CAS via :meth:`mark_loop_replied`.
-        """
-        return self.mark_loop_replied(self.AnswerKind.SELF)
 
     def unmark_loop_replied(self) -> bool:
         """Release the loop-reply claim; ``True`` if a stamp was cleared, else ``False``.
