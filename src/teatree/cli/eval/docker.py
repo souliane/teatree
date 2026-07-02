@@ -30,6 +30,7 @@ from pathlib import Path
 
 from teatree.eval.backends import API_BACKEND
 from teatree.llm.credentials import AnthropicApiKeyCredential
+from teatree.utils.django_bootstrap import ensure_django
 from teatree.utils.run import run_allowed_to_fail, run_streamed
 
 DOCKER_IMAGE = "teatree-test"
@@ -157,6 +158,17 @@ def run_eval_in_docker(eval_args: list[str], *, artifacts_dir: Path | None = Non
     if shutil.which("docker") is None:
         raise DockerUnavailableError
     if _requests_api_lane(eval_args):
+        # This is the single chokepoint every caller (``eval run``, ``eval
+        # benchmark``, the bare full-suite lane) routes through before Docker, so
+        # ``ensure_django()`` must run HERE, not rely on each caller having
+        # already bootstrapped Django before its own docker-routing check — a
+        # caller that routes to Docker before its own ``ensure_django()`` call
+        # (or a future caller that never adds one) would otherwise import
+        # ``credential_config`` while Django is unconfigured and crash with
+        # ``ImproperlyConfigured`` instead of failing loud with
+        # ``CredentialError``. ``ensure_django()`` is idempotent, so this is a
+        # no-op when the caller already configured Django.
+        ensure_django()
         # Imported at call time (not module top) to keep the eval CLI import chain
         # Django-free — ``credential_config`` pulls in the routing models, which
         # cannot be created before ``django.setup()`` (plain ``import teatree.cli``).
