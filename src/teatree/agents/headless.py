@@ -23,9 +23,10 @@ import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, RateLimitEvent, ResultMessage, TextBlock
-from claude_agent_sdk.types import RateLimitInfo, SystemPromptPreset
+from claude_agent_sdk.types import EffortLevel, RateLimitInfo, SystemPromptPreset, ThinkingConfig
 from django.conf import settings
 from django.db import close_old_connections
 from django.db.models import Sum
@@ -33,14 +34,15 @@ from django.utils import timezone
 
 from teatree.agents.harness import Harness, HarnessSession, resolve_harness
 from teatree.agents.headless_usage import _attempt_usage
-from teatree.agents.model_tiering import resolve_spawn_model
+from teatree.agents.model_tiering import model_supports_thinking, resolve_spawn_effort, resolve_spawn_model
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA
 from teatree.agents.skill_bundle import resolve_skill_bundle
 from teatree.config import AgentRuntime, get_effective_settings
 from teatree.core.models import Task, TaskAttempt, Ticket
 from teatree.core.models.worktree import Worktree
+from teatree.credential_config import resolve_api_key_credential, resolve_subscription_credential
 from teatree.llm.anthropic_limits import LimitMatch, classify_limit, classify_rate_limit_type
-from teatree.llm.credentials import AnthropicApiKeyCredential, AnthropicSubscriptionCredential, CredentialError
+from teatree.llm.credentials import CredentialError
 from teatree.skill_support.loading import SkillLoadingPolicy
 from teatree.types import SkillMetadata
 
@@ -79,6 +81,14 @@ _MAX_TURNS = 0
 # structured ``needs_user_input`` + ``user_input_reason`` and STOP, which the
 # durable DeferredQuestion → Slack → resume loop then routes to the user.
 _DISALLOWED_TOOLS = ("AskUserQuestion",)
+# Adaptive thinking, pinned EXPLICITLY on every reasoning-capable production
+# spawn. Opus 4.8 runs WITHOUT thinking when the ``thinking`` option is omitted,
+# so the Opus-4.8 planning/coding/debugging/reviewing phases would silently lose
+# extended thinking; setting adaptive makes them deterministically think (the
+# model still decides HOW MUCH). GUARDED by
+# :func:`~teatree.agents.model_tiering.model_supports_thinking` so the cheap/Haiku
+# tier — which rejects the lever — never receives it.
+_ADAPTIVE_THINKING: ThinkingConfig = {"type": "adaptive"}
 
 
 @dataclass(frozen=True)
@@ -276,7 +286,7 @@ def run_headless(
         return _record_failure(task, error="claude is not installed")
 
     try:
-        child_env = _runtime_child_env(runtime)
+        child_env = _runtime_child_env(runtime, scope=_overlay_scope(task))
     except CredentialError as exc:
         logger.warning("Refusing dispatch for task %s: %s", task.pk, exc)
         return _record_failure(task, error=str(exc))
@@ -340,7 +350,16 @@ def _outcome_failure(task: Task, outcome: HarnessOutcome) -> TaskAttempt | None:
     return None
 
 
-def _runtime_child_env(runtime: AgentRuntime) -> dict[str, str] | None:
+def _overlay_scope(task: Task) -> str:
+    """The overlay the credential selector routes for — the task's ticket overlay.
+
+    Empty (the ``GLOBAL_SCOPE`` sentinel) when the ticket carries no overlay, so the
+    selector falls back to the global routing list.
+    """
+    return task.ticket.overlay or ""
+
+
+def _runtime_child_env(runtime: AgentRuntime, *, scope: str = "") -> dict[str, str] | None:
     """The child-process env that pins the credential for a headless ``runtime``.
 
     ``sdk_apikey`` forces the metered ``ANTHROPIC_API_KEY`` (stripping the
@@ -349,13 +368,15 @@ def _runtime_child_env(runtime: AgentRuntime) -> dict[str, str] | None:
     CLI rides the plan, not the meter. Any other runtime returns ``None`` — the
     ambient env is used unchanged (``interactive`` is dispatched in-session and
     ``api`` is refused upstream, so the runner only sees a headless runtime here).
-    Raises :class:`CredentialError` when the selected token resolves from neither
-    the env nor the ``pass`` store, so a misconfigured headless run fails loud.
+    *scope* is the overlay the per-account routing selector picks an account for, so
+    two overlays ride distinct subscription accounts. Raises :class:`CredentialError`
+    when the selected token resolves from neither the env nor the ``pass`` store (or
+    every configured account is exhausted), so a misconfigured headless run fails loud.
     """
     if runtime is AgentRuntime.SDK_APIKEY:
-        return AnthropicApiKeyCredential().child_env(os.environ)
+        return resolve_api_key_credential(scope=scope).child_env(os.environ)
     if runtime is AgentRuntime.SDK_OAUTH:
-        return AnthropicSubscriptionCredential().child_env(os.environ)
+        return resolve_subscription_credential(scope=scope).child_env(os.environ)
     return None
 
 
@@ -372,9 +393,12 @@ def _build_options(
     Mirrors what the deleted ``_build_headless_command`` passed: the appended
     system context, the resolved spawn model (the most-capable-wins floor merge
     of the per-phase tier and the per-skill MODEL floors of the loaded skills,
-    else the user's default), the worktree as ``cwd`` / ``add_dirs``, and the
-    parent session to resume. NO clean-room isolation — a headless run executes
-    a real task and needs the real environment, skills, and project context.
+    else the user's default), the per-tier reasoning effort for the same phase
+    (:func:`resolve_spawn_effort` — ``xhigh`` for a frontier phase, ``high`` for a
+    balanced phase, unset for the cheap/Haiku phases), the worktree as ``cwd`` /
+    ``add_dirs``, and the parent session to resume. NO clean-room isolation — a
+    headless run executes a real task and needs the real environment, skills, and
+    project context.
 
     ``env`` (when supplied by :func:`_runtime_child_env`) pins the credential for
     the chosen ``agent_runtime`` on the spawned ``claude`` child; ``None`` leaves
@@ -387,25 +411,37 @@ def _build_options(
     # escalation (teatree#2263) can raise a verification spawn to the most-honest
     # model; both default absent → byte-identical to today when none is active.
     escalation_session_id = resume_session_id or (task.session.agent_id if task.session_id else "")  # ty: ignore[unresolved-attribute]
+    spawn_model = resolve_spawn_model(
+        phase,
+        skills=skills,
+        session_id=escalation_session_id or None,
+        task_id=int(task.pk),
+    )
     options = ClaudeAgentOptions(
         # APPEND to the claude_code preset, never REPLACE it: a plain-str
         # system_prompt maps to --system-prompt (the deleted ``claude -p`` path
         # used --append-system-prompt), which would drop the Claude Code preset
         # on every production headless run.
         system_prompt=SystemPromptPreset(type="preset", preset="claude_code", append=system_context),
-        model=resolve_spawn_model(
-            phase,
-            skills=skills,
-            session_id=escalation_session_id or None,
-            task_id=int(task.pk),
-        )
-        or None,
+        model=spawn_model or None,
         cwd=cwd,
         add_dirs=add_dirs,
         permission_mode=_PERMISSION_MODE,
         disallowed_tools=list(_DISALLOWED_TOOLS),
         max_turns=_MAX_TURNS,
         resume=resume_session_id or None,
+        # Pin adaptive thinking so the Opus-4.8 reasoning phases think (Opus 4.8
+        # omits thinking by default). Guarded so the cheap/Haiku tier — which
+        # rejects the lever — and an inherited-default spawn (``None``) keep the
+        # SDK default.
+        thinking=_ADAPTIVE_THINKING if model_supports_thinking(spawn_model) else None,
+        # Pin the per-abstract-TIER reasoning effort for the SAME phase the model
+        # resolved from (frontier → xhigh, balanced → high). ``None`` for the
+        # cheap/Haiku phases (which reject the lever) and a sentinel-opted-out
+        # phase, so those spawns inherit the SDK default effort. The resolver
+        # returns the domain ``str | None`` (validated to the effort scale);
+        # cast it to the SDK ``EffortLevel`` literal at this boundary.
+        effort=cast("EffortLevel | None", resolve_spawn_effort(phase)),
     )
     if env is not None:
         options.env = env

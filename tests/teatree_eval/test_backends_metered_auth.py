@@ -15,6 +15,7 @@ import os
 from unittest.mock import patch
 
 import pytest
+from django.test import TestCase
 
 from teatree.eval.api_runner import ApiInProcessRunner
 from teatree.eval.backends import API_BACKEND, TRANSCRIPT_BACKEND, make_runner
@@ -23,7 +24,7 @@ from teatree.llm.credentials import AnthropicApiKeyCredential, CredentialError
 _API_KEY_ENV = AnthropicApiKeyCredential().spec.env_var
 
 
-class TestMakeRunnerMeteredAuth:
+class TestMakeRunnerMeteredAuth(TestCase):
     def test_api_backend_resolves_the_api_key_before_building_the_runner(self) -> None:
         with patch.object(AnthropicApiKeyCredential, "export", return_value="sk-key") as export:
             runner = make_runner(API_BACKEND)

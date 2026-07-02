@@ -392,6 +392,11 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "contribute_plugin_dir": _parse_strict_bool,
     "dream_propose_evals": _parse_strict_bool,
     "hook_fetch_titles": _parse_strict_bool,
+    # Per-account ``pass`` routing for the Anthropic credentials (llm/credentials.py):
+    # an ORDERED LIST of ``pass`` entries the routing selector fans out over per
+    # overlay (empty list = no override, credential keeps its built-in path).
+    "anthropic_oauth_pass_paths": _parse_str_list,
+    "anthropic_api_key_pass_paths": _parse_str_list,
     # eliminate-~/.teatree.toml: ``check_updates``'s sole reader ``check_for_updates``
     # runs pre-Django but now reads the DB via ``cold_reader`` (Django-free), so a
     # stored ``check_updates=false`` IS honoured. DB-home, seeded by ``t3 setup``.
@@ -1106,6 +1111,22 @@ class UserSettings:
     # the UserPromptSubmit hook runs pre-Django, so there the DB tier is skipped
     # (fail-safe) and env + this default govern — identical to legacy behaviour.
     hook_fetch_titles: bool = True
+    # Per-account ``pass`` routing for the two Anthropic credentials
+    # (``teatree.llm.credentials``): an ORDERED LIST of ``pass`` entries the routing
+    # selector (``teatree.credential_config.PassPathSelector``) fans out over per
+    # overlay — it picks the first non-exhausted account (sticky, with cross-account
+    # fallback), so the subscription OAuth token / metered API key read from a
+    # per-account entry (e.g. ``anthropic/<account>/oauth-token``) with no code edit.
+    # Empty (the default) means "no override — the credential reads its built-in
+    # path (``anthropic/oauth-token`` / ``anthropic/api-key``)". DB-home (#1775): the
+    # selector reads the list off the ``ConfigSetting`` store at RESOLVE time via
+    # ``ConfigSetting.objects.get_effective`` (overlay scope then global), so
+    # per-overlay routing works; the effective DEFAULT lives in the credential's
+    # ``CredentialSpec``, not this field, so ``get_effective_settings()`` reports
+    # ``[]`` when unset. Set via ``t3 <overlay> config_setting set
+    # anthropic_oauth_pass_paths '["anthropic/<account>/oauth-token"]'``.
+    anthropic_oauth_pass_paths: list[str] = field(default_factory=list)
+    anthropic_api_key_pass_paths: list[str] = field(default_factory=list)
 
 
 @dataclass

@@ -26,6 +26,7 @@ from unittest.mock import patch
 
 import pytest
 from claude_agent_sdk import ResultMessage
+from django.test import TestCase
 
 from teatree.eval.api_runner import ApiInProcessRunner
 from teatree.eval.isolation import isolated_claude_env
@@ -203,7 +204,7 @@ class TestRunnerIsolation:
         assert captured["options"].env["ANTHROPIC_API_KEY"] == "sk-runner"
 
 
-class TestJudgeIsolation:
+class TestJudgeIsolation(TestCase):
     def _grade(self) -> dict[str, Any]:
         query, captured = _capturing_query([_result(structured_output={"verdict": "PASS", "reason": "ok"})])
         with (

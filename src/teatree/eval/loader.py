@@ -38,7 +38,7 @@ DEFAULT_MODEL = ""
 # DEFAULT_MAX_TURNS is the single canonical default, reused from
 # teatree.eval.models (the data-layer owner of EvalSpec.max_turns's default).
 DEFAULT_TOOLS: tuple[str, ...] = ("Bash",)
-DEFAULT_JUDGE_MODEL = "claude-sonnet-4-6"
+DEFAULT_JUDGE_MODEL = "claude-sonnet-5"
 DEFAULT_JUDGE_MAX_OUTPUT_TOKENS = 512
 
 # Compiled FROM the single-source-of-truth operator set (teatree.eval.models) so the

@@ -64,6 +64,16 @@ layer = "foundation"
 depends_on = ["teatree.utils"]
 
 [[modules]]
+path = "teatree.credential_config"
+layer = "domain"
+depends_on = ["teatree.core.models", "teatree.llm"]
+
+[[modules]]
+path = "teatree.token_report"
+layer = "domain"
+depends_on = ["teatree.core.models", "teatree.credential_config", "teatree.llm", "teatree.utils"]
+
+[[modules]]
 path = "teatree.teams"
 layer = "domain"
 depends_on = ["teatree.core", "teatree.core.models", "teatree.core.loop_lease_manager", "teatree.config", "teatree.agents", "teatree.skill_support", "teatree.utils"]
@@ -228,6 +238,7 @@ depends_on = [
   "teatree.core",
   "teatree.core.modelkit",
   "teatree.core.models",
+  "teatree.credential_config",
   "teatree.skill_support",
   "teatree.utils",
   "teatree.config",
@@ -347,6 +358,7 @@ layer = "interface"
 depends_on = [
   "teatree.cli._format_opts",
   "teatree.core",
+  "teatree.credential_config",
   "teatree.eval",
   "teatree.utils",
   "teatree.claude_sessions",
@@ -361,7 +373,7 @@ depends_on = []
 [[modules]]
 path = "teatree.eval"
 layer = "integration"
-depends_on = ["teatree.core", "teatree.hooks", "teatree.pricing", "teatree.utils", "teatree.trigger_parser", "teatree.claude_sessions", "teatree.llm"]
+depends_on = ["teatree.core", "teatree.credential_config", "teatree.hooks", "teatree.pricing", "teatree.utils", "teatree.trigger_parser", "teatree.claude_sessions", "teatree.llm"]
 
 [[modules]]
 path = "teatree.core.management"
@@ -378,6 +390,7 @@ depends_on = [
   "teatree.loops",
   "teatree.messaging",
   "teatree.paths",
+  "teatree.token_report",
   "teatree.types",
   "teatree.utils",
   "teatree.visual_qa"

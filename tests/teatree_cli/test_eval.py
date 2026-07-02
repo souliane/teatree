@@ -35,15 +35,24 @@ if TYPE_CHECKING:
 
 @pytest.fixture(autouse=True)
 def _stub_api_key() -> "Iterator[None]":
-    """Stop ``make_runner("api")`` from shelling ``pass``/``gpg`` for the API key.
+    """Stop ``make_runner("api")`` from touching the ``pass``/DB credential store.
 
     Every ``--backend api`` CLI test builds the runner through
     ``teatree.eval.backends.make_runner``, which calls
-    ``AnthropicApiKeyCredential().export()`` → ``read_pass("anthropic/api-key")``
-    → a ``pass`` subprocess that blocks on ``gpg`` on a dev machine without
-    ``ANTHROPIC_API_KEY`` set (and would raise ``CredentialError`` when the key is
-    absent). The stub keeps the suite hermetic — it never touches the host's
-    secret store.
+    ``resolve_api_key_credential().export()``. Both ends of that call reach a real
+    external store the suite must not touch, so both are stubbed here.
+
+    ``resolve_api_key_credential`` routes through the per-account selector, which
+    reads the routing config and health cache from the DB (``ConfigSetting`` /
+    ``AnthropicActivePick`` / ``AnthropicTokenUsage``) — DB access an unmarked test
+    is (rightly) forbidden. Stubbing it to a plain ``AnthropicApiKeyCredential``
+    keeps resolution hermetic; the routing/DB behaviour is covered directly by
+    ``test_credential_config`` / ``test_anthropic_active_pick`` / ``test_anthropic_token_usage``.
+
+    ``.export()`` → ``read_pass("anthropic/api-key")`` shells a ``pass`` subprocess
+    that blocks on ``gpg`` on a dev machine without ``ANTHROPIC_API_KEY`` set (and
+    would raise ``CredentialError`` when the key is absent). Stubbing both keeps the
+    suite hermetic — it never touches the host's secret store nor the DB.
 
     It also sets ``T3_EVAL_IN_CONTAINER=1`` so the metered ``--backend api`` /
     ``--trials`` / ``--models`` runs execute IN-PROCESS (Docker is the default for
@@ -54,6 +63,7 @@ def _stub_api_key() -> "Iterator[None]":
     """
     with (
         patch.object(AnthropicApiKeyCredential, "export", return_value="sk-test"),
+        patch("teatree.credential_config.resolve_api_key_credential", return_value=AnthropicApiKeyCredential()),
         patch.dict("os.environ", {"T3_EVAL_IN_CONTAINER": "1"}),
     ):
         yield
@@ -901,7 +911,7 @@ class TestEvalPersistAndHistory:
             result = CliRunner().invoke(app, ["eval", "history", "--format", "json"])
         payload = json.loads(result.output[result.output.index("{") : result.output.rindex("}") + 1])
         assert payload["runs"][0]["passed"] == 1
-        assert payload["runs"][0]["model"] == "claude-sonnet-4-6"
+        assert payload["runs"][0]["model"] == resolve_eval_model(_spec("alpha"))
 
     def test_mark_baseline_promotes_run(self) -> None:
         specs = [_spec("alpha")]
@@ -975,7 +985,7 @@ class TestEvalCostRegressionGate:
         # dispatch), so the per-scenario cost-regression diff keys on the same model.
         resolved = [with_model(spec, resolve_eval_model(spec)) for spec in specs]
         results = [evaluate(spec, _run(spec.name, tool_calls=_PASSING_CALL, cost_usd=cost_usd)) for spec in resolved]
-        record = persist_run(results, model="claude-sonnet-4-6", git_sha="")
+        record = persist_run(results, model=resolve_eval_model(specs[0]), git_sha="")
         record.mark_baseline()
 
     def _run_candidate(self, specs: list[EvalSpec], *, cost_usd: float, extra: list[str]) -> object:

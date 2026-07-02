@@ -7,8 +7,13 @@ in teatree. The credential resolves from an ordered list of injected
 sets its own env var and **strips** every conflicting credential — so a metered
 invocation can never silently fall back to a different credential.
 
-Dependency injection makes the whole surface unit-testable without touching the
-real environment or the ``pass`` store: every test injects fake sources.
+The module is FOUNDATION-pure: it never reads the config store. A per-account
+``pass_path`` override is INJECTED as a plain string (``pass_path_override``); the
+domain-layer factory ``teatree.credential_config`` resolves it from
+``ConfigSetting`` and passes it in. These tests therefore need no DB — they inject
+the override directly. Dependency injection makes the whole surface unit-testable
+without touching the real environment or the ``pass`` store: every test injects
+fake sources.
 """
 
 import os
@@ -194,3 +199,62 @@ class TestBaseCredentialContract:
     def test_credential_is_the_shared_base(self) -> None:
         assert issubclass(AnthropicApiKeyCredential, Credential)
         assert issubclass(AnthropicSubscriptionCredential, Credential)
+
+
+# (credential class, env var, built-in default pass path) — the two Anthropic
+# credentials differ only by these, so the injected-override behaviour is
+# parametrized over both.
+_ROUTED_PASS = "anthropic/routed-account/entry"
+_OVERRIDE_CREDENTIALS = [
+    pytest.param(AnthropicSubscriptionCredential, _OAUTH_ENV, _OAUTH_PASS, id="subscription"),
+    pytest.param(AnthropicApiKeyCredential, _API_KEY_ENV, _API_KEY_PASS, id="metered"),
+]
+_credential_case = pytest.mark.parametrize(("credential_cls", "env_var", "default_pass"), _OVERRIDE_CREDENTIALS)
+
+
+class TestPassPathOverride:
+    """The ``pass_path`` a credential resolves against is overridable via an injected string."""
+
+    @_credential_case
+    def test_no_override_resolves_the_builtin_pass_path(
+        self, credential_cls: type[Credential], env_var: str, default_pass: str
+    ) -> None:
+        # No injected override: the credential reads its built-in pass path.
+        credential = credential_cls(sources=[_FakePassSource({default_pass: "stored"})])
+        assert credential.resolve() == "stored"
+
+    @_credential_case
+    def test_injected_override_redirects_the_pass_path(
+        self, credential_cls: type[Credential], env_var: str, default_pass: str
+    ) -> None:
+        store = _FakePassSource({_ROUTED_PASS: "routed", default_pass: "builtin"})
+        assert credential_cls(sources=[store], pass_path_override=_ROUTED_PASS).resolve() == "routed"
+
+    @_credential_case
+    def test_env_still_wins_over_the_pass_override(
+        self, credential_cls: type[Credential], env_var: str, default_pass: str
+    ) -> None:
+        # The override only moves where PassSource reads; EnvSource precedence is unchanged.
+        sources = [_FakeEnvSource({env_var: "from-env"}), _FakePassSource({_ROUTED_PASS: "routed"})]
+        assert credential_cls(sources=sources, pass_path_override=_ROUTED_PASS).resolve() == "from-env"
+
+    @_credential_case
+    def test_override_leaves_static_spec_env_var_and_conflicts_unchanged(
+        self, credential_cls: type[Credential], env_var: str, default_pass: str
+    ) -> None:
+        # The static-spec consumers (docker.py .spec.env_var, isolation.py
+        # .spec.conflicting_vars) must keep working: only pass_path is overridable.
+        spec = credential_cls(pass_path_override=_ROUTED_PASS).spec
+        assert spec.env_var == env_var
+        assert spec.pass_path == default_pass, "the static spec's pass_path default is untouched by an override"
+        assert env_var not in spec.conflicting_vars
+
+    def test_missing_message_names_the_overridden_pass_path(self) -> None:
+        # The loud CredentialError points at the entry the user must `pass insert` —
+        # the OVERRIDDEN path, not the built-in default, so the fix instruction is right.
+        credential = AnthropicApiKeyCredential(
+            sources=[_FakeEnvSource({}), _FakePassSource({})], pass_path_override=_ROUTED_PASS
+        )
+        with pytest.raises(CredentialError) as excinfo:
+            credential.resolve()
+        assert _ROUTED_PASS in str(excinfo.value)

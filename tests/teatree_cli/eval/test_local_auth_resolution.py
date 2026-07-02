@@ -18,10 +18,17 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+from django.test import TestCase
+
 from teatree.cli.eval.benchmark import benchmark
 from teatree.cli.eval.multi_trial import run_model_matrix_lane, run_pass_at_k_lane
 from teatree.eval.models import EvalRun, EvalSpec
 from teatree.llm.credentials import AnthropicApiKeyCredential
+
+# The metered lanes build their runner through the config-aware credential factory
+# (``teatree.credential_config``), which reads the ``ConfigSetting`` routing list.
+# The empty table yields no override, so these lanes resolve the built-in key path
+# exactly as before; ``django.test.TestCase`` provides the DB the config read needs.
 
 
 def _spec(name: str = "s", model: str = "claude-opus-4-8") -> EvalSpec:
@@ -55,7 +62,7 @@ class _StubRunner:
         )
 
 
-class TestPassAtKLaneResolvesApiKey:
+class TestPassAtKLaneResolvesApiKey(TestCase):
     def test_pass_at_k_lane_resolves_the_api_key_before_metering(self) -> None:
         with (
             patch.object(AnthropicApiKeyCredential, "export", return_value="sk-test") as ensure,
@@ -71,7 +78,7 @@ class TestPassAtKLaneResolvesApiKey:
         ensure.assert_called_once_with()
 
 
-class TestMatrixLaneResolvesApiKey:
+class TestMatrixLaneResolvesApiKey(TestCase):
     def test_matrix_lane_resolves_the_api_key_before_metering(self) -> None:
         with (
             patch.object(AnthropicApiKeyCredential, "export", return_value="sk-test") as ensure,
@@ -91,7 +98,7 @@ class TestMatrixLaneResolvesApiKey:
         ensure.assert_called_once_with()
 
 
-class TestBenchmarkLaneResolvesApiKey:
+class TestBenchmarkLaneResolvesApiKey(TestCase):
     def test_benchmark_lane_resolves_the_api_key_before_metering(self) -> None:
         with (
             patch.object(AnthropicApiKeyCredential, "export", return_value="sk-test") as ensure,

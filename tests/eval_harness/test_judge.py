@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 import pytest
 from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock
+from django.test import TestCase
 
 from teatree.eval.judge import (
     JUDGE_DEFAULT_BUDGET_USD,
@@ -116,7 +117,7 @@ class TestResolveJudgeBudget:
         assert resolve_judge_budget_usd() == pytest.approx(JUDGE_DEFAULT_BUDGET_USD)
 
 
-class TestClaudeJudgeGrade:
+class TestClaudeJudgeGrade(TestCase):
     def _grade(self, spec: EvalSpec, messages: list[Any], **kwargs: Any):
         query, captured = _fake_query(messages)
         with (
@@ -274,7 +275,7 @@ class TestClaudeJudgeGrade:
         assert "timed out" in verdict.rationale
 
 
-class TestJudgeAuthenticatesViaTheApiKeyChokepoint:
+class TestJudgeAuthenticatesViaTheApiKeyChokepoint(TestCase):
     """The metered judge is a billed Claude call, so it routes through the SAME credential chokepoint.
 
     A judge that actually grades (past the skip guards) makes a metered model

@@ -14,10 +14,14 @@ import teatree.agents.model_tiering as mt_mod
 from teatree.agents.model_tiering import (
     DEFAULT_PHASE_MODELS,
     DEFAULT_TIER,
+    TIER_EFFORT,
     TIER_MODELS,
+    model_supports_thinking,
     resolve_phase_model,
+    resolve_spawn_effort,
     resolve_spawn_model,
     resolve_tier,
+    resolve_tier_effort,
 )
 
 _ABSENT = Path("/nonexistent.toml")
@@ -403,3 +407,121 @@ class TestDowngradeFableHelper:
 
         cfg = AgentConfig(fable_enabled=False, fable_fallback="balanced")
         assert mt_mod._downgrade_fable("fable", cfg) == "balanced"
+
+
+class TestModelSupportsThinking:
+    """The adaptive-thinking guard: reasoning tiers yes, cheap/Haiku and inherit no."""
+
+    def test_frontier_model_supports_thinking(self) -> None:
+        assert model_supports_thinking(TIER_MODELS["frontier"]) is True
+
+    def test_balanced_model_supports_thinking(self) -> None:
+        assert model_supports_thinking(TIER_MODELS["balanced"]) is True
+
+    def test_cheap_haiku_model_does_not_support_thinking(self) -> None:
+        # Haiku rejects the thinking/effort levers, so the guard withholds the pin.
+        assert model_supports_thinking(TIER_MODELS["cheap"]) is False
+
+    def test_fable_supports_thinking(self) -> None:
+        assert model_supports_thinking("claude-fable-5") is True
+
+    def test_inherit_default_is_left_alone(self) -> None:
+        # None = inherit the user's default: unknown model, so leave the SDK default.
+        assert model_supports_thinking(None) is False
+        assert model_supports_thinking("") is False
+
+
+class TestTierEffortConstantIsSingleSource:
+    """:data:`TIER_EFFORT` is the only place per-tier reasoning effort lives."""
+
+    def test_only_reasoning_tiers_carry_effort(self) -> None:
+        # frontier + balanced carry an effort; cheap (Haiku) is deliberately absent
+        # so it inherits the SDK default (Haiku rejects the effort lever).
+        assert TIER_EFFORT == {"frontier": "xhigh", "balanced": "high"}
+
+    def test_resolve_tier_effort_reads_the_constant(self) -> None:
+        for tier, effort in TIER_EFFORT.items():
+            assert resolve_tier_effort(tier, config_path=_ABSENT) == effort
+
+    def test_cheap_tier_has_no_effort(self) -> None:
+        # A tier absent from TIER_EFFORT resolves to None (pin no --effort).
+        assert resolve_tier_effort("cheap", config_path=_ABSENT) is None
+
+    def test_unknown_tier_has_no_effort(self) -> None:
+        # Unlike resolve_tier (which passes an id through), an unknown tier here is
+        # None — a concrete model id is not a known effort tier, so emit no effort.
+        assert resolve_tier_effort(TIER_MODELS["frontier"], config_path=_ABSENT) is None
+
+    def test_config_overrides_a_tier_effort(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        _write_toml(cfg, '[agent.tier_effort]\nbalanced = "max"\n')
+        assert resolve_tier_effort("balanced", config_path=cfg) == "max"
+        # An un-overridden tier still reads the shipped default.
+        assert resolve_tier_effort("frontier", config_path=cfg) == TIER_EFFORT["frontier"]
+
+    def test_invalid_override_value_dropped_falls_back_to_default(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        _write_toml(cfg, '[agent.tier_effort]\nfrontier = "bogus"\n')
+        # An off-scale override is dropped at parse, so the shipped default stands.
+        assert resolve_tier_effort("frontier", config_path=cfg) == TIER_EFFORT["frontier"]
+
+
+class TestResolveSpawnEffort:
+    """`resolve_spawn_effort(phase)` — phase → tier → effort, mirroring resolve_phase_model."""
+
+    @pytest.mark.parametrize("phase", ["planning", "coding", "debugging", "reviewing", "retrospecting"])
+    def test_frontier_phases_resolve_to_frontier_effort(self, phase: str) -> None:
+        assert resolve_spawn_effort(phase, config_path=_ABSENT) == TIER_EFFORT["frontier"]
+
+    @pytest.mark.parametrize("phase", ["testing", "shipping"])
+    def test_balanced_phases_resolve_to_balanced_effort(self, phase: str) -> None:
+        assert resolve_spawn_effort(phase, config_path=_ABSENT) == TIER_EFFORT["balanced"]
+
+    def test_cheap_phase_has_no_effort(self) -> None:
+        # requesting_review is the cheap/Haiku tier — no effort pin.
+        assert resolve_spawn_effort("requesting_review", config_path=_ABSENT) is None
+
+    def test_unknown_phase_uses_default_tier_effort(self) -> None:
+        # An unmapped phase falls back to DEFAULT_TIER (balanced) for effort too.
+        assert resolve_spawn_effort("scoping", config_path=_ABSENT) == TIER_EFFORT[DEFAULT_TIER]
+
+    def test_phase_models_override_lowers_effort_in_lockstep(self, tmp_path: Path) -> None:
+        # Opting a frontier phase down to the cheap tier drops its effort with the
+        # model — the same phase_models override drives both.
+        cfg = tmp_path / ".teatree.toml"
+        _write_toml(cfg, '[agent]\nphase_models.reviewing = "cheap"\n')
+        assert resolve_spawn_effort("reviewing", config_path=cfg) is None
+
+    def test_phase_models_override_raises_effort(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        _write_toml(cfg, '[agent]\nphase_models.requesting_review = "frontier"\n')
+        assert resolve_spawn_effort("requesting_review", config_path=cfg) == TIER_EFFORT["frontier"]
+
+    def test_concrete_model_id_override_has_no_effort(self, tmp_path: Path) -> None:
+        # A phase pinned to a concrete model id (not a tier) is not a known effort
+        # tier, so no effort is pinned.
+        cfg = tmp_path / ".teatree.toml"
+        _write_toml(cfg, '[agent]\nphase_models.coding = "some-pinned-model-id"\n')
+        assert resolve_spawn_effort("coding", config_path=cfg) is None
+
+    @pytest.mark.parametrize("sentinel", ["", "   ", "default", "inherit"])
+    def test_sentinel_override_has_no_effort(self, tmp_path: Path, sentinel: str) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        _write_toml(cfg, f'[agent]\nphase_models.testing = "{sentinel}"\n')
+        assert resolve_spawn_effort("testing", config_path=cfg) is None
+
+    def test_tier_effort_override_flows_through_phase(self, tmp_path: Path) -> None:
+        # The single-source proof for effort: a [agent.tier_effort] override changes
+        # the effort a phase resolves to, with no per-phase effort literal anywhere.
+        cfg = tmp_path / ".teatree.toml"
+        _write_toml(cfg, '[agent.tier_effort]\nbalanced = "max"\n')
+        assert resolve_spawn_effort("testing", config_path=cfg) == "max"
+
+    def test_default_config_path_used_when_none(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        _write_toml(cfg, '[agent.tier_effort]\nbalanced = "max"\n')
+        monkeypatch.setattr(mt_mod, "CONFIG_PATH", cfg)
+        import teatree.config_agent as ca_mod  # noqa: PLC0415
+
+        monkeypatch.setattr(ca_mod, "CONFIG_PATH", cfg)
+        assert resolve_spawn_effort("testing") == "max"
