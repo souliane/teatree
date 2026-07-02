@@ -51,9 +51,9 @@ on:
         default: ""
         type: string
       efforts:
-        description: "Comma-separated reasoning-effort tiers to fan the matrix across (e.g. 'low,medium,high'); empty = no effort axis (single tier at the lane default)."
+        description: "Comma-separated reasoning-effort tiers to fan the matrix across (e.g. 'low,medium,high'); empty = no effort axis (single tier at the lane default). The scheduled weekly run still fans all three."
         required: false
-        default: "low,medium,high"
+        default: ""
         type: string
       lookback-days:
         description: "No-PR-merged guard lookback window in days."
@@ -151,18 +151,21 @@ jobs:
           fi
       # Compute the {lane, shard[, effort]} matrix the eval job fans out over.
       # Empty `lane` = every permitted lane, sharded into budget-safe legs on the
-      # lane-aware ceiling. `efforts` (default 'low,medium,high') adds the model-
-      # tier axis: each {lane, shard} leg runs once per reasoning-effort tier, so
-      # the weekly run measures pass-rate vs effort across the whole suite; an
-      # empty `efforts` keeps the single-tier {lane, shard} matrix. An unknown lane
-      # or effort fails loud here rather than producing an empty/invalid matrix.
-      # Both inputs are routed through `env:` vars (never inlined into the script).
+      # lane-aware ceiling. `efforts` adds the model-tier axis: each {lane, shard}
+      # leg runs once per reasoning-effort tier. The SCHEDULED cron run defaults to
+      # all three (low,medium,high), so the weekly run measures pass-rate vs effort
+      # across the whole suite; a manual run with an empty `efforts` keeps the
+      # single-tier {lane, shard} matrix (lane default). The 3-tier default is keyed
+      # on the schedule EVENT (not a blanket `|| 'low,medium,high'`, which would fan
+      # a blank field 3x and triple the metered spend). An unknown lane or effort
+      # fails loud here rather than producing an empty/invalid matrix. Both inputs
+      # are routed through `env:` vars (never inlined into the script).
       - name: Compute the lane+shard+effort matrix
         id: matrix
         if: steps.gate.outputs.run_eval == 'true'
         env:
           EVAL_LANE: ${{ inputs.lane }}
-          EVAL_EFFORTS: ${{ inputs.efforts }}
+          EVAL_EFFORTS: ${{ inputs.efforts || (github.event_name == 'schedule' && 'low,medium,high' || '') }}
         run: |
           MATRIX="$(uv run python scripts/eval/lane_matrix.py --lane "$EVAL_LANE" --efforts "$EVAL_EFFORTS")"
           echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
