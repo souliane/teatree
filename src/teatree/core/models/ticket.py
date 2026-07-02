@@ -12,8 +12,9 @@ from teatree.core.managers import TicketManager
 from teatree.core.modelkit.gate_registry import get_gate, get_resolver
 from teatree.core.modelkit.review_state import ReviewState
 from teatree.core.models.errors import DirtyWorktreeError, InvalidTransitionError
-from teatree.core.models.ticket_worktree_checks import worktree_has_commits_ahead, worktree_tracked_dirty_path
+from teatree.core.models.ticket_worktree_checks import collect_dirty_worktree_paths, worktree_has_commits_ahead
 from teatree.core.models.types import validated_ticket_extra
+from teatree.utils.url_slug import repo_namespaced_key as compute_repo_namespaced_key
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +125,11 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
     # Set to True when the remote forge returns HTTP 404; the disposition scanner
     # then excludes this ticket from future fetches (#1875).
     remote_missing = models.BooleanField(default=False)
+    # Collision-free ``<repo-slug>#<issue-number>`` derived from `issue_url`
+    # (#2293): a bare numeric IID may collide across repos, this key never
+    # does. Blank when `issue_url` is a PR/MR reference, a bare number, or
+    # any other non-issue shape — see `repo_namespaced_key_from_path`.
+    repo_namespaced_key = models.CharField(max_length=300, blank=True, default="", db_index=True)
 
     objects = TicketManager()
 
@@ -135,6 +141,11 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
                 name="unique_nonempty_issue_url",
                 condition=~models.Q(issue_url=""),
             ),
+            models.UniqueConstraint(
+                fields=["repo_namespaced_key"],
+                name="unique_nonempty_repo_namespaced_key",
+                condition=~models.Q(repo_namespaced_key=""),
+            ),
         ]
 
     def __str__(self) -> str:
@@ -143,6 +154,8 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
     def save(self, *args: object, **kwargs: object) -> None:
         if not self.overlay and self.issue_url:
             self.overlay = self._infer_overlay()
+        if not self.repo_namespaced_key and self.issue_url:
+            self.repo_namespaced_key = compute_repo_namespaced_key(self.issue_url)
         super().save(*args, **kwargs)  # type: ignore[arg-type]
 
     def _infer_overlay(self) -> str:
@@ -823,42 +836,14 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         """Preflight gate (#884): refuse the transition if a worktree is tracked-dirty.
 
         Run at the top of the ``code``/``test``/``review``/``ship``
-        transition bodies, before any scheduling side effect. Owner-resolved
-        policy: a worktree with uncommitted *tracked* changes must not
-        advance the FSM — the agent has to commit or discard first. We do
-        NOT auto-stash: teatree worktrees share one ``.git`` so a stash is
-        repo-global and would clobber an unrelated branch's work (the
-        foreign-stash hazard, near-miss class #806).
-
-        Untracked-only files do not block (the #925 distinction, mirroring
-        ``cli.update._tracked_dirty_paths``): a fast-forward never conflicts
-        with untracked scratch, and the loop legitimately leaves scratch
-        files around. Only a tracked modification — work the agent forgot to
-        commit — is the refusal trigger.
-
-        On dirty: a loud :class:`DirtyWorktreeError` is raised naming the
-        dirty worktree. The transition does **not** advance — every
-        production caller wraps the transition body in an *outer*
-        ``transaction.atomic`` (the loop: ``Task.complete()`` →
-        ``_advance_ticket`` → ``_apply_phase_transition``; ship:
-        ``_ship_exec._do_ship_transition``), so the raise rolls that whole
-        atomic back and the ticket stays put. **The task is not
-        force-reopened here** — there is no cross-transaction durable write
-        that could survive the caller's rollback, so attempting one only
-        adds a false durability claim. Held-task recovery is the existing
-        **lease-reaper safety net**: the worker that called the transition
-        stops heartbeating after the exception, the task's lease expires,
-        and ``TaskManager.reclaim_orphaned_claims`` returns the CLAIMED task
-        to PENDING on the next loop tick so the agent re-runs it and
-        finishes the commit. Mirrors the existing loud-refusal convention
-        (``InvalidTransitionError`` in ``schedule_coding`` / the #694 gate).
+        transition bodies. Dirty-collection rule and the no-auto-stash/
+        lease-reaper rationale live on :func:`collect_dirty_worktree_paths`
+        (#1983 LOC-ratchet split). On dirty: a loud :class:`DirtyWorktreeError`
+        names the dirty worktree(s) and the transition does not advance —
+        every production caller wraps the transition body in an outer
+        ``transaction.atomic``, so the raise rolls that whole atomic back.
         """
-        worktree_model = apps.get_model("core", "Worktree")
-        dirty = [
-            path
-            for wt in worktree_model.objects.filter(ticket=self)
-            if (path := worktree_tracked_dirty_path(wt)) is not None
-        ]
+        dirty = collect_dirty_worktree_paths(self)
         if not dirty:
             return
         joined = ", ".join(dirty)
