@@ -10,6 +10,8 @@ from unittest.mock import patch
 import pytest
 from claude_agent_sdk.types import RateLimitType
 from django.test import TestCase, override_settings
+from pydantic_ai import Agent
+from pydantic_ai.models.test import TestModel
 
 import teatree.agents.harness as harness_mod
 import teatree.agents.headless as headless_mod
@@ -28,6 +30,7 @@ from teatree.agents.headless import (
 )
 from teatree.agents.headless_usage import _safe_float, _safe_int
 from teatree.agents.model_tiering import TIER_EFFORT, TIER_MODELS
+from teatree.agents.pydantic_ai_resume import persist_parked_thread
 from teatree.config import AgentRuntime
 from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket
 from teatree.llm.anthropic_limits import LimitCause
@@ -939,6 +942,35 @@ class TestRunHeadlessRefusesOverBudgetTicket(TestCase):
         task.refresh_from_db()
         assert attempt.exit_code == 0
         assert task.status == Task.Status.COMPLETED
+
+    def test_over_budget_resumed_pydantic_ai_task_preserves_the_parked_thread(self) -> None:
+        """(souliane/teatree#2916 review) A budget-refused RESUME must not lose the parked thread.
+
+        ``resolve_harness`` pops a resumed pydantic_ai task's parked ancestor
+        thread as a side effect of just BUILDING the harness — before this fix
+        the budget gate ran after that pop, so a budget-breached resume
+        permanently destroyed the conversation even though the run never
+        started. The entry must still be there (poppable) after the refusal.
+        """
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+        agent = Agent(TestModel(custom_output_text="hi"))
+        history = asyncio.run(agent.run("hello")).all_messages()
+        parked = Task.objects.create(ticket=self.ticket, session=self.session)
+        persist_parked_thread(parked, history)
+
+        spent = Task.objects.create(ticket=self.ticket, session=self.session)
+        TaskAttempt.objects.create(task=spent, cost_usd=8.0)
+        resumed = Task.objects.create(ticket=self.ticket, session=self.session, parent_task=parked)
+
+        with override_settings(TEATREE_TICKET_BUDGET={"max_cost_usd": 5.0}):
+            attempt = run_headless(resumed, phase="coding", overlay_skill_metadata={})
+
+        resumed.refresh_from_db()
+        assert attempt.exit_code != 0
+        assert "budget_exceeded" in attempt.error
+        assert resumed.status == Task.Status.FAILED
+        self.ticket.refresh_from_db()
+        assert str(parked.pk) in self.ticket.extra.get("pydantic_ai_threads", {})
 
 
 # --- SDK options / model tiering (#880) ---

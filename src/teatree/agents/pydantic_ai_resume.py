@@ -31,9 +31,19 @@ the full context is simply re-paid as ordinary input tokens and logged as
 such. Either way the resume NEVER refuses — a cache miss is a cost, not an
 error. A missing, malformed, or already-consumed thread degrades the same
 way: an empty history, never an exception.
+
+Pop-then-restore (souliane/teatree#2916): :func:`rehydrate_thread_for_resume`
+still consumes the entry the moment it is READ, not the moment it is
+actually driven through a harness — cheaper than plumbing a commit-on-success
+callback through the async driver. A caller (:mod:`teatree.agents.headless`)
+that refuses the dispatch this seeded BEFORE the harness genuinely opens (an
+over-budget ticket, a failed OrcaRouter credential) must restore the popped
+entry via :func:`persist_parked_thread`, or a run that never happened
+silently and irrecoverably destroys the parked conversation.
 """
 
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
 from pydantic import ValidationError
@@ -56,7 +66,10 @@ def persist_parked_thread(task: Task, history: "list[ModelMessage]") -> None:
     """Durably store *history* keyed to *task*'s own pk, for a later resume.
 
     Called once, at PARK time (a ``needs_user_input`` STOP) — never on an
-    ordinary completed run, where there is nothing to resume.
+    ordinary completed run, where there is nothing to resume. Also reused to
+    RESTORE a thread :func:`rehydrate_thread_for_resume` already popped when
+    the dispatch it seeded is refused before it ever runs (see
+    :func:`teatree.agents.headless._restore_unconsumed_resume_thread`).
     """
     ticket = task.ticket
     threads = dict(ticket.extra.get(_THREAD_STORE_KEY, {}) if isinstance(ticket.extra, dict) else {})
@@ -75,8 +88,24 @@ def maybe_persist_on_park(task: Task, result: AgentResultBlob, thread: "list[Mod
         persist_parked_thread(task, thread)
 
 
-def rehydrate_thread_for_resume(task: Task) -> "list[ModelMessage]":
-    """Reload the nearest parked ancestor's thread, or ``[]`` when none parked.
+@dataclass(frozen=True)
+class ResumedThread:
+    """A parked ancestor's thread, popped for an in-flight resume attempt.
+
+    *ancestor* travels alongside *history* so a caller that refuses the
+    dispatch this seeded BEFORE the harness genuinely opens (an over-budget
+    ticket, an OrcaRouter credential failure) can restore the entry via
+    :func:`persist_parked_thread` — the pop is meant to be single-use only
+    once a run actually consumes the conversation, not merely once it is read
+    (souliane/teatree#2916).
+    """
+
+    ancestor: Task
+    history: "list[ModelMessage]"
+
+
+def rehydrate_thread_for_resume(task: Task) -> "ResumedThread | None":
+    """Reload the nearest parked ancestor's thread, or ``None`` when none parked.
 
     Walks ``parent_task`` exactly like
     :func:`~teatree.agents._headless_options._get_resume_session_id`, so a
@@ -88,9 +117,9 @@ def rehydrate_thread_for_resume(task: Task) -> "list[ModelMessage]":
     while current is not None:
         history = _pop_thread(current)
         if history is not None:
-            return history
+            return ResumedThread(ancestor=current, history=history)
         current = current.parent_task
-    return []
+    return None
 
 
 def _pop_thread(task: Task) -> "list[ModelMessage] | None":

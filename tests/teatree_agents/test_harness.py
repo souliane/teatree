@@ -148,11 +148,13 @@ class TestResolveHarnessRehydratesPydanticAiThread(TestCase):
         harness = resolve_harness()
         assert isinstance(harness, PydanticAiHarness)
         assert harness._history is None
+        assert harness.resume_source is None
 
     def test_task_with_no_parked_ancestor_opens_an_empty_conversation(self) -> None:
         harness = resolve_harness(self.resumed)
         assert isinstance(harness, PydanticAiHarness)
         assert harness._history is None
+        assert harness.resume_source is None
 
     def test_parked_ancestor_thread_is_rehydrated_and_consumed(self) -> None:
         from teatree.agents.pydantic_ai_resume import persist_parked_thread  # noqa: PLC0415
@@ -165,9 +167,13 @@ class TestResolveHarnessRehydratesPydanticAiThread(TestCase):
 
         assert isinstance(harness, PydanticAiHarness)
         assert harness._history == result.all_messages()
+        # (#2916) resume_source records the popped ancestor so a caller that
+        # refuses the dispatch before a genuine open can restore the thread.
+        assert harness.resume_source == self.parked
         # Single-use: a second resolve for the same chain finds nothing left.
         harness_again = resolve_harness(self.resumed)
         assert harness_again._history is None
+        assert harness_again.resume_source is None
 
     def test_claude_sdk_backend_ignores_task_entirely(self) -> None:
         ConfigSetting.objects.set_value("agent_harness", "claude_sdk")
@@ -281,6 +287,35 @@ class TestRunHeadlessDrivesPydanticAiHarness(TestCase):
         assert self.task.status == Task.Status.FAILED
         # Refused before any attempt work beyond the failure record.
         assert TaskAttempt.objects.filter(task=self.task).count() == 1
+
+    def test_missing_credential_on_resume_preserves_the_parked_thread(self) -> None:
+        # (souliane/teatree#2916 review) `resolve_harness` pops the parked
+        # ancestor's thread as a side effect of BUILDING the harness — before
+        # `harness.open()` ever runs, the only point OrcaRouter's credential
+        # resolves. A credential failure must restore what it just consumed,
+        # or the conversation is lost even though the run never happened.
+        from teatree.agents.pydantic_ai_resume import persist_parked_thread  # noqa: PLC0415
+
+        agent = Agent(TestModel(custom_output_text="hi"))
+        history = asyncio.run(agent.run("hello")).all_messages()
+        parked = Task.objects.create(ticket=self.ticket, session=self.session)
+        persist_parked_thread(parked, history)
+        resumed_task = Task.objects.create(ticket=self.ticket, session=self.session, phase="coding", parent_task=parked)
+
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, task: TaskUsage(0, 0.0))),
+        ):
+            os.environ.pop("ORCA_ROUTER_BASE_URL", None)
+            os.environ.pop("ORCA_ROUTER_API_KEY", None)
+            attempt = run_headless(resumed_task, phase="coding", overlay_skill_metadata={})
+
+        resumed_task.refresh_from_db()
+        assert attempt.exit_code == 1
+        assert "ORCA_ROUTER" in attempt.error
+        assert resumed_task.status == Task.Status.FAILED
+        self.ticket.refresh_from_db()
+        assert str(parked.pk) in self.ticket.extra.get("pydantic_ai_threads", {})
 
 
 class TestRunHeadlessCachedResumeParity(TestCase):

@@ -31,10 +31,17 @@ from django.db.models import Sum
 from django.utils import timezone
 
 from teatree.agents._headless_options import _build_options
-from teatree.agents.harness import ClaudeSdkHarness, Harness, HarnessSession, pydantic_ai_thread, resolve_harness
+from teatree.agents.harness import (
+    ClaudeSdkHarness,
+    Harness,
+    HarnessSession,
+    PydanticAiHarness,
+    pydantic_ai_thread,
+    resolve_harness,
+)
 from teatree.agents.headless_budget import TicketBudget
 from teatree.agents.headless_usage import _attempt_usage
-from teatree.agents.pydantic_ai_resume import maybe_persist_on_park
+from teatree.agents.pydantic_ai_resume import maybe_persist_on_park, persist_parked_thread
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA
 from teatree.agents.skill_bundle import resolve_skill_bundle
 from teatree.config import AgentRuntime, get_effective_settings
@@ -211,6 +218,15 @@ def run_headless(
     """Run a headless task in-process via ``claude-agent-sdk``."""
     from teatree.agents.prompt import build_system_context, build_task_prompt  # noqa: PLC0415
 
+    # Checked BEFORE resolving the harness (souliane/teatree#2916): for a
+    # resumed pydantic_ai task, resolving the harness destructively pops the
+    # parked ancestor's thread. A budget-breached ticket must never trigger
+    # that pop, or the conversation is lost even though the run never starts.
+    budget_breach = TicketBudget.from_settings().breach_reason(task.ticket)
+    if budget_breach is not None:
+        logger.warning("Refusing dispatch for task %s: %s", task.pk, budget_breach)
+        return _record_failure(task, error=budget_breach)
+
     runtime = get_effective_settings().agent_runtime
     backend = _resolve_backend_or_failure(task, runtime)
     if isinstance(backend, TaskAttempt):
@@ -224,11 +240,6 @@ def run_headless(
         return child_env_result
     child_env = child_env_result
 
-    budget_breach = TicketBudget.from_settings().breach_reason(task.ticket)
-    if budget_breach is not None:
-        logger.warning("Refusing dispatch for task %s: %s", task.pk, budget_breach)
-        return _record_failure(task, error=budget_breach)
-
     prompt = build_task_prompt(task, skills=skills)
     lifecycle_skill = SkillLoadingPolicy.lifecycle_for_phase(phase)
     system_context = build_system_context(task, skills=skills, lifecycle_skill=lifecycle_skill)
@@ -240,6 +251,10 @@ def run_headless(
         # A non-ClaudeSdkHarness resolves its own credential lazily inside
         # ``harness.open`` — this is the same "fail loud, record it" contract
         # the eager ``child_env`` catch above gives the ClaudeSdkHarness.
+        # ``resolve_harness`` (above) already popped any resumed pydantic_ai
+        # thread as a side effect of BUILDING the harness — restore it, since
+        # a run that never opened never actually consumed it (#2916).
+        _restore_unconsumed_resume_thread(harness)
         logger.warning("Refusing dispatch for task %s: %s", task.pk, exc)
         return _record_failure(task, error=str(exc))
 
@@ -247,6 +262,21 @@ def run_headless(
     if failure is not None:
         return failure
     return _record_success(task, outcome, phase=phase)
+
+
+def _restore_unconsumed_resume_thread(harness: Harness) -> None:
+    """Re-persist a pydantic_ai resume thread popped but never actually driven.
+
+    ``resolve_harness`` pops a resumed pydantic_ai task's parked thread as a
+    side effect of BUILDING the harness — before ``harness.open()`` ever
+    runs, the only point OrcaRouter's credential resolves. When ``open()``
+    then fails, the popped thread would otherwise be silently and
+    irrecoverably lost even though the run never happened
+    (souliane/teatree#2916). A no-op for every other harness, and for a fresh
+    (non-resumed) pydantic_ai dispatch.
+    """
+    if isinstance(harness, PydanticAiHarness) and harness.resume_source is not None and harness.history:
+        persist_parked_thread(harness.resume_source, harness.history)
 
 
 def _resolve_backend_or_failure(task: Task, runtime: AgentRuntime) -> Harness | TaskAttempt:

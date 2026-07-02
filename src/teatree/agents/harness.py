@@ -250,11 +250,31 @@ class PydanticAiHarness:
     so its first turn already carries the prior context. ``None``/absent (the
     default, and every non-resumed dispatch) opens a fresh empty conversation,
     byte-identical to before cached-resume existed.
+
+    *resume_source* (souliane/teatree#2916) is the parked ``Task`` *history*
+    was popped from, when this harness seeds a resume — ``None`` for a fresh
+    dispatch. ``resolve_harness`` pops that thread the moment it BUILDS this
+    harness, before ``open`` ever runs and resolves the OrcaRouter credential
+    — so a caller that refuses dispatch after construction but before a
+    successful ``open`` (a budget breach, a credential failure) can restore
+    the popped entry via :attr:`history` + *resume_source*.
     """
 
-    def __init__(self, *, model: Model | None = None, history: "list[ModelMessage] | None" = None) -> None:
+    def __init__(
+        self,
+        *,
+        model: Model | None = None,
+        history: "list[ModelMessage] | None" = None,
+        resume_source: "Task | None" = None,
+    ) -> None:
         self._model = model
         self._history = history
+        self.resume_source = resume_source
+
+    @property
+    def history(self) -> "list[ModelMessage] | None":
+        """The seed conversation this harness was constructed with, if any."""
+        return self._history
 
     def _resolve_model(self, options: ClaudeAgentOptions) -> Model:
         if self._model is not None:
@@ -294,10 +314,18 @@ def resolve_harness(task: "Task | None" = None) -> Harness:
     is rehydrated and threaded into the constructed harness — a DB read only,
     never a network call, so this never itself requires a live credential
     either. Absent *task* (or no parked ancestor) opens a fresh conversation.
+
+    The rehydration POPS the ancestor's entry (single-use), so the returned
+    harness's ``resume_source`` records which ancestor it came from — a
+    caller that ends up refusing the dispatch before the harness genuinely
+    opens (souliane/teatree#2916) restores it from there.
     """
     if get_effective_settings().agent_harness is AgentHarness.PYDANTIC_AI:
-        history = rehydrate_thread_for_resume(task) if task is not None else []
-        return PydanticAiHarness(history=history or None)
+        resumed = rehydrate_thread_for_resume(task) if task is not None else None
+        return PydanticAiHarness(
+            history=resumed.history if resumed else None,
+            resume_source=resumed.ancestor if resumed else None,
+        )
     return ClaudeSdkHarness()
 
 

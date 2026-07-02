@@ -85,15 +85,19 @@ class TestRehydrateThreadForResume(TestCase):
         self.session = Session.objects.create(ticket=self.ticket)
         self.parked = Task.objects.create(ticket=self.ticket, session=self.session)
 
-    def test_no_parent_task_returns_empty(self) -> None:
-        assert rehydrate_thread_for_resume(self.parked) == []
+    def test_no_parent_task_returns_none(self) -> None:
+        assert rehydrate_thread_for_resume(self.parked) is None
 
     def test_immediate_parent_thread_is_rehydrated(self) -> None:
         history = _run("hello", output="hi")
         persist_parked_thread(self.parked, history)
         resumed = Task.objects.create(ticket=self.ticket, session=self.session, parent_task=self.parked)
 
-        assert rehydrate_thread_for_resume(resumed) == history
+        result = rehydrate_thread_for_resume(resumed)
+
+        assert result is not None
+        assert result.history == history
+        assert result.ancestor == self.parked
 
     def test_rehydration_consumes_the_entry(self) -> None:
         history = _run("hello", output="hi")
@@ -111,14 +115,22 @@ class TestRehydrateThreadForResume(TestCase):
         interactive_followup = Task.objects.create(ticket=self.ticket, session=self.session, parent_task=self.parked)
         resumed = Task.objects.create(ticket=self.ticket, session=self.session, parent_task=interactive_followup)
 
-        assert rehydrate_thread_for_resume(resumed) == history
+        result = rehydrate_thread_for_resume(resumed)
 
-    def test_no_thread_anywhere_in_the_chain_returns_empty(self) -> None:
+        assert result is not None
+        assert result.history == history
+        assert result.ancestor == self.parked
+
+    def test_no_thread_anywhere_in_the_chain_returns_none(self) -> None:
         resumed = Task.objects.create(ticket=self.ticket, session=self.session, parent_task=self.parked)
-        assert rehydrate_thread_for_resume(resumed) == []
+        assert rehydrate_thread_for_resume(resumed) is None
 
     def test_malformed_stored_thread_degrades_to_empty_without_raising(self) -> None:
         self.ticket.merge_extra(set_keys={"pydantic_ai_threads": {str(self.parked.pk): [{"not": "a message"}]}})
         resumed = Task.objects.create(ticket=self.ticket, session=self.session, parent_task=self.parked)
 
-        assert rehydrate_thread_for_resume(resumed) == []
+        result = rehydrate_thread_for_resume(resumed)
+
+        assert result is not None
+        assert result.history == []
+        assert result.ancestor == self.parked
