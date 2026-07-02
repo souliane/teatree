@@ -217,7 +217,7 @@ class TestParkedTaskHeadlessResume:
     """
 
     def _parked_task(self) -> Task:
-        ConfigSetting.objects.set_value("agent_runtime", "sdk_oauth")
+        ConfigSetting.objects.set_value("agent_runtime", "headless")
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket, agent_id=_RESUME_UUID)
         parked = Task.objects.create(

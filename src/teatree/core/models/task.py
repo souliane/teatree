@@ -127,12 +127,11 @@ class Task(models.Model):
         The single chokepoint for "phase tasks default to interactive": when the
         ``agent_runtime`` setting selects ``interactive`` (the default) the loop
         is their sole dispatcher, so every ``schedule_*`` / scanner / CLI creation
-        site inherits the rule here without each having to know it. Under a
-        headless ``agent_runtime`` (``sdk_oauth`` / ``sdk_apikey`` / ``api``) the
-        row is left HEADLESS so the headless lane takes it. Only an insert-time
-        HEADLESS row is touched; an explicit ``route_to_interactive`` /
-        ``route_to_headless`` after creation goes through ``_route`` (not an insert)
-        and is never overridden here.
+        site inherits the rule here without each having to know it. Under
+        ``agent_runtime=headless`` the row is left HEADLESS so the headless lane
+        takes it. Only an insert-time HEADLESS row is touched; an explicit
+        ``route_to_interactive`` / ``route_to_headless`` after creation goes
+        through ``_route`` (not an insert) and is never overridden here.
 
         Mirrors ``headless_dispatch.runs_in_session`` (the predicate the signal /
         drain / refusal gates share). It is inlined here rather than called because

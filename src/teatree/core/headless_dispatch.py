@@ -53,11 +53,12 @@ def runs_in_session(*, role: str, phase: str) -> bool:
     chokepoint, the auto-enqueue signal, the queue-drain safety net, and
     :func:`loop_dispatch_refusal`): a ``(role, phase)`` with a registered phase
     agent (``Task.loop_dispatched``) runs in-session ONLY when the
-    ``agent_runtime`` setting selects ``interactive`` (the default). Under any
-    headless runtime (``sdk_oauth`` / ``sdk_apikey`` / ``api``) the SAME phase work
-    runs headless via ``agents/headless.py``, so this returns ``False`` and the
-    headless lane (auto-enqueue → ``execute_headless_task`` / ``work-next-sdk``)
-    takes it. Free-form work (no registered agent) is never in-session.
+    ``agent_runtime`` setting selects ``interactive`` (the default). Under the
+    ``headless`` lane the SAME phase work runs headless via ``agents/headless.py``
+    behind the two-layer ``agent_harness`` / ``agent_harness_provider`` pair
+    (#2887), so this returns ``False`` and the headless lane (auto-enqueue →
+    ``execute_headless_task`` / ``work-next-sdk``) takes it. Free-form work (no
+    registered agent) is never in-session.
     """
     from teatree.config import AgentRuntime, get_effective_settings  # noqa: PLC0415
     from teatree.core.models import Task  # noqa: PLC0415
@@ -75,10 +76,10 @@ def loop_dispatch_refusal(task: "Task") -> str | None:
     one whose ``(ticket.role, phase)`` has a registered phase agent — must run
     INTERACTIVE in the in-session ``/loop`` slot, never as a detached headless-SDK
     run, so this returns a ``routing_error`` reason and the caller records a
-    refusal instead of shelling out. Under a headless ``agent_runtime``
-    (``sdk_oauth`` / ``sdk_apikey`` / ``api``) the same work is meant to run
-    headless, so this returns ``None`` and dispatch proceeds. Free-form headless
-    work (no registered phase agent) always returns ``None``.
+    refusal instead of shelling out. Under ``agent_runtime=headless`` the same
+    work is meant to run headless, so this returns ``None`` and dispatch
+    proceeds. Free-form headless work (no registered phase agent) always
+    returns ``None``.
 
     Both ``core.tasks.execute_headless_task`` (the django-tasks worker) and
     ``core.management.commands.tasks.Command._execute_sdk`` (the ``work-next-sdk``
@@ -90,5 +91,5 @@ def loop_dispatch_refusal(task: "Task") -> str | None:
         f"refused headless dispatch for in-session phase "
         f"(role={task.ticket.role!r}, phase={task.phase!r}): "
         "this task runs INTERACTIVE in the /loop slot under agent_runtime=interactive "
-        "(set agent_runtime to a headless runtime — sdk_oauth / sdk_apikey — to run it headless)"
+        "(set agent_runtime=headless to run it headless)"
     )

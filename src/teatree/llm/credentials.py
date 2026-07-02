@@ -255,8 +255,11 @@ class OrcaRouterCredential(Credential):
     """The OrcaRouter BYOK metered API key — the ``pydantic_ai`` harness's Layer-2 provider.
 
     Layer-2 provider/credential resolution table (Layer 1 = ``agent_harness``,
-    constraining which Layer-2 provider is valid —
-    [#2885](https://github.com/souliane/teatree/issues/2885)):
+    constraining which Layer-2 provider is valid — the ``ORCA_ROUTER_BYOK``
+    member of :class:`~teatree.config.AgentHarnessProvider`, which encodes this
+    same table as :meth:`~teatree.config.AgentHarnessProvider.valid_for`
+    [#2885](https://github.com/souliane/teatree/issues/2885),
+    [#2887](https://github.com/souliane/teatree/issues/2887)):
 
     | Layer 1          | Layer 2 provider    | Credential                        | Status       |
     |-------------------|----------------------|------------------------------------|---------------|

@@ -1,7 +1,7 @@
 """TeaTree configuration — overlay discovery from ~/.teatree.toml.
 
 The ``teatree.config`` package facade. Config concerns are split by cohesion —
-``enums`` (the four config enums), ``settings`` (dataclasses + override
+``enums`` (the config enums), ``settings`` (dataclasses + override
 registries), ``loader`` (``load_config`` + the toml/dir entry points),
 ``discovery`` (overlay discovery), and ``resolution`` (effective-settings +
 the per-setting resolvers) — and re-exported here so every ``teatree.config.<name>``
@@ -24,6 +24,7 @@ from teatree.config.discovery import (
 )
 from teatree.config.enums import (
     AgentHarness,
+    AgentHarnessProvider,
     AgentRuntime,
     Autonomy,
     EvalCredential,
@@ -85,6 +86,7 @@ __all__ = [
     "SETTING_HOMES",
     "TOML_OVERLAY_OVERRIDABLE_SETTINGS",
     "AgentHarness",
+    "AgentHarnessProvider",
     "AgentRuntime",
     "Autonomy",
     "ColdHookSetting",

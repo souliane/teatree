@@ -18,6 +18,8 @@ from teatree.agents.model_tiering import (
     HARNESS_EFFORT_SCALE,
     TIER_EFFORT,
     TIER_MODELS,
+    assert_chinese_model_allowed,
+    is_chinese_origin_model,
     model_supports_thinking,
     resolve_phase_model,
     resolve_spawn_effort,
@@ -491,3 +493,42 @@ class TestHarnessScopedEffortDefaultHarness(TestCase):
         ConfigSetting.objects.set_value("agent_harness", "claude_sdk")
         # Same override, claude_sdk harness: "max" is on-scale, passes through.
         assert resolve_tier_effort("frontier", config_path=self.cfg) == "max"
+
+
+class TestIsChineseOriginModel:
+    """:func:`is_chinese_origin_model` matches the #2887 marker set, case-insensitively."""
+
+    @pytest.mark.parametrize("model_id", ["deepseek-v3", "DeepSeek-R1", "qwen2.5-72b", "GLM-4.5"])
+    def test_matches_a_known_chinese_model_family(self, model_id: str) -> None:
+        assert is_chinese_origin_model(model_id)
+
+    @pytest.mark.parametrize("model_id", list(TIER_MODELS.values()))
+    def test_no_shipped_tier_model_is_chinese_origin(self, model_id: str) -> None:
+        assert not is_chinese_origin_model(model_id)
+
+
+class TestAssertChineseModelAllowed:
+    """:func:`assert_chinese_model_allowed` — the #2887 OrcaRouter allowlist gate."""
+
+    def test_non_chinese_model_never_raises(self) -> None:
+        assert_chinese_model_allowed(TIER_MODELS["frontier"], chinese_models_allowed=False)
+
+    def test_chinese_model_allowed_true_is_a_noop(self) -> None:
+        assert_chinese_model_allowed("deepseek-v3", chinese_models_allowed=True)
+
+    def test_chinese_model_allowed_false_raises(self) -> None:
+        with pytest.raises(ValueError, match="Chinese-origin"):
+            assert_chinese_model_allowed("deepseek-v3", chinese_models_allowed=False)
+
+
+class TestAssertChineseModelAllowedDefaultSetting(TestCase):
+    """The default ``chinese_models_allowed=None`` reads the resolved DB-home setting."""
+
+    def test_default_reads_the_resolved_chinese_models_allowed_setting(self) -> None:
+        ConfigSetting.objects.set_value("chinese_models_allowed", value=False)
+        with pytest.raises(ValueError, match="Chinese-origin"):
+            assert_chinese_model_allowed("qwen2.5-72b")
+
+    def test_default_true_never_raises(self) -> None:
+        ConfigSetting.objects.set_value("chinese_models_allowed", value=True)
+        assert_chinese_model_allowed("qwen2.5-72b")
