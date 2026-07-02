@@ -57,6 +57,13 @@ class TestEmitLoopRegistrations:
         # not read the structured directive still registers all of them.
         assert "t3-loop-inbox" in text
         assert "t3-loop-ship" in text
+        # Verify-by-reread (#1192): the bulk SessionStart nudge must instruct the
+        # same confirm step the manual /t3:loops skill path already has, per
+        # loop name (not slot_id) — the CLI's positional arg is the DB Loop name.
+        assert "verify-cron" in text
+        assert "CronList" in text
+        assert "t3 loop verify-cron inbox --cron-list-json" in text
+        assert "t3 loop verify-cron ship --cron-list-json" in text
 
     def test_no_db_loops_still_auto_registers_the_three_reactive_slots(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # No enabled DB loop, but the three always-on reactive slots have no DB
