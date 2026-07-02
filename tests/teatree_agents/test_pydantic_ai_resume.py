@@ -7,7 +7,7 @@ from pydantic_ai import Agent
 from pydantic_ai.messages import ModelMessage, ModelMessagesTypeAdapter
 from pydantic_ai.models.test import TestModel
 
-from teatree.agents.pydantic_ai_resume import persist_parked_thread, rehydrate_thread_for_resume
+from teatree.agents.pydantic_ai_resume import maybe_persist_on_park, persist_parked_thread, rehydrate_thread_for_resume
 from teatree.core.models import Session, Task, Ticket
 
 
@@ -50,6 +50,33 @@ class TestPersistParkedThread(TestCase):
         threads = self.ticket.extra["pydantic_ai_threads"]
         assert str(self.task.pk) in threads
         assert str(other.pk) in threads
+
+
+class TestMaybePersistOnPark(TestCase):
+    def setUp(self) -> None:
+        self.ticket = Ticket.objects.create()
+        self.session = Session.objects.create(ticket=self.ticket)
+        self.task = Task.objects.create(ticket=self.ticket, session=self.session)
+
+    def test_persists_when_result_needs_user_input_and_thread_present(self) -> None:
+        history = _run("hello", output="hi")
+
+        maybe_persist_on_park(self.task, {"needs_user_input": True}, history)
+
+        self.ticket.refresh_from_db()
+        assert str(self.task.pk) in self.ticket.extra["pydantic_ai_threads"]
+
+    def test_no_op_when_result_does_not_need_user_input(self) -> None:
+        maybe_persist_on_park(self.task, {"needs_user_input": False}, _run("hello", output="hi"))
+
+        self.ticket.refresh_from_db()
+        assert "pydantic_ai_threads" not in self.ticket.extra
+
+    def test_no_op_when_thread_is_none(self) -> None:
+        maybe_persist_on_park(self.task, {"needs_user_input": True}, None)
+
+        self.ticket.refresh_from_db()
+        assert "pydantic_ai_threads" not in self.ticket.extra
 
 
 class TestRehydrateThreadForResume(TestCase):

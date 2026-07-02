@@ -35,6 +35,7 @@ from teatree.agents.harness import (
     PydanticAiHarnessSession,
     _extract_system_prompt,
     _resolve_effort,
+    pydantic_ai_thread,
     resolve_harness,
 )
 from teatree.agents.headless import LoopWatchdog, TaskUsage, _build_options, _drive_with_heartbeat, run_headless
@@ -220,6 +221,19 @@ class TestDriveThroughInjectedHarness(TestCase):
         assert outcome.agent_text == "hello from pydantic_ai"
         assert outcome.result_message is not None
         assert outcome.result_message.is_error is False
+
+
+class TestPydanticAiThread:
+    """``pydantic_ai_thread`` extracts a session's live history, else ``None`` (#2886)."""
+
+    def test_pydantic_ai_session_yields_its_accumulated_history(self) -> None:
+        agent = Agent(TestModel(custom_output_text="hi"))
+        session = PydanticAiHarnessSession(agent, model_name="test")
+
+        assert pydantic_ai_thread(session) == session.history
+
+    def test_non_pydantic_ai_session_yields_none(self) -> None:
+        assert pydantic_ai_thread(FakeHarnessSession([])) is None
 
 
 class TestRunHeadlessDrivesPydanticAiHarness(TestCase):
