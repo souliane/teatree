@@ -1,5 +1,6 @@
 """Tests for teatree.cli_reference — introspection-based CLI doc generation."""
 
+import pytest
 import typer
 
 from teatree.cli import app as real_app
@@ -62,3 +63,18 @@ class TestBuildCliReferenceFromApp:
         result = build_cli_reference_from_app(real_app)
         assert "`t3 teatree e2e project`" in result
         assert "--update-snapshots" in result
+
+    def test_render_is_color_independent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        r"""An ambient ``FORCE_COLOR`` (a common dev-shell setting) must not change the bytes.
+
+        Without pinning, rich's console reads ``FORCE_COLOR`` and wraps tokens in
+        ANSI SGR codes (``\\x1b[1m...\\x1b[0m``), splitting substrings like
+        ``--update-snapshots`` mid-token and breaking any exact/substring match
+        against the render — reproducing locally (a shell with ``FORCE_COLOR``
+        set) but not in a clean CI container (souliane/teatree#2359).
+        """
+        monkeypatch.delenv("FORCE_COLOR", raising=False)
+        plain = build_cli_reference_from_app(_make_test_app(), base_name="demo")
+        monkeypatch.setenv("FORCE_COLOR", "1")
+        forced = build_cli_reference_from_app(_make_test_app(), base_name="demo")
+        assert plain == forced
