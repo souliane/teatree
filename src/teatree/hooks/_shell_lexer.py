@@ -24,7 +24,7 @@ attached short options (``-d'{...}'``) correctly.
 
 import string
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Final
 
@@ -113,6 +113,13 @@ _ONE_CHAR_OPS: Final[tuple[str, ...]] = (";", "|", "&", "\n")
 _INLINE_WHITESPACE: Final[frozenset[str]] = frozenset({" ", "\t"})
 _NEWLINE_CHARS: Final[frozenset[str]] = frozenset({"\n", "\r"})
 _DOUBLE_QUOTE_ESCAPES: Final[frozenset[str]] = frozenset({'"', "\\", "`", "$", "\n"})
+
+# Heredoc redirect operators, LONGEST FIRST so ``<<-`` is recognised before its
+# ``<<`` prefix. Emitted as ordinary WORD tokens (this lexer classifies
+# ``<``/``>`` textually downstream -- see ``token_is_transport_construct`` in
+# ``_gh_glab_hiding.py`` -- rather than as lexer-level operators), so heredoc
+# detection happens post-hoc on the flushed WORD value in ``_note_heredoc_word``.
+_HEREDOC_OPS: Final[tuple[str, str]] = ("<<-", "<<")
 
 
 # ANSI-C escape decoding table for ``$'...'`` per bash man-page.
@@ -215,6 +222,23 @@ def _decode_ansi_c(literal: str) -> str:
     return "".join(out)
 
 
+def _heredoc_delimiter_from_glued_token(value: str) -> tuple[str, bool] | None:
+    """Return ``(delimiter, strip_tabs)`` iff ``value`` is a GLUED heredoc token.
+
+    ``<<EOF`` / ``<<-EOF`` / ``<<'EOF'`` / ``<<"EOF"`` all fuse the operator and
+    delimiter into ONE flushed word -- a quote consumed immediately after ``<<``
+    never flushes mid-token (:meth:`_LexerState.begin_token` only records a NEW
+    start when no token is already open), so the decoded delimiter text lands in
+    the SAME token as the operator prefix. Returns ``None`` for the bare
+    space-separated operator alone (``value in _HEREDOC_OPS`` with nothing
+    trailing) or a value with no heredoc-op prefix at all.
+    """
+    for op in _HEREDOC_OPS:
+        if value.startswith(op) and len(value) > len(op):
+            return value[len(op) :], op == "<<-"
+    return None
+
+
 @dataclass
 class _LexerState:
     """Mutable state shared by the lexer's character handlers."""
@@ -225,6 +249,9 @@ class _LexerState:
     in_token: bool
     i: int
     token_start: int = 0
+    pending_heredocs: list[tuple[str, bool]] = field(default_factory=list)
+    _await_heredoc_delim: bool = False
+    _await_heredoc_strip_tabs: bool = False
 
     def begin_token(self) -> None:
         """Record the raw-source start index when a fresh token opens."""
@@ -235,9 +262,34 @@ class _LexerState:
     def flush(self) -> None:
         if self.in_token:
             raw = self.command[self.token_start : self.i]
-            self.tokens.append(Token("".join(self.current), TokenKind.WORD, raw=raw))
+            value = "".join(self.current)
+            self.tokens.append(Token(value, TokenKind.WORD, raw=raw))
             self.current.clear()
             self.in_token = False
+            self._note_heredoc_word(value)
+
+    def _note_heredoc_word(self, value: str) -> None:
+        """Queue a heredoc body for consumption if ``value`` opens or completes one.
+
+        A heredoc redirect (``<<``/``<<-``) is tokenized as an ordinary WORD (this
+        lexer classifies ``<``/``>`` textually downstream, not as lexer-level
+        operators — see :func:`token_is_transport_construct`), so the delimiter
+        must be recognised across TWO shapes: space-separated (``<< 'EOF'`` —
+        this word IS the bare operator, the delimiter is the NEXT flushed word) or
+        glued (``<<EOF`` / ``<<-EOF`` / ``<<'EOF'`` — quote consumption never
+        flushes mid-token, so operator and delimiter fuse into one word).
+        """
+        if self._await_heredoc_delim:
+            self._await_heredoc_delim = False
+            self.pending_heredocs.append((value, self._await_heredoc_strip_tabs))
+            return
+        glued = _heredoc_delimiter_from_glued_token(value)
+        if glued is not None:
+            self.pending_heredocs.append(glued)
+            return
+        if value in _HEREDOC_OPS:
+            self._await_heredoc_delim = True
+            self._await_heredoc_strip_tabs = value == "<<-"
 
     def append_op(self, op: str, consumed: int) -> None:
         self.flush()
@@ -254,19 +306,60 @@ def _consume_line_continuation(state: _LexerState) -> None:
         state.i = j + 1
 
 
+def _consume_pending_heredocs(state: _LexerState) -> None:
+    r"""Advance ``state.i`` past every queued heredoc body, in delimiter order.
+
+    Called once the newline that starts the heredoc body has already been
+    consumed (``state.i`` sits at the first character of the body). Bash
+    fulfills multiple heredocs opened on one logical line in the order their
+    delimiters were declared, so the queue is drained front-to-back. Each body
+    is read line-by-line from the RAW command text -- never re-tokenized -- so
+    its content (arbitrary prose, code, even further ``<<``/``$(...)``-looking
+    text) can never be mistaken for further shell syntax or fragment the
+    command into bogus extra segments (the #1415/#1213 all-segments bug this
+    fixes: a heredoc body's own newlines were previously emitted as command-
+    separator tokens, splitting one logical redirect into many bogus
+    "commands"). A line exactly equal to the delimiter (leading tabs stripped
+    first when the operator was ``<<-``) terminates that heredoc; an
+    unterminated heredoc (EOF reached with no matching line) stops at end of
+    input rather than looping forever.
+    """
+    n = len(state.command)
+    for delimiter, strip_tabs in state.pending_heredocs:
+        while state.i <= n:
+            line_end = state.command.find("\n", state.i)
+            at_eof = line_end == -1
+            end = n if at_eof else line_end
+            line = state.command[state.i : end]
+            candidate = line.lstrip("\t") if strip_tabs else line
+            state.i = n if at_eof else end + 1
+            if candidate == delimiter or at_eof:
+                break
+    state.pending_heredocs.clear()
+
+
 def _consume_newline_operator(state: _LexerState) -> None:
     r"""Emit a single ``\n`` operator for a bare newline / ``\r\n``.
 
     ``raw`` carries the verbatim newline span (``"\n"`` or ``"\r\n"``) so the
     invariant "every token kind has a populated ``raw``" holds; the decoded
     ``value`` is normalised to ``"\n"`` regardless of the source line ending.
+
+    A newline that follows a heredoc-open (``state.pending_heredocs`` non-empty)
+    is the boundary that starts the heredoc body -- every queued body is
+    consumed verbatim (:func:`_consume_pending_heredocs`) before the logical
+    ``\n`` operator is emitted, so the heredoc-carrying segment is properly
+    separated from whatever follows the terminator line without the body's
+    own newlines ever acting as command separators.
     """
     state.flush()
     ch = state.command[state.i]
     consume = 2 if ch == "\r" and state.i + 1 < len(state.command) and state.command[state.i + 1] == "\n" else 1
     raw = state.command[state.i : state.i + consume]
-    state.tokens.append(Token("\n", TokenKind.OP, raw=raw))
     state.i += consume
+    if state.pending_heredocs:
+        _consume_pending_heredocs(state)
+    state.tokens.append(Token("\n", TokenKind.OP, raw=raw))
 
 
 def _match_operator(state: _LexerState) -> str | None:
