@@ -36,6 +36,12 @@ def _configured_review_skill(skill: str) -> Iterator[None]:
         yield
 
 
+@contextmanager
+def _repo_is_overlay_own(*, is_own: bool) -> Iterator[None]:
+    with patch("teatree.core.gates.review_skill_gate.ticket_repo_is_overlay_own", return_value=is_own):
+        yield
+
+
 class TestReviewingRequiresReviewSkillEvidence(TestCase):
     def _ticket_ready_for_review(self) -> Ticket:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.TESTED)
@@ -82,6 +88,46 @@ class TestReviewingRequiresReviewSkillEvidence(TestCase):
             pytest.raises(ReviewSkillEvidenceError, match="ac-reviewing-codebase"),
         ):
             self._visit_reviewing(ticket)
+
+
+class TestReviewSkillGateRepoScoping(TestCase):
+    """A ticket reached only through the overlay's broader workspace-repo routing is exempt (#2895).
+
+    ``ticket_repo_is_overlay_own`` itself is exercised end-to-end (real
+    overlay + constructed ``issue_url``) in ``tests/test_overlay_loader.py``;
+    here it's patched directly so this file keeps testing only the gate's
+    wiring, matching ``_configured_review_skill``'s style above.
+    """
+
+    def _ticket_ready_for_review(self) -> Ticket:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.TESTED)
+        Session.objects.create(ticket=ticket, agent_id="maker:coding")
+        return ticket
+
+    def _visit_reviewing(self, ticket: Ticket) -> None:
+        call_command("lifecycle", "visit-phase", str(ticket.pk), "reviewing", agent_id="cold-reviewer")
+
+    def test_routed_through_ticket_skips_evidence_requirement(self) -> None:
+        ticket = self._ticket_ready_for_review()
+        with _configured_review_skill("ac-reviewing-codebase"), _repo_is_overlay_own(is_own=False):
+            self._visit_reviewing(ticket)
+        session = ticket.sessions.first()
+        assert session is not None
+        assert "reviewing" in session.visited_phases
+
+    def test_own_repo_ticket_still_requires_evidence(self) -> None:
+        """Regression guard: the narrowing must not leak into genuine same-repo tickets."""
+        ticket = self._ticket_ready_for_review()
+        with (
+            _configured_review_skill("ac-reviewing-codebase"),
+            _repo_is_overlay_own(is_own=True),
+            pytest.raises(ReviewSkillEvidenceError, match="ac-reviewing-codebase"),
+        ):
+            self._visit_reviewing(ticket)
+        session = ticket.sessions.first()
+        assert session is not None
+        session.refresh_from_db()
+        assert "reviewing" not in (session.visited_phases or [])
 
 
 class TestRecordReviewSkillRun(TestCase):

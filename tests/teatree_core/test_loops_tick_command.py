@@ -203,7 +203,7 @@ class TestPerLoopConnectorIsolation(django.test.TestCase):
         overlays = {"alpha": _CleanOverlay(), "beta": _SlackDownOverlay()}
         with (
             patch("teatree.core.connector_preflight.get_all_overlays", return_value=overlays),
-            patch("teatree.core.overlay_loader.get_all_overlay_names", return_value=list(overlays)),
+            patch("teatree.core.overlay_loader.OverlayConfigResolver.all_names", return_value=list(overlays)),
             patch.object(LoopLease.objects, "claim_ownership", return_value=(True, "me")),
             patch.object(LoopLease.objects, "acquire", return_value=True),
             patch.object(LoopLease.objects, "release"),

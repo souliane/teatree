@@ -12,7 +12,7 @@ from django.test import TestCase
 
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayBase, OverlayConfig, ProvisionStep
-from teatree.core.overlay_loader import get_all_overlay_names, get_overlay, reset_overlay_cache
+from teatree.core.overlay_loader import OverlayConfigResolver, get_overlay, reset_overlay_cache
 from teatree.utils.run import CommandFailedError
 
 
@@ -185,13 +185,13 @@ class TestValidatePrRequiredSections(TestCase):
         assert _ConfigMetadata().validate_pr(title, body) == {"errors": [], "warnings": []}
 
 
-class TestGetAllOverlayNames(TestCase):
+class TestOverlayConfigResolverAllNames(TestCase):
     def test_includes_entry_point_overlays(self) -> None:
         with patch(
             "teatree.core.overlay_loader._discover_overlays",
             return_value={"ep-overlay": DummyOverlay()},
         ):
-            names = get_all_overlay_names()
+            names = OverlayConfigResolver.all_names()
         assert "ep-overlay" in names
 
     def test_includes_path_only_toml_overlays(self) -> None:
@@ -209,7 +209,7 @@ class TestGetAllOverlayNames(TestCase):
                     "toml-config-only": {"github_token_pass_key": "key"},
                 },
             }
-            names = get_all_overlay_names()
+            names = OverlayConfigResolver.all_names()
         assert "ep-overlay" in names
         assert "toml-path-only" in names
         assert "toml-config-only" not in names
