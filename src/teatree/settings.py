@@ -161,8 +161,8 @@ TASKS = {
 # ``agent_runtime`` user setting (config/enums.py ``AgentRuntime``), resolved by
 # ``core.headless_dispatch.runs_in_session`` — there is no separate Django
 # kill-switch. ``interactive`` (default) keeps phase work in the in-session
-# ``/loop`` slot; ``sdk_oauth`` / ``sdk_apikey`` / ``api`` run it headless via
-# ``agents/headless.py``.
+# ``/loop`` slot; ``headless`` runs it via ``agents/headless.py``, behind the
+# two-layer ``agent_harness`` / ``agent_harness_provider`` pair (#2887).
 
 # Repair-loop per-phase iteration budget (#2009). A ticket-phase may re-queue at
 # most this many attempts before the re-queue chokepoint

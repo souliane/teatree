@@ -65,9 +65,9 @@ def _build_options(
     headless run executes a real task and needs the real environment, skills, and
     project context.
 
-    ``env`` (when supplied by :func:`_runtime_child_env`) pins the credential for
-    the chosen ``agent_runtime`` on the spawned ``claude`` child; ``None`` leaves
-    the SDK default (inherit the ambient env), byte-identical to before.
+    ``env`` (when supplied by :func:`_provider_child_env`) pins the credential for
+    the chosen ``agent_harness_provider`` on the spawned ``claude`` child; ``None``
+    leaves the SDK default (inherit the ambient env), byte-identical to before.
     """
     cwd = _resolve_task_cwd(task)
     add_dirs = [cwd] if cwd else []

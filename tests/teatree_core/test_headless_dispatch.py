@@ -34,7 +34,7 @@ class TestLoopDispatchRefusal(TestCase):
         assert "agent_runtime" in reason
 
     def test_registered_phase_allowed_under_headless_runtime(self) -> None:
-        ConfigSetting.objects.set_value("agent_runtime", "sdk_oauth")
+        ConfigSetting.objects.set_value("agent_runtime", "headless")
         task = self._make_task(phase="answering")
         assert loop_dispatch_refusal(task) is None
 

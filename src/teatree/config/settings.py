@@ -14,6 +14,7 @@ from typing import Any
 
 from teatree.config.enums import (
     AgentHarness,
+    AgentHarnessProvider,
     AgentRuntime,
     Autonomy,
     EvalCredential,
@@ -75,6 +76,8 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "speed": Speed.parse,
     "agent_runtime": AgentRuntime.parse,
     "agent_harness": AgentHarness.parse,
+    "agent_harness_provider": AgentHarnessProvider.parse,
+    "chinese_models_allowed": _parse_strict_bool,
     "eval_credential": EvalCredential.parse,
     "contribute": _parse_strict_bool,
     "excluded_skills": _parse_str_list,
@@ -240,6 +243,8 @@ ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_SPEED": ("speed", Speed.parse),
     "T3_AGENT_RUNTIME": ("agent_runtime", AgentRuntime.parse),
     "T3_AGENT_HARNESS": ("agent_harness", AgentHarness.parse),
+    "T3_AGENT_HARNESS_PROVIDER": ("agent_harness_provider", AgentHarnessProvider.parse),
+    "T3_CHINESE_MODELS_ALLOWED": ("chinese_models_allowed", _parse_env_bool),
     "T3_EVAL_CREDENTIAL": ("eval_credential", EvalCredential.parse),
     "T3_ON_BEHALF_POST_MODE": ("on_behalf_post_mode", OnBehalfPostMode.parse),
     "T3_MISSING_ISSUE_POLICY": ("missing_issue_ref_policy", MissingIssuePolicy.parse),
@@ -305,21 +310,52 @@ class UserSettings:
     excluded_skills: list[str] = field(default_factory=list)
     mode: Mode = Mode.INTERACTIVE
     autonomy: Autonomy = Autonomy.BABYSIT
-    # The single runtime selector for loop-dispatched phase agents (those whose
+    # The single LANE selector for loop-dispatched phase agents (those whose
     # (role, phase) has a registered phase sub-agent). ``interactive`` (default,
     # today's behaviour) dispatches them in-session via the ``/loop`` slot's
-    # ``Agent`` tool; ``sdk_oauth`` / ``sdk_apikey`` / ``api`` run them headless
-    # via ``agents/headless.py`` (OAuth subscription / metered API key / future
-    # raw-API runner). Per-overlay overridable; ``T3_AGENT_RUNTIME`` env wins.
+    # ``Agent`` tool; ``headless`` runs them via ``agents/headless.py`` behind the
+    # two-layer ``agent_harness`` (transport) / ``agent_harness_provider``
+    # (credential) pair (#2887). Per-overlay overridable; ``T3_AGENT_RUNTIME`` env
+    # wins.
     agent_runtime: AgentRuntime = AgentRuntime.INTERACTIVE
-    # Which in-process TRANSPORT a headless run uses — the harness backend
-    # (#2565). Orthogonal to ``agent_runtime`` (interactive/headless + credential):
-    # once a run IS headless, this picks the transport that opens the agent session
-    # behind the ``teatree.agents.harness.Harness`` protocol. ``claude_sdk``
-    # (default, today's behaviour) is the ``claude-agent-sdk`` backend;
-    # ``pydantic_ai`` (#2885) is the OrcaRouter-BYOK, OpenAI-compatible backend.
-    # Per-overlay overridable; ``T3_AGENT_HARNESS`` env wins.
+    # Layer 1 of the two-layer harness config model (#2887): which in-process
+    # TRANSPORT a headless run uses. Orthogonal to ``agent_runtime`` (which LANE —
+    # interactive vs headless — a task dispatches into): once a run IS headless,
+    # this picks the transport that opens the agent session behind the
+    # ``teatree.agents.harness.Harness`` protocol. ``claude_sdk`` (default, today's
+    # behaviour) is the ``claude-agent-sdk`` backend; ``pydantic_ai`` (#2885) is the
+    # OrcaRouter-BYOK, OpenAI-compatible backend. Per-overlay overridable;
+    # ``T3_AGENT_HARNESS`` env wins.
     agent_harness: AgentHarness = AgentHarness.CLAUDE_SDK
+    # Layer 2 of the two-layer harness config model (#2887): the provider/
+    # credential a headless run authenticates with, CONSTRAINED by Layer 1
+    # (``AgentHarnessProvider.valid_for(agent_harness)`` — see the enum
+    # docstring for the full constraint table). Default ``None`` — NO explicit
+    # pin: a ``ClaudeSdkHarness`` dispatch inherits the ambient environment
+    # unchanged (today's behaviour, and the legacy default the pre-#2887
+    # ``agent_runtime=interactive``/``api`` fallthrough exercised), so an
+    # operator who never touches this setting is never forced through an eager
+    # credential lookup they haven't configured. An explicit ``subscription_oauth``
+    # forces the plan's OAuth token (stripping the API key) — the ``claude_sdk``
+    # default STANCE once pinned. ``api_key`` forces the metered key — the
+    # ``claude_sdk``-only opt-in. ``orca_router_byok`` is the sole implemented
+    # ``pydantic_ai`` provider today — ``PydanticAiHarness`` does not yet branch
+    # on this field (there is only one option), so it ships wired for the
+    # constraint table and a future Vertex binding rather than as an active
+    # branch on that path. Per-overlay overridable; ``T3_AGENT_HARNESS_PROVIDER``
+    # env wins.
+    agent_harness_provider: AgentHarnessProvider | None = None
+    # Whether a Chinese-origin model (DeepSeek, Qwen, GLM — see
+    # ``docs/design/autonomous-lane-redesign.md`` § 3) may be selected through the
+    # ``pydantic_ai`` harness's OrcaRouter routing handle (#2887). Default ``True``:
+    # teatree's own default posture is permissive (the no-Chinese-models
+    # constraint is a client-work policy, not a teatree one) — an overlay serving
+    # client work under that policy overrides this to ``False`` for itself.
+    # Enforced by ``teatree.agents.model_tiering.assert_chinese_model_allowed``,
+    # called from ``PydanticAiHarness`` before a resolved OrcaRouter model name is
+    # used; a no-op today since no shipped ``TIER_MODELS`` entry is Chinese-origin.
+    # Per-overlay overridable; ``T3_CHINESE_MODELS_ALLOWED`` env wins.
+    chinese_models_allowed: bool = True
     # Which Anthropic credential the automated eval lane (the metered ``api``
     # backend + the LLM judge) authenticates with. ``subscription_oauth`` (default,
     # reverses #2707) rides the plan's OAuth token — no per-token bill, but a

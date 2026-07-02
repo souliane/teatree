@@ -178,7 +178,7 @@ class TestNeedsUserInputHeadlessLane(TestCase):
         return task
 
     def test_headless_runtime_records_correlated_deferred_question(self) -> None:
-        ConfigSetting.objects.set_value("agent_runtime", "sdk_oauth")
+        ConfigSetting.objects.set_value("agent_runtime", "headless")
         task = self._parked_headless_task()
 
         task.complete()

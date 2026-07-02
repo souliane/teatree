@@ -316,7 +316,7 @@ class TestTaskCommands(TestCase):
         assert "routing_error" in attempt.result
 
     def test_work_next_sdk_headless_runtime_allows_loop_dispatched_phase(self) -> None:
-        ConfigSetting.objects.set_value("agent_runtime", "sdk_oauth")
+        ConfigSetting.objects.set_value("agent_runtime", "headless")
         ticket = Ticket.objects.create(overlay="test")
         session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent-1")
         task = Task.objects.create(ticket=ticket, session=session, phase="answering")

@@ -30,7 +30,7 @@ from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIChatModelSettings, ReasoningEffort
 from pydantic_ai.providers.openai import OpenAIProvider
 
-from teatree.agents.model_tiering import DEFAULT_TIER, HARNESS_EFFORT_SCALE, resolve_tier
+from teatree.agents.model_tiering import DEFAULT_TIER, HARNESS_EFFORT_SCALE, assert_chinese_model_allowed, resolve_tier
 from teatree.config import AgentHarness, get_effective_settings
 from teatree.llm.credentials import resolve_orca_router_provider_config
 
@@ -213,7 +213,11 @@ class PydanticAiHarness:
     the harness never requires a live credential) so tests drive it with
     pydantic_ai's own :class:`~pydantic_ai.models.test.TestModel` /
     :class:`~pydantic_ai.models.function.FunctionModel` doubles, with no network
-    and no :class:`~teatree.llm.credentials.CredentialError` risk.
+    and no :class:`~teatree.llm.credentials.CredentialError` risk. A resolved
+    model name is checked against the Chinese-models allowlist
+    (:func:`~teatree.agents.model_tiering.assert_chinese_model_allowed`, #2887)
+    before it reaches the provider — a no-op today since no shipped
+    :data:`~teatree.agents.model_tiering.TIER_MODELS` entry is Chinese-origin.
     """
 
     def __init__(self, *, model: Model | None = None) -> None:
@@ -222,9 +226,13 @@ class PydanticAiHarness:
     def _resolve_model(self, options: ClaudeAgentOptions) -> Model:
         if self._model is not None:
             return self._model
+        model_name = options.model or resolve_tier(DEFAULT_TIER)
+        # Checked BEFORE the credential resolution below: an allowlist policy
+        # violation is a config-policy refusal, not a missing-credential one, and
+        # should surface as such even when OrcaRouter credentials are absent too.
+        assert_chinese_model_allowed(model_name)
         config = resolve_orca_router_provider_config()
         provider = OpenAIProvider(base_url=config.base_url, api_key=config.api_key)
-        model_name = options.model or resolve_tier(DEFAULT_TIER)
         return OpenAIChatModel(model_name, provider=provider)
 
     @asynccontextmanager
