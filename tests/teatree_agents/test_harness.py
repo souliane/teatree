@@ -58,6 +58,25 @@ def test_concrete_impls_satisfy_the_harness_protocols() -> None:
         assert callable(session.interrupt)
 
 
+def test_pydantic_ai_harness_open_enters_and_exits_the_agent() -> None:
+    # ``Agent.__aenter__``/``__aexit__`` own the provider's HTTP client
+    # lifecycle — a bare ``Agent(...)`` with no ``async with`` never closes it.
+    # Assert the entered/exited transition directly since pydantic_ai exposes
+    # no public "is the client closed" probe.
+    harness = PydanticAiHarness(model=TestModel())
+    options = ClaudeAgentOptions()
+
+    async def drive() -> tuple[int, int]:
+        async with harness.open(options) as session:
+            assert isinstance(session, PydanticAiHarnessSession)
+            entered_count_inside = session._agent._entered_count
+        return entered_count_inside, session._agent._entered_count
+
+    inside, after = asyncio.run(drive())
+    assert inside == 1
+    assert after == 0
+
+
 class TestResolveHarness(TestCase):
     @pytest.fixture(autouse=True)
     def _isolate_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -262,6 +281,70 @@ class TestPydanticAiHarnessSession:
             return await consumer
 
         assert asyncio.run(drive()) == []
+
+    def test_interrupt_cancels_the_underlying_stream_not_just_the_local_task(self) -> None:
+        # stream.cancel() (not just cancelling the local drain asyncio.Task)
+        # stops token generation, closes the connection, and records the
+        # interrupted state — pydantic_ai's own StreamedRunResult.is_complete
+        # flips True as a direct side effect of THAT call.
+        chunk_seen = asyncio.Event()
+
+        async def slow_stream(_messages: object, _info: AgentInfo) -> AsyncIterator[str]:
+            for i in range(50):
+                yield f"chunk{i} "
+                chunk_seen.set()
+                await asyncio.sleep(0.05)
+
+        agent = Agent(FunctionModel(stream_function=slow_stream))
+        session = PydanticAiHarnessSession(agent, model_name="test")
+
+        async def drive() -> bool:
+            await session.query("hello")
+            consumer = asyncio.ensure_future(_collect_all(session))
+            await chunk_seen.wait()
+            stream = session._active_stream
+            assert stream is not None
+            await session.interrupt()
+            await consumer
+            return stream.is_complete
+
+        assert asyncio.run(drive()) is True
+
+    def test_external_cancellation_propagates_instead_of_being_swallowed(self) -> None:
+        # A timeout unrelated to interrupt() (e.g. headless._drive_with_heartbeat's
+        # asyncio.wait_for runtime ceiling) must NOT be silently absorbed as if it
+        # were a deliberate interrupt() — swallowing it would report an empty
+        # result instead of surfacing the runtime-breach TimeoutError the
+        # watchdog contract depends on.
+        async def slow_stream(_messages: object, _info: AgentInfo) -> AsyncIterator[str]:
+            for i in range(50):
+                await asyncio.sleep(0.05)
+                yield f"chunk{i} "
+
+        agent = Agent(FunctionModel(stream_function=slow_stream))
+        session = PydanticAiHarnessSession(agent, model_name="test")
+
+        async def drive() -> list[object]:
+            await session.query("hello")
+            return await asyncio.wait_for(_collect_all(session), timeout=0.2)
+
+        with pytest.raises(TimeoutError):
+            asyncio.run(drive())
+
+    def test_usage_and_model_usage_are_populated_from_the_stream(self) -> None:
+        agent = Agent(TestModel(custom_output_text="hi there"))
+        session = PydanticAiHarnessSession(agent, model_name="gpt-test")
+
+        async def drive() -> list[object]:
+            await session.query("hello")
+            return [m async for m in session.receive_response()]
+
+        _, result = asyncio.run(drive())
+
+        assert isinstance(result, ResultMessage)
+        assert result.usage is not None
+        assert result.usage["input_tokens"] is not None
+        assert result.model_usage == {"gpt-test": {}}
 
 
 async def _collect_all(session: PydanticAiHarnessSession) -> list[object]:

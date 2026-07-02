@@ -21,7 +21,7 @@ the ``FakeHarnessSession`` test double yielding the identical shape.
 
 import asyncio
 from collections.abc import AsyncIterator
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
 from typing import TYPE_CHECKING, Protocol, cast
 
 from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient, ResultMessage, TextBlock
@@ -116,11 +116,18 @@ class PydanticAiHarnessSession:
     keeps ``message_history`` across calls, matching ``ClaudeSDKClient``'s
     contract — proved by :mod:`tests.teatree_agents.test_harness`.
 
-    ``interrupt`` cancels the ASYNCIO TASK draining the in-flight stream (not
-    pydantic_ai's own ``StreamedRunResult.cancel``) — incremental draining via
-    ``stream_text(delta=True)`` yields control at every chunk, which is a genuine
-    ``asyncio`` cancellation point a concurrent ``task.cancel()`` reliably
-    interrupts; a single blocking ``await stream.get_output()`` is not.
+    ``interrupt`` cancels the pydantic_ai ``StreamedRunResult`` (stops token
+    generation, closes the underlying connection, records the interrupted state
+    in message history) AND the local drain task, and sets ``_interrupted`` so
+    ``receive_response`` can tell "I was deliberately interrupted" apart from an
+    UNRELATED external cancellation of the awaiting coroutine itself (e.g.
+    :func:`headless._drive_with_heartbeat`'s ``asyncio.wait_for`` runtime
+    ceiling) — awaiting a genuine ``asyncio.Task`` propagates the awaiter's own
+    cancellation straight into it, so both sources raise the identical
+    ``CancelledError`` at the identical ``await task`` line; only the flag
+    disambiguates them. Swallowing the latter would silently report an empty
+    result instead of the runtime-breach ``stuck_reason`` the watchdog contract
+    requires.
     """
 
     def __init__(self, agent: Agent[None, str], *, model_name: str) -> None:
@@ -129,6 +136,8 @@ class PydanticAiHarnessSession:
         self._history: list[ModelMessage] = []
         self._pending_prompt: str | None = None
         self._active_task: asyncio.Task[str] | None = None
+        self._active_stream: StreamedRunResult[None, str] | None = None
+        self._interrupted = False
 
     async def query(self, prompt: str) -> None:
         self._pending_prompt = prompt
@@ -137,16 +146,25 @@ class PydanticAiHarnessSession:
         if self._pending_prompt is None:
             return
         prompt, self._pending_prompt = self._pending_prompt, None
+        self._interrupted = False
         async with self._agent.run_stream(prompt, message_history=self._history) as stream:
+            self._active_stream = stream
             task = asyncio.ensure_future(self._drain(stream))
             self._active_task = task
             try:
                 text = await task
             except asyncio.CancelledError:
-                return
+                if self._interrupted:
+                    return
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+                raise
             finally:
                 self._active_task = None
+                self._active_stream = None
             self._history = stream.all_messages()
+            run_usage = stream.usage
         yield AssistantMessage(content=[TextBlock(text=text)], model=self._model_name)
         yield ResultMessage(
             subtype="success",
@@ -156,9 +174,14 @@ class PydanticAiHarnessSession:
             num_turns=1,
             session_id="",
             total_cost_usd=None,
-            usage=None,
+            usage={
+                "input_tokens": run_usage.input_tokens,
+                "output_tokens": run_usage.output_tokens,
+                "cache_read_input_tokens": run_usage.cache_read_tokens,
+                "cache_creation_input_tokens": run_usage.cache_write_tokens,
+            },
             result=text,
-            model_usage=None,
+            model_usage={self._model_name: {}},
         )
 
     @staticmethod
@@ -167,8 +190,12 @@ class PydanticAiHarnessSession:
         return "".join(parts)
 
     async def interrupt(self) -> None:
-        if self._active_task is not None:
-            self._active_task.cancel()
+        if self._active_task is None:
+            return
+        self._interrupted = True
+        if self._active_stream is not None:
+            await self._active_stream.cancel()
+        self._active_task.cancel()
 
 
 class PydanticAiHarness:
@@ -206,7 +233,12 @@ class PydanticAiHarness:
         effort = _resolve_effort(options)
         model_settings = OpenAIChatModelSettings(openai_reasoning_effort=effort) if effort else None
         agent = Agent(model, system_prompt=_extract_system_prompt(options), model_settings=model_settings)
-        yield PydanticAiHarnessSession(agent, model_name=model.model_name)
+        # ``async with agent:`` enters the model so the provider's HTTP client
+        # (OrcaRouter's OpenAI-compatible connection pool) closes cleanly on
+        # exit — a bare ``Agent(...)`` never closes it, leaking a client per
+        # dispatch until GC.
+        async with agent:
+            yield PydanticAiHarnessSession(agent, model_name=model.model_name)
 
 
 def resolve_harness() -> Harness:
