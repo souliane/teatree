@@ -26,6 +26,11 @@ yields ZERO specs, so the handler stays silent — never an exception into the 3
 so the three infra loops still register even when the DB is unreachable (only the
 DB-loop directives fall away). With no enabled DB loops AND no reactive slots
 resolvable, nothing is emitted.
+
+**Verify-by-reread (#1192).** This is the primary, higher-traffic live loop
+registration path (every SessionStart with enabled loops), so it carries the
+same ``t3 loop verify-cron`` confirm-step nudge as the manual ``/t3:loops``
+skill workflow — see :mod:`teatree.core.verify_by_reread`.
 """
 
 import json
@@ -123,6 +128,17 @@ def _write_prose(loops: list[dict], stream: _Writable) -> None:
         stream.write(
             f'  - {entry["slot_id"]}: CronCreate(cron="{entry["cron"]}", prompt="{entry["prompt"]}", recurring=true)\n'
         )
+    stream.write(
+        "Verify-by-reread (#1192): each CronCreate's own success is not proof the registration is visible. "
+        "After calling CronCreate for every loop above, call CronList once, save its JSON output, then run "
+        "`t3 loop verify-cron <name> --cron-list-json <path>` for each loop below (or pipe: `... | t3 loop "
+        "verify-cron <name> --cron-list-json -`). Exits 0 and prints `confirmed: ...` when a loop's "
+        "registration is present in the snapshot; exits non-zero with a reason when it is not — retry that "
+        "loop's CronCreate in that case:\n"
+    )
+    for entry in loops:
+        name = loop_name_from_prompt(entry["prompt"]) or entry["slot_id"]
+        stream.write(f"  - {name}: t3 loop verify-cron {name} --cron-list-json <path>\n")
 
 
 def _write_reactive_prose(directives: list[str], stream: _Writable) -> None:
