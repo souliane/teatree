@@ -13,7 +13,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from teatree.config.enums import AgentRuntime, Autonomy, MissingIssuePolicy, Mode, OnBehalfPostMode, Speed, TeamsDisplay
+from teatree.config.enums import (
+    AgentHarness,
+    AgentRuntime,
+    Autonomy,
+    MissingIssuePolicy,
+    Mode,
+    OnBehalfPostMode,
+    Speed,
+    TeamsDisplay,
+)
 from teatree.config_mr_reminder import MrReminderConfig, parse_mr_reminder_setting
 from teatree.config_speak import parse_speak_setting
 from teatree.paths import DATA_DIR
@@ -284,6 +293,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "autonomy": Autonomy.parse,
     "speed": Speed.parse,
     "agent_runtime": AgentRuntime.parse,
+    "agent_harness": AgentHarness.parse,
     "contribute": _parse_strict_bool,
     "excluded_skills": _parse_str_list,
     "loop_cadence_seconds": _parse_strict_int,
@@ -442,6 +452,7 @@ ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_MODE": ("mode", Mode.parse),
     "T3_SPEED": ("speed", Speed.parse),
     "T3_AGENT_RUNTIME": ("agent_runtime", AgentRuntime.parse),
+    "T3_AGENT_HARNESS": ("agent_harness", AgentHarness.parse),
     "T3_ON_BEHALF_POST_MODE": ("on_behalf_post_mode", OnBehalfPostMode.parse),
     "T3_MISSING_ISSUE_POLICY": ("missing_issue_ref_policy", MissingIssuePolicy.parse),
     "T3_ON_BEHALF_AUTO_ACTIONS": ("on_behalf_auto_actions", _parse_env_str_list),
@@ -458,30 +469,6 @@ ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_HOOK_FETCH_TITLES": ("hook_fetch_titles", _parse_env_bool_default_on),
     "T3_AUTOLOAD": ("autoload", _parse_env_bool),
 }
-
-
-# The irreducible bootstrap set (#1775): settings that must be readable BEFORE
-# Django — and therefore the DB — is available, so they can never move into the
-# ``ConfigSetting`` store. The publish gate reads ``private_repos`` from the raw
-# ``[teatree]`` toml with ``tomllib`` in a hook that runs with no Django;
-# ``DATABASE_URL`` / ``data_dir`` / ``DJANGO_SETTINGS_MODULE`` are the env/toml
-# keys the settings module itself needs to even OPEN the DB. This typed allowlist
-# is the single machine-checked home for that boundary (replacing the former
-# prose-only docstring): the disjoint-registries invariant
-# ``BOOTSTRAP_FILE_ONLY_SETTINGS ∩ OVERLAY_OVERRIDABLE_SETTINGS == ∅`` (a fitness
-# function in the tests) makes it
-# impossible to make a bootstrap key DB-overridable without turning a test red,
-# and ``config-setting set`` already refuses every key here (none is in the
-# overridable registry) so an admin can never stash a DB row for a file-only
-# setting.
-BOOTSTRAP_FILE_ONLY_SETTINGS: frozenset[str] = frozenset(
-    {
-        "DATABASE_URL",
-        "data_dir",
-        "DJANGO_SETTINGS_MODULE",
-        "private_repos",
-    }
-)
 
 
 @dataclass
@@ -551,6 +538,15 @@ class UserSettings:
     # via ``agents/headless.py`` (OAuth subscription / metered API key / future
     # raw-API runner). Per-overlay overridable; ``T3_AGENT_RUNTIME`` env wins.
     agent_runtime: AgentRuntime = AgentRuntime.INTERACTIVE
+    # Which in-process TRANSPORT a headless run uses — the harness backend
+    # (#2565). Orthogonal to ``agent_runtime`` (interactive/headless + credential):
+    # once a run IS headless, this picks the transport that opens the agent session
+    # behind the ``teatree.agents.harness.Harness`` protocol. ``claude_sdk``
+    # (default, today's behaviour) is the ``claude-agent-sdk`` backend; a future
+    # ``pydantic_ai`` provider-agnostic backend is reserved and
+    # ``resolve_harness`` refuses it until implemented (the ``AgentRuntime.API``
+    # precedent). Per-overlay overridable; ``T3_AGENT_HARNESS`` env wins.
+    agent_harness: AgentHarness = AgentHarness.CLAUDE_SDK
     # How much parallel work the orchestrator drives at once. The
     # conservative ``MEDIUM`` baseline means NO orchestrator fan-out — only
     # the intrinsic loop + PR sweep + per-overlay ``max_concurrent_auto_starts``

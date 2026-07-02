@@ -396,3 +396,49 @@ class AgentRuntime(StrEnum):
     def is_headless(self) -> bool:
         """True for every runtime except :attr:`INTERACTIVE` (the headless lane)."""
         return self is not AgentRuntime.INTERACTIVE
+
+
+class AgentHarness(StrEnum):
+    """Which in-process TRANSPORT drives a headless agent run — the harness backend.
+
+    Orthogonal to :class:`AgentRuntime`, which selects the interactive-vs-headless
+    lane and its credential: once a run IS headless, ``agent_harness`` picks the
+    in-process transport that opens the agent session behind the narrow
+    ``teatree.agents.harness.Harness`` protocol. Transport is not the same axis as
+    interactive/headless, so it is its own setting rather than a fold into
+    :class:`AgentRuntime`.
+
+    Tiers (default :attr:`CLAUDE_SDK`, today's behaviour):
+
+    *   :attr:`CLAUDE_SDK` (default) — the ``claude-agent-sdk`` transport
+        (:class:`~teatree.agents.harness.ClaudeSdkHarness`, wrapping
+        ``ClaudeSDKClient``). Byte-identical to the transport before the seam.
+    *   :attr:`PYDANTIC_AI` — a future provider-agnostic transport over a
+        configurable OpenAI-compatible router. Not yet implemented —
+        :func:`~teatree.agents.harness.resolve_harness` refuses it with a clear
+        ``NotImplementedError`` (mirroring the :attr:`AgentRuntime.API` precedent).
+
+    ``agent_harness`` is a DB-home setting: opt in via ``t3 <overlay>
+    config_setting set agent_harness pydantic_ai`` (per-overlay overridable with
+    ``--overlay <name>``) or the ``T3_AGENT_HARNESS`` environment variable — a
+    ``[teatree] agent_harness`` TOML value is ignored on read.
+    """
+
+    CLAUDE_SDK = "claude_sdk"
+    PYDANTIC_AI = "pydantic_ai"
+
+    @classmethod
+    def parse(cls, value: str) -> "AgentHarness":
+        """Parse an agent-harness string; invalid values raise ``ValueError``.
+
+        Mirrors :meth:`Mode.parse`: the conservative default
+        (:attr:`CLAUDE_SDK`) is applied by the caller when the setting is
+        absent, so a typo never silently switches the transport.
+        """
+        normalised = value.strip().lower()
+        try:
+            return cls(normalised)
+        except ValueError as exc:
+            valid = ", ".join(m.value for m in cls)
+            msg = f"Invalid agent_harness {value!r}; valid values: {valid}"
+            raise ValueError(msg) from exc

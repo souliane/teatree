@@ -1,11 +1,13 @@
 """Headless agent runner — executes tasks without a terminal.
 
-Drives ``claude-agent-sdk`` in-process: builds a real-environment
-:class:`~claude_agent_sdk.ClaudeAgentOptions`, runs the agent via
-:class:`~claude_agent_sdk.ClaudeSDKClient`, captures the typed messages it
-yields, and stores the result in ``TaskAttempt.result``. Unlike the clean-room
-eval runner (``teatree.eval.api_runner``), this path runs a REAL task: it keeps
-the developer's environment, skills, and context — no isolation, no
+Drives an in-process agent session behind the
+:class:`~teatree.agents.harness.Harness` seam: builds a real-environment
+:class:`~claude_agent_sdk.ClaudeAgentOptions`, opens a session via the harness
+backend selected by ``agent_harness`` (default: the ``claude-agent-sdk``
+``ClaudeSDKClient``), captures the typed messages it yields, and stores the
+result in ``TaskAttempt.result``. Unlike the clean-room eval runner
+(``teatree.eval.api_runner``), this path runs a REAL task: it keeps the
+developer's environment, skills, and context — no isolation, no
 ``setting_sources=[]``.
 
 Wires only to ``Task`` / ``TaskAttempt`` models — no dashboard, no
@@ -22,20 +24,14 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from claude_agent_sdk import (
-    AssistantMessage,
-    ClaudeAgentOptions,
-    ClaudeSDKClient,
-    RateLimitEvent,
-    ResultMessage,
-    TextBlock,
-)
+from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, RateLimitEvent, ResultMessage, TextBlock
 from claude_agent_sdk.types import RateLimitInfo, SystemPromptPreset
 from django.conf import settings
 from django.db import close_old_connections
 from django.db.models import Sum
 from django.utils import timezone
 
+from teatree.agents.harness import Harness, HarnessSession, resolve_harness
 from teatree.agents.headless_usage import _attempt_usage
 from teatree.agents.model_tiering import resolve_spawn_model
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA
@@ -238,8 +234,8 @@ def _limit_match(message: ResultMessage | None, rate_limit_info: RateLimitInfo |
 
 
 @dataclass(frozen=True)
-class _SdkOutcome:
-    """The captured result of one in-process Agent-SDK run.
+class HarnessOutcome:
+    """The captured result of one in-process harness-driven agent run.
 
     Exactly one of *stuck_reason* / *result* is meaningful: a watchdog breach
     sets *stuck_reason* and the run is recorded FAILED; otherwise the
@@ -267,12 +263,10 @@ def run_headless(
     from teatree.agents.prompt import build_system_context, build_task_prompt  # noqa: PLC0415
 
     runtime = get_effective_settings().agent_runtime
-    if runtime is AgentRuntime.API:
-        return _record_failure(
-            task,
-            error="agent_runtime=api (raw Anthropic Messages API runner) is not implemented yet; "
-            "use sdk_oauth or sdk_apikey",
-        )
+    backend = _resolve_backend_or_failure(task, runtime)
+    if isinstance(backend, TaskAttempt):
+        return backend
+    harness = backend
 
     skills = resolve_skill_bundle(phase=phase, overlay_skill_metadata=overlay_skill_metadata)
 
@@ -297,7 +291,7 @@ def run_headless(
     system_context = build_system_context(task, skills=skills, lifecycle_skill=lifecycle_skill)
     options = _build_options(task, system_context, phase=phase, skills=skills, env=child_env)
 
-    outcome = asyncio.run(_drive_with_heartbeat(task, prompt, options))
+    outcome = asyncio.run(_drive_with_heartbeat(task, prompt, options, harness))
 
     failure = _outcome_failure(task, outcome)
     if failure is not None:
@@ -305,7 +299,28 @@ def run_headless(
     return _record_success(task, outcome, phase=phase)
 
 
-def _outcome_failure(task: Task, outcome: _SdkOutcome) -> TaskAttempt | None:
+def _resolve_backend_or_failure(task: Task, runtime: AgentRuntime) -> Harness | TaskAttempt:
+    """Resolve the headless transport, or a recorded failure for an unimplemented backend.
+
+    Refuses the two not-yet-built selections loud and early, so neither reaches
+    the SDK boundary: the ``agent_runtime=api`` raw-Messages runner, and the
+    reserved ``agent_harness=pydantic_ai`` transport (via
+    :func:`~teatree.agents.harness.resolve_harness`). Folding both into one
+    helper keeps ``run_headless`` within its early-return budget.
+    """
+    if runtime is AgentRuntime.API:
+        return _record_failure(
+            task,
+            error="agent_runtime=api (raw Anthropic Messages API runner) is not implemented yet; "
+            "use sdk_oauth or sdk_apikey",
+        )
+    try:
+        return resolve_harness()
+    except NotImplementedError as exc:
+        return _record_failure(task, error=str(exc))
+
+
+def _outcome_failure(task: Task, outcome: HarnessOutcome) -> TaskAttempt | None:
     """Fold a non-success drive outcome into a recorded failure, or ``None``.
 
     Collapses the stuck-loop / usage-limit / error-result terminal cases into a
@@ -429,17 +444,21 @@ async def _drive_with_heartbeat(
     task: Task,
     prompt: str,
     options: ClaudeAgentOptions,
+    harness: Harness,
     *,
     watchdog: LoopWatchdog | None = None,
-) -> _SdkOutcome:
+) -> HarnessOutcome:
     """Run the agent in-process while sending lease heartbeats (#882, #997).
 
-    A concurrent heartbeat coroutine renews the task lease each tick and, on a
-    turn/cost ceiling breach, interrupts the SDK client so the in-flight agent
-    can flush its final status before the run unwinds. The wall-clock ceiling
-    is enforced with :func:`asyncio.wait_for`; a timeout interrupts the client
-    and is reported as a runtime breach. DB reads/writes run in a worker thread
-    so the event loop is never blocked.
+    The *harness* opens the in-flight session (``harness.open(options)``); the
+    driver talks to it through the narrow :class:`~teatree.agents.harness.HarnessSession`
+    surface, so the transport backend is swappable behind the seam. A concurrent
+    heartbeat coroutine renews the task lease each tick and, on a turn/cost
+    ceiling breach, interrupts the session so the in-flight agent can flush its
+    final status before the run unwinds. The wall-clock ceiling is enforced with
+    :func:`asyncio.wait_for`; a timeout interrupts the session and is reported as
+    a runtime breach. DB reads/writes run in a worker thread so the event loop is
+    never blocked.
     """
     if watchdog is None:
         watchdog = LoopWatchdog.from_settings()
@@ -454,7 +473,7 @@ async def _drive_with_heartbeat(
     started_at = time.monotonic()
     breach: list[str] = []
 
-    async with ClaudeSDKClient(options=options) as client:
+    async with harness.open(options) as session:
 
         async def _heartbeat() -> None:
             try:
@@ -472,7 +491,7 @@ async def _drive_with_heartbeat(
                     if reason and not breach:
                         breach.append(reason)
                         logger.warning("Watchdog interrupting stuck task %s: %s", task.pk, reason)
-                        await client.interrupt()
+                        await session.interrupt()
                         return
             finally:
                 # This coroutine's thread-offloaded DB work owns its own
@@ -482,19 +501,19 @@ async def _drive_with_heartbeat(
         heartbeat_task = asyncio.create_task(_heartbeat())
         try:
             timeout = watchdog.max_runtime_seconds or None
-            outcome = await asyncio.wait_for(_collect(client, prompt), timeout=timeout)
+            outcome = await asyncio.wait_for(_collect(session, prompt), timeout=timeout)
         except TimeoutError:
-            await client.interrupt()
+            await session.interrupt()
             elapsed = time.monotonic() - started_at
             reason = watchdog.breach_reason(task, elapsed_seconds=elapsed, usage=usage) or (
                 f"runtime ceiling exceeded: ran {elapsed:.0f}s without exiting"
             )
-            return _SdkOutcome(agent_text="", result_message=None, stuck_reason=reason)
+            return HarnessOutcome(agent_text="", result_message=None, stuck_reason=reason)
         finally:
             heartbeat_task.cancel()
 
     if breach:
-        return _SdkOutcome(
+        return HarnessOutcome(
             agent_text=outcome.agent_text,
             result_message=outcome.result_message,
             stuck_reason=breach[0],
@@ -503,7 +522,7 @@ async def _drive_with_heartbeat(
     return outcome
 
 
-async def _collect(client: ClaudeSDKClient, prompt: str) -> _SdkOutcome:
+async def _collect(session: HarnessSession, prompt: str) -> HarnessOutcome:
     """Send *prompt* and collect the agent's text + terminal ``ResultMessage`` + rejected window.
 
     A ``RateLimitEvent`` with ``status == "rejected"`` carries the SDK's typed
@@ -511,18 +530,18 @@ async def _collect(client: ClaudeSDKClient, prompt: str) -> _SdkOutcome:
     prefers over prose-grep. The LAST rejected one is kept so a hard limit hit at
     the end of the stream classifies the failure precisely.
     """
-    await client.query(prompt)
+    await session.query(prompt)
     text_parts: list[str] = []
     result_message: ResultMessage | None = None
     rate_limit_info: RateLimitInfo | None = None
-    async for message in client.receive_response():
+    async for message in session.receive_response():
         if isinstance(message, AssistantMessage):
             text_parts.extend(block.text for block in message.content if isinstance(block, TextBlock))
         elif isinstance(message, ResultMessage):
             result_message = message
         elif isinstance(message, RateLimitEvent) and message.rate_limit_info.status == "rejected":
             rate_limit_info = message.rate_limit_info
-    return _SdkOutcome(
+    return HarnessOutcome(
         agent_text="\n".join(text_parts),
         result_message=result_message,
         stuck_reason=None,
@@ -530,7 +549,7 @@ async def _collect(client: ClaudeSDKClient, prompt: str) -> _SdkOutcome:
     )
 
 
-def _record_success(task: Task, outcome: _SdkOutcome, *, phase: str = "") -> TaskAttempt:
+def _record_success(task: Task, outcome: HarnessOutcome, *, phase: str = "") -> TaskAttempt:
     """Record a successful SDK run via the shared recorder.
 
     The schema-key check, the #1284 phase-evidence gate, and the

@@ -11,7 +11,9 @@ import pytest
 from claude_agent_sdk.types import RateLimitType
 from django.test import TestCase, override_settings
 
+import teatree.agents.harness as harness_mod
 import teatree.agents.headless as headless_mod
+from teatree.agents.harness import ClaudeSdkHarness
 from teatree.agents.headless import (
     LoopWatchdog,
     TaskUsage,
@@ -213,7 +215,7 @@ class TestRunHeadlessRoutingRefusal(TestCase):
         ConfigSetting.objects.set_value("agent_runtime", "interactive")
         task = self._make_headless_task(phase="answering")
         with patch.object(
-            headless_mod,
+            harness_mod,
             "ClaudeSDKClient",
             side_effect=AssertionError("SDK client must not be built for a refused phase"),
         ):
@@ -760,7 +762,9 @@ class TestDriveWithHeartbeat(TestCase):
         messages = [_assistant_text("hello"), _result_message(session_id="s1", num_turns=2)]
         watchdog = LoopWatchdog(max_runtime_seconds=0, max_turns=0, max_cost_usd=0.0)
         with _fake_sdk(messages):
-            outcome = asyncio.run(_drive_with_heartbeat(self.task, "p", self._options(), watchdog=watchdog))
+            outcome = asyncio.run(
+                _drive_with_heartbeat(self.task, "p", self._options(), ClaudeSdkHarness(), watchdog=watchdog)
+            )
 
         assert outcome.stuck_reason is None
         assert outcome.agent_text == "hello"
@@ -778,7 +782,9 @@ class TestDriveWithHeartbeat(TestCase):
         messages = [_assistant_text("hello"), _result_message()]
         watchdog = LoopWatchdog(max_runtime_seconds=0, max_turns=0, max_cost_usd=0.0)
         with _fake_sdk(messages, delay=0.05), patch.object(headless_mod, "_HEARTBEAT_INTERVAL", 0.02):
-            outcome = asyncio.run(_drive_with_heartbeat(self.task, "p", self._options(), watchdog=watchdog))
+            outcome = asyncio.run(
+                _drive_with_heartbeat(self.task, "p", self._options(), ClaudeSdkHarness(), watchdog=watchdog)
+            )
 
         assert outcome.stuck_reason is None
         assert renew_count >= 1
@@ -790,7 +796,9 @@ class TestDriveWithHeartbeat(TestCase):
         watchdog = LoopWatchdog(max_runtime_seconds=0.2, max_turns=0, max_cost_usd=0.0)
         start = time.monotonic()
         with _fake_sdk(messages, delay=0.05), patch.object(headless_mod, "_HEARTBEAT_INTERVAL", 0.02):
-            outcome = asyncio.run(_drive_with_heartbeat(self.task, "p", self._options(), watchdog=watchdog))
+            outcome = asyncio.run(
+                _drive_with_heartbeat(self.task, "p", self._options(), ClaudeSdkHarness(), watchdog=watchdog)
+            )
         elapsed = time.monotonic() - start
 
         assert elapsed < 10
@@ -810,7 +818,9 @@ class TestDriveWithHeartbeat(TestCase):
             patch.object(headless_mod, "_HEARTBEAT_INTERVAL", 0.02),
             patch.object(headless_mod, "logger") as mock_logger,
         ):
-            outcome = asyncio.run(_drive_with_heartbeat(self.task, "p", self._options(), watchdog=watchdog))
+            outcome = asyncio.run(
+                _drive_with_heartbeat(self.task, "p", self._options(), ClaudeSdkHarness(), watchdog=watchdog)
+            )
 
         assert outcome.stuck_reason is None
         assert mock_logger.warning.call_count >= 1
@@ -964,7 +974,7 @@ class TestRunHeadlessRefusesOverBudgetTicket(TestCase):
             override_settings(TEATREE_TICKET_BUDGET={"max_cost_usd": 5.0}),
             patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude"),
             patch.object(
-                headless_mod,
+                harness_mod,
                 "ClaudeSDKClient",
                 side_effect=AssertionError("SDK client must not be built over budget"),
             ),

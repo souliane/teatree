@@ -1,10 +1,20 @@
-"""Shared in-process ``claude-agent-sdk`` test double for the headless runner.
+"""Shared in-process harness test doubles for the headless runner.
 
-``run_headless`` drives ``ClaudeSDKClient`` (an async context manager) in
-process, so tests patch the client with a stand-in that yields a canned typed
-message stream. It also stubs ``TaskUsage.for_task`` to a static snapshot: the
-runner samples accumulated deltas via ``asyncio.to_thread`` before the run, and
-a threaded DB read under ``TestCase``'s wrapping SQLite transaction is a harness
+``run_headless`` drives an in-process agent session behind the ``Harness`` seam
+(:mod:`teatree.agents.harness`). :class:`FakeHarnessSession` is the session double
+— it IS the session surface (``query`` / ``receive_response`` / ``interrupt``),
+yielding a canned typed-message stream. Two ways to inject it.
+
+:func:`fake_sdk` patches the SDK boundary INSIDE the default backend
+(``teatree.agents.harness.ClaudeSDKClient``), so a run flows through the REAL
+:class:`~teatree.agents.harness.ClaudeSdkHarness` — proving the transport is
+behaviour-preserving through the seam. :class:`FakeHarness` is a pure ``Harness``
+double a test can inject directly (e.g. into ``_drive_with_heartbeat``) to
+exercise the seam with no SDK at all.
+
+``fake_sdk`` also stubs ``TaskUsage.for_task`` to a static snapshot: the runner
+samples accumulated deltas via ``asyncio.to_thread`` before the run, and a
+threaded DB read under ``TestCase``'s wrapping SQLite transaction is a harness
 artifact that deadlocks the connection — not production behaviour.
 """
 
@@ -17,6 +27,7 @@ from unittest.mock import patch
 from claude_agent_sdk import AssistantMessage, RateLimitEvent, ResultMessage, TextBlock
 from claude_agent_sdk.types import RateLimitInfo, RateLimitStatus, RateLimitType
 
+import teatree.agents.harness as harness_mod
 import teatree.agents.headless as headless_mod
 from teatree.agents.headless import TaskUsage
 
@@ -65,11 +76,11 @@ def success_stream(result: dict[str, Any], **result_kwargs: Any) -> list[Any]:
     return [assistant_text(json.dumps(result)), result_message(**result_kwargs)]
 
 
-class FakeSdkClient:
-    """Stand-in for ``ClaudeSDKClient`` yielding a canned typed-message stream.
+class FakeHarnessSession:
+    """The session double — the ``HarnessSession`` surface over a canned stream.
 
-    Records the ``options`` it was constructed with on the class so a test can
-    assert what the runner passed (model, cwd, resume).
+    Records the ``options`` its owning harness was opened with on the class so a
+    test can assert what the runner passed (model, cwd, resume).
     """
 
     last_options: Any = None
@@ -108,25 +119,48 @@ class FakeSdkClient:
         self.interrupted = True
 
 
+class FakeHarness:
+    """A pure ``Harness`` double — opens a :class:`FakeHarnessSession`.
+
+    Records the options it was opened with so a seam test can assert the driver
+    passed the built options straight through to the backend.
+    """
+
+    def __init__(self, messages: list[Any], *, delay: float = 0.0) -> None:
+        self._messages = messages
+        self._delay = delay
+        self.opened_options: Any = None
+
+    @contextlib.asynccontextmanager
+    async def open(self, options: Any) -> AsyncIterator[FakeHarnessSession]:
+        self.opened_options = options
+        yield FakeHarnessSession(self._messages, delay=self._delay)
+
+
 @contextlib.contextmanager
 def fake_sdk(
     messages: list[Any],
     *,
     delay: float = 0.0,
     task_usage: TaskUsage | None = None,
-) -> Iterator[type[FakeSdkClient]]:
-    """Patch ``ClaudeSDKClient`` (+ ``TaskUsage.for_task``) for a headless run."""
-    FakeSdkClient.last_options = None
-    FakeSdkClient.last_prompt = ""
+) -> Iterator[type[FakeHarnessSession]]:
+    """Patch the default backend's SDK boundary (+ ``TaskUsage.for_task``).
 
-    def _make_client(*, options: Any = None, **_: object) -> FakeSdkClient:
-        FakeSdkClient.last_options = options
-        return FakeSdkClient(messages, delay=delay)
+    The patch target is ``teatree.agents.harness.ClaudeSDKClient`` — the SDK the
+    real :class:`~teatree.agents.harness.ClaudeSdkHarness` constructs — so a run
+    still resolves and flows through that backend, only the transport is faked.
+    """
+    FakeHarnessSession.last_options = None
+    FakeHarnessSession.last_prompt = ""
+
+    def _make_client(*, options: Any = None, **_: object) -> FakeHarnessSession:
+        FakeHarnessSession.last_options = options
+        return FakeHarnessSession(messages, delay=delay)
 
     snapshot = task_usage if task_usage is not None else TaskUsage(turns=0, cost_usd=0.0)
     with (
         patch.object(headless_mod.shutil, "which", return_value="/usr/bin/claude"),
-        patch.object(headless_mod, "ClaudeSDKClient", _make_client),
+        patch.object(harness_mod, "ClaudeSDKClient", _make_client),
         patch.object(headless_mod.TaskUsage, "for_task", classmethod(lambda cls, task: snapshot)),
     ):
-        yield FakeSdkClient
+        yield FakeHarnessSession

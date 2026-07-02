@@ -22,8 +22,17 @@ from teatree.config.discovery import (
     discover_active_overlay,
     discover_overlays,
 )
-from teatree.config.enums import AgentRuntime, Autonomy, MissingIssuePolicy, Mode, OnBehalfPostMode, Speed, TeamsDisplay
-from teatree.config.homes import DERIVED_FIELDS, SETTING_HOMES, SettingHome
+from teatree.config.enums import (
+    AgentHarness,
+    AgentRuntime,
+    Autonomy,
+    MissingIssuePolicy,
+    Mode,
+    OnBehalfPostMode,
+    Speed,
+    TeamsDisplay,
+)
+from teatree.config.homes import BOOTSTRAP_FILE_ONLY_SETTINGS, DERIVED_FIELDS, SETTING_HOMES, SettingHome
 from teatree.config.loader import (
     CONFIG_PATH,
     _load_toml,
@@ -44,7 +53,6 @@ from teatree.config.resolution import (
     get_effective_settings,
 )
 from teatree.config.settings import (
-    BOOTSTRAP_FILE_ONLY_SETTINGS,
     ENV_SETTING_OVERRIDES,
     OVERLAY_OVERRIDABLE_SETTINGS,
     TOML_OVERLAY_OVERRIDABLE_SETTINGS,
@@ -73,6 +81,7 @@ __all__ = [
     "OVERLAY_OVERRIDABLE_SETTINGS",
     "SETTING_HOMES",
     "TOML_OVERLAY_OVERRIDABLE_SETTINGS",
+    "AgentHarness",
     "AgentRuntime",
     "Autonomy",
     "ColdHookSetting",

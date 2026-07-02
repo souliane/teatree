@@ -25,7 +25,7 @@ from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.config import OVERLAY_OVERRIDABLE_SETTINGS
-from teatree.config.settings import BOOTSTRAP_FILE_ONLY_SETTINGS
+from teatree.config.homes import BOOTSTRAP_FILE_ONLY_SETTINGS
 from teatree.core.models import ConfigSetting
 
 
