@@ -2,6 +2,7 @@
 
 import pytest
 import typer
+import typer.rich_utils
 
 from teatree.cli import app as real_app
 from teatree.cli_reference import build_cli_reference_from_app
@@ -67,14 +68,17 @@ class TestBuildCliReferenceFromApp:
     def test_render_is_color_independent(self, monkeypatch: pytest.MonkeyPatch) -> None:
         r"""An ambient ``FORCE_COLOR`` (a common dev-shell setting) must not change the bytes.
 
-        Without pinning, rich's console reads ``FORCE_COLOR`` and wraps tokens in
-        ANSI SGR codes (``\\x1b[1m...\\x1b[0m``), splitting substrings like
-        ``--update-snapshots`` mid-token and breaking any exact/substring match
-        against the render — reproducing locally (a shell with ``FORCE_COLOR``
-        set) but not in a clean CI container (souliane/teatree#2359).
+        ``typer.rich_utils.FORCE_TERMINAL`` is computed once, from ``getenv("FORCE_COLOR")``
+        et al., at module import time — a ``monkeypatch.setenv`` at test time cannot change
+        it. The real-world trigger is a dev shell that already had ``FORCE_COLOR`` set
+        *before* the interpreter started, so the module-level flag is the fixture to flip.
+        Without pinning, rich's console then wraps tokens in ANSI SGR codes
+        (``\\x1b[1m...\\x1b[0m``), splitting substrings like ``--update-snapshots`` mid-token
+        and breaking any exact/substring match against the render — reproducing on a dev box
+        but not in a clean CI container (souliane/teatree#2359).
         """
-        monkeypatch.delenv("FORCE_COLOR", raising=False)
         plain = build_cli_reference_from_app(_make_test_app(), base_name="demo")
-        monkeypatch.setenv("FORCE_COLOR", "1")
+        monkeypatch.setattr(typer.rich_utils, "FORCE_TERMINAL", True)
         forced = build_cli_reference_from_app(_make_test_app(), base_name="demo")
         assert plain == forced
+        assert "\x1b[" not in forced
