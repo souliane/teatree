@@ -384,16 +384,16 @@ class TestApiInProcessRunnerCapture:
         assert captured["options"].effort == "xhigh"
 
     def test_plain_model_leaves_effort_unset(self, tmp_path: Path) -> None:
-        spec = _spec(tmp_path, model="claude-fable-5")
+        spec = _spec(tmp_path, model="claude-sonnet-5")
         _run, captured = self._run(spec, [_result()])
-        assert captured["options"].model == "claude-fable-5"
+        assert captured["options"].model == "claude-sonnet-5"
         assert captured["options"].effort is None
 
     def test_lane_effort_reaches_the_clean_room_when_scenario_declares_none(self, tmp_path: Path) -> None:
         # The metered lane's representative effort (`--effort high` → the runner's
         # `effort=` kwarg) reaches CleanRoomConfig.effort and the SDK options when
         # the scenario declares no `@effort` of its own.
-        spec = _spec(tmp_path, model="claude-fable-5")
+        spec = _spec(tmp_path, model="claude-sonnet-5")
         _run, captured = self._run(spec, [_result()], effort="high")
         assert captured["options"].effort == "high"
 
@@ -407,7 +407,7 @@ class TestApiInProcessRunnerCapture:
     def test_no_lane_effort_leaves_a_plain_model_at_default_effort(self, tmp_path: Path) -> None:
         # Backward compatibility: without a lane effort, a plain model stays at the
         # model's default effort (effort=None), exactly as before.
-        spec = _spec(tmp_path, model="claude-fable-5")
+        spec = _spec(tmp_path, model="claude-sonnet-5")
         _run, captured = self._run(spec, [_result()])
         assert captured["options"].effort is None
 

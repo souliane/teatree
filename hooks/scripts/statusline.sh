@@ -280,7 +280,7 @@ fi
 
 # Effort level (`/effort`): the live payload field above, else the saved
 # settings default. Rendered as a short `· <effort>` suffix on the model chunk
-# (e.g. `model=fable-5 · medium`); omitted entirely when unknown so the segment
+# (e.g. `model=opus-4-8 · medium`); omitted entirely when unknown so the segment
 # stays honest and leaves no dangling separator.
 if [ -z "$effort" ]; then
     effort=$(effort_from_settings)

@@ -46,18 +46,18 @@ class TestSummarizeBenchmark:
         rows = [
             _row("alpha", "opus@xhigh", passed=True, cost_usd=0.10),
             _row("beta", "opus@xhigh", passed=False, cost_usd=0.30),
-            _row("alpha", "fable@medium", passed=True, cost_usd=0.02),
-            _row("beta", "fable@medium", passed=True, cost_usd=0.04),
+            _row("alpha", "sonnet@medium", passed=True, cost_usd=0.02),
+            _row("beta", "sonnet@medium", passed=True, cost_usd=0.04),
         ]
-        opus, fable = summarize_benchmark(rows, ["opus@xhigh", "fable@medium"])
+        opus, sonnet = summarize_benchmark(rows, ["opus@xhigh", "sonnet@medium"])
         assert opus.variant == "opus@xhigh"
         assert (opus.passed, opus.executed, opus.skipped) == (1, 2, 0)
         assert opus.pass_rate == pytest.approx(0.5)
         assert opus.total_cost_usd == pytest.approx(0.40)
         assert opus.mean_cost_usd == pytest.approx(0.20)
         assert opus.cost_per_pass_usd == pytest.approx(0.40)
-        assert fable.pass_rate == pytest.approx(1.0)
-        assert fable.cost_per_pass_usd == pytest.approx(0.03)
+        assert sonnet.pass_rate == pytest.approx(1.0)
+        assert sonnet.cost_per_pass_usd == pytest.approx(0.03)
 
     def test_summaries_follow_the_given_variant_order(self) -> None:
         rows = [_row("alpha", "b"), _row("alpha", "a")]
@@ -232,11 +232,11 @@ class TestRenderBenchmarkText:
     def test_table_shows_each_variant_with_its_metrics(self) -> None:
         summaries = [
             VariantSummary(variant="opus@xhigh", passed=1, executed=2, skipped=0, errored=0, total_cost_usd=0.40),
-            VariantSummary(variant="fable@medium", passed=2, executed=2, skipped=0, errored=0, total_cost_usd=0.06),
+            VariantSummary(variant="sonnet@medium", passed=2, executed=2, skipped=0, errored=0, total_cost_usd=0.06),
         ]
         text = render_benchmark_text(summaries)
         assert "opus@xhigh" in text
-        assert "fable@medium" in text
+        assert "sonnet@medium" in text
         assert "1/2" in text
         assert "2/2" in text
         assert "$0.4000" in text

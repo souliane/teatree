@@ -8,8 +8,8 @@ accused it of lying, or it shipped a job it cannot verify is complete — it run
     t3 <overlay> honesty escalate --reason <user_asked|self_assessed_dishonest|accused_of_lying|shipped_incomplete>
 
 before the next verification/review/grading spawn, so that work routes to the
-most-honest model (today Fable, ``[agent] honesty_model``). The escalation is
-session-scoped (defaulting to the active
+most-honest configured model (``[agent] honesty_model``, default Opus). The
+escalation is session-scoped (defaulting to the active
 :func:`teatree.core.session_identity.current_session_id`), situational, and
 auto-clears — it is not a standing reviewer-model change. The row is idempotent
 on ``(session_id, task_id, reason)`` so re-firing the same trigger is a no-op.
@@ -54,7 +54,7 @@ class Command(TyperCommand):
         """Record a honesty escalation so the next verification spawn routes to the most-honest model.
 
         The next ``(reviewing|requesting_review|testing)`` spawn for this session
-        resolves to ``[agent] honesty_model`` (today Fable). Situational and
+        resolves to ``[agent] honesty_model`` (default Opus). Situational and
         auto-clearing — not a standing reviewer change.
         """
         if reason not in _REASONS:

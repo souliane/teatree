@@ -5,7 +5,7 @@ it runs the suite once per variant on the metered in-process Agent-SDK runner
 (``--backend api`` semantics, all-skipped gate always armed), persists the
 matrix record, and folds the rows into the per-variant comparison table in
 :mod:`teatree.eval.benchmark` — the deliverable for "how does opus@xhigh
-compare to fable@medium on pass-rate and cost".
+compare to sonnet@medium on pass-rate and cost".
 
 The benchmark is metered, so it defaults to running IN the CI container
 (``dev/Dockerfile.test``) — a metered run must never accidentally bill the host.
@@ -42,7 +42,7 @@ def benchmark(  # noqa: PLR0913, PLR0917 — typer command: each param maps 1:1 
         "--models",
         help=(
             "Comma-separated model@effort variants to compare, e.g. "
-            "claude-opus-4-8@xhigh,claude-fable-5@medium (a plain model name = default effort)."
+            "claude-opus-4-8@xhigh,claude-sonnet-5@medium (a plain model name = default effort)."
         ),
     ),
     scenarios: str | None = typer.Option(

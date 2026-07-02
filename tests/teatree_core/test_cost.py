@@ -61,28 +61,24 @@ class TestTierResolution:
         assert tier_of_model(None) == "opus"
         assert tier_of_model("some-future-model") == "opus"
 
-
-class TestFableTier:
-    def test_fable_in_price_table_at_ten_fifty(self) -> None:
-        assert PRICE_TABLE["fable"] == ModelPrice(input_per_mtok=10.0, output_per_mtok=50.0)
-
-    def test_tier_of_model_recognises_fable_substring(self) -> None:
-        assert tier_of_model("fable") == "fable"
-        assert tier_of_model("claude-fable-5[1m]") == "fable"
-
-    def test_fable_priced_above_opus(self) -> None:
-        assert price_for_model("claude-fable-5").input_per_mtok > price_for_model("opus").input_per_mtok
+    def test_no_special_cased_fable_tier(self) -> None:
+        # #2237 removal: no PRICE_TABLE entry recognises "fable" any more — a
+        # Fable-named model id falls back to the conservative reasoning tier,
+        # same as any other unrecognised id.
+        assert "fable" not in PRICE_TABLE
+        assert tier_of_model("fable") == "opus"
+        assert tier_of_model("claude-fable-5") == "opus"
 
 
 class TestTierRank:
-    def test_abstract_tier_order_cheap_lt_balanced_lt_frontier_lt_fable(self) -> None:
-        # The redesigned ordering is expressed in the ABSTRACT tiers.
-        assert tier_rank("cheap") < tier_rank("balanced") < tier_rank("frontier") < tier_rank("fable")
+    def test_abstract_tier_order_cheap_lt_balanced_lt_frontier(self) -> None:
+        # The ordering is expressed in the ABSTRACT tiers.
+        assert tier_rank("cheap") < tier_rank("balanced") < tier_rank("frontier")
 
-    def test_capability_order_haiku_lt_sonnet_lt_opus_lt_fable(self) -> None:
+    def test_capability_order_haiku_lt_sonnet_lt_opus(self) -> None:
         # The legacy short-names still rank consistently (family-mapped onto the
         # abstract tiers): haiku≡cheap, sonnet≡balanced, opus≡frontier.
-        assert tier_rank("haiku") < tier_rank("sonnet") < tier_rank("opus") < tier_rank("fable")
+        assert tier_rank("haiku") < tier_rank("sonnet") < tier_rank("opus")
 
     def test_family_and_abstract_tier_rank_identically(self) -> None:
         # A model FAMILY (old short-name or dated id) ranks identically to the
@@ -92,7 +88,6 @@ class TestTierRank:
         assert tier_rank("haiku") == tier_rank("cheap")
 
     def test_dated_ids_rank_like_their_tier(self) -> None:
-        assert tier_rank("claude-fable-5[1m]") == tier_rank("fable")
         assert tier_rank("claude-sonnet-4-6") == tier_rank("sonnet")
         assert tier_rank("claude-sonnet-5") == tier_rank("balanced")
         assert tier_rank("claude-opus-4-8") == tier_rank("frontier")
@@ -100,7 +95,7 @@ class TestTierRank:
 
     def test_unknown_full_id_ranks_above_every_known_tier(self) -> None:
         unknown = tier_rank("claude-some-future-model")
-        assert unknown > tier_rank("fable")
+        assert unknown > tier_rank("frontier")
 
     def test_none_ranks_as_default_reasoning_tier(self) -> None:
         # None = inherited default; ranked as the conservative reasoning tier so a

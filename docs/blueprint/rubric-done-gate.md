@@ -6,7 +6,7 @@ Detail behind [BLUEPRINT.md](https://github.com/souliane/teatree/blob/main/BLUEP
 
 The standing rule is "**declare done only on a verified, full-spec outcome**." The recurring failure it guards against: a ticket reaches MERGED while its acceptance criteria are unverified — "declared done on a 2xx / a partial subset / an unrun test." That rule lived only in prose and personal memory; nothing mechanically refused the merge when the work was not actually done per spec.
 
-This gate makes "done" objective and audited. Each ticket carries a **rubric** of N checkable acceptance criteria, and an **independent verifier sub-agent (≠ the maker)** grades the maker's output against every criterion. ALL must pass; the gate **fails closed** if any criterion is ungraded or unevaluable. It is the highest-value lever from the Fable-5 loop-design thread (a verifier sub-agent grading a checklist beats self-critique) and the structured form of acceptance criteria — it reinforces teatree's maker≠checker thesis, pushing it from the merge-safety gate down to "is the work actually done per spec."
+This gate makes "done" objective and audited. Each ticket carries a **rubric** of N checkable acceptance criteria, and an **independent verifier sub-agent (≠ the maker)** grades the maker's output against every criterion. ALL must pass; the gate **fails closed** if any criterion is ungraded or unevaluable. It is the highest-value lever identified in an earlier loop-design retro (a verifier sub-agent grading a checklist beats self-critique) and the structured form of acceptance criteria — it reinforces teatree's maker≠checker thesis, pushing it from the merge-safety gate down to "is the work actually done per spec."
 
 ## §17.4.3 precondition placement
 

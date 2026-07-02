@@ -47,7 +47,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from teatree.config import CONFIG_PATH
-from teatree.config_agent import _INHERIT_SENTINELS, AgentConfig, resolve_agent_config
+from teatree.config_agent import _INHERIT_SENTINELS, resolve_agent_config
 from teatree.core.cost import tier_of_model, tier_rank
 
 # THE SINGLE SOURCE OF TRUTH for concrete model ids. This is the ONLY place a
@@ -78,17 +78,9 @@ TIER_EFFORT: dict[str, str] = {
 # nor ``phase:``. The conservative mid tier.
 DEFAULT_TIER = "balanced"
 
-# The :func:`teatree.core.cost.tier_of_model` tier key for Fable. Normalising a
-# model id to its tier recognises BOTH the short alias ``fable`` and the full
-# ``claude-fable-5`` (and any future dated Fable id), so the kill-switch matches
-# on the tier rather than a brittle ``== "fable"`` string compare. Fable is the
-# most-honest escalation tier — deliberately NOT a member of :data:`TIER_MODELS`
-# (it is access-gated/disabled), so it never appears as a routine phase tier.
-_FABLE_TIER = "fable"
-
 # The :func:`teatree.core.cost.tier_of_model` tier key whose models do NOT accept
 # an adaptive-thinking pin: Haiku (the ``cheap`` tier) rejects the ``thinking`` /
-# ``effort`` reasoning levers the Opus/Sonnet/Fable tiers accept. Matched on the
+# ``effort`` reasoning levers the Opus/Sonnet tiers accept. Matched on the
 # tier so any future dated Haiku id is covered (:func:`model_supports_thinking`).
 _NON_THINKING_TIER = "haiku"
 
@@ -197,12 +189,12 @@ def resolve_spawn_model(
     is an inherit sentinel (``None`` after normalisation), contributes nothing.
 
     After the floor merge, a SITUATIONAL honesty-critical escalation
-    (teatree#2263) can RAISE the winner to ``[agent] honesty_model`` (today
-    Fable): when *phase* is a :data:`VERIFICATION_PHASES` phase AND an active
-    :class:`~teatree.core.models.honesty_escalation.HonestyEscalation` row
-    exists for *session_id*. It is most-capable-wins (only raises, never lowers)
-    and gated, so with no active escalation (or both ids ``None``) it is a no-op
-    and resolution is byte-identical to today.
+    (teatree#2263) can RAISE the winner to ``[agent] honesty_model`` (default
+    ``"opus"``): when *phase* is a :data:`VERIFICATION_PHASES` phase AND an
+    active :class:`~teatree.core.models.honesty_escalation.HonestyEscalation`
+    row exists for *session_id*. It is most-capable-wins (only raises, never
+    lowers) and gated, so with no active escalation (or both ids ``None``) it is
+    a no-op and resolution is byte-identical to today.
 
     Returns ``None`` only when the phase model resolved to ``None`` (a sentinel
     ``phase_models`` override that opts the phase out of tiering) AND no skill
@@ -212,12 +204,9 @@ def resolve_spawn_model(
     effort is per-abstract-TIER, resolved separately for the same spawn by
     :func:`resolve_spawn_effort`.
 
-    The resolved winner passes through :func:`_downgrade_fable` last: with the
-    ``[agent] fable_enabled`` kill-switch off (teatree#2237), a Fable winner
-    transparently downgrades to ``fable_fallback`` (Opus 4.8 baseline). This is
-    the single spawn chokepoint, so the downgrade covers every sub-agent spawn
-    — including an honesty-escalated Fable, which must still pass the kill-switch
-    (LOAD-BEARING ordering: the escalation raise lands BEFORE this call).
+    The honesty-escalation raise (below) is the LAST step of resolution — nothing
+    downgrades the winner afterward, so the escalated model is exactly what the
+    spawn receives.
     """
     config = resolve_agent_config(config_path=config_path)
     winner = resolve_phase_model(phase, config_path=config_path)
@@ -231,7 +220,7 @@ def resolve_spawn_model(
         and tier_rank(config.honesty_model) > tier_rank(winner)
     ):
         winner = resolve_tier(config.honesty_model, config_path=config_path)
-    return _downgrade_fable(winner, config)
+    return winner
 
 
 def resolve_spawn_effort(phase: str, *, config_path: Path | None = None) -> str | None:
@@ -292,7 +281,7 @@ def _honesty_escalation_active(session_id: str | None, task_id: int | None) -> b
     wrapped ``try/except → False`` (same fail-to-no-effect posture as
     :func:`_load_phase_model_overrides`). A blank *session_id* or ANY resolution
     error (an import problem, a DB error) returns ``False`` so the escalation
-    silently no-ops — a resolution error must NEVER silently pin Fable.
+    silently no-ops — a resolution error must NEVER silently escalate.
     """
     if not session_id:
         return False
@@ -302,23 +291,6 @@ def _honesty_escalation_active(session_id: str | None, task_id: int | None) -> b
         return HonestyEscalation.is_active(session_id, task_id=task_id)
     except Exception:  # noqa: BLE001
         return False
-
-
-def _downgrade_fable(model: str | None, config: AgentConfig) -> str | None:
-    """Apply the single Fable kill-switch to one resolved *model* (teatree#2237).
-
-    When *model* is Fable — recognised by tier (the short alias ``fable`` OR the
-    full ``claude-fable-5``, via :func:`teatree.core.cost.tier_of_model`) — AND
-    ``config.fable_enabled`` is ``False``, return ``config.fable_fallback`` (the
-    Opus 4.8 baseline by default). Otherwise return *model* unchanged: a
-    non-Fable model, ``None`` (inherit), or Fable while the switch is on all pass
-    through untouched, so enabled/absent is byte-identical to today.
-    """
-    if model is None or config.fable_enabled:
-        return model
-    if tier_of_model(model) == _FABLE_TIER:
-        return config.fable_fallback
-    return model
 
 
 def _load_phase_model_overrides(config_path: Path | None) -> dict[str, str]:

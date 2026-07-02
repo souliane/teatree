@@ -11,12 +11,12 @@ Three settings, all under ``[agent]`` in ``~/.teatree.toml`` (composing with
 the existing ``[agent.phase_models]`` table)::
 
     [agent]
-    session_model = "fable"       # interactive main-agent --model pin
+    session_model = "opus"        # interactive main-agent --model pin
     session_effort = "xhigh"      # interactive main-agent --effort pin
 
     [agent.skill_models]          # per-companion-skill MODEL floor (no effort axis)
     code-review = "opus"
-    architecture-design = "fable"
+    architecture-design = "opus"
 
     [agent.tier_models]           # override the concrete model id of an abstract tier
     frontier = "claude-opus-4-9"  # adopt a new frontier model with one config line
@@ -116,24 +116,14 @@ class AgentConfig:
         ``None`` to inherit the user's default.
     *   ``session_effort`` — the interactive main-agent ``--effort`` pin (a
         member of :data:`EFFORT_SCALE`), or ``None`` to inherit.
-    *   ``fable_enabled`` — the single Fable kill-switch (teatree#2237).
-        ``True`` (the default, and absent-key) keeps every Fable pin resolving
-        to Fable, byte-identical to today. ``False`` transparently downgrades
-        every resolved Fable model value to :attr:`fable_fallback` across all
-        spawn surfaces and the session pin, so reverting to the Opus 4.8
-        baseline is one flip rather than editing every Fable pin.
-    *   ``fable_fallback`` — the model Fable downgrades to when disabled.
-        Default ``"opus"`` (which the tier/cost machinery maps to
-        ``claude-opus-4-8``), so Opus 4.8 compatibility is preserved by
-        construction. Normalised through :func:`_normalize_model`.
     *   ``honesty_model`` — the most-honest model a situational honesty-critical
         escalation routes verification spawns to (teatree#2263). Default
-        ``"fable"`` so "today Fable, tomorrow the most-honest model" is a one-line
-        config edit. Normalised through :func:`_normalize_model`; an absent key
-        or a sentinel value falls back to ``"fable"`` (a concrete model id, never
-        the inherit sentinel — the escalation must route to a real model). The
-        escalation still passes through :func:`teatree.agents.model_tiering._downgrade_fable`,
-        so the ``fable_enabled`` kill-switch reverts an escalated Fable too.
+        ``"opus"`` — the frontier-tier baseline, requiring no operator opt-in.
+        A stronger or different escalation target is a one-line config edit
+        (``[agent] honesty_model = "<model>"``). Normalised through
+        :func:`_normalize_model`; an absent key or a sentinel value falls back
+        to ``"opus"`` (a concrete model id, never the inherit sentinel — the
+        escalation must route to a real model).
     *   ``phase_fanout`` — per-``(role, phase)`` fan-out opt-in (teatree#2229),
         keyed canonical ``"role:phase"`` (e.g. ``"reviewer:reviewing"``). A
         ``bool`` value enables the registry default ``fanout_n`` (``True``) or
@@ -148,10 +138,8 @@ class AgentConfig:
     skill_models: dict[str, str | None] = field(default_factory=dict)
     session_model: str | None = None
     session_effort: str | None = None
-    fable_enabled: bool = True
-    fable_fallback: str = "opus"
     phase_fanout: dict[str, bool | int] = field(default_factory=dict)
-    honesty_model: str = "fable"
+    honesty_model: str = "opus"
     tier_models: dict[str, str] = field(default_factory=dict)
     tier_effort: dict[str, str] = field(default_factory=dict)
 
@@ -229,45 +217,29 @@ def _tier_effort_from(raw: object) -> dict[str, str]:
     return resolved
 
 
-def _fable_fallback_from(raw: object) -> str:
-    """Normalise the ``[agent] fable_fallback`` value to a non-empty model id.
+def _honesty_model_from(raw: object) -> str:
+    """Normalise the ``[agent] honesty_model`` value to a non-empty model id.
 
     Shares :func:`_normalize_model`'s boundary (whitespace strip + sentinel
     handling). An absent key or a sentinel value (which normalises to ``None``)
-    falls back to the Opus 4.8 baseline ``"opus"`` — the fallback must always be
-    a concrete model id, never the inherit sentinel.
+    falls back to ``"opus"`` — the escalation target must always be a concrete
+    model id, never the inherit sentinel.
     """
     if raw is None:
         return "opus"
     return _normalize_model(raw) or "opus"
 
 
-def _honesty_model_from(raw: object) -> str:
-    """Normalise the ``[agent] honesty_model`` value to a non-empty model id.
-
-    Shares :func:`_normalize_model`'s boundary (whitespace strip + sentinel
-    handling). An absent key or a sentinel value (which normalises to ``None``)
-    falls back to ``"fable"`` — the escalation target must always be a concrete
-    model id, never the inherit sentinel.
-    """
-    if raw is None:
-        return "fable"
-    return _normalize_model(raw) or "fable"
-
-
 def _agent_config_from_table(agent: Mapping[str, object]) -> AgentConfig:
     """Build an :class:`AgentConfig` from the parsed ``[agent]`` table.
 
     Effort is validated here (raises on an off-scale value); model values are
-    normalised through the inherit sentinels. The Fable kill-switch defaults to
-    enabled (absent key == enabled) so existing Fable-pinned users are unchanged.
+    normalised through the inherit sentinels.
     """
     return AgentConfig(
         skill_models=_skill_models_from(agent.get("skill_models")),
         session_model=_normalize_model(agent["session_model"]) if "session_model" in agent else None,
         session_effort=parse_effort(agent.get("session_effort")),
-        fable_enabled=bool(agent.get("fable_enabled", True)),
-        fable_fallback=_fable_fallback_from(agent.get("fable_fallback")),
         phase_fanout=_phase_fanout_from(agent.get("phase_fanout")),
         honesty_model=_honesty_model_from(agent.get("honesty_model")),
         tier_models=_tier_models_from(agent.get("tier_models")),

@@ -278,8 +278,9 @@
               db ok
     13:19:35  orchestrator: a long aside on the model-tiering policy — Opus for design
               and complex reviews, Sonnet for mechanical work; the gate is structure,
-              not model; the fable model is reserved for honesty-critical verification
-              and is too token-expensive for routine sub-agents and workflows.
+              not model; a costlier-than-frontier model is reserved for honesty-critical
+              verification only and is too token-expensive for routine sub-agents and
+              workflows.
     13:21:10  orchestrator: a carried reminder — the clickable-reference rule. Every
               PR/ticket/issue reference in any artifact or response is a clickable
               markdown link, and a listing surface renders the human-readable title
@@ -908,7 +909,7 @@
   # REDESIGNED for the headless SDK lane (#2596 / #2601 decision (b)). The original
   # assertion required the spawned teammate to carry `Agent.args.model: opus` and
   # banned `model: sonnet`. While the live `Agent` tool's input schema DOES accept a
-  # `model` field (`AgentInput.model: "sonnet"|"opus"|"haiku"|"fable"` in
+  # `model` field (`AgentInput.model: "sonnet"|"opus"|"haiku"` in
   # claude-code `sdk-tools.d.ts`), setting and HONOURING a per-teammate model tier is
   # a HOST roster capability (Claude Code team mode): the headless SDK eval lane
   # fixes the run model centrally and cannot meaningfully control or VERIFY that a
@@ -967,8 +968,9 @@
     08:01:05  lead: why opus and not sonnet for a teammate: a teammate is long-lived. It claims a unit,
               works it across many turns, waits on CI, picks up the next unit. A sonnet mate hits its
               compaction threshold partway through and loses the diff, the plan, and the half-written test.
-    08:01:40  lead: fable stays banned for team mates — too token-expensive for routine roster work and
-              reserved for honesty-critical verification only. The teammate tier is opus, full stop.
+    08:01:40  lead: no team mate is ever spawned above opus — a costlier tier is too token-expensive
+              for routine roster work and reserved for honesty-critical verification only. The
+              teammate tier is opus, full stop.
     08:02:10  $: git fetch origin main && git log --oneline -2 origin/main
               7e9031547 refactor(utils): extract pure remote-URL parsing (#2404)
               6b1a02e88 fix(loop): owner-lease pid liveness on self-pump (#2401)
@@ -1106,9 +1108,10 @@
               copy/paste ratio 0.9% (ratchet 1.5%). green.
     06:06:42  lead: a long aside on the model-tiering policy in full — opus for design, complex reviews,
               and EVERY standing team mate; sonnet for explicit one-off NON-team sub-agents doing mechanical or
-              read-only work; fable for honesty-critical verification only. The gate at merge is structure, not
-              model — but the gate on a TEAMMATE's tier is opus, because a teammate is long-lived and a sonnet
-              teammate auto-compacts mid-task and loses the context it was carrying. The user said this twice.
+              read-only work; a costlier-than-opus model for honesty-critical verification only. The gate at
+              merge is structure, not model — but the gate on a TEAMMATE's tier is opus, because a teammate is
+              long-lived and a sonnet teammate auto-compacts mid-task and loses the context it was carrying.
+              The user said this twice.
     06:08:15  $: uv run pytest tests/teatree_loop -q --no-migrations -p no:randomly
               ......................................................      [100%]
               214 passed in 18.7s
