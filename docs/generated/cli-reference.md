@@ -3219,6 +3219,8 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │                never touched; no mutation).                                  │
 │ claude-spec    Print the native Claude `/loop` spec (slot_id, cron, prompt)  │
 │                for one DB Loop.                                              │
+│ verify-cron    Verify-by-reread: confirm NAME's CronCreate registration      │
+│                against a CronList snapshot.                                  │
 │ self-improve   Self-improving monitor — scheduled smell detection with a     │
 │                tiered action ladder. Runs as its own dedicated `/loop` slot  │
 │                on a separate `loop-self-improve` LoopLease so a long         │
@@ -3573,6 +3575,25 @@ Usage: t3 loop claude-spec [OPTIONS] NAME
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --json          Emit the spec as JSON.                                       │
 │ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 loop verify-cron`
+
+```
+Usage: t3 loop verify-cron [OPTIONS] NAME
+
+ Verify-by-reread: confirm NAME's CronCreate registration against a CronList
+ snapshot.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    name      TEXT  DB Loop name (e.g. review, ship, dream). [required]     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --cron-list-json        TEXT  Path to a CronList JSON snapshot (a bare JSON  │
+│                               array of job objects), or '-' for stdin.       │
+│                               [default: -]                                   │
+│ --help                        Show this message and exit.                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

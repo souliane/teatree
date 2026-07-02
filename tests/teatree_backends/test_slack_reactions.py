@@ -9,8 +9,10 @@ import pytest
 from teatree.backends.slack import reactions as slack_reactions
 from teatree.backends.slack.reactions import (
     _iter_pr_permalinks,
+    _reaction_present,
     add_approval_reaction,
     add_reaction,
+    add_reaction_verified,
     add_reactions_for_transition,
     parse_permalink,
 )
@@ -128,6 +130,107 @@ class TestAddReaction:
         assert add_reaction("xoxb", "C1", "1.0", "tada") is False
 
 
+class TestAddReactionVerified:
+    """``add_reaction_verified`` wraps ``add_reaction`` with a verify-by-reread (#1192)."""
+
+    def test_write_failure_skips_reread_and_returns_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(slack_reactions, "add_reaction", lambda *_a, **_kw: False)
+
+        def _unexpected_get(*_a: object, **_kw: object) -> httpx.Response:
+            msg = "reread must not run when the write itself failed"
+            raise AssertionError(msg)
+
+        monkeypatch.setattr(slack_reactions.httpx, "get", _unexpected_get)
+        assert add_reaction_verified("xoxb", "C1", "1.0", "tada") is False
+
+    def test_confirmed_when_reread_observes_the_emoji(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(slack_reactions, "add_reaction", lambda *_a, **_kw: True)
+        response = httpx.Response(
+            200,
+            json={"ok": True, "message": {"reactions": [{"name": "tada", "count": 1, "users": ["U1"]}]}},
+            request=httpx.Request("GET", "x"),
+        )
+        monkeypatch.setattr(slack_reactions.httpx, "get", lambda *_a, **_kw: response)
+        assert add_reaction_verified("xoxb", "C1", "1.0", "tada") is True
+
+    def test_not_confirmed_when_reread_does_not_observe_the_emoji(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(slack_reactions, "add_reaction", lambda *_a, **_kw: True)
+        response = httpx.Response(
+            200,
+            json={"ok": True, "message": {"reactions": []}},
+            request=httpx.Request("GET", "x"),
+        )
+        monkeypatch.setattr(slack_reactions.httpx, "get", lambda *_a, **_kw: response)
+        assert add_reaction_verified("xoxb", "C1", "1.0", "tada") is False
+
+    def test_not_confirmed_when_reread_transport_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(slack_reactions, "add_reaction", lambda *_a, **_kw: True)
+
+        def _raise(*_a: object, **_kw: object) -> httpx.Response:
+            msg = "boom"
+            raise httpx.ConnectError(msg)
+
+        monkeypatch.setattr(slack_reactions.httpx, "get", _raise)
+        assert add_reaction_verified("xoxb", "C1", "1.0", "tada") is False
+
+    def test_not_confirmed_when_reread_reports_slack_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(slack_reactions, "add_reaction", lambda *_a, **_kw: True)
+        response = httpx.Response(
+            200,
+            json={"ok": False, "error": "channel_not_found"},
+            request=httpx.Request("GET", "x"),
+        )
+        monkeypatch.setattr(slack_reactions.httpx, "get", lambda *_a, **_kw: response)
+        assert add_reaction_verified("xoxb", "C1", "1.0", "tada") is False
+
+    def test_not_confirmed_when_reread_body_is_not_json(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A non-JSON 2xx reread body degrades to not-confirmed rather than crashing (#1881 pattern)."""
+        monkeypatch.setattr(slack_reactions, "add_reaction", lambda *_a, **_kw: True)
+        response = httpx.Response(200, content=b"<html>not json</html>", request=httpx.Request("GET", "x"))
+        monkeypatch.setattr(slack_reactions.httpx, "get", lambda *_a, **_kw: response)
+        assert add_reaction_verified("xoxb", "C1", "1.0", "tada") is False
+
+    def test_passes_channel_and_timestamp_to_reactions_get(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(slack_reactions, "add_reaction", lambda *_a, **_kw: True)
+        calls: list[dict[str, object]] = []
+
+        def _get(url: str, **kwargs: object) -> httpx.Response:
+            calls.append({"url": url, **kwargs})
+            return httpx.Response(
+                200,
+                json={"ok": True, "message": {"reactions": [{"name": "tada", "count": 1}]}},
+                request=httpx.Request("GET", "x"),
+            )
+
+        monkeypatch.setattr(slack_reactions.httpx, "get", _get)
+        add_reaction_verified("xoxb", "C1", "1700.000100", "tada")
+        assert calls[0]["url"] == "https://slack.com/api/reactions.get"
+        assert calls[0]["params"] == {"channel": "C1", "timestamp": "1700.000100"}
+
+
+class TestReactionPresent:
+    """``_reaction_present`` — the pure predicate behind the reread confirmation."""
+
+    def test_false_when_reactions_field_is_missing_or_not_a_list(self) -> None:
+        assert _reaction_present({}, "tada") is False
+        assert _reaction_present({"reactions": "not-a-list"}, "tada") is False
+
+    def test_non_dict_entries_are_skipped(self) -> None:
+        assert _reaction_present({"reactions": ["not-a-dict", 42]}, "tada") is False
+
+    def test_name_mismatch_is_skipped(self) -> None:
+        assert _reaction_present({"reactions": [{"name": "eyes", "count": 3}]}, "tada") is False
+
+    def test_true_when_count_positive(self) -> None:
+        assert _reaction_present({"reactions": [{"name": "tada", "count": 1}]}, "tada") is True
+
+    def test_true_when_users_list_non_empty(self) -> None:
+        assert _reaction_present({"reactions": [{"name": "tada", "users": ["U1"]}]}, "tada") is True
+
+    def test_false_when_matching_name_but_zero_count_and_no_users(self) -> None:
+        assert _reaction_present({"reactions": [{"name": "tada", "count": 0, "users": []}]}, "tada") is False
+
+
 class TestIterPrPermalinks:
     def test_collects_only_non_empty_string_permalinks(self) -> None:
         ticket = SimpleNamespace(
@@ -191,7 +294,7 @@ class TestAddReactionsForTransition:
             calls.append((token, channel, ts, emoji))
             return True
 
-        monkeypatch.setattr(slack_reactions, "add_reaction", _fake_add)
+        monkeypatch.setattr(slack_reactions, "add_reaction_verified", _fake_add)
 
         ticket = self._ticket(
             [
@@ -208,7 +311,7 @@ class TestAddReactionsForTransition:
     def test_skips_unparseable_permalinks(self, monkeypatch: pytest.MonkeyPatch) -> None:
         overlay = _StubOverlay(_StubConfig(token="xoxb"))
         monkeypatch.setattr("teatree.backends.slack.reactions.get_overlay", lambda name=None: overlay)
-        monkeypatch.setattr(slack_reactions, "add_reaction", lambda *a, **kw: True)
+        monkeypatch.setattr(slack_reactions, "add_reaction_verified", lambda *a, **kw: True)
 
         ticket = self._ticket(["not-a-permalink", "https://team.slack.com/archives/C1/p1700000000000100"])
         assert add_reactions_for_transition(ticket, "mark_merged") == 1
@@ -217,7 +320,7 @@ class TestAddReactionsForTransition:
         overlay = _StubOverlay(_StubConfig(token="xoxb"))
         monkeypatch.setattr("teatree.backends.slack.reactions.get_overlay", lambda name=None: overlay)
         called = []
-        monkeypatch.setattr(slack_reactions, "add_reaction", lambda *a, **kw: called.append(a) or True)
+        monkeypatch.setattr(slack_reactions, "add_reaction_verified", lambda *a, **kw: called.append(a) or True)
 
         ticket = self._ticket(["https://team.slack.com/archives/C1/p1700000000000100"])
         assert add_reactions_for_transition(ticket, "unmapped_transition") == 0
@@ -227,7 +330,7 @@ class TestAddReactionsForTransition:
         overlay = _StubOverlay(_StubConfig(token=""))
         monkeypatch.setattr("teatree.backends.slack.reactions.get_overlay", lambda name=None: overlay)
         called = []
-        monkeypatch.setattr(slack_reactions, "add_reaction", lambda *a, **kw: called.append(a) or True)
+        monkeypatch.setattr(slack_reactions, "add_reaction_verified", lambda *a, **kw: called.append(a) or True)
 
         ticket = self._ticket(["https://team.slack.com/archives/C1/p1700000000000100"])
         assert add_reactions_for_transition(ticket, "mark_merged") == 0
@@ -237,7 +340,7 @@ class TestAddReactionsForTransition:
         overlay = _StubOverlay(_StubConfig(token="xoxb"))
         monkeypatch.setattr("teatree.backends.slack.reactions.get_overlay", lambda name=None: overlay)
         results = iter([True, False, True])
-        monkeypatch.setattr(slack_reactions, "add_reaction", lambda *a, **kw: next(results))
+        monkeypatch.setattr(slack_reactions, "add_reaction_verified", lambda *a, **kw: next(results))
 
         ticket = self._ticket(
             [
@@ -264,7 +367,7 @@ class TestAddReactionsForTransition:
         calls: list[tuple[str, str, str, str]] = []
         monkeypatch.setattr(
             slack_reactions,
-            "add_reaction",
+            "add_reaction_verified",
             lambda token, ch, ts, emoji: calls.append((token, ch, ts, emoji)) or True,
         )
 
@@ -285,7 +388,7 @@ class TestAddReactionsForTransition:
         calls: list[tuple[str, str, str, str]] = []
         monkeypatch.setattr(
             slack_reactions,
-            "add_reaction",
+            "add_reaction_verified",
             lambda token, ch, ts, emoji: calls.append((token, ch, ts, emoji)) or True,
         )
 
@@ -303,7 +406,7 @@ class TestAddReactionsForTransition:
         calls: list[tuple[str, str, str, str]] = []
         monkeypatch.setattr(
             slack_reactions,
-            "add_reaction",
+            "add_reaction_verified",
             lambda token, ch, ts, emoji: calls.append((token, ch, ts, emoji)) or True,
         )
 
@@ -318,7 +421,9 @@ class TestAddReactionsForTransition:
         overlay = _StubOverlay(_StubConfig(token="xoxb", emojis={"mark_merged": "rocket"}))
         monkeypatch.setattr("teatree.backends.slack.reactions.get_overlay", lambda name=None: overlay)
         recorded: list[str] = []
-        monkeypatch.setattr(slack_reactions, "add_reaction", lambda _t, _c, _ts, emoji: recorded.append(emoji) or True)
+        monkeypatch.setattr(
+            slack_reactions, "add_reaction_verified", lambda _t, _c, _ts, emoji: recorded.append(emoji) or True
+        )
 
         ticket = self._ticket(["https://team.slack.com/archives/C1/p1700000000000100"])
         add_reactions_for_transition(ticket, "mark_merged")
@@ -376,7 +481,7 @@ class TestAddApprovalReaction:
         )
         monkeypatch.setattr(
             slack_reactions,
-            "add_reaction",
+            "add_reaction_verified",
             lambda token, ch, ts, emoji: recorded.append((token, ch, ts, emoji)) or True,
         )
         assert add_approval_reaction(self._pr()) == 1
@@ -386,5 +491,5 @@ class TestAddApprovalReaction:
         monkeypatch.setattr(
             slack_reactions, "get_overlay", lambda **_kw: _StubOverlay(config=_StubConfig(token="xoxb"))
         )
-        monkeypatch.setattr(slack_reactions, "add_reaction", lambda *_a, **_kw: False)
+        monkeypatch.setattr(slack_reactions, "add_reaction_verified", lambda *_a, **_kw: False)
         assert add_approval_reaction(self._pr()) == 0

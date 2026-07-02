@@ -432,6 +432,11 @@
       "subcommands": []
     },
     {
+      "help": "Verify-by-reread: confirm a loop's CronCreate registration against a CronList snapshot (#1192).",
+      "name": "loop_verify_cron",
+      "subcommands": []
+    },
+    {
       "help": "List DB-configured autonomous loops (read-only; #1796).",
       "name": "loops_list",
       "subcommands": []

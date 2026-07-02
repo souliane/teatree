@@ -226,6 +226,10 @@ Pause, resume, disable, enable, or inspect a mini-loop's durable state (#1913).
 
 Run one user-manual full-scan tick: scan every overlay once, dispatch, render the statusline.
 
+## `loop_verify_cron`
+
+Verify-by-reread: confirm a loop's CronCreate registration against a CronList snapshot (#1192).
+
 ## `loops_list`
 
 List DB-configured autonomous loops (read-only; #1796).
