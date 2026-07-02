@@ -160,7 +160,9 @@ class GhMergeRpc:
         rc, out, err = self._run(["api", f"repos/{slug}/branches/{base}/protection/required_status_checks"])
         if rc != 0:
             body = f"{out}\n{err}".lower()
-            if "branch not protected" in body or "required status checks not enabled" in body:
+            # `base` was already confirmed a real branch above, so a 404 here
+            # can only mean "no protection configured" — never "no such branch".
+            if "branch not protected" in body or "required status checks not enabled" in body or "not found" in body:
                 return []
             return [ROLLUP_QUERY_FAILED]
         try:

@@ -469,6 +469,18 @@ class TestRequiredStatusCheckContextsTransport:
         result = self._contexts(_contexts_runner(protection=(1, "", "Required status checks not enabled")))
         assert result == []
 
+    def test_generic_404_not_found_is_empty_no_gate(self) -> None:
+        # A repo with no branch-protection rule configured at all returns
+        # GitHub's generic 404 body — not the "Branch not protected" /
+        # "Required status checks not enabled" phrasing (souliane/teatree#2900).
+        body = (
+            '{"message":"Not Found","documentation_url":'
+            '"https://docs.github.com/rest/branches/branch-protection'
+            '#get-status-checks-protection","status":"404"}'
+        )
+        result = self._contexts(_contexts_runner(protection=(1, "", body)))
+        assert result == []
+
     def test_generic_protection_error_fails_closed(self) -> None:
         result = self._contexts(_contexts_runner(protection=(1, "", "HTTP 403: Forbidden")))
         assert rollup_query_failed(result)
