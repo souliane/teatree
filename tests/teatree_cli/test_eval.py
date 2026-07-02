@@ -1298,13 +1298,13 @@ class TestEvalModelVariantMatrix:
                     "--backend",
                     "api",
                     "--models",
-                    "claude-opus-4-8@xhigh,claude-fable-5@medium",
+                    "claude-opus-4-8@xhigh,claude-sonnet-5@medium",
                     "--no-persist",
                 ],
             )
         assert result.exit_code == 0, result.output
         assert "claude-opus-4-8@xhigh" in result.output
-        assert "claude-fable-5@medium" in result.output
+        assert "claude-sonnet-5@medium" in result.output
 
     def test_variant_tag_is_persisted_as_the_model_identity(self) -> None:
         specs = [_spec("alpha")]
@@ -1464,10 +1464,10 @@ class TestEvalBenchmark:
 
     def test_renders_per_variant_comparison_table(self) -> None:
         specs = [_spec("alpha"), _spec("beta")]
-        result = self._invoke(["--models", "claude-opus-4-8@xhigh,claude-fable-5@medium", "--no-persist"], specs=specs)
+        result = self._invoke(["--models", "claude-opus-4-8@xhigh,claude-sonnet-5@medium", "--no-persist"], specs=specs)
         assert result.exit_code == 0, result.output
         assert "claude-opus-4-8@xhigh" in result.output
-        assert "claude-fable-5@medium" in result.output
+        assert "claude-sonnet-5@medium" in result.output
         assert "2/2" in result.output
         assert "1/2" in result.output
 
@@ -1483,7 +1483,7 @@ class TestEvalBenchmark:
 
     def test_json_shape_carries_the_comparison_metrics(self) -> None:
         specs = [_spec("alpha"), _spec("beta")]
-        result = self._invoke(["--models", "opus@xhigh,fable@medium", "--format", "json", "--no-persist"], specs=specs)
+        result = self._invoke(["--models", "opus@xhigh,sonnet@medium", "--format", "json", "--no-persist"], specs=specs)
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
         by_variant = {entry["variant"]: entry for entry in payload["variants"]}
@@ -1492,15 +1492,15 @@ class TestEvalBenchmark:
         assert opus["pass_rate"] == pytest.approx(1.0)
         assert opus["total_cost_usd"] == pytest.approx(0.40)
         assert opus["cost_per_pass_usd"] == pytest.approx(0.20)
-        fable = by_variant["fable@medium"]
-        assert (fable["passed"], fable["executed"]) == (1, 2)
-        assert fable["cost_per_pass_usd"] == pytest.approx(0.10)
+        sonnet = by_variant["sonnet@medium"]
+        assert (sonnet["passed"], sonnet["executed"]) == (1, 2)
+        assert sonnet["cost_per_pass_usd"] == pytest.approx(0.10)
 
     def test_failing_scenarios_are_data_not_an_exit_failure(self) -> None:
         # The benchmark is a comparison report, not a gate: a weaker variant
         # failing scenarios is the measurement, never a non-zero exit.
         specs = [_spec("alpha"), _spec("beta")]
-        result = self._invoke(["--models", "fable@medium", "--no-persist"], specs=specs)
+        result = self._invoke(["--models", "sonnet@medium", "--no-persist"], specs=specs)
         assert result.exit_code == 0, result.output
 
     def test_scenarios_flag_filters_the_suite(self) -> None:
@@ -1590,10 +1590,10 @@ class TestEvalBenchmark:
 
     def test_persists_one_matrix_record_with_variant_tags(self) -> None:
         specs = [_spec("alpha")]
-        self._invoke(["--models", "opus@xhigh,fable@medium"], specs=specs)
+        self._invoke(["--models", "opus@xhigh,sonnet@medium"], specs=specs)
         history = CliRunner().invoke(app, ["eval", "history", "--format", "json"])
         payload = json.loads(history.output[history.output.index("{") : history.output.rindex("}") + 1])
-        assert payload["runs"][0]["model"] == "opus@xhigh,fable@medium"
+        assert payload["runs"][0]["model"] == "opus@xhigh,sonnet@medium"
 
 
 class TestBenchmarkDockerByDefault:
@@ -1616,7 +1616,7 @@ class TestBenchmarkDockerByDefault:
                     "eval",
                     "benchmark",
                     "--models",
-                    "claude-opus-4-8@xhigh,claude-fable-5@medium",
+                    "claude-opus-4-8@xhigh,claude-sonnet-5@medium",
                     "--scenarios",
                     "alpha,beta",
                     "--trials",
@@ -1633,7 +1633,7 @@ class TestBenchmarkDockerByDefault:
         (args,) = docker.call_args.args
         assert args[0] == "benchmark"
         flag_values = {args[i]: args[i + 1] for i in range(1, len(args) - 1) if args[i].startswith("--")}
-        assert flag_values["--models"] == "claude-opus-4-8@xhigh,claude-fable-5@medium"
+        assert flag_values["--models"] == "claude-opus-4-8@xhigh,claude-sonnet-5@medium"
         assert flag_values["--scenarios"] == "alpha,beta"
         assert flag_values["--trials"] == "3"
         assert flag_values["--max-turns"] == "5"

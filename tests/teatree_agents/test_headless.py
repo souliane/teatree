@@ -1110,12 +1110,14 @@ class TestBuildOptionsSpawnModelFloor(TestCase):
             return headless_mod._build_options(task, "ctx", phase=phase, skills=skills)
 
     def test_skill_floor_raises_the_headless_model(self) -> None:
+        # "testing" starts at the balanced tier (sonnet); an opus skill floor
+        # (frontier-ranked) raises it above that baseline.
         options = self._options(
-            "coding",
+            "testing",
             skills=["architecture-design"],
-            config_body='[agent.skill_models]\narchitecture-design = "fable"\n',
+            config_body='[agent.skill_models]\narchitecture-design = "opus"\n',
         )
-        assert options.model == "fable"
+        assert options.model == "opus"
 
     def test_sentinel_skill_floor_keeps_phase_model(self) -> None:
         options = self._options(
@@ -1134,7 +1136,7 @@ class TestBuildOptionsSpawnModelFloor(TestCase):
         options = self._options(
             "requesting_review",
             skills=[],
-            config_body='[agent]\nsession_effort = "xhigh"\nsession_model = "fable"\n',
+            config_body='[agent]\nsession_effort = "xhigh"\nsession_model = "opus"\n',
         )
         assert options.effort is None
 

@@ -258,155 +258,35 @@ class TestResolveSpawnModel:
         assert resolve_spawn_model("requesting_review", skills=["code-review"]) == TIER_MODELS["frontier"]
 
 
-# The Fable-pinned surfaces (phase_models + skill_models + session_model) one
-# config carries, used to prove the kill-switch downgrades EVERY surface, not a
-# sampled subset.
-_FABLE_PHASE_PINS = (
-    'phase_models.planning = "fable"\n'
-    'phase_models.coding = "fable"\n'
-    'phase_models.debugging = "fable"\n'
-    'phase_models.reviewing = "fable"\n'
-    'phase_models.architectural_review = "fable"\n'
-)
-_FABLE_SKILL_PINS = (
-    "[agent.skill_models]\n"
-    'code-review = "fable"\n'
-    'architecture-design = "fable"\n'
-    't3-e2e = "claude-fable-5"\n'  # full id form, not the short alias
-)
+class TestNoFableDefault:
+    """Pinning test (#2237 removal): nothing routes to Fable without explicit opt-in.
 
-_ALL_PHASES = (
-    "planning",
-    "coding",
-    "debugging",
-    "reviewing",
-    "requesting_review",
-    "testing",
-    "shipping",
-    "retrospecting",
-    "architectural_review",
-    "scoping",
-)
-
-_SKILL_BUNDLES = (
-    [],
-    ["code-review"],
-    ["architecture-design"],
-    ["t3-e2e"],
-    ["code-review", "architecture-design", "t3-e2e"],
-    ["unlisted-skill"],
-)
-
-
-def _fable_pinned_cfg(tmp_path: Path, *, agent_scalars: str = "") -> Path:
-    """A Fable-pinned config: phase_models + skill_models + session_model = fable."""
-    cfg = tmp_path / ".teatree.toml"
-    _write_toml(
-        cfg,
-        "[agent]\n" + 'session_model = "fable"\n' + agent_scalars + _FABLE_PHASE_PINS + _FABLE_SKILL_PINS,
-    )
-    return cfg
-
-
-class TestFableKillSwitch:
-    """``[agent] fable_enabled`` single-toggle downgrade (teatree#2237).
-
-    When disabled, every resolved model value that is Fable (short ``fable`` or
-    full ``claude-fable-5``) transparently downgrades to ``fable_fallback``
-    (default ``opus`` = the frontier family) across every spawn + the session pin.
+    The standalone ``fable_enabled`` kill-switch is gone — the safety property it
+    protected is now structural: :data:`TIER_MODELS` never NAMES a Fable model id
+    for any tier, so a phase can only ever reach Fable via an EXPLICIT
+    ``[agent.tier_models]`` / ``[agent.skill_models]`` / ``[agent] honesty_model``
+    override the operator writes themselves — never a shipped default.
     """
 
-    def test_disabled_downgrades_every_phase_skill_combo_to_fallback(self, tmp_path: Path) -> None:
-        from teatree.core.cost import tier_of_model  # noqa: PLC0415
+    def test_tier_models_never_names_a_fable_model_id(self) -> None:
+        assert all("fable" not in model.lower() for model in TIER_MODELS.values())
 
-        on_dir = tmp_path / "on"
-        on_dir.mkdir()
-        off = _fable_pinned_cfg(tmp_path, agent_scalars="fable_enabled = false\n")
-        on = _fable_pinned_cfg(on_dir, agent_scalars="fable_enabled = true\n")
-        any_was_fable = False
-        for phase in _ALL_PHASES:
-            for bundle in _SKILL_BUNDLES:
-                on_resolved = resolve_spawn_model(phase, skills=bundle, config_path=on)
-                off_resolved = resolve_spawn_model(phase, skills=bundle, config_path=off)
-                assert off_resolved != "fable", (phase, bundle, off_resolved)
-                assert off_resolved != "claude-fable-5", (phase, bundle, off_resolved)
-                if on_resolved is not None and tier_of_model(on_resolved) == "fable":
-                    any_was_fable = True
-                    # Every combo that resolved to Fable when ON now resolves to
-                    # the fallback (default "opus") when OFF.
-                    assert off_resolved == "opus", (phase, bundle, off_resolved)
-                else:
-                    assert off_resolved == on_resolved, (phase, bundle, on_resolved, off_resolved)
-        assert any_was_fable, "fixture must exercise at least one Fable resolution"
+    def test_default_phase_models_never_resolve_to_fable(self) -> None:
+        for phase in DEFAULT_PHASE_MODELS:
+            resolved = resolve_phase_model(phase, config_path=_ABSENT)
+            assert resolved is not None
+            assert "fable" not in resolved.lower()
 
-    def test_enabled_is_byte_identical_to_today(self, tmp_path: Path) -> None:
-        cfg = _fable_pinned_cfg(tmp_path, agent_scalars="fable_enabled = true\n")
-        assert resolve_spawn_model("planning", skills=[], config_path=cfg) == "fable"
-        assert resolve_spawn_model("coding", skills=["code-review"], config_path=cfg) == "fable"
-        # t3-e2e's floor is the full claude-fable-5 id, preserved byte-for-byte.
-        assert resolve_spawn_model("testing", skills=["t3-e2e"], config_path=cfg) == "claude-fable-5"
+    def test_absent_config_spawn_model_never_defaults_to_fable(self) -> None:
+        for phase in (*DEFAULT_PHASE_MODELS, "scoping"):
+            resolved = resolve_spawn_model(phase, skills=[], config_path=_ABSENT)
+            assert resolved is not None
+            assert "fable" not in resolved.lower()
 
-    def test_absent_toggle_is_enabled_keeps_fable(self, tmp_path: Path) -> None:
-        cfg = _fable_pinned_cfg(tmp_path)
-        assert resolve_spawn_model("planning", skills=[], config_path=cfg) == "fable"
-        assert resolve_spawn_model("coding", skills=["architecture-design"], config_path=cfg) == "fable"
-
-    def test_fable_fallback_override_to_balanced_tier(self, tmp_path: Path) -> None:
-        cfg = _fable_pinned_cfg(tmp_path, agent_scalars='fable_enabled = false\nfable_fallback = "balanced"\n')
-        assert resolve_spawn_model("planning", skills=[], config_path=cfg) == "balanced"
-        assert resolve_spawn_model("coding", skills=["code-review"], config_path=cfg) == "balanced"
-
-    def test_non_fable_pins_untouched_when_disabled(self, tmp_path: Path) -> None:
-        cfg = tmp_path / ".teatree.toml"
-        _write_toml(
-            cfg,
-            "[agent]\nfable_enabled = false\n"
-            'phase_models.reviewing = "balanced"\nphase_models.retrospecting = "cheap"\n',
-        )
-        assert resolve_spawn_model("reviewing", skills=[], config_path=cfg) == TIER_MODELS["balanced"]
-        assert resolve_spawn_model("retrospecting", skills=[], config_path=cfg) == TIER_MODELS["cheap"]
-
-
-class TestDowngradeFableHelper:
-    """The pure ``_downgrade_fable(model, config)`` helper (teatree#2237)."""
-
-    def test_short_alias_downgrades_when_disabled(self) -> None:
+    def test_default_honesty_model_is_opus_not_fable(self) -> None:
         from teatree.config_agent import AgentConfig  # noqa: PLC0415
 
-        cfg = AgentConfig(fable_enabled=False, fable_fallback="opus")
-        assert mt_mod._downgrade_fable("fable", cfg) == "opus"
-
-    def test_full_id_downgrades_when_disabled(self) -> None:
-        from teatree.config_agent import AgentConfig  # noqa: PLC0415
-
-        cfg = AgentConfig(fable_enabled=False, fable_fallback="opus")
-        assert mt_mod._downgrade_fable("claude-fable-5", cfg) == "opus"
-
-    def test_left_unchanged_when_enabled(self) -> None:
-        from teatree.config_agent import AgentConfig  # noqa: PLC0415
-
-        cfg = AgentConfig(fable_enabled=True, fable_fallback="opus")
-        assert mt_mod._downgrade_fable("fable", cfg) == "fable"
-        assert mt_mod._downgrade_fable("claude-fable-5", cfg) == "claude-fable-5"
-
-    def test_non_fable_unchanged_when_disabled(self) -> None:
-        from teatree.config_agent import AgentConfig  # noqa: PLC0415
-
-        cfg = AgentConfig(fable_enabled=False, fable_fallback="opus")
-        assert mt_mod._downgrade_fable(TIER_MODELS["balanced"], cfg) == TIER_MODELS["balanced"]
-        assert mt_mod._downgrade_fable(TIER_MODELS["frontier"], cfg) == TIER_MODELS["frontier"]
-
-    def test_none_unchanged_when_disabled(self) -> None:
-        from teatree.config_agent import AgentConfig  # noqa: PLC0415
-
-        cfg = AgentConfig(fable_enabled=False, fable_fallback="opus")
-        assert mt_mod._downgrade_fable(None, cfg) is None
-
-    def test_fallback_override_respected(self) -> None:
-        from teatree.config_agent import AgentConfig  # noqa: PLC0415
-
-        cfg = AgentConfig(fable_enabled=False, fable_fallback="balanced")
-        assert mt_mod._downgrade_fable("fable", cfg) == "balanced"
+        assert AgentConfig().honesty_model == "opus"
 
 
 class TestModelSupportsThinking:
@@ -422,8 +302,10 @@ class TestModelSupportsThinking:
         # Haiku rejects the thinking/effort levers, so the guard withholds the pin.
         assert model_supports_thinking(TIER_MODELS["cheap"]) is False
 
-    def test_fable_supports_thinking(self) -> None:
-        assert model_supports_thinking("claude-fable-5") is True
+    def test_unrecognised_model_supports_thinking(self) -> None:
+        # An unrecognised id falls back to the conservative reasoning tier
+        # (opus), which supports thinking — only the cheap/Haiku tier withholds it.
+        assert model_supports_thinking("claude-some-future-model-9") is True
 
     def test_inherit_default_is_left_alone(self) -> None:
         # None = inherit the user's default: unknown model, so leave the SDK default.

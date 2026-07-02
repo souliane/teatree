@@ -13,8 +13,8 @@ from teatree.eval.model_variant import (
 
 class TestParseModelVariant:
     def test_plain_model_has_no_effort(self) -> None:
-        variant = parse_model_variant("claude-fable-5")
-        assert variant == ModelVariant(model="claude-fable-5", effort=None)
+        variant = parse_model_variant("claude-sonnet-5")
+        assert variant == ModelVariant(model="claude-sonnet-5", effort=None)
 
     def test_model_at_effort_parses_both_parts(self) -> None:
         variant = parse_model_variant("claude-opus-4-8@xhigh")
@@ -22,8 +22,8 @@ class TestParseModelVariant:
         assert variant.effort == "xhigh"
 
     def test_surrounding_whitespace_is_stripped(self) -> None:
-        variant = parse_model_variant("  claude-fable-5 @ medium ")
-        assert variant == ModelVariant(model="claude-fable-5", effort="medium")
+        variant = parse_model_variant("  claude-sonnet-5 @ medium ")
+        assert variant == ModelVariant(model="claude-sonnet-5", effort="medium")
 
     def test_every_known_effort_level_is_accepted(self) -> None:
         for level in EFFORT_LEVELS:
@@ -41,7 +41,7 @@ class TestParseModelVariant:
 
     def test_empty_effort_after_at_raises(self) -> None:
         with pytest.raises(ModelVariantError, match="unknown effort ''"):
-            parse_model_variant("claude-fable-5@")
+            parse_model_variant("claude-sonnet-5@")
 
 
 class TestVariantTag:
@@ -50,15 +50,15 @@ class TestVariantTag:
         assert parse_model_variant(tag).tag == tag
 
     def test_tag_of_plain_model_is_the_model(self) -> None:
-        assert parse_model_variant("claude-fable-5").tag == "claude-fable-5"
+        assert parse_model_variant("claude-sonnet-5").tag == "claude-sonnet-5"
 
 
 class TestParseModelVariants:
     def test_csv_parses_each_entry(self) -> None:
-        variants = parse_model_variants("claude-opus-4-8@xhigh, claude-fable-5@medium, haiku")
+        variants = parse_model_variants("claude-opus-4-8@xhigh, claude-sonnet-5@medium, haiku")
         assert [v.tag for v in variants] == [
             "claude-opus-4-8@xhigh",
-            "claude-fable-5@medium",
+            "claude-sonnet-5@medium",
             "haiku",
         ]
 

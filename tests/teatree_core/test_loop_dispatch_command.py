@@ -105,9 +105,12 @@ class TestPendingSpawn(_LoopDispatchTest):
 
     def test_skill_floor_raises_the_dispatch_model(self) -> None:
         # A per-skill MODEL floor on a skill in the resolved bundle raises the
-        # dispatch payload's model above the phase tier (most-capable-wins).
+        # dispatch payload's model above the phase tier (most-capable-wins). The
+        # reviewer task's phase is already frontier-tier, so the floor value is
+        # an unrecognised id — unrecognised ids rank ABOVE every known tier
+        # (most-capable fallback), making the raise observable.
         cfg = Path(tempfile.mkdtemp()) / ".teatree.toml"
-        cfg.write_text('[agent.skill_models]\ncode-review = "fable"\n', encoding="utf-8")
+        cfg.write_text('[agent.skill_models]\ncode-review = "custom-strong-model"\n', encoding="utf-8")
 
         self._reviewer_task()
         stdout = StringIO()
@@ -118,7 +121,7 @@ class TestPendingSpawn(_LoopDispatchTest):
         ):
             call_command("loop_dispatch", "pending-spawn", "--json", stdout=stdout)
         entry = json.loads(stdout.getvalue())[0]
-        assert entry["model"] == "fable"
+        assert entry["model"] == "custom-strong-model"
         assert entry["skill_bundle"] == ["code-review"]
 
 

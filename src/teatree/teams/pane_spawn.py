@@ -67,8 +67,8 @@ def _floor_teammate_model(model: str | None) -> str:
     plain most-capable-wins merge would NOT close the inherit hole
     (``tier_rank(None) == tier_rank("opus")``), so this pins
     :data:`_TEAMMATE_MODEL_FLOOR` whenever the resolved model is absent or ranks
-    below it, and leaves an at-or-above-opus model (opus, or the more-capable
-    fable) untouched — the floor only ever raises, never lowers.
+    below it, and leaves an at-or-above-opus model untouched — the floor only
+    ever raises, never lowers.
     """
     if not model or tier_rank(model) < tier_rank(_TEAMMATE_MODEL_FLOOR):
         return _TEAMMATE_MODEL_FLOOR

@@ -339,13 +339,13 @@ class TestEffortSegment:
         self._write_settings(state_dir, "medium")
 
         result = _run(
-            {"session_id": "s-eff", "model": {"display_name": "fable-5"}},
+            {"session_id": "s-eff", "model": {"display_name": "opus-4-8"}},
             state_dir=state_dir,
         )
 
         assert result.returncode == 0, result.stderr
         plain = _strip_ansi(result.stdout)
-        assert "model=fable-5 · medium" in plain, plain
+        assert "model=opus-4-8 · medium" in plain, plain
 
     def test_omits_effort_when_settings_has_no_effort_level(self, tmp_path: Path) -> None:
         state_dir = tmp_path / "state"
@@ -353,15 +353,15 @@ class TestEffortSegment:
         self._write_settings(state_dir, None)
 
         result = _run(
-            {"session_id": "s-no-eff", "model": {"display_name": "fable-5"}},
+            {"session_id": "s-no-eff", "model": {"display_name": "opus-4-8"}},
             state_dir=state_dir,
         )
 
         assert result.returncode == 0, result.stderr
         plain = _strip_ansi(result.stdout)
-        assert "model=fable-5" in plain, plain
+        assert "model=opus-4-8" in plain, plain
         # No effort resolved → no suffix, no dangling separator after the model.
-        assert "fable-5 ·" not in plain, plain
+        assert "opus-4-8 ·" not in plain, plain
 
     def test_omits_effort_when_settings_file_absent(self, tmp_path: Path) -> None:
         state_dir = tmp_path / "state"
@@ -369,14 +369,14 @@ class TestEffortSegment:
         # No settings.json planted in state_dir → effortLevel unreadable.
 
         result = _run(
-            {"session_id": "s-missing-cfg", "model": {"display_name": "fable-5"}},
+            {"session_id": "s-missing-cfg", "model": {"display_name": "opus-4-8"}},
             state_dir=state_dir,
         )
 
         assert result.returncode == 0, result.stderr
         plain = _strip_ansi(result.stdout)
-        assert "model=fable-5" in plain, plain
-        assert "fable-5 ·" not in plain, plain
+        assert "model=opus-4-8" in plain, plain
+        assert "opus-4-8 ·" not in plain, plain
 
     def test_stdin_effort_field_takes_precedence_over_settings(self, tmp_path: Path) -> None:
         state_dir = tmp_path / "state"
@@ -384,13 +384,13 @@ class TestEffortSegment:
         self._write_settings(state_dir, "low")
 
         result = _run(
-            {"session_id": "s-stdin-eff", "model": {"display_name": "fable-5"}, "effort": "max"},
+            {"session_id": "s-stdin-eff", "model": {"display_name": "opus-4-8"}, "effort": "max"},
             state_dir=state_dir,
         )
 
         assert result.returncode == 0, result.stderr
         plain = _strip_ansi(result.stdout)
-        assert "model=fable-5 · max" in plain, plain
+        assert "model=opus-4-8 · max" in plain, plain
         assert "· low" not in plain, plain
 
     def test_effort_segment_omitted_when_model_absent(self, tmp_path: Path) -> None:
