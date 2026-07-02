@@ -70,7 +70,7 @@ _VALID_MODES = frozenset({MODE_PRESENT, MODE_AWAY, MODE_AUTONOMOUS_AWAY})
 _DEFERRING_MODES = frozenset({MODE_AWAY, MODE_AUTONOMOUS_AWAY})
 # Modes that pause the Stop self-pump — only holiday-``away``. Mirrors
 # ``teatree.core.availability._PAUSING_MODES``. Kept in parity with the core
-# resolver by ``tests/teatree_hooks/test_availability_away_probe.py``.
+# resolver by ``tests/test_loop_pause_levers_stdlib.py``.
 _PAUSING_MODES = frozenset({MODE_AWAY})
 
 _OVERRIDE_FILENAME = "availability_override.json"

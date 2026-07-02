@@ -219,6 +219,66 @@ class TestAwayLeverReadsOverrideFileStdlib:
         assert any("availability" in " ".join(c) for c in calls)  # delegated to t3 for the schedule
 
 
+class TestAutonomousAwayLeverStdlib:
+    """``autonomous_away`` defers questions but does NOT pause the self-pump (#2544).
+
+    The stdlib probe splits the single away-only read into
+    ``resolved_defers_questions`` (away + autonomous_away) and
+    ``resolved_pauses_self_pump`` (away only), read here under the same
+    bare-``python3`` reproduction as the away-only lever above.
+    """
+
+    def test_autonomous_away_override_defers_but_does_not_pause(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _config_db(tmp_path, monkeypatch)
+        _write_override(tmp_path, "autonomous_away")
+        assert away_probe.resolved_defers_questions() is True
+        assert away_probe.resolved_pauses_self_pump() is False
+
+    def test_away_override_defers_and_pauses(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _config_db(tmp_path, monkeypatch)
+        _write_override(tmp_path, "away")
+        assert away_probe.resolved_defers_questions() is True
+        assert away_probe.resolved_pauses_self_pump() is True
+
+    def test_present_override_neither_defers_nor_pauses(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _config_db(tmp_path, monkeypatch)
+        _write_override(tmp_path, "present")
+        assert away_probe.resolved_defers_questions() is False
+        assert away_probe.resolved_pauses_self_pump() is False
+
+    def test_no_override_no_windows_neither_defers_nor_pauses(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _config_db(tmp_path, monkeypatch)
+        assert away_probe.resolved_defers_questions() is False
+        assert away_probe.resolved_pauses_self_pump() is False
+
+    def test_router_question_deferral_reads_the_split_predicate(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # handle_route_away_mode_question must defer under autonomous_away too —
+        # it reads _resolved_defers_questions, not the away-only lever.
+        _config_db(tmp_path, monkeypatch)
+        _write_override(tmp_path, "autonomous_away")
+        assert router._resolved_defers_questions() is True
+
+    def test_stop_self_pump_keeps_running_under_autonomous_away(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The whole point of #2544: unlike holiday-away, autonomous-away must NOT
+        # suppress the Stop self-pump.
+        _config_db(tmp_path, monkeypatch, dispatch_status="enabled")
+        _write_override(tmp_path, "autonomous_away")
+        _own_loop("owner-1")
+        _fake_pending(monkeypatch, [{"task_id": 4, "subagent": "x", "phase": "coding", "issue_url": "u"}])
+
+        result = handle_loop_self_pump({"session_id": "owner-1"})
+
+        assert result is True  # autonomous-away: the pump keeps firing
+
+
 class TestStopSelfPumpEndToEndUnderBarePython3:
     """The whole handler suppresses through a durable pause in the bare context."""
 
