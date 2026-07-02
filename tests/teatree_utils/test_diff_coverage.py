@@ -317,6 +317,34 @@ class TestSymbolScopeRules:
         assert "Base" not in missing
         assert "Thing" in missing
 
+    def test_attribute_form_requires_typing_module_not_any_dot_protocol(self, git_repo: Path) -> None:
+        (git_repo / "shipped.py").write_text(
+            "import custom\n\n\nclass Thing(custom.Protocol):\n    def one(self) -> None:\n        return None\n",
+            encoding="utf-8",
+        )
+        diff = _worktree_diff(git_repo, "shipped.py")
+        # `custom.Protocol` is an ordinary attribute access ending in
+        # `.Protocol`, but `custom` is not `typing` — an unrelated class
+        # merely named `Protocol` must not bypass the anti-vacuity check
+        # (review finding on souliane/teatree#2888: a bare `.attr ==
+        # "Protocol"` match with no import-provenance check wrongly
+        # exempted this).
+        assert "Thing" in unreferenced_changed_symbols(diff, repo_root=git_repo)
+
+    def test_name_form_requires_import_from_typing_not_any_protocol_name(self, git_repo: Path) -> None:
+        (git_repo / "custom.py").write_text("class Protocol:\n    pass\n", encoding="utf-8")
+        (git_repo / "shipped.py").write_text(
+            "from custom import Protocol\n\n\n"
+            "class Thing(Protocol):\n    def one(self) -> None:\n        return None\n",
+            encoding="utf-8",
+        )
+        diff = _worktree_diff(git_repo, "shipped.py", "custom.py")
+        # `Protocol` imported from a module other than `typing` is an
+        # unrelated symbol that merely shares the name — the bare-name
+        # heuristic must resolve import provenance, not just the token.
+        missing = unreferenced_changed_symbols(diff, repo_root=git_repo)
+        assert "Thing" in missing
+
     def test_syntax_error_in_changed_file_is_skipped(self, git_repo: Path) -> None:
         (git_repo / "broken.py").write_text("def x(:\n    pass\n", encoding="utf-8")
         diff = _worktree_diff(git_repo, "broken.py")

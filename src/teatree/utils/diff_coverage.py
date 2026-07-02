@@ -145,21 +145,51 @@ class DiffCoverageReport:
         return "\n".join(rows)
 
 
-def _inherits_protocol(node: ast.ClassDef) -> bool:
+def _typing_protocol_bindings(tree: ast.Module) -> tuple[set[str], set[str]]:
+    """Return ``(protocol_names, typing_module_aliases)`` bound to ``typing.Protocol``.
+
+    ``protocol_names`` is every local name that ``from typing import
+    Protocol [as X]`` binds to ``typing.Protocol`` directly.
+    ``typing_module_aliases`` is every local name that ``import typing [as
+    X]`` binds, so an ``<alias>.Protocol`` attribute access can be resolved
+    back to ``typing.Protocol``. A same-named symbol imported from anywhere
+    else (``from custom import Protocol``, ``class Foo(custom.Protocol)``)
+    binds neither set, so :func:`_inherits_protocol` correctly refuses it —
+    a bare name/attribute match with no import-provenance check would
+    wrongly exempt an unrelated class that merely happens to be named
+    ``Protocol`` (souliane/teatree#2888 review finding).
+    """
+    protocol_names: set[str] = set()
+    typing_aliases: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "typing":
+            protocol_names.update(alias.asname or alias.name for alias in node.names if alias.name == "Protocol")
+        elif isinstance(node, ast.Import):
+            typing_aliases.update(alias.asname or alias.name for alias in node.names if alias.name == "typing")
+    return protocol_names, typing_aliases
+
+
+def _inherits_protocol(node: ast.ClassDef, protocol_names: set[str], typing_aliases: set[str]) -> bool:
     """Whether *node* directly subclasses ``typing.Protocol`` (either import form).
 
-    A source-level heuristic (no type resolution, matching the rest of this
-    module): matches a base named ``Protocol`` (``from typing import
-    Protocol``) or an attribute access ending in ``.Protocol`` (``class
-    Foo(typing.Protocol)``). A Protocol subclassing another *custom* Protocol
-    base (not literally named ``Protocol``) is not detected — narrower is
-    the safe default for a gate exemption.
+    A source-level heuristic (no cross-file type resolution, matching the
+    rest of this module): matches a base name bound by ``from typing import
+    Protocol`` (``protocol_names``) or an attribute access whose object is
+    bound by ``import typing`` (``typing_aliases``). A Protocol subclassing
+    another *custom* Protocol base (not itself importing from ``typing``) is
+    not detected — narrower is the safe default for a gate exemption.
     """
-    return any(
-        (isinstance(base, ast.Name) and base.id == "Protocol")
-        or (isinstance(base, ast.Attribute) and base.attr == "Protocol")
-        for base in node.bases
-    )
+    for base in node.bases:
+        if isinstance(base, ast.Name) and base.id in protocol_names:
+            return True
+        if (
+            isinstance(base, ast.Attribute)
+            and base.attr == "Protocol"
+            and isinstance(base.value, ast.Name)
+            and base.value.id in typing_aliases
+        ):
+            return True
+    return False
 
 
 def _changed_production_symbols(diff: str, repo_root: Path, scope: CoverageScope) -> dict[str, set[str]]:
@@ -197,13 +227,14 @@ def _changed_production_symbols(diff: str, repo_root: Path, scope: CoverageScope
             tree = ast.parse(source_file.read_text(encoding="utf-8"))
         except SyntaxError:
             continue
+        protocol_names, typing_aliases = _typing_protocol_bindings(tree)
         names: set[str] = set()
         for node in tree.body:
             if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
                 continue
             if node.lineno not in lines or node.name.startswith("_") or node.decorator_list:
                 continue
-            if isinstance(node, ast.ClassDef) and _inherits_protocol(node):
+            if isinstance(node, ast.ClassDef) and _inherits_protocol(node, protocol_names, typing_aliases):
                 continue
             names.add(node.name)
         if names:
