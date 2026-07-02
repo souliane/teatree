@@ -230,6 +230,53 @@ def _check_mcp_connectivity() -> bool:
     return False
 
 
+def _check_teatree_mcp_registration() -> bool:
+    """Verify teatree's own structured-search MCP server is wired (#2863).
+
+    Structural check: confirms the plugin-bundled ``.mcp.json`` still declares
+    the ``teatree`` stdio server pointing at ``t3 mcp serve`` (the file the
+    repo ships at its root — Claude Code starts plugin-bundled MCP servers
+    automatically once the plugin is enabled, so nothing more is required to
+    make the tools reachable). When ``claude`` is on PATH, also live-probes
+    visibility via ``claude mcp list``.
+
+    A WARN, never a hard FAIL: the resolved clone (the same main-clone
+    resolution the plugin registration uses) can legitimately lag a merged
+    change until the next ``t3 update`` — that is normal, self-correcting
+    operation, not a misconfiguration worth reddening the whole doctor run
+    over. Crash-proof: any error also degrades to a WARN.
+    """
+    from teatree.cli._doctor_plugin_repair import _resolve_main_clone  # noqa: PLC0415
+    from teatree.core.mcp_registration import TEATREE_MCP_SERVER_NAME, verify_teatree_mcp_registration  # noqa: PLC0415
+
+    try:
+        repo = _resolve_main_clone()
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  Could not resolve the teatree clone to verify .mcp.json: {exc}")
+        return True
+    if repo is None:
+        return True
+
+    outcome = verify_teatree_mcp_registration(repo)
+    if not outcome.ok:
+        typer.echo(f"WARN  {outcome.message}")
+        return True
+
+    try:
+        from teatree.core.mcp_connectivity import probe_mcp_servers  # noqa: PLC0415
+
+        statuses = probe_mcp_servers()
+    except Exception:  # noqa: BLE001 — live probe is best-effort; claude may be absent
+        return True
+    for status in statuses:
+        if status.name == TEATREE_MCP_SERVER_NAME and not status.connected:
+            typer.echo(
+                f"WARN  MCP server '{TEATREE_MCP_SERVER_NAME}' is registered but reports NOT "
+                "connected in `claude mcp list` — it may not have started for this session yet.",
+            )
+    return True
+
+
 def _check_stale_uv_venv() -> bool:
     """Detect + clean an empty uv-built ``.venv`` in a Pipfile-managed clone (#2005).
 

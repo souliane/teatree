@@ -176,6 +176,12 @@ The hooks cover these events:
 
 All hook scripts live in `$T3_REPO/hooks/scripts/`. The `hooks.json` at `$T3_REPO/hooks/hooks.json` defines the routing table.
 
+## Step 4a: Structured-Search MCP Server
+
+Teatree ships a plugin-bundled `.mcp.json` at the repo root declaring the `teatree` stdio MCP server (`t3 mcp serve`, built under [#1023](https://github.com/souliane/teatree/issues/1023)) — the same convention official Claude Code plugins use. Claude Code starts a plugin-bundled MCP server automatically once the plugin is enabled, so once `t3 setup` has registered and enabled the plugin (Step 4), the five read-only `ticket_search` / `worktree_status` / `pr_for_ticket` / `loop_stats` / `incoming_event_recent` tools are reachable as `mcp__teatree__*` — no separate `claude mcp add` step.
+
+`t3 setup` confirms the file is intact (`OK`/`WARN` line naming `.mcp.json`); `t3 doctor check` re-verifies it and, when `claude` is on PATH, live-probes visibility via `claude mcp list` too ([#2863](https://github.com/souliane/teatree/issues/2863)). Prefer these tools over shelling out to `t3 ... list` and parsing text wherever a tool already covers the query — see `/t3:ship` § 4b step 5 for a worked example.
+
 ## Step 4b: Recommended Global Agent Config
 
 **Strongly recommend** the user adds the following rule to their global agent instructions file (e.g., `~/.claude/CLAUDE.md`). AI agents consistently bypass the `t3` CLI to run underlying commands directly (e.g., `manage.py runserver`, `docker compose`, `ln -s`, `pipenv install`) when `t3` fails. This invariably produces a broken environment because the CLI handles env vars, symlinks, port allocation, translations, and SSL config that manual commands miss.

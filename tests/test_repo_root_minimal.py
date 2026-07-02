@@ -69,6 +69,7 @@ _ALLOWED_ROOT_ENTRIES = frozenset(
         ".gitlab-ci.yml",
         ".jscpd.json",
         ".markdownlint-cli2.yaml",
+        ".mcp.json",
         ".pre-commit-config.yaml",
         ".python-version",
     }

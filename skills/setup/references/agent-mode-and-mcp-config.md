@@ -135,6 +135,12 @@ per-server values. The real per-overlay provider values live in the overlay
 repo (souliane/teatree#251); core ships only the extension point and the
 validation logic.
 
+## 2.2 Teatree's own bundled structured-search MCP server (souliane/teatree#2863)
+
+Teatree ships its own MCP server (`t3 mcp serve`, [#1023](https://github.com/souliane/teatree/issues/1023)) as a **plugin-bundled** server: a `.mcp.json` at the repo root (sibling of `.claude-plugin/`), the same convention official Claude Code plugins use for a bundled server. Claude Code starts a plugin-bundled server automatically once the plugin is enabled — `t3 setup` already enables the plugin (§ 3 below), so no separate `claude mcp add` step registers this one. Its five read-only tools (`ticket_search`, `worktree_status`, `pr_for_ticket`, `loop_stats`, `incoming_event_recent`) surface as `mcp__teatree__*`.
+
+This is **not** covered by the § 2.1 enabled-MCP connectivity check: `read_enabled_mcp_servers` reads only `~/.claude.json`'s `mcpServers` + `claudeAiMcpEverConnected`, and a plugin-bundled server is never written there. `teatree.core.mcp_registration.verify_teatree_mcp_registration` is the dedicated, structural check both `t3 setup` (an `OK`/`WARN` confirmation line) and `t3 doctor check` (`_check_teatree_mcp_registration`, which additionally live-probes via `claude mcp list` when `claude` is on PATH) read — the single chokepoint so the two surfaces cannot drift on what "correctly registered" means.
+
 ## 3. Standing permission state after `t3 setup`
 
 `t3 setup` does **not** set `skipDangerousModePermissionPrompt` or
@@ -191,4 +197,5 @@ duplicates the other.
 | MCP / auto-mode permissions | user's own `~/.claude/settings.json` | not plugin-shipped, by design (§ 11.4) |
 | Enabled-MCP connectivity check | n/a — runs at session start / `t3 doctor` / account-switch | `teatree.core.mcp_connectivity.check_mcp_connectivity` (#2282) |
 | Per-server expected provider | overlay's `get_mcp_provider_expectations()` (real values in #251) | `teatree.core.overlay.OverlayBase` |
+| Teatree's own bundled MCP server | n/a — ships in `.mcp.json`, auto-starts with the plugin | `teatree.core.mcp_registration` (#2863) |
 | Recommended auto-mode set | suggested only — user pastes into `autoMode.allow` | `teatree.cli.recommended_authorizations` |
