@@ -442,3 +442,49 @@ class AgentHarness(StrEnum):
             valid = ", ".join(m.value for m in cls)
             msg = f"Invalid agent_harness {value!r}; valid values: {valid}"
             raise ValueError(msg) from exc
+
+
+class EvalCredential(StrEnum):
+    """Which Anthropic credential the automated eval lane authenticates with.
+
+    The single knob that reverses [#2707](https://github.com/souliane/teatree/issues/2707)'s
+    metered-exclusive lock. It selects the credential KIND the metered ``api``
+    eval backend (and the LLM judge) rides — mirroring :class:`AgentRuntime`, the
+    two are mutually exclusive so a single enum (not two flags) is the honest shape:
+
+    *   :attr:`SUBSCRIPTION_OAUTH` (default) — the plan's OAuth token
+        (:class:`~teatree.llm.credentials.AnthropicSubscriptionCredential`,
+        ``CLAUDE_CODE_OAUTH_TOKEN``). Draws no per-token bill. Its cost is the
+        subscription's depleting 5h/7d usage window, so the automated lane MUST be
+        RIGHT-SIZED (a single effort tier, a smaller trial count, per-account
+        routing via ``anthropic_oauth_pass_paths``) or a full fan-out throttles the
+        window mid-run AND starves the main loop (same token).
+    *   :attr:`METERED_API_KEY` — the metered key
+        (:class:`~teatree.llm.credentials.AnthropicApiKeyCredential`,
+        ``ANTHROPIC_API_KEY``). Billed per token; no subscription draw, no usage
+        window. The pre-#2707-reversal default; still selectable via this knob.
+
+    ``eval_credential`` is a DB-home setting: set it via ``t3 <overlay>
+    config_setting set eval_credential subscription_oauth`` (per-overlay overridable
+    with ``--overlay <name>``) or the ``T3_EVAL_CREDENTIAL`` environment variable — a
+    ``[teatree] eval_credential`` TOML value is ignored on read.
+    """
+
+    SUBSCRIPTION_OAUTH = "subscription_oauth"
+    METERED_API_KEY = "metered_api_key"
+
+    @classmethod
+    def parse(cls, value: str) -> "EvalCredential":
+        """Parse an eval-credential string; invalid values raise ``ValueError``.
+
+        Mirrors :meth:`AgentRuntime.parse`: the default (:attr:`SUBSCRIPTION_OAUTH`)
+        is applied by the caller when the setting is absent, so a typo never
+        silently switches the eval lane onto the metered API key (real cost).
+        """
+        normalised = value.strip().lower()
+        try:
+            return cls(normalised)
+        except ValueError as exc:
+            valid = ", ".join(m.value for m in cls)
+            msg = f"Invalid eval_credential {value!r}; valid values: {valid}"
+            raise ValueError(msg) from exc

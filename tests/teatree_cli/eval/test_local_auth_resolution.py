@@ -1,17 +1,17 @@
-"""The metered benchmark + multi-trial lanes resolve the API key themselves.
+"""The benchmark + multi-trial lanes resolve their eval credential themselves.
 
-The single-trial ``t3 eval run`` lane builds its metered runner through
+The single-trial ``t3 eval run`` lane builds its runner through
 ``teatree.eval.backends.make_runner``, the only non-Docker path that resolves the
-metered ``ANTHROPIC_API_KEY`` via ``AnthropicApiKeyCredential().export()`` (env
-wins, else exported from the ``pass`` store). The ``t3 eval benchmark`` and
-``t3 eval run --trials k`` lanes must do the SAME — on a host ``--local`` run the
-key lives only in ``pass``, so a lane that builds ``ApiInProcessRunner`` directly
-leaves the isolated ``claude`` child unauthenticated and the run reports a
-zero-cost auth failure.
+SELECTED eval credential (default subscription OAuth, #2707 reversal) via
+``resolve_eval_credential().export()`` (env wins, else exported from the ``pass``
+store). The ``t3 eval benchmark`` and ``t3 eval run --trials k`` lanes must do the
+SAME — on a host ``--local`` run the credential lives only in ``pass``, so a lane
+that builds ``ApiInProcessRunner`` directly leaves the isolated ``claude`` child
+unauthenticated and the run reports a zero-cost auth failure.
 
-These tests pin that each metered lane resolves the API key exactly where its
+These tests pin that each fresh-run lane resolves its credential exactly where its
 runner is constructed. RED on the pre-fix direct construction (never resolves the
-key), GREEN once the lanes route through ``make_runner``.
+credential), GREEN once the lanes route through ``make_runner``.
 """
 
 from pathlib import Path
@@ -23,7 +23,7 @@ from django.test import TestCase
 from teatree.cli.eval.benchmark import benchmark
 from teatree.cli.eval.multi_trial import run_model_matrix_lane, run_pass_at_k_lane
 from teatree.eval.models import EvalRun, EvalSpec
-from teatree.llm.credentials import AnthropicApiKeyCredential
+from teatree.llm.credentials import AnthropicSubscriptionCredential
 
 # The metered lanes build their runner through the config-aware credential factory
 # (``teatree.credential_config``), which reads the ``ConfigSetting`` routing list.
@@ -62,10 +62,10 @@ class _StubRunner:
         )
 
 
-class TestPassAtKLaneResolvesApiKey(TestCase):
-    def test_pass_at_k_lane_resolves_the_api_key_before_metering(self) -> None:
+class TestPassAtKLaneResolvesEvalCredential(TestCase):
+    def test_pass_at_k_lane_resolves_the_eval_credential_before_metering(self) -> None:
         with (
-            patch.object(AnthropicApiKeyCredential, "export", return_value="sk-test") as ensure,
+            patch.object(AnthropicSubscriptionCredential, "export", return_value="oauth-test") as ensure,
             patch("teatree.eval.backends.ApiInProcessRunner", _StubRunner),
         ):
             run_pass_at_k_lane(
@@ -78,10 +78,10 @@ class TestPassAtKLaneResolvesApiKey(TestCase):
         ensure.assert_called_once_with()
 
 
-class TestMatrixLaneResolvesApiKey(TestCase):
-    def test_matrix_lane_resolves_the_api_key_before_metering(self) -> None:
+class TestMatrixLaneResolvesEvalCredential(TestCase):
+    def test_matrix_lane_resolves_the_eval_credential_before_metering(self) -> None:
         with (
-            patch.object(AnthropicApiKeyCredential, "export", return_value="sk-test") as ensure,
+            patch.object(AnthropicSubscriptionCredential, "export", return_value="oauth-test") as ensure,
             patch("teatree.eval.backends.ApiInProcessRunner", _StubRunner),
         ):
             run_model_matrix_lane(
@@ -98,10 +98,10 @@ class TestMatrixLaneResolvesApiKey(TestCase):
         ensure.assert_called_once_with()
 
 
-class TestBenchmarkLaneResolvesApiKey(TestCase):
-    def test_benchmark_lane_resolves_the_api_key_before_metering(self) -> None:
+class TestBenchmarkLaneResolvesEvalCredential(TestCase):
+    def test_benchmark_lane_resolves_the_eval_credential_before_metering(self) -> None:
         with (
-            patch.object(AnthropicApiKeyCredential, "export", return_value="sk-test") as ensure,
+            patch.object(AnthropicSubscriptionCredential, "export", return_value="oauth-test") as ensure,
             patch("teatree.eval.backends.ApiInProcessRunner", _StubRunner),
             patch("teatree.cli.eval.benchmark.discover_specs", return_value=[_spec("alpha")]),
             patch("teatree.cli.eval.benchmark.should_route_to_docker", return_value=False),

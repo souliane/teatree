@@ -9,15 +9,15 @@ the guard only when a credential was set, i.e. gated on the exact condition it
 exists to catch) and installs + asserts the Claude CLI so a missing binary FAILS
 the job.
 
-Auth is the metered ``ANTHROPIC_API_KEY`` EXCLUSIVELY (#2707) — never the
-subscription ``CLAUDE_CODE_OAUTH_TOKEN``, which a full run would throttle.
+Auth is the ``eval_credential`` knob's call — #2707 is REVERSED, so the eval lane
+DEFAULTS to the subscription ``CLAUDE_CODE_OAUTH_TOKEN`` (both secrets wired so the
+metered ``ANTHROPIC_API_KEY`` stays selectable via the knob).
 
 These are the recurrence-proof fitness tests: they parse the workflow YAML and
-assert the metered eval invocation always carries ``--require-executed`` and is
-NOT key-conditional, that auth is wired via the metered API key (not the
-subscription OAuth token), and that ``ci.yml`` no longer carries a metered eval
-job on the PR path. They go RED if ``--require-executed`` is removed or auth
-regresses to the subscription OAuth token.
+assert the eval invocation always carries ``--require-executed`` and is NOT
+key-conditional, that the default wires the subscription OAuth token (with the
+metered key still selectable), and that ``ci.yml`` no longer carries an eval job on
+the PR path. They go RED if ``--require-executed`` is removed.
 """
 
 from pathlib import Path
@@ -107,15 +107,21 @@ class TestGitHubRequireExecutedUnconditional:
         assert "--docker" in command, "The CI metered eval must run IN the container (--docker)."
         assert "--local" not in command, "The CI metered eval must never use --local (a host run)."
 
-    def test_api_key_secret_is_wired_not_the_oauth_token(self) -> None:
+    def test_default_wires_the_oauth_token_and_keeps_the_metered_key_selectable(self) -> None:
+        # #2707 is REVERSED: the eval lane DEFAULTS to the subscription OAuth token.
+        # Both secrets are wired so the `credential` knob (T3_EVAL_CREDENTIAL) is a
+        # pure config flip; the default resolves subscription_oauth.
         env = _gh_eval_step_env()
-        assert env.get("ANTHROPIC_API_KEY") == "${{ secrets.ANTHROPIC_API_KEY }}", (
-            "The eval step must wire ANTHROPIC_API_KEY from the repo secret — the metered "
-            "eval lane authenticates EXCLUSIVELY via the metered API key (#2707)."
+        assert env.get("CLAUDE_CODE_OAUTH_TOKEN") == "${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}", (
+            "The eval step must wire CLAUDE_CODE_OAUTH_TOKEN from the repo secret — the eval "
+            "lane defaults to the subscription OAuth token (#2707 reversal)."
         )
-        assert "CLAUDE_CODE_OAUTH_TOKEN" not in env, (
-            "No eval step env may set CLAUDE_CODE_OAUTH_TOKEN — the metered lane never runs "
-            "on the subscription OAuth token, which a full run would throttle."
+        assert env.get("ANTHROPIC_API_KEY") == "${{ secrets.ANTHROPIC_API_KEY }}", (
+            "The metered ANTHROPIC_API_KEY must stay wired so `metered_api_key` is selectable "
+            "via the credential knob without editing the workflow."
+        )
+        assert env.get("T3_EVAL_CREDENTIAL") == "${{ inputs.credential || 'subscription_oauth' }}", (
+            "The eval step must resolve the credential knob (default subscription_oauth)."
         )
 
 
@@ -326,19 +332,26 @@ _EFFORTS_WORKFLOWS = [_GH_EVAL, _GH_EVAL_WEEKLY_REUSABLE]
 class TestEffortsAxisEmptyIsSingleTier:
     """A blank efforts field is single-tier; only the scheduled cron fans all three.
 
-    A blank `efforts` field must produce a SINGLE-tier matrix (no effort axis, lane
-    default) — the documented "empty = single tier" behaviour. The old
-    `default: "low,medium,high"` plus the blanket `inputs.efforts || 'low,medium,high'`
+    A blank `efforts` field must produce a SINGLE-tier matrix (no multi-tier fan) —
+    the documented "empty = single tier" behaviour. The old `default:
+    "low,medium,high"` plus the blanket `inputs.efforts || 'low,medium,high'`
     coercion silently fanned every blank run across all three tiers, tripling the
     metered API spend. The 3-tier default is now keyed on the schedule EVENT, so the
     weekly cron still fans low,medium,high while a blank manual run stays single-tier.
+    `eval.yml`'s single tier is the explicit `high` default (#2884 right-sizes the
+    subscription lane); `eval-weekly-reusable.yml` keeps the bare empty default (no
+    credential/sizing redesign there) — either shape is a single tier, so the
+    assertion below rejects only a comma-joined multi-tier default.
     """
 
     @pytest.mark.parametrize("path", _EFFORTS_WORKFLOWS, ids=lambda p: p.name)
-    def test_efforts_input_default_is_empty(self, path: Path) -> None:
-        assert _efforts_input_default(path) == "", (
-            f"{path.name}: the efforts input default must be empty, so a blank manual "
-            "dispatch field is a single-tier run — not a 3x-cost fan across every tier."
+    def test_efforts_input_default_is_a_single_tier(self, path: Path) -> None:
+        default = _efforts_input_default(path)
+        assert default is not None, f"{path.name}: the efforts input must declare a default."
+        assert "," not in default, (
+            f"{path.name}: the efforts input default must be a single tier (or empty), so a "
+            f"blank manual dispatch field is a single-tier run — not a 3x-cost fan across "
+            f"every tier. Got: {default!r}."
         )
 
     @pytest.mark.parametrize("path", _EFFORTS_WORKFLOWS, ids=lambda p: p.name)

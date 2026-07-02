@@ -8,13 +8,17 @@ when neither yields a value, and builds a child process env that sets its own en
 var while **stripping** every conflicting credential — so a metered invocation can
 never silently fall back to a different credential.
 
-The first applied rule (:class:`AnthropicApiKeyCredential`) enforces the
-API-exclusive metered-eval policy ([#2707](https://github.com/souliane/teatree/issues/2707)):
-the metered eval lane authenticates EXCLUSIVELY via ``ANTHROPIC_API_KEY`` and the
-child env strips the subscription ``CLAUDE_CODE_OAUTH_TOKEN`` (the bundled CLI
-prefers the API key only when the OAuth token is absent). The subscription
-counterpart (:class:`AnthropicSubscriptionCredential`) is the inverse, for the
-non-eval Claude invocations that legitimately ride the subscription.
+The two concrete rules are mirror images. :class:`AnthropicApiKeyCredential` sets
+``ANTHROPIC_API_KEY`` and strips the subscription ``CLAUDE_CODE_OAUTH_TOKEN``;
+:class:`AnthropicSubscriptionCredential` sets ``CLAUDE_CODE_OAUTH_TOKEN`` and strips
+``ANTHROPIC_API_KEY`` (the bundled CLI prefers a credential only when the others are
+absent). Which one the automated eval lane rides is the ``eval_credential`` knob's
+call, resolved through ``teatree.credential_config.resolve_eval_credential``: the
+default is the subscription credential, reversing [#2707](https://github.com/souliane/teatree/issues/2707)'s
+metered-exclusive lock (the metered key is still selectable via the knob). The
+subscription credential also backs the non-eval Claude invocations (the headless
+loop). This module stays foundation-pure — it enforces "use THIS credential,
+exclusively", not which one the eval lane picks.
 
 The pieces are named provider-agnostically (``Credential`` / ``CredentialSpec`` /
 ``CredentialSource``) so this layer later becomes an ``LLMBackend.credential`` —
@@ -29,8 +33,8 @@ config store itself. The DB-config read (``ConfigSetting``, the per-overlay rout
 lists ``anthropic_oauth_pass_paths`` / ``anthropic_api_key_pass_paths``, overlay
 scope then global) lives in the domain-layer factory ``teatree.credential_config``,
 whose selector picks a healthy account and injects its ``pass`` path here. ``spec``
-stays a static constant
-the module-load consumers (``cli/eval/docker.py``, ``eval/isolation.py``) read
+stays a static constant the consumers (``eval/isolation.py``'s default strip set,
+the eval chokepoints' ``spec.conflicting_vars`` / ``spec.env_var`` reads) read
 safely; only ``_effective_spec`` applies the injected override at resolve time.
 """
 
@@ -46,8 +50,8 @@ class CredentialError(RuntimeError):
     """Raised when a :class:`Credential` can resolve no value from any source.
 
     The message names the exact fix — set the env var or ``pass insert <path>`` —
-    and states that metered evals never fall back to the subscription credential,
-    so the user is never left guessing why the run refused.
+    and states that this credential never falls back to a conflicting one, so the
+    user is never left guessing why the run refused.
     """
 
 
@@ -195,18 +199,20 @@ class Credential:
         return (
             f"no {spec.env_var} credential available. Set {spec.env_var} in the "
             f"environment, or store it locally with `pass insert {spec.pass_path}`. "
-            "Metered evals authenticate EXCLUSIVELY via the metered API key — they never "
-            "fall back to the subscription OAuth token (a full run would throttle it)."
+            "This credential never falls back to a conflicting one (the conflicting "
+            f"vars {spec.conflicting_vars} are stripped from the child env), so a "
+            "misconfigured run fails loud here rather than authenticating as the wrong one."
         )
 
 
 class AnthropicApiKeyCredential(Credential):
     """The metered Anthropic API key — strips the subscription OAuth token.
 
-    The credential the metered eval lane authenticates with EXCLUSIVELY ([#2707]).
-    Its child env sets ``ANTHROPIC_API_KEY`` and removes ``CLAUDE_CODE_OAUTH_TOKEN``
-    so the SDK / bundled CLI can never bill the subscription. The ``pass_path``
-    default (``anthropic/api-key``) is overridable per account via an injected
+    The metered credential the eval lane rides when ``eval_credential`` is set to
+    ``metered_api_key`` (per-token cost, no usage window). Its child env sets
+    ``ANTHROPIC_API_KEY`` and removes ``CLAUDE_CODE_OAUTH_TOKEN`` so the SDK /
+    bundled CLI authenticates with exactly this key. The ``pass_path`` default
+    (``anthropic/api-key``) is overridable per account via an injected
     ``pass_path_override`` — selected from the ``anthropic_api_key_pass_paths``
     routing list by ``teatree.credential_config.resolve_api_key_credential``.
     """
@@ -221,12 +227,16 @@ class AnthropicApiKeyCredential(Credential):
 class AnthropicSubscriptionCredential(Credential):
     """The subscription OAuth token — strips the metered API key.
 
-    The credential the NON-eval Claude invocations legitimately ride. Its child
-    env sets ``CLAUDE_CODE_OAUTH_TOKEN`` and removes ``ANTHROPIC_API_KEY``. The
-    ``pass_path`` default (``anthropic/oauth-token``) is overridable per account
-    via an injected ``pass_path_override`` — selected from the
-    ``anthropic_oauth_pass_paths`` routing list by
-    ``teatree.credential_config.resolve_subscription_credential``.
+    The plan's credential: the DEFAULT the eval lane rides (reversing #2707) AND the
+    credential the non-eval Claude invocations (the headless loop) ride. Its child
+    env sets ``CLAUDE_CODE_OAUTH_TOKEN`` and removes ``ANTHROPIC_API_KEY``. It draws
+    no per-token bill but shares the plan's depleting 5h/7d usage window with the
+    main loop — so a right-sized eval lane + per-account routing (below) keep it from
+    throttling that window / starving the loop. The ``pass_path`` default
+    (``anthropic/oauth-token``) is overridable per account via an injected
+    ``pass_path_override`` — selected from the ``anthropic_oauth_pass_paths`` routing
+    list by ``teatree.credential_config.resolve_subscription_credential``, so eval
+    load can spread across multiple subscription accounts.
     """
 
     spec = CredentialSpec(

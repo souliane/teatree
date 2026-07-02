@@ -27,43 +27,43 @@ from teatree.eval.skill_command_validity import CommandValidityReport, CommandVi
 from teatree.eval.skill_prose_judge import ProseJudgeReport, ProseScore
 from teatree.eval.transcript_conformance import InvariantResult
 from teatree.eval.trigger_qa import TriggerCheck, TriggerQAReport
-from teatree.llm.credentials import AnthropicApiKeyCredential
+from teatree.llm.credentials import AnthropicApiKeyCredential, AnthropicSubscriptionCredential
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
 
 @pytest.fixture(autouse=True)
-def _stub_api_key() -> "Iterator[None]":
+def _stub_eval_credential() -> "Iterator[None]":
     """Stop ``make_runner("api")`` from touching the ``pass``/DB credential store.
 
     Every ``--backend api`` CLI test builds the runner through
     ``teatree.eval.backends.make_runner``, which calls
-    ``resolve_api_key_credential().export()``. Both ends of that call reach a real
+    ``resolve_eval_credential().export()``. Both ends of that call reach a real
     external store the suite must not touch, so both are stubbed here.
 
-    ``resolve_api_key_credential`` routes through the per-account selector, which
-    reads the routing config and health cache from the DB (``ConfigSetting`` /
-    ``AnthropicActivePick`` / ``AnthropicTokenUsage``) — DB access an unmarked test
-    is (rightly) forbidden. Stubbing it to a plain ``AnthropicApiKeyCredential``
-    keeps resolution hermetic; the routing/DB behaviour is covered directly by
-    ``test_credential_config`` / ``test_anthropic_active_pick`` / ``test_anthropic_token_usage``.
+    ``resolve_eval_credential`` reads the ``eval_credential`` setting (default
+    subscription OAuth, #2707 reversal) and routes through the per-account selector,
+    which reads config + health from the DB (``ConfigSetting`` / ``AnthropicActivePick``
+    / ``AnthropicTokenUsage``) — DB access an unmarked test is (rightly) forbidden.
+    Stubbing it to a plain ``AnthropicSubscriptionCredential`` keeps resolution
+    hermetic; the credential-KIND selection is covered by ``test_credential_config``
+    / ``test_eval_credential_selection``.
 
-    ``.export()`` → ``read_pass("anthropic/api-key")`` shells a ``pass`` subprocess
-    that blocks on ``gpg`` on a dev machine without ``ANTHROPIC_API_KEY`` set (and
-    would raise ``CredentialError`` when the key is absent). Stubbing both keeps the
-    suite hermetic — it never touches the host's secret store nor the DB.
+    ``.export()`` → ``read_pass(...)`` shells a ``pass`` subprocess that blocks on
+    ``gpg`` on a dev machine without the credential set. Stubbing both credentials'
+    ``export`` keeps the suite hermetic — it never touches the host's secret store.
 
-    It also sets ``T3_EVAL_IN_CONTAINER=1`` so the metered ``--backend api`` /
-    ``--trials`` / ``--models`` runs execute IN-PROCESS (Docker is the default for
-    the metered lane; the marker is exactly what the docker runner sets inside the
-    container to run the re-invoked command in-process — the faithful test of the
-    in-container behaviour). Tests that assert the docker-routing path itself
-    override the env explicitly.
+    It also sets ``T3_EVAL_IN_CONTAINER=1`` so the ``--backend api`` / ``--trials``
+    / ``--models`` runs execute IN-PROCESS (Docker is the default for the fresh-run
+    lane; the marker is exactly what the docker runner sets inside the container to
+    run the re-invoked command in-process — the faithful test of the in-container
+    behaviour). Tests that assert the docker-routing path itself override the env.
     """
     with (
+        patch.object(AnthropicSubscriptionCredential, "export", return_value="oauth-test"),
         patch.object(AnthropicApiKeyCredential, "export", return_value="sk-test"),
-        patch("teatree.credential_config.resolve_api_key_credential", return_value=AnthropicApiKeyCredential()),
+        patch("teatree.credential_config.resolve_eval_credential", return_value=AnthropicSubscriptionCredential()),
         patch.dict("os.environ", {"T3_EVAL_IN_CONTAINER": "1"}),
     ):
         yield

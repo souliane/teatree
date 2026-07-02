@@ -20,14 +20,22 @@
 #     collected-but-all-skipped run exits non-zero. Until ANTHROPIC_API_KEY
 #     is wired the job correctly fails RED — that loud failure is intended.
 #
-# AUTH: the metered backend authenticates EXCLUSIVELY from ANTHROPIC_API_KEY, the
-# metered API key — never the subscription OAuth token, which a full run would
-# throttle (#2707). Set it as a masked GitLab CI/CD variable; it is injected into
-# the job env and the metered Agent-SDK `claude` child reads it.
+# AUTH: the `eval_credential` knob (#2707 is REVERSED — the GitHub workflow now
+# DEFAULTS to the subscription OAuth token). This GitLab lane EXPLICITLY selects
+# `metered_api_key` via `T3_EVAL_CREDENTIAL` (below), because its whole purpose is
+# the PERSISTED `--gate-cost-bounds` cost audit — a per-token-COST gate that is
+# meaningless on the subscription lane (a subscription run bills $0, which
+# `--gate-cost-bounds` treats as a fail-loud "configured scenario recorded no
+# cost"). So the cost-audit lane stays metered while the general behavioral-eval
+# workflow rides the plan. `ANTHROPIC_API_KEY` must be a masked GitLab CI/CD
+# variable. SCHEDULE-VAR CAVEAT: a GitLab pipeline SCHEDULE carries its own
+# variable set — if a schedule overrides `T3_EVAL_CREDENTIAL` (e.g. to
+# subscription_oauth for a cheap window-friendly run without the cost gate) it must
+# ALSO drop `--gate-cost-bounds` from that run's script, since the two are coupled.
 #
 # The free deterministic lanes (skill-triggers, pinned-regressions) gate every
 # push via prek and the regression corpus is asserted every MR via pytest, so
-# this job owns only the metered AI suite (one source of truth).
+# this job owns only the metered cost-audit AI suite (one source of truth).
 
 stages:
   - gate
@@ -35,6 +43,9 @@ stages:
 
 variables:
   GIT_DEPTH: "0"
+  # This lane explicitly rides the metered key (the cost-audit gate needs per-token
+  # cost); the GitHub behavioral-eval workflow defaults to subscription_oauth.
+  T3_EVAL_CREDENTIAL: "metered_api_key"
 
 # Shared body of the scheduled and manual eval-suite jobs — one definition so
 # the two never drift (image, setup, retry, and the suite script live here only).
@@ -61,10 +72,10 @@ variables:
   script:
     # The eval run-history ledger persists into the self-DB, so migrate it first.
     - uv run python -m teatree migrate --no-input
-    # `--backend api` keeps CI on the metered Agent-SDK path explicitly (auth via
-    # the metered ANTHROPIC_API_KEY, never the subscription OAuth token #2707);
-    # LOCAL `t3 eval run` defaults to the transcript backend (no API spend).
-    # Mirrors the GitHub eval workflow's fresh lane.
+    # `--backend api` runs a fresh model pass; `T3_EVAL_CREDENTIAL=metered_api_key`
+    # (set in `variables:` above) rides the metered key — this lane's `--gate-cost-bounds`
+    # cost audit needs per-token cost (the GitHub workflow defaults to subscription OAuth,
+    # #2707 reversal). LOCAL `t3 eval run` defaults to the transcript backend (no spend).
     # `--local` is intentional here: the cost-bounds gate must persist/read the
     # runner DB on this host, while the default Docker route is ephemeral and
     # rejects durable-history gates.

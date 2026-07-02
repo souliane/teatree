@@ -32,6 +32,7 @@ parsed health are persisted.
 
 import datetime as dt
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
 from django.utils import timezone
 
@@ -53,6 +54,9 @@ from teatree.llm.rate_limits import (
     read_api_key_status,
     read_rate_limits,
 )
+
+if TYPE_CHECKING:
+    from teatree.config.enums import EvalCredential
 
 
 class TokenKind(StrEnum):
@@ -254,3 +258,30 @@ def resolve_subscription_credential(*, scope: str = GLOBAL_SCOPE) -> AnthropicSu
 def resolve_api_key_credential(*, scope: str = GLOBAL_SCOPE) -> AnthropicApiKeyCredential:
     """The metered API-key credential, routed to its selected account's ``pass`` entry."""
     return AnthropicApiKeyCredential(pass_path_override=_SELECTOR.select(TokenKind.API_KEY, scope))
+
+
+def resolve_eval_credential(*, kind: "EvalCredential | None" = None, scope: str = GLOBAL_SCOPE) -> Credential:
+    """The credential the automated eval lane rides, selected by the ``eval_credential`` knob.
+
+    THE single seam that reverses #2707's metered-exclusive lock: the eval backend,
+    the judge, and the Docker auth-passthrough all resolve their credential HERE, so
+    flipping the knob switches every eval chokepoint at once (never a per-call-site
+    edit). ``kind`` (an explicit :class:`~teatree.config.enums.EvalCredential`) wins;
+    ``None`` (the default) reads the DB-home ``eval_credential`` setting via
+    :func:`~teatree.config.get_effective_settings` (``T3_EVAL_CREDENTIAL`` env → the
+    ``ConfigSetting`` store → the default :attr:`EvalCredential.SUBSCRIPTION_OAUTH`).
+
+    :attr:`EvalCredential.SUBSCRIPTION_OAUTH` → :func:`resolve_subscription_credential`
+    (per-account OAuth routing via ``anthropic_oauth_pass_paths`` for the same
+    *scope*, spreading a right-sized lane across accounts so its usage window is not
+    throttled). :attr:`EvalCredential.METERED_API_KEY` → :func:`resolve_api_key_credential`.
+    Imported at call time so the eval CLI import chain stays Django-free until Django
+    is up (the resolvers already require it).
+    """
+    from teatree.config import EvalCredential, get_effective_settings  # noqa: PLC0415
+
+    if kind is None:
+        kind = get_effective_settings().eval_credential
+    if kind is EvalCredential.METERED_API_KEY:
+        return resolve_api_key_credential(scope=scope)
+    return resolve_subscription_credential(scope=scope)

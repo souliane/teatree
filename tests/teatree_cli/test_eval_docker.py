@@ -9,15 +9,19 @@ from django.test import TestCase
 from teatree.cli.eval.docker import (
     ARTIFACTS_MOUNT,
     DOCKER_IMAGE,
+    EVAL_CREDENTIAL_ENV_VAR,
     DockerUnavailableError,
     _auth_passthrough_flags,
     _image_present,
     _repo_root,
     run_eval_in_docker,
 )
-from teatree.llm.credentials import AnthropicApiKeyCredential
+from teatree.llm.credentials import AnthropicApiKeyCredential, AnthropicSubscriptionCredential
 
 _MODULE = "teatree.cli.eval.docker"
+_OAUTH_ENV = AnthropicSubscriptionCredential().spec.env_var
+_API_KEY_ENV = AnthropicApiKeyCredential().spec.env_var
+_METERED = "metered_api_key"
 
 
 def _completed(returncode: int) -> MagicMock:
@@ -82,12 +86,13 @@ class TestRunEvalInDocker(TestCase):
     def test_sets_in_container_marker_so_the_re_invoked_command_runs_in_process(self) -> None:
         # The in-container `t3 eval` re-invocation must run DIRECTLY in-process, not
         # re-route to docker again (an infinite loop). The marker breaks the loop.
-        # benchmark is an always-metered lane, so the credential pre-export fires; the
-        # host has no key, so stub it (its own coverage is in the metered-lane class).
+        # benchmark is an always-fresh-run lane, so the eval-credential pre-export
+        # fires; the default is subscription OAuth, so stub its export (its own auth
+        # coverage is in the auth-passthrough class).
         with (
             patch(f"{_MODULE}.shutil.which", return_value="/usr/bin/docker"),
             patch(f"{_MODULE}._image_present", return_value=True),
-            patch.object(AnthropicApiKeyCredential, "export", return_value="sk-test"),
+            patch.object(AnthropicSubscriptionCredential, "export", return_value="oauth-test"),
             patch(f"{_MODULE}.run_streamed", return_value=0) as streamed,
         ):
             run_eval_in_docker(["benchmark", "--models", "claude-opus-4-8@xhigh"])
@@ -184,13 +189,13 @@ class TestWritableArtifactsMount:
 
 
 class TestAuthPassthroughIntoContainer(TestCase):
-    """The metered AI lane authenticates in-container via the host's API key.
+    """The fresh-run AI lane authenticates in-container via the SELECTED credential.
 
-    The value is forwarded with docker's ``-e VARNAME`` pass-through form (no
-    value on the command line) so the key never lands in argv / the process
-    list / logs. The subscription OAuth token is deliberately NOT forwarded — the
-    metered lane authenticates EXCLUSIVELY via ``ANTHROPIC_API_KEY`` (#2707), so a
-    full run can never throttle the subscription. Reverting the
+    The value is forwarded with docker's ``-e VARNAME`` pass-through form (no value
+    on the command line) so the credential never lands in argv / the process list /
+    logs. The DEFAULT lane forwards the subscription ``CLAUDE_CODE_OAUTH_TOKEN``
+    (reversing #2707); flipping the ``eval_credential`` knob (``T3_EVAL_CREDENTIAL``)
+    to ``metered_api_key`` forwards ``ANTHROPIC_API_KEY`` instead. Reverting the
     ``*_auth_passthrough_flags()`` splice in ``_run_in_image`` turns these RED.
     """
 
@@ -204,26 +209,37 @@ class TestAuthPassthroughIntoContainer(TestCase):
             run_eval_in_docker(["run", "--backend", "api", "--require-executed"])
         return streamed.call_args.args[0]
 
-    def test_forwards_api_key_as_passthrough_when_set(self) -> None:
-        command = self._run_command({"ANTHROPIC_API_KEY": "x"})
-        assert self._passthrough_pair(command, "ANTHROPIC_API_KEY") == ["-e", "ANTHROPIC_API_KEY"]
+    def test_default_lane_forwards_the_oauth_token_as_passthrough(self) -> None:
+        command = self._run_command({_OAUTH_ENV: "oauth-sub"})
+        assert self._passthrough_pair(command, _OAUTH_ENV) == ["-e", _OAUTH_ENV]
 
-    def test_key_value_never_appears_on_the_command_line(self) -> None:
-        command = self._run_command({"ANTHROPIC_API_KEY": "super-secret-key-value"})
-        assert "super-secret-key-value" not in command
+    def test_oauth_value_never_appears_on_the_command_line(self) -> None:
+        command = self._run_command({_OAUTH_ENV: "super-secret-oauth-value"})
+        assert "super-secret-oauth-value" not in command
 
-    def test_oauth_token_is_never_forwarded_into_the_container(self) -> None:
-        # The metered lane must never bill the subscription, so the OAuth token is
-        # not a passthrough var — even when the operator has it exported.
-        command = self._run_command({"ANTHROPIC_API_KEY": "x", "CLAUDE_CODE_OAUTH_TOKEN": "sub-token"})
-        assert "CLAUDE_CODE_OAUTH_TOKEN" not in command
-        assert "sub-token" not in command
+    def test_default_lane_does_not_forward_the_metered_key(self) -> None:
+        # The default subscription lane must not leak/forward the metered API key.
+        command = self._run_command({_OAUTH_ENV: "oauth-sub", _API_KEY_ENV: "sk-metered"})
+        assert _API_KEY_ENV not in command
+        assert "sk-metered" not in command
 
-    def test_metered_lane_fails_loud_when_no_api_key_is_resolvable(self) -> None:
-        # A metered api --docker run with no env key AND an empty pass store must
-        # fail loud (CredentialError) rather than dispatch a flagless container
-        # that would authenticate as nothing — the docker dispatcher resolves the
-        # API key BEFORE computing the passthrough flags.
+    def test_metered_knob_forwards_the_api_key_not_the_oauth_token(self) -> None:
+        command = self._run_command(
+            {EVAL_CREDENTIAL_ENV_VAR: _METERED, _API_KEY_ENV: "sk-metered", _OAUTH_ENV: "oauth-sub"}
+        )
+        assert self._passthrough_pair(command, _API_KEY_ENV) == ["-e", _API_KEY_ENV]
+        assert _OAUTH_ENV not in command
+
+    def test_credential_knob_override_is_forwarded_into_the_container(self) -> None:
+        # The in-container re-invocation must see the same knob so it resolves the
+        # same credential kind, without depending on a ConfigSetting row.
+        command = self._run_command({EVAL_CREDENTIAL_ENV_VAR: _METERED, _API_KEY_ENV: "sk-metered"})
+        assert self._passthrough_pair(command, EVAL_CREDENTIAL_ENV_VAR) == ["-e", EVAL_CREDENTIAL_ENV_VAR]
+
+    def test_default_lane_fails_loud_when_no_oauth_token_is_resolvable(self) -> None:
+        # A default (OAuth) api --docker run with no token AND an empty pass store
+        # must fail loud (CredentialError) rather than dispatch a flagless container
+        # — the docker dispatcher resolves the credential BEFORE the passthrough flags.
         from teatree.llm.credentials import CredentialError  # noqa: PLC0415
 
         with (
@@ -242,16 +258,15 @@ class TestAuthPassthroughIntoContainer(TestCase):
         return command[index - 1 : index + 1]
 
 
-class TestMeteredBenchmarkLaneFailsLoudBeforeDocker(TestCase):
-    """``t3 eval benchmark`` is always api-metered, so the Docker pre-export fires for it too.
+class TestBenchmarkLaneFailsLoudBeforeDocker(TestCase):
+    """``t3 eval benchmark`` is always a fresh run, so the Docker pre-export fires for it too.
 
     The benchmark argv starts ``benchmark`` and carries no literal ``api`` token,
-    yet the lane is always metered. The pre-export must therefore key on the
-    metered SUBCOMMAND, not only the ``api`` backend token — a missing key must
-    fail loud with :class:`~teatree.llm.credentials.CredentialError` BEFORE the
-    container is built or run, never dispatch a keyless container that authenticates
-    as nothing in-container. Narrowing the detector back to the ``api`` token alone
-    turns these RED.
+    yet the lane always runs a model. The eval-credential pre-export must therefore
+    key on the fresh-run SUBCOMMAND, not only the ``api`` backend token — a missing
+    credential must fail loud with :class:`~teatree.llm.credentials.CredentialError`
+    BEFORE the container is built or run. Narrowing the detector back to the ``api``
+    token alone turns these RED.
     """
 
     def test_keyless_benchmark_raises_before_any_docker_call(self) -> None:
@@ -270,63 +285,68 @@ class TestMeteredBenchmarkLaneFailsLoudBeforeDocker(TestCase):
         image_present.assert_not_called()
         streamed.assert_not_called()
 
-    def test_benchmark_forwards_resolved_api_key_into_the_container(self) -> None:
+    def test_benchmark_forwards_the_resolved_oauth_token_into_the_container(self) -> None:
         with (
             patch(f"{_MODULE}.shutil.which", return_value="/usr/bin/docker"),
             patch(f"{_MODULE}._image_present", return_value=True),
             patch(f"{_MODULE}.os.environ", {}),
-            patch("teatree.llm.credentials.read_pass", return_value="sk-pass-key"),
+            patch("teatree.llm.credentials.read_pass", return_value="oauth-pass-token"),
             patch(f"{_MODULE}.run_streamed", return_value=0) as streamed,
         ):
             run_eval_in_docker(["benchmark", "--models", "claude-opus-4-8@xhigh"])
         command = streamed.call_args.args[0]
-        index = command.index("ANTHROPIC_API_KEY")
-        assert command[index - 1 : index + 1] == ["-e", "ANTHROPIC_API_KEY"]
+        index = command.index(_OAUTH_ENV)
+        assert command[index - 1 : index + 1] == ["-e", _OAUTH_ENV]
 
 
-class TestDockerResolvesKeyFromPassForSdkLane(TestCase):
-    """Local ``--backend api --docker`` auto-resolves the API key from pass.
+class TestDockerResolvesCredentialFromPassForSdkLane(TestCase):
+    """Local ``--backend api --docker`` auto-resolves the credential from pass.
 
-    The container authenticates from the host's ``ANTHROPIC_API_KEY`` via the
-    ``-e`` pass-through. When the operator has NOT exported it, the docker
-    dispatcher resolves it from the ``pass`` store and exports it into the parent
-    env BEFORE ``_auth_passthrough_flags()`` is computed, so the ``-e`` flag is
-    emitted and the key reaches the container — ``--backend api --docker`` just
-    works. The free / transcript lane must not read the secret store.
+    The container authenticates from the host's SELECTED eval credential via the
+    ``-e`` pass-through. When the operator has NOT exported it, the docker dispatcher
+    resolves it from the ``pass`` store and exports it into the parent env BEFORE
+    ``_auth_passthrough_flags()`` is computed, so the ``-e`` flag is emitted and the
+    credential reaches the container — ``--backend api --docker`` just works. The
+    free / transcript lane must not read the secret store.
     """
 
-    def _run(self, args: list[str], env: dict[str, str], pass_key: str) -> list[str]:
+    def _run(self, args: list[str], env: dict[str, str], pass_value: str) -> list[str]:
         with (
             patch(f"{_MODULE}.shutil.which", return_value="/usr/bin/docker"),
             patch(f"{_MODULE}._image_present", return_value=True),
             patch(f"{_MODULE}.os.environ", env),
-            patch("teatree.llm.credentials.read_pass", return_value=pass_key) as read_pass,
+            patch("teatree.llm.credentials.read_pass", return_value=pass_value) as read_pass,
             patch(f"{_MODULE}.run_streamed", return_value=0) as streamed,
         ):
             run_eval_in_docker(args)
             self.read_pass = read_pass
         return streamed.call_args.args[0]
 
-    def test_api_lane_exports_pass_key_so_it_is_forwarded(self) -> None:
-        command = self._run(["run", "--backend", "api", "--require-executed"], env={}, pass_key="sk-pass-key")
-        index = command.index("ANTHROPIC_API_KEY")
-        assert command[index - 1 : index + 1] == ["-e", "ANTHROPIC_API_KEY"]
+    def test_api_lane_exports_pass_oauth_token_so_it_is_forwarded(self) -> None:
+        command = self._run(["run", "--backend", "api", "--require-executed"], env={}, pass_value="oauth-pass-token")
+        index = command.index(_OAUTH_ENV)
+        assert command[index - 1 : index + 1] == ["-e", _OAUTH_ENV]
 
     def test_free_only_lane_does_not_read_pass(self) -> None:
-        self._run(["all", "--free-only"], env={}, pass_key="sk-pass-key")
+        self._run(["all", "--free-only"], env={}, pass_value="oauth-pass-token")
         self.read_pass.assert_not_called()
 
 
 class TestAuthPassthroughFlags:
-    def test_emits_e_varname_pair_for_the_api_key_only(self) -> None:
-        # The OAuth token is never a passthrough var, even when set.
-        with patch(f"{_MODULE}.os.environ", {"CLAUDE_CODE_OAUTH_TOKEN": "x", "ANTHROPIC_API_KEY": "y"}):
-            assert _auth_passthrough_flags() == ["-e", "ANTHROPIC_API_KEY"]
+    def test_forwards_the_selected_credential_var_when_set(self) -> None:
+        with patch(f"{_MODULE}.os.environ", {_OAUTH_ENV: "x", _API_KEY_ENV: "y"}):
+            assert _auth_passthrough_flags((_OAUTH_ENV,)) == ["-e", _OAUTH_ENV]
 
-    def test_skips_empty_or_absent_api_key(self) -> None:
-        with patch(f"{_MODULE}.os.environ", {"ANTHROPIC_API_KEY": ""}):
-            assert _auth_passthrough_flags() == []
+    def test_skips_the_selected_var_when_empty_or_absent(self) -> None:
+        with patch(f"{_MODULE}.os.environ", {_OAUTH_ENV: ""}):
+            assert _auth_passthrough_flags((_OAUTH_ENV,)) == []
 
-    def test_oauth_token_alone_emits_no_flag(self) -> None:
-        with patch(f"{_MODULE}.os.environ", {"CLAUDE_CODE_OAUTH_TOKEN": "x"}):
-            assert _auth_passthrough_flags() == []
+    def test_a_non_selected_var_present_in_env_is_not_forwarded(self) -> None:
+        # Only the SELECTED credential var (passed in) is forwarded — a stray token
+        # for the other credential in the env is never spliced in.
+        with patch(f"{_MODULE}.os.environ", {_API_KEY_ENV: "x"}):
+            assert _auth_passthrough_flags((_OAUTH_ENV,)) == []
+
+    def test_forwards_the_credential_knob_override_when_set(self) -> None:
+        with patch(f"{_MODULE}.os.environ", {_OAUTH_ENV: "x", EVAL_CREDENTIAL_ENV_VAR: _METERED}):
+            assert _auth_passthrough_flags((_OAUTH_ENV,)) == ["-e", _OAUTH_ENV, "-e", EVAL_CREDENTIAL_ENV_VAR]
