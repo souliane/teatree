@@ -22,6 +22,8 @@ from pathlib import Path
 
 import pytest
 
+from tests._color_env import no_color_env
+
 _CODE_RE = re.compile(r"\b([A-Z]+\d+)\b")
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -43,12 +45,16 @@ def _ignored_codes(lint: dict) -> set[str]:
 
 
 def _ruff_codes(target: Path) -> set[str]:
+    # --color=never plus a color-forcing-stripped env: belt and suspenders
+    # against an ambient FORCE_COLOR/CLICOLOR_FORCE ANSI-wrapping ruff's
+    # output, which breaks \b-bounded code extraction (souliane/teatree#2359).
     result = subprocess.run(
-        [_UV, "run", "ruff", "check", "--output-format", "concise", str(target)],
+        [_UV, "run", "ruff", "check", "--output-format", "concise", "--color=never", str(target)],
         cwd=_REPO_ROOT,
         check=False,
         capture_output=True,
         text=True,
+        env=no_color_env(),
     )
     return set(_CODE_RE.findall(result.stdout + result.stderr))
 
@@ -69,6 +75,13 @@ class TestEnablementPins:
 
 @pytest.mark.integration
 class TestCapsBite:
+    @pytest.fixture(autouse=True)
+    def _force_color(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Exercise the color-forced path on every run (not just a dev shell
+        # that happens to set it) so the extractor's hermeticity is proven,
+        # not merely assumed (souliane/teatree#2359).
+        monkeypatch.setenv("FORCE_COLOR", "1")
+
     def test_c901_flags_too_complex_function(self, tmp_path: Path) -> None:
         body = "\n".join(f"    if a == {i}:\n        return {i}" for i in range(15))
         probe = _REPO_ROOT / "src" / "teatree" / "_c901_probe.py"

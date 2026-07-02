@@ -19,12 +19,15 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from rich.console import Console
 from typer.main import get_command
 from typer.testing import CliRunner
 
+from teatree.cli import banned_terms as banned_terms_cli
 from teatree.cli.banned_terms import banned_terms_app
 from teatree.core import banned_terms_tree
 from teatree.hooks import banned_terms_tree_scan
+from tests._ansi import strip_ansi
 
 # Synthetic high-confidence brand — never a real tenant name. Used so the
 # pre-push banned-terms gate cannot trip on this test's own contents.
@@ -585,6 +588,18 @@ class TestScanTreeCliSummaryIsBrandAgnostic:
     and remediation must not call a terminology finding a "brand" one.
     """
 
+    @pytest.fixture(autouse=True)
+    def _force_color(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # banned_terms.py's `_console = Console()` is a module-level singleton;
+        # its color_system is resolved once from os.environ at import time and
+        # cached, so a runtime monkeypatch.setenv("FORCE_COLOR", ...) never
+        # reaches it. Reconstruct the singleton with force_terminal pinned
+        # directly instead, so the color-forced path is exercised on every
+        # run (not just a dev shell that happens to set it) — an ANSI-wrapped
+        # "docs/note.md" or "banned-term finding(s)" breaks a plain substring
+        # match otherwise (souliane/teatree#2359).
+        monkeypatch.setattr(banned_terms_cli, "_console", Console(force_terminal=True))
+
     def test_terminology_only_summary_does_not_say_brand(self, tmp_path: Path) -> None:
         # A conflated-terminology hit whose ONLY finding is a terminology
         # violation must never be labelled a "brand" finding in the count or
@@ -600,10 +615,11 @@ class TestScanTreeCliSummaryIsBrandAgnostic:
             banned_terms_app,
             ["scan-tree", "--repo-root", str(repo), "--config", str(cfg)],
         )
+        stdout = strip_ansi(result.stdout)
         assert result.exit_code == 1
-        assert "docs/note.md" in result.stdout
-        assert "INERT" not in result.stdout
-        assert "brand" not in result.stdout.lower()
+        assert "docs/note.md" in stdout
+        assert "INERT" not in stdout
+        assert "brand" not in stdout.lower()
 
     def test_summary_counts_findings_generically(self, tmp_path: Path) -> None:
         cfg = _config(tmp_path, brands=[SYNTH_BRAND])
@@ -612,9 +628,10 @@ class TestScanTreeCliSummaryIsBrandAgnostic:
             banned_terms_app,
             ["scan-tree", "--repo-root", str(repo), "--config", str(cfg)],
         )
+        stdout = strip_ansi(result.stdout)
         assert result.exit_code == 1
-        assert "banned-term finding(s)" in result.stdout
-        assert "brand-name finding" not in result.stdout
+        assert "banned-term finding(s)" in stdout
+        assert "brand-name finding" not in stdout
 
 
 @pytest.mark.parametrize("joined", ["wt_777_{b}", "{b}_777", "a_{b}_z"])

@@ -1,6 +1,5 @@
 import io
 import json
-import re
 import tempfile
 from contextlib import AbstractContextManager
 from pathlib import Path
@@ -20,21 +19,12 @@ import teatree.core.runners.worktree_provision as worktree_provision_mod
 import teatree.utils.run as utils_run_mod
 from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket, Worktree
 from teatree.core.overlay import DbImportStrategy, OverlayBase, ProvisionStep, RunCommands
+from tests._ansi import strip_ansi as _strip_ansi
 from tests.teatree_agents._sdk_fake import fake_sdk, success_stream
 
 pytestmark = pytest.mark.filterwarnings(
     "ignore:In Typer, only the parameter 'autocompletion' is supported.*:DeprecationWarning",
 )
-
-_ANSI_SGR = re.compile(r"\x1b\[[0-9;]*m")
-
-
-def _strip_ansi(text: str) -> str:
-    # Rich colorizes when color is on (real TTY / FORCE_COLOR), wrapping numeric
-    # ids mid-token ("TODO-\x1b[1;36m7\x1b[0m") so a literal substring assert
-    # breaks under color but passes when piped. Assert on de-colorized text so
-    # the rendering content is checked deterministically in either color state.
-    return _ANSI_SGR.sub("", text)
 
 
 class CommandOverlay(OverlayBase):
