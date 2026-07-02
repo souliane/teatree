@@ -13,9 +13,11 @@ plus repeated near-identical user turns.
 The third keeper, :func:`looks_like_user_ask`, is the structural sibling of the
 correction keeper for the "improve-with-new-stuff" half of dreaming (#2663): a USER
 turn that reads like a manual directive/request t3 could automate away (imperative
-cues "can you"/"please"/"let's", or operational-urgency cues "hotfix"/"asap"/
-"production"). Clustered over many nights, a recurring ask becomes an automatable-ask
-gap promoted to a fix under the standing umbrella.
+cues "can you"/"please"/"let's", or operational-ACTION cues "hotfix"/"asap"/
+"rollback"). Bare incident-state words ("production"/"broken"/"blocker"/"wedged")
+are excluded (#2732) — they describe a situation, not a request. Clustered over many
+nights, a recurring ask becomes an automatable-ask gap promoted to a fix under the
+standing umbrella.
 
 Without these keepers the keyword gate filtered fresh user-correction and user-ask
 prose out before the distiller ever saw it — the gap this module closes.
@@ -55,9 +57,12 @@ _CORRECTION_CUES = (
 #: Imperative-request and operational-urgency cues that mark a raw USER turn as a
 #: directive/ask the agent could be taken out of the loop on — the keyword-blind
 #: sibling of :data:`_CORRECTION_CUES`. The imperative cues read like a request
-#: ("can you", "please", "let's"); the operational cues mark an urgent lane
-#: ("hotfix", "asap", "production", "rollback") whose manual handling is exactly what
-#: a new automation (e.g. a hotfix lane) would absorb.
+#: ("can you", "please", "let's"); the operational cues name an urgent ACTION the
+#: user is asking for ("hotfix", "asap", "rollback") whose manual handling is exactly
+#: what a new automation (e.g. a hotfix lane) would absorb. Bare INCIDENT-STATE words
+#: ("production", "broken", "blocker", "wedged") are deliberately EXCLUDED (#2732):
+#: they describe a situation, not a request, so they over-matched on incident chatter
+#: that carried no user ask.
 _ASK_CUES = (
     "can you",
     "could you",
@@ -73,10 +78,6 @@ _ASK_CUES = (
     "urgent",
     "asap",
     "drop everything",
-    "wedged",
-    "broken",
-    "production",
-    "blocker",
     "rollback",
 )
 

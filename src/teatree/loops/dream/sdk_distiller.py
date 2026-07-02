@@ -33,6 +33,7 @@ from collections.abc import Mapping, Sequence
 from typing import cast
 
 from teatree.loops.dream.engine import ConsolidationExtract, DistilledCluster, DistillEmptyReason, DistillResult
+from teatree.loops.dream.json_scan import first_object_bearing_array
 
 _DISTILL_SYSTEM_PROMPT = (
     "You consolidate an agent's recent feedback and lessons into durable rules. "
@@ -68,11 +69,6 @@ _REQUIRED_CLUSTER_KEYS = ("rule", "source_files", "is_binding", "verified_citati
 #: A fenced ```json … ``` block the model may wrap its array in. Tried after a direct
 #: decode and before the balanced-bracket scan in :func:`_extract_json_array`.
 _JSON_FENCE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
-
-#: Anchored decoder for the balanced-bracket scan: ``raw_decode`` parses exactly one
-#: JSON value starting at a given ``[`` and returns where it ended, so a prose span
-#: that is not valid JSON raises and is skipped rather than swallowing the real array.
-_DECODER = json.JSONDecoder()
 
 
 def deterministic_cluster_key(source_files: Sequence[str]) -> str:
@@ -193,11 +189,15 @@ def _extract_json_array(raw: str) -> list[object] | None:
     """Find the model's top-level JSON array, tolerating bracketed prose around it.
 
     Three tiers, first hit wins: (1) the stripped reply IS a JSON array; (2) a fenced
-    ```json code block holds one; (3) a balanced-bracket scan returns the FIRST ``[`` …
-    ``]`` span that decodes to a list. The scan — not the prior greedy first-``[`` …
-    last-``]`` span — is what makes bracket-heavy prose (markdown links, ``#N`` refs,
-    regex classes) around the array safe: a prose ``[…]`` that is not valid JSON is
-    skipped instead of swallowing the real array (#2847).
+    ```json code block holds one; (3) a balanced-bracket scan
+    (:func:`~teatree.loops.dream.json_scan.first_object_bearing_array`) returns the
+    first top-level ``[`` span carrying an object, else the first decodable list. The
+    scan — not the prior greedy first-``[`` … last-``]`` span — makes bracket-heavy
+    prose (markdown links, ``#N`` refs, regex classes) around the array safe: a prose
+    ``[…]`` that is not valid JSON is skipped (#2847), and a prose scalar/empty array
+    appearing BEFORE the real cluster array no longer wins over it (#2861). A genuine
+    empty array as the whole reply still resolves via tier 1, so the healthy 0-cluster
+    path is untouched.
     """
     direct = _loads_array(raw.strip())
     if direct is not None:
@@ -206,7 +206,7 @@ def _extract_json_array(raw: str) -> list[object] | None:
         fenced = _loads_array(match.group(1).strip())
         if fenced is not None:
             return fenced
-    return _first_balanced_array(raw)
+    return first_object_bearing_array(raw)
 
 
 def _loads_array(text: str) -> list[object] | None:
@@ -215,26 +215,6 @@ def _loads_array(text: str) -> list[object] | None:
     except json.JSONDecodeError:
         return None
     return parsed if isinstance(parsed, list) else None
-
-
-def _first_balanced_array(raw: str) -> list[object] | None:
-    """Return the first ``[``-anchored span that ``json`` decodes to a list.
-
-    Attempts a strict decode at each ``[`` (``raw_decode`` stops at the value's own
-    matching ``]`` and handles nested arrays and brackets-inside-strings natively), so
-    a bracketed prose span that is not valid JSON — a markdown ref, a regex class — is
-    skipped instead of being swallowed by the prior greedy first-``[`` … last-``]`` span.
-    A successful decode anchored at ``[`` is always a JSON array by grammar.
-    """
-    for i, ch in enumerate(raw):
-        if ch != "[":
-            continue
-        try:
-            parsed, _ = _DECODER.raw_decode(raw, i)
-        except json.JSONDecodeError:
-            continue
-        return cast("list[object]", parsed)
-    return None
 
 
 def _coerce_cluster(entry: object) -> DistilledCluster | None:
