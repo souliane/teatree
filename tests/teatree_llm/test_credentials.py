@@ -30,13 +30,18 @@ from teatree.llm.credentials import (
     CredentialSource,
     CredentialSpec,
     EnvSource,
+    OrcaRouterCredential,
     PassSource,
+    resolve_orca_router_provider_config,
 )
 
 _API_KEY_ENV = "ANTHROPIC_API_KEY"
 _API_KEY_PASS = "anthropic/api-key"
 _OAUTH_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
 _OAUTH_PASS = "anthropic/oauth-token"
+_ORCA_ENV = "ORCA_ROUTER_API_KEY"
+_ORCA_PASS = "orca-router/api-key"
+_ORCA_BASE_URL_ENV = "ORCA_ROUTER_BASE_URL"
 
 
 class _FakeEnvSource:
@@ -256,3 +261,75 @@ class TestPassPathOverride:
         with pytest.raises(CredentialError) as excinfo:
             credential.resolve()
         assert _ROUTED_PASS in str(excinfo.value)
+
+
+class TestOrcaRouterCredential:
+    """The ``pydantic_ai`` harness's BYOK provider — orthogonal to the Anthropic credentials."""
+
+    def test_is_a_credential(self) -> None:
+        assert issubclass(OrcaRouterCredential, Credential)
+
+    def test_spec_is_provider_explicit(self) -> None:
+        spec = OrcaRouterCredential().spec
+        assert spec.env_var == _ORCA_ENV
+        assert spec.pass_path == _ORCA_PASS
+
+    def test_declares_no_conflicting_vars(self) -> None:
+        # OrcaRouter is an orthogonal provider — applying it strips nothing.
+        assert OrcaRouterCredential().spec.conflicting_vars == ()
+
+    def test_resolves_from_env(self) -> None:
+        credential = OrcaRouterCredential(sources=[_FakeEnvSource({_ORCA_ENV: "orca-key-env"})])
+        assert credential.resolve() == "orca-key-env"
+
+    def test_falls_through_to_pass(self) -> None:
+        credential = OrcaRouterCredential(
+            sources=[_FakeEnvSource({_ORCA_ENV: None}), _FakePassSource({_ORCA_PASS: "orca-key-pass"})]
+        )
+        assert credential.resolve() == "orca-key-pass"
+
+    def test_raises_loud_when_absent(self) -> None:
+        credential = OrcaRouterCredential(sources=[_FakeEnvSource({}), _FakePassSource({})])
+        with pytest.raises(CredentialError) as excinfo:
+            credential.resolve()
+        assert _ORCA_ENV in str(excinfo.value)
+        assert _ORCA_PASS in str(excinfo.value)
+
+    def test_child_env_does_not_strip_anthropic_credentials(self) -> None:
+        credential = OrcaRouterCredential(sources=[_FakeEnvSource({_ORCA_ENV: "orca-key"})])
+        base = {_OAUTH_ENV: "sub-token", _API_KEY_ENV: "sk-env"}
+        child = credential.child_env(base)
+        assert child[_ORCA_ENV] == "orca-key"
+        assert child[_OAUTH_ENV] == "sub-token"
+        assert child[_API_KEY_ENV] == "sk-env"
+
+
+class TestResolveOrcaRouterProviderConfig:
+    """The full OpenAI-compatible provider config: BYOK key + endpoint."""
+
+    def test_resolves_both_halves(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(_ORCA_BASE_URL_ENV, "https://orca.example/v1")
+        credential = OrcaRouterCredential(sources=[_FakeEnvSource({_ORCA_ENV: "orca-key"})])
+        config = resolve_orca_router_provider_config(credential=credential)
+        assert config.api_key == "orca-key"
+        assert config.base_url == "https://orca.example/v1"
+
+    def test_missing_base_url_raises_loud(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv(_ORCA_BASE_URL_ENV, raising=False)
+        credential = OrcaRouterCredential(sources=[_FakeEnvSource({_ORCA_ENV: "orca-key"})])
+        with pytest.raises(CredentialError) as excinfo:
+            resolve_orca_router_provider_config(credential=credential)
+        assert _ORCA_BASE_URL_ENV in str(excinfo.value)
+
+    def test_missing_api_key_raises_loud_even_with_base_url_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(_ORCA_BASE_URL_ENV, "https://orca.example/v1")
+        credential = OrcaRouterCredential(sources=[_FakeEnvSource({}), _FakePassSource({})])
+        with pytest.raises(CredentialError):
+            resolve_orca_router_provider_config(credential=credential)
+
+    def test_default_credential_is_a_fresh_orca_router_credential(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # No injected credential: resolves via the real env-then-pass chain.
+        monkeypatch.setenv(_ORCA_BASE_URL_ENV, "https://orca.example/v1")
+        monkeypatch.setenv(_ORCA_ENV, "orca-key-from-real-env")
+        config = resolve_orca_router_provider_config()
+        assert config.api_key == "orca-key-from-real-env"

@@ -9,11 +9,13 @@ literal — so adopting a new model needs zero test edits.
 from pathlib import Path
 
 import pytest
+from django.test import TestCase
 
 import teatree.agents.model_tiering as mt_mod
 from teatree.agents.model_tiering import (
     DEFAULT_PHASE_MODELS,
     DEFAULT_TIER,
+    HARNESS_EFFORT_SCALE,
     TIER_EFFORT,
     TIER_MODELS,
     model_supports_thinking,
@@ -23,6 +25,8 @@ from teatree.agents.model_tiering import (
     resolve_tier,
     resolve_tier_effort,
 )
+from teatree.config import AgentHarness
+from teatree.core.models import ConfigSetting
 
 _ABSENT = Path("/nonexistent.toml")
 
@@ -407,3 +411,83 @@ class TestResolveSpawnEffort:
 
         monkeypatch.setattr(ca_mod, "CONFIG_PATH", cfg)
         assert resolve_spawn_effort("testing") == "max"
+
+
+class TestHarnessScopedEffort:
+    """Effort resolution is scoped to the ACTIVE harness (#2885).
+
+    ``TIER_MODELS`` is harness-INDEPENDENT by design (both backends target the
+    same concrete model catalog); ``TIER_EFFORT`` resolution is genuinely
+    harness-scoped because the two harnesses' effort vocabularies differ
+    (``claude_sdk`` has ``max``, ``pydantic_ai`` does not — see
+    :data:`HARNESS_EFFORT_SCALE`).
+    """
+
+    def test_harness_effort_scale_has_an_entry_per_agent_harness(self) -> None:
+        assert set(HARNESS_EFFORT_SCALE) == set(AgentHarness)
+
+    def test_claude_sdk_scale_matches_the_shared_effort_scale(self) -> None:
+        from teatree.config_agent import EFFORT_SCALE  # noqa: PLC0415
+
+        assert HARNESS_EFFORT_SCALE[AgentHarness.CLAUDE_SDK] == EFFORT_SCALE
+
+    def test_pydantic_ai_scale_has_no_max_rung(self) -> None:
+        assert "max" not in HARNESS_EFFORT_SCALE[AgentHarness.PYDANTIC_AI]
+
+    def test_shipped_defaults_are_valid_on_both_harnesses(self) -> None:
+        # The no-op guarantee: the shipped xhigh/high values never get dropped
+        # by the harness-scale check on either harness.
+        for harness in AgentHarness:
+            for tier, effort in TIER_EFFORT.items():
+                assert resolve_tier_effort(tier, harness=harness, config_path=_ABSENT) == effort
+
+    def test_claude_sdk_accepts_a_max_override(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        _write_toml(cfg, '[agent.tier_effort]\nfrontier = "max"\n')
+        assert resolve_tier_effort("frontier", harness=AgentHarness.CLAUDE_SDK, config_path=cfg) == "max"
+
+    def test_pydantic_ai_drops_a_max_override_and_falls_back_to_default(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        _write_toml(cfg, '[agent.tier_effort]\nfrontier = "max"\n')
+        assert (
+            resolve_tier_effort("frontier", harness=AgentHarness.PYDANTIC_AI, config_path=cfg)
+            == TIER_EFFORT["frontier"]
+        )
+
+    def test_pydantic_ai_accepts_an_override_within_the_shared_vocabulary(self, tmp_path: Path) -> None:
+        # "low" is in EFFORT_SCALE (so the config-time parser in config_agent.py
+        # accepts it) AND in pydantic_ai's HARNESS_EFFORT_SCALE, so it passes
+        # straight through — the harness-scale check only narrows, never widens
+        # what an operator can already configure.
+        cfg = tmp_path / ".teatree.toml"
+        _write_toml(cfg, '[agent.tier_effort]\nbalanced = "low"\n')
+        assert resolve_tier_effort("balanced", harness=AgentHarness.PYDANTIC_AI, config_path=cfg) == "low"
+
+    def test_resolve_spawn_effort_threads_the_harness_through(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        _write_toml(cfg, '[agent.tier_effort]\nfrontier = "max"\n')
+        assert resolve_spawn_effort("planning", harness=AgentHarness.CLAUDE_SDK, config_path=cfg) == "max"
+        assert (
+            resolve_spawn_effort("planning", harness=AgentHarness.PYDANTIC_AI, config_path=cfg)
+            == TIER_EFFORT["frontier"]
+        )
+
+
+class TestHarnessScopedEffortDefaultHarness(TestCase):
+    """The default ``harness=None`` reads the DB-home ``agent_harness`` setting."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        monkeypatch.delenv("T3_AGENT_HARNESS", raising=False)
+        self.cfg = tmp_path / ".teatree.toml"
+        _write_toml(self.cfg, '[agent.tier_effort]\nfrontier = "max"\n')
+
+    def test_defaults_to_the_resolved_agent_harness_setting(self) -> None:
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+        # No explicit harness= passed: resolves via get_effective_settings(),
+        # which now reads the stored pydantic_ai setting — "max" is dropped.
+        assert resolve_tier_effort("frontier", config_path=self.cfg) == TIER_EFFORT["frontier"]
+
+        ConfigSetting.objects.set_value("agent_harness", "claude_sdk")
+        # Same override, claude_sdk harness: "max" is on-scale, passes through.
+        assert resolve_tier_effort("frontier", config_path=self.cfg) == "max"
