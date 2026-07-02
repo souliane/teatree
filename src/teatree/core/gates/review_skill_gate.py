@@ -18,6 +18,16 @@ Satisfying evidence
     configured ``review_skill``. Evidence for a different (e.g. stale) skill
     does not satisfy the gate — the artifact must attest the skill in force.
 
+Repo scoping
+    The gate only applies to a ticket whose issue lives in its overlay's OWN
+    primary repo(s) (:func:`~teatree.core.overlay_loader.ticket_repo_is_overlay_own`).
+    A ticket reached only through the overlay's broader workspace-repo
+    routing — a sibling project's own repo-ownership config doesn't
+    enumerate its own meta/tooling repo, so its tickets dispatch through
+    this overlay's workspace-repo list purely for administrative
+    convenience — is exempt, since the ticket isn't actually this overlay's
+    own codebase (#1539 / #2895).
+
 The gate is a pure function over durable ``extra`` state, mirroring
 ``teatree.core.gates.dod_gate``. On a block it raises
 :class:`ReviewSkillEvidenceError` with a remediation message naming the
@@ -27,6 +37,7 @@ expected evidence; the ``visit-phase`` command surfaces it as a non-zero exit.
 from typing import TYPE_CHECKING
 
 from teatree.config import get_effective_settings
+from teatree.core.overlay_loader import ticket_repo_is_overlay_own
 
 if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
@@ -50,11 +61,15 @@ def recorded_review_skill(ticket: "Ticket") -> str:
 def check_review_skill_evidence(ticket: "Ticket") -> None:
     """Refuse a ``reviewing`` attestation that no review-skill run backs.
 
-    NO-OP when ``review_skill`` is unset (the opt-in default). Otherwise the
-    durable ``review_skill_run`` artifact must name the configured skill.
+    NO-OP when ``review_skill`` is unset (the opt-in default) or when
+    *ticket* isn't in its overlay's own repo (see "Repo scoping" above).
+    Otherwise the durable ``review_skill_run`` artifact must name the
+    configured skill.
     """
     expected = configured_review_skill()
     if not expected:
+        return
+    if not ticket_repo_is_overlay_own(ticket):
         return
     if recorded_review_skill(ticket) == expected:
         return

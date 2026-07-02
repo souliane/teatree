@@ -12,6 +12,7 @@ from django.core.exceptions import ImproperlyConfigured
 
 import teatree.config as config_mod
 from teatree.config import TeaTreeConfig
+from teatree.core.models import Ticket
 from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import (
     OverlayConfigResolver,
@@ -21,6 +22,7 @@ from teatree.core.overlay_loader import (
     get_overlay_for_url,
     infer_overlay_for_url,
     resolve_overlay_name,
+    ticket_repo_is_overlay_own,
 )
 
 owned_repos_for_overlay = OverlayConfigResolver.owned_repos
@@ -398,6 +400,67 @@ class TestGetOverlayForRepo:
         assert "failed during repo resolution" in caplog.text
 
 
+class TestTicketRepoIsOverlayOwn:
+    """``ticket_repo_is_overlay_own`` scopes a ticket to its overlay's OWN repos (#2895).
+
+    Distinguishes an overlay's canonical ``get_repos()`` from its broader
+    ``get_workspace_repos()`` routing set — a ticket reached only through the
+    latter (a sibling project's own repo-ownership config doesn't enumerate
+    its own meta/tooling repo, so its tickets are routed through this
+    overlay's workspace-repo list purely for dispatch) is not "this
+    overlay's own codebase".
+    """
+
+    def _ticket(self, issue_url: str, overlay: str = "a") -> Ticket:
+        return Ticket(issue_url=issue_url, overlay=overlay)
+
+    def test_full_slug_match_against_own_repos_is_true(self):
+        overlays = {"a": _RepoOverlay(["acme/widgets"])}
+        ticket = self._ticket("https://github.com/acme/widgets/issues/7")
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=overlays):
+            assert ticket_repo_is_overlay_own(ticket) is True
+
+    def test_bare_name_match_against_own_repos_is_true(self):
+        """Mirrors the bundled overlay's own ``get_repos() == ["teatree"]`` bare-name case."""
+        overlays = {"a": _RepoOverlay(["teatree"])}
+        ticket = self._ticket("https://github.com/souliane/teatree/issues/7")
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=overlays):
+            assert ticket_repo_is_overlay_own(ticket) is True
+
+    def test_routed_through_workspace_repo_not_in_get_repos_is_false(self):
+        """A ticket owned only by ``get_workspace_repos()`` routing is NOT the overlay's own repo."""
+
+        class _RoutedOverlay(_RepoOverlay):
+            def get_workspace_repos(self) -> list[str]:
+                return [*self._repos, "acme/sibling-tooling"]
+
+        overlays = {"a": _RoutedOverlay(["acme/widgets"])}
+        ticket = self._ticket("https://github.com/acme/sibling-tooling/issues/3")
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=overlays):
+            assert ticket_repo_is_overlay_own(ticket) is False
+
+    def test_blank_issue_url_fails_open(self):
+        ticket = self._ticket("")
+        assert ticket_repo_is_overlay_own(ticket) is True
+
+    def test_unresolvable_overlay_fails_open(self):
+        ticket = self._ticket("https://github.com/acme/widgets/issues/7", overlay="ghost-overlay")
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value={}):
+            assert ticket_repo_is_overlay_own(ticket) is True
+
+    def test_get_repos_raising_fails_open_and_does_not_propagate(self, caplog):
+        class _Broken(_RepoOverlay):
+            def get_repos(self) -> list[str]:
+                msg = "boom"
+                raise RuntimeError(msg)
+
+        overlays = {"a": _Broken(["acme/widgets"])}
+        ticket = self._ticket("https://github.com/acme/widgets/issues/7")
+        with patch("teatree.core.overlay_loader._discover_overlays", return_value=overlays):
+            assert ticket_repo_is_overlay_own(ticket) is True
+        assert "get_repos" in caplog.text
+
+
 class TestGetOverlayForUrl:
     """``get_overlay_for_url`` resolves the owning overlay from a forge URL (TODO-282).
 
@@ -474,14 +537,14 @@ class TestResolveOverlayName:
 
     def test_registered_name_resolves_to_itself(self):
         with patch(
-            "teatree.core.overlay_loader.get_all_overlay_names",
+            "teatree.core.overlay_loader.OverlayConfigResolver.all_names",
             return_value=["t3-teatree", "t3-beta"],
         ):
             assert resolve_overlay_name("t3-teatree") == "t3-teatree"
 
     def test_legacy_short_alias_folds_onto_entry_point(self):
         with patch(
-            "teatree.core.overlay_loader.get_all_overlay_names",
+            "teatree.core.overlay_loader.OverlayConfigResolver.all_names",
             return_value=["t3-teatree", "t3-beta"],
         ):
             assert resolve_overlay_name("teatree") == "t3-teatree"
@@ -489,7 +552,7 @@ class TestResolveOverlayName:
 
     def test_unknown_name_resolves_to_none(self):
         with patch(
-            "teatree.core.overlay_loader.get_all_overlay_names",
+            "teatree.core.overlay_loader.OverlayConfigResolver.all_names",
             return_value=["t3-teatree", "t3-beta"],
         ):
             assert resolve_overlay_name("removed-overlay") is None
@@ -501,7 +564,7 @@ class TestResolveOverlayName:
 
     def test_dispatchable_check_via_resolution(self):
         with patch(
-            "teatree.core.overlay_loader.get_all_overlay_names",
+            "teatree.core.overlay_loader.OverlayConfigResolver.all_names",
             return_value=["t3-teatree", "t3-beta"],
         ):
             assert resolve_overlay_name("teatree") is not None
