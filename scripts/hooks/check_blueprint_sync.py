@@ -2,7 +2,7 @@
 
 Exits non-zero when source code changes without a corresponding BLUEPRINT
 update, unless the commit type is one that typically doesn't require it
-(test, docs, style, chore, ci, fix, refactor).
+(test, docs, style, chore, ci, fix, refactor, revert).
 
 The "BLUEPRINT" is the top-level ``BLUEPRINT.md`` plus its split appendix
 files under ``docs/blueprint/`` (e.g. ``configuration.md``,
@@ -23,6 +23,16 @@ A commit mid-``git merge`` is exempt regardless of message or staged files
 carries every upstream commit's changes in one shot, so it would otherwise
 false-block on virtually any non-BLUEPRINT upstream source commit.
 
+A commit mid-``git revert`` is exempt regardless of message (its default
+``Revert "..."`` message matches no prefix): the staged tree is the inverse
+of a single original commit's diff, and if that original commit never
+touched BLUEPRINT.md, undoing it can't need a BLUEPRINT update either. A
+commit explicitly typed ``revert:``/``revert(scope):`` (Conventional
+Commits' own revert type) is exempt by prefix the same way ``fix:`` is —
+this covers a revert commit authored or replayed outside a live
+``git revert`` operation (e.g. after a rebase), where ``REVERT_HEAD`` is
+absent but the same reasoning still applies.
+
 See: souliane/teatree#8
 """
 
@@ -33,8 +43,10 @@ import sys
 # Commit types that don't require BLUEPRINT updates. ``refactor`` joins the
 # set because a behaviour-preserving internal change (a swapped runner, an
 # extracted helper) does not alter the external contracts BLUEPRINT documents
-# — the same reasoning that exempts ``fix``.
-_EXEMPT_PREFIXES = ("test", "docs", "style", "chore", "ci", "fix", "refactor")
+# — the same reasoning that exempts ``fix``. ``revert`` joins for the same
+# reason as the ``_is_revert_commit`` REVERT_HEAD check: undoing a commit
+# that never touched BLUEPRINT.md can't need a BLUEPRINT update either.
+_EXEMPT_PREFIXES = ("test", "docs", "style", "chore", "ci", "fix", "refactor", "revert")
 
 # Filenames git uses to hold an in-progress commit message. ``argv[1]`` is read
 # as the commit message only when it ends in one of these — a staged ``src/``
@@ -64,6 +76,17 @@ def _is_merge_commit() -> bool:
     """
     result = subprocess.run(
         ["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def _is_revert_commit() -> bool:
+    """True mid-``git revert`` (``REVERT_HEAD`` exists), mirroring ``_is_merge_commit``."""
+    result = subprocess.run(
+        ["git", "rev-parse", "-q", "--verify", "REVERT_HEAD"],
         capture_output=True,
         text=True,
         check=False,
@@ -131,7 +154,7 @@ def _commit_message() -> str:
 
 
 def main() -> int:
-    if _is_merge_commit():
+    if _is_merge_commit() or _is_revert_commit():
         return 0
 
     msg = _commit_message()

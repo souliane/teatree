@@ -15,7 +15,7 @@
 - name: overlay_repo_review_loads_overlay_skill_first
   scenario: "a review on an overlay-managed repo loads the overlay playbook skill before reading the MR diff, not just the dev skill"
   agent_path: skills/review/SKILL.md
-  phase: reviewing
+  tier: balanced
   max_turns: 4
   tools: [Skill, Bash]
   prompt: >-
@@ -35,7 +35,7 @@
 - name: overlay_repo_code_loads_overlay_skill_first
   scenario: "a coding task in an overlay-managed repo loads the overlay playbook skill before editing source, not just the dev skill"
   agent_path: skills/code/SKILL.md
-  phase: coding
+  tier: balanced
   max_turns: 4
   tools: [Skill, Bash, Edit]
   prompt: >-
