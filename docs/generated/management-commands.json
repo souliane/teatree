@@ -664,6 +664,14 @@
         {
           "help": "Report whether *mr_url* is safe to approve at its CURRENT head (read-only)",
           "name": "status"
+        },
+        {
+          "help": "Acquire the per-MR review-dispatch lock BEFORE a manual Agent() reviewer dispatch (#1405)",
+          "name": "lock-acquire"
+        },
+        {
+          "help": "Report the current :class:`MRReviewLock` state for *mr_url* (read-only)",
+          "name": "lock-status"
         }
       ]
     },

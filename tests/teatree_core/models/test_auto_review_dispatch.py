@@ -2,7 +2,7 @@
 
 import pytest
 
-from teatree.core.models import AutoReviewDispatch, Task, Ticket
+from teatree.core.models import AutoReviewDispatch, MRReviewLock, Task, Ticket
 from teatree.core.models.auto_review_dispatch import build_review_contract
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -59,14 +59,41 @@ class TestDedupPerHead:
         assert AutoReviewDispatch.objects.count() == 1
         assert Task.objects.filter(phase="reviewing").count() == 1
 
-    def test_new_head_rearms_exactly_one_new_task(self) -> None:
+    def test_new_head_while_prior_review_in_flight_does_not_rearm(self) -> None:
+        # #1405: the MRReviewLock is keyed on the MR, not the head — a fresh
+        # push while the prior review hasn't concluded must not arm a SECOND,
+        # concurrent reviewer for the new head.
+        first = AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=HEAD, pr_url=URL, overlay="teatree")
+        rearmed = AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=NEW_HEAD, pr_url=URL, overlay="teatree")
+
+        assert first is not None
+        assert rearmed is None
+        assert AutoReviewDispatch.objects.count() == 1
+        assert Task.objects.filter(phase="reviewing").count() == 1
+
+    def test_new_head_rearms_once_the_prior_review_has_resolved(self) -> None:
         AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=HEAD, pr_url=URL, overlay="teatree")
+        MRReviewLock.resolve(slug=SLUG, pr_id=6230)
+
         rearmed = AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=NEW_HEAD, pr_url=URL, overlay="teatree")
 
         assert rearmed is not None
         assert rearmed.task is not None
         assert AutoReviewDispatch.objects.count() == 2
         assert Task.objects.filter(phase="reviewing").count() == 2
+
+    def test_re_enqueue_same_head_after_resolve_is_still_a_dedup_no_op(self) -> None:
+        # A fresh lock acquire alone isn't enough to rearm — the AutoReviewDispatch
+        # row's own (slug, pr_id, head_sha) uniqueness still dedups a re-enqueue on
+        # the EXACT same head, even once the lock has resolved and become acquirable.
+        AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=HEAD, pr_url=URL, overlay="teatree")
+        MRReviewLock.resolve(slug=SLUG, pr_id=6230)
+
+        second = AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=HEAD, pr_url=URL, overlay="teatree")
+
+        assert second is None
+        assert AutoReviewDispatch.objects.count() == 1
+        assert Task.objects.filter(phase="reviewing").count() == 1
 
     def test_distinct_prs_are_independent(self) -> None:
         AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=HEAD, pr_url=URL, overlay="teatree")

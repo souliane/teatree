@@ -353,6 +353,8 @@ Report (and optionally recover) work stranded by an outage.
 | --- | --- |
 | `record` | Persist a cold-review verdict for a PR at an exact reviewed SHA |
 | `status` | Report whether *mr_url* is safe to approve at its CURRENT head (read-only) |
+| `lock-acquire` | Acquire the per-MR review-dispatch lock BEFORE a manual Agent() reviewer dispatch (#1405) |
+| `lock-status` | Report the current :class:`MRReviewLock` state for *mr_url* (read-only) |
 
 ## `review_request_check`
 

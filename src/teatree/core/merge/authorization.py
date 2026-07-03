@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from teatree.core.author_trust import classify_author
 from teatree.core.merge.ci_rollup import fetch_pr_author
 from teatree.core.merge.errors import MergePreconditionError
+from teatree.core.models.mr_review_lock import MRReviewLock
 from teatree.core.models.review_verdict import HeadVerdictState, ReviewVerdict
 
 if TYPE_CHECKING:
@@ -342,6 +343,31 @@ def assert_review_verdict_gate(*, slug: str, pr_id: int, head_sha: str) -> None:
             f"non-stale verdict at the head is a HOLD; record a later merge_safe to override it."
         )
         raise MergePreconditionError(msg)
+
+
+def assert_no_active_review_lock(*, slug: str, pr_id: int) -> None:
+    """Refuse the merge while a :class:`MRReviewLock` is actively held for the PR (#1405).
+
+    Sibling of :func:`assert_review_verdict_gate` at the same chokepoint
+    (:func:`teatree.core.merge.execution.execute_bound_merge`): a recorded
+    ``merge_safe`` verdict at the live head is not enough on its own when a
+    review is concurrently in flight (``review_dispatched`` /
+    ``verdict_pending``, not yet stale) for the SAME MR — that in-flight
+    review could still be about to record a HOLD, and a merge racing ahead of
+    it would land before the hold ever lands. No row, an ``idle``/``resolved``
+    row, or a stale (deadline-passed) row all mean "no review in flight" and
+    the merge proceeds.
+    """
+    lock = MRReviewLock.active_lock_for(slug=slug, pr_id=pr_id)
+    if lock is None:
+        return
+    msg = (
+        f"a review is in flight for {slug}#{pr_id} — MRReviewLock state={lock.state!r} "
+        f"holder={lock.holder!r} — refusing to merge until the lock resolves (#1405). "
+        f"The lock clears when the in-flight review records its verdict, or expires on "
+        f"its own once its dispatch deadline passes."
+    )
+    raise MergePreconditionError(msg)
 
 
 def assert_public_repo_author_trusted(*, slug: str, pr_id: int, host_kind: str = "github") -> None:
