@@ -11,6 +11,7 @@ from functools import lru_cache
 from typing import TYPE_CHECKING, Literal
 
 from teatree.backends.github import GitHubCodeHost
+from teatree.backends.github.api import gh_ambient_auth_available
 from teatree.backends.gitlab import GitLabCodeHost
 from teatree.backends.gitlab.api import GitLabAPI
 from teatree.backends.gitlab.ci import GitLabCIService
@@ -157,25 +158,37 @@ def get_code_host_for_repo(overlay: "OverlayBase", repo_path: str) -> CodeHostBa
     GitLab-hosted repo and ran ``gh`` against a GitLab remote (#2025).
 
     Raises :class:`BackendResolutionError` when the origin host is a
-    recognised forge but the overlay has no credentials for it — surfacing
-    the mismatch BEFORE the PR-creation attempt instead of letting a raw
-    ``gh``/``glab`` GraphQL error be the first signal. Falls back to
+    recognised forge but the overlay has no working credentials for it —
+    surfacing the mismatch BEFORE the PR-creation attempt instead of letting
+    a raw ``gh``/``glab`` GraphQL error be the first signal. Falls back to
     :func:`get_code_host` (the overlay default) only when the repo has no
     origin remote / an unrecognised host.
+
+    GitHub carve-out: an overlay with no explicitly-configured GitHub token
+    is not necessarily unauthenticated — ``_run_gh`` already inherits the
+    ambient environment (and thus ``gh``'s own logged-in account) whenever
+    no token is passed. So when the forge is GitHub and no token is
+    configured, this checks :func:`gh_ambient_auth_available` and, if it
+    passes, builds a ``GitHubCodeHost(token="")`` that relies on that
+    fallback rather than raising. GitLab has no equivalent: its REST
+    transport (``GitLabHTTPClient``) returns early on an empty token with
+    no ``glab`` call at all, so it keeps raising here.
     """
     remote = git.remote_url(repo=repo_path)
     forge = forge_from_remote(remote) if remote else ""
     if not forge:
         return get_code_host(overlay)
     backend = _host_backend(overlay, forge)
-    if backend is None:
-        msg = (
-            f"repo origin resolves to the {forge} forge ({remote!r}) but the active "
-            f"overlay has no {forge} credentials configured — cannot open a PR. "
-            f"Configure a {forge} token for this overlay."
-        )
-        raise BackendResolutionError(msg)
-    return backend
+    if backend is not None:
+        return backend
+    if forge == "github" and gh_ambient_auth_available():
+        return GitHubCodeHost(token="")
+    msg = (
+        f"repo origin resolves to the {forge} forge ({remote!r}) but the active "
+        f"overlay has no {forge} credentials configured — cannot open a PR. "
+        f"Configure a {forge} token for this overlay."
+    )
+    raise BackendResolutionError(msg)
 
 
 def get_messaging(overlay: "OverlayBase") -> MessagingBackend:
