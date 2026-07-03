@@ -11,7 +11,14 @@ import teatree.backends.github.client as github_mod
 import teatree.backends.github.projects as github_projects_mod
 import teatree.utils.run as utils_run_mod
 from teatree.backends.github import GitHubCodeHost, ProjectItem, fetch_project_items, issue_repo_short
-from teatree.backends.github.api import _gh_api_get, _gh_api_get_paginated, _gh_api_patch, _gh_api_post, _run_gh
+from teatree.backends.github.api import (
+    _gh_api_get,
+    _gh_api_get_paginated,
+    _gh_api_patch,
+    _gh_api_post,
+    _run_gh,
+    gh_ambient_auth_available,
+)
 from teatree.backends.github.projects import _gh_graphql
 from teatree.core.backend_protocols import PullRequestSpec
 
@@ -57,6 +64,23 @@ class TestRunGh:
             _run_gh("gh", "version")
         env = mock_run.call_args.kwargs.get("env")
         assert env is None or "GH_TOKEN" not in env
+
+
+class TestGhAmbientAuthAvailable:
+    def test_true_when_gh_auth_status_succeeds(self) -> None:
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(["gh", "auth", "status"], 0, "", "")
+            assert gh_ambient_auth_available() is True
+        assert mock_run.call_args.args[0] == ["gh", "auth", "status"]
+
+    def test_false_when_gh_auth_status_fails(self) -> None:
+        with patch.object(utils_run_mod.subprocess, "run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess(["gh", "auth", "status"], 1, "", "not logged in")
+            assert gh_ambient_auth_available() is False
+
+    def test_false_when_gh_not_installed(self) -> None:
+        with patch.object(utils_run_mod.subprocess, "run", side_effect=FileNotFoundError):
+            assert gh_ambient_auth_available() is False
 
 
 class TestGhApiGet:

@@ -13,7 +13,7 @@ from typing import cast
 from urllib.parse import urlparse
 
 from teatree.types import RawAPIDict
-from teatree.utils.run import CompletedProcess, run_checked
+from teatree.utils.run import CompletedProcess, run_allowed_to_fail, run_checked
 
 _ISSUE_URL_RE = re.compile(r"^/(?P<owner>[^/]+)/(?P<repo>[^/]+)/issues/(?P<number>\d+)/?$")
 
@@ -27,6 +27,21 @@ def _run_gh(*args: str, token: str = "") -> CompletedProcess[str]:
     """
     env = {**os.environ, "GH_TOKEN": token} if token else None
     return run_checked(list(args), env=env)
+
+
+def gh_ambient_auth_available() -> bool:
+    """Whether ``gh``'s own logged-in account (no explicit token) is usable.
+
+    ``gh auth status`` exits 0 when the CLI has a valid active account.
+    :func:`teatree.backends.loader.get_code_host_for_repo` uses this to fail
+    fast with a clear message instead of letting a raw ``gh`` auth error
+    surface deep inside a PR-creation call.
+    """
+    try:
+        result = run_allowed_to_fail(["gh", "auth", "status"], expected_codes=None)
+    except FileNotFoundError:
+        return False
+    return result.returncode == 0
 
 
 def _gh_api_get(endpoint: str, *, token: str = "") -> object:

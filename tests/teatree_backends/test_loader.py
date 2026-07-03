@@ -325,3 +325,52 @@ class TestGetCodeHostForRepo:
         path.mkdir()
         subprocess.run([_GIT, "-C", str(path), "init", "-q", "-b", "main"], check=True, capture_output=True)
         assert isinstance(get_code_host_for_repo(overlay, str(path)), GitLabCodeHost)
+
+
+class TestGetCodeHostForRepoGithubAmbientAuth:
+    """A tokenless overlay falls back to ``gh``'s own ambient auth (#2946).
+
+    ``_run_gh`` already inherits the parent environment (and thus ``gh``'s
+    logged-in account) when no explicit token is passed — ``_host_backend``
+    used to short-circuit to ``None`` before that fallback ever got a
+    chance to run. GitLab's REST transport has no equivalent ambient-auth
+    path (see ``GitLabHTTPClient.get_json``/``post_json``), so it keeps
+    raising on an empty token.
+    """
+
+    def test_falls_back_to_ambient_auth_when_no_token_configured(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        overlay = _build_overlay()
+        _stub_token(overlay)  # no GitHub, no GitLab token configured
+        monkeypatch.setattr("teatree.backends.loader.gh_ambient_auth_available", lambda: True)
+        repo = _git_repo_with_origin(tmp_path / "gh-ambient", "git@github.com:souliane/teatree.git")
+
+        result = get_code_host_for_repo(overlay, repo)
+
+        assert isinstance(result, GitHubCodeHost)
+
+    def test_configured_token_path_is_unchanged(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        overlay = _build_overlay()
+        _stub_token(overlay, github="gh-tok")
+        # Ambient-auth check must never even run when a token is configured.
+        monkeypatch.setattr(
+            "teatree.backends.loader.gh_ambient_auth_available",
+            lambda: (_ for _ in ()).throw(AssertionError("should not probe ambient auth when a token is set")),
+        )
+        repo = _git_repo_with_origin(tmp_path / "gh-tok", "git@github.com:souliane/teatree.git")
+
+        result = get_code_host_for_repo(overlay, repo)
+
+        assert isinstance(result, GitHubCodeHost)
+
+    def test_raises_when_no_token_and_ambient_auth_unavailable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        overlay = _build_overlay()
+        _stub_token(overlay)
+        monkeypatch.setattr("teatree.backends.loader.gh_ambient_auth_available", lambda: False)
+        repo = _git_repo_with_origin(tmp_path / "gh-noauth", "git@github.com:souliane/teatree.git")
+
+        with pytest.raises(BackendResolutionError, match="github"):
+            get_code_host_for_repo(overlay, repo)
