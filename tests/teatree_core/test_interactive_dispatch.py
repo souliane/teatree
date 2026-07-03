@@ -127,6 +127,9 @@ class TestRecordAttemptCommand(TestCase):
         assert attempt.result["summary"] == "done"
         assert attempt.agent_session_id == "sess-1"
         assert task.ticket.state == Ticket.State.CODED
+        # souliane/teatree#657: an in-session sub-agent always rides the
+        # user's Max subscription seat — never the metered lane.
+        assert attempt.lane == "subscription"
 
     def test_outage_death_fails_task_without_advancing_ticket(self) -> None:
         task = self._claimed_task()

@@ -6,12 +6,14 @@ import pytest
 
 from teatree.core.cost import (
     DEFAULT_MONTHLY_CREDIT_USD,
+    ET_MODEL_MULTIPLIER,
     PRICE_TABLE,
     AttemptUsage,
     CostBreakdown,
     CostReport,
     ModelPrice,
     attempt_cost_usd,
+    compute_effective_tokens,
     cycle_start,
     price_for_model,
     price_table_cost_usd,
@@ -131,6 +133,37 @@ class TestAttemptCost:
         assert price_table_cost_usd(usage) == pytest.approx(3.0)
 
 
+class TestEffectiveTokens:
+    """GitHub's agentic-workflow ET formula: m*(1.0*I + 0.1*C + 4.0*O) (souliane/teatree#657)."""
+
+    def test_opus_multiplier_is_one(self) -> None:
+        usage = AttemptUsage("opus", None, 1000, 100, 2000, 0)
+        # 1.0 * (1000 + 0.1*2000 + 4*100) = 1.0 * 1600 = 1600.
+        assert compute_effective_tokens(usage) == pytest.approx(1600.0)
+
+    def test_sonnet_multiplier_is_point_two(self) -> None:
+        usage = AttemptUsage("sonnet", None, 1000, 100, 2000, 0)
+        assert compute_effective_tokens(usage) == pytest.approx(0.2 * 1600.0)
+
+    def test_haiku_multiplier_is_point_zero_five(self) -> None:
+        usage = AttemptUsage("haiku", None, 1000, 100, 2000, 0)
+        assert compute_effective_tokens(usage) == pytest.approx(0.05 * 1600.0)
+
+    def test_cache_write_tokens_do_not_count(self) -> None:
+        # Only input / cache-READ / output feed the formula — cache-write is
+        # excluded (matches the GitHub article's I/C/O definition).
+        with_write = AttemptUsage("opus", None, 0, 0, 0, 5000)
+        assert compute_effective_tokens(with_write) == pytest.approx(0.0)
+
+    def test_unknown_model_uses_conservative_multiplier(self) -> None:
+        usage = AttemptUsage("some-future-model", None, 1000, 0, 0, 0)
+        assert compute_effective_tokens(usage) == pytest.approx(ET_MODEL_MULTIPLIER["opus"] * 1000)
+
+    def test_attempt_usage_exposes_effective_tokens_property(self) -> None:
+        usage = AttemptUsage("opus", None, 100, 0, 0, 0)
+        assert usage.effective_tokens == pytest.approx(compute_effective_tokens(usage))
+
+
 class TestCostBreakdown:
     def test_totals_and_splits_per_tier(self) -> None:
         usages = [
@@ -148,6 +181,35 @@ class TestCostBreakdown:
         breakdown = CostBreakdown.from_usages([])
         assert breakdown.total_usd == pytest.approx(0.0)
         assert breakdown.attempts == 0
+        assert breakdown.effective_tokens_total == pytest.approx(0.0)
+
+    def test_effective_tokens_totalled_across_usages(self) -> None:
+        usages = [
+            AttemptUsage("opus", None, 1000, 0, 0, 0),
+            AttemptUsage("haiku", None, 1000, 0, 0, 0),
+        ]
+        breakdown = CostBreakdown.from_usages(usages)
+        # 1.0*1000 (opus) + 0.05*1000 (haiku) = 1050.
+        assert breakdown.effective_tokens_total == pytest.approx(1050.0)
+
+    def test_splits_by_layer_2_lane(self) -> None:
+        usages = [
+            AttemptUsage("opus", 1.0, 1000, 0, 0, 0, lane="subscription"),
+            AttemptUsage("opus", 2.0, 1000, 0, 0, 0, lane="metered"),
+            AttemptUsage("opus", 0.5, 1000, 0, 0, 0, lane="metered"),
+        ]
+        breakdown = CostBreakdown.from_usages(usages)
+        assert breakdown.per_lane_usd["subscription"] == pytest.approx(1.0)
+        assert breakdown.per_lane_usd["metered"] == pytest.approx(2.5)
+        assert breakdown.per_lane_effective_tokens["subscription"] == pytest.approx(1000.0)
+        assert breakdown.per_lane_effective_tokens["metered"] == pytest.approx(2000.0)
+
+    def test_unattributed_lane_buckets_separately(self) -> None:
+        # No explicit Layer-2 pin was configured for this dispatch (#2887
+        # ambient-credential default) — the lane is unknown, not guessed.
+        usages = [AttemptUsage("opus", 1.0, 0, 0, 0, 0)]
+        breakdown = CostBreakdown.from_usages(usages)
+        assert set(breakdown.per_lane_usd) == {"unattributed"}
 
 
 class TestCycleStart:
@@ -220,3 +282,27 @@ class TestCostReport:
         lines = "\n".join(report.render_lines())
         assert "per model" not in lines
         assert "(0%)" in lines
+
+    def test_render_lines_show_effective_tokens_and_lane_split(self) -> None:
+        breakdown = CostBreakdown(
+            total_usd=3.0,
+            per_tier_usd={"opus": 3.0},
+            attempts=2,
+            effective_tokens_total=1500.0,
+            per_lane_usd={"subscription": 1.0, "metered": 2.0},
+            per_lane_effective_tokens={"subscription": 500.0, "metered": 1000.0},
+        )
+        report = CostReport.build(
+            breakdown,
+            credit_usd=DEFAULT_MONTHLY_CREDIT_USD,
+            cycle_start_date=date(2026, 6, 1),
+            today=date(2026, 6, 10),
+        )
+        lines = "\n".join(report.render_lines())
+        assert "effective tokens (ET): 1,500" in lines
+        assert "subscription: $1.00 (ET 500)" in lines
+        assert "metered: $2.00 (ET 1,000)" in lines
+
+    def test_render_lines_omit_per_lane_when_no_lane_split(self) -> None:
+        lines = "\n".join(self._report(50.0).render_lines())
+        assert "per lane" not in lines

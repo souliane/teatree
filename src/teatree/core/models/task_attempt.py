@@ -31,6 +31,7 @@ class TaskAttemptQuerySet(models.QuerySet):
                 output_tokens=row.output_tokens or 0,
                 cache_read_tokens=row.cache_read_tokens or 0,
                 cache_write_tokens=row.cache_write_tokens or 0,
+                lane=row.lane,
             )
             for row in self.only(
                 "model",
@@ -39,6 +40,7 @@ class TaskAttemptQuerySet(models.QuerySet):
                 "output_tokens",
                 "cache_read_tokens",
                 "cache_write_tokens",
+                "lane",
             )
         ]
 
@@ -50,6 +52,18 @@ class TaskAttemptQuerySet(models.QuerySet):
 
 
 class TaskAttempt(models.Model):
+    class Lane(models.TextChoices):
+        """The Layer-2 lane (souliane/teatree#2887) an attempt authenticated through.
+
+        ``""`` (blank, the field default) means unattributed — no explicit
+        ``agent_harness_provider`` pin was configured for the dispatch, so the
+        ambient-credential default authenticated however the ``claude`` CLI's
+        own login state resolved, which is unobservable from here.
+        """
+
+        SUBSCRIPTION = "subscription", "Subscription"
+        METERED = "metered", "Metered"
+
     task = models.ForeignKey(Task, on_delete=models.CASCADE, related_name="attempts")
     started_at = models.DateTimeField(auto_now_add=True)
     ended_at = models.DateTimeField(null=True, blank=True)
@@ -67,6 +81,9 @@ class TaskAttempt(models.Model):
     num_turns = models.IntegerField(null=True, blank=True)
     launch_url = models.URLField(max_length=500, blank=True)
     agent_session_id = models.CharField(max_length=255, blank=True)
+    # souliane/teatree#657: the Layer-2 lane this attempt's tokens are
+    # attributable to, so #2565's two-lane cost strategy is observable.
+    lane = models.CharField(max_length=16, choices=Lane.choices, blank=True, default="")
     # #2009 repair-loop budget: 1-based attempt number for this attempt's
     # (ticket, normalized-phase), spanning re-queued Task rows. Auto-stamped on
     # insert; 0 only on a transient unsaved instance.
@@ -88,6 +105,27 @@ class TaskAttempt(models.Model):
         if self._state.adding:
             self._stamp_repair_loop_fields()
         super().save(*args, **kwargs)  # type: ignore[arg-type]
+
+    @property
+    def effective_tokens(self) -> float | None:
+        """GitHub's ET formula for this attempt (souliane/teatree#657): ``m*(1*I + 0.1*C + 4*O)``.
+
+        ``None`` when no token counts were ever captured (the run never
+        reached a billed SDK turn) — mirrors ``cost_usd``'s null-when-uncaptured
+        contract rather than reporting a misleading 0.
+        """
+        if self.input_tokens is None and self.output_tokens is None and self.cache_read_tokens is None:
+            return None
+        AttemptUsage = cast("type[AttemptUsage]", get("cost", "AttemptUsage"))  # noqa: N806
+        return AttemptUsage(
+            model=self.model or None,
+            reported_cost_usd=self.cost_usd,
+            input_tokens=self.input_tokens or 0,
+            output_tokens=self.output_tokens or 0,
+            cache_read_tokens=self.cache_read_tokens or 0,
+            cache_write_tokens=self.cache_write_tokens or 0,
+            lane=self.lane,
+        ).effective_tokens
 
     def _stamp_repair_loop_fields(self) -> None:
         """Stamp the iteration counter + error fingerprint on insert (#2009).

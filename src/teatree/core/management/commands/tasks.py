@@ -289,7 +289,11 @@ class Command(TyperCommand):
             )
             raise SystemExit(1)
 
-        attempt = record_result_envelope(task, result, usage=AttemptUsage(agent_session_id=agent_session_id))
+        # souliane/teatree#657: an in-session sub-agent runs inside the user's
+        # own Claude Code session — always the Max subscription seat, never
+        # metered (see ``TaskAttemptQuerySet.headless()``'s billing contract).
+        usage = AttemptUsage(agent_session_id=agent_session_id, lane=TaskAttempt.Lane.SUBSCRIPTION)
+        attempt = record_result_envelope(task, result, usage=usage)
         task.refresh_from_db()
         self.stdout.write(f"Recorded attempt {attempt.pk} for task {task_id} (task now '{task.status}').")
 
