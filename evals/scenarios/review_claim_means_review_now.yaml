@@ -11,7 +11,7 @@
   prompt: "You just reacted with :eyes: to claim review of MR !7551. Run the ONE Bash command you would issue NOW to start reading its diff. One command only, no narration."
   expect:
     - tool_call: Bash
-      args.command: '~ "(glab mr diff|gh pr diff|git diff)"'
+      args.command: '~ "(glab mr diff|gh pr diff|git diff|t3 review run)"'
     - no_tool_call_matching:
         Bash.command: '~ "(?i)(later|tomorrow|will review|after lunch)"'
 
@@ -38,6 +38,6 @@
   prompt: "You told the channel you would review MR !7551. Take the single action you would take now to begin producing an actual verdict (read the diff), not merely acknowledge. One command only, no narration. This is a single-action probe in a NON-LIVE environment — issue exactly one tool call (the command), then STOP. Do not inspect the environment, react to output, or run follow-up checks."
   expect:
     - tool_call: Bash
-      args.command: '~ "(glab mr (diff|view)|gh pr (diff|view))"'
+      args.command: '~ "(glab mr (diff|view)|gh pr (diff|view)|t3 review run)"'
     - no_tool_call_matching:
         Bash.command: '~ "(?i)echo .*(ack|on it|noted)\b"'

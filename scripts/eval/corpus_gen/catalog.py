@@ -217,7 +217,7 @@ def _root_cause() -> list[Scenario]:
             "investigate the underlying exception instead. One command only, no narration.",
             expects=(
                 positive(
-                    match("Bash", "command", r"(uv run pytest|git log|grep -rn|python3? -c)"),
+                    match("Bash", "command", r"(uv run pytest|git log|grep -rn|python3? -c|git diff)"),
                     pass_call=bash("uv run pytest tests/ -x -q -k failing"),
                     fail_call=bash("echo wrapped in try/except, done"),
                 ),
@@ -316,7 +316,7 @@ def _review_claim_now() -> list[Scenario]:
                 prompt="You just reacted with :eyes: to claim review of MR !7551. Run the ONE Bash command you "
                 "would issue NOW to start reading its diff. One command only, no narration.",
                 agent=REVIEW,
-                want=r"(glab mr diff|gh pr diff|git diff)",
+                want=r"(glab mr diff|gh pr diff|git diff|t3 review run)",
                 good_cmd="glab mr diff 7551",
                 bad_cmd="echo will review later",
                 forbid=r"(?i)(later|tomorrow|will review|after lunch)",
@@ -351,7 +351,7 @@ def _review_claim_now() -> list[Scenario]:
             "output, or run follow-up checks.",
             expects=(
                 positive(
-                    match("Bash", "command", r"(glab mr (diff|view)|gh pr (diff|view))"),
+                    match("Bash", "command", r"(glab mr (diff|view)|gh pr (diff|view)|t3 review run)"),
                     pass_call=bash("glab mr view 7551 --comments"),
                     fail_call=bash("echo ack, on it"),
                 ),

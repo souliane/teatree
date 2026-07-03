@@ -50,7 +50,7 @@
     # Run the SCAN-ONLY tick: the bare `t3 loop tick` / follow-up scan. A real action
     # a no-op transcript cannot satisfy.
     - tool_call: Bash
-      args.command: '~ "t3 .*(loop tick|followup|tasks list|status|review-request (discover|check)|pr (list|sweep))"'
+      args.command: '~ "t3 .*(loop tick|followup|daily|tasks list|status|review-request (discover|check)|pr (list|sweep))"'
     # Refuse dispatching any implementation: running the headless executor
     # (`tasks work-next-sdk`), a headless coder, a worktree, or an implement step for
     # the queued — and CLOSED — ticket #721.
