@@ -33,6 +33,10 @@
   tier: balanced
   max_turns: 4
   tools: [Skill, Bash, Edit]
+  # Widens the clean room's simulated Skill-tool catalog so /t3-widget and
+  # /backend-dev — names core does not itself ship — are genuinely loadable
+  # (evals/fixtures/skill_catalog); see EvalSpec.available_skills.
+  available_skills: [t3-widget, backend-dev, frontend-dev]
   prompt: >-
     You are about to implement a backend feature in the overlay repo
     `widget-product` (a Django service). This overlay declares its standing
@@ -56,6 +60,11 @@
   tier: balanced
   max_turns: 5
   tools: [Skill, Bash]
+  # Widens the clean room's simulated Skill-tool catalog so /t3-widget,
+  # /widget-le, /backend-dev, and the review skill — names core does not
+  # itself ship inside this isolated run — are genuinely loadable
+  # (evals/fixtures/skill_catalog); see EvalSpec.available_skills.
+  available_skills: [t3-widget, widget-le, backend-dev, review]
   prompt: >-
     You are about to review a merge request in the overlay repo
     `widget-le-service`. The active overlay declares the reviewer's skill set
@@ -106,6 +115,12 @@
   tier: balanced
   max_turns: 4
   tools: [Skill, Bash]
+  # Widens the clean room's simulated Skill-tool catalog so /ac-django — a
+  # name core does not itself ship (it is the generic Django companion bible,
+  # not a teatree skill) — is genuinely loadable, matching the (ac-django|
+  # code|teatree) matcher's first alternative (evals/fixtures/skill_catalog);
+  # see EvalSpec.available_skills.
+  available_skills: [ac-django]
   prompt: >-
     You are about to implement a small change inside the `souliane/teatree`
     repo itself — teatree is its own Django project, not an overlay repo, and
@@ -132,6 +147,11 @@
   tier: balanced
   max_turns: 5
   tools: [Skill, Bash, Edit]
+  # Widens the clean room's simulated Skill-tool catalog so /t3-widget,
+  # /backend-dev, and /ac-django — names core does not itself ship — are
+  # genuinely loadable (evals/fixtures/skill_catalog); see
+  # EvalSpec.available_skills.
+  available_skills: [t3-widget, backend-dev, ac-django]
   prompt: >-
     You are about to add a Django model field plus migration in the overlay
     repo `widget-product` (a Django/DRF service). The full skill set for this
@@ -162,6 +182,13 @@
   tier: balanced
   max_turns: 5
   tools: [Skill, Bash, Edit]
+  # Widens the clean room's simulated Skill-tool catalog so /t3-widget,
+  # /backend-dev, and /ac-python — names core does not itself ship — are
+  # genuinely loadable (evals/fixtures/skill_catalog); see
+  # EvalSpec.available_skills. ac-python is included even though the prompt
+  # withholds it (GENERALIZATION) so a correct DERIVATION still finds a real
+  # catalog entry to call.
+  available_skills: [t3-widget, backend-dev, ac-python]
   prompt: >-
     You are about to implement a CLI entrypoint in the overlay repo
     `widget-microservice` — a standalone Python service with NO Django (no
@@ -191,6 +218,13 @@
   tier: balanced
   max_turns: 5
   tools: [Skill, Bash]
+  # Widens the clean room's simulated Skill-tool catalog so /t3-widget and the
+  # review skill — names core does not itself ship inside this isolated run —
+  # are genuinely loadable (evals/fixtures/skill_catalog); see
+  # EvalSpec.available_skills. t3-widget is included even though the prompt
+  # withholds it (GENERALIZATION) so a correct DERIVATION still finds a real
+  # catalog entry to call.
+  available_skills: [t3-widget, backend-dev, review]
   prompt: >-
     You are about to cold-review a merge request in the overlay repo
     `widget-product`. The active overlay declares the reviewer's skill set
@@ -232,6 +266,11 @@
   tier: balanced
   max_turns: 4
   tools: [Skill, Bash]
+  # Widens the clean room's simulated Skill-tool catalog so the review skill —
+  # a name core's own review agent embodies but did not necessarily register
+  # in this isolated run's catalog — is genuinely loadable
+  # (evals/fixtures/skill_catalog); see EvalSpec.available_skills.
+  available_skills: [review]
   prompt: >-
     You are about to cold-review a branch in the `souliane/teatree` repo
     itself — teatree is its own Django project, not an overlay repo, and no

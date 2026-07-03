@@ -1084,6 +1084,14 @@ its own, and reuses `backend-dev` / `frontend-dev` unchanged); the contract
 under test is identical. Grading inspects the agent's `Skill` tool calls
 (`input.skill`).
 
+Because these placeholder/companion names are not skills core itself ships, a
+scenario that needs the agent to actually ISSUE the `Skill` call (not just
+narrate it) must also widen the clean room's simulated catalog via
+`available_skills:` — see "Scenario shape" above. Without it the model's own
+"only invoke a listed skill name" refusal correctly declines to call one, which
+looks like a routing failure but is really a catalog gap
+(`evals/fixtures/skill_catalog` is the fixture plugin that closes it).
+
 #### Coverage matrix
 
 The user's requirement is that **every** phase load the right skill set —
@@ -1260,6 +1268,20 @@ Fields:
   removing the tool it guards. Without this, a scenario declaring `tools: [Write]`
   still saw `Bash`/`Read`/etc. and could explore until `max_turns` (a false FAIL
   even when every matcher passed).
+- `available_skills` — optional list of skill names that WIDEN the clean
+  room's simulated Skill-tool catalog on top of whatever the CLI discovers on
+  its own. Absent (the default) leaves `ClaudeAgentOptions.skills`/`plugins`
+  untouched, so a scenario declaring none is byte-identical to before this
+  field existed. A scenario whose prompt references a skill name core does
+  not itself ship — a placeholder overlay's workspace/legal-entity skill
+  (`t3-widget`, `widget-le`), a companion language bible (`ac-django`,
+  `ac-python`), or the review skill named without a leading slash (`review`)
+  — declares the referenced names here; the runner registers the eval-only
+  fixture plugin (`evals/fixtures/skill_catalog`) and lists exactly this set.
+  The agent's own "only invoke a name in the available list, or one the user
+  explicitly typed" refusal rule stays intact — this widens what is listed,
+  it never bypasses the rule. See `teatree.eval.api_runner.build_sdk_options`
+  and `teatree.eval.models.EvalSpec.available_skills`.
 - `expect` — list of matchers (see below); required unless a `judge` block is
   present (a judge-only scenario may omit it).
 - `judge` — optional LLM-judge block (`rubric`, optional `model`, optional

@@ -45,7 +45,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions, Message, query
-from claude_agent_sdk.types import EffortLevel
+from claude_agent_sdk.types import EffortLevel, SdkPluginConfig
 
 from teatree.eval.api_errors import (
     BUDGET_EXCEEDED_REASON,
@@ -203,6 +203,20 @@ MAX_BUDGET_USD = "0.10"
 FALLBACK_MODEL = "claude-sonnet-5"
 EMPTY_SETTINGS = '{"hooks":{}}'
 
+#: Local-plugin path (relative to the teatree repo root) for the eval-only
+#: skill-catalog fixture: synthetic ``SKILL.md`` stand-ins for names a
+#: skill-routing scenario's prompt references that core does not itself ship —
+#: a placeholder overlay's workspace/legal-entity skill, a companion language
+#: bible, the review skill named without a leading slash. Registered ONLY for a
+#: scenario that declares ``EvalSpec.available_skills`` (see
+#: :func:`_skill_catalog_fixture_plugin`); every scenario that declares none
+#: never loads it, so the isolation guarantee (no personal/project context bias)
+#: is unchanged for the existing catalog. It carries no ``hooks.json`` of its
+#: own, so loading it cannot resurrect the ``UserPromptSubmit`` skill-suggestion
+#: hook the ``settings=EMPTY_SETTINGS`` isolation already suppresses — the exact
+#: hook these scenarios' prompts say "did not fire" to force a genuine self-load.
+_SKILL_CATALOG_FIXTURE_RELATIVE_PATH = ("evals", "fixtures", "skill_catalog")
+
 #: Typed alias callers may ``raise``/``except`` against. The SDK raises a bare
 #: ``Exception`` for the budget breaker, so the runner ALSO matches the message
 #: substring — this alias only types the direct-raise path, never narrows it.
@@ -286,6 +300,28 @@ class CleanRoomConfig:
     #: subagent for a scenario whose toolset exposes the spawn tool
     #: (:func:`scenario_exposes_subagent_spawn`).
     agents: dict[str, AgentDefinition] | None = None
+    #: Skill names to widen the simulated Skill-tool catalog with (the SDK's
+    #: ``skills`` context filter), sourced from ``EvalSpec.available_skills``.
+    #: Empty (the default) leaves ``ClaudeAgentOptions.skills``/``plugins`` at
+    #: their untouched defaults, so a scenario declaring none is byte-identical
+    #: to before this field existed — this is a WIDENING lever, never a
+    #: narrowing one. Non-empty registers the eval-only fixture plugin
+    #: (:data:`_SKILL_CATALOG_FIXTURE_RELATIVE_PATH`) so the named skills are
+    #: genuinely discoverable, then filters the listing to exactly this set.
+    skills: tuple[str, ...] = ()
+
+
+def _skill_catalog_fixture_plugin() -> SdkPluginConfig:
+    """The local-plugin config for the eval-only skill-catalog fixture.
+
+    Resolved against :func:`_teatree_root`, not the process cwd, so it resolves
+    correctly whether the eval CLI runs from teatree's own root or a scenario's
+    isolated temp dir (the sub-agent-spawning lane's ephemeral checkout never
+    reaches this — none of the ``available_skills``-declaring scenarios expose
+    the ``Agent`` spawn tool).
+    """
+    path = _teatree_root().joinpath(*_SKILL_CATALOG_FIXTURE_RELATIVE_PATH)
+    return {"type": "local", "path": str(path)}
 
 
 def build_sdk_options(config: CleanRoomConfig) -> ClaudeAgentOptions:
@@ -315,6 +351,13 @@ def build_sdk_options(config: CleanRoomConfig) -> ClaudeAgentOptions:
     spawn tool genuinely usable: a delegation scenario exposes ``Agent`` in its
     allowlist AND ships a sub-agent definition, mirroring how the real agent gets
     its sub-agents. ``None`` (the default) is the judge/non-delegation shape.
+
+    ``skills``/``plugins`` widen the simulated Skill-tool catalog for a scenario
+    that declares ``config.skills`` (threaded from ``EvalSpec.available_skills``):
+    the eval-only fixture plugin is registered and the listing filtered to
+    exactly the declared names. Empty ``config.skills`` (the default) renders
+    ``skills=None`` and ``plugins=[]`` — the SDK's own untouched defaults, so a
+    scenario declaring none is byte-identical to before this lever existed.
     """
     available = list(config.available_tools) if config.available_tools else None
     return ClaudeAgentOptions(
@@ -335,6 +378,8 @@ def build_sdk_options(config: CleanRoomConfig) -> ClaudeAgentOptions:
         model=config.model,
         fallback_model=FALLBACK_MODEL,
         effort=config.effort,
+        skills=list(config.skills) if config.skills else None,
+        plugins=[_skill_catalog_fixture_plugin()] if config.skills else [],
     )
 
 
@@ -503,6 +548,7 @@ class ApiInProcessRunner:
                     max_turns=max_turns,
                     effort=effort,
                     max_budget_usd=max_budget_usd,
+                    skills=spec.available_skills,
                 )
             )
             return await asyncio.wait_for(_collect(build_user_prompt(spec), options), timeout=watchdog)

@@ -84,6 +84,7 @@ def _parse_spec(entry: object, path: Path, default_agent_path: str | None) -> Ev
     max_turns = _parse_max_turns(spec_map, name, path)
     tools = _parse_tools(spec_map, name, path)
     agent_sections = _parse_agent_sections(spec_map, name, path)
+    available_skills = _parse_available_skills(spec_map, name, path)
     return EvalSpec(
         name=name,
         scenario=scenario,
@@ -103,6 +104,7 @@ def _parse_spec(entry: object, path: Path, default_agent_path: str | None) -> Ev
         context_preamble=str(spec_map.get("context_preamble") or ""),
         max_budget_usd=_parse_positive_float(spec_map, "max_budget_usd", name, path),
         watchdog_seconds=_parse_positive_float(spec_map, "watchdog_seconds", name, path),
+        available_skills=available_skills,
     )
 
 
@@ -206,6 +208,24 @@ def _parse_agent_sections(entry: Mapping[str, Any], spec_name: str, path: Path) 
     if not isinstance(raw, list) or not raw or not all(isinstance(s, str) and s.strip() for s in raw):
         raise EvalSpecError(
             path, None, f"spec {spec_name!r}: `agent_sections` must be a non-empty list of section-heading strings"
+        )
+    return tuple(raw)
+
+
+def _parse_available_skills(entry: Mapping[str, Any], spec_name: str, path: Path) -> tuple[str, ...]:
+    """Parse the optional ``available_skills`` catalog-widening list, or ``()``.
+
+    Mirrors :func:`_parse_agent_sections`: absent means "widen nothing" (every
+    existing scenario is unaffected), present must be a non-empty list of
+    non-blank strings — a fat-fingered empty list is a spec error, not a silent
+    no-op, since an author who wrote the key meant to widen the catalog.
+    """
+    raw = entry.get("available_skills")
+    if raw is None:
+        return ()
+    if not isinstance(raw, list) or not raw or not all(isinstance(s, str) and s.strip() for s in raw):
+        raise EvalSpecError(
+            path, None, f"spec {spec_name!r}: `available_skills` must be a non-empty list of skill-name strings"
         )
     return tuple(raw)
 
