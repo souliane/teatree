@@ -7,6 +7,7 @@ graph TD
     teatree.credential_config --> teatree.config
     teatree.credential_config --> teatree.core.models
     teatree.credential_config --> teatree.llm
+    teatree.credential_config --> teatree.utils
     teatree.token_report --> teatree.core.models
     teatree.token_report --> teatree.credential_config
     teatree.token_report --> teatree.llm

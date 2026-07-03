@@ -54,6 +54,7 @@ from teatree.llm.rate_limits import (
     read_api_key_status,
     read_rate_limits,
 )
+from teatree.utils.eval_container import in_container
 
 if TYPE_CHECKING:
     from teatree.config.enums import EvalCredential
@@ -251,12 +252,30 @@ _SELECTOR = PassPathSelector()
 
 
 def resolve_subscription_credential(*, scope: str = GLOBAL_SCOPE) -> AnthropicSubscriptionCredential:
-    """The subscription OAuth credential, routed to its selected account's ``pass`` entry."""
+    """The subscription OAuth credential, routed to its selected account's ``pass`` entry.
+
+    Inside the ephemeral eval container (:func:`~teatree.utils.eval_container.in_container`),
+    the per-account DB routing is short-circuited: the HOST already selected an
+    account and forwarded its resolved ``CLAUDE_CODE_OAUTH_TOKEN`` via ``docker
+    run -e`` (see ``teatree.cli.eval.docker``), so the credential's own
+    env-then-``pass`` resolution picks that up with no DB read — the container's
+    SQLite has zero tables (never migrated), so a DB query there is a guaranteed
+    ``OperationalError``, not a degraded-but-safe read.
+    """
+    if in_container():
+        return AnthropicSubscriptionCredential()
     return AnthropicSubscriptionCredential(pass_path_override=_SELECTOR.select(TokenKind.OAUTH, scope))
 
 
 def resolve_api_key_credential(*, scope: str = GLOBAL_SCOPE) -> AnthropicApiKeyCredential:
-    """The metered API-key credential, routed to its selected account's ``pass`` entry."""
+    """The metered API-key credential, routed to its selected account's ``pass`` entry.
+
+    Inside the ephemeral eval container, the per-account DB routing is
+    short-circuited the same way as :func:`resolve_subscription_credential` —
+    the HOST-forwarded ``ANTHROPIC_API_KEY`` env var is reused instead.
+    """
+    if in_container():
+        return AnthropicApiKeyCredential()
     return AnthropicApiKeyCredential(pass_path_override=_SELECTOR.select(TokenKind.API_KEY, scope))
 
 
