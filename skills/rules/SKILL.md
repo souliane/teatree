@@ -422,7 +422,16 @@ The gate is **satisfiable, not pure suppression**. The teatree code paths consul
 
 ## Never Post PR Comments from Parallel Agents (Non-Negotiable)
 
-MR/PR comment posting (test plans, evidence, review notes) must be **serialized** — never dispatch two parallel agents that both post comments on PRs. Parallel agents cannot check for each other's posts, resulting in duplicate comments. Post all PR comments from the main conversation thread, or serialize agent tasks so only one posts at a time.
+MR/PR comment posting (test plans, evidence, review notes) must be **serialized** — never dispatch two parallel agents that both post comments on PRs. Parallel agents cannot check for each other's posts, resulting in duplicate comments.
+
+**Serialized means one poster at a time — it does NOT mean the main agent posts directly (do X, never Y).** "Serialize" governs ordering, not who acts. The main/orchestrating agent is never the poster itself: per § "DISPATCH IMMEDIATELY — the orchestrate-only boundary" below, a colleague-visible publish (`t3 review post-comment`, `post-draft-note`, a test-plan or evidence comment) is dispatched to a single sub-agent, exactly like a code edit — the boundary is about WHO touches a colleague-facing surface, not about the call being short enough to "just do it here." Serialize by dispatching one sub-agent, collecting its result, then dispatching the next — never by having the main agent shortcut the dispatch and run the posting command itself in the foreground.
+
+```python
+# do X — dispatch the single posting action to a sub-agent, then stop:
+Task(description="Post review finding", prompt="Post an inline `t3 review post-comment` on my-org/my-repo!4120, src/teatree/core/sweep.py line 88: <finding text>. Report the comment URL.")
+# never Y — the main agent runs the posting command itself because it's short/serialized:
+# Bash(command="t3 review post-comment my-org/my-repo 4120 '<finding>' --file src/teatree/core/sweep.py --line 88")   # FORBIDDEN in the main agent
+```
 
 ## Evidence Comes From the Deployed Environment (Non-Negotiable)
 
@@ -758,6 +767,8 @@ Task(description="Fix get_active_session", prompt="In a fresh worktree off origi
 # never Y — the orchestrator edits production code itself because the fix is "small" / "urgent":
 # Edit(file_path="src/teatree/core/session.py", ...)   # FORBIDDEN in the main agent — size/urgency is no exemption
 ```
+
+**Publishing a colleague-visible artifact is in scope too, regardless of how fast the call itself runs.** Posting an MR/PR/issue comment, a review finding, or evidence is a one-shot CLI call that finishes in under a second — but the boundary is about WHO acts on a colleague-facing surface, not about call duration. Dispatch it the same way as a code edit; see § "Never Post PR Comments from Parallel Agents" above for the worked `t3 review post-comment` example.
 
 1. **Dispatch the unit to a `Task` (or `Agent`) sub-agent in this same turn.** The prompt fully describes the bounded unit of work in plain language — the file/subsystem, the bug, the expected outcome. Do this even when you don't yet know the exact shell command (the `Task` path needs no shell invocation up front).
 2. **Never run the long unit yourself in the foreground.** Do NOT `grep -r … src`, `rg … src`, `find … -name`, open-and-`Edit` the `.py` file, or `Write` the `test_*.py` yourself when the unit is delegable — the orchestrator stays thin.
