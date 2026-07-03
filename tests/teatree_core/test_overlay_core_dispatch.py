@@ -150,6 +150,77 @@ class TestTicketGroupCoreDispatch:
         assert "merge" in cmd
 
 
+class TestPrGroupCoreDispatch:
+    """``pr create`` routes through ``python -m teatree`` (core), not the overlay manage.py.
+
+    ``pr`` subcommands live in ``teatree.core.management.commands.pr`` —
+    teatree CORE — and ``create`` gate-validates against the teatree-core
+    control DB the shipping gate reads
+    (``teatree.core.db_anchor.assert_lifecycle_db_is_canonical``). Without the
+    ``core_dispatch`` marker, the overlay project-path resolver prefers any
+    ``manage.py`` discovered from the invoking cwd — from inside a ticket
+    worktree that is the worktree's OWN ``manage.py``, running against its
+    per-worktree auto-isolated DB the gate never consults
+    (souliane/teatree#2925, the same #126 class as ``db migrate``/``db approve``).
+    """
+
+    def test_pr_group_is_marked_core_dispatch(self) -> None:
+        """``DJANGO_GROUPS['pr']`` carries the ``core_dispatch`` marker."""
+        entry = DJANGO_GROUPS["pr"]
+        assert getattr(entry, "core_dispatch", False) is True, (
+            f"pr group must opt into core dispatch (#2925) — its create command reads/writes "
+            f"the teatree-core control DB, not an overlay manage.py, got {entry!r}"
+        )
+
+    def test_pr_create_uses_core_dispatch(self, overlay_clone_path: Path) -> None:
+        """``t3 <overlay> pr create`` must dispatch to core, never the overlay manage.py."""
+        runner = CliRunner()
+        app = _build_overlay_app(overlay_clone_path)
+        with patch("teatree.cli.overlay.run_streamed") as run_streamed:
+            result = runner.invoke(app, ["pr", "create", "15"])
+        assert result.exit_code == 0, result.output
+        assert run_streamed.called
+        cmd = run_streamed.call_args.args[0]
+        assert "-m" in cmd, f"pr create must dispatch via python -m teatree, got {cmd!r}"
+        assert "teatree" in cmd, f"pr create must dispatch via python -m teatree, got {cmd!r}"
+        assert "manage.py" not in " ".join(cmd), f"pr create must NOT route through manage.py, got {cmd!r}"
+        assert "pr" in cmd
+        assert "create" in cmd
+
+
+class TestLifecycleGroupCoreDispatch:
+    """``lifecycle visit-phase`` routes through ``python -m teatree`` (core), not the overlay manage.py.
+
+    ``lifecycle`` subcommands live in ``teatree.core.management.commands.lifecycle``
+    — teatree CORE — and every one of them records a phase attestation against
+    the teatree-core control DB the shipping gate reads via
+    ``assert_lifecycle_db_is_canonical``. Same #2925 reasoning as ``pr`` above.
+    """
+
+    def test_lifecycle_group_is_marked_core_dispatch(self) -> None:
+        """``DJANGO_GROUPS['lifecycle']`` carries the ``core_dispatch`` marker."""
+        entry = DJANGO_GROUPS["lifecycle"]
+        assert getattr(entry, "core_dispatch", False) is True, (
+            f"lifecycle group must opt into core dispatch (#2925) — its subcommands record "
+            f"phase attestations against the teatree-core control DB, got {entry!r}"
+        )
+
+    def test_lifecycle_visit_phase_uses_core_dispatch(self, overlay_clone_path: Path) -> None:
+        """``t3 <overlay> lifecycle visit-phase`` must dispatch to core, never the overlay manage.py."""
+        runner = CliRunner()
+        app = _build_overlay_app(overlay_clone_path)
+        with patch("teatree.cli.overlay.run_streamed") as run_streamed:
+            result = runner.invoke(app, ["lifecycle", "visit-phase", "15", "testing"])
+        assert result.exit_code == 0, result.output
+        assert run_streamed.called
+        cmd = run_streamed.call_args.args[0]
+        assert "-m" in cmd, f"lifecycle visit-phase must dispatch via python -m teatree, got {cmd!r}"
+        assert "teatree" in cmd, f"lifecycle visit-phase must dispatch via python -m teatree, got {cmd!r}"
+        assert "manage.py" not in " ".join(cmd), f"lifecycle visit-phase must NOT route through manage.py, got {cmd!r}"
+        assert "lifecycle" in cmd
+        assert "visit-phase" in cmd
+
+
 class TestDbMigrateCoreDispatch:
     """``db migrate`` routes through ``python -m teatree`` (core); siblings do not.
 
