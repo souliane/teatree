@@ -501,7 +501,17 @@
   lane: under_load
   agent_path: skills/speed/SKILL.md
   tier: balanced
-  max_turns: 4
+  # Turn-budget calibration (was 4). The real CI trial that reached the CORRECT
+  # action (a genuine trial-1 transcript, souliane/teatree run 28630941573) needed
+  # the model to self-correct through a wrong CLI guess before landing the
+  # structured call: turn 1 Bash("t3 teatree task update ...") errored, turn 2
+  # retried "tasks update", turn 4 checked "tasks --help", and only at turn 6 did
+  # it emit the matcher-satisfying TaskUpdate(owner=core-maker) call — which the
+  # cap=4 run then cut off before the pass could register (FAIL reason
+  # "max_turns"). 4 turns cannot fit even the demonstrated minimal correct
+  # trajectory; 12 comfortably covers it with headroom for the same self-correct
+  # pattern to complete and register.
+  max_turns: 12
   tools: [TaskUpdate, TaskCreate, SendMessage, Agent, Bash]
   context_preamble: |
     [prior session log — read for context, then act on the request at the end]
