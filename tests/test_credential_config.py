@@ -16,6 +16,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from django.db.utils import OperationalError
 from django.test import TestCase
 from django.utils import timezone
 
@@ -34,6 +35,7 @@ from teatree.credential_config import (
 )
 from teatree.llm.credentials import AnthropicApiKeyCredential, AnthropicSubscriptionCredential
 from teatree.llm.rate_limits import MeteredKeySnapshot, RateLimitProbeError, RateLimitSnapshot
+from teatree.utils.eval_container import IN_CONTAINER_ENV_VAR
 
 _OAUTH_BUILTIN = "anthropic/oauth-token"
 _API_KEY_BUILTIN = "anthropic/api-key"
@@ -332,6 +334,56 @@ class TestFactoryWiring(TestCase):
     def test_resolvers_return_the_expected_credential_classes(self) -> None:
         assert isinstance(resolve_api_key_credential(), AnthropicApiKeyCredential)
         assert isinstance(resolve_subscription_credential(), AnthropicSubscriptionCredential)
+
+
+class TestInContainerNeverTouchesConfigSetting(TestCase):
+    """Per-account routing must never touch ``ConfigSetting`` in-container.
+
+    Inside the ephemeral eval Docker container the SQLite DB has zero tables
+    (never migrated) — a live ``ConfigSetting`` read there is a guaranteed
+    crash, not a degraded path. ``docker.py`` already forwards the HOST's
+    selected credential env var into the container (its own docstring states
+    the intent), so the factory must reuse that env-var passthrough instead of
+    re-running the per-account routing selector against a DB that structurally
+    cannot exist in-container.
+    """
+
+    @contextmanager
+    def _in_container(self, **extra_env: str) -> Iterator[None]:
+        # A DB read that would raise exactly CI's crash ("no such table:
+        # teatree_config_setting") proves the short-circuit never reaches it —
+        # a raise here means the fix regressed, not that the DB was "empty".
+        db_has_no_tables = OperationalError("no such table: teatree_config_setting")
+        with (
+            patch.dict(os.environ, {IN_CONTAINER_ENV_VAR: "1", **extra_env}),
+            patch("teatree.credential_config.ConfigSetting.objects.get_effective", side_effect=db_has_no_tables),
+        ):
+            yield
+
+    def test_subscription_resolver_never_touches_configsetting_in_container(self) -> None:
+        with self._in_container(CLAUDE_CODE_OAUTH_TOKEN="host-forwarded-oauth-token"):
+            credential = resolve_subscription_credential()
+            assert isinstance(credential, AnthropicSubscriptionCredential)
+            assert credential.resolve() == "host-forwarded-oauth-token", "the host-forwarded env var must win"
+
+    def test_api_key_resolver_never_touches_configsetting_in_container(self) -> None:
+        with self._in_container(ANTHROPIC_API_KEY="host-forwarded-api-key"):
+            credential = resolve_api_key_credential()
+            assert isinstance(credential, AnthropicApiKeyCredential)
+            assert credential.resolve() == "host-forwarded-api-key"
+
+    def test_outside_the_container_the_selector_still_runs_and_would_crash(self) -> None:
+        # Control: WITHOUT the in-container marker, the same "no such table" DB
+        # failure surfaces — proving the short-circuit above is container-gated,
+        # not an accidental universal bypass of the selector.
+        db_has_no_tables = OperationalError("no such table: teatree_config_setting")
+        ConfigSetting.objects.set_value(_OAUTH_SETTING, ["anthropic/a/oauth"])
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("teatree.credential_config.ConfigSetting.objects.get_effective", side_effect=db_has_no_tables),
+            pytest.raises(OperationalError),
+        ):
+            resolve_subscription_credential()
 
 
 class TestResolveEvalCredential(TestCase):

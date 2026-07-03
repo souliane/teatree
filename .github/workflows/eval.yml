@@ -430,16 +430,19 @@ jobs:
           if-no-files-found: warn
 
   # PUBLISH: merge every shard's sanitized summary into ONE public dashboard and
-  # commit it to main. `needs: [prepare, eval]` + `if: always() && run_eval == 'true'`
-  # so it still runs when a shard went red (a red dashboard is worth publishing) but is
-  # SKIPPED when prepare gated the eval out — otherwise it would download zero summaries
-  # and commit a zero-row dashboard over the real one. It downloads only
-  # the `eval-summary-*` artifacts (NEVER the private transcripts), merges them via
-  # scripts/eval/merge_summaries.py into docs/evals/index.md, writes the same
-  # content to $GITHUB_STEP_SUMMARY, and — when the file changed — commits + pushes
-  # to main as github-actions[bot]. The push triggers docs.yml, which builds the
-  # site and serves the dashboard on GitHub Pages. The unchanged-file guard makes a
-  # no-diff run a clean no-op (no empty commit).
+  # open a PR carrying it against main. `needs: [prepare, eval]` + `if: always() &&
+  # run_eval == 'true'` so it still runs when a shard went red (a red dashboard is
+  # worth publishing) but is SKIPPED when prepare gated the eval out — otherwise it
+  # would download zero summaries and commit a zero-row dashboard over the real one.
+  # It downloads only the `eval-summary-*` artifacts (NEVER the private transcripts),
+  # merges them via scripts/eval/merge_summaries.py into docs/evals/index.md, writes
+  # the same content to $GITHUB_STEP_SUMMARY, and — when the file changed — commits
+  # it on a dedicated branch and opens (or updates) a PR against main, mirroring the
+  # `uv-lock-upgrade.yml` weekly-refresh precedent: main's branch protection requires
+  # PRs + required status checks, so a direct `git push origin main` is rejected
+  # (GH013). The unchanged-file guard makes a no-diff run a clean no-op (no empty
+  # commit, no PR). Merging the PR triggers docs.yml, which builds the site and
+  # serves the dashboard on GitHub Pages.
   #
   # FAILURE NOTIFICATION: a red weekly run is surfaced by GitHub's NATIVE failed-run
   # email to the maintainer (no extra secret, no bot) — see the top-of-file note.
@@ -449,10 +452,14 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
           ref: main
+          # Full history so the PR branch can be force-pushed cleanly on reruns
+          # (mirrors uv-lock-upgrade.yml).
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
         with:
           enable-cache: true
@@ -481,17 +488,36 @@ jobs:
             --run-url "$RUN_URL" --sha "$SHA" --generated-at "$GENERATED_AT" \
             --out docs/evals/index.md
           cat docs/evals/index.md >> "$GITHUB_STEP_SUMMARY"
-      # Commit + push the dashboard ONLY when it changed (an unchanged file is a
-      # clean no-op — no empty commit). The push to main triggers docs.yml, which
-      # serves the dashboard on Pages.
-      - name: Commit and push the dashboard when it changed
+      # Commit the dashboard ONLY when it changed (an unchanged file is a clean
+      # no-op — no empty commit, no PR) and open (or update) a PR against main —
+      # main's branch protection requires PRs + required status checks, so a direct
+      # `git push origin main` is rejected (GH013). Mirrors the `uv-lock-upgrade.yml`
+      # weekly-refresh precedent: a week-dated branch is force-pushed on reruns so
+      # repeated runs within the same week update ONE PR instead of piling up
+      # duplicates, and `gh pr view` before `gh pr create` keeps re-runs idempotent.
+      # This commit carries no judgment content (a mechanical merge of sanitized
+      # summaries), so it is left for the standing PR-sweep loop (or a human) to
+      # merge once CI is green — merging triggers docs.yml, which serves the
+      # dashboard on Pages.
+      - name: Commit the dashboard refresh and open (or update) a PR
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           if git diff --quiet -- docs/evals/index.md; then
             echo "Dashboard unchanged — nothing to commit."
-          else
-            git add docs/evals/index.md
-            git commit -m "docs(evals): refresh weekly behavioral-eval dashboard"
-            git push origin main
+            exit 0
+          fi
+          BRANCH="docs/eval-dashboard-refresh-$(date -u +%Y-%W)"
+          git checkout -B "$BRANCH"
+          git add docs/evals/index.md
+          git commit -m "docs(evals): refresh weekly behavioral-eval dashboard"
+          git push --force-with-lease origin "$BRANCH"
+          # Open a PR if one does not already exist for this branch.
+          if ! gh pr view "$BRANCH" --json number -q .number 2>/dev/null; then
+            gh pr create \
+              --title "docs(evals): refresh weekly behavioral-eval dashboard" \
+              --body "Automated dashboard refresh merging every shard's sanitized eval summary. No judgment content — merge when green." \
+              --base main
           fi

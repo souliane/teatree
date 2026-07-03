@@ -282,25 +282,33 @@ Also-covered blocker case: a repair-loop stall escalates the same way
 The interactive lane is unaffected — `park_for_user_input` branches on
 `agent_runtime` and schedules an in-session followup there (`task_handoff.py:30-31`).
 
-**The one new piece — cached resume.** Today `schedule_headless_resume` chains
-`parent_task` and `_get_resume_session_id` walks back to the captured
+**The one new piece — cached resume (#2886, done).** Today `schedule_headless_resume`
+chains `parent_task` and `_get_resume_session_id` walks back to the captured
 `TaskAttempt.agent_session_id` (`core/models/task_attempt.py:52-77`), so the
 Claude SDK *resumes that session* (`--resume`) and the agent continues from the
 decision point without re-sending context. **The provider-agnostic transport has
-no Claude session to resume**, so this cheap continuation must be re-homed in the
-harness:
+no Claude session to resume**, so this cheap continuation is re-homed in the
+harness (`teatree.agents.pydantic_ai_resume`):
 
-1. **Persist the parked thread.** On park, store the harness message history
-   (not just `agent_session_id`) durably keyed to the parked `Task` — the
-   `TaskAttempt` already carries the token / `cache_read_tokens` /
-   `cache_write_tokens` columns (`task_attempt.py:52-77`) to measure this.
-2. **Rehydrate on resume.** `schedule_headless_resume` reloads that thread and
-   appends the answer, rather than restarting from `execution_reason` prose alone.
-3. **Prompt-cache the stable prefix.** Send the rehydrated system prompt + tool
-   set + prior turns with the router's OpenAI-compatible prompt-cache markers so
-   the resumed turn reuses cached tokens instead of re-billing the prefix.
-   (Teatree has **no** `cache_control` usage today — this is greenfield, and the
-   `cache_read_tokens` / `cache_write_tokens` columns become the acceptance metric.)
+1. **Persist the parked thread.** On park (`needs_user_input`), the pydantic_ai
+   harness's `list[ModelMessage]` is dumped JSON-safe
+   (`ModelMessagesTypeAdapter.dump_python(..., mode="json")`) and stored durably
+   under `Ticket.extra["pydantic_ai_threads"]`, keyed by the parked `Task`'s own
+   pk — reusing the already-migrated `Ticket.extra` store (no migration), via the
+   locked `Ticket.merge_extra` read-modify-write. Single-use: a resume pops its
+   entry, so the map never accumulates stale threads.
+2. **Rehydrate on resume.** `resolve_harness(task)` walks `task.parent_task`
+   exactly like `_get_resume_session_id` (same ancestor, either backend) and
+   seeds the new `PydanticAiHarnessSession` with the rehydrated history before
+   `schedule_headless_resume`'s answer is appended.
+3. **Prompt-cache the stable prefix.** Resending the rehydrated history *is* the
+   whole mechanism — no manual `cache_control` markers are sent (prompt-cache
+   semantics differ per provider behind OrcaRouter's OpenAI-compatible surface,
+   and are opaque to teatree). A cache hit shows up as non-zero
+   `cache_read_tokens` on the resuming `TaskAttempt`; a miss simply re-pays the
+   context as ordinary input tokens. Fallback policy: **re-pay and log the cost,
+   never refuse** — a missing, malformed, or already-consumed thread degrades to
+   an empty history, never an exception.
 
 Resilience invariants (#1192, `skills/architecture-design/SKILL.md:83-93`) are all
 satisfied by existing pieces: **fallback-transport** = the durable

@@ -7,8 +7,9 @@ lanes spawn no agent and stay host-default.
 
 Two predicates break the re-route loop and gate the host escape:
 
-*   :func:`in_container` — the docker runner set ``T3_EVAL_IN_CONTAINER=1`` on the
-    container, so the in-container re-invocation runs the command in-process.
+*   :func:`~teatree.utils.eval_container.in_container` (re-exported here) — the
+    docker runner set ``T3_EVAL_IN_CONTAINER=1`` on the container, so the
+    in-container re-invocation runs the command in-process.
 *   :func:`should_route_to_docker` — a metered command runs in-process ONLY when
     it is already in the container OR ``--local`` was passed; otherwise it routes
     back through :func:`~teatree.cli.eval.docker.run_eval_in_docker`.
@@ -17,15 +18,11 @@ Two predicates break the re-route loop and gate the host escape:
 escape.
 """
 
-import os
 import sys
 
-from teatree.cli.eval.docker import IN_CONTAINER_ENV_VAR
+from teatree.utils.eval_container import IN_CONTAINER_ENV_VAR, in_container
 
-
-def in_container() -> bool:
-    """``True`` when the docker runner's ``T3_EVAL_IN_CONTAINER=1`` marker is set."""
-    return bool(os.environ.get(IN_CONTAINER_ENV_VAR))
+__all__ = ["IN_CONTAINER_ENV_VAR", "in_container", "should_route_to_docker", "warn_local_metered"]
 
 
 def should_route_to_docker(*, metered: bool, local: bool) -> bool:
