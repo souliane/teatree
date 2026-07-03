@@ -336,15 +336,21 @@ class MissingIssuePolicy(StrEnum):
 
 
 class AgentRuntime(StrEnum):
-    """How a loop-dispatched phase agent EXECUTES — the single runtime selector.
+    """WHICH LANE a loop-dispatched phase agent executes in — interactive vs headless.
 
     A loop-dispatched phase task is one whose ``(role, phase)`` has a registered
     phase sub-agent (``t3:coder`` / ``t3:reviewer`` / …, see
-    ``SUBAGENT_BY_PHASE``). This setting decides the ONE runtime such a task runs
-    in. :attr:`INTERACTIVE` is the in-session Agent-tool runner; the other three
-    are headless runners driven by ``agents/headless.py``. The four are mutually
-    exclusive — there is no valid "interactive + a headless credential" pair, so a
-    single enum (not two flags) is the honest shape.
+    ``SUBAGENT_BY_PHASE``). This setting decides ONLY the lane such a task runs
+    in. WHICH in-process transport a headless run rides, and WHICH
+    provider/credential that transport authenticates with, is the orthogonal
+    two-layer pair :class:`AgentHarness` (Layer 1) / :class:`AgentHarnessProvider`
+    (Layer 2) — [#2887](https://github.com/souliane/teatree/issues/2887) retired
+    the credential distinction this enum used to carry itself (the former
+    ``sdk_oauth`` / ``sdk_apikey`` / ``api`` members): conflating "which lane"
+    with "which credential" in one enum meant the two could never be set
+    independently, and the not-yet-implemented ``api`` member had no home once
+    the credential axis moved to Layer 2. A stored pre-#2887 value is collapsed
+    onto this shape by migration ``0015_agent_harness_two_layer_config``.
 
     Tiers (default :attr:`INTERACTIVE`, today's behaviour):
 
@@ -352,29 +358,21 @@ class AgentRuntime(StrEnum):
         task (``loop_dispatch claim-next``) and spawns the phase sub-agent via the
         ``Agent`` tool, in the live Claude Code session (subscription-covered,
         visible in the agent view). No behaviour change from before this setting.
-    *   :attr:`SDK_OAUTH` — headless ``run_headless`` (``claude-agent-sdk``
-        in-process: a full autonomous agent loop, not a one-shot prompt),
-        authenticated with the subscription OAuth token
-        (:class:`~teatree.llm.credentials.AnthropicSubscriptionCredential`,
-        ``CLAUDE_CODE_OAUTH_TOKEN``). Rides the plan, not metered.
-    *   :attr:`SDK_APIKEY` — the SAME ``run_headless`` harness, authenticated with
-        the metered API key
-        (:class:`~teatree.llm.credentials.AnthropicApiKeyCredential`,
-        ``ANTHROPIC_API_KEY``). Billed per token; no ``claude`` subscription draw.
-    *   :attr:`API` — a future runner over the raw Anthropic Messages API with its
-        own agent loop and tool runtime (no ``claude`` CLI dependency). Not yet
-        implemented — ``run_headless`` refuses it with a clear error.
+    *   :attr:`HEADLESS` — ``run_headless`` (``agents/headless.py``) drives an
+        in-process agent session behind the :class:`AgentHarness` transport seam.
+        The transport (``claude_sdk`` default | ``pydantic_ai``) is
+        :class:`AgentHarness`'s call; for ``claude_sdk`` the Anthropic credential
+        (subscription OAuth default | metered API key) is
+        :class:`AgentHarnessProvider`'s call.
 
     ``agent_runtime`` is a DB-home setting: opt in via ``t3 <overlay>
-    config_setting set agent_runtime sdk_oauth`` (per-overlay overridable with
+    config_setting set agent_runtime headless`` (per-overlay overridable with
     ``--overlay <name>``) or the ``T3_AGENT_RUNTIME`` environment variable — a
     ``[teatree] agent_runtime`` TOML value is ignored on read.
     """
 
     INTERACTIVE = "interactive"
-    SDK_OAUTH = "sdk_oauth"
-    SDK_APIKEY = "sdk_apikey"
-    API = "api"
+    HEADLESS = "headless"
 
     @classmethod
     def parse(cls, value: str) -> "AgentRuntime":
@@ -394,8 +392,8 @@ class AgentRuntime(StrEnum):
 
     @property
     def is_headless(self) -> bool:
-        """True for every runtime except :attr:`INTERACTIVE` (the headless lane)."""
-        return self is not AgentRuntime.INTERACTIVE
+        """True for :attr:`HEADLESS` — the sole non-interactive lane."""
+        return self is AgentRuntime.HEADLESS
 
 
 class AgentHarness(StrEnum):
@@ -445,6 +443,81 @@ class AgentHarness(StrEnum):
             valid = ", ".join(m.value for m in cls)
             msg = f"Invalid agent_harness {value!r}; valid values: {valid}"
             raise ValueError(msg) from exc
+
+
+class AgentHarnessProvider(StrEnum):
+    """Layer 2 of the two-layer harness config model — the provider/credential.
+
+    [#2887](https://github.com/souliane/teatree/issues/2887): the "single home"
+    for the provider/credential a headless run authenticates with, CONSTRAINED by
+    Layer 1 (:class:`AgentHarness`) via :meth:`valid_for`. Mirrors the resolution
+    table :class:`~teatree.llm.credentials.OrcaRouterCredential` already
+    documents in prose:
+
+    | Layer 1 (``agent_harness``) | Layer 2 (this enum)     | Credential                            |
+    |------------------------------|---------------------------|-----------------------------------------|
+    | ``claude_sdk``                | ``subscription_oauth``    | ``AnthropicSubscriptionCredential``     |
+    | ``claude_sdk``                | ``api_key``               | ``AnthropicApiKeyCredential``           |
+    | ``pydantic_ai``               | ``orca_router_byok``      | ``OrcaRouterCredential``                |
+
+    A Vertex AI Layer-2 provider under ``pydantic_ai`` is reserved but not yet
+    implemented (see ``OrcaRouterCredential``'s docstring), so it carries no enum
+    member yet — :meth:`valid_for` names only what is actually selectable today.
+
+    Tiers (default :attr:`SUBSCRIPTION_OAUTH`, today's ``claude_sdk`` behaviour):
+
+    *   :attr:`SUBSCRIPTION_OAUTH` (default) — the plan's OAuth token
+        (:class:`~teatree.llm.credentials.AnthropicSubscriptionCredential`).
+        Valid only under ``agent_harness=claude_sdk``.
+    *   :attr:`API_KEY` — the metered Anthropic API key
+        (:class:`~teatree.llm.credentials.AnthropicApiKeyCredential`).
+        Valid only under ``agent_harness=claude_sdk``.
+    *   :attr:`ORCA_ROUTER_BYOK` — OrcaRouter's BYOK metered key
+        (:class:`~teatree.llm.credentials.OrcaRouterCredential`).
+        Valid only under ``agent_harness=pydantic_ai`` — it is the ONLY Layer-2
+        provider a ``pydantic_ai`` run has today, so
+        :class:`~teatree.agents.harness.PydanticAiHarness` does not yet branch on
+        this setting (there is nothing else to pick); it ships wired for the
+        constraint table and a future Vertex binding, not yet as an active
+        branch.
+
+    ``agent_harness_provider`` is a DB-home setting: opt in via ``t3 <overlay>
+    config_setting set agent_harness_provider api_key`` (per-overlay overridable
+    with ``--overlay <name>``) or the ``T3_AGENT_HARNESS_PROVIDER`` environment
+    variable — a ``[teatree] agent_harness_provider`` TOML value is ignored on
+    read.
+    """
+
+    SUBSCRIPTION_OAUTH = "subscription_oauth"
+    API_KEY = "api_key"
+    ORCA_ROUTER_BYOK = "orca_router_byok"
+
+    @classmethod
+    def parse(cls, value: str) -> "AgentHarnessProvider":
+        """Parse an agent-harness-provider string; invalid values raise ``ValueError``.
+
+        Mirrors :meth:`Mode.parse`: the conservative default
+        (:attr:`SUBSCRIPTION_OAUTH`) is applied by the caller when the setting is
+        absent, so a typo never silently switches the credential.
+        """
+        normalised = value.strip().lower()
+        try:
+            return cls(normalised)
+        except ValueError as exc:
+            valid = ", ".join(m.value for m in cls)
+            msg = f"Invalid agent_harness_provider {value!r}; valid values: {valid}"
+            raise ValueError(msg) from exc
+
+    @classmethod
+    def valid_for(cls, harness: "AgentHarness") -> frozenset["AgentHarnessProvider"]:
+        """The Layer-2 providers CONSTRAINED-VALID under Layer-1 *harness*."""
+        return _VALID_PROVIDERS_BY_HARNESS[harness]
+
+
+_VALID_PROVIDERS_BY_HARNESS: dict[AgentHarness, frozenset[AgentHarnessProvider]] = {
+    AgentHarness.CLAUDE_SDK: frozenset({AgentHarnessProvider.SUBSCRIPTION_OAUTH, AgentHarnessProvider.API_KEY}),
+    AgentHarness.PYDANTIC_AI: frozenset({AgentHarnessProvider.ORCA_ROUTER_BYOK}),
+}
 
 
 class EvalCredential(StrEnum):

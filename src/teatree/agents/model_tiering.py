@@ -144,6 +144,44 @@ DEFAULT_PHASE_MODELS: dict[str, str] = {
 # without an active escalation these phases resolve exactly as today.
 VERIFICATION_PHASES: frozenset[str] = frozenset({"reviewing", "requesting_review", "testing"})
 
+# The Chinese-models allowlist (#2887, docs/design/autonomous-lane-redesign.md
+# § 3): substrings identifying a Chinese-origin model family reachable through
+# OrcaRouter's routing handle. Matched case-insensitively against a resolved
+# OrcaRouter model name in :func:`assert_chinese_model_allowed`. No shipped
+# :data:`TIER_MODELS` entry matches today (every tier is a Claude model), so the
+# check is currently a no-op for the shipped defaults — it exists for the day a
+# tier (or a ``phase_models`` / ``tier_models`` override) points at one of these.
+_CHINESE_MODEL_MARKERS: frozenset[str] = frozenset({"deepseek", "qwen", "glm"})
+
+
+def is_chinese_origin_model(model_id: str) -> bool:
+    """Whether *model_id* names a Chinese-origin model family (:data:`_CHINESE_MODEL_MARKERS`)."""
+    lowered = model_id.lower()
+    return any(marker in lowered for marker in _CHINESE_MODEL_MARKERS)
+
+
+def assert_chinese_model_allowed(model_id: str, *, chinese_models_allowed: bool | None = None) -> None:
+    """Raise ``ValueError`` when *model_id* is Chinese-origin and disallowed for the active overlay.
+
+    *chinese_models_allowed* is injectable for tests; the default reads the
+    resolved ``chinese_models_allowed`` DB-home setting (#2887) — ``True`` for
+    teatree's own default posture, overridden ``False`` per-overlay by an
+    overlay serving client work under a no-Chinese-models policy. A non-Chinese
+    *model_id*, or an allowed one, is a no-op.
+    """
+    allowed = (
+        chinese_models_allowed
+        if chinese_models_allowed is not None
+        else get_effective_settings().chinese_models_allowed
+    )
+    if not allowed and is_chinese_origin_model(model_id):
+        msg = (
+            f"model {model_id!r} is a Chinese-origin model but chinese_models_allowed is False "
+            "for the active overlay; set a non-Chinese tier/model or "
+            "`t3 <overlay> config_setting set chinese_models_allowed true --overlay <name>`"
+        )
+        raise ValueError(msg)
+
 
 def resolve_tier(tier: str, *, config_path: Path | None = None) -> str:
     """Resolve an abstract *tier* name to its concrete model id.

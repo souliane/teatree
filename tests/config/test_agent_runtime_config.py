@@ -1,11 +1,14 @@
-"""Config resolution for ``agent_runtime`` — the loop-dispatched phase runtime selector.
+"""Config resolution for ``agent_runtime`` — the loop-dispatched phase LANE selector.
 
 ``agent_runtime`` is DB-home: its sole authoritative tier is the ``ConfigSetting``
 store (+ the ``T3_AGENT_RUNTIME`` env). The resolver defaults to ``interactive``
-(today's behaviour) when no row is set, reads a stored headless runtime, lets the
+(today's behaviour) when no row is set, reads a stored ``headless`` lane, lets the
 env win over the store, and raises LOUD on a corrupt stored value so a silent
-runtime switch never lands. ``CONFIG_PATH`` is isolated so the real
-``~/.teatree.toml`` never leaks in.
+runtime switch never lands. Since #2887 this enum carries ONLY the lane
+(interactive vs headless) — the transport/credential axis lives in the two-layer
+pair ``agent_harness`` / ``agent_harness_provider`` (see
+``tests/teatree_config/test_agent_harness_provider_config.py``). ``CONFIG_PATH``
+is isolated so the real ``~/.teatree.toml`` never leaks in.
 """
 
 import os
@@ -29,32 +32,34 @@ class TestAgentRuntimeResolution(TestCase):
     def test_default_is_interactive_when_no_row(self) -> None:
         assert get_effective_settings().agent_runtime is AgentRuntime.INTERACTIVE
 
-    def test_stored_sdk_oauth(self) -> None:
-        ConfigSetting.objects.set_value("agent_runtime", "sdk_oauth")
-        assert get_effective_settings().agent_runtime is AgentRuntime.SDK_OAUTH
-
-    def test_stored_sdk_apikey(self) -> None:
-        ConfigSetting.objects.set_value("agent_runtime", "sdk_apikey")
-        assert get_effective_settings().agent_runtime is AgentRuntime.SDK_APIKEY
-
-    def test_stored_api(self) -> None:
-        ConfigSetting.objects.set_value("agent_runtime", "api")
-        assert get_effective_settings().agent_runtime is AgentRuntime.API
+    def test_stored_headless(self) -> None:
+        ConfigSetting.objects.set_value("agent_runtime", "headless")
+        assert get_effective_settings().agent_runtime is AgentRuntime.HEADLESS
 
     def test_env_wins_over_store(self) -> None:
         ConfigSetting.objects.set_value("agent_runtime", "interactive")
-        with patch.dict(os.environ, {"T3_AGENT_RUNTIME": "sdk_apikey"}):
-            assert get_effective_settings().agent_runtime is AgentRuntime.SDK_APIKEY
+        with patch.dict(os.environ, {"T3_AGENT_RUNTIME": "headless"}):
+            assert get_effective_settings().agent_runtime is AgentRuntime.HEADLESS
 
     def test_corrupt_stored_value_raises(self) -> None:
         ConfigSetting.objects.set_value("agent_runtime", "headfull")
         with pytest.raises(ValueError, match="agent_runtime"):
             get_effective_settings()
 
+    def test_pre_2887_sdk_oauth_value_raises_before_migration(self) -> None:
+        # #2887 retired the credential-conflated values (sdk_oauth / sdk_apikey /
+        # api). A row stored before the change is collapsed by migration
+        # 0015_agent_harness_two_layer_config — this pins that an UN-migrated row
+        # is a corrupt value, never a silent misread, so the migration is load-
+        # bearing rather than cosmetic.
+        ConfigSetting.objects.set_value("agent_runtime", "sdk_oauth")
+        with pytest.raises(ValueError, match="agent_runtime"):
+            get_effective_settings()
+
 
 class TestAgentRuntimeParse:
     def test_parses_canonical_and_normalises(self) -> None:
-        assert AgentRuntime.parse("sdk_oauth") is AgentRuntime.SDK_OAUTH
+        assert AgentRuntime.parse("headless") is AgentRuntime.HEADLESS
         assert AgentRuntime.parse("  INTERACTIVE  ") is AgentRuntime.INTERACTIVE
 
     def test_invalid_value_raises_naming_the_setting(self) -> None:
@@ -63,6 +68,4 @@ class TestAgentRuntimeParse:
 
     def test_is_headless_partitions_the_runtimes(self) -> None:
         assert not AgentRuntime.INTERACTIVE.is_headless
-        assert AgentRuntime.SDK_OAUTH.is_headless
-        assert AgentRuntime.SDK_APIKEY.is_headless
-        assert AgentRuntime.API.is_headless
+        assert AgentRuntime.HEADLESS.is_headless

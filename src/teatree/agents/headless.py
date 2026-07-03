@@ -44,7 +44,7 @@ from teatree.agents.headless_usage import _attempt_usage
 from teatree.agents.pydantic_ai_resume import maybe_persist_on_park, persist_parked_thread
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA
 from teatree.agents.skill_bundle import resolve_skill_bundle
-from teatree.config import AgentRuntime, get_effective_settings
+from teatree.config import AgentHarness, AgentHarnessProvider, get_effective_settings
 from teatree.core.models import Task, TaskAttempt
 from teatree.credential_config import resolve_api_key_credential, resolve_subscription_credential
 from teatree.llm.anthropic_limits import LimitMatch, classify_limit, classify_rate_limit_type
@@ -227,15 +227,15 @@ def run_headless(
         logger.warning("Refusing dispatch for task %s: %s", task.pk, budget_breach)
         return _record_failure(task, error=budget_breach)
 
-    runtime = get_effective_settings().agent_runtime
-    backend = _resolve_backend_or_failure(task, runtime)
+    backend = _resolve_backend_or_failure(task)
     if isinstance(backend, TaskAttempt):
         return backend
     harness = backend
 
     skills = resolve_skill_bundle(phase=phase, overlay_skill_metadata=overlay_skill_metadata)
 
-    child_env_result = _resolve_child_env_or_failure(task, harness, runtime)
+    provider = get_effective_settings().agent_harness_provider
+    child_env_result = _resolve_child_env_or_failure(task, harness, provider)
     if isinstance(child_env_result, TaskAttempt):
         return child_env_result
     child_env = child_env_result
@@ -279,24 +279,15 @@ def _restore_unconsumed_resume_thread(harness: Harness) -> None:
         persist_parked_thread(harness.resume_source, harness.history)
 
 
-def _resolve_backend_or_failure(task: Task, runtime: AgentRuntime) -> Harness | TaskAttempt:
+def _resolve_backend_or_failure(task: Task) -> Harness | TaskAttempt:
     """Resolve the headless transport, or a recorded failure for an unimplemented backend.
 
-    Refuses the not-yet-built ``agent_runtime=api`` raw-Messages runner loud and
-    early, so it never reaches the SDK boundary. ``agent_harness`` selection
-    itself (:func:`~teatree.agents.harness.resolve_harness`) never fails here —
-    both the ``claude_sdk`` and ``pydantic_ai`` backends
+    ``agent_harness`` selection itself (:func:`~teatree.agents.harness.resolve_harness`)
+    never fails here — both the ``claude_sdk`` and ``pydantic_ai`` backends
     ([#2885](https://github.com/souliane/teatree/issues/2885)) are shipped;
     ``NotImplementedError`` is still caught below as a forward-compatible guard
-    for a FUTURE reserved backend value. Folding these into one helper keeps
-    ``run_headless`` within its early-return budget.
+    for a FUTURE reserved backend value.
     """
-    if runtime is AgentRuntime.API:
-        return _record_failure(
-            task,
-            error="agent_runtime=api (raw Anthropic Messages API runner) is not implemented yet; "
-            "use sdk_oauth or sdk_apikey",
-        )
     try:
         return resolve_harness(task)
     except NotImplementedError as exc:
@@ -304,14 +295,14 @@ def _resolve_backend_or_failure(task: Task, runtime: AgentRuntime) -> Harness | 
 
 
 def _resolve_child_env_or_failure(
-    task: Task, harness: Harness, runtime: AgentRuntime
+    task: Task, harness: Harness, provider: AgentHarnessProvider | None
 ) -> dict[str, str] | TaskAttempt | None:
     """Resolve the ``claude`` CLI child env for a :class:`~teatree.agents.harness.ClaudeSdkHarness` dispatch.
 
     Only the ``ClaudeSdkHarness`` spawns the bundled ``claude`` CLI child and
     needs its Anthropic credential env — the ``claude`` binary provisioning
-    check and ``agent_runtime``-keyed credential resolution are both scoped to
-    it. Any OTHER harness (e.g. ``PydanticAiHarness``,
+    check and the Layer-2 ``agent_harness_provider``-keyed credential resolution
+    are both scoped to it. Any OTHER harness (e.g. ``PydanticAiHarness``,
     [#2885](https://github.com/souliane/teatree/issues/2885)) resolves its OWN
     credential lazily inside ``harness.open`` — this returns ``None``
     unconditionally for it (no CLI child, no child env), and that harness's
@@ -325,7 +316,7 @@ def _resolve_child_env_or_failure(
     if shutil.which("claude") is None:
         return _record_failure(task, error="claude is not installed")
     try:
-        return _runtime_child_env(runtime, scope=_overlay_scope(task))
+        return _provider_child_env(provider, scope=_overlay_scope(task))
     except CredentialError as exc:
         logger.warning("Refusing dispatch for task %s: %s", task.pk, exc)
         return _record_failure(task, error=str(exc))
@@ -360,25 +351,43 @@ def _overlay_scope(task: Task) -> str:
     return task.ticket.overlay or ""
 
 
-def _runtime_child_env(runtime: AgentRuntime, *, scope: str = "") -> dict[str, str] | None:
-    """The child-process env that pins the credential for a headless ``runtime``.
+def _provider_child_env(provider: AgentHarnessProvider | None, *, scope: str = "") -> dict[str, str] | None:
+    """The child-process env that pins the Layer-2 credential for a ``claude_sdk`` dispatch (#2887).
 
-    ``sdk_apikey`` forces the metered ``ANTHROPIC_API_KEY`` (stripping the
-    subscription token); ``sdk_oauth`` forces the subscription
-    ``CLAUDE_CODE_OAUTH_TOKEN`` (stripping the API key) so the spawned ``claude``
-    CLI rides the plan, not the meter. Any other runtime returns ``None`` — the
-    ambient env is used unchanged (``interactive`` is dispatched in-session and
-    ``api`` is refused upstream, so the runner only sees a headless runtime here).
-    *scope* is the overlay the per-account routing selector picks an account for, so
-    two overlays ride distinct subscription accounts. Raises :class:`CredentialError`
-    when the selected token resolves from neither the env nor the ``pass`` store (or
-    every configured account is exhausted), so a misconfigured headless run fails loud.
+    ``provider is None`` (the default — no explicit Layer-2 pin) returns
+    ``None``: the ambient environment is used UNCHANGED, so an operator who
+    never configured ``agent_harness_provider`` is never forced through an
+    eager credential lookup — the ``claude`` CLI's own ambient auth state
+    (however it was set up) applies, exactly as before #2887. An explicit
+    ``api_key`` forces the metered ``ANTHROPIC_API_KEY`` (stripping the
+    subscription token); an explicit ``subscription_oauth`` forces the
+    subscription ``CLAUDE_CODE_OAUTH_TOKEN`` (stripping the API key) so the
+    spawned ``claude`` CLI rides the plan, not the meter. *scope* is the
+    overlay the per-account routing selector picks an account for, so two
+    overlays ride distinct subscription accounts. The sole caller
+    (:func:`_resolve_child_env_or_failure`) is already scoped to a
+    :class:`~teatree.agents.harness.ClaudeSdkHarness` dispatch, so a
+    NON-``None`` *provider* must be a Layer-2 provider valid under Layer 1
+    ``agent_harness=claude_sdk`` (:meth:`~teatree.config.AgentHarnessProvider.valid_for`) —
+    an ``orca_router_byok`` provider reaching here is a genuine cross-layer
+    misconfiguration and raises :class:`CredentialError` loud rather than
+    silently falling through to the ambient env. Also raises when the selected
+    token resolves from neither the env nor the ``pass`` store (or every
+    configured account is exhausted), so a misconfigured headless run always
+    fails loud.
     """
-    if runtime is AgentRuntime.SDK_APIKEY:
+    if provider is None:
+        return None
+    valid = AgentHarnessProvider.valid_for(AgentHarness.CLAUDE_SDK)
+    if provider not in valid:
+        msg = (
+            f"agent_harness_provider={provider.value!r} is not valid under agent_harness=claude_sdk; "
+            f"valid values: {', '.join(sorted(p.value for p in valid))}"
+        )
+        raise CredentialError(msg)
+    if provider is AgentHarnessProvider.API_KEY:
         return resolve_api_key_credential(scope=scope).child_env(os.environ)
-    if runtime is AgentRuntime.SDK_OAUTH:
-        return resolve_subscription_credential(scope=scope).child_env(os.environ)
-    return None
+    return resolve_subscription_credential(scope=scope).child_env(os.environ)
 
 
 def _sample_usage_closing_connection(task: Task) -> TaskUsage:

@@ -41,6 +41,7 @@ from teatree.agents.harness import (
 from teatree.agents.headless import LoopWatchdog, TaskUsage, _build_options, _drive_with_heartbeat, run_headless
 from teatree.config import get_effective_settings
 from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket
+from teatree.llm.credentials import CredentialError
 from tests.teatree_agents._sdk_fake import FakeHarness, FakeHarnessSession, assistant_text, result_message
 
 
@@ -385,6 +386,43 @@ class TestRunHeadlessCachedResumeParity(TestCase):
         assert captured_message_counts[1] > 1
         self.ticket.refresh_from_db()
         assert str(self.task.pk) not in self.ticket.extra.get("pydantic_ai_threads", {})
+
+
+class TestPydanticAiHarnessChineseModelGate(TestCase):
+    """#2887: a disallowed Chinese-origin model never reaches the OrcaRouter provider."""
+
+    def setUp(self) -> None:
+        os.environ.pop("ORCA_ROUTER_BASE_URL", None)
+        os.environ.pop("ORCA_ROUTER_API_KEY", None)
+
+    def test_disallowed_chinese_model_raises_before_credential_resolution(self) -> None:
+        # No OrcaRouter credential configured — proves the Chinese-model check
+        # fires FIRST (a config-policy ValueError), not the credential check
+        # (which would instead raise CredentialError naming ORCA_ROUTER).
+        ConfigSetting.objects.set_value("chinese_models_allowed", value=False)
+        harness = PydanticAiHarness()
+        options = ClaudeAgentOptions(model="deepseek-v3")
+
+        with pytest.raises(ValueError, match="Chinese-origin"):
+            harness._resolve_model(options)
+
+    def test_disallowed_setting_does_not_block_a_non_chinese_model(self) -> None:
+        ConfigSetting.objects.set_value("chinese_models_allowed", value=False)
+        harness = PydanticAiHarness()
+        options = ClaudeAgentOptions()  # falls back to the default (Claude) tier
+
+        # No Chinese-origin model involved, so resolution proceeds to the
+        # (here unconfigured) credential step instead of the allowlist gate.
+        with pytest.raises(CredentialError, match="ORCA_ROUTER"):
+            harness._resolve_model(options)
+
+    def test_chinese_model_allowed_reaches_the_credential_step(self) -> None:
+        ConfigSetting.objects.set_value("chinese_models_allowed", value=True)
+        harness = PydanticAiHarness()
+        options = ClaudeAgentOptions(model="deepseek-v3")
+
+        with pytest.raises(CredentialError, match="ORCA_ROUTER"):
+            harness._resolve_model(options)
 
 
 class TestPydanticAiHarnessSession:

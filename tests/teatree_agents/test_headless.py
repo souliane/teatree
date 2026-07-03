@@ -23,7 +23,7 @@ from teatree.agents.headless import (
     _drive_with_heartbeat,
     _limit_match,
     _parse_result,
-    _runtime_child_env,
+    _provider_child_env,
     _validate_result,
     get_result_json_schema,
     run_headless,
@@ -31,9 +31,10 @@ from teatree.agents.headless import (
 from teatree.agents.headless_usage import _safe_float, _safe_int
 from teatree.agents.model_tiering import TIER_EFFORT, TIER_MODELS
 from teatree.agents.pydantic_ai_resume import persist_parked_thread
-from teatree.config import AgentRuntime
+from teatree.config import AgentHarnessProvider
 from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket
 from teatree.llm.anthropic_limits import LimitCause
+from teatree.llm.credentials import CredentialError
 from tests.teatree_agents._sdk_fake import assistant_text as _assistant_text
 from tests.teatree_agents._sdk_fake import fake_sdk as _fake_sdk
 from tests.teatree_agents._sdk_fake import rate_limit_event as _rate_limit_event
@@ -1120,8 +1121,8 @@ class TestBuildOptionsSpawnModelFloor(TestCase):
         assert options.effort == "max"
 
 
-class TestRuntimeChildEnv(TestCase):
-    """``_runtime_child_env`` pins the credential for the chosen headless runtime.
+class TestProviderChildEnv(TestCase):
+    """``_provider_child_env`` pins the Layer-2 credential for a ``claude_sdk`` dispatch (#2887).
 
     DB access: the credential is now built through the config-aware factory
     (``teatree.credential_config``), which reads the ``ConfigSetting`` routing list.
@@ -1129,39 +1130,33 @@ class TestRuntimeChildEnv(TestCase):
     ``TestCase`` just provides the DB the (no-op) config read needs.
     """
 
-    def test_sdk_oauth_pins_subscription_and_strips_api_key(self) -> None:
+    def test_subscription_oauth_pins_subscription_and_strips_api_key(self) -> None:
         with patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "oauth-x", "ANTHROPIC_API_KEY": "key-y"}):
-            env = _runtime_child_env(AgentRuntime.SDK_OAUTH)
+            env = _provider_child_env(AgentHarnessProvider.SUBSCRIPTION_OAUTH)
 
         assert env is not None
         assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "oauth-x"
         assert "ANTHROPIC_API_KEY" not in env
 
-    def test_sdk_apikey_pins_key_and_strips_oauth(self) -> None:
+    def test_api_key_pins_key_and_strips_oauth(self) -> None:
         with patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "oauth-x", "ANTHROPIC_API_KEY": "key-y"}):
-            env = _runtime_child_env(AgentRuntime.SDK_APIKEY)
+            env = _provider_child_env(AgentHarnessProvider.API_KEY)
 
         assert env is not None
         assert env["ANTHROPIC_API_KEY"] == "key-y"
         assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
 
-    def test_interactive_and_api_use_ambient_env(self) -> None:
-        assert _runtime_child_env(AgentRuntime.INTERACTIVE) is None
-        assert _runtime_child_env(AgentRuntime.API) is None
+    def test_orca_router_byok_is_invalid_under_claude_sdk_and_raises(self) -> None:
+        # #2887: the sole caller of this helper is already scoped to the
+        # ClaudeSdkHarness dispatch, so a Layer-2 provider only valid under
+        # agent_harness=pydantic_ai reaching here is a cross-layer
+        # misconfiguration — it must fail loud, never silently fall through to
+        # the ambient env.
+        with pytest.raises(CredentialError, match="not valid under agent_harness=claude_sdk"):
+            _provider_child_env(AgentHarnessProvider.ORCA_ROUTER_BYOK)
 
-
-class TestAgentRuntimeApiGuard(TestCase):
-    """``run_headless`` refuses the not-yet-built raw-API runtime, loud and early."""
-
-    def test_api_runtime_records_not_implemented_failure(self) -> None:
-        ConfigSetting.objects.set_value("agent_runtime", "api")
-        ticket = Ticket.objects.create()
-        session = Session.objects.create(ticket=ticket, agent_id="agent-1")
-        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
-
-        attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
-
-        task.refresh_from_db()
-        assert attempt.exit_code == 1
-        assert "not implemented" in attempt.error
-        assert task.status == Task.Status.FAILED
+    def test_no_explicit_pin_uses_ambient_env(self) -> None:
+        # #2887: the default (no ConfigSetting row, no env var) resolves to
+        # None — no explicit Layer-2 pin, so the ambient environment is used
+        # unchanged rather than forcing an eager credential lookup.
+        assert _provider_child_env(None) is None

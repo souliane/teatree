@@ -28,7 +28,7 @@ _RESUME_UUID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 
 
 def _parked_task() -> Task:
-    ConfigSetting.objects.set_value("agent_runtime", "sdk_oauth")
+    ConfigSetting.objects.set_value("agent_runtime", "headless")
     ticket = Ticket.objects.create()
     session = Session.objects.create(ticket=ticket, agent_id=_RESUME_UUID)
     parked = Task.objects.create(

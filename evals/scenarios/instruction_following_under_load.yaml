@@ -11,7 +11,7 @@
   scenario: "under a long polluted context and a tempting just-fix-it-fast cue spanning multiple tickets, the agent presents a plan FIRST and never starts editing/committing/pushing across tickets unplanned"
   lane: under_load
   agent_path: skills/code/SKILL.md
-  phase: coding
+  tier: balanced
   max_turns: 3
   tools: [Bash, Edit, Write, TaskCreate, AskUserQuestion]
   context_preamble: |

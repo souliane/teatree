@@ -43,8 +43,8 @@ class TestPhaseTaskDefaultsInteractive(TestCase):
         assert task.execution_target == Task.ExecutionTarget.INTERACTIVE
         assert "agent_runtime=interactive" in task.execution_reason
 
-    def test_loop_dispatched_phase_is_headless_under_sdk_runtime(self) -> None:
-        ConfigSetting.objects.set_value("agent_runtime", "sdk_oauth")
+    def test_loop_dispatched_phase_is_headless_under_headless_runtime(self) -> None:
+        ConfigSetting.objects.set_value("agent_runtime", "headless")
         ticket = self._author_ticket()
         session = Session.objects.create(ticket=ticket, agent_id="coding")
 
@@ -226,7 +226,7 @@ class TestHeadlessDispatchGuard(TestCase):
 
         import teatree.core.tasks as tasks_mod  # noqa: PLC0415
 
-        ConfigSetting.objects.set_value("agent_runtime", "sdk_oauth")
+        ConfigSetting.objects.set_value("agent_runtime", "headless")
         task = self._headless_loop_task()
         sentinel = TaskAttempt(exit_code=0, result={"summary": "ran"})
 

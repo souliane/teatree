@@ -37,7 +37,8 @@ _RENDER_WIDTH = 80
 
 def build_cli_reference_from_app(app: typer.Typer, *, base_name: str = "t3") -> str:
     """Walk *app* and return a CLI reference in markdown."""
-    return _build_cli_reference_from_command(get_command(app), base_name=base_name)
+    with _pinned_render_environment():
+        return _build_cli_reference_from_command(get_command(app), base_name=base_name)
 
 
 def _build_cli_reference_from_command(click_app: click.Command, *, base_name: str = "t3") -> str:

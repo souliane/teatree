@@ -2485,6 +2485,15 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │                      AI-signature trailer.                                   │
 │ diff-coverage        Per-diff coverage + mutation/revert gate (BLUEPRINT     │
 │                      §17.6 gate 12, #836).                                   │
+│ figma-screenshot     Fetch a Figma node/frame as a PNG — bypasses the MCP    │
+│                      integration's size limits.                              │
+│ figma-frames         List a node's child frames (name + ID) for navigation.  │
+│ figma-comments       Fetch Figma comments (designer annotations, review      │
+│                      feedback) for a file or node.                           │
+│ figma-components     Fetch component descriptions, variant properties, and   │
+│                      styles (design tokens).                                 │
+│ figma-compare        Combine a Figma mockup and a Playwright screenshot side │
+│                      by side for MR evidence.                                │
 │ validate-skill-refs  Assert every skill reference resolves to a real skill   │
 │                      in the canonical set.                                   │
 │ test-path-mirror     Forward-guard: test files mirror their                  │
@@ -2786,6 +2795,97 @@ Usage: t3 tool diff-coverage [OPTIONS]
 │                              [default: .coverage]                            │
 │ --json                       Emit machine-readable JSON.                     │
 │ --help                       Show this message and exit.                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool figma-screenshot`
+
+```
+Usage: t3 tool figma-screenshot [OPTIONS] FILE_KEY NODE_ID
+
+ Fetch a Figma node/frame as a PNG — bypasses the MCP integration's size
+ limits.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    file_key      TEXT  Figma file key (from the file URL). [required]      │
+│ *    node_id       TEXT  Node/frame ID to render (e.g. `12:34`). [required]  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --dest   -d      PATH                        Output PNG path.                │
+│                                              [default: figma-screenshot.png] │
+│ --scale          FLOAT RANGE [0.01<=x<=4.0]  Render scale. [default: 2.0]    │
+│ --help                                       Show this message and exit.     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool figma-frames`
+
+```
+Usage: t3 tool figma-frames [OPTIONS] FILE_KEY NODE_ID
+
+ List a node's child frames (name + ID) for navigation.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    file_key      TEXT  Figma file key. [required]                          │
+│ *    node_id       TEXT  Parent node ID to list children of. [required]      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool figma-comments`
+
+```
+Usage: t3 tool figma-comments [OPTIONS] FILE_KEY
+
+ Fetch Figma comments (designer annotations, review feedback) for a file or
+ node.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    file_key      TEXT  Figma file key. [required]                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --node-id        TEXT  Restrict to comments anchored on this node.           │
+│ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool figma-components`
+
+```
+Usage: t3 tool figma-components [OPTIONS] FILE_KEY
+
+ Fetch component descriptions, variant properties, and styles (design tokens).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    file_key      TEXT  Figma file key. [required]                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool figma-compare`
+
+```
+Usage: t3 tool figma-compare [OPTIONS] DESIGN_IMAGE ACTUAL_SCREENSHOT
+
+ Combine a Figma mockup and a Playwright screenshot side by side for MR
+ evidence.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    design_image           PATH  Figma mockup PNG (e.g. from                │
+│                                   `figma-screenshot`).                       │
+│                                   [required]                                 │
+│ *    actual_screenshot      PATH  Playwright screenshot PNG to compare       │
+│                                   against.                                   │
+│                                   [required]                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --dest  -d      PATH  Output side-by-side PNG path.                          │
+│                       [default: figma-comparison.png]                        │
+│ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

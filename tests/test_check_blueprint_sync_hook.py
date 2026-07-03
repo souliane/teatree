@@ -30,6 +30,7 @@ class _RunOptions:
 
     argv_is_src: bool = False
     is_merge_commit: bool = False
+    is_revert_commit: bool = False
 
 
 class TestIsBlueprint:
@@ -153,6 +154,7 @@ class TestMain:
             monkeypatch.setattr(hook.sys, "argv", ["check_blueprint_sync.py", str(msg_file)])
         monkeypatch.setattr(hook, "_staged_files", lambda: staged)
         monkeypatch.setattr(hook, "_is_merge_commit", lambda: options.is_merge_commit)
+        monkeypatch.setattr(hook, "_is_revert_commit", lambda: options.is_revert_commit)
         return hook.main()
 
     def test_src_without_blueprint_fails(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -273,5 +275,52 @@ class TestMain:
             message="Merge in the new config helper",
             staged=["src/teatree/config_agent.py"],
             options=_RunOptions(is_merge_commit=False),
+        )
+        assert rc == 1
+
+    def test_revert_commit_is_exempt_even_with_src_and_no_blueprint(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # git revert's default message ("Revert \"...\"") matches no exempt
+        # prefix, and the staged tree is the inverse of a single original
+        # commit's diff — if that commit never touched BLUEPRINT.md, undoing
+        # it can't need one either.
+        rc = self._run(
+            monkeypatch,
+            tmp_path,
+            message='Revert "fix(loop): skip the user\'s own outbound DMs"',
+            staged=["src/teatree/loop/slack_answer/cycle.py"],
+            options=_RunOptions(is_revert_commit=True),
+        )
+        assert rc == 0
+
+    def test_revert_prefix_message_exempt_without_revert_head(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # A commit explicitly typed "revert:" (Conventional Commits' own
+        # revert type) is exempt by prefix like "fix:" is, even when
+        # REVERT_HEAD is absent — e.g. a revert commit replayed after a
+        # rebase, outside a live `git revert` operation.
+        rc = self._run(
+            monkeypatch,
+            tmp_path,
+            message="revert: self-authored-DM filter drops all real inbound rows",
+            staged=["src/teatree/loop/slack_answer/cycle.py"],
+            options=_RunOptions(is_revert_commit=False),
+        )
+        assert rc == 0
+
+    def test_non_revert_commit_with_unexempt_message_still_gated(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # The revert exemption must not over-correct: an ordinary commit
+        # whose message happens to start with "Revert" is still gated when
+        # it isn't actually mid-revert (REVERT_HEAD absent).
+        rc = self._run(
+            monkeypatch,
+            tmp_path,
+            message="Revert my own local experiment",
+            staged=["src/teatree/config_agent.py"],
+            options=_RunOptions(is_revert_commit=False),
         )
         assert rc == 1

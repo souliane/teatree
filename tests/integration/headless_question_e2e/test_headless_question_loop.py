@@ -68,7 +68,7 @@ class FakeBackend:
 
 class TestHeadlessQuestionLoop:
     def _run_parked_headless_task(self) -> Task:
-        ConfigSetting.objects.set_value("agent_runtime", "sdk_oauth")
+        ConfigSetting.objects.set_value("agent_runtime", "headless")
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket, agent_id=_RESUME_UUID)
         task = Task.objects.create(
@@ -84,7 +84,7 @@ class TestHeadlessQuestionLoop:
         }
         with (
             _fake_sdk(_success_stream(result, session_id=_RESUME_UUID)),
-            patch.object(headless_mod, "_runtime_child_env", return_value=None),
+            patch.object(headless_mod, "_provider_child_env", return_value=None),
         ):
             run_headless(task, phase="coding", overlay_skill_metadata={})
         task.refresh_from_db()
