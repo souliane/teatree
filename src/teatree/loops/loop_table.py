@@ -39,11 +39,12 @@ drive the loop — exactly one wins the claim and dispatches.
 **Colleague-facing loops defer to availability (#2904).** A row with
 ``Loop.colleague_facing`` set is additionally gated on
 :func:`teatree.core.availability.resolve_mode`: whenever the resolved mode
-``defers_questions`` (holiday-``away`` or ``autonomous_away``), the row is NOT
-admitted, cadence-bumped, or dispatched — BLUEPRINT §17.1 invariant 9 says
-colleague-facing work needs the user reachable, so it must not fire while they
-are not, even in ``autonomous_away`` where every other loop keeps
-self-pumping (the #2544 ``pauses_self_pump``/``defers_questions`` split). This
+``defers_questions`` (holiday-``away`` or ``autonomous_away`` — the same
+BLUEPRINT §17.1 invariant 9 axis that defers user-directed questions in that
+mode), the row is NOT admitted, cadence-bumped, or dispatched — colleague-facing
+work should not fire while the user is unreachable to weigh in, even in
+``autonomous_away`` where every other loop keeps self-pumping (the #2544
+``pauses_self_pump``/``defers_questions`` split). This
 is the SAME unified verdict both :func:`build_loop_table_jobs` and
 :func:`admitted_loop_names` gate on, so the axis can never drift between them.
 

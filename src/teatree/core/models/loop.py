@@ -28,10 +28,11 @@ colleague — reviewing someone else's PR, nagging a reviewer, posting where a
 teammate reads it — as opposed to internal/self-improvement work. The unified
 admission verdict in ``teatree.loops.loop_table`` gates a ``colleague_facing``
 row off whenever :func:`teatree.core.availability.resolve_mode` reports
-``defers_questions`` (holiday-``away`` or ``autonomous_away``): BLUEPRINT §17.1
-invariant 9 says colleague-facing work needs the user reachable, so it must not
-fire while the user is unreachable, even in ``autonomous_away`` where every
-other loop keeps self-pumping.
+``defers_questions`` (holiday-``away`` or ``autonomous_away``, the same
+BLUEPRINT §17.1 invariant 9 axis that defers user-directed questions in that
+mode): colleague-facing work should not fire while the user is unreachable to
+weigh in, even in ``autonomous_away`` where every other loop keeps
+self-pumping.
 """
 
 import datetime as dt
