@@ -67,6 +67,16 @@ class TestLoopAdditiveFields(TestCase):
         Loop.objects.create(name="demo-inline", delay_seconds=60, prompt=_prompt("p-in"), run_in_sub_agent=False)
         assert Loop.objects.get(name="demo-inline").run_in_sub_agent is False
 
+    def test_colleague_facing_defaults_false(self) -> None:
+        loop = Loop.objects.create(name="demo-colleague-default", delay_seconds=300, prompt=_prompt("p-cf-default"))
+        assert loop.colleague_facing is False
+
+    def test_colleague_facing_can_be_set_true(self) -> None:
+        Loop.objects.create(
+            name="demo-colleague-true", delay_seconds=300, prompt=_prompt("p-cf-true"), colleague_facing=True
+        )
+        assert Loop.objects.get(name="demo-colleague-true").colleague_facing is True
+
 
 class TestLoopNullableDelay(TestCase):
     """``delay_seconds`` is nullable for prompt loops that run every tick."""

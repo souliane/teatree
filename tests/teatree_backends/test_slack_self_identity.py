@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 
 from teatree.backends.slack.self_identity import (
     OwnSlackIdentity,
+    is_on_behalf_posted,
     is_self_authored,
     is_thread_root,
     resolve_own_identity,
@@ -87,3 +88,19 @@ class TestIsThreadRoot:
 
     def test_not_root_without_thread_ts(self) -> None:
         assert is_thread_root({"ts": "1.0"}) is False
+
+
+class TestIsOnBehalfPosted:
+    """#1941: distinguish an on-behalf app post from a human-typed DM."""
+
+    def test_true_when_api_app_id_present(self) -> None:
+        assert is_on_behalf_posted({"user": "U1", "api_app_id": "A0DEMOAPP1"}) is True
+
+    def test_false_when_api_app_id_absent(self) -> None:
+        assert is_on_behalf_posted({"user": "U1", "text": "hi"}) is False
+
+    def test_false_when_api_app_id_empty_string(self) -> None:
+        assert is_on_behalf_posted({"user": "U1", "api_app_id": ""}) is False
+
+    def test_false_when_api_app_id_non_string(self) -> None:
+        assert is_on_behalf_posted({"user": "U1", "api_app_id": 12345}) is False

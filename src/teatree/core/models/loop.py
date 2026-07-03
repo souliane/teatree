@@ -22,6 +22,17 @@ set (both ``None``) the loop is due every tick.
 
 A never-run loop is due immediately (interval / every-tick) or at its first
 scheduled time (daily), so a fresh install fires without waiting a whole window.
+
+``colleague_facing`` (#2904) marks a loop that reaches or reads from a
+colleague — reviewing someone else's PR, nagging a reviewer, posting where a
+teammate reads it — as opposed to internal/self-improvement work. The unified
+admission verdict in ``teatree.loops.loop_table`` gates a ``colleague_facing``
+row off whenever :func:`teatree.core.availability.resolve_mode` reports
+``defers_questions`` (holiday-``away`` or ``autonomous_away``, the same
+BLUEPRINT §17.1 invariant 9 axis that defers user-directed questions in that
+mode): colleague-facing work should not fire while the user is unreachable to
+weigh in, even in ``autonomous_away`` where every other loop keeps
+self-pumping.
 """
 
 import datetime as dt
@@ -100,6 +111,7 @@ class Loop(models.Model):
     delay_seconds = models.PositiveIntegerField(null=True, blank=True)
     daily_at = models.TimeField(null=True, blank=True)
     enabled = models.BooleanField(default=True)
+    colleague_facing = models.BooleanField(default=False)
     last_run_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

@@ -157,6 +157,27 @@ class TestSeedDefaultLoops(django.test.TestCase):
         seed_default_loops_and_prompts()
         assert Loop.objects.get(name="inbox").description == "operator note"
 
+    def test_seeded_colleague_facing_matches_the_spec(self) -> None:
+        # #2904: review and followup reach/read a colleague, so they seed
+        # colleague_facing=True; every other default loop stays False.
+        seed_default_loops_and_prompts()
+        by_name = {loop.name: loop for loop in Loop.objects.all()}
+        for spec in DEFAULT_LOOPS:
+            assert by_name[spec.name].colleague_facing is spec.colleague_facing, spec.name
+
+    def test_review_and_followup_seed_colleague_facing_true(self) -> None:
+        seed_default_loops_and_prompts()
+        assert Loop.objects.get(name="review").colleague_facing is True
+        assert Loop.objects.get(name="followup").colleague_facing is True
+
+    def test_seed_preserves_operator_edited_colleague_facing_flag(self) -> None:
+        seed_default_loops_and_prompts()
+        # Operator flips inbox (default False) to colleague-facing; re-seeding
+        # must not clobber that choice back to the spec default.
+        Loop.objects.filter(name="inbox").update(colleague_facing=True)
+        seed_default_loops_and_prompts()
+        assert Loop.objects.get(name="inbox").colleague_facing is True
+
     def test_arch_review_prompt_description_is_the_real_description(self) -> None:
         # The single prompt-backed default's ``Prompt.description`` is the loop's
         # real description, not the retired ``Default loop prompt for ...`` placeholder.

@@ -7,12 +7,18 @@ can apply them at its read chokepoint without a backwards import to the loop
 layer; the loop scanner re-exports them via
 :mod:`teatree.loop.scanners.slack_self_filter`.
 
-Two transforms, two failure doctrines:
+Three transforms, three failure doctrines:
 
 *   :func:`filter_self_messages` — DROP the bot's own DMs before they reach
     :class:`PendingChatInjection`, so the bot never "answers" its own outbound
     posts (#1346). **Fail-closed**: an unresolved identity returns ``None`` and
     the scanner refuses to enqueue any row that turn.
+*   :func:`drop_on_behalf_messages` — DROP messages posted through the Slack
+    Web API (an app/bot token — including the human's own ``xoxp-`` user
+    token used to post on the human's behalf) even when they display under
+    the human's own identity (#1941). **Structural, no identity needed**: the
+    ``api_app_id`` field Slack stamps on the message is the signal, so this
+    filter never fails closed.
 *   :func:`strip_self_audio_attachments` — STRIP the bot's own TTS audio
     attachment when reading Slack, so the loop never re-ingests a spoken copy
     of text it already wrote (#2089). **Fail-open**: an unresolved identity
@@ -136,6 +142,36 @@ def filter_self_messages(
     return [m for m in messages if not is_self_authored(m, identity)]
 
 
+def is_on_behalf_posted(message: RawAPIDict) -> bool:
+    """True iff *message* was posted through the Slack Web API by an app (#1941).
+
+    Slack stamps ``api_app_id`` on every message posted via ``chat.postMessage``
+    under an app-owned token — the bot's own ``xoxb-`` token, or a human's
+    ``xoxp-`` user token installed as part of an app (Slack renders the
+    latter with a "Sent using <app>" hover signature). A message a human
+    types directly in the Slack client never carries this field.
+
+    In the bot's single-user 1:1 DM every row surviving :func:`is_self_authored`
+    already carries the human's own ``user`` id by construction — a genuine
+    inbound question and an on-behalf post sent with the human's own token
+    are otherwise indistinguishable by author id alone (the #2907 regression:
+    comparing ``user_id`` to the resolved Slack user id matched both and went
+    silent on real usage, reverted in #2911). ``api_app_id`` presence is the
+    remaining signal.
+    """
+    api_app_id = message.get("api_app_id")
+    return isinstance(api_app_id, str) and bool(api_app_id)
+
+
+def drop_on_behalf_messages(messages: list[RawAPIDict]) -> list[RawAPIDict]:
+    """Unlike :func:`filter_self_messages`, needs no bot identity (#1941).
+
+    ``api_app_id`` presence is a structural property of how Slack delivered
+    the message, so this filter never fails closed on an unresolved identity.
+    """
+    return [m for m in messages if not is_on_behalf_posted(m)]
+
+
 def is_tts_audio_file(file_entry: object) -> bool:
     """True iff a Slack ``files`` entry is an audio attachment (#2089).
 
@@ -192,7 +228,9 @@ def strip_self_audio_attachments(
 
 __all__ = [
     "OwnSlackIdentity",
+    "drop_on_behalf_messages",
     "filter_self_messages",
+    "is_on_behalf_posted",
     "is_self_authored",
     "is_thread_root",
     "is_tts_audio_file",

@@ -50,6 +50,7 @@ class LoopAdmin(admin.ModelAdmin):
     list_display = (
         "name",
         "enabled",
+        "colleague_facing",
         "action",
         "run_in_sub_agent",
         "description",
@@ -57,7 +58,7 @@ class LoopAdmin(admin.ModelAdmin):
         "last_run_at",
         "updated_at",
     )
-    list_editable = ("enabled",)
+    list_editable = ("enabled", "colleague_facing")
     search_fields = ("name",)
     readonly_fields = ("last_run_at", "created_at", "updated_at")
 
