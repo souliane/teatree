@@ -1328,6 +1328,36 @@ class TestUnreadableCommitBodyQuoteGateVisibilityScoped:
         assert handle_quote_scanner_pretool(data) is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
+    def test_public_commit_minus_m_cat_heredoc_substitution_clean_passes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The canonical ``git commit -m "$(cat <<'EOF' ... EOF)"`` idiom (the shape
+        # documented as THE way to pass a commit message): the heredoc body is fully
+        # readable in-command, so a clean message must pass rather than fail-close on
+        # the outer double-quoted ``$(...)`` the ``-m`` walker cannot itself resolve.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git_init_remote(repo, "git@github.com:souliane/teatree.git")
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        cmd = "git commit -m \"$(cat <<'EOF'\nfix: a clean commit message\nEOF\n)\""
+        data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(repo)}
+        assert handle_quote_scanner_pretool(data) is False
+        assert capsys.readouterr().out == ""  # clean: no deny JSON
+
+    def test_public_commit_minus_m_cat_heredoc_substitution_user_quote_still_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # ANTI-VACUITY: the same in-command-readable heredoc form still blocks a real
+        # leaked user quote — the fix resolves the body for scanning, it never bypasses it.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git_init_remote(repo, "git@github.com:souliane/teatree.git")
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        cmd = "git commit -m \"$(cat <<'EOF'\nthe user said: ship it now without review\nEOF\n)\""
+        data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(repo)}
+        assert handle_quote_scanner_pretool(data) is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
     def test_public_commit_unreadable_var_message_still_denies(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
