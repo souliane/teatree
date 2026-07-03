@@ -2,8 +2,10 @@
 
 Backs the read-only ``t3 loops list``. Reads :class:`teatree.core.models.Loop`
 rows and prints each loop's name, enabled state, cadence (interval or daily
-schedule), last run, and next-due. ORM access lives in a management command
-(the project's "anything touching the ORM is a management command" rule).
+schedule), last run, next-due, and a ``[colleague-facing]`` tag (#2904) when the
+row is gated off during any availability-deferring mode. ORM access lives in a
+management command (the project's "anything touching the ORM is a management
+command" rule).
 
 Strictly read-only: ORM reads only — it never ticks, marks a run, or mutates a
 row. Distinct from the singular ``t3 loop`` (the legacy fat-loop status view).
@@ -51,7 +53,10 @@ def _next_label(loop: Loop, now: dt.datetime) -> str:
 def _line(loop: Loop, now: dt.datetime) -> str:
     enabled = "enabled" if loop.enabled else "disabled"
     last = _human_duration(loop.seconds_since_run(now))
-    return f"  {loop.name:<22} {enabled:<8} {loop.cadence_label:<13} last {last:<10} next {_next_label(loop, now)}"
+    line = f"  {loop.name:<22} {enabled:<8} {loop.cadence_label:<13} last {last:<10} next {_next_label(loop, now)}"
+    if loop.colleague_facing:
+        line += "  [colleague-facing]"
+    return line
 
 
 def _description_line(loop: Loop) -> str | None:
@@ -77,6 +82,7 @@ def _payload(loop: Loop, now: dt.datetime) -> dict[str, Any]:
         "last_run_at": loop.last_run_at.isoformat() if loop.last_run_at else "",
         "next_run_at": next_at.isoformat() if next_at else "",
         "due": loop.is_due(now),
+        "colleague_facing": loop.colleague_facing,
     }
 
 
