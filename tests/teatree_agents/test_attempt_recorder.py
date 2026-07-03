@@ -10,7 +10,7 @@ from teatree.agents.attempt_recorder import (
     record_result_envelope,
     validate_result_keys,
 )
-from teatree.core.models import Session, Task, Ticket
+from teatree.core.models import Session, Task, TaskAttempt, Ticket
 
 
 class TestParseResultEnvelope(TestCase):
@@ -76,6 +76,23 @@ class TestRecordResultEnvelope(TestCase):
         assert attempt.cost_usd == pytest.approx(0.4)
         assert attempt.num_turns == 3
         assert attempt.agent_session_id == "sess"
+
+    def test_success_stamps_lane_when_supplied(self) -> None:
+        task = self._claimed()
+        attempt = record_result_envelope(
+            task,
+            {"summary": "done", "files_modified": [{"path": "a.py", "action": "modified"}]},
+            usage=AttemptUsage(lane=TaskAttempt.Lane.METERED),
+        )
+        assert attempt.lane == "metered"
+
+    def test_lane_defaults_to_blank_when_not_supplied(self) -> None:
+        task = self._claimed()
+        attempt = record_result_envelope(
+            task,
+            {"summary": "done", "files_modified": [{"path": "a.py", "action": "modified"}]},
+        )
+        assert attempt.lane == ""
 
     def test_evidence_gate_fails_task(self) -> None:
         task = self._claimed()

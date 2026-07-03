@@ -82,3 +82,19 @@ class TestCostCommand:
         assert "cycle-to-date:" in out
         assert "$200 credit" in out
         assert "projected end-of-cycle:" in out
+
+    def test_effective_tokens_and_lane_breakdown_in_json(self) -> None:
+        now = timezone.now()
+        self._attempt(cost=1.0, when=now, model="opus", input_tokens=1000, lane=TaskAttempt.Lane.SUBSCRIPTION)
+        self._attempt(cost=2.0, when=now, model="opus", input_tokens=1000, lane=TaskAttempt.Lane.METERED)
+        payload = json.loads(_call(json_output=True))
+        assert payload["effective_tokens_total"] == pytest.approx(2000.0)
+        assert payload["per_lane_usd"]["subscription"] == pytest.approx(1.0)
+        assert payload["per_lane_usd"]["metered"] == pytest.approx(2.0)
+        assert payload["per_lane_effective_tokens"]["subscription"] == pytest.approx(1000.0)
+        assert payload["per_lane_effective_tokens"]["metered"] == pytest.approx(1000.0)
+
+    def test_human_output_shows_effective_tokens(self) -> None:
+        self._attempt(cost=1.0, when=timezone.now(), model="opus", input_tokens=1000)
+        out = _call()
+        assert "effective tokens (ET): 1,000" in out

@@ -40,6 +40,9 @@ class AttemptUsage:
     cache_write_tokens: int | None = None
     cost_usd: float | None = None
     num_turns: int | None = None
+    # souliane/teatree#657: the Layer-2 lane (``TaskAttempt.Lane``) this
+    # attempt's credential authenticated through, or ``""`` when unattributed.
+    lane: str = ""
 
 
 class ResultEnvelopeError(ValueError):
@@ -130,6 +133,7 @@ def record_result_envelope(
         cache_write_tokens=usage.cache_write_tokens,
         cost_usd=usage.cost_usd,
         num_turns=usage.num_turns,
+        lane=usage.lane,
     )
     task.complete(result_artifact_path="")
     return attempt

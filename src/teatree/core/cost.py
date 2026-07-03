@@ -144,6 +144,29 @@ def tier_rank(model: str | None) -> int:
     return len(_CAPABILITY_ORDER)
 
 
+# GitHub's agentic-workflow token-efficiency formula (souliane/teatree#657):
+# ET = m * (1.0*input + 0.1*cache_read + 4.0*output). ``m`` re-expresses the
+# same tier PRICE_TABLE prices at, as GitHub's dimensionless weight, so ET
+# figures are comparable to the source article's. Cache-WRITE tokens are
+# deliberately excluded — the formula only counts I/C(read)/O.
+ET_MODEL_MULTIPLIER: dict[str, float] = {
+    "opus": 1.0,
+    "sonnet": 0.2,
+    "haiku": 0.05,
+}
+
+# Unrecognised model: price at the most expensive known tier so an unknown
+# model's ET is never under-counted (mirrors PRICE_TABLE's own conservative
+# fallback via ``tier_of_model``).
+_DEFAULT_ET_MULTIPLIER = ET_MODEL_MULTIPLIER["opus"]
+
+# The Layer-2 lane (souliane/teatree#2887) a dispatch's usage is unattributable
+# to — no explicit ``agent_harness_provider`` pin was configured, so the
+# ambient-credential default authenticated however the ``claude`` CLI's own
+# login state resolved (see ``teatree.agents.headless._resolve_dispatch_lane``).
+UNATTRIBUTED_LANE = "unattributed"
+
+
 @dataclass(frozen=True, slots=True)
 class AttemptUsage:
     """The usage fields one :class:`TaskAttempt` carries for costing."""
@@ -154,6 +177,21 @@ class AttemptUsage:
     output_tokens: int
     cache_read_tokens: int
     cache_write_tokens: int
+    # The Layer-2 lane (``"subscription"`` / ``"metered"``) this usage
+    # authenticated through, or ``""`` when the dispatch carried no explicit
+    # Layer-2 pin (see ``TaskAttempt.Lane`` / ``UNATTRIBUTED_LANE``).
+    lane: str = ""
+
+    @property
+    def effective_tokens(self) -> float:
+        """GitHub's ET formula for this usage (souliane/teatree#657)."""
+        return compute_effective_tokens(self)
+
+
+def compute_effective_tokens(usage: AttemptUsage) -> float:
+    """GitHub's agentic-workflow ET formula: ``m*(1.0*I + 0.1*C + 4.0*O)``."""
+    multiplier = ET_MODEL_MULTIPLIER.get(tier_of_model(usage.model), _DEFAULT_ET_MULTIPLIER)
+    return multiplier * (1.0 * usage.input_tokens + 0.1 * usage.cache_read_tokens + 4.0 * usage.output_tokens)
 
 
 def price_table_cost_usd(usage: AttemptUsage) -> float:
@@ -181,24 +219,45 @@ def attempt_cost_usd(usage: AttemptUsage) -> float:
 
 @dataclass(frozen=True, slots=True)
 class CostBreakdown:
-    """Cycle-to-date SDK-equivalent spend, totalled and split per tier."""
+    """Cycle-to-date SDK-equivalent spend, totalled and split per tier and per Layer-2 lane."""
 
     total_usd: float = 0.0
     per_tier_usd: dict[str, float] = field(default_factory=dict)
     attempts: int = 0
+    # souliane/teatree#657: GitHub's ET metric alongside the dollar figure, and
+    # the same totals split by Layer-2 lane (subscription vs metered) so the
+    # two-lane cost strategy locked in #2565 is observable.
+    effective_tokens_total: float = 0.0
+    per_lane_usd: dict[str, float] = field(default_factory=dict)
+    per_lane_effective_tokens: dict[str, float] = field(default_factory=dict)
 
     @classmethod
     def from_usages(cls, usages: Iterable[AttemptUsage]) -> "CostBreakdown":
         per_tier: dict[str, float] = {}
+        per_lane_usd: dict[str, float] = {}
+        per_lane_et: dict[str, float] = {}
         total = 0.0
+        et_total = 0.0
         count = 0
         for usage in usages:
             cost = attempt_cost_usd(usage)
+            et = usage.effective_tokens
             tier = tier_of_model(usage.model)
+            lane = usage.lane or UNATTRIBUTED_LANE
             per_tier[tier] = per_tier.get(tier, 0.0) + cost
+            per_lane_usd[lane] = per_lane_usd.get(lane, 0.0) + cost
+            per_lane_et[lane] = per_lane_et.get(lane, 0.0) + et
             total += cost
+            et_total += et
             count += 1
-        return cls(total_usd=total, per_tier_usd=per_tier, attempts=count)
+        return cls(
+            total_usd=total,
+            per_tier_usd=per_tier,
+            attempts=count,
+            effective_tokens_total=et_total,
+            per_lane_usd=per_lane_usd,
+            per_lane_effective_tokens=per_lane_et,
+        )
 
 
 def cycle_start(today: date, *, anchor_day: int | None = None) -> date:
@@ -313,11 +372,17 @@ class CostReport:
             f"  cycle-to-date: ${spent:,.2f} / ${self.credit_usd:,.0f} credit ({pct:.0f}%)",
             f"  projected end-of-cycle: ${self.projected_month_end_usd:,.2f}",
             f"  attempts: {self.breakdown.attempts}",
+            f"  effective tokens (ET): {self.breakdown.effective_tokens_total:,.0f}",
         ]
         if self.breakdown.per_tier_usd:
             lines.append("  per model:")
             for tier, amount in sorted(self.breakdown.per_tier_usd.items(), key=lambda kv: -kv[1]):
                 lines.append(f"    {tier}: ${amount:,.2f}")
+        if self.breakdown.per_lane_usd:
+            lines.append("  per lane:")
+            for lane, amount in sorted(self.breakdown.per_lane_usd.items(), key=lambda kv: -kv[1]):
+                et = self.breakdown.per_lane_effective_tokens.get(lane, 0.0)
+                lines.append(f"    {lane}: ${amount:,.2f} (ET {et:,.0f})")
         return lines
 
 
@@ -334,3 +399,4 @@ def register_cost_factories() -> None:
 
     register("cost", "AttemptUsage", AttemptUsage)
     register("cost", "CostBreakdown", CostBreakdown)
+    register("cost", "compute_effective_tokens", compute_effective_tokens)

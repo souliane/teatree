@@ -30,7 +30,7 @@ from django.db.models import Sum
 from django.utils import timezone
 
 from teatree.agents._headless_options import _build_options
-from teatree.agents.harness import ClaudeSdkHarness, Harness, HarnessSession, resolve_harness
+from teatree.agents.harness import ClaudeSdkHarness, Harness, HarnessSession, PydanticAiHarness, resolve_harness
 from teatree.agents.headless_usage import _attempt_usage
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA
 from teatree.agents.skill_bundle import resolve_skill_bundle
@@ -280,7 +280,7 @@ def run_headless(
     failure = _outcome_failure(task, outcome)
     if failure is not None:
         return failure
-    return _record_success(task, outcome, phase=phase)
+    return _record_success(task, outcome, phase=phase, lane=_resolve_dispatch_lane(harness, provider))
 
 
 def _resolve_backend_or_failure(task: Task) -> Harness | TaskAttempt:
@@ -392,6 +392,35 @@ def _provider_child_env(provider: AgentHarnessProvider | None, *, scope: str = "
     if provider is AgentHarnessProvider.API_KEY:
         return resolve_api_key_credential(scope=scope).child_env(os.environ)
     return resolve_subscription_credential(scope=scope).child_env(os.environ)
+
+
+# souliane/teatree#657: the Layer-2 lane (subscription vs metered) each
+# ``AgentHarnessProvider`` authenticates through — ORCA_ROUTER_BYOK is a
+# metered BYOK key, same lane as API_KEY.
+_LANE_BY_PROVIDER: dict[AgentHarnessProvider, str] = {
+    AgentHarnessProvider.SUBSCRIPTION_OAUTH: TaskAttempt.Lane.SUBSCRIPTION,
+    AgentHarnessProvider.API_KEY: TaskAttempt.Lane.METERED,
+    AgentHarnessProvider.ORCA_ROUTER_BYOK: TaskAttempt.Lane.METERED,
+}
+
+
+def _resolve_dispatch_lane(harness: Harness, provider: AgentHarnessProvider | None) -> str:
+    """The Layer-2 lane (souliane/teatree#657/#2887) this dispatch authenticated through.
+
+    A :class:`~teatree.agents.harness.PydanticAiHarness` run always rides
+    OrcaRouter's BYOK metered credential — the only Layer-2 provider valid
+    under ``agent_harness=pydantic_ai`` — so it is unconditionally METERED. A
+    :class:`ClaudeSdkHarness` run is attributable only when an explicit
+    Layer-2 pin (*provider*) was configured: the ambient-credential default
+    (#2887, *provider* is ``None``) authenticates however the ``claude`` CLI's
+    own login state resolves, which is unobservable here, so it stays
+    unattributed (``""``) rather than guessing.
+    """
+    if isinstance(harness, PydanticAiHarness):
+        return TaskAttempt.Lane.METERED
+    if provider is None:
+        return ""
+    return _LANE_BY_PROVIDER[provider]
 
 
 def _sample_usage_closing_connection(task: Task) -> TaskUsage:
@@ -523,13 +552,14 @@ async def _collect(session: HarnessSession, prompt: str) -> HarnessOutcome:
     )
 
 
-def _record_success(task: Task, outcome: HarnessOutcome, *, phase: str = "") -> TaskAttempt:
+def _record_success(task: Task, outcome: HarnessOutcome, *, phase: str = "", lane: str = "") -> TaskAttempt:
     """Record a successful SDK run via the shared recorder.
 
     The schema-key check, the #1284 phase-evidence gate, and the
     complete/fail decision live once in ``attempt_recorder`` so the headless
     SDK path and the in-session ``record-attempt`` path can never drift on the
-    result-envelope contract.
+    result-envelope contract. *lane* is the resolved Layer-2 lane
+    (souliane/teatree#657) this dispatch authenticated through.
     """
     from teatree.agents.attempt_recorder import record_result_envelope  # noqa: PLC0415
 
@@ -537,7 +567,7 @@ def _record_success(task: Task, outcome: HarnessOutcome, *, phase: str = "") -> 
     if not result:
         result = {"summary": outcome.agent_text[:1000]}
 
-    return record_result_envelope(task, result, phase=phase, usage=_attempt_usage(outcome.result_message))
+    return record_result_envelope(task, result, phase=phase, usage=_attempt_usage(outcome.result_message, lane=lane))
 
 
 def _parse_result(agent_text: str) -> dict[str, object]:

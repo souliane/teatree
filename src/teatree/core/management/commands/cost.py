@@ -6,6 +6,11 @@ on each :class:`~teatree.core.models.task_attempt.TaskAttempt` for the current b
 cycle and shows it against the credit, broken down per model, with a linear
 end-of-cycle projection.
 
+Also reports GitHub's agentic-workflow ET (effective tokens) metric
+(souliane/teatree#657) and splits both dollars and ET by Layer-2 lane
+(subscription vs metered, souliane/teatree#2887) so the two-lane cost
+strategy locked in #2565 is observable.
+
 Read-only: every query underneath is a select. The billing-cycle anchor day and
 the credit are configurable in ``~/.teatree.toml`` (``billing_cycle_anchor_day``
 / ``sdk_monthly_credit_usd``); with no anchor the cycle is the calendar month.
@@ -58,6 +63,11 @@ class Command(TyperCommand):
                     "projected_month_end_usd": round(report.projected_month_end_usd, 4),
                     "attempts": breakdown.attempts,
                     "per_model_usd": {tier: round(amount, 4) for tier, amount in breakdown.per_tier_usd.items()},
+                    "effective_tokens_total": round(breakdown.effective_tokens_total, 2),
+                    "per_lane_usd": {lane: round(amount, 4) for lane, amount in breakdown.per_lane_usd.items()},
+                    "per_lane_effective_tokens": {
+                        lane: round(amount, 2) for lane, amount in breakdown.per_lane_effective_tokens.items()
+                    },
                 },
             )
         return "\n".join(report.render_lines())
