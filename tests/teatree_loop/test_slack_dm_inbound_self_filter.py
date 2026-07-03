@@ -1,4 +1,4 @@
-"""Regression: scanner must drop bot's own outbound DMs (#1346).
+"""Regression: scanner must drop bot's own outbound DMs (#1346) and on-behalf posts (#1941).
 
 The Slack inbound bridge enqueues a ``PendingChatInjection`` row for every
 DM the bot's IM channel surfaces. The Socket Mode receiver only filters
@@ -9,16 +9,21 @@ scanner the bot's outbound DMs are persisted, the UserPromptSubmit hook
 injects them as "user replies", and the reactive Slack-answer cycle spawns
 ``t3:answerer`` sub-agents that try to answer the bot's own message.
 
-The filter must apply at the lowest common helper so BOTH downstream
-consumers — the UserPromptSubmit ``handle_inject_pending_chat`` and the
-reactive ``run_slack_answer_cycle`` — inherit it. Filtering at
-``SlackDmInboundScanner.scan()`` (the write side) achieves that: rows that
-fail the filter never reach the DB.
+A second, distinct case (#1941): an automated on-behalf post sent with
+the HUMAN's own Slack token carries the human's own ``user`` id — not the
+bot's — so the #1346 identity filter above never catches it. See
+``TestOnBehalfFilter`` below.
 
-Fail-closed: when the bot's own identity cannot be resolved (network down
-at startup, auth.test returns ok:false), the scanner refuses to enqueue
-any row that turn — better silent than spam-spawning answerer sub-agents
-against unfiltered traffic.
+Both filters apply at the lowest common helper so BOTH downstream
+consumers — the UserPromptSubmit ``handle_inject_pending_chat`` and the
+reactive ``run_slack_answer_cycle`` — inherit them. Filtering at
+``SlackDmInboundScanner.scan()`` (the write side) achieves that: rows that
+fail either filter never reach the DB.
+
+Fail-closed (the #1346 identity filter only): when the bot's own identity
+cannot be resolved (network down at startup, auth.test returns ok:false),
+the scanner refuses to enqueue any row that turn — better silent than
+spam-spawning answerer sub-agents against unfiltered traffic.
 """
 
 from dataclasses import dataclass, field
@@ -226,3 +231,92 @@ class TestSelfFilter:
         scanner.scan()
 
         assert backend.auth_test_calls == 1
+
+
+class TestOnBehalfFilter:
+    """#1941: the scanner must drop on-behalf posts, not genuine human DMs.
+
+    In this single-user 1:1 DM every surviving row already carries the
+    human's own ``user`` id by construction (#1346 strips the bot's own
+    outbound posts before this check runs) — so ``user_id`` alone cannot
+    distinguish a human-typed question from an automated on-behalf post
+    sent with the human's own token (the #2907 regression: comparing
+    ``user_id`` to the resolved Slack user id matched every genuine
+    inbound question too and went silent on real usage, reverted in
+    #2911). ``api_app_id`` is the structural signal Slack stamps on any
+    message posted through the Web API — present even when the post
+    displays under the human's own identity, absent on a message the
+    human actually typed in the Slack client.
+    """
+
+    def test_on_behalf_post_never_yields_an_answering_task(self) -> None:
+        """Failure mode (b): an on-behalf outbound post is dropped, not enqueued."""
+        backend = FakeMessagingWithAuth(
+            dms=[
+                {
+                    "ts": "1780653892.068199",
+                    "user": _USER_ID,
+                    "api_app_id": "A0DEMOAPP1",
+                    "channel": _CHANNEL,
+                    "text": "PR merged — evidence at https://example/pr/1",
+                },
+            ]
+        )
+
+        signals = SlackDmInboundScanner(backend=backend, overlay="demo").scan()
+
+        assert signals == []
+        assert PendingChatInjection.objects.count() == 0
+
+    def test_genuine_human_dm_still_yields_an_answering_task(self) -> None:
+        """Failure mode (a) — the #2907 regression: a real inbound DM must still enqueue.
+
+        Same author id as the on-behalf post above (the human's own
+        ``slack_user_id`` — the only value a genuine DM in this 1:1
+        channel can carry), but with no ``api_app_id`` — a human typed
+        this directly in the Slack client.
+        """
+        backend = FakeMessagingWithAuth(
+            dms=[
+                {
+                    "ts": "1780653900.000000",
+                    "user": _USER_ID,
+                    "channel": _CHANNEL,
+                    "text": "why did the pipeline fail?",
+                },
+            ]
+        )
+
+        signals = SlackDmInboundScanner(backend=backend, overlay="demo").scan()
+
+        rows = list(PendingChatInjection.objects.all())
+        assert len(rows) == 1
+        assert rows[0].text == "why did the pipeline fail?"
+        assert [s.payload["ts"] for s in signals] == ["1780653900.000000"]
+
+    def test_both_failure_modes_in_one_batch(self) -> None:
+        """The two message shapes side by side: only the genuine DM survives."""
+        backend = FakeMessagingWithAuth(
+            dms=[
+                {
+                    "ts": "1.0",
+                    "user": _USER_ID,
+                    "api_app_id": "A0DEMOAPP1",
+                    "channel": _CHANNEL,
+                    "text": "on-behalf answer post",
+                },
+                {
+                    "ts": "2.0",
+                    "user": _USER_ID,
+                    "channel": _CHANNEL,
+                    "text": "how do I resolve this?",
+                },
+            ]
+        )
+
+        signals = SlackDmInboundScanner(backend=backend, overlay="demo").scan()
+
+        rows = list(PendingChatInjection.objects.all())
+        assert len(rows) == 1, f"expected only the genuine DM to persist, got {[r.text for r in rows]}"
+        assert rows[0].text == "how do I resolve this?"
+        assert [s.payload["ts"] for s in signals] == ["2.0"]
