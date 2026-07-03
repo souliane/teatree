@@ -1358,6 +1358,42 @@ class TestUnreadableCommitBodyQuoteGateVisibilityScoped:
         assert handle_quote_scanner_pretool(data) is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
+    def test_public_commit_minus_m_cat_heredoc_dash_form_clean_passes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The POSIX tab-stripping ``<<-DELIM`` heredoc form -- ``_CAT_HEREDOC_SUBST_RE``
+        # matches ``<<-?`` and marks this body "resolved elsewhere" by
+        # :func:`unredirected_heredoc_bodies`. A clean message must still pass.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git_init_remote(repo, "git@github.com:souliane/teatree.git")
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        cmd = "git commit -m \"$(cat <<-'EOF'\n\tfix: a clean commit message\nEOF\n)\""
+        data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(repo)}
+        assert handle_quote_scanner_pretool(data) is False
+        assert capsys.readouterr().out == ""  # clean: no deny JSON
+
+    def test_public_commit_minus_m_cat_heredoc_dash_form_user_quote_still_blocks(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # REGRESSION (cold-review finding on #2927): ``_CAT_HEREDOC_SUBST_RE`` matches
+        # ``<<-?DELIM`` (the tab-stripping ``<<-`` form) and defers scanning to
+        # :func:`unredirected_heredoc_bodies`, but that walker's ``_HEREDOC_RE`` used
+        # to match only plain ``<<DELIM`` -- so a ``<<-'EOF'`` body was marked
+        # "resolved elsewhere" while "elsewhere" silently found nothing, dropping the
+        # body from scanning entirely (not even the fail-closed sentinel fired). A
+        # leaked user quote inside a tab-indented ``<<-'EOF'`` heredoc sailed through
+        # completely undetected. Reproduced RED on pre-fix code (``blocked is False``);
+        # this asserts the real gap is closed through the actual entrypoint.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git_init_remote(repo, "git@github.com:souliane/teatree.git")
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        cmd = "git commit -m \"$(cat <<-'EOF'\n\tthe user said: ship it now without review\nEOF\n)\""
+        data = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(repo)}
+        assert handle_quote_scanner_pretool(data) is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
     def test_public_commit_unreadable_var_message_still_denies(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:

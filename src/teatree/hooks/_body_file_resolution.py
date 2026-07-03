@@ -175,7 +175,7 @@ def resolve_inline_body_value(value: str, base: Path | None, raw: str = "") -> s
 
 
 _HEREDOC_RE: Final[re.Pattern[str]] = re.compile(
-    r"<<\s*['\"]?(\w+)['\"]?\s*\n(.*?)\n\1\b",
+    r"<<-?\s*['\"]?(\w+)['\"]?\s*\n(.*?)\n\1\b",
     re.DOTALL,
 )
 
@@ -188,7 +188,7 @@ _HEREDOC_RE: Final[re.Pattern[str]] = re.compile(
 # with the heredoc delimiter so a later ``-F``/``--body-file <path>`` reference
 # resolves to the body the command is about to write there (#126).
 _HEREDOC_TO_FILE_RE: Final[re.Pattern[str]] = re.compile(
-    r">{1,2}\|?\s*(?P<path>'[^']+'|\"[^\"]+\"|\S+)\s+<<\s*['\"]?(?P<delim>\w+)['\"]?\s*\n(?P<body>.*?)\n(?P=delim)\b",
+    r">{1,2}\|?\s*(?P<path>'[^']+'|\"[^\"]+\"|\S+)\s+<<-?\s*['\"]?(?P<delim>\w+)['\"]?\s*\n(?P<body>.*?)\n(?P=delim)\b",
     re.DOTALL,
 )
 
