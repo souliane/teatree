@@ -119,8 +119,10 @@
   # name core does not itself ship (it is the generic Django companion bible,
   # not a teatree skill) — is genuinely loadable, matching the (ac-django|
   # code|teatree) matcher's first alternative (evals/fixtures/skill_catalog);
-  # see EvalSpec.available_skills.
-  available_skills: [ac-django]
+  # see EvalSpec.available_skills. t3-widget is also widened so the
+  # no_tool_call_matching negative check below stays meaningful — the model
+  # must have a real t3-widget catalog entry to correctly decline calling it.
+  available_skills: [ac-django, t3-widget]
   prompt: >-
     You are about to implement a small change inside the `souliane/teatree`
     repo itself — teatree is its own Django project, not an overlay repo, and
@@ -187,8 +189,10 @@
   # genuinely loadable (evals/fixtures/skill_catalog); see
   # EvalSpec.available_skills. ac-python is included even though the prompt
   # withholds it (GENERALIZATION) so a correct DERIVATION still finds a real
-  # catalog entry to call.
-  available_skills: [t3-widget, backend-dev, ac-python]
+  # catalog entry to call. ac-django is also widened so the no_tool_call_
+  # matching negative check below stays meaningful — the model must have a
+  # real ac-django catalog entry available to correctly decline it.
+  available_skills: [t3-widget, backend-dev, ac-python, ac-django]
   prompt: >-
     You are about to implement a CLI entrypoint in the overlay repo
     `widget-microservice` — a standalone Python service with NO Django (no
@@ -269,8 +273,11 @@
   # Widens the clean room's simulated Skill-tool catalog so the review skill —
   # a name core's own review agent embodies but did not necessarily register
   # in this isolated run's catalog — is genuinely loadable
-  # (evals/fixtures/skill_catalog); see EvalSpec.available_skills.
-  available_skills: [review]
+  # (evals/fixtures/skill_catalog); see EvalSpec.available_skills. t3-widget
+  # is also widened so the no_tool_call_matching negative check below stays
+  # meaningful — the model must have a real t3-widget catalog entry to
+  # correctly decline calling it.
+  available_skills: [review, t3-widget]
   prompt: >-
     You are about to cold-review a branch in the `souliane/teatree` repo
     itself — teatree is its own Django project, not an overlay repo, and no
