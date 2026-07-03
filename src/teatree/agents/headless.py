@@ -21,6 +21,7 @@ import os
 import shutil
 import time
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, RateLimitEvent, ResultMessage, TextBlock
 from claude_agent_sdk.types import RateLimitInfo
@@ -30,17 +31,29 @@ from django.db.models import Sum
 from django.utils import timezone
 
 from teatree.agents._headless_options import _build_options
-from teatree.agents.harness import ClaudeSdkHarness, Harness, HarnessSession, PydanticAiHarness, resolve_harness
+from teatree.agents.harness import (
+    ClaudeSdkHarness,
+    Harness,
+    HarnessSession,
+    PydanticAiHarness,
+    pydantic_ai_thread,
+    resolve_harness,
+)
+from teatree.agents.headless_budget import TicketBudget
 from teatree.agents.headless_usage import _attempt_usage
+from teatree.agents.pydantic_ai_resume import maybe_persist_on_park, persist_parked_thread
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA
 from teatree.agents.skill_bundle import resolve_skill_bundle
 from teatree.config import AgentHarness, AgentHarnessProvider, get_effective_settings
-from teatree.core.models import Task, TaskAttempt, Ticket
+from teatree.core.models import Task, TaskAttempt
 from teatree.credential_config import resolve_api_key_credential, resolve_subscription_credential
 from teatree.llm.anthropic_limits import LimitMatch, classify_limit, classify_rate_limit_type
 from teatree.llm.credentials import CredentialError
 from teatree.skill_support.loading import SkillLoadingPolicy
 from teatree.types import SkillMetadata
+
+if TYPE_CHECKING:
+    from pydantic_ai.messages import ModelMessage
 
 logger = logging.getLogger(__name__)
 
@@ -53,15 +66,6 @@ _HEARTBEAT_INTERVAL = 60  # seconds
 _DEFAULT_WATCHDOG = {
     "max_runtime_seconds": 3 * 60 * 60,  # 3h — well past any healthy phase task
     "max_turns": 0,  # 0 = disabled
-    "max_cost_usd": 0.0,  # 0 = disabled
-}
-
-# Conservative documented default (#885 / #398-4): the per-ticket cumulative
-# cost cap is opt-in. ``0.0`` = disabled, so installing this consumer changes
-# no behaviour until the user configures a ceiling — the same precedent #882
-# set for the watchdog's absolute cost dimension. The user picks a ceiling
-# that matches their budget appetite once they want batch runs bounded.
-_DEFAULT_TICKET_BUDGET = {
     "max_cost_usd": 0.0,  # 0 = disabled
 }
 
@@ -127,39 +131,6 @@ class LoopWatchdog:
                 return f"turns ceiling exceeded: {usage.turns} turns > {self.max_turns} without progress"
             if self.max_cost_usd and usage.cost_usd > self.max_cost_usd:
                 return f"cost ceiling exceeded: ${usage.cost_usd:.2f} > ${self.max_cost_usd:.2f} without progress"
-        return None
-
-
-@dataclass(frozen=True)
-class TicketBudget:
-    """Per-ticket cumulative cost cap consumer (#885 / #398-4).
-
-    Where ``LoopWatchdog`` bounds a *single in-flight run* (it interrupts a
-    runaway mid-run from the heartbeat thread), this consumer bounds the
-    *whole ticket's lifetime spend* at dispatch time. Before a task's agent is
-    launched it sums ``TaskAttempt.cost_usd`` across every task under the
-    ticket; once the cumulative spend crosses the configured ceiling no
-    further attempt is dispatched and a ``budget_exceeded`` ``TaskAttempt``
-    failure is recorded (``task.fail()`` runs), surfacing the breach on the
-    failure record. A ceiling of ``0.0`` disables the cap.
-    """
-
-    max_cost_usd: float
-
-    @classmethod
-    def from_settings(cls) -> "TicketBudget":
-        configured = getattr(settings, "TEATREE_TICKET_BUDGET", None) or _DEFAULT_TICKET_BUDGET
-        return cls(max_cost_usd=float(configured.get("max_cost_usd", 0.0)))
-
-    def breach_reason(self, ticket: Ticket) -> str | None:
-        """Return a reason string with the observed total, or ``None`` if healthy."""
-        if not self.max_cost_usd:
-            return None
-        total = TaskAttempt.objects.filter(task__ticket=ticket).aggregate(cost=Sum("cost_usd"))["cost"] or 0.0
-        if total > self.max_cost_usd:
-            return (
-                f"budget_exceeded: ticket spent ${total:.2f} > cap ${self.max_cost_usd:.2f} — refusing further dispatch"
-            )
         return None
 
 
@@ -234,6 +205,8 @@ class HarnessOutcome:
     #: SDK's unambiguous typed field. ``None`` when the stream named no rejected
     #: window — the classifier then falls back to phrase-matching the result text.
     rate_limit_info: RateLimitInfo | None = None
+    #: (#2886) The pydantic_ai session's conversation, ``None`` for every other backend.
+    thread: "list[ModelMessage] | None" = None
 
 
 def run_headless(
@@ -244,6 +217,15 @@ def run_headless(
 ) -> TaskAttempt:
     """Run a headless task in-process via ``claude-agent-sdk``."""
     from teatree.agents.prompt import build_system_context, build_task_prompt  # noqa: PLC0415
+
+    # Checked BEFORE resolving the harness (souliane/teatree#2916): for a
+    # resumed pydantic_ai task, resolving the harness destructively pops the
+    # parked ancestor's thread. A budget-breached ticket must never trigger
+    # that pop, or the conversation is lost even though the run never starts.
+    budget_breach = TicketBudget.from_settings().breach_reason(task.ticket)
+    if budget_breach is not None:
+        logger.warning("Refusing dispatch for task %s: %s", task.pk, budget_breach)
+        return _record_failure(task, error=budget_breach)
 
     backend = _resolve_backend_or_failure(task)
     if isinstance(backend, TaskAttempt):
@@ -258,11 +240,6 @@ def run_headless(
         return child_env_result
     child_env = child_env_result
 
-    budget_breach = TicketBudget.from_settings().breach_reason(task.ticket)
-    if budget_breach is not None:
-        logger.warning("Refusing dispatch for task %s: %s", task.pk, budget_breach)
-        return _record_failure(task, error=budget_breach)
-
     prompt = build_task_prompt(task, skills=skills)
     lifecycle_skill = SkillLoadingPolicy.lifecycle_for_phase(phase)
     system_context = build_system_context(task, skills=skills, lifecycle_skill=lifecycle_skill)
@@ -274,6 +251,10 @@ def run_headless(
         # A non-ClaudeSdkHarness resolves its own credential lazily inside
         # ``harness.open`` — this is the same "fail loud, record it" contract
         # the eager ``child_env`` catch above gives the ClaudeSdkHarness.
+        # ``resolve_harness`` (above) already popped any resumed pydantic_ai
+        # thread as a side effect of BUILDING the harness — restore it, since
+        # a run that never opened never actually consumed it (#2916).
+        _restore_unconsumed_resume_thread(harness)
         logger.warning("Refusing dispatch for task %s: %s", task.pk, exc)
         return _record_failure(task, error=str(exc))
 
@@ -281,6 +262,21 @@ def run_headless(
     if failure is not None:
         return failure
     return _record_success(task, outcome, phase=phase, lane=_resolve_dispatch_lane(harness, provider))
+
+
+def _restore_unconsumed_resume_thread(harness: Harness) -> None:
+    """Re-persist a pydantic_ai resume thread popped but never actually driven.
+
+    ``resolve_harness`` pops a resumed pydantic_ai task's parked thread as a
+    side effect of BUILDING the harness — before ``harness.open()`` ever
+    runs, the only point OrcaRouter's credential resolves. When ``open()``
+    then fails, the popped thread would otherwise be silently and
+    irrecoverably lost even though the run never happened
+    (souliane/teatree#2916). A no-op for every other harness, and for a fresh
+    (non-resumed) pydantic_ai dispatch.
+    """
+    if isinstance(harness, PydanticAiHarness) and harness.resume_source is not None and harness.history:
+        persist_parked_thread(harness.resume_source, harness.history)
 
 
 def _resolve_backend_or_failure(task: Task) -> Harness | TaskAttempt:
@@ -293,7 +289,7 @@ def _resolve_backend_or_failure(task: Task) -> Harness | TaskAttempt:
     for a FUTURE reserved backend value.
     """
     try:
-        return resolve_harness()
+        return resolve_harness(task)
     except NotImplementedError as exc:
         return _record_failure(task, error=str(exc))
 
@@ -549,6 +545,7 @@ async def _collect(session: HarnessSession, prompt: str) -> HarnessOutcome:
         result_message=result_message,
         stuck_reason=None,
         rate_limit_info=rate_limit_info,
+        thread=pydantic_ai_thread(session),  # (#2886) captured while `session` is still open
     )
 
 
@@ -567,6 +564,7 @@ def _record_success(task: Task, outcome: HarnessOutcome, *, phase: str = "", lan
     if not result:
         result = {"summary": outcome.agent_text[:1000]}
 
+    maybe_persist_on_park(task, result, outcome.thread)  # (#2886)
     return record_result_envelope(task, result, phase=phase, usage=_attempt_usage(outcome.result_message, lane=lane))
 
 

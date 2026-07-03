@@ -10,6 +10,8 @@ from unittest.mock import patch
 import pytest
 from claude_agent_sdk.types import RateLimitType
 from django.test import TestCase, override_settings
+from pydantic_ai import Agent
+from pydantic_ai.models.test import TestModel
 
 import teatree.agents.harness as harness_mod
 import teatree.agents.headless as headless_mod
@@ -18,7 +20,6 @@ from teatree.agents.harness import ClaudeSdkHarness, PydanticAiHarness
 from teatree.agents.headless import (
     LoopWatchdog,
     TaskUsage,
-    TicketBudget,
     _drive_with_heartbeat,
     _limit_match,
     _parse_result,
@@ -30,6 +31,7 @@ from teatree.agents.headless import (
 )
 from teatree.agents.headless_usage import _safe_float, _safe_int
 from teatree.agents.model_tiering import TIER_EFFORT, TIER_MODELS
+from teatree.agents.pydantic_ai_resume import persist_parked_thread
 from teatree.config import AgentHarnessProvider
 from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket
 from teatree.llm.anthropic_limits import LimitCause
@@ -898,68 +900,6 @@ class TestRunHeadlessRecordsStuckLoop(TestCase):
         assert elapsed < 10, f"watchdog did not cut the runaway stream short: {elapsed:.1f}s"
 
 
-class TestTicketBudget(TestCase):
-    """Per-ticket cumulative cost-cap consumer (#885 / #398-4)."""
-
-    def setUp(self) -> None:
-        self.ticket = Ticket.objects.create()
-        self.session = Session.objects.create(ticket=self.ticket)
-        self.task = Task.objects.create(ticket=self.ticket, session=self.session)
-
-    def test_disabled_budget_never_refuses(self) -> None:
-        TaskAttempt.objects.create(task=self.task, cost_usd=9999.0)
-        budget = TicketBudget(max_cost_usd=0.0)
-        assert budget.breach_reason(self.ticket) is None
-
-    def test_under_cap_does_not_refuse(self) -> None:
-        TaskAttempt.objects.create(task=self.task, cost_usd=2.0)
-        budget = TicketBudget(max_cost_usd=5.0)
-        assert budget.breach_reason(self.ticket) is None
-
-    def test_over_cap_refuses_with_observed_total(self) -> None:
-        TaskAttempt.objects.create(task=self.task, cost_usd=4.0)
-        TaskAttempt.objects.create(task=self.task, cost_usd=3.5)
-        budget = TicketBudget(max_cost_usd=5.0)
-        reason = budget.breach_reason(self.ticket)
-        assert reason is not None
-        assert "budget" in reason
-        assert "7.50" in reason
-        assert "5.00" in reason
-
-    def test_sums_across_all_tasks_of_the_ticket(self) -> None:
-        other_session = Session.objects.create(ticket=self.ticket)
-        other_task = Task.objects.create(ticket=self.ticket, session=other_session)
-        TaskAttempt.objects.create(task=self.task, cost_usd=3.0)
-        TaskAttempt.objects.create(task=other_task, cost_usd=3.0)
-        budget = TicketBudget(max_cost_usd=5.0)
-        reason = budget.breach_reason(self.ticket)
-        assert reason is not None
-        assert "6.00" in reason
-
-    def test_ignores_other_tickets(self) -> None:
-        other_ticket = Ticket.objects.create()
-        other_session = Session.objects.create(ticket=other_ticket)
-        other_task = Task.objects.create(ticket=other_ticket, session=other_session)
-        TaskAttempt.objects.create(task=other_task, cost_usd=99.0)
-        TaskAttempt.objects.create(task=self.task, cost_usd=1.0)
-        budget = TicketBudget(max_cost_usd=5.0)
-        assert budget.breach_reason(self.ticket) is None
-
-    def test_from_settings_reads_configured_cap(self) -> None:
-        with override_settings(TEATREE_TICKET_BUDGET={"max_cost_usd": 12.5}):
-            budget = TicketBudget.from_settings()
-        assert budget.max_cost_usd == pytest.approx(12.5)
-
-    def test_from_settings_defaults_to_disabled(self) -> None:
-        with override_settings():
-            from django.conf import settings  # noqa: PLC0415
-
-            if hasattr(settings, "TEATREE_TICKET_BUDGET"):
-                del settings.TEATREE_TICKET_BUDGET
-            budget = TicketBudget.from_settings()
-        assert budget.max_cost_usd == pytest.approx(0.0)
-
-
 class TestRunHeadlessRefusesOverBudgetTicket(TestCase):
     """run_headless refuses dispatch and records a budget_exceeded failure."""
 
@@ -1004,6 +944,35 @@ class TestRunHeadlessRefusesOverBudgetTicket(TestCase):
         task.refresh_from_db()
         assert attempt.exit_code == 0
         assert task.status == Task.Status.COMPLETED
+
+    def test_over_budget_resumed_pydantic_ai_task_preserves_the_parked_thread(self) -> None:
+        """(souliane/teatree#2916 review) A budget-refused RESUME must not lose the parked thread.
+
+        ``resolve_harness`` pops a resumed pydantic_ai task's parked ancestor
+        thread as a side effect of just BUILDING the harness — before this fix
+        the budget gate ran after that pop, so a budget-breached resume
+        permanently destroyed the conversation even though the run never
+        started. The entry must still be there (poppable) after the refusal.
+        """
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+        agent = Agent(TestModel(custom_output_text="hi"))
+        history = asyncio.run(agent.run("hello")).all_messages()
+        parked = Task.objects.create(ticket=self.ticket, session=self.session)
+        persist_parked_thread(parked, history)
+
+        spent = Task.objects.create(ticket=self.ticket, session=self.session)
+        TaskAttempt.objects.create(task=spent, cost_usd=8.0)
+        resumed = Task.objects.create(ticket=self.ticket, session=self.session, parent_task=parked)
+
+        with override_settings(TEATREE_TICKET_BUDGET={"max_cost_usd": 5.0}):
+            attempt = run_headless(resumed, phase="coding", overlay_skill_metadata={})
+
+        resumed.refresh_from_db()
+        assert attempt.exit_code != 0
+        assert "budget_exceeded" in attempt.error
+        assert resumed.status == Task.Status.FAILED
+        self.ticket.refresh_from_db()
+        assert str(parked.pk) in self.ticket.extra.get("pydantic_ai_threads", {})
 
 
 # --- SDK options / model tiering (#880) ---
