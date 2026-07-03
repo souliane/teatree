@@ -7,6 +7,7 @@ the swap is invisible to the grader. The SDK is mocked here — no metered calls
 """
 
 import asyncio
+import dataclasses
 import os
 from collections.abc import AsyncIterator
 from contextlib import contextmanager
@@ -657,6 +658,99 @@ class TestBuildSdkOptionsBudget:
         # this is the seam the benchmark's generous cap threads through.
         config = _config(tmp_path, max_budget_usd=2.5)
         assert build_sdk_options(config).max_budget_usd == pytest.approx(2.5)
+
+
+def _skills_config(tmp_path: Path, *, skills: tuple[str, ...] = ()) -> CleanRoomConfig:
+    return CleanRoomConfig(
+        system_prompt="sp",
+        workspace=tmp_path,
+        cwd=str(tmp_path),
+        env={},
+        allowed_tools=("Bash",),
+        model="haiku",
+        max_turns=3,
+        skills=skills,
+    )
+
+
+class TestBuildSdkOptionsSkillCatalog:
+    """A scenario's ``available_skills`` widens the clean room's simulated catalog.
+
+    The eval-skill-catalog fixture gap (#2630-family): a scenario prompt that
+    references a skill name core does not itself ship (a placeholder overlay's
+    workspace/legal-entity skill, a companion language bible, the review skill
+    named without a leading slash) needs that name to be genuinely LISTED, or
+    the agent's own "only invoke a listed skill" refusal correctly declines to
+    call it. This is a WIDENING lever only — a scenario declaring no
+    ``available_skills`` must see byte-identical ``ClaudeAgentOptions``.
+    """
+
+    def test_no_declared_skills_leaves_options_untouched(self, tmp_path: Path) -> None:
+        options = build_sdk_options(_skills_config(tmp_path))
+        assert options.skills is None
+        assert options.plugins == []
+
+    def test_declared_skills_populate_the_skills_filter(self, tmp_path: Path) -> None:
+        config = _skills_config(tmp_path, skills=("t3-widget", "ac-django"))
+        options = build_sdk_options(config)
+        assert options.skills == ["t3-widget", "ac-django"]
+
+    def test_declared_skills_register_the_fixture_plugin(self, tmp_path: Path) -> None:
+        config = _skills_config(tmp_path, skills=("t3-widget",))
+        options = build_sdk_options(config)
+        assert len(options.plugins) == 1
+        assert options.plugins[0]["type"] == "local"
+        assert options.plugins[0]["path"].endswith("evals/fixtures/skill_catalog")
+
+    def test_fixture_plugin_path_is_a_real_local_plugin_on_disk(self, tmp_path: Path) -> None:
+        # Anti-vacuity: the registered path must actually resolve to a real
+        # plugin directory (a valid plugin.json + at least one skill), or the
+        # widening is a no-op that still leaves the model's catalog empty.
+        from teatree.eval.api_runner import _skill_catalog_fixture_plugin  # noqa: PLC0415
+
+        plugin_dir = Path(_skill_catalog_fixture_plugin()["path"])
+        assert (plugin_dir / ".claude-plugin" / "plugin.json").is_file()
+        assert list(plugin_dir.glob("skills/*/SKILL.md")), "fixture plugin ships no skills"
+
+    def test_every_scenario_declared_skill_has_a_fixture_entry(self) -> None:
+        # Anti-drift: every skill name any shipped scenario declares via
+        # available_skills must resolve to a real fixture skill directory, or a
+        # scenario author's typo silently widens the catalog with nothing.
+        from teatree.eval.api_runner import _skill_catalog_fixture_plugin  # noqa: PLC0415
+        from teatree.eval.discovery import discover_specs  # noqa: PLC0415
+
+        plugin_dir = Path(_skill_catalog_fixture_plugin()["path"])
+        fixture_names = {p.parent.name for p in plugin_dir.glob("skills/*/SKILL.md")}
+        declared: set[str] = set()
+        for spec in discover_specs():
+            declared.update(spec.available_skills)
+        missing = declared - fixture_names
+        assert not missing, f"scenario(s) declare available_skills with no fixture entry: {sorted(missing)}"
+
+    def test_runner_threads_spec_available_skills_into_options(self, tmp_path: Path) -> None:
+        # End-to-end: EvalSpec.available_skills -> CleanRoomConfig.skills ->
+        # ClaudeAgentOptions.skills, through the real ApiInProcessRunner.run().
+        spec = _spec(tmp_path)
+        spec = dataclasses.replace(spec, available_skills=("t3-widget", "widget-le"))
+        query, captured = _fake_query([_result()])
+        with (
+            patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.api_runner.query", query),
+        ):
+            ApiInProcessRunner(workspace=tmp_path).run(spec)
+        assert captured["options"].skills == ["t3-widget", "widget-le"]
+        assert len(captured["options"].plugins) == 1
+
+    def test_runner_without_available_skills_matches_prior_behaviour(self, tmp_path: Path) -> None:
+        spec = _spec(tmp_path)
+        query, captured = _fake_query([_result()])
+        with (
+            patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.api_runner.query", query),
+        ):
+            ApiInProcessRunner(workspace=tmp_path).run(spec)
+        assert captured["options"].skills is None
+        assert captured["options"].plugins == []
 
 
 class TestCalibratedCaps:

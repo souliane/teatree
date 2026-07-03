@@ -18,6 +18,10 @@
   tier: balanced
   max_turns: 4
   tools: [Skill, Bash]
+  # Widens the clean room's simulated Skill-tool catalog so /t3-widget — a
+  # name core does not itself ship — is genuinely loadable
+  # (evals/fixtures/skill_catalog); see EvalSpec.available_skills.
+  available_skills: [t3-widget]
   prompt: >-
     You are about to cold-review merge request !4120 in the overlay-managed repo
     `widget-le-service`. Skill prose does not auto-load into a review context and
