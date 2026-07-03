@@ -155,11 +155,6 @@ ET_MODEL_MULTIPLIER: dict[str, float] = {
     "haiku": 0.05,
 }
 
-# Unrecognised model: price at the most expensive known tier so an unknown
-# model's ET is never under-counted (mirrors PRICE_TABLE's own conservative
-# fallback via ``tier_of_model``).
-_DEFAULT_ET_MULTIPLIER = ET_MODEL_MULTIPLIER["opus"]
-
 # The Layer-2 lane (souliane/teatree#2887) a dispatch's usage is unattributable
 # to — no explicit ``agent_harness_provider`` pin was configured, so the
 # ambient-credential default authenticated however the ``claude`` CLI's own
@@ -189,8 +184,14 @@ class AttemptUsage:
 
 
 def compute_effective_tokens(usage: AttemptUsage) -> float:
-    """GitHub's agentic-workflow ET formula: ``m*(1.0*I + 0.1*C + 4.0*O)``."""
-    multiplier = ET_MODEL_MULTIPLIER.get(tier_of_model(usage.model), _DEFAULT_ET_MULTIPLIER)
+    """GitHub's agentic-workflow ET formula: ``m*(1.0*I + 0.1*C + 4.0*O)``.
+
+    ``tier_of_model`` only ever returns a :data:`PRICE_TABLE` key, and
+    :data:`ET_MODEL_MULTIPLIER` mirrors that same key set 1:1, so a direct
+    index is safe — and fails loudly (not a silently-wrong multiplier) the
+    day the two dicts are ever allowed to drift apart.
+    """
+    multiplier = ET_MODEL_MULTIPLIER[tier_of_model(usage.model)]
     return multiplier * (1.0 * usage.input_tokens + 0.1 * usage.cache_read_tokens + 4.0 * usage.output_tokens)
 
 
@@ -399,4 +400,3 @@ def register_cost_factories() -> None:
 
     register("cost", "AttemptUsage", AttemptUsage)
     register("cost", "CostBreakdown", CostBreakdown)
-    register("cost", "compute_effective_tokens", compute_effective_tokens)

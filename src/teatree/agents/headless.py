@@ -416,7 +416,11 @@ def _resolve_dispatch_lane(harness: Harness, provider: AgentHarnessProvider | No
         return TaskAttempt.Lane.METERED
     if provider is None:
         return ""
-    return _LANE_BY_PROVIDER[provider]
+    # A future AgentHarnessProvider member added without a matching entry
+    # here must not surface as a KeyError: that would be caught by the
+    # broad ``except Exception`` in ``tasks.py``'s SDK executor and record
+    # an otherwise-successful, already-billed run as a FAILED attempt.
+    return _LANE_BY_PROVIDER.get(provider, "")
 
 
 def _sample_usage_closing_connection(task: Task) -> TaskUsage:

@@ -11,6 +11,18 @@ Also reports GitHub's agentic-workflow ET (effective tokens) metric
 (subscription vs metered, souliane/teatree#2887) so the two-lane cost
 strategy locked in #2565 is observable.
 
+The lane split only covers HEADLESS attempts, matching this command's
+existing scope (the credit tracks headless spend only — see below). Under
+the default ambient-credential dispatch (no explicit
+``agent_harness_provider`` pin) a headless run's lane is unattributed
+(``""``, dropped from ``per_lane_*``); ``subscription`` only appears here
+for a headless run explicitly pinned to ``subscription_oauth``. Interactive
+``/loop`` sub-agent turns ride the user's own subscription too and DO
+carry ``lane=subscription`` on their ``TaskAttempt`` row, but that row's
+``execution_target`` is ``interactive`` so it is excluded from this
+report by design — see ``TaskAttempt.objects.usages()`` for the full,
+lane-unfiltered picture across both execution targets.
+
 Read-only: every query underneath is a select. The billing-cycle anchor day and
 the credit are configurable in ``~/.teatree.toml`` (``billing_cycle_anchor_day``
 / ``sdk_monthly_credit_usd``); with no anchor the cycle is the calendar month.
