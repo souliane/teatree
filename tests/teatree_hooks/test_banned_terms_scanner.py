@@ -1890,6 +1890,92 @@ class TestDestinationAwareGate:
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
 
+class TestPythonRestPublishGate:
+    """Regression guard for the gap found via PR #2943.
+
+    A ``python3``/``python`` REST-publish segment (``requests``/``httpx``/
+    ``urllib`` POSTing/PATCHing to a forge REST API -- the "Post or Update
+    Note with Images" recipe in ``skills/platforms/references/gitlab.md``)
+    was never classified as a publish at all, so ``extract_publish_payload``
+    returned ``None`` and the gate never even ran, on ANY repo, public or
+    private.
+
+    RED-before-fix: ``extract_publish_payload`` returned ``None`` for every
+    row here, so the gate never blocked the public-repo row and never got the
+    chance to skip the private-repo row -- both looked "clean" for the wrong
+    reason. Mirrors the ``gh``/``glab`` structure in ``TestDestinationAwareGate``.
+    """
+
+    @staticmethod
+    def _python_post(url: str) -> str:
+        return (
+            f"python3 -c \"import requests; requests.post('{url}', "
+            "json={'body': 'ship to acmecorp'}, headers={'PRIVATE-TOKEN': token})\""
+        )
+
+    def test_extract_publish_payload_is_no_longer_none(self) -> None:
+        # The core gap: pre-fix, this returned None (not a recognised publish),
+        # so the gate short-circuited before ever reaching the visibility scan.
+        command = self._python_post("https://api.github.com/repos/souliane/teatree/issues/5/comments")
+        payload = banned_terms_scanner.extract_publish_payload("Bash", {"command": command})
+        assert payload is not None
+        assert "acmecorp" in payload
+
+    def test_banned_term_via_python_post_to_public_repo_is_blocked(self, capsys: pytest.CaptureFixture[str]) -> None:
+        command = self._python_post("https://api.github.com/repos/souliane/teatree/issues/5/comments")
+        blocked = handle_banned_terms_pretool(_bash(command))
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_banned_term_via_python_post_to_internal_namespace_is_allowed(self) -> None:
+        command = self._python_post("https://gitlab.com/api/v4/projects/internalcorp%2Fprivate-svc/notes")
+        blocked = handle_banned_terms_pretool(_bash(command))
+        assert blocked is False
+
+    def test_banned_term_via_python_post_to_allowlisted_private_repo_is_allowed(self) -> None:
+        command = self._python_post("https://api.github.com/repos/acmecorp-engineering/product/issues/5/comments")
+        blocked = handle_banned_terms_pretool(_bash(command))
+        assert blocked is False
+
+    def test_clean_python_post_to_public_repo_passes(self, capsys: pytest.CaptureFixture[str]) -> None:
+        command = (
+            'python3 -c "import requests; requests.post('
+            "'https://api.github.com/repos/souliane/teatree/issues/5/comments', "
+            "json={'body': 'clean note'}, headers={'Authorization': 'Bearer ' + token})\""
+        )
+        blocked = handle_banned_terms_pretool(_bash(command))
+        assert blocked is False
+        assert capsys.readouterr().out == ""
+
+    def test_heredoc_fed_python_post_to_public_repo_is_blocked(self, capsys: pytest.CaptureFixture[str]) -> None:
+        command = (
+            "python3 << 'PYEOF'\n"
+            "import json, urllib.request\n"
+            "url = 'https://gitlab.com/api/v4/projects/souliane%2Fteatree/merge_requests/5/notes'\n"
+            "body = json.dumps({'body': 'ship to acmecorp'}).encode()\n"
+            "req = urllib.request.Request(url, data=body, method='POST', "
+            "headers={'PRIVATE-TOKEN': 'x'})\n"
+            "urllib.request.urlopen(req)\n"
+            "PYEOF"
+        )
+        blocked = handle_banned_terms_pretool(_bash(command))
+        assert blocked is True
+        assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
+
+    def test_unrelated_python_one_liner_with_secret_shaped_string_is_not_blocked(self) -> None:
+        # Independent-review finding (codex, this ticket): gating the ``-c``
+        # payload walker on the python LEADER alone (not the write+forge
+        # classification) fed every python ``-c`` script into
+        # ``secret_scan_text`` -- which runs BEFORE ``is_publish_command`` and
+        # regardless of destination -- so a purely local, non-networked
+        # one-liner that merely PRINTS a secret-shaped string was false-
+        # blocked as a "publish payload" it never was.
+        secret = "sk-ant-api03-" + "a" * 90
+        command = f"python3 -c \"token='{secret}'; print(token[:3])\""
+        blocked = handle_banned_terms_pretool(_bash(command))
+        assert blocked is False
+
+
 class TestFormatBlockMessage:
     def test_message_names_the_term_and_the_override(self) -> None:
         message = banned_terms_scanner.format_block_message("acmecorp")

@@ -45,6 +45,7 @@ from typing import Final
 
 from teatree.hooks._command_parser import first_segment_words
 from teatree.hooks._gh_glab_hiding import token_has_substitution_marker, token_is_transport_construct
+from teatree.hooks._python_rest_detection import find_python_forge_rest_urls, is_python_leader
 from teatree.hooks._repo_visibility import (
     _config_path,
     forge_qualified_slug,
@@ -337,6 +338,29 @@ def _destination_from_t3_review(words: list[str]) -> Destination | None:
     return None
 
 
+def _destination_from_python_script(words: list[str]) -> Destination | None:
+    """Resolve the destination of a python REST-publish segment from its URL literal.
+
+    Reuses :func:`_publish_detection.find_python_forge_rest_urls` -- the SAME
+    ``repos/<owner>/<repo>`` (GitHub) / ``api/v<N>/projects/<slug>`` (GitLab)
+    path resolution :func:`_destination_from_api` applies to a ``gh``/``glab
+    api`` URL argument, now applied to a URL LITERAL embedded in the script
+    text. Resolution is orthogonal to read/write (mirrors
+    ``_destination_from_api``, which resolves a ``gh api ... --method GET``
+    target too) -- the write/read gate is
+    :func:`_publish_detection.segment_is_python_rest_publish`, upstream of
+    this resolver. A dynamically-built URL (string concatenation) carries no
+    literal ``https?://`` substring and resolves to ``None`` -- genuinely
+    unresolvable, not private.
+    """
+    if not words or not is_python_leader(words[0]):
+        return None
+    source = " ".join(words[1:])
+    for forge, slug in find_python_forge_rest_urls(source):
+        return Destination(slug=slug, via="api", forge=forge)
+    return None
+
+
 def _destination_from_words(words: list[str], cwd: Path | None) -> Destination | None:
     """Resolve the publish destination of one command segment's word list.
 
@@ -350,6 +374,9 @@ def _destination_from_words(words: list[str], cwd: Path | None) -> Destination |
     t3_dest = _destination_from_t3_review(words)
     if t3_dest is not None:
         return t3_dest
+    python_dest = _destination_from_python_script(words)
+    if python_dest is not None:
+        return python_dest
     if words[0] not in {"gh", "glab"}:
         return None
     explicit = _extract_repo_flag(words)
@@ -377,6 +404,10 @@ def resolve_publish_destination(command: str, cwd: Path | None = None) -> Destin
     - ``gh``/``glab`` ``pr``/``issue``/``mr`` ``create``/``comment``/``note``
         with no ``--repo`` flag -- the CURRENT repo, via the git remote of
         ``cwd``.
+    - a ``python3``/``python``-led REST-publish script -- the SAME
+        ``repos/``/``projects/`` path shape, resolved from a URL LITERAL in
+        the script text (:func:`_destination_from_python_script`) instead of
+        a CLI flag/positional.
 
     Resolves only the FIRST command segment;
     :func:`public_visibility.gate_skips_for_visibility` is the multi-segment

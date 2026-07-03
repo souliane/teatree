@@ -772,3 +772,91 @@ class TestRestrictedPathCwdResolution:
         monkeypatch.setenv("PATH", "")
         cmd = "gh pr create --title x --body y"
         assert public_visibility.gate_skips_for_visibility(cmd, repo, config_path=cfg) is False
+
+
+_GITLAB_PRIVATE_NOTE_URL = "https://gitlab.com/api/v4/projects/internalcorp%2Fprivate-svc/merge_requests/5/notes"
+_GITHUB_PRIVATE_COMMENT_URL = "https://api.github.com/repos/internalcorp/private-svc/issues/5/comments"
+_GITHUB_PUBLIC_COMMENT_URL = "https://api.github.com/repos/souliane/teatree/issues/5/comments"
+
+
+def _python_post_command(url: str) -> str:
+    return (
+        f"python3 -c \"import requests; requests.post('{url}', "
+        "json={'body': 'note'}, headers={'PRIVATE-TOKEN': token})\""
+    )
+
+
+class TestPythonRestScriptDestination:
+    """A python REST-publish script resolves a destination the SAME way a raw ``gh``/``glab api`` URL does.
+
+    Reuses the identical ``repos/<owner>/<repo>`` / ``api/v<N>/projects/<slug>``
+    path resolution (#1415/#1213 gap: a ``python3``/``python`` REST-publish
+    segment was never classified as a publish at all, so the leak scan never
+    even ran against it).
+    """
+
+    def test_resolve_gitlab_projects_path_from_python_script(self) -> None:
+        dest = publish_destination.resolve_publish_destination(_python_post_command(_GITLAB_PRIVATE_NOTE_URL))
+        assert dest is not None
+        assert dest.slug == "internalcorp/private-svc"
+        assert dest.forge == "gitlab"
+
+    def test_resolve_github_repos_path_from_python_script(self) -> None:
+        dest = publish_destination.resolve_publish_destination(_python_post_command(_GITHUB_PRIVATE_COMMENT_URL))
+        assert dest is not None
+        assert dest.slug == "internalcorp/private-svc"
+        assert dest.forge == "github"
+
+    def test_read_only_script_still_resolves_a_destination(self) -> None:
+        # Destination RESOLUTION is orthogonal to read/write -- mirroring
+        # ``_destination_from_api`` (a ``gh api ... --method GET`` resolves a
+        # slug too). The write-vs-read gate is ``segment_is_python_rest_publish``
+        # upstream (the whole leak scan never runs for a read-only script), not
+        # this resolver.
+        command = "python3 -c \"import requests; requests.get('https://api.github.com/repos/o/r')\""
+        dest = publish_destination.resolve_publish_destination(command)
+        assert dest is not None
+        assert dest.slug == "o/r"
+
+    def test_dynamically_built_url_resolves_no_destination(self) -> None:
+        # No literal URL in the segment -- the target is genuinely unresolvable,
+        # not private, so it must fail closed to SCAN (never skip).
+        command = (
+            "python3 -c \"import requests; requests.post(base + '/api/v4/projects/' + str(pid) + '/notes', json={})\""
+        )
+        assert publish_destination.resolve_publish_destination(command) is None
+
+    def test_python_publish_to_private_repo_is_skipped(self, tmp_path: Path) -> None:
+        cfg = _config(tmp_path, ["internalcorp"])
+        command = _python_post_command(_GITLAB_PRIVATE_NOTE_URL)
+        assert public_visibility.gate_skips_for_visibility(command, None, config_path=cfg) is True
+
+    def test_python_publish_to_public_repo_still_scans(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        cfg = _config(tmp_path, ["internalcorp"])
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        command = _python_post_command(_GITHUB_PUBLIC_COMMENT_URL)
+        assert public_visibility.gate_skips_for_visibility(command, None, config_path=cfg) is False
+
+    def test_python_publish_with_unresolvable_target_still_scans(self, tmp_path: Path) -> None:
+        cfg = _config(tmp_path, ["internalcorp"])
+        command = (
+            "python3 -c \"import requests; requests.post(base + '/api/v4/projects/' "
+            "+ str(pid) + '/notes', headers={'PRIVATE-TOKEN': token}, json={})\""
+        )
+        assert public_visibility.gate_skips_for_visibility(command, None, config_path=cfg) is False
+
+    def test_self_hosted_gitlab_host_declared_via_private_repos_is_skipped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # "Configured self-hosted GitLab host" -- the SAME mechanism the offline
+        # ``private_repos`` allowlist already uses to declare a host: a
+        # host-qualified entry. The python script's URL targets that declared
+        # host's REST API, and it resolves + skips without any new config knob.
+        # Destination RESOLUTION (unlike classification) reads the default
+        # config path, mirroring every other resolver in this module -- so the
+        # test config is pointed at via the same env var the resolvers read.
+        cfg = _private_repos_config(tmp_path, ["gitlab.example.corp/internalcorp"])
+        monkeypatch.setenv("T3_BANNED_TERMS_CONFIG", str(cfg))
+        url = "https://gitlab.example.corp/api/v4/projects/internalcorp%2Fprivate-svc/merge_requests/5/notes"
+        command = _python_post_command(url)
+        assert public_visibility.gate_skips_for_visibility(command, None, config_path=cfg) is True
