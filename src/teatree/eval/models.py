@@ -230,6 +230,19 @@ class EvalSpec:
     phase: str = ""
     max_turns: int = DEFAULT_MAX_TURNS
     tools: tuple[str, ...] = ("Bash",)
+    #: Skill names to widen the clean-room's simulated Skill-tool catalog with, on
+    #: top of whatever the CLI discovers on its own. Empty (the default) leaves the
+    #: SDK ``skills``/``plugins`` options untouched, so every existing scenario is
+    #: byte-identical to before this field existed. A scenario whose prompt
+    #: references a skill name core does not itself ship — a placeholder overlay's
+    #: workspace/legal-entity skill, a companion language bible (``ac-django`` /
+    #: ``ac-python``), or the review skill named without a leading slash — declares
+    #: the referenced names here so the runner registers the eval-only fixture
+    #: plugin (``evals/fixtures/skill_catalog``) and lists exactly this set: the
+    #: agent's own "only invoke a listed name" refusal rule is real and must stay
+    #: intact, so the fix widens what is listed rather than bypassing the rule. See
+    #: ``teatree.eval.api_runner.build_sdk_options``.
+    available_skills: tuple[str, ...] = ()
     #: Opt-in throwaway sandbox fixture (``""`` = the neutral empty cwd). A scenario
     #: whose prompt presupposes a working tree (staged changes, commits to squash)
     #: declares ``fixture: git_repo`` so the runner provisions a real repo whose

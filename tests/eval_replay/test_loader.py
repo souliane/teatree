@@ -215,6 +215,49 @@ class TestLoadEvalYaml:
         with pytest.raises(EvalSpecError, match="agent_sections"):
             load_eval_yaml(_write(tmp_path, body))
 
+    def test_defaults_available_skills_to_empty(self, tmp_path: Path) -> None:
+        spec = load_eval_yaml(_write(tmp_path, _MINIMAL))[0]
+        assert spec.available_skills == ()
+
+    def test_parses_available_skills_list(self, tmp_path: Path) -> None:
+        body = (
+            "- name: widened\n"
+            "  scenario: widened scenario\n"
+            "  available_skills: [t3-widget, ac-django]\n"
+            "  prompt: do the thing\n"
+            "  expect:\n"
+            "    - tool_call: bash\n"
+            '      args.command: contains "x"\n'
+        )
+        spec = load_eval_yaml(_write(tmp_path, body))[0]
+        assert spec.available_skills == ("t3-widget", "ac-django")
+
+    def test_rejects_empty_available_skills(self, tmp_path: Path) -> None:
+        body = (
+            "- name: bad\n"
+            "  scenario: bad\n"
+            "  available_skills: []\n"
+            "  prompt: x\n"
+            "  expect:\n"
+            "    - tool_call: bash\n"
+            '      args.command: contains "x"\n'
+        )
+        with pytest.raises(EvalSpecError, match="available_skills"):
+            load_eval_yaml(_write(tmp_path, body))
+
+    def test_rejects_non_string_available_skills(self, tmp_path: Path) -> None:
+        body = (
+            "- name: bad\n"
+            "  scenario: bad\n"
+            "  available_skills: [123]\n"
+            "  prompt: x\n"
+            "  expect:\n"
+            "    - tool_call: bash\n"
+            '      args.command: contains "x"\n'
+        )
+        with pytest.raises(EvalSpecError, match="available_skills"):
+            load_eval_yaml(_write(tmp_path, body))
+
     def test_defaults_lane_to_clean_room(self, tmp_path: Path) -> None:
         spec = load_eval_yaml(_write(tmp_path, _MINIMAL))[0]
         assert spec.lane == "clean_room"
