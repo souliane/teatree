@@ -29,6 +29,7 @@ script the host workflow shells out to). Both delegate here; the logic lives onc
 """
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
 
 from teatree.eval.discovery import SCENARIOS_DIR, discover_specs
@@ -47,6 +48,38 @@ REPO_ROOT = SCENARIOS_DIR.parents[1]
 MAX_SELECTIVE_PR_SCENARIOS = MAX_SCENARIOS_PER_SHARD
 
 
+@dataclass(frozen=True, slots=True)
+class ScenarioSelection:
+    """A capped selective-PR selection plus the truncation the cap applied (#2737).
+
+    ``names`` is the bounded subset the lane runs; ``total_matched`` is how many the
+    diff selected BEFORE the cap. When ``total_matched`` exceeds the cap the extra
+    scenarios are deferred to the weekly sharded lane — :meth:`truncation_note` renders
+    the one-line signal so a corpus-wide PR's truncated coverage is visible in the CI
+    log instead of hidden.
+    """
+
+    names: list[str]
+    total_matched: int
+    cap: int
+
+    @property
+    def truncated(self) -> bool:
+        return self.total_matched > self.cap
+
+    @property
+    def deferred(self) -> int:
+        return max(self.total_matched - len(self.names), 0)
+
+    def truncation_note(self) -> str | None:
+        if not self.truncated:
+            return None
+        return (
+            f"selected {self.total_matched} changed scenarios, capped to {self.cap} for the "
+            f"selective-PR lane; deferred {self.deferred} to the weekly sharded lane"
+        )
+
+
 def _relative_to_root(path: Path, repo_root: Path) -> str:
     candidate = path if path.is_absolute() else repo_root / path
     try:
@@ -55,13 +88,22 @@ def _relative_to_root(path: Path, repo_root: Path) -> str:
         return candidate.as_posix()
 
 
-def names_for_changed(changed: Iterable[str], specs: Iterable[EvalSpec], repo_root: Path) -> list[str]:
+def selection_for_changed(changed: Iterable[str], specs: Iterable[EvalSpec], repo_root: Path) -> ScenarioSelection:
     wanted = {_relative_to_root(Path(line.strip()), repo_root) for line in changed if line.strip()}
     matched = {spec.name for spec in specs if _relative_to_root(spec.source_path, repo_root) in wanted}
     # Cap to keep the single-job PR lane inside its step budget; the sorted prefix
     # is deterministic so the same diff always selects the same bounded subset.
-    return sorted(matched)[:MAX_SELECTIVE_PR_SCENARIOS]
+    return ScenarioSelection(
+        names=sorted(matched)[:MAX_SELECTIVE_PR_SCENARIOS],
+        total_matched=len(matched),
+        cap=MAX_SELECTIVE_PR_SCENARIOS,
+    )
 
 
-def select_changed_scenario_names(changed: Iterable[str]) -> list[str]:
-    return names_for_changed(changed, discover_specs(), REPO_ROOT)
+def names_for_changed(changed: Iterable[str], specs: Iterable[EvalSpec], repo_root: Path) -> list[str]:
+    return selection_for_changed(changed, specs, repo_root).names
+
+
+def select_changed_scenarios(changed: Iterable[str]) -> ScenarioSelection:
+    """The full selection (names + truncation) the selective-PR entry points surface."""
+    return selection_for_changed(changed, discover_specs(), REPO_ROOT)

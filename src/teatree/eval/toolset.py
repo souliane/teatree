@@ -22,7 +22,7 @@ from claude_agent_sdk import AgentDefinition
 
 from teatree.eval.models import AnyOf, EvalSpec, Matcher, canonicalize_tool
 
-#: The COMPLETE set of the bundled ``claude`` CLI's built-in tool names (26,
+#: The COMPLETE set of the bundled ``claude`` CLI's built-in tool names (28,
 #: validated against the binary — a name the CLI does NOT register is REJECTED
 #: with ``Permission deny rule "<name>" matches no known tool — check for
 #: typos.`` on EVERY ``--disallowedTools`` invocation. Because the set is
@@ -49,6 +49,13 @@ from teatree.eval.models import AnyOf, EvalSpec, Matcher, canonicalize_tool
 #: them keeps the allowlist/denylist pair consistent so the ``Agent`` tool the
 #: spawn-vs-delegate scenarios depend on is reliably exposed.
 #:
+#: ``DesignSync`` and ``RemoteTrigger`` (#2601) are two further genuine CLI
+#: built-ins of the same ``strings``-on-the-binary provenance, and the bundled CLI
+#: ACCEPTS both as ``--disallowedTools`` deny rules (only a bogus name is rejected).
+#: They were absent, so a scenario building a ``--tools`` allowlist whose denylist-
+#: complement omitted them would not reliably deny them — the same denylist-
+#: incompleteness leak. Adding them keeps the "complete set" honest.
+#:
 #: ``Skill`` is deliberately ABSENT — it is left untouched so a scenario can always
 #: load a skill (the CLI auto-appends ``Skill`` to the allowlist anyway).
 KNOWN_BUILTIN_TOOLS: tuple[str, ...] = (
@@ -56,6 +63,7 @@ KNOWN_BUILTIN_TOOLS: tuple[str, ...] = (
     "AskUserQuestion",
     "Bash",
     "BashOutput",
+    "DesignSync",
     "Edit",
     "EnterPlanMode",
     "ExitPlanMode",
@@ -69,6 +77,7 @@ KNOWN_BUILTIN_TOOLS: tuple[str, ...] = (
     "PushNotification",
     "Read",
     "ReadMcpResource",
+    "RemoteTrigger",
     "SendMessage",
     "Task",
     "TaskCreate",
