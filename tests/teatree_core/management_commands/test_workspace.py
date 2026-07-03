@@ -35,6 +35,8 @@ import teatree.utils.git_commit as git_commit_mod
 import teatree.utils.run as utils_run_mod
 from teatree.config import load_config
 from teatree.core.cleanup_liveness import LivenessVerdict
+from teatree.core.gates.provision_admission_gate import ProvisionAdmissionVerdict
+from teatree.core.management.commands._workspace_provision_parallel import WorktreeProvisionResult
 from teatree.core.management.commands._workspace_ticket_intake import build_branch_name
 from teatree.core.management.commands.workspace import _branch_prefix, _worktree_root
 from teatree.core.models import Session, Task, Ticket, Worktree
@@ -52,6 +54,19 @@ from tests.teatree_core.management_commands._overlays import (
 pytestmark = pytest.mark.filterwarnings(
     "ignore:In Typer, only the parameter 'autocompletion' is supported.*:DeprecationWarning",
 )
+
+
+def _fake_provision_ok(worktree: Worktree, **_kwargs: object) -> WorktreeProvisionResult:
+    """Stand in for a real ``provision_worktree_subprocess`` subprocess call in tests."""
+    return WorktreeProvisionResult(worktree_id=worktree.pk, repo_path=worktree.repo_path, ok=True, detail="ok")
+
+
+def _allow_provision_admission() -> AbstractContextManager[MagicMock]:
+    """Force the RAM-admission gate to always allow — never sample the real host's RAM in a test."""
+    return patch(
+        "teatree.core.management.commands._workspace_provision_parallel.check_provision_admission",
+        return_value=ProvisionAdmissionVerdict.allow(),
+    )
 
 
 # ── Workspace helpers ──────────────────────────────────────────────
@@ -951,9 +966,10 @@ class TestWorkspaceProvisionPositionalId(TestCase):
         """A positional ticket id resolves the ticket directly — no rc=1."""
         with tempfile.TemporaryDirectory() as tmp:
             ticket, _, _wt_dir = self._make_worktree(tmp)
-            ok = MagicMock()
-            ok.run.return_value = RunnerResult(ok=True, detail="2 step(s) ok")
-            with patch.object(workspace_mod, "WorktreeProvisionRunner", return_value=ok):
+            with (
+                patch.object(workspace_mod, "provision_worktree_subprocess", side_effect=_fake_provision_ok),
+                _allow_provision_admission(),
+            ):
                 # Call WITHOUT path — relies solely on the positional id.
                 # Pre-#941 this would raise SystemExit via typer "unexpected argument".
                 call_command("workspace", "provision", str(ticket.pk))
@@ -964,9 +980,10 @@ class TestWorkspaceProvisionPositionalId(TestCase):
         """A ticket id that doesn't match falls back to PWD/--path resolution."""
         with tempfile.TemporaryDirectory() as tmp:
             _, _, wt_dir = self._make_worktree(tmp)
-            ok = MagicMock()
-            ok.run.return_value = RunnerResult(ok=True, detail="ok")
-            with patch.object(workspace_mod, "WorktreeProvisionRunner", return_value=ok):
+            with (
+                patch.object(workspace_mod, "provision_worktree_subprocess", side_effect=_fake_provision_ok),
+                _allow_provision_admission(),
+            ):
                 call_command("workspace", "provision", "999999", path=str(wt_dir))
 
     @_patch_overlays(FULL_OVERLAY)
@@ -975,9 +992,10 @@ class TestWorkspaceProvisionPositionalId(TestCase):
         """Calling without any positional arg still auto-detects (legacy path)."""
         with tempfile.TemporaryDirectory() as tmp:
             _, _, wt_dir = self._make_worktree(tmp)
-            ok = MagicMock()
-            ok.run.return_value = RunnerResult(ok=True, detail="ok")
-            with patch.object(workspace_mod, "WorktreeProvisionRunner", return_value=ok):
+            with (
+                patch.object(workspace_mod, "provision_worktree_subprocess", side_effect=_fake_provision_ok),
+                _allow_provision_admission(),
+            ):
                 call_command("workspace", "provision", path=str(wt_dir))
 
 
@@ -1173,12 +1191,11 @@ class TestWorkspaceMultiOverlayResolution(TestCase):
         """``workspace provision`` survives a missing ``T3_OVERLAY_NAME`` env."""
         with self._patch_two_overlays(), tempfile.TemporaryDirectory() as tmp:
             ticket, _wt, _wt_dir = self._make_worktree(tmp, overlay_name="alpha")
-            ok = MagicMock()
-            ok.run.return_value = RunnerResult(ok=True, detail="2 step(s) ok")
             env_without_overlay = {k: v for k, v in os.environ.items() if k != "T3_OVERLAY_NAME"}
             with (
                 patch.dict(os.environ, env_without_overlay, clear=True),
-                patch.object(workspace_mod, "WorktreeProvisionRunner", return_value=ok),
+                patch.object(workspace_mod, "provision_worktree_subprocess", side_effect=_fake_provision_ok),
+                _allow_provision_admission(),
             ):
                 # Pre-fix: raises ImproperlyConfigured(Multiple overlays found …).
                 # Post-fix: resolves from ``ticket.overlay`` = "alpha".

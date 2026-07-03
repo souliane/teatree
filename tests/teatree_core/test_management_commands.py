@@ -89,6 +89,9 @@ class TestLifecycleCommands(TestCase):
             assert worktree_id == wt.id
             assert status["state"] == Worktree.State.PROVISIONED
             assert status["repo_path"] == "/tmp/backend"
+            # status renders the last provision report.
+            assert status["provision_report"]["success"] is True
+            assert status["provision_report"]["steps"] >= 0
             # Teardown folds the old `clean` step — the row is deleted, not reset
             assert not Worktree.objects.filter(pk=worktree_id).exists()
 

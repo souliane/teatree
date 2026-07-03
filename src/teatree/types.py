@@ -302,6 +302,31 @@ class ProvisionStep:
     ORM-safe in-process behaviour. A step only lands on a worker thread by
     affirmatively asserting it is subprocess-only — so the dangerous mistake
     (an ORM callable on a worker thread) is opt-in and never accidental.
+
+    ``skip_probe`` (souliane/teatree#2949) is an optional cheap precondition
+    check: when set and it returns ``True``, :func:`run_provision_steps` skips
+    the (expensive) callable entirely and records a successful, near-zero
+    ``StepResult(skipped=True)`` — the mechanism that lets a re-provision of an
+    already-current worktree finish in seconds instead of re-paying every step.
+    A probe that raises is treated as "cannot tell, so don't skip" (the callable
+    still runs) rather than crashing the provision.
+
+    ``parallel_group`` (souliane/teatree#2949) opts a ``subprocess_only`` step
+    into concurrent execution with every other step sharing the same non-empty
+    group name: :func:`run_provision_steps` runs each group's steps on a bounded
+    thread pool instead of serially. An empty string (the default) means "no
+    group" — the step always runs on its own, serially with its neighbours. Only
+    ``subprocess_only`` steps may declare a group; an ORM-touching step
+    (``subprocess_only=False``) ignores ``parallel_group`` and always runs
+    serially in-process (the same thread-safety contract as above). *(This
+    field is an interim mechanism: PR-27 replaces it with a ``requires``/
+    ``produces`` DAG and deletes it in that cutover.)*
+
+    ``heavy`` (souliane/teatree#2949) selects the step's time-box ceiling: a
+    fast step (symlinks, settings, a compose override) defaults to a short
+    ceiling so a hang surfaces in seconds, not half an hour; a heavy step (a DB
+    import, a frontend build) opts into the long ceiling by setting this
+    ``True``. See :func:`teatree.core.provision_timebox.resolve_step_timeout_seconds`.
     """
 
     name: str
@@ -309,6 +334,9 @@ class ProvisionStep:
     required: bool = True
     description: str = ""
     subprocess_only: bool = False
+    skip_probe: Callable[[], bool] | None = None
+    parallel_group: str = ""
+    heavy: bool = False
 
 
 # ── Sync types (shared vocabulary between core and backends) ─────────

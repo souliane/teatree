@@ -14,6 +14,7 @@ from teatree.core.author_trust import classify_author
 from teatree.loop.dispatch import ActionPayload
 from teatree.loop.mechanical_local_stack import drain_stack_queue_item, reap_idle_stack
 from teatree.loop.mechanical_resources import free_resources
+from teatree.loop.mechanical_snapshot_warmer import refresh_snapshot
 from teatree.utils.url_slug import pr_ref_from_url
 
 if TYPE_CHECKING:
@@ -363,4 +364,7 @@ HANDLERS: dict[str, Callable[[ActionPayload], None]] = {
     # here (re-verifying live state first, never an agent).
     "reap_idle_stack": reap_idle_stack,
     "drain_stack_queue_item": drain_stack_queue_item,
+    # souliane/teatree#2949 snapshot warmer — restore+migrate+snapshot a
+    # stale reference DB out-of-band from any ticket-critical-path provision.
+    "refresh_snapshot": refresh_snapshot,
 }

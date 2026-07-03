@@ -17,6 +17,8 @@ import pytest
 from django.test import TestCase, override_settings
 
 from teatree.core.provision_timebox import (
+    DEFAULT_FAST_STEP_TIMEOUT_SECONDS,
+    DEFAULT_STEP_TIMEOUT_SECONDS,
     detect_migration_conflict,
     resolve_step_timeout_seconds,
     run_timeboxed_callable,
@@ -48,16 +50,37 @@ class TestDetectMigrationConflict(TestCase):
 
 
 class TestResolveStepTimeout(TestCase):
-    """The ceiling is configurable; a sensible positive default applies."""
+    """The ceiling is configurable, fast-by-default; ``heavy=True`` opts into the long one (souliane/teatree#2949)."""
 
     def test_default_is_a_positive_ceiling(self) -> None:
         assert resolve_step_timeout_seconds() > 0
 
+    def test_default_is_the_fast_ceiling(self) -> None:
+        assert resolve_step_timeout_seconds() == DEFAULT_FAST_STEP_TIMEOUT_SECONDS
+
+    def test_heavy_is_the_long_ceiling(self) -> None:
+        assert resolve_step_timeout_seconds(heavy=True) == DEFAULT_STEP_TIMEOUT_SECONDS
+
+    def test_fast_ceiling_is_shorter_than_heavy(self) -> None:
+        assert resolve_step_timeout_seconds() < resolve_step_timeout_seconds(heavy=True)
+
     @override_settings()
-    def test_override_wins(self) -> None:
+    def test_heavy_override_wins(self) -> None:
         with patch("teatree.core.provision_timebox.get_effective_settings") as mock_settings:
             mock_settings.return_value = MagicMock(provision_step_timeout_seconds=42)
-            assert resolve_step_timeout_seconds() == 42
+            assert resolve_step_timeout_seconds(heavy=True) == 42
+
+    @override_settings()
+    def test_fast_override_wins(self) -> None:
+        with patch("teatree.core.provision_timebox.get_effective_settings") as mock_settings:
+            mock_settings.return_value = MagicMock(provision_fast_step_timeout_seconds=7)
+            assert resolve_step_timeout_seconds() == 7
+
+    @override_settings()
+    def test_non_positive_heavy_value_falls_back_to_default(self) -> None:
+        with patch("teatree.core.provision_timebox.get_effective_settings") as mock_settings:
+            mock_settings.return_value = MagicMock(provision_step_timeout_seconds=0)
+            assert resolve_step_timeout_seconds(heavy=True) == DEFAULT_STEP_TIMEOUT_SECONDS
 
 
 class TestRunTimeboxedStep(TestCase):

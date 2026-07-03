@@ -19,6 +19,11 @@ from teatree.core.management.commands._workspace_cleanup import _die, _fix_drift
 from teatree.core.management.commands._workspace_docker import reap_stale_local_stacks, reap_stale_report
 from teatree.core.management.commands._workspace_finalize import run_finalize
 from teatree.core.management.commands._workspace_landscape import LandscapeReport, run_landscape
+from teatree.core.management.commands._workspace_provision_parallel import (
+    provision_worktree_subprocess,
+    render_worktree_report,
+    run_worktree_provisions_in_parallel,
+)
 from teatree.core.management.commands._workspace_relocate import RelocateIO, active_overlay_name, run_relocate
 from teatree.core.management.commands._workspace_salvage import emit_records_json, run_salvage
 from teatree.core.management.commands._workspace_ticket_intake import (
@@ -35,12 +40,7 @@ from teatree.core.public_identity import StampResult, is_public_github_remote, s
 from teatree.core.readiness import run_and_report_probes
 from teatree.core.reconcile import reconcile_all, reconcile_ticket
 from teatree.core.resolve import WorktreeNotFoundError, _get_user_cwd, resolve_worktree, workspace_owner_ticket
-from teatree.core.runners import (
-    WorktreeProvisioner,
-    WorktreeProvisionRunner,
-    WorktreeStartRunner,
-    WorktreeTeardownRunner,
-)
+from teatree.core.runners import WorktreeProvisioner, WorktreeStartRunner, WorktreeTeardownRunner
 from teatree.core.worktree_done import reap_done_worktrees
 from teatree.core.worktree_paths import ticket_dir_for
 from teatree.docker.reclaim import reclaim_disk
@@ -214,14 +214,19 @@ class Command(TyperCommand):
         ticket_id: int = typer.Argument(0, help="Optional ticket id (alias for PWD auto-detect; #941)."),
         path: str = typer.Option("", help="Worktree path inside the workspace (auto-detects from PWD)."),
         slow_import: bool = typer.Option(default=False, help="Allow slow DB fallbacks."),  # noqa: FBT001
+        report: bool = typer.Option(  # noqa: FBT001
+            default=False,
+            help="Print each worktree's per-step provision-report table (total + slowest step).",
+        ),
     ) -> int:
-        """Provision every worktree in the current ticket workspace.
+        """Provision every worktree in the current ticket workspace, in parallel.
 
-        Iterates ``ticket.worktrees`` and fires ``Worktree.provision()``
-        for each. Stops at the first failure so the operator can fix
-        the offending worktree before retrying. #941: an optional
-        positional ``ticket_id`` is a no-op alias for PWD auto-detect
-        (agents typed ``provision <id>`` from habit; typer used to reject it with rc=1).
+        Each worktree's ENTIRE provision (FSM transition + steps) runs as its
+        OWN subprocess under a bounded, RAM-admitted pool (souliane/teatree#2949)
+        instead of one serial ``for`` loop. Every worktree is attempted
+        regardless of an earlier one's failure; failures are reported by name
+        at the end. #941: a positional ``ticket_id`` is a no-op PWD-auto-detect
+        alias (typer used to reject it with rc=1).
         """
         ticket = Ticket.objects.filter(pk=ticket_id).first() if ticket_id else None
         if ticket is None:
@@ -230,23 +235,29 @@ class Command(TyperCommand):
         # installs don't die on ambiguous ``get_overlay()`` when
         # ``T3_OVERLAY_NAME`` env var is missing (a real path when a
         # caller bypasses the CLI bridge or the env is lost).
-        overlay = get_overlay(ticket.overlay or None)
+        overlay_name = ticket.overlay
+        get_overlay(overlay_name or None)  # fail fast on an unresolvable overlay before spawning subprocesses
 
         # #2207: free abandoned unowned stacks (age-guarded) before the heavy
         # provisioning work competes with them for host CPU/RAM.
         reap_stale_local_stacks(self.stdout.write)
 
         worktrees = list(Worktree.objects.filter(ticket=ticket))
-        for wt in worktrees:
-            self.stdout.write(f"  Provisioning {wt.repo_path}…")
-            with transaction.atomic():
-                if wt.state in {Worktree.State.CREATED, Worktree.State.PROVISIONED}:
-                    wt.provision()
-                    wt.save()
-            result = WorktreeProvisionRunner(wt, overlay=overlay, slow_import=slow_import).run()
-            self.stdout.write(f"    {result.detail}")
-            if not result.ok:
-                _die(self.stderr.write, f"  Stopped: {wt.repo_path} failed — fix and re-run.")
+        to_provision = [wt for wt in worktrees if wt.state in {Worktree.State.CREATED, Worktree.State.PROVISIONED}]
+        results = run_worktree_provisions_in_parallel(
+            to_provision,
+            executor=lambda wt: provision_worktree_subprocess(wt, overlay_name=overlay_name, slow_import=slow_import),
+            write=self.stdout.write,
+        )
+        if report:
+            for wt in to_provision:
+                wt.refresh_from_db()
+                self.stdout.write(render_worktree_report(wt))
+
+        failures = [r for r in results if not r.ok]
+        if failures:
+            names = ", ".join(f"{r.repo_path} ({r.detail})" for r in failures)
+            _die(self.stderr.write, f"  Stopped: {names} — fix and re-run.")
         return len(worktrees)
 
     @command()

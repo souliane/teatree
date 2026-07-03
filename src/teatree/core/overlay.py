@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from teatree.core.models import Worktree
     from teatree.core.readiness import Probe
     from teatree.types import RawAPIDict
+    from teatree.utils.django_db import DjangoDbImportConfig
 
 logger = logging.getLogger(__name__)
 
@@ -426,6 +427,20 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
         DSLR snapshot lookup.
         """
         return variant
+
+    def get_snapshot_warmer_configs(self) -> list["DjangoDbImportConfig"]:
+        """Reference-DB configs the snapshot-warmer loop keeps current, one per variant.
+
+        Default empty — an overlay with no DSLR-backed :meth:`db_import`
+        strategy (like teatree's own dogfood overlay) warms nothing. An
+        overlay that DOES use DSLR returns one
+        :class:`teatree.utils.django_db.DjangoDbImportConfig` per configured
+        variant/tenant so the loop scanner
+        (:mod:`teatree.loop.scanners.snapshot_warmer`) can refresh each
+        out-of-band — a ticket-critical-path provision then never has to pay
+        the slow restore+migrate path itself (souliane/teatree#2949).
+        """
+        return []
 
     # ast-grep-ignore: ac-django-no-complexity-suppressions
     def db_import(  # noqa: PLR0913 — overlay extension-point contract; each kwarg is a documented hook input, not poor design.
