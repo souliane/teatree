@@ -300,12 +300,14 @@ curl -s -X POST "https://gitlab.com/api/v4/projects/<PROJECT_ID>/merge_requests/
 
 ### Post Note
 
+Pass the body as a **literal** `-m` value in its own, single Bash call — never via `$(cat <path>)` or a heredoc. `glab mr note` has no `-F`/`--body-file` flag (`glab mr note --help` lists only `-m`/`--message`), so there is no substitution-free way to source the body from a file. Per `t3:rules` § "Never Pipe, Redirect, or Chain a gh/glab Publish Command", any `$(...)` construct — a plain `$(cat <path>)` just as much as a heredoc — carries a substitution marker that the leak gate's segment-walk treats as unresolvable, forcing a conservative scan even on a genuinely private repo. Verified directly against `teatree.hooks.public_visibility.gate_skips_for_visibility` with the destination mocked non-public: both `-m "$(cat <<'EOF' ... EOF)"` and a plain `-m "$(cat <path>)"` return `skip=False`; only a fully literal `-m` value returns `skip=True`. A single-quoted literal spans multiple lines fine on its own:
+
 ```bash
-glab mr note <MR_NUMBER> -R <REPO_PATH> -m "$(cat <<'EOF'
-Comment body here.
-EOF
-)"
+glab mr note <MR_NUMBER> -R <REPO_PATH> -m 'Comment body here.
+A second line works directly inside the quotes.'
 ```
+
+For a body too complex to embed safely as a literal argument (single quotes/backticks, markdown images), use the Python + REST API recipe below instead of `glab mr note` — it never invokes `gh`/`glab` at all, so this concern doesn't apply to it. Note it also means the banned-terms/quote-scanner gates don't scan it (they only recognise `gh`/`glab`/`git`/`curl`-led segments as a publish) — compose that body carefully.
 
 ### Post or Update Note with Images — Always Use Python
 
