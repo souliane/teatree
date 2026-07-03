@@ -16,7 +16,7 @@ from pydantic_ai.models.test import TestModel
 import teatree.agents.harness as harness_mod
 import teatree.agents.headless as headless_mod
 from teatree.agents._headless_options import _get_resume_session_id
-from teatree.agents.harness import ClaudeSdkHarness
+from teatree.agents.harness import ClaudeSdkHarness, PydanticAiHarness
 from teatree.agents.headless import (
     LoopWatchdog,
     TaskUsage,
@@ -24,6 +24,7 @@ from teatree.agents.headless import (
     _limit_match,
     _parse_result,
     _provider_child_env,
+    _resolve_dispatch_lane,
     _validate_result,
     get_result_json_schema,
     run_headless,
@@ -1160,3 +1161,56 @@ class TestProviderChildEnv(TestCase):
         # None — no explicit Layer-2 pin, so the ambient environment is used
         # unchanged rather than forcing an eager credential lookup.
         assert _provider_child_env(None) is None
+
+
+class TestResolveDispatchLane:
+    """``_resolve_dispatch_lane`` attributes the Layer-2 lane (souliane/teatree#657)."""
+
+    def test_claude_sdk_with_subscription_pin_is_subscription_lane(self) -> None:
+        lane = _resolve_dispatch_lane(ClaudeSdkHarness(), AgentHarnessProvider.SUBSCRIPTION_OAUTH)
+        assert lane == TaskAttempt.Lane.SUBSCRIPTION
+
+    def test_claude_sdk_with_api_key_pin_is_metered_lane(self) -> None:
+        lane = _resolve_dispatch_lane(ClaudeSdkHarness(), AgentHarnessProvider.API_KEY)
+        assert lane == TaskAttempt.Lane.METERED
+
+    def test_claude_sdk_with_no_pin_is_unattributed(self) -> None:
+        # The ambient-credential default (#2887): whichever credential the
+        # ``claude`` CLI's own login state resolves is not observable here.
+        assert _resolve_dispatch_lane(ClaudeSdkHarness(), None) == ""
+
+    def test_pydantic_ai_is_always_metered(self) -> None:
+        # OrcaRouter BYOK is the only Layer-2 provider valid under
+        # agent_harness=pydantic_ai — always metered, no pin needed.
+        assert _resolve_dispatch_lane(PydanticAiHarness(), None) == TaskAttempt.Lane.METERED
+        assert _resolve_dispatch_lane(PydanticAiHarness(), AgentHarnessProvider.ORCA_ROUTER_BYOK) == (
+            TaskAttempt.Lane.METERED
+        )
+
+
+class TestRunHeadlessRecordsLane(TestCase):
+    """``run_headless`` stamps the resolved Layer-2 lane onto the recorded attempt."""
+
+    def test_explicit_subscription_pin_is_recorded(self) -> None:
+        result = {"summary": "Done", "files_modified": [{"path": "src/x.py", "action": "modified"}]}
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
+        ConfigSetting.objects.set_value("agent_harness_provider", "subscription_oauth")
+        with (
+            _fake_sdk(_success_stream(result)),
+            patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "oauth-x"}),
+        ):
+            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+
+        assert attempt.lane == "subscription"
+
+    def test_no_pin_leaves_lane_unattributed(self) -> None:
+        result = {"summary": "Done", "files_modified": [{"path": "src/x.py", "action": "modified"}]}
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session)
+        with _fake_sdk(_success_stream(result)):
+            attempt = run_headless(task, phase="coding", overlay_skill_metadata={})
+
+        assert attempt.lane == ""

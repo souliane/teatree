@@ -33,19 +33,22 @@ def _safe_float(value: object) -> float | None:
         return None
 
 
-def _attempt_usage(message: ResultMessage | None) -> "AttemptUsage":
+def _attempt_usage(message: ResultMessage | None, *, lane: str = "") -> "AttemptUsage":
     """Map a :class:`~claude_agent_sdk.ResultMessage` to ``AttemptUsage``.
 
     Token counts come from the nested ``usage`` dict (``input_tokens`` /
     ``output_tokens`` / ``cache_creation_input_tokens`` /
     ``cache_read_input_tokens``), the billed model from the single key of
     ``model_usage`` (e.g. ``claude-opus-4-8[1m]``), the cost from
-    ``total_cost_usd`` (else the price-table estimate).
+    ``total_cost_usd`` (else the price-table estimate). *lane* is the resolved
+    Layer-2 lane (souliane/teatree#657) this dispatch authenticated through —
+    independent of the message, so it is stamped even when *message* is
+    ``None``.
     """
     from teatree.agents.attempt_recorder import AttemptUsage  # noqa: PLC0415
 
     if message is None:
-        return AttemptUsage()
+        return AttemptUsage(lane=lane)
     usage = message.usage if isinstance(message.usage, dict) else {}
     model = _billed_model(message.model_usage)
     return AttemptUsage(
@@ -57,6 +60,7 @@ def _attempt_usage(message: ResultMessage | None) -> "AttemptUsage":
         cache_write_tokens=_safe_int(usage.get("cache_creation_input_tokens")),
         cost_usd=_resolve_cost_usd(message, usage=usage, model=model),
         num_turns=message.num_turns,
+        lane=lane,
     )
 
 
