@@ -388,6 +388,12 @@ Some issue tracker CLIs cannot serialize nested JSON. **Always use `curl`** with
 
 For note bodies containing markdown images (`![alt](url)`), shell variable interpolation and `jq --arg` both escape `!` to `\!`. **Always use Python** (`urllib.request` or `requests`) to serialize the JSON payload.
 
+## Never Pipe, Redirect, or Chain a gh/glab Publish Command
+
+The banned-terms (#1415) and quote-scanner (#1213) gates classify a command's visibility by walking EVERY top-level `&&`/`;`/`|`/newline segment — a segment carrying any redirection, heredoc, or substitution construct (`>`, `<<`, `2>&1`, `$(...)`) forces a conservative SCAN of the whole command, even when the actual `gh`/`glab` post targets a known-private repo that would otherwise skip. This is by design (an unrecognised construct could hide a second, unverifiable command), but it means a habitual `... 2>&1 | python3 -c "..."` tacked onto a `gh pr create`/`glab api` call — or writing a body file via heredoc in the SAME Bash call as the post — reliably trips the gate on a repo that is genuinely private.
+
+**Issue the publish command ALONE, in its own Bash call, with no trailing `2>&1`, no pipe, no heredoc.** Write any body file in a separate, prior Bash call; inspect the JSON response (if needed) in a separate, later call. Splitting the call costs nothing and avoids a false block that has nothing to do with the destination's actual visibility.
+
 ## Preserve Existing UX Patterns
 
 When fixing a broken UX mechanism (web terminal, browser launch, notification method), fix it **in-kind** — do not replace it with a different mechanism without asking. If proposing a different approach, ask the user first: "Currently this uses X. Want to keep that or switch to Y?"

@@ -179,6 +179,13 @@ glab api "projects/<PROJECT_ID>/merge_requests/<IID>/notes?per_page=100"
 glab ci status --branch <source_branch> -R <repo>
 ```
 
+**One SHA can have MULTIPLE pipelines with DIFFERENT job sets — check all of them before declaring an MR green.** `glab ci status --branch` (and a first glance at `glab mr view`) surfaces only the LATEST pipeline for that branch. A `push` pipeline and a separate `merge_request_event` pipeline can both exist for the exact same head SHA, and the `merge_request_event` one often carries jobs the push pipeline doesn't run at all (e.g. an MR title/description format validator). A push pipeline showing all-green does NOT mean the MR is mergeable if a later `merge_request_event` pipeline for the same SHA failed. Before asserting "CI green" on any MR, list every pipeline for the head SHA and check every job in each:
+
+```bash
+glab api "projects/<URL-ENCODED-PROJECT>/pipelines?sha=<head_sha>&per_page=10"   # lists ALL pipelines for that SHA
+glab api "projects/<URL-ENCODED-PROJECT>/pipelines/<pipeline_id>/jobs?per_page=100"  # every job's real status, not just the ones glab prints first
+```
+
 ### Watch a Manually-Triggered Job by ID
 
 `glab ci status --branch` only finds the latest pipeline; it misses manually-triggered stage jobs and old pipelines. When you already have a job URL (e.g., from `glab mr view`'s `head_pipeline.jobs[]`), hit the REST API directly:
