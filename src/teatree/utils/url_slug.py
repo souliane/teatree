@@ -104,3 +104,21 @@ def repo_namespaced_key(url: str) -> str:
     but never collide on this key, since the full repo path is part of it.
     """
     return repo_namespaced_key_from_path(urlparse(url).path)
+
+
+def project_slug_from_ref(ref: str) -> str:
+    """Normalize a CLI-supplied *ref* to the canonical repo-project slug (#2892).
+
+    Accepts either a literal ``owner/repo`` slug or a full issue/PR/MR web
+    URL, resolving the URL case through the same :func:`slug_from_issue_or_pr_url`
+    parser #2293 introduced — one repo-slug extraction mechanism, reused
+    rather than duplicated, for both the issue-scoped
+    :func:`repo_namespaced_key` and this project-scoped (repo-only) key.
+    Returns ``""`` for an empty *ref* or an unrecognised URL shape.
+    """
+    if not ref:
+        return ""
+    parsed = urlparse(ref)
+    if parsed.scheme in {"http", "https"}:
+        return slug_from_issue_or_pr_url(parsed.path)
+    return ref.strip("/")
