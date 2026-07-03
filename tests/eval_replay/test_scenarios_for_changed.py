@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from teatree.eval.changed_scenarios import MAX_SELECTIVE_PR_SCENARIOS
+from teatree.eval.changed_scenarios import MAX_SELECTIVE_PR_SCENARIOS, selection_for_changed
 from teatree.eval.changed_scenarios import names_for_changed as _core_names_for_changed
 from teatree.eval.discovery import SCENARIOS_DIR, discover_specs
 from teatree.eval.models import EvalSpec
@@ -117,7 +117,51 @@ class TestSelectivePrCap:
         assert len(out) <= MAX_SELECTIVE_PR_SCENARIOS
 
 
+class TestTruncationSurfaced:
+    """#2737: when the cap bites the selector reports the deferral, never silence."""
+
+    def _many_specs(self, count: int) -> list[EvalSpec]:
+        return [_spec(f"s{n:04d}", SCENARIOS_DIR / f"f{n:04d}.yaml") for n in range(count)]
+
+    def test_selection_below_cap_has_no_truncation_note(self) -> None:
+        specs = self._many_specs(MAX_SELECTIVE_PR_SCENARIOS)
+        changed = [s.source_path.relative_to(_REPO_ROOT).as_posix() for s in specs]
+        selection = selection_for_changed(changed, specs, _REPO_ROOT)
+        assert not selection.truncated
+        assert selection.truncation_note() is None
+
+    def test_selection_above_cap_reports_total_deferred_and_note(self) -> None:
+        total = MAX_SELECTIVE_PR_SCENARIOS + 50
+        specs = self._many_specs(total)
+        changed = [s.source_path.relative_to(_REPO_ROOT).as_posix() for s in specs]
+        selection = selection_for_changed(changed, specs, _REPO_ROOT)
+        assert selection.truncated
+        assert selection.total_matched == total
+        assert selection.deferred == 50
+        assert len(selection.names) == MAX_SELECTIVE_PR_SCENARIOS
+        note = selection.truncation_note()
+        assert note is not None
+        assert f"selected {total} changed scenarios" in note
+        assert f"capped to {MAX_SELECTIVE_PR_SCENARIOS}" in note
+        assert "deferred 50 to the weekly sharded lane" in note
+
+
 class TestMain:
+    def test_corpus_wide_change_surfaces_truncation_on_stderr(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Every real scenario file changed → the selection exceeds the cap; the deferral
+        # note must appear on stderr (not silently drop the deferred scenarios), while
+        # stdout still prints exactly the capped run set.
+        all_files = sorted({s.source_path.relative_to(_REPO_ROOT).as_posix() for s in discover_specs()})
+        monkeypatch.setattr("sys.stdin", io.StringIO("\n".join(all_files) + "\n"))
+        code = main([])
+        captured = capsys.readouterr()
+        assert code == 0
+        assert "capped to" in captured.err
+        assert "weekly sharded lane" in captured.err
+        assert len([line for line in captured.out.splitlines() if line]) == MAX_SELECTIVE_PR_SCENARIOS
+
     def test_real_catalog_file_prints_names_and_exits_zero(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:

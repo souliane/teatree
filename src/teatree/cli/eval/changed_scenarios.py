@@ -15,7 +15,7 @@ import sys
 
 import typer
 
-from teatree.eval.changed_scenarios import select_changed_scenario_names
+from teatree.eval.changed_scenarios import select_changed_scenarios
 from teatree.utils.django_bootstrap import ensure_django
 
 
@@ -24,8 +24,12 @@ def changed_scenarios(
 ) -> None:
     """Print the scenario names a PR's STDIN diff touched; exit --skip-code when none."""
     ensure_django()
-    names = select_changed_scenario_names(sys.stdin)
-    if not names:
+    selection = select_changed_scenarios(sys.stdin)
+    # Surface the cap when it bites (#2737) so a corpus-wide PR's truncated coverage is
+    # visible in the CI log — the deferred scenarios run in the weekly sharded lane.
+    if note := selection.truncation_note():
+        typer.echo(note, err=True)
+    if not selection.names:
         raise SystemExit(skip_code)
-    for name in names:
+    for name in selection.names:
         typer.echo(name)
