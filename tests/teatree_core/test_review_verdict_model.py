@@ -10,7 +10,7 @@ round-trip, and the staleness / safe-to-approve logic the status command reads.
 import pytest
 from django.test import TestCase
 
-from teatree.core.models import Finding, MergeClear, ReviewVerdict, ReviewVerdictError
+from teatree.core.models import Finding, MergeClear, MRReviewLock, ReviewVerdict, ReviewVerdictError
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -250,3 +250,47 @@ class TestFindingRoundTrip(TestCase):
 
     def test_file_level_location_when_no_line(self) -> None:
         assert Finding(severity="major", summary="s", file="a.py").location() == "a.py"
+
+
+class TestRecordResolvesReviewLock(TestCase):
+    """Recording a verdict resolves the PR's MRReviewLock (#1405)."""
+
+    def test_recording_merge_safe_resolves_a_held_lock(self) -> None:
+        MRReviewLock.acquire(slug="souliane/teatree", pr_id=42, holder="t3:reviewer-agent-a")
+
+        ReviewVerdict.record(
+            pr_id=42,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="merge_safe",
+            reviewer_identity="cold-reviewer",
+        )
+
+        lock = MRReviewLock.objects.get(slug="souliane/teatree", pr_id=42)
+        assert lock.state == MRReviewLock.State.RESOLVED
+
+    def test_recording_hold_also_resolves_the_lock(self) -> None:
+        MRReviewLock.acquire(slug="souliane/teatree", pr_id=42, holder="t3:reviewer-agent-a")
+
+        ReviewVerdict.record(
+            pr_id=42,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="hold",
+            reviewer_identity="cold-reviewer",
+            gh_verify_result="failed",
+        )
+
+        lock = MRReviewLock.objects.get(slug="souliane/teatree", pr_id=42)
+        assert lock.state == MRReviewLock.State.RESOLVED
+
+    def test_recording_with_no_held_lock_is_a_no_op(self) -> None:
+        ReviewVerdict.record(
+            pr_id=42,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="merge_safe",
+            reviewer_identity="cold-reviewer",
+        )
+
+        assert MRReviewLock.objects.count() == 0

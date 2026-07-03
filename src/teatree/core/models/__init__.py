@@ -49,6 +49,7 @@ from teatree.core.models.loop_lease import LoopLease
 from teatree.core.models.loop_state import LoopState, LoopStateManager, LoopStatus
 from teatree.core.models.merge_clear import ClearIssuanceError, ClearRequest, MergeAudit, MergeClear
 from teatree.core.models.mergeable_notified import MergeableNotified
+from teatree.core.models.mr_review_lock import DEFAULT_LOCK_TTL, MRReviewLock
 from teatree.core.models.on_behalf_approval import OnBehalfApproval, OnBehalfApprovalError, OnBehalfAudit
 from teatree.core.models.outbound_claim import OutboundClaim
 from teatree.core.models.pending_article_suggestion import PendingArticleSuggestion
@@ -90,6 +91,7 @@ from teatree.core.models.types import Ports, TicketExtra, WorktreeExtra, validat
 from teatree.core.models.worktree import Worktree, WorktreeEnvOverride
 
 __all__ = [
+    "DEFAULT_LOCK_TTL",
     "LIVE_POST_APPROVAL_TTL_MINUTES",
     "NEEDS_TRIAGE_LABEL",
     "AnthropicActivePick",
@@ -150,6 +152,7 @@ __all__ = [
     "LoopState",
     "LoopStateManager",
     "LoopStatus",
+    "MRReviewLock",
     "MatcherDetail",
     "MergeAudit",
     "MergeClear",

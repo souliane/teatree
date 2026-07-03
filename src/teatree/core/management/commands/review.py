@@ -26,7 +26,7 @@ from django_typer.management import TyperCommand, command, initialize
 
 from teatree.core.gates.schema_guard import SelfDbMigrationError, require_current_schema
 from teatree.core.merge import fetch_live_head_sha, fetch_required_checks_status
-from teatree.core.models import Finding, ReviewVerdict, ReviewVerdictError, Ticket
+from teatree.core.models import Finding, MRReviewLock, ReviewVerdict, ReviewVerdictError, Ticket
 from teatree.utils.url_slug import pr_ref_from_url
 
 
@@ -50,6 +50,24 @@ class StatusResult(TypedDict, total=False):
     live_checks: str
     reviewer_identity: str
     findings_count: int
+    error: str
+
+
+class LockAcquireResult(TypedDict, total=False):
+    acquired: bool
+    slug: str
+    pr_id: int
+    state: str
+    holder: str
+    error: str
+
+
+class LockStatusResult(TypedDict, total=False):
+    slug: str
+    pr_id: int
+    locked: bool
+    state: str
+    holder: str
     error: str
 
 
@@ -289,4 +307,79 @@ class Command(TyperCommand):
             "live_checks": live_checks,
             "reviewer_identity": recorded.reviewer_identity,
             "findings_count": len(recorded.findings),
+        }
+
+    @command(name="lock-acquire")
+    def lock_acquire(
+        self,
+        mr_url: str,
+        *,
+        holder: Annotated[
+            str, typer.Option(help="Identity of the dispatcher acquiring the lock (agent/session id).")
+        ] = "",
+    ) -> LockAcquireResult:
+        """Acquire the per-MR review-dispatch lock BEFORE a manual Agent() reviewer dispatch (#1405).
+
+        Run this before spawning a `t3:reviewer` sub-agent via the Agent tool.
+        ``acquired: true`` means proceed with the dispatch — the lock is now
+        held by ``holder``. ``acquired: false`` means a review is already in
+        flight for this MR (state + holder are reported); skip the dispatch,
+        the in-flight review already covers it.
+        """
+        if not holder.strip():
+            self.stderr.write("  lock-acquire refused: --holder is required (identity of the dispatcher)")
+            raise SystemExit(1)
+        try:
+            require_current_schema()
+        except SelfDbMigrationError as exc:
+            self.stdout.write(f"  lock-acquire refused: {exc}")
+            return {"acquired": False, "error": str(exc)}
+
+        ref = pr_ref_from_url(mr_url)
+        if ref is None:
+            self.stderr.write(f"  could not parse a PR/MR URL from {mr_url!r}")
+            raise SystemExit(1)
+
+        lock = MRReviewLock.acquire(slug=ref.slug, pr_id=ref.number, holder=holder, mr_url=mr_url)
+        if lock is not None:
+            self.stdout.write(f"  acquired: {ref.slug}#{ref.number} now held by {holder!r} — dispatch the reviewer")
+            return {
+                "acquired": True,
+                "slug": ref.slug,
+                "pr_id": ref.number,
+                "state": lock.state,
+                "holder": lock.holder,
+            }
+
+        held = MRReviewLock.objects.filter(slug=ref.slug, pr_id=ref.number).first()
+        held_state = held.state if held is not None else ""
+        held_by = held.holder if held is not None else ""
+        self.stdout.write(
+            f"  not acquired: {ref.slug}#{ref.number} is already {held_state!r} held by {held_by!r} — "
+            f"skip the dispatch, a review is in flight"
+        )
+        return {"acquired": False, "slug": ref.slug, "pr_id": ref.number, "state": held_state, "holder": held_by}
+
+    @command(name="lock-status")
+    def lock_status(self, mr_url: str) -> LockStatusResult:
+        """Report the current :class:`MRReviewLock` state for *mr_url* (read-only)."""
+        ref = pr_ref_from_url(mr_url)
+        if ref is None:
+            self.stderr.write(f"  could not parse a PR/MR URL from {mr_url!r}")
+            raise SystemExit(1)
+
+        lock = MRReviewLock.objects.filter(slug=ref.slug, pr_id=ref.number).first()
+        if lock is None:
+            self.stdout.write(f"  no lock recorded for {ref.slug}#{ref.number} — idle")
+            return {"slug": ref.slug, "pr_id": ref.number, "locked": False, "state": "idle", "holder": ""}
+
+        self.stdout.write(
+            f"  {ref.slug}#{ref.number}: state={lock.state!r} holder={lock.holder!r} locked={lock.is_locked()}"
+        )
+        return {
+            "slug": ref.slug,
+            "pr_id": ref.number,
+            "locked": lock.is_locked(),
+            "state": lock.state,
+            "holder": lock.holder,
         }

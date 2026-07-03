@@ -30,6 +30,7 @@ from teatree.core.merge.authorization import (
     _assert_anti_vacuity,
     _assert_clear_authorized,
     _assert_rubric_satisfied,
+    assert_no_active_review_lock,
     assert_public_repo_author_trusted,
     assert_review_verdict_gate,
 )
@@ -270,14 +271,12 @@ def execute_bound_merge(
 ) -> str:
     """Squash-merge bound to ``expected_head_oid`` — fail closed on head drift.
 
-    GitHub: ``PUT repos/<slug>/pulls/<n>/merge`` with ``sha=<oid>``.
-    GitLab: ``PUT projects/<encoded>/merge_requests/<iid>/merge`` with
-    ``sha=<oid>`` (GitLab enforces the SHA-bind upstream and 409s on drift).
+    GitHub: ``PUT repos/<slug>/pulls/<n>/merge`` with ``sha=<oid>``. GitLab: ``PUT
+    projects/<encoded>/merge_requests/<iid>/merge`` with ``sha=<oid>`` (409s on drift).
 
-    If the forge reports the head moved, the merge is refused and raised
-    as :class:`MergeHeadMovedError` — a failed check, never a
-    retry-with-new-head (§17.4.3 "bind execution to the exact verified
-    SHA, fail closed").
+    If the forge reports the head moved, the merge is refused and raised as
+    :class:`MergeHeadMovedError` — a failed check, never a retry-with-new-head
+    (§17.4.3 "bind execution to the exact verified SHA, fail closed").
 
     A transient/empty-JSON/network/5xx forge response (#1813 — the #1804
     ``unexpected end of JSON input`` window) is the forge momentarily
@@ -291,10 +290,11 @@ def execute_bound_merge(
     hook idempotently instead of re-issuing the (then-405-bricking) merge.
     A policy refusal (not-mergeable / required-checks / 405 / 422) and a
     head-moved are NOT transient — they raise on the first attempt. Before the
-    retry loop the #2829 :func:`assert_review_verdict_gate` runs against the
-    bound ``expected_head_oid`` — the single chokepoint both merge paths cross.
+    retry loop, ``assert_review_verdict_gate`` (#2829) and ``assert_no_active_review_lock``
+    (#1405) run — the single chokepoint both merge paths cross.
     """
     assert_review_verdict_gate(slug=slug, pr_id=pr_id, head_sha=expected_head_oid)
+    assert_no_active_review_lock(slug=slug, pr_id=pr_id)
     for attempt in range(MERGE_TRANSIENT_ATTEMPTS):
         if attempt > 0:
             landed = _already_merged_at(

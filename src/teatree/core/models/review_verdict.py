@@ -16,6 +16,13 @@ can never carry — issuance refuses a non-green CLEAR) is recorded directly via
 ``review record``. Both share ``MergeClear``'s validation primitives
 (``is_commit_sha``, blast/verify normalisation) so the two contracts cannot
 drift apart.
+
+Recording a verdict also resolves the PR's :class:`~teatree.core.models.mr_review_lock.MRReviewLock`
+(#1405), in the same transaction as the row insert: whether the verdict is
+``merge_safe`` or ``hold``, the in-flight review it concludes is no longer
+"dispatched" — the MR's lock clears so a later push can dispatch a fresh
+review, and the merge decision point's lock consult stops refusing the MR
+this same verdict just vouched for (or held).
 """
 
 import enum
@@ -26,6 +33,7 @@ from django.db import models, transaction
 from django.utils import timezone
 
 from teatree.core.models.merge_clear import SHA_FULL_LEN, MergeClear, is_commit_sha, is_non_reviewer_role
+from teatree.core.models.mr_review_lock import MRReviewLock
 from teatree.core.models.ticket import Ticket
 
 
@@ -282,7 +290,7 @@ class ReviewVerdict(models.Model):
             raise ReviewVerdictError(msg)
 
         with transaction.atomic():
-            return cls.objects.create(
+            recorded = cls.objects.create(
                 ticket=ticket,
                 pr_id=pr_id,
                 slug=slug.strip(),
@@ -293,6 +301,8 @@ class ReviewVerdict(models.Model):
                 gh_verify_result=normalized_verify,
                 findings=[finding.as_dict() for finding in (findings or [])],
             )
+            MRReviewLock.resolve(slug=recorded.slug, pr_id=recorded.pr_id)
+            return recorded
 
     @property
     def structured_findings(self) -> list[Finding]:

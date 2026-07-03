@@ -236,6 +236,14 @@ The gate verifies the required phases (`testing`, `reviewing`, `retro`) were rec
 
 1. **Locate the reviewing task.** When the worktree was created via `t3 <overlay> workspace ticket <url>`, a `Task(phase="reviewing")` was scheduled by `Ticket.schedule_review()` once `test()` fired. If the branch is ad-hoc (no session/ticket exists yet), create one first with `t3 <overlay> workspace ticket <issue_url>` — never push from a session-less branch. The session is the receipt; without it the FSM has nothing to advance.
 
+1b. **Acquire the per-MR review-dispatch lock BEFORE spawning** (#1405, `MRReviewLock`) — this manual `Agent()` path and the loop's `AutoReviewDispatch` scanner enqueue are two independent dispatch paths that must not both spawn a reviewer for the same MR at once:
+
+   ```bash
+   t3 <overlay> review lock-acquire <mr-url> --holder <your-agent/session-id>
+   ```
+
+   `acquired: true` → proceed to step 2. `acquired: false` → a review is already in flight for this MR (the reported `holder` + `state`) — do **not** spawn a second reviewer; the in-flight one already covers this dispatch.
+
 2. **Spawn the reviewer sub-agent from the main conversation** (not from another sub-agent — see [`../rules/SKILL.md`](../rules/SKILL.md) § "Sub-Agent Limitations") via the `Agent` tool:
 
    The `prompt:` MUST open with this verbatim block — it is not optional and not a "remember to add it" note. Skill prose does not propagate into a spawned agent's context, so the near-zero-comments rule is lost unless it is inline in the prompt itself:

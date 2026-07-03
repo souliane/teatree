@@ -19,6 +19,13 @@ recorded verdict for the head suppresses enqueue upstream (the PR never reaches
 
 Mirrors :class:`teatree.core.models.red_mr_fix_attempt.RedMrFixAttempt`
 (idempotent claim keyed on ``(pr_url, head_sha)``).
+
+Also acquires the per-MR :class:`~teatree.core.models.mr_review_lock.MRReviewLock`
+(#1405) before dispatching: a PR that gets a new push while its PRIOR review is
+still in flight (dispatched, not yet resolved) no longer arms a second,
+concurrent reviewer for the new head — the lock is per-``(slug, pr_id)``, not
+per-head, so it also dedups ACROSS heads, closing the gap where a fresh push
+during an in-flight review used to arm a second reviewer.
 """
 
 from typing import TYPE_CHECKING, ClassVar
@@ -26,8 +33,12 @@ from typing import TYPE_CHECKING, ClassVar
 from django.db import models, transaction
 from django.utils import timezone
 
+from teatree.core.models.mr_review_lock import MRReviewLock
+
 if TYPE_CHECKING:
     from teatree.core.models.task import Task
+
+_LOOP_SCANNER_HOLDER = "loop-scanner:auto-review-dispatch"
 
 
 def build_review_contract(*, slug: str, pr_id: int, head_sha: str, pr_url: str, overlay: str) -> str:
@@ -100,12 +111,18 @@ class AutoReviewDispatch(models.Model):
 
         Returns the new row (carrying the enqueued task) on first dispatch for
         ``(slug, pr_id, head_sha)``; ``None`` when a row for that head already
-        exists (the sweep on a previous tick already armed the review). The row
-        insert and the Task creation share one transaction so a row never
-        exists without its task and a task is never created without claiming the
-        dedup slot.
+        exists (the sweep on a previous tick already armed the review) OR when
+        the per-MR :class:`~teatree.core.models.mr_review_lock.MRReviewLock`
+        is already held for ``(slug, pr_id)`` — a review for a DIFFERENT
+        (older) head on the same MR is still in flight (#1405: the lock is
+        keyed on the MR, not the head, so it also dedups a fresh push arriving
+        while the prior review hasn't concluded). The row insert and the Task
+        creation share one transaction so a row never exists without its task
+        and a task is never created without claiming the dedup slot.
         """
         if not slug or not head_sha:
+            return None
+        if MRReviewLock.acquire(slug=slug, pr_id=pr_id, holder=_LOOP_SCANNER_HOLDER, mr_url=pr_url) is None:
             return None
         with transaction.atomic():
             row, created = cls.objects.get_or_create(
