@@ -17,6 +17,7 @@ points that keep the no-orphan invariant:
     workspace already contains orphans.
 """
 
+import logging
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -26,6 +27,8 @@ from teatree.core.clone_paths import resolve_clone_path
 from teatree.core.models import Worktree
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
+
+logger = logging.getLogger(__name__)
 
 
 class BranchStatus(StrEnum):
@@ -121,7 +124,11 @@ def find_orphans_in_workspace() -> list[BranchReport]:
     """Return orphan branches across all tracked worktrees in the workspace.
 
     Deduplicates by ``(repo, branch)`` — multiple Worktree rows sharing a
-    branch produce a single report.
+    branch produce a single report. A single worktree whose classification
+    fails (a real git error — corrupt checkout, unresolvable target ref) is
+    logged and skipped rather than aborting the whole scan (#2937): this
+    sweep spans every tracked worktree in the workspace, and one bad row
+    must not hide every other worktree's orphan status.
     """
     workspace = clone_root()
     reports: list[BranchReport] = []
@@ -134,7 +141,16 @@ def find_orphans_in_workspace() -> list[BranchReport]:
         if key in seen:
             continue
         seen.add(key)
-        report = classify_branch(str(repo_main), wt.branch)
+        try:
+            report = classify_branch(str(repo_main), wt.branch)
+        except CommandFailedError:
+            logger.warning(
+                "orphan scan: could not classify %s@%s (git command failed) — skipping",
+                repo_main,
+                wt.branch,
+                exc_info=True,
+            )
+            continue
         if report.is_orphan:
             reports.append(report)
     return reports

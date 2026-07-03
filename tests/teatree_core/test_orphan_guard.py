@@ -7,6 +7,7 @@ from django.test import TestCase
 from teatree.core.cleanup import BranchClassification, BranchCommit
 from teatree.core.gates.orphan_guard import BranchReport, BranchStatus, classify_branch, find_orphans_in_workspace
 from teatree.core.models import Ticket, Worktree
+from teatree.utils.run import CommandFailedError
 from tests.teatree_core.cleanup._shared import _run_git
 
 _patch_classify = patch("teatree.core.gates.orphan_guard.classify_branch_commits")
@@ -191,6 +192,44 @@ class TestFindOrphansInWorkspace(TestCase):
         assert len(orphans) == 1
         assert mock_classify.call_count == 1
 
+    @patch("teatree.core.gates.orphan_guard.clone_root")
+    @patch("teatree.core.gates.orphan_guard.classify_branch")
+    def test_skips_worktree_whose_classification_fails_but_reports_the_rest(
+        self,
+        mock_classify: MagicMock,
+        mock_clone_root: MagicMock,
+    ) -> None:
+        """#2937: one worktree's git failure must not crash the whole scan."""
+        fake_workspace = MagicMock()
+
+        def _fake_div(_self: object, x: str) -> MagicMock:
+            return MagicMock(spec=Path, is_dir=lambda: True, __str__=lambda _s: f"/ws/{x}")
+
+        fake_workspace.__truediv__ = _fake_div
+        mock_clone_root.return_value = fake_workspace
+
+        self._make_worktree("org/alpha", "feat-1")
+        self._make_worktree("org/beta", "feat-2")
+
+        def classify(repo: str, branch: str) -> BranchReport:
+            if branch == "feat-1":
+                raise CommandFailedError(
+                    cmd=["git", "-C", repo, "log", branch, "--not", "origin/main"],
+                    returncode=128,
+                    stdout="",
+                    stderr="fatal: cannot change to '/ws/org/alpha': No such file or directory",
+                )
+            return BranchReport(repo=repo, branch=branch, status=BranchStatus.PUSHED_ORPHAN, ahead_count=1)
+
+        mock_classify.side_effect = classify
+
+        orphans = find_orphans_in_workspace()
+
+        branches = [o.branch for o in orphans]
+        assert "feat-1" not in branches
+        assert "feat-2" in branches
+        assert len(orphans) == 1
+
 
 class TestClassifyBranchRespectsRepoDefaultBranch:
     """Real-git integration: ``classify_branch`` must use the repo's actual default branch.
@@ -228,11 +267,15 @@ class TestClassifyBranchRespectsRepoDefaultBranch:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Fallback path — ``git.default_branch`` raises, classifier still returns a report.
+        """Fallback path — ``git.default_branch`` raises, classifier falls back to ``origin/main``.
 
         When the repo has no ``origin/HEAD`` and no known fallback name on the
-        remote, ``classify_branch`` must still return a valid report rather
-        than crashing — falls back to ``origin/main``.
+        remote, ``classify_branch`` still attempts ``origin/main``. On this
+        fixture that ref genuinely does not exist either (the remote's only
+        branch is ``master``), so the underlying ``git log ... --not
+        origin/main`` fails for real — and per #2937 that failure must
+        propagate (fail loud), never silently degrade to a possibly-wrong
+        report.
         """
         from teatree.core.gates import orphan_guard as og  # noqa: PLC0415
 
@@ -242,5 +285,25 @@ class TestClassifyBranchRespectsRepoDefaultBranch:
             raise RuntimeError(msg)
 
         monkeypatch.setattr(og.git, "default_branch", _raise)
-        report = classify_branch(str(self.clone), "feature-branch")
-        assert isinstance(report, BranchReport)
+        with pytest.raises(CommandFailedError, match="origin/main"):
+            classify_branch(str(self.clone), "feature-branch")
+
+
+class TestClassifyBranchFailsLoudOnGitFailure:
+    """#2937.
+
+    An invalid ``repo`` filesystem path must fail loud, never silently
+    misclassify a genuinely-ahead branch as SYNCED.
+
+    ``t3 <overlay> pr ensure-pr --repo <owner/repo-slug>`` passes a forge
+    slug (``owner/repo``) where a filesystem path is expected. ``git -C
+    <bad-path> log ...`` then fails, and the classifier used to swallow that
+    failure as an empty (legitimately-synced-looking) result.
+    """
+
+    def test_nonexistent_repo_path_raises_instead_of_reporting_synced(self, tmp_path: Path) -> None:
+        # Never created — mimics passing a forge slug like "owner/repo"
+        # instead of a real checkout path.
+        bad_repo = str(tmp_path / "owner" / "repo")
+        with pytest.raises(CommandFailedError):
+            classify_branch(bad_repo, "feature-branch")

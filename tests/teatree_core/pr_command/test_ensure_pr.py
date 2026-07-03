@@ -173,6 +173,54 @@ class TestEnsurePr(TestCase):
         assert "feat-q" in str(result["hint"])
         host.create_pr.assert_called_once()
 
+    def test_repo_flag_with_forge_slug_rejected_before_touching_classification(self) -> None:
+        """#2937.
+
+        ``--repo owner/repo`` (a forge slug, not a filesystem path) must fail
+        loud with a clear, actionable error — and never reach branch classification,
+        the path that used to silently misreport the branch as SYNCED.
+        """
+        with patch.object(pr_command, "classify_branch") as mock_classify:
+            result = cast(
+                "dict[str, object]",
+                call_command("pr", "ensure-pr", repo="owner/repo", branch="feature"),
+            )
+
+        assert "error" in result
+        assert "owner/repo" in str(result["error"])
+        mock_classify.assert_not_called()
+
+    def test_classify_branch_git_failure_surfaces_as_structured_error(self) -> None:
+        """#2937.
+
+        A real git failure during classification must surface as a
+        structured error, never an unhandled exception or a silent SYNCED skip.
+        """
+        host = MagicMock()
+        self._monkeypatch.setattr(pr_command, "code_host_from_overlay", lambda: host)
+
+        from teatree.utils.run import CommandFailedError  # noqa: PLC0415
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command.git, "current_branch", return_value="feat-r"),
+            patch.object(
+                pr_command,
+                "classify_branch",
+                side_effect=CommandFailedError(
+                    cmd=["git", "-C", ".", "log", "feat-r", "--not", "origin/main"],
+                    returncode=128,
+                    stdout="",
+                    stderr="fatal: ambiguous argument 'origin/main': unknown revision",
+                ),
+            ),
+        ):
+            result = cast("dict[str, object]", call_command("pr", "ensure-pr"))
+
+        assert "error" in result
+        assert "feat-r" in str(result["error"])
+        host.create_pr.assert_not_called()
+
     def test_other_create_pr_failure_still_raises(self) -> None:
         """A non-race create_pr failure must still surface (no silent swallow)."""
         from teatree.utils.run import CommandFailedError  # noqa: PLC0415

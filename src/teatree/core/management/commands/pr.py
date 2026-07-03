@@ -60,6 +60,7 @@ from teatree.core.public_identity import MergeResult
 from teatree.core.runners.ship import resolve_and_reconcile_branch, resolve_ship_worktree
 from teatree.types import RawAPIDict
 from teatree.utils import git
+from teatree.utils.run import CommandFailedError
 
 if TYPE_CHECKING:
     from teatree.core.models.types import TicketExtra
@@ -175,6 +176,30 @@ def _dispatch_ship(
     if sync:
         return _ship_sync(ticket, title)
     return _enqueue_ship(ticket, title)
+
+
+def _validate_repo_and_resolve_branch(repo: str, repo_path: str, branch: str) -> tuple[str, EnsurePrResult | None]:
+    """Validate ``--repo`` is a real git checkout and resolve the branch to classify.
+
+    ``--repo`` must be a filesystem path, never a forge slug (``owner/repo``) —
+    ``git -C <slug>`` fails, and that failure used to be swallowed into a
+    false SYNCED classification (#2937). Returns ``(branch_name, None)`` on
+    success, or ``("", <result>)`` — the early :class:`EnsurePrResult` the
+    caller returns as-is — when validation stops the command before
+    classification.
+    """
+    if repo and not git.check(repo=repo_path, args=["rev-parse", "--is-inside-work-tree"]):
+        return "", EnsurePrResult(
+            error=(
+                f"--repo {repo!r} is not a git checkout on this filesystem. Pass a "
+                "path to a local clone or worktree (e.g. '.' or '/path/to/repo'), "
+                "not a forge slug like 'owner/repo'."
+            ),
+        )
+    branch_name = branch or git.current_branch(repo=repo_path)
+    if not branch_name or branch_name in {"HEAD", "main", "master"}:
+        return "", EnsurePrResult(skipped="not on a feature branch", branch=branch_name)
+    return branch_name, None
 
 
 class Command(TyperCommand):
@@ -316,13 +341,23 @@ class Command(TyperCommand):
         match + tree-equality checks and no open PR. When this runs inside a
         git pre-push hook for a *first* push, the branch is not yet on the
         remote — creating the PR is deferred so the push proceeds.
+
+        ``--repo`` must be a filesystem path to a git checkout, never a forge
+        slug (``owner/repo``) — validated up front so that mistake surfaces
+        as a clear error instead of a silently misclassified branch (#2937).
         """
         repo_path = repo or "."
-        branch_name = branch or git.current_branch(repo=repo_path)
-        if not branch_name or branch_name in {"HEAD", "main", "master"}:
-            return EnsurePrResult(skipped="not on a feature branch", branch=branch_name)
+        branch_name, early_result = _validate_repo_and_resolve_branch(repo, repo_path, branch)
+        if early_result is not None:
+            return early_result
 
-        report = classify_branch(repo_path, branch_name)
+        try:
+            report = classify_branch(repo_path, branch_name)
+        except CommandFailedError as exc:
+            return EnsurePrResult(
+                branch=branch_name,
+                error=f"could not determine sync status of {branch_name!r} in {repo_path!r}: {exc}",
+            )
 
         if report.status is BranchStatus.SYNCED:
             return EnsurePrResult(skipped="branch synced to default branch", branch=branch_name)

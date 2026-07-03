@@ -6459,6 +6459,10 @@ Usage: t3 teatree pr ensure-pr [OPTIONS]
  git pre-push hook for a *first* push, the branch is not yet on the
  remote — creating the PR is deferred so the push proceeds.
 
+ ``--repo`` must be a filesystem path to a git checkout, never a forge
+ slug (``owner/repo``) — validated up front so that mistake surfaces
+ as a clear error instead of a silently misclassified branch (#2937).
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --branch        TEXT                                                         │
 │ --repo          TEXT                                                         │

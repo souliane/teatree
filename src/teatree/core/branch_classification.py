@@ -128,9 +128,14 @@ def classify_branch_commits(repo: str, branch: str, target: str = "origin/main")
 
     Runs two git log invocations: one to list branch commits not on any remote
     (same as :func:`git.unsynced_commits`), one to fetch subjects on ``target``
-    for subject matching.
+    for subject matching. Both use :func:`git.run_strict` — a real git failure
+    (e.g. ``repo`` is not a filesystem path to a checkout, such as a forge
+    slug like ``owner/repo`` passed where a path is expected) raises
+    :class:`CommandFailedError` instead of returning empty output, which used
+    to be indistinguishable from "branch has no unsynced commits" and
+    misclassified a genuinely-ahead branch as synced (#2937).
     """
-    raw = git.run(
+    raw = git.run_strict(
         repo=repo,
         args=["log", branch, "--not", target, "--format=%H%x00%P%x00%s"],
     )
@@ -138,7 +143,7 @@ def classify_branch_commits(repo: str, branch: str, target: str = "origin/main")
     if not raw.strip():
         return classification
 
-    target_raw = git.run(repo=repo, args=["log", target, "--format=%s", "-n", "500"])
+    target_raw = git.run_strict(repo=repo, args=["log", target, "--format=%s", "-n", "500"])
     target_subjects = {_canonicalize_subject(line) for line in target_raw.splitlines() if line.strip()}
     target_subjects.discard("")
 
