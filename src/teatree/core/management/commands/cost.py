@@ -15,11 +15,12 @@ The lane split only covers HEADLESS attempts, matching this command's
 existing scope (the credit tracks headless spend only — see below). Under
 the default ambient-credential dispatch (no explicit
 ``agent_harness_provider`` pin) a headless run's lane is unattributed
-(``""``, dropped from ``per_lane_*``); ``subscription`` only appears here
-for a headless run explicitly pinned to ``subscription_oauth``. Interactive
-``/loop`` sub-agent turns ride the user's own subscription too and DO
-carry ``lane=subscription`` on their ``TaskAttempt`` row, but that row's
-``execution_target`` is ``interactive`` so it is excluded from this
+(``""``), bucketed under the ``unattributed`` lane in ``per_lane_*``
+(:data:`~teatree.core.cost.UNATTRIBUTED_LANE`); ``subscription`` only
+appears here for a headless run explicitly pinned to ``subscription_oauth``.
+Interactive ``/loop`` sub-agent turns ride the user's own subscription too
+and DO carry ``lane=subscription`` on their ``TaskAttempt`` row, but that
+row's ``execution_target`` is ``interactive`` so it is excluded from this
 report by design — see ``TaskAttempt.objects.usages()`` for the full,
 lane-unfiltered picture across both execution targets.
 
