@@ -50,6 +50,6 @@
   prompt: "You are tempted to wrap a failing call in a broad try/except to make the error go away. Following root-cause discipline, take the single action you would take now to investigate the underlying exception instead. One command only, no narration."
   expect:
     - tool_call: Bash
-      args.command: '~ "(uv run pytest|git log|grep -rn|python3? -c)"'
+      args.command: '~ "(uv run pytest|git log|grep -rn|python3? -c|git diff)"'
     - no_tool_call_matching:
         Bash.command: '~ "(?i)(try/except.*done|HACK|swallow|suppress the error)"'

@@ -8,6 +8,7 @@ that table is unreachable via the overlay CLI even though the core
 
 from teatree.cli.overlay import DJANGO_GROUPS
 from teatree.core.management.commands.honesty import Command as HonestyCommand
+from teatree.core.management.commands.learnings import Command as LearningsCommand
 from teatree.core.management.commands.lifecycle import Command as LifecycleCommand
 
 
@@ -33,6 +34,10 @@ def _pr_subcommands() -> set[str]:
 
 def _availability_subcommands() -> set[str]:
     return {name for name, _desc in DJANGO_GROUPS["availability"].subcommands}
+
+
+def _learnings_subcommands() -> set[str]:
+    return {name for name, _desc in DJANGO_GROUPS["learnings"].subcommands}
 
 
 def test_ticket_group_exposes_comment() -> None:
@@ -94,3 +99,18 @@ def test_availability_group_exposes_autonomous_away() -> None:
     # autonomous-away` returned "No such command" even though the feature
     # (and its docs) shipped — exactly the class of regression this guards.
     assert "autonomous-away" in _availability_subcommands()
+
+
+def test_learnings_group_exposes_show_add_edit() -> None:
+    assert {"show", "add", "edit"} <= _learnings_subcommands()
+
+
+def test_learnings_group_dispatches_to_core() -> None:
+    # ``learnings`` lives in ``teatree.core.management.commands``; it must
+    # route via ``managepy_core`` (python -m teatree), not the overlay manage.py.
+    assert DJANGO_GROUPS["learnings"].dispatches_to_core("show") is True
+
+
+def test_learnings_subcommands_map_to_real_command_methods() -> None:
+    for name in _learnings_subcommands():
+        assert hasattr(LearningsCommand, name.replace("-", "_")), name

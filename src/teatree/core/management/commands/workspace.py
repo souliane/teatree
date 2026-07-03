@@ -28,6 +28,7 @@ from teatree.core.management.commands._workspace_ticket_intake import (
     build_ticket,
 )
 from teatree.core.models import Ticket, Worktree
+from teatree.core.models.project_learning import ProjectLearning
 from teatree.core.models.ticket_display import format_intake_summary
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.public_identity import StampResult, is_public_github_remote, set_local_noreply_identity
@@ -44,10 +45,17 @@ from teatree.core.worktree_done import reap_done_worktrees
 from teatree.core.worktree_paths import ticket_dir_for
 from teatree.docker.reclaim import reclaim_disk
 from teatree.utils import git
+from teatree.utils.url_slug import project_slug_from_ref
 
 if TYPE_CHECKING:
     from teatree.core.models.types import TicketExtra
     from teatree.core.overlay import OverlayBase
+
+
+def _project_learnings_for_ticket(ticket: Ticket) -> str:
+    """Durable per-repo learnings (#2892) for *ticket*'s repo, or "" when none recorded."""
+    slug = project_slug_from_ref(ticket.issue_url)
+    return ProjectLearning.objects.content_for_slug(slug) if slug else ""
 
 
 def _worktree_root() -> Path:
@@ -190,7 +198,14 @@ class Command(TyperCommand):
             return 0
         if not result.ok:
             self.stderr.write(f"  WARNING: {result.detail}")
-        self.stdout.write(format_intake_summary(ticket, str(ticket_dir), branch))
+        self.stdout.write(
+            format_intake_summary(
+                ticket,
+                str(ticket_dir),
+                branch,
+                project_learnings=_project_learnings_for_ticket(ticket),
+            )
+        )
         return int(ticket.pk)
 
     @command()

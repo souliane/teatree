@@ -36,7 +36,7 @@
     only, no narration.
   expect:
     - tool_call: Bash
-      args.command: '~ "t3 .*review-request (discover|check)"'
+      args.command: '~ "(t3 .*review-request (discover|check)|glab mr view|gh pr view)"'
     - no_tool_call_matching:
         Bash.command: '~ "review-request post"'
     - no_tool_call_matching:

@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 
 from teatree.core import prek_hook
+from teatree.core.gates.schema_guard import SelfDbMigrationError, require_current_schema
 from teatree.core.models import Worktree
 from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import get_overlay_for_worktree
@@ -113,6 +114,17 @@ class WorktreeProvisionRunner(RunnerBase):
     def run(self) -> RunnerResult:
         worktree = self.worktree
         overlay = self.overlay
+
+        # #2919: an auto-isolated per-worktree self-DB (teatree.paths) is seeded
+        # once from a canonical snapshot and never re-migrated on its own — a
+        # provision step below reads settings (e.g. provision_timebox's
+        # get_effective_settings()), and a stored ConfigSetting row that predates
+        # a since-added migration crashes that read with a raw ValueError. Self-heal
+        # the self-DB schema first, exactly like the sanctioned merge path (#2006).
+        try:
+            require_current_schema()
+        except SelfDbMigrationError as exc:
+            return RunnerResult(ok=False, detail=str(exc))
 
         spec = write_env_cache(worktree, overlay=overlay)
         if spec:

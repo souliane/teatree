@@ -339,4 +339,13 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         ],
         core_dispatch=True,
     ),
+    "learnings": DjangoGroup(
+        "Durable per-repo knowledge store, DB-placed (#2892).",
+        [
+            ("show", "Print the repo's durable learnings store."),
+            ("add", "Append a timestamped entry to the repo's durable learnings store."),
+            ("edit", "Open the repo's full learnings store in $EDITOR and replace it."),
+        ],
+        core_dispatch=True,
+    ),
 }

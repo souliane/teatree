@@ -295,6 +295,20 @@ Id references must be namespace-qualified — they are never bare. A harness/tea
 - **Harness/teatree task ids** render as `TODO-<n>` (e.g. `TODO-7`) — never `task #<n>` or bare `#<n>`. This is `Task` PKs and harness TODO ids alike.
 - **Forge issue/ticket/PR ids** render as `<repo>#<n>` when ambiguity with a task id (or a cross-repo ref) is possible (e.g. `teatree#11`, `<overlay-repo>#42`/`!42`). A bare `#<n>` for a forge ref is acceptable only inside a context already scoped to one forge namespace (e.g. a statusline line prefixed `[overlay]`, or a single-namespace section), never side-by-side with a task id.
 - Never emit a bare `#<n>` for a task id sitting next to a bare `#<n>` for a ticket.
+- **A repo-qualified ref is a rendering convention, not `gh`/`glab` CLI syntax — do X, never Y.** `<repo>#<n>` (e.g. `teatree#50`) is how you _write_ the ref in prose, a statusline, or a commit body. Neither `gh` nor `glab` accepts that slash/hash-qualified string as a single positional argument — pass the bare number and name the repo with its own flag:
+
+  ```bash
+  # do X — bare number + explicit repo flag:
+  gh issue view 50 --repo souliane/teatree
+  gh pr view 50 --repo souliane/teatree
+  glab issue view 50 --repo souliane/teatree
+  # never Y — a repo-qualified single argument is not valid gh/glab CLI syntax,
+  # even though "teatree#50" is the correct PROSE rendering of the same ref:
+  gh issue view teatree#50              # FORBIDDEN — gh rejects this argument shape
+  gh issue view souliane/teatree#50     # FORBIDDEN — same error
+  ```
+
+  Inside the repo's own working tree (`gh`/`glab` resolve the repo from the git remote), `--repo`/`-R` can be omitted — `gh issue view 50` is fine there. Add the flag whenever the command runs outside that repo's tree, or whenever the surrounding text disambiguates against a same-numbered task id and the command must stay unambiguous too.
 
 This is the canonical home; `/t3:todos` § "Output contract" cross-references it for the `task TODO-<id> (ticket #<n>)` line shape, and the disambiguation eval is `evals/scenarios/id_namespace_disambiguation.yaml`.
 
@@ -422,7 +436,16 @@ The gate is **satisfiable, not pure suppression**. The teatree code paths consul
 
 ## Never Post PR Comments from Parallel Agents (Non-Negotiable)
 
-MR/PR comment posting (test plans, evidence, review notes) must be **serialized** — never dispatch two parallel agents that both post comments on PRs. Parallel agents cannot check for each other's posts, resulting in duplicate comments. Post all PR comments from the main conversation thread, or serialize agent tasks so only one posts at a time.
+MR/PR comment posting (test plans, evidence, review notes) must be **serialized** — never dispatch two parallel agents that both post comments on PRs. Parallel agents cannot check for each other's posts, resulting in duplicate comments.
+
+**Serialized means one poster at a time — it does NOT mean the main agent posts directly (do X, never Y).** "Serialize" governs ordering, not who acts. The main/orchestrating agent is never the poster itself: per § "DISPATCH IMMEDIATELY — the orchestrate-only boundary" below, a colleague-visible publish (`t3 review post-comment`, `post-draft-note`, a test-plan or evidence comment) is dispatched to a single sub-agent, exactly like a code edit — the boundary is about WHO touches a colleague-facing surface, not about the call being short enough to "just do it here." Serialize by dispatching one sub-agent, collecting its result, then dispatching the next — never by having the main agent shortcut the dispatch and run the posting command itself in the foreground.
+
+```python
+# do X — dispatch the single posting action to a sub-agent, then stop:
+Task(description="Post review finding", prompt="Post an inline `t3 review post-comment` on my-org/my-repo!4120, src/teatree/core/sweep.py line 88: <finding text>. Report the comment URL.")
+# never Y — the main agent runs the posting command itself because it's short/serialized:
+# Bash(command="t3 review post-comment my-org/my-repo 4120 '<finding>' --file src/teatree/core/sweep.py --line 88")   # FORBIDDEN in the main agent
+```
 
 ## Evidence Comes From the Deployed Environment (Non-Negotiable)
 
@@ -431,7 +454,7 @@ Before posting any screenshot, PDF, or "proof it works" artifact on an MR/PR/iss
 - **Required:** browser screenshots from the deployed dev/staging URL, OR documents regenerated on the deployed environment after merge + deploy.
 - **Prohibited:** golden test PDFs from `build/test-results/` or `src/test/resources/`, `pdftotext` from a local build, screenshots of `localhost`, **and side-by-side comparisons assembled from PDFs extracted at different git commits**.
 
-A passing local test suite is not evidence. The deployed system is the only artifact that proves a user-visible feature works. If the proper evidence requires steps you can't complete this session, say so explicitly in the comment — don't substitute a prohibited source.
+A passing local test suite is not evidence. The deployed system is the only artifact that proves a user-visible feature works. If the proper evidence requires steps you can't complete this session, don't substitute a prohibited source — and don't just narrate the limitation in prose and stop, either. This is exactly the "fact you genuinely cannot obtain" case in § "Always Use AskUserQuestion for Questions" § "The boundary — what you SHOULD still ask" below: while you're still mid-turn with the user/orchestrator (nothing posted yet), surface the blocker with `AskUserQuestion` — ask for the deployed dev/staging URL, or whether the deploy has actually finished — rather than declaring "I can't verify this" as your final answer with no way for the user to unblock you. Only once you're recording the outcome durably on the PR/MR/issue itself does the unavailability get written into the comment as the fallback note.
 
 **The mandatory-E2E gate is bypassed ONLY by a recorded user approval — never by the agent self-asserting a skip.** For a display-impacting change that genuinely cannot get E2E this session, the single sanctioned escape is the user-authorized bypass command:
 
@@ -759,6 +782,8 @@ Task(description="Fix get_active_session", prompt="In a fresh worktree off origi
 # Edit(file_path="src/teatree/core/session.py", ...)   # FORBIDDEN in the main agent — size/urgency is no exemption
 ```
 
+**Publishing a colleague-visible artifact is in scope too, regardless of how fast the call itself runs.** Posting an MR/PR/issue comment, a review finding, or evidence is a one-shot CLI call that finishes in under a second — but the boundary is about WHO acts on a colleague-facing surface, not about call duration. Dispatch it the same way as a code edit; see § "Never Post PR Comments from Parallel Agents" above for the worked `t3 review post-comment` example.
+
 1. **Dispatch the unit to a `Task` (or `Agent`) sub-agent in this same turn.** The prompt fully describes the bounded unit of work in plain language — the file/subsystem, the bug, the expected outcome. Do this even when you don't yet know the exact shell command (the `Task` path needs no shell invocation up front).
 2. **Never run the long unit yourself in the foreground.** Do NOT `grep -r … src`, `rg … src`, `find … -name`, open-and-`Edit` the `.py` file, or `Write` the `test_*.py` yourself when the unit is delegable — the orchestrator stays thin.
 3. **Keep moving while it runs** — pick up the next ticket, or arm a `Monitor` on it. Do NOT sit in a foreground `while/until … sleep … pgrep` poll loop waiting on the sub-agent's process.
@@ -857,6 +882,16 @@ Edit(file_path="module.py", ...)   # do the thorough fix
 
 - a **fact you cannot obtain** — a private URL/endpoint, the intended audience, a credential/token, a value that lives only in the user's head and is in no repo/config you can read;
 - **authorization for an irreversible or outward-facing action** — a force-push to a default branch, a destructive DB op, a post/PR/merge that leaves the machine (per the always-gated and on-behalf rules below).
+
+**A verification tool being unavailable, or the evidence source being un-locatable, is the "fact you cannot obtain" case — ask, don't just state the limitation and stop (do X, never Y).** Trying one autonomous diagnostic step first is fine; but once it confirms you're blocked, the next action is `AskUserQuestion`, not a prose sign-off. A turn that ends "I couldn't verify X, so I won't confirm it" without asking for the missing fact leaves the user unaware there's anything to unblock — silence reads as "handled," not "stuck."
+
+```python
+# do X — the required tool/evidence is unreachable; ask for the missing fact:
+AskUserQuestion(questions=[{"question": "The gh CLI isn't available here, so I can't confirm the dev deploy finished or reach a deployed URL. What's the dev URL, or has the deploy landed?", "options": [...]}])
+# never Y — state the blocker in prose as the final answer, no ask, turn just ends:
+# "The gh CLI isn't available in this environment, so I couldn't complete that
+#  status check... I won't tell you it works on dev until I have that evidence."   # FORBIDDEN
+```
 
 The test is sharp: _can I reach the best outcome by doing the work?_ If yes → do it, don't ask. If the blocker is a missing fact or an authorization gate → ask via `AskUserQuestion`. "I could resolve this by doing the best work" is RED; "I truly cannot know this / am not authorized" is GREEN. Pinned by `do_the_best_without_asking` and `legitimate_missing_fact_question_is_allowed` (`evals/scenarios/do_the_best_no_tech_debt.yaml`).
 
