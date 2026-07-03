@@ -1,10 +1,17 @@
 """Shared fixtures for teatree.core test modules."""
 
-from collections.abc import Iterator
+import uuid
+from collections.abc import Callable, Iterator
+from contextlib import ExitStack
+from dataclasses import dataclass
+from pathlib import Path
 from typing import cast
 from unittest.mock import patch
 
 import pytest
+from django.core.management import call_command
+from django.db import connections
+from django.test import override_settings
 
 from teatree.core.models import Worktree
 from teatree.core.models.review_verdict import ReviewVerdict
@@ -120,3 +127,104 @@ def mock_command_overlay() -> Iterator[None]:
         return_value={"test": CommandOverlay()},
     ):
         yield
+
+
+class _RouteAllToAlias:
+    """Force every unscoped ORM query onto ``alias`` for one migrate call (#2915).
+
+    Several ``core`` migrations (e.g. ``0001_initial``'s loop/prompt seed,
+    ``0016_loop_colleague_facing``'s backfill) run a ``RunPython`` that reads
+    historical models via ``apps.get_model(...).objects`` with no
+    ``.using(...)`` — Django resolves that to ``DEFAULT_DB_ALIAS`` regardless
+    of which connection the surrounding ``migrate --database`` targets.
+    Installing this as the sole ``DATABASE_ROUTERS`` entry for the migrate
+    call reroutes those unscoped reads/writes onto the private alias instead
+    of leaking onto the shared ``default`` connection.
+    """
+
+    def __init__(self, alias: str) -> None:
+        self.alias = alias
+
+    def db_for_read(self, model: type, **hints: object) -> str:
+        return self.alias
+
+    def db_for_write(self, model: type, **hints: object) -> str:
+        return self.alias
+
+
+@dataclass(frozen=True)
+class SchemaGuardAlias:
+    """Factory for private, file-backed SQLite connections used by schema_guard tests (#2915)."""
+
+    register_current: Callable[[], str]
+    make_stale: Callable[[], str]
+
+
+@pytest.fixture
+def _unblocked_db(django_db_blocker: pytest.FixtureRequest) -> Iterator[None]:
+    """Lift pytest-django's DB-access guard for a test that never touches ``default``."""
+    with django_db_blocker.unblock():
+        yield
+
+
+@pytest.fixture
+def schema_guard_alias(tmp_path: Path, _unblocked_db: None) -> Iterator[SchemaGuardAlias]:
+    """Private, throwaway SQLite connections for schema_guard tests (#2915).
+
+    Every alias this factory creates is registered against its own file under
+    ``tmp_path`` and torn down automatically — a crashed reverse-migrate/
+    restore cycle can corrupt only that one throwaway file, never the shared,
+    xdist-worker-lifetime-reused ``default`` test database every other test in
+    the worker relies on.
+
+    The ``_RouteAllToAlias`` router is installed for the alias's whole
+    remaining lifetime, not just this factory's own migrate calls: the
+    schema-guard functions under test (``migrate_self_db``,
+    ``require_current_schema``) run their own ``migrate --database=<alias>``
+    internally, and without the router active for *those* calls too, their
+    RunPython seed/backfill operations resolve back onto the shared
+    ``default`` connection they were built to avoid.
+    """
+    stack = ExitStack()
+    created: list[str] = []
+
+    def _register_current() -> str:
+        """Register + migrate-to-HEAD a private, file-backed SQLite connection.
+
+        Runs a real ``migrate`` (not a hand-rolled table) so the full app
+        graph is current — the schema-guard functions under test read the
+        migration ledger via Django's own ``MigrationExecutor``, which needs
+        every app's history.
+        """
+        alias = f"sg_{uuid.uuid4().hex}"
+        db_file = tmp_path / f"{alias}.sqlite3"
+        connections.databases[alias] = {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": str(db_file),
+            "OPTIONS": {},
+            "ATOMIC_REQUESTS": False,
+            "AUTOCOMMIT": True,
+            "CONN_MAX_AGE": 0,
+            "CONN_HEALTH_CHECKS": False,
+            "TIME_ZONE": None,
+            "TEST": {},
+        }
+        stack.enter_context(override_settings(DATABASE_ROUTERS=[_RouteAllToAlias(alias)]))
+        call_command("migrate", "--no-input", database=alias, verbosity=0)
+        created.append(alias)
+        return alias
+
+    def _make_stale() -> str:
+        """A private alias migrated to HEAD, then reverse-migrated ``core`` to ``zero``."""
+        alias = _register_current()
+        call_command("migrate", "core", "zero", "--no-input", database=alias, verbosity=0)
+        return alias
+
+    with stack:
+        yield SchemaGuardAlias(register_current=_register_current, make_stale=_make_stale)
+
+    for alias in created:
+        for conn in connections.all():
+            if conn.alias == alias:
+                conn.close()
+        connections.databases.pop(alias, None)

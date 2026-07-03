@@ -11,81 +11,72 @@ process, against the exact connection** ``pending_migrations()`` reads — so
 non-destructive (rows survive), idempotent (a no-op on a current DB), and
 fail-closed (a real migrate error raises).
 
-Since the #2652 squash ``core`` is a single ``0001_initial``, so the only
-genuinely-stale state a real reverse migrate can reach is the pre-initial one
-(``zero``), from which ``migrate_self_db`` re-applies the initial and seeds.
+A real reverse migrate can leave ``core`` behind at any point in its
+migration graph; the tests below exercise the pre-initial state (``zero``),
+the state a keystone merge of a migration-adding PR leaves the runtime
+self-DB in, from which ``migrate_self_db`` re-applies the whole graph.
+
+Every test below drives its stale/restore cycle against a **private,
+file-backed SQLite connection** registered per test — never the shared,
+xdist-worker-lifetime-reused ``default`` test database (#2915). Reverse-
+migrating ``core`` to ``zero`` against ``default`` risked leaving every other
+test in the same worker permanently stale if a cleanup was ever interrupted
+(a ``pytest-timeout`` firing mid-restore, an OOM-kill); a private alias
+confines that risk to the one throwaway file this test itself creates and
+tears down.
 """
 
 from unittest.mock import patch
 
 import pytest
-from django.core.management import call_command
 from django.db import OperationalError
-from django.test import TransactionTestCase
 
 from teatree.core.gates.schema_guard import SelfDbMigrationError, migrate_self_db, pending_migrations
+from teatree.core.models import Ticket
+from tests.teatree_core.conftest import SchemaGuardAlias
 
 
-class MigrateSelfDbInProcessTest(TransactionTestCase):
-    """``migrate_self_db`` converges the live test connection.
+class TestMigrateSelfDbInProcess:
+    """``migrate_self_db`` converges the connection named by its ``alias`` arg.
 
-    It targets the same connection ``pending_migrations()`` inspects, so the
-    migrate-then-recheck round-trip is guaranteed to converge on one DB.
+    Each test registers its own private, file-backed SQLite alias (via the
+    shared ``schema_guard_alias`` fixture) — never the shared ``default``
+    connection every other test in the xdist worker reuses — so a crashed
+    reverse-migrate/restore cycle cannot corrupt unrelated tests (#2915).
     """
 
-    def _make_stale(self) -> list[str]:
-        """Reverse the live DB to ``zero`` so it is genuinely behind.
+    def test_stale_db_is_brought_current(self, schema_guard_alias: SchemaGuardAlias) -> None:
+        alias = schema_guard_alias.make_stale()
+        assert pending_migrations(alias) != [], "precondition: DB must be stale"
 
-        The squashed graph's only reverse target is ``zero``: un-applying
-        ``0001_initial`` really drops the core tables (schema genuinely
-        behind), the exact stale-runtime-DB state ``schema_guard`` guards
-        against. ``migrate_self_db`` then re-applies the initial forward.
-        """
-        call_command("migrate", "core", "zero", "--no-input", verbosity=0)
-        return pending_migrations()
+        applied = migrate_self_db(alias)
 
-    def _restore_head(self) -> None:
-        call_command("migrate", "core", "--no-input", verbosity=0)
-
-    def test_stale_db_is_brought_current(self) -> None:
-        self.addCleanup(self._restore_head)
-        self._make_stale()
-        assert pending_migrations() != [], "precondition: DB must be stale"
-
-        applied = migrate_self_db()
-
-        assert pending_migrations() == [], "migrate_self_db must converge the live connection"
+        assert pending_migrations(alias) == [], "migrate_self_db must converge the aliased connection"
         assert applied, "must report the migration labels it applied"
         assert any("0001_initial" in label for label in applied)
 
-    def test_idempotent_noop_on_current_db(self) -> None:
-        # A current DB yields nothing pending; migrate returns an empty list
-        # and does not error.
-        assert pending_migrations() == []
-        assert migrate_self_db() == []
-        assert pending_migrations() == []
+    def test_idempotent_noop_on_current_db(self, schema_guard_alias: SchemaGuardAlias) -> None:
+        alias = schema_guard_alias.register_current()
+        # A current DB yields nothing pending; migrate returns an empty
+        # list and does not error.
+        assert pending_migrations(alias) == []
+        assert migrate_self_db(alias) == []
+        assert pending_migrations(alias) == []
 
-    def test_migrate_is_non_destructive_to_existing_rows(self) -> None:
-        # ``migrate_self_db`` runs a forward ``migrate`` that never drops live
-        # rows. On the squashed single-migration graph the only reverse target
-        # is ``zero`` (which recreates the schema from scratch), so the
-        # non-destructive guarantee is pinned on the always-available
-        # invocation: a no-op migrate against a current DB leaves existing rows
-        # exactly as they were.
-        from teatree.core.models import Ticket  # noqa: PLC0415
+    def test_migrate_is_non_destructive_to_existing_rows(self, schema_guard_alias: SchemaGuardAlias) -> None:
+        alias = schema_guard_alias.register_current()
+        ticket = Ticket.objects.using(alias).create(overlay="t3-teatree", issue_url="https://example.com/issues/126")
 
-        ticket = Ticket.objects.create(overlay="t3-teatree", issue_url="https://example.com/issues/126")
-
-        assert migrate_self_db() == [], "current DB: migrate is a no-op"
+        assert migrate_self_db(alias) == [], "current DB: migrate is a no-op"
 
         ticket.refresh_from_db()
         assert ticket.issue_url == "https://example.com/issues/126", "non-destructive: existing rows survive"
 
-    def test_fails_closed_when_migrate_errors(self) -> None:
+    def test_fails_closed_when_migrate_errors(self, schema_guard_alias: SchemaGuardAlias) -> None:
         # A genuine migrate failure must raise SelfDbMigrationError, never be
         # swallowed — the consumer relies on a non-zero outcome to fail closed.
-        self.addCleanup(self._restore_head)
-        self._make_stale()  # ensure pending != [] so call_command is reached
+        alias = schema_guard_alias.make_stale()
+        assert pending_migrations(alias) != [], "precondition: ensure call_command is reached"
         with (
             patch(
                 "teatree.core.gates.schema_guard.call_command",
@@ -93,5 +84,5 @@ class MigrateSelfDbInProcessTest(TransactionTestCase):
             ),
             pytest.raises(SelfDbMigrationError) as exc,
         ):
-            migrate_self_db()
+            migrate_self_db(alias)
         assert "disk I/O error" in str(exc.value)
