@@ -34,8 +34,12 @@ class TestLoopAdmin(django.test.TestCase):
 
     def test_loop_admin_lists_key_columns(self) -> None:
         model_admin = admin.site._registry[Loop]
-        for column in ("name", "enabled", "action", "run_in_sub_agent", "description", "cadence"):
+        for column in ("name", "enabled", "colleague_facing", "action", "run_in_sub_agent", "description", "cadence"):
             assert column in model_admin.list_display
+
+    def test_loop_admin_colleague_facing_is_editable(self) -> None:
+        model_admin = admin.site._registry[Loop]
+        assert "colleague_facing" in model_admin.list_editable
 
     def test_loop_admin_action_shows_script_or_prompt(self) -> None:
         model_admin = admin.site._registry[Loop]

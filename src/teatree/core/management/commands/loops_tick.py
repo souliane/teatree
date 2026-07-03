@@ -27,6 +27,14 @@ the mini-loop schedules reader so the statusline loop line keeps its per-loop
 countdowns, and runs the shared :func:`teatree.loop.tick.run_tick` pipeline (reap
 + scan + act + render).
 
+A row with ``Loop.colleague_facing`` set is gated a second, finer-grained way
+(#2904), downstream in ``teatree.loops.loop_table._loop_admitted``: it is not
+admitted while ``resolved.defers_questions`` is true — ``autonomous_away``
+included, even though this tick is not parked here for that mode. So an
+``autonomous_away`` per-loop tick of a colleague-facing row still claims its
+lease and preflights its overlay, but the jobs builder yields nothing and the
+row's cadence anchor is preserved untouched (same as a disabled/not-due row).
+
 The reactive infra loops (Slack-answer, self-improve, drain-queue) are NOT driven
 here: each is its own dedicated native Claude ``/loop`` running its own
 ``t3 loop <slot> run`` command on its own cadence (``teatree.cli.loop*``), behind

@@ -52,6 +52,16 @@ class TestLoopsListText(django.test.TestCase):
         assert "last —" in line
         assert "next due" in line
 
+    def test_colleague_facing_loop_is_tagged(self) -> None:
+        Loop.objects.create(name="demo-cf", delay_seconds=60, prompt=_prompt(), colleague_facing=True)
+        line = next(ln for ln in _run().splitlines() if ln.strip().startswith("demo-cf"))
+        assert "colleague-facing" in line
+
+    def test_non_colleague_facing_loop_is_not_tagged(self) -> None:
+        Loop.objects.create(name="demo-internal", delay_seconds=60, prompt=_prompt(), colleague_facing=False)
+        line = next(ln for ln in _run().splitlines() if ln.strip().startswith("demo-internal"))
+        assert "colleague-facing" not in line
+
 
 @django.test.override_settings(USE_TZ=True)
 class TestLoopsListDescription(django.test.TestCase):
@@ -107,6 +117,12 @@ class TestLoopsListJson(django.test.TestCase):
         news = next(e for e in payload["loops"] if e["name"] == "news")
         assert news["daily_at"] == "08:00"
         assert news["cadence"] == "daily 08:00"
+
+    def test_json_carries_colleague_facing(self) -> None:
+        Loop.objects.create(name="demo-json-cf", delay_seconds=60, prompt=_prompt(), colleague_facing=True)
+        payload = json.loads(_run("--json"))
+        demo = next(e for e in payload["loops"] if e["name"] == "demo-json-cf")
+        assert demo["colleague_facing"] is True
 
 
 @django.test.override_settings(USE_TZ=True)

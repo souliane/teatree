@@ -62,7 +62,9 @@ class LoopSeedSpec:
     interval for a once-per-day loop. ``description`` is the loop's real one-line
     "what it does and when" — the source of truth populated onto ``Loop.description``
     (and the prompt-backed loop's ``Prompt.description``) and rendered by
-    ``t3 loops list``.
+    ``t3 loops list``. ``colleague_facing`` (#2904) marks a loop that reaches or
+    reads from a colleague — the #2904 admission gate skips it whenever
+    availability defers questions (away / autonomous_away).
     """
 
     name: str
@@ -70,6 +72,7 @@ class LoopSeedSpec:
     description: str
     daily_at: dt.time | None = None
     prompt_body: str | None = None
+    colleague_facing: bool = False
 
     @property
     def is_prompt_backed(self) -> bool:
@@ -129,6 +132,7 @@ DEFAULT_LOOPS: tuple[LoopSeedSpec, ...] = (
         300,
         "Reviews colleague-authored open PRs every 5m and posts inline findings (with the "
         "PR-sweep, codex double-check and Slack-broadcast companions).",
+        colleague_facing=True,
     ),
     LoopSeedSpec(
         "ship",
@@ -150,6 +154,7 @@ DEFAULT_LOOPS: tuple[LoopSeedSpec, ...] = (
         "followup",
         1800,
         "Intakes newly-assigned issues (auto-starting ready ones) and fires the review-request nag every 30m.",
+        colleague_facing=True,
     ),
     LoopSeedSpec(
         "issue_implementer",
@@ -240,6 +245,7 @@ def seed_default_loops_and_prompts() -> SeedResult:
             "daily_at": spec.daily_at,
             "description": spec.description,
             "enabled": False,
+            "colleague_facing": spec.colleague_facing,
         }
         if prompt is not None:
             defaults["prompt"] = prompt
