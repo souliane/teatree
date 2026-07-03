@@ -431,7 +431,7 @@ Before posting any screenshot, PDF, or "proof it works" artifact on an MR/PR/iss
 - **Required:** browser screenshots from the deployed dev/staging URL, OR documents regenerated on the deployed environment after merge + deploy.
 - **Prohibited:** golden test PDFs from `build/test-results/` or `src/test/resources/`, `pdftotext` from a local build, screenshots of `localhost`, **and side-by-side comparisons assembled from PDFs extracted at different git commits**.
 
-A passing local test suite is not evidence. The deployed system is the only artifact that proves a user-visible feature works. If the proper evidence requires steps you can't complete this session, say so explicitly in the comment — don't substitute a prohibited source.
+A passing local test suite is not evidence. The deployed system is the only artifact that proves a user-visible feature works. If the proper evidence requires steps you can't complete this session, don't substitute a prohibited source — and don't just narrate the limitation in prose and stop, either. This is exactly the "fact you genuinely cannot obtain" case in § "Always Use AskUserQuestion for Questions" § "The boundary — what you SHOULD still ask" below: while you're still mid-turn with the user/orchestrator (nothing posted yet), surface the blocker with `AskUserQuestion` — ask for the deployed dev/staging URL, or whether the deploy has actually finished — rather than declaring "I can't verify this" as your final answer with no way for the user to unblock you. Only once you're recording the outcome durably on the PR/MR/issue itself does the unavailability get written into the comment as the fallback note.
 
 **The mandatory-E2E gate is bypassed ONLY by a recorded user approval — never by the agent self-asserting a skip.** For a display-impacting change that genuinely cannot get E2E this session, the single sanctioned escape is the user-authorized bypass command:
 
@@ -857,6 +857,16 @@ Edit(file_path="module.py", ...)   # do the thorough fix
 
 - a **fact you cannot obtain** — a private URL/endpoint, the intended audience, a credential/token, a value that lives only in the user's head and is in no repo/config you can read;
 - **authorization for an irreversible or outward-facing action** — a force-push to a default branch, a destructive DB op, a post/PR/merge that leaves the machine (per the always-gated and on-behalf rules below).
+
+**A verification tool being unavailable, or the evidence source being un-locatable, is the "fact you cannot obtain" case — ask, don't just state the limitation and stop (do X, never Y).** Trying one autonomous diagnostic step first is fine; but once it confirms you're blocked, the next action is `AskUserQuestion`, not a prose sign-off. A turn that ends "I couldn't verify X, so I won't confirm it" without asking for the missing fact leaves the user unaware there's anything to unblock — silence reads as "handled," not "stuck."
+
+```python
+# do X — the required tool/evidence is unreachable; ask for the missing fact:
+AskUserQuestion(questions=[{"question": "The gh CLI isn't available here, so I can't confirm the dev deploy finished or reach a deployed URL. What's the dev URL, or has the deploy landed?", "options": [...]}])
+# never Y — state the blocker in prose as the final answer, no ask, turn just ends:
+# "The gh CLI isn't available in this environment, so I couldn't complete that
+#  status check... I won't tell you it works on dev until I have that evidence."   # FORBIDDEN
+```
 
 The test is sharp: _can I reach the best outcome by doing the work?_ If yes → do it, don't ask. If the blocker is a missing fact or an authorization gate → ask via `AskUserQuestion`. "I could resolve this by doing the best work" is RED; "I truly cannot know this / am not authorized" is GREEN. Pinned by `do_the_best_without_asking` and `legitimate_missing_fact_question_is_allowed` (`evals/scenarios/do_the_best_no_tech_debt.yaml`).
 
