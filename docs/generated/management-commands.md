@@ -453,7 +453,7 @@ Show per-account Anthropic 5h / weekly token utilization + status.
 | Subcommand | Description |
 | --- | --- |
 | `ticket` | Create or update a ticket and trigger worktree provisioning |
-| `provision` | Provision every worktree in the current ticket workspace |
+| `provision` | Provision every worktree in the current ticket workspace, in parallel |
 | `start` | Start docker for every worktree in the current ticket workspace |
 | `ready` | Run readiness probes for every worktree in the ticket workspace |
 | `teardown` | Tear down every worktree in the current ticket workspace |
@@ -479,7 +479,7 @@ Show per-account Anthropic 5h / weekly token utilization + status.
 | `verify` | Run overlay health checks for one worktree |
 | `ready` | Run runtime readiness probes for one worktree |
 | `teardown` | Stop docker, drop DB, remove git worktree, delete row |
-| `status` | Report FSM state, branch, and allocated host ports for one worktree |
+| `status` | Report FSM state, branch, allocated host ports, and the last provision report for one worktree |
 | `diagnose` | Print a structured health checklist for one worktree |
 | `diagram` | Print a state diagram as Mermaid. Models: worktree, ticket, task |
 | `smoke-test` | Quick health check: overlay loads, CLI responds, imports OK |

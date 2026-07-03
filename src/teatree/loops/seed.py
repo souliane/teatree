@@ -110,6 +110,12 @@ DEFAULT_LOOPS: tuple[LoopSeedSpec, ...] = (
         "Auto-frees host disk and RAM when they cross the pressure threshold; "
         "checks every 1m on its own ~5m internal cadence.",
     ),
+    LoopSeedSpec(
+        "snapshot_warmer",
+        86400,
+        "Refreshes each overlay-declared reference DB's DSLR snapshot out-of-band once a day "
+        "so a ticket-critical-path provision never pays the slow restore+migrate path.",
+    ),
     # NOTE: the reactive infra loops (``slack_answer`` / ``self_improve`` /
     # ``drain_queue``) are intentionally absent — they have no registry MiniLoop
     # and each runs as its own dedicated `/loop` (`t3 loop <slot> run`), never via

@@ -33,6 +33,7 @@ from teatree.loop.scanners import (
     SlackDmInboundScanner,
     SlackMentionsScanner,
     SlackReviewIntentScanner,
+    SnapshotWarmerScanner,
 )
 from teatree.loop.scanners.notion_view import NotionLike
 from teatree.loop.scanners.self_update_ci import GhMainCiStatus
@@ -206,6 +207,33 @@ def _idle_stack_reaper_scanner() -> IdleStackReaperScanner | None:
     )
 
 
+def _snapshot_warmer_scanner() -> SnapshotWarmerScanner | None:
+    """Build the global snapshot-warmer scanner from teatree-core config (souliane/teatree#2949).
+
+    Returns ``None`` when ``snapshot_warmer_disabled = true`` (the durable
+    kill-switch) OR when the active overlay declares no DSLR-backed configs
+    (:meth:`OverlayBase.get_snapshot_warmer_configs` default empty — nothing
+    to warm). Per-overlay scoped like the reaper: the overlay anchor is
+    resolved via :func:`discover_active_overlay`, falling back to the
+    canonical core overlay when none is registered.
+    """
+    settings = load_config().user
+    if settings.snapshot_warmer_disabled:
+        return None
+    from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+
+    active = discover_active_overlay()
+    overlay_name = active.name if active is not None else _CANONICAL_CORE_OVERLAY
+    try:
+        overlay = get_overlay(overlay_name)
+    except Exception:  # noqa: BLE001 — an unresolvable overlay means nothing to warm, not a tick crash
+        return None
+    configs = overlay.get_snapshot_warmer_configs()
+    if not configs:
+        return None
+    return SnapshotWarmerScanner(configs=configs, max_age_days=settings.snapshot_warmer_max_age_days)
+
+
 def _local_stack_queue_drainer_scanner() -> LocalStackQueueDrainerScanner | None:
     """Build the global acquisition-queue drainer scanner from config (#2190, #44).
 
@@ -363,35 +391,22 @@ def build_default_jobs(
             _dogfood_smoke_scanner(),
             _eval_local_scanner(),
             _backlog_sweep_scanner(),
+            # #1249 self-update — fast-forwards the editable teatree core clone
+            # + every registered overlay clone once the cadence has elapsed.
+            _self_update_scanner(),
+            # #128 resource-pressure — global host-level disk/RAM auto-free.
+            _resource_pressure_scanner(),
+            # #2190 idle-stack reaper + #44 acquisition-queue drainer — the
+            # reaper stops idle stacks to free a ``max_concurrent_local_stacks``
+            # slot; the drainer re-fires a queued ``start`` once a slot frees.
+            _idle_stack_reaper_scanner(),
+            _local_stack_queue_drainer_scanner(),
+            # souliane/teatree#2949 snapshot warmer — keeps every overlay-
+            # declared reference DB's DSLR snapshot current out-of-band.
+            _snapshot_warmer_scanner(),
         )
         if s
     )
-    # #1249 Self-update scanner — fast-forwards the editable teatree
-    # core clone + every registered overlay clone to ``origin/<default>``
-    # once the cadence has elapsed. Wired as a global job because it
-    # concerns the editable installs themselves, not any one overlay's
-    # tracked work.
-    self_update_scanner = _self_update_scanner()
-    if self_update_scanner is not None:
-        jobs.append(_ScannerJob(scanner=self_update_scanner, overlay=""))
-    # #128 Resource-pressure scanner — global (overlay="") host-level
-    # disk/RAM auto-free. Monitoring + regenerable-cache purge on by
-    # default; destructive levers flag-gated off. Kill-switch:
-    # ``resource_pressure_disabled = true`` → builder returns None.
-    resource_pressure_scanner = _resource_pressure_scanner()
-    if resource_pressure_scanner is not None:
-        jobs.append(_ScannerJob(scanner=resource_pressure_scanner, overlay=""))
-    # #2190 idle-stack reaper + #44 acquisition-queue drainer — global
-    # (overlay="") mechanical scanners. The reaper stops idle stacks to free a
-    # ``max_concurrent_local_stacks`` slot; the drainer re-fires a queued
-    # ``start`` once a slot frees. Kill-switches: ``idle_stack_reaper_disabled``
-    # / ``local_stack_queue_disabled`` → builder returns None.
-    idle_stack_reaper_scanner = _idle_stack_reaper_scanner()
-    if idle_stack_reaper_scanner is not None:
-        jobs.append(_ScannerJob(scanner=idle_stack_reaper_scanner, overlay=""))
-    queue_drainer_scanner = _local_stack_queue_drainer_scanner()
-    if queue_drainer_scanner is not None:
-        jobs.append(_ScannerJob(scanner=queue_drainer_scanner, overlay=""))
 
     if backends:
         all_backends = tuple(backends)

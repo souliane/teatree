@@ -30,17 +30,29 @@ from teatree.core.runners import (
     WorktreeVerifyRunner,
     heal_missing_provisioned_db,
 )
+from teatree.core.step_runner import ProvisionReport
 from teatree.core.worktree_env import CACHE_FILENAME, compose_project
 from teatree.docker.build import ensure_base_image
 from teatree.utils.ports import get_worktree_ports
 from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
 
 
-class WorktreeStatus(TypedDict):
+class ProvisionSummary(TypedDict):
+    """Rendered summary of the worktree's last ``Worktree.extra['provision_report']``."""
+
+    total_duration: float
+    steps: int
+    success: bool
+    slowest_step: str
+    slowest_step_duration: float
+
+
+class WorktreeStatus(TypedDict, total=False):
     state: str
     repo_path: str
     branch: str
     ports: dict[str, int]
+    provision_report: ProvisionSummary
 
 
 class WorktreeDiagnose(TypedDict):
@@ -117,6 +129,26 @@ def _resolve_typer_defaults(variant: "str | object", overlay: "str | object") ->
         variant if isinstance(variant, str) else "",
         overlay if isinstance(overlay, str) else "",
     )
+
+
+def _provision_summary(worktree: Worktree) -> "ProvisionSummary | None":
+    """Render ``Worktree.extra['provision_report']`` for ``status`` (souliane/teatree#2949).
+
+    ``None`` when the worktree has never been provisioned under the
+    instrumented runner — an absent key, not an error.
+    """
+    data = (worktree.extra or {}).get("provision_report")
+    if not data:
+        return None
+    report = ProvisionReport.from_dict(data)
+    slowest = report.slowest_step
+    return {
+        "total_duration": report.total_duration,
+        "steps": len(report.steps),
+        "success": report.success,
+        "slowest_step": slowest.name if slowest is not None else "",
+        "slowest_step_duration": slowest.duration if slowest is not None else 0.0,
+    }
 
 
 class Command(TyperCommand):
@@ -350,15 +382,19 @@ class Command(TyperCommand):
         self,
         path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
     ) -> WorktreeStatus:
-        """Report FSM state, branch, and allocated host ports for one worktree."""
+        """Report FSM state, branch, allocated host ports, and the last provision report for one worktree."""
         worktree = resolve_worktree(path)
         ports = get_worktree_ports(compose_project(worktree))
-        return {
+        result: WorktreeStatus = {
             "state": worktree.state,
             "repo_path": worktree.repo_path,
             "branch": worktree.branch,
             "ports": ports,
         }
+        summary = _provision_summary(worktree)
+        if summary is not None:
+            result["provision_report"] = summary
+        return result
 
     @command()
     def diagnose(

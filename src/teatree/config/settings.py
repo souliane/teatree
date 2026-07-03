@@ -217,6 +217,32 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     # ``sqlite3`` CLI (bash ``statusline.sh._autoload_db_value``); a ``[teatree]
     # autoload`` TOML value is ignored on read. Strict bool, default OFF.
     "autoload": _parse_strict_bool,
+    # Parallel ticket-workspace provisioning speed + resource-aware admission.
+    # Fast steps (symlinks, settings, a compose override) default to this short
+    # ceiling instead of the uniform 1800s one; a step opts into the long
+    # ceiling via ``ProvisionStep.heavy``. Per-overlay overridable.
+    "provision_fast_step_timeout_seconds": _parse_strict_int,
+    # nCPU-derived default concurrency cap for parallel worktree provisioning
+    # (0 = auto-derive from ``os.cpu_count()`` at each read, never persisted as
+    # a magic number that drifts from the actual host). A positive value pins
+    # an explicit cap. Per-overlay overridable.
+    "provision_max_concurrency": _parse_strict_int,
+    # RAM-used-percent ceiling above which a NEW provision is held (queued, not
+    # started) rather than admitted — mirrors ``DEFAULT_RAM_USED_CEILING_PCT``
+    # in the self-improve budget gate. Per-overlay overridable.
+    "provision_ram_ceiling_percent": _parse_strict_int,
+    # A provision whose total duration exceeds this many seconds triggers a
+    # best-effort out-of-band user alert (the same egress
+    # ``provision_timebox.alert_provision_user`` uses) so a regression in
+    # provisioning speed is never silently absorbed. Per-overlay overridable.
+    "provision_slow_threshold_seconds": _parse_strict_int,
+    # Reference-DB DSLR snapshots older than this many days are STALE — the
+    # snapshot-warmer loop refreshes them out-of-band; a ticket-critical-path
+    # provision facing a stale/missing snapshot fails fast with a pointer to
+    # the warmer instead of silently paying the slow restore+migrate path.
+    # Per-overlay overridable.
+    "snapshot_warmer_max_age_days": _parse_strict_int,
+    "snapshot_warmer_disabled": _parse_strict_bool,
     # eliminate-~/.teatree.toml: the last two carve-out fields — the nested
     # structured tables ``speak`` / ``mr_reminder``. Each parser validates + stores
     # the CANONICAL ``to_dict()`` JSON object; the resolver rebuilds the dataclass
@@ -732,6 +758,33 @@ class UserSettings:
     # aborted+alerted. A non-positive value degrades to the default — the
     # "never hang" invariant cannot be configured away. Per-overlay overridable.
     provision_step_timeout_seconds: int = 1800
+    # Parallel ticket-workspace provisioning speed + resource-aware admission.
+    # A fast step (symlinks, settings, a compose override) defaults to this
+    # short ceiling; only a step explicitly marked ``ProvisionStep.heavy``
+    # (a DB import, a frontend build) keeps ``provision_step_timeout_seconds``.
+    # Per-overlay overridable.
+    provision_fast_step_timeout_seconds: int = 120
+    # nCPU-derived default concurrency cap for the bounded subprocess pool
+    # ``workspace provision`` runs worktrees under. ``0`` (the default)
+    # auto-derives from the host's ``os.cpu_count()`` at each read
+    # (:func:`teatree.utils.ram_probe.default_provision_concurrency`); a
+    # positive value pins an explicit cap. Per-overlay overridable.
+    provision_max_concurrency: int = 0
+    # RAM-used-percent ceiling above which a new provision is HELD (queued,
+    # not started) rather than admitted, so a cold multi-repo provision never
+    # pushes the host into OOM. Mirrors the self-improve budget gate's
+    # ``DEFAULT_RAM_USED_CEILING_PCT``. Per-overlay overridable.
+    provision_ram_ceiling_percent: int = 85
+    # A provision whose total duration exceeds this many seconds fires a
+    # best-effort out-of-band user alert — a regression in provisioning speed
+    # must never be silently absorbed. Per-overlay overridable.
+    provision_slow_threshold_seconds: int = 600
+    # Reference-DB DSLR snapshots older than this many days are STALE; the
+    # snapshot-warmer loop refreshes them out-of-band so a ticket-critical-path
+    # provision never has to. Per-overlay overridable.
+    snapshot_warmer_max_age_days: int = 1
+    # On by default; ``snapshot_warmer_disabled = true`` is the escape hatch.
+    snapshot_warmer_disabled: bool = False
     # #2190 Idle-stack reaper — a loop scanner that stops the docker stack of
     # an IDLE locally-running worktree (``services_up``/``ready``) and demotes
     # it to ``provisioned`` (REVERSIBLE: DB + worktree preserved), freeing the

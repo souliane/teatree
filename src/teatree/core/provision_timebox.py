@@ -44,13 +44,22 @@ from teatree.utils.run import run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
 
-# Sensible default ceiling for one provisioning subprocess. A DSLR restore +
-# migrate on a healthy graph completes well within this; a forked graph or a
-# genuine hang blows past it and gets aborted + alerted. Overridable via the
-# DB-home ``provision_step_timeout_seconds`` setting (``t3 <overlay>
-# config_setting set provision_step_timeout_seconds <n>``, per-overlay
-# overridable); a ``[teatree]`` TOML value is ignored on read.
+# Sensible default ceiling for one HEAVY provisioning subprocess (a DSLR
+# restore, a reference-DB ``migrate``, a frontend build). A healthy run
+# completes well within this; a forked graph or a genuine hang blows past it
+# and gets aborted + alerted. Overridable via the DB-home
+# ``provision_step_timeout_seconds`` setting (``t3 <overlay> config_setting
+# set provision_step_timeout_seconds <n>``, per-overlay overridable); a
+# ``[teatree]`` TOML value is ignored on read.
 DEFAULT_STEP_TIMEOUT_SECONDS = 1800
+
+# The uniform 1800s ceiling let two grinding FAST steps (symlinks, settings, a
+# compose override) burn an hour before failure even surfaced. A fast step
+# defaults to this short ceiling instead — only a step explicitly marked
+# ``heavy`` (``ProvisionStep.heavy``) keeps the long one. Overridable via the
+# DB-home ``provision_fast_step_timeout_seconds`` setting, per-overlay
+# overridable.
+DEFAULT_FAST_STEP_TIMEOUT_SECONDS = 120
 
 # Heartbeat cadence: emit "still <step>… (Nm elapsed)" this often while the op
 # runs, so the agent/statusline/monitor can tell progress from a hang.
@@ -71,22 +80,32 @@ _MIGRATION_FORK_REMEDY = (
 )
 
 
-def resolve_step_timeout_seconds() -> int:
+def resolve_step_timeout_seconds(*, heavy: bool = False) -> int:
     """The configured hard ceiling (seconds) for one provisioning subprocess.
 
-    Reads ``provision_step_timeout_seconds`` off the effective settings
-    (per-overlay override → global → :data:`DEFAULT_STEP_TIMEOUT_SECONDS`).
-    Always returns a positive ceiling — a non-positive or unreadable value
-    degrades to the default so a misconfiguration can never disable the
-    time-box (the "never hang" invariant must not be configurable away).
+    ``heavy=False`` (the default — souliane/teatree#2949) reads
+    ``provision_fast_step_timeout_seconds`` (per-overlay override → global →
+    :data:`DEFAULT_FAST_STEP_TIMEOUT_SECONDS`) — the ceiling for symlinks,
+    settings, a compose override, or any step that hasn't opted into the long
+    one. ``heavy=True`` reads ``provision_step_timeout_seconds`` (→
+    :data:`DEFAULT_STEP_TIMEOUT_SECONDS`) — a DB import, a frontend build, or
+    anything else that can legitimately take tens of minutes. Always returns
+    a positive ceiling — a non-positive or unreadable value degrades to the
+    matching default so a misconfiguration can never disable the time-box
+    (the "never hang" invariant must not be configurable away).
     """
     settings_ = get_effective_settings()
-    value = getattr(settings_, "provision_step_timeout_seconds", DEFAULT_STEP_TIMEOUT_SECONDS)
+    setting_name, default = (
+        ("provision_step_timeout_seconds", DEFAULT_STEP_TIMEOUT_SECONDS)
+        if heavy
+        else ("provision_fast_step_timeout_seconds", DEFAULT_FAST_STEP_TIMEOUT_SECONDS)
+    )
+    value = getattr(settings_, setting_name, default)
     try:
         ceiling = int(value)
     except (TypeError, ValueError):
-        return DEFAULT_STEP_TIMEOUT_SECONDS
-    return ceiling if ceiling > 0 else DEFAULT_STEP_TIMEOUT_SECONDS
+        return default
+    return ceiling if ceiling > 0 else default
 
 
 def detect_migration_conflict(output: str) -> str | None:
@@ -150,18 +169,19 @@ def run_timeboxed_step(  # noqa: PLR0913 — each kwarg is a documented opt-in /
     repo: str = "",
     heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
     heartbeat: Callable[[str], object] | None = None,
+    heavy: bool = False,
 ) -> StepResult:
     """Run one provisioning subprocess time-boxed, with heartbeat + loud alert.
 
     On a clean exit returns a successful :class:`StepResult`. On a non-zero
     exit whose output shows a **forked migration graph** the alert names that
     cause specifically (rebase/renumber). On exceeding *timeout* (defaulting
-    to :func:`resolve_step_timeout_seconds`) the op aborts with a "timed out"
-    error and a loud user alert — it never hangs. While the op runs, a progress
-    heartbeat fires every *heartbeat_interval* seconds so a slow-but-moving
-    step is distinguishable from a hang.
+    to :func:`resolve_step_timeout_seconds`, ``heavy``-selected) the op aborts
+    with a "timed out" error and a loud user alert — it never hangs. While the
+    op runs, a progress heartbeat fires every *heartbeat_interval* seconds so a
+    slow-but-moving step is distinguishable from a hang.
     """
-    ceiling = timeout if timeout is not None else resolve_step_timeout_seconds()
+    ceiling = timeout if timeout is not None else resolve_step_timeout_seconds(heavy=heavy)
     start = time.monotonic()
     done = threading.Event()
     beat = heartbeat or (lambda _msg: None)
@@ -267,6 +287,7 @@ def run_timeboxed_callable(  # noqa: PLR0913 — each kwarg is a documented opt-
     repo: str = "",
     heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
     heartbeat: Callable[[str], object] | None = None,
+    heavy: bool = False,
 ) -> StepResult:
     """The callable sibling of :func:`run_timeboxed_step`, for an ORM-free shellout (#2244).
 
@@ -284,8 +305,12 @@ def run_timeboxed_callable(  # noqa: PLR0913 — each kwarg is a documented opt-
     callable would write/read on a connection invisible to the caller. The
     ``ProvisionStep.subprocess_only`` flag is that contract — ``run_provision_steps``
     routes a step here only when the overlay affirmed it is subprocess-only.
+
+    ``heavy`` (souliane/teatree#2949) selects the ceiling via
+    :func:`resolve_step_timeout_seconds` when *timeout* is not given explicitly
+    — propagated from ``ProvisionStep.heavy``.
     """
-    ceiling = timeout if timeout is not None else resolve_step_timeout_seconds()
+    ceiling = timeout if timeout is not None else resolve_step_timeout_seconds(heavy=heavy)
     captured: dict[str, StepResult] = {}
     timed_out, duration = _join_callable_on_ceiling(
         name,
@@ -330,8 +355,11 @@ def run_timeboxed_db_import(  # noqa: PLR0913 — each kwarg is a documented opt
     run ``db refresh`` or supply a dump") and returns ``False`` so the caller
     aborts the provision loud and non-zero instead of hanging. A callable
     exception is re-raised on the main thread to keep the loud crash.
+
+    A DB import is unconditionally ``heavy`` (souliane/teatree#2949) — it
+    always consults the long ceiling, never the fast one.
     """
-    ceiling = timeout if timeout is not None else resolve_step_timeout_seconds()
+    ceiling = timeout if timeout is not None else resolve_step_timeout_seconds(heavy=True)
     outcome = _DbImportOutcome()
 
     def _invoke() -> None:

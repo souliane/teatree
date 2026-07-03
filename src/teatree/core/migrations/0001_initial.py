@@ -32,6 +32,7 @@ _DEFAULT_LOOPS = (
     ("idle_stack_reaper", 60, None, None),
     ("local_stack_queue", 60, None, None),
     ("resource_pressure", 60, None, None),
+    ("snapshot_warmer", 86400, None, None),
     ("dispatch", 300, None, None),
     ("tickets", 300, None, None),
     ("review", 300, None, None),

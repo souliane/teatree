@@ -278,6 +278,54 @@ class WorktreeProvisionRunnerContractTests(TestCase):
         assert not result.ok
         assert "schema" in result.detail
 
+    # souliane/teatree#2949 — the ProvisionReport is persisted to
+    # Worktree.extra so `--report` / worktree status can render it later,
+    # with no schema change (extra is existing JSON).
+    def test_successful_provision_persists_report_to_worktree_extra(self) -> None:
+        overlay = FullStackOverlay(self.order_file)
+        result = self._run(overlay)
+        assert result.ok
+
+        self.worktree.refresh_from_db()
+        report_data = self.worktree.extra["provision_report"]
+        assert report_data["success"] is True
+        step_names = {s["name"] for s in report_data["steps"]}
+        assert {"prov-schema", "prov-seed", "prereq-backend", "prereq-frontend", "prereq-microservice"} == step_names
+        assert report_data["total_duration"] >= 0
+
+    def test_failed_provision_still_persists_report(self) -> None:
+        overlay = FullStackOverlay(self.order_file, fail_provision_step="schema")
+        result = self._run(overlay)
+        assert not result.ok
+
+        self.worktree.refresh_from_db()
+        report_data = self.worktree.extra["provision_report"]
+        assert report_data["success"] is False
+        step_names = [s["name"] for s in report_data["steps"]]
+        # halted before "prov-seed" (required-failure), but the post-db/pre-run
+        # phases still run unconditionally (best-effort, pre-existing behavior).
+        assert "prov-schema" in step_names
+        assert "prov-seed" not in step_names
+
+    def test_slow_provision_fires_out_of_band_alert(self) -> None:
+        overlay = FullStackOverlay(self.order_file)
+        with (
+            patch("teatree.core.runners.worktree_provision.alert_provision_user") as mock_alert,
+            patch("teatree.core.runners.worktree_provision.get_effective_settings") as mock_settings,
+        ):
+            mock_settings.return_value = SimpleNamespace(provision_slow_threshold_seconds=-1)
+            result = self._run(overlay)
+        assert result.ok
+        mock_alert.assert_called_once()
+        assert mock_alert.call_args.kwargs["step"] == "provision"
+
+    def test_fast_provision_does_not_fire_alert(self) -> None:
+        overlay = FullStackOverlay(self.order_file)
+        with patch("teatree.core.runners.worktree_provision.alert_provision_user") as mock_alert:
+            result = self._run(overlay)
+        assert result.ok
+        mock_alert.assert_not_called()
+
 
 class WorktreeStartRunnerContractTests(TestCase):
     """The real start runner: prepare_all must run before the compose phase.

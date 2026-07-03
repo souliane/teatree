@@ -8,8 +8,10 @@ import logging
 import subprocess  # noqa: S404 — only TimeoutExpired/CompletedProcess accessed, no shelling
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TypedDict
 
 from teatree.utils.run import run_allowed_to_fail
 
@@ -37,13 +39,48 @@ class StepResult:
     stderr: str = ""
     error: str = ""
     required: bool = True
+    skipped: bool = False
 
     def summary(self) -> str:
-        status = "OK" if self.success else "FAILED"
+        status = "SKIP" if self.skipped else ("OK" if self.success else "FAILED")
         msg = f"  [{status}] {self.name} ({self.duration:.1f}s)"
         if not self.success and self.error:
             msg += f"\n         {self.error}"
         return msg
+
+    def to_dict(self) -> "StepResultDict":
+        return {
+            "name": self.name,
+            "success": self.success,
+            "duration": self.duration,
+            "error": self.error,
+            "required": self.required,
+            "skipped": self.skipped,
+        }
+
+
+class StepResultDict(TypedDict):
+    """JSON-serializable projection of :class:`StepResult` for ``Worktree.extra`` persistence.
+
+    Deliberately narrower than the full dataclass — ``stdout``/``stderr`` can be
+    arbitrarily large subprocess output and add nothing to a persisted report
+    a human or the ``--report`` table reads later.
+    """
+
+    name: str
+    success: bool
+    duration: float
+    error: str
+    required: bool
+    skipped: bool
+
+
+class ProvisionReportDict(TypedDict):
+    """JSON-serializable projection of :class:`ProvisionReport` (``Worktree.extra['provision_report']``)."""
+
+    steps: list[StepResultDict]
+    total_duration: float
+    success: bool
 
 
 @dataclass
@@ -55,6 +92,14 @@ class ProvisionReport:
     @property
     def success(self) -> bool:
         return not any(s.required and not s.success for s in self.steps)
+
+    @property
+    def total_duration(self) -> float:
+        return sum(s.duration for s in self.steps)
+
+    @property
+    def slowest_step(self) -> StepResult | None:
+        return max(self.steps, key=lambda s: s.duration, default=None)
 
     @property
     def failed_step(self) -> str | None:
@@ -74,10 +119,32 @@ class ProvisionReport:
         lines = [s.summary() for s in self.steps]
         total = len(self.steps)
         ok = sum(1 for s in self.steps if s.success)
-        lines.append(f"\n  {ok}/{total} steps succeeded.")
+        lines.append(f"\n  {ok}/{total} steps succeeded. Total: {self.total_duration:.1f}s")
         if not self.success:
             lines.append(f"  First failure: {self.failed_step}")
         return "\n".join(lines)
+
+    def to_dict(self) -> ProvisionReportDict:
+        return {
+            "steps": [s.to_dict() for s in self.steps],
+            "total_duration": self.total_duration,
+            "success": self.success,
+        }
+
+    @classmethod
+    def from_dict(cls, data: ProvisionReportDict) -> "ProvisionReport":
+        steps = [
+            StepResult(
+                name=str(s.get("name", "")),
+                success=bool(s.get("success", False)),
+                duration=float(s.get("duration", 0.0)),
+                error=str(s.get("error", "")),
+                required=bool(s.get("required", True)),
+                skipped=bool(s.get("skipped", False)),
+            )
+            for s in data.get("steps", [])
+        ]
+        return cls(steps=steps)
 
 
 # ast-grep-ignore: ac-django-no-complexity-suppressions
@@ -227,7 +294,7 @@ def run_callable_step(name: str, fn: Callable[[], object]) -> StepResult:
         return StepResult(name=name, success=False, duration=duration, error=error)
 
 
-def _timeboxed_subprocess_callable_step(name: str, fn: Callable[[], object]) -> StepResult:
+def _timeboxed_subprocess_callable_step(name: str, fn: Callable[[], object], *, heavy: bool = False) -> StepResult:
     """Run a ``subprocess_only`` provision step wall-clock-bounded, degrading plain.
 
     The callable sibling of :func:`_timeboxed_step`, for a step the overlay
@@ -245,6 +312,11 @@ def _timeboxed_subprocess_callable_step(name: str, fn: Callable[[], object]) -> 
     here — :func:`run_provision_steps` runs them in-process, because Django DB
     connections are per-thread and a worker-thread time-box would write on a
     connection invisible to the caller.
+
+    ``heavy`` selects the ceiling (souliane/teatree#2949):
+    :func:`teatree.core.provision_timebox.resolve_step_timeout_seconds` — a
+    fast step (the default) aborts within seconds of the short ceiling; a
+    heavy step (a DB import, a frontend build) keeps the long one.
     """
     try:
         from teatree.core.provision_timebox import run_timeboxed_callable  # noqa: PLC0415
@@ -253,7 +325,97 @@ def _timeboxed_subprocess_callable_step(name: str, fn: Callable[[], object]) -> 
             raise
         logger.warning("provision_timebox unavailable for subprocess step %r — plain run", name)
         return run_callable_step(name, fn)
-    return run_timeboxed_callable(name, fn)
+    return run_timeboxed_callable(name, fn, heavy=heavy)
+
+
+def _run_single_step(step, *, write: Callable[[str], object]) -> StepResult:  # noqa: ANN001
+    """Run one ``ProvisionStep``, honouring its skip-probe first (souliane/teatree#2949).
+
+    A cheap ``skip_probe`` that returns ``True`` means the precondition is
+    already satisfied — the (expensive) callable never runs and the step
+    records a successful, near-zero :class:`StepResult`. A probe that raises
+    is treated as "cannot tell" (never skip) rather than aborting the
+    provision — a broken probe must not itself become the failure mode.
+    """
+    if step.skip_probe is not None:
+        try:
+            should_skip = step.skip_probe()
+        except Exception as exc:  # noqa: BLE001 — a broken probe must not abort the provision
+            logger.warning("skip_probe for step %r raised: %s — running the step normally", step.name, exc)
+            should_skip = False
+        if should_skip:
+            write(f"  Skipped: {step.name} (precondition already satisfied)")
+            return StepResult(name=step.name, success=True, duration=0.0, required=step.required, skipped=True)
+
+    write(f"  Running: {step.name}")
+    # #2244: a subprocess-only step (uv sync / uv pip install) shells out
+    # with no wall-clock bound, so a child blocked on its PIPE (a network
+    # stall) hangs the whole provision — time-box it on a worker thread,
+    # which is safe BECAUSE it touches no ORM. An ORM-touching step
+    # (subprocess_only=False, the default) runs IN-PROCESS: Django
+    # connections are per-thread, so a worker-thread time-box would write on
+    # a connection invisible to the caller ("database table is locked" under
+    # a test transaction). The db_import callable is the other #2244 hang and
+    # is time-boxed separately in worktree_provision via run_timeboxed_db_import.
+    if step.subprocess_only:
+        result = _timeboxed_subprocess_callable_step(step.name, step.callable, heavy=step.heavy)
+    else:
+        result = run_callable_step(step.name, step.callable)
+    return StepResult(
+        name=result.name,
+        success=result.success,
+        duration=result.duration,
+        stdout=result.stdout,
+        stderr=result.stderr,
+        error=result.error,
+        required=step.required,
+    )
+
+
+def _run_group_concurrently(group: list, *, write: Callable[[str], object]) -> list[StepResult]:
+    """Run every step in *group* concurrently on a bounded thread pool.
+
+    Only ``subprocess_only`` steps ever reach here (souliane/teatree#2949) —
+    each already runs time-boxed on its own worker thread, so running several
+    concurrently is the same thread-safety contract, just parallel. Results
+    are returned in the SAME order as *group* regardless of completion order,
+    so the caller's reporting stays deterministic.
+    """
+    names = ", ".join(s.name for s in group)
+    write(f"  Running (parallel group {group[0].parallel_group!r}): {names}")
+    with ThreadPoolExecutor(max_workers=len(group)) as pool:
+        return list(pool.map(lambda s: _run_single_step(s, write=write), group))
+
+
+# ast-grep-ignore: ac-django-no-complexity-suppressions
+def _report_one_result(  # noqa: PLR0913 — each kwarg is a documented output sink, not poor design.
+    member,  # noqa: ANN001
+    result: StepResult,
+    *,
+    verbose: bool,
+    write: Callable[[str], object],
+    write_err: Callable[[str], object],
+    stop_on_required_failure: bool,
+) -> bool:
+    """Log one step's outcome; return whether it should halt the whole run."""
+    if result.skipped:
+        return False
+    if verbose and result.stdout:
+        for line in result.stdout.strip().splitlines()[:20]:
+            write(f"    | {line}")
+    if result.success:
+        if verbose:
+            write(f"    OK ({result.duration:.1f}s)")
+        return False
+    write_err(result.summary())
+    if verbose and result.stderr:
+        for line in result.stderr.strip().splitlines()[:20]:
+            write_err(f"    | {line}")
+    _alert_on_migration_conflict(result)
+    if member.required and stop_on_required_failure:
+        write_err(f"  HALTED: required step '{member.name}' failed.")
+        return True
+    return False
 
 
 def run_provision_steps(
@@ -269,51 +431,44 @@ def run_provision_steps(
     When *stop_on_required_failure* is True (default), execution halts after
     the first failure of a step with ``required=True``.  Optional steps
     (``required=False``) never halt execution.
+
+    Steps sharing a non-empty ``parallel_group`` (and ``subprocess_only=True``
+    — souliane/teatree#2949) run concurrently as one unit, at the position
+    the first member of the group appears in *steps*; every other step runs
+    serially as before.
     """
     report = ProvisionReport()
     write = stdout_writer or (lambda _msg: None)
     write_err = stderr_writer or (lambda _msg: None)
+    executed_names: set[str] = set()
 
     for step in steps:
-        write(f"  Running: {step.name}")
-        # #2244: a subprocess-only step (uv sync / uv pip install) shells out
-        # with no wall-clock bound, so a child blocked on its PIPE (a network
-        # stall) hangs the whole provision — time-box it on a worker thread,
-        # which is safe BECAUSE it touches no ORM. An ORM-touching step
-        # (subprocess_only=False, the default) runs IN-PROCESS: Django
-        # connections are per-thread, so a worker-thread time-box would write on
-        # a connection invisible to the caller ("database table is locked" under
-        # a test transaction). The db_import callable is the other #2244 hang and
-        # is time-boxed separately in worktree_provision via run_timeboxed_db_import.
-        if step.subprocess_only:
-            result = _timeboxed_subprocess_callable_step(step.name, step.callable)
-        else:
-            result = run_callable_step(step.name, step.callable)
-        result = StepResult(
-            name=result.name,
-            success=result.success,
-            duration=result.duration,
-            stdout=result.stdout,
-            stderr=result.stderr,
-            error=result.error,
-            required=step.required,
-        )
-        report.steps.append(result)
+        if step.name in executed_names:
+            continue
 
-        if verbose and result.stdout:
-            for line in result.stdout.strip().splitlines()[:20]:
-                write(f"    | {line}")
-        if not result.success:
-            write_err(result.summary())
-            if verbose and result.stderr:
-                for line in result.stderr.strip().splitlines()[:20]:
-                    write_err(f"    | {line}")
-            _alert_on_migration_conflict(result)
-            if step.required and stop_on_required_failure:
-                write_err(f"  HALTED: required step '{step.name}' failed.")
-                break
-        elif verbose:
-            write(f"    OK ({result.duration:.1f}s)")
+        if step.parallel_group and step.subprocess_only:
+            group = [s for s in steps if s.parallel_group == step.parallel_group and s.subprocess_only]
+            results = _run_group_concurrently(group, write=write)
+        else:
+            group = [step]
+            results = [_run_single_step(step, write=write)]
+
+        halt = False
+        for member, result in zip(group, results, strict=True):
+            executed_names.add(member.name)
+            report.steps.append(result)
+            if _report_one_result(
+                member,
+                result,
+                verbose=verbose,
+                write=write,
+                write_err=write_err,
+                stop_on_required_failure=stop_on_required_failure,
+            ):
+                halt = True
+
+        if halt:
+            break
 
     return report
 

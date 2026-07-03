@@ -19,6 +19,7 @@ from typing import Protocol
 from django.utils import timezone
 
 from teatree.core.models.self_improve_firing import SelfImproveFiring
+from teatree.utils.ram_probe import read_ram_used_percent as _read_ram_used_percent
 
 # Static thresholds — overridable via env if the user wants to tune
 # without a code change.  Defaults match the issue plan.
@@ -40,74 +41,6 @@ class RamSample(Protocol):
     """The minimal RAM probe surface the budget gate consumes."""
 
     percent: float
-
-
-def _macos_ram_used_percent() -> float:  # pragma: no cover - macOS host probe
-    """Read mac RAM use via ``sysctl`` + ``vm_stat`` (mirrors statusline.sh)."""
-    import shutil  # noqa: PLC0415
-
-    from teatree.utils.run import CommandFailedError, run_checked  # noqa: PLC0415
-
-    sysctl = shutil.which("sysctl")
-    vm_stat = shutil.which("vm_stat")
-    if not sysctl or not vm_stat:
-        return 0.0
-    try:
-        total = int(run_checked([sysctl, "-n", "hw.memsize"], timeout=2).stdout.strip())
-        if total <= 0:
-            return 0.0
-        stat = run_checked([vm_stat], timeout=2).stdout
-    except (CommandFailedError, ValueError, OSError, TimeoutError):
-        return 0.0
-    page_size, free_pages, inactive_pages = 4096, 0, 0
-    for line in stat.splitlines():
-        if line.startswith("Pages free:"):
-            free_pages = int(line.split(":")[1].strip().rstrip("."))
-        elif line.startswith("Pages inactive:"):
-            inactive_pages = int(line.split(":")[1].strip().rstrip("."))
-    used = total - (free_pages + inactive_pages) * page_size
-    return max(0.0, min(100.0, used * 100.0 / total))
-
-
-def _linux_ram_used_percent() -> float:  # pragma: no cover - Linux host probe
-    """Read Linux RAM use via ``/proc/meminfo`` (mirrors statusline.sh)."""
-    try:
-        with open("/proc/meminfo", encoding="utf-8") as handle:  # noqa: PTH123
-            lines = handle.readlines()
-    except OSError:
-        return 0.0
-    info: dict[str, int] = {}
-    for line in lines:
-        key, _, rest = line.partition(":")
-        value = rest.strip().split(" ", 1)[0]
-        if value.isdigit():
-            info[key.strip()] = int(value)
-    total = info.get("MemTotal", 0)
-    avail = info.get("MemAvailable", 0)
-    if total <= 0:
-        return 0.0
-    used = total - avail
-    return max(0.0, min(100.0, used * 100.0 / total))
-
-
-def _read_ram_used_percent() -> float:  # pragma: no cover - dispatches by platform
-    """Best-effort read of system RAM utilisation percent (0-100).
-
-    Mirrors the same probe shape ``hooks/scripts/statusline.sh`` uses
-    (sysctl on macOS, /proc/meminfo on Linux); the budget gate stays
-    dependency-free so a missing optional library never crashes the
-    schedule cycle.  Tests inject the percent directly via the
-    ``ram_used_percent`` arg — this function is only consulted when no
-    explicit sample is provided.
-    """
-    import platform  # noqa: PLC0415
-
-    system = platform.system()
-    if system == "Darwin":
-        return _macos_ram_used_percent()
-    if system == "Linux":
-        return _linux_ram_used_percent()
-    return 0.0
 
 
 @dataclass(frozen=True, slots=True)

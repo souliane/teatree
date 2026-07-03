@@ -1,18 +1,39 @@
 import logging
 import os
+import time
 from pathlib import Path
 
+from teatree.config import get_effective_settings
 from teatree.core import prek_hook
 from teatree.core.gates.schema_guard import SelfDbMigrationError, require_current_schema
 from teatree.core.models import Worktree
 from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import get_overlay_for_worktree
-from teatree.core.provision_timebox import run_timeboxed_db_import
+from teatree.core.provision_timebox import alert_provision_user, run_timeboxed_db_import
 from teatree.core.runners.base import RunnerBase, RunnerResult
-from teatree.core.step_runner import ProvisionReport, run_provision_steps, run_step
+from teatree.core.step_runner import ProvisionReport, StepResult, run_provision_steps, run_step
 from teatree.core.worktree_env import CACHE_FILENAME, worktree_pg_connection, write_env_cache
 
 logger = logging.getLogger(__name__)
+
+# Matches ``UserSettings.provision_slow_threshold_seconds``'s dataclass
+# default — the fallback when the setting is absent/unreadable, mirroring
+# ``provision_timebox.resolve_step_timeout_seconds``'s defensive coercion.
+_DEFAULT_SLOW_THRESHOLD_SECONDS = 600
+
+
+def _resolve_slow_threshold_seconds() -> int:
+    """The configured slow-provision alert threshold (seconds), defensively coerced.
+
+    A non-numeric or unreadable setting (e.g. an under-specified settings
+    mock in a caller's test) degrades to the default rather than crashing the
+    provision — the alert is a best-effort nicety, never a correctness gate.
+    """
+    value = getattr(get_effective_settings(), "provision_slow_threshold_seconds", _DEFAULT_SLOW_THRESHOLD_SECONDS)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return _DEFAULT_SLOW_THRESHOLD_SECONDS
 
 
 def heal_missing_provisioned_db(worktree: Worktree, overlay: OverlayBase) -> bool:
@@ -135,16 +156,23 @@ class WorktreeProvisionRunner(RunnerBase):
         if setup_failure is not None:
             return RunnerResult(ok=False, detail=setup_failure)
 
+        report = ProvisionReport()
         db_import_needed = worktree.db_name and overlay.get_db_import_strategy(worktree) is not None
-        if db_import_needed and not self._run_db_import():
-            return RunnerResult(ok=False, detail="db import failed")
+        if db_import_needed:
+            db_step = self._run_db_import_timed()
+            report.steps.append(db_step)
+            if not db_step.success:
+                self._persist_report(report)
+                return RunnerResult(ok=False, detail="db import failed")
 
-        report = run_provision_steps(overlay.get_provision_steps(worktree))
+        step_report = run_provision_steps(overlay.get_provision_steps(worktree))
         post_db_report = self._run_post_db_steps()
         pre_run_report = self._run_pre_run_steps()
-        report.steps.extend(post_db_report.steps + pre_run_report.steps)
+        report.steps.extend(step_report.steps + post_db_report.steps + pre_run_report.steps)
 
         health_failures = self._run_health_checks()
+
+        self._persist_report(report)
 
         if not report.success:
             failed = report.failed_required_step or "unknown"
@@ -152,6 +180,39 @@ class WorktreeProvisionRunner(RunnerBase):
         if health_failures:
             return RunnerResult(ok=False, detail=f"health checks failed: {', '.join(health_failures)}")
         return RunnerResult(ok=True, detail=f"{len(report.steps)} step(s) ok")
+
+    def _persist_report(self, report: ProvisionReport) -> None:
+        """Persist *report* to ``Worktree.extra['provision_report']`` and log/alert (souliane/teatree#2949).
+
+        No schema change — ``Worktree.extra`` is existing JSON. A one-line
+        summary always logs; a total exceeding ``provision_slow_threshold_seconds``
+        additionally fires the best-effort out-of-band user alert so a
+        provisioning-speed regression is never silently absorbed.
+        """
+        extra = self.worktree.extra or {}
+        extra["provision_report"] = report.to_dict()
+        self.worktree.extra = extra
+        self.worktree.save(update_fields=["extra"])
+        logger.info(
+            "provision(%s): %d step(s), %.1fs total, %s",
+            self.worktree.repo_path,
+            len(report.steps),
+            report.total_duration,
+            "OK" if report.success else f"FAILED at {report.failed_required_step}",
+        )
+        threshold = _resolve_slow_threshold_seconds()
+        if report.total_duration > threshold:
+            alert_provision_user(
+                step="provision",
+                repo=self.worktree.repo_path,
+                detail=f"total duration {report.total_duration:.0f}s exceeded the {threshold}s threshold",
+            )
+
+    def _run_db_import_timed(self) -> StepResult:
+        start = time.monotonic()
+        ok = self._run_db_import()
+        duration = time.monotonic() - start
+        return StepResult(name="db_import", success=ok, duration=duration, required=True)
 
     def _run_db_import(self) -> bool:
         from teatree.utils.db import db_exists  # noqa: PLC0415

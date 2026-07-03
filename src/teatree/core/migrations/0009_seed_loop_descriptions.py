@@ -23,6 +23,7 @@ _LOOP_DESCRIPTIONS = {
     "idle_stack_reaper": "Stops local dev stacks left idle past their threshold to free a concurrency slot; checks every 1m.",
     "local_stack_queue": "Drains the local-stack acquisition queue, starting the next queued worktree stack whose backoff retry is due; checks every 1m.",
     "resource_pressure": "Auto-frees host disk and RAM when they cross the pressure threshold; checks every 1m on its own ~5m internal cadence.",
+    "snapshot_warmer": "Refreshes each overlay-declared reference DB's DSLR snapshot out-of-band once a day so a ticket-critical-path provision never pays the slow restore+migrate path.",
     "dispatch": "Runs the always-on global scanners every 5m: dispatches pending headless Tasks to phase sub-agents, ingests incoming events, redelivers undelivered notifies, and posts deferred questions.",
     "tickets": "Scans the local Ticket DB and each code host every 5m — surfacing active and stale tickets, dispositioning issues, and marking completed ones.",
     "review": "Reviews colleague-authored open PRs every 5m and posts inline findings (with the PR-sweep, codex double-check and Slack-broadcast companions).",

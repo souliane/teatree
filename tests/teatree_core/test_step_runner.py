@@ -398,3 +398,222 @@ class TestSubprocessOnlyStepSurvivesMissingProvisionTimebox(TestCase):
             run_provision_steps(steps)
 
         assert exc_info.value.name == BROKEN_DEPENDENCY_NAME
+
+
+class TestStepResultSkipped(TestCase):
+    def test_summary_shows_skip_for_skipped_step(self) -> None:
+        result = StepResult(name="test-step", success=True, duration=0.0, skipped=True)
+        assert "[SKIP]" in result.summary()
+
+    def test_to_dict_round_trip_fields(self) -> None:
+        result = StepResult(name="a", success=False, duration=1.5, error="boom", required=False, skipped=True)
+        data = result.to_dict()
+        assert data == {
+            "name": "a",
+            "success": False,
+            "duration": 1.5,
+            "error": "boom",
+            "required": False,
+            "skipped": True,
+        }
+
+
+class TestProvisionReportSerialization(TestCase):
+    def test_total_duration_sums_steps(self) -> None:
+        report = ProvisionReport(
+            steps=[
+                StepResult(name="a", success=True, duration=1.0),
+                StepResult(name="b", success=True, duration=2.5),
+            ]
+        )
+        assert report.total_duration == pytest.approx(3.5)
+
+    def test_slowest_step_returns_the_longest(self) -> None:
+        report = ProvisionReport(
+            steps=[
+                StepResult(name="a", success=True, duration=1.0),
+                StepResult(name="b", success=True, duration=9.0),
+                StepResult(name="c", success=True, duration=2.0),
+            ]
+        )
+        assert report.slowest_step is not None
+        assert report.slowest_step.name == "b"
+
+    def test_slowest_step_none_when_empty(self) -> None:
+        assert ProvisionReport().slowest_step is None
+
+    def test_to_dict_from_dict_round_trip(self) -> None:
+        report = ProvisionReport(
+            steps=[
+                StepResult(name="a", success=True, duration=1.0),
+                StepResult(name="b", success=False, duration=2.0, error="x", required=True),
+                StepResult(name="c", success=True, duration=0.0, skipped=True),
+            ]
+        )
+        data = report.to_dict()
+        assert data["total_duration"] == pytest.approx(3.0)
+        assert data["success"] is False
+        restored = ProvisionReport.from_dict(data)
+        assert len(restored.steps) == 3
+        assert restored.steps[2].skipped is True
+        assert restored.total_duration == report.total_duration
+        assert restored.success == report.success
+
+    def test_from_dict_tolerates_missing_keys(self) -> None:
+        restored = ProvisionReport.from_dict({"steps": [{"name": "a"}]})  # type: ignore[typeddict-item]
+        assert len(restored.steps) == 1
+        assert restored.steps[0].success is False
+        assert restored.steps[0].required is True
+
+
+class TestSkipProbe(TestCase):
+    def test_skip_probe_true_skips_the_callable(self) -> None:
+        calls: list[str] = []
+        steps = [
+            ProvisionStep(
+                name="skippable",
+                callable=partial(calls.append, "ran"),
+                skip_probe=lambda: True,
+            ),
+        ]
+        report = run_provision_steps(steps)
+        assert calls == []
+        assert report.steps[0].skipped is True
+        assert report.steps[0].success is True
+        assert report.steps[0].duration == pytest.approx(0.0)
+
+    def test_skip_probe_false_runs_the_callable(self) -> None:
+        calls: list[str] = []
+        steps = [
+            ProvisionStep(
+                name="not-skippable",
+                callable=partial(calls.append, "ran"),
+                skip_probe=lambda: False,
+            ),
+        ]
+        report = run_provision_steps(steps)
+        assert calls == ["ran"]
+        assert report.steps[0].skipped is False
+        assert report.steps[0].success is True
+
+    def test_raising_skip_probe_does_not_skip_or_crash(self) -> None:
+        calls: list[str] = []
+
+        def broken_probe() -> bool:
+            msg = "probe exploded"
+            raise RuntimeError(msg)
+
+        steps = [
+            ProvisionStep(
+                name="probe-broken",
+                callable=partial(calls.append, "ran"),
+                skip_probe=broken_probe,
+            ),
+        ]
+        report = run_provision_steps(steps)
+        assert calls == ["ran"]
+        assert report.steps[0].skipped is False
+        assert report.steps[0].success is True
+
+    def test_no_skip_probe_runs_normally(self) -> None:
+        calls: list[str] = []
+        steps = [ProvisionStep(name="plain", callable=partial(calls.append, "ran"))]
+        report = run_provision_steps(steps)
+        assert calls == ["ran"]
+        assert report.steps[0].skipped is False
+
+
+class TestParallelGroup(TestCase):
+    """Steps sharing a ``parallel_group`` run concurrently (souliane/teatree#2949).
+
+    ANTI-VACUITY: with the group-concurrency guard reverted (every step run
+    sequentially) this test goes RED — the two barrier-gated steps deadlock
+    since each waits for the other to have started before either can finish,
+    and a serial runner never lets the second one start before the first
+    returns.
+    """
+
+    def test_steps_in_same_group_run_concurrently(self) -> None:
+        barrier = threading.Barrier(2, timeout=5)
+        order: list[str] = []
+
+        def step_a() -> None:
+            barrier.wait()
+            order.append("a")
+
+        def step_b() -> None:
+            barrier.wait()
+            order.append("b")
+
+        steps = [
+            ProvisionStep(name="a", callable=step_a, subprocess_only=True, parallel_group="lane"),
+            ProvisionStep(name="b", callable=step_b, subprocess_only=True, parallel_group="lane"),
+        ]
+        report = run_provision_steps(steps)
+        assert report.success is True
+        assert {s.name for s in report.steps} == {"a", "b"}
+        assert sorted(order) == ["a", "b"]
+
+    def test_orm_step_ignores_parallel_group_and_runs_serially(self) -> None:
+        ran_on: dict[str, int] = {}
+        steps = [
+            ProvisionStep(
+                name="orm-in-group",
+                callable=lambda: ran_on.__setitem__("tid", threading.get_ident()),
+                subprocess_only=False,
+                parallel_group="lane",
+            ),
+        ]
+        run_provision_steps(steps)
+        assert ran_on["tid"] == threading.get_ident()
+
+    def test_required_failure_in_group_halts_subsequent_steps(self) -> None:
+        def fail() -> None:
+            msg = "group-fail"
+            raise RuntimeError(msg)
+
+        after_ran: list[str] = []
+        steps = [
+            ProvisionStep(name="ok", callable=lambda: None, subprocess_only=True, parallel_group="lane"),
+            ProvisionStep(name="fail", callable=fail, subprocess_only=True, parallel_group="lane", required=True),
+            ProvisionStep(name="after", callable=partial(after_ran.append, "after"), required=True),
+        ]
+        report = run_provision_steps(steps, stop_on_required_failure=True)
+        assert after_ran == []
+        assert report.success is False
+        names = {s.name for s in report.steps}
+        assert names == {"ok", "fail"}
+
+    def test_ungrouped_steps_still_run_serially(self) -> None:
+        order: list[str] = []
+        steps = [
+            ProvisionStep(name="a", callable=partial(order.append, "a")),
+            ProvisionStep(name="b", callable=partial(order.append, "b")),
+        ]
+        run_provision_steps(steps)
+        assert order == ["a", "b"]
+
+
+class TestHeavyFlagPropagation(TestCase):
+    """``ProvisionStep.heavy`` selects the time-box ceiling (souliane/teatree#2949)."""
+
+    @patch("teatree.core.provision_timebox.resolve_step_timeout_seconds", return_value=999)
+    def test_heavy_subprocess_step_requests_heavy_ceiling(self, mock_resolve: MagicMock) -> None:
+        steps = [ProvisionStep(name="heavy-step", callable=lambda: None, subprocess_only=True, heavy=True)]
+        run_provision_steps(steps)
+        mock_resolve.assert_called_once_with(heavy=True)
+
+    @patch("teatree.core.provision_timebox.resolve_step_timeout_seconds", return_value=999)
+    def test_fast_subprocess_step_requests_fast_ceiling(self, mock_resolve: MagicMock) -> None:
+        steps = [ProvisionStep(name="fast-step", callable=lambda: None, subprocess_only=True, heavy=False)]
+        run_provision_steps(steps)
+        mock_resolve.assert_called_once_with(heavy=False)
+
+    # A wall-clock "concurrent group finishes faster than serial" timing proof
+    # was tried here and dropped: under a loaded full test-suite run (xdist
+    # worker CPU contention), the concurrent measurement is not reliably
+    # faster in absolute or even self-relative terms — the flakiness is
+    # environmental thread-scheduling noise, not a defect. The deterministic
+    # anti-vacuity proof is TestParallelGroup.test_steps_in_same_group_run_concurrently
+    # above, which uses a threading.Barrier(2) so a serialized (non-concurrent)
+    # run deadlocks and fails outright — no wall clock involved.

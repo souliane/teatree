@@ -581,7 +581,9 @@ class DjangoDbImporter:
                 "\n  DSLR restore failed or unavailable. Non-DSLR fallbacks are disabled by default.\n"
                 "  Non-DSLR paths (pg_restore, remote dump) take minutes instead of seconds.\n"
                 "  To allow slow fallback paths, re-run with: --fresh-dump --user-authorized <user-id>\n"
-                "  (the equivalent internal flag is `slow_import=True`)\n",
+                "  (the equivalent internal flag is `slow_import=True`)\n"
+                f"  The snapshot warmer keeps {cfg.ref_db_name} current out-of-band (souliane/teatree#2949) —\n"
+                "  run refresh_reference_snapshot(cfg) directly or wait for its next tick.\n",
             )
             return False
 

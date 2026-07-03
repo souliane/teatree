@@ -240,4 +240,8 @@ MECHANICAL_BY_KIND: dict[str, tuple[ActionKind, str]] = {
     # are mechanical-only (re-verify live state, never an agent).
     "local_stack.reap_idle": ("mechanical", "reap_idle_stack"),
     "local_stack.queue_acquire": ("mechanical", "drain_stack_queue_item"),
+    # souliane/teatree#2949 snapshot warmer — a stale reference-DB snapshot →
+    # mechanical restore+migrate+snapshot refresh, out-of-band from any
+    # ticket-critical-path provision.
+    "snapshot_warmer.refresh_needed": ("mechanical", "refresh_snapshot"),
 }

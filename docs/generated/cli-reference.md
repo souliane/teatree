@@ -5275,7 +5275,8 @@ Usage: t3 teatree worktree teardown [OPTIONS]
 ```
 Usage: t3 teatree worktree status [OPTIONS]
 
- Report FSM state, branch, and allocated host ports for one worktree.
+ Report FSM state, branch, allocated host ports, and the last provision report
+ for one worktree.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │
@@ -5404,14 +5405,14 @@ Usage: t3 teatree workspace ticket [OPTIONS] ISSUE_URL
 ```
 Usage: t3 teatree workspace provision [OPTIONS] [TICKET_ID]
 
- Provision every worktree in the current ticket workspace.
+ Provision every worktree in the current ticket workspace, in parallel.
 
- Iterates ``ticket.worktrees`` and fires ``Worktree.provision()``
- for each. Stops at the first failure so the operator can fix
- the offending worktree before retrying. #941: an optional
- positional ``ticket_id`` is a no-op alias for PWD auto-detect
- (agents typed ``provision <id>`` from habit; typer used to reject it with
- rc=1).
+ Each worktree's ENTIRE provision (FSM transition + steps) runs as its
+ OWN subprocess under a bounded, RAM-admitted pool (souliane/teatree#2949)
+ instead of one serial ``for`` loop. Every worktree is attempted
+ regardless of an earlier one's failure; failures are reported by name
+ at the end. #941: a positional ``ticket_id`` is a no-op PWD-auto-detect
+ alias (typer used to reject it with rc=1).
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │   ticket_id      [TICKET_ID]  Optional ticket id (alias for PWD auto-detect; │
@@ -5424,6 +5425,10 @@ Usage: t3 teatree workspace provision [OPTIONS] [TICKET_ID]
 │                                            PWD).                             │
 │ --slow-import    --no-slow-import          Allow slow DB fallbacks.          │
 │                                            [default: no-slow-import]         │
+│ --report         --no-report               Print each worktree's per-step    │
+│                                            provision-report table (total +   │
+│                                            slowest step).                    │
+│                                            [default: no-report]              │
 │ --help                                     Show this message and exit.       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
