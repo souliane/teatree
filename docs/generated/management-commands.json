@@ -305,6 +305,24 @@
       ]
     },
     {
+      "help": "``t3 <overlay> learnings`` group root.",
+      "name": "learnings",
+      "subcommands": [
+        {
+          "help": "Print the repo's durable learnings store",
+          "name": "show"
+        },
+        {
+          "help": "Append a timestamped entry to the repo's durable learnings store",
+          "name": "add"
+        },
+        {
+          "help": "Open the repo's full learnings store in ``$EDITOR`` and replace it",
+          "name": "edit"
+        }
+      ]
+    },
+    {
       "help": "Group root \u2014 forces sub-commands to be addressed by name.",
       "name": "lifecycle",
       "subcommands": [

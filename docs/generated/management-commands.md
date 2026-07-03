@@ -155,6 +155,16 @@ Hand all current work from this session to another session.
 | --- | --- |
 | `artifacts` | Locate every artifact for a ticket: stack, ports, plans, run artifacts, E2E evidence |
 
+## `learnings`
+
+``t3 <overlay> learnings`` group root.
+
+| Subcommand | Description |
+| --- | --- |
+| `show` | Print the repo's durable learnings store |
+| `add` | Append a timestamped entry to the repo's durable learnings store |
+| `edit` | Open the repo's full learnings store in ``$EDITOR`` and replace it |
+
 ## `lifecycle`
 
 Group root — forces sub-commands to be addressed by name.

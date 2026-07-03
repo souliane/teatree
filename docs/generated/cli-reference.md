@@ -4521,6 +4521,7 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ retro           Retrospective enforcement tooling (#1573).                   │
 │ honesty         Situational honesty-critical escalation (#2263).             │
 │ memory          Cold-tier memory recall (#2746).                             │
+│ learnings       Durable per-repo knowledge store, DB-placed (#2892).         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -8594,5 +8595,77 @@ Usage: t3 teatree memory recall [OPTIONS] QUERY
 │ --limit             INTEGER  Max number of cold-tier rules to surface.       │
 │                              [default: 5]                                    │
 │ --help                       Show this message and exit.                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree learnings`
+
+```
+Usage: t3 teatree learnings [OPTIONS] COMMAND [ARGS]...
+
+ Durable per-repo knowledge store, DB-placed (#2892).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ show  Print the repo's durable learnings store.                              │
+│ add   Append a timestamped entry to the repo's durable learnings store.      │
+│ edit  Open the repo's full learnings store in $EDITOR and replace it.        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree learnings show`
+
+```
+Usage: t3 teatree learnings show [OPTIONS] REPO_REF
+
+ Print the repo's durable learnings store.
+
+ ``repo_ref`` accepts a literal ``owner/repo`` slug or a full
+ issue/PR/MR URL.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    repo_ref      TEXT  [required]                                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree learnings add`
+
+```
+Usage: t3 teatree learnings add [OPTIONS] REPO_REF ENTRY
+
+ Append a timestamped entry to the repo's durable learnings store.
+
+ Append-only: parallel sessions never overwrite each other's notes.
+ A blank entry is refused with a nonzero exit.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    repo_ref      TEXT  [required]                                          │
+│ *    entry         TEXT  [required]                                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree learnings edit`
+
+```
+Usage: t3 teatree learnings edit [OPTIONS] REPO_REF
+
+ Open the repo's full learnings store in ``$EDITOR`` and replace it.
+
+ Unlike ``add``, ``edit`` is a full-field rewrite. An aborted edit
+ (editor exits without saving) leaves the store untouched.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    repo_ref      TEXT  [required]                                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
