@@ -295,6 +295,20 @@ Id references must be namespace-qualified — they are never bare. A harness/tea
 - **Harness/teatree task ids** render as `TODO-<n>` (e.g. `TODO-7`) — never `task #<n>` or bare `#<n>`. This is `Task` PKs and harness TODO ids alike.
 - **Forge issue/ticket/PR ids** render as `<repo>#<n>` when ambiguity with a task id (or a cross-repo ref) is possible (e.g. `teatree#11`, `<overlay-repo>#42`/`!42`). A bare `#<n>` for a forge ref is acceptable only inside a context already scoped to one forge namespace (e.g. a statusline line prefixed `[overlay]`, or a single-namespace section), never side-by-side with a task id.
 - Never emit a bare `#<n>` for a task id sitting next to a bare `#<n>` for a ticket.
+- **A repo-qualified ref is a rendering convention, not `gh`/`glab` CLI syntax — do X, never Y.** `<repo>#<n>` (e.g. `teatree#50`) is how you _write_ the ref in prose, a statusline, or a commit body. Neither `gh` nor `glab` accepts that slash/hash-qualified string as a single positional argument — pass the bare number and name the repo with its own flag:
+
+  ```bash
+  # do X — bare number + explicit repo flag:
+  gh issue view 50 --repo souliane/teatree
+  gh pr view 50 --repo souliane/teatree
+  glab issue view 50 --repo souliane/teatree
+  # never Y — a repo-qualified single argument is not valid gh/glab CLI syntax,
+  # even though "teatree#50" is the correct PROSE rendering of the same ref:
+  gh issue view teatree#50              # FORBIDDEN — gh rejects this argument shape
+  gh issue view souliane/teatree#50     # FORBIDDEN — same error
+  ```
+
+  Inside the repo's own working tree (`gh`/`glab` resolve the repo from the git remote), `--repo`/`-R` can be omitted — `gh issue view 50` is fine there. Add the flag whenever the command runs outside that repo's tree, or whenever the surrounding text disambiguates against a same-numbered task id and the command must stay unambiguous too.
 
 This is the canonical home; `/t3:todos` § "Output contract" cross-references it for the `task TODO-<id> (ticket #<n>)` line shape, and the disambiguation eval is `evals/scenarios/id_namespace_disambiguation.yaml`.
 
