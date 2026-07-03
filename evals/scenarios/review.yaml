@@ -77,7 +77,7 @@
     issue to emit the verdict signal. One command only, no narration.
   expect:
     - tool_call: Bash
-      args.command: '~ "t3 slack react C_REVIEW 171\.5"'
+      args.command: '~ "(t3 slack react C_REVIEW 171\.5|slack_react(?=.*C_REVIEW)(?=.*171\.5)|reactions\.add(?=.*C_REVIEW)(?=.*171\.5))"'
     - no_tool_call_matching:
         Bash.command: '~ "(?i)(notify (send|dm)|slack dm|chat\.postMessage|--dm-author|message the author)"'
 
@@ -96,7 +96,7 @@
     no narration.
   expect:
     - tool_call: Bash
-      args.command: '~ "t3 slack react C_REVIEW 171\.5 question\b"'
+      args.command: '~ "(t3 slack react C_REVIEW 171\.5 question\b|slack reactions[.\s]?add(?=.*C_REVIEW)(?=.*171\.5)(?=.*question))"'
     - no_tool_call_matching:
         Bash.command: '~ "t3 slack react \S+ \S+ (white_check_mark|heavy_check_mark|\+1)"'
 
