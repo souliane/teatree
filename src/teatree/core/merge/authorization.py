@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from teatree.core.author_trust import classify_author
 from teatree.core.merge.ci_rollup import fetch_pr_author
 from teatree.core.merge.errors import MergePreconditionError
+from teatree.core.models.mr_review_lock import MRReviewLock
 from teatree.core.models.review_verdict import HeadVerdictState, ReviewVerdict
 
 if TYPE_CHECKING:
@@ -357,8 +358,6 @@ def assert_no_active_review_lock(*, slug: str, pr_id: int) -> None:
     row, or a stale (deadline-passed) row all mean "no review in flight" and
     the merge proceeds.
     """
-    from teatree.core.models.mr_review_lock import MRReviewLock  # noqa: PLC0415
-
     lock = MRReviewLock.active_lock_for(slug=slug, pr_id=pr_id)
     if lock is None:
         return
