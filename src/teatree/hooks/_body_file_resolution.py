@@ -57,6 +57,21 @@ _CAT_SUBST_RE: Final[re.Pattern[str]] = re.compile(
     r"^\$\(\s*cat\s+(?:--\s+)?(?P<path>'[^']+'|\"[^\"]+\"|\S+)\s*\)$",
 )
 
+# A body value that IS exactly a ``$(cat <<DELIM ... DELIM)`` heredoc-fed
+# command substitution -- the canonical ``git commit -m "$(cat <<'EOF' …
+# EOF)"`` idiom. The lexer keeps the whole multi-line value as ONE token, so
+# ``_CAT_SUBST_RE`` above (a bare path argument) never matches it and the
+# generic embedded-``$(...)``  check below would fail-close on a body that is
+# actually fully present in the token text. :func:`unredirected_heredoc_bodies`
+# already extracts and scans this exact heredoc body elsewhere in
+# :func:`_command_parser.extract_bash_payload`, so a match here is resolved
+# (empty return, not the sentinel) to avoid emitting a spurious fail-closed
+# line alongside the correctly-scanned content (#1213 self-block).
+_CAT_HEREDOC_SUBST_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\$\(\s*cat\s+<<-?\s*['\"]?(?P<delim>\w+)['\"]?\s*\n.*\n(?P=delim)\s*\n?\s*\)$",
+    re.DOTALL,
+)
+
 # A body value that IS exactly a single shell-variable reference (``$VAR`` or
 # ``${VAR}``). Resolved best-effort from the hook subprocess's environment (it
 # inherits the agent's env, the same channel the ``ALLOW_BANNED_TERM`` override
@@ -136,12 +151,20 @@ def resolve_inline_body_value(value: str, base: Path | None, raw: str = "") -> s
     case in real PR/issue bodies) is inert data fully present in the value and
     fully scanned -- blocking on it was a pure false positive that forced
     ``--body-file``/heredoc workarounds.
+
+    A ``$(cat <<DELIM … DELIM)`` heredoc-fed substitution (the canonical
+    ``git commit -m "$(cat <<'EOF' … EOF)"`` idiom) resolves to "" here --
+    :func:`unredirected_heredoc_bodies` already scans that exact body
+    elsewhere in the same payload, so this walker defers to it instead of
+    fail-closing on the outer ``$(...)`` it cannot itself expand (#1213).
     """
     cat_match = _CAT_SUBST_RE.match(value)
     if cat_match is not None and _raw_substitution_is_live(raw):
         path = cat_match.group("path").strip("'\"")
         content = read_file_arg(path, base)
         return content if content is not None else FAIL_CLOSED_SENTINEL
+    if _CAT_HEREDOC_SUBST_RE.match(value) is not None:
+        return ""
     var_match = _VAR_REF_RE.match(value)
     if var_match is not None and (not raw or _DOUBLE_QUOTED_VAR_REF_RE.match(raw)):
         resolved = os.environ.get(var_match.group("name"))
@@ -152,7 +175,7 @@ def resolve_inline_body_value(value: str, base: Path | None, raw: str = "") -> s
 
 
 _HEREDOC_RE: Final[re.Pattern[str]] = re.compile(
-    r"<<\s*['\"]?(\w+)['\"]?\s*\n(.*?)\n\1\b",
+    r"<<-?\s*['\"]?(\w+)['\"]?\s*\n(.*?)\n\1\b",
     re.DOTALL,
 )
 
@@ -165,7 +188,7 @@ _HEREDOC_RE: Final[re.Pattern[str]] = re.compile(
 # with the heredoc delimiter so a later ``-F``/``--body-file <path>`` reference
 # resolves to the body the command is about to write there (#126).
 _HEREDOC_TO_FILE_RE: Final[re.Pattern[str]] = re.compile(
-    r">{1,2}\|?\s*(?P<path>'[^']+'|\"[^\"]+\"|\S+)\s+<<\s*['\"]?(?P<delim>\w+)['\"]?\s*\n(?P<body>.*?)\n(?P=delim)\b",
+    r">{1,2}\|?\s*(?P<path>'[^']+'|\"[^\"]+\"|\S+)\s+<<-?\s*['\"]?(?P<delim>\w+)['\"]?\s*\n(?P<body>.*?)\n(?P=delim)\b",
     re.DOTALL,
 )
 
