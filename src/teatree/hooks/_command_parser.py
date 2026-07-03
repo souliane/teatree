@@ -43,7 +43,11 @@ from teatree.hooks._publish_detection import (
     segment_is_substring_publish,
     segment_word_lists,
 )
-from teatree.hooks._python_rest_detection import command_has_python_rest_publish_surface, is_python_leader
+from teatree.hooks._python_rest_detection import (
+    command_has_python_rest_publish_surface,
+    is_python_leader,
+    segment_is_python_rest_publish,
+)
 from teatree.hooks._shell_lexer import Token, TokenKind, split_commands, tokenize
 
 if TYPE_CHECKING:
@@ -343,7 +347,12 @@ def _walk_python_script(words: list[str], payloads: list[str]) -> None:
     body-flag/file walkers never see the script text a REST-publish call
     lives in. A heredoc-fed script's body is captured separately (and
     unconditionally, regardless of leader) by :func:`extract_bash_payload`'s
-    heredoc-body pass -- this walker covers only the ``-c`` inline form.
+    heredoc-body pass -- this walker covers only the ``-c`` inline form. The
+    caller gates this on :func:`_python_rest_detection.segment_is_python_rest_publish`
+    so an unrelated python ``-c`` one-liner (a local computation, a secret
+    read for LOCAL use) is never dumped into the wide secret-scan surface
+    :func:`extract_secret_scan_text` runs regardless of destination (#2943
+    review finding: gating on the leader alone over-widened that surface).
     """
     i = 0
     n = len(words)
@@ -518,7 +527,14 @@ def _walk_command_segment(segment: list[Token], payloads: list[str], ctx: "BodyF
         _walk_api_fields(words, raws, payloads, ctx.base)
     if first == "curl":
         _walk_curl_args(words, payloads)
-    if is_python_leader(first):
+    # Gated on the ACTUAL classification (write verb + forge URL), not merely
+    # the python leader: ``extract_bash_payload`` also backs
+    # ``extract_secret_scan_text``, which runs on EVERY Bash command
+    # regardless of destination -- an unconditional append here would dump
+    # any unrelated python ``-c`` one-liner's full source (a local
+    # computation, a secret read for LOCAL use) into that wide surface and
+    # false-block it as a "publish payload" it never was.
+    if is_python_leader(first) and segment_is_python_rest_publish(words, " ".join(words)):
         _walk_python_script(words, payloads)
 
 

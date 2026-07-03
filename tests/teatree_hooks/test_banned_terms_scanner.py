@@ -1962,6 +1962,19 @@ class TestPythonRestPublishGate:
         assert blocked is True
         assert json.loads(capsys.readouterr().out)["permissionDecision"] == "deny"
 
+    def test_unrelated_python_one_liner_with_secret_shaped_string_is_not_blocked(self) -> None:
+        # Independent-review finding (codex, this ticket): gating the ``-c``
+        # payload walker on the python LEADER alone (not the write+forge
+        # classification) fed every python ``-c`` script into
+        # ``secret_scan_text`` -- which runs BEFORE ``is_publish_command`` and
+        # regardless of destination -- so a purely local, non-networked
+        # one-liner that merely PRINTS a secret-shaped string was false-
+        # blocked as a "publish payload" it never was.
+        secret = "sk-ant-api03-" + "a" * 90
+        command = f"python3 -c \"token='{secret}'; print(token[:3])\""
+        blocked = handle_banned_terms_pretool(_bash(command))
+        assert blocked is False
+
 
 class TestFormatBlockMessage:
     def test_message_names_the_term_and_the_override(self) -> None:
