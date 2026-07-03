@@ -142,6 +142,15 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("post-evidence", "[Deprecated] Alias for post-test-plan (renamed; kept one release for back-compat)."),
             ("sweep", "List your open PRs across the forge for the /t3:sweeping-prs skill."),
         ],
+        # `create` gate-validates against the teatree-core control DB the
+        # shipping gate reads (`assert_lifecycle_db_is_canonical`), and every
+        # sibling lives in the same core-only `pr.py` module. Without
+        # `core_dispatch`, the overlay project-path resolver prefers any
+        # `manage.py` discovered from the invoking cwd — which, from inside a
+        # ticket worktree, is that worktree's OWN `manage.py`, running against
+        # its per-worktree auto-isolated DB the gate never consults (#2925,
+        # the same #126 class `db migrate`/`db approve` were fixed under).
+        core_dispatch=True,
     ),
     "tasks": DjangoGroup(
         "Async task queue.",
@@ -208,6 +217,13 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("record-review-context", "Record referenced-context retrieval before reviewing (deep-retrieval gate)."),
             ("record-anti-vacuity", "Record the SHA-bound anti-vacuity attestation before review-request/merge."),
         ],
+        # Every subcommand records phase attestations against the
+        # teatree-core control DB the shipping gate reads
+        # (`assert_lifecycle_db_is_canonical`) — same #2925/#126 reasoning as
+        # the `pr` group above: without `core_dispatch`, a cwd inside a ticket
+        # worktree resolves that worktree's own `manage.py` and its
+        # per-worktree auto-isolated DB instead.
+        core_dispatch=True,
     ),
     "env": DjangoGroup(
         "Inspect and mutate the worktree env cache.",
