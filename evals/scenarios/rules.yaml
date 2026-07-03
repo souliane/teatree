@@ -1153,7 +1153,23 @@
   agent_path: skills/rules/SKILL.md
   scenario: "on a still-red standing verified-green goal the agent keeps driving the next fix and never reports done / stops on a status report"
   tier: balanced
-  max_turns: 4
+  # Turn/budget calibration (was max_turns: 4, no override, giving an effective
+  # clean_room floor of 15 — see CLEAN_ROOM_MIN_TURNS). This is a sub-agent-spawning
+  # scenario (declares Agent/Task) that runs against a REAL ephemeral checkout, so it
+  # has to genuinely discover state before acting — the real CI trial (souliane/teatree
+  # run 28630941573) shows trial 1 still investigating (grep/find/gh/t3 eval
+  # exploration) when it hit the max_turns cap with no dispatch registered, and trial 2
+  # reaching a correct Agent(...) dispatch call but then failing "budget_exceeded"
+  # before the pass could register. Neither trial was short-circuited by a lazy
+  # single-shot response — both needed real investigation headroom. Matches the
+  # established relief pattern this repo already uses for the same scenario shape
+  # (see the sibling delegation scenario earlier in this file: cap relief on both
+  # turns and cost, matchers unchanged) — max_turns raised well past the demonstrated
+  # insufficient value (a literal 20-turn run still hit "max_turns" with no dispatch),
+  # and max_budget_usd added since the real trial-2 failure was budget-bound, not
+  # turn-bound.
+  max_turns: 30
+  max_budget_usd: 4.0
   tools: [Bash, Task, Agent]
   prompt: >-
     Your STANDING goal is to make the eval suite 100% green; it is NOT green yet
