@@ -13,7 +13,6 @@ from django.test import TestCase
 from teatree.core.management.commands import review as review_cmd
 from teatree.core.merge import conflict_only as co
 from teatree.core.merge.conflict_only import (
-    _path_was_conflicted,
     is_conflict_only_merge_commit,
     merge_commit_parents,
     rebind_clearance_after_conflict_only_merge,
@@ -146,10 +145,55 @@ class TestConflictOnlyFailsSafe:
         ):
             assert is_conflict_only_merge_commit("/repo", self._MERGE) is False
 
-    def test_path_was_conflicted_is_false_on_unreadable_blob(self, tmp_path: Path) -> None:
+
+def _init_repo_marker_file(repo: Path) -> None:
+    """Like ``_init_repo`` but ``other.txt`` legitimately CONTAINS conflict markers.
+
+    A doc/fixture whose content includes literal ``<<<<<<<`` / ``>>>>>>>`` lines.
+    ``other.txt`` is cleanly merged (untouched on both sides), so its marker
+    content flows verbatim into git's auto-merge tree — the exact shape a
+    marker-grep oracle misreads as "was conflicted".
+    """
+    repo.mkdir(parents=True, exist_ok=True)
+    _git(repo, "init", "-q", "-b", "main")
+    _git(repo, "config", "user.email", "t@example.com")
+    _git(repo, "config", "user.name", "Tester")
+    _git(repo, "config", "commit.gpgsign", "false")
+    (repo / "conflict.txt").write_text("line1\nline2\nline3\n")
+    (repo / "other.txt").write_text("<<<<<<< example\nsome doc text\n>>>>>>> example\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "base")
+
+
+class TestEvilMergeOnMarkerContainingFile:
+    """PR-07 fail-open: an evil merge editing a cleanly-merged marker-containing file.
+
+    ``other.txt`` merges cleanly yet its content carries literal conflict markers.
+    The evil merge resolves ``conflict.txt`` AND edits ``other.txt``. A marker-grep
+    oracle sees markers in the auto-merge blob of ``other.txt`` and misclassifies
+    the substantive deviation as conflict-only — re-binding clearance and SKIPPING
+    re-review. git's authoritative conflicted-path set contains only ``conflict.txt``,
+    so the deviation on ``other.txt`` correctly forces a fresh review.
+    """
+
+    def test_evil_edit_on_marker_file_is_not_conflict_only(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
-        _init_repo(repo)
-        assert _path_was_conflicted(str(repo), "0" * 40, "nope.txt") is False
+        _init_repo_marker_file(repo)
+        _diverge(repo, "feature")
+        merge_sha = _merge_main_resolving(repo, extra_edit=True)
+        # RED without the fix: the marker-grep oracle returns True (misclassified
+        # conflict-only) and this assertion fails; git's conflicted-path set returns
+        # False (re-review forced).
+        assert is_conflict_only_merge_commit(str(repo), merge_sha) is False
+
+    def test_marker_file_untouched_conflict_only_still_detected(self, tmp_path: Path) -> None:
+        # Control: with NO evil edit, the only deviation IS the genuinely-conflicted
+        # file, so the merge stays conflict-only even though other.txt carries markers.
+        repo = tmp_path / "repo"
+        _init_repo_marker_file(repo)
+        _diverge(repo, "feature")
+        merge_sha = _merge_main_resolving(repo, extra_edit=False)
+        assert is_conflict_only_merge_commit(str(repo), merge_sha) is True
 
 
 def _clear_with_verdict(repo: Path, feature_tip: str) -> MergeClear:
