@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from teatree.utils.singleton import AlreadyRunningError, default_pid_path, pid_alive, read_pid, singleton
+from teatree.utils.singleton import AlreadyRunningError, default_pid_path, flock_is_held, pid_alive, read_pid, singleton
 
 
 def _hold_lock(lock_path: str, ready_path: str, release_path: str) -> None:
@@ -113,3 +113,20 @@ class TestSingleton:
     def test_default_path_uses_data_dir(self) -> None:
         path = default_pid_path("worker")
         assert path.name == "worker.pid"
+
+
+class TestFlockIsHeld:
+    def test_free_when_no_holder(self, tmp_path: Path) -> None:
+        assert flock_is_held("t", pid_path=tmp_path / "t.pid") is False
+
+    def test_held_while_a_singleton_is_active(self, tmp_path: Path) -> None:
+        path = tmp_path / "t.pid"
+        with singleton("t", pid_path=path):
+            assert flock_is_held("t", pid_path=path) is True
+
+    def test_ignores_a_recycled_live_pid_with_no_flock(self, tmp_path: Path) -> None:
+        # A live pid recorded in the file but NO flock held: the probe reads the
+        # kernel lock (free), never the recyclable pid (which would read "held").
+        path = tmp_path / "t.pid"
+        path.write_text(f"{os.getpid()}\n", encoding="utf-8")
+        assert flock_is_held("t", pid_path=path) is False

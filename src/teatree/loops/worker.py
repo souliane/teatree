@@ -4,9 +4,10 @@ One process runs K=4 programmatic ``django_tasks_db`` :class:`Worker` executor
 threads — 2 pinned to the ``loops`` queue, 2 to ``default`` — so a heavy headless
 ``default`` job can never starve a reactive loop timer, and vice-versa. A
 supervisor thread re-reads the ``loop_runner_enabled`` kill-switch every ~5 s and
-stops every executor on a flip-off or a SIGTERM/SIGINT, joining and exiting; the
-flock singleton (:func:`teatree.utils.singleton.singleton`) guarantees at most one
-worker per box. At startup the worker reconciles the loop-timer chains and seeds
+stops every executor on a flip-off or a SIGTERM/SIGINT, joining and — after the join
+timeout — SIGKILLing any in-flight tick process group the join left orphaned, then
+exiting; the flock singleton (:func:`teatree.utils.singleton.singleton`) guarantees
+at most one worker per box. At startup the worker reconciles the loop-timer chains and seeds
 the maintenance chains, so a fresh or crash-recovered box catches up and self-heals
 with no OS scheduler (no cron / launchd / systemd). The worker supervisor +
 reconciler IS the process-watchdog surface.
@@ -20,6 +21,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
+from teatree.loops.timer_chains import kill_live_tick_process_groups
 from teatree.loops.timer_reconciler import ensure_loop_timers, ensure_maintenance_chains
 
 if TYPE_CHECKING:
@@ -107,6 +109,7 @@ class WorkerSeams:
     seed_chains: Callable[[], object] = ensure_maintenance_chains
     make_executor: Callable[[str, str], _Executor] = _build_executor
     spawn: Callable[[_Executor], _Handle] = _spawn_executor_thread
+    kill_ticks: Callable[[], object] = kill_live_tick_process_groups
     sleep: Callable[[float], None] = time.sleep
     poll_seconds: float = SUPERVISOR_POLL_SECONDS
     executor_queues: tuple[str, ...] = EXECUTOR_QUEUES
@@ -145,3 +148,7 @@ class LoopWorker:
                 executor.running = False
             for handle in handles:
                 handle.join(timeout=EXECUTOR_INTERVAL_SECONDS * 3)
+            # The daemon-join above never reaches a tick SUBPROCESS: a kill-switch flip
+            # or SIGTERM mid-tick orphans it with no deadline owner. Kill any in-flight
+            # tick process group so no zombie/orphan outlives the worker's shutdown.
+            seams.kill_ticks()

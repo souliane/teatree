@@ -78,15 +78,20 @@ def _worker_enabled() -> bool:
 def _flock_is_free() -> bool:
     """Whether the ``worker`` flock has no live holder; fail-SAFE (not free) on error.
 
-    An uncertain probe returns ``False`` so an ambiguous state never triggers a
-    spawn — and even a spurious spawn is harmless (the second worker's singleton
-    refuses and exits), so this errs toward not-spawning.
+    Probes the KERNEL ``flock`` state, not the recorded pid: a ``read_pid`` liveness
+    probe treats a RECYCLED pid (an unrelated live process that reused a crashed
+    worker's pid) as a live holder and suppresses resurrection — and the reconciler —
+    indefinitely. The ``flock`` probe reflects the actual lock, so a dead worker's
+    freed flock always reads free. An uncertain probe returns ``False`` so an
+    ambiguous state never triggers a spawn — and even a spurious spawn is harmless
+    (the second worker's own flock singleton refuses and exits), so this errs toward
+    not-spawning.
     """
     try:
         from teatree.loops.worker import WORKER_SINGLETON  # noqa: PLC0415
-        from teatree.utils.singleton import default_pid_path, read_pid  # noqa: PLC0415
+        from teatree.utils.singleton import flock_is_held  # noqa: PLC0415
 
-        return read_pid(default_pid_path(WORKER_SINGLETON)) is None
+        return not flock_is_held(WORKER_SINGLETON)
     except Exception:  # noqa: BLE001 — can't tell -> do NOT spawn a possible duplicate.
         return False
 

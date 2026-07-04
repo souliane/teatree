@@ -44,6 +44,7 @@ CONFIG_OVERWRITE_GATE_KEY = "config_overwrite_gate_enabled"
 COMPLETION_CLAIM_GATE_KEY = "completion_claim_gate_enabled"
 MAIN_CLONE_GATE_KEY = "main_clone_guard_gate_enabled"
 MEMORY_RECALL_GATE_KEY = "memory_recall_enabled"
+SNAPSHOT_BASELINE_GATE_KEY = "snapshot_baseline_gate_enabled"
 # Master fail-open switch (NEVER-LOCKOUT). Unlike the per-gate kill-switches
 # above (which default ENABLED and read ``is not False``), this is OFF by
 # default and reads ``is True`` — it must NEVER relax a gate by accident, only
@@ -312,6 +313,13 @@ def register_gate_commands(overlay_app: typer.Typer) -> None:
         name="memory-recall",
         key=MEMORY_RECALL_GATE_KEY,
         label="Cold-tier memory recall injector",
+    )
+
+    _register_keyed_gate(
+        gate_group,
+        name="snapshot-baseline",
+        key=SNAPSHOT_BASELINE_GATE_KEY,
+        label="Snapshot-baseline attestation gate",
     )
 
     overlay_app.add_typer(gate_group, name="gate")

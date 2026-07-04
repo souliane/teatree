@@ -6,6 +6,7 @@ tick stubbed so the five-step body is exercised without spawning a real tick.
 """
 
 import datetime as dt
+import os
 
 import django.test
 import pytest
@@ -13,6 +14,8 @@ from django.utils import timezone
 
 from teatree.core.models import Loop, Prompt
 from teatree.loops import timer_chains
+from teatree.utils.run import spawn_session_leader
+from teatree.utils.singleton import pid_alive
 
 #: The production DB backend so an ``enqueue`` lands a real ``django_tasks_db`` row
 #: (the suite default ``DummyBackend`` never touches the DB).
@@ -132,6 +135,78 @@ class TestLoopTimerBody(django.test.TestCase):
         result = timer_chains.loop_timer.func("no-such-loop")
         assert result["action"] == "unknown"
         assert timer_chains.pending_loop_timers("no-such-loop") == []
+
+    def test_faulted_tick_that_leaves_anchor_unmoved_floors_the_successor(self) -> None:
+        # A crash before the CAS / connector outage / lost lease: the tick runs but
+        # never moves ``last_run_at``, so the loop is still "due". Step 5 must floor
+        # the successor to the idle poll — else ``compute_successor_run_after`` returns
+        # ``now`` and the chain re-spawns a full Django subprocess every few seconds.
+        self._enable_inbox(last_run_at=timezone.now() - dt.timedelta(seconds=120))  # overdue
+        ticks: list[str] = []
+
+        def _faulted_tick(name: str, *, deadline: float) -> dict[str, object]:
+            ticks.append(name)  # runs, but does NOT mark_run → anchor stays put
+            return {"timed_out": True, "returncode": None}
+
+        before = timezone.now()
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(timer_chains, "run_deadlined_tick", _faulted_tick)
+            result = timer_chains.loop_timer.func("inbox")
+
+        assert result["action"] == "ticked"
+        assert ticks == ["inbox"]  # exactly one tick — no duplicate spawned this fire
+        pending = timer_chains.pending_loop_timers("inbox")
+        assert len(pending) == 1  # one successor, not an unbounded storm
+        floor = before + dt.timedelta(seconds=timer_chains.IDLE_POLL_FLOOR_SECONDS - 2)
+        assert pending[0].run_after >= floor  # floored out, never re-fires at "now"
+
+    def test_interval_fire_does_not_leave_an_immediately_ready_duplicate_successor(self) -> None:
+        # Step 2 (successor-first) must NOT enqueue an already-due successor at ``now``:
+        # a second ``loops`` executor would claim it and run a duplicate tick subprocess
+        # while this tick is still in flight. Capture the successor AT tick time (after
+        # step 2, before step 5's refinement).
+        self._enable_inbox(last_run_at=timezone.now() - dt.timedelta(seconds=120))  # overdue
+        successor_at_tick: list[dt.datetime] = []
+
+        def _capture_at_tick(name: str, *, deadline: float) -> dict[str, object]:
+            successor_at_tick.append(timer_chains.pending_loop_timers(name)[0].run_after)
+            return {"timed_out": False, "returncode": 0}  # no mark_run — isolate step 2
+
+        before = timezone.now()
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(timer_chains, "run_deadlined_tick", _capture_at_tick)
+            timer_chains.loop_timer.func("inbox")
+
+        assert successor_at_tick, "tick was not run"
+        floor = before + dt.timedelta(seconds=timer_chains.IDLE_POLL_FLOOR_SECONDS - 2)
+        assert successor_at_tick[0] >= floor  # step 2 floored → not immediately claimable
+
+
+class TestLiveTickProcessGroups(django.test.SimpleTestCase):
+    """The worker-shutdown kill surface: in-flight tick groups are tracked + killed."""
+
+    def setUp(self) -> None:
+        timer_chains._LIVE_TICK_PGIDS.clear()  # process-global registry — isolate from other tests
+
+    def test_kill_live_tick_process_groups_kills_a_registered_group(self) -> None:
+        proc = spawn_session_leader(["sleep", "30"])  # a stand-in in-flight tick
+        pgid = os.getpgid(proc.pid)
+        timer_chains._register_tick_pgid(pgid)
+        try:
+            assert pid_alive(proc.pid)
+            killed = timer_chains.kill_live_tick_process_groups()
+            assert pgid in killed
+            proc.wait(timeout=5)
+            assert not pid_alive(proc.pid)
+        finally:
+            timer_chains._unregister_tick_pgid(pgid)
+            timer_chains._killpg(pgid)
+
+    def test_completed_tick_leaves_no_group_registered(self) -> None:
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(timer_chains, "_tick_argv", lambda name: ["true"])
+            timer_chains.run_deadlined_tick("x", deadline=30)
+        assert timer_chains.kill_live_tick_process_groups() == []  # nothing leaked past the tick
 
 
 class TestRunDeadlinedTick(django.test.SimpleTestCase):

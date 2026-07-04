@@ -110,24 +110,50 @@ def _clause_has_phrase(clause: str, phrase: str) -> bool:
     return not any(neg in lowered for neg in _NEGATION_TOKENS)
 
 
-def _has_approval_phrase(text: str) -> bool:
-    r"""True iff the message body contains a whole-word, unnegated approval phrase.
+# Straight single quotes are excluded on purpose: they collide with the
+# apostrophes in the negation tokens (``don't``/``can't``), so masking them
+# would swallow a negation and re-open the false-positive it guards.
+_QUOTE_SPAN_RES: tuple[re.Pattern[str], ...] = (
+    re.compile(r'"[^"]*"'),
+    re.compile(r"“[^”]*”"),  # "curly double"
+    re.compile(r"«[^»]*»"),  # «guillemets»
+    re.compile(r"`[^`]*`"),
+)
 
-    Splits the body into sentence-like clauses on ``.``/``!``/``?``/``;``
-    /``\n`` boundaries (every clause is checked independently), then
-    requires that some clause contains an approval phrase under
-    :func:`_clause_has_phrase`. This rejects:
+
+def _mask_quoted(text: str) -> str:
+    """Blank the content inside quote pairs so a quoted phrase never authorizes.
+
+    A quoted approval phrase is reported speech, not an authorization — the
+    button labelled ``"post it"`` or ``he said "go ahead"`` must NOT release a
+    live publish. Each quoted span's characters are replaced with spaces (length
+    preserved so nothing else shifts) before clause splitting and phrase
+    matching. See :data:`_QUOTE_SPAN_RES` for why straight single quotes are not
+    masked.
+    """
+    for pattern in _QUOTE_SPAN_RES:
+        text = pattern.sub(lambda match: " " * len(match.group(0)), text)
+    return text
+
+
+def _has_approval_phrase(text: str) -> bool:
+    r"""True iff the message body contains a whole-word, unnegated, unquoted approval phrase.
+
+    Masks quoted spans (:func:`_mask_quoted`), then splits the remainder into
+    sentence-like clauses on ``.``/``!``/``?``/``;``/``\n`` boundaries (every
+    clause is checked independently), and requires that some clause contains an
+    approval phrase under :func:`_clause_has_phrase`. This rejects:
 
     * ``"don't post live"`` (same clause negates the phrase)
     * ``"do NOT go ahead"`` (same clause negates the phrase)
+    * ``he said "go ahead"`` (phrase is quoted — reported speech, not approval)
     * ``"foopost livebar"`` (phrase is embedded, not whole-word)
 
     The longer-term fix is sentence-aware NLP (full negation scope,
-    polarity flips, modal qualifiers); the clause-scope negation gate
-    here is the minimal regex-only fix and is tracked as a class-C
-    enforcement follow-up.
+    polarity flips, modal qualifiers); the clause-scope negation + quotation
+    masking here is the minimal regex-only fix.
     """
-    clauses = re.split(r"[.!?;\n]+", text)
+    clauses = re.split(r"[.!?;\n]+", _mask_quoted(text))
     return any(_clause_has_phrase(clause, phrase) for clause in clauses for phrase in APPROVAL_PHRASES)
 
 
