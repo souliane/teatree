@@ -40,11 +40,10 @@ IMMEDIATE_BACKEND = {
     "TASKS": {
         "default": {
             "BACKEND": "django_tasks.backends.immediate.ImmediateBackend",
-            # Mirror the QUEUES allowlist from tests/django_settings.py — importing
-            # teatree.core.tasks (a headless-task side effect) constructs the
-            # module-level `execute_loop` task at import time, which validates its
-            # "loop-runner" queue_name against this backend's queues immediately.
-            "QUEUES": ["default", "loop-runner"],
+            # Mirror the QUEUES allowlist from tests/django_settings.py — a task
+            # defined with a non-default queue_name (the loop-timer chains' "loops"
+            # queue) validates that name against this backend's queues at import.
+            "QUEUES": ["default", "loops"],
         },
     },
 }

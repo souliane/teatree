@@ -408,11 +408,6 @@
       ]
     },
     {
-      "help": "Run the self-owned singleton loop-runner daemon (#2876) \u2014 owns the tick cadence, no OS cron.",
-      "name": "loop_runner",
-      "subcommands": []
-    },
-    {
       "help": "Run one schedule cycle of the self-improving monitor.",
       "name": "loop_self_improve",
       "subcommands": []
@@ -887,6 +882,11 @@
           "name": "list"
         }
       ]
+    },
+    {
+      "help": "Run the singleton loop-timer worker (#1796) \u2014 K pinned executors, no OS scheduler.",
+      "name": "worker",
+      "subcommands": []
     },
     {
       "help": "",

@@ -26,8 +26,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 UI.                                                          │
 │ admin           Run the Django admin for the teatree project on a local dev  │
 │                 server.                                                      │
-│ loop-runner     Run the supervised singleton loop-runner daemon — the        │
-│                 cadence owner (#2876).                                       │
+│ worker          Run the singleton loop-timer worker — the cadence owner      │
+│                 (#1796).                                                     │
 │ info            Installation info (bare) and read-only per-ticket artifact   │
 │                 discovery.                                                   │
 │ config          Configuration and autoloading.                               │
@@ -60,13 +60,15 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 Stop-hook self-pump re-continues the loop automatically      │
 │                 while consolidated work remains — exactly one consolidation  │
 │                 loop per agent identity, deduped across all sessions (#786   │
-│                 WS4); it idles when none. OPTIONAL daemon (#2876, default    │
-│                 OFF): `t3 loop-runner` is a self-owned singleton that can    │
-│                 own the cadence instead of the native `/loop` crons, so the  │
-│                 DB loops run with no Claude session open. It is opt-in —     │
-│                 enable with `config_setting set loop_runner_enabled true`    │
-│                 and start it once from a login profile; the default stays    │
-│                 the session-bound native `/loop` crons above.                │
+│                 WS4); it idles when none. OPTIONAL worker (#1796, default    │
+│                 OFF): `t3 worker` is a self-owned singleton that drains      │
+│                 durable self-rescheduling loop-timer chains (django-tasks    │
+│                 `run_after` rows), owning the cadence instead of the native  │
+│                 `/loop` crons so the DB loops run with no Claude session     │
+│                 open. It is opt-in — enable with `config_setting set         │
+│                 loop_runner_enabled true` and start it once from a login     │
+│                 profile; the default stays the session-bound native `/loop`  │
+│                 crons above.                                                 │
 │ loops           Manage DB-configured autonomous loops (#1796).               │
 │ mcp             Read-only MCP server exposing teatree's structured search    │
 │                 (stdio).                                                     │
@@ -239,15 +241,14 @@ Usage: t3 admin [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-### `t3 loop-runner`
+### `t3 worker`
 
 ```
-Usage: t3 loop-runner [OPTIONS]
+Usage: t3 worker [OPTIONS]
 
- Run the supervised singleton loop-runner daemon — the cadence owner (#2876).
+ Run the singleton loop-timer worker — the cadence owner (#1796).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --once          Run a single beat then exit (foreground / test variant).     │
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -3276,10 +3277,11 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
  paused until the next session start (no OS daemon — accepted, not a defect). A
  per-agent Stop-hook self-pump re-continues the loop automatically while
  consolidated work remains — exactly one consolidation loop per agent identity,
- deduped across all sessions (#786 WS4); it idles when none. OPTIONAL daemon
- (#2876, default OFF): `t3 loop-runner` is a self-owned singleton that can own
- the cadence instead of the native `/loop` crons, so the DB loops run with no
- Claude session open. It is opt-in — enable with `config_setting set
+ deduped across all sessions (#786 WS4); it idles when none. OPTIONAL worker
+ (#1796, default OFF): `t3 worker` is a self-owned singleton that drains
+ durable self-rescheduling loop-timer chains (django-tasks `run_after` rows),
+ owning the cadence instead of the native `/loop` crons so the DB loops run
+ with no Claude session open. It is opt-in — enable with `config_setting set
  loop_runner_enabled true` and start it once from a login profile; the default
  stays the session-bound native `/loop` crons above.
 
