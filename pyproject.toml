@@ -396,7 +396,7 @@ tolerance = 0.05
 
 [tool.teatree.test_path_mirror]
 mode = "block"
-baseline = 191
+baseline_file = "tests/test_path_mirror_grandfathered.txt"
 
 # Scoped (NARROW) mutation testing — read by ``t3 mutation run`` (see
 # ``src/teatree/quality/mutation.py``). Mutation testing is expensive and

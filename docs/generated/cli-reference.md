@@ -2935,20 +2935,20 @@ Usage: t3 tool test-path-mirror [OPTIONS]
 
  Forward-guard: test files mirror their ``src/teatree/<pkg>/...`` module path.
 
- Baseline-ratchet (fails only when the live mis-pathed count exceeds the
- committed baseline), so the relocation sweep can only shrink the floor. A CI /
- report check, never a PreToolUse gate — it can never lock the agent's tools.
+ Per-path ledger (RED on a live violation missing from the ledger, RED on a
+ stale ledger entry that no longer violates), so the relocation sweep can only
+ shrink the floor and disjoint PRs never collide. A CI / report check, never a
+ PreToolUse gate — it can never lock the agent's tools.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --root                    PATH  Repo root to analyse (default: cwd)          │
 │ --json                          Emit machine-readable JSON.                  │
-│ --update-baseline               Rewrite the committed violation-count        │
-│                                 baseline to the current measurement.         │
-│ --allow-regression              With --update-baseline, permit writing a     │
-│                                 HIGHER count than the committed baseline (an │
-│                                 intentional, reviewed rise). Refused by      │
-│                                 default so the ratchet cannot silently       │
-│                                 loosen.                                      │
+│ --update-baseline               Rewrite the committed grandfathered ledger   │
+│                                 to the exact live violation set.             │
+│ --allow-regression              With --update-baseline, permit ADDING a new  │
+│                                 grandfathered entry (an intentional,         │
+│                                 reviewed rise). Refused by default so the    │
+│                                 ratchet cannot silently loosen.              │
 │ --help                          Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

@@ -7,17 +7,15 @@ thin CLI surface: it resolves the repo root, loads
 ``[tool.teatree.test_path_mirror]``, builds the report, prints it, and chooses
 the exit code from the ratchet.
 
-Exit codes:
+Exit codes: ``0`` when every live violation is grandfathered and no ledger entry
+is stale; ``1`` when a live violation is NOT in the ledger (a new mis-pathed
+file) or a ledger entry no longer violates (forced banking demands its removal).
 
-* ``0`` — live violation count at or below the committed baseline.
-* ``1`` — live violation count ABOVE the baseline (a new mis-pathed file slipped in).
-
-``--update-baseline`` rewrites the committed floor in ``pyproject.toml`` (via
-``tomlkit`` so formatting/comments survive) to the current count. The ratchet
-only moves down: an update that would write a HIGHER count than the committed
-baseline is REFUSED unless ``--allow-regression`` is also passed. Without that
-guard the gate is vacuous — a regression could be "fixed" by silently
-re-baselining to the regressed value. The escape exists for an intentional,
+``--update-baseline`` rewrites the committed ledger file to the exact live
+violation set. The ratchet only moves down: an update that would ADD an entry
+(a path not already grandfathered) is REFUSED unless ``--allow-regression`` is
+also passed. Without that guard the gate is vacuous — a new mis-pathed file
+could be "grandfathered away" silently. The escape exists for an intentional,
 reviewed rise, but it must be an explicit, visible choice.
 """
 
@@ -27,7 +25,7 @@ from pathlib import Path
 import typer
 
 from teatree.cli.tools import tool_app
-from teatree.quality.test_path_mirror import MirrorReport, build_report, find_violations, load_config, loosens_baseline
+from teatree.quality.test_path_mirror import Ledger, MirrorReport, build_report, find_violations, load_config
 
 
 def _resolve_root(root: Path | None) -> Path:
@@ -37,9 +35,11 @@ def _resolve_root(root: Path | None) -> Path:
 def _report_json(report: MirrorReport) -> str:
     return json.dumps(
         {
-            "baseline": report.baseline,
+            "grandfathered_count": len(report.grandfathered),
             "live_count": report.live_count,
-            "exceeds_baseline": report.exceeds_baseline,
+            "failed": report.failed,
+            "unknown_violations": [v.path for v in report.unknown_violations],
+            "stale_entries": list(report.stale_entries),
             "violations": [
                 {
                     "path": v.path,
@@ -54,45 +54,57 @@ def _report_json(report: MirrorReport) -> str:
 
 
 def _print_report(report: MirrorReport) -> None:
-    if not report.exceeds_baseline:
+    if not report.failed:
         typer.echo(
-            f"test-path-mirror: {report.live_count} violation(s) at/below baseline {report.baseline} "
+            f"test-path-mirror: {report.live_count} grandfathered violation(s), ledger exact "
             "(test files mirror src — ratchet holds)."
         )
         return
-    typer.echo(f"test-path-mirror REGRESSION: {report.live_count} violation(s) exceed baseline {report.baseline}.")
-    typer.echo("")
-    for line in report.summary_lines():
-        typer.echo(line)
-    typer.echo("")
-    typer.echo(
-        "A test file must mirror its src/teatree/<pkg>/... module path as tests/teatree_<pkg>/... . "
-        "Move the new file, or (for a genuine multi-package contract test) add a "
-        "`# test-path: cross-cutting` pragma."
-    )
+    if report.unknown_violations:
+        typer.echo(f"test-path-mirror REGRESSION: {len(report.unknown_violations)} new mis-pathed test file(s):")
+        typer.echo("")
+        for line in report.summary_lines():
+            typer.echo(line)
+        typer.echo("")
+        typer.echo(
+            "A test file must mirror its src/teatree/<pkg>/... module path as tests/teatree_<pkg>/... . "
+            "Move the new file, or (for a genuine multi-package contract test) add a "
+            "`# test-path: cross-cutting` pragma."
+        )
+    if report.stale_entries:
+        typer.echo(f"test-path-mirror STALE LEDGER: {len(report.stale_entries)} entry(ies) no longer violate:")
+        typer.echo("")
+        for line in report.stale_lines():
+            typer.echo(line)
+        typer.echo("")
+        typer.echo("Bank the reduction: remove the stale line(s), or run `t3 tool test-path-mirror --update-baseline`.")
 
 
 def _update_baseline(pyproject: Path, root: Path, *, allow_regression: bool) -> None:
-    import tomlkit  # noqa: PLC0415
-
-    measured = len(find_violations(root))
-    committed = load_config(pyproject).baseline
-    loosening = loosens_baseline(measured=measured, baseline=committed)
-    if loosening and not allow_regression:
+    ledger = Ledger.path_for(pyproject)
+    if ledger is None:
         typer.echo(
-            f"Refusing to loosen the baseline: measured count {measured} is above the committed "
-            f"baseline {committed}. The ratchet only moves down. Relocate the new mis-pathed "
-            "test file(s), or pass --allow-regression to record an intentional, reviewed rise.",
+            "No `[tool.teatree.test_path_mirror] baseline_file` configured — nothing to update.",
             err=True,
         )
         raise typer.Exit(code=1)
 
-    doc = tomlkit.parse(pyproject.read_text(encoding="utf-8"))
-    table = doc.setdefault("tool", {}).setdefault("teatree", {}).setdefault("test_path_mirror", tomlkit.table())
-    table["baseline"] = measured
-    pyproject.write_text(tomlkit.dumps(doc), encoding="utf-8")
-    direction = "loosened (regression allowed)" if loosening else "ratcheted"
-    typer.echo(f"Baseline {direction}: baseline={measured}.")
+    committed = load_config(pyproject).grandfathered
+    live = frozenset(v.path for v in find_violations(root))
+    added = sorted(live - committed)
+    if added and not allow_regression:
+        typer.echo(
+            f"Refusing to add {len(added)} new grandfathered entry(ies): the ratchet only moves down. "
+            "Relocate the new mis-pathed test file(s), or pass --allow-regression to record an "
+            "intentional, reviewed rise:\n  " + "\n  ".join(added),
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    Ledger.write(ledger, live)
+    banked = len(committed - live)
+    direction = f"loosened (+{len(added)} added, regression allowed)" if added else f"ratcheted (-{banked} banked)"
+    typer.echo(f"Ledger {direction}: {len(live)} grandfathered path(s).")
 
 
 @tool_app.command("test-path-mirror")
@@ -101,20 +113,21 @@ def run_test_path_mirror(
     *,
     output_json: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
     update_baseline: bool = typer.Option(
-        False, "--update-baseline", help="Rewrite the committed violation-count baseline to the current measurement."
+        False, "--update-baseline", help="Rewrite the committed grandfathered ledger to the exact live violation set."
     ),
     allow_regression: bool = typer.Option(
         False,
         "--allow-regression",
-        help="With --update-baseline, permit writing a HIGHER count than the committed baseline "
+        help="With --update-baseline, permit ADDING a new grandfathered entry "
         "(an intentional, reviewed rise). Refused by default so the ratchet cannot silently loosen.",
     ),
 ) -> None:
     """Forward-guard: test files mirror their ``src/teatree/<pkg>/...`` module path.
 
-    Baseline-ratchet (fails only when the live mis-pathed count exceeds the
-    committed baseline), so the relocation sweep can only shrink the floor. A CI /
-    report check, never a PreToolUse gate — it can never lock the agent's tools.
+    Per-path ledger (RED on a live violation missing from the ledger, RED on a
+    stale ledger entry that no longer violates), so the relocation sweep can only
+    shrink the floor and disjoint PRs never collide. A CI / report check, never a
+    PreToolUse gate — it can never lock the agent's tools.
     """
     resolved = _resolve_root(root)
     pyproject = resolved / "pyproject.toml"
@@ -131,5 +144,5 @@ def run_test_path_mirror(
     else:
         _print_report(report)
 
-    if report.exceeds_baseline:
+    if report.failed:
         raise typer.Exit(code=1)

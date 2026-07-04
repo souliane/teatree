@@ -1,10 +1,16 @@
-"""The pre-push stage must never run the full local test suite (#112/#21/#38).
+"""The pre-push stage must never run the FULL local test suite (#112/#21/#38).
 
 push -> CI is the gate. A host under load times out unrelated wall-clock and
 concurrency tests (e.g. test_simultaneous_fresh_starts_never_both_claim,
 test_two_worktrees_provision_serve_concurrently, test_cli_dogfood) and blocks
 the push. These tests pin that no push-stage hook in .pre-commit-config.yaml
-invokes an unscoped pytest run -- neither directly nor via a referenced script.
+invokes an UNSCOPED pytest run -- neither directly nor via a referenced script.
+
+A PATH-SCOPED push pytest is allowed and pinned as such: the ``ci-critical-parity``
+hook runs ``tests/quality`` + the never-lockout contract + ``--doctest-modules
+src/teatree`` (fast static/AST + doctest collection), which cannot drag in the
+wall-clock/concurrency suites the invariant forbids. ``TestCiCriticalParityHook``
+guards that it stays scoped and cannot silently widen to the full suite.
 """
 
 import re
@@ -40,10 +46,12 @@ class TestNoFullSuiteOnPrePush:
         # vacuous, so a renamed stage key can't silently pass this file.
         assert _push_hooks(), "expected push-stage hooks in .pre-commit-config.yaml"
 
-    def test_no_push_hook_runs_pytest_directly(self) -> None:
-        offenders = [h for h in _push_hooks() if "pytest" in (h.get("entry") or "")]
+    def test_no_push_hook_runs_unscoped_pytest_directly(self) -> None:
+        # A SCOPED pytest (path/marker after `pytest`) is allowed; only a BARE,
+        # unscoped `pytest` (the full-suite signature) is forbidden on the push path.
+        offenders = [h for h in _push_hooks() if _BARE_PYTEST.search(h.get("entry") or "")]
         assert not offenders, (
-            "pre-push hook(s) invoke pytest directly -- the full suite belongs in "
+            "pre-push hook(s) invoke an UNSCOPED pytest -- the full suite belongs in "
             f"CI, not the local push path: {[h.get('id') for h in offenders]}"
         )
 
@@ -64,3 +72,30 @@ class TestNoFullSuiteOnPrePush:
             "pre-push hook script(s) run an unscoped pytest suite -- push -> CI "
             f"is the gate, not the local suite: {offenders}"
         )
+
+
+class TestCiCriticalParityHook:
+    """Pin the ``ci-critical-parity`` push hook stays PATH-SCOPED and complete.
+
+    It closes the local/CI divergence (doctest + never-lockout classes) at push
+    time WITHOUT running the full suite -- so it must (a) exist on the push stage,
+    (b) be path-scoped (its pytest is not bare), and (c) still carry its three
+    load-bearing targets, so a future edit can neither widen it to the full suite
+    nor silently drop the doctest / never-lockout coverage.
+    """
+
+    def _hook(self) -> dict:
+        matches = [h for h in _push_hooks() if h.get("id") == "ci-critical-parity"]
+        assert matches, "ci-critical-parity push hook is missing"
+        return matches[0]
+
+    def test_entry_is_not_a_bare_full_suite(self) -> None:
+        assert not _BARE_PYTEST.search(self._hook()["entry"]), (
+            "ci-critical-parity widened to an unscoped pytest -- it must stay path-scoped so the "
+            "no-full-suite-on-push invariant holds."
+        )
+
+    def test_entry_keeps_its_three_load_bearing_targets(self) -> None:
+        entry = self._hook()["entry"]
+        for token in ("tests/quality", "tests/test_gate_never_lockout_contract.py", "--doctest-modules src/teatree"):
+            assert token in entry, f"ci-critical-parity dropped `{token}` -- it must not narrow its coverage."
