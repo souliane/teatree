@@ -1,6 +1,6 @@
 ---
 name: wip
-description: The bounded-WIP throughput dial — slow / medium / full / boost. `boost` runs one parallel-backlog-blast wave; `full` arms a self-sustaining boost loop; `medium` (baseline) and `slow` cap concurrency. Use when the user says "wip", "go full speed", "full speed", "blast the backlog", "boost", "parallel mode", "max throughput", "go wide", "slow down", or "set wip".
+description: The bounded-WIP throughput dial — slow / medium / full / boost. `boost` keeps `boost_concurrency = N` workers live, refilling the pool each tick; `full` arms a self-sustaining boost loop; `medium` (baseline) and `slow` cap concurrency. Use when the user says "wip", "go full speed", "full speed", "blast the backlog", "boost", "parallel mode", "max throughput", "go wide", "slow down", or "set wip".
 compatibility: any
 requires:
   - rules
@@ -50,9 +50,9 @@ Run `/loop /t3:wip boost`. Each wave:
 
 The classification each wave is **agent judgment in prose** (the bucketing below), never a Python scanner.
 
-## `boost` — one parallel wave, session TODO list FIRST
+## `boost` — sustained pool refill, session TODO list FIRST
 
-An explicit burst that **starts from the session TODO list** — the harness task list for THIS session (`/t3:todos` / `TaskList`). `boost` completes the work already on the session's plate **before** it touches the forge. **Only once the session TODO list is complete** does it go on to classify and blast every open, assigned forge ticket (`gh issue list` / `glab issue list`). Never pull fresh forge tickets while session TODO items are still open — finish the plate first.
+A sustained **pool-refill** drive that keeps `boost_concurrency = N` workers live — when a worker exits below `N`, the next tick admits the shortfall — and **starts from the session TODO list**: the harness task list for THIS session (`/t3:todos` / `TaskList`). `boost` completes the work already on the session's plate **before** it touches the forge. **Only once the session TODO list is complete** does it go on to classify and dispatch every open, assigned forge ticket (`gh issue list` / `glab issue list`). Never pull fresh forge tickets while session TODO items are still open — finish the plate first.
 
 ### Classify before dispatching
 

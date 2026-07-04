@@ -138,7 +138,7 @@
     },
     {
       "name": "wip",
-      "summary": "The bounded-WIP throughput dial \u2014 slow / medium / full / boost. `boost` runs one parallel-backlog-blast wave; `full` arms a self-sustaining boost loop; `medium` (baseline) and `slow` cap concurrency"
+      "summary": "The bounded-WIP throughput dial \u2014 slow / medium / full / boost. `boost` keeps `boost_concurrency = N` workers live, refilling the pool each tick; `full` arms a self-sustaining boost loop; `medium` (baseline) and `slow` cap concurrency"
     },
     {
       "name": "workspace",

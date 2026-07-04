@@ -395,7 +395,8 @@ class UserSettings:
     # conservative ``MEDIUM`` baseline means NO orchestrator fan-out — only
     # the intrinsic loop + PR sweep + per-overlay ``max_concurrent_auto_starts``
     # provide throughput. ``slow`` caps to one impl worker; ``full`` arms the
-    # /t3:wip loop; ``boost`` runs a single parallel-blast wave. Orthogonal
+    # /t3:wip loop; ``boost`` keeps ``boost_concurrency = N`` workers live,
+    # refilling the pool each tick as workers exit. Orthogonal
     # to ``mode``/``autonomy`` (those gate *whether* a publish proceeds; this
     # governs *how many* threads run) and never relaxes a safety gate.
     # Per-overlay overridable; ``T3_WIP`` env wins over both.

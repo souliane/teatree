@@ -38,5 +38,5 @@ Source: `skills/*/SKILL.md` frontmatter
 | `ticket` | Ticket intake and kickoff — from zero to ready-to-code |
 | `todos` | List the current session's tasks/todos — terse, grouped pending / in_progress / completed, with clickable refs |
 | `update` | WHEN to bring teatree core and registered overlays up to date with their default branch, and the safety guarantees of doing so |
-| `wip` | The bounded-WIP throughput dial — slow / medium / full / boost. `boost` runs one parallel-backlog-blast wave; `full` arms a self-sustaining boost loop; `medium` (baseline) and `slow` cap concurrency |
+| `wip` | The bounded-WIP throughput dial — slow / medium / full / boost. `boost` keeps `boost_concurrency = N` workers live, refilling the pool each tick; `full` arms a self-sustaining boost loop; `medium` (baseline) and `slow` cap concurrency |
 | `workspace` | Environment and workspace lifecycle — worktree creation, setup, DB provisioning, dev servers, cleanup |
