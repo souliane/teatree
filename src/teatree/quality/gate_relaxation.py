@@ -65,11 +65,18 @@ class RelaxationFinding:
 
 @dataclass(frozen=True)
 class _FileDiff:
-    """Added/removed line text for one file in a unified diff."""
+    """Added/removed line text for one file in a unified diff.
+
+    ``added_in_omit[i]`` mirrors ``added[i]``: True when that added line sits
+    inside a coverage ``omit`` array/list, tracked from the diff's context so an
+    element of an unrelated ``exclude``/``include`` array is never mistaken for a
+    coverage omit.
+    """
 
     path: str
     added: list[str]
     removed: list[str]
+    added_in_omit: list[bool]
 
 
 def _blank_string_literals(line: str) -> str:
@@ -86,25 +93,80 @@ def parse_diff(diff: str) -> list[_FileDiff]:
 
     Diff and index/hunk metadata lines (``+++``/``---``/``@@``) are excluded;
     only genuine ``+``/``-`` body lines are collected, with the leading marker
-    stripped. A file with neither added nor removed lines is omitted.
+    stripped. A ``+++ /dev/null`` header (a deleted file) resets the accumulator so
+    the deleted file's ``-`` lines never bleed into the previous file's removed
+    bucket. Each added line records whether it sits inside a coverage ``omit``
+    array (``added_in_omit``), tracked from the new-file line sequence (context +
+    added lines) so the coverage-omit matcher is array-context aware. A file with
+    neither added nor removed lines is omitted.
     """
     by_path: dict[str, _FileDiff] = {}
     current: _FileDiff | None = None
+    in_omit = False
     for raw in diff.splitlines():
         new_match = _DIFF_NEW_FILE_RE.match(raw)
         if new_match:
             path = new_match.group(1)
-            current = by_path.setdefault(path, _FileDiff(path=path, added=[], removed=[]))
+            current = by_path.setdefault(path, _FileDiff(path=path, added=[], removed=[], added_in_omit=[]))
+            in_omit = False
             continue
-        if _DIFF_OLD_FILE_RE.match(raw) or raw.startswith(("diff ", "index ", "@@")):
+        if raw.startswith("+++"):  # a `+++` header that is not `+++ b/<path>` (i.e. `/dev/null`, a deleted file)
+            current = None
+            in_omit = False
+            continue
+        if _DIFF_OLD_FILE_RE.match(raw) or raw.startswith(("diff ", "index ")):
+            continue
+        if raw.startswith("@@"):
+            in_omit = False  # a hunk gap — the enclosing array is unknown again
             continue
         if current is None:
             continue
-        if raw.startswith("+") and not raw.startswith("+++"):
-            current.added.append(raw[1:])
-        elif raw.startswith("-") and not raw.startswith("---"):
-            current.removed.append(raw[1:])
+        if raw.startswith("-") and not raw.startswith("---"):
+            current.removed.append(raw[1:])  # removed lines are not in the new file; they never move omit state
+            continue
+        if raw.startswith("+"):  # `+++` headers were already handled above
+            body = raw[1:]
+            current.added.append(body)
+            current.added_in_omit.append(in_omit)
+            in_omit = _advance_omit_list(body, in_omit=in_omit)
+            continue
+        if raw.startswith(" "):  # a context line — present in the new file, tracks omit state
+            in_omit = _advance_omit_list(raw[1:], in_omit=in_omit)
     return [fd for fd in by_path.values() if fd.added or fd.removed]
+
+
+# A config assignment (INI ``key =`` / TOML ``key = [``) and a section/table
+# header. Used to track whether the parser cursor sits inside a coverage ``omit``
+# list across a diff hunk's context + added lines, so a quoted glob is judged by
+# its ENCLOSING array rather than in isolation.
+_ASSIGN_RE: Final[re.Pattern[str]] = re.compile(r"""^(?P<key>[A-Za-z0-9_.\-"']+?)\s*=\s*(?P<val>.*)$""")
+_SECTION_RE: Final[re.Pattern[str]] = re.compile(r"^\[.*\]$")
+
+
+def _advance_omit_list(line: str, *, in_omit: bool) -> bool:
+    """Return whether the cursor is inside a coverage ``omit`` list AFTER *line*.
+
+    Handles the TOML array form (``omit = [ … ]``, closed by ``]``) and the INI
+    multi-line form (``omit =`` then indented values, ended by a blank line, a new
+    ``[section]``, or a new ``key =`` assignment). A non-``omit`` assignment (a ruff
+    ``exclude``/``extend-exclude``, a coverage ``source``) ends the omit list, so
+    its elements are never counted as omit entries.
+    """
+    stripped = line.strip()
+    if not stripped:
+        return False  # a blank line ends an INI multi-line list
+    if _SECTION_RE.match(stripped):
+        return False  # a new `[section]`/table ends any list
+    assign = _ASSIGN_RE.match(stripped)
+    if assign:
+        key = assign.group("key").strip("\"'").rsplit(".", 1)[-1]
+        if key == "omit":
+            val = assign.group("val")
+            return "[" not in val or "]" not in val  # an inline `omit = [ … ]` closes; INI/open-TOML stays inside
+        return False  # a different assignment ends any omit list
+    if in_omit:
+        return "]" not in stripped  # a TOML array element; a `]` closes the array
+    return in_omit
 
 
 def _basename(path: str) -> str:
@@ -161,7 +223,7 @@ def _lint_cov_findings(fd: _FileDiff) -> list[RelaxationFinding]:
     if _basename(fd.path) not in _LINT_COV_CONFIG_FILES:
         return []
     findings: list[RelaxationFinding] = []
-    for line in fd.added:
+    for line, inside_omit in zip(fd.added, fd.added_in_omit, strict=True):
         stripped = line.strip()
         if "per-file-ignores" in stripped:
             findings.append(
@@ -173,7 +235,7 @@ def _lint_cov_findings(fd: _FileDiff) -> list[RelaxationFinding]:
                     line=stripped,
                 )
             )
-        if _line_adds_coverage_omit(stripped):
+        if _line_adds_coverage_omit(stripped, inside_omit=inside_omit):
             findings.append(
                 RelaxationFinding(
                     kind="coverage_omit_added",
@@ -187,16 +249,23 @@ def _lint_cov_findings(fd: _FileDiff) -> list[RelaxationFinding]:
     return findings
 
 
-def _line_adds_coverage_omit(stripped: str) -> bool:
+def _line_adds_coverage_omit(stripped: str, *, inside_omit: bool) -> bool:
     """Whether an added config line introduces or extends a coverage ``omit`` list.
 
-    Matches both the inline-table form (``omit = [ "…" ]``) and a bare glob
-    entry added to a multi-line ``omit`` array (a quoted path ending in ``,``
-    or ``]`` — a source-glob element, not arbitrary quoted config).
+    Flags the ``omit`` assignment itself (INI ``omit =`` or TOML ``omit = [ … ]``)
+    and, when the line sits INSIDE an ``omit`` array/list (``inside_omit``, tracked
+    from the diff's context), a bare glob/path element. The enclosing-array check
+    stops a quoted glob inside an unrelated ``exclude``/``include`` array (a ruff
+    config in the same ``pyproject.toml``) from being counted as a coverage omit.
     """
     if re.match(r"omit\s*=", stripped):
         return True
-    return bool(re.match(r'["\'][^"\']+["\']\s*,?\s*\]?$', stripped) and "*" in stripped)
+    return inside_omit and _is_list_entry(stripped)
+
+
+def _is_list_entry(stripped: str) -> bool:
+    """Whether *stripped* is a non-empty list element (not a bare bracket or blank)."""
+    return bool(stripped.rstrip("],").strip().strip("\"'"))
 
 
 def _fail_under_findings(fd: _FileDiff) -> list[RelaxationFinding]:
@@ -256,10 +325,9 @@ def _tach_findings(fd: _FileDiff) -> list[RelaxationFinding]:
 
     A new empty ``interfaces = []`` on a touched module (tach then enforces no
     encapsulation), or a new ``ignore_type_checking_imports = true`` with no
-    justifying comment. Per the §17.6.2 phasing, only DIFF-ADDED lines are
-    inspected: a pre-existing empty interface (the root default) is untouched;
-    only a newly-declared one on a module added/modified in this diff is a
-    finding.
+    justifying comment. Per §17.6.2, only DIFF-ADDED lines are inspected: a
+    pre-existing empty interface (the root default) is untouched; only a
+    newly-declared one on a module added/modified in this diff is a finding.
     """
     if _basename(fd.path) != "tach.toml":
         return []

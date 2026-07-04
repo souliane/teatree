@@ -60,7 +60,7 @@ from pathlib import Path
 import pytest
 
 import hooks.scripts.hook_router as router
-from hooks.scripts.classifier_relax_gate import validate_relax_write
+from hooks.scripts.classifier_relax_gate import _is_blanket_rule, validate_relax_write
 from hooks.scripts.hook_router import handle_allow_classifier_relax_settings_write
 
 # ── Transcript helpers (mirrors test_structured_question_hook.py) ─────
@@ -899,6 +899,37 @@ class TestRelaxWriteSchemaValidation:
 
     def test_edit_scoped_new_string_passes(self) -> None:
         assert validate_relax_write("Edit", {"new_string": '    "Bash(gh issue create *)",'}) is None
+
+
+class TestBlanketRuleCoversEveryTool:
+    """`_is_blanket_rule` flags a whole-tool grant of ANY built-in tool, not only Bash.
+
+    The rules protocol requires the smallest rule that covers the use case, so a
+    scopeless grant of Edit/Write/Read/WebFetch is as blanket as `Bash`. An
+    `mcp__…` tool name is its own finest grain, so a bare MCP grant is NOT blanket.
+    """
+
+    def test_bare_non_bash_tool_is_blanket(self) -> None:
+        assert _is_blanket_rule("Edit") is True
+        assert _is_blanket_rule("Write") is True
+        assert _is_blanket_rule("Read") is True
+
+    def test_wildcard_scope_non_bash_tool_is_blanket(self) -> None:
+        assert _is_blanket_rule("Edit(*)") is True
+        assert _is_blanket_rule("Write(* *)") is True
+        assert _is_blanket_rule("WebFetch(:*)") is True
+
+    def test_scoped_non_bash_rule_is_not_blanket(self) -> None:
+        assert _is_blanket_rule("WebFetch(domain:example.com)") is False
+        assert _is_blanket_rule("Edit(src/teatree/x.py)") is False
+
+    def test_mcp_tool_finest_grain_is_not_blanket(self) -> None:
+        assert _is_blanket_rule("mcp__glab__glab_mr_create") is False
+
+    def test_non_bash_blanket_rule_in_write_refused(self) -> None:
+        reason = validate_relax_write("Write", {"content": '{"permissions": {"allow": ["Edit(*)"]}}'})
+        assert reason is not None
+        assert "blanket-wildcard" in reason
 
 
 class TestRelaxWriteSchemaDeniesHandler:

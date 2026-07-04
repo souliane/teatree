@@ -105,6 +105,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "e2e_mandatory_gate_enabled": _parse_strict_bool,
     "attachment_gate_enabled": _parse_strict_bool,
     "snapshot_baseline_gate_enabled": _parse_strict_bool,
+    "gate_relaxation_gate_enabled": _parse_strict_bool,
     "chrome_devtools_mcp_enabled": _parse_strict_bool,
     "colleague_repo_url_pattern": _parse_strict_str,
     "solo_repo_url_pattern": _parse_strict_str,
@@ -938,6 +939,14 @@ class UserSettings:
     # resolves it through `get_effective_settings`, so a DB `config_setting set`
     # actuates it exactly like the other gates.
     snapshot_baseline_gate_enabled: bool = True
+    # Anti-relaxation + tach-soundness pre-commit gate (§17.6.1/§17.6.2, #850).
+    # When enabled (default), the `gate-relaxation` prek hook
+    # (`scripts/hooks/check_gate_relaxation.py`) refuses a commit whose staged diff
+    # relaxes a lint/coverage constraint or a tach boundary. Its OWN kill-switch —
+    # `gate_relaxation_gate_enabled` (per-overlay overridable, DB-first) — disables
+    # the hook; the reader resolves it through `get_effective_settings`, so a DB
+    # `config_setting set` actuates it exactly like the sibling gates.
+    gate_relaxation_gate_enabled: bool = True
     # Optional browser-diagnosis MCP server. When true, `t3 mcp
     # browser-diagnosis` emits the `claude mcp add` command that registers
     # Google's chrome-devtools-mcp so an agent can inspect a deployed page's
