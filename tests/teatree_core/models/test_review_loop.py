@@ -251,7 +251,7 @@ class TestExternalLoopStart(TestCase):
         reviewer_task = ticket.tasks.get(phase="e2e_reviewing")
         reason = reviewer_task.execution_reason
         assert "review_verdict" in reason
-        assert "do NOT run `t3 review record`" in reason
+        assert "do NOT run `t3 <overlay> review record`" in reason
 
     def test_external_pass_sets_proceed_marker(self) -> None:
         ticket = Ticket.objects.create()

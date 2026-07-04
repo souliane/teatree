@@ -33,9 +33,9 @@ class TestEnqueueCreatesClaimableTask:
         assert row.task is not None
         reason = row.task.execution_reason
         # corr-11: the headless reviewer RETURNS the verdict envelope; it must
-        # NOT be told to run the shell-only `t3 review record`.
+        # NOT be told to run the shell-only `t3 <overlay> review record`.
         assert "review_verdict" in reason
-        assert "Do NOT run `t3 review record`" in reason
+        assert "Do NOT run `t3 <overlay> review record`" in reason
         assert HEAD in reason
 
     def test_blank_slug_or_head_does_not_enqueue(self) -> None:
@@ -112,7 +112,7 @@ class TestReviewContract:
 
     def test_contract_forbids_the_shell_record_cli(self) -> None:
         contract = build_review_contract(slug=SLUG, pr_id=1, head_sha=HEAD, pr_url=URL)
-        assert "Do NOT run `t3 review record`" in contract
+        assert "Do NOT run `t3 <overlay> review record`" in contract
 
 
 class TestDispatchedTaskReachesTerminalState:
