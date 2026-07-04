@@ -87,6 +87,18 @@ class TestSubagentForPhaseConformance(TestCase):
             "agents/e2e-review.md must exist so the Agent tool resolves it"
         )
 
+    def test_requesting_review_phase_has_a_spawnable_agent(self) -> None:
+        # PR-12: requesting_review carried an FSM transition + a lifecycle skill
+        # but no dispatchable agent, so the loop resolved "" (operator triage)
+        # and the phase could never run headless. Short-verb spelling resolves
+        # the same as the canonical token.
+        assert subagent_for_phase(Ticket.Role.AUTHOR, "requesting_review") == "t3:review-request"
+        assert subagent_for_phase(Ticket.Role.AUTHOR, "request_review") == "t3:review-request"
+        assert (AGENTS_DIR / "review-request.md").is_file(), (
+            "the requesting_review phase dispatches t3:review-request; "
+            "agents/review-request.md must exist so the Agent tool resolves it"
+        )
+
 
 class TestLoopDispatchCommandConformance(TestCase):
     """``_SUBAGENT_BY_PHASE`` (the pending-spawn map) mirrors the canonical map."""

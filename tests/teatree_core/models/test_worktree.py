@@ -1,12 +1,50 @@
 """Worktree model tests (souliane/teatree#443 split of test_models.py)."""
 
+import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 from django.test import TestCase
 
 from teatree.core.models import Ticket, Worktree
+from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.core.worktree_env import compose_project
+
+
+class TestTicketDispatchWorktreePath(TestCase):
+    """``dispatch_worktree_path`` — the PR-12 dispatch detection root."""
+
+    def test_returns_first_materialised_worktree_on_disk(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ticket = Ticket.objects.create(issue_url="https://example.com/issues/1")
+            Worktree.objects.create(ticket=ticket, repo_path=tmp, branch="b", extra={"worktree_path": tmp})
+            assert dispatch_worktree_path(ticket) == tmp
+
+    def test_empty_when_no_worktree_exists(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/2")
+        assert dispatch_worktree_path(ticket) == ""
+
+    def test_skips_recorded_path_that_is_gone_from_disk(self) -> None:
+        # A row whose recorded path no longer exists is not a valid detection
+        # root — the caller falls back to the ambient cwd.
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/3")
+        Worktree.objects.create(
+            ticket=ticket,
+            repo_path="/tmp/gone",
+            branch="b",
+            extra={"worktree_path": "/nonexistent/worktree/xyz"},
+        )
+        assert dispatch_worktree_path(ticket) == ""
+
+    def test_returns_first_existing_worktree_when_some_are_gone(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ticket = Ticket.objects.create(issue_url="https://example.com/issues/4")
+            Worktree.objects.create(
+                ticket=ticket, repo_path="/tmp/gone", branch="a", extra={"worktree_path": "/nonexistent/a"}
+            )
+            Worktree.objects.create(ticket=ticket, repo_path=tmp, branch="b", extra={"worktree_path": tmp})
+            assert dispatch_worktree_path(ticket) == str(Path(tmp))
 
 
 class TestWorktreeTransitionSignals(TestCase):

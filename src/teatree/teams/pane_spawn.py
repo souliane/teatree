@@ -40,6 +40,7 @@ from teatree.agents.skill_bundle import resolve_skill_bundle
 from teatree.config.settings import UserSettings
 from teatree.core.cost import tier_rank
 from teatree.core.models import Task
+from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.skill_support.loading import SkillLoadingPolicy
 from teatree.teams.guardrails import assert_pane_claim_allowed, live_owner_blocks_pane
 from teatree.teams.panes import TeammatePane
@@ -159,6 +160,7 @@ def _resolve_pane_skills(task: Task) -> list[str]:
     return resolve_skill_bundle(
         phase=_MAKER_PANE_PHASE,
         overlay_skill_metadata=overlay.metadata.get_skill_metadata(),
+        worktree_path=dispatch_worktree_path(task.ticket),
     )
 
 

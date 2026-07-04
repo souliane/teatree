@@ -115,15 +115,32 @@ def active_overlay_lifecycle_skills(lifecycle: str) -> list[str]:
     return [s for s in skills if isinstance(s, str) and s]
 
 
+def _dispatch_cwd(worktree_path: str | Path | None) -> Path:
+    """The detection root for framework + overlay skill discovery (PR-12).
+
+    A dispatched task runs in its OWN worktree, so skills must be detected from
+    the ticket's checkout, never the orchestrator's ambient cwd (the loop's
+    clone). Falls back to the ambient cwd when no worktree exists yet
+    (pre-provision) or the recorded path is gone — the byte-identical
+    pre-PR-12 behaviour.
+    """
+    if worktree_path:
+        candidate = Path(worktree_path)
+        if candidate.is_dir():
+            return candidate
+    return Path.cwd()
+
+
 def resolve_skill_bundle(
     *,
     phase: str,
     overlay_skill_metadata: SkillMetadata,
     skill_index: SkillIndex | None = None,
+    worktree_path: str | Path | None = None,
 ) -> list[str]:
     policy = SkillLoadingPolicy()
     result = policy.select_for_runtime_phase(
-        cwd=Path.cwd(),
+        cwd=_dispatch_cwd(worktree_path),
         phase=phase,
         overlay_skill_metadata=overlay_skill_metadata,
         skill_index=skill_index,

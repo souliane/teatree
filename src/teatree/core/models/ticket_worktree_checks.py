@@ -6,6 +6,7 @@ Kept at module scope — no DB access, no ``Ticket`` import — so ``ticket.py``
 stays under the module-health LOC cap.
 """
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from django.apps import apps
@@ -16,6 +17,25 @@ from teatree.utils.run import CommandFailedError
 if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
     from teatree.core.models.worktree import Worktree
+
+
+def dispatch_worktree_path(ticket: "Ticket") -> str:
+    """On-disk worktree path a dispatched agent runs in for *ticket*, or ''.
+
+    The PR-12 dispatch-preflight detection root: skill + overlay resolution
+    keys on this so a dispatch reads the ticket's OWN checkout, not the
+    orchestrator's ambient cwd (the loop's clone). Returns the first
+    materialised worktree whose recorded path still exists on disk (ordered by
+    pk for determinism); '' before provisioning or when every recorded path is
+    gone, so the caller falls back to the ambient cwd. Lives here (not on
+    ``Ticket``) so ``ticket.py`` stays under its module-health LOC cap.
+    """
+    worktree_model = apps.get_model("core", "Worktree")
+    for worktree in worktree_model.objects.filter(ticket=ticket).order_by("pk"):
+        path = worktree.worktree_path
+        if path and Path(path).is_dir():
+            return path
+    return ""
 
 
 def worktree_has_commits_ahead(worktree: "Worktree") -> bool:

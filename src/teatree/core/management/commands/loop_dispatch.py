@@ -25,6 +25,7 @@ from teatree.core.modelkit.phases import (
     subagent_for_phase,
 )
 from teatree.core.models import Task
+from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.loop.admit_budget import read_admit_budget
 from teatree.loop.statusline import default_path
 
@@ -161,7 +162,7 @@ def _resolve_model_and_bundle(task: Task) -> tuple[str | None, list[str]]:
     from teatree.agents.model_tiering import resolve_spawn_model  # noqa: PLC0415
     from teatree.core.modelkit.phases import normalize_phase  # noqa: PLC0415
 
-    skill_bundle = _resolve_skill_bundle(task.phase)
+    skill_bundle = _resolve_skill_bundle(task)
     session_id = task.session.agent_id if task.session_id else None  # ty: ignore[unresolved-attribute]
     model = resolve_spawn_model(
         normalize_phase(task.phase),
@@ -172,19 +173,26 @@ def _resolve_model_and_bundle(task: Task) -> tuple[str | None, list[str]]:
     return model, skill_bundle
 
 
-def _resolve_skill_bundle(phase: str) -> list[str]:
-    """Resolve the loaded skill bundle for *phase*; empty on any discovery failure.
+def _resolve_skill_bundle(task: Task) -> list[str]:
+    """Resolve the loaded skill bundle for *task*; empty on any discovery failure.
 
-    Imports ``resolve_skill_bundle`` locally to keep ``teatree.core`` free of a
-    top-level ``teatree.agents`` dependency edge (core is the lower layer).
+    Resolves the overlay and the framework/detection cwd from the TASK's ticket
+    (its overlay + its worktree, PR-12) — never the orchestrator's ambient cwd,
+    which is the loop's clone rather than the ticket's checkout. Imports
+    ``resolve_skill_bundle`` locally to keep ``teatree.core`` free of a top-level
+    ``teatree.agents`` dependency edge (core is the lower layer).
     """
     from teatree.agents.skill_bundle import resolve_skill_bundle  # noqa: PLC0415
 
     try:
-        from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
+        from teatree.core.overlay_loader import get_overlay_for_ticket  # noqa: PLC0415
 
-        overlay_skill_metadata = get_overlay().metadata.get_skill_metadata()
-        return resolve_skill_bundle(phase=phase, overlay_skill_metadata=overlay_skill_metadata)
+        overlay_skill_metadata = get_overlay_for_ticket(task.ticket).metadata.get_skill_metadata()
+        return resolve_skill_bundle(
+            phase=task.phase,
+            overlay_skill_metadata=overlay_skill_metadata,
+            worktree_path=dispatch_worktree_path(task.ticket),
+        )
     except Exception:  # noqa: BLE001
         return []
 
