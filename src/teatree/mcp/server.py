@@ -23,9 +23,10 @@ _READ_ONLY = ToolAnnotations(readOnlyHint=True)
 
 _INSTRUCTIONS = (
     "Read-only structured search over teatree's internal model — tickets, "
-    "worktrees, pull requests, the autonomous loop's task queue, and inbound "
-    "platform events. Prefer these tools over shelling out to `t3 ... list` and "
-    "parsing text. All tools are read-only; mutations go through the `t3` CLI."
+    "worktrees, pull requests, the autonomous loop's task queue, inbound "
+    "platform events, and derived-on-read factory quality/velocity signals. "
+    "Prefer these tools over shelling out to `t3 ... list` and parsing text. "
+    "All tools are read-only; mutations go through the `t3` CLI."
 )
 
 
@@ -94,6 +95,21 @@ async def _loop_stats(*, overlay: str | None = None) -> dict[str, Any]:
     return await sync_to_async(search.loop_stats, thread_sensitive=True)(overlay=overlay)
 
 
+async def _factory_signals(*, overlay: str | None = None, window_days: int = 28) -> dict[str, Any]:
+    """Derived-on-read factory quality/velocity signals over the trailing window.
+
+    Returns the five signals (first-try-green, defect-escape, review-catch,
+    merge-latency, repair-burn) with fail-loud statuses (``ok`` /
+    ``insufficient_data`` / ``instrumentation_gap``), each signal's red-floor
+    trip, and the top-level verdict (``ok`` / ``regressing`` / ``red``). Scope to
+    an overlay with ``overlay``; widen the window with ``window_days``.
+    """
+    return await sync_to_async(search.factory_signals, thread_sensitive=True)(
+        overlay=overlay,
+        window_days=window_days,
+    )
+
+
 async def _incoming_event_recent(
     *,
     limit: int = 20,
@@ -125,5 +141,6 @@ def build_server() -> FastMCP:
     server.add_tool(_worktree_status, name="worktree_status", annotations=_READ_ONLY)
     server.add_tool(_pr_for_ticket, name="pr_for_ticket", annotations=_READ_ONLY)
     server.add_tool(_loop_stats, name="loop_stats", annotations=_READ_ONLY)
+    server.add_tool(_factory_signals, name="factory_signals", annotations=_READ_ONLY)
     server.add_tool(_incoming_event_recent, name="incoming_event_recent", annotations=_READ_ONLY)
     return server

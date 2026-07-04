@@ -393,6 +393,10 @@ Session-lifecycle operations.
 | --- | --- |
 | `prepare-stop` | Refresh the durable recovery artifacts (idempotent, safe to re-run) |
 
+## `signals`
+
+Print the five factory signals over the trailing window vs its baseline.
+
 ## `speak`
 
 Read ``text`` aloud synchronously through the local speakers per [teatree.speak].

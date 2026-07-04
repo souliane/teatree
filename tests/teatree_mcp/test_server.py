@@ -23,6 +23,7 @@ _EXPECTED_TOOLS = {
     "worktree_status",
     "pr_for_ticket",
     "loop_stats",
+    "factory_signals",
     "incoming_event_recent",
 }
 
@@ -71,6 +72,15 @@ class TestCallToolThroughServer(TestCase):
 
         stats = _payloads(result)[0]
         assert stats["tasks"]["pending"] >= 1
+
+    def test_factory_signals_returns_five_signals(self) -> None:
+        server = build_server()
+
+        result = async_to_sync(server.call_tool)("factory_signals", {})
+
+        report = _payloads(result)[0]
+        assert len(report["signals"]) == 5
+        assert report["verdict"] in {"ok", "regressing", "red"}
 
     def test_unknown_ticket_reference_returns_empty(self) -> None:
         server = build_server()

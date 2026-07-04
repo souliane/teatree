@@ -15,15 +15,20 @@ from teatree.core.models import (
     EvalVerdict,
     ImplementedIssueMarker,
     IncomingEvent,
+    MergeAudit,
     MergeClear,
     PullRequest,
+    RedCardSignal,
+    RedMrFixAttempt,
     ReplyDispatch,
     ReviewVerdict,
     Rubric,
     RubricCriterion,
     Session,
     Task,
+    TaskAttempt,
     Ticket,
+    TicketTransition,
     Worktree,
 )
 
@@ -55,6 +60,46 @@ class MergeClearFactory(DjangoModelFactory[MergeClear]):
         failed = factory.Trait(gh_verify_result=MergeClear.VerifyResult.FAILED)
         substrate = factory.Trait(blast_class=MergeClear.BlastClass.SUBSTRATE)
         docs = factory.Trait(blast_class=MergeClear.BlastClass.DOCS)
+
+
+class MergeAuditFactory(DjangoModelFactory[MergeAudit]):
+    class Meta:
+        model = MergeAudit
+
+    clear = factory.SubFactory(MergeClearFactory)
+    merged_sha = _FORTY_HEX
+    required_checks_status = "green"
+
+
+class RedMrFixAttemptFactory(DjangoModelFactory[RedMrFixAttempt]):
+    class Meta:
+        model = RedMrFixAttempt
+
+    pr_url = factory.Sequence(lambda n: f"https://github.com/souliane/teatree/pull/{900 + n}")
+    head_sha = factory.Sequence(lambda n: f"{n:040x}")
+    overlay = "t3-teatree"
+
+
+class TicketTransitionFactory(DjangoModelFactory[TicketTransition]):
+    """Backdate ``created_at`` (``auto_now_add``) with ``update()`` after build."""
+
+    class Meta:
+        model = TicketTransition
+
+    ticket = factory.SubFactory(TicketFactory)
+    from_state = Ticket.State.STARTED
+    to_state = Ticket.State.CODED
+
+
+class RedCardSignalFactory(DjangoModelFactory[RedCardSignal]):
+    class Meta:
+        model = RedCardSignal
+
+    overlay = "t3-teatree"
+    channel = "C123"
+    slack_ts = factory.Sequence(lambda n: f"1700000000.{n:06d}")
+    signal_kind = RedCardSignal.Kind.RED_CARD_TEXT
+    user_id = "U123"
 
 
 class ReviewVerdictFactory(DjangoModelFactory[ReviewVerdict]):
@@ -186,6 +231,18 @@ class TaskFactory(DjangoModelFactory[Task]):
     # INTERACTIVE keeps ``status`` deterministic: the HEADLESS save-override
     # reroute only touches ``execution_target``, never the status the tests count.
     execution_target = Task.ExecutionTarget.INTERACTIVE
+
+
+class TaskAttemptFactory(DjangoModelFactory[TaskAttempt]):
+    """Backdate ``started_at`` (``auto_now_add``) with ``update()`` after build."""
+
+    class Meta:
+        model = TaskAttempt
+
+    task = factory.SubFactory(TaskFactory)
+    execution_target = Task.ExecutionTarget.HEADLESS
+    exit_code = 0
+    iteration = 1
 
 
 class PullRequestFactory(DjangoModelFactory[PullRequest]):
