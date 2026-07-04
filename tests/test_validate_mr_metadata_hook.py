@@ -133,6 +133,48 @@ class TestDefaultOverlayValidation:
         assert argv[:3] == ["/usr/local/bin/t3", "tool", "validate-mr"]
 
 
+class TestValidatorCrashIsNotADeny:
+    """A validator that RAN but CRASHED is cannot-evaluate → warn+allow, never a deny (#1528).
+
+    A clean validation failure (``Title is empty.``) and an uncaught traceback in
+    the validator both exit non-zero. Collapsing the crash into a content deny
+    hard-blocks the MR with a Python traceback as the "reason" — the lockout class
+    #1528 names. The crash routes to fail-open-with-one-loud-line; the remote CI
+    MR-title/description job is the backstop for genuinely non-compliant content.
+    """
+
+    def test_traceback_output_allows_with_a_loud_warn(self, monkeypatch, capsys):
+        monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
+        monkeypatch.delenv("T3_MR_VALIDATE_ALLOW_BROKEN_ENV", raising=False)
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        crashed = subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout="",
+            stderr="Traceback (most recent call last):\n  File ...\nKeyError: 'overlay'\n",
+        )
+        with patch.object(router.subprocess, "run", return_value=crashed):
+            blocked = handle_validate_mr_metadata(_glab_create("fix: x (p#1)", "fix: x (p#1)"))
+        assert blocked is False, "a crashing validator must not deny (fail-open-with-warn)"
+        captured = capsys.readouterr()
+        assert captured.out.strip() == "", "a crash must emit no deny JSON on stdout"
+        err = captured.err.lower()
+        assert "validator" in err, "the crash warn must name the validator"
+        assert "crash" in err, "the crash warn must be one loud diagnosable line"
+
+    def test_clean_nonzero_still_denies(self, monkeypatch, capsys):
+        # The content-deny path is untouched: a concise validation message
+        # (no traceback) is a genuine deny, not a crash.
+        monkeypatch.delenv("T3_MR_VALIDATE_SCRIPT", raising=False)
+        monkeypatch.setattr(router.shutil, "which", lambda _: "/usr/local/bin/t3")
+        rejected = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="Title is empty.")
+        with patch.object(router.subprocess, "run", return_value=rejected):
+            blocked = handle_validate_mr_metadata(_glab_create("", ""))
+        assert blocked is True
+        out = json.loads(capsys.readouterr().out)
+        assert out["permissionDecision"] == "deny"
+
+
 class TestFileBasedDescriptionIsRead:
     """A file-based MR description (`-F`/`--description-file`) is read, not "".
 
