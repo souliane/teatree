@@ -105,3 +105,55 @@ def diff_coverage(
         typer.echo(report.summary())
     if not report.passes():
         raise typer.Exit(code=1)
+
+
+@tool_app.command("gate-relaxation")
+def gate_relaxation(
+    *,
+    repo: Path = typer.Option(Path.cwd, "--repo", help="Repo root (default: cwd)"),
+    base: str = typer.Option("", "--base", help="Diff <merge-base>..HEAD against this ref instead of the staged diff."),
+    output_json: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
+) -> None:
+    """Anti-relaxation + tach-soundness gate (BLUEPRINT §17.6.1/§17.6.2, #850).
+
+    Refuses a diff that relaxes a lint/coverage constraint or a tach module
+    boundary without a sanctioned relax marker: a new unjustified ``# noqa``, a
+    new ``per-file-ignores`` / coverage ``omit`` entry, a lowered ``fail_under``,
+    a committed ``--no-verify``, a new empty ``interfaces = []``, or a new
+    ``ignore_type_checking_imports`` without a justifying comment. Only the
+    diff's ADDED lines are inspected, so the pre-gate boilerplate baseline is
+    exempt. Scans the STAGED diff by default; ``--base`` scans a branch range.
+    Exits non-zero on any BLOCK finding; WARN findings (possible test vacuity)
+    print advisory-only and never fail.
+    """
+    from teatree.quality.gate_relaxation import (  # noqa: PLC0415 — heavy import kept off the CLI cold path
+        BLOCK,
+        scan_relaxation,
+    )
+    from teatree.utils.git_commit import branch_diff  # noqa: PLC0415 — heavy import kept off the CLI cold path
+    from teatree.utils.git_run import run as _git_run  # noqa: PLC0415 — heavy import kept off the CLI cold path
+
+    if base:
+        diff = branch_diff(str(repo), base)
+    else:
+        diff = _git_run(repo=str(repo), args=["diff", "--cached", "--src-prefix=a/", "--dst-prefix=b/"])
+    findings = scan_relaxation(diff)
+    blocking = [f for f in findings if f.severity == BLOCK]
+    if output_json:
+        typer.echo(
+            json.dumps(
+                {
+                    "passes": not blocking,
+                    "findings": [
+                        {"kind": f.kind, "path": f.path, "severity": f.severity, "message": f.message, "line": f.line}
+                        for f in findings
+                    ],
+                }
+            )
+        )
+    else:
+        for f in findings:
+            typer.echo(f"{f.severity.upper()}: {f.path}: {f.message}", err=True)
+        typer.echo("PASS" if not blocking else f"BLOCKED: {len(blocking)} relaxation finding(s)")
+    if blocking:
+        raise typer.Exit(code=1)

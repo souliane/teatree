@@ -23,6 +23,12 @@ runner = CliRunner()
 _GIT = shutil.which("git") or "git"
 
 
+def _unified_diff(path: str, added: list[str]) -> str:
+    """A minimal unified diff adding ``added`` lines to ``path``."""
+    header = [f"diff --git a/{path} b/{path}", f"--- a/{path}", f"+++ b/{path}", "@@ -1,1 +1,1 @@"]
+    return "\n".join(header + [f"+{line}" for line in added]) + "\n"
+
+
 class TestToolRunner:
     def test_scripts_dir_returns_path(self):
         result = ToolRunner.scripts_dir()
@@ -216,6 +222,33 @@ class TestToolCommands:
 
         with patch.object(Path, "stat", stat_raising_for_ghost):
             assert _coverage_is_stale(cov, tmp_path) is True
+
+    def test_gate_relaxation_clean_staged_diff_passes(self, tmp_path):
+        clean = _unified_diff("src/teatree/m.py", ["    x = 1"])
+        with patch("teatree.utils.git_run.run", return_value=clean) as mock:
+            result = runner.invoke(app, ["tool", "gate-relaxation", "--repo", str(tmp_path)])
+        assert result.exit_code == 0
+        assert "PASS" in result.stdout
+        assert mock.call_args.kwargs["args"][:2] == ["diff", "--cached"]
+
+    def test_gate_relaxation_staged_noqa_blocks_with_json_findings(self, tmp_path):
+        dirty = _unified_diff("src/teatree/m.py", ["    x = bad()  # noqa"])
+        with patch("teatree.utils.git_run.run", return_value=dirty):
+            result = runner.invoke(app, ["tool", "gate-relaxation", "--repo", str(tmp_path), "--json"])
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout)
+        assert payload["passes"] is False
+        assert any(f["kind"] == "noqa_without_justification" for f in payload["findings"])
+
+    def test_gate_relaxation_base_vacuous_test_warns_but_passes(self, tmp_path):
+        warn_diff = _unified_diff("tests/test_x.py", ["def test_it():", "    y = compute()"])
+        with patch("teatree.utils.git_commit.branch_diff", return_value=warn_diff) as mock:
+            result = runner.invoke(app, ["tool", "gate-relaxation", "--repo", str(tmp_path), "--base", "origin/main"])
+        assert result.exit_code == 0
+        assert "PASS" in result.stdout
+        assert "WARN" in result.stderr
+        assert "tests/test_x.py" in result.stderr
+        mock.assert_called_once_with(str(tmp_path), "origin/main")
 
     def test_analyze_video(self):
         with patch.object(ToolRunner, "run_script") as mock:
