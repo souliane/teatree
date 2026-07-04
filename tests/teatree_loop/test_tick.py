@@ -1535,3 +1535,77 @@ class TestRunTickOrchestrateClaimToggle(django.test.TestCase):
             # so a stale ceiling never throttles dispatch after disarm.
             self._run(toggle=False, sl=sl)
             assert self._read_budget(sl) is None
+
+
+class TestBoostPoolRefillBudget(django.test.TestCase):
+    """PR-13: boost persists the pool-refill TARGET so the claimer refills to N.
+
+    The crux: with ``N`` workers and one exited, the sidecar budget the live
+    claimer reads must be the standing target ``N`` (its gate is
+    ``in_flight >= budget``), NOT the marginal ``target - in_flight``. Writing
+    the marginal would wedge the pool below ``N`` because ``in_flight`` already
+    meets the smaller marginal ceiling.
+    """
+
+    def _claimed_dispatchable_task(self):
+        from datetime import timedelta  # noqa: PLC0415
+
+        from django.utils import timezone  # noqa: PLC0415
+
+        from teatree.core.models import Session, Task, Ticket  # noqa: PLC0415
+
+        url = f"https://x/c/{Ticket.objects.count()}"
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, issue_url=url, overlay="acme")
+        session = Session.objects.create(ticket=ticket, agent_id=f"c-{ticket.pk}")
+        now = timezone.now()
+        return Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="coding",
+            status=Task.Status.CLAIMED,
+            claimed_by="w",
+            claimed_at=now,
+            heartbeat_at=now,
+            lease_expires_at=now + timedelta(seconds=300),
+        )
+
+    def _pending_dispatchable_task(self):
+        from teatree.core.models import Session, Task, Ticket  # noqa: PLC0415
+
+        url = f"https://x/p/{Ticket.objects.count()}"
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, issue_url=url, overlay="acme")
+        session = Session.objects.create(ticket=ticket, agent_id=f"p-{ticket.pk}")
+        return Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.PENDING)
+
+    def _run_boost(self, *, sl: Path, n: int) -> None:
+        from unittest.mock import patch  # noqa: PLC0415
+
+        from teatree.config import UserSettings, Wip  # noqa: PLC0415
+        from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
+
+        settings = UserSettings(
+            wip=Wip.BOOST, boost_concurrency=n, provision_max_concurrency=64, orchestrate_claim_enabled=True
+        )
+        backends = [OverlayBackends(name="acme", max_concurrent_auto_starts=1)]
+        with (
+            patch("teatree.loop.phases.orchestrate.get_effective_settings", return_value=settings),
+            patch("teatree.loop.phases.render.get_effective_settings", return_value=settings),
+        ):
+            scanner = _FixedScanner(name="s", out=[ScanSignal(kind="my_pr.open", summary="x")])
+            run_tick(TickRequest(scanners=[scanner], backends=backends), statusline_path=sl)
+
+    def test_boost_writes_target_not_marginal_so_claimer_refills(self) -> None:
+        import tempfile  # noqa: PLC0415
+
+        from teatree.loop.admit_budget import read_admit_budget  # noqa: PLC0415
+
+        with tempfile.TemporaryDirectory() as d:
+            sl = Path(d) / "sl.txt"
+            # Two live workers (one of a target of 3 has exited) + a pending unit.
+            self._claimed_dispatchable_task()
+            self._claimed_dispatchable_task()
+            self._pending_dispatchable_task()
+            self._run_boost(sl=sl, n=3)
+            # The sidecar carries the TARGET (3), not the marginal (3 - 2 = 1) —
+            # so the claimer's ``in_flight(2) >= budget`` is False and it refills.
+            assert read_admit_budget(statusline_path=sl, cadence_seconds=720) == 3

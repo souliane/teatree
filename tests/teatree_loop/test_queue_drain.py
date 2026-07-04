@@ -221,3 +221,40 @@ class TestQueueCommand:
         call_command("queue", "status")
 
         assert DBTaskResult.objects.get().status == TaskResultStatus.READY
+
+
+class TestAdmissionPriorityAnnotation:
+    """PR-13: the admission-rank annotation ranks new-ticket auto-starts LAST."""
+
+    def _task(self, *, phase: str, parented: bool = False):
+        from teatree.core.models import Session, Task, Ticket  # noqa: PLC0415
+
+        url = f"https://x/{phase}/{Ticket.objects.count()}"
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, issue_url=url, overlay="acme")
+        session = Session.objects.create(ticket=ticket, agent_id=f"a-{ticket.pk}")
+        parent = Task.objects.create(ticket=ticket, session=session, phase="planning") if parented else None
+        return Task.objects.create(ticket=ticket, session=session, phase=phase, parent_task=parent)
+
+    def _rank(self, task) -> int:
+        from teatree.core.models import Task  # noqa: PLC0415
+        from teatree.loop.queue_drain import ADMISSION_RANK_ALIAS, admission_priority_annotations  # noqa: PLC0415
+
+        row = Task.objects.annotate(**admission_priority_annotations()).get(pk=task.pk)
+        return getattr(row, ADMISSION_RANK_ALIAS)
+
+    def test_new_ticket_planning_ranks_last(self) -> None:
+        assert self._rank(self._task(phase="planning")) == 1
+
+    def test_new_ticket_scoping_ranks_last(self) -> None:
+        assert self._rank(self._task(phase="scoping")) == 1
+
+    def test_short_verb_plan_ranks_last(self) -> None:
+        # A short-verb ``plan`` row normalizes to the same auto-start band.
+        assert self._rank(self._task(phase="plan")) == 1
+
+    def test_downstream_phase_ranks_first(self) -> None:
+        assert self._rank(self._task(phase="coding")) == 0
+
+    def test_followup_planning_ranks_first(self) -> None:
+        # A planning task WITH a parent is continuing work, not a new-ticket start.
+        assert self._rank(self._task(phase="planning", parented=True)) == 0

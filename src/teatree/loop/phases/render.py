@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 from teatree.config import get_effective_settings
 from teatree.loop.domain_jobs import _identity_groups_for_overlay
 from teatree.loop.job_identity import _ScannerJob
+from teatree.loop.manual_pr_reconcile import reconcile_manual_prs
 from teatree.loop.phases.orchestrate import orchestrate_phase
 from teatree.loop.rendering import zones_for
 from teatree.loop.statusline import StatuslineZones, render
@@ -57,6 +58,7 @@ def render_phase(
         zones = StatuslineZones()
         _populate_live_loops_in_anchors(zones, colorize=colorize)
     _write_open_prs_cache(report.signals, target=statusline_path)
+    _reconcile_manual_prs(report.signals)
     _populate_open_prs_in_anchors(zones, target=statusline_path, colorize=colorize)
     if jobs and report.errors:
         zones.action_needed.append(f"scanner errors: {', '.join(report.errors)}")
@@ -104,7 +106,10 @@ def _orchestrate(request: "TickRequest", *, statusline_path: Path | None) -> Non
         if manifest.wip is Wip.MEDIUM:
             clear_admit_budget(statusline_path=target)
             return
-        write_admit_budget(manifest.cap, statusline_path=target)
+        # The TARGET, not the marginal ``cap``: the claimer's gate is
+        # ``in_flight >= budget``, so the ceiling must be the pool-refill target
+        # for a below-target exit to re-admit next tick (PR-13).
+        write_admit_budget(manifest.target, statusline_path=target)
     except Exception:
         logger.exception("orchestrate_phase budget planning failed — tick continues")
 
@@ -180,6 +185,21 @@ def _write_open_prs_cache(signals: "list[ScanSignal]", *, target: Path | None) -
         from teatree.loop.statusline import default_path  # noqa: PLC0415
 
         write_open_prs_cache(open_prs_from_signals(signals), statusline_path=target or default_path())
+    except Exception:  # noqa: BLE001
+        return
+
+
+def _reconcile_manual_prs(signals: "list[ScanSignal]") -> None:
+    """Upsert ``PullRequest`` rows for manually-opened MRs that resolve to a ticket (#1912).
+
+    Reuses the ``my_pr.*`` signals the scanners already produced — no extra
+    code-host call — so a manual MR opened outside the ship pipeline gains a
+    linked row that review-request tracking and the FSM then treat like any
+    other. Fails open: any DB error degrades to a no-op so a bad row can never
+    abort the tick.
+    """
+    try:
+        reconcile_manual_prs(signals)
     except Exception:  # noqa: BLE001
         return
 

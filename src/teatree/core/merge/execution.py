@@ -49,6 +49,7 @@ from teatree.core.merge.pr_slug_resolution import (
     _resolve_host_kind,
     resolve_pr_repo_slug,
 )
+from teatree.core.merge.sha_bind import verify_sha_bound
 from teatree.project import find_project_root
 
 if TYPE_CHECKING:
@@ -213,16 +214,15 @@ def assert_merge_preconditions(  # noqa: PLR0913 — §17.4.3 gate entry-point; 
     if not live_sha:
         msg = f"could not resolve the live head SHA for {slug}#{pr_id} (§17.4.3 step 2)"
         raise MergePreconditionError(msg)
-    if live_sha != authorized_clear.reviewed_sha:
+    if not verify_sha_bound(cleared_sha=authorized_clear.reviewed_sha, live_sha=live_sha):
         # Show full SHAs (not [:8] prefixes) so a length-mismatch or any other
         # silent difference is obvious in the diagnostic (#1162).
-        reviewed_sha = authorized_clear.reviewed_sha
+        reviewed = authorized_clear.reviewed_sha
         msg = (
             f"PR head moved: live={live_sha} (length={len(live_sha)}) != "
-            f"reviewed={reviewed_sha} (length={len(reviewed_sha)}) — "
-            f"the CLEAR is stale (force-push / new commits) or was issued with a "
-            f"truncated SHA. Re-escalate; the loop never self-issues a replacement "
-            f"(§17.4.3 step 2)"
+            f"reviewed={reviewed} (length={len(reviewed)}) — the CLEAR is stale "
+            f"(force-push / new commits) or was issued with a truncated SHA. "
+            f"Re-escalate; the loop never self-issues a replacement (§17.4.3 step 2)"
         )
         raise MergePreconditionError(msg)
 

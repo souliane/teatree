@@ -1,6 +1,6 @@
 ---
 name: wip
-description: The bounded-WIP throughput dial — slow / medium / full / boost. `boost` runs one parallel-backlog-blast wave; `full` arms a self-sustaining boost loop; `medium` (baseline) and `slow` cap concurrency. Use when the user says "wip", "go full speed", "full speed", "blast the backlog", "boost", "parallel mode", "max throughput", "go wide", "slow down", or "set wip".
+description: The bounded-WIP throughput dial — slow / medium / full / boost. `boost` keeps `boost_concurrency = N` workers live, refilling the pool each tick; `full` arms a self-sustaining boost loop; `medium` (baseline) and `slow` cap concurrency. Use when the user says "wip", "go full speed", "full speed", "blast the backlog", "boost", "parallel mode", "max throughput", "go wide", "slow down", or "set wip".
 compatibility: any
 requires:
   - rules
@@ -21,13 +21,14 @@ The dial, lowest to highest throughput (default **`medium`**):
 | **`slow`** | At most **one implementation worker** in flight at a time (the cold-review reviewer still runs separately). For a fragile tree or a constrained host. |
 | **`medium`** (baseline) | **NO orchestrator fan-out.** Throughput comes only from the intrinsic loop, the PR sweep, and the per-overlay `max_concurrent_auto_starts` auto-start cap. |
 | **`full`** | Arm `/loop /t3:wip boost` — each wave re-classifies the backlog and fans out a burst, sustained across waves. |
-| **`boost`** | Exactly **one** parallel-backlog-blast wave, clamped to `max_concurrent_auto_starts`. |
+| **`boost`** | A **pool-refill** burst that keeps `boost_concurrency = N` live workers in flight: when a worker exits below `N`, the next tick admits the shortfall. `N` is clamped by the PR-01 resource concurrency ceiling; with `boost_concurrency = 0` (unset) it keeps `full`'s summed `max_concurrent_auto_starts` target. Set both at once with `t3 <overlay> wip boost N`. |
 
 ## Resolving the invocation
 
 - **No argument (`/t3:wip`)** → treat as **`full`**: arm the boost loop. A bare invocation is the deliberate "go fast now" override regardless of the persisted baseline.
 - **`/t3:wip <level>`** → run that level once and persist it as the resting dial: call `t3 <overlay> wip set <level>` (never hand-edit `~/.teatree.toml`). Then act on the level per the table below.
 - **`/t3:wip show`** → report the effective dial via `t3 <overlay> wip show` and stop.
+- **`/t3:wip boost N`** → arm the pool-refill burst at a live-worker target of `N`: `t3 <overlay> wip boost N` (sets `wip = boost` and `boost_concurrency = N` in one write). Admission drains queued TODO/followup work before auto-starting new tickets.
 
 The persisted value (the DB-home `wip` setting in the `ConfigSetting` store, per-overlay overridable, `T3_WIP` env) is the resting dial the loop reads each tick. A `[teatree] wip` TOML value is ignored on read; persist it with `t3 <overlay> config_setting set wip <level>` (the `t3 <overlay> wip set` wrapper does this for you). Friendly aliases on input: `low`→`slow`, `normal`→`medium`, `high`→`full`.
 
@@ -49,9 +50,9 @@ Run `/loop /t3:wip boost`. Each wave:
 
 The classification each wave is **agent judgment in prose** (the bucketing below), never a Python scanner.
 
-## `boost` — one parallel wave, session TODO list FIRST
+## `boost` — sustained pool refill, session TODO list FIRST
 
-An explicit burst that **starts from the session TODO list** — the harness task list for THIS session (`/t3:todos` / `TaskList`). `boost` completes the work already on the session's plate **before** it touches the forge. **Only once the session TODO list is complete** does it go on to classify and blast every open, assigned forge ticket (`gh issue list` / `glab issue list`). Never pull fresh forge tickets while session TODO items are still open — finish the plate first.
+A sustained **pool-refill** drive that keeps `boost_concurrency = N` workers live — when a worker exits below `N`, the next tick admits the shortfall — and **starts from the session TODO list**: the harness task list for THIS session (`/t3:todos` / `TaskList`). `boost` completes the work already on the session's plate **before** it touches the forge. **Only once the session TODO list is complete** does it go on to classify and dispatch every open, assigned forge ticket (`gh issue list` / `glab issue list`). Never pull fresh forge tickets while session TODO items are still open — finish the plate first.
 
 ### Classify before dispatching
 

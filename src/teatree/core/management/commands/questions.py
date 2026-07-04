@@ -20,6 +20,7 @@ own pace; the agent reads pending questions back via the same model
 on its next turn.
 """
 
+import io
 import json
 from typing import Annotated
 
@@ -30,11 +31,23 @@ from django_typer.management import TyperCommand, command, initialize
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
 from teatree.core.models.task_handoff import schedule_headless_resume
 from teatree.core.notify_question_drains import drain_deferred_questions
+from teatree.core.table_output import print_table
 
 
-def _format_row(row: DeferredQuestion) -> str:
-    age = row.created_at.isoformat() if row.created_at is not None else "?"
-    return f"  #{row.pk} [{row.status}] {age}\n     {row.question}"
+def _render_questions_table(rows: list[DeferredQuestion]) -> str:
+    buffer = io.StringIO()
+    table_rows = [
+        [row.pk, row.status, row.created_at.isoformat() if row.created_at is not None else "?", row.question]
+        for row in rows
+    ]
+    print_table(
+        ["ID", "Status", "Created", "Question"],
+        table_rows,
+        title=f"{len(rows)} deferred question(s)",
+        stream=buffer,
+        justify=["right", "left", "left", "left"],
+    )
+    return buffer.getvalue()
 
 
 class Command(TyperCommand):
@@ -95,9 +108,7 @@ class Command(TyperCommand):
             )
         if not rows:
             return "no deferred questions."
-        lines = [f"{len(rows)} deferred question(s):"]
-        lines.extend(_format_row(row) for row in rows)
-        return "\n".join(lines)
+        return _render_questions_table(rows)
 
     @command()
     def answer(

@@ -90,6 +90,10 @@ SUBAGENT_BY_PHASE: dict[tuple[str, str], str] = {
     ("author", "scanning_news"): "t3:scanning-news",
     ("author", "e2e"): "t3:e2e",
     ("reviewer", "e2e_reviewing"): "t3:e2e-review",
+    # Orthogonal reactive phase (like ``answering``/``scanning_news``): no FSM
+    # transition, so not in ``_PHASE_ALIASES``/``CANONICAL_PHASES``. Registered
+    # here so it is dispatchable and carries the find-then-verify fan-out below.
+    ("author", "bughunt"): "t3:bughunter",
 }
 
 #: The chaining orchestrator must never be the target of an author phase
@@ -149,8 +153,8 @@ class PhaseFanout:
 #: → judge-panel (N independent plans + a synthesis pass, default 3). Both the
 #: author-role and reviewer-role reviewing phases carry the adversarial-verify
 #: directive (a self-authored review and an assigned cold review both benefit).
-#: ``bughunt`` is deferred until a bughunt phase is registered in
-#: ``SUBAGENT_BY_PHASE`` (the conformance test forbids an undispatched key).
+#: bughunt → find-then-verify (N independent bug-finding passes, then a
+#: verification pass that reproduces each candidate before it is reported).
 FANOUT_BY_PHASE: dict[tuple[str, str], PhaseFanout] = {
     ("reviewer", "reviewing"): PhaseFanout(
         pattern="adversarial-verify",
@@ -188,6 +192,20 @@ FANOUT_BY_PHASE: dict[tuple[str, str], PhaseFanout] = {
             "the single best plan (taking the strongest elements of each). If a "
             "parallel workflow runtime is available use it; otherwise produce "
             "the {n} candidates and the synthesis inline and sequentially."
+        ),
+    ),
+    ("author", "bughunt"): PhaseFanout(
+        pattern="find-then-verify",
+        fanout_n=3,
+        directive_template=(
+            "FAN-OUT (find-then-verify, N={n}): run {n} independent bug-finding "
+            "passes over the target, each hunting a distinct class of defect "
+            "(logic errors, unhandled edge cases, races, stale assumptions). "
+            "Then run a verification pass that reproduces each candidate before "
+            "reporting it, so a false positive is caught by the verify pass "
+            "rather than shipped. If a parallel workflow runtime is available "
+            "use it; otherwise perform the {n} find passes and the verification "
+            "inline and sequentially."
         ),
     ),
 }

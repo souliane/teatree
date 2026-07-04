@@ -33,15 +33,69 @@ same rows.
 import datetime as dt
 import logging
 import os
+from typing import TYPE_CHECKING
 
 from django.core.exceptions import SuspiciousOperation
+from django.db.models import Case, IntegerField, Q, Value, When
 from django.db.utils import OperationalError
 from django.utils import timezone
+
+if TYPE_CHECKING:
+    from teatree.core.managers import ClaimOrder
 
 logger = logging.getLogger(__name__)
 
 _STALE_THRESHOLD_DEFAULT_HOURS = 24
 _DRAIN_BATCH_DEFAULT = 5
+
+#: Priority order the loop admits pending Task rows in: TODO/followup (rank 0)
+#: before a new-ticket auto-start (rank 1), then FIFO ``pk`` within a rank.
+ADMISSION_RANK_ALIAS = "_admission_rank"
+ADMISSION_ORDER: tuple[str, ...] = (ADMISSION_RANK_ALIAS, "pk")
+
+
+def _new_ticket_autostart_q() -> Q:
+    """A task that auto-STARTS a brand-new ticket: an initial-phase, un-parented row.
+
+    A ``planning``/``scoping`` task with no ``parent_task`` is the first phase of
+    a freshly picked-up ticket. Everything else — a downstream lifecycle phase
+    (coding/testing/reviewing/shipping), a followup (``parent_task`` set), or a
+    reactive ``answering``/``bughunt`` task — is continuing TODO work that should
+    drain first. Matched across every accepted spelling so a short-verb
+    ``plan``/``scope`` row ranks identically to the canonical gerund.
+    """
+    from teatree.core.modelkit.phases import phase_spellings  # noqa: PLC0415
+
+    autostart_phases = phase_spellings("planning") + phase_spellings("scoping")
+    return Q(parent_task__isnull=True) & Q(phase__in=autostart_phases)
+
+
+def admission_priority_annotations() -> dict[str, Case]:
+    """The ``.annotate()`` kwargs producing the integer :data:`ADMISSION_RANK_ALIAS`.
+
+    ``0`` = TODO/followup (drain first); ``1`` = new-ticket auto-start. Paired
+    with :data:`ADMISSION_ORDER` on the claim/plan path so a queued TODO admits
+    before a lower-``pk`` new-ticket task at equal priority.
+    """
+    return {
+        ADMISSION_RANK_ALIAS: Case(
+            When(_new_ticket_autostart_q(), then=Value(1)),
+            default=Value(0),
+            output_field=IntegerField(),
+        )
+    }
+
+
+def admission_claim_order() -> "ClaimOrder":
+    """The :class:`ClaimOrder` the loop passes to ``claim_next_pending`` (PR-13).
+
+    Bundles :func:`admission_priority_annotations` with :data:`ADMISSION_ORDER`
+    so the live claim path admits a queued TODO/followup before a new-ticket
+    auto-start.
+    """
+    from teatree.core.managers import ClaimOrder  # noqa: PLC0415
+
+    return ClaimOrder(annotations=admission_priority_annotations(), order_by=ADMISSION_ORDER)
 
 
 class StaleQueueJobError(RuntimeError):

@@ -1,7 +1,6 @@
 """Workspace management: create ticket worktrees, finalize, clean stale branches."""
 
 import os
-from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, cast
@@ -31,13 +30,13 @@ from teatree.core.management.commands._workspace_ticket_intake import (
     RawTicketInputs,
     build_intake,
     build_ticket,
+    resolve_adopt_context,
 )
 from teatree.core.models import Ticket, Worktree
 from teatree.core.models.project_learning import ProjectLearning
 from teatree.core.models.ticket_display import format_intake_summary
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.public_identity import StampResult, is_public_github_remote, set_local_noreply_identity
-from teatree.core.readiness import run_and_report_probes
 from teatree.core.reconcile import reconcile_all, reconcile_ticket
 from teatree.core.resolve import WorktreeNotFoundError, _get_user_cwd, resolve_worktree, workspace_owner_ticket
 from teatree.core.runners import WorktreeProvisioner, WorktreeStartRunner, WorktreeTeardownRunner
@@ -49,7 +48,6 @@ from teatree.utils.url_slug import project_slug_from_ref
 
 if TYPE_CHECKING:
     from teatree.core.models.types import TicketExtra
-    from teatree.core.overlay import OverlayBase
 
 
 def _project_learnings_for_ticket(ticket: Ticket) -> str:
@@ -88,34 +86,6 @@ def _resolve_workspace_ticket(path: str) -> Ticket:
         return Ticket.objects.get(pk=owner.pk)
 
 
-def _report_worktree_probes(
-    worktrees: list[Worktree],
-    overlay: "OverlayBase",
-    write: Callable[[str], None],
-    *,
-    note_empty: bool,
-) -> tuple[int, int]:
-    """Run each worktree's readiness probes; return ``(total, failures)``.
-
-    Shared by ``start`` (probe only the worktrees that started) and
-    ``ready`` (probe every worktree). ``note_empty`` reports a worktree
-    with no probes explicitly (``ready``) or skips it silently (``start``).
-    """
-    total = 0
-    total_failures = 0
-    for wt in worktrees:
-        probes = overlay.get_readiness_probes(wt)
-        if not probes:
-            if note_empty:
-                write(f"  {wt.repo_path}: no probes")
-            continue
-        write(f"  {wt.repo_path}:")
-        summary = run_and_report_probes(probes, write_line=write, indent="    ")
-        total += summary.total
-        total_failures += summary.failures
-    return total, total_failures
-
-
 def _branch_prefix() -> str:
     prefix = os.environ.get("T3_BRANCH_PREFIX", "")
     if not prefix:
@@ -127,7 +97,8 @@ def _branch_prefix() -> str:
 
 class Command(TyperCommand):
     @command()
-    def ticket(
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
+    def ticket(  # noqa: PLR0913 — django-typer command: every param maps 1:1 to a CLI flag; the arg list IS the public `workspace ticket` surface, not an internal design smell.
         self,
         issue_url: str,
         variant: str = "",
@@ -141,6 +112,21 @@ class Command(TyperCommand):
                 help="Proceed even when another worktree dir for this issue already exists (#2217).",
             ),
         ] = False,
+        adopt: Annotated[
+            bool,
+            typer.Option(
+                "--adopt",
+                help="Adopt the branch checked out in the current git worktree (auto-detect), "
+                "registering Ticket + Worktree rows against it instead of deriving <number>-<slug> (#2275).",
+            ),
+        ] = False,
+        adopt_branch: Annotated[
+            str,
+            typer.Option(
+                "--adopt-branch",
+                help="Adopt this EXISTING branch (implies --adopt). Omit to auto-detect from the current git worktree.",
+            ),
+        ] = "",
     ) -> int:
         """Create or update a ticket and trigger worktree provisioning.
 
@@ -166,7 +152,13 @@ class Command(TyperCommand):
         # Infer from the issue URL whose workspace repos own it; the
         # default ``get_overlay()`` env-var path still wins when set.
         overlay = get_overlay(_wh.resolve_overlay_name_for_url(issue_url))
-        raw = RawTicketInputs(issue_url, repos, variant, description, take_over)
+        adopt_ctx = resolve_adopt_context(adopt=adopt, adopt_branch=adopt_branch)
+        if adopt_ctx is not None and (not adopt_ctx.branch or adopt_ctx.branch == git.DETACHED_HEAD):
+            self.stderr.write(
+                "  Refused: --adopt needs a checked-out branch (HEAD is detached); pass --adopt-branch <branch>."
+            )
+            return 0
+        raw = RawTicketInputs(issue_url, repos, variant, description, take_over, adopt=adopt_ctx)
         intake = build_intake(overlay, raw)
         try:
             ticket = build_ticket(self.stderr.write, overlay, intake, _worktree_root())
@@ -174,7 +166,9 @@ class Command(TyperCommand):
             return 0
 
         branch = cast("TicketExtra", ticket.extra)["branch"]
-        ticket_dir = ticket_dir_for(_worktree_root(), branch)
+        # In adopt mode the checkout lives where the operator ran the command, not
+        # under the worktree root — surface that path in the summary.
+        ticket_dir = Path(adopt_ctx.worktree_path).parent if adopt_ctx else ticket_dir_for(_worktree_root(), branch)
 
         # Run the provisioner synchronously so the CLI gives immediate feedback;
         # the worker that ``start()`` enqueued is idempotent and no-ops when it
@@ -318,7 +312,7 @@ class Command(TyperCommand):
         if failures:
             _die(self.stderr.write, f"  Failed: {', '.join(failures)}")
 
-        total, total_failures = _report_worktree_probes(started, overlay, self.stdout.write, note_empty=False)
+        total, total_failures = _wh.report_worktree_probes(started, overlay, self.stdout.write, note_empty=False)
         if total_failures:
             _die(self.stderr.write, f"  {total_failures} of {total} probe(s) failed")
         return f"started {len(worktrees)} worktree(s)"
@@ -340,7 +334,7 @@ class Command(TyperCommand):
         overlay = get_overlay(ticket.overlay or None)
 
         worktrees = list(Worktree.objects.filter(ticket=ticket))
-        total, total_failures = _report_worktree_probes(worktrees, overlay, self.stdout.write, note_empty=True)
+        total, total_failures = _wh.report_worktree_probes(worktrees, overlay, self.stdout.write, note_empty=True)
         if total_failures:
             _die(self.stderr.write, f"  {total_failures} of {total} probe(s) failed")
         return "ok"

@@ -672,6 +672,10 @@
         {
           "help": "Report the current :class:`MRReviewLock` state for *mr_url* (read-only)",
           "name": "lock-status"
+        },
+        {
+          "help": "Re-bind a CLEAR to a conflict-only merge commit \u2014 no re-review (PR-07)",
+          "name": "rebind-clearance"
         }
       ]
     },
@@ -797,6 +801,10 @@
         {
           "help": "Show a ticket's state plus the per-phase ``attempt N/max`` budget (#2009)",
           "name": "show"
+        },
+        {
+          "help": "Flag a ticket as expedite/release-blocker (``--off`` clears it) (PR-07)",
+          "name": "expedite"
         },
         {
           "help": "Transition a ticket to a new state",

@@ -65,8 +65,9 @@ class Wip(StrEnum):
         per-overlay ``max_concurrent_auto_starts`` auto-start cap.
     *   :attr:`FULL` — arm ``/loop /t3:wip boost`` so each wave re-classifies
         the backlog and fans out a burst, sustained across waves.
-    *   :attr:`BOOST` — one parallel-backlog-blast wave, clamped to
-        ``max_concurrent_auto_starts``.
+    *   :attr:`BOOST` — a pool-refill burst that keeps ``boost_concurrency
+        = N`` live workers in flight, refilling the shortfall each tick;
+        clamped to ``max_concurrent_auto_starts``.
 
     A no-arg ``/t3:wip`` invocation means "go full" regardless of the
     persisted baseline; the persisted value is the resting dial the loop

@@ -1,14 +1,14 @@
-"""``ticket show`` command + rendering — per-phase ``attempt N/max`` budget (#2009).
+"""``ticket show`` + ``ticket expedite`` — read/set a ticket's state (#2009, PR-07).
 
 Split out of ``ticket.py`` as a :class:`TicketShowCommands` mixin (the same MRO
 split as ``RubricCommands``) so the already-cap-bound command god-module does not
-grow. Holds the aggregation + formatting over the ticket's recorded
-``TaskAttempt`` rows, grouped by normalized phase, against the configurable
-iteration cap.
+grow. Holds ``show`` (per-phase ``attempt N/max`` budget over the ticket's
+``TaskAttempt`` rows) and ``expedite`` (the release-blocker flag).
 """
 
-from typing import TypedDict
+from typing import Annotated, TypedDict
 
+import typer
 from django_typer.management import TyperCommand, command
 
 from teatree.core.modelkit.phases import normalize_phase
@@ -27,7 +27,13 @@ class TicketShowResult(TypedDict):
     state: str
     overlay: str
     issue_url: str
+    expedited: bool
     phases: list[PhaseBudgetRow]
+
+
+class ExpediteResult(TypedDict, total=False):
+    ticket_id: int
+    expedited: bool
 
 
 def phase_budget_rows(ticket: Ticket) -> list[PhaseBudgetRow]:
@@ -57,6 +63,8 @@ def render_ticket_show(result: TicketShowResult) -> str:
         f"  overlay: {result['overlay'] or '-'}",
         f"  issue:   {result['issue_url'] or '-'}",
     ]
+    if result.get("expedited"):
+        lines.append("  expedite: ⚡ release-blocker (pre-CI push allowed; merge still gated on review+test)")
     if not result["phases"]:
         lines.append("  phases:  (no attempts yet)")
         return "\n".join(lines)
@@ -94,7 +102,31 @@ class TicketShowCommands(TyperCommand):
             "state": ticket.state,
             "overlay": ticket.overlay,
             "issue_url": ticket.issue_url,
+            "expedited": ticket.expedited,
             "phases": phase_budget_rows(ticket),
         }
         self.stdout.write(render_ticket_show(result))
         return result
+
+    @command()
+    def expedite(
+        self,
+        ticket_id: int,
+        *,
+        off: Annotated[bool, typer.Option("--off", help="Clear the flag instead of setting it.")] = False,
+    ) -> ExpediteResult:
+        """Flag a ticket as expedite/release-blocker (``--off`` clears it) (PR-07).
+
+        A flagged ticket may push before CI completes; the merge keystone is NEVER
+        relaxed — merge stays gated on local review + test evidence. Surfaces on
+        ``ticket show`` and as a ⚡ statusline chip.
+        """
+        try:
+            ticket = Ticket.objects.get(pk=ticket_id)
+        except Ticket.DoesNotExist:
+            self.stderr.write(f"  Ticket {ticket_id} not found")
+            raise SystemExit(1) from None
+        ticket.expedited = not off
+        ticket.save(update_fields=["expedited"])
+        self.stdout.write(f"  {'expedited' if ticket.expedited else 'cleared expedite on'} ticket {ticket.pk}")
+        return {"ticket_id": int(ticket.pk), "expedited": ticket.expedited}

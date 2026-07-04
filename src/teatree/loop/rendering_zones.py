@@ -7,7 +7,7 @@ duplicate-free :class:`_ClassifiedActions` produced by
 :mod:`teatree.loop.rendering_classification`.
 """
 
-from teatree.loop.rendering_classification import _ClassifiedActions, _is_url
+from teatree.loop.rendering_classification import ActiveTicketRow, _ClassifiedActions, _is_url
 from teatree.loop.rendering_dms import render_dm_line as _render_dm_line
 from teatree.loop.rendering_items import _format_mr_ref, _LinkCtx, _OverlayActionRefs, _PRRef, _render_canonical_item
 from teatree.loop.statusline import StatuslineZones, plain_link
@@ -109,7 +109,7 @@ def _render_pr_group(
 
 def _render_ticket_line(
     overlay: str,
-    tickets: list[tuple[str, str, str, str]],
+    tickets: list[ActiveTicketRow],
     pr_map: dict[str, list[_PRRef]],
     *,
     live_pr_urls: set[str] | None = None,
@@ -139,17 +139,20 @@ def _render_ticket_line(
     prefix = f"[{overlay}] " if overlay else ""
     live = live_pr_urls or set()
     by_state: dict[str, list[str]] = {}
-    for num, state, url, title in tickets:
-        if state in _NOISE_STATES:
+    for row in tickets:
+        if row.state in _NOISE_STATES:
             continue
-        if _is_pr_url(url) and url not in live:
+        if _is_pr_url(row.issue_url) and row.issue_url not in live:
             continue
-        by_state.setdefault(state, []).append(
+        # ⚡ chip flags an expedite/release-blocker ticket (PR-07): it may push
+        # pre-CI, but the merge keystone is never relaxed.
+        label = f"⚡#{row.number}" if row.expedite else f"#{row.number}"
+        by_state.setdefault(row.state, []).append(
             _render_canonical_item(
-                label=f"#{num}",
-                url=url,
-                title=title,
-                child_refs=pr_map.get(num, []),
+                label=label,
+                url=row.issue_url,
+                title=row.title,
+                child_refs=pr_map.get(row.number, []),
                 ctx=_LinkCtx(colorize=colorize, link=_link),
             ),
         )

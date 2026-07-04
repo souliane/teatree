@@ -19,8 +19,10 @@ from teatree.core.dev_repo import parse_repo_branch_map, resolve_repo_names
 from teatree.core.management.commands import _workspace_helpers as _wh
 from teatree.core.models import Ticket
 from teatree.core.models.external_delivery import mark_external_delivery
+from teatree.core.resolve import _get_user_cwd
 from teatree.core.worktree_collision import find_foreign_issue_worktrees
 from teatree.core.worktree_paths import ticket_dir_for
+from teatree.utils import git
 
 if TYPE_CHECKING:
     from teatree.core.models.types import TicketExtra
@@ -37,6 +39,23 @@ class ForeignIssueWorktreeRefusedError(Exception):
 
 
 @dataclass(frozen=True)
+class AdoptContext:
+    """An existing branch + on-disk worktree to register verbatim (#2275).
+
+    Set when ``workspace ticket --adopt`` / ``--adopt-branch`` registers a Ticket
+    against work that originated OUTSIDE the derive-``<number>-<slug>`` flow. The
+    operator runs the command from inside the checkout they want to adopt, so
+    ``branch``, ``worktree_path`` (the checkout's on-disk root), and ``repo`` (its
+    slug) are read from git. The provisioner records ``worktree_path`` instead of
+    ``git worktree add`` so no second worktree dir is created.
+    """
+
+    branch: str
+    worktree_path: str
+    repo: str
+
+
+@dataclass(frozen=True)
 class TicketIntake:
     """The ``workspace ticket`` inputs that get-or-create + scope/start a ticket."""
 
@@ -50,6 +69,7 @@ class TicketIntake:
     # branches provision as SIBLINGS in one dir. A repo absent from the map
     # falls back to ``extra['branch']`` in the provisioner. Empty = uniform.
     branches: dict[str, str] = field(default_factory=dict)
+    adopt: "AdoptContext | None" = None
 
 
 @dataclass(frozen=True)
@@ -61,6 +81,25 @@ class RawTicketInputs:
     variant: str
     description: str
     take_over: bool
+    adopt: "AdoptContext | None" = None
+
+
+def resolve_adopt_context(*, adopt: bool, adopt_branch: str) -> AdoptContext | None:
+    """Read the branch/worktree/repo to adopt from the current git worktree (#2275).
+
+    Returns ``None`` when neither flag is set (not adopting). Otherwise runs from
+    inside the checkout the operator wants to register: *adopt_branch* overrides
+    the branch, else the currently-checked-out branch is auto-detected; the
+    worktree's on-disk root and repo slug are read from git so the provisioner
+    records the existing checkout verbatim rather than creating a second dir.
+    """
+    if not (adopt or adopt_branch):
+        return None
+    cwd = _get_user_cwd()
+    worktree_path = git.run(repo=cwd, args=["rev-parse", "--show-toplevel"]) or cwd
+    branch = adopt_branch or git.current_branch(repo=worktree_path)
+    repo = git.remote_slug(repo=worktree_path) or Path(worktree_path).name
+    return AdoptContext(branch=branch, worktree_path=worktree_path, repo=repo)
 
 
 def build_intake(overlay: "OverlayBase", raw: RawTicketInputs) -> TicketIntake:
@@ -68,15 +107,18 @@ def build_intake(overlay: "OverlayBase", raw: RawTicketInputs) -> TicketIntake:
 
     Splits the ``--repos`` string into bare repo names and, per #33, the
     per-repo ``repo:branch`` override map — both derived from the one string
-    so the CLI command body stays thin.
+    so the CLI command body stays thin. In adopt mode (#2275) the repo set is
+    the single adopted repo read from git, not the overlay/issue derivation.
     """
+    repo_names = [raw.adopt.repo] if raw.adopt else resolve_repo_names(overlay, raw.issue_url, raw.repos)
     return TicketIntake(
         issue_url=raw.issue_url,
         variant=raw.variant,
-        repo_names=resolve_repo_names(overlay, raw.issue_url, raw.repos),
+        repo_names=repo_names,
         description=raw.description,
         take_over=raw.take_over,
         branches=parse_repo_branch_map(raw.repos),
+        adopt=raw.adopt,
     )
 
 
@@ -138,7 +180,16 @@ def build_ticket(
         description = intake.description or overlay.get_issue_title(intake.issue_url)
 
         extra = cast("TicketExtra", ticket.extra or {})
-        if not extra.get("branch"):
+        if intake.adopt:
+            # Adopt (#2275): register the ticket against the EXISTING branch the
+            # operator handed us, not a derived ``<number>-<slug>``, and record
+            # the on-disk worktree path so the provisioner reuses it (no second
+            # dir). ``adopt`` maps repo -> existing worktree_path.
+            extra["branch"] = intake.adopt.branch
+            adopt_map = dict(extra.get("adopt") or {})
+            adopt_map[intake.adopt.repo] = intake.adopt.worktree_path
+            extra["adopt"] = adopt_map
+        elif not extra.get("branch"):
             extra["branch"] = build_branch_name(intake.repo_names, ticket.ticket_number, description)
         if description and not extra.get("description"):
             extra["description"] = description
@@ -161,7 +212,9 @@ def build_ticket(
         # so re-provisioning it is idempotent; --take-over opts out. Runs before
         # the on-disk worktree and the delivery-ownership claim so neither side
         # effect survives a refusal.
-        if not intake.take_over:
+        # Adopt (#2275) is an explicit "use this existing checkout" intent, so it
+        # opts out of the foreign-dir guard exactly like --take-over.
+        if not intake.take_over and not intake.adopt:
             _refuse_on_foreign_issue_worktree(
                 write, ticket, workspace_root, ticket_dir_for(workspace_root, extra["branch"])
             )

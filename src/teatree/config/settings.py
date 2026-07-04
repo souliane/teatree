@@ -165,6 +165,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "auto_disposition_enabled": _parse_strict_bool,
     "auto_disposition_max_closes_per_tick": _parse_strict_int,
     "orchestrate_claim_enabled": _parse_strict_bool,
+    "boost_concurrency": _parse_strict_int,
     # #1775 newly-DB-home (formerly file-only): these now resolve from the DB store.
     "agent_signature": _parse_strict_bool,
     "claude_chrome": _parse_strict_bool,
@@ -279,6 +280,7 @@ ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_ISSUE_IMPLEMENTER_ENABLED": ("issue_implementer_enabled", _parse_env_bool),
     "T3_LOOP_AUTO_UPDATE": ("auto_update_reinstall", _parse_env_bool),
     "T3_ORCHESTRATE_CLAIM_ENABLED": ("orchestrate_claim_enabled", _parse_env_bool),
+    "T3_BOOST_CONCURRENCY": ("boost_concurrency", _parse_strict_int),
     "T3_LOOP_RUNNER_ENABLED": ("loop_runner_enabled", _parse_env_bool),
     "T3_TEAMS_ENABLED": ("teams_enabled", _parse_env_bool),
     "T3_TEAMS_MAX_PANES": ("teams_max_panes", _parse_env_positive_int(1)),
@@ -393,7 +395,8 @@ class UserSettings:
     # conservative ``MEDIUM`` baseline means NO orchestrator fan-out — only
     # the intrinsic loop + PR sweep + per-overlay ``max_concurrent_auto_starts``
     # provide throughput. ``slow`` caps to one impl worker; ``full`` arms the
-    # /t3:wip loop; ``boost`` runs a single parallel-blast wave. Orthogonal
+    # /t3:wip loop; ``boost`` keeps ``boost_concurrency = N`` workers live,
+    # refilling the pool each tick as workers exit. Orthogonal
     # to ``mode``/``autonomy`` (those gate *whether* a publish proceeds; this
     # governs *how many* threads run) and never relaxes a safety gate.
     # Per-overlay overridable; ``T3_WIP`` env wins over both.
@@ -929,6 +932,14 @@ class UserSettings:
     # per-overlay overridable and ``T3_ORCHESTRATE_CLAIM_ENABLED`` env wins over
     # both.
     orchestrate_claim_enabled: bool = False
+    # PR-13 boost pool-refill target: how many live loop workers ``boost`` wip
+    # keeps in flight. ``0`` (default) means UNSET — ``boost`` keeps today's
+    # summed per-overlay ``max_concurrent_auto_starts`` target. A positive ``N``
+    # makes the orchestrate planner refill to ``N`` each tick, clamped by the
+    # PR-01 resource ceiling (``provision_max_concurrency`` / nCPU). DB-home,
+    # per-overlay overridable, ``T3_BOOST_CONCURRENCY`` env wins; set via
+    # ``t3 <overlay> wip boost N``.
+    boost_concurrency: int = 0
     # #2122 Opt-in, default-OFF gate for the issue-disposition triage scanner.
     # When False (the default) no scanner is built, so the loop emits nothing
     # and never auto-closes an issue. The scanner only CLOSES high-confidence
