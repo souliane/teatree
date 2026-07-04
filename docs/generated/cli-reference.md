@@ -13,6 +13,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ startoverlay    Create a new TeaTree overlay package.                        │
 │ docs            Serve the project documentation with mkdocs.                 │
+│ capabilities    List each command's --json support and exit-code contract    │
+│                 (front-end discovery).                                       │
 │ agent           Launch Claude Code with auto-detected project context.       │
 │ sessions        List recent Claude conversation sessions with resume         │
 │                 commands.                                                    │
@@ -125,6 +127,20 @@ Usage: t3 docs [OPTIONS]
 │ --host        TEXT     Host to bind to [default: 127.0.0.1]                  │
 │ --port        INTEGER  Port to serve on [default: 8888]                      │
 │ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 capabilities`
+
+```
+Usage: t3 capabilities [OPTIONS]
+
+ List each command's --json support and exit-code contract (front-end
+ discovery).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit the capability registry as JSON on stdout.              │
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
