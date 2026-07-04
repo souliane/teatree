@@ -68,16 +68,20 @@ def _scope_guarded(method: str, token: str, call: Callable[[], RawAPIDict]) -> R
     """Run *call* under the token-scope cache (souliane/teatree#1450, PR-19).
 
     A known-missing ``(token, method-scope)`` pair short-circuits pre-HTTP; the
-    first live ``missing_scope`` records the pair and banners once. Both outcomes
-    surface the same ``missing_scope`` body every caller already tolerates, so the
-    cache stays non-breaking while collapsing the repeated HTTP into a single call
-    per loop run. A method with no mapped scope is passed through unguarded.
+    first live ``missing_scope`` records the pair and banners once. The first live
+    failure returns Slack's verbatim body (its ``needed``/``provided`` fields
+    intact, so a caller can report exactly which scope is missing); the pre-HTTP
+    short-circuit — where no response exists — reconstructs the minimal
+    ``missing_scope`` body every caller already tolerates. A method with no mapped
+    scope is passed through unguarded.
     """
     token_id = token_scope_id(token)
     scope = SLACK_METHOD_SCOPES.get(method, "")
     try:
         return guarded_scope_call(token_id, scope, call, slack_scope_failure)
     except ScopeMissingError as exc:
+        if exc.body is not None:
+            return cast("RawAPIDict", exc.body)
         return {"ok": False, "error": "missing_scope", "needed": exc.scope}
 
 

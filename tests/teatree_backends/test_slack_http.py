@@ -247,7 +247,7 @@ class TestEnvConfiguration:
 def _missing_scope(scope: str) -> httpx.Response:
     return httpx.Response(
         200,
-        json={"ok": False, "error": "missing_scope", "needed": scope},
+        json={"ok": False, "error": "missing_scope", "needed": scope, "provided": "channels:read,chat:write"},
         request=httpx.Request("POST", "https://slack.com/api/x"),
     )
 
@@ -276,8 +276,16 @@ class TestScopeCacheWiring:
         first = client.post("reactions.add", token="xoxb-x", json={}, idempotent=True)
         second = client.post("reactions.add", token="xoxb-x", json={}, idempotent=True)
 
-        assert first["error"] == "missing_scope"  # caller still gets the tolerated body
-        assert second["error"] == "missing_scope"
+        # Live failure echoes Slack's verbatim body (``provided`` intact); the
+        # pre-HTTP short-circuit has no response to echo, so it reconstructs the
+        # minimal body every caller tolerates.
+        assert first == {
+            "ok": False,
+            "error": "missing_scope",
+            "needed": "reactions:write",
+            "provided": "channels:read,chat:write",
+        }
+        assert second == {"ok": False, "error": "missing_scope", "needed": "reactions:write"}
         assert len(posts) == 1  # second call short-circuited pre-HTTP
         assert banners == ["scope_missing:" + slack_http.token_scope_id("xoxb-x") + ":reactions:write"]
 

@@ -62,13 +62,21 @@ class ScopeMissingError(RuntimeError):
     — the whole point of the cache. Callers that tolerate a missing scope
     (a best-effort reaction, a non-critical post) catch this and no-op; the
     banner has already told the operator.
+
+    ``body`` is the verbatim response that triggered a live failure, so a caller
+    can surface the transport's raw error fields (e.g. Slack's ``provided``)
+    instead of a lossy reconstruction. It is ``None`` on a pre-HTTP short-circuit,
+    where no response exists.
     """
 
-    def __init__(self, *, token_id: str, scope: str, cached: bool, detail: str = "") -> None:
+    def __init__(
+        self, *, token_id: str, scope: str, cached: bool, detail: str = "", body: object | None = None
+    ) -> None:
         self.token_id = token_id
         self.scope = scope
         self.cached = cached
         self.detail = detail
+        self.body = body
         suffix = " (cached)" if cached else ""
         message = f"token {token_id} is missing scope {scope!r}{suffix}"
         if detail:
@@ -181,8 +189,9 @@ def guarded_scope_call[T](
     *call* runs (zero HTTP); otherwise *call* runs and *detect* classifies its
     result. ``detect`` returns a detail string when the result IS a scope
     failure (else ``None``) — the pair is then recorded (log + one banner) and
-    ``ScopeMissingError(cached=False)`` raised. An empty *scope* means the call
-    has no scope requirement to guard, so it runs unguarded.
+    ``ScopeMissingError(cached=False, body=result)`` raised, carrying the raw
+    response so the caller keeps the transport's verbatim error fields. An empty
+    *scope* means the call has no scope requirement to guard, so it runs unguarded.
     """
     if not token_id or not scope:
         return call()
@@ -192,7 +201,7 @@ def guarded_scope_call[T](
     detail = detect(result)
     if detail is not None:
         cache.record_missing(token_id, scope, detail=detail)
-        raise ScopeMissingError(token_id=token_id, scope=scope, cached=False, detail=detail)
+        raise ScopeMissingError(token_id=token_id, scope=scope, cached=False, detail=detail, body=result)
     return result
 
 
