@@ -84,7 +84,6 @@ _NEVER_LOCKOUT_EXEMPT_DENY_HANDLERS: Final[dict[str, str]] = {
     ),
     # Narrow targeted-command gates — deny one specific command, never arbitrary Bash.
     "handle_block_direct_commands": "denies only specific t3-CLI-bypass commands (_deny_match denylist)",
-    "handle_block_out_of_band_merge": "denies only raw `gh pr merge` / `glab mr merge` on managed repos",
     "handle_block_raw_review_post": "denies only raw review-post commands that bypass the FSM",
     "handle_block_self_dm_via_mcp": (
         "denies only the 4 Slack MCP write tools to a self-DM id, never arbitrary Bash; "
@@ -282,6 +281,30 @@ def test_plan_edit_gate_routes_through_fail_open() -> None:
     )
     assert "handle_block_edit_before_planned" not in _NEVER_LOCKOUT_EXEMPT_DENY_HANDLERS, (
         "the plan-edit gate is fail-open-routed; its redundant allowlist entry must be pruned"
+    )
+
+
+def test_out_of_band_merge_gate_routes_through_fail_open() -> None:
+    """The raw-merge gate fail-open-routes and is OFF the allowlist (FIX-EXPEDITE PART B).
+
+    ``handle_block_out_of_band_merge`` was the ONLY merge-adjacent gate denying via a
+    bare ``emit_pretooluse_deny`` — it honoured neither the self-rescue allowlist, the
+    master ``danger_gate_fail_open``, nor a per-gate kill-switch. PART B routes both
+    deny sites through ``_fail_open_or_deny`` and adds the ``raw-merge`` kill-switch, so
+    the gate now joins the fix-the-class siblings (loop-registration, plan-edit) instead
+    of the narrow-exempt allowlist. This pins it is still fail-open-routed (never a bare
+    lockout) after the removal.
+    """
+    tree = _module_tree()
+    funcs = _call_graph_functions(tree)
+    reachable = _reachable_callees("handle_block_out_of_band_merge", funcs)
+    assert _DENY_WRITER in reachable, "the raw-merge gate must still be able to deny"
+    assert _FAIL_OPEN_ROUTER in reachable, (
+        "handle_block_out_of_band_merge must route its deny through "
+        f"{_FAIL_OPEN_ROUTER} so the self-rescue + danger_gate_fail_open escapes apply"
+    )
+    assert "handle_block_out_of_band_merge" not in _NEVER_LOCKOUT_EXEMPT_DENY_HANDLERS, (
+        "the raw-merge gate is fail-open-routed; its narrow-exemption allowlist entry must be pruned"
     )
 
 

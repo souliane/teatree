@@ -638,14 +638,15 @@ class TestAgentExecutesApprovedSubstrateMerge(TestCase):
     def test_merge_executor_signature_has_no_human_actor_parameter(self) -> None:
         """Structural guarantee: the keystone executor takes no 'a human performs it' arg.
 
-        Its only human-related parameter is ``human_authorized`` — the recorded
-        *approval* id re-presented for verification. There is no parameter
-        whose presence means 'a human, not the agent, performs the merge'.
+        Its human-related parameters are ``human_authorized`` (substrate approval)
+        and ``expedite_authorized`` (PENDING-checks waiver) — each a recorded
+        *approval* id re-presented for verification. There is no parameter whose
+        presence means 'a human, not the agent, performs the merge'.
         """
         import inspect  # noqa: PLC0415
 
         params = set(inspect.signature(merge_ticket_pr).parameters)
-        assert params == {"clear", "executing_loop_identity", "human_authorized"}
+        assert params == {"clear", "executing_loop_identity", "human_authorized", "expedite_authorized"}
 
 
 class TestPrMergeRedirectedToKeystone(TestCase):
@@ -786,10 +787,13 @@ class TestFullAutonomySubstrateIsHeldAndPingedNotAutoMerged(TestCase):
             _assert_preconditions(clear, human_authorized="owner:adrien")
 
     def test_full_autonomy_does_not_relax_ci_green_floor(self) -> None:
-        """MUST-DENY: full + non-green recorded verdict still refuses — the CI floor is intact."""
+        """MUST-DENY: full + FAILED recorded verdict still refuses — the CI floor is intact."""
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
         clear = _substrate_clear(ticket, pr_id=1736, gh_verify_result=MergeClear.VerifyResult.FAILED)
-        with _overlay_autonomy("t3-teatree", "full"), pytest.raises(MergePreconditionError, match="not green"):
+        with (
+            _overlay_autonomy("t3-teatree", "full"),
+            pytest.raises(MergePreconditionError, match="FAILED required check"),
+        ):
             _assert_preconditions(clear)
 
     def test_full_autonomy_does_not_relax_not_draft_floor(self) -> None:

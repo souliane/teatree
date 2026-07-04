@@ -85,7 +85,10 @@ class TestNonGreenVerdictNeverIssuable(TestCase):
                     ),
                 )
                 assert not result["issued"]
-                assert "green" in cast("str", result["error"]).lower()
+                # Split messages (FIX-EXPEDITE): a pending snapshot is refused as
+                # "issuable only via the expedite waiver"; a failed one as "can never
+                # authorize a merge". Both name their verdict class.
+                assert verdict in cast("str", result["error"]).lower()
         assert MergeClear.objects.count() == 0
 
     def test_clear_with_green_verdict_is_issued(self) -> None:
@@ -124,7 +127,9 @@ class TestNonGreenVerdictNeverMerges(TestCase):
                 ticket = clear.ticket
                 with (
                     patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub_live_green),
-                    pytest.raises(MergePreconditionError, match="not green"),
+                    # FIX-EXPEDITE split: pending refuses with "not green" (no waiver
+                    # presented), failed refuses with "FAILED required check".
+                    pytest.raises(MergePreconditionError, match=r"not green|FAILED required check"),
                 ):
                     merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
                 ticket.refresh_from_db()

@@ -60,6 +60,7 @@ COLD_HOOK_SETTINGS: dict[str, ColdHookSetting] = {
     "dispatch_quote_gate_on_task_create_enabled": ColdHookSetting(_parse_strict_bool, default=False),
     "banned_terms_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     "orchestrator_boundary_agent_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
+    "out_of_band_merge_gate_enabled": ColdHookSetting(_parse_strict_bool, default=True),
     # Bespoke integer budgets ``hook_router`` reads straight from ``[teatree]``.
     "deny_circuit_breaker_threshold": ColdHookSetting(_parse_strict_int, default=3),
     "orchestrator_turn_budget": ColdHookSetting(_parse_strict_int, default=25),

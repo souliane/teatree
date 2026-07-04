@@ -52,6 +52,8 @@ class TestIsSelfRescue:
             "t3 acme gate config-overwrite disable",
             "t3 acme gate main-clone disable",  # #2844 #3 — main-clone kill-switch self-rescue
             "t3 t3-teatree gate main-clone disable",
+            "t3 acme gate raw-merge disable",  # FIX-EXPEDITE PART B — raw-merge kill-switch self-rescue
+            "t3 t3-teatree gate raw-merge disable",
             "t3 t3-teatree gate fail-open enable",
             "t3 acme db migrate",
             "python manage.py migrate",
@@ -105,6 +107,11 @@ class TestIsSelfRescue:
         # A self-rescue command in a SECOND shell segment must not whitelist
         # the leading (blocked) command.
         assert is_self_rescue("git push origin main; t3 acme gate disable") is False
+
+    def test_raw_merge_disable_chained_to_raw_merge_is_not_rescue(self) -> None:
+        # FIX-EXPEDITE PART B: the raw-merge kill-switch glued to a raw merge
+        # must NOT rescue the raw merge — the second segment is not a rescue.
+        assert is_self_rescue("t3 acme gate raw-merge disable && gh pr merge 7 --squash") is False
 
     @pytest.mark.parametrize(
         "command",
