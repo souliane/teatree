@@ -33,7 +33,7 @@
 # subscription_oauth for a cheap window-friendly run without the cost gate) it must
 # ALSO drop `--gate-cost-bounds` from that run's script, since the two are coupled.
 #
-# The free deterministic lanes (skill-triggers, pinned-regressions) gate every
+# The free deterministic lanes (pinned-regressions) gate every
 # push via prek and the regression corpus is asserted every MR via pytest, so
 # this job owns only the metered cost-audit AI suite (one source of truth).
 

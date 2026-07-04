@@ -64,6 +64,12 @@ class _DbImportOverlay(OverlayBase):
         return True
 
 
+# ``setUp`` reverse-migrates ``core`` to a mid-graph target and the cleanup runs
+# a full forward heal on the shared ``default`` connection — several seconds
+# single-core that exceeds the global 60s ``pytest-timeout`` under maximum
+# ``-n auto --cov --doctest-modules`` parallel contention. Scoped 240s bump for
+# the genuinely-slow migrations; the global 60s stays the hang-detector (#1189).
+@pytest.mark.timeout(240)
 class WorktreeProvisionSelfHealsStaleAgentRuntimeTest(TransactionTestCase):
     """Self-DB left one migration behind, carrying a pre-#2887 ``agent_runtime`` row."""
 

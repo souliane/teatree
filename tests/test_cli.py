@@ -334,7 +334,7 @@ class TestConfigCommands:
             patch.object(config_mod, "discover_active_overlay", return_value=active),
             patch("django.setup"),
             patch.object(startup_mod, "get_overlay", return_value=mock_overlay),
-            patch.object(startup_mod, "_build_trigger_index", return_value=[]),
+            patch.object(startup_mod, "_build_requires_index", return_value=[]),
             patch.object(startup_mod, "resolve_all", return_value={}),
             patch.object(startup_mod, "_collect_skill_mtimes", return_value={}),
         ):
@@ -345,7 +345,7 @@ class TestConfigCommands:
             assert cache.is_file()
             data = json.loads(cache.read_text())
             assert data["skill_path"] == "skills/test/SKILL.md"
-            assert data["trigger_index"] == []
+            assert data["skill_index"] == []
             assert "teatree_version" in data
 
     def test_write_skill_cache_no_active_overlay(self, tmp_path, monkeypatch):
@@ -361,7 +361,7 @@ class TestConfigCommands:
             patch.object(config_mod, "discover_active_overlay", return_value=None),
             patch("django.setup"),
             patch.object(startup_mod, "get_overlay", return_value=mock_overlay),
-            patch.object(startup_mod, "_build_trigger_index", return_value=[]),
+            patch.object(startup_mod, "_build_requires_index", return_value=[]),
             patch.object(startup_mod, "resolve_all", return_value={}),
             patch.object(startup_mod, "_collect_skill_mtimes", return_value={}),
         ):
@@ -428,7 +428,7 @@ class TestConfigCommands:
         cache.write_text(
             json.dumps(
                 {
-                    "trigger_index": [
+                    "skill_index": [
                         {"skill": "rules", "requires": []},
                         {"skill": "workspace", "requires": ["rules"]},
                         {"skill": "code", "requires": ["workspace"]},
@@ -459,7 +459,7 @@ class TestConfigCommands:
         cache.write_text(
             json.dumps(
                 {
-                    "trigger_index": [
+                    "skill_index": [
                         {"skill": "rules", "requires": []},
                         {"skill": "workspace", "requires": ["rules"]},
                     ],
@@ -469,51 +469,6 @@ class TestConfigCommands:
         result = runner.invoke(app, ["config", "deps", "workspace"])
         assert result.exit_code == 0
         assert "rules → workspace" in result.output
-
-    def test_test_trigger_keyword_match(self, tmp_path, monkeypatch):
-        """Config test-trigger shows matching skill and pattern."""
-        import sys  # noqa: PLC0415
-
-        monkeypatch.setattr("teatree.paths.DATA_DIR", tmp_path)
-        cache = tmp_path / "skill-metadata.json"
-        cache.write_text(
-            json.dumps(
-                {
-                    "trigger_index": [
-                        {
-                            "skill": "ship",
-                            "priority": 10,
-                            "keywords": [r"\bcommit\b"],
-                            "urls": [],
-                            "exclude": "",
-                            "end_of_session": False,
-                        },
-                    ],
-                },
-            ),
-        )
-        # Add scripts dir to path so skill_loader can be imported inside the CLI command.
-        scripts_dir = str(Path(__file__).resolve().parent.parent / "scripts")
-        if scripts_dir not in sys.path:
-            sys.path.insert(0, scripts_dir)
-        result = runner.invoke(app, ["config", "test-trigger", "commit and push"])
-        assert result.exit_code == 0
-        assert "ship" in result.output
-        assert "keyword" in result.output
-
-    def test_test_trigger_no_match(self, tmp_path, monkeypatch):
-        """Config test-trigger shows no match for unrelated prompt."""
-        import sys  # noqa: PLC0415
-
-        monkeypatch.setattr("teatree.paths.DATA_DIR", tmp_path)
-        cache = tmp_path / "skill-metadata.json"
-        cache.write_text(json.dumps({"trigger_index": []}))
-        scripts_dir = str(Path(__file__).resolve().parent.parent / "scripts")
-        if scripts_dir not in sys.path:
-            sys.path.insert(0, scripts_dir)
-        result = runner.invoke(app, ["config", "test-trigger", "hello world"])
-        assert result.exit_code == 0
-        assert "no match" in result.output
 
 
 # ── Review-request discover ──────────────────────────────────────────

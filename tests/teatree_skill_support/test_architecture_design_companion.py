@@ -1,7 +1,7 @@
 """Tests for the architecture-design companion skill.
 
 Verifies that:
-- the skill file exists at the expected path with the expected frontmatter
+- the skill file exists at the expected path with valid frontmatter
 - the nine architectural checks are enumerated in the ARCHITECTURE.md template
 - the ``requires:`` graph wires it into ``code``, ``ticket``, and ``retro``
 - transitive resolution loads ``architecture-design`` whenever any of the three implementer skills loads
@@ -10,10 +10,10 @@ Verifies that:
 from pathlib import Path
 
 from teatree.skill_support.deps import resolve_requires
+from teatree.skill_support.requires_parser import parse_requires
 from teatree.skill_support.schema import validate_skill_md
-from teatree.trigger_parser import parse_triggers
 
-SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"
+SKILLS_DIR = Path(__file__).resolve().parents[2] / "skills"
 SKILL_PATH = SKILLS_DIR / "architecture-design" / "SKILL.md"
 
 EXPECTED_TEMPLATE_SECTIONS = [
@@ -27,6 +27,10 @@ EXPECTED_TEMPLATE_SECTIONS = [
     "8. Identity and key normalization",
     "9. Behavior preservation / capability deletion",
 ]
+
+
+def _requires_of(name: str) -> list[str]:
+    return parse_requires((SKILLS_DIR / name / "SKILL.md").read_text(encoding="utf-8")) or []
 
 
 class TestSkillFile:
@@ -44,11 +48,10 @@ class TestSkillFile:
         assert "description:" in text
         assert "architecture" in text.lower()
 
-    def test_declares_writing_plans_as_companion(self) -> None:
-        text = SKILL_PATH.read_text(encoding="utf-8")
-        triggers = parse_triggers(text)
-        assert triggers is not None
-        assert "writing-plans" in triggers["companions"]
+    def test_declares_writing_plans_as_required(self) -> None:
+        # ``writing-plans`` (an external superpowers methodology skill) migrated
+        # from the removed ``companions:`` key into the single ``requires:`` list.
+        assert "writing-plans" in _requires_of("architecture-design")
 
     def test_template_enumerates_all_nine_sections(self) -> None:
         body = SKILL_PATH.read_text(encoding="utf-8")
@@ -60,39 +63,25 @@ class TestSkillFile:
         assert len(lines) <= 200, f"skill is {len(lines)} lines, cap is 200"
 
 
-def _trigger_index_for(*skill_names: str) -> list[dict[str, object]]:
-    """Build a real trigger index from the on-disk SKILL.md files."""
-    entries: list[dict[str, object]] = []
-    for name in skill_names:
-        path = SKILLS_DIR / name / "SKILL.md"
-        triggers = parse_triggers(path.read_text(encoding="utf-8"))
-        if triggers is None:
-            entries.append({"skill": name, "requires": [], "companions": []})
-            continue
-        entries.append({"skill": name, **triggers})
-    return entries
+def _requires_index_for(*skill_names: str) -> list[dict[str, object]]:
+    """Build a real requires index from the on-disk SKILL.md files."""
+    return [{"skill": name, "requires": _requires_of(name)} for name in skill_names]
 
 
 class TestRequiresWiring:
     def test_code_requires_architecture_design(self) -> None:
-        triggers = parse_triggers((SKILLS_DIR / "code" / "SKILL.md").read_text(encoding="utf-8"))
-        assert triggers is not None
-        assert "architecture-design" in triggers["requires"]
+        assert "architecture-design" in _requires_of("code")
 
     def test_ticket_requires_architecture_design(self) -> None:
-        triggers = parse_triggers((SKILLS_DIR / "ticket" / "SKILL.md").read_text(encoding="utf-8"))
-        assert triggers is not None
-        assert "architecture-design" in triggers["requires"]
+        assert "architecture-design" in _requires_of("ticket")
 
     def test_retro_requires_architecture_design(self) -> None:
-        triggers = parse_triggers((SKILLS_DIR / "retro" / "SKILL.md").read_text(encoding="utf-8"))
-        assert triggers is not None
-        assert "architecture-design" in triggers["requires"]
+        assert "architecture-design" in _requires_of("retro")
 
 
 class TestResolution:
     def test_loading_code_pulls_architecture_design(self) -> None:
-        index = _trigger_index_for("rules", "workspace", "architecture-design", "code")
+        index = _requires_index_for("rules", "workspace", "architecture-design", "code")
         resolved = resolve_requires(["code"], index)
         assert "architecture-design" in resolved
         assert "code" in resolved
@@ -100,25 +89,23 @@ class TestResolution:
         assert resolved.index("architecture-design") < resolved.index("code")
 
     def test_loading_ticket_pulls_architecture_design(self) -> None:
-        index = _trigger_index_for("rules", "workspace", "architecture-design", "ticket")
+        index = _requires_index_for("rules", "workspace", "architecture-design", "ticket")
         resolved = resolve_requires(["ticket"], index)
         assert "architecture-design" in resolved
         assert resolved.index("architecture-design") < resolved.index("ticket")
 
     def test_loading_retro_pulls_architecture_design(self) -> None:
-        index = _trigger_index_for("rules", "workspace", "architecture-design", "retro")
+        index = _requires_index_for("rules", "workspace", "architecture-design", "retro")
         resolved = resolve_requires(["retro"], index)
         assert "architecture-design" in resolved
         assert resolved.index("architecture-design") < resolved.index("retro")
 
     def test_no_circular_dependency(self) -> None:
-        index = _trigger_index_for("rules", "workspace", "architecture-design", "code", "ticket", "retro")
+        index = _requires_index_for("rules", "workspace", "architecture-design", "code", "ticket", "retro")
         # If a cycle existed, resolve_requires would raise ValueError.
         resolve_requires(["code", "ticket", "retro"], index)
 
-    def test_architecture_design_has_no_required_deps(self) -> None:
-        triggers = parse_triggers(SKILL_PATH.read_text(encoding="utf-8"))
-        assert triggers is not None
-        # The companion stays at the bottom of the DAG — pulling it in must not
-        # cascade further `requires:` loads.
-        assert triggers["requires"] == []
+    def test_architecture_design_requires_writing_plans(self) -> None:
+        # writing-plans is an external methodology skill with no SKILL.md in this
+        # repo; it stays in ``requires`` and passes through resolution.
+        assert _requires_of("architecture-design") == ["writing-plans"]

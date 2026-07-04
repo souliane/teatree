@@ -48,7 +48,6 @@ graph TD
     teatree.core --> teatree.utils
     teatree.core --> teatree.timeouts
     teatree.core --> teatree.skill_support
-    teatree.core --> teatree.trigger_parser
     teatree.core --> teatree.hooks
     teatree.core --> teatree.on_behalf_gate
     teatree.core --> teatree.slack_mrkdwn
@@ -156,7 +155,6 @@ graph TD
     teatree.eval --> teatree.hooks
     teatree.eval --> teatree.pricing
     teatree.eval --> teatree.utils
-    teatree.eval --> teatree.trigger_parser
     teatree.eval --> teatree.claude_sessions
     teatree.eval --> teatree.llm
     teatree.core.management --> teatree.core
@@ -344,5 +342,4 @@ graph TD
     teatree.loop.dispatch_tables
     teatree.slack_mrkdwn
     teatree.memory_audit
-    teatree.trigger_parser
 ```

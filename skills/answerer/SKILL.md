@@ -6,7 +6,6 @@ requires:
   - workspace
   - rules
   - platforms
-companions:
   - verification-before-completion
 metadata:
   version: 0.0.1

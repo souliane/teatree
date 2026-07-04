@@ -197,8 +197,8 @@ class OverlayConfig:
     # loaded alongside the active lifecycle skill — the standing equivalent of
     # "always load /ac-django and /ac-python when working in this overlay".
     # Wired through ``SkillLoadingPolicy._base_detected_skills`` so the
-    # existing ``resolve_companions`` resolver handles the dependency chain
-    # without a parallel implementation.
+    # ``resolve_requires`` chain handles the dependency closure without a
+    # parallel implementation.
     companion_skills: list[str]
     # ``pr_review_companion`` is the single skill injected alongside
     # ``/t3:review`` whenever a reviewer sub-agent is dispatched
@@ -333,7 +333,7 @@ class OverlayConfig:
         """Return the skills a reviewer must hold, deduped and order-preserving.
 
         ``[pr_review_companion, *companion_skills]``: the project's
-        review-quality bar (#1135) then the overlay's standing companions,
+        review-quality bar (#1135) then the overlay's standing companion skills,
         threaded through :func:`active_overlay_review_skills` into the
         reviewing-phase bundle and system context so a headless reviewer
         receives the overlay's review conventions in full. An overlay broadens
@@ -346,7 +346,7 @@ class OverlayConfig:
 
         Generalizes :meth:`get_review_companion_skills` beyond reviewing so a
         fanned-out ``code``/``e2e``/``test`` task demands the overlay's
-        companions too. ``review`` keeps the richer review set; every other
+        companion skills too. ``review`` keeps the richer review set; every other
         lifecycle gets the standing ``companion_skills``.
         """
         if lifecycle == "review":

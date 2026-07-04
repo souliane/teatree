@@ -9,15 +9,15 @@ path (``select_for_prompt_hook``) and the runtime-phase path
 The wiring threads through ``OverlayConfig.apply_toml_overrides`` (reads the
 field from the ``[overlays.<name>]`` table and sets it on the instance),
 ``SkillLoadingPolicy._base_detected_skills`` (accepts an explicit
-``companion_skills`` list that the caller — the UserPromptSubmit script or
+``companion_skills`` list that the caller — the agent-launch CLI or
 ``resolve_skill_bundle`` — reads from the active overlay's config and passes
 in, keeping the policy module free of a back-reference to ``teatree.core``),
-and ``resolve_companions`` (the existing resolver, which handles transitive
-``requires``/``companions`` so we never parallel-implement the dep chain).
+and ``resolve_requires`` (the single dependency resolver, which handles the
+transitive ``requires`` chain so we never parallel-implement the dep chain).
 
-Reuses ``resolve_companions`` — does NOT parallel-implement a
-teatree-specific path regex or single-purpose handler (the approach taken by
-the reverted commit ``ae66b291``).
+The prompt-hook path surfaces framework skills only (cwd-based); the overlay's
+own skill + companions surface through the dispatch paths (agent launch,
+runtime phase).
 """
 
 from pathlib import Path
@@ -58,37 +58,37 @@ class TestOverlayConfigCompanionSkillsField:
         assert second.companion_skills == []
 
 
-# An overlay whose remote_patterns match the cwd → the prompt-hook path resolves
+# An overlay whose remote_patterns match the cwd → the agent-launch path resolves
 # the overlay as in-scope, so its companion skills are required. Without a
 # matching remote, the overlay is NOT in scope and the companions are withheld.
 _IN_SCOPE_OVERLAY_META = {"skill_path": "t3:acme", "remote_patterns": ["*acme*"]}
 
 
-class TestSelectForPromptHookEmitsCompanionSkills:
-    """``select_for_prompt_hook`` emits the overlay's ``companion_skills``."""
+class TestSelectForAgentLaunchEmitsCompanionSkills:
+    """``select_for_agent_launch`` emits the overlay's ``companion_skills``."""
 
-    def test_prompt_hook_includes_overlay_companion_skills(self, tmp_path: Path, monkeypatch) -> None:
+    def test_agent_launch_includes_overlay_companion_skills(self, tmp_path: Path, monkeypatch) -> None:
         monkeypatch.setattr(
             "teatree.skill_support.loading._matches_any_remote",
             lambda _cwd, _patterns: True,
         )
         config = _config_with_companions(["ac-django", "ac-python"])
-        trigger_index: list[dict[str, object]] = [
-            {"skill": "code", "companions": [], "requires": []},
-        ]
+        skill_index: list[dict[str, object]] = [{"skill": "code", "requires": []}]
         policy = SkillLoadingPolicy()
-        result = policy.select_for_prompt_hook(
+        result = policy.select_for_agent_launch(
             cwd=tmp_path,
-            intent="code",
             overlay_skill_metadata=_IN_SCOPE_OVERLAY_META,
-            loaded_skills=set(),
-            trigger_index=trigger_index,
+            ticket_status="started",
+            explicit_phase="",
+            explicit_skills=[],
+            overlay_active=False,
+            skill_index=skill_index,
             companion_skills=config.companion_skills,
         )
         assert "ac-django" in result.skills
         assert "ac-python" in result.skills
 
-    def test_prompt_hook_dedupes_overlay_companions_with_framework_detect(
+    def test_agent_launch_dedupes_overlay_companions_with_framework_detect(
         self,
         tmp_path: Path,
         monkeypatch,
@@ -101,16 +101,16 @@ class TestSelectForPromptHookEmitsCompanionSkills:
         )
         (tmp_path / "manage.py").touch()
         config = _config_with_companions(["ac-django", "ac-python"])
-        trigger_index: list[dict[str, object]] = [
-            {"skill": "code", "companions": [], "requires": []},
-        ]
+        skill_index: list[dict[str, object]] = [{"skill": "code", "requires": []}]
         policy = SkillLoadingPolicy()
-        result = policy.select_for_prompt_hook(
+        result = policy.select_for_agent_launch(
             cwd=tmp_path,
-            intent="code",
             overlay_skill_metadata=_IN_SCOPE_OVERLAY_META,
-            loaded_skills=set(),
-            trigger_index=trigger_index,
+            ticket_status="started",
+            explicit_phase="",
+            explicit_skills=[],
+            overlay_active=False,
+            skill_index=skill_index,
             companion_skills=config.companion_skills,
         )
         assert result.skills.count("ac-django") == 1
@@ -122,15 +122,13 @@ class TestSelectForRuntimePhaseEmitsCompanionSkills:
 
     def test_runtime_phase_includes_overlay_companion_skills(self, tmp_path: Path) -> None:
         config = _config_with_companions(["ac-django", "ac-python"])
-        trigger_index: list[dict[str, object]] = [
-            {"skill": "code", "companions": [], "requires": []},
-        ]
+        skill_index: list[dict[str, object]] = [{"skill": "code", "requires": []}]
         policy = SkillLoadingPolicy()
         result = policy.select_for_runtime_phase(
             cwd=tmp_path,
             phase="coding",
             overlay_skill_metadata={},
-            trigger_index=trigger_index,
+            skill_index=skill_index,
             companion_skills=config.companion_skills,
         )
         assert "ac-django" in result.skills

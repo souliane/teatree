@@ -36,6 +36,13 @@ from teatree.core.models import Ticket
 from tests.teatree_core.conftest import SchemaGuardAlias
 
 
+# Each test here runs a full multi-app Django ``migrate`` (register + reverse +
+# forward) against a fresh sqlite alias — ~8s single-core, which balloons past
+# the global 60s ``pytest-timeout`` only under maximum ``-n auto --cov
+# --doctest-modules`` parallel contention. The global timeout stays 60s as the
+# hang-detector for every other test; these genuinely-slow migrations get a
+# scoped 240s bump so the load-induced flake stops blocking every PR (#1189).
+@pytest.mark.timeout(240)
 class TestMigrateSelfDbInProcess:
     """``migrate_self_db`` converges the connection named by its ``alias`` arg.
 

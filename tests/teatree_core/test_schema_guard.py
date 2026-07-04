@@ -135,6 +135,13 @@ class PendingMigrationsTest(TransactionTestCase):
         require_current_schema()  # must not raise
 
 
+# Every test here calls ``make_stale()`` — a full multi-app migrate plus a
+# reverse-migrate of ``core`` to ``zero`` on a fresh sqlite alias (several
+# seconds single-core). Under maximum ``-n auto --cov --doctest-modules``
+# parallel contention that exceeds the global 60s ``pytest-timeout``, so the
+# genuinely-slow migrations get a scoped 240s bump; the global timeout stays
+# 60s as the hang-detector for all other tests (#1189).
+@pytest.mark.timeout(240)
 class TestSchemaGuardOnPrivateAlias:
     """Read-only / self-heal surfaces exercised against a private alias (#2915).
 
@@ -220,6 +227,12 @@ class BehindSelfDbReportingTest(TransactionTestCase):
         assert "unapplied migration" in buffer.getvalue()
 
 
+# Each test drives a real backward ``migrate core zero`` in ``setUp`` and a full
+# forward heal, on the shared ``default`` connection — several seconds
+# single-core that exceeds the global 60s ``pytest-timeout`` under maximum
+# parallel contention. Scoped 240s bump for the genuinely-slow migrations; the
+# global 60s stays as the hang-detector everywhere else (#1189).
+@pytest.mark.timeout(240)
 class BehindSelfDbSelfHealsTest(TransactionTestCase):
     """The sanctioned commands that cannot move off ``default`` (#2915).
 

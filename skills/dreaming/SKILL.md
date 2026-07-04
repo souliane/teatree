@@ -7,10 +7,6 @@ requires:
   - workspace
   - rules
   - platforms
-triggers:
-  priority: 90
-  keywords:
-    - '\b(dream(ing)?|run the dream( pass)?|memory consolidation|consolidate (the )?(memory|memories)|full dream)\b'
 metadata:
   version: 0.0.1
   subagent_safe: true

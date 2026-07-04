@@ -46,7 +46,7 @@ graph TB
     direction LR
     skills["lifecycle skills"]
     hooks["hooks<br/>routing, guards, tracking"]
-    companions["companion skills<br/>superpowers, ac-*"]
+    required["required skills<br/>superpowers, ac-*"]
   end
 
   scanners -->|"feed signals to"| dispatch
@@ -447,8 +447,8 @@ Skills and hooks that drive AI-assisted development. Each skill covers one phase
 of the development lifecycle — ticket intake, coding, testing, review, shipping
 — and contains the methodology, guardrails, and domain knowledge the agent needs
 to do the work well: TDD discipline, debugging process, review checklists, retro
-learning, verification rules. Skills declare dependencies (`requires:`) and
-optional companion skills (`companions:`) from third-party packages like
+learning, verification rules. Skills declare dependencies (`requires:`,
+transitive) — including methodology skills from third-party packages like
 [superpowers](https://github.com/obra/superpowers). Hooks handle automatic skill
 routing, branch protection, and session tracking.
 
@@ -599,7 +599,7 @@ graph LR
 | `review` | Code review — self-review before finalization, giving review, receiving review feedback |
 | `review-request` | Batch review requests — discover open PRs, validate metadata, check for duplicates, post to review channels |
 | `rules` | Cross-cutting agent safety rules — clickable refs, temp files, sub-agent limits, UX preservation. Auto-loaded as a dependency by other skills. |
-| `running-evals` | Single in-session entrypoint that auto-orchestrates the whole eval picture — free deterministic lanes (skill-triggers, the eval-coverage gate `t3 eval coverage`, pinned-regressions) plus the transcript AI/trajectory lane (prepare → produce transcripts in-session → grade) — and prints one unified results table |
+| `running-evals` | Single in-session entrypoint that auto-orchestrates the whole eval picture — free deterministic lanes (the eval-coverage gate `t3 eval coverage`, pinned-regressions) plus the transcript AI/trajectory lane (prepare → produce transcripts in-session → grade) — and prints one unified results table |
 | `scanning-news` | Scans today's TLDR AI and The Rundown AI editions for ideas that could improve teatree, fetches the full article for promising items, queues each concrete t3-improvement candidate behind an ask-gate (PendingArticleSuggestion) for per-article user approval before any souliane/teatree issue is filed, and posts a terse Slack DM summary |
 | `setup` | Bootstrap and validate teatree for local use — prerequisites, config, skill symlinks, optional agent hooks, and Django project scaffolding |
 | `ship` | Delivery — committing, pushing, creating MR/PR, pipeline monitoring, review requests |
@@ -618,38 +618,30 @@ graph LR
 ### Extended `SKILL.md` frontmatter
 
 Teatree adds a small schema on top of Claude Code's standard `SKILL.md`
-frontmatter so skills can declare *when* they should load and *what* they need
-alongside them:
+frontmatter so a skill can declare *what* it needs loaded alongside it:
 
 ```yaml
 ---
 name: ship
-triggers:
-  priority: 20
-  keywords: ['\b(commit|push|ship)\b']
-  exclude: '\breview\b'
-  end_of_session: true
-requires: [rules, platforms]
-companions: [verification-before-completion]
-search_hints: [deliver, merge request, PR]
+requires: [rules, platforms, verification-before-completion]
 ---
 ```
 
-- `triggers` — deterministic auto-load rules (keywords, URLs, priority, exclude,
-  end-of-session phrases)
-- `requires` — hard dependencies, resolved transitively with cycle detection
-- `companions` — optional third-party skills (e.g. from
+- `requires` — the single skill-dependency edge, resolved transitively in
+  topological order with cycle detection. A required skill with no `SKILL.md`
+  in this repo (an external methodology skill from
   [obra/superpowers](https://github.com/obra/superpowers), installed via
-  [APM](https://github.com/microsoft/apm), never modified by teatree)
-- `search_hints` — keyword synonyms used to route headless tasks to the right
-  skill
+  [APM](https://github.com/microsoft/apm), never modified by teatree) passes
+  through so the `Skill` tool still loads it.
 
-The `UserPromptSubmit` hook matches the prompt against a cached trigger index
-and injects `LOAD THESE SKILLS NOW: ...`. `PreToolUse` blocks edits until the
-injected skills are loaded. Matching is regex, not the model — skill loading
-is no longer the agent's decision.
+Skill loading is fully explicit — slash commands (`/t3:ship`), phase mapping
+(`t3 agent --phase shipping`), ticket status, the `requires` chain, and
+cwd/overlay context. There is no free-text scan of the prompt: the
+`UserPromptSubmit` hook surfaces only the framework / overlay / companion
+skills a prompt's cwd context implies, and `PreToolUse` blocks Python code
+edits until those load.
 
-See [docs/skill-triggers.md](docs/skill-triggers.md) for the full schema and
+See `BLUEPRINT.md` § 11.5 for the explicit-loading model and
 [docs/claude-code-internals.md](docs/claude-code-internals.md) for how the
 hooks wire into Claude Code.
 

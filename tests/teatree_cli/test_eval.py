@@ -26,7 +26,6 @@ from teatree.eval.report import JudgeOutcome, MatcherResult, ScenarioResult, eva
 from teatree.eval.skill_command_validity import CommandValidityReport, CommandViolation
 from teatree.eval.skill_prose_judge import ProseJudgeReport, ProseScore
 from teatree.eval.transcript_conformance import InvariantResult
-from teatree.eval.trigger_qa import TriggerCheck, TriggerQAReport
 from teatree.llm.credentials import AnthropicApiKeyCredential, AnthropicSubscriptionCredential
 
 if TYPE_CHECKING:
@@ -777,38 +776,11 @@ class TestEvalRequireExecuted:
         assert result.exit_code == 0, result.output
 
 
-class TestEvalSkillTriggers:
-    def test_shipped_corpus_passes(self) -> None:
+class TestSkillTriggersLaneRemoved:
+    """The free-text skill-triggers lane was removed with explicit skill loading."""
+
+    def test_skill_triggers_command_is_gone(self) -> None:
         result = CliRunner().invoke(app, ["eval", "skill-triggers"])
-        assert result.exit_code == 0, result.output
-        assert "0 failed" in result.output
-
-    def test_reports_failure_and_exits_nonzero(self) -> None:
-        bad = TriggerQAReport(checks=(TriggerCheck("debug", "no scope here", should_fire=True, fired=False),))
-        with patch("teatree.cli.eval.lanes.run_trigger_qa", return_value=bad):
-            result = CliRunner().invoke(app, ["eval", "skill-triggers"])
-        assert result.exit_code == 1
-        assert "under-trigger" in result.output
-
-    def test_json_format_emits_checks(self) -> None:
-        good = TriggerQAReport(checks=(TriggerCheck("debug", "the build is broken", should_fire=True, fired=True),))
-        with patch("teatree.cli.eval.lanes.run_trigger_qa", return_value=good):
-            result = CliRunner().invoke(app, ["eval", "skill-triggers", "--format", "json"])
-        assert result.exit_code == 0
-        output = result.output
-        payload = json.loads(output[output.index("{") : output.rindex("}") + 1])
-        assert payload["ok"] is True
-        assert payload["checks"][0]["skill"] == "debug"
-
-    def test_over_trigger_message_for_unexpected_fire(self) -> None:
-        bad = TriggerQAReport(checks=(TriggerCheck("debug", "open a PR", should_fire=False, fired=True),))
-        with patch("teatree.cli.eval.lanes.run_trigger_qa", return_value=bad):
-            result = CliRunner().invoke(app, ["eval", "skill-triggers"])
-        assert result.exit_code == 1
-        assert "over-trigger" in result.output
-
-    def test_old_trigger_qa_command_is_gone(self) -> None:
-        result = CliRunner().invoke(app, ["eval", "trigger-qa"])
         assert result.exit_code != 0, result.output
 
 
@@ -1790,14 +1762,6 @@ class TestPrepareTranscript:
         assert manifest[0]["transcript_path"] == str(tmp_path / "alpha.jsonl")
 
 
-def _good_trigger() -> TriggerQAReport:
-    return TriggerQAReport(checks=(TriggerCheck("debug", "the build is broken", should_fire=True, fired=True),))
-
-
-def _bad_trigger() -> TriggerQAReport:
-    return TriggerQAReport(checks=(TriggerCheck("debug", "no scope", should_fire=True, fired=False),))
-
-
 def _regression(*, ok: bool) -> RegressionReport:
     check = RegressionCheck(
         failure_class="synthetic",
@@ -1855,7 +1819,6 @@ def _prose_report(*, weakest: str = "beta") -> ProseJudgeReport:
 def _patch_all_lanes(  # noqa: PLR0913 — one keyword per free lane the bare-`t3 eval` run patches; the list IS the lane set.
     specs: list[EvalSpec],
     *,
-    trigger: TriggerQAReport | None = None,
     regression_ok: bool = True,
     negative_caught: bool = True,
     replay_results: list[InvariantResult] | None = None,
@@ -1865,7 +1828,6 @@ def _patch_all_lanes(  # noqa: PLR0913 — one keyword per free lane the bare-`t
     """Patch every free-lane input `run_full_suite` (in cli.eval.all) resolves."""
     with (
         patch("teatree.cli.eval.all.discover_specs", return_value=specs),
-        patch("teatree.cli.eval.all.run_trigger_qa", return_value=trigger or _good_trigger()),
         patch("teatree.cli.eval.all.skill_eval_coverage", return_value=_coverage(gaps=coverage_gaps)),
         patch("teatree.cli.eval.all.run_regression_corpus", return_value=_regression(ok=regression_ok)),
         patch("teatree.cli.eval.all.run_negative_control", return_value=_negative_outcome(caught=negative_caught)),
@@ -1892,7 +1854,6 @@ class TestEvalDefault:
         assert result.exit_code == 0, result.output
         assert any(ch in result.output for ch in "─│┌┐└┘╭╮╰╯"), result.output
         for lane in (
-            "skill-triggers",
             "skill-coverage",
             "pinned-regressions",
             "negative-control",
@@ -1914,8 +1875,8 @@ class TestEvalDefault:
             result = CliRunner().invoke(app, ["eval"])
         assert result.exit_code == 1, result.output
 
-    def test_bare_eval_exits_nonzero_on_a_trigger_failure(self) -> None:
-        with _patch_all_lanes([_spec("worktree_first")], trigger=_bad_trigger()):
+    def test_bare_eval_exits_nonzero_on_a_lane_failure(self) -> None:
+        with _patch_all_lanes([_spec("worktree_first")], regression_ok=False):
             result = CliRunner().invoke(app, ["eval"])
         assert result.exit_code == 1, result.output
 
@@ -1928,7 +1889,10 @@ class TestEvalDefault:
     def test_bare_eval_docker_delegates_to_the_container(self) -> None:
         with (
             patch("teatree.cli.eval.all.run_eval_in_docker", return_value=0) as run_docker,
-            patch("teatree.cli.eval.all.run_trigger_qa", side_effect=AssertionError("docker must not run host lanes")),
+            patch(
+                "teatree.cli.eval.all.run_regression_corpus",
+                side_effect=AssertionError("docker must not run host lanes"),
+            ),
         ):
             result = CliRunner().invoke(app, ["eval", "--docker", "--free-only"])
         assert result.exit_code == 0, result.output
@@ -1960,7 +1924,10 @@ class TestEvalSuiteSdkBackendDockerByDefault:
         with (
             patch.dict("os.environ", {}, clear=True),
             patch("teatree.cli.eval.all.run_eval_in_docker", return_value=0) as docker,
-            patch("teatree.cli.eval.all.run_trigger_qa", side_effect=AssertionError("fresh run must not run on host")),
+            patch(
+                "teatree.cli.eval.all.run_regression_corpus",
+                side_effect=AssertionError("fresh run must not run on host"),
+            ),
         ):
             result = CliRunner().invoke(app, ["eval", "--backend", "api"])
         assert result.exit_code == 0, result.output
@@ -2045,7 +2012,7 @@ class TestEvalAll:
             result = CliRunner().invoke(app, ["eval", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
         assert any(ch in result.output for ch in "─│┌┐└┘╭╮╰╯"), result.output
-        assert "skill-triggers" in result.output
+        assert "skill-coverage" in result.output
         assert "pinned-regressions" in result.output
 
     def test_table_lists_all_lanes_including_coverage(self, tmp_path: Path) -> None:
@@ -2056,7 +2023,6 @@ class TestEvalAll:
             result = CliRunner().invoke(app, ["eval", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
         lanes = (
-            "skill-triggers",
             "skill-coverage",
             "pinned-regressions",
             "negative-control",
@@ -2080,7 +2046,6 @@ class TestEvalAll:
             result = CliRunner().invoke(app, ["eval", "--free-only", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 0, result.output
         for lane in (
-            "skill-triggers",
             "skill-coverage",
             "pinned-regressions",
             "negative-control",
@@ -2108,7 +2073,10 @@ class TestEvalAll:
     def test_docker_delegates_to_the_container_and_skips_host_lanes(self) -> None:
         with (
             patch("teatree.cli.eval.all.run_eval_in_docker", return_value=0) as run_docker,
-            patch("teatree.cli.eval.all.run_trigger_qa", side_effect=AssertionError("docker must not run host lanes")),
+            patch(
+                "teatree.cli.eval.all.run_regression_corpus",
+                side_effect=AssertionError("docker must not run host lanes"),
+            ),
         ):
             result = CliRunner().invoke(app, ["eval", "--docker", "--free-only"])
         assert result.exit_code == 0, result.output
@@ -2376,7 +2344,7 @@ class TestEvalRunMeteredDockerByDefault:
         assert "ai-eval" in result.output
 
     def test_failing_free_lane_exits_nonzero(self, tmp_path: Path) -> None:
-        with _patch_all_lanes([_spec("worktree_first")], trigger=_bad_trigger()):
+        with _patch_all_lanes([_spec("worktree_first")], regression_ok=False):
             result = CliRunner().invoke(app, ["eval", "--transcript-dir", str(tmp_path)])
         assert result.exit_code == 1, result.output
 
@@ -2696,7 +2664,7 @@ class TestSuiteMeteredImpliesStrict:
 
     def _lanes(self) -> list[LaneResult]:
         return [
-            LaneResult(name="skill-triggers", cost="free", passed=True, skipped=False, detail="ok"),
+            LaneResult(name="pinned-regressions", cost="free", passed=True, skipped=False, detail="ok"),
             LaneResult(
                 name="ai-eval",
                 cost="metered",

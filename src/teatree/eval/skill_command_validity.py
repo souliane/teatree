@@ -28,7 +28,7 @@ from pathlib import Path
 
 # ``skills/`` sits next to ``src/`` in the teatree tree; resolve it from this
 # module's path so the lane stays a leaf of the eval package (the same
-# backwards-edge convention ``discovery`` / ``trigger_qa`` follow).
+# backwards-edge convention ``discovery`` / ``coverage`` follow).
 DEFAULT_SKILLS_DIR = Path(__file__).resolve().parents[3] / "skills"
 
 # A backticked ``t3 …`` run command inside a markdown doc. Stops at the closing

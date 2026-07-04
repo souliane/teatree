@@ -3,10 +3,6 @@ name: prompts
 description: 'Trigger and manage reusable prompts — list the prompts in the DB, render one by name with its templated params, and point to the admin for authoring + version history. Use when the user says "prompts", "run a prompt", "trigger a prompt", "render a prompt", "list prompts", or "prompt library".'
 eval_exempt: thin `t3 prompts` CLI reference; prompt render/versioning behaviour is covered by tests/teatree_core/models/test_prompt_params.py and tests/teatree_core/test_prompts_command.py, not by agent prose here
 compatibility: any
-triggers:
-  priority: 50
-  keywords:
-    - '\b(prompts|run a prompt|trigger a prompt|render a prompt|list prompts|prompt library)\b'
 requires:
   - rules
 metadata:

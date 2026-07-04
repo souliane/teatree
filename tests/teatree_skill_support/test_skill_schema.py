@@ -43,12 +43,23 @@ class TestValidateSkillMd:
         assert errors == []
         assert any("unknown field 'custom_field'" in w for w in warnings)
 
-    def test_companions_field_is_recognised(self, tmp_path: Path):
+    def test_removed_companions_field_fails_loud(self, tmp_path: Path):
         skill_md = tmp_path / "SKILL.md"
         skill_md.write_text("---\nname: test\ndescription: d\ncompanions:\n  - other-skill\n---\n")
-        errors, warnings = validate_skill_md(skill_md)
-        assert errors == []
-        assert not any("'companions'" in w for w in warnings)
+        errors, _warnings = validate_skill_md(skill_md)
+        assert any("'companions'" in e and "removed" in e for e in errors)
+
+    def test_removed_triggers_field_fails_loud(self, tmp_path: Path):
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text("---\nname: test\ndescription: d\ntriggers:\n  priority: 50\n---\n")
+        errors, _warnings = validate_skill_md(skill_md)
+        assert any("'triggers'" in e and "removed" in e for e in errors)
+
+    def test_removed_search_hints_field_fails_loud(self, tmp_path: Path):
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text("---\nname: test\ndescription: d\nsearch_hints:\n  - foo\n---\n")
+        errors, _warnings = validate_skill_md(skill_md)
+        assert any("'search_hints'" in e and "removed" in e for e in errors)
 
     def test_eval_exempt_field_is_recognised(self, tmp_path: Path):
         skill_md = tmp_path / "SKILL.md"
@@ -68,18 +79,6 @@ class TestValidateSkillMd:
         skill_md.write_text("---\nname: test\ndescription: d\neval_exempt:\n---\n")
         errors, _ = validate_skill_md(skill_md)
         assert any("eval_exempt" in e and "non-empty" in e for e in errors)
-
-    def test_invalid_regex_in_keywords(self, tmp_path: Path):
-        skill_md = tmp_path / "SKILL.md"
-        skill_md.write_text("---\nname: test\ndescription: d\ntriggers:\n  keywords:\n    - '[invalid'\n---\n")
-        errors, _ = validate_skill_md(skill_md)
-        assert any("invalid regex" in e for e in errors)
-
-    def test_valid_regex_in_keywords(self, tmp_path: Path):
-        skill_md = tmp_path / "SKILL.md"
-        skill_md.write_text("---\nname: test\ndescription: d\ntriggers:\n  keywords:\n    - '\\bcommit\\b'\n---\n")
-        errors, _ = validate_skill_md(skill_md)
-        assert errors == []
 
     def test_requires_unknown_skill(self, tmp_path: Path):
         skill_md = tmp_path / "SKILL.md"

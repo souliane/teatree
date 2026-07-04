@@ -18,7 +18,7 @@ from teatree.cli.eval.changed_scenarios import changed_scenarios
 from teatree.cli.eval.corpus import corpus_app
 from teatree.cli.eval.history import history_command
 from teatree.cli.eval.label import label_app
-from teatree.cli.eval.lanes import coverage, pinned_regressions, skill_triggers
+from teatree.cli.eval.lanes import coverage, pinned_regressions
 from teatree.cli.eval.merge_summaries import merge_summaries
 from teatree.cli.eval.merged_prs_since import merged_prs_since
 from teatree.cli.eval.negative_control import negative_control
@@ -34,7 +34,6 @@ def register_imported_commands(eval_app: typer.Typer) -> None:
     eval_app.command("benchmark")(benchmark)
     eval_app.command("capture-subagent")(capture_subagent)
     eval_app.command("transcript-replay")(transcript_replay)
-    eval_app.command("skill-triggers")(skill_triggers)
     eval_app.command("coverage")(coverage)
     eval_app.command("pinned-regressions")(pinned_regressions)
     eval_app.command("skill-command-validity")(skill_command_validity)
