@@ -65,7 +65,7 @@ _CONNECT_ERRORS = (httpx.ConnectTimeout, httpx.ConnectError, httpx.PoolTimeout)
 
 
 def _scope_guarded(method: str, token: str, call: Callable[[], RawAPIDict]) -> RawAPIDict:
-    """Run *call* under the token-scope cache (souliane/teatree#2566, PR-19).
+    """Run *call* under the token-scope cache (souliane/teatree#1450, PR-19).
 
     A known-missing ``(token, method-scope)`` pair short-circuits pre-HTTP; the
     first live ``missing_scope`` records the pair and banners once. Both outcomes

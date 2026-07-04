@@ -14,7 +14,7 @@ from teatree.types import RawAPIDict
 OAUTH_SCOPES_HEADER = "X-OAuth-Scopes"
 
 # Static Slack-method → required-OAuth-scope map for the token-scope cache
-# (souliane/teatree#2566, PR-19). Only the loop's write methods are listed: the
+# (souliane/teatree#1450, PR-19). Only the loop's write methods are listed: the
 # scope a ``missing_scope`` maps to must be knowable BEFORE the call so a
 # known-missing pair short-circuits pre-HTTP. Each value is the exact scope Slack
 # reports in ``needed`` for that method, so the pre-call key and the observed

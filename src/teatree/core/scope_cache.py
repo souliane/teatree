@@ -1,4 +1,4 @@
-"""Process-lifetime token-scope-failure cache (souliane/teatree#2566, PR-19).
+"""Process-lifetime token-scope-failure cache (souliane/teatree#1450, PR-19).
 
 A backend call that fails because its OAuth token lacks a scope is a hard
 configuration failure, not a transient one: retrying it in this loop process
@@ -176,8 +176,8 @@ def guarded_scope_call[T](
 ) -> T:
     """Run *call* under the scope cache, short-circuiting a known-missing scope.
 
-    The response-inspection form used by the Slack and GitLab transports: a
-    pair already recorded raises ``ScopeMissingError(cached=True)`` before
+    The response-inspection form used by the Slack transport (GitLab deferred):
+    a pair already recorded raises ``ScopeMissingError(cached=True)`` before
     *call* runs (zero HTTP); otherwise *call* runs and *detect* classifies its
     result. ``detect`` returns a detail string when the result IS a scope
     failure (else ``None``) — the pair is then recorded (log + one banner) and

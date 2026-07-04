@@ -1,4 +1,4 @@
-"""Token-scope-failure cache behaviour (souliane/teatree#2566, PR-19 item 6).
+"""Token-scope-failure cache behaviour (souliane/teatree#1450, PR-19 item 6).
 
 Drives the seam directly (no DB, no network): a stub notifier records banner
 idempotency keys and a fake transport counts HTTP calls, so the acceptance
