@@ -57,7 +57,11 @@ class TestArchitectureContract:
 
     def test_layers_reject_a_backwards_cross_layer_import(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"
-        shutil.copytree(_REPO_ROOT / "src", repo / "src", ignore=shutil.ignore_patterns("__pycache__"))
+        # ``_*_probe.py`` are transient files another test (``TestCapsBite`` in
+        # tests/quality/test_ruff_antislop_caps.py) writes into the real
+        # ``src/teatree/`` and deletes; under ``-n auto`` the copy would otherwise
+        # race their deletion (``shutil.Error: No such file``). They are not modules.
+        shutil.copytree(_REPO_ROOT / "src", repo / "src", ignore=shutil.ignore_patterns("__pycache__", "_*_probe.py"))
         shutil.copy2(_TACH_TOML, repo / "tach.toml")
         config = tomllib.loads((repo / "tach.toml").read_text(encoding="utf-8"))
         layer_of = {m["path"]: m.get("layer") for m in config["modules"]}
