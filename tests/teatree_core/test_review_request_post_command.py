@@ -24,7 +24,7 @@ from django.test import TestCase
 
 from teatree.config import OnBehalfPostMode, UserSettings
 from teatree.core.gates.review_request_guard import GuardDecision, GuardTarget
-from teatree.core.models import OnBehalfApproval, OnBehalfAudit, ReviewRequestPost, Ticket
+from teatree.core.models import OnBehalfApproval, OnBehalfAudit, ReviewEvidence, ReviewRequestPost, Ticket
 
 _MR_URL = "https://gitlab.com/org/repo/-/merge_requests/385"
 _TARGET = GuardTarget(channel_id="C_REVIEW", channel_name="the-review-team", token="xoxp")
@@ -182,11 +182,36 @@ class TestReviewRequestPostReviewedStateGate(_DataDirMixin, TestCase):
         assert payload["reason"] == "ticket_not_reviewed"
 
     def test_allows_reviewed_ticket_with_evidence(self) -> None:
-        from teatree.core.models import ReviewEvidence  # noqa: PLC0415
-
         OnBehalfApproval.record(target=_MR_URL, action="review_request_post", approver_id="souliane")
         backend = _FakeBackend()
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEWED)
+        ReviewEvidence.record(
+            ticket=ticket,
+            kind=ReviewEvidence.Kind.COLD_REVIEW,
+            reviewer_identity="reviewer-bob",
+            verdict="merge_safe",
+            head_sha=_SHA,
+        )
+        with (
+            _reviewed_gate(required=True),
+            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
+            patch(f"{_CMD}.should_post_review_request", return_value=GuardDecision(action="post")),
+            patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
+        ):
+            code, payload = _run("--ticket-id", str(ticket.pk), "--title", "t")
+        assert code == 0, payload
+        assert payload["action"] == "post"
+        assert len(backend.posts) == 1
+
+    def test_allows_in_review_ticket_with_evidence(self) -> None:
+        # PR-08b wave-2 audit: the ENABLED gate exercised end-to-end with the
+        # REALISTIC broadcast-time state (IN_REVIEW — the FSM advanced
+        # review → ship → request_review before the request broadcast fires).
+        # RED on the pre-fix strict ``state == REVIEWED`` gate: the command
+        # refused with reason ``ticket_not_reviewed`` and posted nothing.
+        OnBehalfApproval.record(target=_MR_URL, action="review_request_post", approver_id="souliane")
+        backend = _FakeBackend()
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
         ReviewEvidence.record(
             ticket=ticket,
             kind=ReviewEvidence.Kind.COLD_REVIEW,
