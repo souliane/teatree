@@ -1,3 +1,4 @@
+# test-path: cross-cutting
 """Stop-event 5-minute snapshot slot + PreCompact adapter (souliane/teatree#2564, PR-20).
 
 The slot is throttled to a 5-minute cadence, runs even while loops are paused
