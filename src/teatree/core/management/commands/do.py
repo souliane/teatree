@@ -54,7 +54,7 @@ class StepPayload(TypedDict):
 
 
 class DoPayload(TypedDict):
-    """The full ``t3 do --json`` document a front-end drives off."""
+    """The full ``t3 <overlay> do --json`` document a front-end drives off."""
 
     ticket_ref: str
     ticket_id: int | None
