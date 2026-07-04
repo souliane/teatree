@@ -35,11 +35,17 @@ Threat model:
     evidence of the approval; a replay of consumed consent; a payload that fails
     content-schema validation.
 
+A schema-invalid write with a recorded approval is REFUSED through the router's
+shared ``_fail_open_or_deny`` chokepoint (not a bare ``emit_pretooluse_deny``),
+so the self-rescue allowlist and the master ``danger_gate_fail_open`` kill-switch
+apply — a false positive in the validator can never wedge the classifier-relax
+flow (the never-lockout contract, ``test_gate_never_lockout_contract``).
+
 Cold-import safe: the live PreToolUse hook is a bare ``python3`` subprocess with
 no guarantee ``teatree`` is importable, so the module top imports only stdlib
 plus the ``question_gates`` sibling (the transcript-parsing home). The router
-helpers ``_entry_role`` / ``_entry_content`` / ``emit_pretooluse_deny`` stay in
-the router (shared with other handlers) and are back-imported lazily.
+helpers ``_entry_role`` / ``_entry_content`` / ``_fail_open_or_deny`` stay in the
+router (shared with other handlers) and are back-imported lazily.
 """
 
 import json
@@ -286,12 +292,13 @@ def handle_allow_classifier_relax_settings_write(data: dict) -> bool | None:
         return None
     schema_error = validate_relax_write(data.get("tool_name"), tool_input)
     if schema_error is not None:
-        from hook_router import emit_pretooluse_deny  # noqa: PLC0415 — cold-hook lazy back-import
+        from hook_router import _fail_open_or_deny  # noqa: PLC0415, PLC2701 — cold-hook lazy back-import
 
-        return emit_pretooluse_deny(
+        return _fail_open_or_deny(
+            data,
             "classifier-relax settings.json write failed content-schema validation (#857): "
             f"{schema_error}. Only a smallest-scope string rule may be appended to permissions.allow / "
-            "autoMode.allow; no blanket wildcard, and the result must stay valid JSON."
+            "autoMode.allow; no blanket wildcard, and the result must stay valid JSON.",
         )
     json.dump({"permissionDecision": "allow"}, sys.stdout)
     return True
