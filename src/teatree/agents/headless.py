@@ -227,7 +227,7 @@ def run_headless(
         logger.warning("Refusing dispatch for task %s: %s", task.pk, budget_breach)
         return _record_failure(task, error=budget_breach)
 
-    backend = _resolve_backend_or_failure(task)
+    backend = _resolve_backend_or_failure(task, phase=phase)
     if isinstance(backend, TaskAttempt):
         return backend
     harness = backend
@@ -279,7 +279,7 @@ def _restore_unconsumed_resume_thread(harness: Harness) -> None:
         persist_parked_thread(harness.resume_source, harness.history)
 
 
-def _resolve_backend_or_failure(task: Task) -> Harness | TaskAttempt:
+def _resolve_backend_or_failure(task: Task, *, phase: str = "") -> Harness | TaskAttempt:
     """Resolve the headless transport, or a recorded failure for an unimplemented backend.
 
     ``agent_harness`` selection itself (:func:`~teatree.agents.harness.resolve_harness`)
@@ -287,9 +287,13 @@ def _resolve_backend_or_failure(task: Task) -> Harness | TaskAttempt:
     ([#2885](https://github.com/souliane/teatree/issues/2885)) are shipped;
     ``NotImplementedError`` is still caught below as a forward-compatible guard
     for a FUTURE reserved backend value.
+
+    *phase* opts a ``pydantic_ai`` dispatch into the Lane-B tool layer (PR-03,
+    souliane/teatree#2512): the resolved harness wires the phase-scoped, gated
+    toolsets. Ignored for the ``claude_sdk`` backend.
     """
     try:
-        return resolve_harness(task)
+        return resolve_harness(task, phase=phase or None)
     except NotImplementedError as exc:
         return _record_failure(task, error=str(exc))
 
