@@ -1397,11 +1397,11 @@ def test_run_tick_still_dispatches_sweep_scanner_signals_after_the_split(tmp_pat
 class TestRunTickOrchestrateIsDormant(django.test.TestCase):
     """#1796: ``run_tick`` wires ``orchestrate_phase`` but never claims (dormant)."""
 
-    def test_run_tick_at_full_speed_does_not_claim_pending_tasks(self) -> None:
+    def test_run_tick_at_full_wip_does_not_claim_pending_tasks(self) -> None:
         import tempfile  # noqa: PLC0415
         from unittest.mock import patch  # noqa: PLC0415
 
-        from teatree.config import Speed, UserSettings  # noqa: PLC0415
+        from teatree.config import UserSettings, Wip  # noqa: PLC0415
         from teatree.core.models import Session, Task, Ticket  # noqa: PLC0415
 
         ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, issue_url="https://x/d", overlay="acme")
@@ -1413,7 +1413,7 @@ class TestRunTickOrchestrateIsDormant(django.test.TestCase):
             tempfile.TemporaryDirectory() as d,
             patch(
                 "teatree.loop.phases.orchestrate.get_effective_settings",
-                return_value=UserSettings(speed=Speed.FULL),
+                return_value=UserSettings(wip=Wip.FULL),
             ),
         ):
             run_tick(TickRequest(scanners=[scanner]), statusline_path=Path(d) / "sl.txt")
@@ -1427,10 +1427,10 @@ class TestRunTickOrchestrateIsDormant(django.test.TestCase):
         import tempfile  # noqa: PLC0415
         from unittest.mock import patch  # noqa: PLC0415
 
-        from teatree.config import Speed, UserSettings  # noqa: PLC0415
+        from teatree.config import UserSettings, Wip  # noqa: PLC0415
         from teatree.loop.admit_budget import read_admit_budget  # noqa: PLC0415
 
-        settings = UserSettings(speed=Speed.FULL, orchestrate_claim_enabled=True)
+        settings = UserSettings(wip=Wip.FULL, orchestrate_claim_enabled=True)
         scanner = _FixedScanner(name="s", out=[ScanSignal(kind="my_pr.open", summary="x")])
         with (
             tempfile.TemporaryDirectory() as d,
@@ -1449,7 +1449,7 @@ class TestRunTickOrchestrateClaimToggle(django.test.TestCase):
     """#1796 (WI-1): ``orchestrate_claim_enabled`` arms a read-only BUDGET planner.
 
     The reconciled fan-out keeps exactly ONE claim point — the live
-    ``claim_next`` CAS. When the toggle is ON and the speed clamps
+    ``claim_next`` CAS. When the toggle is ON and the wip clamps
     (``full``/``boost``/``slow``), the tick runs ``orchestrate_phase`` read-only
     (``claim=False``) to *compute* the cap and persists an admit BUDGET to the
     tick-meta sidecar — it never claims in the tick, so the orphan window is
@@ -1457,20 +1457,20 @@ class TestRunTickOrchestrateClaimToggle(django.test.TestCase):
     (absence = unclamped = today's throughput).
     """
 
-    def _full_speed_dispatchable_task(self):
+    def _full_wip_dispatchable_task(self):
         from teatree.core.models import Session, Task, Ticket  # noqa: PLC0415
 
         ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, issue_url="https://x/d", overlay="acme")
         session = Session.objects.create(ticket=ticket, agent_id="d")
         return Task.objects.create(ticket=ticket, session=session, phase="coding", status=Task.Status.PENDING)
 
-    def _run(self, *, toggle: bool, sl: Path, speed=None) -> None:
+    def _run(self, *, toggle: bool, sl: Path, wip=None) -> None:
         from unittest.mock import patch  # noqa: PLC0415
 
-        from teatree.config import Speed, UserSettings  # noqa: PLC0415
+        from teatree.config import UserSettings, Wip  # noqa: PLC0415
         from teatree.core.backend_factory import OverlayBackends  # noqa: PLC0415
 
-        settings = UserSettings(speed=speed or Speed.FULL, orchestrate_claim_enabled=toggle)
+        settings = UserSettings(wip=wip or Wip.FULL, orchestrate_claim_enabled=toggle)
         backends = [OverlayBackends(name="acme", max_concurrent_auto_starts=2)]
         with (
             patch("teatree.loop.phases.orchestrate.get_effective_settings", return_value=settings),
@@ -1491,7 +1491,7 @@ class TestRunTickOrchestrateClaimToggle(django.test.TestCase):
 
         with tempfile.TemporaryDirectory() as d:
             sl = Path(d) / "sl.txt"
-            task = self._full_speed_dispatchable_task()
+            task = self._full_wip_dispatchable_task()
             self._run(toggle=False, sl=sl)
             task.refresh_from_db()
             assert task.status == Task.Status.PENDING  # tick never claims
@@ -1504,7 +1504,7 @@ class TestRunTickOrchestrateClaimToggle(django.test.TestCase):
 
         with tempfile.TemporaryDirectory() as d:
             sl = Path(d) / "sl.txt"
-            task = self._full_speed_dispatchable_task()
+            task = self._full_wip_dispatchable_task()
             self._run(toggle=True, sl=sl)
             task.refresh_from_db()
             # The tick PLANS, it does not claim — claiming is the live claimer's job.
@@ -1515,12 +1515,12 @@ class TestRunTickOrchestrateClaimToggle(django.test.TestCase):
     def test_toggle_on_medium_writes_no_budget(self) -> None:
         import tempfile  # noqa: PLC0415
 
-        from teatree.config import Speed  # noqa: PLC0415
+        from teatree.config import Wip  # noqa: PLC0415
 
         with tempfile.TemporaryDirectory() as d:
             sl = Path(d) / "sl.txt"
-            self._full_speed_dispatchable_task()
-            self._run(toggle=True, speed=Speed.MEDIUM, sl=sl)
+            self._full_wip_dispatchable_task()
+            self._run(toggle=True, wip=Wip.MEDIUM, sl=sl)
             assert self._read_budget(sl) is None  # medium → no clamp
 
     def test_budget_clears_when_toggle_flips_off_between_ticks(self) -> None:
@@ -1528,7 +1528,7 @@ class TestRunTickOrchestrateClaimToggle(django.test.TestCase):
 
         with tempfile.TemporaryDirectory() as d:
             sl = Path(d) / "sl.txt"
-            self._full_speed_dispatchable_task()
+            self._full_wip_dispatchable_task()
             self._run(toggle=True, sl=sl)
             assert self._read_budget(sl) == 2
             # Operator disarms the toggle — the next tick must clear the budget

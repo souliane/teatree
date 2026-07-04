@@ -21,8 +21,8 @@ from teatree.config.enums import (
     MissingIssuePolicy,
     Mode,
     OnBehalfPostMode,
-    Speed,
     TeamsDisplay,
+    Wip,
 )
 from teatree.config.setting_parsers import (
     _default_handover_mirror_path,
@@ -73,7 +73,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "workspace_dir": _parse_strict_str,
     "mode": Mode.parse,
     "autonomy": Autonomy.parse,
-    "speed": Speed.parse,
+    "wip": Wip.parse,
     "agent_runtime": AgentRuntime.parse,
     "agent_harness": AgentHarness.parse,
     "agent_harness_provider": AgentHarnessProvider.parse,
@@ -266,7 +266,7 @@ TOML_OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {}
 # global setting. Mapped to ``(UserSettings field, parser)``.
 ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_MODE": ("mode", Mode.parse),
-    "T3_SPEED": ("speed", Speed.parse),
+    "T3_WIP": ("wip", Wip.parse),
     "T3_AGENT_RUNTIME": ("agent_runtime", AgentRuntime.parse),
     "T3_AGENT_HARNESS": ("agent_harness", AgentHarness.parse),
     "T3_AGENT_HARNESS_PROVIDER": ("agent_harness_provider", AgentHarnessProvider.parse),
@@ -389,15 +389,15 @@ class UserSettings:
     # ``metered_api_key`` rides the metered key (per-token cost, no window) and stays
     # selectable. Per-overlay overridable; ``T3_EVAL_CREDENTIAL`` env wins over both.
     eval_credential: EvalCredential = EvalCredential.SUBSCRIPTION_OAUTH
-    # How much parallel work the orchestrator drives at once. The
+    # How much new work a loop tick admits at once — the bounded-WIP dial. The
     # conservative ``MEDIUM`` baseline means NO orchestrator fan-out — only
     # the intrinsic loop + PR sweep + per-overlay ``max_concurrent_auto_starts``
     # provide throughput. ``slow`` caps to one impl worker; ``full`` arms the
-    # /t3:speed loop; ``boost`` runs a single parallel-blast wave. Orthogonal
+    # /t3:wip loop; ``boost`` runs a single parallel-blast wave. Orthogonal
     # to ``mode``/``autonomy`` (those gate *whether* a publish proceeds; this
     # governs *how many* threads run) and never relaxes a safety gate.
-    # Per-overlay overridable; ``T3_SPEED`` env wins over both.
-    speed: Speed = Speed.MEDIUM
+    # Per-overlay overridable; ``T3_WIP`` env wins over both.
+    wip: Wip = Wip.MEDIUM
     # Loop tick interval in seconds (BLUEPRINT § 5.6). Default 12 minutes.
     loop_cadence_seconds: int = 720
     # #1796 — the loop-worker kill-switch. When false (the default, fail-OFF) the
@@ -920,7 +920,7 @@ class UserSettings:
     # #1796 / agent-teams Track-A PR#1: opt-in, default-OFF arm for the
     # dispatch loop's ``orchestrate_phase`` claim. The phase is wired dormant
     # (``claim=False``) in ``run_tick`` — it computes the deterministic fan-out
-    # manifest from ``speed`` + ``max_concurrent_auto_starts`` but never claims
+    # manifest from ``wip`` + ``max_concurrent_auto_starts`` but never claims
     # or spawns. When this is flipped on, the tick runs ``orchestrate_phase``
     # with ``claim=True`` so the lead does the thin per-unit claim+spawn the
     # manifest already computes (the #786-N4 claim-is-the-spawn boundary). When

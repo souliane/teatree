@@ -105,10 +105,6 @@
       "summary": "Delivery \u2014 committing, pushing, creating MR/PR, pipeline monitoring, review requests"
     },
     {
-      "name": "speed",
-      "summary": "The parallel-work throughput dial \u2014 slow / medium / full / boost. `boost` runs one parallel-backlog-blast wave; `full` arms a self-sustaining boost loop; `medium` (baseline) and `slow` cap concurrency"
-    },
-    {
       "name": "sweeping-prs",
       "summary": "Maintenance sweep across all your open PRs/PRs \u2014 merge the default branch, fix conflicts, monitor CI, push, and (per-repo policy) optionally squash-merge each PR before moving to the next. Never rebases"
     },
@@ -139,6 +135,10 @@
     {
       "name": "update",
       "summary": "WHEN to bring teatree core and registered overlays up to date with their default branch, and the safety guarantees of doing so"
+    },
+    {
+      "name": "wip",
+      "summary": "The bounded-WIP throughput dial \u2014 slow / medium / full / boost. `boost` runs one parallel-backlog-blast wave; `full` arms a self-sustaining boost loop; `medium` (baseline) and `slow` cap concurrency"
     },
     {
       "name": "workspace",

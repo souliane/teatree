@@ -29,16 +29,29 @@ lives in the sibling module, never inside the harness classes themselves.
 """
 
 import asyncio
-from collections.abc import AsyncIterator
+import json
+from collections.abc import AsyncIterator, Iterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
-from claude_agent_sdk import AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient, ResultMessage, TextBlock
+from claude_agent_sdk import (
+    AssistantMessage,
+    ClaudeAgentOptions,
+    ClaudeSDKClient,
+    ResultMessage,
+    TextBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+)
 from pydantic_ai import Agent
+from pydantic_ai.messages import ModelRequest, ModelResponse, RetryPromptPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIChatModelSettings, ReasoningEffort
 from pydantic_ai.providers.openai import OpenAIProvider
 
+from teatree.agents.lane_b.compaction import compact_history
+from teatree.agents.lane_b.config import LaneBToolConfig
+from teatree.agents.lane_b.toolsets import build_lane_b_toolsets
 from teatree.agents.model_tiering import DEFAULT_TIER, HARNESS_EFFORT_SCALE, assert_chinese_model_allowed, resolve_tier
 from teatree.agents.pydantic_ai_resume import rehydrate_thread_for_resume
 from teatree.config import AgentHarness, get_effective_settings
@@ -49,6 +62,70 @@ if TYPE_CHECKING:
     from pydantic_ai.result import StreamedRunResult
 
     from teatree.core.models import Task
+
+
+def _tool_blocks_since(messages: "list[ModelMessage]", start: int) -> "Iterator[AssistantMessage]":
+    """Yield the tool call/result blocks a turn produced, in the seam's vocabulary.
+
+    Maps each pydantic_ai ``ToolCallPart`` produced this turn onto a
+    :class:`~claude_agent_sdk.ToolUseBlock` and each ``ToolReturnPart`` /
+    ``RetryPromptPart`` (a gate refusal) onto a
+    :class:`~claude_agent_sdk.ToolResultBlock` (``is_error`` set for a refusal),
+    each carried in its own :class:`~claude_agent_sdk.AssistantMessage`. This is
+    what turns the ``pydantic_ai`` lane from text-in/text-out into a tool-emitting
+    session the driver (:func:`teatree.agents.headless._collect`) sees in the same
+    vocabulary the ``claude_sdk`` lane yields. *start* is the message count of the
+    (compacted) seed history, so only THIS turn's messages are mapped.
+    """
+    for message in messages[start:]:
+        if isinstance(message, ModelResponse):
+            for part in message.parts:
+                if isinstance(part, ToolCallPart):
+                    yield AssistantMessage(
+                        content=[ToolUseBlock(id=part.tool_call_id, name=part.tool_name, input=_as_input(part.args))],
+                        model="",
+                    )
+        elif isinstance(message, ModelRequest):
+            for part in message.parts:
+                if isinstance(part, ToolReturnPart):
+                    yield AssistantMessage(
+                        content=[ToolResultBlock(tool_use_id=part.tool_call_id, content=str(part.content))],
+                        model="",
+                    )
+                elif isinstance(part, RetryPromptPart):
+                    yield AssistantMessage(
+                        content=[
+                            ToolResultBlock(
+                                tool_use_id=part.tool_call_id or "",
+                                content=_retry_text(part),
+                                is_error=True,
+                            )
+                        ],
+                        model="",
+                    )
+
+
+def _as_input(args: object) -> dict[str, Any]:
+    """Coerce a ``ToolCallPart.args`` (dict or JSON string) to a plain dict.
+
+    The return feeds ``ToolUseBlock.input``, whose claude_agent_sdk contract is
+    ``dict[str, Any]`` — a tool's arguments are genuinely arbitrary JSON, so the
+    value type is unavoidably dynamic here.
+    """
+    if isinstance(args, dict):
+        return {str(k): v for k, v in args.items()}
+    if isinstance(args, str):
+        with suppress(json.JSONDecodeError):
+            parsed = json.loads(args)
+            if isinstance(parsed, dict):
+                return {str(k): v for k, v in parsed.items()}
+    return {}
+
+
+def _retry_text(part: RetryPromptPart) -> str:
+    """The refusal text of a ``RetryPromptPart`` (a gate deny), as a plain string."""
+    content = part.content
+    return content if isinstance(content, str) else str(content)
 
 
 class HarnessSession(Protocol):
@@ -155,10 +232,15 @@ class PydanticAiHarnessSession:
         *,
         model_name: str,
         history: "list[ModelMessage] | None" = None,
+        phase: str | None = None,
     ) -> None:
         self._agent = agent
         self._model_name = model_name
         self._history: list[ModelMessage] = list(history) if history else []
+        # Compaction only applies to a phased, tool-bearing dispatch (PR-03). An
+        # un-phased run stays history-identical to #2885 — a resumed thread is
+        # sent verbatim, never trimmed.
+        self._phase = phase
         self._pending_prompt: str | None = None
         self._active_task: asyncio.Task[str] | None = None
         self._active_stream: StreamedRunResult[None, str] | None = None
@@ -177,7 +259,13 @@ class PydanticAiHarnessSession:
             return
         prompt, self._pending_prompt = self._pending_prompt, None
         self._interrupted = False
-        async with self._agent.run_stream(prompt, message_history=self._history) as stream:
+        # Compact the conversation the model actually sees (the ``history_processors``
+        # equivalent — trim the stale middle before the turn) ONLY for a phased,
+        # tool-bearing run; a short history is returned unchanged so a normal
+        # phased run is byte-identical. An un-phased run sends its history
+        # verbatim, so a resumed #2885 thread is never trimmed.
+        sent_history = compact_history(self._history) if self._phase else self._history
+        async with self._agent.run_stream(prompt, message_history=sent_history) as stream:
             self._active_stream = stream
             task = asyncio.ensure_future(self._drain(stream))
             self._active_task = task
@@ -193,8 +281,14 @@ class PydanticAiHarnessSession:
             finally:
                 self._active_task = None
                 self._active_stream = None
-            self._history = stream.all_messages()
+            all_messages = stream.all_messages()
+            self._history = all_messages
             run_usage = stream.usage
+        # Surface this turn's tool calls/results in the seam's tool-block
+        # vocabulary BEFORE the final text, so a tool-emitting Lane-B session
+        # looks to the driver exactly like the claude_sdk lane's.
+        for tool_message in _tool_blocks_since(all_messages, len(sent_history)):
+            yield tool_message
         yield AssistantMessage(content=[TextBlock(text=text)], model=self._model_name)
         yield ResultMessage(
             subtype="success",
@@ -270,10 +364,17 @@ class PydanticAiHarness:
         model: Model | None = None,
         history: "list[ModelMessage] | None" = None,
         resume_source: "Task | None" = None,
+        phase: str | None = None,
     ) -> None:
         self._model = model
         self._history = history
         self.resume_source = resume_source
+        # *phase* opts the dispatch into the Lane-B tool layer (PR-03): a set
+        # phase resolves the phase-scoped, gated toolsets (:mod:`teatree.agents.lane_b`).
+        # ``None`` (the default, and every construction that predates the tool
+        # port) keeps a text-in/text-out Agent with no tools — byte-identical to
+        # before, so the existing harness/resume tests are unaffected.
+        self._phase = phase
 
     @property
     def history(self) -> "list[ModelMessage] | None":
@@ -297,16 +398,28 @@ class PydanticAiHarness:
         model = self._resolve_model(options)
         effort = _resolve_effort(options)
         model_settings = OpenAIChatModelSettings(openai_reasoning_effort=effort) if effort else None
-        agent = Agent(model, system_prompt=_extract_system_prompt(options), model_settings=model_settings)
+        # PR-03: a phased dispatch wires the phase-scoped, gated tool/MCP layer
+        # onto the Agent (``toolsets=`` + ``tool_timeout=``); an un-phased one
+        # keeps a bare text Agent (byte-identical to before the tool port). The
+        # worktree jail root is ``options.cwd`` (the resolved task cwd).
+        config = LaneBToolConfig.from_options(options, phase=self._phase or "")
+        toolsets = build_lane_b_toolsets(config).toolsets if self._phase else []
+        agent: Agent[None, str] = Agent(
+            model,
+            system_prompt=_extract_system_prompt(options),
+            model_settings=model_settings,
+            toolsets=toolsets,
+            tool_timeout=config.shell_timeout_seconds if self._phase else None,
+        )
         # ``async with agent:`` enters the model so the provider's HTTP client
         # (OrcaRouter's OpenAI-compatible connection pool) closes cleanly on
         # exit — a bare ``Agent(...)`` never closes it, leaking a client per
         # dispatch until GC.
         async with agent:
-            yield PydanticAiHarnessSession(agent, model_name=model.model_name, history=self._history)
+            yield PydanticAiHarnessSession(agent, model_name=model.model_name, history=self._history, phase=self._phase)
 
 
-def resolve_harness(task: "Task | None" = None) -> Harness:
+def resolve_harness(task: "Task | None" = None, *, phase: str | None = None) -> Harness:
     """Return the headless transport backend selected by ``agent_harness``.
 
     Defaults to :class:`ClaudeSdkHarness` (today's behaviour, byte-identical).
@@ -323,6 +436,12 @@ def resolve_harness(task: "Task | None" = None) -> Harness:
     never a network call, so this never itself requires a live credential
     either. Absent *task* (or no parked ancestor) opens a fresh conversation.
 
+    *phase* (PR-03, souliane/teatree#2512, optional) opts a ``pydantic_ai``
+    dispatch into the Lane-B tool layer — the harness resolves the phase-scoped,
+    gated toolsets. ``None`` (every call site that predates the tool port) keeps
+    the text-only Agent. It is ignored for the ``claude_sdk`` backend, whose
+    per-phase least-privilege lands separately (PR-11).
+
     The rehydration POPS the ancestor's entry (single-use), so the returned
     harness's ``resume_source`` records which ancestor it came from — a
     caller that ends up refusing the dispatch before the harness genuinely
@@ -333,6 +452,7 @@ def resolve_harness(task: "Task | None" = None) -> Harness:
         return PydanticAiHarness(
             history=resumed.history if resumed else None,
             resume_source=resumed.ancestor if resumed else None,
+            phase=phase,
         )
     return ClaudeSdkHarness()
 

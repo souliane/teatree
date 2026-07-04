@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 
 import teatree.cli.admin as _admin
 import teatree.cli.agent as _agent
+import teatree.cli.capabilities as _capabilities
 import teatree.cli.cost as _cost
 import teatree.cli.info as _info
 import teatree.cli.sessions as _sessions
@@ -142,6 +143,7 @@ def _find_overlay_project() -> Path:
 
 app.command()(_info.startoverlay)
 app.command()(_info.docs)
+app.command()(_capabilities.capabilities)
 app.command()(_agent.agent)
 app.command()(_sessions.sessions)
 app.command()(_cost.cost)

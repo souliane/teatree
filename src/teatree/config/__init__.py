@@ -31,8 +31,8 @@ from teatree.config.enums import (
     MissingIssuePolicy,
     Mode,
     OnBehalfPostMode,
-    Speed,
     TeamsDisplay,
+    Wip,
 )
 from teatree.config.homes import BOOTSTRAP_FILE_ONLY_SETTINGS, DERIVED_FIELDS, SETTING_HOMES, SettingHome
 from teatree.config.loader import (
@@ -98,10 +98,10 @@ __all__ = [
     "OnBehalfPostMode",
     "OverlayEntry",
     "SettingHome",
-    "Speed",
     "TeaTreeConfig",
     "TeamsDisplay",
     "UserSettings",
+    "Wip",
     "_active_overlay_entry",
     "_active_overlay_overrides",
     "_apply_autonomy",

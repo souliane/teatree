@@ -183,7 +183,7 @@ The resolution chain is **per home** (first match wins) — each field reads fro
 exactly the tiers its home allows:
 
 * **DB-home field** (every field not in the carve-out): `T3_*` env var (wired one-offs
-  in `ENV_SETTING_OVERRIDES`: `T3_MODE`, `T3_SPEED`, `T3_ON_BEHALF_POST_MODE`,
+  in `ENV_SETTING_OVERRIDES`: `T3_MODE`, `T3_WIP`, `T3_ON_BEHALF_POST_MODE`,
   `T3_MISSING_ISSUE_POLICY`, `T3_REVIEW_SKILL`), then the **DB store** — an
   **overlay-scoped** `ConfigSetting` row, then a **global** row — then the
   `UserSettings` dataclass default. Its `[teatree]` / `[overlays.<name>]` TOML
@@ -301,7 +301,7 @@ below mirrors it; consult the dataclass for type signatures and defaults.
 |-----|------------------|
 | `mode` | `auto` for a personal dogfooding overlay, `interactive` for a client overlay |
 | `autonomy` | Single trust switch, tiers `full > notify > babysit` (default `babysit`). Both autonomous tiers collapse the three approval gates (colleague auto-approve via `on_behalf_post_mode`, auto-merge, auto-answer) and pin `mode = auto`; `full` enables the single-author `solo_overlay` merge bypass, `notify` derives `notify_on_behalf = true` and keeps the colleague-approval CLEAR merge path. An explicit per-gate value wins, and a global `mode` does not defeat the `mode = auto` pin (a per-overlay one does). Set without hand-editing TOML via `t3 <overlay> autonomy set <tier>` (`--overlay <name>` / `--global`); `t3 <overlay> autonomy show` reports the effective tier. Safety floor untouched |
-| `speed` | Throughput dial `slow < medium < full < boost` (default `medium`): how many threads run at once, orthogonal to `mode`/`autonomy`. `t3 <overlay> speed set`; `T3_SPEED` env. |
+| `wip` | Bounded-WIP throughput dial `slow < medium < full < boost` (default `medium`): how much new work a tick admits at once, orthogonal to `mode`/`autonomy`. `t3 <overlay> wip set`; `T3_WIP` env. |
 | `privacy` | Stricter for client code, looser for personal |
 | `contribute` | Contribute to one overlay's skills but not another |
 | `excluded_skills` | Project-specific skill exclusions |

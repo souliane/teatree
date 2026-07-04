@@ -5,6 +5,8 @@ import json as _json
 import logging
 import os
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -13,11 +15,11 @@ import typer
 from teatree.agents.skill_injection import build_subagent_skill_preamble
 from teatree.cli.autonomy import register_autonomy_commands
 from teatree.cli.django_groups import DJANGO_GROUPS, DjangoGroup
-from teatree.cli.speed import register_speed_commands
 from teatree.cli.teatree_gate import register_gate_commands
+from teatree.cli.wip import register_wip_commands
 from teatree.skill_support.loading import DEFAULT_SKILLS_DIR
 from teatree.utils.django_db import runner_prefix
-from teatree.utils.run import run_streamed, spawn
+from teatree.utils.run import CommandFailedError, run_streamed, spawn
 from teatree.utils.singleton import AlreadyRunningError, singleton
 
 if TYPE_CHECKING:
@@ -117,6 +119,25 @@ def _run_workers(project_path: Path, overlay_name: str, count: int, interval: fl
             p.wait(timeout=5)
 
 
+@contextmanager
+def _faithful_child_exit() -> Iterator[None]:
+    """Propagate a bridged child's exit code faithfully, without a traceback (PR-30).
+
+    The overlay bridge shells the real subcommand out via ``run_streamed(check=True)``,
+    which raises :class:`CommandFailedError` on any non-zero child. Click only catches
+    ``ClickException``/``Abort``, so an uncaught ``CommandFailedError`` dumps a full
+    ``run_streamed`` traceback to stderr — burying the child's real error line — and
+    collapses every failure to exit 1, losing the child's specific exit code. A machine
+    front-end cannot branch on that. Re-raising as ``SystemExit(returncode)`` gives the
+    exact child code with no traceback; the child's stderr was already teed live by
+    ``run_streamed``, so nothing is lost.
+    """
+    try:
+        yield
+    except CommandFailedError as exc:
+        raise SystemExit(exc.returncode) from None
+
+
 def managepy(project_path: Path | None, *args: str, overlay_name: str = "") -> None:
     """Run a Django management command for an overlay.
 
@@ -132,12 +153,13 @@ def managepy(project_path: Path | None, *args: str, overlay_name: str = "") -> N
     if overlay_name:
         env["T3_OVERLAY_NAME"] = overlay_name
 
-    if project_path and (project_path / "manage.py").is_file():
-        cmd = _managepy_cmd(project_path, "manage.py", *args)
-        run_streamed(cmd, cwd=project_path, env=env)
-    else:
-        env.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
-        run_streamed([sys.executable, "-m", "teatree", *args], env=env)
+    with _faithful_child_exit():
+        if project_path and (project_path / "manage.py").is_file():
+            cmd = _managepy_cmd(project_path, "manage.py", *args)
+            run_streamed(cmd, cwd=project_path, env=env)
+        else:
+            env.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
+            run_streamed([sys.executable, "-m", "teatree", *args], env=env)
 
 
 def _overlay_importable_in_current_env(entry: "OverlayEntry") -> bool:
@@ -229,10 +251,11 @@ def managepy_core(*args: str, overlay_name: str = "") -> None:
         env["T3_OVERLAY_NAME"] = overlay_name
     env.setdefault("DJANGO_SETTINGS_MODULE", "teatree.settings")
     project_path = _overlay_project_env(overlay_name)
-    if project_path is not None:
-        run_streamed([*runner_prefix(project_path), "-m", "teatree", *args], cwd=project_path, env=env)
-    else:
-        run_streamed([sys.executable, "-m", "teatree", *args], env=env)
+    with _faithful_child_exit():
+        if project_path is not None:
+            run_streamed([*runner_prefix(project_path), "-m", "teatree", *args], cwd=project_path, env=env)
+        else:
+            run_streamed([sys.executable, "-m", "teatree", *args], env=env)
 
 
 class OverlayAppBuilder:
@@ -259,7 +282,7 @@ class OverlayAppBuilder:
         self._register_skill_preamble_command()
         self._register_config_commands()
         register_gate_commands(self.overlay_app)
-        register_speed_commands(self.overlay_app)
+        register_wip_commands(self.overlay_app)
         register_autonomy_commands(self.overlay_app)
 
         for group_name, dj_group in DJANGO_GROUPS.items():

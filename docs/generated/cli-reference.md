@@ -13,6 +13,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ startoverlay    Create a new TeaTree overlay package.                        │
 │ docs            Serve the project documentation with mkdocs.                 │
+│ capabilities    List each command's --json support and exit-code contract    │
+│                 (front-end discovery).                                       │
 │ agent           Launch Claude Code with auto-detected project context.       │
 │ sessions        List recent Claude conversation sessions with resume         │
 │                 commands.                                                    │
@@ -127,6 +129,20 @@ Usage: t3 docs [OPTIONS]
 │ --host        TEXT     Host to bind to [default: 127.0.0.1]                  │
 │ --port        INTEGER  Port to serve on [default: 8888]                      │
 │ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 capabilities`
+
+```
+Usage: t3 capabilities [OPTIONS]
+
+ List each command's --json support and exit-code contract (front-end
+ discovery).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit the capability registry as JSON on stdout.              │
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4457,7 +4473,7 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │                 brief must carry.                                            │
 │ config          Overlay configuration.                                       │
 │ gate            Enforcement-gate kill-switches (self-rescue).                │
-│ speed           Parallel-work throughput dial.                               │
+│ wip             Bounded-WIP throughput dial.                                 │
 │ autonomy        Per-overlay trust switch (collapses the approval gates).     │
 │ worktree        Per-worktree FSM operations.                                 │
 │ workspace       Ticket-level workspace operations (every worktree in the     │
@@ -4996,40 +5012,40 @@ Usage: t3 teatree gate memory-recall enable [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-#### `t3 teatree speed`
+#### `t3 teatree wip`
 
 ```
-Usage: t3 teatree speed [OPTIONS] COMMAND [ARGS]...
+Usage: t3 teatree wip [OPTIONS] COMMAND [ARGS]...
 
- Parallel-work throughput dial.
+ Bounded-WIP throughput dial.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ show  Show the effective speed (env > per-overlay > global > default).       │
-│ set   Persist the global `` speed`` dial. A typo is rejected.                │
+│ show  Show the effective wip (env > per-overlay > global > default).         │
+│ set   Persist the global `` wip`` dial. A typo is rejected.                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-##### `t3 teatree speed show`
+##### `t3 teatree wip show`
 
 ```
-Usage: t3 teatree speed show [OPTIONS]
+Usage: t3 teatree wip show [OPTIONS]
 
- Show the effective speed (env > per-overlay > global > default).
+ Show the effective wip (env > per-overlay > global > default).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-##### `t3 teatree speed set`
+##### `t3 teatree wip set`
 
 ```
-Usage: t3 teatree speed set [OPTIONS] LEVEL
+Usage: t3 teatree wip set [OPTIONS] LEVEL
 
- Persist the global `` speed`` dial. A typo is rejected.
+ Persist the global `` wip`` dial. A typo is rejected.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    level      TEXT  slow | medium | full | boost (aliases: low, normal,    │
@@ -5246,6 +5262,8 @@ Usage: t3 teatree worktree status [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │
+│ --json              Emit the status as JSON on stdout instead of the human   │
+│                     view.                                                    │
 │ --help              Show this message and exit.                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -5259,6 +5277,8 @@ Usage: t3 teatree worktree diagnose [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │
+│ --json              Emit the health checklist as JSON on stdout instead of   │
+│                     the human view.                                          │
 │ --help              Show this message and exit.                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -6665,7 +6685,9 @@ Usage: t3 teatree tasks create [OPTIONS] TICKET
  Used by `/t3:next` to hand off from one phase to the next. Headless by default
  so a worker
  claims it immediately; pass `--interactive` for tasks that require human
- input.
+ input. A machine
+ handoff: the created-task record is JSON on stdout, the human confirmation on
+ stderr.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    ticket      INTEGER  Ticket PK (see `ticket_id` in `tasks list`).       │
@@ -6700,6 +6722,9 @@ Usage: t3 teatree tasks list [OPTIONS]
 │                                             session and group pending /      │
 │                                             claimed / done.                  │
 │                                             [default: no-session]            │
+│ --json                                      Emit the task rows as JSON on    │
+│                                             stdout instead of the human      │
+│                                             table.                           │
 │ --help                                      Show this message and exit.      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -6760,6 +6785,8 @@ Usage: t3 teatree queue status [OPTIONS]
  Print the queue breakdown by status, and READY jobs by task name.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit the queue breakdown as JSON on stdout instead of the    │
+│                 human view.                                                  │
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -6822,6 +6849,8 @@ Usage: t3 teatree followup refresh [OPTIONS]
 Usage: t3 teatree followup sync [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit the sync summary as JSON on stdout instead of the human │
+│                 view.                                                        │
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -7967,6 +7996,8 @@ Usage: t3 teatree availability show [OPTIONS]
  Print the current resolved mode and which layer decided it.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit the resolved mode/source as JSON instead of the human   │
+│                 line.                                                        │
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -8165,6 +8196,8 @@ Usage: t3 teatree questions list [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --all     --pending      Include answered/dismissed rows. [default: pending] │
+│ --json                   Emit the deferred questions as JSON instead of the  │
+│                          human view.                                         │
 │ --help                   Show this message and exit.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

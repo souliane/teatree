@@ -7,21 +7,19 @@ from typing import IO, Annotated, cast
 
 import typer
 from django_typer.management import TyperCommand, command
-from rich.console import Console
-from rich.table import Table
 
 from teatree.agents._headless_options import UUID_RE
 from teatree.agents.prompt import build_interactive_context
 from teatree.agents.skill_bundle import resolve_skill_bundle
+from teatree.core.machine_output import emit
 from teatree.core.management.commands.tasks_session_view import (
-    STATUS_STYLES,
     TaskRow,
     render_reconcile_checklist,
     render_session_view,
+    render_tasks_table,
 )
 from teatree.core.models import InvalidTransitionError, Task, TaskAttempt, Ticket
 from teatree.core.overlay_loader import get_overlay
-from teatree.core.ref_render import short_title
 from teatree.core.session_identity import current_session_id
 
 logger = logging.getLogger(__name__)
@@ -53,7 +51,8 @@ class Command(TyperCommand):
         """Enqueue the next-phase task for a ticket.
 
         Used by `/t3:next` to hand off from one phase to the next. Headless by default so a worker
-        claims it immediately; pass `--interactive` for tasks that require human input.
+        claims it immediately; pass `--interactive` for tasks that require human input. A machine
+        handoff: the created-task record is JSON on stdout, the human confirmation on stderr.
         """
         if not phase.strip():
             self.stderr.write("--phase is required (scoping, coding, testing, reviewing, or shipping).")
@@ -85,8 +84,16 @@ class Command(TyperCommand):
         # ``Task.save`` routes a loop-dispatched phase to INTERACTIVE regardless
         # of ``--interactive``, so report the persisted target, not the request.
         target = task.execution_target
-        self.stdout.write(f"Created task {task.pk} (ticket {ticket_obj.pk}, phase={phase}, target={target}).")
-        return {"task_id": task.pk, "ticket_id": ticket_obj.pk, "phase": phase, "execution_target": target}
+        payload: dict[str, int | str] = {
+            "task_id": task.pk,
+            "ticket_id": ticket_obj.pk,
+            "phase": phase,
+            "execution_target": target,
+        }
+        self.print_result = False
+        self.stderr.write(f"Created task {task.pk} (ticket {ticket_obj.pk}, phase={phase}, target={target}).")
+        emit(payload, json_output=True, out=cast("IO[str]", self.stdout), err=cast("IO[str]", self.stderr))
+        return payload
 
     @command()
     def cancel(
@@ -307,18 +314,29 @@ class Command(TyperCommand):
             bool,
             typer.Option(help="Scope to the current harness session and group pending / claimed / done."),
         ] = False,
+        json_output: Annotated[
+            bool,
+            typer.Option("--json", help="Emit the task rows as JSON on stdout instead of the human table."),
+        ] = False,
     ) -> list[TaskRow]:
         """List the teatree tasks queue (not your harness TODO list)."""
         Task.objects.reap_stale_claims()
         if session:
-            return self._list_session_todos(status=status, execution_target=execution_target)
+            return self._list_session_todos(status=status, execution_target=execution_target, json_output=json_output)
         qs = Task.objects.select_related("ticket").order_by("pk")
         if status:
             qs = qs.filter(status=status)
         if execution_target:
             qs = qs.filter(execution_target=execution_target)
         rows = [_task_row(task) for task in qs]
-        _render_tasks_table(rows, stream=cast("IO[str]", self.stdout))
+        self.print_result = False
+        emit(
+            rows,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=lambda stream: render_tasks_table(rows, stream=stream),
+        )
         return rows
 
     def _list_session_todos(
@@ -326,6 +344,7 @@ class Command(TyperCommand):
         *,
         status: str | None,
         execution_target: str | None,
+        json_output: bool,
     ) -> list[TaskRow]:
         """Print the current session's teatree tasks, grouped by status.
 
@@ -344,10 +363,13 @@ class Command(TyperCommand):
         if execution_target:
             qs = qs.filter(execution_target=execution_target)
         rows = [_task_row(task) for task in qs]
-        render_session_view(
+        self.print_result = False
+        emit(
             rows,
-            session_id=session_id,
-            stream=cast("IO[str]", self.stdout),
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=lambda stream: render_session_view(rows, session_id=session_id, stream=stream),
         )
         return rows
 
@@ -505,45 +527,6 @@ def _task_row(task: Task) -> TaskRow:
         execution_reason=task.execution_reason,
         claimed_by=task.claimed_by,
     )
-
-
-# A redirected/captured stream has no terminal width; rich then defaults to 80
-# cols and crushes the Title column (#2092). Give piped output a generous fixed
-# width so every column renders untruncated; a real terminal keeps its own width.
-_TABLE_PIPE_WIDTH = 160
-
-
-def _render_tasks_table(rows: list[TaskRow], *, stream: IO[str] | None = None) -> None:
-    console = Console(file=stream, width=_TABLE_PIPE_WIDTH) if stream is not None else Console()
-    if not rows:
-        console.print("[dim]No tasks.[/dim]")
-        return
-
-    table = Table(title=f"teatree tasks ({len(rows)})", show_lines=False)
-    table.add_column("ID", justify="right", style="bold")
-    table.add_column("Ticket", justify="right")
-    table.add_column("Title", overflow="ellipsis", max_width=48)
-    table.add_column("Status")
-    table.add_column("Target")
-    table.add_column("Phase")
-    table.add_column("Claimed by")
-    table.add_column("Reason", overflow="fold", max_width=60)
-
-    for row in rows:
-        status = row["status"]
-        style = STATUS_STYLES.get(status, "")
-        table.add_row(
-            str(row["task_id"]),
-            str(row["ticket_id"]),
-            short_title(row["ticket_title"]) or "-",
-            f"[{style}]{status}[/]" if style else status,
-            row["execution_target"],
-            row["phase"] or "-",
-            row["claimed_by"] or "-",
-            row["execution_reason"] or "-",
-        )
-
-    console.print(table)
 
 
 def _build_claude_command(task: Task) -> list[str]:

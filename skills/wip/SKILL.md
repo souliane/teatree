@@ -1,6 +1,6 @@
 ---
-name: speed
-description: The parallel-work throughput dial — slow / medium / full / boost. `boost` runs one parallel-backlog-blast wave; `full` arms a self-sustaining boost loop; `medium` (baseline) and `slow` cap concurrency. Use when the user says "speed", "go full speed", "full speed", "blast the backlog", "boost", "parallel mode", "max throughput", "go wide", "slow down", or "set speed".
+name: wip
+description: The bounded-WIP throughput dial — slow / medium / full / boost. `boost` runs one parallel-backlog-blast wave; `full` arms a self-sustaining boost loop; `medium` (baseline) and `slow` cap concurrency. Use when the user says "wip", "go full speed", "full speed", "blast the backlog", "boost", "parallel mode", "max throughput", "go wide", "slow down", or "set wip".
 compatibility: any
 requires:
   - rules
@@ -10,9 +10,9 @@ metadata:
   subagent_safe: false
 ---
 
-# Speed — the parallel-work throughput dial
+# Wip — the bounded-WIP throughput dial
 
-`speed` is a single dial governing **how many threads of work the orchestrator drives at once**. It is orthogonal to `mode` and `autonomy` (which gate *whether* a publishing action may proceed) — `speed` never relaxes a safety gate, it only changes concurrency.
+`wip` is a single dial governing **how much new work a loop tick admits at once**. It is orthogonal to `mode` and `autonomy` (which gate *whether* a publishing action may proceed) — `wip` never relaxes a safety gate, it only changes concurrency.
 
 The dial, lowest to highest throughput (default **`medium`**):
 
@@ -20,16 +20,16 @@ The dial, lowest to highest throughput (default **`medium`**):
 |-------|-------------|
 | **`slow`** | At most **one implementation worker** in flight at a time (the cold-review reviewer still runs separately). For a fragile tree or a constrained host. |
 | **`medium`** (baseline) | **NO orchestrator fan-out.** Throughput comes only from the intrinsic loop, the PR sweep, and the per-overlay `max_concurrent_auto_starts` auto-start cap. |
-| **`full`** | Arm `/loop /t3:speed boost` — each wave re-classifies the backlog and fans out a burst, sustained across waves. |
+| **`full`** | Arm `/loop /t3:wip boost` — each wave re-classifies the backlog and fans out a burst, sustained across waves. |
 | **`boost`** | Exactly **one** parallel-backlog-blast wave, clamped to `max_concurrent_auto_starts`. |
 
 ## Resolving the invocation
 
-- **No argument (`/t3:speed`)** → treat as **`full`**: arm the boost loop. A bare invocation is the deliberate "go fast now" override regardless of the persisted baseline.
-- **`/t3:speed <level>`** → run that level once and persist it as the resting dial: call `t3 <overlay> speed set <level>` (never hand-edit `~/.teatree.toml`). Then act on the level per the table below.
-- **`/t3:speed show`** → report the effective dial via `t3 <overlay> speed show` and stop.
+- **No argument (`/t3:wip`)** → treat as **`full`**: arm the boost loop. A bare invocation is the deliberate "go fast now" override regardless of the persisted baseline.
+- **`/t3:wip <level>`** → run that level once and persist it as the resting dial: call `t3 <overlay> wip set <level>` (never hand-edit `~/.teatree.toml`). Then act on the level per the table below.
+- **`/t3:wip show`** → report the effective dial via `t3 <overlay> wip show` and stop.
 
-The persisted value (the DB-home `speed` setting in the `ConfigSetting` store, per-overlay overridable, `T3_SPEED` env) is the resting dial the loop reads each tick. A `[teatree] speed` TOML value is ignored on read; persist it with `t3 <overlay> config_setting set speed <level>` (the `t3 <overlay> speed set` wrapper does this for you). Friendly aliases on input: `low`→`slow`, `normal`→`medium`, `high`→`full`.
+The persisted value (the DB-home `wip` setting in the `ConfigSetting` store, per-overlay overridable, `T3_WIP` env) is the resting dial the loop reads each tick. A `[teatree] wip` TOML value is ignored on read; persist it with `t3 <overlay> config_setting set wip <level>` (the `t3 <overlay> wip set` wrapper does this for you). Friendly aliases on input: `low`→`slow`, `normal`→`medium`, `high`→`full`.
 
 ## `slow` — single-worker
 
@@ -41,9 +41,9 @@ Do nothing extra. The loop, the PR sweep, and the `max_concurrent_auto_starts` a
 
 ## `full` — arm the boost loop
 
-Run `/loop /t3:speed boost`. Each wave:
+Run `/loop /t3:wip boost`. Each wave:
 
-1. Re-reads the effective `speed` (`t3 <overlay> speed show`). If it is no longer `full`, **self-terminate the loop** — the dial was turned down.
+1. Re-reads the effective `wip` (`t3 <overlay> wip show`). If it is no longer `full`, **self-terminate the loop** — the dial was turned down.
 2. Runs one `boost` wave (below).
 3. Yields to the next interval.
 
@@ -51,7 +51,7 @@ The classification each wave is **agent judgment in prose** (the bucketing below
 
 ## `boost` — one parallel wave, session TODO list FIRST
 
-An explicit burst that **starts from the session TODO list** — the harness task list for THIS session (`/t3:todos` / `TaskList`). `boost` completes the work already on the session's plate **before** it touches the forge. **Only once the session TODO list is complete** does it go on to classify and blast every open, assigned forge ticket (`gh issue list` / `glab issue list`). Never pull fresh forge tickets while session TODO items are still open — finish the plate first. (This is the former `/t3:full-speed` behaviour.)
+An explicit burst that **starts from the session TODO list** — the harness task list for THIS session (`/t3:todos` / `TaskList`). `boost` completes the work already on the session's plate **before** it touches the forge. **Only once the session TODO list is complete** does it go on to classify and blast every open, assigned forge ticket (`gh issue list` / `glab issue list`). Never pull fresh forge tickets while session TODO items are still open — finish the plate first.
 
 ### Classify before dispatching
 
@@ -146,7 +146,7 @@ Agent(name="docs-maker", model="opus", prompt="Do the overdue BLUEPRINT + README
 # Edit(file_path="BLUEPRINT.md", ...)   # banned: the lead dispatches, it does not implement
 ```
 
-The opus-floor (above) is the host-runtime tier rule; this delegate-don't-do-it-inline rule is the SDK-testable essence both the real runtime and the eval lane share. Pinned by `evals/scenarios/speed.yaml` (`team_mate_spawned_opus_never_sonnet` — the SDK lane grades the delegation, the host runtime enforces the opus tier).
+The opus-floor (above) is the host-runtime tier rule; this delegate-don't-do-it-inline rule is the SDK-testable essence both the real runtime and the eval lane share. Pinned by `evals/scenarios/wip.yaml` (`team_mate_spawned_opus_never_sonnet` — the SDK lane grades the delegation, the host runtime enforces the opus tier).
 
 ### Hard rails parallelization must not break
 

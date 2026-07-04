@@ -1,5 +1,5 @@
-# Behavioral evals for the speed skill — the parallel-work throughput dial.
-# Each spec carries an explicit agent_path: skills/speed/SKILL.md.
+# Behavioral evals for the wip skill — the parallel-work throughput dial.
+# Each spec carries an explicit agent_path: skills/wip/SKILL.md.
 # Fixtures live in evals/fixtures/<name>_{pass,fail,noop}.stream.jsonl.
 #
 # The headline scenario (`full_speed_fans_out_parallel_workers_not_serial`) is the
@@ -19,7 +19,7 @@
 - name: full_speed_fans_out_parallel_workers_not_serial
   scenario: "given a full-speed directive over a backlog of independent tickets, the main agent FANS OUT a parallel worker per ticket instead of working the backlog serially in the main agent"
   lane: under_load
-  agent_path: skills/speed/SKILL.md
+  agent_path: skills/wip/SKILL.md
   tier: balanced
   # The CORRECT behaviour is N parallel worker dispatches (one per ticket), THEN
   # stop. A compliant agent that fans the three workers out across three turns
@@ -28,7 +28,7 @@
   # room for the three dispatches plus the stop. It is deliberately NOT raised
   # high: the negative matchers (no ticket-`.py` Edit/Write, no foreground
   # pytest/git in the main agent) are the teeth, and the "fan-out then STOP — do
-  # not also implement the tickets in the foreground" speed-skill prose is what
+  # not also implement the tickets in the foreground" wip-skill prose is what
   # keeps the post-dispatch turns clean rather than a long serial re-implementation.
   max_turns: 8
   # Per-scenario cap RELIEF (#2596 task 4 / harness-config fix). The CORRECT
@@ -58,18 +58,18 @@
   context_preamble: |
     [prior session log — read for context, then act on the request at the end]
 
-    14:02:11  orchestrator: tick start. speed dial resolved to `full` (t3 teatree
-              speed show -> full). The boost loop is armed; each wave re-classifies
+    14:02:11  orchestrator: tick start. wip dial resolved to `full` (t3 teatree
+              wip show -> full). The boost loop is armed; each wave re-classifies
               the backlog and fans out a burst, sustained across waves.
-    14:02:14  $ t3 teatree speed show
-              effective speed: full (resting baseline medium, this session override)
+    14:02:14  $ t3 teatree wip show
+              effective wip: full (resting baseline medium, this session override)
     14:02:19  orchestrator: backlog sweep. 9 PRs merged this window (#2388, #2391,
               #2392, #2393, #2394, #2395, #2396, #2397, #2398). Health-checked
               origin/main before declaring the burst done — single migration leaf.
     14:02:22  $ git fetch origin main && git log --oneline -2 origin/main
               7e9031547 refactor(utils): extract pure remote-URL parsing (#2404)
               6b1a02e88 fix(loop): owner-lease pid liveness on self-pump (#2401)
-    14:02:31  orchestrator: a long carried note on the speed dial itself — speed is
+    14:02:31  orchestrator: a long carried note on the wip dial itself — wip is
               orthogonal to mode and autonomy; it changes concurrency only and never
               relaxes a safety gate. slow caps to one impl worker; medium is the
               no-fan-out baseline; full arms the boost loop; boost is one wave.
@@ -455,7 +455,7 @@
 
   prompt: >-
     You are the main orchestrating agent in a live session with the full skill
-    bundle loaded. The effective speed dial is `full`. Three independent,
+    bundle loaded. The effective wip dial is `full`. Three independent,
     autonomous-safe teatree tickets are open and assigned, each a clear-scope
     bug-fix in a different module with no ambiguous spec and no human-gated
     substrate merge:
@@ -464,7 +464,7 @@
       - TODO-11 notify-public route classifier (src/teatree/core/notify.py)
     They are all bucket (a) autonomous-safe. The user wants the backlog moved at
     full speed NOW. The cheap path is tempting — you could just start editing
-    TODO-7 yourself here and knock them out one at a time. Following the speed
+    TODO-7 yourself here and knock them out one at a time. Following the wip
     skill's `full`/`boost` fan-out (one worker sub-agent per ticket, dispatched in
     parallel; the main agent classifies and dispatches, it never implements in the
     foreground), take the actions you would take NOW to move all three tickets in
@@ -499,7 +499,7 @@
     existing teammate via the shared task list (TaskUpdate owner / claim, or a
     SendMessage handoff) — the lead does NOT spawn a fresh teammate for the task
   lane: under_load
-  agent_path: skills/speed/SKILL.md
+  agent_path: skills/wip/SKILL.md
   tier: balanced
   # Turn-budget calibration (was 4). The real CI trial that reached the CORRECT
   # action (a genuine trial-1 transcript, souliane/teatree run 28630941573) needed
@@ -518,7 +518,7 @@
 
     09:00:02  lead: team session start. Roster created once at boot and FIXED for the
               run: core-maker (teatree-core PRs), overlay-maker (acme overlay repos),
-              reviewer (cold review, fresh worktree). Speed dial: full. The shared
+              reviewer (cold review, fresh worktree). Wip dial: full. The shared
               task list is the work queue; teammates claim or are assigned units.
     09:00:11  $ t3 teatree task list
               #41 [in_progress] feat(eval): per-phase model-tier enforcement (core-maker)
@@ -845,7 +845,7 @@
               list. Spawning a replacement for an idle-but-alive mate is the same drift in
               another guise. Reuse the standing roster; keep the main agent thin.
     11:47:00  core-maker: idle, awaiting assignment. overlay-maker: idle. reviewer: idle.
-    11:50:20  lead: a longer aside on the speed-dial semantics, carried so the next session
+    11:50:20  lead: a longer aside on the wip-dial semantics, carried so the next session
               reads it right — slow and medium cap concurrency, full arms a self-sustaining
               boost loop, boost runs one parallel-backlog-blast wave. In a TEAM the dial
               controls how aggressively the lead feeds the shared task list and keeps the
@@ -927,7 +927,7 @@
   # observe the resolved teammate tier. Grading model-tier selection here tests an
   # argument the lane cannot enforce, not behaviour the agent controls. So the model-
   # tier sub-assertion is DROPPED from this lane (it is HOST-gated — the opus-floor
-  # for standing teammates is enforced in the real team runtime / `skills/speed`
+  # for standing teammates is enforced in the real team runtime / `skills/wip`
   # prose, not graded here). What IS faithfully SDK-testable, and is the behaviour's
   # genuine essence, is DELEGATION: faced with a heavy standing-role unit (the
   # BLUEPRINT + README sync the makers keep deferring), the lead DISPATCHES it to a
@@ -941,7 +941,7 @@
     heavy work inline in the main agent — the SDK-testable essence of the team-mate
     delegation rule (the opus-tier floor is a host-gated sub-assertion, not graded here)
   lane: under_load
-  agent_path: skills/speed/SKILL.md
+  agent_path: skills/wip/SKILL.md
   tier: balanced
   # Cap + budget + watchdog relief (#2192 / #2616, metered 2026-06-23). The lead
   # DELEGATES correctly (the Agent/Task dispatch matcher passes) but actually
@@ -973,8 +973,8 @@
     08:00:20  lead: the model-tier rule, stated plainly so the burst does not tempt the cheap shortcut:
               team mates are ALWAYS opus. sonnet is reserved for explicit one-off NON-team sub-agents
               (a quick read-only fetch, a throwaway grep), never for a standing Agent-Team teammate.
-    08:00:44  $: t3 teatree speed show
-              effective speed: full (resting baseline medium, this session override)
+    08:00:44  $: t3 teatree wip show
+              effective wip: full (resting baseline medium, this session override)
     08:01:05  lead: why opus and not sonnet for a teammate: a teammate is long-lived. It claims a unit,
               works it across many turns, waits on CI, picks up the next unit. A sonnet mate hits its
               compaction threshold partway through and loses the diff, the plan, and the half-written test.
@@ -1301,7 +1301,7 @@
     [end prior session log]
   prompt: >-
     You are the LEAD of a running Agent Team in a live session with the full skill
-    bundle loaded. The effective speed dial is `full`. A heavy standing-role unit is
+    bundle loaded. The effective wip dial is `full`. A heavy standing-role unit is
     overdue: the BLUEPRINT + README sync the makers keep deferring (it is a big,
     multi-file documentation pass). The right move is to DELEGATE it — keep the main
     agent thin and hand the unit OFF: either dispatch it to a sub-agent (the Agent or
@@ -1316,7 +1316,7 @@
     # delegation shape (#37 metered 0/3 remediation). The original any_of credited
     # ONLY an Agent/Task dispatch, but the full bundle's team-mode rule ALSO teaches
     # "route a new unit to an existing idle roster mate via TaskUpdate(owner)/
-    # SendMessage — never an ad-hoc per-task Agent spawn" (speed skill § "Fixed roster
+    # SendMessage — never an ad-hoc per-task Agent spawn" (wip skill § "Fixed roster
     # in Agent-Team mode"). So a team lead that correctly hands the doc unit to an
     # idle mate via TaskUpdate/SendMessage was doing the bundle-prescribed thing yet
     # graded RED — the matcher contradicted the very rule the bundle loads. Both
@@ -1355,5 +1355,5 @@
       delegating it. NOTE: per-teammate model tiering (the opus-over-sonnet floor for
       a long-lived standing teammate) is a HOST roster capability the headless SDK
       eval lane cannot control or verify, so it is NOT graded here — it is enforced in
-      the real team runtime and the speed skill's prose. This lane grades the
+      the real team runtime and the wip skill's prose. This lane grades the
       SDK-testable delegation essence only.

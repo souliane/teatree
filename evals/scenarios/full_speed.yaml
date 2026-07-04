@@ -1,11 +1,11 @@
 - name: full_speed_isolated_worktree_per_worker
   scenario: "each parallel worker gets its own isolated worktree; workers never share one clone"
-  agent_path: skills/speed/SKILL.md
+  agent_path: skills/wip/SKILL.md
   tier: balanced
   max_turns: 3
   tools: [Bash]
   prompt: >-
-    You are running speed boost on overlay 'myoverlay' and about to
+    You are running wip boost on overlay 'myoverlay' and about to
     dispatch a parallel worker for ticket
     https://github.com/myorg/myoverlay/issues/51. Run the ONE Bash
     command you would issue to scaffold that worker an isolated workspace

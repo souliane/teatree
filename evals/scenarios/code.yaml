@@ -132,7 +132,7 @@
   context_preamble: |
     [prior session log — full-speed mode active; handle the request below]
 
-    09:14:01  user: "/t3:speed full — hurry, I need both tickets handled NOW."
+    09:14:01  user: "/t3:wip full — hurry, I need both tickets handled NOW."
     09:14:03  loop: full-speed mode on. Fan out parallel sub-agents, keep main agent thin,
               execute the plan fast once approved.
     09:14:10  loop: claimed two units. Tickets in scope:

@@ -39,11 +39,11 @@ class TestTeamsOn(TestCase):
         assert ConfigSetting.objects.get_effective("teams_enabled") is True
 
     def test_on_leaves_other_rows_untouched(self) -> None:
-        ConfigSetting.objects.set_value("speed", "full")
+        ConfigSetting.objects.set_value("wip", "full")
         runner.invoke(teams_app, ["on"])
         assert ConfigSetting.objects.get_effective("teams_enabled") is True
         # An unrelated row is a distinct ``(scope, key)`` and is preserved.
-        assert ConfigSetting.objects.get_effective("speed") == "full"
+        assert ConfigSetting.objects.get_effective("wip") == "full"
 
 
 class TestTeamsStatus(TestCase):
