@@ -94,6 +94,18 @@ class Command(TyperCommand):
                 exit_code=2,
             )
 
+        # PR-08 review-state gate: refuse a broadcast unless the ticket is
+        # REVIEWED with a recorded review-evidence artifact. NO-OP when
+        # ``require_reviewed_state_for_review_request`` is off (opt-in default),
+        # so a normal reviewed-and-cleared flow is never blocked.
+        reviewed_state_block = self._reviewed_state_block(ticket_id)
+        if reviewed_state_block:
+            self.stdout.write(reviewed_state_block)
+            self._emit(
+                {"action": "refused", "reason": "ticket_not_reviewed", "mr_url": mr_url},
+                exit_code=2,
+            )
+
         target = resolve_guard_target()
         if target is None:
             # The review channel is unpostable (e.g. a Slack Connect channel
@@ -261,6 +273,34 @@ class Command(TyperCommand):
         except AntiVacuityAttestationError as exc:
             return str(exc)
         return ""
+
+    @staticmethod
+    def _reviewed_state_block(ticket_id: str) -> str:
+        """The PR-08 review-state block message, or ``""`` when allowed / off.
+
+        NO-OP (returns ``""``) when ``require_reviewed_state_for_review_request``
+        is off. When on, a ``--ticket-id`` is required (the gate reads the
+        ticket's FSM state and its review-evidence artifact); a missing or
+        unknown ticket is itself a block with actionable steering.
+        """
+        from teatree.core.gates.review_request_state_gate import (  # noqa: PLC0415
+            check_reviewed_state,
+            reviewed_state_required,
+        )
+        from teatree.core.models import Ticket  # noqa: PLC0415
+
+        if not reviewed_state_required():
+            return ""
+        if not ticket_id.strip():
+            return (
+                "request review refused (require_reviewed_state_for_review_request): pass --ticket-id so "
+                "the gate can verify the ticket is REVIEWED with a recorded review-evidence artifact."
+            )
+        try:
+            ticket = Ticket.objects.resolve(ticket_id)
+        except Ticket.DoesNotExist:
+            return f"request review refused: ticket {ticket_id!r} not found (review-state gate needs a ticket)."
+        return check_reviewed_state(ticket)
 
     @staticmethod
     def _rollback_orphan_claim(canonical: str) -> None:
