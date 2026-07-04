@@ -19,6 +19,7 @@ from typing import Any
 
 from django.db.models import Count, Q
 
+from teatree.core.factory_signals import DEFAULT_WINDOW_DAYS, compute_factory_signals
 from teatree.core.models import IncomingEvent, PullRequest, ReplyDispatch, Task, Ticket, Worktree
 from teatree.mcp.serializers import (
     serialize_incoming_event,
@@ -136,6 +137,20 @@ def loop_stats(*, overlay: str | None = None) -> dict[str, Any]:
         counts[row["status"]] = row["total"]
     dead_letter = ReplyDispatch.objects.filter(status=ReplyDispatch.Status.DEAD_LETTER).count()
     return {"overlay": overlay or "", "tasks": counts, "dead_letter": dead_letter}
+
+
+def factory_signals(*, overlay: str | None = None, window_days: int = DEFAULT_WINDOW_DAYS) -> dict[str, Any]:
+    """The derived-on-read factory quality/velocity signals report (read-only).
+
+    Delegates to :func:`teatree.core.factory_signals.compute_factory_signals` —
+    the same computation path ``t3 <overlay> signals`` uses, so the CLI and MCP
+    surfaces can never drift. Returns the report's ``to_dict()``: the trailing
+    window's five signals (first-try-green, defect-escape, review-catch,
+    merge-latency, repair-burn) with their fail-loud statuses, red-floor trips,
+    and the top-level verdict the outer loop keys on.
+    """
+    report = compute_factory_signals(window_days=window_days, overlay=overlay or "")
+    return report.to_dict()
 
 
 def incoming_event_recent(

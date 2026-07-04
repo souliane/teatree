@@ -385,6 +385,10 @@ Signal *pid* only if it maps to a dead target AND is confirmed non-live.
 
 Idempotently seed the default loops + prompts (#2513).
 
+## `signals`
+
+Print the five factory signals over the trailing window vs its baseline.
+
 ## `speak`
 
 Read ``text`` aloud synchronously through the local speakers per [teatree.speak].

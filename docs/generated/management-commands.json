@@ -734,6 +734,11 @@
       "subcommands": []
     },
     {
+      "help": "Print the five factory signals over the trailing window vs its baseline.",
+      "name": "signals",
+      "subcommands": []
+    },
+    {
       "help": "Read ``text`` aloud synchronously through the local speakers per [teatree.speak].",
       "name": "speak",
       "subcommands": []
