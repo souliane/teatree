@@ -609,5 +609,8 @@ class Command(TyperCommand):
         push / open / verify leaves it intact. Operates on the current repo (cwd).
         """
         line = run_salvage(source_ref, salvage_branch=salvage_branch, target=target, allow_banned=allow_banned)
+        # Emit the human outcome ONCE: `print_result = False` stops django-typer
+        # repr'ing the return a second time (#2763's `workspace emit` double-emit).
+        self.print_result = False
         self.stdout.write(line)
         return line

@@ -69,9 +69,14 @@ CAPABILITIES: tuple[Capability, ...] = (
     ),
     # Pre-existing JSON commands (already machine-drivable before PR-30).
     Capability("teatree checking show", json_output=True, exit_codes=("0",)),
-    Capability("teatree env show", json_output=True, exit_codes=("0",)),
+    Capability("teatree env show", json_output=True, exit_codes=("0", "1"), note="--format json"),
     Capability("teatree db query", json_output=True, exit_codes=("0", "1")),
-    Capability("teatree workspace salvage", json_output=True, exit_codes=("0", "1")),
+    Capability(
+        "teatree workspace salvage",
+        json_output=False,
+        exit_codes=("0", "1"),
+        note="human outcome line (salvaged/deleted/branch/pr), not a JSON document",
+    ),
     Capability("cost", json_output=True, exit_codes=("0",)),
     Capability("tokens", json_output=True, exit_codes=("0",)),
     Capability("config show", json_output=True, exit_codes=("0",)),

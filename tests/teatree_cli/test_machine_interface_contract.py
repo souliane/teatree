@@ -43,6 +43,28 @@ class TestWorkspaceEmitSingleEmit(TestCase):
         assert rv == payload
 
 
+class TestWorkspaceSalvageSingleEmit(TestCase):
+    """#2954 double-emit: ``workspace salvage`` printed its human outcome twice.
+
+    ``self.stdout.write(line)`` then ``return line`` made django-typer repr the
+    return a SECOND time (the same #2763 class ``workspace emit`` fixed), so the
+    outcome line printed twice.
+    """
+
+    def test_outcome_line_prints_exactly_once(self) -> None:
+        import teatree.core.management.commands._workspace_salvage as ws_salvage_mod  # noqa: PLC0415
+        from teatree.core.cleanup_salvage import SalvageResult  # noqa: PLC0415
+
+        result = SalvageResult(salvaged=True, deleted=True, pr_url="https://x/pr/9", salvage_branch="salvage/feat")
+        with (
+            patch.object(ws_salvage_mod.git, "run", return_value="/repo"),
+            patch.object(ws_salvage_mod, "salvage_item", return_value=result),
+        ):
+            out, _err, rv = _run("workspace", "salvage", "feat")
+        assert out.count("salvaged=True") == 1, "outcome line must print exactly once, not twice"
+        assert "salvaged=True" in rv  # the return still feeds call_command consumers
+
+
 class TestQueueStatusJson(TestCase):
     def test_json_stdout_is_pure_json_no_human_bytes(self) -> None:
         out, _err, rv = _run("queue", "status", "--json")
