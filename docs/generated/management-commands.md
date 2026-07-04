@@ -209,10 +209,6 @@ Claim, inspect, or release the session-scoped t3-master slot (#1073).
 | `whoami` | Print this Claude session's own id |
 | `release` | Release this session's t3-master claim (CAS — non-owner is a no-op) |
 
-## `loop_runner`
-
-Run the self-owned singleton loop-runner daemon (#2876) — owns the tick cadence, no OS cron.
-
 ## `loop_self_improve`
 
 Run one schedule cycle of the self-improving monitor.
@@ -447,6 +443,10 @@ Show per-account Anthropic 5h / weekly token utilization + status.
 | --- | --- |
 | `run` | Run an overlay tool command by name |
 | `list` | List available overlay tool commands |
+
+## `worker`
+
+Run the singleton loop-timer worker (#1796) — K pinned executors, no OS scheduler.
 
 ## `workspace`
 

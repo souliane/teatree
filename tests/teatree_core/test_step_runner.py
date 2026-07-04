@@ -1,13 +1,12 @@
 """Tests for the structured step execution engine."""
 
-import gc
 import subprocess
 import threading
-import warnings
 from functools import partial
 from unittest.mock import MagicMock, patch
 
 import pytest
+from django.db.backends.sqlite3.base import DatabaseWrapper
 from django.test import TestCase
 
 from teatree.core.overlay import ProvisionStep
@@ -402,6 +401,71 @@ class TestSubprocessOnlyStepSurvivesMissingProvisionTimebox(TestCase):
         assert exc_info.value.name == BROKEN_DEPENDENCY_NAME
 
 
+class TestParallelGroupSurvivesMissingProvisionTimebox(TestCase):
+    """A parallel group degrades / propagates the same as the serial path (#2664).
+
+    The parallel path pre-resolves each member's ceiling on the caller thread
+    (``_resolve_step_timeout``) so the pool workers touch no ORM. That resolution
+    must degrade to a plain run when ``provision_timebox`` is absent, and must
+    propagate a genuinely broken (present-but-broken-dependency) module.
+    """
+
+    def test_group_runs_when_module_absent(self) -> None:
+        ran: list[str] = []
+        steps = [
+            ProvisionStep(name="a", callable=partial(ran.append, "a"), subprocess_only=True, parallel_group="lane"),
+            ProvisionStep(name="b", callable=partial(ran.append, "b"), subprocess_only=True, parallel_group="lane"),
+        ]
+
+        with provision_timebox_unimportable():
+            report = run_provision_steps(steps)
+
+        assert sorted(ran) == ["a", "b"]
+        assert report.success is True
+
+    def test_group_propagates_when_module_present_but_internally_broken(self) -> None:
+        steps = [
+            ProvisionStep(name="a", callable=lambda: None, subprocess_only=True, parallel_group="lane"),
+            ProvisionStep(name="b", callable=lambda: None, subprocess_only=True, parallel_group="lane"),
+        ]
+
+        with provision_timebox_internally_broken(), pytest.raises(ModuleNotFoundError) as exc_info:
+            run_provision_steps(steps)
+
+        assert exc_info.value.name == BROKEN_DEPENDENCY_NAME
+
+
+class TestParallelGroupWorkersAreOrmFree(TestCase):
+    """A pool worker must open NO DB connection — the regression guard for the leak.
+
+    A Django connection opened on a ``ThreadPoolExecutor`` worker is never closed
+    under a Django ``TestCase`` (its atomic wrapping vetoes ``close()``), so it
+    leaks a ``sqlite3`` ``ResourceWarning`` at GC time that surfaces as an
+    unraisable-exception error in an unrelated later test. The time-box ceiling is
+    resolved on the caller thread so the workers stay ORM-free; this test fails if
+    any pool worker opens a connection again.
+    """
+
+    def test_pool_workers_open_no_db_connection(self) -> None:
+        opened_on: list[str] = []
+        real_get_new_connection = DatabaseWrapper.get_new_connection
+
+        def _record(self, conn_params):
+            opened_on.append(threading.current_thread().name)
+            return real_get_new_connection(self, conn_params)
+
+        steps = [
+            ProvisionStep(name="a", callable=lambda: None, subprocess_only=True, parallel_group="lane"),
+            ProvisionStep(name="b", callable=lambda: None, subprocess_only=True, parallel_group="lane"),
+        ]
+        with patch.object(DatabaseWrapper, "get_new_connection", _record):
+            report = run_provision_steps(steps)
+
+        assert report.success is True
+        pool_opens = [name for name in opened_on if name.startswith("ThreadPoolExecutor")]
+        assert pool_opens == [], f"a pool worker opened a DB connection (leaks under TestCase): {pool_opens}"
+
+
 class TestStepResultSkipped(TestCase):
     def test_summary_shows_skip_for_skipped_step(self) -> None:
         result = StepResult(name="test-step", success=True, duration=0.0, skipped=True)
@@ -594,70 +658,6 @@ class TestParallelGroup(TestCase):
         ]
         run_provision_steps(steps)
         assert order == ["a", "b"]
-
-    def test_parallel_group_closes_pool_thread_db_connections(self) -> None:
-        """A parallel step never strands its worker thread's Django connection.
-
-        Each pool worker resolves its step's time-box via
-        ``resolve_step_timeout_seconds()`` -> ``get_effective_settings()``, which
-        reads the ``ConfigSetting`` store through the ORM — so the worker thread
-        opens a *per-thread* ``sqlite3.Connection``. Django never closes a
-        connection on a thread it did not spawn, so the group runner must close it;
-        otherwise the connection outlives the pool and leaks a
-        ``ResourceWarning: unclosed database`` at GC — an order-dependent
-        unraisable-warning flake that fails a random later test under ``-W error``.
-
-        RED before the fix: the two concurrent steps strand two connections, caught
-        here by forcing GC and recording the warning.
-        """
-        steps = [
-            ProvisionStep(name="a", callable=lambda: None, subprocess_only=True, parallel_group="lane"),
-            ProvisionStep(name="b", callable=lambda: None, subprocess_only=True, parallel_group="lane"),
-        ]
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            report = run_provision_steps(steps)
-            gc.collect()
-        assert report.success is True
-        leaked = [
-            str(w.message)
-            for w in caught
-            if issubclass(w.category, ResourceWarning) and "unclosed database" in str(w.message)
-        ]
-        assert not leaked, f"parallel group leaked {len(leaked)} worker-thread DB connection(s): {leaked}"
-
-    def test_parallel_group_degrades_when_provision_timebox_absent(self) -> None:
-        """A stale base with no ``provision_timebox`` runs the group with no time-box (#2664).
-
-        The calling-thread ceiling pre-resolution (:func:`_resolve_group_timeouts`)
-        must degrade exactly like :func:`_timeboxed_subprocess_callable_step` does when
-        the module is absent — return a ``None`` ceiling and let each step run plainly —
-        never abort the whole parallel group.
-        """
-        ran: list[str] = []
-        steps = [
-            ProvisionStep(name="a", callable=partial(ran.append, "a"), subprocess_only=True, parallel_group="lane"),
-            ProvisionStep(name="b", callable=partial(ran.append, "b"), subprocess_only=True, parallel_group="lane"),
-        ]
-        with provision_timebox_unimportable():
-            report = run_provision_steps(steps)
-        assert report.success is True
-        assert sorted(ran) == ["a", "b"]
-
-    def test_parallel_group_propagates_when_provision_timebox_internally_broken(self) -> None:
-        """A PRESENT-but-broken ``provision_timebox`` re-raises from the group pre-resolution.
-
-        The ceiling pre-resolution must NOT swallow a ``ModuleNotFoundError`` whose
-        ``.name`` is a missing transitive dependency (not ``provision_timebox`` itself) —
-        silently degrading would mask the real bug for every healthy install.
-        """
-        steps = [
-            ProvisionStep(name="a", callable=lambda: None, subprocess_only=True, parallel_group="lane"),
-            ProvisionStep(name="b", callable=lambda: None, subprocess_only=True, parallel_group="lane"),
-        ]
-        with provision_timebox_internally_broken(), pytest.raises(ModuleNotFoundError) as exc_info:
-            run_provision_steps(steps)
-        assert exc_info.value.name == BROKEN_DEPENDENCY_NAME
 
 
 class TestHeavyFlagPropagation(TestCase):

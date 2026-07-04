@@ -6,7 +6,7 @@ own ``--resume <session_id>`` (server-side session storage, see
 ``pydantic_ai`` transport has no equivalent server-side session, so its
 in-memory conversation (``list[ModelMessage]``) must be persisted by teatree
 itself on PARK and rehydrated on RESUME — the piece epic #2565-C names as the
-"one new piece" cached-resume needs (docs/design/own-loop-scheduler.md § 7).
+"one new piece" cached-resume needs (BLUEPRINT.md § Loop Topology).
 
 No migration: reuses ``Ticket.extra`` (an already-migrated per-ticket JSON
 store — precedent: ``more_prs_coming``, ``prs``) under the

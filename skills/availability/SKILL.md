@@ -29,7 +29,7 @@ Load `/t3:availability` when the user wants to:
 - **`away`** — holiday: questions defer to the durable backlog AND the self-pump pauses (the factory stops self-driving too).
 - **`autonomous_away`** — unattended run: questions defer like `away`, but the self-pump keeps the factory running like `present`. Use this for a long unattended run so a permanent `away` doesn't silently stop the loop.
 
-`away` also parks every per-loop tick: the `loops_tick` command — the single chokepoint both the loop-runner daemon (`execute_loop`) and the legacy native `/loop` cron converge on — consults `resolve_mode().pauses_self_pump` first and skips silently (`skipped: true`, no lease claimed) when it is true. `autonomous_away` does NOT pause here, so every enabled loop keeps ticking on its own cadence while questions still defer.
+`away` also parks every per-loop tick: the `loops_tick` command — the single chokepoint both the `t3 worker`'s deadlined subprocess timer tick and the legacy native `/loop` cron converge on — consults `resolve_mode().pauses_self_pump` first and skips silently (`skipped: true`, no lease claimed) when it is true. `autonomous_away` does NOT pause here, so every enabled loop keeps ticking on its own cadence while questions still defer.
 
 ## Mode resolution (single deterministic precedence)
 

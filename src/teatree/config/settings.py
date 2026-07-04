@@ -371,9 +371,8 @@ class UserSettings:
     # branch on that path. Per-overlay overridable; ``T3_AGENT_HARNESS_PROVIDER``
     # env wins.
     agent_harness_provider: AgentHarnessProvider | None = None
-    # Whether a Chinese-origin model (DeepSeek, Qwen, GLM — see
-    # ``docs/design/autonomous-lane-redesign.md`` § 3) may be selected through the
-    # ``pydantic_ai`` harness's OrcaRouter routing handle (#2887). Default ``True``:
+    # Whether a Chinese-origin model (DeepSeek, Qwen, GLM) may be selected through
+    # the ``pydantic_ai`` harness's OrcaRouter routing handle (#2887). Default ``True``:
     # teatree's own default posture is permissive (the no-Chinese-models
     # constraint is a client-work policy, not a teatree one) — an overlay serving
     # client work under that policy overrides this to ``False`` for itself.
@@ -401,10 +400,11 @@ class UserSettings:
     wip: Wip = Wip.MEDIUM
     # Loop tick interval in seconds (BLUEPRINT § 5.6). Default 12 minutes.
     loop_cadence_seconds: int = 720
-    # #2876 — selects the loop *driver*. When false (the default, fail-OFF) the
+    # #1796 — the loop-worker kill-switch. When false (the default, fail-OFF) the
     # native Claude `/loop` crons own the tick cadence exactly as today. When true
-    # the self-owned singleton `t3 loop-runner` daemon owns the cadence and the
-    # SessionStart CronCreate path stands down, so the two drivers never both fire.
+    # the singleton `t3 worker` drains the self-rescheduling loop-timer chains and
+    # the SessionStart CronCreate path stands down, so the two drivers never both
+    # fire; the worker supervisor re-reads this flag every ~5s and stops on flip-off.
     # DB-home (#1775): resolved from the `ConfigSetting` store (global + overlay
     # rows) + `T3_LOOP_RUNNER_ENABLED` env; a `[teatree]`/`[overlays.<name>]` TOML
     # value is ignored on read. Set via `config_setting set loop_runner_enabled`.

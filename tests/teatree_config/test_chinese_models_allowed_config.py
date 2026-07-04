@@ -2,8 +2,7 @@
 
 ``chinese_models_allowed`` is DB-home: its sole authoritative tier is the
 ``ConfigSetting`` store (+ the ``T3_CHINESE_MODELS_ALLOWED`` env). The resolver
-defaults to ``True`` (teatree's own permissive posture per
-``docs/design/autonomous-lane-redesign.md`` § 3) when no row is set, and an
+defaults to ``True`` (teatree's own permissive posture) when no row is set, and an
 overlay serving client work under a no-Chinese-models policy overrides it to
 ``False`` for itself. ``CONFIG_PATH`` is isolated so the real
 ``~/.teatree.toml`` never leaks in.
