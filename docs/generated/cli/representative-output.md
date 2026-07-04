@@ -16,6 +16,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ startoverlay    Create a new TeaTree overlay package.                        │
 │ docs            Serve the project documentation with mkdocs.                 │
+│ capabilities    List each command's --json support and exit-code contract    │
+│                 (front-end discovery).                                       │
 │ agent           Launch Claude Code with auto-detected project context.       │
 │ sessions        List recent Claude conversation sessions with resume         │
 │                 commands.                                                    │

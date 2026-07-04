@@ -12,30 +12,51 @@ for read-only inspection.
 
 import logging
 from collections import Counter
-from typing import Annotated
+from typing import IO, Annotated, TypedDict, cast
 
 import typer
 from django_typer.management import TyperCommand, command
 
+from teatree.core.machine_output import emit
+
 logger = logging.getLogger(__name__)
+
+
+class QueueStatus(TypedDict):
+    total: int
+    by_status: dict[str, int]
+    ready_by_task: dict[str, int]
 
 
 class Command(TyperCommand):
     @command()
-    def status(self) -> None:
+    def status(
+        self,
+        *,
+        json_output: Annotated[
+            bool,
+            typer.Option("--json", help="Emit the queue breakdown as JSON on stdout instead of the human view."),
+        ] = False,
+    ) -> QueueStatus:
         """Print the queue breakdown by status, and READY jobs by task name."""
         from django_tasks.base import TaskResultStatus  # noqa: PLC0415
         from django_tasks_db.models import DBTaskResult  # noqa: PLC0415
 
         total = DBTaskResult.objects.count()
-        self.stdout.write(f"Total queued rows: {total}")
-        for value in TaskResultStatus.values:
-            self.stdout.write(f"  {value}: {DBTaskResult.objects.filter(status=value).count()}")
+        by_status = {value: DBTaskResult.objects.filter(status=value).count() for value in TaskResultStatus.values}
         ready = DBTaskResult.objects.filter(status=TaskResultStatus.READY)
-        if ready.exists():
-            self.stdout.write("READY by task:")
-            for name, count in Counter(job.task_name for job in ready.iterator()).most_common():
-                self.stdout.write(f"  {count}  {name}")
+        ready_by_task = dict(Counter(job.task_name for job in ready.iterator()).most_common())
+        payload: QueueStatus = {"total": total, "by_status": by_status, "ready_by_task": ready_by_task}
+
+        self.print_result = False
+        emit(
+            payload,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=lambda stream: _render_status(payload, stream),
+        )
+        return payload
 
     @command(name="expire-stale")
     def expire_stale(
@@ -80,3 +101,13 @@ class Command(TyperCommand):
         self.stdout.write(f"Expired {sum(retired.values())} READY job(s) older than {threshold}h:")
         for name, count in sorted(retired.items(), key=lambda kv: -kv[1]):
             self.stdout.write(f"  {count}  {name}")
+
+
+def _render_status(payload: QueueStatus, stream: IO[str]) -> None:
+    stream.write(f"Total queued rows: {payload['total']}\n")
+    for value, count in payload["by_status"].items():
+        stream.write(f"  {value}: {count}\n")
+    if payload["ready_by_task"]:
+        stream.write("READY by task:\n")
+        for name, count in payload["ready_by_task"].items():
+            stream.write(f"  {count}  {name}\n")

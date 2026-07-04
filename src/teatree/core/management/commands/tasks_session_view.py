@@ -36,8 +36,9 @@ import pathlib
 from typing import IO, TypedDict
 
 from rich.console import Console
+from rich.table import Table
 
-from teatree.core.ref_render import render_ref
+from teatree.core.ref_render import render_ref, short_title
 
 
 class TaskRow(TypedDict):
@@ -240,3 +241,42 @@ def read_harness_todos(session_id: str) -> list[tuple[str, str]]:
     if not session_id:
         return []
     return _read_harness_todos_from_store(session_id)
+
+
+# A redirected/captured stream has no terminal width; rich then defaults to 80
+# cols and crushes the Title column (#2092). Give piped output a generous fixed
+# width so every column renders untruncated; a real terminal keeps its own width.
+_TABLE_PIPE_WIDTH = 160
+
+
+def render_tasks_table(rows: list[TaskRow], *, stream: IO[str] | None = None) -> None:
+    console = Console(file=stream, width=_TABLE_PIPE_WIDTH) if stream is not None else Console()
+    if not rows:
+        console.print("[dim]No tasks.[/dim]")
+        return
+
+    table = Table(title=f"teatree tasks ({len(rows)})", show_lines=False)
+    table.add_column("ID", justify="right", style="bold")
+    table.add_column("Ticket", justify="right")
+    table.add_column("Title", overflow="ellipsis", max_width=48)
+    table.add_column("Status")
+    table.add_column("Target")
+    table.add_column("Phase")
+    table.add_column("Claimed by")
+    table.add_column("Reason", overflow="fold", max_width=60)
+
+    for row in rows:
+        status = row["status"]
+        style = STATUS_STYLES.get(status, "")
+        table.add_row(
+            str(row["task_id"]),
+            str(row["ticket_id"]),
+            short_title(row["ticket_title"]) or "-",
+            f"[{style}]{status}[/]" if style else status,
+            row["execution_target"],
+            row["phase"] or "-",
+            row["claimed_by"] or "-",
+            row["execution_reason"] or "-",
+        )
+
+    console.print(table)
