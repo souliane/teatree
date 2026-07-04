@@ -219,6 +219,32 @@ class S3ReviewCatchTests(FactorySignalsTestBase):
         assert row.verdict == SignalVerdict.OK
         assert row.tripped is False
 
+    def test_workstream_slug_clear_joins_owner_repo_keyed_verdict(self) -> None:
+        # Dominant self-merge shape: the CLEAR carries a WORKSTREAM slug while its
+        # HOLD verdict is keyed under the resolved OWNER/REPO slug (the same
+        # `resolve_pr_repo_slug` the merge gate keys `ReviewVerdict.record` on).
+        # S3 must resolve that owner/repo before `for_pr`, so a genuinely-held
+        # lane counts as CAUGHT — never a false-RED rubber-stamp trip.
+        for i in range(5):
+            pr_id = 971 + i
+            ticket = TicketFactory(issue_url=f"https://github.com/{self.SLUG}/issues/{pr_id}")
+            merged_at = self.now - timedelta(days=5)
+            clear = MergeClearFactory(
+                ticket=ticket,
+                pr_id=pr_id,
+                slug=f"{pr_id}-feat-x",
+                issued_at=merged_at - timedelta(hours=1),
+                consumed_at=merged_at,
+            )
+            MergeAuditFactory(clear=clear, merged_at=merged_at)
+            ReviewVerdictFactory(hold=True, slug=self.SLUG, pr_id=pr_id)
+        report = compute_factory_signals(now=self.now)
+        row = _row(report, "review_catch")
+        assert row.reading.value == pytest.approx(1.0)
+        assert row.reading.sample_size == 5
+        assert row.tripped is False
+        assert row.verdict == SignalVerdict.OK
+
 
 class S4MergeLatencyTests(FactorySignalsTestBase):
     def test_stale_actionable_clear_is_red_with_zero_merges(self) -> None:

@@ -17,7 +17,8 @@ from typing import Any
 
 from django.db.models import Min
 
-from teatree.core.merge.pr_slug_resolution import normalize_repo_slug
+from teatree.core.merge.errors import MergePreconditionError
+from teatree.core.merge.pr_slug_resolution import normalize_repo_slug, resolve_pr_repo_slug
 from teatree.core.models.merge_clear import MergeAudit, MergeClear
 from teatree.core.models.red_card_signal import RedCardSignal
 from teatree.core.models.red_mr_fix_attempt import RedMrFixAttempt
@@ -234,6 +235,23 @@ def compute_s2(window: Window, overlay: str, now: datetime) -> Computation:  # n
     return Computation(SignalReading(numerator / denom, denom, window.days, SignalStatus.OK), evidence)
 
 
+def _verdict_repo_key(clear: MergeClear) -> tuple[str, int] | None:
+    """``(owner/repo, pr_id)`` for a CLEAR keyed the way its verdict is stored.
+
+    ``ReviewVerdict`` is keyed under :func:`resolve_pr_repo_slug` (the owner/repo
+    the merge gate targets), NOT the CLEAR's workstream slug — so S3 must resolve
+    the same owner/repo before ``for_pr``, mirroring how S1 canonicalises both
+    join sides. Offline (no network probe). A degenerate CLEAR that cannot be
+    resolved (workstream slug, no ticket ``issue_url``, no clone origin) is
+    reported unmatched rather than joined on the wrong (workstream) slug.
+    """
+    try:
+        slug = resolve_pr_repo_slug(clear)
+    except MergePreconditionError:
+        return None
+    return (slug, clear.pr_id)
+
+
 def _review_caught(slug: str, pr_id: int) -> bool:
     """True iff any recorded verdict for the PR held or surfaced a blocker/major."""
     for verdict in ReviewVerdict.objects.for_pr(slug, pr_id):
@@ -248,14 +266,26 @@ def compute_s3(window: Window, overlay: str, now: datetime) -> Computation:  # n
     """S3 review_catch_rate: merged PRs whose review held or found a blocker/major.
 
     The rubber-stamp detector: ≥MIN_SAMPLE merges with a catch rate of zero is a
-    vacuous review lane, tripped RED by the red-floor of ``0.0``.
+    vacuous review lane, tripped RED by the red-floor of ``0.0``. Each merge is
+    joined to its verdict under the resolved owner/repo slug (:func:`_verdict_repo_key`,
+    the key ``ReviewVerdict`` is stored under); a CLEAR whose owner/repo cannot be
+    resolved is routed to ``unmatched_slug`` and dropped from the denominator, the
+    way S1 handles an unjoinable CLEAR — never mis-counted as a rubber-stamp.
     """
     audits = _merge_audits_in(window, overlay)
-    denom = len(audits)
-    evidence: dict[str, Any] = {"merges": denom}
+    matchable: list[tuple[str, int]] = []
+    unmatched = 0
+    for audit in audits:
+        key = _verdict_repo_key(audit.clear)
+        if key is None:
+            unmatched += 1
+        else:
+            matchable.append(key)
+    denom = len(matchable)
+    evidence: dict[str, Any] = {"merges": denom, "unmatched_slug": unmatched}
     if denom < MIN_SAMPLE:
         return Computation(SignalReading(0.0, denom, window.days, SignalStatus.INSUFFICIENT_DATA), evidence)
-    caught = sum(1 for audit in audits if _review_caught(audit.clear.slug, audit.clear.pr_id))
+    caught = sum(1 for slug, pr_id in matchable if _review_caught(slug, pr_id))
     evidence["caught"] = caught
     return Computation(SignalReading(caught / denom, denom, window.days, SignalStatus.OK), evidence)
 
