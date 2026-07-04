@@ -106,7 +106,10 @@ def _orchestrate(request: "TickRequest", *, statusline_path: Path | None) -> Non
         if manifest.wip is Wip.MEDIUM:
             clear_admit_budget(statusline_path=target)
             return
-        write_admit_budget(manifest.cap, statusline_path=target)
+        # The TARGET, not the marginal ``cap``: the claimer's gate is
+        # ``in_flight >= budget``, so the ceiling must be the pool-refill target
+        # for a below-target exit to re-admit next tick (PR-13).
+        write_admit_budget(manifest.target, statusline_path=target)
     except Exception:
         logger.exception("orchestrate_phase budget planning failed — tick continues")
 

@@ -305,10 +305,13 @@ class Command(TyperCommand):
         if _admit_budget_exhausted():
             task = None
         else:
+            from teatree.loop.queue_drain import admission_claim_order  # noqa: PLC0415
+
             task = Task.objects.claim_next_pending(
                 claimed_by=claimed_by,
                 claimed_by_session=session,
                 extra_filter=_dispatchable_q(),
+                ordering=admission_claim_order(),
             )
         payload: list[dict[str, Any]] = [_task_to_dict(task)] if task is not None else []
 

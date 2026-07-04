@@ -303,6 +303,36 @@ class TestClaimNextAtomicDispatch(_LoopDispatchTest):
         assert task.claimed_by_session == ""
 
 
+class TestClaimNextAdmissionPriority(_LoopDispatchTest):
+    """PR-13: ``claim-next`` claims a queued TODO before a new-ticket auto-start."""
+
+    def _new_ticket_planning(self, *, url: str) -> Task:
+        # An initial-phase (planning) task with no parent = a brand-new-ticket
+        # auto-start; INTERACTIVE so the in-session claim path is eligible.
+        ticket = Ticket.objects.create(overlay="acme", issue_url=url, role=Ticket.Role.AUTHOR)
+        session = Session.objects.create(ticket=ticket, agent_id=f"plan-{ticket.pk}")
+        return Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="planning",
+            status=Task.Status.PENDING,
+            execution_target=Task.ExecutionTarget.INTERACTIVE,
+        )
+
+    def test_claim_next_admits_todo_before_lower_pk_new_ticket(self) -> None:
+        # The new-ticket planning task is created FIRST (lower pk); FIFO alone
+        # would claim it. The coding TODO (higher pk) must win on admission rank.
+        new_ticket = self._new_ticket_planning(url="https://example.com/issues/newticket")
+        todo = self._author_task(url="https://example.com/issues/todo")  # coding, INTERACTIVE
+        assert todo.pk > new_ticket.pk
+        stdout = StringIO()
+        call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
+        payload = json.loads(stdout.getvalue())
+        assert [e["task_id"] for e in payload] == [todo.pk]
+        new_ticket.refresh_from_db()
+        assert new_ticket.status == Task.Status.PENDING  # left for the next claim
+
+
 class TestClaimNextAdmitBudgetGate(_LoopDispatchTest):
     """#1796 (WI-1): ``claim-next`` honours the orchestrate admit-budget ceiling.
 
