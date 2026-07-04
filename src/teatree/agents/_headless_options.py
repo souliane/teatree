@@ -18,6 +18,7 @@ from claude_agent_sdk import ClaudeAgentOptions
 from claude_agent_sdk.types import EffortLevel, SystemPromptPreset, ThinkingConfig
 
 from teatree.agents.model_tiering import model_supports_thinking, resolve_spawn_effort, resolve_spawn_model
+from teatree.agents.sdk_tool_map import sdk_disallowed_tools_for_phase
 from teatree.core.models import Task
 from teatree.core.models.worktree import Worktree
 
@@ -29,9 +30,11 @@ _PERMISSION_MODE = "bypassPermissions"
 _MAX_TURNS = 0
 # AskUserQuestion only renders to a live human at the harness — there is none
 # in the SDK/headless lane, so leaving it allowed lets the agent silently stall
-# on an unanswerable question. Hard-deny it: the agent must instead return the
-# structured ``needs_user_input`` + ``user_input_reason`` and STOP, which the
-# durable DeferredQuestion → Slack → resume loop then routes to the user.
+# on an unanswerable question. Hard-deny it UNCONDITIONALLY: the agent must
+# instead return the structured ``needs_user_input`` + ``user_input_reason`` and
+# STOP, which the durable DeferredQuestion → Slack → resume loop then routes to
+# the user. The per-phase least-privilege complement (PR-11) is added on top of
+# this floor at build time — see :func:`_disallowed_tools_for_phase`.
 _DISALLOWED_TOOLS = ("AskUserQuestion",)
 # Adaptive thinking, pinned EXPLICITLY on every reasoning-capable production
 # spawn. Opus 4.8 runs WITHOUT thinking when the ``thinking`` option is omitted,
@@ -43,6 +46,22 @@ _DISALLOWED_TOOLS = ("AskUserQuestion",)
 _ADAPTIVE_THINKING: ThinkingConfig = {"type": "adaptive"}
 
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
+def _disallowed_tools_for_phase(phase: str) -> list[str]:
+    """The full disallow list for a headless dispatch — floor plus per-phase complement.
+
+    :data:`_DISALLOWED_TOOLS` (``AskUserQuestion``) is denied on every headless
+    spawn; the per-phase least-privilege complement (PR-11) is layered on top,
+    mapped from the phase_tools SSOT to SDK tool names by
+    :func:`~teatree.agents.sdk_tool_map.sdk_disallowed_tools_for_phase`. A review
+    phase (``reviewing`` / ``e2e_reviewing`` / ``requesting_review``) therefore
+    denies the shell (git-write), ``Write``/``Edit``, and the spawn tools — the
+    cold-review least-privilege that keeps the transcript at its verdict. A write
+    phase's complement is empty, so its list stays exactly ``[AskUserQuestion]``,
+    byte-identical to before the lever. Sorted & deduplicated for determinism.
+    """
+    return sorted(set(_DISALLOWED_TOOLS) | set(sdk_disallowed_tools_for_phase(phase)))
 
 
 def _build_options(
@@ -92,7 +111,7 @@ def _build_options(
         cwd=cwd,
         add_dirs=add_dirs,
         permission_mode=_PERMISSION_MODE,
-        disallowed_tools=list(_DISALLOWED_TOOLS),
+        disallowed_tools=_disallowed_tools_for_phase(phase),
         max_turns=_MAX_TURNS,
         resume=resume_session_id or None,
         # Pin adaptive thinking so the Opus-4.8 reasoning phases think (Opus 4.8

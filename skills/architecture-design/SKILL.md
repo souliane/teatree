@@ -1,6 +1,6 @@
 ---
 name: architecture-design
-description: Architecture pre-check companion. Loaded transitively by implementation skills (code, ticket-for-features, retro-for-skill-changes) to force an architecture pass — BLUEPRINT alignment, FSM phase boundaries, extension-point contracts, component boundaries, dependency direction, test surface, resilience invariants — BEFORE any code is written.
+description: Architecture pre-check companion. Loaded transitively by implementation skills (code, ticket-for-features, retro-for-skill-changes) to force an architecture pass — BLUEPRINT alignment, FSM phase boundaries, extension-point contracts, component boundaries, dependency direction, test surface, resilience invariants, removability — BEFORE any code is written.
 compatibility: macOS/Linux, any teatree-managed repo.
 requires:
   - writing-plans
@@ -15,11 +15,11 @@ metadata:
 
 This is a companion gate. Implementation skills (`t3:code`, `t3:ticket` for new features, `t3:retro` when a retro touches skills) declare `requires: [architecture-design]` so it loads BEFORE coding starts. The flywheel (BLUEPRINT § 17.1 invariant 2) is enforcement encoded as structure, not prose vigilance — this companion is the structure for the "design first, then code" step.
 
-Generic planning methodology is delegated to `obra/superpowers/writing-plans`. The teatree-specific value-add is the nine-check architecture pass below, plus the template the implementer fills in before touching `src/` — worktree-local as `ARCHITECTURE.md` (gitignored scratch) and surfaced to the reviewer as a `## Architecture pre-check` section in the PR body.
+Generic planning methodology is delegated to `obra/superpowers/writing-plans`. The teatree-specific value-add is the ten-check architecture pass below, plus the template the implementer fills in before touching `src/` — worktree-local as `ARCHITECTURE.md` (gitignored scratch) and surfaced to the reviewer as a `## Architecture pre-check` section in the PR body.
 
 ## When the gate fires
 
-The nine checks apply when the work meets any of:
+The ten checks apply when the work meets any of:
 
 - touches `src/teatree/cli/`, `src/teatree/core/`, `src/teatree/loop/scanners/`, `src/teatree/agents/`, `OverlayBase`, scanner registration, or any `*Backend` Protocol
 - crosses an FSM phase boundary (introduces or moves a `Ticket.State` transition)
@@ -29,7 +29,7 @@ The nine checks apply when the work meets any of:
 
 Tactical fixes (typo, narrow string change, single-call-site bug) skip the gate — the implementer notes that in the PR body.
 
-## The nine checks
+## The ten checks
 
 ### 1. BLUEPRINT § alignment
 
@@ -112,13 +112,22 @@ For any change that replaces or rewrites an existing implementation, **enumerate
 - **Never invert an existing must-block regression test to must-not-block** (e.g. `returncode == 1` → `== 0`) to make a weaker matcher pass. Deleting or inverting the test that pinned the old behavior is the tell that coverage was dropped without preservation.
 - If a behavior genuinely must be dropped, the removal is its own reviewed decision: list it here, justify it, and (for safety gates) get sign-off — preserve-or-STOP, never silently narrow.
 
+### 10. Removability / harness-vs-data
+
+Two questions every new component must answer.
+
+- **Removability.** Can this component be deleted later without a cascade? State the blast radius of its removal — a self-contained module reverting to the prior behavior is removable; one whose deletion forces edits across N call sites is not. A component that cannot be cleanly removed is a component you cannot cheaply revert when it proves wrong; prefer the shape that can be pulled out.
+- **Harness vs data.** Does this belong in the harness (code/gate/FSM logic) or in data/config (a table, a setting, a registry row)? A per-item policy that a table can express does not belong hard-coded in the harness — put the varying part in data and keep the harness the generic mechanism that reads it. Justify the side you chose.
+
+The deterministic validator `teatree.quality.architecture_precheck` fires a warning on PR creation — `core.gates.architecture_precheck_gate` runs it against the PR body at both PR-creation chokepoints (alongside the open-questions gate) — when the body carries a pre-check section that leaves this check absent or a bare placeholder. The pre-check is incomplete until it carries a real answer.
+
 ## Anti-pattern catalog
 
-The nine checks above are the curated, narrative core. Their machine-checked superset is the anti-pattern catalog at [docs/generated/antipattern-catalog.md](../../docs/generated/antipattern-catalog.md) — generated from `src/teatree/quality/antipatterns.yaml`, the single source of truth. Each entry carries a detection tier (`greppable` or `judgement`) feeding the three review tiers: this design-time pass, the per-PR deterministic linter (`scripts/hooks/check_antipatterns.py`, manual stage), and the periodic holistic review in `ac-reviewing-codebase`. A reviewer skimming a design can use the catalog as the checklist the nine prose checks summarize.
+The ten checks above are the curated, narrative core. Their machine-checked superset is the anti-pattern catalog at [docs/generated/antipattern-catalog.md](../../docs/generated/antipattern-catalog.md) — generated from `src/teatree/quality/antipatterns.yaml`, the single source of truth. Each entry carries a detection tier (`greppable` or `judgement`) feeding the three review tiers: this design-time pass, the per-PR deterministic linter (`scripts/hooks/check_antipatterns.py`, manual stage), and the periodic holistic review in `ac-reviewing-codebase`. A reviewer skimming a design can use the catalog as the checklist the nine prose checks summarize.
 
 ## Architecture pre-check template
 
-The implementer fills the template BEFORE touching `src/`, drafting it in a worktree-local `ARCHITECTURE.md` (gitignored scratch — it is never committed, so it can never thrash a PR with per-ticket conflicts). The reviewer-facing deliverable is a `## Architecture pre-check` section carrying the same nine-check summary **in the PR body**, where it is visible in the PR with no tracked file to conflict. A missing or empty pre-check section in the PR body is a review gap.
+The implementer fills the template BEFORE touching `src/`, drafting it in a worktree-local `ARCHITECTURE.md` (gitignored scratch — it is never committed, so it can never thrash a PR with per-ticket conflicts). The reviewer-facing deliverable is a `## Architecture pre-check` section carrying the same ten-check summary **in the PR body**, where it is visible in the PR with no tracked file to conflict. A missing or empty pre-check section in the PR body is a review gap.
 
 ```markdown
 ## Architecture pre-check — <ticket-ref>
@@ -149,12 +158,15 @@ The implementer fills the template BEFORE touching `src/`, drafting it in a work
 
 ## 9. Behavior preservation / capability deletion
 <for a change that replaces/rewrites existing code: enumerate every behavior the old code handled, mark each preserved or dropped; flag any narrowing of a privacy/leak/security matcher as requiring user sign-off; confirm no must-block test was inverted to must-not-block; "n/a — purely additive" if nothing is removed>
+
+## 10. Removability / harness-vs-data
+<is the component removable — the blast radius of deleting it; does it belong in the harness (code/gate/FSM) or in data/config (table/setting/registry)? justify the side chosen>
 ```
 
 ## Workflow
 
 1. Read `BLUEPRINT.md` and the appendix for the touched section.
-2. Run the nine checks against the proposed change.
+2. Run the ten checks against the proposed change.
 3. Draft the pre-check in the worktree-local `ARCHITECTURE.md` (gitignored), then carry the summary into the PR body's `## Architecture pre-check` section when you open the PR.
 4. Hand off to the implementation skill (`t3:code`) — it picks up from here with TDD.
 
@@ -167,6 +179,6 @@ The implementer fills the template BEFORE touching `src/`, drafting it in a work
 
 ## Scope discipline
 
-This skill ships v1 with the nine checks above. If a check is missing from the PR body's `## Architecture pre-check` section, the reviewer surfaces it as a discussion thread on the PR — no merge until the gap is closed.
+This skill ships with the ten checks above. If a check is missing from the PR body's `## Architecture pre-check` section, the reviewer surfaces it as a discussion thread on the PR — no merge until the gap is closed. The removability check (#10) additionally has a deterministic backstop: `core.gates.architecture_precheck_gate` warns on PR creation (warn-only, mirroring the open-questions gate) when the pre-check section leaves a required check unanswered.
 
 The companion does not block implementation skills from loading — it loads alongside them. The discipline is that the implementer reads it first; the PR review enforces that the pre-check (the `## Architecture pre-check` section in the PR body) was produced.

@@ -163,6 +163,7 @@ depends_on = [
   "teatree.hooks",
   "teatree.on_behalf_gate",
   "teatree.slack_mrkdwn",
+  "teatree.quality",
   "teatree.core.modelkit",
   "teatree.core.models.errors",
   "teatree.core.models",
