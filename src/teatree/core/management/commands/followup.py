@@ -1,8 +1,10 @@
-from typing import cast
+from typing import IO, Annotated, cast
 
+import typer
 from django_typer.management import TyperCommand, command
 
 from teatree.core.backend_factory import code_host_from_overlay
+from teatree.core.machine_output import emit
 from teatree.core.models import Task, Ticket
 from teatree.core.overlay_loader import get_overlay
 from teatree.types import ConflictedMR, RawAPIDict
@@ -54,12 +56,22 @@ class Command(TyperCommand):
         }
 
     @command()
-    def sync(self) -> dict[str, int | list[str] | list[dict[str, int | str]]]:
+    def sync(
+        self,
+        *,
+        json_output: Annotated[
+            bool,
+            typer.Option("--json", help="Emit the sync summary as JSON on stdout instead of the human view."),
+        ] = False,
+    ) -> dict[str, int | list[str] | list[dict[str, int | str]]]:
         from teatree.core.sync import sync_followup  # noqa: PLC0415
 
         result = sync_followup()
+        # The conflict banner is a human diagnostic, not machine data — always to
+        # stderr so stdout stays a clean JSON channel (pre-PR-30 it wrote a
+        # ``'=' * 64`` banner to stdout ahead of the repr'd dict, #78/#2763).
         self._warn_conflicted_mrs(result.conflicted_mrs)
-        return {
+        payload: dict[str, int | list[str] | list[dict[str, int | str]]] = {
             "prs_found": result.prs_found,
             "tickets_created": result.tickets_created,
             "tickets_updated": result.tickets_updated,
@@ -67,6 +79,15 @@ class Command(TyperCommand):
             "errors": result.errors,
             "conflicted_mrs": [c.to_dict() for c in result.conflicted_mrs],
         }
+        self.print_result = False
+        emit(
+            payload,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=lambda stream: _render_sync(payload, stream),
+        )
+        return payload
 
     def _warn_conflicted_mrs(self, conflicted: list[ConflictedMR]) -> None:
         """Surface conflicted open authored MRs LOUDLY, never buried like errors.
@@ -74,20 +95,21 @@ class Command(TyperCommand):
         A conflicted MR sits invisibly until someone resolves it, and re-arises
         as master advances — so the sweep prints a clearly-visible WARNING
         block naming each one. Detection only: resolution stays an explicit,
-        separate action (#78).
+        separate action (#78). Written to stderr (the human channel) so stdout
+        remains a pure JSON contract under ``--json``.
         """
         if not conflicted:
             return
         count = len(conflicted)
         plural = "s" if count != 1 else ""
-        self.stdout.write("")
-        self.stdout.write(f"{'=' * 64}")
-        self.stdout.write(f"WARNING: {count} open MR{plural} in merge conflict — resolve before merge:")
-        self.stdout.write(f"{'=' * 64}")
+        self.stderr.write("")
+        self.stderr.write(f"{'=' * 64}")
+        self.stderr.write(f"WARNING: {count} open MR{plural} in merge conflict — resolve before merge:")
+        self.stderr.write(f"{'=' * 64}")
         for mr in conflicted:
-            self.stdout.write(f"  CONFLICT  !{mr.iid}  {mr.repo}  {mr.title}")
-            self.stdout.write(f"            {mr.web_url}")
-        self.stdout.write(f"{'=' * 64}")
+            self.stderr.write(f"  CONFLICT  !{mr.iid}  {mr.repo}  {mr.title}")
+            self.stderr.write(f"            {mr.web_url}")
+        self.stderr.write(f"{'=' * 64}")
 
     @command(name="discover-mrs")
     def discover_mrs(self) -> RawAPIDict:
@@ -154,3 +176,17 @@ class Command(TyperCommand):
             .order_by("pk")
             .values_list("id", flat=True),
         )
+
+
+def _render_sync(payload: dict[str, int | list[str] | list[dict[str, int | str]]], stream: IO[str]) -> None:
+    errors = cast("list[str]", payload["errors"])
+    conflicted = cast("list[dict[str, int | str]]", payload["conflicted_mrs"])
+    stream.write(
+        f"followup sync: prs_found={payload['prs_found']} "
+        f"tickets_created={payload['tickets_created']} "
+        f"tickets_updated={payload['tickets_updated']} "
+        f"worktrees_cleaned={payload['worktrees_cleaned']} "
+        f"errors={len(errors)} conflicted_mrs={len(conflicted)}\n"
+    )
+    for err in errors:
+        stream.write(f"  ERROR  {err}\n")

@@ -6699,7 +6699,9 @@ Usage: t3 teatree tasks create [OPTIONS] TICKET
  Used by `/t3:next` to hand off from one phase to the next. Headless by default
  so a worker
  claims it immediately; pass `--interactive` for tasks that require human
- input.
+ input. A machine
+ handoff: the created-task record is JSON on stdout, the human confirmation on
+ stderr.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    ticket      INTEGER  Ticket PK (see `ticket_id` in `tasks list`).       │
@@ -6734,6 +6736,9 @@ Usage: t3 teatree tasks list [OPTIONS]
 │                                             session and group pending /      │
 │                                             claimed / done.                  │
 │                                             [default: no-session]            │
+│ --json                                      Emit the task rows as JSON on    │
+│                                             stdout instead of the human      │
+│                                             table.                           │
 │ --help                                      Show this message and exit.      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -6794,6 +6799,8 @@ Usage: t3 teatree queue status [OPTIONS]
  Print the queue breakdown by status, and READY jobs by task name.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit the queue breakdown as JSON on stdout instead of the    │
+│                 human view.                                                  │
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -6856,6 +6863,8 @@ Usage: t3 teatree followup refresh [OPTIONS]
 Usage: t3 teatree followup sync [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit the sync summary as JSON on stdout instead of the human │
+│                 view.                                                        │
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

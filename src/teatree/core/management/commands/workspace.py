@@ -584,9 +584,11 @@ class Command(TyperCommand):
         auto-deletion of provably-redundant items; this surfaces the rest for the
         skill to route (superseded / salvage-to-fresh-PR / defer-live).
         """
-        rendered = emit_records_json(_worktree_root())
-        self.stdout.write(rendered)
-        return rendered
+        # Return the JSON string only — django-typer serializes the return onto
+        # stdout exactly once. A manual ``self.stdout.write(rendered)`` here (the
+        # pre-PR-30 double-emit, #2763) printed it a SECOND time, so `json.loads`
+        # failed with "Extra data" at the midpoint of the machine handoff.
+        return emit_records_json(_worktree_root())
 
     @command(name="salvage")
     def salvage(

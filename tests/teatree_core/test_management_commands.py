@@ -1395,7 +1395,7 @@ class TestTasksListCommand(TestCase):
     def test_render_tasks_table_formats_rows(self) -> None:
         from io import StringIO  # noqa: PLC0415
 
-        from teatree.core.management.commands.tasks import TaskRow, _render_tasks_table  # noqa: PLC0415
+        from teatree.core.management.commands.tasks_session_view import TaskRow, render_tasks_table  # noqa: PLC0415
 
         rows: list[TaskRow] = [
             TaskRow(
@@ -1410,7 +1410,7 @@ class TestTasksListCommand(TestCase):
             ),
         ]
         buf = StringIO()
-        _render_tasks_table(rows, stream=buf)
+        render_tasks_table(rows, stream=buf)
         out = buf.getvalue()
         assert "teatree tasks (1)" in out
         assert "ID" in out
@@ -1426,10 +1426,10 @@ class TestTasksListCommand(TestCase):
     def test_render_tasks_table_handles_empty(self) -> None:
         from io import StringIO  # noqa: PLC0415
 
-        from teatree.core.management.commands.tasks import _render_tasks_table  # noqa: PLC0415
+        from teatree.core.management.commands.tasks_session_view import render_tasks_table  # noqa: PLC0415
 
         buf = StringIO()
-        _render_tasks_table([], stream=buf)
+        render_tasks_table([], stream=buf)
         assert "No tasks" in buf.getvalue()
 
 
