@@ -28,10 +28,21 @@ from claude_agent_sdk import (
     ToolResultBlock,
     ToolUseBlock,
 )
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    RetryPromptPart,
+    TextPart,
+    ToolCallPart,
+    ToolReturnPart,
+    UserPromptPart,
+)
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
 from teatree.agents.harness import PydanticAiHarness
 from teatree.agents.lane_b.gating import hard_deny_reason
+from teatree.hooks.quote_scanner import extract_publish_payload, scan_text
 from tests.teatree_agents.lane_b._managed_clone import linked_worktree, managed_main_clone
 
 pydantic_ai.models.ALLOW_MODEL_REQUESTS = False  # ty: ignore[invalid-assignment] — the zero-token test guard.
@@ -121,6 +132,117 @@ class TestHardDenyParity:
         messages = _collect(harness, ClaudeAgentOptions(cwd=str(wt)), "reset soft")
 
         assert not [r for r in _blocks(messages, ToolResultBlock) if r.is_error]
+
+
+def _pairing_validator_model(orphans: list[str]) -> FunctionModel:
+    """A streaming FunctionModel that records every orphaned tool-result it is sent.
+
+    A ``ToolReturnPart`` / tool-linked ``RetryPromptPart`` whose ``tool_call_id``
+    was not produced by a preceding ``ToolCallPart`` is exactly the "tool message
+    without preceding tool_calls" an OpenAI-compatible provider rejects — the model
+    stand-in for that wire-level check.
+    """
+
+    def stream_fn(messages: object, info: object) -> object:
+        call_ids: set[str] = set()
+        for message in messages:  # type: ignore[attr-defined]
+            if isinstance(message, ModelResponse):
+                call_ids.update(p.tool_call_id for p in message.parts if isinstance(p, ToolCallPart))
+            elif isinstance(message, ModelRequest):
+                for part in message.parts:
+                    tool_linked_retry = isinstance(part, RetryPromptPart) and part.tool_name is not None
+                    if (isinstance(part, ToolReturnPart) or tool_linked_retry) and part.tool_call_id not in call_ids:
+                        orphans.append(part.tool_call_id)
+
+        async def gen():  # noqa: RUF029 — an async generator (the stream contract) that only yields.
+            yield "ok"
+
+        return gen()
+
+    return FunctionModel(stream_function=stream_fn)
+
+
+def _history_straddling_a_tool_pair() -> list[ModelMessage]:
+    """A 44-message history whose default (``keep_recent=40``) cut orphans a return.
+
+    The kept window is the last 40 (indices 4..43): the tool RETURN sits at index 4
+    (first kept) while its CALL at index 3 falls in the dropped middle, so a naive
+    ``[first, *last-40]`` keeps an orphaned return. Index 5 onward is filler so the
+    snapped window opens on a non-tool message.
+    """
+    history: list[ModelMessage] = [
+        ModelRequest(parts=[UserPromptPart(content="task")]),  # 0: framing
+        ModelResponse(parts=[TextPart(content="a1")]),  # 1: dropped middle
+        ModelRequest(parts=[UserPromptPart(content="u2")]),  # 2: dropped middle
+        ModelResponse(parts=[ToolCallPart(tool_name="shell", args={"command": "ls"}, tool_call_id="c1")]),  # 3: CALL
+        ModelRequest(parts=[ToolReturnPart(tool_name="shell", content="out", tool_call_id="c1")]),  # 4: RETURN
+    ]
+    for i in range(5, 44):
+        if i % 2 == 1:
+            history.append(ModelResponse(parts=[TextPart(content=f"a{i}")]))
+        else:
+            history.append(ModelRequest(parts=[UserPromptPart(content=f"u{i}")]))
+    return history
+
+
+class TestCompactionRoundTrip:
+    def test_compacted_history_round_trips_with_no_orphaned_tool_return(self, tmp_path: Path) -> None:
+        # The REAL PydanticAiHarness compacts the seeded history before the turn
+        # (phase set → Lane-B tool layer + compaction). A validator FunctionModel
+        # stands in for the OpenAI-compatible provider's tool-pairing check.
+        orphans: list[str] = []
+        harness = PydanticAiHarness(
+            model=_pairing_validator_model(orphans),
+            history=_history_straddling_a_tool_pair(),
+            phase="coding",
+        )
+        _collect(harness, ClaudeAgentOptions(cwd=str(tmp_path)), "continue")
+
+        assert orphans == [], f"the compacted history sent to the model orphaned a tool-return: {orphans}"
+
+
+class TestPrivacyGateParity:
+    """The privacy/banned-term gate refuses the SAME publish set on both lanes.
+
+    Lane A's PreToolUse scopes the scan to :func:`extract_publish_payload` (``None``
+    for a non-publish call); Lane B's :func:`hard_deny_reason` now uses the same
+    scoping, so a local write / non-publish shell command is refused on NEITHER
+    lane, and a publish command carrying a HIGH finding is refused on BOTH.
+    """
+
+    _HIGH_BODY = "the user said: do it now"  # trips the ``the-user-said-colon`` HIGH pattern
+
+    def _lane_a_denies(self, tool_name: str, tool_args: dict, cwd: Path | None) -> bool:
+        # Lane A's ground truth: a publish payload (else None) run through the same scan.
+        command = tool_args.get("command", "") if tool_name == "shell" else ""
+        payload = extract_publish_payload("Bash", {"command": command}, cwd) if command else None
+        return payload is not None and scan_text(payload).has_high
+
+    def test_local_write_with_a_high_finding_is_refused_on_neither_lane(self, tmp_path: Path) -> None:
+        # RED without the fix: Lane B scanned every string arg, so write_file's
+        # content tripped HIGH and was denied while Lane A never scans a local write.
+        args = {"path": "note.md", "content": self._HIGH_BODY}
+        assert hard_deny_reason("write_file", args, cwd=tmp_path) is None
+        assert self._lane_a_denies("write_file", args, tmp_path) is False
+
+    def test_non_publish_shell_command_with_a_high_finding_is_refused_on_neither_lane(self, tmp_path: Path) -> None:
+        # A local `echo ... > file` is not a publish — Lane A passes it through, and
+        # Lane B must too (RED without the fix: the whole command string was scanned).
+        args = {"command": f'echo "{self._HIGH_BODY}" > note.md'}
+        assert hard_deny_reason("shell", args, cwd=tmp_path) is None
+        assert self._lane_a_denies("shell", args, tmp_path) is False
+
+    def test_publish_command_with_a_high_finding_is_refused_on_both_lanes(self, tmp_path: Path) -> None:
+        args = {"command": f'gh pr comment 5 --body "{self._HIGH_BODY}"'}
+        reason = hard_deny_reason("shell", args, cwd=tmp_path)
+        assert reason is not None
+        assert "privacy/banned-term gate" in reason
+        assert self._lane_a_denies("shell", args, tmp_path) is True
+
+    def test_clean_publish_command_is_refused_on_neither_lane(self, tmp_path: Path) -> None:
+        args = {"command": 'gh pr comment 5 --body "shipped the compaction fix"'}
+        assert hard_deny_reason("shell", args, cwd=tmp_path) is None
+        assert self._lane_a_denies("shell", args, tmp_path) is False
 
 
 def test_zero_tokens_enforced() -> None:

@@ -44,6 +44,24 @@ class TestHardDenyReason:
     def test_non_command_tool_with_clean_text_is_allowed(self) -> None:
         assert hard_deny_reason("read_file", {"path": "src/app.py"}) is None
 
+    def test_local_write_with_a_high_finding_content_is_allowed(self, tmp_path: Path) -> None:
+        # Lane A never scans a local write (extract_publish_payload → None), so
+        # Lane B must not either: write_file content is not an egress. RED before
+        # the fix, when every string arg of every tool was scanned.
+        args = {"path": "note.md", "content": "the user said: do it now"}
+        assert hard_deny_reason("write_file", args, cwd=tmp_path) is None
+
+    def test_non_publish_shell_command_with_a_high_finding_is_allowed(self, tmp_path: Path) -> None:
+        # `echo "..." > file` is not a publish — the payload scoping returns None.
+        args = {"command": 'echo "the user said: do it now" > note.md'}
+        assert hard_deny_reason("shell", args, cwd=tmp_path) is None
+
+    def test_publish_command_with_a_high_finding_body_is_denied(self, tmp_path: Path) -> None:
+        args = {"command": 'gh pr comment 5 --body "the user said: do it now"'}
+        reason = hard_deny_reason("shell", args, cwd=tmp_path)
+        assert reason is not None
+        assert "privacy/banned-term gate" in reason
+
     def test_full_gate_parity_with_lane_a_across_clone_and_worktree(self, tmp_path: Path) -> None:
         # Parity against Lane A's FULL gate (the PreToolUse handler = the pure
         # classifier PLUS the environmental main-clone check), not just the core
