@@ -39,29 +39,29 @@ def _git(repo: Path, *args: str, check: bool = True) -> str:
     return result.stdout.strip()
 
 
-def _init_repo(repo: Path) -> None:
+def _init_repo(repo: Path, *, conflict_name: str = "conflict.txt") -> None:
     repo.mkdir(parents=True, exist_ok=True)
     _git(repo, "init", "-q", "-b", "main")
     _git(repo, "config", "user.email", "t@example.com")
     _git(repo, "config", "user.name", "Tester")
     _git(repo, "config", "commit.gpgsign", "false")
-    (repo / "conflict.txt").write_text("line1\nline2\nline3\n")
+    (repo / conflict_name).write_text("line1\nline2\nline3\n")
     (repo / "other.txt").write_text("other\n")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "base")
 
 
-def _diverge(repo: Path, feature: str) -> None:
+def _diverge(repo: Path, feature: str, *, conflict_name: str = "conflict.txt") -> None:
     """Create a conflicting edit on ``main`` and on a fresh ``feature`` branch."""
     _git(repo, "checkout", "-q", "main")
-    (repo / "conflict.txt").write_text("line1\nmain-change\nline3\n")
+    (repo / conflict_name).write_text("line1\nmain-change\nline3\n")
     _git(repo, "commit", "-q", "-am", "main edit")
     _git(repo, "checkout", "-q", "-b", feature, "main~1")
-    (repo / "conflict.txt").write_text("line1\nfeature-change\nline3\n")
+    (repo / conflict_name).write_text("line1\nfeature-change\nline3\n")
     _git(repo, "commit", "-q", "-am", "feature edit")
 
 
-def _merge_main_resolving(repo: Path, *, extra_edit: bool) -> str:
+def _merge_main_resolving(repo: Path, *, extra_edit: bool, conflict_name: str = "conflict.txt") -> str:
     """Merge main into the current branch, resolve the conflict, return the merge SHA.
 
     ``extra_edit`` additionally edits a cleanly-merged file → a substantive
@@ -73,7 +73,7 @@ def _merge_main_resolving(repo: Path, *, extra_edit: bool) -> str:
         text=True,
         check=False,
     )
-    (repo / "conflict.txt").write_text("line1\nfeature-change\nmain-change\nline3\n")
+    (repo / conflict_name).write_text("line1\nfeature-change\nmain-change\nline3\n")
     if extra_edit:
         (repo / "other.txt").write_text("evil-change\n")
     _git(repo, "add", "-A")
@@ -194,6 +194,40 @@ class TestEvilMergeOnMarkerContainingFile:
         _diverge(repo, "feature")
         merge_sha = _merge_main_resolving(repo, extra_edit=False)
         assert is_conflict_only_merge_commit(str(repo), merge_sha) is True
+
+
+class TestNonAsciiConflictedPathEncoding:
+    r"""CORR-07b: a conflicted path with a non-ASCII name classifies verbatim.
+
+    The conflicted-path set is read ``-z`` (verbatim ``café.py``); before the fix
+    the deviation diff was read WITHOUT ``-z``, so git C-quoted the same path to
+    ``"caf\303\251.py"`` under ``core.quotePath``. The quoted deviation name never
+    matched the verbatim conflicted-path name, so a genuine conflict-only merge
+    over-blocked (a legit merge forced back to re-review) and a decoy could fail
+    OPEN. Both sides now read ``-z``.
+    """
+
+    _NON_ASCII = "café.py"
+
+    def test_conflict_only_on_non_ascii_path_is_detected(self, tmp_path: Path) -> None:
+        # RED without the -z fix: the C-quoted deviation name misses the verbatim
+        # conflicted-path set, so this legit conflict-only merge returns False
+        # (over-block).
+        repo = tmp_path / "repo"
+        _init_repo(repo, conflict_name=self._NON_ASCII)
+        _diverge(repo, "feature", conflict_name=self._NON_ASCII)
+        merge_sha = _merge_main_resolving(repo, extra_edit=False, conflict_name=self._NON_ASCII)
+        assert is_conflict_only_merge_commit(str(repo), merge_sha) is True
+
+    def test_evil_edit_alongside_non_ascii_conflict_is_not_conflict_only(self, tmp_path: Path) -> None:
+        # A substantive edit on a cleanly-merged file alongside the non-ASCII
+        # conflict resolution is NOT conflict-only — other.txt is absent from the
+        # conflicted set, forcing a fresh review.
+        repo = tmp_path / "repo"
+        _init_repo(repo, conflict_name=self._NON_ASCII)
+        _diverge(repo, "feature", conflict_name=self._NON_ASCII)
+        merge_sha = _merge_main_resolving(repo, extra_edit=True, conflict_name=self._NON_ASCII)
+        assert is_conflict_only_merge_commit(str(repo), merge_sha) is False
 
 
 def _clear_with_verdict(repo: Path, feature_tip: str) -> MergeClear:
