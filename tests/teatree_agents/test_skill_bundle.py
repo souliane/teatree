@@ -31,13 +31,19 @@ class TestResolveSkillBundleWorktreeScoping(TestCase):
     def test_detects_framework_skill_from_worktree_not_cwd(self) -> None:
         # A worktree that looks like a Django repo resolves ac-django even when
         # the ambient cwd is not a Django repo — the anti-vacuous proof the
-        # detection root is the worktree, not Path.cwd().
-        with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "manage.py").write_text("# django project marker\n")
+        # detection root is the worktree, not Path.cwd(). Path.cwd() is pinned to
+        # a marker-free dir so the ambient teatree repo root (which also has
+        # manage.py) can't make this pass with the worktree threading reverted.
+        with (
+            tempfile.TemporaryDirectory() as worktree,
+            tempfile.TemporaryDirectory() as ambient,
+            patch.object(Path, "cwd", return_value=Path(ambient)),
+        ):
+            (Path(worktree) / "manage.py").write_text("# django project marker\n")
             bundle = resolve_skill_bundle(
                 phase="coding",
                 overlay_skill_metadata={},
-                worktree_path=tmp,
+                worktree_path=worktree,
             )
         assert "ac-django" in bundle
 
