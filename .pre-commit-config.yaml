@@ -402,6 +402,12 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [commit-msg]
+      - id: gate-relaxation
+        name: Anti-relaxation + tach-soundness gate (§17.6.1/§17.6.2, #850)
+        language: system
+        entry: uv run python scripts/hooks/check_gate_relaxation.py
+        pass_filenames: false
+        always_run: true
 
   # Phase 7c - Version sync
   - repo: local

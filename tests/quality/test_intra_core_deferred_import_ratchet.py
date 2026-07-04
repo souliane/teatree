@@ -100,7 +100,11 @@ _TACH = _REPO_ROOT / "tach.toml"
 # available) and the command modules load lazily, so neither AppRegistry nor a cycle
 # forces a deferral. Deduping `review_request_post._anti_vacuity_block`'s
 # now-redundant deferred `Ticket` import banks the extra -1.
-_FROZEN_INTRA_CORE_DEFERRED = 184
+# Dropped 184->183 (dispatch-preflight merge): hoisting `_execute_sdk`'s deferred
+# `get_overlay_for_ticket` to a module-scope import removed one more function-scoped
+# intra-core edge. This reduction is independent of the PR-08 gate reduction above,
+# so the two stack in the merged tree.
+_FROZEN_INTRA_CORE_DEFERRED = 183
 
 
 def _function_scoped_intra_core_imports(source: Path) -> int:

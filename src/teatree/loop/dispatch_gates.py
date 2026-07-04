@@ -15,6 +15,23 @@ from teatree.loop.dispatch_tables import STATUSLINE_ZONE_BY_KIND, ActionPayload,
 from teatree.loop.review_claim_signals import review_loop_enabled
 from teatree.loop.scanners.base import ScanSignal
 
+#: The display marker an untyped/empty spawn degrades to in :func:`spawn_display_name`.
+#: A real phase agent is always ``t3:<type>``, so this never names a live phase agent.
+GENERAL_PURPOSE_SUBAGENT = "general-purpose"
+
+
+def spawn_display_name(subagent: str, task_id: int) -> str:
+    """The ``t3-<type>-<id>`` display name a dispatched sub-agent must carry (PR-12).
+
+    Every spawn is named after its phase agent type and the task it serves, so a
+    spawned agent is attributable at a glance (``t3-coder-42``) and never an
+    anonymous ``general-purpose`` one. The ``t3:`` namespace is folded to the
+    ``t3-`` display prefix; an untyped/empty *subagent* degrades to the explicit
+    ``general-purpose`` marker rather than an empty name.
+    """
+    agent_type = subagent.removeprefix("t3:").strip() or GENERAL_PURPOSE_SUBAGENT
+    return f"t3-{agent_type}-{task_id}"
+
 
 def review_target_is_dead(pr_url: str) -> bool:
     """Whether the loop must skip dispatching a reviewer for *pr_url* (#2081).

@@ -19,7 +19,8 @@ from teatree.core.management.commands.tasks_session_view import (
     render_tasks_table,
 )
 from teatree.core.models import InvalidTransitionError, Task, TaskAttempt, Ticket
-from teatree.core.overlay_loader import get_overlay
+from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
+from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.session_identity import current_session_id
 
 logger = logging.getLogger(__name__)
@@ -480,7 +481,6 @@ class Command(TyperCommand):
 
         from teatree.agents.headless import run_headless  # noqa: PLC0415
         from teatree.core.headless_dispatch import loop_dispatch_refusal  # noqa: PLC0415
-        from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
 
         # Fail-closed billing guard, shared with ``execute_headless_task`` via
         # the single ``loop_dispatch_refusal`` chokepoint (souliane/teatree#1375):
@@ -506,7 +506,7 @@ class Command(TyperCommand):
             attempt = run_headless(
                 task,
                 phase=task.phase,
-                overlay_skill_metadata=get_overlay().metadata.get_skill_metadata(),
+                overlay_skill_metadata=get_overlay_for_ticket(task.ticket).metadata.get_skill_metadata(),
             )
         except Exception:  # noqa: BLE001 — ANY SDK failure (startup/query/response) must be recorded durably, not escape.
             error = traceback.format_exc()
@@ -546,8 +546,12 @@ def _build_claude_command(task: Task) -> list[str]:
         logger.info("Resuming claude session %s for task %s", agent_id, task.pk)
         return [claude_bin, "--resume", agent_id]
 
-    overlay_skill_metadata = get_overlay().metadata.get_skill_metadata()
-    skills = resolve_skill_bundle(phase=task.phase, overlay_skill_metadata=overlay_skill_metadata)
+    overlay_skill_metadata = get_overlay_for_ticket(task.ticket).metadata.get_skill_metadata()
+    skills = resolve_skill_bundle(
+        phase=task.phase,
+        overlay_skill_metadata=overlay_skill_metadata,
+        worktree_path=dispatch_worktree_path(task.ticket),
+    )
     system_context = build_interactive_context(task, skills=skills)
     return [claude_bin, "--append-system-prompt", system_context]
 

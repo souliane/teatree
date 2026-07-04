@@ -83,3 +83,42 @@ class TestApplyPhaseTransitionGuardsTerminalReviewer(TestCase):
 
         with pytest.raises(TransitionNotAllowed):
             ticket.mark_reviewed_externally()
+
+
+class TestApplyPhaseTransitionChainsParentTask(TestCase):
+    """PR-12: the completing task is threaded as ``parent_task`` of the next phase.
+
+    A phase-boundary brief is warm only if the next-phase task chains back to
+    the task that just finished — ``agents.prompt._parent_result_summary``
+    reads ``task.parent_task``'s last attempt. Before this the FSM transition
+    scheduled the next phase with ``parent_task=None`` (a cold brief).
+    """
+
+    def _author_ticket(self, state: str) -> Ticket:
+        return Ticket.objects.create(overlay="test", role=Ticket.Role.AUTHOR, state=state)
+
+    def _completed_task(self, ticket: Ticket, phase: str) -> Task:
+        session = Session.objects.create(ticket=ticket, agent_id=phase)
+        return Task.objects.create(ticket=ticket, session=session, phase=phase, status=Task.Status.COMPLETED)
+
+    def test_coding_completion_chains_testing_task_to_the_coder(self) -> None:
+        ticket = self._author_ticket(Ticket.State.PLANNED)
+        coding_task = self._completed_task(ticket, "coding")
+
+        assert coding_task._apply_phase_transition() is True
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.CODED
+        testing = Task.objects.get(ticket=ticket, phase="testing")
+        assert testing.parent_task_id == coding_task.pk
+
+    def test_testing_completion_chains_review_task_to_the_tester(self) -> None:
+        ticket = self._author_ticket(Ticket.State.CODED)
+        testing_task = self._completed_task(ticket, "testing")
+
+        assert testing_task._apply_phase_transition() is True
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.TESTED
+        review = Task.objects.get(ticket=ticket, phase="reviewing")
+        assert review.parent_task_id == testing_task.pk
