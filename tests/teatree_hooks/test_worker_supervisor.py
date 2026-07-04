@@ -6,6 +6,7 @@ on any error. ``main`` never raises into the SessionStart hook.
 """
 
 import json
+import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -20,6 +21,9 @@ if str(_HOOKS_DIR) not in sys.path:
 import django  # noqa: E402
 import django_bootstrap  # noqa: E402
 import worker_supervisor as supervisor  # noqa: E402
+
+from teatree.loops.worker import WORKER_SINGLETON  # noqa: E402
+from teatree.utils import singleton  # noqa: E402
 
 
 class _Spy:
@@ -145,3 +149,22 @@ class TestWorkerEnabledColdRead:
         boots = _arm_django_boot_spy(monkeypatch)
         assert supervisor._worker_enabled() is False  # fail-open to OFF, never a crash
         assert boots == []
+
+
+class TestFlockLivenessProbe:
+    """``_flock_is_free`` probes the KERNEL flock, not a recyclable recorded pid (#1796)."""
+
+    def test_recycled_live_pid_does_not_suppress_resurrection(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(singleton, "DATA_DIR", tmp_path)
+        # A live pid that does NOT hold the worker flock — an unrelated process that
+        # recycled a crashed worker's pid. A ``read_pid`` probe reads it as "alive"
+        # and suppresses resurrection forever; the flock probe sees the freed lock.
+        (tmp_path / f"{WORKER_SINGLETON}.pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
+        assert supervisor._flock_is_free() is True
+
+    def test_real_flock_holder_suppresses_resurrection(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(singleton, "DATA_DIR", tmp_path)
+        with singleton.singleton(WORKER_SINGLETON):
+            assert supervisor._flock_is_free() is False  # a genuine holder → do not double-spawn
