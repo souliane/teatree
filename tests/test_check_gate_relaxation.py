@@ -1,0 +1,77 @@
+"""Anti-relaxation prek-hook end-to-end (§17.6.1/§17.6.2, #850).
+
+Drives the real hook ``main()`` against a real git repo under ``tmp_path`` with
+a genuinely-staged diff, so the block/allow/never-lockout paths are proven on
+the actual ``git diff --cached`` surface the hook reads — not a mocked diff.
+"""
+
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from scripts.hooks.check_gate_relaxation import main
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True)  # noqa: S607 — git resolved from PATH in test
+
+
+@pytest.fixture
+def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A real git repo with one committed baseline file, cwd set into it."""
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "config", "user.email", "t@t")
+    _git(tmp_path, "config", "user.name", "t")
+    (tmp_path / "m.py").write_text("x = 1\n", encoding="utf-8")
+    _git(tmp_path, "add", "m.py")
+    _git(tmp_path, "commit", "-qm", "base")
+    monkeypatch.chdir(tmp_path)
+    return tmp_path
+
+
+def _stage(repo: Path, name: str, content: str) -> None:
+    target = repo / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+    _git(repo, "add", name)
+
+
+def test_staged_relaxation_blocks(repo: Path) -> None:
+    _stage(repo, "m.py", "x = 1\ny = bad()  # noqa\n")
+    assert main() == 1
+
+
+def test_clean_staged_change_passes(repo: Path) -> None:
+    _stage(repo, "m.py", "x = 1\ny = 2\n")
+    assert main() == 0
+
+
+def test_nothing_staged_passes(repo: Path) -> None:
+    assert main() == 0
+
+
+def test_allow_env_marker_lets_relaxation_through(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _stage(repo, "m.py", "x = 1\ny = bad()  # noqa\n")
+    monkeypatch.setenv("ALLOW_GATE_RELAX", "reviewed with maintainer, vendored quirk")
+    assert main() == 0
+
+
+def test_empty_allow_marker_does_not_bypass(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _stage(repo, "m.py", "x = 1\ny = bad()  # noqa\n")
+    monkeypatch.setenv("ALLOW_GATE_RELAX", "   ")
+    assert main() == 1
+
+
+def test_kill_switch_disables_gate(repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    (home / ".teatree.toml").write_text("[teatree]\ngate_relaxation_gate_enabled = false\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    _stage(repo, "m.py", "x = 1\ny = bad()  # noqa\n")
+    assert main() == 0
+
+
+def test_warn_only_test_vacuity_does_not_block(repo: Path) -> None:
+    _stage(repo, "tests/test_x.py", "def test_it():\n    compute()\n")
+    assert main() == 0

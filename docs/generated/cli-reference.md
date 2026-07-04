@@ -2466,6 +2466,8 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │                      AI-signature trailer.                                   │
 │ diff-coverage        Per-diff coverage + mutation/revert gate (BLUEPRINT     │
 │                      §17.6 gate 12, #836).                                   │
+│ gate-relaxation      Anti-relaxation + tach-soundness gate (BLUEPRINT        │
+│                      §17.6.1/§17.6.2, #850).                                 │
 │ figma-screenshot     Fetch a Figma node/frame as a PNG — bypasses the MCP    │
 │                      integration's size limits.                              │
 │ figma-frames         List a node's child frames (name + ID) for navigation.  │
@@ -2776,6 +2778,34 @@ Usage: t3 tool diff-coverage [OPTIONS]
 │                              [default: .coverage]                            │
 │ --json                       Emit machine-readable JSON.                     │
 │ --help                       Show this message and exit.                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool gate-relaxation`
+
+```
+Usage: t3 tool gate-relaxation [OPTIONS]
+
+ Anti-relaxation + tach-soundness gate (BLUEPRINT §17.6.1/§17.6.2, #850).
+
+ Refuses a diff that relaxes a lint/coverage constraint or a tach module
+ boundary without a sanctioned relax marker: a new unjustified ``# noqa``, a
+ new ``per-file-ignores`` / coverage ``omit`` entry, a lowered ``fail_under``,
+ a committed ``--no-verify``, a new empty ``interfaces = []``, or a new
+ ``ignore_type_checking_imports`` without a justifying comment. Only the
+ diff's ADDED lines are inspected, so the pre-gate boilerplate baseline is
+ exempt. Scans the STAGED diff by default; ``--base`` scans a branch range.
+ Exits non-zero on any BLOCK finding; WARN findings (possible test vacuity)
+ print advisory-only and never fail.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --repo        PATH  Repo root (default: cwd)                                 │
+│                     [default: <bound method PathBase.cwd of <class           │
+│                     'pathlib._local.Path'>>]                                 │
+│ --base        TEXT  Diff <merge-base>..HEAD against this ref instead of the  │
+│                     staged diff.                                             │
+│ --json              Emit machine-readable JSON.                              │
+│ --help              Show this message and exit.                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

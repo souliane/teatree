@@ -60,6 +60,7 @@ from pathlib import Path
 import pytest
 
 import hooks.scripts.hook_router as router
+from hooks.scripts.classifier_relax_gate import validate_relax_write
 from hooks.scripts.hook_router import handle_allow_classifier_relax_settings_write
 
 # ── Transcript helpers (mirrors test_structured_question_hook.py) ─────
@@ -155,13 +156,16 @@ class TestClassifierRelaxAllow:
     def test_allow_write_settings_json_after_affirmative(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """Write ~/.claude/settings.json is allowed too (same trust signal)."""
+        """Write ~/.claude/settings.json is allowed when the payload is schema-valid (#857)."""
         transcript = _sanctioned_transcript(tmp_path)
 
         result = handle_allow_classifier_relax_settings_write(
             {
                 "tool_name": "Write",
-                "tool_input": {"file_path": _settings_json_path()},
+                "tool_input": {
+                    "file_path": _settings_json_path(),
+                    "content": '{"permissions": {"allow": ["Bash(gh issue create *)"]}}',
+                },
                 "transcript_path": str(transcript),
             }
         )
@@ -847,3 +851,90 @@ class TestClassifierRelaxHelperDefensiveBranches:
 
         assert _decision(capsys) == {"permissionDecision": "allow"}
         assert result is True
+
+
+# ── #857: content-schema validation of the relax write payload ─────────
+
+
+class TestRelaxWriteSchemaValidation:
+    """Unit coverage for the #857 payload validator (pure, no transcript)."""
+
+    def test_valid_write_content_passes(self) -> None:
+        assert validate_relax_write("Write", {"content": '{"permissions": {"allow": ["Bash(gh pr view *)"]}}'}) is None
+
+    def test_invalid_json_write_refused(self) -> None:
+        reason = validate_relax_write("Write", {"content": "{not json"})
+        assert reason is not None
+        assert "valid JSON" in reason
+
+    def test_non_object_top_level_refused(self) -> None:
+        reason = validate_relax_write("Write", {"content": '["a", "b"]'})
+        assert reason is not None
+        assert "JSON object" in reason
+
+    def test_non_string_allow_entry_refused(self) -> None:
+        reason = validate_relax_write("Write", {"content": '{"permissions": {"allow": [123]}}'})
+        assert reason is not None
+        assert "list of strings" in reason
+
+    def test_blanket_bash_wildcard_in_write_refused(self) -> None:
+        reason = validate_relax_write("Write", {"content": '{"permissions": {"allow": ["Bash(*)"]}}'})
+        assert reason is not None
+        assert "blanket-wildcard" in reason
+
+    def test_bare_bash_rule_in_write_refused(self) -> None:
+        reason = validate_relax_write("Write", {"content": '{"permissions": {"allow": ["Bash"]}}'})
+        assert reason is not None
+        assert "blanket-wildcard" in reason
+
+    def test_automode_allow_validated(self) -> None:
+        reason = validate_relax_write("Write", {"content": '{"autoMode": {"allow": ["Bash(* *)"]}}'})
+        assert reason is not None
+        assert "blanket-wildcard" in reason
+
+    def test_edit_new_string_blanket_rule_refused(self) -> None:
+        reason = validate_relax_write("Edit", {"new_string": '    "Bash(:*)",'})
+        assert reason is not None
+        assert "blanket-wildcard" in reason
+
+    def test_edit_scoped_new_string_passes(self) -> None:
+        assert validate_relax_write("Edit", {"new_string": '    "Bash(gh issue create *)",'}) is None
+
+
+class TestRelaxWriteSchemaDeniesHandler:
+    """The handler DENIES a sanctioned-but-malformed write, refusing pre-persist (#857)."""
+
+    def test_malformed_write_denied_even_with_approval(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        transcript = _sanctioned_transcript(tmp_path)
+        result = handle_allow_classifier_relax_settings_write(
+            {
+                "tool_name": "Write",
+                "tool_input": {"file_path": _settings_json_path(), "content": "{ broken json"},
+                "transcript_path": str(transcript),
+            }
+        )
+        decision = _decision(capsys)
+        assert (
+            decision.get("permissionDecision") == "deny"
+            or decision.get("hookSpecificOutput", {}).get("permissionDecision") == "deny"
+        )
+        assert result is True
+
+    def test_blanket_wildcard_write_denied_even_with_approval(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        transcript = _sanctioned_transcript(tmp_path)
+        result = handle_allow_classifier_relax_settings_write(
+            {
+                "tool_name": "Write",
+                "tool_input": {
+                    "file_path": _settings_json_path(),
+                    "content": '{"permissions": {"allow": ["Bash(* *)"]}}',
+                },
+                "transcript_path": str(transcript),
+            }
+        )
+        assert result is True
+        assert _decision(capsys) != {"permissionDecision": "allow"}
