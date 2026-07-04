@@ -12,7 +12,10 @@ the same evidence the mandatory-E2E gate already consumes (the attestation
 Enforcement mirrors the §17.6 gate contract:
 
 - vacuous-on-empty — no staged baseline → exit 0 without touching Django/DB.
-- kill-switch ``[teatree] snapshot_baseline_gate_enabled = false`` disables it.
+- kill-switch ``snapshot_baseline_gate_enabled`` disables it, resolved DB-first
+through ``get_effective_settings`` (the canonical resolver every sibling gate uses),
+so a DB ``config_setting set snapshot_baseline_gate_enabled false`` actuates the
+hook — not only a raw ``~/.teatree.toml`` edit.
 - never-lockout ``ALLOW_SNAPSHOT_BASELINE='<reason>'`` sanctions one commit.
 - crash ≠ deny — a Django/DB error, or a cwd with no resolvable ticket, fails
 open with a warning (a gate bug must never wedge commits). Only a resolved
@@ -22,7 +25,6 @@ ticket that genuinely lacks the attestation is a BLOCK.
 import os
 import subprocess
 import sys
-import tomllib
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -31,26 +33,21 @@ from teatree.quality.snapshot_baseline import block_message, snapshot_baselines
 if TYPE_CHECKING:
     from teatree.core.models import Ticket
 
-_KILL_SWITCH = "snapshot_baseline_gate_enabled"
 _ALLOW_ENV = "ALLOW_SNAPSHOT_BASELINE"
 
 
-def _gate_enabled() -> bool:
-    """Read ``[teatree] snapshot_baseline_gate_enabled`` (default on).
+def _gate_enabled(overlay_name: str | None) -> bool:
+    """Resolve ``snapshot_baseline_gate_enabled`` via the canonical DB-first resolver.
 
-    A missing/unreadable config or any non-``false`` value leaves the gate
-    ENABLED — only an explicit bare ``false`` disables it, mirroring the other
-    §17.6 kill-switches.
+    Reads the kill-switch through ``get_effective_settings`` — the same DB-home
+    resolver every sibling gate consults (see ``e2e_mandatory_gate``) — so a DB
+    ``config_setting set snapshot_baseline_gate_enabled false`` actuates the hook,
+    not only a raw ``~/.teatree.toml`` edit. Requires Django, so the caller reads
+    it only once a baseline is staged.
     """
-    config = Path("~/.teatree.toml").expanduser()
-    if not config.is_file():
-        return True
-    try:
-        raw = tomllib.loads(config.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return True
-    teatree = raw.get("teatree", {}) if isinstance(raw, dict) else {}
-    return teatree.get(_KILL_SWITCH, True) is not False if isinstance(teatree, dict) else True
+    from teatree.config import get_effective_settings
+
+    return bool(get_effective_settings(overlay_name).snapshot_baseline_gate_enabled)
 
 
 def _staged_paths() -> list[str]:
@@ -90,8 +87,9 @@ def _record_command(ticket_pk: int) -> str:
 def _decide(baselines: list[str]) -> int:
     """Return the exit code for a commit that staged *baselines* (non-empty).
 
-    Bootstraps Django, resolves the ticket read-only, and consults the visual
-    attestation. Any failure to resolve/verify fails OPEN (warn + allow).
+    Bootstraps Django, resolves the ticket read-only, honours the DB-first
+    kill-switch on the ticket's overlay, and consults the visual attestation.
+    Any failure to resolve/verify fails OPEN (warn + allow).
     """
     from teatree.utils.django_bootstrap import ensure_django
 
@@ -104,6 +102,8 @@ def _decide(baselines: list[str]) -> int:
             file=sys.stderr,
         )
         return 0
+    if not _gate_enabled(ticket.overlay or None):
+        return 0
 
     from teatree.core.models.e2e_mandatory_run import E2eMandatoryRun
 
@@ -114,8 +114,9 @@ def _decide(baselines: list[str]) -> int:
 
 
 def main() -> int:
-    if not _gate_enabled():
-        return 0
+    # Detect a staged baseline FIRST — cheap and Django-free. No baseline staged
+    # (the common commit) exits 0 without paying the Django bootstrap; only a
+    # staged baseline pays for the kill-switch + attestation resolution.
     baselines = snapshot_baselines(_staged_paths())
     if not baselines:
         return 0

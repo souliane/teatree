@@ -11,9 +11,11 @@ souliane/teatree#98) so the methods can still take ``tmp_path`` / ``monkeypatch`
 """
 
 import subprocess
+from io import StringIO
 from pathlib import Path
 
 import pytest
+from django.core.management import call_command
 
 from scripts.hooks.check_snapshot_baseline import main
 from teatree.core.models import E2eMandatoryRun, Ticket, Worktree
@@ -103,3 +105,17 @@ class TestSnapshotBaselineHook:
         _point_cwd_at(monkeypatch, root)
         monkeypatch.setenv("ALLOW_SNAPSHOT_BASELINE", "verified the hero image by hand")
         assert main() == 0
+
+    def test_db_kill_switch_disables_gate(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # `t3 config_setting set snapshot_baseline_gate_enabled false` is a DB write; the
+        # hook must honour it via the canonical DB-first resolver. RED before the fix: the
+        # old hook read the kill-switch from ~/.teatree.toml RAW, so the DB row was ignored
+        # and the un-attested baseline still blocked (main() stayed 1).
+        root = _init_repo(tmp_path)
+        ticket = Ticket.objects.create(issue_url="https://example.com/i/23")
+        _register_worktree(ticket, root)
+        _stage_baseline(root)
+        _point_cwd_at(monkeypatch, root)
+        assert main() == 1  # enabled by default -> un-attested baseline blocks
+        call_command("config_setting", "set", "snapshot_baseline_gate_enabled", "false", stdout=StringIO())
+        assert main() == 0  # the DB kill-switch now actuates the hook

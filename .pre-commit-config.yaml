@@ -470,7 +470,7 @@ repos:
         entry: uv run python scripts/hooks/check_snapshot_baseline.py
         pass_filenames: false
         always_run: true
-        stages: [pre-commit]
+        stages: [commit]
       - id: comment-density
         name: Near-zero-comments gate (added comments must not restate the code)
         language: system
