@@ -20,6 +20,7 @@ from typing import TypedDict
 
 from teatree.core.backend_factory import code_host_for_repo_from_overlay
 from teatree.core.backend_protocols import BackendResolutionError, PullRequestSpec
+from teatree.core.gates.architecture_precheck_gate import warn_if_precheck_incomplete
 from teatree.core.gates.open_questions_gate import warn_if_open_questions_missing
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.runners.ship import overlay_pr_labels, sanitize_close_keywords, should_close_ticket
@@ -107,6 +108,7 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
     )
     description = sanitize_close_keywords(raw_description, close_ticket=close_ticket)
     warn_if_open_questions_missing(description)
+    warn_if_precheck_incomplete(description)
 
     remote = git.remote_url(repo=repo_path)
     repo_slug = git_remote.slug_from_remote(remote)

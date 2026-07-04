@@ -52,6 +52,7 @@ graph TD
     teatree.core --> teatree.hooks
     teatree.core --> teatree.on_behalf_gate
     teatree.core --> teatree.slack_mrkdwn
+    teatree.core --> teatree.quality
     teatree.core --> teatree.core.modelkit
     teatree.core --> teatree.core.models.errors
     teatree.core --> teatree.core.models

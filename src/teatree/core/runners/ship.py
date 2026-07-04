@@ -8,6 +8,7 @@ from teatree.core.backend_factory import code_host_for_repo_from_overlay
 from teatree.core.backend_protocols import BackendResolutionError, PullRequestSpec
 from teatree.core.branch_currency import sha_conflicts_with_target
 from teatree.core.close_trailer_scanner import apply_publish_gate
+from teatree.core.gates.architecture_precheck_gate import warn_if_precheck_incomplete
 from teatree.core.gates.open_questions_gate import warn_if_open_questions_missing
 from teatree.core.mr_metadata import ensure_standard_body
 from teatree.core.overlay_loader import get_overlay
@@ -444,6 +445,7 @@ class ShipExecutor(RunnerBase):
             patterns=get_overlay_publish_gates(),
         )
         warn_if_open_questions_missing(description)
+        warn_if_precheck_incomplete(description)
         assignee = host.current_user() or git.config_value(key="user.name")
         return PullRequestSpec(
             repo=repo_path,

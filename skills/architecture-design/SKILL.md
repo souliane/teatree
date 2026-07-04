@@ -119,7 +119,7 @@ Two questions every new component must answer.
 - **Removability.** Can this component be deleted later without a cascade? State the blast radius of its removal — a self-contained module reverting to the prior behavior is removable; one whose deletion forces edits across N call sites is not. A component that cannot be cleanly removed is a component you cannot cheaply revert when it proves wrong; prefer the shape that can be pulled out.
 - **Harness vs data.** Does this belong in the harness (code/gate/FSM logic) or in data/config (a table, a setting, a registry row)? A per-item policy that a table can express does not belong hard-coded in the harness — put the varying part in data and keep the harness the generic mechanism that reads it. Justify the side you chose.
 
-The deterministic check `teatree.quality.architecture_precheck.removability_answered` fires when this section is absent or a bare placeholder — the pre-check is incomplete until it carries a real answer.
+The deterministic validator `teatree.quality.architecture_precheck` fires a warning on PR creation — `core.gates.architecture_precheck_gate` runs it against the PR body at both PR-creation chokepoints (alongside the open-questions gate) — when the body carries a pre-check section that leaves this check absent or a bare placeholder. The pre-check is incomplete until it carries a real answer.
 
 ## Anti-pattern catalog
 
@@ -179,6 +179,6 @@ The implementer fills the template BEFORE touching `src/`, drafting it in a work
 
 ## Scope discipline
 
-This skill ships with the ten checks above. If a check is missing from the PR body's `## Architecture pre-check` section, the reviewer surfaces it as a discussion thread on the PR — no merge until the gap is closed. The removability check (#10) additionally has a deterministic backstop in `teatree.quality.architecture_precheck`.
+This skill ships with the ten checks above. If a check is missing from the PR body's `## Architecture pre-check` section, the reviewer surfaces it as a discussion thread on the PR — no merge until the gap is closed. The removability check (#10) additionally has a deterministic backstop: `core.gates.architecture_precheck_gate` warns on PR creation (warn-only, mirroring the open-questions gate) when the pre-check section leaves a required check unanswered.
 
 The companion does not block implementation skills from loading — it loads alongside them. The discipline is that the implementer reads it first; the PR review enforces that the pre-check (the `## Architecture pre-check` section in the PR body) was produced.
