@@ -22,10 +22,20 @@ gates an otherwise-autonomous action behind explicit user confirmation.
 """
 
 import hashlib
-from typing import ClassVar
+import logging
+from typing import TYPE_CHECKING, ClassVar
 
 from django.db import models, transaction
 from django.utils import timezone
+
+from teatree.verification.url_check import UrlCheckStatus, check_url
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from teatree.verification.url_check import UrlCheckResult
+
+logger = logging.getLogger(__name__)
 
 
 class PendingArticleSuggestion(models.Model):
@@ -73,18 +83,32 @@ class PendingArticleSuggestion(models.Model):
         title: str = "",
         summary: str = "",
         overlay: str = "",
+        url_checker: "Callable[[str], UrlCheckResult] | None" = None,
     ) -> "PendingArticleSuggestion | None":
-        """Idempotently enqueue one PENDING candidate; return it or ``None`` on dup.
+        """Idempotently enqueue one PENDING candidate; return it or ``None``.
 
-        ``None`` means a row for this exact source URL already exists (on
-        any prior tick, in any state) — the candidate is not enqueued
-        again, so a daily re-scan of the same article never spams the
-        queue. The insert is atomic so a concurrent second scanner cannot
-        double-write the same URL.
+        Intake-source verification (PR-15): the candidate's ``url`` must actually
+        resolve. An ``UNRESOLVED`` (fabricated / 404) URL is DROPPED — ``None``,
+        the candidate is never enqueued. A ``NETWORK_ERROR`` (timeout / DNS) means
+        teatree could not tell, so the candidate is recorded anyway (fail-open — a
+        real article is never dropped on our transient failure) and the error is
+        logged distinctly. ``url_checker`` injects the probe for tests; production
+        uses :func:`teatree.verification.url_check.check_url`.
+
+        ``None`` also means a row for this exact source URL already exists (on any
+        prior tick, in any state) — a daily re-scan never spams the queue. The
+        insert is atomic so a concurrent second scanner cannot double-write.
         """
         clean_url = url.strip()
         if not clean_url:
             return None
+        checker = url_checker or check_url
+        verdict = checker(clean_url)
+        if verdict.status is UrlCheckStatus.UNRESOLVED:
+            logger.info("Dropping news candidate; URL does not resolve: %s (%s)", clean_url, verdict.detail)
+            return None
+        if verdict.status is UrlCheckStatus.NETWORK_ERROR:
+            logger.warning("URL existence check failed for %s; recording anyway: %s", clean_url, verdict.detail)
         digest = cls.hash_url(clean_url)
         with transaction.atomic():
             row, created = cls.objects.get_or_create(

@@ -10,6 +10,7 @@ from django_typer.management import TyperCommand, command
 
 from teatree.core.gates.owned_repo_guard import MergeKeystoneResult, escalated_merge_result, merge_clear_refusal
 from teatree.core.gates.schema_guard import SelfDbMigrationError, require_current_schema
+from teatree.core.management.commands._attachment_commands import AttachmentCommands
 from teatree.core.management.commands._clear_preflight import clear_preflight_refusal
 from teatree.core.management.commands._close_commands import CloseCommands
 from teatree.core.management.commands._context_commands import ContextCommands
@@ -23,6 +24,7 @@ from teatree.core.management.commands._plan_gate_commands import (
 )
 from teatree.core.management.commands._rubric_commands import RubricCommands
 from teatree.core.management.commands._ticket_show import TicketShowCommands
+from teatree.core.management.commands._transition_names import ALLOWED_TRANSITIONS
 from teatree.core.management.commands._transition_refusals import review_context_refusal
 from teatree.core.merge import MergePreconditionError, merge_ticket_pr, resolve_pr_repo_slug
 from teatree.core.models import ClearIssuanceError, ClearRequest, MergeClear, ReviewVerdict, Ticket
@@ -88,32 +90,8 @@ class ReattributeResult(TypedDict, total=False):
 
 logger = logging.getLogger(__name__)
 
-_ALLOWED_TRANSITIONS = {
-    "scope",
-    "start",
-    "plan",
-    "code",
-    "test",
-    "review",
-    "ship",
-    "request_review",
-    "mark_merged",
-    "retrospect",
-    "mark_delivered",
-    "rework",
-    # #1077: reviewer concludes an external review with no postable/
-    # approvable action — terminal disposition for the reviewing task.
-    "mark_review_no_action",
-    # #1118: phase-driven catch-up to REVIEWED. The FSM exposes it via
-    # ``get_available_FIELD_transitions`` from every non-terminal state
-    # (#808); the CLI must mirror the FSM-table surface so a ticket
-    # stranded at ``in_review`` after a failed ship can be reconciled
-    # without a code-level workaround.
-    "reconcile_reviewed",
-}
 
-
-class Command(RubricCommands, TicketShowCommands, ContextCommands, CloseCommands, TyperCommand):
+class Command(RubricCommands, TicketShowCommands, ContextCommands, CloseCommands, AttachmentCommands, TyperCommand):
     @command()
     def transition(self, ticket_id: int, transition_name: str) -> dict[str, object]:
         """Transition a ticket to a new state.
@@ -122,7 +100,7 @@ class Command(RubricCommands, TicketShowCommands, ContextCommands, CloseCommands
         review, ship, request_review, mark_merged, retrospect, mark_delivered,
         rework, mark_review_no_action.
         """
-        if transition_name not in _ALLOWED_TRANSITIONS:
+        if transition_name not in ALLOWED_TRANSITIONS:
             return {"error": f"Unknown transition: {transition_name}"}
 
         try:

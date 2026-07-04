@@ -12,8 +12,21 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models import PendingArticleSuggestion
+from teatree.verification.url_check import UrlCheckResult, UrlCheckStatus
 
 _URL = "https://tldr.tech/ai/2026-05-27#some-agent-eval-harness"
+
+
+def _resolves(url: str) -> UrlCheckResult:
+    return UrlCheckResult(url, UrlCheckStatus.OK, http_status=200)
+
+
+def _unresolved(url: str) -> UrlCheckResult:
+    return UrlCheckResult(url, UrlCheckStatus.UNRESOLVED, http_status=404, detail="HTTP 404")
+
+
+def _network_error(url: str) -> UrlCheckResult:
+    return UrlCheckResult(url, UrlCheckStatus.NETWORK_ERROR, detail="timed out")
 
 
 class PendingArticleSuggestionTests(TestCase):
@@ -24,6 +37,7 @@ class PendingArticleSuggestionTests(TestCase):
             title="An agent eval harness",
             summary="Pattern we lack",
             overlay="t3-teatree",
+            url_checker=_resolves,
         )
 
         assert row is not None
@@ -37,10 +51,10 @@ class PendingArticleSuggestionTests(TestCase):
 
     def test_record_candidate_is_idempotent_by_url(self) -> None:
         """Re-scanning the same article URL does not enqueue a duplicate."""
-        first = PendingArticleSuggestion.record_candidate(url=_URL)
+        first = PendingArticleSuggestion.record_candidate(url=_URL, url_checker=_resolves)
         assert first is not None
 
-        second = PendingArticleSuggestion.record_candidate(url=_URL)
+        second = PendingArticleSuggestion.record_candidate(url=_URL, url_checker=_resolves)
 
         # Dedup by URL hash — the second scan returns None (already queued).
         assert second is None
@@ -48,11 +62,11 @@ class PendingArticleSuggestionTests(TestCase):
 
     def test_record_candidate_dedup_survives_a_decided_row(self) -> None:
         """A previously approved/rejected URL is not re-enqueued on the next scan."""
-        first = PendingArticleSuggestion.record_candidate(url=_URL)
+        first = PendingArticleSuggestion.record_candidate(url=_URL, url_checker=_resolves)
         assert first is not None
         first.reject()
 
-        again = PendingArticleSuggestion.record_candidate(url=_URL)
+        again = PendingArticleSuggestion.record_candidate(url=_URL, url_checker=_resolves)
 
         assert again is None
         assert PendingArticleSuggestion.objects.count() == 1
@@ -62,9 +76,30 @@ class PendingArticleSuggestionTests(TestCase):
         assert PendingArticleSuggestion.record_candidate(url="   ") is None
         assert PendingArticleSuggestion.objects.count() == 0
 
+    def test_unresolved_url_is_dropped(self) -> None:
+        """A fabricated / 404 URL is dropped — no candidate row (PR-15)."""
+        result = PendingArticleSuggestion.record_candidate(url=_URL, url_checker=_unresolved)
+
+        assert result is None
+        assert PendingArticleSuggestion.objects.count() == 0
+
+    def test_resolving_url_is_recorded(self) -> None:
+        """A URL that resolves is recorded — the anti-vacuity pair for the drop."""
+        result = PendingArticleSuggestion.record_candidate(url=_URL, url_checker=_resolves)
+
+        assert result is not None
+        assert PendingArticleSuggestion.objects.count() == 1
+
+    def test_network_error_records_anyway(self) -> None:
+        """A transient network failure never drops a possibly-real article (fail-open)."""
+        result = PendingArticleSuggestion.record_candidate(url=_URL, url_checker=_network_error)
+
+        assert result is not None
+        assert result.status == PendingArticleSuggestion.Status.PENDING
+
     def test_approve_marks_row_and_records_issue_url(self) -> None:
         """Approval is the only path that authorizes filing — stamps the issue URL."""
-        row = PendingArticleSuggestion.record_candidate(url=_URL)
+        row = PendingArticleSuggestion.record_candidate(url=_URL, url_checker=_resolves)
         assert row is not None
         before = timezone.now()
 
@@ -78,7 +113,7 @@ class PendingArticleSuggestionTests(TestCase):
 
     def test_reject_marks_row_without_issue(self) -> None:
         """Rejection records the decision and never files an issue."""
-        row = PendingArticleSuggestion.record_candidate(url=_URL)
+        row = PendingArticleSuggestion.record_candidate(url=_URL, url_checker=_resolves)
         assert row is not None
 
         row.reject()
@@ -94,7 +129,7 @@ class PendingArticleSuggestionTests(TestCase):
 
     def test_str_names_status_and_title(self) -> None:
         """The repr surfaces pk, status, and a title slice for admin/log readability."""
-        row = PendingArticleSuggestion.record_candidate(url=_URL, title="An agent eval harness")
+        row = PendingArticleSuggestion.record_candidate(url=_URL, title="An agent eval harness", url_checker=_resolves)
         assert row is not None
         rendered = str(row)
         assert "pending" in rendered

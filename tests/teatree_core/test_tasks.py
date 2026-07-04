@@ -1,12 +1,16 @@
+import tempfile
 from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 from django.test import TestCase, override_settings
 
 import teatree.core.overlay_loader as overlay_loader_mod
-from teatree.core.models import Session, Task, TaskAttempt, Ticket
+from teatree.core.attachment_manifest import AttachmentKind, AttachmentRef, local_path_for
+from teatree.core.models import AttachmentManifest, Session, Task, TaskAttempt, Ticket
+from teatree.core.runners.base import RunnerResult
 from teatree.core.tasks import (
     drain_headless_queue,
     execute_provision,
@@ -447,6 +451,74 @@ class TestExecuteProvision(TestCase):
             "ok": True,
             "detail": "provisioned 1 worktree(s)",
         }
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_holds_planning_while_attachment_unfetched(self) -> None:
+        # PR-15/M5: the intake gate refuses to hand a ticket to the planner while
+        # a referenced attachment is un-fetched. Remove the gate call in
+        # execute_provision and the planning task appears anyway — the
+        # anti-vacuity proof (this assertion goes RED without the gate wiring).
+        ticket = self._ticket_in_started()
+        attachment = "/uploads/" + "a" * 32 + "/spec.pdf"
+
+        with (
+            patch("teatree.core.tasks.WorktreeProvisioner") as provisioner,
+            patch("teatree.core.tasks.ticket_text_sources", return_value=[f"spec {attachment}"]),
+        ):
+            provisioner.return_value.run.return_value = RunnerResult(ok=True, detail="provisioned 1 worktree(s)")
+            result = execute_provision.enqueue(ticket.pk)
+
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.STARTED
+        assert not ticket.tasks.filter(phase="planning").exists()
+        assert attachment in result.return_value["detail"]
+        assert "--fetch" in result.return_value["detail"]
+        # The gate recorded the manifest with the un-fetched entry.
+        manifest = AttachmentManifest.latest_for(ticket)
+        assert manifest is not None
+        assert manifest.entries[0]["source_url"] == attachment
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_kill_switch_lifts_the_hold(self) -> None:
+        # Never-lockout: `[teatree] attachment_gate_enabled = false` hands the
+        # ticket off even with an un-fetched attachment, so a stuck ticket is
+        # never a hard lockout.
+        ticket = self._ticket_in_started()
+        attachment = "/uploads/" + "a" * 32 + "/spec.pdf"
+
+        with (
+            patch("teatree.core.tasks.WorktreeProvisioner") as provisioner,
+            patch("teatree.core.tasks.ticket_text_sources", return_value=[f"spec {attachment}"]),
+            patch(
+                "teatree.core.tasks.get_effective_settings",
+                return_value=MagicMock(attachment_gate_enabled=False),
+            ),
+        ):
+            provisioner.return_value.run.return_value = RunnerResult(ok=True, detail="provisioned 1 worktree(s)")
+            execute_provision.enqueue(ticket.pk)
+
+        assert ticket.tasks.filter(phase="planning").exists()
+
+    @override_settings(**IMMEDIATE_BACKEND)
+    def test_hands_off_once_attachment_is_fetched(self) -> None:
+        # The gate is not permanently blocking: once the cached file exists the
+        # planner is scheduled. Pairs with the hold test as the two-sided proof.
+        ticket = self._ticket_in_started()
+        attachment = "/uploads/" + "a" * 32 + "/spec.pdf"
+        att_dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        cached = local_path_for(att_dir, AttachmentRef(attachment, AttachmentKind.GITLAB_UPLOAD))
+        cached.parent.mkdir(parents=True, exist_ok=True)
+        cached.write_bytes(b"fetched")
+
+        with (
+            patch("teatree.core.tasks.WorktreeProvisioner") as provisioner,
+            patch("teatree.core.tasks.ticket_text_sources", return_value=[f"spec {attachment}"]),
+            patch("teatree.core.tasks.attachments_dir_for", return_value=att_dir),
+        ):
+            provisioner.return_value.run.return_value = RunnerResult(ok=True, detail="provisioned 1 worktree(s)")
+            execute_provision.enqueue(ticket.pk)
+
+        assert ticket.tasks.filter(phase="planning").exists()
 
     @override_settings(**IMMEDIATE_BACKEND)
     def test_skips_when_state_does_not_match(self) -> None:

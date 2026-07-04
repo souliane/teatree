@@ -799,6 +799,10 @@
       "name": "ticket",
       "subcommands": [
         {
+          "help": "Print (and with ``--fetch`` download) a ticket's referenced attachments",
+          "name": "attachments"
+        },
+        {
           "help": "Durable per-ticket knowledge store (#627, repo-namespaced key #2293)",
           "name": "context"
         },
