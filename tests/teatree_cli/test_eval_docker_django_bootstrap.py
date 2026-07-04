@@ -108,6 +108,13 @@ _PROBE = textwrap.dedent("""
     """)
 
 
+# Spawns two child interpreters, each doing its own ``django.setup()`` + a full
+# ``migrate`` bounded by the subprocess ``_TIMEOUT_S`` (60s) — so the parent can
+# legitimately need more than the global 60s ``pytest-timeout`` under maximum
+# parallel contention. The scoped 240s parent bump does not weaken hang
+# detection: the per-subprocess ``timeout=_TIMEOUT_S`` still catches a real
+# hang inside either child. The global 60s stays the hang-detector (#1189).
+@pytest.mark.timeout(240)
 @pytest.mark.parametrize(
     "eval_args",
     [

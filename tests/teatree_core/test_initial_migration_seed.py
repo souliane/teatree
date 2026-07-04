@@ -15,6 +15,7 @@ drift, and :class:`FreshMigrateSeedsDefaultLoops` proves a real migrate from
 
 import importlib
 
+import pytest
 from django.core.management import call_command
 from django.test import TransactionTestCase
 
@@ -38,6 +39,12 @@ class TestInlinedSeedMatchesCanonicalSeed:
         assert _migration._ARCH_REVIEW_PROMPT_BODY == ARCH_REVIEW_PROMPT_BODY
 
 
+# ``setUp`` reverse-migrates ``core`` to ``zero`` then re-applies the full graph
+# on the shared ``default`` connection — several seconds single-core that
+# exceeds the global 60s ``pytest-timeout`` under maximum ``-n auto --cov
+# --doctest-modules`` parallel contention. Scoped 240s bump for the
+# genuinely-slow migrations; the global 60s stays the hang-detector (#1189).
+@pytest.mark.timeout(240)
 class FreshMigrateSeedsDefaultLoops(TransactionTestCase):
     """A migrate from ``zero`` re-runs the seed ``RunPython`` and lands the loops."""
 
