@@ -640,6 +640,112 @@ class TestWorktreeProvisionerStampsScopedIdentity(TestCase):
         )
 
 
+class TestWorktreeProvisionerAdopt(TestCase):
+    """#2275: adopt an EXISTING on-disk worktree — record its path, never re-create it.
+
+    ``workspace ticket --adopt`` records ``extra['adopt'] = {repo: worktree_path}``.
+    The provisioner must record that path verbatim on the ``Worktree`` row, never
+    call ``git worktree add`` (git would refuse the already-checked-out branch and
+    it would create a second dir), and derive the backing clone from the checkout's
+    own shared git dir when it lives OUTSIDE the discovered clone root. Real git
+    under ``tmp_path``.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tmp_workspace(self, tmp_path: Path) -> None:
+        self.tmp = tmp_path
+        self.workspace = tmp_path / "workspace"
+        self.workspace.mkdir()
+
+    def _outside_clone_and_worktree(self, branch: str) -> tuple[Path, Path]:
+        """A real clone + a real worktree on *branch*, both OUTSIDE the clone root."""
+        clone = self.tmp / "outside" / "myrepo"
+        clone.mkdir(parents=True)
+        git.run_strict(repo=str(clone), args=["init", "-q"])
+        git.run_strict(repo=str(clone), args=["config", "user.email", "t@example.com"])
+        git.run_strict(repo=str(clone), args=["config", "user.name", "t"])
+        (clone / "README.md").write_text("x\n", encoding="utf-8")
+        git.run_strict(repo=str(clone), args=["add", "-A"])
+        git.run_strict(repo=str(clone), args=["commit", "-q", "-m", "init"])
+        worktree = self.tmp / "outside-wt"
+        git.run_strict(repo=str(clone), args=["worktree", "add", "-q", "-b", branch, str(worktree)])
+        return clone, worktree
+
+    def test_adopt_records_existing_worktree_without_git_worktree_add(self) -> None:
+        clone, worktree = self._outside_clone_and_worktree("feature-x")
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/2275",
+            repos=["myrepo"],
+            extra={"branch": "feature-x", "adopt": {"myrepo": str(worktree)}, "description": "x"},
+        )
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            # An EMPTY clone root → find_clone_path returns None → clone derives
+            # from the worktree's own git-common-dir.
+            patch("teatree.core.runners.provision.clone_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.worktree_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.git.worktree_add") as worktree_add,
+        ):
+            result = WorktreeProvisioner(ticket).run()
+
+        assert result.ok is True, result.detail
+        worktree_add.assert_not_called()
+
+        wt = Worktree.objects.get(ticket=ticket, repo_path="myrepo")
+        assert (wt.extra or {}).get("worktree_path") == str(worktree)
+        assert Path((wt.extra or {})["clone_path"]).resolve() == clone.resolve()
+
+        # No second worktree dir was created under the worktree root.
+        assert not (self.workspace / "feature-x").exists()
+
+    def test_clone_dir_from_worktree_resolves_linked_and_main(self) -> None:
+        from teatree.core.runners.provision import _clone_dir_from_worktree  # noqa: PLC0415
+
+        clone, worktree = self._outside_clone_and_worktree("feature-z")
+
+        # A linked worktree resolves back to its main clone (absolute git-common-dir).
+        assert _clone_dir_from_worktree(str(worktree)).resolve() == clone.resolve()
+        # The main clone itself resolves to itself (relative ``.git`` git-common-dir).
+        assert _clone_dir_from_worktree(str(clone)).resolve() == clone.resolve()
+
+    def test_clone_dir_from_worktree_returns_none_for_non_git(self) -> None:
+        from teatree.core.runners.provision import _clone_dir_from_worktree  # noqa: PLC0415
+
+        plain = self.tmp / "not-git"
+        plain.mkdir()
+        assert _clone_dir_from_worktree(str(plain)) is None
+
+    def test_adopt_prefers_discovered_clone_when_present(self) -> None:
+        # When the repo's clone IS under the clone root, that discovered clone
+        # backs the row (the worktree path is still recorded verbatim).
+        _, worktree = self._outside_clone_and_worktree("feature-y")
+        discovered = self.workspace / "myrepo"
+        discovered.mkdir()
+        (discovered / ".git").mkdir()
+        ticket = Ticket.objects.create(
+            overlay="test",
+            issue_url="https://example.com/issues/2276",
+            repos=["myrepo"],
+            extra={"branch": "feature-y", "adopt": {"myrepo": str(worktree)}, "description": "x"},
+        )
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.provision.clone_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.worktree_root", return_value=self.workspace),
+            patch("teatree.core.runners.provision.git.worktree_add") as worktree_add,
+        ):
+            result = WorktreeProvisioner(ticket).run()
+
+        assert result.ok is True, result.detail
+        worktree_add.assert_not_called()
+        wt = Worktree.objects.get(ticket=ticket, repo_path="myrepo")
+        assert (wt.extra or {}).get("worktree_path") == str(worktree)
+        assert (wt.extra or {}).get("clone_path") == str(discovered)
+
+
 class TestWorktreeProvisionerGuardsWrongRepo(TestCase):
     """#2276: provisioning a worktree against the WRONG repo must fail loud.
 

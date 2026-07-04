@@ -277,6 +277,89 @@ class TestProvisionSplitsCloneRootFromWorktreeRoot(TestCase):
             assert Path(wt.worktree_path).parent.parent != self.workspace, wt.worktree_path
 
 
+class TestWorkspaceTicketAdopt(TestCase):
+    """#2275: ``workspace ticket --adopt`` registers rows against an EXISTING branch.
+
+    Real git (no subprocess mock) so branch/worktree auto-detection and the
+    provisioner's clone derivation run against a genuine checkout under
+    ``tmp_path``. The provisioner must record the existing worktree verbatim and
+    create no second dir under the worktree root.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _paths(self, tmp_path: Path) -> None:
+        self.tmp = tmp_path
+        self.workspace = tmp_path / "workspace"
+        self.workspace.mkdir()
+
+    def _clone_and_worktree(self, branch: str) -> Path:
+        clone = self.tmp / "clone" / "myrepo"
+        clone.mkdir(parents=True)
+        git_mod.run_strict(repo=str(clone), args=["init", "-q"])
+        git_mod.run_strict(repo=str(clone), args=["config", "user.email", "t@example.com"])
+        git_mod.run_strict(repo=str(clone), args=["config", "user.name", "t"])
+        (clone / "README.md").write_text("x\n", encoding="utf-8")
+        git_mod.run_strict(repo=str(clone), args=["add", "-A"])
+        git_mod.run_strict(repo=str(clone), args=["commit", "-q", "-m", "init"])
+        # The worktree dir name is the repo fallback when there is no origin remote.
+        worktree = self.tmp / "myrepo"
+        git_mod.run_strict(repo=str(clone), args=["worktree", "add", "-q", "-b", branch, str(worktree)])
+        return worktree
+
+    def _enter_adopt_patches(self, worktree: Path) -> None:
+        # An empty clone root → the clone derives from the worktree's own git dir.
+        self.enterContext(patch.object(workspace_mod, "_worktree_root", return_value=self.workspace))
+        self.enterContext(patch.object(provision_mod, "clone_root", return_value=self.workspace))
+        self.enterContext(patch.object(provision_mod, "worktree_root", return_value=self.workspace))
+        self.enterContext(patch.dict(os.environ, {"T3_ORIG_CWD": str(worktree)}))
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_adopt_branch_registers_rows_and_no_second_dir(self) -> None:
+        worktree = self._clone_and_worktree("feature-x")
+        self._enter_adopt_patches(worktree)
+
+        ticket_id = cast(
+            "int",
+            call_command("workspace", "ticket", "https://example.com/issues/2275", adopt_branch="feature-x"),
+        )
+
+        ticket = Ticket.objects.get(pk=ticket_id)
+        assert ticket.extra["branch"] == "feature-x"
+        assert ticket.repos == ["myrepo"]
+        wt = Worktree.objects.get(ticket=ticket, repo_path="myrepo")
+        assert Path((wt.extra or {})["worktree_path"]).resolve() == worktree.resolve()
+        assert not (self.workspace / "feature-x").exists()
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_adopt_auto_detects_branch_from_current_worktree(self) -> None:
+        worktree = self._clone_and_worktree("adopted-feature")
+        self._enter_adopt_patches(worktree)
+
+        ticket_id = cast(
+            "int",
+            call_command("workspace", "ticket", "https://example.com/issues/1912", adopt=True),
+        )
+
+        ticket = Ticket.objects.get(pk=ticket_id)
+        assert ticket.extra["branch"] == "adopted-feature"
+        wt = Worktree.objects.get(ticket=ticket, repo_path="myrepo")
+        assert Path((wt.extra or {})["worktree_path"]).resolve() == worktree.resolve()
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_adopt_refuses_on_detached_head(self) -> None:
+        worktree = self._clone_and_worktree("feature-x")
+        git_mod.run_strict(repo=str(worktree), args=["checkout", "-q", "--detach"])
+        self._enter_adopt_patches(worktree)
+
+        rc = call_command("workspace", "ticket", "https://example.com/issues/2275", adopt=True)
+
+        assert rc == 0
+        assert not Ticket.objects.filter(issue_url="https://example.com/issues/2275").exists()
+
+
 class TestWorkspaceTicket(TestCase):
     def setUp(self) -> None:
         super().setUp()

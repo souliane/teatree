@@ -18,6 +18,24 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _clone_dir_from_worktree(worktree_path: str) -> Path | None:
+    """The main clone backing an on-disk worktree, via its shared git dir (#2275).
+
+    ``git rev-parse --git-common-dir`` resolves to the main clone's git directory
+    (``<clone>/.git`` for a linked worktree, ``.git`` relative from the clone
+    root); its parent is the clone working tree. Returns ``None`` when
+    *worktree_path* is not a git worktree, so the adopt path falls back to the
+    checkout itself.
+    """
+    common = git.run(repo=worktree_path, args=["rev-parse", "--git-common-dir"])
+    if not common:
+        return None
+    common_path = Path(common)
+    if not common_path.is_absolute():
+        common_path = (Path(worktree_path) / common_path).resolve()
+    return common_path.parent
+
+
 class WorktreeProvisioner(RunnerBase):
     """Create the per-repo git worktrees for a STARTED ticket.
 
@@ -72,42 +90,32 @@ class WorktreeProvisioner(RunnerBase):
         # in ``<worktree_root>/<actual-branch>`` while ``extra['branch']`` may have
         # been (re)set to a pk-default like ``<pk>-ticket`` by a later scope(),
         # so ``worktree_root / branch`` would split the second repo into a new dir.
+        # #2275 adopt: repo -> existing on-disk worktree_path. In adopt mode the
+        # checkout already exists (the operator ran ``workspace ticket --adopt``
+        # from inside it), so it is recorded verbatim and no ``ticket_dir`` under
+        # the worktree root is needed. Skip creating that (empty) dir when every
+        # repo is adopted so no stray second dir appears.
+        adopt = dict(extra.get("adopt") or {})
+
         ticket_dir = self._existing_ticket_dir(ticket) or ticket_dir_for(worktree_root(), branch)
-        ticket_dir.mkdir(parents=True, exist_ok=True)
+        if any(repo_name not in adopt for repo_name in repos):
+            ticket_dir.mkdir(parents=True, exist_ok=True)
 
         provisioned: dict[str, str] = dict(extra.get("provision") or {})
         failed: list[str] = []
 
         for repo_name in repos:
-            existing = Worktree.objects.filter(ticket=ticket, repo_path=repo_name).first()
-            if existing and (existing.extra or {}).get("worktree_path"):
-                provisioned[repo_name] = (existing.extra or {})["worktree_path"]
-                continue
-
-            repo_branch = branches.get(repo_name, branch)
-
-            worktree = existing or Worktree.objects.create(
-                ticket=ticket,
-                repo_path=repo_name,
-                branch=repo_branch,
-                overlay=ticket.overlay,
+            wt_path = self._provision_repo(
+                clone_root_path,
+                repo_name,
+                ticket_dir,
+                branch=branches.get(repo_name, branch),
+                adopt_path=adopt.get(repo_name, ""),
             )
-
-            created = self._create(clone_root_path, repo_name, ticket_dir, repo_branch)
-            if created is None:
-                worktree.delete()
+            if wt_path is None:
                 failed.append(repo_name)
-                continue
-
-            wt_path, clone_path = created
-            worktree.branch = repo_branch
-            worktree.extra = {
-                **(worktree.extra or {}),
-                "worktree_path": wt_path,
-                "clone_path": str(clone_path),
-            }
-            worktree.save(update_fields=["branch", "extra"])
-            provisioned[repo_name] = wt_path
+            else:
+                provisioned[repo_name] = wt_path
 
         # #800 N3: canonical locked RMW (was an unlocked extra save).
         ticket.merge_extra(set_keys={"provision": provisioned})
@@ -115,6 +123,42 @@ class WorktreeProvisioner(RunnerBase):
         if failed:
             return RunnerResult(ok=False, detail=f"failed to create worktrees for: {', '.join(failed)}")
         return RunnerResult(ok=True, detail=f"provisioned {len(provisioned)} worktree(s)")
+
+    def _provision_repo(
+        self, clones_root: Path, repo_name: str, ticket_dir: Path, *, branch: str, adopt_path: str
+    ) -> str | None:
+        """Materialise one repo's ``Worktree`` row + checkout; return its path or ``None``.
+
+        Idempotent: a repo whose worktree_path is already recorded is a no-op. In
+        adopt mode (*adopt_path* set) the existing checkout is recorded verbatim —
+        see :meth:`_create`. On a failed ``git worktree add`` the just-created row
+        is rolled back so the ticket carries no half-provisioned repo.
+        """
+        existing = Worktree.objects.filter(ticket=self.ticket, repo_path=repo_name).first()
+        if existing and (existing.extra or {}).get("worktree_path"):
+            return (existing.extra or {})["worktree_path"]
+
+        worktree = existing or Worktree.objects.create(
+            ticket=self.ticket,
+            repo_path=repo_name,
+            branch=branch,
+            overlay=self.ticket.overlay,
+        )
+
+        created = self._create(clones_root, repo_name, ticket_dir, branch, adopt_path=adopt_path)
+        if created is None:
+            worktree.delete()
+            return None
+
+        wt_path, clone_path = created
+        worktree.branch = branch
+        worktree.extra = {
+            **(worktree.extra or {}),
+            "worktree_path": wt_path,
+            "clone_path": str(clone_path),
+        }
+        worktree.save(update_fields=["branch", "extra"])
+        return wt_path
 
     @staticmethod
     def _existing_ticket_dir(ticket: Ticket) -> Path | None:
@@ -137,8 +181,10 @@ class WorktreeProvisioner(RunnerBase):
         return parents.pop() if len(parents) == 1 else None
 
     @staticmethod
-    def _create(clones_root: Path, repo_name: str, ticket_dir: Path, branch: str) -> tuple[str, Path] | None:
-        """Run ``git worktree add`` for one repo.
+    def _create(
+        clones_root: Path, repo_name: str, ticket_dir: Path, branch: str, *, adopt_path: str = ""
+    ) -> tuple[str, Path] | None:
+        """Run ``git worktree add`` for one repo, or record an adopted checkout (#2275).
 
         *clones_root* is the CLONE root (``config.clone_root()``, ``~/workspace``)
         — where source clones are DISCOVERED — NOT the WORKTREE root the new
@@ -146,8 +192,18 @@ class WorktreeProvisioner(RunnerBase):
         ``(worktree_path, clone_path)`` on success or ``None`` on failure (no clone
         found, or ``git worktree add`` rejected the path). Retries without ``-b`` so
         partial-failure recovery picks up an existing branch.
+
+        *adopt_path* (#2275): when set, the branch's worktree already exists on
+        disk (the operator ran ``workspace ticket --adopt`` from inside it), so its
+        path is recorded verbatim — never ``git worktree add`` (git would refuse
+        the already-checked-out branch and it would create a second dir). The
+        backing clone is the discovered clone, or the checkout's own shared git dir
+        when it lives outside *clones_root*.
         """
         repo_path = find_clone_path(clones_root, repo_name)
+        if adopt_path:
+            clone_path = repo_path or _clone_dir_from_worktree(adopt_path)
+            return adopt_path, clone_path or Path(adopt_path)
         if repo_path is None:
             logger.warning(
                 "No git clone found for %s under %s (looked at %s and one-level subdirs)",

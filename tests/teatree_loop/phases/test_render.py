@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from django.test import TestCase
 
 from teatree.loop.dispatch import dispatch
 from teatree.loop.job_identity import _ScannerJob
@@ -60,6 +61,40 @@ def test_render_phase_surfaces_scanner_errors_in_active_render(tmp_path: Path) -
     render_phase(report, TickRequest(), jobs=[_job("my_prs")], statusline_path=sl, colorize=False)
 
     assert "scanner errors: my_prs" in sl.read_text(encoding="utf-8")
+
+
+class TestRenderPhaseReconcilesManualPrs(TestCase):
+    """render_phase wires in the #1912 manual-MR reconciler (after the scan)."""
+
+    @pytest.fixture(autouse=True)
+    def _tmp(self, tmp_path: Path) -> None:
+        self.sl = tmp_path / "statusline.txt"
+
+    def test_render_phase_reconciles_manual_prs_into_rows(self) -> None:
+        from teatree.core.models.pull_request import PullRequest  # noqa: PLC0415
+        from teatree.core.models.ticket import Ticket  # noqa: PLC0415
+
+        Ticket.objects.create(
+            overlay="t3-teatree",
+            issue_url="https://github.com/souliane/teatree/issues/855",
+            state="started",
+        )
+        url = "https://github.com/souliane/teatree/pull/370"
+        report = TickReport(
+            started_at=_NOW,
+            signals=[
+                ScanSignal(
+                    kind="my_pr.open",
+                    summary="PR #370",
+                    payload={"url": url, "iid": 370, "raw": {"description": "Closes #855"}},
+                )
+            ],
+        )
+        report.actions = dispatch(report.signals, errors=report.errors)
+
+        render_phase(report, TickRequest(), jobs=[_job("my_prs")], statusline_path=self.sl, colorize=False)
+
+        assert PullRequest.objects.filter(url=url).count() == 1
 
 
 def test_render_phase_idle_renders_statusline_without_jobs(tmp_path: Path) -> None:
