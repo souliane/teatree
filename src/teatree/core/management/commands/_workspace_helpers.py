@@ -15,10 +15,39 @@ from typing import TYPE_CHECKING, TypedDict
 from teatree.core.gates.orphan_guard import find_orphans_in_workspace
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay, infer_overlay_for_url
+from teatree.core.readiness import run_and_report_probes
 from teatree.core.runners import heal_missing_provisioned_db
 
 if TYPE_CHECKING:
     from teatree.core.overlay import OverlayBase
+
+
+def report_worktree_probes(
+    worktrees: list[Worktree],
+    overlay: "OverlayBase",
+    write: Callable[[str], None],
+    *,
+    note_empty: bool,
+) -> tuple[int, int]:
+    """Run each worktree's readiness probes; return ``(total, failures)``.
+
+    Shared by ``start`` (probe only the worktrees that started) and
+    ``ready`` (probe every worktree). ``note_empty`` reports a worktree
+    with no probes explicitly (``ready``) or skips it silently (``start``).
+    """
+    total = 0
+    total_failures = 0
+    for wt in worktrees:
+        probes = overlay.get_readiness_probes(wt)
+        if not probes:
+            if note_empty:
+                write(f"  {wt.repo_path}: no probes")
+            continue
+        write(f"  {wt.repo_path}:")
+        summary = run_and_report_probes(probes, write_line=write, indent="    ")
+        total += summary.total
+        total_failures += summary.failures
+    return total, total_failures
 
 
 class OrphanEntry(TypedDict):

@@ -56,6 +56,10 @@ class TicketExtra(TypedDict, total=False):
     # single ticket-dir name so every repo provisions as a SIBLING in one dir.
     # Repos absent from the map fall back to ``branch``.
     branches: dict[str, str]
+    # #2275 adopt: repo -> existing on-disk worktree_path for an outside branch
+    # registered via ``workspace ticket --adopt``; the provisioner records the
+    # path verbatim instead of ``git worktree add``.
+    adopt: dict[str, str]
     description: str
     provision: dict[str, str]
     shipping_skipped: str

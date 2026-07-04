@@ -5387,12 +5387,19 @@ Usage: t3 teatree workspace ticket [OPTIONS] ISSUE_URL
 │ *    issue_url      TEXT  [required]                                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --variant            TEXT                                                    │
-│ --repos              TEXT                                                    │
-│ --description        TEXT                                                    │
-│ --take-over                Proceed even when another worktree dir for this   │
-│                            issue already exists (#2217).                     │
-│ --help                     Show this message and exit.                       │
+│ --variant             TEXT                                                   │
+│ --repos               TEXT                                                   │
+│ --description         TEXT                                                   │
+│ --take-over                 Proceed even when another worktree dir for this  │
+│                             issue already exists (#2217).                    │
+│ --adopt                     Adopt the branch checked out in the current git  │
+│                             worktree (auto-detect), registering Ticket +     │
+│                             Worktree rows against it instead of deriving     │
+│                             <number>-<slug> (#2275).                         │
+│ --adopt-branch        TEXT  Adopt this EXISTING branch (implies --adopt).    │
+│                             Omit to auto-detect from the current git         │
+│                             worktree.                                        │
+│ --help                      Show this message and exit.                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
