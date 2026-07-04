@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.utils import git
+from teatree.utils.run import CommandFailedError
 
 if TYPE_CHECKING:
     from teatree.core.models.task import Task
@@ -83,6 +84,48 @@ def head_state_brief_lines(task: "Task") -> tuple[str, ...]:
         f'  HEAD: {state.short_sha} "{state.subject}" (committed {committed})',
         f"  {_trigger_line(state, getattr(task, 'created_at', None))}",
     )
+
+
+_MAX_REVIEW_DIFF_CHARS = 24000
+
+
+def review_diff_brief_lines(task: "Task") -> tuple[str, ...]:
+    """Render the branch diff for a reviewing brief, or ``()`` (corr-11).
+
+    A headless reviewing phase is denied the shell (PR-11), so it cannot run
+    ``git diff`` itself — the diff is injected here at prompt-build time (the
+    orchestrator has shell access), the same read-git-at-build-time pattern as
+    :func:`head_state_brief_lines`. Empty when the ticket has no materialised
+    worktree (e.g. a remote-PR review with no local checkout) or the diff comes
+    back empty, so a dispatch is byte-identical to today until a branch actually
+    carries changes. Truncated to keep a large diff from blowing the prompt
+    budget — the reviewer Reads the changed files for anything past the cap.
+    """
+    diff = _resolve_branch_diff(task)
+    if not diff.strip():
+        return ()
+    body = diff[:_MAX_REVIEW_DIFF_CHARS]
+    if len(diff) > _MAX_REVIEW_DIFF_CHARS:
+        body += "\n… (diff truncated — Read the changed files directly for the remainder)"
+    return (
+        "",
+        "DIFF UNDER REVIEW (this phase has no shell — review THIS diff; Read the files for more context):",
+        "```diff",
+        body,
+        "```",
+    )
+
+
+def _resolve_branch_diff(task: "Task") -> str:
+    worktree = dispatch_worktree_path(task.ticket)
+    if not worktree:
+        return ""
+    try:
+        return git.branch_diff(repo=worktree)
+    except (OSError, CommandFailedError):
+        # A non-git path or a missing default-branch ref (merge_base failure) is
+        # "no diff to inject", never a dispatch-crashing raise.
+        return ""
 
 
 def _trigger_line(state: HeadState, triggered_at: "datetime | None") -> str:

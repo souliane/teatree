@@ -6,7 +6,7 @@ from pathlib import Path
 
 from django.test import TestCase
 
-from teatree.agents.dispatch_preflight import head_state_brief_lines, resolve_head_state
+from teatree.agents.dispatch_preflight import head_state_brief_lines, resolve_head_state, review_diff_brief_lines
 from teatree.core.models import Session, Task, Ticket, Worktree
 from tests._git_repo import make_git_repo, run_git
 
@@ -98,3 +98,42 @@ class TestHeadStateBriefLines(TestCase):
 
             block = "\n".join(head_state_brief_lines(task))
             assert "HEAD predates this dispatch" in block
+
+
+def _reviewing_worktree(tmp: Path) -> str:
+    make_git_repo(tmp, default_branch="main")
+    run_git(tmp, "update-ref", "refs/remotes/origin/main", "HEAD")
+    run_git(tmp, "checkout", "-q", "-b", "feature")
+    (tmp / "widget.py").write_text("def widget() -> int:\n    return 7\n")
+    run_git(tmp, "add", "widget.py")
+    run_git(tmp, "commit", "-q", "-m", "feat: add widget")
+    return str(tmp)
+
+
+class TestReviewDiffBriefLines(TestCase):
+    def test_empty_when_ticket_has_no_worktree(self) -> None:
+        ticket = Ticket.objects.create(issue_url="https://example.com/issues/8")
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+        assert review_diff_brief_lines(task) == ()
+
+    def test_empty_when_worktree_path_is_not_a_git_repo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ticket = Ticket.objects.create(issue_url="https://example.com/issues/9")
+            Worktree.objects.create(ticket=ticket, repo_path=tmp, branch="b", extra={"worktree_path": tmp})
+            session = Session.objects.create(ticket=ticket)
+            task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+            assert review_diff_brief_lines(task) == ()
+
+    def test_block_carries_the_branch_diff_for_a_shell_denied_reviewer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = _reviewing_worktree(Path(tmp))
+            ticket = Ticket.objects.create(issue_url="https://example.com/issues/10")
+            Worktree.objects.create(ticket=ticket, repo_path=path, branch="feature", extra={"worktree_path": path})
+            session = Session.objects.create(ticket=ticket)
+            task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+
+            block = "\n".join(review_diff_brief_lines(task))
+            assert "DIFF UNDER REVIEW" in block
+            assert "widget.py" in block
+            assert "def widget" in block

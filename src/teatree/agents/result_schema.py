@@ -32,6 +32,31 @@ class TestResult(TypedDict, total=False):
     error: str
 
 
+class ReviewFinding(TypedDict, total=False):
+    severity: str
+    summary: str
+    file: str
+    line: int
+
+
+class ReviewVerdictEnvelope(TypedDict, total=False):
+    """A reviewing-phase agent's typed verdict, recorded server-side (corr-11).
+
+    A headless reviewing phase is denied the shell (PR-11), so it cannot run
+    ``t3 review record``. It RETURNS this instead: the orchestrator
+    (a different actor) records the ``ReviewVerdict`` from it, so maker≠checker
+    holds by construction. ``reviewed_sha`` is the full 40-char SHA the review
+    bound to; ``verdict`` is ``merge_safe`` / ``hold``.
+    """
+
+    verdict: str
+    reviewed_sha: str
+    reviewer_identity: str
+    gh_verify_result: str
+    blast_class: str
+    findings: list[ReviewFinding]
+
+
 class AgentResult(TypedDict, total=False):
     """Structured result from an agent task execution.
 
@@ -48,6 +73,7 @@ class AgentResult(TypedDict, total=False):
     tests_passed: int
     tests_failed: int
     decisions: list[str]
+    review_verdict: ReviewVerdictEnvelope
     needs_user_input: bool
     user_input_reason: str
     next_steps: list[str]
@@ -92,6 +118,30 @@ RESULT_JSON_SCHEMA: dict[str, object] = {
             "items": {"type": "string"},
             "description": "Design decisions the agent made during execution.",
         },
+        "review_verdict": {
+            "type": "object",
+            "description": "A reviewing-phase agent's typed verdict, recorded server-side (corr-11).",
+            "properties": {
+                "verdict": {"type": "string", "enum": ["merge_safe", "hold"]},
+                "reviewed_sha": {"type": "string", "description": "Full 40-char hex SHA the review bound to."},
+                "reviewer_identity": {"type": "string"},
+                "gh_verify_result": {"type": "string", "enum": ["green", "pending", "failed"]},
+                "blast_class": {"type": "string", "enum": ["substrate", "logic", "docs"]},
+                "findings": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "severity": {"type": "string"},
+                            "summary": {"type": "string"},
+                            "file": {"type": "string"},
+                            "line": {"type": "integer"},
+                        },
+                    },
+                },
+            },
+            "required": ["verdict"],
+        },
         "needs_user_input": {"type": "boolean"},
         "user_input_reason": {"type": "string"},
         "next_steps": {
@@ -120,9 +170,10 @@ RESULT_JSON_SCHEMA: dict[str, object] = {
 #:
 #: - ``coding``: at least one file change recorded.
 #: - ``testing``: at least one test result OR a positive ``tests_passed``.
-#: - ``reviewing``: at least one design decision recorded (a review with no
-#:   recorded decision is a rubber-stamp; codex #1282-6 names this as the
-#:   exact false-positive class to prevent).
+#: - ``reviewing``: at least one design decision recorded, OR a typed
+#:   ``review_verdict`` returned for server-side recording (corr-11) — a
+#:   headless reviewer denied the shell proves the review happened by the
+#:   verdict it hands back, not only by a decision list.
 #: - ``shipping``: at least one command executed (``git push``, ``gh pr``...).
 #:
 #: Phases not in this map (``scoping``, ``retro``) carry no evidence
@@ -131,7 +182,7 @@ PHASE_REQUIRED_EVIDENCE: dict[str, tuple[str, ...]] = {
     "planning": ("plan_text",),
     "coding": ("files_modified",),
     "testing": ("tests_run", "tests_passed"),
-    "reviewing": ("decisions",),
+    "reviewing": ("decisions", "review_verdict"),
     "shipping": ("commands_executed",),
 }
 

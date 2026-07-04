@@ -326,8 +326,12 @@ class ReviewLoop(models.Model):
                 f"Findings feed straight back to the author; do NOT post and do NOT record a ReviewVerdict."
             )
         return (
-            f"Review-loop {self.pk} reviewer leg (round {self.round}) — cold-review per /t3:review doctrine "
-            f"and RECORD the verdict via `review record` bound to the reviewed head SHA."
+            f"Review-loop {self.pk} reviewer leg (round {self.round}) — cold-review the diff per /t3:review "
+            f"doctrine and RETURN your verdict in the result envelope: "
+            f'`"review_verdict": {{"verdict": "merge_safe"|"hold", "reviewed_sha": "<full HEAD SHA>", '
+            f'"reviewer_identity": "<your-reviewer-id>", "findings": [...]}}`. This phase has no shell — do '
+            f"NOT run `t3 review record`; the orchestrator records the ReviewVerdict from your envelope and "
+            f"advances this loop."
         )
 
 

@@ -41,21 +41,25 @@ if TYPE_CHECKING:
 _LOOP_SCANNER_HOLDER = "loop-scanner:auto-review-dispatch"
 
 
-def build_review_contract(*, slug: str, pr_id: int, head_sha: str, pr_url: str, overlay: str) -> str:
+def build_review_contract(*, slug: str, pr_id: int, head_sha: str, pr_url: str) -> str:
     """The reviewer's standing contract, stamped into the task's execution_reason.
 
-    The dispatched ``t3:reviewer`` reads this to know it must cold-review per
-    /t3:review doctrine and RECORD the verdict via the ``review record`` CLI
-    bound to the reviewed head SHA — the artifact the next sweep merges on.
+    The dispatched ``t3:reviewer`` cold-reviews the diff per /t3:review doctrine
+    and RETURNS its verdict in the ``review_verdict`` result envelope. This runs
+    headless with the shell denied (PR-11), so it must NOT try ``t3 review
+    record``; the orchestrator records the ``ReviewVerdict`` server-side from the
+    returned envelope (maker≠checker: a different actor writes it), which is the
+    artifact the next pr_sweep merges on and which releases the review lock (#68,
+    #1405).
     """
-    overlay_arg = overlay or "<overlay>"
     return (
-        f"Cold-review {pr_url} per /t3:review doctrine, then RECORD the verdict bound to the "
-        f"reviewed head SHA so the next pr_sweep can merge it: "
-        f"`t3 {overlay_arg} review record {pr_id} {slug} --reviewed-sha {head_sha} "
-        f"--reviewer-identity <your-reviewer-id> --verdict merge_safe` (use --verdict hold with "
-        f"--findings-json when blocking). The recorded merge_safe ReviewVerdict at head {head_sha[:8]} "
-        f"is the artifact pr_sweep consumes to auto-merge this own PR (#68)."
+        f"Cold-review the diff of {slug}#{pr_id} ({pr_url}) per /t3:review doctrine at head "
+        f'{head_sha[:8]}, then RETURN your verdict in the result envelope: `"review_verdict": '
+        f'{{"verdict": "merge_safe", "reviewed_sha": "{head_sha}", "reviewer_identity": '
+        f'"<your-reviewer-id>", "gh_verify_result": "green"}}`. Use "verdict": "hold" with a "findings" '
+        f"array when blocking. Do NOT run `t3 review record` — this phase has no shell; the orchestrator "
+        f"records the ReviewVerdict at head {head_sha[:8]} from your envelope, and pr_sweep consumes it "
+        f"to auto-merge this own PR (#68)."
     )
 
 
@@ -160,7 +164,5 @@ class AutoReviewDispatch(models.Model):
             session=session,
             phase="reviewing",
             execution_target=Task.ExecutionTarget.HEADLESS,
-            execution_reason=build_review_contract(
-                slug=slug, pr_id=pr_id, head_sha=head_sha, pr_url=pr_url, overlay=overlay
-            ),
+            execution_reason=build_review_contract(slug=slug, pr_id=pr_id, head_sha=head_sha, pr_url=pr_url),
         )

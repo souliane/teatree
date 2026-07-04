@@ -237,6 +237,22 @@ class TestExternalLoopStart(TestCase):
         assert loop.current_task is not None
         assert loop.current_task.phase == "e2e"
 
+    def test_external_reviewer_leg_returns_the_verdict_envelope(self) -> None:
+        # corr-11: the external reviewer leg runs headless with no shell, so its
+        # contract must instruct RETURNING the verdict, not running the CLI.
+        ticket = Ticket.objects.create()
+        with self.captureOnCommitCallbacks(execute=True):
+            loop = ReviewLoop.start_external_loop(ticket=ticket)
+        _complete(loop)
+        with self.captureOnCommitCallbacks(execute=True):
+            loop.submit_for_review()
+            loop.save()
+
+        reviewer_task = ticket.tasks.get(phase="e2e_reviewing")
+        reason = reviewer_task.execution_reason
+        assert "review_verdict" in reason
+        assert "do NOT run `t3 review record`" in reason
+
     def test_external_pass_sets_proceed_marker(self) -> None:
         ticket = Ticket.objects.create()
         with self.captureOnCommitCallbacks(execute=True):
