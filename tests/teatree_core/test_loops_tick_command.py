@@ -190,9 +190,9 @@ class TestAvailabilityPauseReconciliation(django.test.TestCase):
     """Per-loop tick parks silently when availability pauses the self-pump (#2544).
 
     Both drivers of a per-loop tick converge on this exact command: the
-    loop-runner daemon's ``execute_loop`` task (``call_command("loops_tick",
-    loop=name)``) and the legacy native Claude ``/loop`` cron (which fires
-    ``t3 loops tick --loop <name>``). Gating in ONE place reconciles both.
+    ``t3 worker``'s deadlined subprocess timer tick (``python -m teatree
+    loops_tick --loop <name>``) and the legacy native Claude ``/loop`` cron
+    (which fires ``t3 loops tick --loop <name>``). Gating in ONE place reconciles both.
     """
 
     def test_holiday_away_parks_the_tick_before_claiming_any_lease(self) -> None:

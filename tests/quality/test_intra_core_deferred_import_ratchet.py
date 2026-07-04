@@ -84,7 +84,15 @@ _TACH = _REPO_ROOT / "tach.toml"
 # import risks AppRegistryNotReady; the models import must wait until `handle()`
 # runs. Parallel structure with the existing reactive-loop commands; not a new
 # severable edge.
-_FROZEN_INTRA_CORE_DEFERRED = 184
+# Rose 184->185 (parallel-provision connection-leak fix): `step_runner`'s
+# `_resolve_step_timeout` defers `from teatree.core.provision_timebox import
+# resolve_step_timeout_seconds` so the parallel group resolves each member's
+# time-box ceiling on the CALLER thread — a pool worker must touch no ORM (a
+# Django connection opened there leaks under a TestCase, whose atomic wrapping
+# vetoes close()). This rides the SAME `step_runner`->`provision_timebox`
+# cycle-forced deferral its sibling `_timeboxed_subprocess_callable_step` already
+# uses for `run_timeboxed_callable`; not a new severable edge.
+_FROZEN_INTRA_CORE_DEFERRED = 185
 
 
 def _function_scoped_intra_core_imports(source: Path) -> int:

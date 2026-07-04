@@ -46,6 +46,7 @@ __all__ = [
     "run_checked",
     "run_streamed",
     "spawn",
+    "spawn_session_leader",
 ]
 
 
@@ -202,5 +203,29 @@ def spawn(
         cwd=str(cwd) if cwd is not None else None,
         stdout=stdout,
         stderr=stderr,
+        text=True,
+    )
+
+
+def spawn_session_leader(
+    cmd: Sequence[str],
+    *,
+    stdout: int | IO[bytes] | IO[str] | None = None,
+    stderr: int | IO[bytes] | IO[str] | None = None,
+) -> Popen[str]:
+    """Spawn a background process that LEADS its own process group.
+
+    ``start_new_session=True`` makes the child a session/group leader, so the
+    caller can ``os.killpg(os.getpgid(proc.pid), …)`` the WHOLE group (the child
+    plus any grandchildren it spawns) on a deadline — an OS-level kill boundary a
+    plain :func:`spawn` cannot give. ``stdin`` is always ``DEVNULL`` (a detached
+    background process must never inherit or block on the parent's stdin).
+    """
+    return subprocess.Popen(
+        list(cmd),
+        stdin=DEVNULL,
+        stdout=stdout,
+        stderr=stderr,
+        start_new_session=True,
         text=True,
     )

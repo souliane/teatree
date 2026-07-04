@@ -1,11 +1,11 @@
-"""SessionStart resurrection of the self-owned loop-runner daemon (#2876 decision 2b).
+"""SessionStart resurrection of the singleton loop-timer worker (#1796).
 
-When ``loop_runner_enabled`` is on and no runner holds the ``loop-runner`` flock,
-the SessionStart hook (OS-agnostic — it fires on every Claude session start)
-re-spawns a detached ``t3 loop-runner``. This is the "at least one" half of
-supervision the at-most-one flock cannot provide: the flock gives at-most-one, the
-in-daemon supervisor respawns a crashed beat worker, and this rehydrates the whole
-daemon after a full crash / reboot.
+When ``loop_runner_enabled`` is on and no worker holds the ``worker`` flock, the
+SessionStart hook (OS-agnostic — it fires on every Claude session start) re-spawns
+a detached ``t3 worker``. This is the "at least one" half of supervision the
+at-most-one flock cannot provide: the flock gives at-most-one, the worker's own
+supervisor thread stops the executor pool on a kill-switch flip, and this
+rehydrates the whole worker after a full crash / reboot.
 
 A standalone infrastructure hook (like the sibling SessionStart ``bootstrap-cli.sh``)
 rather than a router handler: ``hook_router.py`` is a grandfathered shrink-only
@@ -17,9 +17,8 @@ exception into the SessionStart hook. The enable check boots NO Django (#2879
 parity): the DB-home flag is read via the Django-free ``teatree.config.cold_reader``
 stdlib-sqlite path, so a fresh, non-engaged session (contra #256) never pays a full
 ``django.setup()`` on the session-start critical path just to read a default-OFF
-flag — exactly the second cold-boot cost #2879 removed from the Stop hook. On a
-fully-headless box with no Claude session ever opening, the operator starts
-``t3 loop-runner`` once from a login profile (a dotfile, not a system scheduler);
+flag. On a fully-headless box with no Claude session ever opening, the operator
+starts ``t3 worker`` once from a login profile (a dotfile, not a system scheduler);
 this hook only covers the session-present case.
 """
 
@@ -32,8 +31,8 @@ from collections.abc import Callable
 
 # Alias the bare and ``hooks.scripts.`` identities so the live hook and a test
 # importing either name operate on ONE module object (mirrors loop_registrations).
-sys.modules.setdefault("loop_runner_supervisor", sys.modules[__name__])
-sys.modules.setdefault("hooks.scripts.loop_runner_supervisor", sys.modules[__name__])
+sys.modules.setdefault("worker_supervisor", sys.modules[__name__])
+sys.modules.setdefault("hooks.scripts.worker_supervisor", sys.modules[__name__])
 
 
 #: Truthy tokens for the ``T3_LOOP_RUNNER_ENABLED`` env override — mirrors the
@@ -54,7 +53,7 @@ def _enabled_scope_chain() -> tuple[str, ...]:
     return (overlay, "") if overlay else ("",)
 
 
-def _loop_runner_enabled() -> bool:
+def _worker_enabled() -> bool:
     """Whether ``loop_runner_enabled`` resolves on — Django-free cold read, fail-OFF.
 
     #2879 parity: read the DB-home flag WITHOUT booting Django.
@@ -77,28 +76,28 @@ def _loop_runner_enabled() -> bool:
 
 
 def _flock_is_free() -> bool:
-    """Whether the ``loop-runner`` flock has no live holder; fail-SAFE (not free) on error.
+    """Whether the ``worker`` flock has no live holder; fail-SAFE (not free) on error.
 
     An uncertain probe returns ``False`` so an ambiguous state never triggers a
-    spawn — and even a spurious spawn is harmless (the second runner's singleton
+    spawn — and even a spurious spawn is harmless (the second worker's singleton
     refuses and exits), so this errs toward not-spawning.
     """
     try:
-        from teatree.loops.runner import LOOP_RUNNER_SINGLETON  # noqa: PLC0415
+        from teatree.loops.worker import WORKER_SINGLETON  # noqa: PLC0415
         from teatree.utils.singleton import default_pid_path, read_pid  # noqa: PLC0415
 
-        return read_pid(default_pid_path(LOOP_RUNNER_SINGLETON)) is None
+        return read_pid(default_pid_path(WORKER_SINGLETON)) is None
     except Exception:  # noqa: BLE001 — can't tell -> do NOT spawn a possible duplicate.
         return False
 
 
-def _spawn_loop_runner() -> None:
-    """Spawn a detached ``t3 loop-runner`` that outlives this session; a no-op if ``t3`` is absent."""
+def _spawn_worker() -> None:
+    """Spawn a detached ``t3 worker`` that outlives this session; a no-op if ``t3`` is absent."""
     t3_bin = shutil.which("t3")
     if not t3_bin:
         return
     subprocess.Popen(  # noqa: S603 — resolved binary, fixed argv, no shell, no user input.
-        [t3_bin, "loop-runner"],
+        [t3_bin, "worker"],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -106,16 +105,16 @@ def _spawn_loop_runner() -> None:
     )
 
 
-def resurrect_loop_runner(
+def resurrect_worker(
     *,
-    enabled: Callable[[], bool] = _loop_runner_enabled,
+    enabled: Callable[[], bool] = _worker_enabled,
     flock_free: Callable[[], bool] = _flock_is_free,
-    spawn: Callable[[], None] = _spawn_loop_runner,
+    spawn: Callable[[], None] = _spawn_worker,
 ) -> str:
-    """Spawn a detached loop-runner iff enabled AND the flock is free; return the action.
+    """Spawn a detached worker iff enabled AND the flock is free; return the action.
 
-    Returns ``"disabled"`` (not opted in), ``"already-running"`` (a runner holds the
-    flock), ``"spawned"`` (a fresh daemon was launched), or ``"error"`` (fail-open).
+    Returns ``"disabled"`` (not opted in), ``"already-running"`` (a worker holds the
+    flock), ``"spawned"`` (a fresh worker was launched), or ``"error"`` (fail-open).
     """
     try:
         if not enabled():
@@ -129,12 +128,12 @@ def resurrect_loop_runner(
 
 
 def main() -> int:
-    """SessionStart hook entry point — resurrect the daemon, always exit 0."""
+    """SessionStart hook entry point — resurrect the worker, always exit 0."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--event", default="")
     parser.parse_args()
     sys.stdin.read()  # drain the payload; the resurrection needs none of it
-    resurrect_loop_runner()
+    resurrect_worker()
     return 0
 
 
