@@ -17,6 +17,12 @@ def _diff(path: str, added: list[str], removed: list[str] | None = None) -> str:
     return "\n".join(body) + "\n"
 
 
+def _raw_diff(path: str, hunk_lines: list[str]) -> str:
+    """A raw unified diff for *path* whose hunk body is *hunk_lines* (each carries its own +/-/space marker)."""
+    header = [f"diff --git a/{path} b/{path}", f"--- a/{path}", f"+++ b/{path}", "@@ -1,4 +1,5 @@"]
+    return "\n".join(header + hunk_lines) + "\n"
+
+
 def _kinds(findings: list[RelaxationFinding]) -> set[str]:
     return {f.kind for f in findings}
 
@@ -75,9 +81,41 @@ class TestLintCoverageConfig:
         findings = scan_relaxation(_diff("pyproject.toml", ['omit = [ "src/teatree/new_thing/*.py" ]']))
         assert _kinds(findings) == {"coverage_omit_added"}
 
-    def test_added_glob_to_omit_array_blocks(self) -> None:
-        findings = scan_relaxation(_diff(".coveragerc", ['    "src/teatree/hard/*.py",']))
+    def test_new_omit_array_with_globs_blocks(self) -> None:
+        # An INI `.coveragerc` omit list added wholesale — the `omit =` opening plus
+        # its indented glob entries — is a real coverage relaxation.
+        findings = scan_relaxation(_diff(".coveragerc", ["omit =", "    src/teatree/hard/*.py"]))
         assert _kinds(findings) == {"coverage_omit_added"}
+
+    def test_glob_added_to_existing_omit_array_flagged(self) -> None:
+        # A glob added inside a coverage `omit` array whose opening is a CONTEXT line
+        # IS a coverage omit — the enclosing-array is tracked from the diff context.
+        diff = _raw_diff(
+            "pyproject.toml",
+            [
+                " [tool.coverage.run]",
+                " omit = [",
+                '     "src/teatree/legacy/*.py",',
+                '+    "src/teatree/hard/*.py",',
+                " ]",
+            ],
+        )
+        assert _kinds(scan_relaxation(diff)) == {"coverage_omit_added"}
+
+    def test_ruff_exclude_glob_not_flagged_as_coverage_omit(self) -> None:
+        # A `*`-glob added inside a ruff `exclude` array is NOT a coverage omit — the
+        # old context-free matcher false-positived on any quoted glob in a lint/cov file.
+        diff = _raw_diff(
+            "pyproject.toml",
+            [
+                " [tool.ruff]",
+                " exclude = [",
+                '     "generated/*",',
+                '+    "build/*",',
+                " ]",
+            ],
+        )
+        assert "coverage_omit_added" not in _kinds(scan_relaxation(diff))
 
     def test_fail_under_lowered_blocks(self) -> None:
         findings = scan_relaxation(_diff("pyproject.toml", ["fail_under = 80"], removed=["fail_under = 93"]))
@@ -193,3 +231,27 @@ class TestParseDiff:
         result = parse_diff(diff)
         assert result[0].removed == ["old = 1"]
         assert result[0].added == []
+
+    def test_deleted_file_removed_lines_do_not_bleed_into_previous_file(self) -> None:
+        # A `+++ /dev/null` header (a deleted file) resets the accumulator, so the
+        # deleted file's `-` lines are NOT appended to the previous file's removed set.
+        diff = (
+            "diff --git a/keep.py b/keep.py\n"
+            "--- a/keep.py\n"
+            "+++ b/keep.py\n"
+            "@@ -1,1 +1,1 @@\n"
+            "-old_keep = 1\n"
+            "+new_keep = 1\n"
+            "diff --git a/gone.py b/gone.py\n"
+            "deleted file mode 100644\n"
+            "--- a/gone.py\n"
+            "+++ /dev/null\n"
+            "@@ -1,2 +0,0 @@\n"
+            "-gone_1 = 1\n"
+            "-gone_2 = 2\n"
+        )
+        result = parse_diff(diff)
+        keep = next(fd for fd in result if fd.path == "keep.py")
+        assert keep.removed == ["old_keep = 1"]  # NOT polluted by gone.py's removed lines
+        assert keep.added == ["new_keep = 1"]
+        assert all(fd.path != "gone.py" for fd in result)  # the deleted file yields no _FileDiff

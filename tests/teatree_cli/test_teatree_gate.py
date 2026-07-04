@@ -20,6 +20,7 @@ from teatree.cli.teatree_gate import (
     COMPLETION_CLAIM_GATE_KEY,
     CONFIG_OVERWRITE_GATE_KEY,
     GATE_KEY,
+    GATE_RELAXATION_GATE_KEY,
     MAIN_CLONE_GATE_KEY,
     MEMORY_RECALL_GATE_KEY,
     _gate_key_is_enabled,
@@ -179,6 +180,33 @@ class TestMainCloneGate:
         assert _gate_key_is_enabled(MAIN_CLONE_GATE_KEY) is False
         assert runner.invoke(app, ["gate", "main-clone", "enable"]).exit_code == 0
         assert _gate_key_is_enabled(MAIN_CLONE_GATE_KEY) is True
+
+
+class TestGateRelaxationGate:
+    """``t3 <overlay> gate gate-relaxation disable|enable`` — the anti-relaxation self-rescue (#850)."""
+
+    def test_disable_writes_false_and_is_reflected(self, app: typer.Typer, home: Path) -> None:
+        result = CliRunner().invoke(app, ["gate", "gate-relaxation", "disable"])
+        assert result.exit_code == 0, result.output
+        document = tomlkit.parse((home / ".teatree.toml").read_text(encoding="utf-8"))
+        assert document["teatree"][GATE_RELAXATION_GATE_KEY] is False
+        assert _gate_key_is_enabled(GATE_RELAXATION_GATE_KEY) is False
+
+    def test_enabled_by_default_when_config_missing(self, home: Path) -> None:
+        assert _gate_key_is_enabled(GATE_RELAXATION_GATE_KEY) is True
+
+    def test_status_reports_state(self, app: typer.Typer, home: Path) -> None:
+        runner = CliRunner()
+        assert "ENABLED" in runner.invoke(app, ["gate", "gate-relaxation", "status"]).output
+        runner.invoke(app, ["gate", "gate-relaxation", "disable"])
+        assert "DISABLED" in runner.invoke(app, ["gate", "gate-relaxation", "status"]).output
+
+    def test_round_trips(self, app: typer.Typer, home: Path) -> None:
+        runner = CliRunner()
+        assert runner.invoke(app, ["gate", "gate-relaxation", "disable"]).exit_code == 0
+        assert _gate_key_is_enabled(GATE_RELAXATION_GATE_KEY) is False
+        assert runner.invoke(app, ["gate", "gate-relaxation", "enable"]).exit_code == 0
+        assert _gate_key_is_enabled(GATE_RELAXATION_GATE_KEY) is True
 
 
 class TestTomlPreservation:

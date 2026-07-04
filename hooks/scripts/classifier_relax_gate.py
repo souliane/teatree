@@ -24,12 +24,13 @@ Threat model:
     CONTENT-SCHEMA VALIDATION (#857 — RESOLVED): the write payload is validated
     before the allow is emitted. A ``Write`` whose ``content`` is not a JSON
     object, whose ``permissions.{allow,deny,ask}`` / ``autoMode.allow`` are not
-    lists of strings, or that adds a blanket-wildcard rule (``Bash``, ``Bash(*)``,
-    ``Bash(* *)``, ``Bash(:*)``) is REFUSED pre-persist; an ``Edit`` whose
-    ``new_string`` adds a blanket-wildcard rule, or whose applied result parses to
-    invalid JSON, is likewise refused. The gate only permits the SANCTIONED SHAPE
-    the classifier-relax protocol produces — a smallest-scope string rule appended
-    to an allow list.
+    lists of strings, or that adds a blanket-wildcard rule — a whole-tool grant
+    with no scope for ANY built-in tool (``Bash``, ``Edit``, ``Write(*)``,
+    ``Read(:*)``) — is REFUSED pre-persist; an ``Edit`` whose ``new_string`` adds a
+    blanket-wildcard rule, or whose applied result parses to invalid JSON, is
+    likewise refused. The gate only permits the SANCTIONED SHAPE the
+    classifier-relax protocol produces — a smallest-scope string rule appended to
+    an allow list.
 
     WHAT THIS DOES NOT ALLOW: any other target path; a write without transcript
     evidence of the approval; a replay of consumed consent; a payload that fails
@@ -84,9 +85,10 @@ _SETTINGS_JSON_PATH = "~/.claude/settings.json"
 _ALLOW_LIST_KEYS = (("permissions", ("allow", "deny", "ask")), ("autoMode", ("allow",)))
 
 # A blanket-wildcard permission rule that grants a whole tool with no scope —
-# ``Bash``, ``Bash()``, ``Bash(*)``, ``Bash(* *)``, ``Bash(:*)``. The rules
-# protocol requires the SMALLEST rule that covers the use case, so a blanket
-# grant is never a sanctioned relax.
+# a bare tool (``Bash``, ``Edit``, ``Write``) or a wildcard/empty scope
+# (``Bash()``, ``Edit(*)``, ``Write(* *)``, ``Read(:*)``). The rules protocol
+# requires the SMALLEST rule that covers the use case, so a whole-tool grant of
+# ANY built-in tool is never a sanctioned relax. Group 1 is the tool name.
 _BLANKET_RULE_RE = re.compile(r"^([A-Za-z_]+)(?:\(\s*(?:\*(?:\s+\*)*|:\*|)\s*\)|)$")
 
 
@@ -178,9 +180,17 @@ def _has_sanctioned_relax_approval(transcript_path: str) -> bool:
 
 
 def _is_blanket_rule(rule: str) -> bool:
-    """Whether ``rule`` grants a whole tool with no scope (a blanket-wildcard rule)."""
+    """Whether ``rule`` grants a whole tool with no scope (a blanket-wildcard rule).
+
+    Any built-in tool granted bare (``Bash``, ``Edit``, ``Write``) or with a
+    wildcard/empty scope (``Bash(*)``, ``Write(* *)``, ``Read(:*)``, ``Edit()``)
+    is a blanket grant — the rules protocol requires the SMALLEST rule that covers
+    the use case, so a whole-tool grant of ANY tool is never a sanctioned relax. An
+    ``mcp__…`` tool name is its own finest grain (MCP tools carry no sub-scope), so
+    a bare MCP grant is NOT a blanket rule.
+    """
     match = _BLANKET_RULE_RE.match(rule.strip())
-    return match is not None and match.group(1) == "Bash"
+    return match is not None and not match.group(1).startswith("mcp__")
 
 
 def _validate_allow_lists(payload: dict) -> str | None:
