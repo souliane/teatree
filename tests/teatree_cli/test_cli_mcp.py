@@ -118,6 +118,7 @@ class TestServeSubprocessSmoke:
             "worktree_status",
             "pr_for_ticket",
             "loop_stats",
+            "factory_signals",
             "incoming_event_recent",
         }
         assert payload == {
