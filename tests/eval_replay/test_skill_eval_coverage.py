@@ -1,6 +1,6 @@
 """Per-skill eval coverage: every skill is covered by >=1 eval or exempt.
 
-Mirrors ``tests/eval_replay/test_trigger_qa.py``'s detect-under / detect-over
+Mirrors the pinned-regressions corpus's must-block / must-allow anti-vacuity
 pattern: a synthetic skill dir with no eval and no exemption is flagged a
 gap; one carrying ``eval_exempt`` is NOT a gap; one targeted by a spec is
 NOT a gap.

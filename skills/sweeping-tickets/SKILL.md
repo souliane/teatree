@@ -6,10 +6,6 @@ compatibility: macOS/Linux, git, gh CLI.
 requires:
   - rules
   - platforms
-triggers:
-  priority: 90
-  keywords:
-    - '\b(sweep(ing)? tickets|sweeping[- ]tickets|triage (the )?(issue )?(tracker|tickets)|consolidat(e|ing) (the )?(issue )?tracker|consolidat(e|ing) tickets|merge tickets into (an )?epics?|prune (the )?(issue )?tracker|retire (stale )?issues|clean up the (issue )?tracker)\b'
 metadata:
   version: 0.0.1
   subagent_safe: false
@@ -232,7 +228,7 @@ weekly), with two safety properties baked in from day one:
   auto-closes. The queued task does not presume a cap either — it still asks
   (Non-Negotiable 1) rather than assuming a number for an unattended run.
 
-Until that wiring lands, this skill runs on demand (the triggers above) —
+Until that wiring lands, this skill runs on demand (`/t3:sweeping-tickets`) —
 which is the correct posture while the verdicts are still being trusted.
 
 ## Rules

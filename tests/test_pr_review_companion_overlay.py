@@ -13,9 +13,8 @@ The injection threads through:
 *   ``SkillLoadingPolicy.select_for_runtime_phase`` — accepts the value as
     a parameter and appends it when the phase resolves to the ``review``
     lifecycle skill. The companion goes through the standard
-    ``resolve_companions`` pipeline so its own ``requires``/``companions``
-    chain expands transitively (and a missing companion logs a warning,
-    dispatch still proceeds).
+    ``resolve_requires`` chain so its own ``requires`` expand transitively
+    (and a review companion with no SKILL.md warns, dispatch still proceeds).
 *   ``teatree.agents.skill_bundle.resolve_skill_bundle`` — reads the active
     overlay's ``pr_review_companion`` and passes it to the policy, keeping
     the policy module free of a back-reference to ``teatree.core``.
@@ -110,11 +109,11 @@ class TestSelectForRuntimePhaseInjectsPrReviewCompanion:
         assert "code-review" not in result.skills
 
     def test_missing_companion_in_index_dispatch_still_proceeds(self, tmp_path: Path) -> None:
-        """A companion absent from the trigger index logs a warning, doesn't fail.
+        """A review companion absent from the skill index warns, doesn't fail.
 
-        ``resolve_companions`` handles unknown skills by passing them through
-        as-is when no trigger entry expands them — the policy still returns
-        ``review`` alongside the companion name, never crashes.
+        ``resolve_requires`` passes an unknown skill through as-is when no index
+        entry expands it — the policy still returns ``review`` alongside the
+        companion name, never crashes.
         """
         policy = SkillLoadingPolicy()
         result = policy.select_for_runtime_phase(
@@ -122,7 +121,7 @@ class TestSelectForRuntimePhaseInjectsPrReviewCompanion:
             phase="reviewing",
             overlay_skill_metadata={},
             pr_review_companion="nonexistent-companion-skill",
-            trigger_index=[],
+            skill_index=[],
         )
         assert "review" in result.skills
         assert "nonexistent-companion-skill" in result.skills

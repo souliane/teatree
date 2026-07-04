@@ -99,8 +99,8 @@
 #   failed-workflow-run email goes to the maintainer (Actions → Notifications) with
 #   no extra secret and no bot — that is the failure-notification mechanism here.
 #
-# The FREE deterministic TESTS (eval-skill-triggers commit-stage,
-# eval-pinned-regressions push-stage) are unaffected — they gate every push via
+# The FREE deterministic TESTS (eval-pinned-regressions push-stage) are
+# unaffected — they gate every push via
 # prek and the regression corpus is asserted every PR via pytest. Only the
 # in-process Agent-SDK eval (the SDK spawns the `claude` CLI child internally, so
 # `shutil.which("claude")` is still the provisioning gate) lives here.

@@ -58,7 +58,7 @@ def _make_loop_state_db(path: Path, rows: Iterable[tuple[str, str]], *, wal: boo
 
 
 def _remove_wal_sidecars(db: Path) -> None:
-    """Delete the ``-wal``/``-shm`` companions of `db`.
+    """Delete the ``-wal``/``-shm`` sidecar files of `db`.
 
     The realistic quiescent cold state (no teatree process holding the DB),
     where a WAL-format file has no live sidecars.

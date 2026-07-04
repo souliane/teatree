@@ -16,7 +16,7 @@ one umbrella CLI (`t3 eval …`):
   / judge-metered / count-floor. This is the `--backend api` AI lane, the
   `--judge` / `judge:` oracles, `benchmark`, and the advisory `skill-prose-judge`.
 - **tests** — deterministic, no live model, free, run **every commit** (pytest +
-  prek): skill-triggers, pinned-regressions, skill-command-validity, coverage,
+  prek): pinned-regressions, skill-command-validity, coverage,
   negative-control, transcript-replay, corpus-grade, plus the **replay** of the
   committed `evals/scenarios/*.yaml` against their `_{pass,fail,noop}` fixtures.
 
@@ -75,10 +75,10 @@ coverage gate (`t3 eval coverage`).
 | Spec discovery | `src/teatree/eval/discovery.py` |
 | Grading (matchers, judge) | `src/teatree/eval/report.py`, `matrix.py`, `pass_at_k.py` |
 | Transcript readers | `src/teatree/eval/transcript.py` (stream-json), `session_transcript.py` + `subagent_transcript.py` (on-disk session schema) |
-| Deterministic lanes | `src/teatree/eval/trigger_qa.py`, `regression_corpus.py`, `negative_control.py`, `transcript_conformance.py` |
+| Deterministic lanes | `src/teatree/eval/regression_corpus.py`, `negative_control.py`, `transcript_conformance.py`, `coverage.py` |
 | Run-store | `src/teatree/core/models/eval_run.py` (`EvalRunRecord` + `EvalScenarioResult`) |
 | Generated corpus | `scripts/eval/corpus_gen/` + `generate_corpus.py` |
-| Prek hooks | `.pre-commit-config.yaml`: `eval-skill-triggers` (commit stage → `t3 eval skill-triggers`) + `eval-pinned-regressions` (push stage → `t3 eval pinned-regressions`) |
+| Prek hooks | `.pre-commit-config.yaml`: `eval-pinned-regressions` (push stage → `t3 eval pinned-regressions`) |
 | CI triggers | `.github/workflows/eval.yml` (standalone weekly schedule + manual `workflow_dispatch`) + `.gitlab-ci.yml` (schedule + manual), `scripts/eval/merged_prs_since.py` (scheduled no-PR guard) |
 
 ### Tech stack
@@ -125,12 +125,10 @@ installed editable from a clone; the eval harness ships inside it.
   fresh-run route raises `DockerUnavailableError` with guidance, so it is
   impossible to ACCIDENTALLY run the fresh-run lane on the host.
 
-- **Prek (deterministic gates).** The two deterministic lanes are wired into
-  prek under their explicit names: the sub-second `eval-skill-triggers` hook
-  (`t3 eval skill-triggers`, pure frontmatter parsing) runs at the **commit**
-  stage, and `eval-pinned-regressions` (`t3 eval pinned-regressions`, real
-  git/FSM work) runs at the **push** stage — both token-free, failing the
-  commit/push on a real violation.
+- **Prek (deterministic gate).** The deterministic regression lane is wired into
+  prek under its explicit name: `eval-pinned-regressions`
+  (`t3 eval pinned-regressions`, real git/FSM work) runs at the **push** stage —
+  token-free, failing the push on a real violation.
 - **CI manual.** The metered eval can be triggered on demand via the standalone
   workflow's manual `workflow_dispatch` button (GitHub) / `when: manual` job
   (GitLab). A manual run ALWAYS runs (the no-PR guard is bypassed).
@@ -187,7 +185,6 @@ t3 eval history --model opus --format json    # filter + JSON
 t3 eval run --backend transcript              # explicit transcript (the default; host-default, $0 extra)
 t3 eval prepare-transcript                    # emit prompts/paths for a transcript run
 t3 eval transcript-replay                     # replay a real session against invariants
-t3 eval skill-triggers                        # deterministic skill-activation eval (no claude run)
 t3 eval coverage                              # per-skill eval coverage (covered / eval_exempt / gap); warn-first, no claude run
 t3 eval coverage --fail-on-gap                # Phase-B enforcement: exit non-zero on any uncovered, non-exempt skill
 t3 eval pinned-regressions                    # deterministic real-code-path regression corpus (no claude run)
@@ -215,17 +212,15 @@ host's `scripts/eval/*.py` workflow shims and the reusable `eval-pr-reusable.yml
 / `eval-weekly-reusable.yml` (`workflow_call`) workflows delegate to, so an
 overlay reuses teatree's eval CI instead of duplicating it.
 
-The two deterministic lanes are wired into prek under their explicit names: the
-sub-second `eval-skill-triggers` hook runs at the **pre-commit** stage (pure
-frontmatter parsing) and `eval-pinned-regressions` runs at the **pre-push** stage
-(real git/FSM work) — both token-free, no model, no spec discovery. Each fails
-the commit/push on a real deterministic violation. The full free-lane summary
-(`t3 eval --free-only`) — which also folds in the warn-first skill-coverage
-lane, negative-control, and the SKIP-when-out-of-scope transcript-replay lane —
-stays runnable on demand. Run a single prek lane on demand with:
+The deterministic regression lane is wired into prek under its explicit name:
+`eval-pinned-regressions` runs at the **pre-push** stage (real git/FSM work) —
+token-free, no model, no spec discovery. It fails the push on a real
+deterministic violation. The full free-lane summary (`t3 eval --free-only`) —
+which also folds in the warn-first skill-coverage lane, negative-control, and the
+SKIP-when-out-of-scope transcript-replay lane — stays runnable on demand. Run the
+prek lane on demand with:
 
 ```bash
-prek run --hook-stage commit eval-skill-triggers
 prek run --hook-stage push eval-pinned-regressions
 ```
 
@@ -242,7 +237,7 @@ bill), with the metered `ANTHROPIC_API_KEY` still selectable via config.
 | `transcript` (default) | $0 extra (reuses a recorded run) | local / manual | grades an already-recorded `<scenario>.jsonl` transcript off disk — runs no model |
 | `sdk` | subscription-covered by default (NOT API-billed; `metered_api_key` selectable) | CI (standalone `eval.yml`) + local `--backend api` (DEFAULTS to the container) | RUNS the model fresh in-process via the Agent SDK + grades the run, in a container by default (`--local` for durable-history gates / host checks) |
 
-The free, no-model commands — `skill-triggers`, `pinned-regressions`, and
+The free, no-model commands — `pinned-regressions` and
 `transcript-replay` — never invoke any model and are unaffected by the backend.
 
 ### Token cost — the per-scenario system prompt (`agent_sections`)
@@ -444,14 +439,14 @@ wall-clock lever only — it does not change token cost.
 prints a single aggregated summary table — the command to reach for by default.
 Arguments and subcommands are the *targeted/special* path: `run` (a single AI
 scenario, the fresh-run `--backend api` path — Docker-default), `pinned-regressions` /
-`negative-control` / `skill-triggers` / `coverage` (one free lane in isolation),
+`negative-control` / `coverage` (one free lane in isolation),
 `history` / `list` / `prepare-transcript` (introspection). The bare default
 accepts `--free-only`, `--backend`, `--transcript-dir`, `--docker`, `--strict`,
 `--parallel`. The process exits non-zero if ANY lane fails (fail-loud); a SKIP
 never counts as a green pass.
 
-It runs every lane in one summary table: the seven free deterministic lanes
-(`skill-triggers`, `skill-coverage`, `pinned-regressions`, `negative-control`,
+It runs every lane in one summary table: the six free deterministic lanes
+(`skill-coverage`, `pinned-regressions`, `negative-control`,
 `transcript-replay`, `corpus-grade`, `skill-command-validity`) plus the AI lane.
 `skill-coverage` is warn-first (reports a gap, exit 0). The AI lane never runs a
 model silently — `--backend api` opts into a fresh run. The ADVISORY
@@ -830,21 +825,10 @@ cheap default model tier, a per-call `--max-budget-usd` cap, and a per-run
 skips (it never fails a scenario by absence). A scenario may carry `judge:` with
 no `expect:` (judge-only) or alongside matchers (both must pass).
 
-### Skill-triggers (skill activation)
-
-`t3 eval skill-triggers` is a Layer-1 (deterministic, free, no `claude` run)
-**test** — a trigger test, not a behavioral eval: it asserts code/config
-behaviour with fixed I/O, no live model.
-It loads each skill's `triggers.keywords` frontmatter and checks the
-must-fire / must-not-fire prompt corpus in `trigger_qa_corpus.yaml`: an
-under-trigger (in-scope prompt that does not fire) or over-trigger (control
-prompt that fires) exits non-zero. A skill author registers expectations by
-editing the corpus.
-
 ### Pinned-regressions corpus (real gate/checker code paths)
 
 `t3 eval pinned-regressions` is a Layer-1 (deterministic, free, no `claude` run)
-**test** — sibling of skill-triggers. Where a scenario grades what an agent *says* it
+**test**. Where a scenario grades what an agent *says* it
 would do, the pinned-regressions corpus (`regression_corpus.py`) grades what the gate/checker
 code *does*: each `RegressionCheck` calls the **real** function for a recurring
 failure class on a constructed must-block input and a must-allow input, and
@@ -865,7 +849,7 @@ code path still honors the invariant — then add the matching anti-vacuous test
 ### Skill-command-validity (#550 Tier-1 — stale `t3 …` references)
 
 `t3 eval skill-command-validity` is a Layer-1 (deterministic, free, no `claude`
-run) **test** — the third sibling of skill-triggers and pinned-regressions. It
+run) **test** — a sibling of pinned-regressions. It
 grades the skill *docs* themselves: every backticked `t3 …` command a
 `skills/<name>/SKILL.md` (and its nested `*.md` references) documents must
 resolve against the LIVE CLI registry. A SKILL.md that cites a `t3` command
@@ -910,13 +894,12 @@ path drives it for real.
 ## Triggering
 
 - **Manual, on demand.** Run `t3 eval run` / `t3 eval run --trials 3` /
-  `t3 eval skill-triggers` / `t3 eval pinned-regressions` locally whenever you want.
-- **Every commit / push (deterministic lanes via prek).** The
-  `eval-skill-triggers` hook gates every commit and `eval-pinned-regressions`
-  gates every push (token-free).
+  `t3 eval pinned-regressions` locally whenever you want.
+- **Every push (deterministic lane via prek).** The `eval-pinned-regressions`
+  hook gates every push (token-free).
 - **Every PR (deterministic layers).** The pinned-regressions corpus is exercised by
   `tests/eval_replay/test_regression_corpus.py` in the normal pytest gate on every
-  PR, and skill-triggers + the scenario anti-vacuous matchers are pinned by
+  PR, and the scenario anti-vacuous matchers are pinned by
   `tests/eval_replay/test_scenarios_anti_vacuous.py` / `tests/teatree_cli/
   test_eval.py`. The deterministic, free layers therefore guard every PR
   through pytest — only the paid Agent-SDK scenario *run* is weekly.
@@ -942,7 +925,6 @@ This table is the single source of truth for which lanes exist, how they run, an
 
 | Lane | Kind | Cost | Host / Docker | Local invocation | CI | Cadence |
 |---|---|---|---|---|---|---|
-| skill-triggers | **test** | free | host | `t3 eval skill-triggers` | pytest (`test_scenarios_anti_vacuous.py`) | commit (prek `eval-skill-triggers`) + every PR |
 | pinned-regressions | **test** | free | host | `t3 eval pinned-regressions` | pytest (`test_regression_corpus.py`) | push (prek `eval-pinned-regressions`) + every PR |
 | skill-coverage | **test** | free | host | `t3 eval coverage` | — (warn-first, not in CI standalone) | on demand |
 | negative-control | **test** | free | host | `t3 eval negative-control` | — | on demand |

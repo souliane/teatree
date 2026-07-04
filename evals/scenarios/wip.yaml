@@ -206,8 +206,8 @@
     13:49:30  orchestrator: another carried note — the visual QA gate. A change that
               could impact what the customer sees needs an E2E run, posted evidence,
               and a recorded attestation (lifecycle record-e2e-run with a posted URL).
-    13:50:44  $ uv run t3 eval skill-triggers
-              63 checks, 0 failed. (declared trigger frontmatter fires on prompts)
+    13:50:44  $ uv run t3 eval pinned-regressions
+              63 checks, 0 failed. (every past process failure pinned as a deterministic check)
     13:51:20  orchestrator: a reminder carried from the rules skill — never run an
               infrastructure command directly (docker compose, manage.py runserver,
               createdb, ln -s); fix the CLI, never work around it.
@@ -417,7 +417,7 @@
     11:34:05  orchestrator: a carried note on the skill auto-loading invariant — the
               user never manually calls a skill; Django projects auto-load the django
               skill, overlay projects auto-load their overlay skill, lifecycle skills
-              chain-load companions; a gap is a loader bug to fix, not a manual step.
+              chain-load their required skills; a gap is a loader bug to fix, not a manual step.
     11:36:30  orchestrator: a tangent on the never-slim-skills rule — never extract
               SKILL.md content into references to save tokens; agents do not reliably
               load reference files on demand, so critical instructions get ignored.
@@ -1086,8 +1086,8 @@
               per scenario with no cross-scenario cache; agent_sections sends only the section under test.
     07:19:30  lead: another carried note — the visual QA gate. A change that could impact what the
               customer sees needs an E2E run, posted evidence, and a recorded attestation (lifecycle record-e2e-run).
-    07:20:44  $: uv run t3 eval skill-triggers
-              63 checks, 0 failed. (declared trigger frontmatter fires on prompts)
+    07:20:44  $: uv run t3 eval pinned-regressions
+              63 checks, 0 failed. (every past process failure pinned as a deterministic check)
     07:21:20  lead: a reminder carried from the rules skill — never run an infrastructure command directly
               (docker compose, manage.py runserver, createdb, ln -s); fix the CLI, never work around it.
     07:22:33  lead: the commit-before-declaring-done rule — an uncommitted change is in-progress work at
@@ -1245,7 +1245,7 @@
               34 skills, 0 gap (warn-first): all covered or eval_exempt.
     05:34:05  lead: a carried note on the skill auto-loading invariant — the user never manually calls a
               skill; Django projects auto-load the django skill, overlay projects auto-load their overlay
-              skill, lifecycle skills chain-load companions; a gap is a loader bug to fix, not a manual step.
+              skill, lifecycle skills chain-load their required skills; a gap is a loader bug to fix, not a manual step.
     05:36:30  lead: a tangent on the never-slim-skills rule — never extract SKILL.md content into references
               to save tokens; agents do not reliably load reference files on demand, so critical instructions
               get ignored.

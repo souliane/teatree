@@ -7,23 +7,6 @@ requires:
 metadata:
   version: 0.0.1
   subagent_safe: false
-triggers:
-  priority: 85
-  keywords:
-    - '\b(dogfood|dogfooding)\b'
-    - '\b(cli change|loop change|statusline change|scanner change|manage\.py change)\b'
-    - '\b(bug hunt|self[- ]qa|hunt bugs)\b'
-search_hints:
-  - dogfood
-  - dogfooding
-  - cli change
-  - loop change
-  - statusline change
-  - scanner change
-  - validation checklist
-  - bug hunt
-  - self qa
-  - hunt bugs
 ---
 
 # TeaTree — Dogfooding (CLI / Loop / Statusline)

@@ -4,20 +4,6 @@ description: TeaTree agent lifecycle platform — core architecture, lifecycle p
 eval_exempt: architecture/CLI reference for working on teatree itself; behavioural invariants live in the rules skill and the regression corpus, not in this overview
 metadata:
   version: 0.0.1
-triggers:
-  priority: 90
-  keywords:
-    - '\b(teatree|t3)\b'
-    - '\b(overlay|provision|headless)\b'
-  exclude: '\b(t3:code|t3:test|t3:ship|t3:debug|t3:review|batch mode|bug hunt|dogfood|backlog)\b'
-search_hints:
-  - teatree
-  - lifecycle
-  - overlay
-  - provision
-  - headless
-  - skill loading
-  - agent workflow
 ---
 
 # TeaTree — Agent Lifecycle Platform
@@ -89,9 +75,9 @@ Overlays subclass `OverlayBase` and override methods:
 
 ## Skill Loading
 
-TeaTree's UserPromptSubmit hook detects intent from user prompts using `triggers:` patterns in skill frontmatter. The hook suggests loading the matching skill. A PreToolUse hook blocks Bash/Edit/Write until suggested skills are loaded.
+Skill loading is fully explicit — there is no free-text scan of the prompt. Skills load via slash commands (`/t3:code`), phase mapping (`t3 agent --phase coding`), ticket status, the transitive `requires:` dependency chain, and cwd/overlay context. TeaTree's UserPromptSubmit hook surfaces only the skills a prompt's cwd/overlay context implies — framework skills (`ac-django`/`ac-python`), the active overlay's own skill, and its `companion_skills`. A PreToolUse hook blocks Python code edits until those load.
 
-The `SkillLoadingPolicy` class resolves which skills to load based on intent, overlay, and current phase. For headless tasks, `search_hints` in frontmatter provide keyword matching.
+The `SkillLoadingPolicy` class resolves which skills to load from an explicit phase / ticket-status / cwd-overlay context and expands each root's `requires:` chain transitively.
 
 **Engagement is default-OFF ([#256](https://github.com/souliane/teatree/issues/256)).** Installing the plugin does NOT force teatree onto every session. A fresh session is *not engaged*: the UserPromptSubmit suggester (and the T3 CLI reminder) is suppressed, `<session>.pending` stays empty so the PreToolUse gate never blocks, and SessionStart shows a one-line how-to advisory instead of arming the loop. A session engages teatree when any of: the owner set `[teatree] autoload = true` (or `T3_AUTOLOAD=1`); a teatree-requiring skill loaded (the `<session>.teatree-active` marker); or **any** `t3:` skill loaded (the `<session>.t3-engaged` marker, set by `handle_track_skill_usage`). The cold-hook seam is `hook_router._teatree_engaged` = `_autoload_enabled() OR _teatree_active() OR <session>.t3-engaged`. Note the two markers differ: `.t3-engaged` engages only the suggester, while loop scheduling still gates exclusively on `.teatree-active` (so a plain lifecycle skill never arms loops). Explicitly running `/teatree` engages the session for the next prompt.
 

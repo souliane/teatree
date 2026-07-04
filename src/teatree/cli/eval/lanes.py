@@ -18,25 +18,7 @@ from teatree.eval.coverage import skill_eval_coverage
 from teatree.eval.regression_corpus import render_json as render_regression_json
 from teatree.eval.regression_corpus import render_text as render_regression_text
 from teatree.eval.regression_corpus import run_regression_corpus
-from teatree.eval.trigger_qa import render_json as render_trigger_json
-from teatree.eval.trigger_qa import render_text as render_trigger_text
-from teatree.eval.trigger_qa import run_trigger_qa
 from teatree.utils.django_bootstrap import ensure_django
-
-
-def skill_triggers(
-    output_format: str = typer.Option("text", "--format", help="Report format: text or json."),
-) -> None:
-    """Validate every skill's trigger keywords against the must-fire/must-not-fire corpus.
-
-    Deterministic and free — no ``claude -p`` invocation. An under-trigger
-    (in-scope prompt that does not fire) or over-trigger (control prompt that
-    does fire) exits non-zero.
-    """
-    report = run_trigger_qa()
-    typer.echo(render_trigger_json(report) if output_format == "json" else render_trigger_text(report))
-    if not report.ok:
-        sys.exit(1)
 
 
 def coverage(

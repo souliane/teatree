@@ -5,7 +5,6 @@ compatibility: macOS/Linux, git, glab or gh CLI, CI system.
 requires:
   - workspace
   - rules
-companions:
   - finishing-a-development-branch
 metadata:
   version: 0.0.1
@@ -21,7 +20,7 @@ This skill delegates the generic branch-finalization doctrine to:
 - `finishing-a-development-branch` — decide how to wrap up a ready branch
 - `verification-before-completion` — fresh verification before claiming the branch is ready
 
-Optional [obra/superpowers](https://github.com/obra/superpowers) companions provide generic methodology. TeaTree keeps the project-specific workflow locally.
+Optional [obra/superpowers](https://github.com/obra/superpowers) skills provide generic methodology. TeaTree keeps the project-specific workflow locally.
 
 From "code is done" to "PR is merged."
 

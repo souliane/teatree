@@ -104,12 +104,14 @@ class TestSupplementaryDemotedToAdvisory:
         assert "ac-adopting-ruff" in result["suggestions"]
         assert "ac-adopting-ruff" in result["advisory"]
 
-    def test_intent_skill_is_not_advisory(self, fixtures: tuple[Path, Path]) -> None:
-        # The lifecycle intent skill (``code``) is a hard demand, never advisory.
+    def test_framework_skill_is_not_advisory(self, fixtures: tuple[Path, Path]) -> None:
+        # A cwd-detected framework skill (``ac-django``) is a hard demand, never
+        # advisory — only supplementary-config skills are demoted.
         skills_dir, config = fixtures
+        (skills_dir.parent / "manage.py").touch()
         result = _run("fix the failing test and run ruff check", skills_dir, config)
-        assert "code" in result["suggestions"]
-        assert "code" not in result["advisory"]
+        assert "ac-django" in result["suggestions"]
+        assert "ac-django" not in result["advisory"]
 
 
 class TestPendingExcludesAdvisory:

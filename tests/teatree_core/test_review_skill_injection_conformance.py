@@ -20,8 +20,6 @@ They also assert the two backstops the fix threads through:
 *   ``OverlayConfig.get_lifecycle_companion_skills(lifecycle)`` generalizes that
     to every lifecycle (``review`` keeps the richer set; others get the standing
     companions).
-*   ``subagent_skill_gate.required_skills_for_task`` for a review task unions in
-    the active overlay's review companions.
 *   Back-compat: ``code-review`` (the #1135 default ``pr_review_companion``)
     is still present when no overlay override is declared.
 """
@@ -196,56 +194,3 @@ class TestReviewingContextEmbedsOverlayReviewSkillInFull(TestCase):
                 lifecycle_skill="code",
             )
         assert _SENTINEL not in context
-
-
-class TestRequiredSkillsForTaskUnionsOverlayLifecycleCompanions:
-    """``required_skills_for_task`` unions the overlay's lifecycle companions.
-
-    Generalizes the former review-only union: a ``review`` task pulls in the
-    overlay's review companions; a ``debug`` task pulls in the overlay's
-    non-review companions but NOT the review-only ones. The companion-resolution
-    closure runs against a real fixture skills tree so the union is the
-    production resolver's, not a hand-rolled list.
-    """
-
-    @pytest.fixture
-    def gate_skills(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-        sd = tmp_path / "skills"
-        _seed_skill(sd, "review", body="# review")
-        _seed_skill(sd, "debug", body="# debug")
-        _seed_skill(sd, _COMPANION_NAME, body=_SENTINEL)
-        _seed_skill(sd, "code-review", body="# code-review")
-        monkeypatch.setenv("T3_SKILL_SEARCH_DIRS", str(sd))
-        return sd
-
-    @staticmethod
-    def _overlay(*, review: list[str], non_review: list[str]) -> MagicMock:
-        overlay = MagicMock()
-        overlay.config.get_lifecycle_companion_skills.side_effect = lambda lifecycle: (
-            review if lifecycle == "review" else non_review
-        )
-        return overlay
-
-    def test_review_task_includes_overlay_review_companion(self, gate_skills: Path) -> None:
-        from subagent_skill_gate import required_skills_for_task  # noqa: PLC0415
-
-        overlay = self._overlay(review=[_COMPANION_NAME], non_review=[])
-        with patch("teatree.core.overlay_loader.get_overlay", return_value=overlay):
-            required = required_skills_for_task("please review the open PR and leave feedback", [gate_skills])
-        assert _COMPANION_NAME in required
-
-    def test_back_compat_code_review_present_without_override(self, gate_skills: Path) -> None:
-        from subagent_skill_gate import required_skills_for_task  # noqa: PLC0415
-
-        overlay = self._overlay(review=["code-review"], non_review=[])
-        with patch("teatree.core.overlay_loader.get_overlay", return_value=overlay):
-            required = required_skills_for_task("please review the open PR and leave feedback", [gate_skills])
-        assert "code-review" in required
-
-    def test_non_review_task_does_not_union_review_only_companions(self, gate_skills: Path) -> None:
-        from subagent_skill_gate import required_skills_for_task  # noqa: PLC0415
-
-        overlay = self._overlay(review=[_COMPANION_NAME], non_review=[])
-        with patch("teatree.core.overlay_loader.get_overlay", return_value=overlay):
-            required = required_skills_for_task("fix the broken parser", [gate_skills])
-        assert _COMPANION_NAME not in required

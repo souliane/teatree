@@ -6,10 +6,6 @@ requires:
   - workspace
   - rules
   - platforms
-triggers:
-  priority: 90
-  keywords:
-    - '\b(scan(ning)? (the )?(ai )?news|ai newsletter scan|improvement scan|tldr scan|scan tldr|scan rundown)\b'
 metadata:
   version: 0.0.1
   subagent_safe: false

@@ -26,7 +26,7 @@ _LOOP_DESCRIPTIONS = {
     "snapshot_warmer": "Refreshes each overlay-declared reference DB's DSLR snapshot out-of-band once a day so a ticket-critical-path provision never pays the slow restore+migrate path.",
     "dispatch": "Runs the always-on global scanners every 5m: dispatches pending headless Tasks to phase sub-agents, ingests incoming events, redelivers undelivered notifies, and posts deferred questions.",
     "tickets": "Scans the local Ticket DB and each code host every 5m — surfacing active and stale tickets, dispositioning issues, and marking completed ones.",
-    "review": "Reviews colleague-authored open PRs every 5m and posts inline findings (with the PR-sweep, codex double-check and Slack-broadcast companions).",
+    "review": "Reviews colleague-authored open PRs every 5m and posts inline findings (with the PR-sweep, codex double-check and Slack-broadcast helpers).",
     "ship": "Sweeps your own-authored open PRs every 5m: folds in approvals/CI and executes the keystone merge of your PRs (consumes the orchestrator's MergeClear).",
     "pane_reaper": "Demotes idle Agent-Teams maker panes past the idle threshold every 5m; inert unless team mode is enabled.",
     "audit": "Verifies and posts per-overlay failed-E2E results to Slack (driven by overlay watchers) every 30m.",

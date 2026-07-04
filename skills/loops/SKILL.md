@@ -3,10 +3,6 @@ name: loops
 description: 'Show t3 loop status and trigger DB-configured loops — which loops are running vs stalled, the cadence/next-tick of each, loop ownership, and how to trigger a per-loop tick. Use when the user says "which loops are running", "loop status", "loops", "loop health", "is the loop ticking", "trigger a loop", "run the loops".'
 eval_exempt: thin `t3 loop list` / `t3 loops` CLI reference; the loop FSM + DB-table cadence behaviour is covered by tests/teatree_loops/ and the regression corpus, not by agent prose here
 compatibility: any
-triggers:
-  priority: 50
-  keywords:
-    - '\b(which loops are running|loop status|loops|loop health|is the loop ticking|trigger a loop|run the loops)\b'
 requires:
   - rules
 metadata:

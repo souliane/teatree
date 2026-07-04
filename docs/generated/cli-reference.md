@@ -330,7 +330,6 @@ Usage: t3 config [OPTIONS] COMMAND [ARGS]...
 │                    files.                                                    │
 │ cache              Show the XDG skill-metadata cache content.                │
 │ deps               Show resolved dependency chain for a skill.               │
-│ test-trigger       Test which skill would be triggered for a given prompt.   │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -410,21 +409,6 @@ Usage: t3 config deps [OPTIONS] SKILL
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    skill      TEXT  [required]                                             │
-╰──────────────────────────────────────────────────────────────────────────────╯
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-#### `t3 config test-trigger`
-
-```
-Usage: t3 config test-trigger [OPTIONS] PROMPT
-
- Test which skill would be triggered for a given prompt.
-
-╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    prompt      TEXT  [required]                                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -1456,8 +1440,6 @@ Usage: t3 eval [OPTIONS] COMMAND [ARGS]...
 │                         scenario's transcript path.                          │
 │ transcript-replay       Replay a real session transcript against teatree     │
 │                         behavioural invariants.                              │
-│ skill-triggers          Validate every skill's trigger keywords against the  │
-│                         must-fire/must-not-fire corpus.                      │
 │ coverage                Report per-skill behavioral-eval coverage: every     │
 │                         skill is covered or eval_exempt.                     │
 │ pinned-regressions      Run the deterministic regression corpus over the     │
@@ -1622,24 +1604,6 @@ Usage: t3 eval transcript-replay [OPTIONS]
 │ --format                    TEXT  Report format: text or json.               │
 │                                   [default: text]                            │
 │ --help                            Show this message and exit.                │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-#### `t3 eval skill-triggers`
-
-```
-Usage: t3 eval skill-triggers [OPTIONS]
-
- Validate every skill's trigger keywords against the must-fire/must-not-fire
- corpus.
-
- Deterministic and free — no ``claude -p`` invocation. An under-trigger
- (in-scope prompt that does not fire) or over-trigger (control prompt that
- does fire) exits non-zero.
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --format        TEXT  Report format: text or json. [default: text]           │
-│ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

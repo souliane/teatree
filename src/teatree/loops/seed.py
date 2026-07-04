@@ -137,7 +137,7 @@ DEFAULT_LOOPS: tuple[LoopSeedSpec, ...] = (
         "review",
         300,
         "Reviews colleague-authored open PRs every 5m and posts inline findings (with the "
-        "PR-sweep, codex double-check and Slack-broadcast companions).",
+        "PR-sweep, codex double-check and Slack-broadcast helpers).",
         colleague_facing=True,
     ),
     LoopSeedSpec(

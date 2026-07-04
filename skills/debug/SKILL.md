@@ -4,24 +4,7 @@ description: Troubleshooting and fixing — something is broken, find and fix it
 compatibility: macOS/Linux, any language/framework supported by the project.
 requires:
   - workspace
-companions:
   - systematic-debugging
-triggers:
-  priority: 50
-  keywords:
-    - '\b(broken|error|not working|crash|blank page|can.t connect|debug|fix this|won.t start|500|traceback|exception)\b'
-  urls:
-    - 'https?://[^\s]*sentry\.[^\s]+/issues/'
-search_hints:
-  - debug
-  - fix
-  - error
-  - broken
-  - crash
-  - not working
-  - bug
-  - trace
-  - troubleshoot
 metadata:
   version: 0.0.1
   subagent_safe: false
@@ -36,7 +19,7 @@ This skill delegates the generic debugging doctrine to:
 - `systematic-debugging` — root-cause-first investigation
 - `verification-before-completion` — evidence before claiming the fix worked
 
-Optional [obra/superpowers](https://github.com/obra/superpowers) companions provide generic methodology. TeaTree keeps the project-specific workflow locally.
+Optional [obra/superpowers](https://github.com/obra/superpowers) skills provide generic methodology. TeaTree keeps the project-specific workflow locally.
 
 Reactive mode — something is wrong, find and fix it.
 
