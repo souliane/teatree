@@ -545,6 +545,44 @@ class TestCodingPhaseDispatchContract(TestCase):
         assert "BEHAVIOR PRESERVATION" not in prompt
         assert "REQUIRED: before writing code" not in prompt
 
+    def test_coding_prompt_has_no_head_state_block_without_a_worktree(self) -> None:
+        # Byte-identical to pre-PR-12 when the ticket has no materialised branch.
+        prompt = build_task_prompt(self._coding_task())
+        assert "DISPATCH PREFLIGHT" not in prompt
+
+
+class TestCodingPhaseHeadStateInjection(TestCase):
+    """PR-12: a maker brief carries the worktree HEAD state so it builds on it."""
+
+    def _coding_task_with_commit(self, tmp: Path) -> Task:
+        from teatree.core.models import Worktree  # noqa: PLC0415
+        from tests._git_repo import make_git_repo, run_git  # noqa: PLC0415
+
+        make_git_repo(tmp, default_branch="feat-x")
+        (tmp / "f.txt").write_text("x\n")
+        run_git(tmp, "add", "f.txt")
+        run_git(tmp, "commit", "-q", "-m", "feat: prior partial work")
+        ticket = Ticket.objects.create()
+        Worktree.objects.create(ticket=ticket, repo_path=str(tmp), branch="feat-x", extra={"worktree_path": str(tmp)})
+        session = Session.objects.create(ticket=ticket)
+        return Task.objects.create(ticket=ticket, session=session, phase="coding")
+
+    def test_task_prompt_injects_head_state_block(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            prompt = build_task_prompt(self._coding_task_with_commit(Path(tmp)))
+        assert "DISPATCH PREFLIGHT" in prompt
+        assert "feat: prior partial work" in prompt
+
+    def test_system_context_injects_head_state_block(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ctx = build_system_context(
+                self._coding_task_with_commit(Path(tmp)),
+                skills=["code", "rules"],
+                lifecycle_skill="code",
+            )
+        assert "DISPATCH PREFLIGHT" in ctx
+        assert "feat: prior partial work" in ctx
+
     def test_system_context_coding_phase_embeds_directive(self) -> None:
         ticket = Ticket.objects.create()
         session = Session.objects.create(ticket=ticket)

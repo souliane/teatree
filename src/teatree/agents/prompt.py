@@ -3,6 +3,7 @@
 import json
 from typing import cast
 
+from teatree.agents.dispatch_preflight import head_state_brief_lines
 from teatree.agents.skill_injection import (
     _ALWAYS_FULL_SKILLS,
     _explicit_load_name,
@@ -193,7 +194,7 @@ def build_task_prompt(task: Task, *, skills: list[str] | None = None) -> str:
     )
 
     if task.phase == "coding":
-        lines.extend(("", "PHASE: coding", *_coding_phase_directive(skills)))
+        lines.extend(("", "PHASE: coding", *head_state_brief_lines(task), *_coding_phase_directive(skills)))
 
     return "\n".join(lines)
 
@@ -357,7 +358,12 @@ def _phase_specific_lines(task: Task, skills: list[str]) -> tuple[str, ...]:
     block — they are mutually exclusive on ``task.phase``.
     """
     if task.phase == "coding":
-        return ("", "PHASE: coding — builder dispatch contract", *_coding_phase_directive(skills))
+        return (
+            "",
+            "PHASE: coding — builder dispatch contract",
+            *head_state_brief_lines(task),
+            *_coding_phase_directive(skills),
+        )
     if task.phase == "planning":
         return _planning_phase_lines(task)
     if task.phase == "reviewing":
