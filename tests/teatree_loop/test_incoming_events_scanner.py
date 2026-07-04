@@ -554,5 +554,11 @@ class TestIncomingEventsScannerReliability(TestCase):
         for _ in range(MAX_INGEST_ATTEMPTS):
             event.record_failure("boom", now=None)
 
-        with patch.object(IncomingEventsScanner, "_handle", side_effect=AssertionError("must not re-drain")):
-            IncomingEventsScanner().scan()  # a dead-lettered event must never reach _handle again
+        # A plain Mock, not a raising side_effect: scan()'s per-event `except
+        # Exception` would swallow an AssertionError and pass vacuously. The
+        # recorded call survives that swallow, so assert_not_called() is the
+        # real guard on the `unprocessed()` dead-letter exclusion.
+        with patch.object(IncomingEventsScanner, "_handle") as handle:
+            IncomingEventsScanner().scan()
+
+        handle.assert_not_called()
