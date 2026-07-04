@@ -92,7 +92,7 @@ _TACH = _REPO_ROOT / "tach.toml"
 # vetoes close()). This rides the SAME `step_runner`->`provision_timebox`
 # cycle-forced deferral its sibling `_timeboxed_subprocess_callable_step` already
 # uses for `run_timeboxed_callable`; not a new severable edge.
-_FROZEN_INTRA_CORE_DEFERRED = 185
+_FROZEN_INTRA_CORE_DEFERRED = 184
 
 
 def _function_scoped_intra_core_imports(source: Path) -> int:
