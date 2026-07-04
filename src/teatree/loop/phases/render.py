@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 from teatree.config import get_effective_settings
 from teatree.loop.domain_jobs import _identity_groups_for_overlay
 from teatree.loop.job_identity import _ScannerJob
+from teatree.loop.manual_pr_reconcile import reconcile_manual_prs
 from teatree.loop.phases.orchestrate import orchestrate_phase
 from teatree.loop.rendering import zones_for
 from teatree.loop.statusline import StatuslineZones, render
@@ -191,12 +192,10 @@ def _reconcile_manual_prs(signals: "list[ScanSignal]") -> None:
     Reuses the ``my_pr.*`` signals the scanners already produced — no extra
     code-host call — so a manual MR opened outside the ship pipeline gains a
     linked row that review-request tracking and the FSM then treat like any
-    other. Fails open: any import/DB error degrades to a no-op so a bad row can
-    never abort the tick.
+    other. Fails open: any DB error degrades to a no-op so a bad row can never
+    abort the tick.
     """
     try:
-        from teatree.loop.manual_pr_reconcile import reconcile_manual_prs  # noqa: PLC0415
-
         reconcile_manual_prs(signals)
     except Exception:  # noqa: BLE001
         return
