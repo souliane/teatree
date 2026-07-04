@@ -68,6 +68,7 @@ graph TD
     teatree.core.models --> teatree.core.managers
     teatree.core.models --> teatree.core.models.errors
     teatree.core.models --> teatree.core.repair_loop
+    teatree.core.models --> teatree.verification
     teatree.mcp --> teatree.core.models
     teatree.agents --> teatree.types
     teatree.agents --> teatree.core
@@ -326,6 +327,7 @@ graph TD
     teatree.paths
     teatree.types
     teatree.pricing
+    teatree.verification
     teatree.templates
     teatree.claude_sessions
     teatree.overlay_init

@@ -12,43 +12,44 @@ Enforcement (§17.6.5 WARN-not-hardfail): a BLOCK finding refuses the commit; a
 WARN finding (possible test vacuity — a fuzzy heuristic) prints advisory-only
 and never fails. Never-lockout: the ``ALLOW_GATE_RELAX=<reason>`` env marker
 (a non-empty reason, mirroring ``ALLOW_BANNED_TERM=1``) records a sanctioned
-relaxation and lets the commit through, and the ``[teatree]
-gate_relaxation_gate_enabled = false`` kill-switch in ``~/.teatree.toml``
-disables the gate entirely. Any internal error FAILS OPEN — a gate bug must
-never wedge a commit.
+relaxation and lets the commit through, and the ``gate_relaxation_gate_enabled``
+kill-switch disables the gate entirely — resolved DB-first through
+``get_effective_settings`` (the canonical resolver every sibling gate uses), so a
+DB ``config_setting set gate_relaxation_gate_enabled false`` actuates the hook,
+not only a raw ``~/.teatree.toml`` edit. The diff scan is the fast Django-free
+pre-check: only a finding worth acting on pays the Django bootstrap for the
+kill-switch read. Any internal error FAILS OPEN — a gate bug must never wedge a
+commit.
 """
 
 import os
 import subprocess
 import sys
-import tomllib
-from pathlib import Path
 
 # Importable because prek runs this as ``uv run python`` with teatree installed;
 # the scan engine is pure and lives in the teatree package (single source of
 # truth shared with ``t3 tool gate-relaxation``).
 from teatree.quality.gate_relaxation import BLOCK, WARN, scan_relaxation
 
-_KILL_SWITCH = "gate_relaxation_gate_enabled"
 _ALLOW_ENV = "ALLOW_GATE_RELAX"
 
 
 def _gate_enabled() -> bool:
-    """Read the ``[teatree] gate_relaxation_gate_enabled`` kill-switch (default on).
+    """Resolve ``gate_relaxation_gate_enabled`` via the canonical DB-first resolver.
 
-    A missing/unreadable config or a non-``false`` value leaves the gate ENABLED
-    — only an explicit bare ``false`` disables it, mirroring the other §17.6 gate
-    kill-switches.
+    Reads the kill-switch through ``get_effective_settings`` — the same DB-home
+    resolver every sibling gate consults (see ``check_snapshot_baseline``) — so a
+    DB ``config_setting set gate_relaxation_gate_enabled false`` actuates the hook,
+    not only a raw ``~/.teatree.toml`` edit. Requires Django, so the caller reads
+    it only once the diff scan has surfaced a finding worth acting on; the DB read
+    fails safe to the dataclass default (ENABLED) when Django/the DB is
+    unavailable, so only an explicit ``false`` disables the gate.
     """
-    config = Path("~/.teatree.toml").expanduser()
-    if not config.is_file():
-        return True
-    try:
-        raw = tomllib.loads(config.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return True
-    teatree = raw.get("teatree", {}) if isinstance(raw, dict) else {}
-    return teatree.get(_KILL_SWITCH, True) is not False if isinstance(teatree, dict) else True
+    from teatree.config import get_effective_settings
+    from teatree.utils.django_bootstrap import ensure_django
+
+    ensure_django()
+    return bool(get_effective_settings().gate_relaxation_gate_enabled)
 
 
 def _staged_diff() -> str:
@@ -63,6 +64,10 @@ def _staged_diff() -> str:
 
 def _scan_and_decide(diff: str) -> int:
     findings = scan_relaxation(diff)
+    if not findings:
+        return 0
+    if not _gate_enabled():
+        return 0
     for finding in (f for f in findings if f.severity == WARN):
         print(f"WARN: {finding.path}: {finding.message}", file=sys.stderr)
     blocking = [f for f in findings if f.severity == BLOCK]
@@ -86,8 +91,6 @@ def _scan_and_decide(diff: str) -> int:
 
 
 def main() -> int:
-    if not _gate_enabled():
-        return 0
     diff = _staged_diff()
     if not diff.strip():
         return 0

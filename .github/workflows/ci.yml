@@ -9,15 +9,28 @@
 #             saying "advisory" to identify advisory jobs.
 #
 # LOAD-BEARING NAMES (do NOT rename without a coordinated change)
-#   `test (3.13)` — The check context produced by the `test` job
-#       matrix entry with python-version="3.13".  Branch protection
-#       lists this string by name.  The `test-shim` job deliberately
-#       reproduces the same context on docs-only PRs (see below).
+#   `test (3.13)` — The REQUIRED check context. Produced by the `test`
+#       COMBINER job (matrix python-version="3.13"), which aggregates the
+#       4-way `test-shard` matrix: it fails if any shard failed, asserts the
+#       shards partition the suite exactly once
+#       (scripts/ci/check_shard_completeness.py), then combines their coverage
+#       and enforces the 93% branch floor ONCE over the whole tree. The job KEY
+#       and matrix are unchanged, so the emitted context stays byte-for-byte
+#       `test (3.13)`; branch protection lists this string by name. The
+#       `test-shim` job reproduces the same context on docs-only PRs (see below).
 #       Hardcoded as REQUIRED_CHECK_NAME in
-#       src/teatree/loop/scanners/pr_sweep.py.
+#       src/teatree/loop/scanners/pr_sweep_types.py.
 #   `uv-audit`  — The job key used as UV_AUDIT_CHECK_NAME in
-#       src/teatree/loop/scanners/pr_sweep.py for the PR-sweep
+#       src/teatree/loop/scanners/pr_sweep_types.py for the PR-sweep
 #       scanner's fallback escape hatch.  Rename breaks the scanner.
+#
+# CONCURRENCY — supersede-cancel on PRs, never on main
+#   A re-push to a PR cancels its own superseded in-progress wave
+#   (group `ci-pr-<number>`, cancel-in-progress) instead of stacking a new
+#   one behind it. push-to-main and the schedule get a UNIQUE never-cancelled
+#   group (`ci-<run_id>`) so the full-tree banned-terms / overlay-leak
+#   backstops always run to completion — a superseding event must never kill
+#   a main-branch tree scan mid-run.
 #
 # THE `preflight` JOB — diff-scoped lane classifier
 #   Reads the PR's file diff and exports two booleans:
@@ -46,7 +59,9 @@
 #                              comment-density-warning, docs-drift
 #   4. Signal & ratchet      — test-shape (advisory),
 #                              test-path-mirror (ratchet gate)
-#   5. Test suite            — test, test-shim
+#   5. Test suite            — test-shard (4-way coverage matrix),
+#                              test (combiner = required `test (3.13)`),
+#                              test-shim
 #   6. Architecture / quality fitness gates — mutation-diff, mutation-full,
 #                              banned-terms-tree, overlay-leak-tree
 #                              (the two tree gates run on push, schedule AND PR
@@ -74,6 +89,14 @@ on:
     # cannot see a brand name already committed; this catches a pre-existing
     # leak even when no new diff touches it.
     - cron: "17 6 * * *"
+
+# Supersede-cancel a PR's own in-progress wave on re-push; NEVER cancel a
+# push-to-main or scheduled run (unique run_id group) so the full-tree
+# banned-terms / overlay-leak backstops always finish. See the CONCURRENCY
+# note in the legend above.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
 
@@ -439,12 +462,16 @@ jobs:
 
   # ── 5. Test suite ──────────────────────────────────────────────────────────
 
-  # GATE (heavy lane): full pytest suite in Docker + per-module coverage floors.
-  # Skipped ONLY on a provably pure-docs PR diff (preflight run_heavy_python=false);
-  # always runs on push-to-main, schedule, and any non-pure-docs PR.
-  # LOAD-BEARING: the job key + matrix produce the `test (3.13)` check context
-  # that branch protection requires — do NOT rename without updating protection.
-  test:
+  # GATE (heavy lane): one of the 4 coverage SHARDS. Each shard runs a
+  # duration-balanced quarter of the suite (pytest-split `--splits 4 --group N`)
+  # in Docker WITH `--cov --cov-branch --doctest-modules` but NO floor and NO
+  # report — partial coverage data must never be floor-judged. The `test`
+  # combiner below aggregates all four and enforces the 93% floor once over the
+  # combined data. Skipped ONLY on a provably pure-docs PR diff
+  # (run_heavy_python=false); always runs on push-to-main, schedule, and any
+  # non-pure-docs PR — same heavy-lane gating as the old monolithic `test` job.
+  # NOT a required context: `test-shard (3.13, N)` is aggregated by the combiner.
+  test-shard:
     # Heavy lane. Skipped ONLY on a provably pure-docs/markdown PR diff
     # (preflight ``run_heavy_python=false``). On push-to-main and on the
     # schedule (no PR diff to classify) and on any non-pure-docs PR it
@@ -454,11 +481,13 @@ jobs:
       always() &&
       (github.event_name != 'pull_request' ||
       needs.preflight.outputs.run_heavy_python == 'true')
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.13"]
+        group: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
       - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4
@@ -470,28 +499,108 @@ jobs:
           tags: teatree-test-${{ matrix.python-version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      # Coverage lane: the lean global ``addopts`` (pyproject.toml) is fast and
-      # parallel but carries NO ``--cov*``/``--doctest-modules``, so this gate
-      # adds them explicitly. ``-n auto`` keeps the heavy run parallel;
-      # pytest-cov combines the per-worker ``.coverage.*`` files at the end and
-      # computes the floor over the whole suite. ``--doctest-modules`` keeps
-      # doctest coverage contributing so the 93% floor stays honest.
-      # ``--cov-fail-under=93`` is also configured in ``[tool.coverage.report]
-      # fail_under``; passing it on the CLI makes the gate explicit at the
-      # invocation site so a future ``pyproject.toml`` edit can't silently
-      # disarm CI. Both must agree — ``tests/test_coverage_floor_guard.py``
-      # locks the floor value.
-      - run: >
+      # Shard N/4: pytest-split slices collection by `dev/.test_durations`;
+      # `-n auto` parallelises WITHIN the shard. `--cov --cov-branch --doctest-modules`
+      # measure exactly what the old monolithic lane did, but `--cov-report=`
+      # (empty) suppresses any report and `--cov-fail-under=0` NEUTRALISES the
+      # `[tool.coverage.report] fail_under=93` config floor — a shard measures
+      # only a QUARTER of the tree, so floor-judging its partial data would fail
+      # every shard; the combiner owns the real floor over the combined data.
+      # The `shard_stats_plugin` records the collected-vs-selected counts so the
+      # combiner can prove the shards partition the suite exactly once
+      # (`--group shard` installs pytest-split; PYTHONPATH=/app makes the
+      # `-p scripts.ci.shard_stats_plugin` import resolve at plugin-load time).
+      - name: Test shard ${{ matrix.group }}/4 (coverage, no floor — partial data)
+        run: >
+          docker run --rm
+          -v "$PWD":/app
+          -e UV_PROJECT_ENVIRONMENT=/tmp/.venv
+          -e COVERAGE_FILE=/app/coverage.shard${{ matrix.group }}
+          -e PYTHONPATH=/app
+          teatree-test-${{ matrix.python-version }}
+          uv run --group shard -p ${{ matrix.python-version }} pytest --no-header -q -n auto
+          -o cache_dir=/tmp/.pytest_cache
+          --doctest-modules --cov --cov-branch --cov-report= --cov-fail-under=0
+          --splits 4 --group ${{ matrix.group }} --durations-path dev/.test_durations
+          -p scripts.ci.shard_stats_plugin
+          --shard-stats-out=/app/shard-stats.${{ matrix.group }}.json
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        if: always()
+        with:
+          name: shard-artifacts-${{ matrix.group }}
+          path: |
+            coverage.shard${{ matrix.group }}
+            shard-stats.${{ matrix.group }}.json
+
+  # GATE (heavy lane): the COMBINER. Its job key + matrix produce the EXACT
+  # required `test (3.13)` check context (unchanged from the old monolithic job).
+  # It (1) fails if ANY shard failed, (2) asserts the shards partition the suite
+  # exactly once (no dropped/duplicated tests), then (3) combines the four
+  # shards' coverage and enforces the 93% branch floor + per-module floors ONCE
+  # over the whole tree — identical floor semantics to the old single-process
+  # lane, just computed over combined shards.
+  # LOAD-BEARING: the job key `test` + matrix python-version "3.13" produce
+  # `test (3.13)` — do NOT rename without updating branch protection.
+  test:
+    needs: [preflight, test-shard]
+    if: >
+      always() &&
+      (github.event_name != 'pull_request' ||
+      needs.preflight.outputs.run_heavy_python == 'true')
+    timeout-minutes: 12
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.13"]
+    steps:
+      # A FAILED shard (real test failure) must red the required context. The
+      # shards only ran a QUARTER of the suite each, so a green combiner without
+      # this guard could pass on combined coverage while a test failed in a shard.
+      - name: Require every test shard to have passed
+        run: |
+          result='${{ needs.test-shard.result }}'
+          if [ "$result" != "success" ]; then
+            echo "::error::test-shard result was '$result' — the required test (${{ matrix.python-version }}) gate fails."
+            exit 1
+          fi
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4
+      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7
+        with:
+          context: .
+          file: dev/Dockerfile.test
+          load: true
+          tags: teatree-test-${{ matrix.python-version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          pattern: shard-artifacts-*
+          merge-multiple: true
+      # Anti-vacuity: prove every test ran in exactly one shard BEFORE trusting
+      # the combined coverage number. A silently-dropped shard (sum<total) or a
+      # duplicated group (sum>total) fails LOUD here, not by riding a green floor.
+      - name: Assert the shards partition the suite exactly once
+        run: >
+          docker run --rm
+          -v "$PWD":/app
+          -e UV_PROJECT_ENVIRONMENT=/tmp/.venv
+          teatree-test-${{ matrix.python-version }}
+          uv run -p ${{ matrix.python-version }} python scripts/ci/check_shard_completeness.py
+          shard-stats.1.json shard-stats.2.json shard-stats.3.json shard-stats.4.json
+      # Combine the four shards' data and enforce the whole-tree 93% branch floor
+      # ONCE — same data, same floor as the old single-process lane. `coverage
+      # report --fail-under=93` is the explicit invocation-site floor
+      # (tests/test_coverage_floor_guard.py locks it here + in dev/test-cov.sh).
+      - name: Combine shard coverage and enforce the 93% floor
+        run: >
           docker run --rm
           -v "$PWD":/app
           -e UV_PROJECT_ENVIRONMENT=/tmp/.venv
           -e COVERAGE_FILE=/app/.coverage
           teatree-test-${{ matrix.python-version }}
-          uv run -p ${{ matrix.python-version }} pytest --no-header -q -n auto
-          -o cache_dir=/tmp/.pytest_cache
-          --doctest-modules --cov --cov-branch
-          --cov-report=xml:/app/coverage.xml
-          --cov-fail-under=93
+          bash -c "uv run -p ${{ matrix.python-version }} coverage combine coverage.shard1 coverage.shard2 coverage.shard3 coverage.shard4 && uv run -p ${{ matrix.python-version }} coverage report --fail-under=93 && uv run -p ${{ matrix.python-version }} coverage xml -o coverage.xml"
       - name: Enforce per-module coverage floors
         run: >
           docker run --rm
@@ -507,21 +616,23 @@ jobs:
           path: coverage.xml
 
   # GATE (shim): emits the load-bearing `test (3.13)` required context on
-  # pure-docs PRs where the real `test` job is path-skipped; a no-op step
-  # only — never runs tests. Mutually exclusive with the `test` job above.
+  # pure-docs PRs where the `test` combiner (and its shards) are path-skipped;
+  # a no-op step only — never runs tests. Mutually exclusive with the `test`
+  # combiner above.
   test-shim:
     # Required-context shim for pure-docs PRs (souliane/teatree#1942).
-    # Branch protection requires the context `test (3.13)`. The heavy `test`
-    # lane is path-skipped on a provably pure-docs diff (preflight
-    # run_heavy_python == 'false'), so it NEVER reports that context — and a
-    # never-reported required context leaves the PR permanently pending /
-    # BLOCKED. This job reports a passing `test (3.13)` ONLY in that exact
-    # skip case, so a docs-only PR can merge without re-running the suite.
+    # Branch protection requires the context `test (3.13)`. The heavy lane
+    # (`test-shard` + the `test` combiner) is path-skipped on a provably
+    # pure-docs diff (preflight run_heavy_python == 'false'), so it NEVER
+    # reports that context — and a never-reported required context leaves the
+    # PR permanently pending / BLOCKED. This job reports a passing `test (3.13)`
+    # ONLY in that exact skip case, so a docs-only PR can merge without running
+    # the shards.
     #
     # It must never mask a real failure: it runs ONLY when the heavy lane was
     # path-skipped (run_heavy_python == 'false') AND only on pull_request
     # events. On push-to-main, on the schedule, and on any non-pure-docs PR
-    # the heavy `test` lane runs and owns the `test (3.13)` context; this
+    # the `test` combiner runs and owns the `test (3.13)` context; this
     # shim is skipped (its `if` is false), so the two can never both report.
     #
     # The `name: test` + matrix `python-version: ["3.13"]` makes the produced

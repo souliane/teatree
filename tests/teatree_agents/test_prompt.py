@@ -165,6 +165,17 @@ class TestBuildSystemContext(TestCase):
         assert "reproduce" in ctx
         assert "robustness" in ctx
 
+    def test_reviewing_brief_instructs_returning_the_verdict_envelope(self) -> None:
+        # corr-11: the reviewing phase has no shell, so the brief must tell the
+        # reviewer to RETURN a `review_verdict` and NOT run `t3 <overlay> review record`.
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+
+        ctx = build_system_context(task, skills=[])
+        assert "review_verdict" in ctx
+        assert "do NOT try `t3 <overlay> review record`" in ctx
+
     def test_coding_brief_carries_heartbeat_dm_block(self) -> None:
         # PR-12: a long-running maker brief auto-injects the heartbeat-DM cue.
         ticket = Ticket.objects.create()

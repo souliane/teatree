@@ -103,7 +103,9 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "review_skill": _parse_strict_str,
     "require_review_context": _parse_strict_bool,
     "e2e_mandatory_gate_enabled": _parse_strict_bool,
+    "attachment_gate_enabled": _parse_strict_bool,
     "snapshot_baseline_gate_enabled": _parse_strict_bool,
+    "gate_relaxation_gate_enabled": _parse_strict_bool,
     "chrome_devtools_mcp_enabled": _parse_strict_bool,
     "colleague_repo_url_pattern": _parse_strict_str,
     "solo_repo_url_pattern": _parse_strict_str,
@@ -919,6 +921,15 @@ class UserSettings:
     # entirely. The bypass is satisfiable per-tree only by the human user; a
     # maker/coding-agent/loop approver id is refused (maker≠checker).
     e2e_mandatory_gate_enabled: bool = True
+    # Pre-flight attachment-fetch gate (PR-15, M5). When enabled (default), the
+    # intake FSM step refuses to hand a ticket to the planner while any
+    # attachment the ticket references (a GitLab upload, a linked Notion file, a
+    # Slack-thread file) is still un-fetched under `<ticket_dir>/.attachments/`.
+    # Its OWN kill-switch — `[teatree] attachment_gate_enabled = false`
+    # (per-overlay overridable, DB-first) — lifts the hold so a stuck ticket is
+    # never a lockout; the operator otherwise clears it with
+    # `t3 <overlay> ticket attachments <ref> --fetch`.
+    attachment_gate_enabled: bool = True
     # Snapshot-baseline pre-commit gate (§17.6). When enabled (default), a
     # commit that stages a Playwright visual baseline (a file under
     # `__snapshots__/` / `<spec>-snapshots/`) is refused unless the ticket
@@ -928,6 +939,14 @@ class UserSettings:
     # resolves it through `get_effective_settings`, so a DB `config_setting set`
     # actuates it exactly like the other gates.
     snapshot_baseline_gate_enabled: bool = True
+    # Anti-relaxation + tach-soundness pre-commit gate (§17.6.1/§17.6.2, #850).
+    # When enabled (default), the `gate-relaxation` prek hook
+    # (`scripts/hooks/check_gate_relaxation.py`) refuses a commit whose staged diff
+    # relaxes a lint/coverage constraint or a tach boundary. Its OWN kill-switch —
+    # `gate_relaxation_gate_enabled` (per-overlay overridable, DB-first) — disables
+    # the hook; the reader resolves it through `get_effective_settings`, so a DB
+    # `config_setting set` actuates it exactly like the sibling gates.
+    gate_relaxation_gate_enabled: bool = True
     # Optional browser-diagnosis MCP server. When true, `t3 mcp
     # browser-diagnosis` emits the `claude mcp add` command that registers
     # Google's chrome-devtools-mcp so an agent can inspect a deployed page's

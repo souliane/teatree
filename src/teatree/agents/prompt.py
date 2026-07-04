@@ -3,7 +3,7 @@
 import json
 from typing import cast
 
-from teatree.agents.dispatch_preflight import head_state_brief_lines
+from teatree.agents.dispatch_preflight import head_state_brief_lines, review_diff_brief_lines
 from teatree.agents.skill_injection import (
     _ALWAYS_FULL_SKILLS,
     _explicit_load_name,
@@ -66,6 +66,22 @@ _VERIFICATION_BRIEF_LINES: tuple[str, ...] = (
     "   before accepting it; a summary is not evidence, and a finding you cannot reproduce is not a finding.",
     "2. Grade against the six quality dimensions and record a per-dimension verdict:",
     "   correctness | robustness (failure modes) | maintainability | coherence | reliability | proactivity.",
+)
+
+# Injected into a headless reviewing brief (corr-11): the reviewing phase is
+# denied the shell (PR-11), so it CANNOT run `t3 <overlay> review record`. It returns the
+# verdict in the result envelope instead; the orchestrator records it server-
+# side (maker≠checker: a different actor writes the row).
+_REVIEW_VERDICT_RETURN_LINES: tuple[str, ...] = (
+    "",
+    "RECORD YOUR VERDICT BY RETURNING IT (this phase has no shell — do NOT try `t3 <overlay> review record`):",
+    "add a `review_verdict` object to your final JSON result. The orchestrator records the",
+    "ReviewVerdict server-side and releases the review lock:",
+    '  "review_verdict": {"verdict": "merge_safe"|"hold", "reviewed_sha": "<full 40-char HEAD SHA>",',
+    '                     "reviewer_identity": "<your reviewer id, NOT a maker/loop role>",',
+    '                     "gh_verify_result": "green"|"pending"|"failed",',
+    '                     "findings": [{"severity": "...", "summary": "...", "file": "...", "line": 0}]}',
+    "Use verdict=hold with the blocking findings when the change must not merge yet.",
 )
 
 # The coding directive force-loads these two by name in its first lines, and
@@ -340,6 +356,8 @@ def _reviewing_phase_lines(task: Task) -> tuple[str, ...]:
         "1. Do a thorough code review of all changes on this ticket's branch.",
         "2. Run /t3:next when done — it handles retro + structured result + handoff.",
         *_VERIFICATION_BRIEF_LINES,
+        *_REVIEW_VERDICT_RETURN_LINES,
+        *review_diff_brief_lines(task),
     ]
     if fanout := _phase_fanout_directive(task):
         lines.append(fanout)
