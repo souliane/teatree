@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING
 from django.db import transaction
 
 from teatree.core.models.merge_clear import is_commit_sha
+from teatree.core.models.review_verdict import HeadVerdictState, ReviewVerdict
 from teatree.utils.run import run_allowed_to_fail
 
 if TYPE_CHECKING:
@@ -119,8 +120,6 @@ def rebind_clearance_after_conflict_only_merge(
     and changes nothing — the SHA-bind gate keeps refusing the moved head, forcing
     a fresh review.
     """
-    from teatree.core.models.review_verdict import HeadVerdictState, ReviewVerdict  # noqa: PLC0415
-
     reviewed = str(getattr(clear, "reviewed_sha", "") or "").strip().lower()
     merge = merge_sha.strip().lower()
     if not is_commit_sha(reviewed) or not is_commit_sha(merge):
