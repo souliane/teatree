@@ -15,8 +15,11 @@ The two coexist — whichever fires first in the chain emits the deny.
 
 Cold-import safe: the live ``PreToolUse`` hook is a bare ``python3`` subprocess
 with no guarantee ``teatree`` is importable, so the module top imports only stdlib.
-The deny writer (``emit_pretooluse_deny``) and the kill-switch reader
-(``_teatree_bool_setting``) are back-imported lazily inside the handler.
+Because the gate sits on the broad ``mcp__*slack*`` matcher, its deny routes
+through the router's shared ``_fail_open_or_deny`` chokepoint (self-rescue
+allowlist + master ``danger_gate_fail_open`` switch — the never-lockout contract);
+that helper and the kill-switch reader (``_teatree_bool_setting``) are
+back-imported lazily inside the handler.
 """
 
 import re
@@ -94,9 +97,12 @@ def handle_block_mcp_slack_write(data: dict) -> bool:
 
     Fires on any ``mcp__*slack*`` tool whose suffix carries a write verb; a Slack
     READ tool passes through. Never-lockout: the ``[teatree]
-    mcp_slack_write_gate_enabled = false`` kill-switch disables it, and a
-    ``[slack-mcp-ok: <reason>]`` token in the tool input allows a single call.
-    Returns True when a deny was emitted (caller stops the handler chain).
+    mcp_slack_write_gate_enabled = false`` kill-switch disables it, a
+    ``[slack-mcp-ok: <reason>]`` token in the tool input allows a single call, and
+    the deny routes through the router's shared ``_fail_open_or_deny`` chokepoint
+    so the always-allowed self-rescue commands and the master ``[teatree]
+    danger_gate_fail_open`` kill-switch apply. Returns True when a deny was emitted
+    (caller stops the handler chain).
     """
     if not _gate_enabled():
         return False
@@ -105,6 +111,6 @@ def handle_block_mcp_slack_write(data: dict) -> bool:
     tool_input = data.get("tool_input", {}) or {}
     if isinstance(tool_input, dict) and _has_escape_token(tool_input):
         return False
-    from hook_router import emit_pretooluse_deny  # noqa: PLC0415
+    from hook_router import _fail_open_or_deny  # noqa: PLC0415, PLC2701
 
-    return emit_pretooluse_deny(_DENY_REASON)
+    return _fail_open_or_deny(data, _DENY_REASON)
