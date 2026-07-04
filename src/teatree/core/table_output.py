@@ -44,8 +44,10 @@ def print_table(
     console = Console(file=stream, width=_PIPE_WIDTH) if stream is not None else Console()
     if title:
         # A bold line above the frame — never ``Table(title=...)``, whose centred
-        # title wraps to the (often narrow) table width and mangles the text.
-        console.print(f"[bold]{title}[/]")
+        # title wraps to the (often narrow) table width and mangles the text. The
+        # title is a ``Text`` for the same reason the cells are: a plain string is
+        # parsed as console markup, so a title carrying ``[…]`` would be eaten.
+        console.print(Text(title, style="bold"))
     if not rows:
         console.print("[dim](no rows)[/dim]")
         return

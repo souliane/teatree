@@ -25,6 +25,12 @@ class TestPrintTable:
         out = _render(["A"], [["1"]], title="My Records")
         assert "My Records" in out
 
+    def test_title_with_brackets_rendered_literally(self) -> None:
+        # A title carrying ``[...]`` must survive verbatim — rich console markup
+        # would otherwise eat ``[priority]`` as a style tag (as the cells guard against).
+        out = _render(["A"], [["1"]], title="Loans [priority] queue")
+        assert "[priority]" in out
+
     def test_empty_rows_shows_no_rows(self) -> None:
         out = _render(["A", "B"], [])
         assert "(no rows)" in out
