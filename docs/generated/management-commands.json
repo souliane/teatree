@@ -734,6 +734,16 @@
       "subcommands": []
     },
     {
+      "help": "Session-lifecycle operations.",
+      "name": "session",
+      "subcommands": [
+        {
+          "help": "Refresh the durable recovery artifacts (idempotent, safe to re-run)",
+          "name": "prepare-stop"
+        }
+      ]
+    },
+    {
       "help": "Print the five factory signals over the trailing window vs its baseline.",
       "name": "signals",
       "subcommands": []

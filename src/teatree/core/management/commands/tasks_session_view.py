@@ -15,24 +15,20 @@ the harness half **dynamically from the live ``TaskList`` harness tool** — not
 from this CLI. Keeping the CLI's session view scoped to the teatree ``Task``
 rows means it can never masquerade as the live session todo list.
 
-``read_harness_todos`` remains here for the one **hook** consumer that
-genuinely cannot call the live ``TaskList`` tool — the PreCompact recovery
-snapshot (``hook_router._durable_session_snapshot``). It reads the harness's
-OWN on-disk store (``~/.claude/tasks/<session>/*.json``); that is a best-effort,
-point-in-time capture inside a hook subprocess, and a lagging disk read is the
-only option there and an acceptable one (a snapshot is a moment in time anyway).
-There is NO teatree-written mirror of the harness list (the old
-``<session>.todos`` materialiser was removed — it was a stale mistake-source
-that nothing load-bearing read). The reconciliation discipline that keeps the
-LIVE harness TODO list faithful belongs to the in-session agent, which applies
-``/t3:todos`` § "Harness-TODO maintenance" (and the ``tasks reconcile-checklist``
-emitter) with its own ``TaskList`` / ``TaskUpdate`` / ``TaskCreate`` tools. The
-fix is to keep the best-effort disk read OUT of the interactive ``/t3:todos``
-path, where the agent can and must read the live list.
+The best-effort on-disk harness-TODO reader that the recovery snapshots need
+lives in the domain-layer :mod:`teatree.core.harness_todos` (``read_harness_todos``),
+NOT here — a hook / domain consumer reaches it without a backwards layer edge
+through this interface-layer command. There is NO teatree-written mirror of the
+harness list (the old ``<session>.todos`` materialiser was removed — it was a
+stale mistake-source that nothing load-bearing read). The reconciliation
+discipline that keeps the LIVE harness TODO list faithful belongs to the
+in-session agent, which applies ``/t3:todos`` § "Harness-TODO maintenance" (and
+the ``tasks reconcile-checklist`` emitter) with its own ``TaskList`` /
+``TaskUpdate`` / ``TaskCreate`` tools. The fix is to keep the best-effort disk
+read OUT of the interactive ``/t3:todos`` path, where the agent must read the
+live list.
 """
 
-import os
-import pathlib
 from typing import IO, TypedDict
 
 from rich.console import Console
@@ -172,75 +168,6 @@ def render_reconcile_checklist(
         reason = row["execution_reason"] or "-"
         ticket_ref = render_ref(f"#{row['ticket_id']}", title=row["ticket_title"])
         console.print(f"  task TODO-{row['task_id']} (ticket {ticket_ref}{phase}): {reason}")
-
-
-# ── Harness TODO store reader — for the PreCompact snapshot only ─────────────
-#
-# Reads a best-effort, point-in-time disk snapshot of the harness's OWN TODO
-# store (``~/.claude/tasks/<session>/*.json`` — the harness writes it, teatree
-# does not). It exists for the PreCompact recovery snapshot, which runs inside a
-# hook subprocess and genuinely cannot call the live ``TaskList`` harness tool;
-# a lagging disk read is the only option there and an acceptable one (a snapshot
-# is a moment in time anyway). It is deliberately NOT used by the interactive
-# ``/t3:todos`` path — see this module's docstring.
-
-
-def _harness_tasks_dir() -> pathlib.Path:
-    """The harness TODO store root (``CLAUDE_TASKS_DIR`` env or ``~/.claude/tasks``).
-
-    Mirrors the resolution in ``hooks/scripts/hook_router._newest_task_agent_id`` —
-    the hooks module cannot be imported from ``teatree.core`` (module-boundary
-    graph), so the path is resolved here with stdlib only.
-    """
-    configured = os.environ.get("CLAUDE_TASKS_DIR")
-    if configured:
-        return pathlib.Path(configured)
-    return pathlib.Path.home() / ".claude" / "tasks"
-
-
-def _read_harness_todos_from_store(session_id: str) -> list[tuple[str, str]]:
-    """Read the harness TODO list for *session_id* from the harness task store.
-
-    The harness persists one ``<task-number>.json`` per harness TODO under
-    ``<tasks_dir>/<session_id>/`` with ``subject`` / ``status`` fields.
-    Best-effort: an absent dir or unreadable file yields an empty list.
-    """
-    import json  # noqa: PLC0415
-
-    session_dir = _harness_tasks_dir() / session_id
-    try:
-        files = sorted(session_dir.glob("*.json"), key=lambda p: (len(p.stem), p.stem))
-    except OSError:
-        return []
-    todos: list[tuple[str, str]] = []
-    for path in files:
-        try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if not isinstance(payload, dict):
-            continue
-        subject = str(payload.get("subject", "")).strip()
-        if not subject:
-            continue
-        status = str(payload.get("status", "pending")).strip() or "pending"
-        todos.append((status, subject))
-    return todos
-
-
-def read_harness_todos(session_id: str) -> list[tuple[str, str]]:
-    """Read the session's harness TODO list as ``(status, text)`` — PreCompact only.
-
-    A best-effort, point-in-time read of the harness's OWN on-disk TODO store
-    (``~/.claude/tasks/<session>/*.json``) for the PreCompact recovery snapshot.
-    Empty session id (no resolvable harness session) yields an empty list.
-
-    Do NOT use this for the interactive ``/t3:todos`` list — it lags the live
-    session. The agent builds that list from the live ``TaskList`` harness tool.
-    """
-    if not session_id:
-        return []
-    return _read_harness_todos_from_store(session_id)
 
 
 # A redirected/captured stream has no terminal width; rich then defaults to 80

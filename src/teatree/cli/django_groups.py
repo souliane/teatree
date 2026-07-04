@@ -208,6 +208,16 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         ],
         core_dispatch=True,
     ),
+    "session": DjangoGroup(
+        "Session-lifecycle operations.",
+        [
+            ("prepare-stop", "Refresh the durable recovery artifacts (TODO mirror, resume plan, at-risk worktrees)."),
+        ],
+        # ``prepare-stop`` reads the teatree-core control DB (open PRs, deferred
+        # questions) — dispatch via ``python -m teatree`` so a cwd inside a ticket
+        # worktree resolves core, not the worktree's per-worktree DB.
+        core_dispatch=True,
+    ),
     "lifecycle": DjangoGroup(
         "Session lifecycle and phase tracking.",
         [
