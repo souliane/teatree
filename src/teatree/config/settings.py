@@ -103,6 +103,8 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "review_skill": _parse_strict_str,
     "require_review_context": _parse_strict_bool,
     "e2e_mandatory_gate_enabled": _parse_strict_bool,
+    "snapshot_baseline_gate_enabled": _parse_strict_bool,
+    "chrome_devtools_mcp_enabled": _parse_strict_bool,
     "colleague_repo_url_pattern": _parse_strict_str,
     "solo_repo_url_pattern": _parse_strict_str,
     "require_anti_vacuity_attestation": _parse_strict_bool,
@@ -917,6 +919,23 @@ class UserSettings:
     # entirely. The bypass is satisfiable per-tree only by the human user; a
     # maker/coding-agent/loop approver id is refused (maker≠checker).
     e2e_mandatory_gate_enabled: bool = True
+    # Snapshot-baseline pre-commit gate (§17.6). When enabled (default), a
+    # commit that stages a Playwright visual baseline (a file under
+    # `__snapshots__/` / `<spec>-snapshots/`) is refused unless the ticket
+    # carries a green + POSTED `E2eMandatoryRun`. Its OWN kill-switch —
+    # `snapshot_baseline_gate_enabled` (per-overlay overridable, DB-first) —
+    # disables the hook; the reader (`scripts/hooks/check_snapshot_baseline.py`)
+    # resolves it through `get_effective_settings`, so a DB `config_setting set`
+    # actuates it exactly like the other gates.
+    snapshot_baseline_gate_enabled: bool = True
+    # Optional browser-diagnosis MCP server. When true, `t3 mcp
+    # browser-diagnosis` emits the `claude mcp add` command that registers
+    # Google's chrome-devtools-mcp so an agent can inspect a deployed page's
+    # network / console / DOM before proposing a root cause for browser-visible
+    # breakage. Default OFF — a heavy, optional third-party server the operator
+    # opts into; perf/trace *enforcement* stays in the deterministic Playwright
+    # lane, never this diagnostic server. Per-overlay overridable (DB-home).
+    chrome_devtools_mcp_enabled: bool = False
     colleague_repo_url_pattern: str = ""
     solo_repo_url_pattern: str = ""
     # Conventional-Commits title pattern enforced at ``pr create`` BEFORE the

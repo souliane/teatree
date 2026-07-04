@@ -7,6 +7,8 @@ bootstrapped here (the ORM-touching server import is deferred until after
 ``ensure_django``, the same shape as ``t3 cost``).
 """
 
+import os
+
 import typer
 
 from teatree.utils.django_bootstrap import ensure_django
@@ -26,3 +28,22 @@ def serve() -> None:
     from teatree.mcp.server import build_server  # noqa: PLC0415
 
     build_server().run("stdio")
+
+
+@mcp_app.command(name="browser-diagnosis")
+def browser_diagnosis() -> None:
+    """Report the optional chrome-devtools MCP registration (default off).
+
+    Prints whether the browser-diagnosis MCP server is enabled and, when it is,
+    the exact ``claude mcp add`` line that registers it — so an agent can inspect
+    a deployed page's network/console/DOM before proposing a root cause for
+    browser-visible breakage. No enforcement; a diagnostic aid only.
+    """
+    ensure_django()
+
+    from teatree.core.browser_diagnosis import (  # noqa: PLC0415 — deferred post-bootstrap: reads a Django setting
+        resolve_browser_diagnosis,
+    )
+
+    registration = resolve_browser_diagnosis(os.environ.get("T3_OVERLAY_NAME") or None)
+    typer.echo(registration.message)
