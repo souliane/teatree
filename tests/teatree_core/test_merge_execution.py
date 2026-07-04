@@ -294,6 +294,23 @@ class TestMergeKeystonePreconditions(TestCase):
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.IN_REVIEW
 
+    def test_sha_bind_precondition_runs_the_named_registry_gate(self) -> None:
+        # The named ``sha_bind`` gate (``merge.sha_bind.verify_sha_bound``) IS the
+        # enforcing code in the precondition path — not a dead registry entry beside
+        # an inline ``!=`` twin. Force the gate to report "not bound" while the live
+        # head equals the reviewed SHA: the merge is refused, so the gate's verdict —
+        # not a parallel copy — drives the SHA-bind check.
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _clear(ticket)
+        with (
+            patch("teatree.core.merge.execution.verify_sha_bound", return_value=False) as gate,
+            pytest.raises(MergePreconditionError, match="head moved"),
+        ):
+            _run(clear, _GhStub())  # head == reviewed_sha — the inline twin would PASS
+        gate.assert_called_once_with(cleared_sha=_SHA, live_sha=_SHA)
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.IN_REVIEW
+
     def test_expedite_flag_does_not_bypass_sha_bind(self) -> None:
         # PR-07: the expedite/release-blocker flag relaxes only the pre-CI push
         # posture — it grants NO merge bypass. An expedited ticket whose head

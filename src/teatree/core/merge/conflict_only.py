@@ -12,13 +12,15 @@ keeps refusing it and a fresh review is forced.
 
 The oracle is ``git merge-tree --write-tree`` — git's own machine auto-merge of
 the two parents. The merge commit is conflict-only iff every path where the
-committed merge tree deviates from that auto-merge tree was a CONFLICTED path in
-the auto-merge (its auto-merged blob carries git conflict markers). Any deviation
-on a cleanly-merged path is a substantive change.
+committed merge tree deviates from that auto-merge tree is in git's OWN
+authoritative conflicted-path set for that auto-merge. Any deviation on a
+cleanly-merged path is a substantive change — even when that file's content
+legitimately contains literal conflict-marker strings (a doc/fixture), which a
+marker-grep would misread as "was conflicted" and fail OPEN.
 
-Every uncertainty fails SAFE — a non-two-parent commit, a git error, or an
-unreadable blob returns ``False`` (force re-review), never a false "conflict-only"
-that would skip an independent review.
+Every uncertainty fails SAFE — a non-two-parent commit or any git error returns
+``False`` (force re-review), never a false "conflict-only" that would skip an
+independent review.
 """
 
 import logging
@@ -36,8 +38,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_CONFLICT_START = "<<<<<<<"
-_CONFLICT_END = ">>>>>>>"
 _OID_ALPHABET = frozenset("0123456789abcdef")
 _MIN_OID_LEN = 40
 _MERGE_PARENT_COUNT = 2
@@ -61,35 +61,44 @@ def merge_commit_parents(repo_root: str, merge_sha: str) -> tuple[str, ...]:
     return tuple(result.stdout.strip().split()[1:])
 
 
-def _path_was_conflicted(repo_root: str, tree: str, path: str) -> bool:
-    """True iff the auto-merge blob at ``path`` in ``tree`` carries conflict markers.
+def _auto_merge(repo_root: str, p1: str, p2: str) -> "tuple[str, frozenset[str]] | None":
+    """Git's machine auto-merge of two parents: (merged tree OID, conflicted-path set).
 
-    Fails safe: an unreadable path (add/add or delete conflicts leave no single
-    blob) returns ``False`` so it counts as a substantive deviation, never a
-    silently-allowed one.
+    ``git merge-tree --write-tree --name-only -z`` emits the merged tree OID
+    followed by git's OWN authoritative list of the paths it could not cleanly
+    auto-merge — NUL-separated, terminated by an empty record before the
+    informational-message section. A path is conflicted iff git reports it here,
+    never inferred from marker strings a cleanly-merged blob may legitimately
+    carry. Returns ``None`` on any git error / unparsable OID (fails safe).
     """
-    result = _git(repo_root, ["cat-file", "-p", f"{tree}:{path}"])
-    if result.returncode != 0:
-        return False
-    return _CONFLICT_START in result.stdout and _CONFLICT_END in result.stdout
+    result = _git(repo_root, ["merge-tree", "--write-tree", "--name-only", "-z", p1, p2])
+    records = result.stdout.split("\x00")
+    if not _looks_like_oid(records[0]):
+        return None
+    conflicted: set[str] = set()
+    for record in records[1:]:
+        if not record:
+            break
+        conflicted.add(record)
+    return records[0].strip(), frozenset(conflicted)
 
 
 def is_conflict_only_merge_commit(repo_root: str, merge_sha: str) -> bool:
     """True iff ``merge_sha`` is a two-parent merge that only resolves conflicts.
 
     Compares the committed merge tree against ``git merge-tree --write-tree`` of
-    its two parents: conflict-only iff every deviating path was conflicted in the
-    machine auto-merge. An empty deviation set (the commit is exactly the machine
-    merge) is trivially conflict-only.
+    its two parents: conflict-only iff every deviating path is in git's
+    authoritative conflicted-path set for that auto-merge. An empty deviation set
+    (the commit is exactly the machine merge) is trivially conflict-only.
     """
     parents = merge_commit_parents(repo_root, merge_sha)
     if len(parents) != _MERGE_PARENT_COUNT:
         return False
     p1, p2 = parents
-    auto = _git(repo_root, ["merge-tree", "--write-tree", p1, p2])
-    auto_tree = auto.stdout.splitlines()[0].strip() if auto.stdout.strip() else ""
-    if not _looks_like_oid(auto_tree):
+    auto = _auto_merge(repo_root, p1, p2)
+    if auto is None:
         return False
+    auto_tree, conflicted_paths = auto
     merge_tree = _git(repo_root, ["rev-parse", f"{merge_sha}^{{tree}}"]).stdout.strip()
     if not _looks_like_oid(merge_tree):
         return False
@@ -97,7 +106,7 @@ def is_conflict_only_merge_commit(repo_root: str, merge_sha: str) -> bool:
     if diff.returncode != 0:
         return False
     deviations = [line for line in diff.stdout.splitlines() if line.strip()]
-    return all(_path_was_conflicted(repo_root, auto_tree, path) for path in deviations)
+    return all(path in conflicted_paths for path in deviations)
 
 
 def rebind_clearance_after_conflict_only_merge(
