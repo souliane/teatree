@@ -106,6 +106,9 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "colleague_repo_url_pattern": _parse_strict_str,
     "solo_repo_url_pattern": _parse_strict_str,
     "require_anti_vacuity_attestation": _parse_strict_bool,
+    "require_reviewed_state_for_review_request": _parse_strict_bool,
+    "require_integration_review": _parse_strict_bool,
+    "bulk_close_threshold": _parse_strict_int,
     "require_rubric_verification": _parse_strict_bool,
     "require_spec_coverage": _parse_strict_bool,
     "e2e_confidence_threshold": _parse_strict_int,
@@ -598,6 +601,24 @@ class UserSettings:
     # #1829 Opt-in SHA-bound anti-vacuity gate on review-request/merge
     # (``anti_vacuity_gate``); default false = NO-OP. Per-overlay overridable.
     require_anti_vacuity_attestation: bool = False
+    # PR-08 Opt-in review-state gate on the review-request broadcast
+    # (``review_request_state_gate``): a broadcast is refused unless the ticket
+    # is REVIEWED with a recorded review-evidence artifact (a ``ReviewEvidence``
+    # cold-review row or a ``ReviewVerdict`` from the cold-review step). Default
+    # false = NO-OP so a normal reviewed-and-cleared flow is never blocked.
+    # Per-overlay overridable.
+    require_reviewed_state_for_review_request: bool = False
+    # PR-08 Opt-in cross-repo integration-review DoD gate on ``mark_delivered``
+    # (``integration_review_gate``): a ticket touching ≥ 2 repos cannot reach
+    # DELIVERED without an integration-review ``ReviewEvidence`` covering the
+    # combined changeset. A single-repo ticket never trips it. Default false =
+    # NO-OP. Per-overlay overridable.
+    require_integration_review: bool = False
+    # PR-08 No-bulk-close threshold: a single command/agent action closing more
+    # than this many tickets/MRs is refused without an explicit per-item
+    # confirmation token (``bulk_close_gate``). A close of ≤ threshold items is
+    # always allowed. Per-overlay overridable.
+    bulk_close_threshold: int = 5
     # #2241 Opt-in rubric->verifier done-gate on the keystone merge precondition
     # (``rubric_gate``): the ticket's rubric of acceptance criteria must be fully
     # PASS by an independent verifier (grader != maker) at the merge-time head

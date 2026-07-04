@@ -223,6 +223,21 @@ class BacklogSweepAskGateTests(TestCase):
         assert "ASK-GATE" in reason
         assert "do NOT mass-close" in reason
 
+    def test_ask_gate_directive_routes_closes_through_bulk_close(self) -> None:
+        """Auto-closes must go through the gated `ticket bulk-close` command (#1931).
+
+        The no-bulk-close gate only protects the `ticket bulk-close` CLI path;
+        a raw per-item `ticket ignore` loop bypasses it. The directive routes
+        the sweep's autonomous close path through the gated command so an
+        over-threshold autonomous close is refused the same as a manual one.
+        """
+        _scanner().scan()
+        task = _last_sweep_task()
+        assert task is not None
+        reason = task.execution_reason
+        assert "ticket bulk-close" in reason
+        assert "never a raw per-item `ticket ignore` loop" in reason
+
     def test_approval_disabled_omits_gate_directive(self) -> None:
         """Opt-out (ask_before_backlog_sweep_closes=false) → no gate directive."""
         signals = _scanner(require_approval=False).scan()

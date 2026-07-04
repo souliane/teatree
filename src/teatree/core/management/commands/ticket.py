@@ -11,6 +11,7 @@ from django_typer.management import TyperCommand, command
 from teatree.core.gates.owned_repo_guard import MergeKeystoneResult, escalated_merge_result, merge_clear_refusal
 from teatree.core.gates.schema_guard import SelfDbMigrationError, require_current_schema
 from teatree.core.management.commands._clear_preflight import clear_preflight_refusal
+from teatree.core.management.commands._close_commands import CloseCommands
 from teatree.core.management.commands._context_commands import ContextCommands
 from teatree.core.management.commands._plan_gate_commands import (
     PlanAdvanceError,
@@ -112,7 +113,7 @@ _ALLOWED_TRANSITIONS = {
 }
 
 
-class Command(RubricCommands, TicketShowCommands, ContextCommands, TyperCommand):
+class Command(RubricCommands, TicketShowCommands, ContextCommands, CloseCommands, TyperCommand):
     @command()
     def transition(self, ticket_id: int, transition_name: str) -> dict[str, object]:
         """Transition a ticket to a new state.
@@ -400,10 +401,9 @@ class Command(RubricCommands, TicketShowCommands, ContextCommands, TyperCommand)
     def _resolve_ticket(self, ticket_id: int) -> Ticket:
         """Fetch a ticket or abort the subcommand with a nonzero exit (#932).
 
-        A missing ticket is a real failure — returning an ``{"error": …}``
-        dict would print and exit 0, so a scripted ``ticket context`` caller
-        could not tell success from "ticket not found". ``raise SystemExit(1)``
-        is the sibling refusal convention (AGENTS.md § Test-Writing Doctrine).
+        A missing ticket is a real failure — returning an ``{"error": …}`` dict
+        would print and exit 0, so a scripted caller could not tell success from
+        "ticket not found". ``raise SystemExit(1)`` is the sibling refusal convention.
         """
         try:
             return Ticket.objects.get(pk=ticket_id)
