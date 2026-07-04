@@ -734,6 +734,16 @@
       "subcommands": []
     },
     {
+      "help": "Session-lifecycle operations.",
+      "name": "session",
+      "subcommands": [
+        {
+          "help": "Refresh the durable recovery artifacts (idempotent, safe to re-run)",
+          "name": "prepare-stop"
+        }
+      ]
+    },
+    {
       "help": "Read ``text`` aloud synchronously through the local speakers per [teatree.speak].",
       "name": "speak",
       "subcommands": []

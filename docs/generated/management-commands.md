@@ -385,6 +385,14 @@ Signal *pid* only if it maps to a dead target AND is confirmed non-live.
 
 Idempotently seed the default loops + prompts (#2513).
 
+## `session`
+
+Session-lifecycle operations.
+
+| Subcommand | Description |
+| --- | --- |
+| `prepare-stop` | Refresh the durable recovery artifacts (idempotent, safe to re-run) |
+
 ## `speak`
 
 Read ``text`` aloud synchronously through the local speakers per [teatree.speak].
