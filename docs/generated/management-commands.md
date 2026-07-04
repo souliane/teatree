@@ -351,6 +351,7 @@ Report (and optionally recover) work stranded by an outage.
 | `status` | Report whether *mr_url* is safe to approve at its CURRENT head (read-only) |
 | `lock-acquire` | Acquire the per-MR review-dispatch lock BEFORE a manual Agent() reviewer dispatch (#1405) |
 | `lock-status` | Report the current :class:`MRReviewLock` state for *mr_url* (read-only) |
+| `rebind-clearance` | Re-bind a CLEAR to a conflict-only merge commit — no re-review (PR-07) |
 
 ## `review_request_check`
 
@@ -412,6 +413,7 @@ The ``ticket rubric-set`` / ``rubric-grade`` commands, mounted via MRO inheritan
 | --- | --- |
 | `context` | Durable per-ticket knowledge store (#627, repo-namespaced key #2293) |
 | `show` | Show a ticket's state plus the per-phase ``attempt N/max`` budget (#2009) |
+| `expedite` | Flag a ticket as expedite/release-blocker (``--off`` clears it) (PR-07) |
 | `transition` | Transition a ticket to a new state |
 | `plan` | Record a PlanArtifact and advance the ticket STARTED → PLANNED |
 | `clear` | Issue a per-diff CLEAR — the orchestrator's only merge output (BLUEPRINT §17.4.2) |

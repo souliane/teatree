@@ -12,6 +12,7 @@ from teatree.core.managers import TicketManager
 from teatree.core.modelkit.gate_registry import get_gate, get_resolver
 from teatree.core.modelkit.review_state import ReviewState
 from teatree.core.models.errors import DirtyWorktreeError, InvalidTransitionError
+from teatree.core.models.ticket_ledger import retire_phase_ledger
 from teatree.core.models.ticket_worktree_checks import collect_dirty_worktree_paths, worktree_has_commits_ahead
 from teatree.core.models.types import validated_ticket_extra
 from teatree.utils.url_slug import repo_namespaced_key as compute_repo_namespaced_key
@@ -125,6 +126,12 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
     # Set to True when the remote forge returns HTTP 404; the disposition scanner
     # then excludes this ticket from future fetches (#1875).
     remote_missing = models.BooleanField(default=False)
+    # Expedite / release-blocker flag (PR-07): a flagged ticket may push before
+    # CI completes (the release is blocked on it). It NEVER relaxes the merge
+    # keystone — merge stays gated on local review + test evidence — so the flag
+    # buys earlier visibility of the branch, not an unreviewed merge. Surfaces on
+    # the ticket CLI and a statusline chip.
+    expedited = models.BooleanField(default=False)
     # Collision-free ``<repo-slug>#<issue-number>`` derived from `issue_url`
     # (#2293): a bare numeric IID may collide across repos, this key never
     # does. Blank when `issue_url` is a PR/MR reference, a bare number, or
@@ -202,6 +209,14 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
     def is_terminal(self) -> bool:
         """True when the ticket is in a genuinely terminal/abandoned state (SHIPPED/MERGED/DELIVERED/IGNORED)."""
         return self.state in self._TERMINAL_STATES
+
+    def may_push_before_ci(self) -> bool:
+        """True iff this expedite/release-blocker ticket may push before CI completes (PR-07).
+
+        The flag relaxes ONLY the pre-CI push posture; it never relaxes the merge
+        keystone, which stays gated on local review + test evidence regardless.
+        """
+        return self.expedited
 
     @property
     def ticket_number(self) -> str:
@@ -768,7 +783,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         extra["reopened_from"] = self.state
         self.extra = extra
         self._cancel_pending_tasks()
-        self._retire_phase_ledger()
+        retire_phase_ledger(self)
 
     @transition(
         field=state,
@@ -807,30 +822,6 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
 
         for task in self.tasks.filter(status__in=Task.Status.active()):  # type: ignore[attr-defined]  # Django reverse FK
             task.fail()
-
-    def _retire_phase_ledger(self) -> None:
-        """Retire every session's phase ledger for this ticket (#1286).
-
-        Mirrors ``lifecycle clear-ledger --confirm``: a per-session reset
-        of ``visited_phases``, ``phase_visits``, ``repos_modified``,
-        ``repos_tested`` so the next workstream re-earns its attestations
-        from scratch. Invoked from ``reopen()`` because that transition
-        IS the workstream boundary — prior testing/reviewing no longer
-        attest the new work.
-
-        Wrapped in ``transaction.atomic`` so the ``select_for_update``
-        works even when the FSM caller has not opened a surrounding
-        transaction (the loop ``reopen_ticket`` mechanical path).
-        """
-        with transaction.atomic():
-            for session in self.sessions.select_for_update().all():  # type: ignore[attr-defined]  # Django reverse FK
-                session.visited_phases = []
-                session.phase_visits = {}
-                session.repos_modified = []
-                session.repos_tested = []
-                session.save(
-                    update_fields=["visited_phases", "phase_visits", "repos_modified", "repos_tested"],
-                )
 
     def _refuse_if_worktree_dirty(self, phase: str) -> None:
         """Preflight gate (#884): refuse the transition if a worktree is tracked-dirty.

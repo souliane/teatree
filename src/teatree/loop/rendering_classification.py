@@ -10,7 +10,7 @@ lives here — every downstream line builder can assume duplicate-free input.
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, NamedTuple
 
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.rendering_dms import DmRef as _DmRef
@@ -35,6 +35,23 @@ type Payload = Mapping[str, Any]
 _REVIEWER_SUMMARY_PREFIXES: tuple[str, ...] = ("Review needed:", "Approval dismissed:")
 
 _TITLE_FALLBACK_LEN = 32
+
+
+class ActiveTicketRow(NamedTuple):
+    """One active-ticket anchor row: number, FSM state, issue URL, title, expedite flag.
+
+    ``title`` is the cached tracker title (empty when the scanner has no title
+    yet); ``expedite`` marks a release-blocker ticket the renderer flags with a
+    ⚡ chip (PR-07). A :class:`NamedTuple` (not a bare 4-tuple) so adding the
+    ``expedite`` field is a named, defaulted extension — existing positional
+    construction stays valid and reads self-documenting at every consumer.
+    """
+
+    number: str
+    state: str
+    issue_url: str
+    title: str
+    expedite: bool = False
 
 
 type IdentityAliases = tuple[tuple[str, ...], ...]
@@ -124,11 +141,10 @@ class _ClassifiedActions:
     ready_refs: dict[str, list[_IssueRef]] = field(default_factory=dict)
     action_prs: dict[str, list[_PRRef]] = field(default_factory=dict)
     inflight_prs: dict[str, list[_PRRef]] = field(default_factory=dict)
-    # ``(ticket_number, state, issue_url, title)`` — ``title`` is the cached
-    # tracker title (``ticket.extra["issue_title"]``); empty when the
-    # scanner has no title yet. Renderer uses it for the canonical
-    # ``#N (short desc) (!M)`` item shape (#1015).
-    active_tickets: dict[str, list[tuple[str, str, str, str]]] = field(default_factory=dict)
+    # Renderer uses each :class:`ActiveTicketRow` for the canonical
+    # ``#N (short desc) (!M)`` item shape (#1015), prefixed with a ⚡ chip when
+    # ``expedite`` (PR-07).
+    active_tickets: dict[str, list[ActiveTicketRow]] = field(default_factory=dict)
     dms: dict[str, list[_DmRef]] = field(default_factory=dict)
     other: list[tuple[str, StatuslineEntry]] = field(default_factory=list)
 
@@ -177,8 +193,8 @@ def _active_ticket_tuple(
     ticket_number: str,
     state: str,
     payload: Payload,
-) -> tuple[str, str, str, str]:
-    """Build the canonical ``(ticket_number, state, issue_url, title)`` row.
+) -> ActiveTicketRow:
+    """Build the canonical :class:`ActiveTicketRow` from a ``ticket.active`` payload.
 
     #1163 refinement 4: when the scanner observed the tracker URL last
     returned a 404, drop the URL so the renderer prints a bare ``#N``
@@ -189,7 +205,13 @@ def _active_ticket_tuple(
     title = _str_field(payload, "title")
     if payload.get("tracker_404") is True:
         issue_url = ""
-    return (ticket_number, state, issue_url, title)
+    return ActiveTicketRow(
+        number=ticket_number,
+        state=state,
+        issue_url=issue_url,
+        title=title,
+        expedite=payload.get("expedite") is True,
+    )
 
 
 def _classify_disposition(
@@ -400,8 +422,8 @@ def _dedup_reassign_by_ticket(refs: list[_ReassignRef]) -> list[_ReassignRef]:
 
 
 def _dedup_active_tickets_across_overlays(
-    by_overlay: dict[str, list[tuple[str, str, str, str]]],
-) -> dict[str, list[tuple[str, str, str, str]]]:
+    by_overlay: dict[str, list[ActiveTicketRow]],
+) -> dict[str, list[ActiveTicketRow]]:
     """Drop duplicate ticket rows that surface under more than one overlay.
 
     A single underlying tracker row (same ``issue_url``) can be claimed by
@@ -416,11 +438,11 @@ def _dedup_active_tickets_across_overlays(
     not a reliable identity, so we err on the side of showing the row.
     """
     seen_urls: set[str] = set()
-    out: dict[str, list[tuple[str, str, str, str]]] = {}
+    out: dict[str, list[ActiveTicketRow]] = {}
     for overlay in sorted(by_overlay):
-        kept: list[tuple[str, str, str, str]] = []
+        kept: list[ActiveTicketRow] = []
         for ticket in by_overlay[overlay]:
-            _, _, issue_url, _ = ticket
+            issue_url = ticket.issue_url
             if issue_url and issue_url in seen_urls:
                 continue
             if issue_url:
@@ -432,7 +454,7 @@ def _dedup_active_tickets_across_overlays(
 
 def _drop_stale_already_on_active_line(
     stale_by_overlay: dict[str, list[_IssueRef]],
-    active_by_overlay: dict[str, list[tuple[str, str, str, str]]],
+    active_by_overlay: dict[str, list[ActiveTicketRow]],
 ) -> dict[str, list[_IssueRef]]:
     """Drop a stale ref when its ticket number already renders on the active line.
 
@@ -443,7 +465,7 @@ def _drop_stale_already_on_active_line(
     """
     out: dict[str, list[_IssueRef]] = {}
     for overlay, refs in stale_by_overlay.items():
-        on_active = {num for num, _, _, _ in active_by_overlay.get(overlay, [])}
+        on_active = {row.number for row in active_by_overlay.get(overlay, [])}
         out[overlay] = [r for r in refs if r.label.lstrip("#") not in on_active]
     return out
 

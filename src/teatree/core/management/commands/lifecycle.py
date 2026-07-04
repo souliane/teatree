@@ -15,6 +15,7 @@ from teatree.core.modelkit.phases import normalize_phase, phase_transition
 from teatree.core.models import Ticket
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.merge_clear import is_non_reviewer_role
+from teatree.core.models.ticket_ledger import retire_phase_ledger
 
 logger = logging.getLogger(__name__)
 
@@ -144,12 +145,12 @@ class Command(TyperCommand):
                 f"Refusing to clear ticket {ticket.pk}'s phase ledger without --confirm "
                 f"(destructive: every session's visited_phases/phase_visits is wiped)"
             )
-        # #1286: delegate to the canonical ``Ticket._retire_phase_ledger``
-        # helper so the CLI and the ``reopen()`` FSM workstream-boundary
-        # call retire the ledger the same way. One source of truth, no
-        # drift if the retire policy ever has to learn a new column.
+        # #1286: delegate to the canonical ``retire_phase_ledger`` helper so the
+        # CLI and the ``reopen()`` FSM workstream-boundary call retire the ledger
+        # the same way. One source of truth, no drift if the retire policy ever
+        # has to learn a new column.
         cleared = ticket.sessions.count()
-        ticket._retire_phase_ledger()  # noqa: SLF001
+        retire_phase_ledger(ticket)
         logger.warning(
             "Phase ledger cleared for ticket %s across %d session(s) — sanctioned session-retire",
             ticket.pk,

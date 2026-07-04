@@ -73,6 +73,12 @@ class WorktreeProvisionSelfHealsStaleAgentRuntimeTest(TransactionTestCase):
         self.wt_path.mkdir()
 
     def setUp(self) -> None:
+        # Create the ticket + worktree fixture at HEAD first, so the ORM insert
+        # sees every current Ticket column; only THEN roll the self-DB back to the
+        # stale pre-#2887 state (the post-0014 columns are dropped and re-added
+        # when the provision runner self-heals). Creating it at 0014 would break
+        # the moment any new Ticket column lands after 0014 (e.g. `expedited`).
+        self.worktree = self._make_worktree()
         _migrate_core_to("0014_ticket_repo_namespaced_key")
         ConfigSetting.objects.create(scope="", key="agent_runtime", value="sdk_oauth")
         self.addCleanup(_migrate_core_forward)
@@ -94,7 +100,7 @@ class WorktreeProvisionSelfHealsStaleAgentRuntimeTest(TransactionTestCase):
             get_effective_settings()
 
     def test_provision_runner_self_heals_before_reading_settings(self) -> None:
-        worktree = self._make_worktree()
+        worktree = self.worktree
         overlay = _DbImportOverlay()
 
         with (

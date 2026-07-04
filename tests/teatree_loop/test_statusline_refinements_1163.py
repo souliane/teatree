@@ -172,9 +172,7 @@ class TestNo404Links:
         c = _classify_actions([action])
         tickets = c.active_tickets["overlay-a"]
         assert len(tickets) == 1
-        # tuple shape: (ticket_number, state, issue_url, title)
-        _, _, issue_url, _ = tickets[0]
-        assert issue_url == ""
+        assert tickets[0].issue_url == ""
 
 
 class TestDedupAcrossOverlays:
