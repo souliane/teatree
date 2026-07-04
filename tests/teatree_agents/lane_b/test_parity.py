@@ -40,8 +40,10 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
+from hooks.scripts.quote_verdict import resolve_high_verdict
 from teatree.agents.harness import PydanticAiHarness
 from teatree.agents.lane_b.gating import hard_deny_reason
+from teatree.hooks import _repo_visibility
 from teatree.hooks.quote_scanner import extract_publish_payload, scan_text
 from tests.teatree_agents.lane_b._managed_clone import linked_worktree, managed_main_clone
 
@@ -205,22 +207,48 @@ class TestPrivacyGateParity:
     """The privacy/banned-term gate refuses the SAME publish set on both lanes.
 
     Lane A's PreToolUse scopes the scan to :func:`extract_publish_payload` (``None``
-    for a non-publish call); Lane B's :func:`hard_deny_reason` now uses the same
-    scoping, so a local write / non-publish shell command is refused on NEITHER
-    lane, and a publish command carrying a HIGH finding is refused on BOTH.
+    for a non-publish call) and routes a HIGH finding through its OWN destination
+    verdict (:func:`resolve_high_verdict`: SKIP a non-public / unresolvable target,
+    DOWNGRADE a provably-private one, DENY only a confirmed-public one). Lane B's
+    :func:`hard_deny_reason` now consults the same scoping AND the same destination
+    gate, so the two lanes refuse the identical set — a local write / non-publish
+    shell command on NEITHER, a clean publish on NEITHER, a HIGH-content publish to
+    a non-public / unresolvable target on NEITHER, and a HIGH-content publish to a
+    confirmed-PUBLIC target on BOTH (the hard anti-leak constraint).
     """
 
     _HIGH_BODY = "the user said: do it now"  # trips the ``the-user-said-colon`` HIGH pattern
 
+    @pytest.fixture(autouse=True)
+    def _hermetic_visibility(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Isolate the config home + the visibility cache so a monkeypatched probe
+        # verdict governs, never the developer's ~/.teatree.toml or a warm cache.
+        home = tmp_path / "home"
+        home.mkdir(parents=True, exist_ok=True)
+        (home / ".teatree.toml").write_text("[teatree]\n", encoding="utf-8")
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+        monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "viscache"))
+
     def _lane_a_denies(self, tool_name: str, tool_args: dict, cwd: Path | None) -> bool:
-        # Lane A's ground truth: a publish payload (else None) run through the same scan.
+        # Lane A's REAL deny predicate: the publish payload (else None), a HIGH scan,
+        # then Lane A's OWN destination verdict — the exact ``resolve_high_verdict``
+        # function its PreToolUse hook consults, NOT a strawman that omits the
+        # destination gate and so would call every HIGH finding a deny.
         command = tool_args.get("command", "") if tool_name == "shell" else ""
         payload = extract_publish_payload("Bash", {"command": command}, cwd) if command else None
-        return payload is not None and scan_text(payload).has_high
+        if payload is None or not scan_text(payload).has_high:
+            return False
+        return resolve_high_verdict(command, cwd).deny
+
+    @staticmethod
+    def _post(slug: str, body: str) -> dict:
+        return {"command": f'gh pr comment 5 --repo {slug} --body "{body}"'}
 
     def test_local_write_with_a_high_finding_is_refused_on_neither_lane(self, tmp_path: Path) -> None:
-        # RED without the fix: Lane B scanned every string arg, so write_file's
-        # content tripped HIGH and was denied while Lane A never scans a local write.
+        # RED without the payload-scoping fix: Lane B scanned every string arg, so
+        # write_file's content tripped HIGH and was denied while Lane A never scans
+        # a local write.
         args = {"path": "note.md", "content": self._HIGH_BODY}
         assert hard_deny_reason("write_file", args, cwd=tmp_path) is None
         assert self._lane_a_denies("write_file", args, tmp_path) is False
@@ -232,15 +260,46 @@ class TestPrivacyGateParity:
         assert hard_deny_reason("shell", args, cwd=tmp_path) is None
         assert self._lane_a_denies("shell", args, tmp_path) is False
 
-    def test_publish_command_with_a_high_finding_is_refused_on_both_lanes(self, tmp_path: Path) -> None:
-        args = {"command": f'gh pr comment 5 --body "{self._HIGH_BODY}"'}
+    def test_clean_publish_command_is_refused_on_neither_lane(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        args = self._post("souliane/teatree", "shipped the compaction fix")
+        assert hard_deny_reason("shell", args, cwd=tmp_path) is None
+        assert self._lane_a_denies("shell", args, tmp_path) is False
+
+    def test_public_target_high_finding_is_denied_on_both_lanes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The hard anti-leak constraint: a HIGH body to a CONFIRMED-PUBLIC egress is
+        # STILL denied on Lane B (matching Lane A) — public-egress protection intact.
+        # This is the anti-vacuity guard for the two allow rows below.
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        args = self._post("souliane/teatree", self._HIGH_BODY)
         reason = hard_deny_reason("shell", args, cwd=tmp_path)
         assert reason is not None
         assert "privacy/banned-term gate" in reason
         assert self._lane_a_denies("shell", args, tmp_path) is True
 
-    def test_clean_publish_command_is_refused_on_neither_lane(self, tmp_path: Path) -> None:
-        args = {"command": 'gh pr comment 5 --body "shipped the compaction fix"'}
+    def test_private_target_high_finding_is_allowed_on_both_lanes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A HIGH body to a probe-CONFIRMED-PRIVATE repo cannot leak to the public —
+        # Lane A downgrades it, and Lane B now allows it too (no over-deny).
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PRIVATE")
+        args = self._post("someowner/private-svc", self._HIGH_BODY)
+        assert hard_deny_reason("shell", args, cwd=tmp_path) is None
+        assert self._lane_a_denies("shell", args, tmp_path) is False
+
+    def test_unresolvable_target_high_finding_is_allowed_on_both_lanes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The allow-on-unknown anti-vacuity proof — RED before the fix, where Lane B
+        # denied ANY HIGH finding while Lane A skips an unresolvable target (bias to
+        # not firing). A cold-hook target whose visibility cannot be resolved is NOT
+        # affirmatively public, so both lanes ALLOW it.
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
+        args = self._post("someowner/mystery", self._HIGH_BODY)
         assert hard_deny_reason("shell", args, cwd=tmp_path) is None
         assert self._lane_a_denies("shell", args, tmp_path) is False
 
