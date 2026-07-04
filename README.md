@@ -365,6 +365,7 @@ t3 teatree db refresh           # restore a database dump
 t3 teatree pr create            # create a pull request with metadata validation
 t3 teatree followup sync        # sync tickets and PRs from code host
 t3 cost                         # cycle-to-date SDK-equivalent spend + effective-token (ET) totals, split by subscription/metered lane
+t3 capabilities --json          # machine-readable registry of which t3 commands emit JSON and their exit-code contract (a front-end drives teatree from this)
 t3 speak                        # read text aloud on local speakers per [teatree.speak] (no-op unless local = all)
 t3 recover                      # find/recover work stranded by a network-outage death (dry-run by default)
 t3 mutation run                 # scoped mutation testing — mutate only the high-value safety modules a diff touches
