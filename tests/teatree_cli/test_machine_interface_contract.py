@@ -85,3 +85,21 @@ class TestTasksJson(TestCase):
         assert parsed["phase"] == "scoping"
         assert "Created task" not in out  # confirmation line is not on stdout
         assert "Created task" in err
+
+
+class TestStringReturnJson(TestCase):
+    """String-return commands emit JSON on stdout under --json.
+
+    availability show / questions list return a ``json.dumps`` string, preserving
+    human-on-stdout otherwise — the checking.py precedent, distinct from the
+    emit-seam stderr split.
+    """
+
+    def test_availability_show_json_is_parseable(self) -> None:
+        out, _err, _rv = _run("availability", "show", "--json")
+        parsed = json.loads(out)
+        assert set(parsed) == {"mode", "source"}
+
+    def test_questions_list_json_is_parseable_array(self) -> None:
+        out, _err, _rv = _run("questions", "list", "--json")
+        assert json.loads(out) == []  # empty DB → empty JSON array, not "no deferred questions."

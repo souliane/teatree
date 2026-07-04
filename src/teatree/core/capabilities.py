@@ -53,7 +53,12 @@ CAPABILITIES: tuple[Capability, ...] = (
     Capability("teatree followup sync", json_output=True, exit_codes=("0",)),
     Capability("teatree worktree status", json_output=True, exit_codes=("0",)),
     Capability("teatree worktree diagnose", json_output=True, exit_codes=("0",)),
-    Capability("teatree worktree ready", json_output=True, exit_codes=("0", "1")),
+    Capability(
+        "teatree worktree ready",
+        json_output=False,
+        exit_codes=("0", "1"),
+        note="exit code IS the contract: 0 iff every readiness probe passes",
+    ),
     Capability("teatree availability show", json_output=True, exit_codes=("0",)),
     Capability("teatree questions list", json_output=True, exit_codes=("0",)),
     Capability(

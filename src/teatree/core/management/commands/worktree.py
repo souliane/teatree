@@ -10,13 +10,14 @@ for headless retries.
 import os
 from collections.abc import Callable
 from pathlib import Path
-from typing import TypedDict
+from typing import IO, Annotated, TypedDict, cast
 
 import typer
 from django.db import transaction
 from django_typer.management import TyperCommand, command
 
 from teatree.core.gates.local_stack_gate import acquire_or_enqueue
+from teatree.core.machine_output import emit
 from teatree.core.management.commands._workspace_docker import reap_stale_local_stacks
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayBase
@@ -149,6 +150,28 @@ def _provision_summary(worktree: Worktree) -> "ProvisionSummary | None":
         "slowest_step": slowest.name if slowest is not None else "",
         "slowest_step_duration": slowest.duration if slowest is not None else 0.0,
     }
+
+
+def _render_status(result: "WorktreeStatus", stream: IO[str]) -> None:
+    stream.write(f"state: {result.get('state', '')}\n")
+    stream.write(f"repo_path: {result.get('repo_path', '')}\n")
+    stream.write(f"branch: {result.get('branch', '')}\n")
+    stream.write(f"ports: {result.get('ports', {})}\n")
+    summary = result.get("provision_report")
+    if summary is not None:
+        stream.write(
+            f"provision: total={summary['total_duration']:.1f}s steps={summary['steps']} "
+            f"success={summary['success']} slowest={summary['slowest_step']}\n"
+        )
+
+
+def _render_diagnose(checks: "WorktreeDiagnose", stream: IO[str]) -> None:
+    stream.write(f"\n  ── {checks['repo_path']} ({checks['state']}) ──\n")
+    for key in ("worktree_dir", "git_marker", "env_cache"):
+        ok = "OK" if checks[key] else "FAIL"
+        stream.write(f"  [{ok}] {key}\n")
+    stream.write(f"  [{'OK' if checks['db_name'] else 'FAIL'}] DB name: {checks['db_name'] or '(none)'}\n")
+    stream.write(f"  docker: {checks['docker_services']}\n")
 
 
 class Command(TyperCommand):
@@ -381,6 +404,11 @@ class Command(TyperCommand):
     def status(
         self,
         path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
+        *,
+        json_output: Annotated[
+            bool,
+            typer.Option("--json", help="Emit the status as JSON on stdout instead of the human view."),
+        ] = False,
     ) -> WorktreeStatus:
         """Report FSM state, branch, allocated host ports, and the last provision report for one worktree."""
         worktree = resolve_worktree(path)
@@ -394,12 +422,25 @@ class Command(TyperCommand):
         summary = _provision_summary(worktree)
         if summary is not None:
             result["provision_report"] = summary
+        self.print_result = False
+        emit(
+            result,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=lambda stream: _render_status(result, stream),
+        )
         return result
 
     @command()
     def diagnose(
         self,
         path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
+        *,
+        json_output: Annotated[
+            bool,
+            typer.Option("--json", help="Emit the health checklist as JSON on stdout instead of the human view."),
+        ] = False,
     ) -> WorktreeDiagnose:
         """Print a structured health checklist for one worktree."""
         worktree = resolve_worktree(path)
@@ -421,13 +462,14 @@ class Command(TyperCommand):
             "db_name": worktree.db_name,
             "docker_services": ps.stdout.strip() if ps.returncode == 0 else "not running",
         }
-
-        self.stdout.write(f"\n  ── {worktree.repo_path} ({worktree.state}) ──")
-        for key in ("worktree_dir", "git_marker", "env_cache"):
-            ok = "OK" if checks[key] else "FAIL"
-            self.stdout.write(f"  [{ok}] {key}")
-        self.stdout.write(f"  [{'OK' if checks['db_name'] else 'FAIL'}] DB name: {checks['db_name'] or '(none)'}")
-        self.stdout.write(f"  docker: {checks['docker_services']}")
+        self.print_result = False
+        emit(
+            checks,
+            json_output=json_output,
+            out=cast("IO[str]", self.stdout),
+            err=cast("IO[str]", self.stderr),
+            human=lambda stream: _render_diagnose(checks, stream),
+        )
         return checks
 
     @command(name="smoke-test")

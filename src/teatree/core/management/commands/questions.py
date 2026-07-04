@@ -20,6 +20,7 @@ own pace; the agent reads pending questions back via the same model
 on its next turn.
 """
 
+import json
 from typing import Annotated
 
 import typer
@@ -73,9 +74,25 @@ class Command(TyperCommand):
             bool,
             typer.Option("--all/--pending", help="Include answered/dismissed rows."),
         ] = False,
+        json_output: Annotated[
+            bool,
+            typer.Option("--json", help="Emit the deferred questions as JSON instead of the human view."),
+        ] = False,
     ) -> str:
         """List pending deferred questions, oldest first."""
         rows = list(DeferredQuestion.objects.order_by("-created_at")) if all_rows else list(DeferredQuestion.pending())
+        if json_output:
+            return json.dumps(
+                [
+                    {
+                        "id": row.pk,
+                        "status": row.status,
+                        "question": row.question,
+                        "created_at": row.created_at.isoformat() if row.created_at is not None else None,
+                    }
+                    for row in rows
+                ]
+            )
         if not rows:
             return "no deferred questions."
         lines = [f"{len(rows)} deferred question(s):"]

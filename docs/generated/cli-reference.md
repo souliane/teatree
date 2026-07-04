@@ -5296,6 +5296,8 @@ Usage: t3 teatree worktree status [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │
+│ --json              Emit the status as JSON on stdout instead of the human   │
+│                     view.                                                    │
 │ --help              Show this message and exit.                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -5309,6 +5311,8 @@ Usage: t3 teatree worktree diagnose [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │
+│ --json              Emit the health checklist as JSON on stdout instead of   │
+│                     the human view.                                          │
 │ --help              Show this message and exit.                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -8026,6 +8030,8 @@ Usage: t3 teatree availability show [OPTIONS]
  Print the current resolved mode and which layer decided it.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit the resolved mode/source as JSON instead of the human   │
+│                 line.                                                        │
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -8224,6 +8230,8 @@ Usage: t3 teatree questions list [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --all     --pending      Include answered/dismissed rows. [default: pending] │
+│ --json                   Emit the deferred questions as JSON instead of the  │
+│                          human view.                                         │
 │ --help                   Show this message and exit.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

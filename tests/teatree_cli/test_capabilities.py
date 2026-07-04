@@ -63,3 +63,19 @@ class TestRegistryMatchesConvertedCommands:
         from teatree.core.management.commands.followup import Command  # noqa: PLC0415
 
         assert "json_output" in inspect.signature(Command.sync).parameters
+
+    def test_worktree_status_and_diagnose_declare_json_output(self) -> None:
+        from teatree.core.management.commands.worktree import Command  # noqa: PLC0415
+
+        assert "json_output" in inspect.signature(Command.status).parameters
+        assert "json_output" in inspect.signature(Command.diagnose).parameters
+
+    def test_availability_show_declares_json_output(self) -> None:
+        from teatree.core.management.commands.availability import Command  # noqa: PLC0415
+
+        assert "json_output" in inspect.signature(Command.show).parameters
+
+    def test_questions_list_declares_json_output(self) -> None:
+        from teatree.core.management.commands.questions import Command  # noqa: PLC0415
+
+        assert "json_output" in inspect.signature(Command.list_pending).parameters

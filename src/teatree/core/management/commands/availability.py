@@ -16,6 +16,7 @@ The command also prints the current resolution (mode + source) so
 the user can confirm the effect.
 """
 
+import json
 from datetime import UTC, datetime
 from typing import Annotated
 
@@ -118,6 +119,16 @@ class Command(TyperCommand):
         return _render(prefix=prefix)
 
     @command()
-    def show(self) -> str:
+    def show(
+        self,
+        *,
+        json_output: Annotated[
+            bool,
+            typer.Option("--json", help="Emit the resolved mode/source as JSON instead of the human line."),
+        ] = False,
+    ) -> str:
         """Print the current resolved mode and which layer decided it."""
+        if json_output:
+            resolution = resolve_mode()
+            return json.dumps({"mode": resolution.mode, "source": resolution.source})
         return _render()
