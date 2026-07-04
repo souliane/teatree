@@ -4974,8 +4974,8 @@ def _bash_env_file() -> Path:
 
     The harness spawns the Stop hook as a bare ``python3`` that does NOT
     source the user's shell profile, so ``export VAR=value`` lines in this
-    file never reach ``os.environ`` (the ``ensure-skills-loaded.sh``
-    bootstrap calls it out: "hooks don't source .zshrc/.teatree").
+    file never reach ``os.environ`` (hooks don't source
+    ``.zshrc``/``.teatree``).
     ``TEATREE_BASH_ENV_FILE`` overrides the location (tests / non-default
     HOME).
     """

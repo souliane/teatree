@@ -190,7 +190,7 @@ Most of these are defined in `teatree/types.py` (the Django-free shared types mo
 | `SymlinkSpec` | TypedDict | `path`, `source`, `mode`, `description` |
 | `ServiceSpec` | TypedDict | `shared`, `service`, `compose_file`, `start_command`, `readiness_check`, `base_image` |
 | `DbImportStrategy` | TypedDict | `kind`, `source_database`, `shared_postgres`, `snapshot_tool`, `restore_order`, `notes`, `worktree_repo_path` |
-| `SkillMetadata` | TypedDict | `skill_path`, `remote_patterns`, `trigger_index`, `resolved_requires`, `skill_mtimes`, `teatree_version` |
+| `SkillMetadata` | TypedDict | `skill_path`, `remote_patterns`, `skill_index`, `resolved_requires`, `skill_mtimes`, `teatree_version` |
 | `ToolCommand` | TypedDict | `name`, `help`, `command`, `arguments` |
 | `ValidationResult` | TypedDict | `errors`, `warnings` |
 | `RunCommand` | dataclass | `args`, `cwd` |

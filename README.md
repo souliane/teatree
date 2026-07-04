@@ -640,7 +640,7 @@ cwd/overlay context. There is no free-text scan of the prompt: the
 skills a prompt's cwd context implies, and `PreToolUse` blocks Python code
 edits until those load.
 
-See [docs/skill-triggers.md](docs/skill-triggers.md) for the full schema and
+See `BLUEPRINT.md` § 11.5 for the explicit-loading model and
 [docs/claude-code-internals.md](docs/claude-code-internals.md) for how the
 hooks wire into Claude Code.
 
