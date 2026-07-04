@@ -13,7 +13,7 @@ from teatree.skill_support.deps import resolve_requires
 from teatree.skill_support.requires_parser import parse_requires
 from teatree.skill_support.schema import validate_skill_md
 
-SKILLS_DIR = Path(__file__).resolve().parent.parent / "skills"
+SKILLS_DIR = Path(__file__).resolve().parents[2] / "skills"
 SKILL_PATH = SKILLS_DIR / "architecture-design" / "SKILL.md"
 
 EXPECTED_TEMPLATE_SECTIONS = [

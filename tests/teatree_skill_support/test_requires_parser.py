@@ -13,7 +13,7 @@ import pytest
 
 from teatree.skill_support.requires_parser import parse_requires as teatree_parse
 
-_SCRIPTS_LIB = Path(__file__).resolve().parents[1] / "scripts"
+_SCRIPTS_LIB = Path(__file__).resolve().parents[2] / "scripts"
 if str(_SCRIPTS_LIB) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_LIB))
 
