@@ -7,6 +7,7 @@ from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.machine_output import emit
 from teatree.core.models import Task, Ticket
 from teatree.core.overlay_loader import get_overlay
+from teatree.core.table_output import print_table
 from teatree.types import ConflictedMR, RawAPIDict
 from teatree.url_classify import pr_ref
 
@@ -181,12 +182,19 @@ class Command(TyperCommand):
 def _render_sync(payload: dict[str, int | list[str] | list[dict[str, int | str]]], stream: IO[str]) -> None:
     errors = cast("list[str]", payload["errors"])
     conflicted = cast("list[dict[str, int | str]]", payload["conflicted_mrs"])
-    stream.write(
-        f"followup sync: prs_found={payload['prs_found']} "
-        f"tickets_created={payload['tickets_created']} "
-        f"tickets_updated={payload['tickets_updated']} "
-        f"worktrees_cleaned={payload['worktrees_cleaned']} "
-        f"errors={len(errors)} conflicted_mrs={len(conflicted)}\n"
+    print_table(
+        ["Metric", "Value"],
+        [
+            ["prs_found", payload["prs_found"]],
+            ["tickets_created", payload["tickets_created"]],
+            ["tickets_updated", payload["tickets_updated"]],
+            ["worktrees_cleaned", payload["worktrees_cleaned"]],
+            ["errors", len(errors)],
+            ["conflicted_mrs", len(conflicted)],
+        ],
+        title="followup sync",
+        stream=stream,
+        justify=["left", "right"],
     )
-    for err in errors:
-        stream.write(f"  ERROR  {err}\n")
+    if errors:
+        print_table(["Error"], [[err] for err in errors], title="errors", stream=stream)

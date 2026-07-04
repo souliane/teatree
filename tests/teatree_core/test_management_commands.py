@@ -916,6 +916,19 @@ class TestFollowupCommands(TestCase):
         assert len(errors) == 1
         assert "No code host token for" in errors[0]
 
+    def test_sync_renders_summary_table_on_stderr(self) -> None:
+        import io as _io  # noqa: PLC0415
+
+        from tests._ansi import strip_ansi  # noqa: PLC0415
+
+        err = _io.StringIO()
+        with patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY):
+            call_command("followup", "sync", stderr=err)
+        printed = strip_ansi(err.getvalue())
+        # The human view is a table on stderr (stdout stays a JSON channel).
+        assert "followup sync" in printed
+        assert "prs_found" in printed
+
 
 class TestTicketCommand(TestCase):
     """Tests for the ticket management command (transition + list)."""

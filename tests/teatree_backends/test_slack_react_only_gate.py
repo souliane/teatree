@@ -195,6 +195,23 @@ class TestSlackBotBackendRejectsSingleEmojiBody:
         with patch.object(backend, "_post", return_value={"ok": True}):
             backend.post_message(channel="C1", text="")
 
+    def test_post_message_forwards_blocks_in_payload(self) -> None:
+        # A native table block rides the chat.postMessage payload alongside the
+        # text fallback (#1777); text-only posts carry no blocks key.
+        backend = self._backend()
+        blocks = [{"type": "table", "rows": []}]
+        with patch.object(backend, "_post", return_value={"ok": True}) as posted:
+            backend.post_message(channel="C1", text="```\n(no rows)\n```", blocks=blocks)
+        payload = posted.call_args.args[1]
+        assert payload["blocks"] == blocks
+        assert payload["text"] == "```\n(no rows)\n```"
+
+    def test_post_message_omits_blocks_key_when_none(self) -> None:
+        backend = self._backend()
+        with patch.object(backend, "_post", return_value={"ok": True}) as posted:
+            backend.post_message(channel="C1", text="plain text")
+        assert "blocks" not in posted.call_args.args[1]
+
 
 class TestIsSingleEmojiBody:
     """The pure predicate behind the single-emoji guard."""

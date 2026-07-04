@@ -82,6 +82,43 @@ class TestNotifyUser(TestCase):
 
         assert backend.post_message.call_args.kwargs["thread_ts"] == ""
 
+    def test_table_blocks_reach_post_message_with_fence_fallback(self) -> None:
+        # A caller with tabular data passes the monospace fence as ``text`` and
+        # the native ``table`` block as ``blocks``; both must reach post_message.
+        from teatree.backends.slack.table_format import render_table_message  # noqa: PLC0415
+
+        backend = _backend()
+        message = render_table_message(["ID", "Name"], [["1", "Alice"]], title="Records")
+
+        notify_user(
+            message.fence,
+            kind=NotifyKind.INFO,
+            idempotency_key="table-dm",
+            backend=backend,
+            user_id="U_ME",
+            blocks=message.blocks,
+            linkify=False,
+        )
+
+        call_kwargs = backend.post_message.call_args.kwargs
+        assert [b["type"] for b in call_kwargs["blocks"]] == ["section", "table"]
+        assert "```" in call_kwargs["text"]
+
+    def test_no_blocks_kwarg_on_the_text_only_path(self) -> None:
+        # A plain notification calls post_message without a ``blocks`` kwarg, so
+        # a backend predating the argument keeps working unchanged.
+        backend = _backend()
+
+        notify_user(
+            "plain text notification",
+            kind=NotifyKind.INFO,
+            idempotency_key="plain-no-blocks",
+            backend=backend,
+            user_id="U_ME",
+        )
+
+        assert "blocks" not in backend.post_message.call_args.kwargs
+
     def test_active_thread_lookup_db_error_falls_back_to_root(self) -> None:
         backend = _backend()
         with patch(
