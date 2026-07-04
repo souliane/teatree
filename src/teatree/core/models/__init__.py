@@ -1,6 +1,7 @@
 from teatree.core.models.anthropic_active_pick import AnthropicActivePick, AnthropicActivePickManager
 from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage, AnthropicTokenUsageManager
 from teatree.core.models.assess_finding import AssessFinding, AssessSweepRun
+from teatree.core.models.attachment_manifest import AttachmentManifest
 from teatree.core.models.audit_run import InvariantOutcome, SessionAuditRecord
 from teatree.core.models.auto_review_dispatch import AutoReviewDispatch, build_review_contract
 from teatree.core.models.bot_ping import BotPing, DeliveryClaim
@@ -101,6 +102,7 @@ __all__ = [
     "AnthropicTokenUsageManager",
     "AssessFinding",
     "AssessSweepRun",
+    "AttachmentManifest",
     "AutoReviewDispatch",
     "BindingFeedbackError",
     "BotPing",

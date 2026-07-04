@@ -22,6 +22,7 @@ metadata:
 4. **Dedupe candidates by source URL** before recording. `record_candidate` is idempotent by URL hash; existing `from-news-scan` issues also cite the article URL in their body.
 5. **No AI signature** on issues or DMs (per `t3:rules`).
 6. **Never invent stories.** If a source fetch fails, omit that source from the DM and note the failure.
+7. **Every cited URL must resolve before it is recorded (PR-15).** A fabricated or 404 article link is dropped, not queued. This is enforced in code — `record_candidate` probes the URL via `teatree.verification.url_check.check_url` and returns `None` for an `UNRESOLVED` (2xx/3xx = ok, 4xx/5xx = drop) URL, so a hallucinated citation never reaches the backlog. A `NETWORK_ERROR` (teatree could not tell) records the candidate anyway — a transient failure never drops a real article. Do the URL-presence pass yourself too (step 6b) so the DM counts the drops.
 
 ## Command Reference
 
@@ -95,6 +96,14 @@ For each deep-read article, ask: *is there a concrete, scoped change to teatree 
 
 Bias toward filing in borderline cases — duplicates are triaged later, missed ideas vanish.
 
+### 6b. Verify each cited URL resolves (PR-15)
+
+Before recording any candidate, confirm its article URL actually exists — a triaged story whose link was hallucinated or has 404'd is not a real source. `record_candidate` enforces this in code (it drops an `UNRESOLVED` URL), but do the pass explicitly so you can count and report the drops:
+
+- For each surviving candidate, check the cited URL resolves (a `HEAD` / ranged `GET` — the same probe `check_url` runs). A 2xx/3xx keeps it; a 4xx/5xx drops it.
+- Keep a running count of `stories dropped (url unresolved): N` — this goes in the DM tail (step 8).
+- A network error (timeout / DNS) is NOT a drop: teatree could not verify it, so the candidate is kept and recorded. Count these separately if useful, but never drop a real story on a transient failure.
+
 ### 7. Queue candidates behind the ask-gate (#1391) — never auto-file
 
 **The scanner must NOT auto-create issues.** Auto-filing every "could improve t3" article is backlog pollution — it confuses "I read this" with "we should build this". Instead, record each candidate behind the ask-gate and let the user decide.
@@ -126,6 +135,8 @@ When the gate is explicitly opted out (`ask_before_creating_news_tickets = false
 ### 8. Post the Slack DM
 
 Format defined in `references/slack-format.md`. Always post even when zero items are interesting — a "0 items, 0 candidates" DM is the honest signal that the scan ran. When candidates were queued, the DM is the approval surface: list each `PendingArticleSuggestion` so the user can approve or reject.
+
+Add the drop counter from step 6b to the DM tail so URL-verification is visible: `stories dropped (url unresolved): N`. Omit the line only when `N` is 0.
 
 ## Periodic Mode
 
