@@ -19,7 +19,10 @@ from teatree.types import RawAPIDict
 
 Align = Literal["left", "center", "right"]
 
-MAX_ROWS = 100
+# Slack's Block Kit ``table`` block caps at 100 rows *total*, and the header
+# row counts toward that limit — so at most 99 data rows fit under the header.
+MAX_TOTAL_ROWS = 100
+MAX_DATA_ROWS = MAX_TOTAL_ROWS - 1
 MAX_COLS = 20
 DEFAULT_FENCE_WIDTH = 72
 _ELLIPSIS = "…"
@@ -74,14 +77,15 @@ def slack_table_block(
 
     Header cells are bold ``rich_text``; data cells are plain ``rich_text``.
     Per-column alignment rides ``column_settings`` (``left`` when unspecified).
-    Capped at :data:`MAX_COLS` columns and :data:`MAX_ROWS` data rows so a
-    runaway list can never exceed Slack's table limits.
+    Capped at :data:`MAX_COLS` columns and :data:`MAX_DATA_ROWS` data rows so
+    the header + data never exceed Slack's :data:`MAX_TOTAL_ROWS`-row table
+    limit (a full table otherwise fails with ``invalid_blocks``).
     """
     capped_headers, capped_rows = _cells(headers, rows)
     ncols = len(capped_headers)
     aligns = _aligns(alignment, ncols)
     block_rows: list[list[RawAPIDict]] = [[_rich_text_cell(h, bold=True) for h in capped_headers]]
-    block_rows.extend([_rich_text_cell(cell, bold=False) for cell in row] for row in capped_rows[:MAX_ROWS])
+    block_rows.extend([_rich_text_cell(cell, bold=False) for cell in row] for row in capped_rows[:MAX_DATA_ROWS])
     return {
         "type": "table",
         "column_settings": [{"align": align} for align in aligns],
@@ -137,20 +141,26 @@ def slack_table_fence(
     """Render a space-aligned monospace table wrapped in a ``` fence.
 
     Columns are padded to a common width (``max_width`` budget, over-wide
-    columns ellipsis-truncated widest-first, never wrapped). Empty *rows*
-    renders ``(no rows)`` inside the fence.
+    columns ellipsis-truncated widest-first, never wrapped). Rows are capped
+    at :data:`MAX_DATA_ROWS` to match the block; a truncated fence ends with an
+    ``… and N more`` trailer naming the dropped rows. Empty *rows* renders
+    ``(no rows)`` inside the fence.
     """
     capped_headers, capped_rows = _cells(headers, rows)
     if not capped_rows:
         return f"```\n{_EMPTY}\n```"
     aligns = _aligns(alignment, len(capped_headers))
-    widths = _fit_widths(capped_headers, capped_rows, max_width)
+    shown_rows = capped_rows[:MAX_DATA_ROWS]
+    dropped = len(capped_rows) - len(shown_rows)
+    widths = _fit_widths(capped_headers, shown_rows, max_width)
 
     def render_row(values: list[str]) -> str:
         return _CELL_SEP.join(_pad(_truncate(value, widths[i]), widths[i], aligns[i]) for i, value in enumerate(values))
 
     rule = _RULE_SEP.join("-" * width for width in widths)
-    lines = [render_row(capped_headers), rule, *(render_row(row) for row in capped_rows)]
+    lines = [render_row(capped_headers), rule, *(render_row(row) for row in shown_rows)]
+    if dropped:
+        lines.append(f"{_ELLIPSIS} and {dropped} more")
     body = "\n".join(lines)
     return f"```\n{body}\n```"
 
@@ -189,7 +199,8 @@ def render_table_message(
 __all__ = [
     "DEFAULT_FENCE_WIDTH",
     "MAX_COLS",
-    "MAX_ROWS",
+    "MAX_DATA_ROWS",
+    "MAX_TOTAL_ROWS",
     "Align",
     "TableMessage",
     "render_table_message",
