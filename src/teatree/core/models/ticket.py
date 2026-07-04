@@ -739,15 +739,15 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
 
     @transition(field=state, source=State.RETROSPECTED, target=State.DELIVERED)
     def mark_delivered(self) -> None:
-        """Reach DELIVERED (done) past two Definition-of-Done gates.
+        """Reach DELIVERED past the Definition-of-Done gates.
 
-        ``check_fix_record_dod`` requires a validated FixRecord for a ``kind=fix``
-        ticket; ``check_spec_coverage`` requires every acceptance criterion to
-        have a backing test when ``require_spec_coverage`` is on — done is not a
-        partial subset of the spec (#2232). A refusal keeps the FSM at RETROSPECTED.
+        ``fix_record_dod`` (kind=fix), ``spec_coverage`` (#2232), and
+        ``integration_review`` (≥2-repo combined changeset, PR-08) each gate the
+        close; each is a NO-OP unless configured. A refusal keeps RETROSPECTED.
         """
         get_gate("fix_record_dod")(self)
         get_gate("spec_coverage")(self)
+        get_gate("integration_review")(self)
 
     @transition(field=state, source=[State.CODED, State.TESTED, State.REVIEWED], target=State.STARTED)
     def rework(self) -> None:

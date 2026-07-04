@@ -108,6 +108,10 @@ class TicketExtra(TypedDict, total=False):
     # escape hatch (a ``reason`` for an AC-less ticket).
     spec_coverage: "SpecCoverageManifest"
     spec_coverage_override: "SpecCoverageOverride"
+    # PR-08 audited escape hatch for the cross-repo integration-review gate: a
+    # ``reason`` for a ≥2-repo ticket exempt from the combined-changeset review;
+    # read by ``integration_review_gate`` at ``mark_delivered``.
+    integration_review_override: "IntegrationReviewOverride"
     # #2104 delivery-ownership lease: stamped when a hand-dispatched delivery
     # agent (``workspace ticket``) takes the unit, so the loop's scheduling
     # chokepoints skip the auto-planner / duplicate review-arm / global dispatch
@@ -240,6 +244,18 @@ class SpecCoverageOverride(TypedDict, total=False):
     the spec-coverage gate pass-and-log — for a genuinely AC-less ticket (a pure
     refactor, a docs-only change) the heuristic must not hard-trap a legitimate
     delivery.
+    """
+
+    reason: str
+
+
+class IntegrationReviewOverride(TypedDict, total=False):
+    """Audited escape hatch for the cross-repo integration-review gate (PR-08).
+
+    ``Ticket.extra['integration_review_override']`` with a non-empty ``reason``
+    makes the integration-review gate pass-and-log — for a ≥2-repo ticket whose
+    combined changeset was genuinely reviewed out of band (a coordinated hotfix),
+    the gate must not hard-trap a legitimate close.
     """
 
     reason: str

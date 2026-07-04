@@ -148,6 +148,78 @@ class TestReviewRequestPostAntiVacuityGate(_DataDirMixin, TestCase):
         assert payload["action"] == "post"
 
 
+def _reviewed_gate(*, required: bool) -> AbstractContextManager[object]:
+    return patch(
+        "teatree.core.gates.review_request_state_gate.get_effective_settings",
+        return_value=UserSettings(require_reviewed_state_for_review_request=required),
+    )
+
+
+class TestReviewRequestPostReviewedStateGate(_DataDirMixin, TestCase):
+    """PR-08: with the gate on, a broadcast refuses unless the ticket is REVIEWED + has evidence."""
+
+    def test_refused_when_ticket_not_reviewed_and_takes_no_claim(self) -> None:
+        backend = _FakeBackend()
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.CODED)
+        with (
+            _reviewed_gate(required=True),
+            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
+            patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
+        ):
+            code, payload = _run("--ticket-id", str(ticket.pk))
+        assert code == 2
+        assert payload["reason"] == "ticket_not_reviewed"
+        assert backend.posts == []
+        assert ReviewRequestPost.objects.filter(mr_url=_MR_URL).count() == 0
+
+    def test_refused_when_ticket_id_missing(self) -> None:
+        with (
+            _reviewed_gate(required=True),
+            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
+        ):
+            code, payload = _run()  # no --ticket-id
+        assert code == 2
+        assert payload["reason"] == "ticket_not_reviewed"
+
+    def test_allows_reviewed_ticket_with_evidence(self) -> None:
+        from teatree.core.models import ReviewEvidence  # noqa: PLC0415
+
+        OnBehalfApproval.record(target=_MR_URL, action="review_request_post", approver_id="souliane")
+        backend = _FakeBackend()
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.REVIEWED)
+        ReviewEvidence.record(
+            ticket=ticket,
+            kind=ReviewEvidence.Kind.COLD_REVIEW,
+            reviewer_identity="reviewer-bob",
+            verdict="merge_safe",
+            head_sha=_SHA,
+        )
+        with (
+            _reviewed_gate(required=True),
+            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
+            patch(f"{_CMD}.should_post_review_request", return_value=GuardDecision(action="post")),
+            patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
+        ):
+            code, payload = _run("--ticket-id", str(ticket.pk), "--title", "t")
+        assert code == 0, payload
+        assert payload["action"] == "post"
+        assert len(backend.posts) == 1
+
+    def test_noop_when_gate_off(self) -> None:
+        OnBehalfApproval.record(target=_MR_URL, action="review_request_post", approver_id="souliane")
+        backend = _FakeBackend()
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.CODED)
+        with (
+            _reviewed_gate(required=False),
+            patch(f"{_CMD}.resolve_guard_target", return_value=_TARGET),
+            patch(f"{_CMD}.should_post_review_request", return_value=GuardDecision(action="post")),
+            patch(f"{_CMD}.messaging_from_overlay", return_value=backend),
+        ):
+            code, payload = _run("--ticket-id", str(ticket.pk), "--title", "t")
+        assert code == 0, payload
+        assert payload["action"] == "post"
+
+
 class TestReviewRequestPostDedup(TestCase):
     def test_no_review_channel_or_token_falls_back_to_draft_dm(self) -> None:
         """#2231: unpostable Connect channel → draft DM, not silent suppress."""

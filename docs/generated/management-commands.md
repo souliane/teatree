@@ -353,6 +353,7 @@ Report (and optionally recover) work stranded by an outage.
 | --- | --- |
 | `record` | Persist a cold-review verdict for a PR at an exact reviewed SHA |
 | `status` | Report whether *mr_url* is safe to approve at its CURRENT head (read-only) |
+| `record-evidence` | Record a PR-08 review-evidence artifact for a ticket |
 | `lock-acquire` | Acquire the per-MR review-dispatch lock BEFORE a manual Agent() reviewer dispatch (#1405) |
 | `lock-status` | Report the current :class:`MRReviewLock` state for *mr_url* (read-only) |
 | `rebind-clearance` | Re-bind a CLEAR to a conflict-only merge commit — no re-review (PR-07) |
@@ -423,6 +424,8 @@ The ``ticket rubric-set`` / ``rubric-grade`` commands, mounted via MRO inheritan
 | `clear` | Issue a per-diff CLEAR — the orchestrator's only merge output (BLUEPRINT §17.4.2) |
 | `merge` | Execute the missing IN_REVIEW → MERGED keystone transition (BLUEPRINT §17.4) |
 | `comment` | Post a comment to an issue or work item by its URL |
+| `bulk-close` | Close (``ignore``) a batch of tickets, gated by the no-bulk-close guard (PR-08) |
+| `integration-review-override` | Record the audited escape hatch for the cross-repo integration-review gate (PR-08) |
 | `rubric-set` | Set a ticket's rubric from EXPLICIT JSON criteria, all PENDING (#2241) |
 | `rubric-grade` | Record a verifier's per-criterion PASS/FAIL on a ticket's rubric (#2241) |
 | `dod-override` | Record the DoD local-E2E gate escape hatch for a ticket (#88) |
