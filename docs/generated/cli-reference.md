@@ -4748,6 +4748,7 @@ Usage: t3 teatree gate [OPTIONS] COMMAND [ARGS]...
 │                    (self-rescue).                                            │
 │ gate-relaxation    Anti-relaxation + tach-soundness gate kill-switch         │
 │                    (self-rescue).                                            │
+│ raw-merge          Out-of-band raw-merge gate kill-switch (self-rescue).     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -5204,6 +5205,59 @@ Usage: t3 teatree gate gate-relaxation disable [OPTIONS]
 
 ```
 Usage: t3 teatree gate gate-relaxation enable [OPTIONS]
+
+ Re-enable the gate.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree gate raw-merge`
+
+```
+Usage: t3 teatree gate raw-merge [OPTIONS] COMMAND [ARGS]...
+
+ Out-of-band raw-merge gate kill-switch (self-rescue).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ status   Show whether the gate is enabled.                                   │
+│ disable  Disable the gate (self-rescue from a lockout).                      │
+│ enable   Re-enable the gate.                                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate raw-merge status`
+
+```
+Usage: t3 teatree gate raw-merge status [OPTIONS]
+
+ Show whether the gate is enabled.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate raw-merge disable`
+
+```
+Usage: t3 teatree gate raw-merge disable [OPTIONS]
+
+ Disable the gate (self-rescue from a lockout).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate raw-merge enable`
+
+```
+Usage: t3 teatree gate raw-merge enable [OPTIONS]
 
  Re-enable the gate.
 
@@ -7871,6 +7925,17 @@ Usage: t3 teatree ticket clear [OPTIONS] PR_ID SLUG
 │ --human-authorize                TEXT     ONLY for blast_class=substrate:    │
 │                                           the human/owner id authorising the │
 │                                           substrate merge.                   │
+│ --expedite-authorize             TEXT     PENDING-checks waiver: the         │
+│                                           human/owner id authorising a merge │
+│                                           on queued (never FAILED) required  │
+│                                           checks. Requires a ticket flagged  │
+│                                           expedited AND --local-ci-green-sha │
+│                                           bound to the reviewed tree.        │
+│ --local-ci-green-sha             TEXT     Attestation that the local full CI │
+│                                           lane (dev/test-cov.sh + ruff,      │
+│                                           tree-wide gates) ran green at      │
+│                                           exactly this reviewed SHA — must   │
+│                                           equal --reviewed-sha.              │
 │ --executing-loop-identity        TEXT     The loop that will execute the     │
 │                                           merge; the reviewer must differ    │
 │                                           (§17.8 clause 3).                  │
@@ -7917,13 +7982,21 @@ Usage: t3 teatree ticket merge [OPTIONS] CLEAR_ID
 │ *    clear_id      INTEGER  [required]                                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --loop-identity           TEXT  Identity of the executing loop (must differ  │
-│                                 from the CLEAR reviewer — §17.8 clause 3).   │
-│                                 [default: merge-loop]                        │
-│ --human-authorized        TEXT  Substrate-only: the recorded human           │
-│                                 authoriser id, re-presented to merge a       │
-│                                 substrate CLEAR.                             │
-│ --help                          Show this message and exit.                  │
+│ --loop-identity              TEXT  Identity of the executing loop (must      │
+│                                    differ from the CLEAR reviewer — §17.8    │
+│                                    clause 3).                                │
+│                                    [default: merge-loop]                     │
+│ --human-authorized           TEXT  Substrate-only: the recorded human        │
+│                                    authoriser id, re-presented to merge a    │
+│                                    substrate CLEAR.                          │
+│ --expedite-authorized        TEXT  Expedite-only: the recorded expedite      │
+│                                    authoriser id, re-presented to waive a    │
+│                                    PENDING (never FAILED) required check on  │
+│                                    an expedite CLEAR. Distinct from          │
+│                                    --human-authorized so the substrate hold  │
+│                                    and the pending waiver never              │
+│                                    cross-unlock.                             │
+│ --help                             Show this message and exit.               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

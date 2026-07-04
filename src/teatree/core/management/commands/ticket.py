@@ -8,12 +8,12 @@ from django.db import transaction
 from django_fsm import TransitionNotAllowed
 from django_typer.management import TyperCommand, command
 
-from teatree.core.gates.owned_repo_guard import MergeKeystoneResult, escalated_merge_result, merge_clear_refusal
 from teatree.core.gates.schema_guard import SelfDbMigrationError, require_current_schema
 from teatree.core.management.commands._attachment_commands import AttachmentCommands
 from teatree.core.management.commands._clear_preflight import clear_preflight_refusal
 from teatree.core.management.commands._close_commands import CloseCommands
 from teatree.core.management.commands._context_commands import ContextCommands
+from teatree.core.management.commands._merge_keystone_commands import MergeKeystoneCommands
 from teatree.core.management.commands._plan_gate_commands import (
     PlanAdvanceError,
     PlanReconcileResult,
@@ -26,7 +26,7 @@ from teatree.core.management.commands._rubric_commands import RubricCommands
 from teatree.core.management.commands._ticket_show import TicketShowCommands
 from teatree.core.management.commands._transition_names import ALLOWED_TRANSITIONS
 from teatree.core.management.commands._transition_refusals import review_context_refusal
-from teatree.core.merge import MergePreconditionError, merge_ticket_pr, resolve_pr_repo_slug
+from teatree.core.merge import MergePreconditionError, resolve_pr_repo_slug
 from teatree.core.models import ClearIssuanceError, ClearRequest, MergeClear, ReviewVerdict, Ticket
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.external_delivery import refresh_external_delivery_if_active
@@ -91,7 +91,15 @@ class ReattributeResult(TypedDict, total=False):
 logger = logging.getLogger(__name__)
 
 
-class Command(RubricCommands, TicketShowCommands, ContextCommands, CloseCommands, AttachmentCommands, TyperCommand):
+class Command(
+    RubricCommands,
+    TicketShowCommands,
+    ContextCommands,
+    CloseCommands,
+    AttachmentCommands,
+    MergeKeystoneCommands,
+    TyperCommand,
+):
     @command()
     def transition(self, ticket_id: int, transition_name: str) -> dict[str, object]:
         """Transition a ticket to a new state.
@@ -421,6 +429,27 @@ class Command(RubricCommands, TicketShowCommands, ContextCommands, CloseCommands
                 help="ONLY for blast_class=substrate: the human/owner id authorising the substrate merge.",
             ),
         ] = "",
+        expedite_authorize: Annotated[
+            str,
+            typer.Option(
+                "--expedite-authorize",
+                help=(
+                    "PENDING-checks waiver: the human/owner id authorising a merge on queued "
+                    "(never FAILED) required checks. Requires a ticket flagged expedited AND "
+                    "--local-ci-green-sha bound to the reviewed tree."
+                ),
+            ),
+        ] = "",
+        local_ci_green_sha: Annotated[
+            str,
+            typer.Option(
+                "--local-ci-green-sha",
+                help=(
+                    "Attestation that the local full CI lane (dev/test-cov.sh + ruff, tree-wide "
+                    "gates) ran green at exactly this reviewed SHA — must equal --reviewed-sha."
+                ),
+            ),
+        ] = "",
         executing_loop_identity: Annotated[
             str,
             typer.Option(
@@ -485,6 +514,8 @@ class Command(RubricCommands, TicketShowCommands, ContextCommands, CloseCommands
             blast_class=blast_class,
             ticket=resolved_ticket,
             human_authorizer=human_authorize,
+            expedite_authorizer=expedite_authorize,
+            local_ci_green_sha=local_ci_green_sha,
             executing_loop_identity=executing_loop_identity,
         )
 
@@ -514,6 +545,9 @@ class Command(RubricCommands, TicketShowCommands, ContextCommands, CloseCommands
             blast_class=clear.blast_class,
             gh_verify_result=clear.gh_verify_result,
             ticket=resolved_ticket,
+            # A pending expedite CLEAR records the sibling merge_safe verdict on
+            # PENDING checks; the flag lets ``record`` accept it (§17.4.3 / PR-07).
+            expedited=bool(clear.expedite_authorizer),
         )
         result: ClearIssueResult = {
             "issued": True,
@@ -526,87 +560,6 @@ class Command(RubricCommands, TicketShowCommands, ContextCommands, CloseCommands
         }
         if resolved_ticket is not None:
             result["ticket_id"] = int(resolved_ticket.pk)
-        return result
-
-    @command()
-    def merge(
-        self,
-        clear_id: int,
-        *,
-        loop_identity: Annotated[
-            str,
-            typer.Option(help="Identity of the executing loop (must differ from the CLEAR reviewer — §17.8 clause 3)."),
-        ] = "merge-loop",
-        human_authorized: Annotated[
-            str,
-            typer.Option(
-                help="Substrate-only: the recorded human authoriser id, re-presented to merge a substrate CLEAR.",
-            ),
-        ] = "",
-    ) -> MergeKeystoneResult:
-        """Execute the missing IN_REVIEW → MERGED keystone transition (BLUEPRINT §17.4).
-
-        The ONLY sanctioned merge path. Raw ``gh pr merge`` / ``glab mr
-        merge`` is mechanically refused on teatree-managed tickets (the
-        prohibition guard in ``hook_router``); they bypass the ledger
-        update, attestation binding, and ``mark_merged()`` and leave the
-        FSM incoherent.
-
-        Pre-condition (§17.4.3): a valid, actionable ``MergeClear`` (CLI
-        arg ``clear_id``), CI green on the exact PR head, an independent
-        cold-review CLEAR (``reviewer_identity`` != ``--loop-identity``),
-        SHA-match, not-draft, and ``blast_class`` != substrate. The merge
-        is bound to ``expected_head_oid`` and fails closed on head drift.
-        Post hook: atomic CLEAR-consume + ``MergeAudit`` + attestation
-        binding + ``ticket.mark_merged()``.
-
-        ``--human-authorized`` is the sanctioned substrate approval path
-        (invariant 8): the loop NEVER auto-merges substrate, but the recorded
-        human approval id (set on the CLEAR via ``ticket clear …
-        --human-authorize``) is re-presented here and **the agent executes**
-        the substrate merge through THIS SAME transition — not raw ``gh``,
-        never a human-performed merge (approval is the gate, the agent is the
-        executor). It cannot unlock a non-substrate CLEAR, so it can never
-        bypass independent loop review of logic/docs.
-
-        On a pre-condition failure the FSM is left untouched and the
-        result is flagged ``escalated`` so the durable backlog re-escalation
-        is visible (the loop never self-issues a replacement CLEAR).
-        """
-        try:
-            require_current_schema()
-        except SelfDbMigrationError as exc:
-            self.stdout.write(f"  merge refused: {exc}")
-            return {"error": str(exc), "merged": False}
-
-        try:
-            clear = MergeClear.objects.get(pk=clear_id)
-        except MergeClear.DoesNotExist:
-            return {"error": f"MergeClear {clear_id} not found", "merged": False}
-
-        if (scope_refusal := merge_clear_refusal(clear, approved=bool(human_authorized))) is not None:
-            return scope_refusal
-
-        try:
-            outcome = merge_ticket_pr(
-                clear=clear,
-                executing_loop_identity=loop_identity,
-                human_authorized=human_authorized,
-            )
-        except MergePreconditionError as exc:
-            self.stdout.write(f"  merge refused (re-escalating): {exc}")
-            return escalated_merge_result(clear, str(exc))
-
-        result: MergeKeystoneResult = {
-            "merged": True,
-            "pr_id": outcome.pr_id,
-            "slug": outcome.slug,
-            "merged_sha": outcome.merged_sha,
-            "ticket_state": outcome.ticket_state,
-        }
-        if clear.ticket_id is not None:
-            result["ticket_id"] = int(clear.ticket_id)
-        self.stdout.write(f"  merged {outcome.slug}#{outcome.pr_id} → ticket state {outcome.ticket_state}")
         return result
 
     @command()

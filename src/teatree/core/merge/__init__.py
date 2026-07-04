@@ -7,7 +7,7 @@ from ``teatree.core.merge`` while each symbol keeps an explicit defining module
 ``mock.patch`` targets name the defining submodule, never this facade.
 """
 
-from teatree.core.merge.authorization import MergePrecheck, _assert_clear_authorized
+from teatree.core.merge.authorization import MergePrecheck, PresentedApprovals, _assert_clear_authorized
 from teatree.core.merge.ci_rollup import (
     fetch_live_head_sha,
     fetch_pr_is_draft,
@@ -33,6 +33,7 @@ __all__ = [
     "MergePreconditionError",
     "MergeReplayError",
     "MergeTransientError",
+    "PresentedApprovals",
     "_assert_clear_authorized",
     "_looks_like_owner_repo",
     "assert_merge_preconditions",

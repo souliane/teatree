@@ -27,14 +27,33 @@ class MergePrecheck:
     fired: GitHub reports the PR already MERGED at the exact reviewed tree
     (a lost post-hook), so the irreversible merge must be SKIPPED and the
     post hook run idempotently against the existing merge commit.
+    ``expedited_by`` is non-empty only when the merge proceeded on PENDING
+    live checks via the human-authorized expedite waiver (§17.4.3 / PR-07) —
+    the authoriser stamped onto the ``MergeAudit`` row.
     """
 
     verified_sha: str
     already_merged_sha: str = ""
+    expedited_by: str = ""
 
     @property
     def needs_reconcile(self) -> bool:
         return bool(self.already_merged_sha)
+
+
+@dataclass(frozen=True, slots=True)
+class PresentedApprovals:
+    """The two orthogonal approval ids re-presented at ``ticket merge`` (§17.4.3).
+
+    ``human`` unlocks a substrate CLEAR (``--human-authorized``); ``expedite``
+    waives a PENDING (never FAILED) required check on an expedite CLEAR
+    (``--expedite-authorized``). Kept distinct so the substrate hold and the
+    pending waiver can never cross-unlock (one presented token unlocks exactly
+    one relaxation).
+    """
+
+    human: str = ""
+    expedite: str = ""
 
 
 def _assert_clear_authorized(
@@ -43,7 +62,7 @@ def _assert_clear_authorized(
     executing_loop_identity: str,
     slug: str,
     pr_id: int,
-    human_authorized: str,
+    approvals: PresentedApprovals | None = None,
 ) -> "MergeClear":
     """The §17.4.3 identity/substrate authorization guards (steps 1 + 5).
 
@@ -51,10 +70,13 @@ def _assert_clear_authorized(
     there reads as the ordered §17.4.3 sequence (authorize → SHA →
     reconcile → draft → checks) rather than one deeply-branching block.
     Raises :class:`MergePreconditionError` on the first failed guard;
-    returns the narrowed :class:`MergeClear` on success.
+    returns the narrowed :class:`MergeClear` on success. ``approvals`` defaults
+    to none presented (a loop-driven merge presents neither key).
     """
     from teatree.core.models import MergeClear  # noqa: PLC0415
     from teatree.core.models.merge_clear import is_non_reviewer_role  # noqa: PLC0415
+
+    approvals = approvals or PresentedApprovals()
 
     if not isinstance(clear, MergeClear):
         msg = f"no MergeClear row for {slug}#{pr_id} — refusing to merge (§17.4.3 step 1)"
@@ -69,19 +91,31 @@ def _assert_clear_authorized(
         raise MergePreconditionError(msg)
 
     # The recorded reviewer verdict must be merge-safe. ``MergeClear.issue()``
-    # rejects a non-green verdict at issue time, but a row written directly via
-    # ``.objects.create()`` (fixture / migration / non-factory ORM path) could
-    # smuggle a HOLD (pending/failed) verdict past it. Re-check here so the
-    # live-CI re-check below can never stamp green over the reviewer's recorded
-    # HOLD when CI self-flips green — the green-over-HOLD class (§17.8 clause 3:
-    # the checker's recorded verdict is authoritative, mirroring the
-    # ``is_non_reviewer_role`` issue/merge double-guard above).
-    if clear.gh_verify_result != clear.VerifyResult.GREEN:
+    # rejects a FAILED verdict at issue time and a PENDING one without a bound
+    # expedite waiver, but a row written directly via ``.objects.create()``
+    # (fixture / migration / non-factory ORM path) could smuggle either past it.
+    # Re-check here so the live-CI re-check below can never stamp green over the
+    # reviewer's recorded HOLD when CI self-flips green — the green-over-HOLD class
+    # (§17.8 clause 3: the checker's recorded verdict is authoritative, mirroring
+    # the ``is_non_reviewer_role`` issue/merge double-guard above). FAILED is
+    # refused unconditionally; PENDING is accepted ONLY when the row carries a
+    # valid bound expedite waiver re-presented at merge time (the raw-ORM-smuggle
+    # double-guard, mirroring ``expedite_pending_waived_by`` at the live-check step).
+    if clear.gh_verify_result == clear.VerifyResult.FAILED:
+        msg = (
+            f"MergeClear for {slug}#{pr_id} records gh_verify_result=failed — a FAILED required "
+            f"check is a real red verdict; expedite can never waive it, so it can never authorize "
+            f"a merge regardless of the live CI rollup (§17.4.2 / §17.8 clause 3)"
+        )
+        raise MergePreconditionError(msg)
+    if clear.gh_verify_result != clear.VerifyResult.GREEN and not clear.expedite_pending_waived_by(approvals.expedite):
         msg = (
             f"MergeClear for {slug}#{pr_id} records gh_verify_result "
-            f"({clear.gh_verify_result!r}), not green — the reviewer recorded a HOLD at the "
-            f"reviewed tree; a non-green verdict can never authorize a merge regardless of the "
-            f"live CI rollup (§17.4.2 / §17.8 clause 3)"
+            f"({clear.gh_verify_result!r}), not green — the reviewer recorded a HOLD at the reviewed "
+            f"tree. A PENDING (queued) verdict authorizes a merge ONLY via a re-presented, "
+            f"tree-bound expedite waiver (`t3 <overlay> ticket merge <id> --expedite-authorized "
+            f"<recorded-id>` on an expedite CLEAR); no valid waiver was presented (§17.4.2 / §17.8 "
+            f"clause 3)"
         )
         raise MergePreconditionError(msg)
 
@@ -117,7 +151,7 @@ def _assert_clear_authorized(
     # non-substrate CLEAR is refused outright so the path can never be used to
     # short-circuit independent loop review of a logic/docs PR (the loop is
     # the reviewer-of-record for those — invariant 8 / §17.4.1).
-    presented = human_authorized.strip()
+    presented = approvals.human.strip()
     if presented and not clear.is_substrate():
         msg = (
             f"--human-authorized presented for non-substrate MergeClear "

@@ -47,8 +47,9 @@ class TestRecordContract(TestCase):
         assert not verdict.is_merge_safe()
         assert verdict.structured_findings[0].location() == "(MR-level)"
 
-    def test_merge_safe_on_non_green_checks_is_refused(self) -> None:
-        with pytest.raises(ReviewVerdictError, match="green"):
+    def test_merge_safe_on_pending_checks_without_expedite_is_refused(self) -> None:
+        # FIX-EXPEDITE split: merge_safe on PENDING checks requires the expedite waiver.
+        with pytest.raises(ReviewVerdictError, match="requires the expedite waiver"):
             ReviewVerdict.record(
                 pr_id=1,
                 slug="souliane/teatree",
@@ -56,6 +57,19 @@ class TestRecordContract(TestCase):
                 verdict="merge_safe",
                 reviewer_identity="cold-reviewer",
                 gh_verify_result="pending",
+            )
+        assert ReviewVerdict.objects.count() == 0
+
+    def test_merge_safe_on_failed_checks_is_refused(self) -> None:
+        # FIX-EXPEDITE: a merge_safe verdict can never carry a FAILED result — even expedited.
+        with pytest.raises(ReviewVerdictError, match="never carry gh_verify_result=failed"):
+            ReviewVerdict.record(
+                pr_id=2,
+                slug="souliane/teatree",
+                reviewed_sha=_SHA,
+                verdict="merge_safe",
+                reviewer_identity="cold-reviewer",
+                gh_verify_result="failed",
             )
         assert ReviewVerdict.objects.count() == 0
 

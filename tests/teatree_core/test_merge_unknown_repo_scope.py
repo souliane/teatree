@@ -26,7 +26,7 @@ from teatree.core.overlay import OverlayBase, OverlayConfig
 pytestmark = pytest.mark.django_db
 
 _SHA = "a" * 40
-_MERGE_TICKET_PR = "teatree.core.management.commands.ticket.merge_ticket_pr"
+_MERGE_TICKET_PR = "teatree.core.management.commands._merge_keystone_commands.merge_ticket_pr"
 _GET_ALL_OVERLAYS = "teatree.core.overlay_loader.get_all_overlays"
 
 

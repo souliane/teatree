@@ -126,11 +126,13 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
     # Set to True when the remote forge returns HTTP 404; the disposition scanner
     # then excludes this ticket from future fetches (#1875).
     remote_missing = models.BooleanField(default=False)
-    # Expedite / release-blocker flag (PR-07): a flagged ticket may push before
-    # CI completes (the release is blocked on it). It NEVER relaxes the merge
-    # keystone — merge stays gated on local review + test evidence — so the flag
-    # buys earlier visibility of the branch, not an unreviewed merge. Surfaces on
-    # the ticket CLI and a statusline chip.
+    # Expedite / release-blocker flag (PR-07): the flag alone grants NO merge
+    # bypass. It makes a per-CLEAR, human-authorized, SHA-bound PENDING-checks
+    # waiver ISSUABLE (see ``MergeClear.issue`` / ``expedite_pending_waived_by``):
+    # a flagged ticket's merge can proceed on queued (pending) required checks
+    # ONLY with a recorded human authoriser and a tree-bound local-CI-green
+    # attestation. A FAILED required check is never waivable. Surfaces on the
+    # ticket CLI and a statusline chip.
     expedited = models.BooleanField(default=False)
     # Collision-free ``<repo-slug>#<issue-number>`` derived from `issue_url`
     # (#2293): a bare numeric IID may collide across repos, this key never
@@ -210,11 +212,11 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         """True when the ticket is in a genuinely terminal/abandoned state (SHIPPED/MERGED/DELIVERED/IGNORED)."""
         return self.state in self._TERMINAL_STATES
 
-    def may_push_before_ci(self) -> bool:
-        """True iff this expedite/release-blocker ticket may push before CI completes (PR-07).
+    def may_expedite(self) -> bool:
+        """True iff this ticket may carry a human-authorized PENDING-checks waiver (PR-07).
 
-        The flag relaxes ONLY the pre-CI push posture; it never relaxes the merge
-        keystone, which stays gated on local review + test evidence regardless.
+        The flag alone grants NO merge bypass — it only makes the per-CLEAR,
+        SHA-bound waiver ISSUABLE (§17.4.3 / ``MergeClear.expedite_pending_waived_by``).
         """
         return self.expedited
 

@@ -5452,7 +5452,7 @@ _OUT_OF_BAND_MERGE_REASON = (
     "Use the sanctioned keystone transition `t3 <overlay> ticket merge <clear_id>` "
     "(BLUEPRINT §17.1 invariant 8 / §17.4). If this repo is genuinely not "
     "teatree-managed and the cwd could not be resolved, run the merge from inside "
-    "the repo's working tree so the gate can classify it."
+    "the repo's working tree so the gate can classify it. kill-switch: `t3 <overlay> gate raw-merge disable`."
 )
 
 
@@ -5542,20 +5542,21 @@ def handle_block_out_of_band_merge(data: dict) -> bool:
     if data.get("tool_name") != "Bash":
         return False
     command = data.get("tool_input", {}).get("command", "")
-    if not command:
+    # No command, or the kill-switch (`t3 <overlay> gate raw-merge disable`) is off → nothing to gate.
+    if not command or not _teatree_bool_setting("out_of_band_merge_gate_enabled", default=True):
         return False
     # Matches the mutation name in argv only: a query loaded from a file or stdin
     # (`gh api graphql -F query=@file` / `--input`) moves the text out of argv and
     # is NOT inspected — an accepted residual, not a silent miss.
     if _GLAB_GH_API_RE.search(command) and _GRAPHQL_MERGE_MUTATION_RE.search(command):
-        return emit_pretooluse_deny(_OUT_OF_BAND_MERGE_REASON)
+        return _fail_open_or_deny(data, _OUT_OF_BAND_MERGE_REASON)
     if not _invokes_raw_merge_subcommand(command) and not _is_raw_merge_api_write(command):
         return False
     if not merge_target_is_managed(command, _overlay_managed_repo_signals()[0]):
         cwd = _resolve_cwd_repo(data)
         if cwd is not None and _cwd_is_teatree_managed(cwd) is False:
             return False
-    return emit_pretooluse_deny(_OUT_OF_BAND_MERGE_REASON)
+    return _fail_open_or_deny(data, _OUT_OF_BAND_MERGE_REASON)
 
 
 # ── shared effective-HTTP-method regexes (#1164 raw-review-post gate extracted) ──

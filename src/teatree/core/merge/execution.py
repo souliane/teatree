@@ -24,9 +24,9 @@ from django.db import transaction
 from django.utils import timezone
 from django_fsm import TransitionNotAllowed
 
-from teatree.core.backend_protocols import ForgeMergeResult
 from teatree.core.merge.authorization import (
     MergePrecheck,
+    PresentedApprovals,
     _assert_anti_vacuity,
     _assert_clear_authorized,
     _assert_rubric_satisfied,
@@ -42,8 +42,9 @@ from teatree.core.merge.ci_rollup import (
     fetch_pr_merge_state,
     fetch_required_checks_status,
 )
-from teatree.core.merge.errors import MergeHeadMovedError, MergePreconditionError, MergeReplayError, MergeTransientError
+from teatree.core.merge.errors import MergePreconditionError, MergeReplayError, MergeTransientError
 from teatree.core.merge.head_guard import restore_caller_branch
+from teatree.core.merge.merge_response import _raise_bound_merge_failure
 from teatree.core.merge.pr_slug_resolution import (
     _reconcile_slug_against_reviewed_sha,
     _resolve_host_kind,
@@ -60,64 +61,6 @@ logger = logging.getLogger(__name__)
 
 MERGE_TRANSIENT_ATTEMPTS = 3
 MERGE_TRANSIENT_BASE_DELAY = 0.5
-
-# Lower-cased substrings that mark a forge merge response as TRANSIENT — the
-# forge momentarily failing to answer rather than refusing the merge. A
-# truncated/empty JSON body (the #1804 window), a network/connection error, a
-# timeout, or a 5xx. Matched against the combined stdout+stderr.
-_TRANSIENT_MERGE_MARKERS = (
-    "unexpected end of json input",
-    "unexpected eof",
-    "empty response",
-    "connection reset",
-    "connection refused",
-    "connection closed",
-    "broken pipe",
-    "timeout",
-    "timed out",
-    "eof",
-    "i/o timeout",
-    "temporary failure",
-    "service unavailable",
-    "bad gateway",
-    "gateway timeout",
-    "502",
-    "503",
-    "504",
-)
-
-# Lower-cased substrings that mark a forge merge response as a POLICY REFUSAL —
-# a verdict on the merge, never retried. Checked first so a refusal that also
-# mentions a transient-looking token (rare) is still classified as a refusal.
-_POLICY_REFUSAL_MERGE_MARKERS = (
-    "not mergeable",
-    "is not mergeable",
-    "required status check",
-    "review required",
-    "changes requested",
-    "merge conflict",
-    "405",
-    "422",
-)
-
-
-def _is_transient_merge_response(rc: int, out: str, err: str) -> bool:
-    """True iff a non-zero forge merge response is transient (retryable).
-
-    A policy refusal (not-mergeable / required-checks / 405 / 422) is never
-    transient — checked first so a refusal is never mis-retried. An empty
-    body with no recognisable marker (rc != 0, no stdout, no stderr) is the
-    truncated/dropped-response shape and is treated as transient. Anything
-    else with an explicit non-transient message is NOT transient.
-    """
-    if rc == 0:
-        return False
-    combined = f"{out}\n{err}".lower()
-    if any(marker in combined for marker in _POLICY_REFUSAL_MERGE_MARKERS):
-        return False
-    if any(marker in combined for marker in _TRANSIENT_MERGE_MARKERS):
-        return True
-    return not combined.strip()
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +109,7 @@ def assert_merge_preconditions(  # noqa: PLR0913 — §17.4.3 gate entry-point; 
     slug: str,
     pr_id: int,
     human_authorized: str = "",
+    expedite_authorized: str = "",
     host_kind: str = "github",
 ) -> MergePrecheck:
     """Run the §17.4.3 loop validation in order; return the :class:`MergePrecheck`.
@@ -206,7 +150,7 @@ def assert_merge_preconditions(  # noqa: PLR0913 — §17.4.3 gate entry-point; 
         executing_loop_identity=executing_loop_identity,
         slug=slug,
         pr_id=pr_id,
-        human_authorized=human_authorized,
+        approvals=PresentedApprovals(human=human_authorized, expedite=expedite_authorized),
     )
 
     # 2. SHA still matches — re-fetch the live head; it must equal reviewed_sha.
@@ -249,15 +193,34 @@ def assert_merge_preconditions(  # noqa: PLR0913 — §17.4.3 gate entry-point; 
         msg = f"{slug}#{pr_id} is in draft state — refusing to merge (§17.4.3 step 4)"
         raise MergePreconditionError(msg)
 
-    # 3. CI still green — against the forge's LIVE rollup, not the saved snapshot.
+    # 3. CI still not FAILED — against the forge's LIVE rollup, not the saved
+    # snapshot. Three-valued (green/pending/failed):
+    #   * failed  — a real red verdict; ALWAYS refused. Expedite can never waive it
+    #               (the anti-vacuity pin: even a fully-authorized expedite CLEAR
+    #               with FAILED live checks is refused here).
+    #   * pending — queued checks, no verdict; refused UNLESS the CLEAR carries a
+    #               valid human-authorized waiver re-presented as ``expedite_authorized``
+    #               AND still bound to the reviewed tree (``expedite_pending_waived_by``).
+    #   * green   — proceeds unchanged.
     checks = fetch_required_checks_status(slug, pr_id, host_kind=host_kind)
-    if checks != "green":
+    if checks == "failed":
         msg = (
-            f"live required-checks for {slug}#{pr_id} are {checks!r}, not green — "
-            f"refusing to merge (§17.4.3 step 3; the live list is the source of "
-            f"truth, not the CLEAR snapshot)"
+            f"live required-checks for {slug}#{pr_id} are {checks!r}, not green — refusing to "
+            f"merge (§17.4.3 step 3; the live list is the source of truth, not the CLEAR snapshot). "
+            f"A FAILED required check is a verdict — expedite can never waive it"
         )
         raise MergePreconditionError(msg)
+    if checks != "green":
+        if not authorized_clear.expedite_pending_waived_by(expedite_authorized):
+            msg = (
+                f"live required-checks for {slug}#{pr_id} are {checks!r}, not green — refusing to "
+                f"merge (§17.4.3 step 3). A queued (pending) required check merges ONLY via the "
+                f"sanctioned human-authorized expedite waiver: `t3 <overlay> ticket merge <clear_id> "
+                f"--expedite-authorized <recorded-id>` on a CLEAR issued with `--expedite-authorize` "
+                f"and a `--local-ci-green-sha` bound to the reviewed tree"
+            )
+            raise MergePreconditionError(msg)
+        return MergePrecheck(verified_sha=live_sha, expedited_by=expedite_authorized.strip())
 
     return MergePrecheck(verified_sha=live_sha)
 
@@ -369,63 +332,12 @@ def _attempt_bound_merge(*, slug: str, pr_id: int, expected_head_oid: str, host_
     return result.merged_sha or expected_head_oid
 
 
-def _raise_bound_merge_failure(
-    *,
-    result: ForgeMergeResult,
-    slug: str,
-    pr_id: int,
-    expected_head_oid: str,
-    host_kind: str,
-) -> None:
-    """Classify a non-zero merge response and raise the typed forge-specific error.
-
-    GitLab and GitHub have distinct head-moved sniffs and distinct error
-    f-strings (``!`` vs ``#``, ``glab`` vs ``gh``); both are preserved verbatim.
-    """
-    out, err = result.stdout, result.stderr
-    combined = f"{out}\n{err}".lower()
-    if host_kind == "gitlab":
-        if "sha" in combined and ("does not match" in combined or "409" in combined or "conflict" in combined):
-            msg = (
-                f"GitLab refused the merge of {slug}!{pr_id}: head moved off "
-                f"{expected_head_oid} (length={len(expected_head_oid)}, "
-                f"expected_head_oid mismatch). Treated as a failed check — "
-                f"NOT retried with a new head (§17.4.3)"
-            )
-            raise MergeHeadMovedError(msg)
-        if _is_transient_merge_response(result.returncode, out, err):
-            msg = (
-                f"merge of {slug}!{pr_id} hit a transient forge response: "
-                f"{err.strip() or out.strip() or 'empty glab api response'} — retrying (#1813)"
-            )
-            raise MergeTransientError(msg)
-        msg = f"merge of {slug}!{pr_id} failed: {err.strip() or out.strip() or 'glab api non-zero'}"
-        raise MergePreconditionError(msg)
-    if "head" in combined and ("modif" in combined or "changed" in combined or "409" in combined):
-        # Print the full ``expected_head_oid`` so a length mismatch can never
-        # masquerade as a value mismatch (#1162).
-        msg = (
-            f"GitHub refused the merge of {slug}#{pr_id}: head moved off "
-            f"{expected_head_oid} (length={len(expected_head_oid)}, "
-            f"expected_head_oid mismatch). Treated as a failed check — "
-            f"NOT retried with a new head (§17.4.3)"
-        )
-        raise MergeHeadMovedError(msg)
-    if _is_transient_merge_response(result.returncode, out, err):
-        msg = (
-            f"merge of {slug}#{pr_id} hit a transient forge response: "
-            f"{err.strip() or out.strip() or 'empty gh api response'} — retrying (#1813)"
-        )
-        raise MergeTransientError(msg)
-    msg = f"merge of {slug}#{pr_id} failed: {err.strip() or out.strip() or 'gh api non-zero'}"
-    raise MergePreconditionError(msg)
-
-
 def record_merge_and_advance(
     *,
     clear: object,
     merged_sha: str,
     required_checks_status: str,
+    expedited_by: str = "",
 ) -> str:
     """Post hook: consume CLEAR, write audit, bind attestation, ``mark_merged()``.
 
@@ -478,6 +390,7 @@ def record_merge_and_advance(
                 clear=locked,
                 merged_sha=merged_sha,
                 required_checks_status=required_checks_status,
+                expedited_by=expedited_by,
             )
             ticket = locked.ticket
             if ticket is None:
@@ -519,6 +432,7 @@ def merge_ticket_pr(
     clear: object,
     executing_loop_identity: str,
     human_authorized: str = "",
+    expedite_authorized: str = "",
 ) -> MergeOutcome:
     """The full keystone transition: pre-condition → atomic merge → post hook.
 
@@ -532,6 +446,12 @@ def merge_ticket_pr(
     id is re-presented here and **the agent executes** the merge through this
     same sanctioned transition (invariant 8 — approval is the gate, the agent
     is always the executor) — see :func:`assert_merge_preconditions`.
+
+    ``expedite_authorized`` is likewise empty for every loop-driven merge (the
+    loop never auto-expedites). For an expedite CLEAR with live PENDING checks
+    the recorded expedite authoriser is re-presented here to waive the pending
+    (never a FAILED) required check — a distinct key from ``human_authorized`` so
+    the substrate hold and the pending waiver can never cross-unlock.
     """
     from teatree.core.models import MergeClear  # noqa: PLC0415
 
@@ -548,6 +468,7 @@ def merge_ticket_pr(
             clear=clear,
             executing_loop_identity=executing_loop_identity,
             human_authorized=human_authorized,
+            expedite_authorized=expedite_authorized,
         )
 
 
@@ -568,6 +489,7 @@ def _merge_ticket_pr_inner(
     clear: "MergeClear",
     executing_loop_identity: str,
     human_authorized: str,
+    expedite_authorized: str = "",
 ) -> MergeOutcome:
     slug = resolve_pr_repo_slug(clear)
     pr_id = clear.pr_id
@@ -585,6 +507,7 @@ def _merge_ticket_pr_inner(
         slug=slug,
         pr_id=pr_id,
         human_authorized=human_authorized,
+        expedite_authorized=expedite_authorized,
         host_kind=host_kind,
     )
     if precheck.needs_reconcile:
@@ -610,6 +533,7 @@ def _merge_ticket_pr_inner(
         clear=clear,
         merged_sha=merged_sha,
         required_checks_status=checks,
+        expedited_by=precheck.expedited_by,
     )
     logger.info(
         "merge keystone: %s#%s %s at %s; ticket state=%s",
