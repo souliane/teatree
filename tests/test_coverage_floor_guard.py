@@ -12,6 +12,14 @@ The floor exists because CI on ``main`` had drifted under 93% across five
 commits before anyone noticed — see PR #623 for the cleanup. Without a
 codified floor, the same drift would happen again. New uncovered code must
 ship with tests.
+
+The CI ``test (3.13)`` lane is sharded 4-way (``test-shard`` matrix) behind an
+unchanged ``test`` combiner context. This guard is the safety-critical piece of
+that change: the combiner floor is asserted LOAD-BEARING — the needs-edge to the
+shards, the >= 2 distinct shard groups, the partition check, and the shard-pass
+guard — so a future edit cannot quietly turn the 93% floor into a no-op (a
+dropped shard, a collapsed matrix, or a combiner that never depends on the
+shards must FAIL this guard).
 """
 
 import re
@@ -19,6 +27,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+import yaml
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _PYPROJECT = _REPO_ROOT / "pyproject.toml"
@@ -47,14 +56,26 @@ ALLOWED_SOURCE_PATHS: frozenset[str] = frozenset({"src/teatree"})
 # stays banned from the default.
 BANNED_PYTEST_FLAGS: frozenset[str] = frozenset({"--no-cov", "--cov-fail-under=0"})
 
-# Flags the coverage-enforcing invocations (CI heavy lane + ``dev/test-cov.sh``)
-# MUST carry. Dropping any of these silently weakens the gate: ``--cov`` /
-# ``--cov-branch`` stop measuring, ``--doctest-modules`` drops doctest coverage
-# (which contributes to the floor), ``--cov-fail-under=93`` stops failing below
-# the floor.
+# Flags the single-process local parity lane (``dev/test-cov.sh``) MUST carry.
+# Dropping any silently weakens the local gate: ``--cov`` / ``--cov-branch`` stop
+# measuring, ``--doctest-modules`` drops doctest coverage (which contributes to
+# the floor), ``--cov-fail-under=93`` stops failing below the floor. The CI lane
+# is sharded (measurement on the shards, floor on the combiner) and is locked
+# separately by ``TestShardedCoverageLane`` below.
 REQUIRED_COVERAGE_LANE_FLAGS: frozenset[str] = frozenset(
     {"--cov", "--cov-branch", "--doctest-modules", "--cov-fail-under=93"},
 )
+
+# Flags each CI shard MUST carry to measure fully AND split.
+REQUIRED_SHARD_MEASURE_FLAGS: frozenset[str] = frozenset(
+    {"--cov", "--cov-branch", "--doctest-modules", "--splits", "--group"},
+)
+# A shard measures only a QUARTER of the tree, so it must NOT enforce the 93%
+# floor on its partial data (that is the combiner's job) — and it MUST explicitly
+# neutralise the pyproject ``[tool.coverage.report] fail_under=93``, which
+# pytest-cov auto-applies otherwise, failing every quarter-suite shard.
+FORBIDDEN_SHARD_FLAG = "--cov-fail-under=93"
+REQUIRED_SHARD_FLOOR_NEUTRALISER = "--cov-fail-under=0"
 
 
 @pytest.fixture(scope="module")
@@ -125,17 +146,20 @@ def _addopts_str(pyproject: dict) -> str:
     return " ".join(addopts) if isinstance(addopts, list) else addopts
 
 
-def _ci_test_lane_command() -> str:
-    """The folded ``run: >`` block of the CI heavy lane that invokes pytest.
+def _ci_jobs() -> dict:
+    return yaml.safe_load(_CI_WORKFLOW.read_text(encoding="utf-8"))["jobs"]
 
-    Each block spans several lines (folded YAML ``>``); the coverage gate is the
-    one whose body contains both ``pytest`` and ``--cov-fail-under``.
-    """
-    text = _CI_WORKFLOW.read_text(encoding="utf-8")
-    blocks = re.findall(r"- run: >\n((?:[ \t]+.*\n)+)", text)
-    coverage_blocks = [block for block in blocks if "pytest" in block and "--cov-fail-under" in block]
-    assert coverage_blocks, "No CI ``run`` block invokes pytest with --cov-fail-under — coverage gate missing."
-    return " ".join(coverage_blocks[0].split())
+
+def _job_run_texts(job: dict) -> list[str]:
+    """Whitespace-normalised text of every ``run:`` step in a job."""
+    return [
+        " ".join(str(step["run"]).split()) for step in job.get("steps", []) if isinstance(step, dict) and "run" in step
+    ]
+
+
+def _needs(job: dict) -> list[str]:
+    needs = job.get("needs", [])
+    return [needs] if isinstance(needs, str) else list(needs)
 
 
 class TestPytestConfigNotBypassed:
@@ -155,22 +179,99 @@ class TestPytestConfigNotBypassed:
             "if you must serialize, pass ``-n0`` ad-hoc, never bake it in."
         )
 
-    def test_ci_lane_enforces_coverage_gate(self) -> None:
-        command = _ci_test_lane_command()
-        for flag in REQUIRED_COVERAGE_LANE_FLAGS:
-            assert flag in command, (
-                f"The CI heavy lane lost {flag!r}. Coverage moved off the default "
-                f"addopts INTO this lane (and dev/test-cov.sh); dropping a flag here "
-                f"silently disarms the 93% floor that gates every merge."
-            )
-
     def test_local_coverage_lane_mirrors_ci(self) -> None:
         script = _COV_LANE_SCRIPT.read_text(encoding="utf-8")
         for flag in REQUIRED_COVERAGE_LANE_FLAGS:
             assert flag in script, (
-                f"dev/test-cov.sh lost {flag!r}; it must stay CI-parity so a developer "
-                f"can reproduce the coverage gate locally."
+                f"dev/test-cov.sh lost {flag!r}; it must stay the single-process CI-parity "
+                f"lane so a developer can reproduce the coverage gate locally."
             )
+
+
+class TestShardedCoverageLane:
+    """Lock the sharded CI coverage lane so the 93% floor stays load-bearing.
+
+    The required ``test (3.13)`` context is produced by the ``test`` COMBINER,
+    which aggregates the 4-way ``test-shard`` matrix. Each assertion below pins
+    one property that, if quietly removed, would turn the floor into a no-op —
+    the exact anti-vacuity the FIX-CIRUNTIME plan calls the safety-critical edit.
+    """
+
+    def test_shard_lane_measures_fully(self) -> None:
+        pytest_runs = [text for text in _job_run_texts(_ci_jobs()["test-shard"]) if "pytest" in text]
+        assert pytest_runs, "the test-shard lane must invoke pytest"
+        command = pytest_runs[0]
+        for flag in REQUIRED_SHARD_MEASURE_FLAGS:
+            assert flag in command, (
+                f"the test-shard lane lost {flag!r}; each shard must measure exactly what "
+                f"the old monolithic lane did (--cov/--cov-branch/--doctest-modules) AND "
+                f"split (--splits/--group), or the combined floor is dishonest."
+            )
+        assert FORBIDDEN_SHARD_FLAG not in command, (
+            "the test-shard lane must NOT enforce --cov-fail-under=93: a shard measures only a "
+            "QUARTER of the tree, so floor-judging its partial data would be meaningless. "
+            "The combiner enforces the floor once over the combined data."
+        )
+        assert REQUIRED_SHARD_FLOOR_NEUTRALISER in command, (
+            "the test-shard lane must pass --cov-fail-under=0 to neutralise the pyproject "
+            "`fail_under=93` config floor; without it pytest-cov applies the floor to the "
+            "shard's partial data and every shard fails (verified: exit 1)."
+        )
+
+    def test_shard_matrix_declares_multiple_distinct_groups(self) -> None:
+        # Anti-vacuity: collapsing the matrix to one group (or dropping it) would
+        # make the "combiner" a no-op wrapper over a single un-sharded run — the
+        # floor could then be silently disarmed by editing only the shard lane.
+        groups = _ci_jobs()["test-shard"]["strategy"]["matrix"]["group"]
+        assert len(set(groups)) >= 2, (
+            f"the test-shard matrix must declare >= 2 distinct groups; got {groups}. "
+            f"A single group defeats sharding and un-anchors the combiner floor."
+        )
+
+    def test_combiner_emits_the_required_context(self) -> None:
+        jobs = _ci_jobs()
+        assert "test" in jobs, "the required `test (3.13)` context must be produced by a job keyed `test`"
+        python_versions = jobs["test"]["strategy"]["matrix"]["python-version"]
+        assert python_versions == ["3.13"], (
+            f"the combiner matrix must be python-version ['3.13'] so the emitted context stays "
+            f"exactly `test (3.13)` (branch protection lists it by name); got {python_versions}."
+        )
+
+    def test_combiner_depends_on_the_shards(self) -> None:
+        # Anti-vacuity (needs-edge): without this edge the combiner could report
+        # `test (3.13)` green without the shards ever having run.
+        assert "test-shard" in _needs(_ci_jobs()["test"]), (
+            "the `test` combiner must `needs: test-shard`; dropping the edge would let the "
+            "required context go green without the shards running."
+        )
+
+    def test_combiner_enforces_the_floor(self) -> None:
+        joined = " ".join(_job_run_texts(_ci_jobs()["test"]))
+        assert "coverage report --fail-under=93" in joined, (
+            "the combiner lost `coverage report --fail-under=93`; the whole-tree 93% branch "
+            "floor moved onto the combiner when the lane was sharded — dropping it disarms the gate."
+        )
+        assert "t3 ci coverage" in joined, (
+            "the combiner lost `t3 ci coverage`; the per-module floors must still run over the combined data."
+        )
+
+    def test_combiner_asserts_an_exact_partition(self) -> None:
+        # A dropped or duplicated shard must red the required context, not ride a
+        # green coverage number: the combiner runs the completeness checker first.
+        joined = " ".join(_job_run_texts(_ci_jobs()["test"]))
+        assert "check_shard_completeness.py" in joined, (
+            "the combiner must run scripts/ci/check_shard_completeness.py so a silently-dropped "
+            "shard (sum<total) or a duplicated group (sum>total) fails LOUD before the floor is trusted."
+        )
+
+    def test_combiner_fails_when_a_shard_failed(self) -> None:
+        # A real test failure in a shard only ran a quarter of the suite; combined
+        # coverage alone could pass, so the combiner must fail on any non-success shard.
+        joined = " ".join(_job_run_texts(_ci_jobs()["test"]))
+        assert "needs.test-shard.result" in joined, (
+            "the combiner must fail when `needs.test-shard.result != success`; otherwise a "
+            "failed shard could leave the required `test (3.13)` context green."
+        )
 
 
 # Minimum acceptable per-module floor. Lowering this constant requires the
