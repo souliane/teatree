@@ -4540,6 +4540,7 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ checking        Terse 'what did I miss' report since the last check          │
 │                 (read-only).                                                 │
 │ handover        Hand all current work from this session to another session.  │
+│ session         Session-lifecycle operations.                                │
 │ lifecycle       Session lifecycle and phase tracking.                        │
 │ env             Inspect and mutate the worktree env cache.                   │
 │ ticket          Ticket state management.                                     │
@@ -7288,6 +7289,39 @@ Usage: t3 teatree handover claim-on-start [OPTIONS]
 │ --session        TEXT  The starting session id claiming a hand-off.          │
 │ --json                 Emit JSON. [default: True]                            │
 │ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree session`
+
+```
+Usage: t3 teatree session [OPTIONS] COMMAND [ARGS]...
+
+ Session-lifecycle operations.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ prepare-stop  Refresh the durable recovery artifacts (TODO mirror, resume    │
+│               plan, at-risk worktrees).                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree session prepare-stop`
+
+```
+Usage: t3 teatree session prepare-stop [OPTIONS]
+
+ Refresh the durable recovery artifacts (idempotent, safe to re-run).
+
+ Reports the resume-plan path, the TODO-mirror path, and any at-risk
+ worktrees whose working state was captured for recovery. Re-running
+ overwrites the files and the resume ref in place — no duplicate commits.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit JSON.                                                   │
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

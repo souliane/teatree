@@ -30,6 +30,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCANNED_MODULES: tuple[Path, ...] = (
     _REPO_ROOT / "src" / "teatree" / "core" / "cleanup.py",
     _REPO_ROOT / "src" / "teatree" / "core" / "handover.py",
+    _REPO_ROOT / "src" / "teatree" / "core" / "stop_snapshot.py",
     _REPO_ROOT / "src" / "teatree" / "core" / "worktree_done.py",
     _REPO_ROOT / "src" / "teatree" / "utils" / "git_worktree.py",
     _REPO_ROOT / "src" / "teatree" / "utils" / "git.py",

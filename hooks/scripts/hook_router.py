@@ -111,6 +111,9 @@ from secret_file_print_guard import handle_block_secret_file_print
 from self_dm_destinations import SelfDmDestinations as _SelfDmDestinations
 from self_dm_destinations import resolve_self_dm_destinations as _resolve_self_dm_destinations
 from state_files import append_line, read_lines
+from stop_snapshot_slot import handle_stop_snapshot_slot
+from stop_snapshot_slot import open_prs_for_repo as _open_prs_for_repo
+from stop_snapshot_slot import run_prepare_stop_best_effort as _run_prepare_stop_best_effort
 from subagent_no_commit import handle_subagent_stop_no_commit
 from subagent_skill_gate import is_file_safe, unreferenced_demand_reason
 from teatree_settings import autoload_enabled as _autoload_enabled
@@ -3705,45 +3708,6 @@ def _git_state_for_repo(repo_path: Path) -> dict[str, str] | None:
     }
 
 
-def _open_prs_for_repo(repo_path: Path) -> list[dict]:
-    """Return open PRs authored by the current user for *repo_path*.
-
-    Best-effort: a missing ``gh``, no auth, no network, or a non-GitHub
-    remote returns ``[]``. Never raises. Tests monkeypatch this symbol
-    directly to avoid hitting the network — see
-    ``tests/test_pre_compact_snapshot_enriched.py``.
-    """
-    if not (repo_path / ".git").exists():
-        return []
-    try:
-        out = subprocess.check_output(
-            [  # noqa: S607
-                "gh",
-                "pr",
-                "list",
-                "--author",
-                "@me",
-                "--state",
-                "open",
-                "--limit",
-                "20",
-                "--json",
-                "number,title,headRefName,isDraft",
-            ],
-            cwd=str(repo_path),
-            text=True,
-            timeout=3,
-            stderr=subprocess.DEVNULL,
-        )
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return []
-    try:
-        data = json.loads(out)
-    except json.JSONDecodeError:
-        return []
-    return data if isinstance(data, list) else []
-
-
 def _resolve_cwd_repo(data: dict) -> Path | None:
     """Resolve the harness-provided ``cwd`` to a directory, if any."""
     cwd = data.get("cwd", "")
@@ -3886,7 +3850,7 @@ def _durable_session_snapshot(session_id: str, data: dict | None = None) -> str:
 
     lines += _render_no_commit_section(session_id)
 
-    from teatree.core.management.commands.tasks_session_view import read_harness_todos  # noqa: PLC0415
+    from teatree.core.harness_todos import read_harness_todos  # noqa: PLC0415 — lazy cold-import
 
     todos = read_harness_todos(session_id)
     if todos:
@@ -3942,6 +3906,7 @@ def handle_pre_compact(data: dict) -> None:
         return
 
     _write_precompact_snapshot(session_id, data)
+    _run_prepare_stop_best_effort(session_id, data)
 
     skills_file = _state_file(session_id, "skills")
     loaded: set[str] = set()
@@ -6772,6 +6737,7 @@ _HANDLERS: dict[str, list] = {
         handle_closure_reverify_stop,
         handle_consideration_gate,
         handle_speak_all_on_stop,
+        handle_stop_snapshot_slot,
         handle_loop_self_pump,
     ],
     "SubagentStop": [handle_subagent_stop_no_commit],
