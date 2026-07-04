@@ -18,8 +18,8 @@ Slack mrkdwn has **no** GitHub-flavored table syntax. A `| col | col |` / `|---|
 
 Render tabular data through the pure formatter beside the Slack backend:
 
-- `teatree.backends.slack.table_format.slack_table_block(headers, rows, *, alignment=None)` → a native Block Kit `table` block (`rich_text` cells; per-column alignment via `column_settings`). Capped at 100 rows and 20 columns.
-- `teatree.backends.slack.table_format.slack_table_fence(headers, rows, *, alignment=None, max_width=72)` → a space-aligned monospace table wrapped in a triple-backtick fence. Over-budget cells are ellipsis-truncated widest-column-first and never wrapped; empty rows render `(no rows)`.
+- `teatree.backends.slack.table_format.slack_table_block(headers, rows, *, alignment=None)` → a native Block Kit `table` block (`rich_text` cells; per-column alignment via `column_settings`). Capped at 100 rows **total** (the header row counts toward Slack's limit, so at most 99 data rows) and 20 columns.
+- `teatree.backends.slack.table_format.slack_table_fence(headers, rows, *, alignment=None, max_width=72)` → a space-aligned monospace table wrapped in a triple-backtick fence. Over-budget cells are ellipsis-truncated widest-column-first and never wrapped; rows are capped to match the block with an honest `… and N more` trailer naming the dropped rows; empty rows render `(no rows)`.
 - `teatree.backends.slack.table_format.render_table_message(headers, rows, *, alignment=None, title="", max_width=72)` → a `TableMessage(blocks, fence)`: the `blocks` for the native rendering, the `fence` for the message `text` (the notification preview and the degradation path a client uses when it cannot render the block).
 
 Post both together — the `table` block plus the fence as the fallback `text`:

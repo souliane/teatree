@@ -4,7 +4,8 @@ from typing import Any
 
 from teatree.backends.slack.table_format import (
     MAX_COLS,
-    MAX_ROWS,
+    MAX_DATA_ROWS,
+    MAX_TOTAL_ROWS,
     TableMessage,
     render_table_message,
     slack_table_block,
@@ -58,11 +59,22 @@ class TestSlackTableBlock:
         block = slack_table_block(["A", "B"], [["1", "2"]])
         assert block["column_settings"] == [{"align": "left"}, {"align": "left"}]
 
-    def test_rows_capped_at_max_rows(self) -> None:
-        rows = [[str(i)] for i in range(MAX_ROWS + 50)]
+    def test_rows_capped_at_max_total_rows(self) -> None:
+        rows = [[str(i)] for i in range(MAX_TOTAL_ROWS + 50)]
         block = slack_table_block(["A"], rows)
-        # 1 header row + at most MAX_ROWS data rows
-        assert len(_rows(block)) == MAX_ROWS + 1
+        # Header counts toward Slack's 100-total table cap: 1 header + 99 data = 100.
+        assert len(_rows(block)) == MAX_TOTAL_ROWS
+        assert MAX_DATA_ROWS == MAX_TOTAL_ROWS - 1
+
+    def test_full_table_never_exceeds_slack_100_row_total(self) -> None:
+        # Slack rejects a ``table`` block with more than 100 rows total (the
+        # header counts), hard-failing the whole DM. 150 input rows must yield
+        # exactly 100 block rows — 1 header + 99 data — never 101.
+        block = slack_table_block(["A"], [[str(i)] for i in range(150)])
+        rows = _rows(block)
+        assert len(rows) == 100
+        assert [_cell_text(c) for c in rows[0]] == ["A"]  # header
+        assert len(rows) - 1 == 99  # data rows
 
     def test_columns_capped_at_max_cols(self) -> None:
         headers = [f"c{i}" for i in range(MAX_COLS + 5)]
@@ -132,6 +144,17 @@ class TestSlackTableFence:
         data_lines = [line for line in fence.splitlines() if line != "```"]
         # header + rule + exactly one data line — the long cell is truncated, not wrapped
         assert len(data_lines) == 3
+
+    def test_rows_capped_with_and_more_trailer(self) -> None:
+        fence = slack_table_fence(["A"], [[str(i)] for i in range(150)])
+        lines = [line for line in fence.splitlines() if line != "```"]
+        # header + rule + MAX_DATA_ROWS data rows + one honest trailer
+        assert lines[-1] == f"… and {150 - MAX_DATA_ROWS} more"
+        assert len(lines[2:-1]) == MAX_DATA_ROWS
+
+    def test_no_trailer_when_within_cap(self) -> None:
+        fence = slack_table_fence(["A"], [["1"], ["2"]])
+        assert "more" not in fence
 
 
 class TestRenderTableMessage:
