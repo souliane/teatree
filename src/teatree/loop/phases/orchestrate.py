@@ -1,7 +1,7 @@
-"""``orchestrate_phase`` — the speed-driven autonomous fan-out (#1796).
+"""``orchestrate_phase`` — the wip-driven autonomous fan-out (#1796).
 
 This is the missing third job of a tick: *drive new work*. It reads the
-:class:`~teatree.config.Speed` dial and the per-overlay
+:class:`~teatree.config.Wip` dial and the per-overlay
 ``max_concurrent_auto_starts`` cap and decides how many dispatchable Task
 rows to admit this tick:
 
@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING
 
 from django.db.models import Q
 
-from teatree.config import Speed, get_effective_settings
+from teatree.config import Wip, get_effective_settings
 from teatree.core.modelkit.phases import SUBAGENT_BY_PHASE, normalize_phase, phase_spellings, subagent_for_phase
 
 if TYPE_CHECKING:
@@ -68,7 +68,7 @@ class ManifestEntry:
 
 @dataclass(slots=True)
 class OrchestrationManifest:
-    speed: Speed
+    wip: Wip
     cap: int
     entries: list[ManifestEntry] = field(default_factory=list)
     merge_order: list[int] = field(default_factory=list)
@@ -80,12 +80,12 @@ def orchestrate_phase(
     claim: bool = False,
     claimed_by: str = "orchestrate-phase",
 ) -> OrchestrationManifest:
-    speed = get_effective_settings().speed
-    if speed is Speed.MEDIUM:
-        return OrchestrationManifest(speed=speed, cap=0)
+    wip = get_effective_settings().wip
+    if wip is Wip.MEDIUM:
+        return OrchestrationManifest(wip=wip, cap=0)
 
-    cap = 1 if speed is Speed.SLOW else _fanout_budget(backends)
-    manifest = OrchestrationManifest(speed=speed, cap=cap)
+    cap = 1 if wip is Wip.SLOW else _fanout_budget(backends)
+    manifest = OrchestrationManifest(wip=wip, cap=cap)
     if cap <= 0:
         return manifest
 

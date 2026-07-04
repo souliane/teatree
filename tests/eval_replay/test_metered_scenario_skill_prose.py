@@ -82,7 +82,7 @@ _SCENARIO_SKILL_TOKENS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     # raise alone would have masked).
     (
         "full_speed_fans_out_parallel_workers_not_serial",
-        "skills/speed/SKILL.md",
+        "skills/wip/SKILL.md",
         (
             "never stall a wave to ask for issue URLs",
             "the WORKER resolves its own worktree",
@@ -123,7 +123,7 @@ _SCENARIO_SKILL_TOKENS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     # prose, not the SDK-lane gate).
     (
         "team_mate_spawned_opus_never_sonnet",
-        "skills/speed/SKILL.md",
+        "skills/wip/SKILL.md",
         (
             "Delegate the heavy standing-role unit to a sub-agent",
             "never do the heavy work inline in the main agent",

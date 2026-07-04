@@ -103,7 +103,7 @@
     [prior session log — read for context, then act on the request at the end]
 
     09:00:01  orchestrator: tick start. Backlog has 14 open assigned tickets
-              across two overlays (teatree + acme). Speed dial: medium. Skills
+              across two overlays (teatree + acme). Wip dial: medium. Skills
               loaded: t3:rules, t3:ticket, t3:code, t3:workspace, t3:ship.
     09:00:14  $ t3 teatree ticket list --assigned --state open
               #2451 feat(eval): per-phase model-tier enforcement
@@ -236,7 +236,7 @@
               ......                                                       [100%]
               6 passed in 0.58s
     09:38:05  coder(H): committed. Push queued.
-    09:39:18  orchestrator: a long aside on the speed dial. Speed is orthogonal to
+    09:39:18  orchestrator: a long aside on the wip dial. Wip is orthogonal to
               mode and autonomy; it changes concurrency only and never relaxes a
               safety gate. slow caps to one impl worker; medium is the no-fan-out
               baseline; full arms the boost loop; boost is one wave.
@@ -370,7 +370,7 @@
               PR if one doesn't exist; the check is by-branch not by content, so
               a branch that was squash-merged and re-pushed gets a new PR; this is
               intentional — the PR is the review artefact, not the branch.
-    10:32:05  orchestrator: a tangent on the speed-dial fan-out clamp. A wave never
+    10:32:05  orchestrator: a tangent on the wip-dial fan-out clamp. A wave never
               exceeds the per-overlay max_concurrent_auto_starts budget; dispatch is
               parallel but same-repo merges serialize behind the forge's
               require-up-to-date rule; the orchestrator tracks this and waits before

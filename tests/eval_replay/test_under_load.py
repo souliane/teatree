@@ -83,7 +83,7 @@ class TestLoadBudgetedSkillBundle:
         skills = tmp_path / "skills"
         bodies = {
             "rules": "# Rules\n\n" + ("rule " * 200),
-            "speed": "# Speed\n\n" + ("speed " * 50),
+            "wip": "# Wip\n\n" + ("wip " * 50),
             "loops": "# Loops\n\nthe role split source",  # tiny canonical-source skill
             "ship": "# Ship\n\n" + ("ship " * 4000),
             "review": "# Review\n\n" + ("review " * 4000),
@@ -101,22 +101,22 @@ class TestLoadBudgetedSkillBundle:
 
     def test_over_budget_keeps_agent_path_skill_rules_and_loops(self, tmp_path: Path) -> None:
         skills = self._big_skill_dir(tmp_path)
-        budgeted = load_budgeted_skill_bundle(keep_skill="speed", char_budget=15_000, skills_dir=skills)
-        assert "## skill: speed" in budgeted, "the agent_path skill (keep_skill) must never be dropped"
+        budgeted = load_budgeted_skill_bundle(keep_skill="wip", char_budget=15_000, skills_dir=skills)
+        assert "## skill: wip" in budgeted, "the agent_path skill (keep_skill) must never be dropped"
         assert "## skill: rules" in budgeted, "the always-keep cross-cutting rules skill must survive"
         assert "## skill: loops" in budgeted, "a small canonical-source skill must survive smallest-first"
 
     def test_over_budget_sheds_the_largest_tail(self, tmp_path: Path) -> None:
         skills = self._big_skill_dir(tmp_path)
-        budgeted = load_budgeted_skill_bundle(keep_skill="speed", char_budget=15_000, skills_dir=skills)
+        budgeted = load_budgeted_skill_bundle(keep_skill="wip", char_budget=15_000, skills_dir=skills)
         # Only one of the three large peripheral skills can fit beside the pinned set.
         large_present = sum(f"## skill: {n}" in budgeted for n in ("ship", "review", "e2e"))
         assert large_present < 3, "the budget did not shed any large tail skill"
 
     def test_budgeted_bundle_never_exceeds_the_char_budget(self, tmp_path: Path) -> None:
         skills = self._big_skill_dir(tmp_path)
-        budgeted = load_budgeted_skill_bundle(keep_skill="speed", char_budget=15_000, skills_dir=skills)
-        # The pinned set (speed+rules+loops) is small here; the cap holds for the fill.
+        budgeted = load_budgeted_skill_bundle(keep_skill="wip", char_budget=15_000, skills_dir=skills)
+        # The pinned set (wip+rules+loops) is small here; the cap holds for the fill.
         assert len(budgeted) <= 15_000
 
     def test_real_catalog_under_load_prompt_fits_the_input_window(self) -> None:

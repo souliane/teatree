@@ -394,7 +394,7 @@ class TestPrunesStaleSkillLinks:
     def test_prunes_link_for_removed_core_skill(self, tmp_path: Path) -> None:
         skills_src = tmp_path / "core_skills"
         skills_src.mkdir()
-        self._make_core_skill(skills_src, "speed")
+        self._make_core_skill(skills_src, "wip")
         runtime = tmp_path / "runtime_skills"
         runtime.mkdir()
 
@@ -404,17 +404,17 @@ class TestPrunesStaleSkillLinks:
         ):
             mock_svc.collect_overlay_skills.return_value = []
             SkillLinker(runtime, tmp_path / "workspace").sync()
-            removed = self._make_core_skill(skills_src, "full-speed")
+            removed = self._make_core_skill(skills_src, "full-wip")
             SkillLinker(runtime, tmp_path / "workspace").sync()
             shutil.rmtree(removed)
             SkillLinker(runtime, tmp_path / "workspace").sync()
 
-        assert {p.name for p in runtime.iterdir()} == {"speed"}
+        assert {p.name for p in runtime.iterdir()} == {"wip"}
 
     def test_prunes_link_for_renamed_core_skill(self, tmp_path: Path) -> None:
         skills_src = tmp_path / "core_skills"
         skills_src.mkdir()
-        self._make_core_skill(skills_src, "full-speed")
+        self._make_core_skill(skills_src, "full-wip")
         runtime = tmp_path / "runtime_skills"
         runtime.mkdir()
 
@@ -424,10 +424,10 @@ class TestPrunesStaleSkillLinks:
         ):
             mock_svc.collect_overlay_skills.return_value = []
             SkillLinker(runtime, tmp_path / "workspace").sync()
-            (skills_src / "full-speed").rename(skills_src / "speed")
+            (skills_src / "full-wip").rename(skills_src / "wip")
             SkillLinker(runtime, tmp_path / "workspace").sync()
 
-        assert {p.name for p in runtime.iterdir()} == {"speed"}
+        assert {p.name for p in runtime.iterdir()} == {"wip"}
 
     def test_prunes_link_for_overlay_skill_removed_from_source(self, tmp_path: Path) -> None:
         skills_src = tmp_path / "core_skills"
@@ -455,7 +455,7 @@ class TestPrunesStaleSkillLinks:
     def test_leaves_user_owned_real_directory(self, tmp_path: Path) -> None:
         skills_src = tmp_path / "core_skills"
         skills_src.mkdir()
-        self._make_core_skill(skills_src, "speed")
+        self._make_core_skill(skills_src, "wip")
         runtime = tmp_path / "runtime_skills"
         runtime.mkdir()
         own = runtime / "my-own-skill"
@@ -475,7 +475,7 @@ class TestPrunesStaleSkillLinks:
     def test_preserves_contribute_mode_link(self, tmp_path: Path) -> None:
         skills_src = tmp_path / "core_skills"
         skills_src.mkdir()
-        self._make_core_skill(skills_src, "speed")
+        self._make_core_skill(skills_src, "wip")
         workspace = tmp_path / "workspace"
         contrib_target = workspace / "my-fork" / "skills" / "code"
         contrib_target.mkdir(parents=True)

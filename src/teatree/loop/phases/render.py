@@ -81,7 +81,7 @@ def _orchestrate(request: "TickRequest", *, statusline_path: Path | None) -> Non
 
     *   **OFF (default)** — no budget key is written (any prior one is cleared),
         so the claimer reads UNCLAMPED. Byte-identical to before the arm.
-    *   **ON** — at a clamping speed (``full``/``boost``/``slow``) the computed
+    *   **ON** — at a clamping wip (``full``/``boost``/``slow``) the computed
         cap is persisted as the budget; at ``medium`` no budget key is written
         (absence = unclamped = today's throughput). The phase never claims, so
         there is no orphan window.
@@ -92,7 +92,7 @@ def _orchestrate(request: "TickRequest", *, statusline_path: Path | None) -> Non
     which the reader treats as unclamped: fail-safe by construction.
     """
     try:
-        from teatree.config import Speed  # noqa: PLC0415
+        from teatree.config import Wip  # noqa: PLC0415
         from teatree.loop.admit_budget import clear_admit_budget, write_admit_budget  # noqa: PLC0415
         from teatree.loop.statusline import default_path  # noqa: PLC0415
 
@@ -101,7 +101,7 @@ def _orchestrate(request: "TickRequest", *, statusline_path: Path | None) -> Non
             clear_admit_budget(statusline_path=target)
             return
         manifest = orchestrate_phase(backends=request.backends, claim=False)
-        if manifest.speed is Speed.MEDIUM:
+        if manifest.wip is Wip.MEDIUM:
             clear_admit_budget(statusline_path=target)
             return
         write_admit_budget(manifest.cap, statusline_path=target)

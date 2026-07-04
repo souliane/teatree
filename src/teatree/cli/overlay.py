@@ -13,8 +13,8 @@ import typer
 from teatree.agents.skill_injection import build_subagent_skill_preamble
 from teatree.cli.autonomy import register_autonomy_commands
 from teatree.cli.django_groups import DJANGO_GROUPS, DjangoGroup
-from teatree.cli.speed import register_speed_commands
 from teatree.cli.teatree_gate import register_gate_commands
+from teatree.cli.wip import register_wip_commands
 from teatree.skill_support.loading import DEFAULT_SKILLS_DIR
 from teatree.utils.django_db import runner_prefix
 from teatree.utils.run import run_streamed, spawn
@@ -259,7 +259,7 @@ class OverlayAppBuilder:
         self._register_skill_preamble_command()
         self._register_config_commands()
         register_gate_commands(self.overlay_app)
-        register_speed_commands(self.overlay_app)
+        register_wip_commands(self.overlay_app)
         register_autonomy_commands(self.overlay_app)
 
         for group_name, dj_group in DJANGO_GROUPS.items():

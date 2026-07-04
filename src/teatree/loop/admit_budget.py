@@ -1,6 +1,6 @@
 """Orchestrate admit-budget sidecar — the read-only fan-out ceiling (#1796).
 
-The reconciled ``speed=full`` fan-out (#1796) keeps exactly ONE mutation
+The reconciled ``wip=full`` fan-out (#1796) keeps exactly ONE mutation
 point: the ``claim_next_pending`` compare-and-swap (the #786 boundary). The
 ``orchestrate_phase`` planner no longer claims; it computes a per-tick admit
 *budget* (the clamped fan-out cap) and the tick persists it here, beside the
@@ -11,7 +11,7 @@ hits the ceiling, so claimed ≡ spawned and the orphan window is eliminated.
 
 Two halves cross the process boundary through one JSON file:
 
-*   :func:`write_admit_budget` (tick side) — clamps speed → cap, writes the
+*   :func:`write_admit_budget` (tick side) — clamps wip → cap, writes the
     ``orchestrate_admit_budget`` key + a ``…_written_at`` epoch. Last-writer-
     wins, idempotent per tick.
 *   :func:`read_admit_budget` (claimer side) — returns the budget only when it
@@ -20,7 +20,7 @@ Two halves cross the process boundary through one JSON file:
     corrupt sidecar, or a non-int value. A dead loop's stale budget must never
     wrongly throttle live dispatch — absence is today's unclamped throughput.
 
-At ``medium`` speed or with the toggle off the tick writes NO budget key (it
+At ``medium`` wip or with the toggle off the tick writes NO budget key (it
 clears any prior one), so the claimer reads ``None`` = unclamped = byte-
 identical to today.
 """

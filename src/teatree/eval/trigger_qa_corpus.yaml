@@ -20,7 +20,7 @@
     - "write a retrospective for this session"
     - "create a worktree and provision the database"
 
-- skill: speed
+- skill: wip
   should_fire:
     - "go full-speed and blast the backlog in parallel mode"
     - "fan-out and tackle everything at once"

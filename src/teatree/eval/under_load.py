@@ -58,7 +58,7 @@ _BUNDLE_CHAR_BUDGET = 600_000
 #: skill): ``rules`` is the cross-cutting invariant surface that every real session
 #: loads, so it is the single most important source of the cross-rule competition
 #: the lane reproduces. Keeping it guarantees a scenario whose ``agent_path`` is a
-#: DIFFERENT skill (e.g. ``speed``) still runs under the rules-skill load.
+#: DIFFERENT skill (e.g. ``wip``) still runs under the rules-skill load.
 _ALWAYS_KEEP_SKILLS: frozenset[str] = frozenset({"rules"})
 
 
