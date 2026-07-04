@@ -97,14 +97,12 @@ _NEVER_LOCKOUT_EXEMPT_DENY_HANDLERS: Final[dict[str, str]] = {
         "converts loop-driven AskUserQuestion to DeferredQuestion (present-mode deny arm, #1174); "
         "denies only AskUserQuestion, never arbitrary Bash"
     ),
-    # Narrow targeted-command gate — denies only Edit/Write when ticket is in STARTED (pre-plan) state.
-    "handle_block_edit_before_planned": (
-        "denies Edit/Write only when the ticket FSM is in STARTED (no PlanArtifact yet); fail-open on any error"
-    ),
-    # NB: handle_enforce_orchestrator_boundary is NO LONGER exempt — both its
-    # heavy-Bash arm and its default-ON foreground-Agent arm (#1692) now route
-    # their deny through _fail_open_or_deny, so the contract verifies the route
-    # structurally rather than tracking a TODO here.
+    # NB: the orchestrator-boundary gate (#1692) plus the plan-edit gate
+    # (#2384 PR-09) are NO LONGER exempt. Each routes its deny through the
+    # fail-open chokepoint, so the contract verifies the route STRUCTURALLY rather
+    # than tracking a redundant allowlist entry. Shrinking the allowlist to only
+    # the two documented hard-safety classes (public-egress leak, narrow
+    # targeted-command) is the whole point of routing them through the chokepoint.
 }
 
 
@@ -262,6 +260,28 @@ def test_loop_registration_gate_routes_through_fail_open() -> None:
     )
     assert "handle_enforce_loop_registration" not in _NEVER_LOCKOUT_EXEMPT_DENY_HANDLERS, (
         "the loop-registration gate is FIXED (fail-open-routed); it must not be on the exemption allowlist"
+    )
+
+
+def test_plan_edit_gate_routes_through_fail_open() -> None:
+    """The plan-edit gate fail-open-routes and is OFF the allowlist (#2384 PR-09 shrink).
+
+    ``handle_block_edit_before_planned`` already routes its deny through
+    ``_fail_open_or_deny``, so its allowlist entry was redundant. Removing it
+    shrinks the never-lockout exemption set to only the two documented
+    hard-safety classes — this pins that the gate is still fail-open-routed
+    (never a bare lockout) after the removal.
+    """
+    tree = _module_tree()
+    funcs = _call_graph_functions(tree)
+    reachable = _reachable_callees("handle_block_edit_before_planned", funcs)
+    assert _DENY_WRITER in reachable, "the plan-edit gate must still be able to deny"
+    assert _FAIL_OPEN_ROUTER in reachable, (
+        "handle_block_edit_before_planned must route its deny through "
+        f"{_FAIL_OPEN_ROUTER} so the self-rescue + danger_gate_fail_open escapes apply"
+    )
+    assert "handle_block_edit_before_planned" not in _NEVER_LOCKOUT_EXEMPT_DENY_HANDLERS, (
+        "the plan-edit gate is fail-open-routed; its redundant allowlist entry must be pruned"
     )
 
 

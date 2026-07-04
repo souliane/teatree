@@ -50,6 +50,9 @@ from availability_away_probe import resolved_defers_questions as _resolved_defer
 from banned_terms_gate import handle_banned_terms_pretool
 from completion_claim_gate import handle_completion_claim_gate
 from config_overwrite_guard import handle_block_config_overwrite
+from cron_tracking import cron_cadence_seconds as _cron_cadence_seconds  # noqa: F401
+from cron_tracking import derive_loop_name as _derive_loop_name  # noqa: F401
+from cron_tracking import handle_track_cron_jobs
 from deny_circuit_breaker import apply_deny_circuit_breaker as _apply_deny_circuit_breaker
 from deny_circuit_breaker import deny_circuit_breaker_enabled as _deny_circuit_breaker_enabled  # noqa: F401
 from deny_circuit_breaker import deny_circuit_breaker_threshold as _deny_circuit_breaker_threshold  # noqa: F401
@@ -60,9 +63,10 @@ from direct_command_guard import deny_match as _deny_match  # noqa: F401
 from direct_command_guard import handle_block_direct_commands
 from django_bootstrap import bootstrap_teatree_django
 from engagement import engage
+from gate_result import GateOutcome, classify_validator_run
 from loop_owner_db import db_lease_consult_disabled as _db_lease_consult_disabled
 from loop_owner_db import db_owner_is_current_session as _db_owner_is_current_session
-from loop_registrations import emit_loop_registrations, is_bare_loop_tick_prompt, loop_name_from_prompt
+from loop_registrations import emit_loop_registrations, is_bare_loop_tick_prompt
 from loop_state_self_pump_gate import db_loop_state_suppresses_self_pump
 from main_clone_guard import handle_block_main_clone_mutation
 from managed_repo import db_overlays_registry as _db_overlays_registry
@@ -102,6 +106,7 @@ from subagent_no_commit import handle_subagent_stop_no_commit
 from subagent_skill_gate import is_file_safe, unreferenced_demand_reason
 from teatree_settings import autoload_enabled as _autoload_enabled
 from teatree_settings import teatree_bool_setting as _teatree_bool_setting
+from teatree_settings import teatree_bool_setting_loud as _teatree_bool_setting_loud
 from teatree_settings import teatree_int_setting as _teatree_int_setting
 from turn_inspect import current_turn_tool_commands
 from unknown_repo_push_gate import handle_block_unknown_repo_push
@@ -1851,7 +1856,18 @@ def handle_validate_mr_metadata(data: dict) -> bool:
     if result is None:
         return _handle_broken_validate_env(data)
 
-    if result.returncode != 0:
+    outcome = classify_validator_run(result)
+    if outcome is GateOutcome.CANNOT_EVALUATE:
+        # The validator RAN but crashed (a traceback, not a clean verdict).
+        # Crash ≠ deny (#1528): warn loudly and allow — the remote CI
+        # MR-title/description job is the backstop for real non-compliance.
+        sys.stderr.write(
+            "NOTE: the MR-metadata validator crashed (could not evaluate) — "
+            "allowing the MR to proceed (fail-open-with-warn). The remote "
+            "MR-title/description CI job remains the backstop.\n"
+        )
+        return False
+    if outcome is GateOutcome.DENY:
         return emit_pretooluse_deny(
             (result.stderr or result.stdout or "").strip() or "MR title/description failed overlay validation."
         )
@@ -2382,6 +2398,19 @@ def handle_block_self_dm_via_mcp(data: dict) -> bool:
 # ── PreToolUse: pre-dispatch quote-scanner gate (#1401) ─────────────
 
 
+def _dispatch_quote_scan_enabled() -> bool:
+    """Whether the pre-dispatch quote scan is enabled (default True, #1564).
+
+    Fails OPEN to enabled on a missing/broken config so the gate keeps its
+    protective default; an explicit bare ``false`` is the one-line kill-switch
+    (``t3 <overlay> config_setting set dispatch_quote_scan_enabled false``). An
+    UNKNOWN (non-boolean) value warns loudly and keeps the default — the
+    misconfiguration is surfaced, not silently swallowed. See
+    :func:`_teatree_bool_setting_loud` for the fail-loud semantics.
+    """
+    return _teatree_bool_setting_loud("dispatch_quote_scan_enabled", default=True)
+
+
 def handle_dispatch_prompt_quote_scanner(data: dict) -> bool:
     """Refuse an ``Agent``/``Task`` dispatch whose prompt carries verbatim user-voice/PII.
 
@@ -2407,7 +2436,14 @@ def handle_dispatch_prompt_quote_scanner(data: dict) -> bool:
     scan): the ``sys.path`` bootstrap + exception swallow mirror the #1314
     posture of the publish gate. Every decision lands in the shared
     quote-scanner ledger so cold review can audit what the gate saw.
+
+    Disabled entirely (pass-through) when
+    ``[teatree] dispatch_quote_scan_enabled = false`` — the one-line
+    kill-switch (#1564); an unknown (non-boolean) value warns loudly and
+    keeps the protective default (enabled).
     """
+    if not _dispatch_quote_scan_enabled():
+        return False
     src_dir = Path(__file__).resolve().parents[2] / "src"
     added = False
     try:
@@ -5619,132 +5655,6 @@ def handle_session_end(data: dict) -> None:
 
 
 # ── PostToolUse: track-cron-jobs ──────────────────────────────────────
-
-
-_LOOP_NAME_MAX = 20
-
-
-def _clean_token(token: str) -> str:
-    """Strip surrounding/trailing punctuation and backticks from a token."""
-    return token.strip("`").strip(".,;:!?\"'()[]{}/").strip("`")
-
-
-def _derive_loop_name(prompt: str) -> str:
-    """Derive a short display name from a cron/loop prompt.
-
-    - The canonical teatree loop prompt maps to a stable readable name.
-    - Slash-command prompts use the command token.
-    - Otherwise a short label is taken from the first meaningful word.
-
-    Surrounding punctuation and backticks are always stripped.
-    """
-    prompt = prompt.strip()
-
-    # 1. A teatree loop-tick prompt → a stable readable name: a per-loop tick
-    # (#2650) shows that loop's OWN name (the native `/loop` it drives), the
-    # legacy fat-tick prompt shows "tick".
-    per_loop = loop_name_from_prompt(prompt)
-    if per_loop is not None or prompt == _LOOP_PROMPT or prompt.startswith(_LOOP_PROMPT):
-        return (per_loop or "tick")[:_LOOP_NAME_MAX]
-
-    if prompt.startswith("!"):
-        prompt = prompt[1:].strip()
-
-    parts = prompt.split()
-    if not parts:
-        return "loop"
-
-    # `t3 loop <subcommand>` shell form → the subcommand (e.g. `tick`).
-    if parts[:2] == ["t3", "loop"] and len(parts) > 2:  # noqa: PLR2004
-        return _clean_token(parts[2])[:_LOOP_NAME_MAX] or "loop"
-
-    # 2. Slash-command form: a leading `/foo` or an embedded `/foo` token.
-    #    `/loop 5m /babysit-prs` wraps the real command — use the last token.
-    slash_tokens = [p for p in parts if p.startswith("/") and len(p) > 1]
-    if slash_tokens:
-        return _clean_token(slash_tokens[-1].split("/")[-1])[:_LOOP_NAME_MAX] or "loop"
-
-    # 3. Prose: first meaningful word, punctuation/backticks stripped.
-    for part in parts:
-        cleaned = _clean_token(part)
-        if cleaned:
-            return cleaned[:_LOOP_NAME_MAX]
-    return "loop"
-
-
-def _load_crons(path: Path) -> dict:
-    if not path.is_file():
-        return {"jobs": {}, "wakeup": None}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {"jobs": {}, "wakeup": None}
-
-
-def _save_crons(path: Path, data: dict) -> None:
-    path.write_text(json.dumps(data) + "\n", encoding="utf-8")
-
-
-def handle_track_cron_jobs(data: dict) -> None:
-    """Track CronCreate/CronDelete/ScheduleWakeup for statusline display."""
-    tool_name = data.get("tool_name", "")
-    if tool_name not in {"CronCreate", "CronDelete", "ScheduleWakeup"}:
-        return
-
-    session_id = data.get("session_id", "")
-    if not session_id:
-        return
-
-    _ensure_state_dir()
-    crons_file = _state_file(session_id, "crons")
-    state = _load_crons(crons_file)
-    if "jobs" not in state:
-        state["jobs"] = {}
-
-    import time  # noqa: PLC0415
-
-    now = int(time.time())
-    tool_input = data.get("tool_input", {})
-
-    if tool_name == "CronCreate":
-        prompt = tool_input.get("prompt", "")
-        cron_expr = tool_input.get("cron", "")
-        name = _derive_loop_name(prompt)
-        job_id = data.get("tool_result", {}).get("id", "") or f"job-{now}"
-        cadence = _cron_cadence_seconds(cron_expr)
-        state["jobs"][job_id] = {
-            "name": name,
-            "cron": cron_expr,
-            "cadence": cadence,
-            "created_at": now,
-        }
-        _state_file(session_id, "loop-pending").unlink(missing_ok=True)
-    elif tool_name == "CronDelete":
-        job_id = tool_input.get("id", "")
-        state["jobs"].pop(job_id, None)
-    elif tool_name == "ScheduleWakeup":
-        delay = int(tool_input.get("delaySeconds", 0))
-        reason = tool_input.get("reason", "")
-        state["wakeup"] = {
-            "name": reason[:30] if reason else "loop",
-            "next_epoch": now + delay,
-        }
-
-    _save_crons(crons_file, state)
-
-
-def _cron_cadence_seconds(cron_expr: str) -> int | None:
-    """Extract cadence in seconds from simple */N minute patterns."""
-    parts = cron_expr.strip().split()
-    if len(parts) != 5:  # noqa: PLR2004
-        return None
-    minute = parts[0]
-    if minute.startswith("*/") and all(p == "*" for p in parts[1:]):
-        try:
-            return int(minute[2:]) * 60
-        except ValueError:
-            return None
-    return None
 
 
 # ── PreToolUse: block-out-of-band-merge (#126) ──────────────────────
