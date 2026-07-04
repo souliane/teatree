@@ -159,7 +159,7 @@ def record_result_envelope(
 
 #: Reviewing phases whose returned ``review_verdict`` the orchestrator records
 #: server-side (corr-11). These phases are denied the shell (PR-11), so their
-#: reviewer hands the verdict back instead of running ``t3 review record``.
+#: reviewer hands the verdict back instead of running ``t3 <overlay> review record``.
 _REVIEW_VERDICT_PHASES = frozenset({"reviewing", "e2e_reviewing"})
 #: Default reviewer identity when the envelope omits one — a non-maker/loop token
 #: (``ReviewVerdict.record`` refuses a maker/coding/loop identity, §17.8 clause 3).

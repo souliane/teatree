@@ -330,7 +330,7 @@ class ReviewLoop(models.Model):
             f"doctrine and RETURN your verdict in the result envelope: "
             f'`"review_verdict": {{"verdict": "merge_safe"|"hold", "reviewed_sha": "<full HEAD SHA>", '
             f'"reviewer_identity": "<your-reviewer-id>", "findings": [...]}}`. This phase has no shell — do '
-            f"NOT run `t3 review record`; the orchestrator records the ReviewVerdict from your envelope and "
+            f"NOT run `t3 <overlay> review record`; the orchestrator records the ReviewVerdict from your envelope and "
             f"advances this loop."
         )
 

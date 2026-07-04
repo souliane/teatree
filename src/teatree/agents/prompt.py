@@ -69,12 +69,12 @@ _VERIFICATION_BRIEF_LINES: tuple[str, ...] = (
 )
 
 # Injected into a headless reviewing brief (corr-11): the reviewing phase is
-# denied the shell (PR-11), so it CANNOT run `t3 review record`. It returns the
+# denied the shell (PR-11), so it CANNOT run `t3 <overlay> review record`. It returns the
 # verdict in the result envelope instead; the orchestrator records it server-
 # side (maker≠checker: a different actor writes the row).
 _REVIEW_VERDICT_RETURN_LINES: tuple[str, ...] = (
     "",
-    "RECORD YOUR VERDICT BY RETURNING IT (this phase has no shell — do NOT try `t3 review record`):",
+    "RECORD YOUR VERDICT BY RETURNING IT (this phase has no shell — do NOT try `t3 <overlay> review record`):",
     "add a `review_verdict` object to your final JSON result. The orchestrator records the",
     "ReviewVerdict server-side and releases the review lock:",
     '  "review_verdict": {"verdict": "merge_safe"|"hold", "reviewed_sha": "<full 40-char HEAD SHA>",',

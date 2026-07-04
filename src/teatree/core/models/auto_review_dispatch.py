@@ -46,8 +46,8 @@ def build_review_contract(*, slug: str, pr_id: int, head_sha: str, pr_url: str) 
 
     The dispatched ``t3:reviewer`` cold-reviews the diff per /t3:review doctrine
     and RETURNS its verdict in the ``review_verdict`` result envelope. This runs
-    headless with the shell denied (PR-11), so it must NOT try ``t3 review
-    record``; the orchestrator records the ``ReviewVerdict`` server-side from the
+    headless with the shell denied (PR-11), so it must NOT try ``t3 <overlay>
+    review record``; the orchestrator records the ``ReviewVerdict`` server-side from the
     returned envelope (maker≠checker: a different actor writes it), which is the
     artifact the next pr_sweep merges on and which releases the review lock (#68,
     #1405).
@@ -57,7 +57,7 @@ def build_review_contract(*, slug: str, pr_id: int, head_sha: str, pr_url: str) 
         f'{head_sha[:8]}, then RETURN your verdict in the result envelope: `"review_verdict": '
         f'{{"verdict": "merge_safe", "reviewed_sha": "{head_sha}", "reviewer_identity": '
         f'"<your-reviewer-id>", "gh_verify_result": "green"}}`. Use "verdict": "hold" with a "findings" '
-        f"array when blocking. Do NOT run `t3 review record` — this phase has no shell; the orchestrator "
+        f"array when blocking. Do NOT run `t3 <overlay> review record` — this phase has no shell; the orchestrator "
         f"records the ReviewVerdict at head {head_sha[:8]} from your envelope, and pr_sweep consumes it "
         f"to auto-merge this own PR (#68)."
     )
