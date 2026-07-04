@@ -84,12 +84,18 @@ def _auto_merge(repo_root: str, p1: str, p2: str) -> "tuple[str, frozenset[str]]
 
 
 def is_conflict_only_merge_commit(repo_root: str, merge_sha: str) -> bool:
-    """True iff ``merge_sha`` is a two-parent merge that only resolves conflicts.
+    r"""True iff ``merge_sha`` is a two-parent merge that only resolves conflicts.
 
     Compares the committed merge tree against ``git merge-tree --write-tree`` of
     its two parents: conflict-only iff every deviating path is in git's
     authoritative conflicted-path set for that auto-merge. An empty deviation set
     (the commit is exactly the machine merge) is trivially conflict-only.
+
+    Both sides read ``-z`` (NUL-separated, verbatim): without it the deviation
+    diff C-quotes a non-ASCII path (``café.py`` → ``"caf\303\251.py"``) under
+    ``core.quotePath`` while the conflicted-path set stays verbatim, so the two
+    never match — a real conflict-only merge over-blocks and a decoy path crafted
+    to collide under C-quoting could fail OPEN.
     """
     parents = merge_commit_parents(repo_root, merge_sha)
     if len(parents) != _MERGE_PARENT_COUNT:
@@ -102,10 +108,10 @@ def is_conflict_only_merge_commit(repo_root: str, merge_sha: str) -> bool:
     merge_tree = _git(repo_root, ["rev-parse", f"{merge_sha}^{{tree}}"]).stdout.strip()
     if not _looks_like_oid(merge_tree):
         return False
-    diff = _git(repo_root, ["diff", "--name-only", auto_tree, merge_tree])
+    diff = _git(repo_root, ["diff", "--name-only", "-z", auto_tree, merge_tree])
     if diff.returncode != 0:
         return False
-    deviations = [line for line in diff.stdout.splitlines() if line.strip()]
+    deviations = [record for record in diff.stdout.split("\x00") if record]
     return all(path in conflicted_paths for path in deviations)
 
 
