@@ -12,6 +12,7 @@ from teatree.core.gates.architecture_precheck_gate import warn_if_precheck_incom
 from teatree.core.gates.open_questions_gate import warn_if_open_questions_missing
 from teatree.core.mr_metadata import ensure_standard_body
 from teatree.core.overlay_loader import get_overlay
+from teatree.core.pr_create_verify import verify_pr_exists
 from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.utils import git
 
@@ -321,6 +322,16 @@ class ShipExecutor(RunnerBase):
                     f"host.create_pr returned a PR url for the wrong repo "
                     f"(expected slug {expected_slug!r} not found in {url!r})"
                 ),
+            )
+        # #1194 verify-by-re-read: a well-formed URL for the right repo is still
+        # not proof the PR is live — re-read it before advancing the FSM. A
+        # re-read that 404s means the create silently no-op'd; report failure
+        # so no phantom URL is recorded.
+        verified = verify_pr_exists(host, url)
+        if not verified.confirmed:
+            return RunnerResult(
+                ok=False,
+                detail=f"host.create_pr URL {url!r} failed verify-by-re-read: {verified.reason}",
             )
         self._record_pr_url(ticket, extra, url, branch)
         logger.info("Ship executor pushed %s and opened PR %s", branch, url)

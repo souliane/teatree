@@ -23,6 +23,7 @@ from teatree.core.backend_protocols import BackendResolutionError, PullRequestSp
 from teatree.core.gates.architecture_precheck_gate import warn_if_precheck_incomplete
 from teatree.core.gates.open_questions_gate import warn_if_open_questions_missing
 from teatree.core.overlay_loader import get_overlay
+from teatree.core.pr_create_verify import verify_pr_exists
 from teatree.core.runners.ship import overlay_pr_labels, sanitize_close_keywords, should_close_ticket
 from teatree.utils import git, git_remote
 from teatree.utils.run import CommandFailedError
@@ -145,5 +146,14 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
         return EnsurePrResult(
             branch=branch_name,
             error=f"host.create_pr returned no PR url (got {url!r}; payload keys={sorted(raw.keys())!r})",
+        )
+    # #1194 verify-by-re-read: a well-formed URL is not proof the PR is live.
+    # Re-read it; a 404 means the create silently no-op'd — report the failure
+    # rather than hand back a phantom URL the caller records as a real PR.
+    verified = verify_pr_exists(host, url)
+    if not verified.confirmed:
+        return EnsurePrResult(
+            branch=branch_name,
+            error=f"host.create_pr URL {url!r} failed verify-by-re-read: {verified.reason}",
         )
     return EnsurePrResult(branch=branch_name, url=url)

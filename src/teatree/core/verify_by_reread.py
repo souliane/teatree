@@ -15,13 +15,16 @@ never let a verification failure raise into the caller — the write already
 happened by the time verification runs, so a failed verification is a signal
 to log, retry, or flag, never a reason to crash the write path.
 
-Two call sites wire this in (#1192, subsuming #1193 and #1202):
+Call sites wire this in (#1192, subsuming #1193 and #1202; #1194):
 
 *   :func:`teatree.backends.slack.reactions.add_reaction_verified` re-reads a
     posted Slack reaction via ``reactions.get`` before trusting ``reactions.add``.
 *   :func:`teatree.loops.claude_specs.verify_loop_registered` re-reads a native
     Claude ``/loop`` cron registration against a harness ``CronList`` snapshot,
     since only the agent — never a CLI — can call ``CronCreate``.
+*   :func:`teatree.core.pr_create_verify.verify_pr_exists` re-reads a just-created
+    PR's open-state before the ship/ensure path trusts ``create_pr`` and records
+    the URL, so a phantom PR (a 404 re-read) never advances the FSM (#1194).
 
 See BLUEPRINT.md §17.1 invariant 13 for the architectural statement.
 """

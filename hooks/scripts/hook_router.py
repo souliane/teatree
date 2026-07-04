@@ -84,6 +84,8 @@ from managed_repo import overlay_managed_repo_signals as _overlay_managed_repo_s
 from managed_repo import repo_root_is_teatree_managed as _repo_root_is_teatree_managed
 from managed_repo import resolve_branch_and_root as _resolve_branch_and_root
 from managed_repo import teatree_src_on_path as _teatree_src_on_path
+from mcp_slack_write_guard import handle_block_mcp_slack_write
+from mcp_slack_write_guard import is_slack_mcp_tool as _is_slack_mcp_tool
 from memory_recall import handle_recall_cold_memory
 from mr_cli_fields import extract_cli_mr_fields, extract_mr_target_repo, merge_target_is_managed
 from no_self_reviewer_assign import handle_block_self_reviewer_assign
@@ -2147,17 +2149,6 @@ def _mcp_privacy_gate_enabled() -> bool:
     :func:`_teatree_bool_setting` for the shared bare-boolean semantics.
     """
     return _teatree_bool_setting("mcp_privacy_gate_enabled", default=True)
-
-
-def _is_slack_mcp_tool(tool_name: str) -> bool:
-    """Whether *tool_name* is a Slack MCP tool (``mcp__*slack*``).
-
-    The kill-switch governs ONLY the Slack-MCP arm of the publish-privacy
-    gates; the Bash arm stays live regardless. This mirrors the matcher
-    ``mcp__.*[Ss]lack.*`` so the canary off-switch scopes to exactly the
-    newly-reachable arm.
-    """
-    return tool_name.startswith("mcp__") and "slack" in tool_name.lower()
 
 
 def handle_quote_scanner_pretool(data: dict) -> bool:
@@ -6732,6 +6723,7 @@ _HANDLERS: dict[str, list] = {
         handle_protect_default_branch,
         handle_block_main_clone_mutation,
         handle_block_self_dm_via_mcp,
+        handle_block_mcp_slack_write,
         handle_quote_scanner_pretool,
         handle_dispatch_prompt_quote_scanner,
         handle_banned_terms_pretool,

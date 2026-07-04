@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.test import TestCase
 
-from teatree.core.backend_protocols import BackendResolutionError
+from teatree.core.backend_protocols import BackendResolutionError, PrOpenState
 from teatree.core.models import Ticket, Worktree
 from teatree.core.runners import ShipExecutor
 from teatree.core.runners.base import RunnerResult
@@ -112,6 +112,33 @@ class TestShipExecutor(TestCase):
 
         assert result.ok is False
         assert "url" in result.detail.lower()
+        ticket.refresh_from_db()
+        assert "pr_urls" not in (ticket.extra or {})
+
+    def test_create_pr_url_that_fails_reread_reports_failure_with_no_url_recorded(self) -> None:
+        """#1194 verify-by-re-read: a create URL whose re-read 404s is not trusted.
+
+        ``create_pr`` handed back a well-formed URL for the right repo, but a fresh
+        independent GET reports ``UNKNOWN`` (the create silently no-op'd / the PR
+        does not exist). The ship runner MUST report failure and record no
+        ``pr_urls`` entry — no phantom PR advances the FSM.
+        """
+        ticket = self._ticket_with_worktree()
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": "https://example.com/mr/phantom"}
+        host.current_user.return_value = "souliane"
+        host.get_pr_open_state.return_value = PrOpenState.UNKNOWN
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.git.push"),
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "body")),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is False
+        assert "verify-by-re-read" in result.detail
         ticket.refresh_from_db()
         assert "pr_urls" not in (ticket.extra or {})
 
@@ -726,6 +753,17 @@ class TestShipResolvesBackendFromRepoHost(TestCase):
             ),
             patch("teatree.backends.gitlab.client.GitLabCodeHost.current_user", autospec=True, return_value="souliane"),
             patch("teatree.backends.github.client.GitHubCodeHost.current_user", autospec=True, return_value="souliane"),
+            # #1194: the create is verify-by-re-read confirmed against a live GET.
+            patch(
+                "teatree.backends.gitlab.client.GitLabCodeHost.get_pr_open_state",
+                autospec=True,
+                return_value=PrOpenState.OPEN,
+            ),
+            patch(
+                "teatree.backends.github.client.GitHubCodeHost.get_pr_open_state",
+                autospec=True,
+                return_value=PrOpenState.OPEN,
+            ),
             patch("teatree.core.runners.ship.git.push"),
         ):
             result = ShipExecutor(ticket).run()

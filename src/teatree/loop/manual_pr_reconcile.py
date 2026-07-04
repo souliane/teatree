@@ -16,7 +16,10 @@ review-request tracking and the FSM need no special-casing.
 
 This mirrors :mod:`teatree.loop.open_prs`: the tick is the single fetch point and
 the reconciler reuses the scan data it already produced — zero extra code-host
-calls.
+calls. A persisted row's ``create_verification`` is stamped ``CONFIRMED`` (#1194):
+the ``my_pr.*`` scan that produced it is a live-forge read, so the row's existence
+is re-read-confirmed by construction; the phantom-URL case is caught upstream on
+the ship/ensure create path.
 """
 
 import logging
@@ -24,6 +27,8 @@ from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+
+from django.utils import timezone
 
 from teatree.loop.pr_ticket_index import _description_from_payload, _parse_closes_ticket, resolve_author_ticket
 from teatree.utils.url_slug import pr_ref_from_url
@@ -110,9 +115,20 @@ def _reconcile_one(pr: _ScannedPr) -> bool:
         ticket = _resolve_ticket(pr)
         if ticket is None:
             return False
+        # The `my_pr.*` scan that produced `pr` is a live-forge read that returned
+        # this PR, so its existence is verify-by-re-read confirmed (#1194): a
+        # persisted row is stamped CONFIRMED. The ship/ensure create path catches
+        # a phantom URL (a 404 re-read) before it can ever reach this reconciler.
         row, changed = PullRequest.objects.get_or_create(
             url=pr.url,
-            defaults={"ticket": ticket, "overlay": ticket.overlay, "repo": pr.slug, "iid": str(pr.iid)},
+            defaults={
+                "ticket": ticket,
+                "overlay": ticket.overlay,
+                "repo": pr.slug,
+                "iid": str(pr.iid),
+                "create_verification": PullRequest.CreateVerification.CONFIRMED,
+                "create_verified_at": timezone.now(),
+            },
         )
     else:
         changed = False

@@ -101,14 +101,28 @@ class IncomingEventsScanner:
         for event in events:
             try:
                 signal = self._handle(event)
-            except Exception:
+            except Exception as exc:
                 logger.exception("IncomingEventsScanner failed on event %s", event.pk)
-                event.mark_processed()
+                # Do NOT mark_processed: that silently drops the poison. Record
+                # the failure so a transient error retries with backoff and a
+                # persistent one dead-letters (surfaced, not queue-blocking).
+                dead_lettered = event.record_failure(f"{type(exc).__name__}: {exc}")
+                if dead_lettered:
+                    signals.append(self._dead_letter_signal(event))
                 continue
             event.mark_processed()
             if signal is not None:
                 signals.append(signal)
         return signals
+
+    @staticmethod
+    def _dead_letter_signal(event: "IncomingEvent") -> ScanSignal:
+        """Surface a poisoned event that exhausted its retries (#673 dead-letter view)."""
+        return ScanSignal(
+            kind="incoming_event.dead_letter",
+            summary=f"dead-lettered {event.source} event after {event.attempts} attempts: {event.last_error}",
+            payload={"event_id": event.pk, "source": event.source, "attempts": event.attempts},
+        )
 
     def _handle(self, event: "IncomingEvent") -> ScanSignal | None:
         self._resolve_parent_text(event)
