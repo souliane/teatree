@@ -153,6 +153,27 @@ class TestBuildSystemContext(TestCase):
         assert "PHASE: reviewing" in ctx
         assert "code review" in ctx
 
+    def test_reviewing_brief_carries_verification_rigor_block(self) -> None:
+        # PR-12: a verification brief must demand the dimensions-checked verdict
+        # and a proof-of-concept read first, so review never rubber-stamps.
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+
+        ctx = build_system_context(task, skills=[])
+        assert "VERIFICATION RIGOR" in ctx
+        assert "reproduce" in ctx
+        assert "robustness" in ctx
+
+    def test_coding_brief_carries_heartbeat_dm_block(self) -> None:
+        # PR-12: a long-running maker brief auto-injects the heartbeat-DM cue.
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+
+        ctx = build_system_context(task, skills=["code"], lifecycle_skill="code")
+        assert "HEARTBEAT" in ctx
+
     def test_planning_phase_injects_persisted_intake_survey(self) -> None:
         # #2541: the planner CONSUMES the survey the intake FSM step persisted —
         # it appears in the planning context, so the planner does not re-derive it.

@@ -57,6 +57,15 @@ class TestPendingSpawn(_LoopDispatchTest):
         assert payload[0]["task_id"] == task.pk
         assert payload[0]["subagent"] == "t3:coder"
 
+    def test_spawn_payload_carries_type_prefixed_display_name(self) -> None:
+        # PR-12: every spawn is named t3-<type>-<id> so the Agent tool call is
+        # attributable, never an anonymous general-purpose spawn.
+        task = self._author_task()
+        stdout = StringIO()
+        call_command("loop_dispatch", "pending-spawn", "--json", stdout=stdout)
+        entry = json.loads(stdout.getvalue())[0]
+        assert entry["display_name"] == f"t3-coder-{task.pk}"
+
     def test_skips_claimed_tasks(self) -> None:
         task = self._reviewer_task()
         task.claim(claimed_by="loop-slot")

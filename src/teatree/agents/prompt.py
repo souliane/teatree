@@ -47,6 +47,27 @@ def _parent_result_summary(task: Task) -> str:
 
 _VERIFY_GATES_COMMAND = "t3 tool verify-gates"
 
+# Auto-injected into a long-running maker brief (PR-12): user-visible liveness
+# so a watchdog can tell "stuck" from "still working". The transport half is
+# PR-14's worker heartbeat; this is the brief-level cue the sub-agent acts on.
+_HEARTBEAT_DM_LINES: tuple[str, ...] = (
+    "",
+    "HEARTBEAT (long-running work): if this task runs long, emit a periodic user-visible",
+    "progress DM (`t3 <overlay> notify send`) — report progress, not silence. A watchdog",
+    "distinguishes a stuck run from a still-working one only if you check in.",
+)
+
+# Injected into a verification (review) brief (PR-12): the anti-rubber-stamp
+# contract — prove the change out first, then grade every quality dimension.
+_VERIFICATION_BRIEF_LINES: tuple[str, ...] = (
+    "",
+    "VERIFICATION RIGOR (do NOT rubber-stamp):",
+    "1. Read the PROOF first — reproduce the change's claimed outcome (a PoC read / a test run)",
+    "   before accepting it; a summary is not evidence, and a finding you cannot reproduce is not a finding.",
+    "2. Grade against the six quality dimensions and record a per-dimension verdict:",
+    "   correctness | robustness (failure modes) | maintainability | coherence | reliability | proactivity.",
+)
+
 # The coding directive force-loads these two by name in its first lines, and
 # ``rules`` is always embedded in full — so they are never re-listed in the
 # resolved-stack skill-load block.
@@ -144,6 +165,7 @@ def _coding_phase_directive(skills: list[str] | None = None) -> list[str]:
         "commit-stage and push-stage hooks; a bare `prek run --all-files` SKIPS the push-stage gates",
         "(comment-density, doc-update, ensure-pr, the public-repo leak gate) that CI",
         "re-runs. Report its exit code as the green-proof — not a commit-stage-only run.",
+        *_HEARTBEAT_DM_LINES,
     ]
 
 
@@ -317,6 +339,7 @@ def _reviewing_phase_lines(task: Task) -> tuple[str, ...]:
         "PHASE: reviewing",
         "1. Do a thorough code review of all changes on this ticket's branch.",
         "2. Run /t3:next when done — it handles retro + structured result + handoff.",
+        *_VERIFICATION_BRIEF_LINES,
     ]
     if fanout := _phase_fanout_directive(task):
         lines.append(fanout)

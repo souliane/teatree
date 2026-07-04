@@ -27,6 +27,7 @@ from teatree.core.modelkit.phases import (
 from teatree.core.models import Task
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.loop.admit_budget import read_admit_budget
+from teatree.loop.dispatch_gates import spawn_display_name
 from teatree.loop.statusline import default_path
 
 logger = logging.getLogger(__name__)
@@ -91,11 +92,16 @@ def _admit_budget_exhausted() -> bool:
 def _task_to_dict(task: Task) -> dict[str, Any]:
     ticket = task.ticket
     model, skill_bundle = _resolve_model_and_bundle(task)
+    subagent = _subagent_for(task)
     return {
         "task_id": int(task.pk),
         "ticket_id": int(ticket.pk),
         "phase": task.phase,
-        "subagent": _subagent_for(task),
+        "subagent": subagent,
+        # PR-12: the type-prefixed display name (``t3-<type>-<id>``) the /loop
+        # slot passes to its Agent tool, so every spawn is attributable at a
+        # glance and never an anonymous general-purpose one.
+        "display_name": spawn_display_name(subagent, int(task.pk)),
         "execution_reason": task.execution_reason,
         "issue_url": ticket.issue_url,
         "ticket_role": ticket.role,
@@ -219,7 +225,10 @@ class Command(TyperCommand):
         Tasks are returned in FIFO order (oldest pending first). The
         ``subagent`` field tells the slot which subagent_type to pass
         to its ``Agent`` tool; an empty string means the role+phase pair
-        has no registered subagent (operator triage).
+        has no registered subagent (operator triage) and is filtered out —
+        a general-purpose spawn never reaches the slot. The ``display_name``
+        field (``t3-<type>-<id>``, PR-12) is the Agent tool ``description`` the
+        slot passes, so every spawn is attributable and type-prefixed.
 
         ``--claimable-only`` (TODO #100) applies the SAME admit-budget gate
         ``claim-next`` applies, so the probe answers "is there a unit a claim
