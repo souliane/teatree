@@ -2402,8 +2402,8 @@ Usage: t3 doctor [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ authorizations  Suggest absent recommended auto-mode authorizations          │
-│                 (read-only).                                                 │
+│ authorizations  Suggest absent recommended auto-mode authorizations; re-test │
+│                 cached scope failures.                                       │
 │ check           Verify imports, required tools, and editable-install sanity. │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -2413,7 +2413,13 @@ Usage: t3 doctor [OPTIONS] COMMAND [ARGS]...
 ```
 Usage: t3 doctor authorizations [OPTIONS]
 
- Suggest absent recommended auto-mode authorizations (read-only).
+ Suggest absent recommended auto-mode authorizations; re-test cached scope
+ failures.
+
+ Read-only for settings. As the "am I authorized" re-check surface, it also
+ resets the in-process token-scope-failure cache (PR-19): once the operator
+ re-runs this after fixing a token's scopes, the next call re-tests the scope
+ live instead of short-circuiting on a stale cached miss.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -3148,6 +3154,8 @@ Usage: t3 setup recover-account-switch [OPTIONS]
  connectors.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --open          Best-effort open each connector reconnect URL in a browser   │
+│                 (fail-open).                                                 │
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -3979,6 +3987,8 @@ Usage: t3 mcp [OPTIONS] COMMAND [ARGS]...
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ serve              Run the structured-search MCP server over stdio (blocks   │
 │                    until stdin closes).                                      │
+│ reconnect          Reconnect (or print exact steps for) every                │
+│                    declared-but-down claude.ai connector.                    │
 │ browser-diagnosis  Report the optional chrome-devtools MCP registration      │
 │                    (default off).                                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -3992,6 +4002,26 @@ Usage: t3 mcp serve [OPTIONS]
  Run the structured-search MCP server over stdio (blocks until stdin closes).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 mcp reconnect`
+
+```
+Usage: t3 mcp reconnect [OPTIONS]
+
+ Reconnect (or print exact steps for) every declared-but-down claude.ai
+ connector.
+
+ claude.ai-hosted connectors are re-authed in the claude.ai UI, not headlessly
+ via ``claude mcp`` — so this prints one ``RECONNECT <name> -> <target>`` line
+ per down connector across every registered overlay's manifest, and exits
+ non-zero when a REQUIRED connector is down so a caller (or CI) can gate on it.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --open          Best-effort open each reconnect URL in a browser             │
+│                 (fail-open).                                                 │
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

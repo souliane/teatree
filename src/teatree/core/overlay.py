@@ -28,6 +28,7 @@ from teatree.types import (
 from teatree.utils.run import CommandFailedError, TimeoutExpired
 
 if TYPE_CHECKING:
+    from teatree.core.connector_manifest import ConnectorRequirement
     from teatree.core.models import Worktree
     from teatree.core.readiness import Probe
     from teatree.types import RawAPIDict
@@ -558,6 +559,10 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
     def get_mcp_provider_expectations(self) -> dict[str, str]:
         """``{mcp_server_name: provider}`` for the #2282 connectivity check (default empty; real values in #251)."""
         return {}
+
+    def get_connector_manifest(self) -> list["ConnectorRequirement"]:
+        """Overlay's required-vs-optional claude.ai connectors by NAME; default none (PR-19)."""
+        return []
 
     def get_verify_endpoints(self, worktree: "Worktree") -> dict[str, str]:
         return {}

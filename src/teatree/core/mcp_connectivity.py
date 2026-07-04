@@ -188,6 +188,31 @@ def read_enabled_mcp_servers(*, home: Path | None = None, cwd: Path | None = Non
     ]
 
 
+def read_ever_connected(*, home: Path | None = None) -> set[str]:
+    """The set of claude.ai connector names that have EVER connected on this machine.
+
+    Reads ``claudeAiMcpEverConnected`` from ``~/.claude.json`` (network-free,
+    error-tolerant). This is the ground-truth signal that distinguishes the two
+    connector-failure modes the recovery guidance branches on (PR-19): a declared
+    connector that is NOT in this set has never been connected → a first-install
+    case (add it in claude.ai Settings → Connectors); one that IS in the set but
+    is now down → a post-account-switch case (reconnect it). A missing or
+    malformed config is an empty set, never an error.
+    """
+    home = home if home is not None else Path.home()
+    config_path = home / ".claude.json"
+    if not config_path.is_file():
+        return set()
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return set()
+    if not isinstance(data, dict):
+        return set()
+    ever = data.get("claudeAiMcpEverConnected")
+    return {name for name in ever if isinstance(name, str)} if isinstance(ever, list) else set()
+
+
 def has_enabled_mcp_servers(*, home: Path | None = None, cwd: Path | None = None) -> bool:
     """Whether any MCP server is enabled — a cheap, network-free ``~/.claude.json`` read.
 
@@ -318,5 +343,6 @@ __all__ = [
     "parse_mcp_list_output",
     "probe_mcp_servers",
     "read_enabled_mcp_servers",
+    "read_ever_connected",
     "resolve_provider",
 ]
