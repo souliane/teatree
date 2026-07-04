@@ -393,6 +393,25 @@ class OverlayAppBuilder:
             # and ``--hang-cause`` are forwarded verbatim.
             managepy_core("safe_kill", *ctx.args, overlay_name=overlay_name)
 
+        @overlay_app.command(
+            name="do",
+            context_settings={
+                "allow_extra_args": True,
+                "allow_interspersed_args": False,
+                "ignore_unknown_options": True,
+            },
+            add_help_option=False,
+        )
+        def do(ctx: typer.Context) -> None:
+            """Walk a ticket through the lifecycle via each phase's existing gate (PR-31)."""
+            # ``do`` is a teatree-CORE management command that reads the canonical
+            # control DB the shipping gate consults, so it dispatches via
+            # ``python -m teatree`` (same #2925/#126 reasoning as ``pr``/``lifecycle``)
+            # — a cwd inside a ticket worktree must not resolve that worktree's own
+            # ``manage.py``. The ticket-ref, ``--plan`` and ``--json`` are forwarded
+            # verbatim; the faithful-child-exit bridge propagates its exit code.
+            managepy_core("do", *ctx.args, overlay_name=overlay_name)
+
         self._register_agent_command()
 
     def _register_agent_command(self) -> None:

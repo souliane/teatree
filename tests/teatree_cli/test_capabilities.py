@@ -42,6 +42,7 @@ def _switch_handler_params() -> dict[str, set[str]]:
     from teatree.core.management.commands import (  # noqa: PLC0415
         availability,
         checking,
+        do,
         env,
         followup,
         questions,
@@ -60,6 +61,10 @@ def _switch_handler_params() -> dict[str, set[str]]:
         "teatree questions list": questions.Command.list_pending,
         "teatree checking show": checking.Command.show,
         "teatree env show": env.Command.show,
+        # ``do`` is a bare-``handle`` command (no subcommand token); django-typer
+        # replaces the class ``handle`` attribute with a generic wrapper, so its
+        # real params live on the registered typer callback, not on ``Command.handle``.
+        "teatree do": do.Command.typer_app.registered_commands[0].callback,
         "cost": cli_cost.cost,
         "tokens": cli_tokens.tokens,
         "config show": cli_config_show,
