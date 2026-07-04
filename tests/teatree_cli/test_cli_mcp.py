@@ -14,12 +14,16 @@ from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from typer.testing import CliRunner
 
-from teatree.cli.mcp import serve
+from teatree.cli.mcp import browser_diagnosis, serve
+from teatree.core.browser_diagnosis import BrowserDiagnosisRegistration
 
 runner = CliRunner()
 
 _app = typer.Typer()
 _app.command()(serve)
+
+_diag_app = typer.Typer()
+_diag_app.command()(browser_diagnosis)
 
 
 class TestServeCommand:
@@ -34,6 +38,25 @@ class TestServeCommand:
         ensure_mock.assert_called_once_with()
         build_mock.assert_called_once_with()
         build_mock.return_value.run.assert_called_once_with("stdio")
+
+
+class TestBrowserDiagnosisCommand:
+    def test_prints_resolved_registration_message(self) -> None:
+        fake = BrowserDiagnosisRegistration(
+            enabled=True,
+            server_name="chrome-devtools",
+            add_command="claude mcp add chrome-devtools -- npx -y chrome-devtools-mcp@latest",
+            message="Browser-diagnosis MCP ('chrome-devtools') is enabled. Register it with: ...",
+        )
+        with (
+            patch("teatree.cli.mcp.ensure_django"),
+            patch("teatree.core.browser_diagnosis.resolve_browser_diagnosis", return_value=fake) as resolve_mock,
+        ):
+            result = runner.invoke(_diag_app, [])
+
+        assert result.exit_code == 0
+        assert "Browser-diagnosis MCP" in result.stdout
+        resolve_mock.assert_called_once()
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]

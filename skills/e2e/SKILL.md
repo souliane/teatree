@@ -58,6 +58,17 @@ This is the empirical fallout item (c) from the account-switch checklist in [sou
 
 **Research finding — MCP allow-rules cannot constrain by domain, and wildcard subdomains are NOT supported.** Per the [Claude Code permission rule syntax](https://docs.claude.com/en/docs/claude-code/permissions#mcp), an MCP specifier matches only by server and tool name — `mcp__server`, `mcp__server__*`, or `mcp__server__tool_name`. There is **no** argument/domain form: you cannot write `mcp__claude-in-chrome__navigate(domain:*.example.com)` the way you can write `WebFetch(domain:example.com)`. So a browser-navigation allow-rule is all-or-nothing per tool — it auto-approves the `navigate` tool for **every** origin, not a wildcard-subdomain subset. (`WebFetch(domain:...)` and the bash sandbox's `allowedDomains` do support `*.example.com`, but those govern `WebFetch` and Bash, not the Claude-in-Chrome MCP tools.) The per-origin grant the browser itself enforces is upstream of permission rules; auto-approving the tool removes the Claude Code prompt, not the browser's own origin gate. Upstream feature gap: there is no per-origin allow-list for MCP browser tools today — track it against the account-switch automation in [souliane/teatree#1916](https://github.com/souliane/teatree/issues/1916).
 
+### Optional browser-diagnosis MCP (chrome-devtools)
+
+Browser-visible breakage — a blank render, a failed XHR, a console error, a wrong DOM state — is diagnosed **in the browser (network / console / DOM)** before any root-cause claim, not guessed from the server side. Google's `chrome-devtools-mcp` server exposes that inspection to an agent, but it is a heavy third-party dependency the operator opts into, so it ships **off by default**:
+
+```bash
+t3 <overlay> config_setting set chrome_devtools_mcp_enabled true   # opt in (default off)
+t3 mcp browser-diagnosis                                           # prints the `claude mcp add` line to register it
+```
+
+It is a **diagnostic aid only, not an enforcement path** — perf/trace enforcement stays in the deterministic Playwright lane covered below, never this server.
+
 ## Running E2E Tests
 
 - Run headless with `CI=1`.

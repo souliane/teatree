@@ -3977,8 +3977,10 @@ Usage: t3 mcp [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ serve  Run the structured-search MCP server over stdio (blocks until stdin   │
-│        closes).                                                              │
+│ serve              Run the structured-search MCP server over stdio (blocks   │
+│                    until stdin closes).                                      │
+│ browser-diagnosis  Report the optional chrome-devtools MCP registration      │
+│                    (default off).                                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -3988,6 +3990,23 @@ Usage: t3 mcp [OPTIONS] COMMAND [ARGS]...
 Usage: t3 mcp serve [OPTIONS]
 
  Run the structured-search MCP server over stdio (blocks until stdin closes).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 mcp browser-diagnosis`
+
+```
+Usage: t3 mcp browser-diagnosis [OPTIONS]
+
+ Report the optional chrome-devtools MCP registration (default off).
+
+ Prints whether the browser-diagnosis MCP server is enabled and, when it is,
+ the exact ``claude mcp add`` line that registers it — so an agent can inspect
+ a deployed page's network/console/DOM before proposing a root cause for
+ browser-visible breakage. No enforcement; a diagnostic aid only.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │

@@ -102,3 +102,19 @@ class E2eMandatoryRun(models.Model):
             .exclude(posted_url="")
             .exists()
         )
+
+    @classmethod
+    def has_visual_verification(cls, ticket: Ticket) -> bool:
+        """True iff *ticket* has any green AND POSTED E2E run — the visual attestation.
+
+        The snapshot-baseline gate runs at commit time, when the tree the new
+        baseline lands on has no SHA yet, so it cannot bind to a specific
+        ``head_sha`` the way :meth:`has_green_evidence` does. It instead reads
+        this per-ticket signal: a green run whose evidence was POSTED proves the
+        rendered result was verified and shown, which is exactly the
+        visual-verification attestation a baseline change needs. A green run
+        with no ``posted_url`` (recorded-but-unposted) does not count — the
+        verification must have been posted, matching the mandatory-E2E gate's
+        posted-proof rule.
+        """
+        return cls.objects.filter(ticket=ticket, result=GREEN_RESULT).exclude(posted_url="").exists()

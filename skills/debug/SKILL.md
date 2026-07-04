@@ -94,6 +94,8 @@ When the user gives a debugging hint, **investigate that hint FIRST** before oth
 
 When the bug report includes screenshots or videos, **analyze ALL visual evidence before writing any code.** Use `t3 tool analyze-video` for videos. Each frame may reveal additional issues beyond what the text description mentions.
 
+**Browser-visible breakage is diagnosed IN the browser, before any root-cause guess.** When the symptom is something a user sees in a page — a blank render, a failed request, a console error, a wrong DOM state — inspect the live page's **network / console / DOM** first; do not propose a root cause from the Python/server side alone. The optional `chrome-devtools-mcp` server exposes exactly that to an agent. It ships **off by default** — enable it per-operator with `t3 <overlay> config_setting set chrome_devtools_mcp_enabled true`, then run `t3 mcp browser-diagnosis` for the `claude mcp add` registration line. It is a diagnostic aid only: **perf/trace enforcement stays in the deterministic Playwright lane**, never this server.
+
 ### Phase 0c: What Changed Recently?
 
 When a user reports "this worked yesterday" or "this just started happening," check **what changed** before deep-diving into code:
