@@ -144,9 +144,9 @@ DEFAULT_PHASE_MODELS: dict[str, str] = {
 # without an active escalation these phases resolve exactly as today.
 VERIFICATION_PHASES: frozenset[str] = frozenset({"reviewing", "requesting_review", "testing"})
 
-# The Chinese-models allowlist (#2887, docs/design/autonomous-lane-redesign.md
-# § 3): substrings identifying a Chinese-origin model family reachable through
-# OrcaRouter's routing handle. Matched case-insensitively against a resolved
+# The Chinese-models allowlist (#2887): substrings identifying a Chinese-origin
+# model family reachable through OrcaRouter's routing handle. Matched
+# case-insensitively against a resolved
 # OrcaRouter model name in :func:`assert_chinese_model_allowed`. No shipped
 # :data:`TIER_MODELS` entry matches today (every tier is a Claude model), so the
 # check is currently a no-op for the shipped defaults — it exists for the day a

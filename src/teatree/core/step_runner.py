@@ -294,7 +294,9 @@ def run_callable_step(name: str, fn: Callable[[], object]) -> StepResult:
         return StepResult(name=name, success=False, duration=duration, error=error)
 
 
-def _timeboxed_subprocess_callable_step(name: str, fn: Callable[[], object], *, heavy: bool = False) -> StepResult:
+def _timeboxed_subprocess_callable_step(
+    name: str, fn: Callable[[], object], *, heavy: bool = False, timeout: float | None = None
+) -> StepResult:
     """Run a ``subprocess_only`` provision step wall-clock-bounded, degrading plain.
 
     The callable sibling of :func:`_timeboxed_step`, for a step the overlay
@@ -316,7 +318,9 @@ def _timeboxed_subprocess_callable_step(name: str, fn: Callable[[], object], *, 
     ``heavy`` selects the ceiling (souliane/teatree#2949):
     :func:`teatree.core.provision_timebox.resolve_step_timeout_seconds` — a
     fast step (the default) aborts within seconds of the short ceiling; a
-    heavy step (a DB import, a frontend build) keeps the long one.
+    heavy step (a DB import, a frontend build) keeps the long one. A caller
+    that pre-resolved the ceiling (the parallel path, to keep pool workers
+    ORM-free) passes it as *timeout*, bypassing the ``heavy`` lookup here.
     """
     try:
         from teatree.core.provision_timebox import run_timeboxed_callable  # noqa: PLC0415
@@ -325,10 +329,10 @@ def _timeboxed_subprocess_callable_step(name: str, fn: Callable[[], object], *, 
             raise
         logger.warning("provision_timebox unavailable for subprocess step %r — plain run", name)
         return run_callable_step(name, fn)
-    return run_timeboxed_callable(name, fn, heavy=heavy)
+    return run_timeboxed_callable(name, fn, heavy=heavy, timeout=timeout)
 
 
-def _run_single_step(step, *, write: Callable[[str], object]) -> StepResult:  # noqa: ANN001
+def _run_single_step(step, *, write: Callable[[str], object], timeout: float | None = None) -> StepResult:  # noqa: ANN001
     """Run one ``ProvisionStep``, honouring its skip-probe first (souliane/teatree#2949).
 
     A cheap ``skip_probe`` that returns ``True`` means the precondition is
@@ -336,6 +340,11 @@ def _run_single_step(step, *, write: Callable[[str], object]) -> StepResult:  # 
     records a successful, near-zero :class:`StepResult`. A probe that raises
     is treated as "cannot tell" (never skip) rather than aborting the
     provision — a broken probe must not itself become the failure mode.
+
+    *timeout* is the pre-resolved time-box ceiling. The parallel path resolves it
+    on the caller thread (:func:`_run_group_concurrently`) so the pool worker never
+    reads the ``ConfigSetting`` store; the serial path passes ``None`` and lets the
+    time-box resolve its own ceiling on this (caller) thread.
     """
     if step.skip_probe is not None:
         try:
@@ -358,7 +367,7 @@ def _run_single_step(step, *, write: Callable[[str], object]) -> StepResult:  # 
     # a test transaction). The db_import callable is the other #2244 hang and
     # is time-boxed separately in worktree_provision via run_timeboxed_db_import.
     if step.subprocess_only:
-        result = _timeboxed_subprocess_callable_step(step.name, step.callable, heavy=step.heavy)
+        result = _timeboxed_subprocess_callable_step(step.name, step.callable, heavy=step.heavy, timeout=timeout)
     else:
         result = run_callable_step(step.name, step.callable)
     return StepResult(
@@ -383,8 +392,36 @@ def _run_group_concurrently(group: list, *, write: Callable[[str], object]) -> l
     """
     names = ", ".join(s.name for s in group)
     write(f"  Running (parallel group {group[0].parallel_group!r}): {names}")
+    # Resolve each member's time-box ceiling HERE, on the caller thread: a pool
+    # worker must touch NO ORM. ``resolve_step_timeout_seconds`` reads the
+    # ``ConfigSetting`` store, and a Django connection opened on a pool thread is
+    # never closed under a Django ``TestCase`` (its atomic wrapping vetoes the
+    # ``close()``), so it leaks a ``sqlite3`` ``ResourceWarning`` at GC time.
+    # Hoisting the read keeps the workers ORM-free, exactly as _run_single_step's
+    # "subprocess_only steps touch no ORM" contract promises.
+    timeouts = [_resolve_step_timeout(step) for step in group]
     with ThreadPoolExecutor(max_workers=len(group)) as pool:
-        return list(pool.map(lambda s: _run_single_step(s, write=write), group))
+        return list(
+            pool.map(lambda step, timeout: _run_single_step(step, write=write, timeout=timeout), group, timeouts)
+        )
+
+
+def _resolve_step_timeout(step) -> float | None:  # noqa: ANN001
+    """The time-box ceiling for *step*, resolved on the CALLER thread.
+
+    :func:`teatree.core.provision_timebox.resolve_step_timeout_seconds` reads the
+    ``ConfigSetting`` store — an ORM access that must not run on a pool worker
+    thread (see :func:`_run_group_concurrently`). Degrades to ``None`` — letting
+    the time-box fall back to its own plain path — when ``provision_timebox`` is
+    absent on a stale base (souliane/teatree#2664).
+    """
+    try:
+        from teatree.core.provision_timebox import resolve_step_timeout_seconds  # noqa: PLC0415
+    except ModuleNotFoundError as exc:
+        if exc.name != _PROVISION_TIMEBOX_MODULE:
+            raise
+        return None
+    return float(resolve_step_timeout_seconds(heavy=step.heavy))
 
 
 # ast-grep-ignore: ac-django-no-complexity-suppressions

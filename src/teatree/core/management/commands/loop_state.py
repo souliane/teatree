@@ -25,6 +25,7 @@ mistaken for a pause/enable that just changed it.
 """
 
 import json
+import logging
 from typing import Annotated
 
 import typer
@@ -32,6 +33,27 @@ from django.db import transaction
 from django_typer.management import TyperCommand, command
 
 from teatree.core.models import Loop, LoopState
+
+logger = logging.getLogger(__name__)
+
+
+def _reconcile_timers() -> None:
+    """Reconcile the loop-timer chains after an enable/disable — best-effort.
+
+    The enable/disable chokepoint (#1796): enabling a loop creates its chain head
+    at once and disabling prunes its queued timers, so the change takes effect
+    without waiting for the next ~5-minute reconciler pass. Never fatal — the timer
+    rows only fire when a worker drains them, so a reconcile failure here degrades
+    to the periodic reconciler catching up.
+    """
+    try:
+        from teatree.loops.timer_reconciler import ensure_loop_timers  # noqa: PLC0415
+
+        ensure_loop_timers()
+    except Exception:
+        logger.debug(
+            "ensure_loop_timers after loop-state change failed — periodic reconciler will catch up", exc_info=True
+        )
 
 
 def _report(name: str, *, json_output: bool, stdout_write) -> None:  # noqa: ANN001
@@ -84,6 +106,7 @@ class Command(TyperCommand):
         with transaction.atomic():
             LoopState.objects.resume(name)
             Loop.objects.set_enabled(name, enabled=True)
+        _reconcile_timers()
         _report(name, json_output=json_output, stdout_write=self.stdout.write)
 
     @command(name="disable")
@@ -97,6 +120,7 @@ class Command(TyperCommand):
         with transaction.atomic():
             LoopState.objects.disable(name)
             Loop.objects.set_enabled(name, enabled=False)
+        _reconcile_timers()
         _report(name, json_output=json_output, stdout_write=self.stdout.write)
 
     @command(name="enable")
@@ -110,6 +134,7 @@ class Command(TyperCommand):
         with transaction.atomic():
             LoopState.objects.enable(name)
             Loop.objects.set_enabled(name, enabled=True)
+        _reconcile_timers()
         _report(name, json_output=json_output, stdout_write=self.stdout.write)
 
     @command(name="status")

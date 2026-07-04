@@ -336,11 +336,12 @@ class TestCadenceClaimIsAtomic(django.test.TestCase):
 
 @django.test.override_settings(USE_TZ=True)
 class TestAdmittedLoopNames(django.test.TestCase):
-    """teatree.loops.loop_table.admitted_loop_names — the loop-runner beat's no-CAS verdict (#2876).
+    """teatree.loops.loop_table.admitted_loop_names — the loop-timer chain's no-CAS verdict (#1796).
 
-    The beat's pre-filter reuses the SAME unified verdict ``build_loop_table_jobs``
-    gates on (enabled + due + un-held, off_live_tick skipped) but claims no cadence
-    anchor — the CAS belongs to the per-loop tick the beat enqueues.
+    The timer's admission pre-filter reuses the SAME unified verdict
+    ``build_loop_table_jobs`` gates on (enabled + due + un-held, off_live_tick
+    skipped) but claims no cadence anchor — the CAS belongs to the per-loop tick the
+    timer runs.
     """
 
     def test_returns_enabled_and_due_only(self) -> None:
@@ -373,8 +374,8 @@ class TestAdmittedLoopNames(django.test.TestCase):
         assert names == []
 
     def test_does_not_consume_the_cadence_anchor(self) -> None:
-        # The beat only ASKS the verdict — it must never bump last_run_at (the CAS
-        # claim belongs to the per-loop tick the beat enqueues).
+        # The admission pre-filter only ASKS the verdict — it must never bump
+        # last_run_at (the CAS claim belongs to the per-loop tick the timer runs).
         now = timezone.now()
         Loop.objects.create(name="ad-anchor", delay_seconds=60, prompt=_prompt())
         with patch("teatree.loops.loop_table.iter_loops", return_value=(_mini("ad-anchor"),)):
@@ -385,9 +386,9 @@ class TestAdmittedLoopNames(django.test.TestCase):
 
 @django.test.override_settings(USE_TZ=True)
 class TestAtLeastOnceDoubleDeliveryIsACasNoOp(django.test.TestCase):
-    """A redelivered per-loop tick is a no-op via the ``mark_run_if_unchanged`` CAS (#2876).
+    """A redelivered per-loop tick is a no-op via the ``mark_run_if_unchanged`` CAS (#1796).
 
-    ``execute_loop`` runs ``build_loop_table_jobs(only=name)``. Two deliveries for
+    The per-loop tick runs ``build_loop_table_jobs(only=name)``. Two deliveries for
     the same loop reach that path twice; the first claims the anchor and dispatches,
     the second reads the already-bumped anchor, finds the row not-due, and dispatches
     nothing — the cadence CAS, not the queue, is the idempotency guard.
