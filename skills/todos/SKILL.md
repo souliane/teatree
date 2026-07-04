@@ -2,10 +2,6 @@
 name: todos
 description: List the current session's tasks/todos — terse, grouped pending / in_progress / completed, with clickable refs. Use when the user says "task list", "todos", "what's on my list", "where is the task list", or "my tasks".
 compatibility: any
-triggers:
-  priority: 50
-  keywords:
-    - '\b(task list|todos?|what''?s on my list|where is the task list|my tasks)\b'
 requires:
   - rules
 metadata:

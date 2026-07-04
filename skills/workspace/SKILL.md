@@ -4,17 +4,6 @@ description: Environment and workspace lifecycle — worktree creation, setup, D
 requires:
   - rules
 compatibility: macOS/Linux, zsh or bash, git, docker with compose plugin, PostgreSQL CLIs (psql, createdb, dropdb, pg_restore), direnv, lsof. Optional dslr, uv, jq.
-triggers:
-  priority: 120
-  keywords:
-    - '\b(worktree|setup|servers?|start session|refresh db|cleanup|clean up|reset passwords?|restore.*(db|database))\b'
-    - '\b(database|start (the )?backend|start (the )?frontend)\b'
-search_hints:
-  - setup
-  - worktree
-  - create worktree
-  - servers
-  - cleanup
 metadata:
   version: 0.0.1
   subagent_safe: false

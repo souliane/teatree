@@ -192,7 +192,7 @@ def _review_jobs_for_overlay(
     *,
     all_backends: tuple[OverlayBackends, ...],
 ) -> list[_ScannerJob]:
-    """Reviewer-PR (per host) + broadcast / codex / PR-sweep companions."""
+    """Reviewer-PR (per host) + broadcast / codex / PR-sweep helpers."""
     tag = backend.name
     jobs: list[_ScannerJob] = []
     for code_host in backend.hosts:

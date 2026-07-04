@@ -190,7 +190,7 @@ def _write_skill(skills_dir: Path, name: str, *, requires: list[str] | None = No
 def skill_fixture_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Create a real skill tree and point the closure resolver at it.
 
-    No mocking of the dependency resolver: ``build_trigger_index`` parses
+    No mocking of the dependency resolver: ``build_requires_index`` parses
     these real SKILL.md files and ``resolve_requires`` walks them.
     """
     skills_dir = tmp_path / "skills"

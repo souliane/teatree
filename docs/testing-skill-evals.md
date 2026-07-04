@@ -143,7 +143,7 @@ green with zero coverage.
 
 ## What CI does
 
-- **Free lanes — every PR.** `skill-triggers` (prek hook), `pinned-regressions`
+- **Free lanes — every PR.** `pinned-regressions` (prek hook)
   - `skill-coverage` (pytest). `t3 tool verify-gates` runs the same set locally.
 - **Fresh-run lane — weekly + on demand.** A standalone workflow
   ([`eval.yml`](https://github.com/souliane/teatree/blob/main/.github/workflows/eval.yml)), off the PR path: weekly cron +

@@ -1,4 +1,10 @@
-"""Tests for scripts/lib/skill_loader.py."""
+"""Tests for scripts/lib/skill_loader.py.
+
+Skill suggestion is cwd/overlay-context only — framework skills detected from
+the prompt's cwd plus advisory supplementary skills. There is no free-text
+scan of the prompt; the lifecycle skill loads explicitly via slash command /
+phase / requires-chain elsewhere.
+"""
 
 from __future__ import annotations  # noqa: TID251 — test for standalone script
 
@@ -15,264 +21,52 @@ if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
 from lib import skill_loader as skill_loader_mod  # noqa: E402
-from lib.skill_loader import (  # noqa: E402
-    build_trigger_index,
-    detect_intent,
-    parse_triggers_from_frontmatter,
-    read_companion_skills,
-    read_supplementary_skills,
-    suggest_skills,
-)
-
-import teatree.skill_support.loading as skill_loading_mod  # noqa: E402
+from lib.skill_loader import build_requires_index, read_supplementary_skills, suggest_skills  # noqa: E402
 
 SKILLS_DIR = Path(__file__).resolve().parents[2] / "skills"
 
 
-# ── Trigger frontmatter parsing ──────────────────────────────────────
+# ── Build requires index from skills directory ───────────────────────
 
 
-class TestParseTriggers:
-    def test_full_triggers(self):
-        md = (
-            "---\nname: ship\ntriggers:\n  priority: 10\n  exclude: '\\breview\\b'\n"
-            "  keywords:\n    - '\\bcommit\\b'\n    - '\\bpush\\b'\n  urls:\n"
-            "    - 'https?://example.com'\n---\n# Ship"
-        )
-        result = parse_triggers_from_frontmatter(md)
-        assert result is not None
-        assert result["priority"] == 10
-        assert result["exclude"] == r"\breview\b"
-        assert result["keywords"] == [r"\bcommit\b", r"\bpush\b"]
-        assert result["urls"] == ["https?://example.com"]
-        assert result["end_of_session"] is False
-
-    def test_end_of_session(self):
-        md = (
-            "---\nname: retro\ntriggers:\n  priority: 100\n"
-            "  end_of_session: true\n  keywords:\n    - '\\bretro\\b'\n---\n"
-        )
-        result = parse_triggers_from_frontmatter(md)
-        assert result is not None
-        assert result["end_of_session"] is True
-
-    def test_no_triggers(self):
-        md = "---\nname: rules\n---\n# Rules"
-        assert parse_triggers_from_frontmatter(md) is None
-
-    def test_no_frontmatter(self):
-        assert parse_triggers_from_frontmatter("# No frontmatter") is None
-
-    def test_default_priority(self):
-        md = "---\nname: test\ntriggers:\n  keywords:\n    - '\\btest\\b'\n---\n"
-        result = parse_triggers_from_frontmatter(md)
-        assert result is not None
-        assert result["priority"] == 50
-
-    def test_triggers_block_terminated_by_next_key(self):
-        md = "---\nname: test\ntriggers:\n  priority: 5\n  keywords:\n    - '\\bfoo\\b'\nmetadata:\n  version: 1\n---\n"
-        result = parse_triggers_from_frontmatter(md)
-        assert result is not None
-        assert result["keywords"] == [r"\bfoo\b"]
-
-
-# ── Build trigger index from skills directory ────────────────────────
-
-
-class TestBuildTriggerIndex:
+class TestBuildRequiresIndex:
     def test_builds_from_skills_dir(self):
         if not SKILLS_DIR.is_dir():
             pytest.skip("skills directory not found")
-        index = build_trigger_index([SKILLS_DIR])
-        # Only a handful of retained skills carry keyword/url triggers; the
-        # lowest priority among them is 50 (``debug`` and ``checking`` share
-        # it). The index is sorted by priority, then alphabetically within a
-        # priority, so the first entry is a priority-50 skill.
-        triggerable = [e for e in index if e.get("keywords") or e.get("urls")]
-        assert len(triggerable) > 0
-        assert triggerable[0]["priority"] == 50
-        assert "debug" in {e["skill"] for e in triggerable}
+        index = build_requires_index([SKILLS_DIR])
+        by_skill = {e["skill"]: e for e in index}
+        assert "code" in by_skill
+        # ``code`` requires the migrated companion + its declared deps.
+        assert "workspace" in by_skill["code"]["requires"]
+        assert "test-driven-development" in by_skill["code"]["requires"]
+        # Every entry has exactly the two keys.
+        assert all(set(e) == {"skill", "requires"} for e in index)
 
-    def test_sorted_by_priority(self):
+    def test_sorted_by_skill_name(self):
         if not SKILLS_DIR.is_dir():
             pytest.skip("skills directory not found")
-        index = build_trigger_index([SKILLS_DIR])
-        priorities = [e["priority"] for e in index]
-        assert priorities == sorted(priorities)
+        index = build_requires_index([SKILLS_DIR])
+        names = [e["skill"] for e in index]
+        assert names == sorted(names)
 
     def test_empty_dir(self, tmp_path):
-        assert build_trigger_index([tmp_path]) == []
+        assert build_requires_index([tmp_path]) == []
 
-    def test_skill_without_triggers_excluded(self, tmp_path):
-        skill_dir = tmp_path / "no-triggers"
+    def test_skill_without_requires_gets_empty_list(self, tmp_path):
+        skill_dir = tmp_path / "no-requires"
         skill_dir.mkdir()
-        (skill_dir / "SKILL.md").write_text("---\nname: no-triggers\n---\n# No triggers")
-        assert build_trigger_index([tmp_path]) == []
+        (skill_dir / "SKILL.md").write_text("---\nname: no-requires\n---\n# No requires")
+        assert build_requires_index([tmp_path]) == [{"skill": "no-requires", "requires": []}]
 
-
-# ── Intent detection (data-driven) ──────────────────────────────────
-
-
-class TestDetectIntent:
-    """Intent-detection mechanics exercised against the REAL trigger index.
-
-    The fixture is built from the production ``SKILL.md`` frontmatter
-    (``build_trigger_index([SKILLS_DIR])``) rather than fabricated entries.
-    A fabricated index gave false confidence — earlier revisions invented
-    keyword triggers for ``ship``/``test``/``code`` (e.g. ``commit|push`` ->
-    ``ship``) that production does NOT carry, so the unit tests "passed"
-    against routing that never fires for a real prompt. Deriving the fixture
-    from disk means every assertion below reflects what the hook actually
-    does. ``test_fixture_is_not_fabricated`` pins that the fixture is the
-    production index, not a hand-written stand-in.
-    """
-
-    @pytest.fixture
-    def trigger_index(self):
-        if not SKILLS_DIR.is_dir():
-            pytest.skip("skills directory not found")
-        return build_trigger_index([SKILLS_DIR])
-
-    def test_fixture_is_not_fabricated(self, trigger_index):
-        # The fixture must equal the index built from the real skill tree —
-        # this is the guard that the test below exercise production routing.
-        assert trigger_index == build_trigger_index([SKILLS_DIR])
-        skills = {e["skill"] for e in trigger_index}
-        # Skills that carry real keyword/url triggers in production.
-        assert {"debug", "ticket", "retro", "workspace", "teatree"} <= skills
-
-    def test_explicit_slash_command_overrides_url(self, trigger_index):
-        # ``review`` is an indexed skill name, so a leading ``review`` token
-        # short-circuits via the slash pass before any URL match — even though
-        # the trailing gitlab merge-request URL would otherwise route to
-        # ``ticket`` (the production ticket trigger catches merge_requests URLs).
-        result = detect_intent(
-            "review https://gitlab.com/org/repo/-/merge_requests/190",
-            trigger_index=trigger_index,
-        )
-        assert result == "review"
-
-    def test_colon_qualified_slash_does_not_short_circuit(self, trigger_index):
-        # The slash pass splits on the first non-word char, so ``/t3:review``
-        # yields the candidate ``t3`` (not ``review``); ``t3`` is not an indexed
-        # skill, so the slash pass does NOT fire. With no other signal the
-        # prompt does not route. (The fabricated fixture hid this by inventing a
-        # ``review`` keyword that matched the trailing word.)
-        assert detect_intent("/t3:review foo", trigger_index=trigger_index) == ""
-
-    def test_explicit_slash_command_without_leading_slash(self, trigger_index):
-        assert detect_intent("ship some args", trigger_index=trigger_index) == "ship"
-
-    def test_explicit_slash_command_unknown_skill(self, trigger_index):
-        assert detect_intent("/unknown-skill do something", trigger_index=trigger_index) != "unknown-skill"
-
-    def test_keyword_match(self, trigger_index):
-        # ``debug`` carries a real keyword trigger (``broken``); this is the
-        # genuine production keyword path.
-        assert detect_intent("the page is broken", trigger_index=trigger_index) == "debug"
-
-    def test_ship_has_no_production_keyword_trigger(self, trigger_index):
-        # Production ``ship`` carries NO keyword triggers, so a bare
-        # "commit and push" does not route to it — the fabricated fixture
-        # used to claim it did. Slash-prefix invocation is the real path.
-        assert detect_intent("commit and push", trigger_index=trigger_index) == ""
-
-    def test_url_match_takes_priority(self, trigger_index):
-        assert detect_intent("check https://gitlab.com/org/repo/-/issues/123", trigger_index=trigger_index) == "ticket"
-
-    def test_sentry_url(self, trigger_index):
-        assert detect_intent("https://sentry.io/issues/999", trigger_index=trigger_index) == "debug"
-
-    def test_test_has_no_production_keyword_trigger(self, trigger_index):
-        # Production ``test`` carries no keyword triggers; "run the tests"
-        # does not route (the fabricated fixture wrongly claimed it did).
-        assert detect_intent("run the tests", trigger_index=trigger_index) == ""
-
-    def test_code_has_no_production_keyword_trigger(self, trigger_index):
-        # Production ``code`` carries no keyword triggers; "implement …" does
-        # not route via keyword (fabricated-fixture false confidence).
-        assert detect_intent("implement the login feature", trigger_index=trigger_index) == ""
-
-    def test_ticket_intent(self, trigger_index):
-        assert detect_intent("start working on PROJ-123", trigger_index=trigger_index) == "ticket"
-
-    def test_no_match(self, trigger_index):
-        assert detect_intent("hello there friend", trigger_index=trigger_index) == ""
-
-    def test_end_of_session(self, trigger_index):
-        result = detect_intent(
-            "done",
-            trigger_index=trigger_index,
-            loaded_skills={"code", "workspace"},
-        )
-        assert result == "retro"
-
-    def test_end_of_session_no_lifecycle_loaded(self, trigger_index):
-        result = detect_intent("done", trigger_index=trigger_index, loaded_skills=set())
-        assert result == ""
-
-    def test_end_of_session_retro_already_loaded(self, trigger_index):
-        result = detect_intent(
-            "done",
-            trigger_index=trigger_index,
-            loaded_skills={"code", "retro"},
-        )
-        assert result == ""
-
-    def test_retro_keyword(self, trigger_index):
-        assert detect_intent("let's do a retro", trigger_index=trigger_index) == "retro"
-
-    def test_empty_index(self):
-        assert detect_intent("commit", trigger_index=[]) == ""
-
-    def test_falls_back_to_skill_dirs(self, tmp_path):
-        """When no cache, builds index from skill_search_dirs."""
-        skill_dir = tmp_path / "my-skill"
-        skill_dir.mkdir()
-        (skill_dir / "SKILL.md").write_text("---\nname: my-skill\ntriggers:\n  keywords:\n    - '\\bhello\\b'\n---\n")
-        with mock.patch.object(skill_loader_mod, "_read_trigger_index", return_value=[]):
-            result = detect_intent("hello", skill_search_dirs=[tmp_path])
-        assert result == "my-skill"
-
-
-# ── Integration: detect_intent with real SKILL.md triggers ───────────
-
-
-class TestDetectIntentIntegration:
-    """Test intent detection against real SKILL.md trigger patterns.
-
-    After #1189 phase 2 only the 6 retained skills (``debug``, ``retro``,
-    ``ticket``, ``teatree``, ``dogfooding-teatree``, ``workspace``) carry
-    ``triggers:``. Assertions for the dropped 16 class-(a) skills have been
-    removed; phases 3-4 will rework these for prose-scan loading.
-    """
-
-    @pytest.fixture
-    def real_index(self):
-        if not SKILLS_DIR.is_dir():
-            pytest.skip("skills directory not found")
-        return build_trigger_index([SKILLS_DIR])
-
-    def test_debug(self, real_index):
-        assert detect_intent("the app is broken", trigger_index=real_index) == "debug"
-
-    def test_ticket(self, real_index):
-        assert detect_intent("start working on PROJ-123", trigger_index=real_index) == "ticket"
-
-    def test_workspace(self, real_index):
-        assert detect_intent("start the backend", trigger_index=real_index) == "workspace"
-
-    def test_retro(self, real_index):
-        assert detect_intent("let's do a retro", trigger_index=real_index) == "retro"
-
-    def test_gitlab_url(self, real_index):
-        assert detect_intent("check https://gitlab.com/org/repo/-/issues/123", trigger_index=real_index) == "ticket"
-
-    def test_sentry_url(self, real_index):
-        assert detect_intent("https://sentry.io/issues/999", trigger_index=real_index) == "debug"
-
-    def test_no_match(self, real_index):
-        assert detect_intent("hello", trigger_index=real_index) == ""
+    def test_dedup_across_search_dirs(self, tmp_path):
+        first = tmp_path / "a"
+        second = tmp_path / "b"
+        for root in (first, second):
+            skill = root / "code"
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text("---\nname: code\nrequires:\n  - workspace\n---\n")
+        index = build_requires_index([first, second])
+        assert [e["skill"] for e in index] == ["code"]
 
 
 # ── Cache version validation ─────────────────────────────────────────
@@ -281,17 +75,17 @@ class TestDetectIntentIntegration:
 class TestMetadataCacheInvalidation:
     def test_valid_version_returns_data(self, tmp_path):
         cache = tmp_path / "skill-metadata.json"
-        cache.write_text(json.dumps({"teatree_version": "1.0.0", "trigger_index": [{"skill": "test"}]}))
+        cache.write_text(json.dumps({"teatree_version": "1.0.0", "skill_index": [{"skill": "test"}]}))
         with (
             mock.patch.object(skill_loader_mod, "SKILL_METADATA_CACHE", cache),
             mock.patch.object(skill_loader_mod, "_get_installed_version", return_value="1.0.0"),
         ):
             result = skill_loader_mod._read_metadata_cache()
-            assert result["trigger_index"] == [{"skill": "test"}]
+            assert result["skill_index"] == [{"skill": "test"}]
 
     def test_mismatched_version_returns_empty(self, tmp_path):
         cache = tmp_path / "skill-metadata.json"
-        cache.write_text(json.dumps({"teatree_version": "1.0.0", "trigger_index": [{"skill": "test"}]}))
+        cache.write_text(json.dumps({"teatree_version": "1.0.0", "skill_index": [{"skill": "test"}]}))
         with (
             mock.patch.object(skill_loader_mod, "SKILL_METADATA_CACHE", cache),
             mock.patch.object(skill_loader_mod, "_get_installed_version", return_value="2.0.0"),
@@ -300,31 +94,10 @@ class TestMetadataCacheInvalidation:
 
     def test_missing_version_in_cache_skips_check(self, tmp_path):
         cache = tmp_path / "skill-metadata.json"
-        cache.write_text(json.dumps({"trigger_index": [{"skill": "test"}]}))
+        cache.write_text(json.dumps({"skill_index": [{"skill": "test"}]}))
         with mock.patch.object(skill_loader_mod, "SKILL_METADATA_CACHE", cache):
             result = skill_loader_mod._read_metadata_cache()
-            assert result["trigger_index"] == [{"skill": "test"}]
-
-
-# ── Preserved tests ──────────────────────────────────────────────────
-
-
-class TestCompanionSkills:
-    def test_reads_cache(self, tmp_path):
-        cache = tmp_path / "skill-metadata.json"
-        cache.write_text(json.dumps({"companion_skills": ["ac-django", "ac-python"]}))
-        with mock.patch.object(skill_loader_mod, "SKILL_METADATA_CACHE", cache):
-            assert read_companion_skills() == ["ac-django", "ac-python"]
-
-    def test_missing_cache(self, tmp_path):
-        with mock.patch.object(skill_loader_mod, "SKILL_METADATA_CACHE", tmp_path / "missing.json"):
-            assert read_companion_skills() == []
-
-    def test_corrupt_cache(self, tmp_path):
-        cache = tmp_path / "skill-metadata.json"
-        cache.write_text("not json")
-        with mock.patch.object(skill_loader_mod, "SKILL_METADATA_CACHE", cache):
-            assert read_companion_skills() == []
+            assert result["skill_index"] == [{"skill": "test"}]
 
 
 class TestSupplementarySkills:
@@ -344,142 +117,53 @@ class TestSupplementarySkills:
 
 
 class TestSuggestSkills:
-    def test_review_includes_framework_and_dependencies(self, tmp_path):
+    """cwd-based framework detection, no prompt scan."""
+
+    def test_django_cwd_surfaces_framework_skill(self, tmp_path):
         (tmp_path / "manage.py").write_text("# django project\n", encoding="utf-8")
-        cache = tmp_path / "skill-metadata.json"
-        cache.write_text(
-            json.dumps(
-                {
-                    "trigger_index": [
-                        {
-                            "skill": "review",
-                            "priority": 40,
-                            "keywords": [r"\breview\b"],
-                            "urls": [],
-                            "exclude": "",
-                            "end_of_session": False,
-                        },
-                    ],
-                }
-            )
+        result = suggest_skills(
+            {
+                "prompt": "anything at all",
+                "cwd": str(tmp_path),
+                "loaded_skills": [],
+                "supplementary_config": "",
+            }
         )
-        with mock.patch.object(skill_loader_mod, "SKILL_METADATA_CACHE", cache):
-            result = suggest_skills(
-                {
-                    "prompt": "review these MRs",
-                    "cwd": str(tmp_path),
-                    "loaded_skills": [],
-                    "skill_search_dirs": [str(SKILLS_DIR)],
-                    "supplementary_config": "",
-                }
-            )
         assert "ac-django" in result["suggestions"]
-        assert "review" in result["suggestions"]
-        assert result["intent"] == "review"
 
     def test_filters_loaded(self, tmp_path):
         (tmp_path / "manage.py").write_text("# django project\n", encoding="utf-8")
-        cache = tmp_path / "skill-metadata.json"
-        cache.write_text(
-            json.dumps(
-                {
-                    "trigger_index": [
-                        {
-                            "skill": "review",
-                            "priority": 40,
-                            "keywords": [r"\breview\b"],
-                            "urls": [],
-                            "exclude": "",
-                            "end_of_session": False,
-                        },
-                    ],
-                }
-            )
+        result = suggest_skills(
+            {
+                "prompt": "anything",
+                "cwd": str(tmp_path),
+                "loaded_skills": ["ac-django"],
+                "supplementary_config": "",
+            }
         )
-        with mock.patch.object(skill_loader_mod, "SKILL_METADATA_CACHE", cache):
-            result = suggest_skills(
-                {
-                    "prompt": "review code",
-                    "cwd": str(tmp_path),
-                    "loaded_skills": ["review", "ac-django", "workspace", "platforms", "code"],
-                    "skill_search_dirs": [str(SKILLS_DIR)],
-                    "supplementary_config": "",
-                }
-            )
-        assert "review" not in result["suggestions"]
         assert "ac-django" not in result["suggestions"]
 
-    def test_overlay_skill_requires_remote_match(self, tmp_path):
-        cache = tmp_path / "skill-metadata.json"
-        cache.write_text(
-            json.dumps(
-                {
-                    "skill_path": "skills/t3:acme/SKILL.md",
-                    "remote_patterns": ["git@gitlab.com:acme-engineering/*"],
-                    "trigger_index": [
-                        {
-                            "skill": "code",
-                            "priority": 70,
-                            "keywords": [r"\bimplement\b"],
-                            "urls": [],
-                            "exclude": "",
-                            "end_of_session": False,
-                        },
-                    ],
-                }
-            )
-        )
-        with (
-            mock.patch.object(skill_loader_mod, "SKILL_METADATA_CACHE", cache),
-            mock.patch.object(
-                skill_loading_mod.git,
-                "remote_url",
-                return_value="git@gitlab.com:acme-engineering/platform-product",
-            ),
-        ):
-            result = suggest_skills(
-                {
-                    "prompt": "implement the change",
-                    "cwd": str(tmp_path),
-                    "loaded_skills": [],
-                    "skill_search_dirs": [str(SKILLS_DIR)],
-                    "supplementary_config": "",
-                }
-            )
-        assert "skills/t3:acme/SKILL.md" in result["suggestions"]
-
-    def test_vague_prompt_does_not_load_overlay_skill(self, tmp_path):
-        cache = tmp_path / "skill-metadata.json"
-        cache.write_text(
-            json.dumps(
-                {
-                    "skill_path": "skills/t3:acme/SKILL.md",
-                    "remote_patterns": ["git@gitlab.com:acme-engineering/*"],
-                    "trigger_index": [],
-                }
-            )
-        )
-        with mock.patch.object(skill_loader_mod, "SKILL_METADATA_CACHE", cache):
-            result = suggest_skills(
-                {
-                    "prompt": "hello",
-                    "cwd": str(tmp_path),
-                    "loaded_skills": [],
-                    "skill_search_dirs": [str(SKILLS_DIR)],
-                    "supplementary_config": "",
-                }
-            )
-        assert result["suggestions"] == []
-
-    def test_no_intent(self):
+    def test_non_python_cwd_surfaces_nothing(self, tmp_path):
         result = suggest_skills(
             {
                 "prompt": "hello",
-                "cwd": ".",
+                "cwd": str(tmp_path),
                 "loaded_skills": [],
-                "skill_search_dirs": [],
                 "supplementary_config": "",
             }
         )
         assert result["suggestions"] == []
-        assert result["intent"] == ""
+
+    def test_supplementary_is_advisory(self, tmp_path):
+        config = tmp_path / "skills.yml"
+        config.write_text("ac-ruff: '\\bruff\\b'\n")
+        result = suggest_skills(
+            {
+                "prompt": "run ruff check",
+                "cwd": str(tmp_path),
+                "loaded_skills": [],
+                "supplementary_config": str(config),
+            }
+        )
+        assert "ac-ruff" in result["suggestions"]
+        assert "ac-ruff" in result["advisory"]

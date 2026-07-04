@@ -90,7 +90,7 @@
     },
     {
       "name": "running-evals",
-      "summary": "Single in-session entrypoint that auto-orchestrates the whole eval picture \u2014 free deterministic lanes (skill-triggers, the eval-coverage gate `t3 eval coverage`, pinned-regressions) plus the transcript AI/trajectory lane (prepare \u2192 produce transcripts in-session \u2192 grade) \u2014 and prints one unified results table"
+      "summary": "Single in-session entrypoint that auto-orchestrates the whole eval picture \u2014 free deterministic lanes (the eval-coverage gate `t3 eval coverage`, pinned-regressions) plus the transcript AI/trajectory lane (prepare \u2192 produce transcripts in-session \u2192 grade) \u2014 and prints one unified results table"
     },
     {
       "name": "scanning-news",

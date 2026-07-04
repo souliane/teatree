@@ -5,7 +5,6 @@ compatibility: macOS/Linux, any language/framework supported by the project.
 requires:
   - workspace
   - architecture-design
-companions:
   - test-driven-development
 metadata:
   version: 0.0.1
@@ -21,7 +20,7 @@ This skill delegates the generic implementation doctrine to:
 - `test-driven-development` — red/green/refactor discipline and failing-test-first rules
 - `verification-before-completion` — proof before any completion claim
 
-Optional [obra/superpowers](https://github.com/obra/superpowers) companions provide generic methodology. TeaTree keeps the project-specific workflow locally.
+Optional [obra/superpowers](https://github.com/obra/superpowers) skills provide generic methodology. TeaTree keeps the project-specific workflow locally.
 
 The implementation phase. Follow test-driven development and project conventions.
 

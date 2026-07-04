@@ -128,7 +128,6 @@ def agent(
         selection = policy.select_for_agent_launch(
             cwd=Path.cwd(),
             overlay_skill_metadata=overlay_skill_metadata,
-            task=task,
             ticket_status=_detect_agent_ticket_status(project_root) if active else "",
             explicit_phase=phase,
             explicit_skills=skill or [],

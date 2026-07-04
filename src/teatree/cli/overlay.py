@@ -426,7 +426,6 @@ class OverlayAppBuilder:
             selection = SkillLoadingPolicy().select_for_agent_launch(
                 cwd=Path.cwd(),
                 overlay_skill_metadata=get_overlay().metadata.get_skill_metadata(),
-                task=task,
                 ticket_status=_detect_agent_ticket_status(overlay_root),
                 explicit_phase=phase,
                 explicit_skills=skill or [],

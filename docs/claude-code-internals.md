@@ -61,12 +61,11 @@ type BundledSkillDefinition = {
 
 These are teatree-specific extensions:
 
-- `triggers.keywords` — regex patterns for UserPromptSubmit hook matching
-- `triggers.urls` — URL regex patterns
-- `triggers.priority` — numeric ordering
-- `triggers.exclude` — negative match regex
-- `triggers.end_of_session` — end-of-session phrase detection
-- `search_hints` — simple keywords for headless agent skill discovery
+- `requires` — the transitive skill-dependency chain (topo-sorted, cycle-checked)
+
+Skill loading is explicit: slash commands, `t3 agent --phase/--skill`, ticket
+status, the `requires` chain, and cwd/overlay context. There is no free-text
+scan of the prompt.
 
 ### How Claude Code Does Skill Matching
 
@@ -423,7 +422,7 @@ No built-in setting forces use of `AskUserQuestion`. Enforcement options:
 | Original Claim | Reality (from claurst spec) |
 |---|---|
 | "Skills truncated to 5K tokens after compaction" | No per-skill truncation. Full compaction replaces entire conversation with summary. Skill content simply disappears. |
-| "`search_hints` is a Claude Code pattern (like ToolSearch `searchHint`)" | `search_hints` is a teatree invention. Claude Code uses `when-to-use` free-text for model-driven discovery. ToolSearch `searchHint` is for *deferred tools*, not skills. |
+| "Skill frontmatter carries free-text keyword-matching fields" | Removed with explicit skill loading. Skills load via slash commands / phase / requires-chain / cwd-overlay context; Claude Code itself uses `when-to-use` free-text for model-driven discovery. |
 | "Claude Code's `readFileState` cache tracks which files were read" | Confirmed: the Read tool requires prior reading before writes. Sub-agents get a cloned cache. |
 | "Auto-compact triggers at contextWindow - 13,000 tokens" | Auto-compact triggers at ~90% of context window (configurable). The 13K figure is not confirmed. |
 | "Hooks receive JSON on stdin with session_id, tool_name, tool_input" | Confirmed. Hook-specific output fields vary by event type (documented above). |

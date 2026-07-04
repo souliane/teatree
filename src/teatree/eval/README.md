@@ -15,7 +15,7 @@ with-skill/baseline, what CI does) is
 
 The short version of the split:
 
-- **tests** — deterministic, no live model, free, run every commit (skill-triggers,
+- **tests** — deterministic, no live model, free, run every commit (
   pinned-regressions, skill-command-validity, coverage, negative-control,
   transcript-replay, corpus-grade, and the fixture replay of `scenarios/*.yaml`).
 - **evals** — a live model + grader, run on a cadence and fail-loud (the

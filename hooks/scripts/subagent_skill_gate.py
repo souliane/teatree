@@ -8,18 +8,13 @@ Workflow/Task fan-out starts BLANK — it has only its task prompt and lacks the
 loaded (that state does not transfer to the blank sub-agent); it is satisfied
 only when the DISPATCH PROMPT itself instructs the sub-agent to load the skill.
 
-This module owns three pieces.
+The demand is the parent session's ``<session>.pending`` set — the explicit
+cwd/overlay-context skills (framework skill, overlay skill + companion skills)
+the UserPromptSubmit hook recorded. There is no free-text scan of the task
+description: which skills a task needs is expressed explicitly (the parent's
+recorded demand), never inferred from prose.
 
-``required_skills_for_task`` derives the UN-DERIVABLE ROOTS a fanned-out task
-must name: the lifecycle skill detected from the description plus the active
-overlay's companion skills for that lifecycle (every lifecycle, not just
-``review``). It does NOT expand the transitive ``requires``/``companions``
-closure — the ``Skill`` tool pulls each root's dependencies itself, so demanding
-the whole closure over-blocks a dispatch that correctly names only the roots
-(e.g. a reviewer dispatch naming ``/t3:review`` need not also enumerate
-``code``/``workspace``/``platforms``/``architecture-design``). A trivial or
-ambiguous task (``fix the typo``, ``push the branch``, ``investigate the build``)
-yields no demand at all — see ``_task_is_trivial``.
+This module owns three pieces.
 
 ``task_references_skill`` tests whether a task prompt already instructs the
 sub-agent to load a given skill: a ``/t3:<name>`` / ``/<name>`` token, a
@@ -30,6 +25,9 @@ skill``, ``skip the ship skill``) does NOT count as a reference.
 ``build_load_first_reason`` is the deny message listing the exact
 ``Read …/<name>/SKILL.md`` lines the orchestrator must embed in the dispatch.
 
+``unreferenced_demand_reason`` is the whole demand computation + never-lockout
+fail-open the router calls.
+
 A bare sibling module (like ``mr_cli_fields`` / ``django_bootstrap``): the
 router puts its own dir on ``sys.path`` so ``from subagent_skill_gate import …``
 resolves both as the live hook and when imported as
@@ -37,13 +35,9 @@ resolves both as the live hook and when imported as
 search dirs and the ``resolves`` predicate are passed in.
 """
 
-import contextlib
 import re
-import sys
 from collections.abc import Callable
 from pathlib import Path
-
-_PLUGIN_ROOT = Path(__file__).resolve().parents[2]
 
 
 def is_file_safe(path: Path) -> bool:
@@ -71,117 +65,6 @@ def _skill_segment(name: str) -> str:
     stripped = name.strip().rstrip("/")
     stripped = stripped.removesuffix("/SKILL.md")
     return stripped.rsplit("/", 1)[-1].rsplit(":", 1)[-1]
-
-
-# A trivial / ambiguous fan-out incidentally carries a lifecycle keyword
-# (``fix the typo`` → ``fix``; ``push the branch`` → ``push``) but is not the
-# substantive lifecycle dispatch the gate exists to govern. Forcing it to
-# slash-list skills over-blocks.
-#
-# STRONG markers name a file/format edit that is trivial at ANY length.
-_STRONG_TRIVIAL_RE = re.compile(
-    r"\b(?:typo|readme|whitespace|formatting|lint|one-?liner|trivial|bump|wording)\b",
-    re.IGNORECASE,
-)
-# WEAK markers (``investigate``/``rename``/``why``…) are ambiguous: a long
-# substantive dispatch legitimately contains them (``rename the public API
-# across all consumers``), so they count as trivial ONLY in a short prompt.
-_WEAK_TRIVIAL_RE = re.compile(
-    r"\b(?:comment|rename|investigate|look into|figure out|find out|check why|why)\b",
-    re.IGNORECASE,
-)
-# A substantive lifecycle dispatch reads like a real instruction, not a bare
-# 3-word imperative (``push the branch``). At or below this word count a lone
-# weak keyword is treated as trivial.
-_MAX_TRIVIAL_WORDS = 3
-# A weak marker only signals trivial within a short-enough prompt; above this
-# the prompt is substantive enough that the marker is incidental.
-_MAX_WEAK_MARKER_WORDS = 8
-
-
-def _task_is_trivial(description: str) -> bool:
-    """Whether *description* is a trivial/ambiguous task the gate should not force.
-
-    True when the text carries a STRONG trivial marker (a file/format edit:
-    ``typo``/``readme``/…), is a bare short imperative (``push the branch``), or
-    carries a WEAK marker (``investigate``/``rename``/``why``…) in a short prompt.
-    A trivial task yields no skill demand so ``fix the typo in the README`` /
-    ``push the branch`` / ``investigate why the build is broken`` are never forced
-    to slash-list skills, while a long substantive dispatch that merely contains a
-    weak marker (``rename the public API across all consumers``) still enforces.
-    """
-    if _STRONG_TRIVIAL_RE.search(description):
-        return True
-    word_count = len(description.split())
-    if word_count <= _MAX_TRIVIAL_WORDS:
-        return True
-    return word_count <= _MAX_WEAK_MARKER_WORDS and _WEAK_TRIVIAL_RE.search(description) is not None
-
-
-def required_skills_for_task(description: str, search_dirs: list[Path]) -> list[str]:
-    """The un-derivable ROOT skills a fanned-out task must name, from its DESCRIPTION.
-
-    The lifecycle skill (``lifecycle_for_task_text``) unioned with the active
-    overlay's companion skills for THAT lifecycle (every lifecycle, not just
-    ``review``) — and NOTHING more. The transitive ``requires``/``companions``
-    closure is deliberately NOT expanded: the ``Skill`` tool pulls each root's
-    dependencies itself, so a dispatch that names the root passes even when it
-    does not enumerate every transitive dep. Demanding the closure denied a
-    reviewer dispatch that correctly named only ``/t3:review`` + the overlay
-    review companion (over-block).
-
-    A trivial/ambiguous task (:func:`_task_is_trivial`) yields ``[]`` so it is
-    never forced to slash-list skills.
-
-    Fail-open: any resolution failure (teatree not importable in this hook
-    process, no lifecycle match, no configured overlay) yields ``[]`` so the
-    gate degrades to the explicit pending demand alone — never a lockout.
-    """
-    if not description or _task_is_trivial(description):
-        return []
-
-    scripts_dir = _PLUGIN_ROOT / "scripts"
-    src_dir = _PLUGIN_ROOT / "src"
-    added: list[str] = []
-    for extra in (str(scripts_dir), str(src_dir)):
-        if extra not in sys.path:
-            sys.path.insert(0, extra)
-            added.append(extra)
-    try:
-        from lib.skill_loader import build_trigger_index  # noqa: PLC0415
-
-        from teatree.skill_support.loading import SkillLoadingPolicy  # noqa: PLC0415
-
-        index = build_trigger_index(search_dirs)
-        lifecycle = SkillLoadingPolicy.lifecycle_for_task_text(description, trigger_index=index)
-        if not lifecycle:
-            return []
-        roots = [lifecycle, *_overlay_companions_for_lifecycle(lifecycle)]
-    except Exception:  # noqa: BLE001
-        return []
-    else:
-        seen: set[str] = set()
-        return [r for r in roots if not (r in seen or seen.add(r))]
-    finally:
-        for extra in added:
-            with contextlib.suppress(ValueError):
-                sys.path.remove(extra)
-
-
-def _overlay_companions_for_lifecycle(lifecycle: str) -> list[str]:
-    """Active overlay's companion skills for *lifecycle*, or ``[]`` (fail-open).
-
-    Calls ``OverlayConfig.get_lifecycle_companion_skills(lifecycle)`` so every
-    lifecycle (``code``/``e2e``/``test``/``review``) unions the overlay's own
-    skills — not only ``review``. Any import/resolution failure (teatree
-    unimportable, no configured overlay) yields ``[]``.
-    """
-    try:
-        from teatree.agents.skill_bundle import active_overlay_lifecycle_skills  # noqa: PLC0415
-
-        return active_overlay_lifecycle_skills(lifecycle)
-    except Exception:  # noqa: BLE001
-        return []
 
 
 def _reference_pattern(skill_name: str) -> re.Pattern[str]:
@@ -314,23 +197,21 @@ def filter_unreferenced(
 def unreferenced_demand_reason(
     *,
     prompt: str,
-    description: str,
     pending: list[str],
     search_dirs: list[Path],
     resolves: Callable[[str], bool],
 ) -> str:
     """The ``TaskCreated`` deny reason, or ``""`` when nothing is unreferenced.
 
-    Owns the whole demand computation (roots + ``<session>.pending``, minus
-    resolvable-and-already-referenced) AND its never-lockout fail-open: ANY
-    internal error — notably a 255+ byte pending name making ``is_file`` raise
-    ``OSError`` — returns ``""`` (allow) rather than propagating, since
-    TaskCreated aborts on any handler stderr. The router handler stays a thin
-    caller so the over-cap router nets smaller.
+    Demands the fanned-out dispatch prompt reference every resolvable skill in
+    the parent session's ``<session>.pending`` (the explicit cwd/overlay-context
+    demand) — minus the ones already referenced. Owns its never-lockout
+    fail-open: ANY internal error — notably a 255+ byte pending name making
+    ``is_file`` raise ``OSError`` — returns ``""`` (allow) rather than
+    propagating, since TaskCreated aborts on any handler stderr.
     """
     try:
-        required = [*pending, *required_skills_for_task(description, search_dirs)]
-        unreferenced = filter_unreferenced(prompt, required, resolves=resolves)
+        unreferenced = filter_unreferenced(prompt, pending, resolves=resolves)
         return build_load_first_reason(unreferenced, search_dirs) if unreferenced else ""
     except Exception:  # noqa: BLE001 — never-lockout: fail OPEN, never abort TaskCreated.
         return ""

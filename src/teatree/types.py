@@ -11,6 +11,11 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TypedDict
 
+# The skill (requires) index: one ``{"skill": name, "requires": [...]}`` entry
+# per SKILL.md. Mirrors ``teatree.skill_support.deps.SkillIndex`` — a local
+# alias here so this foundation module needs no upward import.
+type SkillIndexEntries = list[dict[str, object]]
+
 
 class SlackVoiceClassifierMode(enum.StrEnum):
     """Strictness of the Slack voice/token mismatch classifier (#1395).
@@ -245,7 +250,7 @@ class DbImportStrategy(TypedDict, total=False):
 class SkillMetadata(TypedDict, total=False):
     skill_path: str
     remote_patterns: list[str]
-    trigger_index: list[dict[str, object]]
+    skill_index: SkillIndexEntries
     resolved_requires: dict[str, list[str]]
     skill_mtimes: dict[str, int]
     teatree_version: str

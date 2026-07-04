@@ -6,24 +6,14 @@ from unittest.mock import MagicMock, patch
 
 import teatree.core.skill_cache as skill_cache_mod
 from teatree.core.skill_cache import (
-    _build_trigger_index,
+    _build_requires_index,
     _collect_skill_mtimes,
     _validate_skills,
     write_skill_metadata_cache,
 )
 
-_VALID_FRONTMATTER = (
-    "---\n"
-    "name: example\n"
-    "description: example skill\n"
-    "triggers:\n"
-    "    priority: 50\n"
-    "    keywords:\n"
-    "        - foo\n"
-    "        - bar\n"
-    "---\n"
-    "\n"
-    "# Body\n"
+_FRONTMATTER = (
+    "---\nname: example\ndescription: example skill\nrequires:\n    - rules\n    - workspace\n---\n\n# Body\n"
 )
 
 
@@ -43,44 +33,41 @@ def _make_skills_dir(tmp_path: Path, skills: dict[str, str | None]) -> Path:
     return root
 
 
-class TestBuildTriggerIndex:
+class TestBuildRequiresIndex:
     def test_returns_empty_when_skills_dir_missing(self, tmp_path: Path) -> None:
         with patch.object(skill_cache_mod, "_CLAUDE_SKILLS_DIR", tmp_path / "missing"):
-            assert _build_trigger_index() == []
+            assert _build_requires_index() == []
 
-    def test_extracts_triggers_from_skill_md(self, tmp_path: Path) -> None:
+    def test_extracts_requires_from_skill_md(self, tmp_path: Path) -> None:
         skills_dir = _make_skills_dir(
             tmp_path,
             {
-                "example": _VALID_FRONTMATTER,
+                "example": _FRONTMATTER,
                 "no-skill-md": None,
             },
         )
         with patch.object(skill_cache_mod, "_CLAUDE_SKILLS_DIR", skills_dir):
-            index = _build_trigger_index()
+            index = _build_requires_index()
 
-        assert len(index) == 1
-        assert index[0]["skill"] == "example"
-        assert index[0]["priority"] == 50
+        assert index == [{"skill": "example", "requires": ["rules", "workspace"]}]
 
-    def test_skips_skill_without_frontmatter_triggers(self, tmp_path: Path) -> None:
-        skills_dir = _make_skills_dir(tmp_path, {"plain": "# No frontmatter"})
+    def test_skill_without_requires_gets_empty_list(self, tmp_path: Path) -> None:
+        skills_dir = _make_skills_dir(tmp_path, {"plain": "---\nname: plain\n---\n# Body"})
         with patch.object(skill_cache_mod, "_CLAUDE_SKILLS_DIR", skills_dir):
-            assert _build_trigger_index() == []
+            assert _build_requires_index() == [{"skill": "plain", "requires": []}]
 
-    def test_sorts_by_priority_then_skill(self, tmp_path: Path) -> None:
-        low_priority = _VALID_FRONTMATTER.replace("priority: 50", "priority: 10")
+    def test_sorts_by_skill_name(self, tmp_path: Path) -> None:
         skills_dir = _make_skills_dir(
             tmp_path,
             {
-                "high": _VALID_FRONTMATTER,
-                "low": low_priority,
+                "zeta": _FRONTMATTER,
+                "alpha": _FRONTMATTER,
             },
         )
         with patch.object(skill_cache_mod, "_CLAUDE_SKILLS_DIR", skills_dir):
-            index = _build_trigger_index()
+            index = _build_requires_index()
 
-        assert [entry["skill"] for entry in index] == ["low", "high"]
+        assert [entry["skill"] for entry in index] == ["alpha", "zeta"]
 
 
 class TestCollectSkillMtimes:
@@ -113,7 +100,7 @@ class TestValidateSkills:
         skills_dir = _make_skills_dir(
             tmp_path,
             {
-                "example": _VALID_FRONTMATTER,
+                "example": _FRONTMATTER,
                 "no-skill-md": None,
             },
         )
@@ -125,7 +112,7 @@ class TestValidateSkills:
         validator.assert_called_once()
 
     def test_logs_errors_and_warnings(self, tmp_path: Path) -> None:
-        skills_dir = _make_skills_dir(tmp_path, {"example": _VALID_FRONTMATTER})
+        skills_dir = _make_skills_dir(tmp_path, {"example": _FRONTMATTER})
         with (
             patch.object(skill_cache_mod, "_CLAUDE_SKILLS_DIR", skills_dir),
             patch.object(skill_cache_mod, "validate_skill_md", return_value=(["err"], ["warn"])),
@@ -136,8 +123,8 @@ class TestValidateSkills:
 
 
 class TestWriteSkillMetadataCache:
-    def test_writes_json_with_trigger_index(self, tmp_path: Path) -> None:
-        skills_dir = _make_skills_dir(tmp_path, {"example": _VALID_FRONTMATTER})
+    def test_writes_json_with_skill_index(self, tmp_path: Path) -> None:
+        skills_dir = _make_skills_dir(tmp_path, {"example": _FRONTMATTER})
         overlay = MagicMock()
         overlay.metadata.get_skill_metadata.return_value = {"skill_path": "skills/foo"}
         data_dir = tmp_path / "data"
@@ -153,6 +140,7 @@ class TestWriteSkillMetadataCache:
         assert cache_file.is_file()
         payload = json.loads(cache_file.read_text(encoding="utf-8"))
         assert payload["skill_path"] == "skills/foo"
-        assert payload["trigger_index"][0]["skill"] == "example"
+        assert payload["skill_index"][0]["skill"] == "example"
+        assert payload["skill_index"][0]["requires"] == ["rules", "workspace"]
         assert "teatree_version" in payload
         assert "skill_mtimes" in payload

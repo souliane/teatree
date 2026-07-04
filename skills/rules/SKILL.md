@@ -1096,7 +1096,7 @@ Don't let sessions grow unbounded. After completing 3–4 distinct features in o
 
 ## Skill Auto-Loading Must Work
 
-The user should never have to manually call a teatree or overlay skill. Skills must either auto-load or be explicitly called by the teatree mechanism. When reviewing teatree, check that the hook/autoloading mechanism covers all cases: Django projects auto-load `ac-django`, overlay projects auto-load their overlay skill, lifecycle skills chain-load companions. Fix gaps in the autoloading mechanism rather than documenting manual workarounds.
+The user should never have to manually call a teatree or overlay skill. Skills must either auto-load or be explicitly called by the teatree mechanism. When reviewing teatree, check that the hook/autoloading mechanism covers all cases: Django projects auto-load `ac-django`, overlay projects auto-load their overlay skill, lifecycle skills chain-load their required skills. Fix gaps in the autoloading mechanism rather than documenting manual workarounds.
 
 ## Escalate Honesty-Critical Verification to the Most-Honest Model
 

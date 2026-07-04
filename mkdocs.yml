@@ -63,7 +63,6 @@ nav:
       - Installation: install.md
   - User Guide:
       - Management Commands: generated/management-commands.md
-      - Skill Triggers: skill-triggers.md
       - Testing Skill Evals: testing-skill-evals.md
       - Evals:
           - Dashboard: evals/index.md
