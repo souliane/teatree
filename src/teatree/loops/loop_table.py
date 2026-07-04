@@ -100,8 +100,9 @@ def _loop_admitted(
     ``defers_questions`` (holiday-``away`` / ``autonomous_away``, #2904), AND
     ``LoopsConfig.is_enabled`` agrees (the durable ``LoopState`` control tier — a
     ``t3 loop pause`` / ``disable`` hold, #2584). The single source of truth both
-    :func:`build_loop_table_jobs` and the loop-runner beat
-    (:func:`admitted_loop_names`) gate on, so the verdict can never drift.
+    :func:`build_loop_table_jobs` and the loop-timer chains
+    (:func:`admitted_loop_names`, via :func:`teatree.loops.timer_chains.loop_admitted`)
+    gate on, so the verdict can never drift.
     """
     if loop.off_live_tick:
         return False
@@ -115,11 +116,12 @@ def _loop_admitted(
 def admitted_loop_names(now: dt.datetime, *, only: str | None = None) -> list[str]:
     """Names of every loop the unified verdict admits (enabled + due + un-held) — NO cadence claim.
 
-    The loop-runner beat's pre-filter (#2876): it asks the SAME unified verdict
-    :func:`build_loop_table_jobs` uses (via :func:`_loop_admitted`) but never claims
-    the cadence anchor. The atomic ``mark_run_if_unchanged`` CAS stays in the
-    per-loop tick the beat enqueues, so an at-least-once double delivery is a no-op
-    there — the beat only ASKS which rows are due, it never drives one.
+    The loop-timer chain's admission pre-filter (#1796): it asks the SAME unified
+    verdict :func:`build_loop_table_jobs` uses (via :func:`_loop_admitted`) but never
+    claims the cadence anchor. The atomic ``mark_run_if_unchanged`` CAS stays in the
+    per-loop tick the timer runs, so an at-least-once double delivery is a no-op
+    there — the timer's admission step only ASKS whether the row is due, it never
+    drives one.
     """
     from teatree.core.models import Loop  # noqa: PLC0415
     from teatree.loops.config import LoopsConfig  # noqa: PLC0415

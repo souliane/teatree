@@ -51,9 +51,9 @@ TEMPLATES = [
 TASKS = {
     "default": {
         "BACKEND": "django_tasks.backends.dummy.DummyBackend",
-        # Mirror the production ``teatree.settings`` allowlist: "loop-runner" is the
-        # dedicated queue the #2876 loop-runner beat enqueues onto (parity-tested).
-        "QUEUES": ["default", "loop-runner"],
+        # Mirror the production ``teatree.settings`` allowlist: "loops" is the
+        # dedicated queue the self-rescheduling loop-timer chains ride (parity-tested).
+        "QUEUES": ["default", "loops"],
     },
 }
 

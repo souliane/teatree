@@ -149,11 +149,12 @@ TEATREE_CLAUDE_STATUSLINE_STATE_DIR = "/tmp/claude-statusline"  # noqa: S108 —
 TASKS = {
     "default": {
         "BACKEND": "django_tasks_db.DatabaseBackend",
-        # "default" for every existing task; "loop-runner" is the dedicated queue
-        # the #2876 loop-runner beat enqueues per-loop ticks onto (drained in
-        # isolation so a fast tick never blocks behind a heavy default-queue job).
-        # The literal mirrors teatree.core.tasks.LOOP_RUNNER_QUEUE (parity-tested).
-        "QUEUES": ["default", "loop-runner"],
+        # "default" carries every FSM/headless task; "loops" is the dedicated queue
+        # the self-rescheduling loop-timer chains ride (#1796). The worker pins half
+        # its executor threads to "loops" so a reactive timer never blocks behind a
+        # heavy default-queue job. The literal mirrors
+        # teatree.loops.timer_chains.LOOPS_QUEUE (parity-tested).
+        "QUEUES": ["default", "loops"],
     },
 }
 

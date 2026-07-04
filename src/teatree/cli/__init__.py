@@ -62,7 +62,6 @@ from teatree.cli.eval import eval_app
 from teatree.cli.eval.skill_command_lane import register_command_registry_provider
 from teatree.cli.identities import identities_app
 from teatree.cli.loop import loop_app
-from teatree.cli.loop_runner import loop_runner
 from teatree.cli.loops import loops_app
 from teatree.cli.mcp import mcp_app
 from teatree.cli.mutation import mutation_app
@@ -77,6 +76,7 @@ from teatree.cli.task_alias import task_app
 from teatree.cli.teams import teams_app
 from teatree.cli.tools import tool_app
 from teatree.cli.update import update_app
+from teatree.cli.worker import worker
 
 logger = logging.getLogger(__name__)
 
@@ -166,7 +166,7 @@ app.add_typer(update_app, name="update")
 app.add_typer(assess_app, name="assess")
 app.add_typer(overlay_dev_app, name="overlay")
 app.add_typer(loop_app, name="loop")
-app.command("loop-runner")(loop_runner)
+app.command("worker")(worker)
 app.add_typer(loops_app, name="loops")
 app.add_typer(mcp_app, name="mcp")
 app.add_typer(prompts_app, name="prompts")
