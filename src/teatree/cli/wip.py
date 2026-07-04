@@ -29,6 +29,7 @@ import typer
 from teatree.config import Wip
 
 WIP_KEY = "wip"
+BOOST_CONCURRENCY_KEY = "boost_concurrency"
 
 
 def _set_wip(level: Wip) -> None:
@@ -42,6 +43,13 @@ def _set_wip(level: Wip) -> None:
     from teatree.cli.overlay import managepy_core  # noqa: PLC0415
 
     managepy_core("config_setting", "set", WIP_KEY, json.dumps(level.value))
+
+
+def _set_boost_concurrency(target: int) -> None:
+    """Persist the GLOBAL-scope ``boost_concurrency`` row (same subprocess seam as ``_set_wip``)."""
+    from teatree.cli.overlay import managepy_core  # noqa: PLC0415
+
+    managepy_core("config_setting", "set", BOOST_CONCURRENCY_KEY, json.dumps(target))
 
 
 def register_wip_commands(overlay_app: typer.Typer) -> None:
@@ -59,7 +67,10 @@ def register_wip_commands(overlay_app: typer.Typer) -> None:
         # so without this bootstrap the console-script ``show`` reports the
         # dataclass DEFAULT instead of the persisted dial (#2622). Idempotent.
         ensure_django()
-        typer.echo(get_effective_settings().wip.value)
+        settings = get_effective_settings()
+        typer.echo(settings.wip.value)
+        if settings.wip is Wip.BOOST and settings.boost_concurrency > 0:
+            typer.echo(f"{BOOST_CONCURRENCY_KEY} = {settings.boost_concurrency}")
 
     @wip_group.command(name="set")
     def set_(level: str = typer.Argument(help="slow | medium | full | boost (aliases: low, normal, high)")) -> None:
@@ -71,5 +82,22 @@ def register_wip_commands(overlay_app: typer.Typer) -> None:
             raise typer.Exit(code=1) from exc
         _set_wip(parsed)
         typer.echo(f"wip = {parsed.value} — wrote the {WIP_KEY} row to the global config store")
+
+    @wip_group.command(name="boost")
+    def boost(
+        concurrency: int = typer.Argument(help="Target live worker count N the boost pool refills to."),
+    ) -> None:
+        """Arm boost mode with a live-worker target: sets ``wip = boost`` and ``boost_concurrency = N``.
+
+        The pool-refill driver then keeps ``N`` loop workers in flight — when a
+        worker exits below ``N`` the next tick admits the shortfall. ``N`` is
+        clamped at admission by the PR-01 resource concurrency ceiling.
+        """
+        if concurrency < 1:
+            typer.echo(f"boost_concurrency must be a positive integer, got {concurrency}", err=True)
+            raise typer.Exit(code=1)
+        _set_wip(Wip.BOOST)
+        _set_boost_concurrency(concurrency)
+        typer.echo(f"wip = {Wip.BOOST.value}, {BOOST_CONCURRENCY_KEY} = {concurrency} — wrote both rows")
 
     overlay_app.add_typer(wip_group, name="wip")

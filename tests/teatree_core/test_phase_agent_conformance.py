@@ -195,8 +195,8 @@ class TestFanoutRegistryConformance(TestCase):
     A fan-out can only apply to a ``(role, phase)`` pair the loop actually
     dispatches, so every fan-out key MUST also be a dispatched key — the same
     no-route conformance shape the orchestrator/subagent maps carry. This
-    forbids an undispatched key (e.g. a ``bughunt`` fan-out before a bughunt
-    phase is registered in ``SUBAGENT_BY_PHASE``).
+    forbids an undispatched key: a fan-out can only apply to a ``(role, phase)``
+    pair the loop actually dispatches.
     """
 
     def test_every_fanout_key_is_a_dispatched_pair(self) -> None:
@@ -206,14 +206,14 @@ class TestFanoutRegistryConformance(TestCase):
             f"only apply to a dispatched (role, phase) pair); orphans: {orphan}"
         )
 
-    def test_no_bughunt_fanout_until_a_bughunt_phase_is_dispatched(self) -> None:
-        # bughunt is deferred (no bughunt phase in SUBAGENT_BY_PHASE); the
-        # conformance subset above already forbids it, this names the case.
-        bughunt_keys = {(role, phase) for (role, phase) in FANOUT_BY_PHASE if phase == "bughunt"}
-        assert bughunt_keys == set(), (
-            f"bughunt fan-out is deferred until a bughunt phase is registered in "
-            f"SUBAGENT_BY_PHASE; found undispatched bughunt fan-out keys: {bughunt_keys}"
-        )
+    def test_bughunt_phase_is_registered_and_dispatchable(self) -> None:
+        # PR-13: bughunt's deferral is over — it is now a registered orthogonal phase.
+        assert subagent_for_phase(Ticket.Role.AUTHOR, "bughunt") == "t3:bughunter"
+
+    def test_bughunt_carries_a_find_then_verify_fanout(self) -> None:
+        spec = fanout_for_phase(Ticket.Role.AUTHOR, "bughunt")
+        assert spec is not None, "bughunt must carry a fan-out spec once registered"
+        assert spec.pattern == "find-then-verify"
 
     def test_default_fanout_n_is_within_bounds(self) -> None:
         low, high = _FANOUT_N_BOUNDS

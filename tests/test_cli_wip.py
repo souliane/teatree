@@ -86,12 +86,40 @@ class TestWipSet(TestCase):
         assert ConfigSetting.objects.count() == 0
 
 
+class TestWipBoost(TestCase):
+    def test_boost_sets_wip_and_concurrency_rows(self) -> None:
+        result = runner.invoke(_app(), ["wip", "boost", "4"])
+        assert result.exit_code == 0
+        assert ConfigSetting.objects.get_effective("wip") == Wip.BOOST.value
+        assert ConfigSetting.objects.get_effective("boost_concurrency") == 4
+        assert "boost_concurrency = 4" in result.stdout
+
+    def test_boost_round_trips_through_resolver(self) -> None:
+        runner.invoke(_app(), ["wip", "boost", "3"])
+        settings = get_effective_settings()
+        assert settings.wip is Wip.BOOST
+        assert settings.boost_concurrency == 3
+
+    def test_boost_rejects_non_positive_and_writes_nothing(self) -> None:
+        result = runner.invoke(_app(), ["wip", "boost", "0"])
+        assert result.exit_code == 1
+        assert ConfigSetting.objects.count() == 0
+
+
 class TestWipShow(TestCase):
     def test_show_reports_effective_value(self) -> None:
         ConfigSetting.objects.set_value("wip", Wip.FULL.value)
         result = runner.invoke(_app(), ["wip", "show"])
         assert result.exit_code == 0
         assert result.stdout.strip() == Wip.FULL.value
+
+    def test_show_boost_reports_concurrency_target(self) -> None:
+        ConfigSetting.objects.set_value("wip", Wip.BOOST.value)
+        ConfigSetting.objects.set_value("boost_concurrency", 5)
+        result = runner.invoke(_app(), ["wip", "show"])
+        assert result.exit_code == 0
+        assert "boost" in result.stdout
+        assert "boost_concurrency = 5" in result.stdout
 
     def test_show_defaults_to_medium_when_unset(self) -> None:
         result = runner.invoke(_app(), ["wip", "show"])

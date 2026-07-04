@@ -5033,8 +5033,10 @@ Usage: t3 teatree wip [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ show  Show the effective wip (env > per-overlay > global > default).         │
-│ set   Persist the global `` wip`` dial. A typo is rejected.                  │
+│ show   Show the effective wip (env > per-overlay > global > default).        │
+│ set    Persist the global `` wip`` dial. A typo is rejected.                 │
+│ boost  Arm boost mode with a live-worker target: sets ``wip = boost`` and    │
+│        ``boost_concurrency = N``.                                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -5061,6 +5063,28 @@ Usage: t3 teatree wip set [OPTIONS] LEVEL
 │ *    level      TEXT  slow | medium | full | boost (aliases: low, normal,    │
 │                       high)                                                  │
 │                       [required]                                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree wip boost`
+
+```
+Usage: t3 teatree wip boost [OPTIONS] CONCURRENCY
+
+ Arm boost mode with a live-worker target: sets ``wip = boost`` and
+ ``boost_concurrency = N``.
+
+ The pool-refill driver then keeps ``N`` loop workers in flight — when a
+ worker exits below ``N`` the next tick admits the shortfall. ``N`` is
+ clamped at admission by the PR-01 resource concurrency ceiling.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    concurrency      INTEGER  Target live worker count N the boost pool     │
+│                                refills to.                                   │
+│                                [required]                                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │

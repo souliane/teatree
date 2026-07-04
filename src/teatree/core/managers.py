@@ -1,6 +1,7 @@
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from django.apps import apps
 from django.db import models, transaction
@@ -29,6 +30,7 @@ if TYPE_CHECKING:
 __all__ = [
     "PER_LOOP_OWNER_PREFIX",
     "T3_MASTER_SLOT",
+    "ClaimOrder",
     "IncomingEventManager",
     "LoopLeaseManager",
     "LoopLeaseQuerySet",
@@ -43,6 +45,20 @@ __all__ = [
     "is_per_loop_owner_slot",
     "per_loop_owner_slot",
 ]
+
+
+@dataclass(frozen=True)
+class ClaimOrder:
+    """Optional ordering for :meth:`TaskManager.claim_next_pending` (PR-13).
+
+    Bundles the ``.annotate()`` kwargs and the resulting ``order_by`` fields so a
+    caller can pick the claim order (admission priority: a queued TODO/followup
+    before a new-ticket auto-start) through one parameter. The default claim path
+    passes no ``ClaimOrder`` and stays plain oldest-``pk``.
+    """
+
+    annotations: dict[str, Any]
+    order_by: tuple[str, ...]
 
 
 logger = logging.getLogger(__name__)
@@ -260,6 +276,7 @@ class TaskQuerySet(models.QuerySet):
         claimed_by_session: str = "",
         lease_seconds: int = 300,
         extra_filter: "Q | None" = None,
+        ordering: "ClaimOrder | None" = None,
     ) -> "Task | None":
         """Atomically claim the oldest PENDING task — backend-agnostic (#786, N4).
 
@@ -284,6 +301,10 @@ class TaskQuerySet(models.QuerySet):
         orthogonal to the role-label ``claimed_by``; it rides the SET
         clause only and never the CAS WHERE predicate, so the claim
         semantics are byte-identical with or without it.
+        ``ordering`` (a :class:`ClaimOrder`) lets a caller pick the claim order
+        (PR-13 admission priority: a queued TODO/followup before a new-ticket
+        auto-start). ``None`` (the default) is today's plain oldest-``pk`` order,
+        so a caller that omits it is byte-identical to before.
         Returns the claimed task, or ``None`` when nothing is claimable.
         """
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
@@ -292,8 +313,11 @@ class TaskQuerySet(models.QuerySet):
         candidates = self.filter(status=task_model.Status.PENDING)
         if extra_filter is not None:
             candidates = candidates.filter(extra_filter)
+        if ordering is not None:
+            candidates = candidates.annotate(**ordering.annotations)
+        order_fields = ordering.order_by if ordering is not None else ("pk",)
         with transaction.atomic():
-            oldest_pk = candidates.order_by("pk").values_list("pk", flat=True).first()
+            oldest_pk = candidates.order_by(*order_fields).values_list("pk", flat=True).first()
             if oldest_pk is None:
                 return None
             # Compare-and-swap on status: only the writer that still sees

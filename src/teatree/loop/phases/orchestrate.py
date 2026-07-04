@@ -8,10 +8,26 @@ rows to admit this tick:
 *   ``medium`` (default) — a NO-OP. Throughput stays exactly today's: the
     intrinsic loop, the PR sweep, and the per-scanner auto-start cap. No
     rows are claimed, an empty manifest is returned.
-*   ``slow`` — at most one worker in flight: the cap is clamped to 1.
-*   ``full`` / ``boost`` — compute a fan-out manifest of autonomous-safe
-    claimable Task rows, clamped to the summed ``max_concurrent_auto_starts``
-    budget across the scanned overlays.
+*   ``slow`` — at most one worker in flight: the target is 1.
+*   ``full`` — compute a fan-out manifest of autonomous-safe claimable Task
+    rows, targeting the summed ``max_concurrent_auto_starts`` budget across
+    the scanned overlays.
+*   ``boost`` — the pool-refill burst (PR-13). With ``boost_concurrency = N``
+    configured, the target is ``N`` live workers, clamped by the PR-01 resource
+    concurrency ceiling (``provision_max_concurrency`` when pinned, else
+    ``default_provision_concurrency()``); with ``boost_concurrency = 0`` (unset)
+    boost keeps ``full``'s summed-overlay target. Each tick recomputes
+    ``cap = max(0, target - in_flight)``, so when a worker exits below ``N`` the
+    next tick admits the shortfall — the pool refills back to ``N``.
+
+The manifest carries two quantities: ``target`` is the standing live-worker
+ceiling (what the live claimer's ``in_flight >= budget`` gate reads via the
+admit-budget sidecar), and ``cap`` is the marginal number of rows THIS planner
+pass admits (``target - in_flight``).
+
+Rows are admitted in ADMISSION PRIORITY order (PR-13): a queued TODO/followup
+drains before a brand-new-ticket auto-start at equal priority — the ordering
+lives in :mod:`teatree.loop.queue_drain`.
 
 Admission is a global FIFO over the dispatchable backlog (the same global
 claim as ``claim_next_pending``), clamped to the *total* budget — it is a
@@ -40,6 +56,7 @@ from teatree.config import Wip, get_effective_settings
 from teatree.core.modelkit.phases import SUBAGENT_BY_PHASE, normalize_phase, phase_spellings, subagent_for_phase
 
 if TYPE_CHECKING:
+    from teatree.config import UserSettings
     from teatree.core.backend_factory import OverlayBackends
     from teatree.core.models.task import Task
 
@@ -69,7 +86,11 @@ class ManifestEntry:
 @dataclass(slots=True)
 class OrchestrationManifest:
     wip: Wip
+    #: The marginal number of rows THIS planner pass admits (``target - in_flight``).
     cap: int
+    #: The standing live-worker ceiling the admit-budget sidecar persists for the
+    #: live claimer's ``in_flight >= budget`` gate — the pool-refill target.
+    target: int = 0
     entries: list[ManifestEntry] = field(default_factory=list)
     merge_order: list[int] = field(default_factory=list)
 
@@ -80,12 +101,20 @@ def orchestrate_phase(
     claim: bool = False,
     claimed_by: str = "orchestrate-phase",
 ) -> OrchestrationManifest:
-    wip = get_effective_settings().wip
-    if wip is Wip.MEDIUM:
-        return OrchestrationManifest(wip=wip, cap=0)
+    from teatree.core.models.task import Task  # noqa: PLC0415
 
-    cap = 1 if wip is Wip.SLOW else _fanout_budget(backends)
-    manifest = OrchestrationManifest(wip=wip, cap=cap)
+    settings = get_effective_settings()
+    wip = settings.wip
+    if wip is Wip.MEDIUM:
+        return OrchestrationManifest(wip=wip, cap=0, target=0)
+
+    if wip is Wip.SLOW:
+        target = 1
+        cap = 1
+    else:
+        target = _fanout_target(settings, wip, backends)
+        cap = max(0, target - Task.objects.in_flight_claimed_count(_dispatchable_filter()))
+    manifest = OrchestrationManifest(wip=wip, cap=cap, target=target)
     if cap <= 0:
         return manifest
 
@@ -97,19 +126,31 @@ def orchestrate_phase(
 def _admit_into(manifest: OrchestrationManifest, *, claim: bool, claimed_by: str) -> None:
     """Fill the manifest with up to ``manifest.cap`` dispatchable rows.
 
-    ``claim=True`` admits each row through the existing claim-next CAS;
-    ``claim=False`` plans read-only, listing what would be admitted without
-    mutating any Task row. Fail-open like every other tick phase: a
-    DB-blocked harness or query error degrades to whatever was collected
-    so far, never aborting the tick.
+    Rows are admitted in ADMISSION PRIORITY order (a queued TODO/followup before
+    a brand-new-ticket auto-start) — the annotation + ordering live in
+    :mod:`teatree.loop.queue_drain`. ``claim=True`` admits each row through the
+    existing claim-next CAS (now priority-ordered); ``claim=False`` plans
+    read-only, listing what would be admitted without mutating any Task row.
+    Fail-open like every other tick phase: a DB-blocked harness or query error
+    degrades to whatever was collected so far, never aborting the tick.
     """
     from teatree.core.models.task import Task  # noqa: PLC0415
+    from teatree.loop.queue_drain import (  # noqa: PLC0415
+        ADMISSION_ORDER,
+        admission_claim_order,
+        admission_priority_annotations,
+    )
 
     dispatchable = _dispatchable_filter()
     try:
         if claim:
+            ordering = admission_claim_order()
             for _ in range(manifest.cap):
-                task = Task.objects.claim_next_pending(claimed_by=claimed_by, extra_filter=dispatchable)
+                task = Task.objects.claim_next_pending(
+                    claimed_by=claimed_by,
+                    extra_filter=dispatchable,
+                    ordering=ordering,
+                )
                 if task is None:
                     break
                 manifest.entries.append(_entry_for(task))
@@ -117,24 +158,46 @@ def _admit_into(manifest: OrchestrationManifest, *, claim: bool, claimed_by: str
         candidates = (
             Task.objects.filter(status=Task.Status.PENDING)
             .filter(dispatchable)
+            .annotate(**admission_priority_annotations())
             .select_related("ticket")
-            .order_by("pk")[: manifest.cap]
+            .order_by(*ADMISSION_ORDER)[: manifest.cap]
         )
         manifest.entries.extend(_entry_for(task) for task in candidates)
     except Exception:
         logger.exception("orchestrate_phase admit sweep failed — degrading to %d entries", len(manifest.entries))
 
 
-def _fanout_budget(backends: "list[OverlayBackends] | None") -> int:
-    from teatree.core.models.task import Task  # noqa: PLC0415
+def _fanout_target(settings: "UserSettings", wip: Wip, backends: "list[OverlayBackends] | None") -> int:
+    """The standing live-worker target for a ``full``/``boost`` fan-out.
 
-    raw_cap = (
+    ``full`` (and ``boost`` with ``boost_concurrency`` unset) targets the summed
+    per-overlay ``max_concurrent_auto_starts``. ``boost`` with a positive
+    ``boost_concurrency = N`` targets ``N``, clamped by the PR-01 resource
+    concurrency ceiling so a burst never over-subscribes the host.
+    """
+    overlay_cap = (
         sum(max(0, backend.max_concurrent_auto_starts) for backend in backends)
         if backends is not None
         else max(0, _active_overlay_cap())
     )
-    in_flight = Task.objects.in_flight_claimed_count(_dispatchable_filter())
-    return max(0, raw_cap - in_flight)
+    if wip is Wip.BOOST and settings.boost_concurrency > 0:
+        return min(settings.boost_concurrency, _concurrency_ceiling(settings))
+    return overlay_cap
+
+
+def _concurrency_ceiling(settings: "UserSettings") -> int:
+    """The PR-01 resource-aware concurrency ceiling (nCPU-derived unless pinned).
+
+    An explicit ``provision_max_concurrency > 0`` pins the ceiling; ``0`` (the
+    default) auto-derives from the host via ``default_provision_concurrency()``.
+    Shared with parallel worktree provisioning so a boost burst and a cold
+    provision honour the same machine-wide bound.
+    """
+    from teatree.utils.ram_probe import default_provision_concurrency  # noqa: PLC0415
+
+    if settings.provision_max_concurrency > 0:
+        return settings.provision_max_concurrency
+    return default_provision_concurrency()
 
 
 def _active_overlay_cap() -> int:
