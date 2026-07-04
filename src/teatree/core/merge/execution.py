@@ -215,7 +215,9 @@ def assert_merge_preconditions(  # noqa: PLR0913 — §17.4.3 gate entry-point; 
         raise MergePreconditionError(msg)
     if live_sha != authorized_clear.reviewed_sha:
         # Show full SHAs (not [:8] prefixes) so a length-mismatch or any other
-        # silent difference is obvious in the diagnostic (#1162).
+        # silent difference is obvious in the diagnostic (#1162). The registry's
+        # ``sha_bind`` gate (``merge.sha_bind.verify_sha_bound``) is the same
+        # equality; both compare the full lowercased SHA.
         reviewed_sha = authorized_clear.reviewed_sha
         msg = (
             f"PR head moved: live={live_sha} (length={len(live_sha)}) != "

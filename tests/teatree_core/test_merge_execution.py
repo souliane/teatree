@@ -294,6 +294,17 @@ class TestMergeKeystonePreconditions(TestCase):
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.IN_REVIEW
 
+    def test_expedite_flag_does_not_bypass_sha_bind(self) -> None:
+        # PR-07: the expedite/release-blocker flag relaxes only the pre-CI push
+        # posture — it grants NO merge bypass. An expedited ticket whose head
+        # moved off the reviewed SHA is refused exactly like a non-expedited one.
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW, expedited=True)
+        clear = _clear(ticket)
+        with pytest.raises(MergePreconditionError, match="head moved"):
+            _run(clear, _GhStub(head=_MOVED))
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.IN_REVIEW
+
     def test_draft_pr_is_refused(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
         clear = _clear(ticket)

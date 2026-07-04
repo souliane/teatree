@@ -46,7 +46,7 @@ class ActiveTicketsScanner:
         if self.overlay_name:
             qs = qs.filter(overlay=self.overlay_name)
         signals: list[ScanSignal] = []
-        for ticket in qs.only("id", "state", "overlay", "issue_url", "extra", "short_description"):
+        for ticket in qs.only("id", "state", "overlay", "issue_url", "extra", "short_description", "expedited"):
             try:
                 extra = ticket.extra if isinstance(ticket.extra, dict) else {}
                 cached_title = extra.get("issue_title", "") if isinstance(extra, dict) else ""
@@ -70,6 +70,7 @@ class ActiveTicketsScanner:
                             "issue_url": issue_url,
                             "title": title,
                             "tracker_404": tracker_404,
+                            "expedite": ticket.expedited,
                         },
                     ),
                 )

@@ -26,7 +26,9 @@ from django_typer.management import TyperCommand, command, initialize
 
 from teatree.core.gates.schema_guard import SelfDbMigrationError, require_current_schema
 from teatree.core.merge import fetch_live_head_sha, fetch_required_checks_status
-from teatree.core.models import Finding, MRReviewLock, ReviewVerdict, ReviewVerdictError, Ticket
+from teatree.core.merge.conflict_only import rebind_clearance_after_conflict_only_merge
+from teatree.core.models import Finding, MergeClear, MRReviewLock, ReviewVerdict, ReviewVerdictError, Ticket
+from teatree.project import find_project_root
 from teatree.utils.url_slug import pr_ref_from_url
 
 
@@ -69,6 +71,19 @@ class LockStatusResult(TypedDict, total=False):
     state: str
     holder: str
     error: str
+
+
+class RebindClearanceResult(TypedDict, total=False):
+    rebound: bool
+    clear_id: int
+    reviewed_sha: str
+    merge_sha: str
+
+
+def _project_root_or_cwd() -> str:
+    """The cwd project root the merge commit is resolved against, or ``.`` when none resolves."""
+    root = find_project_root()
+    return str(root) if root is not None else "."
 
 
 def _parse_findings(raw: str) -> list[Finding]:
@@ -382,4 +397,48 @@ class Command(TyperCommand):
             "locked": lock.is_locked(),
             "state": lock.state,
             "holder": lock.holder,
+        }
+
+    @command(name="rebind-clearance")
+    def rebind_clearance(
+        self,
+        clear_id: int,
+        merge_sha: Annotated[str, typer.Option("--merge-sha", help="Full 40-char hex SHA of the merge commit.")] = "",
+        repo_root: Annotated[
+            str, typer.Option("--repo-root", help="Git clone the merge commit lives in (default: cwd project root).")
+        ] = "",
+    ) -> RebindClearanceResult:
+        """Re-bind a CLEAR to a conflict-only merge commit — no re-review (PR-07).
+
+        After ``origin/main`` is merged into a reviewed branch to resolve conflicts
+        (merge, never rebase — §17.4), the head moves and the SHA-bind gate refuses
+        it. This re-binds ONLY when the merge commit's first parent is the reviewed
+        SHA AND the commit is conflict-resolution-only; the original independent
+        verdict is carried forward to the merge SHA, so the merge preconditions pass
+        at the new head. A substantive merge is refused — a fresh review is required.
+        """
+        if not merge_sha.strip():
+            self.stderr.write("  rebind-clearance refused: --merge-sha is required (full 40-char hex SHA)")
+            raise SystemExit(1)
+        try:
+            clear = MergeClear.objects.get(pk=clear_id)
+        except MergeClear.DoesNotExist:
+            self.stderr.write(f"  MergeClear {clear_id} not found")
+            raise SystemExit(1) from None
+
+        root = repo_root.strip() or _project_root_or_cwd()
+        rebound = rebind_clearance_after_conflict_only_merge(clear=clear, merge_sha=merge_sha, repo_root=root)
+        clear.refresh_from_db()
+        if rebound:
+            self.stdout.write(f"  re-bound CLEAR {clear.pk} to conflict-only merge {merge_sha[:8]}")
+        else:
+            self.stdout.write(
+                f"  CLEAR {clear.pk} NOT re-bound — {merge_sha[:8]} is not a conflict-only merge whose "
+                f"first parent is the reviewed SHA; a fresh review is required"
+            )
+        return {
+            "rebound": rebound,
+            "clear_id": int(clear.pk),
+            "reviewed_sha": clear.reviewed_sha,
+            "merge_sha": merge_sha.strip().lower(),
         }
