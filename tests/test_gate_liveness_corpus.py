@@ -499,6 +499,24 @@ def _self_dm_allow(ctx: GateContext) -> dict:
     }
 
 
+# block-mcp-slack-write (#1196): a Slack MCP WRITE (any destination) denies —
+# every Slack write must route through the t3 CLI; a Slack MCP READ allows.
+def _mcp_slack_write_deny(ctx: GateContext) -> dict:
+    return {
+        "session_id": "sess-liveness",
+        "tool_name": "mcp__claude_ai_Slack__slack_send_message",
+        "tool_input": {"channel": "C0COLLEAGUE9", "text": "review note"},
+    }
+
+
+def _mcp_slack_write_allow(ctx: GateContext) -> dict:
+    return {
+        "session_id": "sess-liveness",
+        "tool_name": "mcp__claude_ai_Slack__slack_get_channel_history",
+        "tool_input": {"channel": "C0COLLEAGUE9"},
+    }
+
+
 # dispatch-prompt quote-scanner (Agent/Task): a dispatch prompt carrying a
 # verbatim user quote denies; a clean prompt allows. Now REACHABLE — #1646 wired
 # the `Agent` PreToolUse matcher in hooks.json. The clean-prompt fan-out concern
@@ -864,6 +882,14 @@ GATE_REGISTRY: Final[tuple[GateRow, ...]] = (
         deny_input=_self_dm_deny,
         allow_input=_self_dm_allow,
         arrange=_arrange_self_dm_gate,
+    ),
+    GateRow(
+        gate_id="block-mcp-slack-write",
+        handler=router.handle_block_mcp_slack_write,
+        event="PreToolUse",
+        matched="mcp__claude_ai_Slack__slack_send_message",
+        deny_input=_mcp_slack_write_deny,
+        allow_input=_mcp_slack_write_allow,
     ),
     GateRow(
         gate_id="dispatch-prompt-quote-scanner",

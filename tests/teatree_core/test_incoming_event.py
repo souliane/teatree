@@ -6,12 +6,16 @@ exists ahead of the webhook views so downstream phases (classifier,
 dispatcher branch) have a stable persistence layer to build on.
 """
 
+from datetime import timedelta
+
 import pytest
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.test import TestCase
+from django.utils import timezone
 
 from teatree.core.models import IncomingEvent
+from teatree.core.models.incoming_event import MAX_INGEST_ATTEMPTS
 
 
 class TestIncomingEvent(TestCase):
@@ -96,3 +100,84 @@ class TestIncomingEvent(TestCase):
         assert event.parent_ts == "1234567890.0001"
         assert event.parent_text == "approve posting the evidence?"
         assert event.is_thread_reply is True
+
+
+class TestIncomingEventReliability(TestCase):
+    """The #673 retry / dead-letter reliability layer on failed drains."""
+
+    def _event(self, key: str = "slack:Ev-fail") -> IncomingEvent:
+        return IncomingEvent.objects.create(
+            source=IncomingEvent.Source.SLACK,
+            channel_ref="C-eng",
+            idempotency_key=key,
+        )
+
+    def test_record_failure_increments_attempts_and_schedules_backoff_retry(self) -> None:
+        event = self._event()
+
+        dead = event.record_failure("boom")
+
+        assert dead is False
+        event.refresh_from_db()
+        assert event.attempts == 1
+        assert event.last_error == "boom"
+        assert event.next_retry_at is not None
+        assert event.dead_lettered_at is None
+        assert event.processed_at is None  # a retryable failure is NOT silently dropped
+
+    def test_backoff_grows_across_attempts(self) -> None:
+        event = self._event()
+        now = timezone.now()
+
+        event.record_failure("e1", now=now)
+        first_gap = event.next_retry_at - now
+        event.record_failure("e2", now=now)
+        second_gap = event.next_retry_at - now
+
+        assert second_gap > first_gap
+
+    def test_dead_letters_after_max_attempts(self) -> None:
+        event = self._event()
+
+        for _ in range(MAX_INGEST_ATTEMPTS - 1):
+            assert event.record_failure("still failing") is False
+        dead = event.record_failure("final")
+
+        assert dead is True
+        event.refresh_from_db()
+        assert event.is_dead_lettered is True
+        assert event.dead_lettered_at is not None
+        assert event.next_retry_at is None
+
+    def test_unprocessed_excludes_dead_lettered_events(self) -> None:
+        alive = self._event("slack:alive")
+        poison = self._event("slack:poison")
+        for _ in range(MAX_INGEST_ATTEMPTS):
+            poison.record_failure("boom")
+
+        pks = list(IncomingEvent.objects.unprocessed().values_list("pk", flat=True))
+
+        assert alive.pk in pks
+        assert poison.pk not in pks
+
+    def test_unprocessed_excludes_events_not_yet_due_for_retry(self) -> None:
+        event = self._event()
+        event.record_failure("boom")  # schedules next_retry_at 30s out
+
+        now = timezone.now()
+        not_yet = list(IncomingEvent.objects.unprocessed(now=now).values_list("pk", flat=True))
+        later = list(IncomingEvent.objects.unprocessed(now=now + timedelta(hours=2)).values_list("pk", flat=True))
+
+        assert event.pk not in not_yet
+        assert event.pk in later
+
+    def test_dead_lettered_query_lists_only_dead_letters(self) -> None:
+        alive = self._event("slack:alive")
+        poison = self._event("slack:poison")
+        for _ in range(MAX_INGEST_ATTEMPTS):
+            poison.record_failure("boom")
+
+        dead_pks = list(IncomingEvent.objects.dead_lettered().values_list("pk", flat=True))
+
+        assert dead_pks == [poison.pk]
+        assert alive.pk not in dead_pks

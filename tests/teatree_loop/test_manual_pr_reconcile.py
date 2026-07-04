@@ -42,6 +42,16 @@ class TestReconcileManualPrsFromFooter(TestCase):
         assert row.state == PullRequest.State.OPEN
         assert row.overlay == "t3-teatree"
 
+    def test_reconciled_row_is_create_verification_confirmed(self) -> None:
+        """#1194: a reconciled row is verify-by-re-read CONFIRMED — the scan is the re-read."""
+        self._ticket()
+
+        reconcile_manual_prs([_signal(description="Closes #855")])
+
+        row = PullRequest.objects.get(url=_PR_URL)
+        assert row.create_verification == PullRequest.CreateVerification.CONFIRMED
+        assert row.create_verified_at is not None
+
     def test_re_tick_is_idempotent(self) -> None:
         self._ticket()
         signals = [_signal(description="Closes #855")]

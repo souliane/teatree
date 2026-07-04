@@ -6,7 +6,7 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
-from teatree.core.backend_protocols import BackendResolutionError
+from teatree.core.backend_protocols import BackendResolutionError, PrOpenState
 from teatree.core.gates.orphan_guard import BranchReport, BranchStatus
 from teatree.core.management.commands import _ensure_pr as ensure_pr_mod
 from teatree.core.management.commands import pr as pr_command
@@ -126,6 +126,41 @@ class TestEnsurePr(TestCase):
         assert spec.branch == "feat-q"
         assert spec.repo == "souliane/teatree"
         assert spec.title == "feat: cool thing"
+
+    def test_create_url_failing_reread_is_reported_as_error_not_a_url(self) -> None:
+        """#1194: a create URL whose independent re-read 404s is reported failed.
+
+        ``create_pr`` returned a well-formed URL, but a fresh GET reports
+        ``UNKNOWN`` — the create silently no-op'd. ``ensure-pr`` must surface an
+        ``error`` and no ``url`` so the orphan-branch path never hands back a
+        phantom PR.
+        """
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": "https://github.com/souliane/teatree/pull/phantom"}
+        host.current_user.return_value = "souliane"
+        host.get_pr_open_state.return_value = PrOpenState.UNKNOWN
+        self._monkeypatch.setattr(ensure_pr_mod, "code_host_for_repo_from_overlay", lambda _repo_path: host)
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command.git, "current_branch", return_value="feat-q"),
+            patch.object(ensure_pr_mod.git, "remote_url", return_value="git@github.com:souliane/teatree.git"),
+            patch.object(ensure_pr_mod, "_branch_own_commit_message", return_value=("feat: cool thing", "body")),
+            patch.object(
+                pr_command,
+                "classify_branch",
+                return_value=BranchReport(
+                    repo=".",
+                    branch="feat-q",
+                    status=BranchStatus.PUSHED_ORPHAN,
+                    ahead_count=5,
+                ),
+            ),
+        ):
+            result = cast("dict[str, object]", call_command("pr", "ensure-pr"))
+
+        assert "url" not in result
+        assert "verify-by-re-read" in str(result["error"])
 
     def test_defers_when_remote_ref_stale_in_pre_push_race(self) -> None:
         """#792: ensure-pr must defer (not raise) on the pre-push stale-remote race.

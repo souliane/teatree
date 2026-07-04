@@ -8,6 +8,7 @@ from django.test import TestCase
 import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.core.gates.merge_guard import MergeGuard
 from teatree.core.models import IncomingEvent, ReplyDispatch
+from teatree.core.models.incoming_event import MAX_INGEST_ATTEMPTS
 from teatree.core.overlay import OverlayBase
 from teatree.loop.scanners.incoming_events import IncomingEventsScanner
 
@@ -148,7 +149,11 @@ class TestIncomingEventsScanner(TestCase):
 
         corrupt.refresh_from_db()
         healthy.refresh_from_db()
-        assert corrupt.processed_at is not None
+        # The corrupt event no longer BLOCKS the queue (healthy still drains) and
+        # is no longer silently dropped via mark_processed — it records the
+        # failure and retries with backoff (#673).
+        assert corrupt.processed_at is None
+        assert corrupt.attempts == 1
         assert healthy.processed_at is not None
 
     def test_respects_limit(self) -> None:
@@ -511,3 +516,43 @@ class TestScheduleMergeMultiOverlay(TestCase):
             "overlay's policy — a bare get_overlay() raises Multiple-overlays and drops the merge"
         )
         assert escalations[0].payload["reason"] == "freeze window"
+
+
+class TestIncomingEventsScannerReliability(TestCase):
+    """A failed drain retries with backoff and eventually dead-letters (#673)."""
+
+    def test_failed_drain_retries_instead_of_silently_dropping(self) -> None:
+        event = _event(source=IncomingEvent.Source.SLACK, body="x", key="slack:boom", event={"type": "app_mention"})
+
+        with patch.object(IncomingEventsScanner, "_handle", side_effect=ValueError("boom")):
+            signals = IncomingEventsScanner().scan()
+
+        event.refresh_from_db()
+        # NOT dropped: previously mark_processed() hid the poison; now it retries.
+        assert event.processed_at is None
+        assert event.attempts == 1
+        assert event.next_retry_at is not None
+        assert event.dead_lettered_at is None
+        assert not any(s.kind == "incoming_event.dead_letter" for s in signals)
+
+    def test_exhausted_retries_dead_letter_and_emit_surface_signal(self) -> None:
+        event = _event(source=IncomingEvent.Source.SLACK, body="x", key="slack:poison", event={"type": "app_mention"})
+        event.attempts = MAX_INGEST_ATTEMPTS - 1
+        event.save(update_fields=["attempts"])
+
+        with patch.object(IncomingEventsScanner, "_handle", side_effect=ValueError("boom")):
+            signals = IncomingEventsScanner().scan()
+
+        event.refresh_from_db()
+        assert event.is_dead_lettered is True
+        dead = [s for s in signals if s.kind == "incoming_event.dead_letter"]
+        assert len(dead) == 1
+        assert dead[0].payload["event_id"] == event.pk
+
+    def test_dead_lettered_event_is_no_longer_drained(self) -> None:
+        event = _event(source=IncomingEvent.Source.SLACK, body="x", key="slack:done", event={"type": "app_mention"})
+        for _ in range(MAX_INGEST_ATTEMPTS):
+            event.record_failure("boom", now=None)
+
+        with patch.object(IncomingEventsScanner, "_handle", side_effect=AssertionError("must not re-drain")):
+            IncomingEventsScanner().scan()  # a dead-lettered event must never reach _handle again

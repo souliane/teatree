@@ -161,8 +161,23 @@ class SessionQuerySet(_OverlayFilterMixin, models.QuerySet):
 
 
 class IncomingEventQuerySet(models.QuerySet):
-    def unprocessed(self) -> models.QuerySet:
-        return self.filter(processed_at__isnull=True)
+    def unprocessed(self, now: datetime | None = None) -> models.QuerySet:
+        """Events still awaiting a drain: un-processed, not dead-lettered, and due (#673).
+
+        A failed drain (:meth:`IncomingEvent.record_failure`) leaves the event
+        un-processed but stamps a backoff ``next_retry_at`` and, past the attempt
+        cap, a ``dead_lettered_at``. Excluding both here is what lets the scanner
+        retry a transient failure without re-firing it every tick and drop a
+        dead-lettered poison out of the queue rather than block behind it.
+        """
+        moment = now or timezone.now()
+        return self.filter(processed_at__isnull=True, dead_lettered_at__isnull=True).filter(
+            Q(next_retry_at__isnull=True) | Q(next_retry_at__lte=moment)
+        )
+
+    def dead_lettered(self) -> models.QuerySet:
+        """Poisoned events that exhausted their retries — the dead-letter view (#673)."""
+        return self.filter(dead_lettered_at__isnull=False).order_by("-dead_lettered_at", "-pk")
 
     def active_dm_thread(self, *, channel: str) -> str:
         incoming_event_model = cast("type[IncomingEvent]", apps.get_model("core", "IncomingEvent"))
