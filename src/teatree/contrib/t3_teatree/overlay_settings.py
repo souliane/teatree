@@ -63,3 +63,11 @@ MR_CLOSE_TICKET: bool = True
 # Dogfooding overlay raises loop auto-start concurrency above the
 # conservative base default of 1 (external/multi-repo overlays keep 1).
 MAX_CONCURRENT_AUTO_STARTS: int = 3
+
+# ── Companion skills ────────────────────────────────────────────────
+
+# Skills loaded alongside the active lifecycle skill for every task in this
+# overlay. Teatree posts structured output to Slack (notify DMs, loop digests),
+# so the slack-formatting reference rides along so a dispatched worker builds
+# native table blocks + fence fallbacks rather than hand-rolled pipe tables.
+COMPANION_SKILLS: list[str] = ["slack-formatting"]

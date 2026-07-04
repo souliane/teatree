@@ -201,16 +201,22 @@ class BacklogSweepScanner:
         When ``require_approval`` is on (the default), the directive
         carries an explicit instruction that the skill must record each
         close proposal and surface the batch for user approval — it must
-        NOT mass-close issues unattended. The marker substring is
-        load-bearing: it is the channel the dispatched skill reads to know
-        the gate is active.
+        NOT mass-close issues unattended. It also routes the one
+        auto-closable class through the gated ``ticket bulk-close`` command
+        so the no-bulk-close gate (:mod:`teatree.core.gates.bulk_close_gate`)
+        applies to the autonomous close path exactly as it does to a manual
+        CLI one. The marker substrings are load-bearing: they are the
+        channel the dispatched skill reads to know the gate is active.
         """
         base = f"Periodic backlog-sweep triage ({trigger}) via skill: {self.skill}"
         if self.require_approval:
             return (
                 f"{base} | ASK-GATE: do NOT mass-close issues unattended — record each close "
                 "proposal with its citation and surface the batch for explicit user approval; "
-                "only the high-confidence merged-PR-superseded class auto-closes (#2419)"
+                "only the high-confidence merged-PR-superseded class auto-closes, and that "
+                "auto-close MUST go through `t3 <overlay> ticket bulk-close --ids <ids> --confirm <ids>` "
+                "(which enforces the no-bulk-close gate) — never a raw per-item `ticket ignore` loop "
+                "(#2419, #1931)"
             )
         return base
 

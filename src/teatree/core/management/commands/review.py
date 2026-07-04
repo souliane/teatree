@@ -27,7 +27,16 @@ from django_typer.management import TyperCommand, command, initialize
 from teatree.core.gates.schema_guard import SelfDbMigrationError, require_current_schema
 from teatree.core.merge import fetch_live_head_sha, fetch_required_checks_status
 from teatree.core.merge.conflict_only import rebind_clearance_after_conflict_only_merge
-from teatree.core.models import Finding, MergeClear, MRReviewLock, ReviewVerdict, ReviewVerdictError, Ticket
+from teatree.core.models import (
+    Finding,
+    MergeClear,
+    MRReviewLock,
+    ReviewEvidence,
+    ReviewEvidenceError,
+    ReviewVerdict,
+    ReviewVerdictError,
+    Ticket,
+)
 from teatree.project import find_project_root
 from teatree.utils.url_slug import pr_ref_from_url
 
@@ -52,6 +61,14 @@ class StatusResult(TypedDict, total=False):
     live_checks: str
     reviewer_identity: str
     findings_count: int
+    error: str
+
+
+class RecordEvidenceResult(TypedDict, total=False):
+    recorded: bool
+    evidence_id: int
+    ticket_id: int
+    kind: str
     error: str
 
 
@@ -187,6 +204,64 @@ class Command(TyperCommand):
             "slug": recorded.slug,
             "verdict": recorded.verdict,
             "findings_count": len(findings),
+        }
+
+    @command(name="record-evidence")
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
+    def record_evidence(  # noqa: PLR0913 — django-typer command: every param maps 1:1 to a ReviewEvidence field / CLI flag.
+        self,
+        ticket_id: int,
+        *,
+        kind: Annotated[str, typer.Option(help="cold_review / integration_review.")] = "cold_review",
+        reviewer: Annotated[str, typer.Option("--reviewer", help="Reviewer identity (not a maker/loop role).")] = "",
+        verdict: Annotated[str, typer.Option(help="Review verdict, e.g. merge_safe / hold / pass.")] = "",
+        head_sha: Annotated[
+            str, typer.Option("--head-sha", help="Full 40-char hex commit id of the reviewed tree.")
+        ] = "",
+        repos: Annotated[
+            str,
+            typer.Option("--repos", help="Comma-separated repos covered (≥2 required for integration_review)."),
+        ] = "",
+    ) -> RecordEvidenceResult:
+        """Record a PR-08 review-evidence artifact for a ticket.
+
+        Two kinds share the surface: ``cold_review`` satisfies the review-request
+        review-state gate; ``integration_review`` (with ≥ 2 ``--repos``)
+        satisfies the cross-repo ticket-close gate. Refuses on a maker/loop
+        reviewer, a blank verdict, a non-40-char SHA, or a single-repo
+        integration review — the same ``ReviewEvidence.record`` contract.
+        """
+        try:
+            require_current_schema()
+        except SelfDbMigrationError as exc:
+            self.stdout.write(f"  record-evidence refused: {exc}")
+            return {"recorded": False, "error": str(exc)}
+        try:
+            ticket = Ticket.objects.get(pk=ticket_id)
+        except Ticket.DoesNotExist:
+            self.stderr.write(f"  Ticket {ticket_id} not found")
+            raise SystemExit(1) from None
+
+        repo_list = [chunk.strip() for chunk in repos.split(",") if chunk.strip()]
+        try:
+            evidence = ReviewEvidence.record(
+                ticket=ticket,
+                kind=kind,
+                reviewer_identity=reviewer,
+                verdict=verdict,
+                head_sha=head_sha,
+                repos=repo_list,
+            )
+        except ReviewEvidenceError as exc:
+            self.stdout.write(f"  record-evidence refused: {exc}")
+            return {"recorded": False, "error": str(exc)}
+
+        self.stdout.write(f"  recorded {evidence.kind} evidence {evidence.pk} for ticket {ticket_id}")
+        return {
+            "recorded": True,
+            "evidence_id": int(evidence.pk),
+            "ticket_id": ticket_id,
+            "kind": evidence.kind,
         }
 
     def _trigger_sweep(self, recorded: ReviewVerdict) -> None:

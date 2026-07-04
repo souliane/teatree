@@ -666,6 +666,10 @@
           "name": "status"
         },
         {
+          "help": "Record a PR-08 review-evidence artifact for a ticket",
+          "name": "record-evidence"
+        },
+        {
           "help": "Acquire the per-MR review-dispatch lock BEFORE a manual Agent() reviewer dispatch (#1405)",
           "name": "lock-acquire"
         },
@@ -825,6 +829,14 @@
         {
           "help": "Post a comment to an issue or work item by its URL",
           "name": "comment"
+        },
+        {
+          "help": "Close (``ignore``) a batch of tickets, gated by the no-bulk-close guard (PR-08)",
+          "name": "bulk-close"
+        },
+        {
+          "help": "Record the audited escape hatch for the cross-repo integration-review gate (PR-08)",
+          "name": "integration-review-override"
         },
         {
           "help": "Set a ticket's rubric from EXPLICIT JSON criteria, all PENDING (#2241)",

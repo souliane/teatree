@@ -55,27 +55,28 @@ class TestLoopListText(django.test.TestCase):
         Loop.objects.all().delete()
         _make_loop("dispatch", 300)
         output = _run()
-        line = next(ln for ln in output.splitlines() if ln.strip().startswith("dispatch"))
-        assert "next —" in line
-        assert "last —" in line
+        # Each loop is a table row on one line; a never-fired loop shows "—"
+        # in both its Last and Next cells.
+        line = next(ln for ln in output.splitlines() if "dispatch" in ln)
+        assert line.count("—") >= 2
 
     def test_overdue_loop_renders_overdue(self) -> None:
         Loop.objects.all().delete()
         _make_loop("audit", 60, last_run_at=timezone.now() - dt.timedelta(hours=2))
         output = _run()
-        line = next(ln for ln in output.splitlines() if ln.strip().startswith("audit"))
-        assert "next overdue" in line
+        line = next(ln for ln in output.splitlines() if "audit" in ln)
+        assert "overdue" in line
 
     def test_disabled_loop_shown_with_disabled_marker(self) -> None:
         Loop.objects.all().delete()
         _make_loop("review", 300, enabled=False)
         output = _run()
-        line = next(ln for ln in output.splitlines() if ln.strip().startswith("review"))
+        line = next(ln for ln in output.splitlines() if "review" in ln)
         assert "disabled" in line
 
     def test_infra_slots_listed_before_mini_loops(self) -> None:
         output = _run()
-        assert output.index("infra slots:") < output.index("mini-loops:")
+        assert output.index("infra slots") < output.index("mini-loops")
         assert "loop-tick" in output
 
     def test_paused_loop_shows_held_marker_despite_enabled_row(self) -> None:
@@ -85,7 +86,7 @@ class TestLoopListText(django.test.TestCase):
         _make_loop("review", 300, last_run_at=timezone.now())
         LoopState.objects.pause("review")
         output = _run()
-        line = next(ln for ln in output.splitlines() if ln.strip().startswith("review"))
+        line = next(ln for ln in output.splitlines() if "review" in ln)
         assert "held" in line
         assert "enabled" in line
 

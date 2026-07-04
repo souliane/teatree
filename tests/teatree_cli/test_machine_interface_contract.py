@@ -76,7 +76,9 @@ class TestQueueStatusJson(TestCase):
     def test_non_json_leaves_stdout_empty_and_human_on_stderr(self) -> None:
         out, err, _rv = _run("queue", "status")
         assert out == ""
-        assert "Total queued rows:" in err
+        # The human view is a table on stderr; stdout stays a clean JSON channel.
+        assert "Queue" in err
+        assert "Status" in err
 
 
 class TestTasksJson(TestCase):

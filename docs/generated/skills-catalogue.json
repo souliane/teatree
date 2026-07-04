@@ -105,6 +105,10 @@
       "summary": "Delivery \u2014 committing, pushing, creating MR/PR, pipeline monitoring, review requests"
     },
     {
+      "name": "slack-formatting",
+      "summary": "Rendering tables and formatting messages for Slack \u2014 the native Block Kit table block, the monospace fence fallback, and the mrkdwn gotchas (no pipe tables, single-asterisk bold, angle-bracket links). Auto-loaded as an overlay companion for work that posts to Slack"
+    },
+    {
       "name": "sweeping-prs",
       "summary": "Maintenance sweep across all your open PRs/PRs \u2014 merge the default branch, fix conflicts, monitor CI, push, and (per-repo policy) optionally squash-merge each PR before moving to the next. Never rebases"
     },

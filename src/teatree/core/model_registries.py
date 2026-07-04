@@ -37,6 +37,7 @@ def populate_model_registries() -> None:
     from teatree.core.gates import (  # noqa: F401, PLC0415
         dod_gate,
         fix_dod_gate,
+        integration_review_gate,
         plan_gate,
         review_context_gate,
         spec_coverage_gate,

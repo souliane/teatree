@@ -15,12 +15,14 @@ marks fired, or mutates a row.
 
 import datetime as dt
 import json
-from typing import Annotated, Any
+from collections.abc import Sequence
+from typing import IO, Annotated, Any, cast
 
 import typer
 from django_typer.management import TyperCommand
 
 from teatree.core.session_identity import current_session_id
+from teatree.core.table_output import print_table
 from teatree.loops.live import LoopOwnerStatus, LoopStatusEntry, LoopStatusReport, build_report, owned_per_loop_owners
 
 _NEVER = "—"
@@ -52,18 +54,29 @@ def _next_tick_label(entry: LoopStatusEntry, now: dt.datetime) -> str:
     return f"in {_human_age(entry.due_seconds(now))}"
 
 
-def _entry_line(entry: LoopStatusEntry, now: dt.datetime) -> str:
-    enabled = "enabled" if entry.enabled else "disabled"
-    cadence = _human_age(entry.cadence_seconds)
-    age = _human_age(entry.age_seconds(now))
-    next_tick = _next_tick_label(entry, now)
-    line = f"  {entry.name:<22} {enabled:<8} cadence {cadence:<7} last {age:<10} next {next_tick}"
+def _held_cell(entry: LoopStatusEntry) -> str:
     if entry.kind.value == "infra-slot":
-        line += "  held" if entry.held else "  idle"
-    elif entry.held:
-        # A held mini-loop keeps enabled=True + a live countdown — the marker is its only "won't tick" signal.
-        line += "  held"
-    return line
+        return "held" if entry.held else "idle"
+    # A held mini-loop keeps enabled=True + a live countdown — the marker is its only "won't tick" signal.
+    return "held" if entry.held else ""
+
+
+def _entry_row(entry: LoopStatusEntry, now: dt.datetime) -> list[str]:
+    return [
+        entry.name,
+        "enabled" if entry.enabled else "disabled",
+        _human_age(entry.cadence_seconds),
+        _human_age(entry.age_seconds(now)),
+        _next_tick_label(entry, now),
+        _held_cell(entry),
+    ]
+
+
+_ENTRY_HEADERS = ["Loop", "State", "Cadence", "Last", "Next", "Held"]
+
+
+def _render_entries_table(title: str, entries: Sequence[LoopStatusEntry], now: dt.datetime, stream: IO[str]) -> None:
+    print_table(_ENTRY_HEADERS, [_entry_row(entry, now) for entry in entries], title=title, stream=stream)
 
 
 def _owner_line(owner: LoopOwnerStatus) -> str:
@@ -109,13 +122,14 @@ def _stall_lines(report: LoopStatusReport) -> list[str]:
     return [f"STALLED — last tick {age} ago", f"  hint: {_REMEDIATION}"]
 
 
-def _render_text(report: LoopStatusReport, *, show_all: bool) -> list[str]:
-    now = report.generated_at
-    lines = ["infra slots:"]
-    lines.extend(_entry_line(entry, now) for entry in report.infra_slots)
-    lines.append("mini-loops:")
-    lines.extend(_entry_line(entry, now) for entry in report.mini_loops)
-    lines.append(_owner_line(report.owner))
+def _status_lines(report: LoopStatusReport, *, show_all: bool) -> list[str]:
+    """The non-tabular status lines rendered below the loop tables.
+
+    The owner, per-loop-owner and stall blocks are status prose (one live
+    session's health), not record rows, so they stay lines rather than joining
+    the loop tables.
+    """
+    lines = [_owner_line(report.owner)]
     lines.extend(_per_loop_owner_lines(_resolve_per_loop_owners(report, show_all=show_all)))
     lines.extend(_stall_lines(report))
     return lines
@@ -194,5 +208,9 @@ class Command(TyperCommand):
         if json_output:
             self.stdout.write(_render_json(report, show_all=show_all))
             return
-        for line in _render_text(report, show_all=show_all):
+        stream = cast("IO[str]", self.stdout)
+        now = report.generated_at
+        _render_entries_table("infra slots", report.infra_slots, now, stream)
+        _render_entries_table("mini-loops", report.mini_loops, now, stream)
+        for line in _status_lines(report, show_all=show_all):
             self.stdout.write(line)

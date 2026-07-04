@@ -30,6 +30,7 @@ from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import BotPing, DeliveryClaim, OutboundClaim
 from teatree.core.session_identity import current_session_id
 from teatree.slack_mrkdwn import normalize_slack_message, slack_linkify
+from teatree.types import RawAPIDict
 
 logger = logging.getLogger(__name__)
 
@@ -60,11 +61,19 @@ def notify_user(  # noqa: PLR0913 — single notification egress; each kwarg is 
     user_id: str | None = None,
     linkify: bool = True,
     answering_slack_ts: str = "",
+    blocks: list[RawAPIDict] | None = None,
 ) -> bool:
     """Send a bot→user Slack DM and record an audit row.
 
     See :mod:`teatree.notify` for the full docstring — this is the
     canonical implementation; the public module is a re-export.
+
+    ``blocks`` (#1777): opaque Block Kit blocks (e.g. a native ``table`` block
+    from :mod:`teatree.backends.slack.table_format`) posted alongside ``text``.
+    ``text`` remains the notification + degradation fallback, so a caller with
+    tabular data passes the monospace fence as ``text`` and the ``table`` block
+    here. Kept opaque (``list[RawAPIDict]``) so ``teatree.core`` never imports
+    the Slack backend and cycles the module graph.
 
     ``answering_slack_ts`` (#1063): when this DM is the agent's reply to
     a queued user-question (the user DM'd, the question was injected via
@@ -107,6 +116,7 @@ def notify_user(  # noqa: PLR0913 — single notification egress; each kwarg is 
         resolved_backend,
         user_id=resolved_user_id,
         text=format_notification(payload_text, kind_value),
+        blocks=blocks,
     )
     if failure:
         # Any non-delivery — empty channel from ``open_dm`` (Slack
@@ -246,6 +256,7 @@ def _deliver_dm(
     *,
     user_id: str,
     text: str,
+    blocks: list[RawAPIDict] | None = None,
 ) -> tuple[str, str, str]:
     """Open a DM and post ``text``, returning ``(channel, ts, failure)``.
 
@@ -286,7 +297,13 @@ def _deliver_dm(
         if not channel:
             return "", "", "open_dm returned an empty channel (Slack conversations.open ok:false)"
         thread_ts = _active_dm_thread(channel)
-        response = backend.post_message(channel=channel, text=text, thread_ts=thread_ts)
+        # Pass ``blocks`` only when a table is actually present — the common
+        # text-only path stays a 3-arg call, so any backend (or test double)
+        # that predates the ``blocks`` kwarg keeps working unchanged.
+        if blocks is None:
+            response = backend.post_message(channel=channel, text=text, thread_ts=thread_ts)
+        else:
+            response = backend.post_message(channel=channel, text=text, thread_ts=thread_ts, blocks=blocks)
         deliver_user_dm_sidecar(backend, channel=channel, text=text, thread_ts=thread_ts)
     except Exception as exc:  # noqa: BLE001 — notify must never bubble up
         return "", "", str(exc)
