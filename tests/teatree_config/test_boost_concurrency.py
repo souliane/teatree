@@ -15,7 +15,10 @@ import teatree.config as config_facade
 from teatree.config import get_effective_settings, load_config
 from teatree.core.models import ConfigSetting
 
-from ._shared import _write_toml
+
+def _write_toml(config_path: Path, content: str) -> None:
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(content, encoding="utf-8")
 
 
 class TestBoostConcurrencyDefault:

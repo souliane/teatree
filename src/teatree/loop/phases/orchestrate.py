@@ -54,6 +54,7 @@ from django.db.models import Q
 
 from teatree.config import Wip, get_effective_settings
 from teatree.core.modelkit.phases import SUBAGENT_BY_PHASE, normalize_phase, phase_spellings, subagent_for_phase
+from teatree.loop.queue_drain import ADMISSION_ORDER, admission_claim_order, admission_priority_annotations
 
 if TYPE_CHECKING:
     from teatree.config import UserSettings
@@ -135,11 +136,6 @@ def _admit_into(manifest: OrchestrationManifest, *, claim: bool, claimed_by: str
     degrades to whatever was collected so far, never aborting the tick.
     """
     from teatree.core.models.task import Task  # noqa: PLC0415
-    from teatree.loop.queue_drain import (  # noqa: PLC0415
-        ADMISSION_ORDER,
-        admission_claim_order,
-        admission_priority_annotations,
-    )
 
     dispatchable = _dispatchable_filter()
     try:
