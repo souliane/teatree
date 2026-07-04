@@ -119,6 +119,16 @@ mutation = [
 shuffle = [
   "pytest-randomly>=3.15",
 ]
+# Coverage-gate sharding — `pytest-split` slices the suite into balanced groups
+# (`--splits N --group K`, duration-balanced via a committed `.test_durations`)
+# so the required `test (3.13)` lane runs 4 shards in parallel behind an
+# unchanged combiner context. DELIBERATELY out of the default `dev` group: a
+# plain `uv run pytest` and the local `dev/test-cov.sh` parity lane run the whole
+# suite in one process; the plugin is installed only by the CI `test-shard` lane
+# (and to regenerate `.test_durations`), mirroring the `shuffle` isolation.
+shard = [
+  "pytest-split>=0.9",
+]
 ui = [
   "trogon[typer]>=0.6",
 ]
