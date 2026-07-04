@@ -1,3 +1,4 @@
+# test-path: cross-cutting — drives hooks/scripts/hook_router.py + teatree.cli.teatree_gate; no src/teatree/ mirror.
 """Tests for the cwd-aware out-of-band merge gate in hook_router (#126).
 
 ``gh pr merge`` / ``glab mr merge`` must stay BLOCKED for a teatree-managed
