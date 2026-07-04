@@ -75,3 +75,14 @@ def test_kill_switch_disables_gate(repo: Path, tmp_path: Path, monkeypatch: pyte
 def test_warn_only_test_vacuity_does_not_block(repo: Path) -> None:
     _stage(repo, "tests/test_x.py", "def test_it():\n    compute()\n")
     assert main() == 0
+
+
+def test_scan_error_fails_open(repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _stage(repo, "m.py", "x = 1\ny = bad()  # noqa\n")
+
+    def _boom(_diff: str) -> list[object]:
+        msg = "scan engine crashed"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr("scripts.hooks.check_gate_relaxation.scan_relaxation", _boom)
+    assert main() == 0

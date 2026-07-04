@@ -61,12 +61,7 @@ def _staged_diff() -> str:
     return result.stdout if result.returncode == 0 else ""
 
 
-def main() -> int:
-    if not _gate_enabled():
-        return 0
-    diff = _staged_diff()
-    if not diff.strip():
-        return 0
+def _scan_and_decide(diff: str) -> int:
     findings = scan_relaxation(diff)
     for finding in (f for f in findings if f.severity == WARN):
         print(f"WARN: {finding.path}: {finding.message}", file=sys.stderr)
@@ -88,6 +83,19 @@ def main() -> int:
         f"{_ALLOW_ENV}='<reason>' git commit ...\n"
     )
     return 1
+
+
+def main() -> int:
+    if not _gate_enabled():
+        return 0
+    diff = _staged_diff()
+    if not diff.strip():
+        return 0
+    try:
+        return _scan_and_decide(diff)
+    except Exception as exc:  # noqa: BLE001 — fail-open: a scan bug must never wedge commits repo-wide.
+        print(f"WARN: anti-relaxation gate errored — failing open: {exc}", file=sys.stderr)
+        return 0
 
 
 if __name__ == "__main__":
