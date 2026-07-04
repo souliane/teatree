@@ -12,8 +12,8 @@ carrying the work inline:
     their signals are merged before dispatch, so behaviour is unchanged.
 *   :func:`act_phase` — dispatch the collected signals into actions, run
     the inline mechanical handlers, and persist agent dispatches.
-*   :func:`orchestrate_phase` — the speed-driven autonomous fan-out. A
-    no-op at the default ``medium`` speed (today's behaviour); at ``slow``
+*   :func:`orchestrate_phase` — the wip-driven autonomous fan-out. A
+    no-op at the default ``medium`` wip (today's behaviour); at ``slow``
     it admits at most one worker, and at ``full`` / ``boost`` it computes a
     claimed manifest of dispatchable work clamped to
     ``max_concurrent_auto_starts``. It only computes + claims + returns the

@@ -37,22 +37,22 @@ class Mode(StrEnum):
             raise ValueError(msg) from exc
 
 
-# Friendly aliases accepted by ``Speed.parse`` and normalised to a canonical
+# Friendly aliases accepted by ``Wip.parse`` and normalised to a canonical
 # tier. Module-level (not a class attribute) so ``StrEnum`` does not try to
 # treat the mapping as an enum member.
-_SPEED_ALIASES: dict[str, str] = {
+_WIP_ALIASES: dict[str, str] = {
     "low": "slow",
     "normal": "medium",
     "high": "full",
 }
 
 
-class Speed(StrEnum):
-    """How much parallel work the orchestrator drives at once.
+class Wip(StrEnum):
+    """How much new work a loop tick admits at once — the bounded-WIP dial.
 
     A single dial spanning sequential to burst throughput. Orthogonal to
     :class:`Mode` and :class:`Autonomy` (which govern *whether* a publishing
-    action may proceed); ``speed`` governs *how many* threads of work run
+    action may proceed); ``wip`` governs *how many* threads of work run
     concurrently — it never relaxes a safety gate.
 
     Tiers (``SLOW`` < ``MEDIUM`` < ``FULL`` < ``BOOST``, default ``MEDIUM``):
@@ -63,17 +63,17 @@ class Speed(StrEnum):
     *   :attr:`MEDIUM` — the conservative baseline: NO orchestrator fan-out.
         Throughput comes only from the intrinsic loop, the PR sweep, and the
         per-overlay ``max_concurrent_auto_starts`` auto-start cap.
-    *   :attr:`FULL` — arm ``/loop /t3:speed boost`` so each wave re-classifies
+    *   :attr:`FULL` — arm ``/loop /t3:wip boost`` so each wave re-classifies
         the backlog and fans out a burst, sustained across waves.
-    *   :attr:`BOOST` — one parallel-backlog-blast wave (the former
-        ``/t3:full-speed`` behaviour), clamped to ``max_concurrent_auto_starts``.
+    *   :attr:`BOOST` — one parallel-backlog-blast wave, clamped to
+        ``max_concurrent_auto_starts``.
 
-    A no-arg ``/t3:speed`` invocation means "go full" regardless of the
+    A no-arg ``/t3:wip`` invocation means "go full" regardless of the
     persisted baseline; the persisted value is the resting dial the loop
-    reads. ``speed`` is a DB-home setting: opt in via ``t3 <overlay>
-    config_setting set speed full`` (the ``t3 <overlay> speed set <level>``
-    wrapper does this), or the ``T3_SPEED`` environment variable — a
-    ``[teatree] speed`` TOML value is ignored on read.
+    reads. ``wip`` is a DB-home setting: opt in via ``t3 <overlay>
+    config_setting set wip full`` (the ``t3 <overlay> wip set <level>``
+    wrapper does this), or the ``T3_WIP`` environment variable — a
+    ``[teatree] wip`` TOML value is ignored on read.
     """
 
     SLOW = "slow"
@@ -82,8 +82,8 @@ class Speed(StrEnum):
     BOOST = "boost"
 
     @classmethod
-    def parse(cls, value: str) -> "Speed":
-        """Parse a speed string, accepting friendly aliases; typos raise ``ValueError``.
+    def parse(cls, value: str) -> "Wip":
+        """Parse a wip string, accepting friendly aliases; typos raise ``ValueError``.
 
         Mirrors :meth:`Mode.parse`: the conservative default (:attr:`MEDIUM`)
         is applied by the caller when the setting is absent, so this validates
@@ -91,13 +91,13 @@ class Speed(StrEnum):
         ``low``/``normal``/``high`` map onto ``slow``/``medium``/``full``.
         """
         normalised = value.strip().lower()
-        normalised = _SPEED_ALIASES.get(normalised, normalised)
+        normalised = _WIP_ALIASES.get(normalised, normalised)
         try:
             return cls(normalised)
         except ValueError as exc:
             valid = ", ".join(m.value for m in cls)
-            aliases = ", ".join(sorted(_SPEED_ALIASES))
-            msg = f"Invalid speed {value!r}; valid values: {valid} (aliases: {aliases})"
+            aliases = ", ".join(sorted(_WIP_ALIASES))
+            msg = f"Invalid wip {value!r}; valid values: {valid} (aliases: {aliases})"
             raise ValueError(msg) from exc
 
 

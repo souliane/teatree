@@ -4509,7 +4509,7 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │                 brief must carry.                                            │
 │ config          Overlay configuration.                                       │
 │ gate            Enforcement-gate kill-switches (self-rescue).                │
-│ speed           Parallel-work throughput dial.                               │
+│ wip             Bounded-WIP throughput dial.                                 │
 │ autonomy        Per-overlay trust switch (collapses the approval gates).     │
 │ worktree        Per-worktree FSM operations.                                 │
 │ workspace       Ticket-level workspace operations (every worktree in the     │
@@ -5048,40 +5048,40 @@ Usage: t3 teatree gate memory-recall enable [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-#### `t3 teatree speed`
+#### `t3 teatree wip`
 
 ```
-Usage: t3 teatree speed [OPTIONS] COMMAND [ARGS]...
+Usage: t3 teatree wip [OPTIONS] COMMAND [ARGS]...
 
- Parallel-work throughput dial.
+ Bounded-WIP throughput dial.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ show  Show the effective speed (env > per-overlay > global > default).       │
-│ set   Persist the global `` speed`` dial. A typo is rejected.                │
+│ show  Show the effective wip (env > per-overlay > global > default).         │
+│ set   Persist the global `` wip`` dial. A typo is rejected.                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-##### `t3 teatree speed show`
+##### `t3 teatree wip show`
 
 ```
-Usage: t3 teatree speed show [OPTIONS]
+Usage: t3 teatree wip show [OPTIONS]
 
- Show the effective speed (env > per-overlay > global > default).
+ Show the effective wip (env > per-overlay > global > default).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-##### `t3 teatree speed set`
+##### `t3 teatree wip set`
 
 ```
-Usage: t3 teatree speed set [OPTIONS] LEVEL
+Usage: t3 teatree wip set [OPTIONS] LEVEL
 
- Persist the global `` speed`` dial. A typo is rejected.
+ Persist the global `` wip`` dial. A typo is rejected.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    level      TEXT  slow | medium | full | boost (aliases: low, normal,    │
