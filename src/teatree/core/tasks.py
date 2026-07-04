@@ -4,7 +4,9 @@ from typing import TypedDict
 from django.db import transaction
 from django.tasks import task
 
-from teatree.config import worktree_root
+from teatree.config import get_effective_settings, worktree_root
+from teatree.core.attachment_manifest import attachment_gate_refusal, attachments_dir_for, ticket_text_sources
+from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.landscape_gather import run_landscape
 from teatree.core.models import LandscapeArtifact, Task, Ticket
 from teatree.core.models.external_delivery import under_external_delivery
@@ -35,6 +37,29 @@ def _persist_intake_landscape(ticket: Ticket) -> None:
         LandscapeArtifact.record(ticket=ticket, survey=survey, recorded_by="t3:intake")
     except ValueError:
         logger.info("Intake landscape survey for ticket %s was empty; no artifact recorded", ticket.pk)
+
+
+def _attachment_gate_refusal(ticket: Ticket) -> str | None:
+    """Intake attachment-fetch gate verdict for *ticket* (PR-15, M5).
+
+    Reads the ticket's issue text through the code-host seam (fail-open — a forge
+    outage yields no attachments and hands off), builds the manifest, and returns
+    a refusal naming every un-fetched attachment plus the ``--fetch`` command, or
+    ``None`` to hand off. Vacuous on a zero-attachment ticket. The kill-switch
+    ``[teatree] attachment_gate_enabled = false`` short-circuits to ``None`` so a
+    stuck ticket is never a lockout.
+    """
+    if not get_effective_settings(ticket.overlay or None).attachment_gate_enabled:
+        return None
+    texts = ticket_text_sources(ticket, code_host=code_host_from_overlay(ticket.overlay or None))
+    workspace = worktree_root()
+    fetch_command = f"t3 {ticket.overlay or '<overlay>'} ticket attachments {ticket.pk} --fetch"
+    return attachment_gate_refusal(
+        ticket,
+        texts=texts,
+        attachments_dir=attachments_dir_for(ticket, workspace=workspace),
+        fetch_command=fetch_command,
+    )
 
 
 class TransitionResult(TypedDict, total=False):
@@ -282,6 +307,13 @@ def execute_provision(ticket_id: int) -> TransitionResult:
         elif is_trivial_plan_skip(ticket):
             logger.info("Ticket %s marked trivial; skipping auto-planner (plan-gate carve-out)", ticket_id)
         else:
+            refusal = _attachment_gate_refusal(ticket)
+            if refusal is not None:
+                # Attachments un-fetched: hold at STARTED (like the delivery /
+                # trivial skips, but transient). Re-running execute_provision
+                # after `ticket attachments --fetch` re-checks and hands off.
+                logger.warning("Ticket %s intake held pending attachments: %s", ticket_id, refusal)
+                return {"ticket_id": ticket_id, "ok": True, "detail": refusal}
             ticket.schedule_planning()
 
     return {"ticket_id": ticket_id, "ok": True, "detail": result.detail}

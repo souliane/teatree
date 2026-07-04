@@ -6,9 +6,11 @@ the actual ``git diff --cached`` surface the hook reads — not a mocked diff.
 """
 
 import subprocess
+from io import StringIO
 from pathlib import Path
 
 import pytest
+from django.core.management import call_command
 
 from scripts.hooks.check_gate_relaxation import main
 
@@ -63,15 +65,6 @@ def test_empty_allow_marker_does_not_bypass(repo: Path, monkeypatch: pytest.Monk
     assert main() == 1
 
 
-def test_kill_switch_disables_gate(repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    home = tmp_path / "home"
-    home.mkdir(exist_ok=True)
-    (home / ".teatree.toml").write_text("[teatree]\ngate_relaxation_gate_enabled = false\n", encoding="utf-8")
-    monkeypatch.setenv("HOME", str(home))
-    _stage(repo, "m.py", "x = 1\ny = bad()  # noqa\n")
-    assert main() == 0
-
-
 def test_warn_only_test_vacuity_does_not_block(repo: Path) -> None:
     _stage(repo, "tests/test_x.py", "def test_it():\n    compute()\n")
     assert main() == 0
@@ -86,3 +79,17 @@ def test_scan_error_fails_open(repo: Path, monkeypatch: pytest.MonkeyPatch) -> N
 
     monkeypatch.setattr("scripts.hooks.check_gate_relaxation.scan_relaxation", _boom)
     assert main() == 0
+
+
+# ast-grep-ignore: ac-django-no-pytest-django-db
+@pytest.mark.django_db
+class TestDbKillSwitch:
+    def test_db_kill_switch_disables_gate(self, repo: Path) -> None:
+        # `t3 config_setting set gate_relaxation_gate_enabled false` is a DB write; the
+        # hook must honour it via the canonical DB-first resolver. RED before the fix:
+        # the old hook read the kill-switch from ~/.teatree.toml RAW, so the DB row was
+        # ignored and the un-justified `# noqa` still blocked (main() stayed 1).
+        _stage(repo, "m.py", "x = 1\ny = bad()  # noqa\n")
+        assert main() == 1  # enabled by default -> the relaxation blocks
+        call_command("config_setting", "set", "gate_relaxation_gate_enabled", "false", stdout=StringIO())
+        assert main() == 0  # the DB kill-switch now actuates the hook

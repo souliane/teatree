@@ -4716,6 +4716,8 @@ Usage: t3 teatree gate [OPTIONS] COMMAND [ARGS]...
 │                    (self-rescue).                                            │
 │ snapshot-baseline  Snapshot-baseline attestation gate kill-switch            │
 │                    (self-rescue).                                            │
+│ gate-relaxation    Anti-relaxation + tach-soundness gate kill-switch         │
+│                    (self-rescue).                                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -5119,6 +5121,59 @@ Usage: t3 teatree gate snapshot-baseline disable [OPTIONS]
 
 ```
 Usage: t3 teatree gate snapshot-baseline enable [OPTIONS]
+
+ Re-enable the gate.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree gate gate-relaxation`
+
+```
+Usage: t3 teatree gate gate-relaxation [OPTIONS] COMMAND [ARGS]...
+
+ Anti-relaxation + tach-soundness gate kill-switch (self-rescue).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ status   Show whether the gate is enabled.                                   │
+│ disable  Disable the gate (self-rescue from a lockout).                      │
+│ enable   Re-enable the gate.                                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate gate-relaxation status`
+
+```
+Usage: t3 teatree gate gate-relaxation status [OPTIONS]
+
+ Show whether the gate is enabled.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate gate-relaxation disable`
+
+```
+Usage: t3 teatree gate gate-relaxation disable [OPTIONS]
+
+ Disable the gate (self-rescue from a lockout).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate gate-relaxation enable`
+
+```
+Usage: t3 teatree gate gate-relaxation enable [OPTIONS]
 
  Re-enable the gate.
 

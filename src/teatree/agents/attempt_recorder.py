@@ -16,12 +16,26 @@ the two dispatch backends.
 
 import dataclasses
 import json
+from typing import TYPE_CHECKING, cast
 
 from django.utils import timezone
 
 from teatree.agents.outage_classifier import outage_signature
-from teatree.agents.result_schema import RESULT_JSON_SCHEMA, AgentResultBlob, check_evidence
-from teatree.core.models import Task, TaskAttempt
+from teatree.agents.result_schema import RESULT_JSON_SCHEMA, AgentResultBlob, ReviewVerdictEnvelope, check_evidence
+from teatree.core.modelkit.phases import normalize_phase
+from teatree.core.models import (
+    Finding,
+    ReviewLoop,
+    ReviewLoopRound,
+    ReviewVerdict,
+    ReviewVerdictError,
+    Task,
+    TaskAttempt,
+)
+from teatree.utils.url_slug import pr_ref_from_url
+
+if TYPE_CHECKING:
+    from teatree.core.models import Ticket
 
 
 @dataclasses.dataclass(frozen=True)
@@ -117,6 +131,10 @@ def record_result_envelope(
     if evidence_error:
         return _record_failure(task, error=evidence_error)
 
+    verdict_error = _maybe_record_review_verdict(task, result, phase=phase)
+    if verdict_error:
+        return _record_failure(task, error=verdict_error)
+
     _maybe_record_plan_artifact(task, result, phase=phase)
 
     attempt = TaskAttempt.objects.create(
@@ -137,6 +155,119 @@ def record_result_envelope(
     )
     task.complete(result_artifact_path="")
     return attempt
+
+
+#: Reviewing phases whose returned ``review_verdict`` the orchestrator records
+#: server-side (corr-11). These phases are denied the shell (PR-11), so their
+#: reviewer hands the verdict back instead of running ``t3 <overlay> review record``.
+_REVIEW_VERDICT_PHASES = frozenset({"reviewing", "e2e_reviewing"})
+#: Default reviewer identity when the envelope omits one — a non-maker/loop token
+#: (``ReviewVerdict.record`` refuses a maker/coding/loop identity, §17.8 clause 3).
+_DEFAULT_HEADLESS_REVIEWER = "headless-reviewer"
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _ReviewTarget:
+    """The PR a reviewing task's verdict binds to, resolved from the dispatch context."""
+
+    slug: str
+    pr_id: int
+    head_sha: str
+    ticket: "Ticket | None"
+
+
+def _maybe_record_review_verdict(task: Task, result: AgentResultBlob, *, phase: str) -> str:
+    """Record a reviewing task's returned ``review_verdict`` server-side (corr-11).
+
+    The orchestrator half of the headless review lane: a Bash-denied reviewer
+    RETURNS a typed ``review_verdict``; this records the ``ReviewVerdict`` (which
+    resolves the per-MR :class:`MRReviewLock`) and advances any open external
+    review loop for the PR's ticket — maker≠checker holds because THIS actor is
+    not the author. Returns an error string when the verdict is malformed or the
+    reviewer identity is a maker/loop role (the caller fails the task so the
+    block surfaces), else ``""``. A non-reviewing phase, a result without a
+    ``review_verdict``, or a reviewing task with no resolvable PR target is a
+    no-op (``""``).
+    """
+    if normalize_phase(phase or task.phase) not in _REVIEW_VERDICT_PHASES:
+        return ""
+    raw_envelope = result.get("review_verdict")
+    if not isinstance(raw_envelope, dict):
+        return ""
+    target = _resolve_review_target(task)
+    if target is None:
+        return ""
+
+    envelope = cast("ReviewVerdictEnvelope", raw_envelope)
+    raw_findings = envelope.get("findings", [])
+    findings = (
+        [Finding.from_dict(item) for item in raw_findings if isinstance(item, dict)]
+        if isinstance(raw_findings, list)
+        else []
+    )
+    try:
+        recorded = ReviewVerdict.record(
+            pr_id=target.pr_id,
+            slug=target.slug,
+            reviewed_sha=str(envelope.get("reviewed_sha") or "").strip() or target.head_sha,
+            verdict=str(envelope.get("verdict", "")),
+            reviewer_identity=str(envelope.get("reviewer_identity") or _DEFAULT_HEADLESS_REVIEWER),
+            findings=findings,
+            gh_verify_result=str(envelope.get("gh_verify_result") or "green"),
+            blast_class=str(envelope.get("blast_class") or "logic"),
+            ticket=target.ticket,
+        )
+    except ReviewVerdictError as exc:
+        return f"review verdict recording refused: {exc}"
+    _advance_open_review_loop(recorded)
+    return ""
+
+
+def _resolve_review_target(task: Task) -> "_ReviewTarget | None":
+    """Resolve the PR a reviewing task's verdict binds to, or ``None``.
+
+    Two dispatch contexts carry the target: the #68 auto-review dispatch (the
+    lock-holding path) links the reviewing task to an
+    :class:`AutoReviewDispatch` row carrying ``(slug, pr_id, head_sha)``; an
+    external :class:`ReviewLoop` reviewer leg links via a
+    :class:`ReviewLoopRound`, resolving the PR from the loop ticket's latest
+    :class:`PullRequest` URL. ``None`` for a reviewing task with neither — its
+    returned verdict is evidence but has no PR to bind to.
+    """
+    dispatch = task.auto_review_dispatches.order_by("-pk").first()  # ty: ignore[unresolved-attribute]
+    if dispatch is not None:
+        return _ReviewTarget(slug=dispatch.slug, pr_id=dispatch.pr_id, head_sha=dispatch.head_sha, ticket=task.ticket)
+
+    slot = ReviewLoopRound.objects.filter(task=task).select_related("review_loop", "review_loop__ticket").first()
+    if slot is None or slot.review_loop.variant != ReviewLoop.Variant.EXTERNAL:
+        return None
+    ticket = slot.review_loop.ticket
+    pr = ticket.pull_requests.order_by("-pk").first()
+    if pr is None:
+        return None
+    ref = pr_ref_from_url(pr.url)
+    if ref is None:
+        return None
+    return _ReviewTarget(slug=ref.slug, pr_id=ref.number, head_sha="", ticket=ticket)
+
+
+def _advance_open_review_loop(recorded: ReviewVerdict) -> None:
+    """Advance the open external :class:`ReviewLoop` for *recorded*'s ticket (#2298).
+
+    Mirrors the ``review record`` CLI's loop-advance so a headless verdict drives
+    the loop FSM identically: a merge_safe terminates at PASSED, a HOLD re-arms
+    an author leg (or exhausts). Best-effort — a loop-advance failure never turns
+    verdict recording into a task failure; the periodic sweep is the backstop.
+    """
+    if recorded.ticket_id is None:  # ty: ignore[unresolved-attribute]
+        return
+    loop = ReviewLoop.open_external_for_ticket(recorded.ticket_id)  # ty: ignore[unresolved-attribute]
+    if loop is None:
+        return
+    try:
+        loop.advance_from_recorded_verdict(recorded)
+    except Exception:  # noqa: BLE001 — loop advance must never break verdict recording.
+        return
 
 
 def _maybe_record_plan_artifact(task: Task, result: AgentResultBlob, *, phase: str) -> None:

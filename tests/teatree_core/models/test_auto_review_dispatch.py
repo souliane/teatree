@@ -26,17 +26,17 @@ class TestEnqueueCreatesClaimableTask:
         assert task.ticket.role == Ticket.Role.REVIEWER
         assert task.ticket.issue_url == URL
 
-    def test_task_execution_reason_carries_the_record_verdict_contract(self) -> None:
+    def test_task_execution_reason_carries_the_return_envelope_contract(self) -> None:
         row = AutoReviewDispatch.enqueue(slug=SLUG, pr_id=6230, head_sha=HEAD, pr_url=URL, overlay="teatree")
 
         assert row is not None
         assert row.task is not None
         reason = row.task.execution_reason
-        assert "review record" in reason
-        assert "--reviewed-sha" in reason
+        # corr-11: the headless reviewer RETURNS the verdict envelope; it must
+        # NOT be told to run the shell-only `t3 <overlay> review record`.
+        assert "review_verdict" in reason
+        assert "Do NOT run `t3 <overlay> review record`" in reason
         assert HEAD in reason
-        assert SLUG in reason
-        assert "6230" in reason
 
     def test_blank_slug_or_head_does_not_enqueue(self) -> None:
         assert AutoReviewDispatch.enqueue(slug="", pr_id=1, head_sha=HEAD) is None
@@ -104,13 +104,15 @@ class TestDedupPerHead:
 
 
 class TestReviewContract:
-    def test_contract_uses_overlay_placeholder_when_overlay_blank(self) -> None:
-        contract = build_review_contract(slug=SLUG, pr_id=1, head_sha=HEAD, pr_url=URL, overlay="")
-        assert "t3 <overlay> review record" in contract
+    def test_contract_instructs_returning_the_verdict_envelope(self) -> None:
+        contract = build_review_contract(slug=SLUG, pr_id=1, head_sha=HEAD, pr_url=URL)
+        assert "review_verdict" in contract
+        assert "merge_safe" in contract
+        assert HEAD in contract
 
-    def test_contract_uses_named_overlay(self) -> None:
-        contract = build_review_contract(slug=SLUG, pr_id=1, head_sha=HEAD, pr_url=URL, overlay="teatree")
-        assert "t3 teatree review record" in contract
+    def test_contract_forbids_the_shell_record_cli(self) -> None:
+        contract = build_review_contract(slug=SLUG, pr_id=1, head_sha=HEAD, pr_url=URL)
+        assert "Do NOT run `t3 <overlay> review record`" in contract
 
 
 class TestDispatchedTaskReachesTerminalState:

@@ -59,6 +59,11 @@ layer = "foundation"
 depends_on = []
 
 [[modules]]
+path = "teatree.verification"
+layer = "foundation"
+depends_on = []
+
+[[modules]]
 path = "teatree.llm"
 layer = "foundation"
 depends_on = ["teatree.utils"]
@@ -220,7 +225,8 @@ depends_on = [
   "teatree.core.modelkit",
   "teatree.core.managers",
   "teatree.core.models.errors",
-  "teatree.core.repair_loop"
+  "teatree.core.repair_loop",
+  "teatree.verification"
 ]
 
 [[modules]]
