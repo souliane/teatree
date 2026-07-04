@@ -28,10 +28,23 @@ from claude_agent_sdk import (
     ToolResultBlock,
     ToolUseBlock,
 )
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    RetryPromptPart,
+    TextPart,
+    ToolCallPart,
+    ToolReturnPart,
+    UserPromptPart,
+)
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
+from hooks.scripts.quote_verdict import resolve_high_verdict
 from teatree.agents.harness import PydanticAiHarness
 from teatree.agents.lane_b.gating import hard_deny_reason
+from teatree.hooks import _repo_visibility
+from teatree.hooks.quote_scanner import extract_publish_payload, scan_text
 from tests.teatree_agents.lane_b._managed_clone import linked_worktree, managed_main_clone
 
 pydantic_ai.models.ALLOW_MODEL_REQUESTS = False  # ty: ignore[invalid-assignment] — the zero-token test guard.
@@ -121,6 +134,174 @@ class TestHardDenyParity:
         messages = _collect(harness, ClaudeAgentOptions(cwd=str(wt)), "reset soft")
 
         assert not [r for r in _blocks(messages, ToolResultBlock) if r.is_error]
+
+
+def _pairing_validator_model(orphans: list[str]) -> FunctionModel:
+    """A streaming FunctionModel that records every orphaned tool-result it is sent.
+
+    A ``ToolReturnPart`` / tool-linked ``RetryPromptPart`` whose ``tool_call_id``
+    was not produced by a preceding ``ToolCallPart`` is exactly the "tool message
+    without preceding tool_calls" an OpenAI-compatible provider rejects — the model
+    stand-in for that wire-level check.
+    """
+
+    def stream_fn(messages: object, info: object) -> object:
+        call_ids: set[str] = set()
+        for message in messages:  # type: ignore[attr-defined]
+            if isinstance(message, ModelResponse):
+                call_ids.update(p.tool_call_id for p in message.parts if isinstance(p, ToolCallPart))
+            elif isinstance(message, ModelRequest):
+                for part in message.parts:
+                    tool_linked_retry = isinstance(part, RetryPromptPart) and part.tool_name is not None
+                    if (isinstance(part, ToolReturnPart) or tool_linked_retry) and part.tool_call_id not in call_ids:
+                        orphans.append(part.tool_call_id)
+
+        async def gen():  # noqa: RUF029 — an async generator (the stream contract) that only yields.
+            yield "ok"
+
+        return gen()
+
+    return FunctionModel(stream_function=stream_fn)
+
+
+def _history_straddling_a_tool_pair() -> list[ModelMessage]:
+    """A 44-message history whose default (``keep_recent=40``) cut orphans a return.
+
+    The kept window is the last 40 (indices 4..43): the tool RETURN sits at index 4
+    (first kept) while its CALL at index 3 falls in the dropped middle, so a naive
+    ``[first, *last-40]`` keeps an orphaned return. Index 5 onward is filler so the
+    snapped window opens on a non-tool message.
+    """
+    history: list[ModelMessage] = [
+        ModelRequest(parts=[UserPromptPart(content="task")]),  # 0: framing
+        ModelResponse(parts=[TextPart(content="a1")]),  # 1: dropped middle
+        ModelRequest(parts=[UserPromptPart(content="u2")]),  # 2: dropped middle
+        ModelResponse(parts=[ToolCallPart(tool_name="shell", args={"command": "ls"}, tool_call_id="c1")]),  # 3: CALL
+        ModelRequest(parts=[ToolReturnPart(tool_name="shell", content="out", tool_call_id="c1")]),  # 4: RETURN
+    ]
+    for i in range(5, 44):
+        if i % 2 == 1:
+            history.append(ModelResponse(parts=[TextPart(content=f"a{i}")]))
+        else:
+            history.append(ModelRequest(parts=[UserPromptPart(content=f"u{i}")]))
+    return history
+
+
+class TestCompactionRoundTrip:
+    def test_compacted_history_round_trips_with_no_orphaned_tool_return(self, tmp_path: Path) -> None:
+        # The REAL PydanticAiHarness compacts the seeded history before the turn
+        # (phase set → Lane-B tool layer + compaction). A validator FunctionModel
+        # stands in for the OpenAI-compatible provider's tool-pairing check.
+        orphans: list[str] = []
+        harness = PydanticAiHarness(
+            model=_pairing_validator_model(orphans),
+            history=_history_straddling_a_tool_pair(),
+            phase="coding",
+        )
+        _collect(harness, ClaudeAgentOptions(cwd=str(tmp_path)), "continue")
+
+        assert orphans == [], f"the compacted history sent to the model orphaned a tool-return: {orphans}"
+
+
+class TestPrivacyGateParity:
+    """The privacy/banned-term gate refuses the SAME publish set on both lanes.
+
+    Lane A's PreToolUse scopes the scan to :func:`extract_publish_payload` (``None``
+    for a non-publish call) and routes a HIGH finding through its OWN destination
+    verdict (:func:`resolve_high_verdict`: SKIP a non-public / unresolvable target,
+    DOWNGRADE a provably-private one, DENY only a confirmed-public one). Lane B's
+    :func:`hard_deny_reason` now consults the same scoping AND the same destination
+    gate, so the two lanes refuse the identical set — a local write / non-publish
+    shell command on NEITHER, a clean publish on NEITHER, a HIGH-content publish to
+    a non-public / unresolvable target on NEITHER, and a HIGH-content publish to a
+    confirmed-PUBLIC target on BOTH (the hard anti-leak constraint).
+    """
+
+    _HIGH_BODY = "the user said: do it now"  # trips the ``the-user-said-colon`` HIGH pattern
+
+    @pytest.fixture(autouse=True)
+    def _hermetic_visibility(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Isolate the config home + the visibility cache so a monkeypatched probe
+        # verdict governs, never the developer's ~/.teatree.toml or a warm cache.
+        home = tmp_path / "home"
+        home.mkdir(parents=True, exist_ok=True)
+        (home / ".teatree.toml").write_text("[teatree]\n", encoding="utf-8")
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+        monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "viscache"))
+
+    def _lane_a_denies(self, tool_name: str, tool_args: dict, cwd: Path | None) -> bool:
+        # Lane A's REAL deny predicate: the publish payload (else None), a HIGH scan,
+        # then Lane A's OWN destination verdict — the exact ``resolve_high_verdict``
+        # function its PreToolUse hook consults, NOT a strawman that omits the
+        # destination gate and so would call every HIGH finding a deny.
+        command = tool_args.get("command", "") if tool_name == "shell" else ""
+        payload = extract_publish_payload("Bash", {"command": command}, cwd) if command else None
+        if payload is None or not scan_text(payload).has_high:
+            return False
+        return resolve_high_verdict(command, cwd).deny
+
+    @staticmethod
+    def _post(slug: str, body: str) -> dict:
+        return {"command": f'gh pr comment 5 --repo {slug} --body "{body}"'}
+
+    def test_local_write_with_a_high_finding_is_refused_on_neither_lane(self, tmp_path: Path) -> None:
+        # RED without the payload-scoping fix: Lane B scanned every string arg, so
+        # write_file's content tripped HIGH and was denied while Lane A never scans
+        # a local write.
+        args = {"path": "note.md", "content": self._HIGH_BODY}
+        assert hard_deny_reason("write_file", args, cwd=tmp_path) is None
+        assert self._lane_a_denies("write_file", args, tmp_path) is False
+
+    def test_non_publish_shell_command_with_a_high_finding_is_refused_on_neither_lane(self, tmp_path: Path) -> None:
+        # A local `echo ... > file` is not a publish — Lane A passes it through, and
+        # Lane B must too (RED without the fix: the whole command string was scanned).
+        args = {"command": f'echo "{self._HIGH_BODY}" > note.md'}
+        assert hard_deny_reason("shell", args, cwd=tmp_path) is None
+        assert self._lane_a_denies("shell", args, tmp_path) is False
+
+    def test_clean_publish_command_is_refused_on_neither_lane(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        args = self._post("souliane/teatree", "shipped the compaction fix")
+        assert hard_deny_reason("shell", args, cwd=tmp_path) is None
+        assert self._lane_a_denies("shell", args, tmp_path) is False
+
+    def test_public_target_high_finding_is_denied_on_both_lanes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The hard anti-leak constraint: a HIGH body to a CONFIRMED-PUBLIC egress is
+        # STILL denied on Lane B (matching Lane A) — public-egress protection intact.
+        # This is the anti-vacuity guard for the two allow rows below.
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PUBLIC")
+        args = self._post("souliane/teatree", self._HIGH_BODY)
+        reason = hard_deny_reason("shell", args, cwd=tmp_path)
+        assert reason is not None
+        assert "privacy/banned-term gate" in reason
+        assert self._lane_a_denies("shell", args, tmp_path) is True
+
+    def test_private_target_high_finding_is_allowed_on_both_lanes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A HIGH body to a probe-CONFIRMED-PRIVATE repo cannot leak to the public —
+        # Lane A downgrades it, and Lane B now allows it too (no over-deny).
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: "PRIVATE")
+        args = self._post("someowner/private-svc", self._HIGH_BODY)
+        assert hard_deny_reason("shell", args, cwd=tmp_path) is None
+        assert self._lane_a_denies("shell", args, tmp_path) is False
+
+    def test_unresolvable_target_high_finding_is_allowed_on_both_lanes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The allow-on-unknown anti-vacuity proof — RED before the fix, where Lane B
+        # denied ANY HIGH finding while Lane A skips an unresolvable target (bias to
+        # not firing). A cold-hook target whose visibility cannot be resolved is NOT
+        # affirmatively public, so both lanes ALLOW it.
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: None)
+        args = self._post("someowner/mystery", self._HIGH_BODY)
+        assert hard_deny_reason("shell", args, cwd=tmp_path) is None
+        assert self._lane_a_denies("shell", args, tmp_path) is False
 
 
 def test_zero_tokens_enforced() -> None:

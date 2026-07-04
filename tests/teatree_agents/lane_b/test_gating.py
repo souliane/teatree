@@ -5,6 +5,7 @@ from pydantic_ai.exceptions import ApprovalRequired
 from pydantic_ai.tools import ToolDefinition
 
 from teatree.agents.lane_b.gating import hard_deny_reason, make_soft_gate_predicate, raise_if_soft_gated
+from teatree.hooks import _repo_visibility
 from tests._git_repo import make_git_repo, run_git
 from tests.teatree_agents.lane_b._managed_clone import linked_worktree, managed_main_clone
 
@@ -43,6 +44,59 @@ class TestHardDenyReason:
 
     def test_non_command_tool_with_clean_text_is_allowed(self) -> None:
         assert hard_deny_reason("read_file", {"path": "src/app.py"}) is None
+
+    def test_local_write_with_a_high_finding_content_is_allowed(self, tmp_path: Path) -> None:
+        # Lane A never scans a local write (extract_publish_payload → None), so
+        # Lane B must not either: write_file content is not an egress. RED before
+        # the fix, when every string arg of every tool was scanned.
+        args = {"path": "note.md", "content": "the user said: do it now"}
+        assert hard_deny_reason("write_file", args, cwd=tmp_path) is None
+
+    def test_non_publish_shell_command_with_a_high_finding_is_allowed(self, tmp_path: Path) -> None:
+        # `echo "..." > file` is not a publish — the payload scoping returns None.
+        args = {"command": 'echo "the user said: do it now" > note.md'}
+        assert hard_deny_reason("shell", args, cwd=tmp_path) is None
+
+    @staticmethod
+    def _isolate_visibility(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, verdict: str | None) -> None:
+        # Hermetic config home + fresh visibility cache, and pin the probe verdict,
+        # so the destination gate resolves the target from the monkeypatch alone.
+        home = tmp_path / "vishome"
+        home.mkdir(parents=True, exist_ok=True)
+        (home / ".teatree.toml").write_text("[teatree]\n", encoding="utf-8")
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+        monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "viscache"))
+        monkeypatch.setattr(_repo_visibility, "probe_visibility", lambda _slug: verdict)
+
+    def test_publish_high_finding_to_a_confirmed_public_target_is_denied(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A HIGH body to a CONFIRMED-PUBLIC egress is a real public leak → denied,
+        # matching Lane A's ``resolve_high_verdict`` (public-egress protection intact).
+        self._isolate_visibility(tmp_path, monkeypatch, "PUBLIC")
+        args = {"command": 'gh pr comment 5 --repo souliane/teatree --body "the user said: do it now"'}
+        reason = hard_deny_reason("shell", args, cwd=tmp_path)
+        assert reason is not None
+        assert "privacy/banned-term gate" in reason
+
+    def test_publish_high_finding_to_an_unresolvable_target_is_allowed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # RED before the destination fix: Lane B denied ANY HIGH finding. Lane A
+        # SKIPS an unresolvable target (bias to not firing), so Lane B must too.
+        self._isolate_visibility(tmp_path, monkeypatch, None)
+        args = {"command": 'gh pr comment 5 --repo someowner/mystery --body "the user said: do it now"'}
+        assert hard_deny_reason("shell", args, cwd=tmp_path) is None
+
+    def test_publish_high_finding_to_a_private_target_is_allowed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A HIGH body to a probe-CONFIRMED-PRIVATE repo cannot leak to the public —
+        # Lane A downgrades it, so Lane B allows it (no over-deny of a private post).
+        self._isolate_visibility(tmp_path, monkeypatch, "PRIVATE")
+        args = {"command": 'gh pr comment 5 --repo someowner/private-svc --body "the user said: do it now"'}
+        assert hard_deny_reason("shell", args, cwd=tmp_path) is None
 
     def test_full_gate_parity_with_lane_a_across_clone_and_worktree(self, tmp_path: Path) -> None:
         # Parity against Lane A's FULL gate (the PreToolUse handler = the pure

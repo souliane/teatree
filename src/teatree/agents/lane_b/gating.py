@@ -6,8 +6,15 @@ Hard-deny — a command that must never run (a main-clone working-tree mutation,
 privacy/banned-term leak). :func:`hard_deny_reason` is the single shared
 evaluator; it consults the SAME importable ``teatree`` functions Lane A's
 PreToolUse hook wraps (:func:`teatree.core.gates.main_clone_guard.find_main_clone_git_mutation`,
-:func:`teatree.hooks.quote_scanner.scan_text`), so the two lanes refuse the
-identical set by construction, not by a parallel re-implementation.
+and :func:`teatree.hooks.quote_scanner.extract_publish_payload` → :func:`~teatree.hooks.quote_scanner.scan_text`
+for the privacy scan — scoped to a PUBLISH payload, never every string argument —
+then a HIGH finding routed through Lane A's OWN destination gate
+(:func:`teatree.hooks.public_visibility.gate_skips_for_visibility` +
+:func:`teatree.hooks.publish_surface.command_targets_private_only`, the two
+predicates Lane A's ``resolve_high_verdict`` composes), never an unconditional
+deny-any-HIGH), so the two lanes refuse the identical set by construction — same
+payload scoping AND same destination-awareness — not by a parallel
+re-implementation.
 :class:`HardDenyToolset` wraps a toolset and raises the refusal into the model as
 a ``RetryPromptPart`` (the model sees the reason and must adapt) exactly as a
 Lane-A PreToolUse deny surfaces its message.
@@ -48,9 +55,44 @@ def _command_of(tool_name: str, tool_args: dict[str, Any]) -> str:
     return ""
 
 
-def _scannable_text(tool_args: dict[str, Any]) -> str:
-    """Every string argument joined — the text a privacy/banned-term scan reads."""
-    return "\n".join(str(v) for v in tool_args.values() if isinstance(v, str))
+def _publish_payload(command: str, cwd: Path | None) -> str | None:
+    """The publish-egress text to scan, or ``None`` when the call is not a publish.
+
+    Lane A's ``extract_publish_payload`` scoping, ported.
+    Lane B's only egress surface is the ``shell`` command (its MCP toolsets are
+    read-only and it dispatches no ``Agent``/``Task``), so a shell call is scoped
+    exactly as Lane A scopes a ``Bash`` call: the body payload of a publish command
+    (``gh``/``glab`` post, commit, …), ``None`` for a non-publish command. Every
+    other tool — ``read_file``/``write_file``/``edit_file``/``search_files``, jailed
+    to the worktree — has an empty *command* and is not scanned, matching Lane A,
+    whose publish gate never scans a local file write.
+    """
+    if not command:
+        return None
+    from teatree.hooks.quote_scanner import extract_publish_payload  # noqa: PLC0415 (lazy, mirrors hard_deny_reason)
+
+    return extract_publish_payload("Bash", {"command": command}, cwd)
+
+
+def _publish_high_denies(command: str, cwd: Path | None) -> bool:
+    """The destination half of Lane A's ``resolve_high_verdict``, REUSED not reimplemented.
+
+    A HIGH publish finding is refused ONLY when the command's target is
+    affirmatively PUBLIC. Lane A SKIPS a non-public / unresolvable / unknown
+    target (:func:`~teatree.hooks.public_visibility.gate_skips_for_visibility`)
+    and DOWNGRADES a provably-private one to a warn
+    (:func:`~teatree.hooks.publish_surface.command_targets_private_only`); only
+    what neither skips nor downgrades — a confirmed-public egress — denies. Lane B
+    calls the identical predicates, so a HIGH finding refuses the SAME destination
+    set as Lane A, never a wider deny-any-HIGH that would over-block a private or
+    unresolvable target Lane A allows.
+    """
+    from teatree.hooks.public_visibility import gate_skips_for_visibility  # noqa: PLC0415 (lazy import)
+    from teatree.hooks.publish_surface import command_targets_private_only  # noqa: PLC0415 (lazy import)
+
+    if gate_skips_for_visibility(command, cwd):
+        return False
+    return not command_targets_private_only(command, cwd)
 
 
 def hard_deny_reason(tool_name: str, tool_args: dict[str, Any], *, cwd: Path | None = None) -> str | None:
@@ -63,8 +105,16 @@ def hard_deny_reason(tool_name: str, tool_args: dict[str, Any], *, cwd: Path | N
     ``-C``/``--git-dir``) and refuses a ``checkout <feature>`` / ``reset --hard``
     / ``restore`` / ``stash pop`` ONLY when it targets a managed MAIN CLONE —
     the same routine worktree git ops Lane A ALLOWS pass here too, since Lane B
-    tools are jailed to *cwd* (the worktree). Then every string argument is
-    privacy-scanned; a HIGH finding (a leaked secret / banned term) is refused.
+    tools are jailed to *cwd* (the worktree). Then the call's PUBLISH payload — the
+    body of a publish command, resolved through the SAME
+    :func:`~teatree.hooks.quote_scanner.extract_publish_payload` scoping Lane A's
+    PreToolUse uses — is privacy-scanned; a HIGH finding is routed through Lane A's
+    OWN destination gate (:func:`_publish_high_denies`) and refuses the call ONLY
+    when the target is a confirmed-PUBLIC egress — a non-public / unresolvable /
+    provably-private target is allowed, exactly as Lane A's ``resolve_high_verdict``
+    skips or downgrades it. A non-publish call (a local ``write_file``, a non-egress
+    shell command) yields no payload and is not scanned, so the two lanes refuse the
+    identical publish set, not a wider everything-scan nor a wider deny-any-HIGH.
     """
     from teatree.core.gates.main_clone_env import main_clone_git_deny_reason  # noqa: PLC0415
     from teatree.hooks.quote_scanner import HIGH, scan_text  # noqa: PLC0415
@@ -75,10 +125,12 @@ def hard_deny_reason(tool_name: str, tool_args: dict[str, Any], *, cwd: Path | N
         if main_clone_reason is not None:
             return main_clone_reason
 
-    scan = scan_text(_scannable_text(tool_args))
-    high = next((f for f in scan.findings if f.severity == HIGH), None)
-    if high is not None:
-        return f"BLOCKED: privacy/banned-term gate — {high.name}: {high.excerpt!r}"
+    payload = _publish_payload(command, cwd)
+    if payload is not None:
+        scan = scan_text(payload)
+        high = next((f for f in scan.findings if f.severity == HIGH), None)
+        if high is not None and _publish_high_denies(command, cwd):
+            return f"BLOCKED: privacy/banned-term gate — {high.name}: {high.excerpt!r}"
 
     return None
 
