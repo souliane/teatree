@@ -261,3 +261,26 @@ class TestDefaultFetcher(TestCase):
         ref = AttachmentRef(_GITLAB, AttachmentKind.GITLAB_UPLOAD)
         with pytest.raises(AttachmentFetchError, match="no fetch transport registered"):
             default_fetcher(ref, Path("/tmp/x"))
+
+    def test_unwired_hint_names_the_exact_gate_path_so_manual_placement_clears_it(self) -> None:
+        # The hint must name the FULL deterministic cache path the gate checks
+        # (local_path_for = <sha1>-<basename>), not its parent directory: a file
+        # dropped under its natural basename would never clear the gate. Proving
+        # both halves — the message carries the full dest, and a file placed at
+        # that exact path releases the hold.
+        self.enterContext(mock.patch("teatree.core.attachment_manifest.resolve_attachment_fetcher", return_value=None))
+        ticket = _ticket(branch="1-feat")
+        att_dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        ref = AttachmentRef(_GITLAB, AttachmentKind.GITLAB_UPLOAD)
+        dest = local_path_for(att_dir, ref)
+
+        with pytest.raises(AttachmentFetchError) as exc_info:
+            default_fetcher(ref, dest)
+        assert str(dest) in str(exc_info.value)
+
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"manually placed")
+        assert (
+            attachment_gate_refusal(ticket, texts=[f"spec {_GITLAB}"], attachments_dir=att_dir, fetch_command="cmd")
+            is None
+        )

@@ -7,9 +7,11 @@ downloaders are available to ``ticket attachments --fetch`` — the same
 register-at-ready inversion the reaction publisher uses (core never imports
 backends).
 
-Only the Notion download seam is wired today (teatree already owns
-``download_notion_file``); GitLab-upload and Slack-file transport are not yet
-registered, so ``--fetch`` reports those with an actionable manual-download hint.
+Coverage is narrow: ``download_notion_file`` auto-downloads a **signed**
+``file.notion.so`` file URL (or a resolvable ``NotionFileRef``). A bare notion
+*page* URL (``www.notion.so/…``) is unsigned and not a file ref, so it raises
+``ValueError`` and — like GitLab-upload and Slack-file refs, which have no
+registered transport at all — falls to ``--fetch``'s manual-placement hint.
 """
 
 from pathlib import Path
@@ -24,6 +26,8 @@ if TYPE_CHECKING:
 
 
 def _fetch_notion(ref: "AttachmentRef", dest: Path) -> Path:
+    # Downloads a signed file.notion.so URL only; an unsigned www.notion.so page
+    # URL raises ValueError, which the gate reports as a manual-placement hint.
     return notion.download_notion_file(url=ref.source_url, dest=dest)
 
 

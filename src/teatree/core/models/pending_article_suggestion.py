@@ -102,6 +102,11 @@ class PendingArticleSuggestion(models.Model):
         clean_url = url.strip()
         if not clean_url:
             return None
+        digest = cls.hash_url(clean_url)
+        # Dedup before probing: a re-scan of an already-queued article should not
+        # pay a network HEAD/GET. get_or_create below still guards the race.
+        if cls.objects.filter(url_hash=digest).exists():
+            return None
         checker = url_checker or check_url
         verdict = checker(clean_url)
         if verdict.status is UrlCheckStatus.UNRESOLVED:
@@ -109,7 +114,6 @@ class PendingArticleSuggestion(models.Model):
             return None
         if verdict.status is UrlCheckStatus.NETWORK_ERROR:
             logger.warning("URL existence check failed for %s; recording anyway: %s", clean_url, verdict.detail)
-        digest = cls.hash_url(clean_url)
         with transaction.atomic():
             row, created = cls.objects.get_or_create(
                 url_hash=digest,

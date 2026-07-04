@@ -289,16 +289,14 @@ def default_fetcher(ref: AttachmentRef, dest: Path) -> Path:
     Resolves the per-kind transport from
     :mod:`teatree.core.attachment_fetch_registry` (which ``backends`` populates at
     app-ready time — core never imports backends). A source with no registered
-    transport raises :class:`AttachmentFetchError` naming the exact directory to
-    place the file in, so ``--fetch`` reports the un-wired ones honestly instead
-    of silently marking them fetched.
+    transport raises :class:`AttachmentFetchError` naming the exact ``dest`` path
+    to place the file at — the gate checks that deterministic hashed path
+    (``local_path_for``), so a file dropped under its natural basename would not
+    clear the hold; the full path is what makes manual placement work.
     """
     fetcher = resolve_attachment_fetcher(ref.kind)
     if fetcher is None:
-        msg = (
-            f"no fetch transport registered for kind={ref.kind}; "
-            f"download {ref.source_url} into {dest.parent} then re-run"
-        )
+        msg = f"no fetch transport registered for kind={ref.kind}; download {ref.source_url} to {dest} then re-run"
         raise AttachmentFetchError(msg)
     dest.parent.mkdir(parents=True, exist_ok=True)
     return fetcher(ref, dest)

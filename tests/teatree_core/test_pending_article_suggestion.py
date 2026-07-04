@@ -60,6 +60,23 @@ class PendingArticleSuggestionTests(TestCase):
         assert second is None
         assert PendingArticleSuggestion.objects.filter(url_hash=first.url_hash).count() == 1
 
+    def test_rescan_of_queued_candidate_skips_the_url_probe(self) -> None:
+        """Dedup-first: a re-scan of an already-queued article does not re-probe."""
+        calls: list[str] = []
+
+        def _counting_checker(url: str) -> UrlCheckResult:
+            calls.append(url)
+            return UrlCheckResult(url, UrlCheckStatus.OK, http_status=200)
+
+        first = PendingArticleSuggestion.record_candidate(url=_URL, url_checker=_counting_checker)
+        assert first is not None
+
+        second = PendingArticleSuggestion.record_candidate(url=_URL, url_checker=_counting_checker)
+
+        assert second is None
+        # Probed once — for the genuinely-new candidate — not again on the re-scan.
+        assert calls == [_URL]
+
     def test_record_candidate_dedup_survives_a_decided_row(self) -> None:
         """A previously approved/rejected URL is not re-enqueued on the next scan."""
         first = PendingArticleSuggestion.record_candidate(url=_URL, url_checker=_resolves)
