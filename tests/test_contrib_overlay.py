@@ -54,6 +54,28 @@ class TestTeatreeOverlayIsValid:
             assert isinstance(overlay, TeatreeOverlay)
 
 
+class TestCompanionSkills:
+    def test_slack_formatting_is_declared_as_companion(self) -> None:
+        overlay = TeatreeOverlay()
+        assert "slack-formatting" in overlay.config.companion_skills
+
+    def test_companion_resolves_to_a_real_skill(self) -> None:
+        # The declared companion must name a skill that exists on disk, or the
+        # skill-loading policy silently drops it.
+        skill_md = _repo_root() / "skills" / "slack-formatting" / "SKILL.md"
+        assert skill_md.is_file()
+
+    def test_active_overlay_companion_skills_surfaces_it(self) -> None:
+        from teatree.agents.skill_bundle import active_overlay_companion_skills  # noqa: PLC0415
+
+        with patch.object(
+            overlay_loader_mod,
+            "_discover_overlays",
+            return_value={"t3-teatree": TeatreeOverlay()},
+        ):
+            assert "slack-formatting" in active_overlay_companion_skills()
+
+
 class TestIdentityAliases:
     def test_canonical_group_leads_with_public_login(self) -> None:
         overlay = TeatreeOverlay()

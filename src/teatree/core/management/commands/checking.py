@@ -18,6 +18,7 @@ output channel (``django-typer`` serialises it) — JSON when ``--json``, else
 the terse human view.
 """
 
+import io
 import json
 import os
 from datetime import datetime
@@ -27,8 +28,39 @@ import typer
 from django.utils import timezone
 from django_typer.management import TyperCommand, command, initialize
 
-from teatree.core.checking import gather_all_overlays_report, gather_checking_report
+from teatree.core.checking import DEFAULT_CAP, CheckGroup, gather_all_overlays_report, gather_checking_report
 from teatree.core.checkpoint import advance_checkpoint_monotonic, checkpoint_path, resolve_window_start
+from teatree.core.ref_render import render_ref
+from teatree.core.table_output import print_table
+
+
+def _stamp(when: datetime) -> str:
+    local = timezone.localtime(when) if timezone.is_aware(when) else when
+    return local.strftime("%H:%M")
+
+
+def _render_groups_tables(groups: list[CheckGroup], *, header: str, stamp: str, cap: int = DEFAULT_CAP) -> str:
+    """Render each non-empty group as a table under *header*.
+
+    Empty report (every group at ``total == 0``) collapses to the single
+    ``Nothing since <stamp>.`` line the terse view uses, so a no-change run
+    stays one line. A capped group notes the pre-cap total in its title.
+    """
+    if all(group.total == 0 for group in groups):
+        return f"Nothing since {stamp}."
+    buffer = io.StringIO()
+    buffer.write(header + "\n")
+    for group in groups:
+        if group.total == 0:
+            continue
+        title = group.title if group.total <= cap else f"{group.title} — {group.total} (top {cap})"
+        print_table(
+            ["Ref", "Detail"],
+            [[render_ref(item.label, title=item.title, url=item.url), item.detail] for item in group.items[:cap]],
+            title=title,
+            stream=buffer,
+        )
+    return buffer.getvalue()
 
 
 class Command(TyperCommand):
@@ -103,7 +135,13 @@ class Command(TyperCommand):
             advance_checkpoint_monotonic(now)
         if json_output:
             return json.dumps(report.to_dict())
-        return report.to_terse(overlay_name=overlay_name)
+        stamp = _stamp(report.since)
+        header = f"Since {stamp} · {overlay_name}" if overlay_name else f"Since {stamp}"
+        return _render_groups_tables(
+            [report.merged, report.in_flight, report.needs_you],
+            header=header,
+            stamp=stamp,
+        )
 
     def _show_all_overlays(
         self,
@@ -141,7 +179,12 @@ class Command(TyperCommand):
 
         if json_output:
             return json.dumps(report.to_dict())
-        return report.to_terse()
+        stamp = _stamp(report.earliest_since)
+        return _render_groups_tables(
+            [report.merged, report.in_flight, report.needs_you],
+            header=f"Since {stamp} · all overlays",
+            stamp=stamp,
+        )
 
     @staticmethod
     def _resolve_code_host() -> str:

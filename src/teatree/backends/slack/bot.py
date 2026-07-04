@@ -547,7 +547,14 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         )
         return attach_granted_scopes(body, scopes_header)
 
-    def post_message(self, *, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
+    def post_message(
+        self,
+        *,
+        channel: str,
+        text: str,
+        thread_ts: str = "",
+        blocks: list[RawAPIDict] | None = None,
+    ) -> RawAPIDict:
         if is_single_emoji_body(text):
             raise SingleEmojiBodyRefusedError(text)
         token = self._channel_token(channel, op=SlackOp.WRITE)
@@ -555,19 +562,13 @@ class SlackBotBackend:  # noqa: PLR0904 — method count reflects the MessagingB
         payload: SlackPayload = {"channel": channel, "text": text}
         if thread_ts:
             payload["thread_ts"] = thread_ts
+        if blocks:
+            payload["blocks"] = blocks  # ``text`` stays the notification + degradation fallback
         return self._post("chat.postMessage", payload, token=token, idempotent=False)
 
     def post_reply(self, *, channel: str, ts: str, text: str) -> RawAPIDict:
-        if is_single_emoji_body(text):
-            raise SingleEmojiBodyRefusedError(text)
-        token = self._channel_token(channel, op=SlackOp.WRITE)
-        self._voice_gate.check(text=text, channel=channel, token=token)
-        return self._post(
-            "chat.postMessage",
-            {"channel": channel, "thread_ts": ts, "text": text},
-            token=token,
-            idempotent=False,
-        )
+        # A reply is a post threaded under ``ts`` — one payload/guard path, not two.
+        return self.post_message(channel=channel, text=text, thread_ts=ts)
 
     def react(self, *, channel: str, ts: str, emoji: str) -> RawAPIDict:
         return self._post(

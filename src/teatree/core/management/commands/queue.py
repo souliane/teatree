@@ -18,6 +18,7 @@ import typer
 from django_typer.management import TyperCommand, command
 
 from teatree.core.machine_output import emit
+from teatree.core.table_output import print_table
 
 logger = logging.getLogger(__name__)
 
@@ -104,10 +105,18 @@ class Command(TyperCommand):
 
 
 def _render_status(payload: QueueStatus, stream: IO[str]) -> None:
-    stream.write(f"Total queued rows: {payload['total']}\n")
-    for value, count in payload["by_status"].items():
-        stream.write(f"  {value}: {count}\n")
+    print_table(
+        ["Status", "Count"],
+        [[value, count] for value, count in payload["by_status"].items()],
+        title=f"Queue — {payload['total']} rows",
+        stream=stream,
+        justify=["left", "right"],
+    )
     if payload["ready_by_task"]:
-        stream.write("READY by task:\n")
-        for name, count in payload["ready_by_task"].items():
-            stream.write(f"  {count}  {name}\n")
+        print_table(
+            ["Task", "Ready"],
+            [[name, count] for name, count in payload["ready_by_task"].items()],
+            title="READY by task",
+            stream=stream,
+            justify=["left", "right"],
+        )

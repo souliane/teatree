@@ -42,8 +42,14 @@ class NoopMessagingBackend:
         return []
 
     @staticmethod
-    def post_message(*, channel: str, text: str, thread_ts: str = "") -> RawAPIDict:
-        _ = channel, text, thread_ts
+    def post_message(
+        *,
+        channel: str,
+        text: str,
+        thread_ts: str = "",
+        blocks: list[RawAPIDict] | None = None,
+    ) -> RawAPIDict:
+        _ = channel, text, thread_ts, blocks
         return {}
 
     @staticmethod
