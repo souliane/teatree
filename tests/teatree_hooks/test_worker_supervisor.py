@@ -5,6 +5,11 @@ subprocess): spawn only when enabled AND the flock is free, and fail-open to a n
 on any error. ``main`` never raises into the SessionStart hook.
 """
 
+# test-path: cross-cutting — the subject ``worker_supervisor`` lives in
+# ``hooks/scripts/``, not under ``src/teatree/<pkg>``, so it mirrors no single
+# package; the ``teatree.loops``/``teatree.utils`` imports are flock-probe test
+# collaborators, not the module under test.
+
 import json
 import os
 import sqlite3
