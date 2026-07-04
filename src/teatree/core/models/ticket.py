@@ -266,7 +266,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         target=State.PLANNED,
         conditions=[_check_plan_artifact],
     )
-    def plan(self) -> None:
+    def plan(self, *, parent_task: "Task | None" = None) -> None:
         """Advance STARTED → PLANNED after a PlanArtifact record exists.
 
         Guarded by check_plan_artifact() — requires at least one PlanArtifact
@@ -274,22 +274,22 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         the plan gate; no prose rule or wall-clock check is needed.
         """
         self._consume_pending_phase_tasks("planning")
-        self.schedule_coding()
+        self.schedule_coding(parent_task=parent_task)
 
     @transition(field=state, source=State.PLANNED, target=State.CODED)
-    def code(self) -> None:
+    def code(self, *, parent_task: "Task | None" = None) -> None:
         self._refuse_if_worktree_dirty("coding")
         self._consume_pending_phase_tasks("coding")
-        self.schedule_testing()
+        self.schedule_testing(parent_task=parent_task)
 
     @transition(field=state, source=State.CODED, target=State.TESTED)
-    def test(self, *, passed: bool = True) -> None:
+    def test(self, *, passed: bool = True, parent_task: "Task | None" = None) -> None:
         self._refuse_if_worktree_dirty("testing")
         extra = self._extra()
         extra["tests_passed"] = passed
         self.extra = extra
         self._consume_pending_phase_tasks("testing")
-        self.schedule_review()
+        self.schedule_review(parent_task=parent_task)
 
     @transition(
         field=state,
@@ -300,11 +300,11 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
             lambda t: t.review_context_satisfied(),
         ],
     )
-    def review(self) -> None:
+    def review(self, *, parent_task: "Task | None" = None) -> None:
         self._refuse_if_worktree_dirty("reviewing")
         self._consume_pending_phase_tasks("reviewing")
         if self.has_shippable_diff():
-            self.schedule_shipping()
+            self.schedule_shipping(parent_task=parent_task)
             return
         logger.info(
             "Ticket %s reviewed with no shippable diff; skipping auto-shipping (likely meta or already-shipped work)",

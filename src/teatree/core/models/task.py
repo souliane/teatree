@@ -381,16 +381,16 @@ class Task(models.Model):
                 ticket.start()
                 ticket.save()
             elif phase == "planning" and ticket.state == Ticket.State.STARTED:
-                ticket.plan()
+                ticket.plan(parent_task=self)
                 ticket.save()
             elif phase == "coding" and ticket.state == Ticket.State.PLANNED:
-                ticket.code()
+                ticket.code(parent_task=self)
                 ticket.save()
             elif phase == "testing" and ticket.state == Ticket.State.CODED:
-                ticket.test(passed=True)
+                ticket.test(passed=True, parent_task=self)
                 ticket.save()
             elif phase == "reviewing" and ticket.state == Ticket.State.TESTED:
-                ticket.review()
+                ticket.review(parent_task=self)
                 ticket.save()
             elif phase == "shipping" and ticket.state == Ticket.State.REVIEWED:
                 # #1284 (codex #1282-2): the task-based completion path must
