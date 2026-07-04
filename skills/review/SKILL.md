@@ -6,7 +6,6 @@ requires:
   - workspace
   - platforms
   - code
-companions:
   - requesting-code-review
 metadata:
   version: 0.0.1
@@ -22,7 +21,7 @@ This skill delegates the generic review doctrine to:
 - `requesting-code-review` — when to request an independent review pass
 - `verification-before-completion` — proof before any “review-ready” claim
 
-Optional [obra/superpowers](https://github.com/obra/superpowers) companions provide generic methodology. TeaTree keeps the project-specific workflow locally.
+Optional [obra/superpowers](https://github.com/obra/superpowers) skills provide generic methodology. TeaTree keeps the project-specific workflow locally.
 
 Both self-review and external review cycles.
 
@@ -30,13 +29,13 @@ Both self-review and external review cycles.
 
 - **workspace** (required) — provides environment context. **Load `/t3:workspace` now** if not already loaded.
 - **Framework/language convention skills** (when reviewing backend code) — e.g., Django conventions, Python style guides. TeaTree auto-detects the relevant `ac-*` skill from the repo shape. **If the loader didn't fire**, self-load the appropriate coding skill: `/ac-python` for Python code, `/ac-django` for Django projects.
-- **Overlay review skill set** (when reviewing an overlay repo) — the active overlay declares its full reviewer skill set via `OverlayBase.get_review_companion_skills()`, which returns `[pr_review_companion, *companion_skills]`: the overlay's review-quality bar plus its standing companions (the overlay workspace playbook skill and the project dev skills). When the repo under review is an overlay repo, **derive that set and self-load every skill in it immediately — before asking for the MR URL, before fetching ticket context, before reading any diff**. Skill loading is unconditional and comes before clarifying questions; do not wait to be told the names.
+- **Overlay review skill set** (when reviewing an overlay repo) — the active overlay declares its full reviewer skill set via `OverlayBase.get_review_companion_skills()`, which returns `[pr_review_companion, *companion_skills]`: the overlay's review-quality bar plus its standing companion skills (the overlay workspace playbook skill and the project dev skills). When the repo under review is an overlay repo, **derive that set and self-load every skill in it immediately — before asking for the MR URL, before fetching ticket context, before reading any diff**. Skill loading is unconditional and comes before clarifying questions; do not wait to be told the names.
 
   **Do this — never skip it (imperative, the prose above is the WHY):** reviewing ANY overlay repo, the FIRST actions — before reading the diff, fetching ticket context, or asking for an MR URL — are to derive the declared set (`get_review_companion_skills()` = `[pr_review_companion, *companion_skills]`) and load every skill in it via the `Skill` tool, in order — never proceed to the diff with only the generic `/t3:review`:
 
   1. `/t3-<overlay>` — the overlay's own workspace/review-quality skill (the `pr_review_companion`).
   2. `/t3:review` — this skill (the generic review doctrine).
-  3. the overlay's dev skill(s) — e.g. the backend / frontend skill the overlay declares as companions.
+  3. the overlay's dev skill(s) — e.g. the backend / frontend skill the overlay declares as companion skills.
 
   Each is a separate `Skill`-tool call; load all of them before the first `t3 review run` / diff read. A review run with only the generic review skill loaded — diving straight into the diff without the overlay's declared set — is a **null review** and does not satisfy the gate. Derive the names by **convention, not runtime introspection**: an overlay repo `<name>-product` (more generally `<name>-*`) is served by the skill `/t3-<name>`, which together with this `/t3:review` and the overlay's dev skill(s) IS the declared set — call the `Skill` tool on each directly, as your first action. Do **not** shell out to a `t3 …` command or grep the source to read `get_review_companion_skills()` at runtime: that name points at WHERE the contract lives in code, it is not a CLI to run, and applying the stable naming convention IS the derivation. Do not wait for the prompt to enumerate the names.
 

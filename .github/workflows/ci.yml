@@ -58,8 +58,8 @@
 #   out to `claude -p` — cost, network, model variance) is NOT part of this PR
 #   pipeline. It lives in a standalone workflow, `.github/workflows/eval.yml`,
 #   on a weekly schedule + manual `workflow_dispatch`. A PR run neither runs nor
-#   displays a metered-eval check. The FREE deterministic eval lanes
-#   (eval-skill-triggers, eval-pinned-regressions) still gate every push via
+#   displays a metered-eval check. The FREE deterministic eval lane
+#   (eval-pinned-regressions) still gates every push via
 #   prek and the regression corpus is asserted every PR via pytest.
 # ============================================================
 

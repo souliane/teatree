@@ -328,13 +328,6 @@ repos:
         pass_filenames: false
         always_run: true
         stages: [manual]
-      - id: eval-skill-triggers
-        name: Skill-triggers eval lane (declared trigger frontmatter fires on claimed prompts; sub-second, token-free)
-        language: system
-        entry: uv run t3 eval skill-triggers
-        pass_filenames: false
-        always_run: true
-        stages: [commit]
       - id: eval-pinned-regressions
         name: Pinned-regressions eval lane (every past process failure pinned as a deterministic git/FSM check; token-free)
         language: system

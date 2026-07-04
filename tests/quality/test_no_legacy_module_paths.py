@@ -150,6 +150,7 @@ _SKILL_SUPPORT_SUBMODULES = (
     "loading",
     "map",
     "ref_validator",
+    "requires_parser",
     "schema",
 )
 
@@ -337,7 +338,6 @@ class TestFacadeImportSmoke:
         skill_support = importlib.import_module("teatree.skill_support")
         for name in (
             "resolve_all",
-            "resolve_companions",
             "resolve_requires",
             "DEFAULT_SKILLS_DIR",
             "SkillLoadingPolicy",

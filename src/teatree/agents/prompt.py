@@ -205,7 +205,7 @@ def _review_phase_scoping(skills: list[str]) -> tuple[set[str], set[str]]:
     overlay's review conventions must reach it inline. The active overlay's
     review-skill set (``[pr_review_companion, *companion_skills]``) is split per
     the token budget: the PRIMARY review skill (first entry) plus ``code-review``
-    embed IN FULL; any additional review companions get a verbatim
+    embed IN FULL; any additional review companion skills get a verbatim
     "Load /<skill> via the Skill tool BEFORE reviewing" instruction rather than
     being demoted to the generic, ignorable "available — load if needed" summary.
     Only the review skills actually present in *skills* are scoped, so a
@@ -237,7 +237,7 @@ def build_reviewer_dispatch_prompt(*, review_instruction: str, review_skills: li
     REQUIRED "load via the Skill tool BEFORE reviewing" block — the lifecycle
     review skill plus the active overlay's review skills (deduped, order
     preserved) — so the overlay conventions reach every reviewer structurally,
-    which is also what ``subagent_skill_gate.required_skills_for_task`` enforces.
+    which the ``subagent_skill_gate`` TaskCreated gate enforces on a fan-out.
 
     *review_skills* overrides the overlay resolution when supplied (e.g. a
     caller that already resolved the bundle); otherwise the active overlay's
@@ -374,7 +374,7 @@ def build_system_context(task: Task, *, skills: list[str], lifecycle_skill: str 
     are embedded in full; companion skills get a one-line summary to save
     tokens. On the reviewing phase the active overlay's primary review skill
     and ``code-review`` are additionally embedded in full, and any remaining
-    overlay review companions get a verbatim "load before reviewing"
+    overlay review companion skills get a verbatim "load before reviewing"
     instruction, so a headless reviewer reviews WITH the overlay's conventions.
     """
     lines = ["You are a TeaTree headless agent executing a task."]

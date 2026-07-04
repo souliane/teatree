@@ -1,8 +1,5 @@
 """``t3 config`` — configuration and skill autoloading commands."""
 
-import sys
-from pathlib import Path
-
 import typer
 
 from teatree.utils.django_bootstrap import ensure_django
@@ -113,38 +110,13 @@ def deps(skill: str) -> None:
         raise typer.Exit(code=1)
 
     data = _json.loads(cache_path.read_text(encoding="utf-8"))
-    trigger_index = data.get("trigger_index", [])
+    skill_index = data.get("skill_index", [])
 
     precomputed = data.get("resolved_requires", {})
     if precomputed and skill in precomputed:
         chain = precomputed[skill]
     else:
-        resolved = resolve_all(trigger_index)
+        resolved = resolve_all(skill_index)
         chain = resolved.get(skill, [skill])
 
     typer.echo(" → ".join(chain))
-
-
-@config_app.command(name="test-trigger")
-def test_trigger(prompt: str) -> None:
-    """Test which skill would be triggered for a given prompt."""
-    import json as _json  # noqa: PLC0415
-
-    from teatree import find_project_root as _find_root  # noqa: PLC0415
-    from teatree.paths import DATA_DIR  # noqa: PLC0415
-
-    root = _find_root()
-    scripts_lib = root / "scripts" / "lib" if root else Path(__file__).resolve().parent
-    if str(scripts_lib) not in sys.path:
-        sys.path.insert(0, str(scripts_lib))
-
-    from skill_loader import detect_intent_detailed  # noqa: PLC0415  # ty: ignore[unresolved-import]
-
-    cache_path = DATA_DIR / "skill-metadata.json"
-    trigger_index: list[dict] | None = None
-    if cache_path.is_file():
-        data = _json.loads(cache_path.read_text(encoding="utf-8"))
-        trigger_index = data.get("trigger_index", [])
-
-    match = detect_intent_detailed(prompt, trigger_index=trigger_index)
-    typer.echo(str(match))

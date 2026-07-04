@@ -34,7 +34,7 @@ from pathlib import Path
 _SUGGESTION_CUTOFF = 0.6
 _MAX_SUGGESTIONS = 3
 _CONFIG_LINE_RE = re.compile(r"^([a-zA-Z][a-zA-Z0-9_-]+):\s+(.*)")
-_FRONTMATTER_LIST_KEYS = ("skills", "companion_skills", "requires", "companions")
+_FRONTMATTER_LIST_KEYS = ("skills", "companion_skills", "requires")
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,8 +158,8 @@ def validate_supplementary_config(config_path: Path, canonical: set[str]) -> lis
 def validate_agent_frontmatter(agent_path: Path, canonical: set[str]) -> list[DanglingReference]:
     """Flag dangling skill names in an ``agents/*.md`` frontmatter list field.
 
-    Scans the ``skills:`` / ``companion_skills:`` / ``requires:`` /
-    ``companions:`` list items inside the leading ``---`` frontmatter block.
+    Scans the ``skills:`` / ``companion_skills:`` / ``requires:`` list items
+    inside the leading ``---`` frontmatter block.
     """
     if not agent_path.is_file():
         return []

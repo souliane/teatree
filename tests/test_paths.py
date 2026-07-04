@@ -41,10 +41,10 @@ def _make_sqlite_db(path: Path) -> None:
 
 
 def _make_wal_sqlite_db(path: Path) -> None:
-    """A WAL-mode DB whose ``-shm``/``-wal`` companions are absent.
+    """A WAL-mode DB whose ``-shm``/``-wal`` sidecar files are absent.
 
     ``PRAGMA journal_mode=WAL`` persists in the file header (bytes 18-19 become
-    ``2,2``); after a checkpoint+close and reaping the companions, only the main
+    ``2,2``); after a checkpoint+close and reaping the sidecar files, only the main
     db file remains, still flagged WAL. Opening it WAL-mode requires (re)creating
     the ``-shm`` shared-memory file — which a ``mode=ro`` open cannot do, so it
     raises ``OperationalError``. This is the on-disk shape an auto-isolated
@@ -153,7 +153,7 @@ class TestIsolatedSlug:
 
 
 class TestSqliteSnapshot:
-    def test_snapshots_wal_mode_db_with_absent_companions(self, tmp_path: Path) -> None:
+    def test_snapshots_wal_mode_db_with_absent_sidecars(self, tmp_path: Path) -> None:
         """RED-before-fix: a WAL-header DB whose dir forbids creating ``-shm``.
 
         With ``?mode=ro`` the snapshot open raises

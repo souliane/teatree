@@ -5,24 +5,7 @@ compatibility: macOS/Linux, zsh or bash, git, glab or gh CLI for issue fetching.
 requires:
   - workspace
   - architecture-design
-companions:
   - writing-plans
-triggers:
-  priority: 60
-  keywords:
-    - '(new ticket|start working|what should i do)'
-    - '([a-z]+-\d+|\b(ticket|issue) #?\d+)'
-  urls:
-    - 'https?://gitlab\.[^\s]+/-/(issues|merge_requests|jobs)/\d+'
-    - 'https?://github\.com/[^\s]+/(issues|pull)/\d+'
-    - 'https?://(www\.)?notion\.(so|site)/'
-    - 'https?://[^\s]*\.atlassian\.net/wiki/'
-    - 'https?://linear\.app/[^\s]+/issue/'
-search_hints:
-  - ticket
-  - issue
-  - start working on
-  - intake
 metadata:
   version: 0.0.1
   subagent_safe: false

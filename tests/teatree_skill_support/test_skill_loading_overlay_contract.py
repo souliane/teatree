@@ -91,18 +91,20 @@ class TestOverlayDeclaredSkillsResolve:
     ) -> None:
         # ANTI-VACUITY TOOTH: declared but the overlay is NOT in scope (the
         # cwd's remote does not match the overlay's patterns) → S is withheld.
-        # This is the prompt-hook path, where overlay_active is always False,
-        # so the in-scope decision rests on the remote match.
+        # The agent-launch path with overlay_active=False and a lifecycle from
+        # the ticket status rests the in-scope decision on the remote match.
         monkeypatch.setattr(
             "teatree.skill_support.loading._matches_any_remote",
             lambda _cwd, _patterns: False,
         )
         config = _overlay_config(_DECLARED_S)
-        result = SkillLoadingPolicy().select_for_prompt_hook(
+        result = SkillLoadingPolicy().select_for_agent_launch(
             cwd=tmp_path,
-            intent="code",
             overlay_skill_metadata=_OVERLAY_META,
-            loaded_skills=set(),
+            ticket_status="started",
+            explicit_phase="",
+            explicit_skills=[],
+            overlay_active=False,
             companion_skills=config.get_lifecycle_companion_skills("code"),
         )
         assert "t3:synth" not in result.skills
@@ -114,7 +116,7 @@ class TestOverlayDeclaredSkillsResolve:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        # Same prompt-hook path, but the cwd's remote DOES match → S loads.
+        # Same agent-launch path, but the cwd's remote DOES match → S loads.
         # The single flipped input vs. the withheld case above is the remote
         # match, which is the discriminating part of the in-scope decision.
         monkeypatch.setattr(
@@ -122,11 +124,13 @@ class TestOverlayDeclaredSkillsResolve:
             lambda _cwd, _patterns: True,
         )
         config = _overlay_config(_DECLARED_S)
-        result = SkillLoadingPolicy().select_for_prompt_hook(
+        result = SkillLoadingPolicy().select_for_agent_launch(
             cwd=tmp_path,
-            intent="code",
             overlay_skill_metadata=_OVERLAY_META,
-            loaded_skills=set(),
+            ticket_status="started",
+            explicit_phase="",
+            explicit_skills=[],
+            overlay_active=False,
             companion_skills=config.get_lifecycle_companion_skills("code"),
         )
         assert "t3:synth" in result.skills
@@ -171,7 +175,6 @@ class TestFileDomainMapsToLanguageSkill:
         (tmp_path / "pyproject.toml").write_text("[project]\nname = 'synthpkg'\n", encoding="utf-8")
         result = SkillLoadingPolicy().select_for_prompt_hook(
             cwd=tmp_path,
-            intent="code",
             overlay_skill_metadata={},
             loaded_skills=set(),
         )
@@ -182,7 +185,6 @@ class TestFileDomainMapsToLanguageSkill:
         (tmp_path / "manage.py").touch()
         result = SkillLoadingPolicy().select_for_prompt_hook(
             cwd=tmp_path,
-            intent="code",
             overlay_skill_metadata={},
             loaded_skills=set(),
         )
@@ -193,14 +195,11 @@ class TestFileDomainMapsToLanguageSkill:
         # no framework skill — so the two positives above depend on the marker.
         result = SkillLoadingPolicy().select_for_prompt_hook(
             cwd=tmp_path,
-            intent="code",
             overlay_skill_metadata={},
             loaded_skills=set(),
         )
         assert "ac-python" not in result.skills
         assert "ac-django" not in result.skills
-        # The lifecycle skill is unaffected — the domain mapping is orthogonal.
-        assert "code" in result.skills
 
     @pytest.mark.parametrize(
         ("dependency", "expected_present", "expected_absent"),
@@ -223,7 +222,6 @@ class TestFileDomainMapsToLanguageSkill:
         (tmp_path / "pyproject.toml").write_text(f"[project]\n{dependency}\n", encoding="utf-8")
         result = SkillLoadingPolicy().select_for_prompt_hook(
             cwd=tmp_path,
-            intent="code",
             overlay_skill_metadata={},
             loaded_skills=set(),
         )

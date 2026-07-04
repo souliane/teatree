@@ -1,8 +1,8 @@
 """Skill metadata cache.
 
-Writes the active overlay's skill metadata + trigger index to
+Writes the active overlay's skill metadata + skill (requires) index to
 ``$DATA_DIR/skill-metadata.json``. The UserPromptSubmit hook reads the
-cache to resolve overlay matching and the trigger index without paying
+cache to resolve overlay matching and the requires closure without paying
 the cost of Django bootstrap on every prompt.
 
 Called from `t3 config write-skill-cache` and from the loop tick
@@ -19,8 +19,8 @@ import teatree
 from teatree.core.overlay_loader import get_overlay
 from teatree.paths import DATA_DIR
 from teatree.skill_support.deps import resolve_all
+from teatree.skill_support.requires_parser import parse_requires
 from teatree.skill_support.schema import validate_skill_md
-from teatree.trigger_parser import parse_triggers as _parse_triggers
 
 logger = logging.getLogger(__name__)
 
@@ -31,9 +31,9 @@ _CLAUDE_SKILLS_DIR = Path.home() / ".claude" / "skills"
 def write_skill_metadata_cache() -> None:
     """Write the active overlay's skill metadata to the XDG data directory."""
     metadata = get_overlay().metadata.get_skill_metadata()
-    trigger_index = _build_trigger_index()
-    metadata["trigger_index"] = trigger_index
-    metadata["resolved_requires"] = resolve_all(trigger_index)
+    skill_index = _build_requires_index()
+    metadata["skill_index"] = skill_index
+    metadata["resolved_requires"] = resolve_all(skill_index)
     metadata["skill_mtimes"] = _collect_skill_mtimes()
     metadata["teatree_version"] = teatree.__version__
     cache_path = DATA_DIR / "skill-metadata.json"
@@ -58,8 +58,8 @@ def _validate_skills(known_skills: set[str]) -> None:
             logger.warning("Skill validation error: %s", error)
 
 
-def _build_trigger_index() -> list[dict]:
-    """Scan ``~/.claude/skills/*/SKILL.md`` and extract ``triggers:`` blocks."""
+def _build_requires_index() -> list[dict]:
+    """Scan ``~/.claude/skills/*/SKILL.md`` and index each skill's ``requires:``."""
     index: list[dict] = []
 
     if not _CLAUDE_SKILLS_DIR.is_dir():
@@ -84,12 +84,10 @@ def _build_trigger_index() -> list[dict]:
             text = skill_md.read_text(encoding="utf-8")
         except OSError:
             continue
-        triggers = _parse_triggers(text)
-        if triggers is None:
-            continue
-        index.append({"skill": skill_dir.name, **triggers})
+        requires = parse_requires(text)
+        index.append({"skill": skill_dir.name, "requires": requires or []})
 
-    index.sort(key=operator.itemgetter("priority", "skill"))
+    index.sort(key=operator.itemgetter("skill"))
     return index
 
 

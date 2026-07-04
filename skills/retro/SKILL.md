@@ -7,15 +7,6 @@ requires:
   - workspace
   - architecture-design
 compatibility: macOS/Linux, any project with teatree skills.
-triggers:
-  priority: 100
-  end_of_session: true
-  keywords:
-    - '\b(retro|retrospective|lessons learned|improve skills?|auto.?improve|what went wrong)\b'
-search_hints:
-  - retro
-  - retrospective
-  - lessons learned
 metadata:
   version: 0.0.1
   subagent_safe: false

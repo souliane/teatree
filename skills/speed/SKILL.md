@@ -5,22 +5,6 @@ compatibility: any
 requires:
   - rules
   - workspace
-triggers:
-  priority: 70
-  keywords:
-    - '\b(t3:?speed|set speed|speed (up|level)|go full[- ]speed|full[- ]speed)\b'
-    - '\b(blast the backlog|parallel mode|max throughput|go wide|parallel backlog|boost mode)\b'
-    - '\b(work in parallel|fan[- ]out|all tickets at once|tackle everything|slow down the loop)\b'
-search_hints:
-  - speed
-  - full speed
-  - boost
-  - blast backlog
-  - parallel mode
-  - max throughput
-  - go wide
-  - fan out
-  - slow down
 metadata:
   version: 0.0.1
   subagent_safe: false

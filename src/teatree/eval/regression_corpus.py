@@ -8,7 +8,7 @@ claim, the migration-graph leaf checker) on a constructed must-block input and
 on a must-allow input, and reports a violation when either direction is wrong.
 
 This is a Layer-1 eval per ``README.md`` — deterministic, free, no ``claude``
-run — sibling of :mod:`teatree.eval.trigger_qa`. It exists so the recurring
+run — sibling of :mod:`teatree.eval.coverage`. It exists so the recurring
 safety-gate failure classes of the last development cycle each have one check
 that would go RED on the pre-fix behavior and stays GREEN on the fix, surfaced
 through ``t3 eval pinned-regressions`` and the ``eval-pinned-regressions`` prek

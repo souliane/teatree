@@ -25,7 +25,6 @@ def test_agent_launch_explicit_phase_and_skills_raises() -> None:
         policy.select_for_agent_launch(
             cwd=Path("/tmp"),
             overlay_skill_metadata={},
-            task="",
             ticket_status="",
             explicit_phase="coding",
             explicit_skills=["code"],
@@ -39,7 +38,6 @@ def test_agent_launch_unknown_explicit_phase_raises() -> None:
         policy.select_for_agent_launch(
             cwd=Path("/tmp"),
             overlay_skill_metadata={},
-            task="",
             ticket_status="",
             explicit_phase="nonsense",
             explicit_skills=[],
@@ -52,7 +50,6 @@ def test_agent_launch_valid_explicit_phase(tmp_path: Path) -> None:
     result = policy.select_for_agent_launch(
         cwd=tmp_path,
         overlay_skill_metadata={},
-        task="",
         ticket_status="",
         explicit_phase="coding",
         explicit_skills=[],
@@ -67,7 +64,6 @@ def test_agent_launch_status_without_lifecycle_asks_user(tmp_path: Path) -> None
     result = policy.select_for_agent_launch(
         cwd=tmp_path,
         overlay_skill_metadata={},
-        task="",
         ticket_status="unknown-status",
         explicit_phase="",
         explicit_skills=[],
@@ -80,58 +76,31 @@ def test_prompt_hook_with_supplementary_skills(tmp_path: Path) -> None:
     policy = SkillLoadingPolicy()
     result = policy.select_for_prompt_hook(
         cwd=tmp_path,
-        intent="code",
         overlay_skill_metadata={},
         loaded_skills=set(),
         supplementary_skills=["custom-skill"],
     )
     assert "custom-skill" in result.skills
-    assert "code" in result.skills
 
 
-def test_prompt_hook_no_intent(tmp_path: Path) -> None:
+def test_prompt_hook_no_context(tmp_path: Path) -> None:
     policy = SkillLoadingPolicy()
     result = policy.select_for_prompt_hook(
         cwd=tmp_path,
-        intent="",
         overlay_skill_metadata={},
         loaded_skills=set(),
     )
     assert result.lifecycle_skill == ""
+    assert result.skills == []
 
 
-def test_lifecycle_for_task_no_match() -> None:
-    assert SkillLoadingPolicy.lifecycle_for_task_text("hello world") == ""
-
-
-def test_overlay_skill_no_lifecycle_returns_empty(tmp_path: Path) -> None:
+def test_prompt_hook_does_not_surface_overlay_skill(tmp_path: Path) -> None:
+    # The prompt hook surfaces framework/cwd skills only; the overlay's own
+    # skill loads through the dispatch paths, never the prompt hook.
     policy = SkillLoadingPolicy()
     result = policy.select_for_prompt_hook(
         cwd=tmp_path,
-        intent="",
         overlay_skill_metadata={"skill_path": "t3-acme", "remote_patterns": ["*"]},
-        loaded_skills=set(),
-    )
-    assert "t3-acme" not in result.skills
-
-
-def test_overlay_skill_non_list_patterns(tmp_path: Path) -> None:
-    policy = SkillLoadingPolicy()
-    result = policy.select_for_prompt_hook(
-        cwd=tmp_path,
-        intent="code",
-        overlay_skill_metadata={"skill_path": "t3-acme", "remote_patterns": "not-a-list"},
-        loaded_skills=set(),
-    )
-    assert "t3-acme" not in result.skills
-
-
-def test_overlay_skill_empty_patterns(tmp_path: Path) -> None:
-    policy = SkillLoadingPolicy()
-    result = policy.select_for_prompt_hook(
-        cwd=tmp_path,
-        intent="code",
-        overlay_skill_metadata={"skill_path": "t3-acme", "remote_patterns": []},
         loaded_skills=set(),
     )
     assert "t3-acme" not in result.skills

@@ -5,7 +5,6 @@ compatibility: macOS/Linux, Playwright, Node.js, git.
 requires:
   - review
   - e2e
-companions:
   - receiving-code-review
 metadata:
   version: 0.0.1

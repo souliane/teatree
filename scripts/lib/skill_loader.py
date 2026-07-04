@@ -1,24 +1,26 @@
 """Skill suggestion engine for the UserPromptSubmit hook.
 
-Called by hook_router.py (UserPromptSubmit event) to detect user intent and return a
-deduped suggestion list via ``SkillLoadingPolicy``.
+Called by hook_router.py (UserPromptSubmit event) to surface the skills a
+prompt's cwd/overlay context implies — framework skills (``ac-django`` /
+``ac-python``), the active overlay's own skill, and its companion skills —
+plus advisory supplementary skills. There is no free-text scan of the prompt:
+lifecycle skills load explicitly via slash commands, ``t3 agent --phase/--skill``,
+and the transitive ``requires`` chain.
 
-Trigger patterns are read from SKILL.md frontmatter (``triggers:`` field),
-not hardcoded.  A cached trigger index in the XDG data directory is used
-when available; otherwise skills are scanned on the fly from
+The skill (requires) index is read from a cached index in the XDG data
+directory when available; otherwise skills are scanned on the fly from
 ``skill_search_dirs``.
 """
 
 from __future__ import annotations  # noqa: TID251
 
 import json
+import operator
 import re
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 
-from lib.trigger_parser import parse_triggers as parse_triggers_from_frontmatter
-from lib.url_title_fetcher import enrich_prompt as _enrich_prompt_with_url_titles
+from lib.requires_parser import parse_requires
 
 _SRC_DIR = Path(__file__).resolve().parents[2] / "src"
 if str(_SRC_DIR) not in sys.path:
@@ -88,38 +90,11 @@ def _cache_is_stale(metadata: dict) -> bool:
     return False
 
 
-# End-of-session phrases (matched when no keyword/URL intent fires and a
-# skill declares ``end_of_session: true``).
-_LIFECYCLE_SKILLS = frozenset(
-    {
-        "ticket",
-        "code",
-        "test",
-        "debug",
-        "review",
-        "ship",
-        "review-request",
-        "retro",
-        "workspace",
-        "next",
-        "contribute",
-        "followup",
-        "handover",
-        "setup",
-    }
-)
+def build_requires_index(skill_search_dirs: list[Path]) -> list[dict]:
+    """Scan skill directories and index each skill's ``requires:`` list.
 
-_END_OF_SESSION_RE = re.compile(
-    r"^(done|all set|finished|all done|wrap up|that.s it|that.s all"
-    r"|ship it|we.re done|i.m done|looks good|lgtm)\s*[.!]?\s*$",
-)
-
-
-def build_trigger_index(skill_search_dirs: list[Path]) -> list[dict]:
-    """Scan skill directories and build a trigger index from SKILL.md frontmatter.
-
-    Returns a list of dicts sorted by priority, each with keys:
-    ``skill``, ``priority``, ``keywords``, ``urls``, ``exclude``, ``end_of_session``.
+    Returns a list of ``{"skill": name, "requires": [...]}`` dicts, one per
+    discovered SKILL.md, sorted by skill name.
     """
     seen: set[str] = set()
     index: list[dict] = []
@@ -140,195 +115,18 @@ def build_trigger_index(skill_search_dirs: list[Path]) -> list[dict]:
                 text = skill_md.read_text(encoding="utf-8")
             except OSError:
                 continue
-            triggers = parse_triggers_from_frontmatter(text)
-            if triggers is None:
-                continue
             seen.add(skill_name)
-            index.append({"skill": skill_name, **triggers})
+            index.append({"skill": skill_name, "requires": parse_requires(text) or []})
 
-    import operator
-
-    index.sort(key=operator.itemgetter("priority", "skill"))
+    index.sort(key=operator.itemgetter("skill"))
     return index
 
 
-def _read_trigger_index() -> list[dict]:
-    """Read the cached trigger index from the XDG data directory."""
+def _read_skill_index() -> list[dict]:
+    """Read the cached skill (requires) index from the XDG data directory."""
     metadata = _read_metadata_cache()
-    index = metadata.get("trigger_index", [])
+    index = metadata.get("skill_index", [])
     return index if isinstance(index, list) else []
-
-
-# ── Intent detection (data-driven) ──────────────────────────────────
-
-
-def detect_intent(
-    prompt: str,
-    *,
-    trigger_index: list[dict] | None = None,
-    skill_search_dirs: list[Path] | None = None,
-    loaded_skills: set[str] | None = None,
-) -> str:
-    """Detect the primary skill intent from a user prompt.
-
-    Uses the trigger index (from cache or built on the fly) to match
-    URL and keyword patterns.  Returns the matching skill name or ``""``.
-    """
-    if trigger_index is None:
-        trigger_index = _read_trigger_index()
-        if not trigger_index and skill_search_dirs:
-            trigger_index = build_trigger_index(skill_search_dirs)
-
-    if not trigger_index:
-        return ""
-
-    enriched = _enrich_prompt_with_url_titles(prompt)
-    lp = enriched.lower()
-
-    # Pass 0: Explicit /<skill> slash commands (highest priority).
-    # When the prompt starts with a known skill name, use it directly
-    # instead of falling through to URL/keyword matching.
-    slash_match = re.match(r"^/?([a-z][a-z0-9_-]+)", lp.strip())
-    if slash_match:
-        candidate = slash_match.group(1)
-        indexed = {e["skill"] for e in trigger_index}
-        if candidate in indexed:
-            return candidate
-
-    # Pass 1: URL patterns (checked first, across all skills by priority)
-    for entry in trigger_index:
-        for url_pattern in entry.get("urls", []):
-            try:
-                if re.search(url_pattern, lp):
-                    return entry["skill"]
-            except re.error:
-                continue
-
-    # Pass 2: Keyword patterns (by priority, with exclude support)
-    for entry in trigger_index:
-        exclude = entry.get("exclude", "")
-        if exclude:
-            try:
-                if re.search(exclude, lp):
-                    continue
-            except re.error:
-                pass
-
-        for kw_pattern in entry.get("keywords", []):
-            try:
-                if re.search(kw_pattern, lp):
-                    return entry["skill"]
-            except re.error:
-                continue
-
-    # Pass 3: End-of-session detection for skills with end_of_session: true
-    if _END_OF_SESSION_RE.match(prompt.strip().lower()):
-        loaded = loaded_skills or set()
-        has_lifecycle = any(s in _LIFECYCLE_SKILLS for s in loaded)
-        if has_lifecycle:
-            for entry in trigger_index:
-                if entry.get("end_of_session") and entry["skill"] not in loaded:
-                    return entry["skill"]
-
-    return ""
-
-
-# ── Detailed intent detection (for CLI debugging) ─────────────────
-
-
-@dataclass(frozen=True, slots=True)
-class IntentMatch:
-    skill: str
-    match_pass: str  # "slash", "url", "keyword", "end_of_session", or ""
-    pattern: str
-    priority: int
-
-    def __str__(self) -> str:
-        if not self.skill:
-            return "no match"
-        return f"{self.skill} ({self.match_pass}: {self.pattern}, priority {self.priority})"
-
-
-_NO_MATCH = IntentMatch(skill="", match_pass="", pattern="", priority=0)
-
-
-def detect_intent_detailed(
-    prompt: str,
-    *,
-    trigger_index: list[dict] | None = None,
-    skill_search_dirs: list[Path] | None = None,
-    loaded_skills: set[str] | None = None,
-) -> IntentMatch:
-    """Like ``detect_intent`` but returns match details for debugging."""
-    if trigger_index is None:
-        trigger_index = _read_trigger_index()
-        if not trigger_index and skill_search_dirs:
-            trigger_index = build_trigger_index(skill_search_dirs)
-
-    if not trigger_index:
-        return _NO_MATCH
-
-    enriched = _enrich_prompt_with_url_titles(prompt)
-    lp = enriched.lower()
-
-    # Pass 0: Explicit /<skill> slash commands.
-    slash_match = re.match(r"^/?([a-z][a-z0-9_-]+)", lp.strip())
-    if slash_match:
-        candidate = slash_match.group(1)
-        for entry in trigger_index:
-            if entry["skill"] == candidate:
-                return IntentMatch(candidate, "slash", f"/{candidate}", entry.get("priority", 50))
-
-    # Pass 1: URL patterns.
-    for entry in trigger_index:
-        for url_pattern in entry.get("urls", []):
-            try:
-                if re.search(url_pattern, lp):
-                    return IntentMatch(entry["skill"], "url", url_pattern, entry.get("priority", 50))
-            except re.error:
-                continue
-
-    # Pass 2: Keyword patterns.
-    for entry in trigger_index:
-        exclude = entry.get("exclude", "")
-        if exclude:
-            try:
-                if re.search(exclude, lp):
-                    continue
-            except re.error:
-                pass
-        for kw_pattern in entry.get("keywords", []):
-            try:
-                if re.search(kw_pattern, lp):
-                    return IntentMatch(entry["skill"], "keyword", kw_pattern, entry.get("priority", 50))
-            except re.error:
-                continue
-
-    # Pass 3: End-of-session.
-    if _END_OF_SESSION_RE.match(prompt.strip().lower()):
-        loaded = loaded_skills or set()
-        has_lifecycle = any(s in _LIFECYCLE_SKILLS for s in loaded)
-        if has_lifecycle:
-            for entry in trigger_index:
-                if entry.get("end_of_session") and entry["skill"] not in loaded:
-                    return IntentMatch(
-                        entry["skill"],
-                        "end_of_session",
-                        "end_of_session: true",
-                        entry.get("priority", 50),
-                    )
-
-    return _NO_MATCH
-
-
-# ── Companion skills (XDG cache) ────────────────────────────────────
-
-
-def read_companion_skills() -> list[str]:
-    """Read companion skills from the XDG skill-metadata cache."""
-    metadata = _read_metadata_cache()
-    companions = metadata.get("companion_skills", [])
-    return companions if isinstance(companions, list) else []
 
 
 def read_overlay_skill_metadata() -> dict[str, object]:
@@ -394,65 +192,40 @@ def read_supplementary_skills(config_path: str, prompt: str) -> list[str]:
 
 
 def suggest_skills(data: dict) -> dict:
-    r"""Suggest skills based on user prompt and project context.
+    r"""Suggest the skills a prompt's cwd/overlay context implies.
 
     Args:
         data: Hook input with keys: prompt, cwd, active_repos,
             loaded_skills, skill_search_dirs, supplementary_config.
 
     Returns:
-        Dict with keys: suggestions, advisory, intent. ``advisory`` is the
-        subset of ``suggestions`` sourced ONLY from the supplementary keyword
-        config (``~/.teatree-skills.yml``). Those loose user-authored keyword
-        regexes (e.g. ``\bruff\b``) over-fire on incidental mentions, so the
-        caller suggests them but never adds them to the hard-block demand set.
+        Dict with keys: suggestions, advisory. ``advisory`` is the subset of
+        ``suggestions`` sourced ONLY from the supplementary keyword config
+        (``~/.teatree-skills.yml``). Those loose user-authored keyword regexes
+        (e.g. ``\bruff\b``) over-fire on incidental mentions, so the caller
+        suggests them but never adds them to the hard-block demand set.
 
     """
     prompt = data.get("prompt", "")
     cwd = data.get("cwd", "")
     loaded = set(data.get("loaded_skills", []))
-    search_dirs = [Path(d) for d in data.get("skill_search_dirs", [])]
     supplementary_config = data.get("supplementary_config", "")
     tool_input = data.get("tool_input", {}) or {}
     file_path = str(tool_input.get("file_path", "") or "")
-
-    # 1. Read the trigger index (cached or built on the fly).
-    trigger_index = _read_trigger_index()
-    if not trigger_index and search_dirs:
-        trigger_index = build_trigger_index(search_dirs)
-
-    # 2. Detect intent from trigger index
-    intent = detect_intent(
-        prompt,
-        trigger_index=trigger_index,
-        skill_search_dirs=search_dirs,
-        loaded_skills=loaded,
-    )
-
-    # When intent is empty AND no file_path is available the loader has
-    # nothing to detect framework or overlay context against — short-circuit
-    # to keep the legacy "vague prompt → no suggestions" behaviour. With a
-    # file_path (PreToolUse Edit/Write on a teatree .py), run the policy
-    # against the file's directory so framework-skill detection and overlay
-    # companions still surface even without an intent keyword.
-    if not intent and not file_path:
-        return {"suggestions": [], "advisory": [], "intent": ""}
 
     detect_cwd = _detect_cwd(file_path, cwd)
     policy = SkillLoadingPolicy()
     selection = policy.select_for_prompt_hook(
         cwd=detect_cwd,
-        intent=intent,
         overlay_skill_metadata=read_overlay_skill_metadata(),
         loaded_skills=loaded,
         supplementary_skills=read_supplementary_skills(supplementary_config, prompt),
-        trigger_index=trigger_index,
+        skill_index=_read_skill_index(),
         companion_skills=read_overlay_companion_skills(),
     )
     return {
         "suggestions": selection.skills,
         "advisory": list(selection.advisory_skills),
-        "intent": intent,
     }
 
 

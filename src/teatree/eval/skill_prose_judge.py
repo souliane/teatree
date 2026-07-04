@@ -26,7 +26,7 @@ from pathlib import Path
 
 # ``skills/`` sits next to ``src/`` — resolve from this module's path so the lane
 # stays a leaf of the eval package (the backwards-edge convention the sibling
-# ``discovery`` / ``trigger_qa`` / ``skill_command_validity`` lanes follow).
+# ``discovery`` / ``skill_command_validity`` lanes follow).
 DEFAULT_SKILLS_DIR = Path(__file__).resolve().parents[3] / "skills"
 
 #: The clarity/actionability rubric the live judge grades each SKILL.md against.

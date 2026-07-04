@@ -160,7 +160,6 @@ depends_on = [
   "teatree.utils",
   "teatree.timeouts",
   "teatree.skill_support",
-  "teatree.trigger_parser",
   "teatree.hooks",
   "teatree.on_behalf_gate",
   "teatree.slack_mrkdwn",
@@ -373,7 +372,7 @@ depends_on = []
 [[modules]]
 path = "teatree.eval"
 layer = "integration"
-depends_on = ["teatree.core", "teatree.credential_config", "teatree.hooks", "teatree.pricing", "teatree.utils", "teatree.trigger_parser", "teatree.claude_sessions", "teatree.llm"]
+depends_on = ["teatree.core", "teatree.credential_config", "teatree.hooks", "teatree.pricing", "teatree.utils", "teatree.claude_sessions", "teatree.llm"]
 
 [[modules]]
 path = "teatree.core.management"
@@ -730,11 +729,6 @@ depends_on = ["teatree.utils"]
 
 [[modules]]
 path = "teatree.memory_audit"
-layer = "foundation"
-depends_on = []
-
-[[modules]]
-path = "teatree.trigger_parser"
 layer = "foundation"
 depends_on = []
 

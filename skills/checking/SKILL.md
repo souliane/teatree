@@ -2,11 +2,6 @@
 name: checking
 description: A SHORT "what did I miss" report when the user checks in mid-loop — terse, grouped, clickable; then answer the pending deferred questions in-band. Use when the user says "what did I miss", "checking", "catch me up", "what changed since", or "ask me the questions / shoot me the questions".
 compatibility: any
-triggers:
-  priority: 50
-  keywords:
-    - '\b(what did i miss|checking|catch me up|what changed since|catch up)\b'
-    - '\b(ask|shoot|hit) me (the |my )?(deferred |pending )?questions?\b'
 requires:
   - rules
 metadata:

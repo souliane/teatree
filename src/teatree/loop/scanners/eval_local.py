@@ -163,11 +163,11 @@ class EvalLocalScanner:
         run`` + ``transcript`` substrings are load-bearing — they tell
         the skill to run the same scoped, $0-extra path the user runs
         by hand (``t3 eval run`` defaults to the transcript backend),
-        plus the deterministic ``skill-triggers`` / ``pinned-regressions`` checks.
+        plus the deterministic ``pinned-regressions`` check.
         """
         return (
             f"Periodic local eval ({trigger}) via skill: {self.skill} | run the SCOPED suite locally with "
-            "`t3 eval skill-triggers`, `t3 eval pinned-regressions`, and `t3 eval run` "
+            "`t3 eval pinned-regressions` and `t3 eval run` "
             "(transcript backend, $0 extra)"
         )
 

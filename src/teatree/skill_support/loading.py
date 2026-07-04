@@ -4,6 +4,11 @@ Two callers route through ``SkillLoadingPolicy``:
 
 * ``t3 agent`` CLI (interactive launch)
 * ``scripts/lib/skill_loader.py`` (UserPromptSubmit hook)
+
+Skill selection is fully explicit — slash commands, phase mapping, ticket
+status, the requires-dependency chain, and cwd/overlay context. There is no
+free-text keyword scan of the task/prompt text; a launch with neither a phase,
+a skill, nor a ticket status asks the user which lifecycle to run.
 """
 
 import logging
@@ -12,7 +17,7 @@ from dataclasses import dataclass
 from fnmatch import fnmatch
 from pathlib import Path
 
-from teatree.skill_support.deps import TriggerIndex, resolve_companions
+from teatree.skill_support.deps import SkillIndex, resolve_requires
 from teatree.types import SkillMetadata
 from teatree.utils import git
 
@@ -30,17 +35,6 @@ def _default_skills_dir() -> Path:
 
 
 DEFAULT_SKILLS_DIR = _default_skills_dir()
-
-_AGENT_TASK_KEYWORDS: dict[str, tuple[str, ...]] = {
-    "debug": ("debug", "fix", "error", "broken", "crash", "not working", "bug", "trace"),
-    "e2e": ("e2e", "playwright", "visual qa", "screenshot", "evidence"),
-    "test": ("test", "pytest", "lint", "ci", "pipeline", "qa"),
-    "ship": ("commit", "push", "ship", "deliver", "mr", "merge request", "pull request"),
-    "review": ("review", "feedback", "check the code"),
-    "ticket": ("ticket", "issue", "start working on"),
-    "retro": ("retro", "retrospective", "lessons learned"),
-    "workspace": ("setup", "worktree", "create worktree", "servers", "cleanup"),
-}
 
 _STATUS_TO_SKILL: dict[str, str] = {
     "not_started": "ticket",
@@ -118,14 +112,22 @@ class SkillLoadingPolicy:
     """Single source of truth for skill selection decisions."""
 
     @staticmethod
-    def _resolve_with_companions(
+    def _resolve_requires_chain(
         skills: list[str],
-        trigger_index: TriggerIndex,
+        skill_index: SkillIndex,
     ) -> list[str]:
-        """Resolve requires and companions, logging warnings for missing companions."""
-        resolved, missing = resolve_companions(skills, trigger_index)
-        for comp in missing:
-            logger.warning("Companion skill %r not installed — skipping", comp)
+        """Resolve the transitive ``requires`` chain, warning on deps with no SKILL.md.
+
+        A required skill absent from *skill_index* has no SKILL.md in this repo
+        (an external methodology skill like ``test-driven-development``, or a
+        framework skill). It passes through so the ``Skill`` tool still loads
+        it; the warning surfaces the missing definition without dropping it.
+        """
+        resolved = resolve_requires(skills, skill_index)
+        known = {str(e.get("skill", "")) for e in skill_index if e.get("skill")}
+        for skill in resolved:
+            if skill not in known and skill not in FRAMEWORK_SKILL_NAMES:
+                logger.warning("Required skill %r has no SKILL.md — continuing", skill)
         return resolved
 
     # ast-grep-ignore: ac-django-no-complexity-suppressions
@@ -134,12 +136,11 @@ class SkillLoadingPolicy:
         *,
         cwd: Path,
         overlay_skill_metadata: OverlaySkillMetadata,
-        task: str,
         ticket_status: str,
         explicit_phase: str,
         explicit_skills: list[str],
         overlay_active: bool,
-        trigger_index: TriggerIndex | None = None,
+        skill_index: SkillIndex | None = None,
         companion_skills: list[str] | None = None,
     ) -> SkillSelectionResult:
         if explicit_phase and explicit_skills:
@@ -157,8 +158,6 @@ class SkillLoadingPolicy:
             lifecycle_skill = ""
         elif ticket_status:
             lifecycle_skill = self.lifecycle_for_status(ticket_status)
-        elif task:
-            lifecycle_skill = self.lifecycle_for_task_text(task, trigger_index=trigger_index)
         else:
             ask_user = True
 
@@ -177,7 +176,7 @@ class SkillLoadingPolicy:
         elif lifecycle_skill:
             ordered.append(lifecycle_skill)
 
-        resolved = self._resolve_with_companions(ordered, trigger_index or [])
+        resolved = self._resolve_requires_chain(ordered, skill_index or [])
         return SkillSelectionResult(
             skills=_dedupe(resolved),
             lifecycle_skill=lifecycle_skill,
@@ -189,31 +188,34 @@ class SkillLoadingPolicy:
         self,
         *,
         cwd: Path,
-        intent: str,
         overlay_skill_metadata: OverlaySkillMetadata,
         loaded_skills: set[str],
         supplementary_skills: list[str] | None = None,
-        trigger_index: TriggerIndex | None = None,
+        skill_index: SkillIndex | None = None,
         companion_skills: list[str] | None = None,
     ) -> SkillSelectionResult:
+        """Framework + overlay + cwd context skills for a prompt, no prose scan.
+
+        Surfaces the cwd/overlay-detected skills (``ac-django`` for a Django
+        cwd, the overlay's own skill + companion skills for an overlay repo)
+        plus any advisory supplementary skills — never a free-text keyword
+        match on the prompt.
+        """
         hard = self._base_detected_skills(
             cwd=cwd,
             overlay_skill_metadata=overlay_skill_metadata,
             overlay_active=False,
-            lifecycle_skill=intent,
+            lifecycle_skill="",
             companion_skills=companion_skills,
         )
-        if intent:
-            hard.append(intent)
-        hard_resolved = set(self._resolve_with_companions(hard, trigger_index or []))
+        hard_resolved = set(self._resolve_requires_chain(hard, skill_index or []))
 
         ordered = [*hard, *(supplementary_skills or [])]
-        resolved = _dedupe(self._resolve_with_companions(ordered, trigger_index or []))
+        resolved = _dedupe(self._resolve_requires_chain(ordered, skill_index or []))
         suggestions = [skill for skill in resolved if skill not in loaded_skills]
         advisory = tuple(skill for skill in suggestions if skill not in hard_resolved)
         return SkillSelectionResult(
             skills=suggestions,
-            lifecycle_skill=intent,
             advisory_skills=advisory,
         )
 
@@ -224,7 +226,7 @@ class SkillLoadingPolicy:
         cwd: Path,
         phase: str,
         overlay_skill_metadata: OverlaySkillMetadata,
-        trigger_index: TriggerIndex | None = None,
+        skill_index: SkillIndex | None = None,
         companion_skills: list[str] | None = None,
         pr_review_companion: str = "",
         review_skills: list[str] | None = None,
@@ -251,7 +253,7 @@ class SkillLoadingPolicy:
                 ordered.extend(review_skills)
             elif pr_review_companion:
                 ordered.append(pr_review_companion)
-        resolved = self._resolve_with_companions(ordered, trigger_index or [])
+        resolved = self._resolve_requires_chain(ordered, skill_index or [])
         return SkillSelectionResult(
             skills=_dedupe(resolved),
             lifecycle_skill=lifecycle_skill,
@@ -264,28 +266,6 @@ class SkillLoadingPolicy:
     @staticmethod
     def lifecycle_for_phase(phase: str) -> str:
         return _PHASE_TO_SKILL.get(phase, "")
-
-    @staticmethod
-    def lifecycle_for_task_text(
-        task: str,
-        *,
-        trigger_index: TriggerIndex | None = None,
-    ) -> str:
-        lowered = task.lower()
-        # Pass 1: hardcoded keywords (fast, no I/O).
-        for skill_name, keywords in _AGENT_TASK_KEYWORDS.items():
-            if any(keyword in lowered for keyword in keywords):
-                return skill_name
-        # Pass 2: search_hints from skill frontmatter (trigger index).
-        if trigger_index:
-            for entry in trigger_index:
-                hints = entry.get("search_hints", [])
-                if not isinstance(hints, list):
-                    continue
-                skill = str(entry.get("skill", ""))
-                if any(isinstance(h, str) and h.lower() in lowered for h in hints):
-                    return skill
-        return ""
 
     def _base_detected_skills(
         self,

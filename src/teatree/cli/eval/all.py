@@ -1,6 +1,6 @@
 """``t3 eval list`` table render + bare-``t3 eval`` full-suite lane orchestration.
 
-The seven free deterministic lanes (skill-triggers, skill-coverage, pinned-regressions,
+The six free deterministic lanes (skill-coverage, pinned-regressions,
 negative-control, transcript-replay, corpus-grade, skill-command-validity) always run;
 skill-coverage is warn-first (reports a gap, never FAILs in Phase A), transcript-replay
 surfaces as a SKIP when no real session transcript is in scope (never a FAIL), corpus-grade
@@ -44,7 +44,6 @@ from teatree.eval.regression_corpus import RegressionReport, run_regression_corp
 from teatree.eval.report import ScenarioResult, evaluate
 from teatree.eval.skip_guard import UnmeteredApiRunError, assert_api_run_was_metered
 from teatree.eval.transcript_conformance import InvariantResult
-from teatree.eval.trigger_qa import TriggerQAReport, run_trigger_qa
 from teatree.llm.anthropic_limits import CreditExhaustedError
 from teatree.utils.django_bootstrap import ensure_django
 
@@ -78,16 +77,6 @@ def build_scenarios_table(specs: list[EvalSpec]) -> Table:
             str(len(spec.matchers)),
         )
     return table
-
-
-def trigger_lane(report: TriggerQAReport) -> LaneResult:
-    return LaneResult(
-        name="skill-triggers",
-        cost="free",
-        passed=report.ok,
-        skipped=False,
-        detail=f"{len(report.checks)} checks, {len(report.failures)} failed",
-    )
 
 
 def regression_lane(report: RegressionReport) -> LaneResult:
@@ -300,8 +289,8 @@ def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each 
 ) -> None:
     """The single eval-suite chokepoint: run every lane and render one summary.
 
-    The bare ``t3 eval`` default calls this. The seven free deterministic lanes
-    (skill-triggers, skill-coverage, pinned-regressions, negative-control,
+    The bare ``t3 eval`` default calls this. The six free deterministic lanes
+    (skill-coverage, pinned-regressions, negative-control,
     transcript-replay, corpus-grade, skill-command-validity) always run;
     skill-coverage is warn-first, transcript-replay SKIPs when no real session
     transcript is in scope (a missing run is not a violation), corpus-grade grades
@@ -339,7 +328,6 @@ def run_full_suite(  # noqa: PLR0913 — the single eval-suite chokepoint: each 
     ensure_django()
     target_dir = transcript_dir or Path.cwd()
     lanes = [
-        _timed(lambda: trigger_lane(run_trigger_qa())),
         _timed(lambda: coverage_lane(skill_eval_coverage())),
         _timed(lambda: regression_lane(run_regression_corpus())),
         _timed(lambda: negative_control_lane(run_negative_control())),

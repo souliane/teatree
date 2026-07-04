@@ -62,29 +62,6 @@ def test_lifecycle_for_phase(phase, expected):
     assert SkillLoadingPolicy.lifecycle_for_phase(phase) == expected
 
 
-# ── SkillLoadingPolicy.lifecycle_for_task_text ──────────────────────
-
-
-@pytest.mark.parametrize(
-    ("task", "expected"),
-    [
-        ("debug the issue", "debug"),
-        ("fix it now", "debug"),
-        ("run the tests", "test"),
-        ("run e2e tests", "e2e"),
-        ("playwright screenshot", "e2e"),
-        ("commit and push", "ship"),
-        ("review the code", "review"),
-        ("start working on ticket", "ticket"),
-        ("do a retro", "retro"),
-        ("setup worktree", "workspace"),
-        ("nothing matches here xyz", ""),
-    ],
-)
-def test_lifecycle_for_task_text(task, expected):
-    assert SkillLoadingPolicy.lifecycle_for_task_text(task) == expected
-
-
 # ── SkillLoadingPolicy.select_for_agent_launch ──────────────────────
 
 
@@ -93,7 +70,6 @@ def _launch(tmp_path, **overrides):
     defaults = {
         "cwd": tmp_path,
         "overlay_skill_metadata": {},
-        "task": "",
         "ticket_status": "",
         "explicit_phase": "",
         "explicit_skills": [],
@@ -133,45 +109,9 @@ def test_select_for_agent_launch_ticket_status(tmp_path: Path):
     assert "test" in result.skills
 
 
-def test_select_for_agent_launch_task_text(tmp_path: Path):
-    result = _launch(tmp_path, task="commit the changes")
-    assert result.lifecycle_skill == "ship"
-
-
-def test_lifecycle_for_task_text_with_search_hints():
-    policy = SkillLoadingPolicy()
-    trigger_index: list[dict[str, object]] = [
-        {"skill": "deploy", "search_hints": ["deploy", "release", "rollout"]},
-    ]
-    assert policy.lifecycle_for_task_text("deploy to prod", trigger_index=trigger_index) == "deploy"
-
-
-def test_lifecycle_for_task_text_hardcoded_takes_precedence():
-    policy = SkillLoadingPolicy()
-    trigger_index: list[dict[str, object]] = [
-        {"skill": "custom-debug", "search_hints": ["debug"]},
-    ]
-    # Hardcoded _AGENT_TASK_KEYWORDS maps "debug" to "debug" skill, not "custom-debug"
-    assert policy.lifecycle_for_task_text("debug the issue", trigger_index=trigger_index) == "debug"
-
-
-def test_lifecycle_for_task_text_no_match_with_index():
-    policy = SkillLoadingPolicy()
-    trigger_index: list[dict[str, object]] = [
-        {"skill": "deploy", "search_hints": ["deploy"]},
-    ]
-    assert policy.lifecycle_for_task_text("random gibberish", trigger_index=trigger_index) == ""
-
-
 def test_select_for_agent_launch_no_inputs_asks_user(tmp_path: Path):
     result = _launch(tmp_path)
     assert result.ask_user is True
-
-
-def test_select_for_agent_launch_ask_user_when_no_lifecycle_no_explicit(tmp_path: Path):
-    result = _launch(tmp_path, task="nothing matches xyz blah")
-    assert result.ask_user is True
-    assert result.lifecycle_skill == ""
 
 
 def test_select_for_agent_launch_overlay_active(tmp_path: Path):
@@ -179,59 +119,61 @@ def test_select_for_agent_launch_overlay_active(tmp_path: Path):
         tmp_path,
         overlay_skill_metadata={"skill_path": "t3:acme"},
         overlay_active=True,
-        task="debug this",
+        explicit_phase="debugging",
     )
     assert "t3:acme" in result.skills
     assert "debug" in result.skills
 
 
-# ── SkillLoadingPolicy.select_for_prompt_hook ───────────────────────
+# ── SkillLoadingPolicy.select_for_prompt_hook (framework/cwd only) ───
 
 
-def test_select_for_prompt_hook_basic(tmp_path: Path):
+def test_select_for_prompt_hook_framework_from_cwd(tmp_path: Path):
+    (tmp_path / "manage.py").touch()
     policy = SkillLoadingPolicy()
     result = policy.select_for_prompt_hook(
         cwd=tmp_path,
-        intent="code",
         overlay_skill_metadata={},
         loaded_skills=set(),
     )
-    assert "code" in result.skills
-    assert result.lifecycle_skill == "code"
+    assert "ac-django" in result.skills
+    # No prompt intent means no lifecycle skill from the hook.
+    assert result.lifecycle_skill == ""
 
 
 def test_select_for_prompt_hook_filters_loaded(tmp_path: Path):
+    (tmp_path / "manage.py").touch()
     policy = SkillLoadingPolicy()
     result = policy.select_for_prompt_hook(
         cwd=tmp_path,
-        intent="code",
         overlay_skill_metadata={},
-        loaded_skills={"code"},
+        loaded_skills={"ac-django"},
     )
-    assert "code" not in result.skills
+    assert "ac-django" not in result.skills
 
 
 def test_select_for_prompt_hook_with_supplementary(tmp_path: Path):
     policy = SkillLoadingPolicy()
     result = policy.select_for_prompt_hook(
         cwd=tmp_path,
-        intent="code",
         overlay_skill_metadata={},
         loaded_skills=set(),
         supplementary_skills=["rules", "platforms"],
     )
     assert "rules" in result.skills
     assert "platforms" in result.skills
+    # Supplementary skills are advisory-only.
+    assert set(result.advisory_skills) == {"rules", "platforms"}
 
 
-def test_select_for_prompt_hook_no_intent(tmp_path: Path):
+def test_select_for_prompt_hook_no_context(tmp_path: Path):
     policy = SkillLoadingPolicy()
     result = policy.select_for_prompt_hook(
         cwd=tmp_path,
-        intent="",
         overlay_skill_metadata={},
         loaded_skills=set(),
     )
+    assert result.skills == []
     assert result.lifecycle_skill == ""
 
 
@@ -394,18 +336,21 @@ def test_companion_skills_required_when_overlay_active(tmp_path: Path):
 
 
 def test_companion_skills_required_when_remote_matches_overlay(tmp_path: Path, monkeypatch):
-    # Overlay-repo intent (the cwd's remote matches the overlay's patterns) →
-    # the overlay skill AND its companion skills are required.
+    # Overlay-repo agent launch (the cwd's remote matches the overlay's patterns,
+    # with a lifecycle from ticket status) → the overlay skill AND its companion
+    # skills are required even though the overlay is not session-active.
     monkeypatch.setattr(
         "teatree.skill_support.loading._matches_any_remote",
         lambda _cwd, _patterns: True,
     )
     policy = SkillLoadingPolicy()
-    result = policy.select_for_prompt_hook(
+    result = policy.select_for_agent_launch(
         cwd=tmp_path,
-        intent="code",
         overlay_skill_metadata=_OVERLAY_META,
-        loaded_skills=set(),
+        ticket_status="started",
+        explicit_phase="",
+        explicit_skills=[],
+        overlay_active=False,
         companion_skills=_COMPANIONS,
     )
     assert "t3:acme" in result.skills
@@ -414,7 +359,7 @@ def test_companion_skills_required_when_remote_matches_overlay(tmp_path: Path, m
 
 
 def test_companion_skills_not_required_for_core_only_work(tmp_path: Path, monkeypatch):
-    # Teatree-core-only intent: overlay NOT active and the cwd's remote does NOT
+    # Teatree-core-only work: overlay NOT active and the cwd's remote does NOT
     # match the overlay's patterns. The overlay companion skills must NOT be
     # required — they are scoped to overlay work, not core work.
     monkeypatch.setattr(
@@ -422,17 +367,19 @@ def test_companion_skills_not_required_for_core_only_work(tmp_path: Path, monkey
         lambda _cwd, _patterns: False,
     )
     policy = SkillLoadingPolicy()
-    result = policy.select_for_prompt_hook(
+    result = policy.select_for_agent_launch(
         cwd=tmp_path,
-        intent="code",
         overlay_skill_metadata=_OVERLAY_META,
-        loaded_skills=set(),
+        ticket_status="started",
+        explicit_phase="",
+        explicit_skills=[],
+        overlay_active=False,
         companion_skills=_COMPANIONS,
     )
     assert "t3:acme" not in result.skills
     assert "t3-acme-review" not in result.skills
     assert "acme-conventions" not in result.skills
-    # The framework/lifecycle skill is unaffected — core work still gets `code`.
+    # The lifecycle skill is unaffected — core work still gets `code`.
     assert "code" in result.skills
 
 
@@ -446,11 +393,13 @@ def test_framework_detection_independent_of_overlay_scope(tmp_path: Path, monkey
         lambda _cwd, _patterns: False,
     )
     policy = SkillLoadingPolicy()
-    result = policy.select_for_prompt_hook(
+    result = policy.select_for_agent_launch(
         cwd=tmp_path,
-        intent="code",
         overlay_skill_metadata=_OVERLAY_META,
-        loaded_skills=set(),
+        ticket_status="started",
+        explicit_phase="",
+        explicit_skills=[],
+        overlay_active=False,
         companion_skills=_COMPANIONS,
     )
     assert "ac-django" in result.skills

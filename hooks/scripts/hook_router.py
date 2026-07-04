@@ -448,9 +448,9 @@ def _is_teatree_skill(name: str) -> bool:
 
 
 def _bare_skill_segment(name: str) -> str:
-    """The trigger index's key form: the bare segment after a namespace prefix.
+    """The skill index's key form: the bare segment after a namespace prefix.
 
-    ``build_trigger_index`` keys every entry (and its ``requires:`` members)
+    ``build_requires_index`` keys every entry (and its ``requires:`` members)
     by the bare skill-directory name, so a qualified Skill-tool token like
     ``t3:dogfooding-teatree`` must be mapped DOWN to ``dogfooding-teatree`` to match
     an index entry and resolve its ``requires:`` closure.
@@ -548,7 +548,7 @@ def _build_skill_loader_input(prompt: str, session_id: str) -> dict:
 
 
 def handle_user_prompt_submit(data: dict) -> None:
-    """Detect intent and suggest skills via skill_loader.suggest_skills()."""
+    """Suggest cwd/overlay-context skills — never a free-text scan of the prompt."""
     session_id = data.get("session_id", "")
     prompt = data.get("prompt", "")
     if not session_id or not prompt:
@@ -1355,10 +1355,11 @@ def handle_enforce_skill_loading(data: dict) -> bool:
 # sub-agent starts BLANK: it holds only its task prompt and lacks the
 # ``Skill`` tool, so what the PARENT session loaded does NOT transfer to it.
 # The gate is therefore satisfied by the DISPATCH PROMPT instructing the
-# sub-agent to load the skill — not by the parent's loaded set. The whole
-# demand computation + never-lockout fail-open lives in the
-# ``subagent_skill_gate`` sibling behind ``unreferenced_demand_reason`` (over
-# ``required_skills_for_task`` / ``filter_unreferenced`` /
+# sub-agent to load the skill — not by the parent's loaded set. The demand is
+# the parent's ``<session>.pending`` set (the explicit cwd/overlay-context
+# skills the UserPromptSubmit hook recorded); the demand computation +
+# never-lockout fail-open lives in the ``subagent_skill_gate`` sibling behind
+# ``unreferenced_demand_reason`` (over ``filter_unreferenced`` /
 # ``build_load_first_reason``); the router only calls that one entry point.
 #
 # The ``TaskCreated`` event DOES fire for the fan-out vehicle (verified
@@ -1446,7 +1447,6 @@ def handle_enforce_skill_loading_on_task_create(data: dict) -> bool:
     search_dirs = _skill_search_dirs()
     reason = unreferenced_demand_reason(
         prompt=prompt,
-        description=description,
         pending=_read_lines(_state_file(session_id, "pending")),
         search_dirs=search_dirs,
         resolves=lambda s: _skill_resolves(s, search_dirs),
@@ -3405,11 +3405,11 @@ def _resolve_skill_closure(skills: list[str]) -> list[str]:
             sys.path.insert(0, extra)
             added.append(extra)
     try:
-        from lib.skill_loader import build_trigger_index  # noqa: PLC0415
+        from lib.skill_loader import build_requires_index  # noqa: PLC0415
 
         from teatree.skill_support.deps import resolve_requires  # noqa: PLC0415
 
-        index = build_trigger_index(_skill_search_dirs())
+        index = build_requires_index(_skill_search_dirs())
         return resolve_requires(skills, index)
     except Exception:  # noqa: BLE001
         return list(skills)

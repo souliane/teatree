@@ -5,21 +5,6 @@ compatibility: macOS/Linux, git, gh CLI, `t3` installed (teatree).
 requires:
   - workspace
   - rules
-triggers:
-  priority: 95
-  keywords:
-    - '\bsalvage or delete\b'
-    - '\b(stale|lost|abandoned|orphaned) (work ?trees?|branch(es)?|stash(es)?)\b'
-    - '\bcleanup[ -]sweep\b'
-    - '\bsweep (the |over the )?(stale|lost|abandoned|orphaned)\b'
-    - '\bworkspace emit\b'
-search_hints:
-  - cleanup sweep
-  - salvage or delete
-  - stale worktree
-  - lost worktree
-  - abandoned branch
-  - triage workspace emit
 metadata:
   version: 0.0.1
   subagent_safe: false
