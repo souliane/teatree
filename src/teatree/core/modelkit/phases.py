@@ -86,6 +86,7 @@ SUBAGENT_BY_PHASE: dict[tuple[str, str], str] = {
     ("author", "testing"): "t3:tester",
     ("author", "reviewing"): "t3:reviewer",
     ("author", "shipping"): "t3:shipper",
+    ("author", "requesting_review"): "t3:review-request",
     ("author", "answering"): "t3:answerer",
     ("author", "scanning_news"): "t3:scanning-news",
     ("author", "e2e"): "t3:e2e",

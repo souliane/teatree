@@ -153,6 +153,27 @@ class TestBuildSystemContext(TestCase):
         assert "PHASE: reviewing" in ctx
         assert "code review" in ctx
 
+    def test_reviewing_brief_carries_verification_rigor_block(self) -> None:
+        # PR-12: a verification brief must demand the dimensions-checked verdict
+        # and a proof-of-concept read first, so review never rubber-stamps.
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="reviewing")
+
+        ctx = build_system_context(task, skills=[])
+        assert "VERIFICATION RIGOR" in ctx
+        assert "reproduce" in ctx
+        assert "robustness" in ctx
+
+    def test_coding_brief_carries_heartbeat_dm_block(self) -> None:
+        # PR-12: a long-running maker brief auto-injects the heartbeat-DM cue.
+        ticket = Ticket.objects.create()
+        session = Session.objects.create(ticket=ticket)
+        task = Task.objects.create(ticket=ticket, session=session, phase="coding")
+
+        ctx = build_system_context(task, skills=["code"], lifecycle_skill="code")
+        assert "HEARTBEAT" in ctx
+
     def test_planning_phase_injects_persisted_intake_survey(self) -> None:
         # #2541: the planner CONSUMES the survey the intake FSM step persisted —
         # it appears in the planning context, so the planner does not re-derive it.
@@ -544,6 +565,44 @@ class TestCodingPhaseDispatchContract(TestCase):
         prompt = build_task_prompt(task)
         assert "BEHAVIOR PRESERVATION" not in prompt
         assert "REQUIRED: before writing code" not in prompt
+
+    def test_coding_prompt_has_no_head_state_block_without_a_worktree(self) -> None:
+        # Byte-identical to pre-PR-12 when the ticket has no materialised branch.
+        prompt = build_task_prompt(self._coding_task())
+        assert "DISPATCH PREFLIGHT" not in prompt
+
+
+class TestCodingPhaseHeadStateInjection(TestCase):
+    """PR-12: a maker brief carries the worktree HEAD state so it builds on it."""
+
+    def _coding_task_with_commit(self, tmp: Path) -> Task:
+        from teatree.core.models import Worktree  # noqa: PLC0415
+        from tests._git_repo import make_git_repo, run_git  # noqa: PLC0415
+
+        make_git_repo(tmp, default_branch="feat-x")
+        (tmp / "f.txt").write_text("x\n")
+        run_git(tmp, "add", "f.txt")
+        run_git(tmp, "commit", "-q", "-m", "feat: prior partial work")
+        ticket = Ticket.objects.create()
+        Worktree.objects.create(ticket=ticket, repo_path=str(tmp), branch="feat-x", extra={"worktree_path": str(tmp)})
+        session = Session.objects.create(ticket=ticket)
+        return Task.objects.create(ticket=ticket, session=session, phase="coding")
+
+    def test_task_prompt_injects_head_state_block(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            prompt = build_task_prompt(self._coding_task_with_commit(Path(tmp)))
+        assert "DISPATCH PREFLIGHT" in prompt
+        assert "feat: prior partial work" in prompt
+
+    def test_system_context_injects_head_state_block(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            ctx = build_system_context(
+                self._coding_task_with_commit(Path(tmp)),
+                skills=["code", "rules"],
+                lifecycle_skill="code",
+            )
+        assert "DISPATCH PREFLIGHT" in ctx
+        assert "feat: prior partial work" in ctx
 
     def test_system_context_coding_phase_embeds_directive(self) -> None:
         ticket = Ticket.objects.create()

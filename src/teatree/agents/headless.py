@@ -46,6 +46,7 @@ from teatree.agents.result_schema import RESULT_JSON_SCHEMA
 from teatree.agents.skill_bundle import resolve_skill_bundle
 from teatree.config import AgentHarness, AgentHarnessProvider, get_effective_settings
 from teatree.core.models import Task, TaskAttempt
+from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.credential_config import resolve_api_key_credential, resolve_subscription_credential
 from teatree.llm.anthropic_limits import LimitMatch, classify_limit, classify_rate_limit_type
 from teatree.llm.credentials import CredentialError
@@ -232,7 +233,11 @@ def run_headless(
         return backend
     harness = backend
 
-    skills = resolve_skill_bundle(phase=phase, overlay_skill_metadata=overlay_skill_metadata)
+    skills = resolve_skill_bundle(
+        phase=phase,
+        overlay_skill_metadata=overlay_skill_metadata,
+        worktree_path=dispatch_worktree_path(task.ticket),
+    )
 
     provider = get_effective_settings().agent_harness_provider
     child_env_result = _resolve_child_env_or_failure(task, harness, provider)

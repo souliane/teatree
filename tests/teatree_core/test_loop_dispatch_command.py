@@ -57,6 +57,15 @@ class TestPendingSpawn(_LoopDispatchTest):
         assert payload[0]["task_id"] == task.pk
         assert payload[0]["subagent"] == "t3:coder"
 
+    def test_spawn_payload_carries_type_prefixed_display_name(self) -> None:
+        # PR-12: every spawn is named t3-<type>-<id> so the Agent tool call is
+        # attributable, never an anonymous general-purpose spawn.
+        task = self._author_task()
+        stdout = StringIO()
+        call_command("loop_dispatch", "pending-spawn", "--json", stdout=stdout)
+        entry = json.loads(stdout.getvalue())[0]
+        assert entry["display_name"] == f"t3-coder-{task.pk}"
+
     def test_skips_claimed_tasks(self) -> None:
         task = self._reviewer_task()
         task.claim(claimed_by="loop-slot")
@@ -112,7 +121,16 @@ class TestPendingSpawn(_LoopDispatchTest):
         cfg = Path(tempfile.mkdtemp()) / ".teatree.toml"
         cfg.write_text('[agent.skill_models]\ncode-review = "custom-strong-model"\n', encoding="utf-8")
 
-        self._reviewer_task()
+        # Empty overlay so the ticket-scoped overlay resolver (PR-12) falls back
+        # to the ambient (T3_OVERLAY_NAME) overlay; a synthetic unregistered
+        # overlay would fail resolution and empty the bundle before the patched
+        # resolve_skill_bundle runs, defeating the model-floor assertion.
+        ticket = Ticket.objects.create(
+            issue_url="https://example.com/pr/1",
+            role=Ticket.Role.REVIEWER,
+            extra={"reviewed_sha": "x"},
+        )
+        schedule_external_review(ticket)
         stdout = StringIO()
         with (
             patch("teatree.agents.model_tiering.CONFIG_PATH", cfg),
