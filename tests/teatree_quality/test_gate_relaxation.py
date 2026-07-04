@@ -6,7 +6,7 @@ the anti-vacuity: the must-not-flag half proves the matcher is not a
 block-everything, the must-flag half proves it is not a phantom gate.
 """
 
-from teatree.quality.gate_relaxation import BLOCK, WARN, RelaxationFinding, scan_relaxation
+from teatree.quality.gate_relaxation import BLOCK, WARN, RelaxationFinding, parse_diff, scan_relaxation
 
 
 def _diff(path: str, added: list[str], removed: list[str] | None = None) -> str:
@@ -57,6 +57,12 @@ class TestNoqaSuppression:
 
     def test_noqa_in_non_python_file_ignored(self) -> None:
         findings = scan_relaxation(_diff("docs/x.md", ["A new `# noqa` annotation is discouraged."]))
+        assert findings == []
+
+    def test_regular_trailing_comment_does_not_block(self) -> None:
+        # Code before a non-`noqa` trailing comment: real code precedes the `#`
+        # but the marker isn't a suppression, so the noqa matcher skips the line.
+        findings = scan_relaxation(_diff("src/teatree/m.py", ["    x = compute()  # keep the intermediate value"]))
         assert findings == []
 
 
@@ -149,6 +155,12 @@ class TestTestVacuityWarn:
         )
         assert findings == []
 
+    def test_test_file_diff_without_test_def_yields_nothing(self) -> None:
+        # A test-file diff that adds no `def test_` (a helper edit) is not a
+        # vacuity candidate — the heuristic only fires on an added test function.
+        findings = scan_relaxation(_diff("tests/test_x.py", ["    helper = build_fixture()"]))
+        assert findings == []
+
 
 class TestVacuousOnEmpty:
     def test_empty_diff_yields_nothing(self) -> None:
@@ -156,3 +168,28 @@ class TestVacuousOnEmpty:
 
     def test_pure_context_diff_yields_nothing(self) -> None:
         assert scan_relaxation(_diff("src/teatree/m.py", [], removed=[])) == []
+
+
+class TestParseDiff:
+    def test_body_line_before_any_file_header_is_dropped(self) -> None:
+        # A `+`/`-` body line preceding the first `+++ b/` header has no owning
+        # file — it must be dropped, not attributed to the next file's block.
+        diff = "+orphan body line with no preceding file header\n" + _diff("src/teatree/m.py", ["    x = 1"])
+        result = parse_diff(diff)
+        assert [fd.path for fd in result] == ["src/teatree/m.py"]
+        assert result[0].added == ["    x = 1"]
+
+    def test_removed_line_followed_by_context_line(self) -> None:
+        # A context (unchanged) line — leading space, neither `+` nor `-` — is
+        # collected into neither the added nor the removed set.
+        diff = (
+            "diff --git a/src/teatree/m.py b/src/teatree/m.py\n"
+            "--- a/src/teatree/m.py\n"
+            "+++ b/src/teatree/m.py\n"
+            "@@ -1,2 +1,1 @@\n"
+            "-old = 1\n"
+            " kept = 2\n"
+        )
+        result = parse_diff(diff)
+        assert result[0].removed == ["old = 1"]
+        assert result[0].added == []
