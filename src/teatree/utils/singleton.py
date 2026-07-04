@@ -75,6 +75,32 @@ def read_pid(pid_path: Path) -> int | None:
     return pid
 
 
+def flock_is_held(name: str, *, pid_path: Path | None = None) -> bool:
+    """Whether a live process holds the ``name`` singleton flock, right now.
+
+    A non-blocking ``flock`` probe against the KERNEL lock state — not the recorded
+    pid — so a recycled/stale pid can never make a dead holder look alive (the TOCTOU
+    hazard a ``read_pid`` liveness probe has: an unrelated live process that reused a
+    crashed worker's pid would suppress resurrection indefinitely). Opens the lock
+    file and tries a non-blocking ``LOCK_EX``: acquiring means no holder (the lock is
+    released again immediately), ``BlockingIOError`` means a live holder. The file is
+    never unlinked (the same reuse-in-place contract as :func:`singleton`).
+    """
+    path = pid_path or default_pid_path(name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    finally:
+        with contextlib.suppress(OSError):
+            os.close(fd)
+
+
 def _recorded_pid(path: Path) -> int:
     try:
         raw = path.read_text(encoding="utf-8").strip()

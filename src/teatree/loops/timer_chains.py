@@ -14,11 +14,14 @@ Step 1 — self-dedup: a second pending ``loop_timer`` for the same loop already
 carries the chain, so this one stops without chaining (collapses duplicates to one
 — the "exactly one pending timer per loop" invariant self-heals).
 
-Step 2 — successor-first re-enqueue: schedule the next timer at a conservative
-``run_after`` BEFORE running the tick, so a crash during the tick leaves a queued
-successor (crash-safe). ``run_after`` rules: a due/overdue interval loop or a
-never-run chain head fires now; a future interval/daily slot fires at that slot; a
-cadence-less (every-tick) loop polls on a 60 s floor.
+Step 2 — successor-first re-enqueue: schedule the next timer BEFORE running the
+tick, so a crash during the tick leaves a queued successor (crash-safe). The
+``run_after`` is floored at ``now + IDLE_POLL_FLOOR_SECONDS``: an already-due
+successor scheduled at ``now`` is immediately READY, so a second ``loops`` executor
+claims it and spawns a duplicate tick subprocess while this one is still in flight —
+the floor holds the successor back until this tick has moved the anchor. A future
+interval/daily slot beyond the floor still fires at that slot; step 5 refines the
+successor to the precise next slot once the tick's CAS moves the anchor.
 
 Step 3 — admission check: the unified enabled+due+reachable verdict
 (:func:`teatree.loops.loop_table.admitted_loop_names`). A held/disabled/not-due loop
@@ -31,7 +34,11 @@ occupies one executor slot for at most the deadline and every other loop keeps f
 
 Step 5 — post-tick refinement: after the tick's CAS bumps ``Loop.last_run_at``, the
 successor's ``run_after`` is recomputed from the fresh anchor and pushed out to the
-precise next slot.
+precise next slot. When the anchor did NOT move (a faulted tick — a crash before the
+CAS, a connector outage, a lost lease), a still-"due" loop would recompute to ``now``
+and re-spawn a full Django subprocess every few seconds, unbounded, for the fault's
+duration; instead the successor is floored to the idle poll, so a fault costs one
+poll per floor interval, never a subprocess hot-refire storm.
 
 Idempotency is inherited: at-least-once delivery from django-tasks means a
 ``loop_timer`` can fire twice; the per-loop tick's ``mark_run_if_unchanged`` CAS
@@ -44,6 +51,7 @@ import logging
 import os
 import signal
 import sys
+import threading
 from typing import TYPE_CHECKING, TypedDict
 
 from django.tasks import task
@@ -164,11 +172,13 @@ def compute_successor_run_after(row: "Loop", now: dt.datetime) -> dt.datetime:
 
 
 def _idle_successor_run_after(row: "Loop", now: dt.datetime) -> dt.datetime:
-    """A skipped loop's successor — the cadence, floored so an idle chain polls sanely.
+    """The successor cadence floored at ``now + IDLE_POLL_FLOOR_SECONDS``.
 
-    A not-yet-due loop keeps its future slot; a held/disabled-but-otherwise-due
-    loop (whose cadence anchor did NOT move because the tick was skipped) is floored
-    to ``now + 60 s`` so it polls rather than re-firing immediately.
+    A not-yet-due loop keeps its future slot; any already-due successor (a skipped
+    held/disabled loop, the crash-safety successor of step 2, or a faulted tick whose
+    anchor did NOT move in step 5) is floored so the chain polls rather than
+    re-firing immediately — the single guard against an unbounded subprocess
+    hot-refire when a loop stays "due".
     """
     return max(compute_successor_run_after(row, now), now + dt.timedelta(seconds=IDLE_POLL_FLOOR_SECONDS))
 
@@ -195,33 +205,97 @@ def _tick_argv(name: str) -> list[str]:
     return [sys.executable, "-m", "teatree", "loops_tick", "--loop", name]
 
 
+#: The process-group ids of every tick subprocess currently in flight, so the
+#: worker's shutdown can SIGKILL any the executor-join timeout left orphaned. Keyed
+#: by pgid (a session leader's pgid == its own pid). The tick runs in an executor
+#: thread while the shutdown runs in the supervisor thread, so the set is lock-guarded.
+_LIVE_TICK_PGIDS: set[int] = set()
+_LIVE_TICK_LOCK = threading.Lock()
+
+
+def _register_tick_pgid(pgid: int) -> None:
+    with _LIVE_TICK_LOCK:
+        _LIVE_TICK_PGIDS.add(pgid)
+
+
+def _unregister_tick_pgid(pgid: int) -> None:
+    with _LIVE_TICK_LOCK:
+        _LIVE_TICK_PGIDS.discard(pgid)
+
+
+def kill_live_tick_process_groups() -> list[int]:
+    """SIGKILL every in-flight tick process group; return the pgids signalled.
+
+    The worker's shutdown daemon-joins its executors with a short timeout but that
+    join does not reach a tick subprocess: a kill-switch flip or a SIGTERM mid-tick
+    tears down the executor thread that owned the deadline, orphaning the tick with
+    no deadline owner (a no-zombie violation). This is called AFTER the join timeout
+    so any still-running tick group is killed rather than left orphaned.
+    """
+    with _LIVE_TICK_LOCK:
+        pgids = list(_LIVE_TICK_PGIDS)
+    for pgid in pgids:
+        _killpg(pgid)
+        _unregister_tick_pgid(pgid)
+    return pgids
+
+
 def run_deadlined_tick(name: str, *, deadline: float) -> TickOutcome:
     """Run one per-loop tick as a deadlined subprocess in its OWN process group.
 
     ``python -m teatree loops_tick --loop <name>`` is spawned with
     ``start_new_session=True`` so it leads a fresh process group; on deadline expiry
     the WHOLE group is ``SIGKILL``-ed (the tick plus any grandchildren it spawned),
-    so a hung tick can never outlive its deadline or strand children. Standard over
-    clever: a subprocess via ``python -m teatree`` isolates a crash/hang from the
-    worker executor thread and gives an OS-level kill boundary an in-process
-    ``call_command`` cannot.
+    so a hung tick can never outlive its deadline or strand children. The group is
+    registered while it runs so the worker's shutdown can kill it too (see
+    :func:`kill_live_tick_process_groups`). Standard over clever: a subprocess via
+    ``python -m teatree`` isolates a crash/hang from the worker executor thread and
+    gives an OS-level kill boundary an in-process ``call_command`` cannot.
     """
     proc = spawn_session_leader(_tick_argv(name))
+    pgid = _tick_pgid(proc)
+    if pgid is not None:
+        _register_tick_pgid(pgid)
     try:
         returncode = proc.wait(timeout=deadline)
     except TimeoutExpired:
         _kill_process_group(proc)
         logger.warning("loop_timer %r tick exceeded its %.0fs deadline — killed the process group", name, deadline)
         return {"timed_out": True, "returncode": None}
+    finally:
+        if pgid is not None:
+            _unregister_tick_pgid(pgid)
     return {"timed_out": False, "returncode": returncode}
 
 
-def _kill_process_group(proc: Popen[str]) -> None:
-    """SIGKILL the subprocess's whole process group, tolerating an already-dead child."""
+def _tick_pgid(proc: Popen[str]) -> int | None:
+    """The tick subprocess's own process-group id, or ``None`` if it already exited."""
     try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        return os.getpgid(proc.pid)
     except ProcessLookupError:
+        return None
+
+
+def _killpg(pgid: int) -> None:
+    """SIGKILL a whole process group; best-effort, never raise.
+
+    Tolerates a group that is already gone (``ProcessLookupError``) and one whose
+    leader's pid was recycled to a foreign-owned process (``PermissionError`` / EPERM)
+    — in the shutdown sweep such a pgid is no longer our tick, and a single un-killable
+    group must not abort killing the others.
+    """
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
         return
+
+
+def _kill_process_group(proc: Popen[str]) -> None:
+    """SIGKILL the subprocess's whole process group and reap it, tolerating a dead child."""
+    pgid = _tick_pgid(proc)
+    if pgid is None:
+        return
+    _killpg(pgid)
     try:
         proc.wait(timeout=10)
     except TimeoutExpired:
@@ -250,8 +324,10 @@ def loop_timer(name: str) -> TimerResult:
         # The loop was deleted; do not re-chain (the reconciler prunes stragglers).
         return {"loop": name, "action": "unknown"}
 
-    # (2) successor-first re-enqueue — crash-safe, BEFORE any tick work.
-    enqueue_loop_timer(name, run_after=compute_successor_run_after(row, now))
+    # (2) successor-first re-enqueue — crash-safe, BEFORE any tick work. Floored so an
+    # already-due successor at ``now`` cannot be claimed by a second executor and run
+    # a duplicate tick subprocess while this tick is still in flight.
+    enqueue_loop_timer(name, run_after=_idle_successor_run_after(row, now))
 
     # (3) admission — a held/disabled/not-due loop is a free no-op.
     if not loop_admitted(name, now):
@@ -261,10 +337,15 @@ def loop_timer(name: str) -> TimerResult:
     # (4) deadlined subprocess tick in its own process group.
     outcome = run_deadlined_tick(name, deadline=compute_tick_deadline(row))
 
-    # (5) post-tick refinement from the fresh CAS anchor.
+    # (5) post-tick refinement. A faulted tick (crash before the CAS, connector
+    # outage, lost lease) leaves the anchor unmoved, so the loop is still "due" and
+    # ``compute_successor_run_after`` would return ``now`` — an unbounded subprocess
+    # hot-refire. Fall back to the idle floor when the anchor did NOT advance.
     fresh = Loop.objects.filter(name=name).first()
     if fresh is not None:
-        refine_successor(name, run_after=compute_successor_run_after(fresh, timezone.now()))
+        anchor_advanced = fresh.last_run_at != row.last_run_at
+        successor = compute_successor_run_after if anchor_advanced else _idle_successor_run_after
+        refine_successor(name, run_after=successor(fresh, timezone.now()))
 
     return {
         "loop": name,
