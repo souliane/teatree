@@ -29,7 +29,40 @@ def _report_mcp_connectivity() -> bool:
     return outcome.ok
 
 
-def recover_account_switch() -> None:
+def _report_reconnect_lines(*, open_links: bool) -> None:
+    """Print one ``RECONNECT <name> -> <target>`` line per declared down connector (PR-19).
+
+    After a switch leaves connectors unreachable, the manifest check names each
+    declared-but-down claude.ai connector; recovery surfaces the exact reconnect
+    target per connector so the operator (or agent) has a click-through path,
+    not just a generic "re-auth in the UI". ``--open`` best-effort opens each URL
+    (fail-open). A degraded probe (``claude`` absent) is silent here — the #2282
+    check above already WARNed.
+    """
+    from teatree.cli.mcp import open_reconnect_targets  # noqa: PLC0415 — deferred: only the unreachable path needs it
+    from teatree.core.connector_manifest import (  # noqa: PLC0415 — deferred post-bootstrap: walks overlays + probes MCP
+        check_connector_manifest,
+    )
+
+    outcome = check_connector_manifest()
+    if not outcome.down:
+        return
+    for line in outcome.reconnect_lines():
+        typer.echo(f"  {line}")
+    if open_links:
+        urls = [d.requirement.reconnect_url for d in outcome.down if not d.requirement.instruction]
+        opened = open_reconnect_targets(urls)
+        typer.echo(f"  Opened {opened} reconnect URL(s) in a browser.")
+
+
+def recover_account_switch(
+    *,
+    open_links: bool = typer.Option(
+        False,
+        "--open",
+        help="Best-effort open each connector reconnect URL in a browser (fail-open).",
+    ),
+) -> None:
     """Detect a Claude account switch, invalidate the backend cache, re-probe connectors."""
     ensure_django()
     from teatree.core.account_switch import detect_and_recover_account_switch  # noqa: PLC0415
@@ -59,6 +92,7 @@ def recover_account_switch() -> None:
         "One or more connectors are unreachable. Re-auth the MCP connector(s) in the "
         "Claude.ai UI (and reconnect the Claude-in-Chrome extension per /t3:e2e), then re-run.",
     )
+    _report_reconnect_lines(open_links=open_links)
     raise typer.Exit(code=1)
 
 

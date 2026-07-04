@@ -13,6 +13,34 @@ from teatree.types import RawAPIDict
 
 OAUTH_SCOPES_HEADER = "X-OAuth-Scopes"
 
+# Static Slack-method → required-OAuth-scope map for the token-scope cache
+# (souliane/teatree#2566, PR-19). Only the loop's write methods are listed: the
+# scope a ``missing_scope`` maps to must be knowable BEFORE the call so a
+# known-missing pair short-circuits pre-HTTP. Each value is the exact scope Slack
+# reports in ``needed`` for that method, so the pre-call key and the observed
+# failure key coincide. A method absent from this map is unguarded (its scope is
+# ambiguous — e.g. ``conversations.history`` varies by channel type).
+SLACK_METHOD_SCOPES: dict[str, str] = {
+    "reactions.add": "reactions:write",
+    "reactions.remove": "reactions:write",
+    "chat.postMessage": "chat:write",
+}
+
+
+def slack_scope_failure(body: RawAPIDict) -> str | None:
+    """Return the missing scope when *body* is a Slack ``missing_scope`` error, else ``None``.
+
+    Slack answers a scope-denied call with ``{"ok": false, "error":
+    "missing_scope", "needed": "<scope>"}``. The token-scope cache's ``detect``
+    hook: a non-``None`` return marks the call as a scope failure and carries the
+    scope Slack named (falling back to the literal ``missing_scope`` marker when
+    the ``needed`` field is absent).
+    """
+    if body.get("error") != "missing_scope":
+        return None
+    needed = body.get("needed")
+    return needed if isinstance(needed, str) and needed else "missing_scope"
+
 
 def parse_oauth_scopes(header: str) -> frozenset[str]:
     """Parse a comma-separated ``X-OAuth-Scopes`` header into a clean scope set."""
@@ -32,6 +60,8 @@ def attach_granted_scopes(body: RawAPIDict, header_value: str) -> RawAPIDict:
 __all__ = [
     "GRANTED_SCOPES_KEY",
     "OAUTH_SCOPES_HEADER",
+    "SLACK_METHOD_SCOPES",
     "attach_granted_scopes",
     "parse_oauth_scopes",
+    "slack_scope_failure",
 ]

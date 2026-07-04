@@ -104,7 +104,17 @@ _TACH = _REPO_ROOT / "tach.toml"
 # `get_overlay_for_ticket` to a module-scope import removed one more function-scoped
 # intra-core edge. This reduction is independent of the PR-08 gate reduction above,
 # so the two stack in the merged tree.
-_FROZEN_INTRA_CORE_DEFERRED = 183
+# Rose 183->184 (PR-19 token-scope cache): `scope_cache._notify_user_deferred`
+# defers `from teatree.core.notify import notify_user`. It is load-bearing and
+# CANNOT become a module-top edge: `scope_cache` is consulted from the Django-free
+# Slack transport (`teatree.backends.slack.http.SlackHttpClient`), and
+# `teatree.core.notify` imports `teatree.core.models` at module scope — a top-level
+# import would force Django/AppRegistry on every importer of the transport (and on
+# the hooks that import it before `ensure_django`). The banner only fires at RUNTIME
+# on a real scope failure, well after bootstrap, so the deferral keeps the import
+# graph clean — the same AppRegistry-safe deferral the management-command siblings
+# above use. One deferral, banked here; not a new severable edge.
+_FROZEN_INTRA_CORE_DEFERRED = 184
 
 
 def _function_scoped_intra_core_imports(source: Path) -> int:

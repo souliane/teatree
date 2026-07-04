@@ -230,6 +230,41 @@ def _check_mcp_connectivity() -> bool:
     return False
 
 
+def _check_connector_manifest() -> bool:
+    """Verify every overlay-declared claude.ai connector is connected (PR-19).
+
+    Reads each registered overlay's connector manifest and live-probes each
+    declared connector. A REQUIRED connector that is down is a hard FAIL with
+    mode-correct guidance — first-install (add it in claude.ai Settings →
+    Connectors) vs post-account-switch (reconnect it) — followed by the
+    ``RECONNECT`` lines. An OPTIONAL down connector is a WARN. A probe that
+    cannot run degrades to a WARN. Crash-proof: any error degrades to a WARN so a
+    doctor run never aborts on this check.
+    """
+    try:
+        from teatree.core.connector_manifest import (  # noqa: PLC0415 — deferred post-bootstrap: walks overlays + probes MCP
+            check_connector_manifest,
+        )
+
+        outcome = check_connector_manifest()
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  Connector-manifest check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    if outcome.degraded:
+        for finding in outcome.probe_findings:
+            typer.echo(f"WARN  {finding}")
+        return True
+    for finding in outcome.optional_findings:
+        typer.echo(f"WARN  {finding}")
+    if outcome.ok:
+        return True
+    for finding in outcome.required_findings:
+        typer.echo(f"FAIL  {finding}")
+    for line in outcome.reconnect_lines():
+        typer.echo(f"      {line}")
+    return False
+
+
 def _check_teatree_mcp_registration() -> bool:
     """Verify teatree's own structured-search MCP server is wired (#2863).
 
