@@ -4497,6 +4497,8 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ daily           Daily followup — sync MRs, check gates, remind reviewers.    │
 │ safe-kill       Signal a pid only if it maps to a dead target AND is         │
 │                 confirmed non-live (#2225).                                  │
+│ do              Walk a ticket through the lifecycle via each phase's         │
+│                 existing gate (PR-31).                                       │
 │ agent           Launch Claude Code with overlay context and auto-detected    │
 │                 skills.                                                      │
 │ skill-preamble  Emit the inline SKILL.md preamble a raw Agent-tool sub-agent │
@@ -4613,6 +4615,14 @@ Usage: t3 teatree safe-kill [OPTIONS]
 
  Signal a pid only if it maps to a dead target AND is confirmed non-live
  (#2225).
+```
+
+#### `t3 teatree do`
+
+```
+Usage: t3 teatree do [OPTIONS]
+
+ Walk a ticket through the lifecycle via each phase's existing gate (PR-31).
 ```
 
 #### `t3 teatree agent`

@@ -50,6 +50,10 @@ Print cycle-to-date SDK-equivalent spend vs the monthly credit.
 | `restore-ci` | Restore the worktree database from the latest CI dump |
 | `reset-passwords` | Reset all user passwords to a known dev value |
 
+## `do`
+
+Walk a ticket through the lifecycle, each phase's existing gate enforced.
+
 ## `dogfood`
 
 Dogfood overlay smokes — exercise CLI paths so bugs surface in the loop, not in E2E.

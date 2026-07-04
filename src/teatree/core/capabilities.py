@@ -67,6 +67,12 @@ CAPABILITIES: tuple[Capability, ...] = (
         exit_codes=("0",),
         note="always JSON: the machine-readable clean-all handoff",
     ),
+    Capability(
+        "teatree do",
+        json_output=True,
+        exit_codes=("0", "1"),
+        note="golden-path lifecycle walk: 0 = progress/pending/done, 1 = a gate blocked or ignored",
+    ),
     # Pre-existing JSON commands (already machine-drivable before PR-30).
     Capability("teatree checking show", json_output=True, exit_codes=("0",)),
     Capability("teatree env show", json_output=True, exit_codes=("0", "1"), note="--format json"),
