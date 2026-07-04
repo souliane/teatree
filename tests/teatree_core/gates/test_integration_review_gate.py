@@ -83,6 +83,17 @@ class TestGateFunction:
         with _gate(required=True):
             check_integration_review(t)  # no raise
 
+    def test_refusal_uses_real_record_evidence_flag(self, db) -> None:
+        # The remediation must hand a command the CLI accepts: `record-evidence`
+        # takes `--repos <a,b>` comma-separated (management/commands/review.py),
+        # NOT a repeated `--repo <r>` per repo.
+        t = _ticket(db, ["org/a", "org/b"])
+        with _gate(required=True), pytest.raises(IntegrationReviewError) as excinfo:
+            check_integration_review(t)
+        msg = str(excinfo.value)
+        assert "--repos org/a,org/b" in msg
+        assert "--repo org/a --repo org/b" not in msg
+
 
 class TestFsmWiring:
     def test_two_repo_ticket_cannot_deliver_without_review(self, db) -> None:

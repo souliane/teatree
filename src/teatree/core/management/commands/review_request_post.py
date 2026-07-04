@@ -30,6 +30,8 @@ from django_typer.management import TyperCommand, command
 
 from teatree.core.backend_factory import messaging_from_overlay
 from teatree.core.gates.review_request_guard import canonical_mr_url, resolve_guard_target, should_post_review_request
+from teatree.core.gates.review_request_state_gate import check_reviewed_state, reviewed_state_required
+from teatree.core.models import Ticket
 from teatree.core.on_behalf_gate_recorded import (
     OnBehalfPostBlockedError,
     on_behalf_block_message,
@@ -253,7 +255,6 @@ class Command(TyperCommand):
             anti_vacuity_required,
             check_anti_vacuity_attestation,
         )
-        from teatree.core.models import Ticket  # noqa: PLC0415
 
         if not anti_vacuity_required():
             return ""
@@ -283,12 +284,6 @@ class Command(TyperCommand):
         ticket's FSM state and its review-evidence artifact); a missing or
         unknown ticket is itself a block with actionable steering.
         """
-        from teatree.core.gates.review_request_state_gate import (  # noqa: PLC0415
-            check_reviewed_state,
-            reviewed_state_required,
-        )
-        from teatree.core.models import Ticket  # noqa: PLC0415
-
         if not reviewed_state_required():
             return ""
         if not ticket_id.strip():

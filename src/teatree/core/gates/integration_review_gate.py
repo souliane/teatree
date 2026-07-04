@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING
 
 from teatree.config import get_effective_settings
 from teatree.core.modelkit.gate_registry import register_gate
+from teatree.core.models import ReviewEvidence
 from teatree.core.models.errors import InvalidTransitionError
 
 if TYPE_CHECKING:
@@ -89,8 +90,6 @@ def check_integration_review(ticket: "Ticket") -> None:
         logger.info("Integration-review gate overridden for ticket %s: %s", ticket.pk, reason)
         return
 
-    from teatree.core.models import ReviewEvidence  # noqa: PLC0415
-
     if ReviewEvidence.objects.has_integration_review_covering(ticket, repos):
         return
     msg = (
@@ -99,7 +98,7 @@ def check_integration_review(ticket: "Ticket") -> None:
         f"recorded. Per-repo review does not cover the cross-repo seam. Record it with "
         f"`t3 <overlay> review record-evidence {ticket.pk} --kind integration_review --reviewer <id> "
         f"--verdict <pass|hold> --head-sha <full-40-char-sha> "
-        f"{' '.join(f'--repo {r}' for r in repos)}`. If genuinely exempt, record an override: "
+        f"--repos {','.join(repos)}`. If genuinely exempt, record an override: "
         f"`t3 <overlay> ticket integration-review-override {ticket.pk} --reason '<why>'`."
     )
     raise IntegrationReviewError(msg)

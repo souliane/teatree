@@ -34,6 +34,14 @@ class TestAboveThreshold:
         # Ints and their string forms match after normalization.
         assert check_bulk_close(items=[1, 2, 3, 4], confirmed_tokens=[" 1 ", "2", "3", "4"], threshold=3) == ""
 
+    def test_refusal_uses_real_confirm_flag(self) -> None:
+        # The remediation must hand a command the CLI accepts: `ticket bulk-close`
+        # takes `--confirm <a,b>` (management/commands/_close_commands.py), NOT a
+        # fabricated `--confirm-close <id>` flag.
+        refusal = check_bulk_close(items=[1, 2, 3, 4], confirmed_tokens=[], threshold=3)
+        assert "--confirm-close" not in refusal
+        assert "--confirm <" in refusal
+
 
 class TestThresholdResolution:
     def test_default_threshold_reads_setting(self) -> None:

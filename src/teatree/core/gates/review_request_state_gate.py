@@ -22,14 +22,22 @@ requesting review unchanged. The gate is a pure function over durable state; on
 a block it returns a non-empty refusal string (the review-request post command
 surfaces it as a non-zero exit), mirroring
 :mod:`teatree.core.gates.anti_vacuity_gate`.
+
+Caveat — the ``ReviewVerdict`` bridge only fires when the verdict is bound to
+*this* ticket. :func:`has_review_evidence` matches a ``ReviewVerdict`` via
+``filter(ticket=ticket)``, so a cold review satisfies the gate with no extra
+``record-evidence`` step **only if** its verdict was recorded with
+``review record … --ticket-id <ticket>``. A verdict recorded without
+``--ticket-id`` (e.g. the auto-review-dispatch contract in
+:func:`teatree.core.models.auto_review_dispatch.build_review_contract`, which
+anchors a reviewer ticket rather than the work ticket) leaves ``ticket`` unset,
+so it does NOT satisfy this gate — record a ``record-evidence --kind cold_review``
+for the work ticket, or bind the verdict with ``--ticket-id``.
 """
 
-from typing import TYPE_CHECKING
-
 from teatree.config import get_effective_settings
-
-if TYPE_CHECKING:
-    from teatree.core.models.ticket import Ticket
+from teatree.core.models import ReviewEvidence, ReviewVerdict
+from teatree.core.models.ticket import Ticket
 
 
 def reviewed_state_required() -> bool:
@@ -45,8 +53,6 @@ def has_review_evidence(ticket: "Ticket") -> bool:
     latter, so this bridge keeps the evidence recordable by that step without
     changing it.
     """
-    from teatree.core.models import ReviewEvidence, ReviewVerdict  # noqa: PLC0415
-
     if ReviewEvidence.objects.has_cold_review(ticket):
         return True
     return ReviewVerdict.objects.filter(ticket=ticket).exists()
@@ -61,8 +67,6 @@ def check_reviewed_state(ticket: "Ticket") -> str:
     """
     if not reviewed_state_required():
         return ""
-
-    from teatree.core.models.ticket import Ticket  # noqa: PLC0415
 
     if ticket.state != Ticket.State.REVIEWED:
         return (

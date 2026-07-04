@@ -68,6 +68,21 @@ class TicketBulkCloseTest(TestCase):
         with pytest.raises(SystemExit):
             call_command("ticket", "bulk-close")
 
+    def test_uncloseable_ticket_refused_cleanly_and_rolls_back(self) -> None:
+        # A ticket already in a terminal state (IGNORED) cannot transition to
+        # IGNORED again — the FSM raises TransitionNotAllowed. bulk-close must
+        # surface that as a clean refusal (not a traceback), and the atomic
+        # block must roll back so no sibling ticket in the batch is closed.
+        closeable = Ticket.objects.create(overlay="test", state=Ticket.State.CODED)
+        already_closed = Ticket.objects.create(overlay="test", state=Ticket.State.IGNORED)
+        ids = f"{closeable.pk},{already_closed.pk}"
+        with _threshold(5):
+            result = cast("dict[str, object]", call_command("ticket", "bulk-close", "--ids", ids))
+        assert result["refused"] is True
+        assert "cannot be closed" in cast("str", result["reason"])
+        closeable.refresh_from_db()
+        assert closeable.state == Ticket.State.CODED  # rolled back, not closed
+
 
 class TicketIntegrationReviewOverrideTest(TestCase):
     def test_records_override_reason(self) -> None:

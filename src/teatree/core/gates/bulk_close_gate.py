@@ -5,7 +5,16 @@ command) closing a large batch of tickets/MRs in one action is a recurring way
 work is lost — a mis-scoped sweep mass-closes issues that were not actually
 resolved. The prior guard was a prose ASK-GATE directive stamped onto the
 backlog-sweep task (:mod:`teatree.loop.scanners.backlog_sweep`), which an agent
-could forget under load. This module is the mechanical substitute.
+could forget under load.
+
+This module is that gate's deterministic core, and both close paths route
+through it: the ``t3 <overlay> ticket bulk-close`` command
+(:mod:`teatree.core.management.commands._close_commands`) calls it directly, and
+the backlog-sweep directive now instructs the dispatched skill to perform its
+auto-closes through that same ``ticket bulk-close`` command — never a raw
+per-item ``ticket ignore`` loop — so an over-threshold autonomous close is
+refused the same as a manual one. The residual (an agent must invoke the gated
+command) is the CLI's own boundary, not a hole this gate can close on its own.
 
 The rule: a single close action over more than ``bulk_close_threshold`` items is
 refused unless the caller supplies an explicit per-item confirmation token for
@@ -66,6 +75,6 @@ def check_bulk_close(
         f"Refusing bulk close of {len(targets)} items (threshold {resolved}): a close of more than "
         f"{resolved} tickets/MRs at once requires an explicit per-item confirmation token for EACH item, "
         f"so a mis-scoped sweep cannot mass-close silently. {len(unconfirmed)} item(s) are un-confirmed: "
-        f"{preview}. Re-run confirming each id explicitly (e.g. `--confirm-close <id>` per item), or close "
+        f"{preview}. Re-run echoing every id in `--confirm <comma,separated,ids>`, or close "
         f"them in batches of {resolved} or fewer."
     )

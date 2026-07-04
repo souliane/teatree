@@ -16,8 +16,10 @@ from typing import Annotated, TypedDict
 
 import typer
 from django.db import transaction
+from django_fsm import TransitionNotAllowed
 from django_typer.management import TyperCommand, command
 
+from teatree.core.gates.bulk_close_gate import check_bulk_close
 from teatree.core.models import Ticket
 
 
@@ -53,8 +55,6 @@ class CloseCommands(TyperCommand):
         mass-close silently. A batch at or under the threshold needs no
         confirmation.
         """
-        from teatree.core.gates.bulk_close_gate import check_bulk_close  # noqa: PLC0415
-
         target_ids = [chunk.strip() for chunk in ids.split(",") if chunk.strip()]
         confirmed = [chunk.strip() for chunk in confirm.split(",") if chunk.strip()]
         if not target_ids:
@@ -67,12 +67,20 @@ class CloseCommands(TyperCommand):
             return {"refused": True, "reason": refusal}
 
         closed: list[int] = []
-        with transaction.atomic():
-            for raw_id in target_ids:
-                ticket = self._resolve(int(raw_id))
-                ticket.ignore()
-                ticket.save()
-                closed.append(int(ticket.pk))
+        try:
+            with transaction.atomic():
+                for raw_id in target_ids:
+                    ticket = self._resolve(int(raw_id))
+                    ticket.ignore()
+                    ticket.save()
+                    closed.append(int(ticket.pk))
+        except TransitionNotAllowed as exc:
+            # The atomic block already rolled back, so nothing was closed — a
+            # ticket in the batch (e.g. an already-DELIVERED/IGNORED one) cannot
+            # transition to IGNORED. Surface it cleanly instead of a traceback.
+            refusal = f"a ticket cannot be closed from its current state ({exc}); no tickets were closed"
+            self.stdout.write(f"  bulk-close refused: {refusal}")
+            return {"refused": True, "reason": refusal}
         self.stdout.write(f"  closed {len(closed)} ticket(s): {', '.join(str(cid) for cid in closed)}")
         return {"closed": True, "closed_ids": closed}
 
