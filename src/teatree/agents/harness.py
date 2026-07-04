@@ -232,10 +232,15 @@ class PydanticAiHarnessSession:
         *,
         model_name: str,
         history: "list[ModelMessage] | None" = None,
+        phase: str | None = None,
     ) -> None:
         self._agent = agent
         self._model_name = model_name
         self._history: list[ModelMessage] = list(history) if history else []
+        # Compaction only applies to a phased, tool-bearing dispatch (PR-03). An
+        # un-phased run stays history-identical to #2885 — a resumed thread is
+        # sent verbatim, never trimmed.
+        self._phase = phase
         self._pending_prompt: str | None = None
         self._active_task: asyncio.Task[str] | None = None
         self._active_stream: StreamedRunResult[None, str] | None = None
@@ -255,9 +260,11 @@ class PydanticAiHarnessSession:
         prompt, self._pending_prompt = self._pending_prompt, None
         self._interrupted = False
         # Compact the conversation the model actually sees (the ``history_processors``
-        # equivalent — trim the stale middle before the turn); a short history is
-        # returned unchanged so a normal run is byte-identical.
-        sent_history = compact_history(self._history)
+        # equivalent — trim the stale middle before the turn) ONLY for a phased,
+        # tool-bearing run; a short history is returned unchanged so a normal
+        # phased run is byte-identical. An un-phased run sends its history
+        # verbatim, so a resumed #2885 thread is never trimmed.
+        sent_history = compact_history(self._history) if self._phase else self._history
         async with self._agent.run_stream(prompt, message_history=sent_history) as stream:
             self._active_stream = stream
             task = asyncio.ensure_future(self._drain(stream))
@@ -409,7 +416,7 @@ class PydanticAiHarness:
         # exit — a bare ``Agent(...)`` never closes it, leaking a client per
         # dispatch until GC.
         async with agent:
-            yield PydanticAiHarnessSession(agent, model_name=model.model_name, history=self._history)
+            yield PydanticAiHarnessSession(agent, model_name=model.model_name, history=self._history, phase=self._phase)
 
 
 def resolve_harness(task: "Task | None" = None, *, phase: str | None = None) -> Harness:

@@ -21,6 +21,8 @@ approve/deny.
 """
 
 from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from pydantic_ai import RunContext
@@ -28,12 +30,6 @@ from pydantic_ai.exceptions import ApprovalRequired, ModelRetry
 from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.toolsets.abstract import ToolsetTool
 from pydantic_ai.toolsets.wrapper import WrapperToolset
-
-# The branches a `git checkout <branch>` may safely target without the command
-# being a main-clone mutation — mirrors the protected set Lane A resolves per
-# repo. Passed to the shared core classifier so both lanes agree on which
-# checkout targets are allowed.
-_PROTECTED_BRANCHES = frozenset({"main", "master", "develop", "development", "release"})
 
 #: Tools whose primary argument is a shell command (the Bash-parity surface).
 _COMMAND_TOOLS = frozenset({"shell"})
@@ -57,25 +53,27 @@ def _scannable_text(tool_args: dict[str, Any]) -> str:
     return "\n".join(str(v) for v in tool_args.values() if isinstance(v, str))
 
 
-def hard_deny_reason(tool_name: str, tool_args: dict[str, Any]) -> str | None:
+def hard_deny_reason(tool_name: str, tool_args: dict[str, Any], *, cwd: Path | None = None) -> str | None:
     """Return the refusal reason for a tool call, or ``None`` when it is allowed.
 
     The single shared hard-deny evaluator, consulting the same ``teatree``
-    functions Lane A's PreToolUse hook does. First, a command-tool call is
-    classified by the pure core main-clone classifier — a ``git checkout
-    <feature>`` / ``reset --hard`` / ``restore`` / ``stash pop`` is refused,
-    while ``git fetch`` / ``checkout <default>`` / worktree ops pass. Then every
-    string argument is privacy-scanned; a HIGH finding (a leaked secret / banned
-    term) is refused.
+    functions Lane A's PreToolUse hook does. First, a command-tool call is run
+    through the FULL main-clone gate (:func:`main_clone_git_deny_reason`),
+    mirroring Lane A: it resolves the command's effective dir (honouring
+    ``-C``/``--git-dir``) and refuses a ``checkout <feature>`` / ``reset --hard``
+    / ``restore`` / ``stash pop`` ONLY when it targets a managed MAIN CLONE —
+    the same routine worktree git ops Lane A ALLOWS pass here too, since Lane B
+    tools are jailed to *cwd* (the worktree). Then every string argument is
+    privacy-scanned; a HIGH finding (a leaked secret / banned term) is refused.
     """
-    from teatree.core.gates.main_clone_guard import deny_reason, find_main_clone_git_mutation  # noqa: PLC0415
+    from teatree.core.gates.main_clone_env import main_clone_git_deny_reason  # noqa: PLC0415
     from teatree.hooks.quote_scanner import HIGH, scan_text  # noqa: PLC0415
 
     command = _command_of(tool_name, tool_args)
     if command:
-        finding = find_main_clone_git_mutation(command, default_branch=None, protected_branches=_PROTECTED_BRANCHES)
-        if finding is not None:
-            return deny_reason(finding)
+        main_clone_reason = main_clone_git_deny_reason(command, cwd)
+        if main_clone_reason is not None:
+            return main_clone_reason
 
     scan = scan_text(_scannable_text(tool_args))
     high = next((f for f in scan.findings if f.severity == HIGH), None)
@@ -85,19 +83,27 @@ def hard_deny_reason(tool_name: str, tool_args: dict[str, Any]) -> str | None:
     return None
 
 
+@dataclass
 class HardDenyToolset(WrapperToolset[None]):
     """Wraps a toolset so every tool call is hard-deny-checked before it runs.
 
     A refused call raises :class:`ModelRetry` carrying the reason — pydantic_ai
     records it as a ``RetryPromptPart`` the model sees and must adapt to, the
     Lane-B analogue of a Lane-A PreToolUse deny message. The wrapped tool never
-    executes.
+    executes. *cwd* is the worktree the Lane-B tools are jailed to; it keys the
+    main-clone gate so the deny fires only when a command targets a managed main
+    clone (a ``-C`` redirection out of the worktree), not for routine worktree
+    git ops. It is a dataclass FIELD (not a plain attribute) because
+    ``WrapperToolset`` rebuilds itself via ``dataclasses.replace`` in ``for_run``
+    — a non-field would be dropped and reset each run.
     """
+
+    cwd: Path | None = None
 
     async def call_tool(
         self, name: str, tool_args: dict[str, Any], ctx: RunContext[None], tool: ToolsetTool[None]
     ) -> Any:  # noqa: ANN401 — the ``WrapperToolset.call_tool`` contract is ``-> Any``; matched here.
-        reason = hard_deny_reason(name, tool_args)
+        reason = hard_deny_reason(name, tool_args, cwd=self.cwd)
         if reason is not None:
             raise ModelRetry(reason)
         return await super().call_tool(name, tool_args, ctx, tool)

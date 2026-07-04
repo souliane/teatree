@@ -1,38 +1,77 @@
+from pathlib import Path
+
 import pytest
 from pydantic_ai.exceptions import ApprovalRequired
 from pydantic_ai.tools import ToolDefinition
 
 from teatree.agents.lane_b.gating import hard_deny_reason, make_soft_gate_predicate, raise_if_soft_gated
-from teatree.core.gates.main_clone_guard import find_main_clone_git_mutation
+from tests._git_repo import make_git_repo, run_git
+from tests.teatree_agents.lane_b._managed_clone import linked_worktree, managed_main_clone
+
+_MUTATIONS = ("git reset --hard HEAD~1", "git checkout my-feature", "git stash pop")
 
 
 class TestHardDenyReason:
-    def test_main_clone_mutation_is_denied(self) -> None:
-        for command in ("git reset --hard HEAD~1", "git checkout my-feature", "git stash pop"):
-            assert hard_deny_reason("shell", {"command": command}) is not None
+    def test_main_clone_mutation_is_denied_in_a_managed_main_clone(self, tmp_path: Path) -> None:
+        clone = managed_main_clone(tmp_path / "teatree")
+        for command in _MUTATIONS:
+            assert hard_deny_reason("shell", {"command": command}, cwd=clone) is not None
 
-    def test_safe_git_is_allowed(self) -> None:
+    def test_same_mutation_is_allowed_in_a_linked_worktree(self, tmp_path: Path) -> None:
+        # The Lane-B jail root is the WORKTREE, not the main clone — the routine
+        # worktree git ops Lane A allows must not be denied here (the fix).
+        clone = managed_main_clone(tmp_path / "teatree")
+        wt = linked_worktree(clone, tmp_path / "wt")
+        for command in _MUTATIONS:
+            assert hard_deny_reason("shell", {"command": command}, cwd=wt) is None
+
+    def test_safe_git_is_allowed_even_in_a_managed_main_clone(self, tmp_path: Path) -> None:
+        clone = managed_main_clone(tmp_path / "teatree")
         for command in ("git fetch origin", "git checkout main", "git worktree add ../wt origin/main", "git status"):
+            assert hard_deny_reason("shell", {"command": command}, cwd=clone) is None
+
+    def test_unmanaged_clone_is_not_gated(self, tmp_path: Path) -> None:
+        # A repo no overlay owns (a random clone) must never be blocked.
+        clone = make_git_repo(tmp_path / "random")
+        run_git(clone, "remote", "add", "origin", "git@github.com:randomuser/randomrepo.git")
+        assert hard_deny_reason("shell", {"command": "git checkout feature"}, cwd=clone) is None
+
+    def test_no_cwd_never_denies_a_main_clone_mutation(self, tmp_path: Path) -> None:
+        # No jail root → no repo to key off → the main-clone half cannot fire.
+        for command in _MUTATIONS:
             assert hard_deny_reason("shell", {"command": command}) is None
 
     def test_non_command_tool_with_clean_text_is_allowed(self) -> None:
         assert hard_deny_reason("read_file", {"path": "src/app.py"}) is None
 
-    def test_shares_the_same_core_classifier_as_lane_a(self) -> None:
-        # Parity by construction: the Lane-B evaluator's main-clone verdict is the
-        # SAME core classifier Lane A's PreToolUse hook wraps. For any command,
-        # the two must agree on deny-vs-allow.
-        protected = frozenset({"main", "master", "develop", "development", "release"})
-        for command in (
+    def test_full_gate_parity_with_lane_a_across_clone_and_worktree(self, tmp_path: Path) -> None:
+        # Parity against Lane A's FULL gate (the PreToolUse handler = the pure
+        # classifier PLUS the environmental main-clone check), not just the core
+        # classifier: for every command, in BOTH a managed main clone and a
+        # linked worktree, Lane B's hard-deny verdict must equal Lane A's.
+        import hooks.scripts.hook_router as router  # noqa: PLC0415
+
+        clone = managed_main_clone(tmp_path / "teatree")
+        wt = linked_worktree(clone, tmp_path / "wt")
+        commands = (
             "git reset --hard",
             "git checkout feature-x",
             "git fetch origin",
             "git checkout main",
             "git restore src/a.py",
-        ):
-            lane_b_denied = hard_deny_reason("shell", {"command": command}) is not None
-            core_finding = find_main_clone_git_mutation(command, default_branch=None, protected_branches=protected)
-            assert lane_b_denied == (core_finding is not None)
+            "git stash pop",
+        )
+        for cwd in (clone, wt):
+            for command in commands:
+                lane_b_denied = hard_deny_reason("shell", {"command": command}, cwd=cwd) is not None
+                event = {
+                    "session_id": "parity",
+                    "tool_name": "Bash",
+                    "tool_input": {"command": command},
+                    "cwd": str(cwd),
+                }
+                lane_a_denied = router.handle_block_main_clone_mutation(event)
+                assert lane_b_denied is lane_a_denied, (command, cwd)
 
 
 class TestSoftGate:

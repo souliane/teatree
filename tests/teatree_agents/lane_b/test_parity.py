@@ -32,6 +32,7 @@ from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
 from teatree.agents.harness import PydanticAiHarness
 from teatree.agents.lane_b.gating import hard_deny_reason
+from tests.teatree_agents.lane_b._managed_clone import linked_worktree, managed_main_clone
 
 pydantic_ai.models.ALLOW_MODEL_REQUESTS = False  # ty: ignore[invalid-assignment] — the zero-token test guard.
 
@@ -95,17 +96,31 @@ class TestVocabularyParity:
 
 
 class TestHardDenyParity:
-    def test_main_clone_mutation_is_refused_on_lane_b(self, tmp_path: Path) -> None:
+    def test_main_clone_mutation_is_refused_when_cwd_is_a_managed_main_clone(self, tmp_path: Path) -> None:
         command = "git reset --hard HEAD~1"
+        clone = managed_main_clone(tmp_path / "teatree")
         # The shared evaluator the claude_sdk lane's PreToolUse hook also consults.
-        assert hard_deny_reason("shell", {"command": command}) is not None
+        assert hard_deny_reason("shell", {"command": command}, cwd=clone) is not None
 
         harness = PydanticAiHarness(model=_streaming_model(tool_command=command), phase="coding")
-        messages = _collect(harness, ClaudeAgentOptions(cwd=str(tmp_path)), "reset hard")
+        messages = _collect(harness, ClaudeAgentOptions(cwd=str(clone)), "reset hard")
 
         error_results = [r for r in _blocks(messages, ToolResultBlock) if r.is_error]
         assert error_results, "a refused tool call must surface an is_error ToolResultBlock"
         assert any("BLOCKED" in str(r.content) for r in error_results)
+
+    def test_same_mutation_runs_in_a_linked_worktree(self, tmp_path: Path) -> None:
+        # The Lane-B jail root is the WORKTREE, so the same op Lane A allows there
+        # is NOT refused: no is_error ToolResultBlock, and the command executes.
+        command = "git reset --hard HEAD"
+        clone = managed_main_clone(tmp_path / "teatree")
+        wt = linked_worktree(clone, tmp_path / "wt")
+        assert hard_deny_reason("shell", {"command": command}, cwd=wt) is None
+
+        harness = PydanticAiHarness(model=_streaming_model(tool_command=command), phase="coding")
+        messages = _collect(harness, ClaudeAgentOptions(cwd=str(wt)), "reset soft")
+
+        assert not [r for r in _blocks(messages, ToolResultBlock) if r.is_error]
 
 
 def test_zero_tokens_enforced() -> None:
