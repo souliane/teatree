@@ -951,6 +951,24 @@
       ]
     },
     {
+      "help": "``t3 teatree waiting`` group root.",
+      "name": "waiting",
+      "subcommands": [
+        {
+          "help": "List everything currently waiting on the user",
+          "name": "list"
+        },
+        {
+          "help": "Record a manual waiting item the live sources cannot see",
+          "name": "add"
+        },
+        {
+          "help": "Resolve a manual waiting item by id",
+          "name": "resolve"
+        }
+      ]
+    },
+    {
       "help": "Run the singleton loop-timer worker (#1796) \u2014 K pinned executors, no OS scheduler.",
       "name": "worker",
       "subcommands": []

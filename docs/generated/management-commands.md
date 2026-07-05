@@ -480,6 +480,16 @@ Show per-account Anthropic 5h / weekly token utilization + status.
 | `run` | Run an overlay tool command by name |
 | `list` | List available overlay tool commands |
 
+## `waiting`
+
+``t3 teatree waiting`` group root.
+
+| Subcommand | Description |
+| --- | --- |
+| `list` | List everything currently waiting on the user |
+| `add` | Record a manual waiting item the live sources cannot see |
+| `resolve` | Resolve a manual waiting item by id |
+
 ## `worker`
 
 Run the singleton loop-timer worker (#1796) — K pinned executors, no OS scheduler.

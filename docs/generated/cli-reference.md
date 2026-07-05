@@ -4591,6 +4591,8 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ checking        Terse 'what did I miss' report since the last check          │
 │                 (read-only).                                                 │
 │ health          Global operational-health verdict + known-issues registry.   │
+│ waiting         The durable 'waiting on you' lane — questions, merge         │
+│                 authorizations, reviews, manual items.                       │
 │ handover        Hand all current work from this session to another session.  │
 │ session         Session-lifecycle operations.                                │
 │ lifecycle       Session lifecycle and phase tracking.                        │
@@ -7331,6 +7333,70 @@ Usage: t3 teatree health dismiss [OPTIONS] ISSUE_ID
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    issue_id      INTEGER  The KnownIssue id to dismiss. [required]         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree waiting`
+
+```
+Usage: t3 teatree waiting [OPTIONS] COMMAND [ARGS]...
+
+ The durable 'waiting on you' lane — questions, merge authorizations, reviews,
+ manual items.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ list     List everything currently waiting on the user (all kinds), computed │
+│          live.                                                               │
+│ add      Record a manual waiting item the live sources cannot see.           │
+│ resolve  Resolve a manual waiting item by id.                                │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree waiting list`
+
+```
+Usage: t3 teatree waiting list [OPTIONS]
+
+ List everything currently waiting on the user.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --overlay        TEXT  Scope merge/review entries to this overlay (default:  │
+│                        all).                                                 │
+│ --json                 Emit the entries as JSON instead of the table view.   │
+│ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree waiting add`
+
+```
+Usage: t3 teatree waiting add [OPTIONS] TEXT
+
+ Record a manual waiting item the live sources cannot see.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    text      TEXT  The manual waiting-item text to record. [required]      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree waiting resolve`
+
+```
+Usage: t3 teatree waiting resolve [OPTIONS] ITEM_ID
+
+ Resolve a manual waiting item by id.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    item_id      INTEGER  The manual WaitingItem id to resolve. [required]  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │

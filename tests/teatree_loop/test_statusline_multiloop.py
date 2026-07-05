@@ -14,7 +14,7 @@ History:
 *   #130 added a leading state word, later dropped as redundant with the
     ``tick <next-tick>`` chunk (both derive from the same live-lease set),
     so the line now leads with the loop chunks themselves
-    (``tick 11m · tickets 11m``) and appends a ``waiting: N questions``
+    (``tick 11m · tickets 11m``) and appends a ``waiting=N``
     clause when the loop is blocked on the user.
 
 The #1073 foreign-hijack RED line is preserved unchanged through every

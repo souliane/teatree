@@ -28,7 +28,7 @@ class TestLoopRunningTokenDropped:
             patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[("loop-tick", acquired_at)]),
             patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
             patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
-            patch("teatree.loop.statusline_loops._pending_questions", return_value=0),
+            patch("teatree.loop.statusline_loops._waiting_count", return_value=0),
         ):
             lines = live_loops_anchor()
         assert len(lines) == 1, repr(lines)
@@ -48,7 +48,7 @@ class TestLoopRunningTokenDropped:
                 return_value=[("dispatch", now + timedelta(seconds=120), 600)],
             ),
             patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
-            patch("teatree.loop.statusline_loops._pending_questions", return_value=0),
+            patch("teatree.loop.statusline_loops._waiting_count", return_value=0),
         ):
             lines = live_loops_anchor()
         assert lines == ["dispatch 2m"], lines
@@ -59,10 +59,10 @@ class TestLoopRunningTokenDropped:
             patch("teatree.loop.statusline_loops._live_loop_leases", return_value=[("loop-tick", acquired_at)]),
             patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
             patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
-            patch("teatree.loop.statusline_loops._pending_questions", return_value=2),
+            patch("teatree.loop.statusline_loops._waiting_count", return_value=2),
         ):
             lines = live_loops_anchor()
-        assert lines == ["tick 10m · waiting: 2 questions"], lines
+        assert lines == ["tick 10m · waiting=2"], lines
 
     def test_still_empty_when_no_loops_live(self) -> None:
         with (
