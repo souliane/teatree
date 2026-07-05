@@ -29,6 +29,7 @@ from teatree.loop.scanners.notion_view import NotionViewScanner
 from teatree.loop.scanners.outbound_audit import OutboundAuditScanner
 from teatree.loop.scanners.pane_reaper import PaneReaperScanner
 from teatree.loop.scanners.pending_tasks import PendingTasksScanner
+from teatree.loop.scanners.pr_approvals import PrApprovalScanner
 from teatree.loop.scanners.pr_sweep import PrSweepScanner
 from teatree.loop.scanners.pr_sweep_adapters import (
     AutoReviewTaskDispatcher,
@@ -90,6 +91,7 @@ __all__ = [
     "OutboundAuditScanner",
     "PaneReaperScanner",
     "PendingTasksScanner",
+    "PrApprovalScanner",
     "PrSweepScanner",
     "ProvisionSmokeScanner",
     "PullMainCloneScanner",

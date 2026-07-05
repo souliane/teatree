@@ -82,6 +82,10 @@
 "src/teatree/core/sync.py" = 3
 "src/teatree/core/tasks.py" = 5
 "src/teatree/core/views/_rate_limit.py" = 1
+# #8 M7 revival: the waiting-lane covering-CLEAR match reads the shared SIG-1
+# supersede helper (superseding_context / clear_is_superseded) and the promoted
+# repo resolver — deferred to keep waiting.py light and free of an intra-core cycle.
+"src/teatree/core/waiting.py" = 3
 "src/teatree/core/worktree_tasks.py" = 1
 
 [intra_loop]
