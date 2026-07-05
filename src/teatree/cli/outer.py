@@ -57,6 +57,20 @@ def propose_command(
     call_command("outer", "propose", hypothesis=hypothesis, target=target)
 
 
+@outer_app.command("resolve-revert")
+def resolve_revert_command(
+    experiment_id: int,
+    *,
+    revert_sha: str = typer.Option("", "--revert-sha", help="The git revert commit sha (provenance)."),
+) -> None:
+    """Close a REVERT_PENDING experiment to terminal REVERTED, freeing the slot."""
+    ensure_django()
+
+    from django.core.management import call_command  # noqa: PLC0415 — deferred until ensure_django() bootstraps Django
+
+    call_command("outer", "resolve-revert", experiment_id, revert_sha=revert_sha)
+
+
 @outer_app.command("history")
 def history_command(
     *,

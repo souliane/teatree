@@ -20,9 +20,12 @@ from teatree.loop.self_improve.budget import BudgetVerdict
 from teatree.loops.outer_loop import guards
 
 
-def _settings(*, enabled: bool = True, max_per_week: int = 1, stop_after: int = 3) -> SimpleNamespace:
+def _settings(
+    *, enabled: bool = True, score: bool = True, max_per_week: int = 1, stop_after: int = 3
+) -> SimpleNamespace:
     return SimpleNamespace(
         outer_loop_enabled=enabled,
+        factory_score_enabled=score,
         outer_loop_max_per_week=max_per_week,
         outer_loop_stop_after_consecutive_failures=stop_after,
     )
@@ -65,9 +68,15 @@ class TestGuardChainRefusals:
         assert verdict.ok is False
         assert verdict.reason == guards.FLAG_OFF
 
+    def test_flag_on_but_score_off_refuses(self) -> None:
+        # G1b: the loop needs the T4-PR-2 metric — with factory_score_enabled off
+        # it refuses BEFORE the critic probe (and before any snapshot could be written).
+        verdict = guards.evaluate_guards(settings=_settings(score=False))
+        assert verdict.reason == guards.SCORE_OFF
+
     def test_flag_on_but_critic_not_live_refuses(self) -> None:
         # The default critic probe fails CLOSED — the critic model does not exist
-        # this session, so even with the flag on the tick refuses critic_not_live.
+        # this session, so even with the flags on the tick refuses critic_not_live.
         verdict = guards.evaluate_guards(settings=_settings(), seams=guards.GuardSeams(signal_report=_report(*_ALL_OK)))
         assert verdict.reason == guards.CRITIC_NOT_LIVE
 

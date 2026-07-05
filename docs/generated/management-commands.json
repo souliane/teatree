@@ -551,6 +551,10 @@
         {
           "help": "Print the recent experiment ledger (read-only)",
           "name": "history"
+        },
+        {
+          "help": "Close a REVERT_PENDING experiment to terminal REVERTED, freeing the slot",
+          "name": "resolve-revert"
         }
       ]
     },

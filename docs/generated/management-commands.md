@@ -295,6 +295,7 @@ Drive the T4 autoresearch outer loop (propose→ratify→implement→measure→k
 | `status` | Print the guard-chain verdict and the active experiment (read-only) |
 | `propose` | Record an operator hypothesis as a PROPOSED experiment (refused while off) |
 | `history` | Print the recent experiment ledger (read-only) |
+| `resolve-revert` | Close a REVERT_PENDING experiment to terminal REVERTED, freeing the slot |
 
 ## `overlay`
 

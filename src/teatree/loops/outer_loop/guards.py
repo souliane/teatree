@@ -2,7 +2,9 @@
 
 Every outer-loop tick runs :func:`evaluate_guards` before it touches an
 experiment. The chain is fail-closed and ordered so the first (most fundamental)
-refusal wins. G1 flag: ``outer_loop_enabled`` off ⇒ ``outer_loop_disabled``. G2
+refusal wins. G1 flag: ``outer_loop_enabled`` off ⇒ ``outer_loop_disabled``. G1b
+score: ``factory_score_enabled`` off ⇒ ``factory_score_disabled`` — the metric is
+the loop's whole point and its snapshot table must stay empty while off. G2
 critic-live: the critic gate is not registered, or has fewer than
 :data:`MIN_CRITIC_SAMPLE` ``CriticVerdict`` rows ⇒ ``critic_not_live`` — this is
 CODE not config, :func:`probe_critic_liveness` does a defensive lazy lookup and
@@ -29,6 +31,7 @@ from teatree.core.models import OuterLoopExperiment
 from teatree.loop.self_improve.budget import BudgetVerdict, precheck_budget
 
 FLAG_OFF = "outer_loop_disabled"
+SCORE_OFF = "factory_score_disabled"
 CRITIC_NOT_LIVE = "critic_not_live"
 SIGNAL_UNTRUSTED = "signal_untrusted"
 BUDGET = "budget"
@@ -94,6 +97,7 @@ class OuterLoopSettings(Protocol):
     """
 
     outer_loop_enabled: bool
+    factory_score_enabled: bool
     outer_loop_measure_days: int
     outer_loop_max_per_week: int
     outer_loop_stop_after_consecutive_failures: int
@@ -136,10 +140,15 @@ def evaluate_guards(
     overlay: str = "",
     now: datetime | None = None,
 ) -> GuardVerdict:
-    """Run G1→G2→G3→G4; return the first refusal, else allow."""
+    """Run G1→G1b→G2→G3→G4; return the first refusal, else allow."""
     resolved = seams or GuardSeams()
     if not settings.outer_loop_enabled:
         return GuardVerdict.refuse(FLAG_OFF)
+    # G1b: the metric-to-beat (T4-PR-2) must be ON. Its "empty-table-when-off"
+    # doctrine forbids a FactoryScoreSnapshot write while factory_score_enabled is
+    # off, and the loop has no measure without it — refuse before any snapshot.
+    if not settings.factory_score_enabled:
+        return GuardVerdict.refuse(SCORE_OFF)
     critic = (resolved.critic_probe or probe_critic_liveness)()
     if not critic.live:
         return GuardVerdict.refuse(CRITIC_NOT_LIVE)

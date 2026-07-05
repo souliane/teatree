@@ -40,6 +40,7 @@ class TestFlagOffParity(TestCase):
         # tick refuses critic_not_live and still writes zero rows.
         settings = SimpleNamespace(
             outer_loop_enabled=True,
+            factory_score_enabled=True,
             outer_loop_measure_days=7,
             outer_loop_max_per_week=1,
             outer_loop_stop_after_consecutive_failures=3,
@@ -47,4 +48,19 @@ class TestFlagOffParity(TestCase):
         result = run_tick(settings=settings)
         assert result.action == "refused"
         assert result.reason == guards.CRITIC_NOT_LIVE
+        assert _counts() == (0, 0, 0)
+
+    def test_score_off_is_a_no_op_and_writes_no_snapshot(self) -> None:
+        # G1b coherence with T4-PR-2: outer_loop on but factory_score_enabled off →
+        # refused BEFORE any FactoryScoreSnapshot write (the empty-table doctrine).
+        settings = SimpleNamespace(
+            outer_loop_enabled=True,
+            factory_score_enabled=False,
+            outer_loop_measure_days=7,
+            outer_loop_max_per_week=1,
+            outer_loop_stop_after_consecutive_failures=3,
+        )
+        result = run_tick(settings=settings)
+        assert result.action == "refused"
+        assert result.reason == guards.SCORE_OFF
         assert _counts() == (0, 0, 0)

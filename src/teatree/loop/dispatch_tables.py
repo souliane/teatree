@@ -119,12 +119,6 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     # action_needed so orphaned work is never silently green.
     "workstate.drift": "action_needed",
     "workstate.probe_error": "action_needed",
-    # T4-PR-3 outer loop: a keep/revert DECISION on an experiment needs the
-    # operator's eye (the human-ratified revert / the kept sha), so it surfaces in
-    # action_needed. The ``outer_loop.refused`` bookkeeping (a disabled/blocked
-    # tick with its reason) is dropped from the statusline via the prefix below —
-    # exempted here so the decision is NOT swept up with the refusals.
-    "outer_loop.decision": "action_needed",
 }
 
 # Diagnostic signal kinds that intentionally do NOT render to the statusline.
@@ -151,11 +145,6 @@ STATUSLINE_DROP_PREFIXES: tuple[str, ...] = (
     # bookkeeping signals must not flood the statusline (a slow drain emits a
     # backoff signal per due item per tick).
     "local_stack.",
-    # T4-PR-3: the outer loop refuses most ticks (quadruple-OFF) — a per-tick
-    # ``outer_loop.refused`` with its reason must not flood the statusline. The
-    # reason is still counted; only the rendering is dropped. ``outer_loop.decision``
-    # is exempted above (an operator-facing keep/revert).
-    "outer_loop.",
 )
 
 SELF_UPDATE_CI_SKIP_REASONS: frozenset[str] = frozenset({"ci_red", "ci_pending", "ci_unknown"})

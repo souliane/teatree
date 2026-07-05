@@ -4632,13 +4632,15 @@ Usage: t3 outer [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ tick     Advance the outer loop one step IF its cadence has elapsed (cron    │
-│          entry).                                                             │
-│ status   Print the guard-chain verdict and the active experiment             │
-│          (read-only).                                                        │
-│ propose  Record an operator hypothesis as a PROPOSED experiment (refused     │
-│          while off).                                                         │
-│ history  Print the recent experiment ledger (read-only).                     │
+│ tick            Advance the outer loop one step IF its cadence has elapsed   │
+│                 (cron entry).                                                │
+│ status          Print the guard-chain verdict and the active experiment      │
+│                 (read-only).                                                 │
+│ propose         Record an operator hypothesis as a PROPOSED experiment       │
+│                 (refused while off).                                         │
+│ resolve-revert  Close a REVERT_PENDING experiment to terminal REVERTED,      │
+│                 freeing the slot.                                            │
+│ history         Print the recent experiment ledger (read-only).              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4676,6 +4678,22 @@ Usage: t3 outer propose [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --hypothesis        TEXT  The operator hypothesis to test.                   │
 │ --target            TEXT  The signal provider_id to improve.                 │
+│ --help                    Show this message and exit.                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 outer resolve-revert`
+
+```
+Usage: t3 outer resolve-revert [OPTIONS] EXPERIMENT_ID
+
+ Close a REVERT_PENDING experiment to terminal REVERTED, freeing the slot.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    experiment_id      INTEGER  [required]                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --revert-sha        TEXT  The git revert commit sha (provenance).            │
 │ --help                    Show this message and exit.                        │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

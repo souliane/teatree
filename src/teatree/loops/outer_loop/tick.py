@@ -26,6 +26,7 @@ from teatree.loops.outer_loop.implement import schedule_experiment_fix
 from teatree.loops.outer_loop.measure import arm_measurement, horizon_elapsed, measure_and_decide
 from teatree.loops.outer_loop.propose import select_proposal
 from teatree.loops.outer_loop.ratify import ask_ratification, try_admit
+from teatree.loops.outer_loop.revert import ask_revert
 from teatree.loops.outer_loop.score import read_score
 
 
@@ -121,6 +122,14 @@ def _advance(
         return _advance_implementing(experiment, merged_probe=merged_probe, now=now)
     if experiment.state == state.MEASURING:
         return _advance_measuring(experiment, settings, overlay=overlay, now=now)
+    return _advance_revert_pending(experiment)
+
+
+def _advance_revert_pending(experiment: OuterLoopExperiment) -> OuterLoopTickResult:
+    """Ask the human to revert (once), then wait for `t3 outer resolve-revert`."""
+    if experiment.revert_question is None:
+        ask_revert(experiment)
+        return OuterLoopTickResult(action="revert_asked", experiment_id=experiment.pk)
     return OuterLoopTickResult(action="waiting", reason="awaiting_human_revert", experiment_id=experiment.pk)
 
 

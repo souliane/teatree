@@ -28,6 +28,7 @@ def _live_critic() -> guards.CriticLiveness:
 def _open_settings(*, measure_days: int = 7) -> SimpleNamespace:
     return SimpleNamespace(
         outer_loop_enabled=True,
+        factory_score_enabled=True,
         outer_loop_measure_days=measure_days,
         outer_loop_max_per_week=99,
         outer_loop_stop_after_consecutive_failures=3,
@@ -116,14 +117,20 @@ class TestTickAdvanceBranches(TestCase):
         result = run_tick(settings=_open_settings(measure_days=7), seams=_seams())
         assert result.action in {"kept", "revert_pending"}
 
-    def test_revert_pending_awaits_a_human(self) -> None:
+    def test_revert_pending_asks_then_awaits_a_human(self) -> None:
         exp = self._implementing()
         exp.arm_measure()
         exp.request_revert(post_snapshot=_baseline(), reason="no improvement")
-        result = run_tick(settings=_open_settings(), seams=_seams())
-        assert result.action == "waiting"
-        assert result.reason == "awaiting_human_revert"
-        assert result.experiment_id == exp.pk
+        # First tick asks the human to revert (records the DeferredQuestion).
+        first = run_tick(settings=_open_settings(), seams=_seams())
+        assert first.action == "revert_asked"
+        exp.refresh_from_db()
+        assert exp.revert_question is not None
+        # Subsequent ticks wait for `t3 outer resolve-revert` (no dead-end, no auto-revert).
+        second = run_tick(settings=_open_settings(), seams=_seams())
+        assert second.action == "waiting"
+        assert second.reason == "awaiting_human_revert"
+        assert second.experiment_id == exp.pk
 
     def test_no_target_signal_is_idle(self) -> None:
         # Admission is open and no experiment is active, but the report is healthy

@@ -48,6 +48,7 @@ def _report(*rows: SignalRow) -> FactorySignalsReport:
 def _open_settings() -> SimpleNamespace:
     return SimpleNamespace(
         outer_loop_enabled=True,
+        factory_score_enabled=True,
         outer_loop_measure_days=7,
         outer_loop_max_per_week=1,
         outer_loop_stop_after_consecutive_failures=3,

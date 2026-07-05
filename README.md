@@ -376,6 +376,8 @@ t3 mcp serve                    # serve teatree's structured search (tickets, wo
                                  # registered automatically via the plugin-bundled .mcp.json (surfaces as mcp__teatree__* tools) — `t3 setup`/`t3 doctor check` verify it
 t3 dream run [--since <iso>] [--dry-run]  # run one memory-consolidation pass NOW (ignores cadence)
 t3 dream tick                   # cadence-gated cron entry point (~04:00 schedule, decoupled from live loop)
+t3 outer status|history         # T4 autoresearch outer loop — guard-chain verdict + experiment ledger (read-only)
+t3 outer tick                   # cadence-gated cron entry (propose→ratify→measure→keep-only-if-better; ships quadruple-OFF)
 ```
 
 > Replace `teatree` with your overlay's name (`t3 <overlay>`) when working in

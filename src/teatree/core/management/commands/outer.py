@@ -95,6 +95,26 @@ class Command(TyperCommand):
         experiment = OuterLoopExperiment.objects.propose(candidate)
         self.stdout.write(f"proposed experiment #{experiment.pk} (state={experiment.state}).")
 
+    @command(name="resolve-revert")
+    def resolve_revert(
+        self,
+        experiment_id: int,
+        *,
+        revert_sha: Annotated[str, typer.Option("--revert-sha", help="The git revert commit sha (provenance).")] = "",
+    ) -> None:
+        """Close a REVERT_PENDING experiment to terminal REVERTED, freeing the slot."""
+        from teatree.loops.outer_loop.revert import resolve_revert  # noqa: PLC0415 — cross-layer import cycle
+
+        experiment = OuterLoopExperiment.objects.filter(pk=experiment_id).first()
+        if experiment is None:
+            self.stderr.write(f"  no experiment #{experiment_id}.")
+            raise SystemExit(1)
+        if experiment.state != OuterLoopExperiment.State.REVERT_PENDING:
+            self.stderr.write(f"  experiment #{experiment_id} is {experiment.state}, not revert_pending.")
+            raise SystemExit(1)
+        resolve_revert(experiment, revert_sha=revert_sha.strip())
+        self.stdout.write(f"reverted experiment #{experiment.pk} (state={experiment.state}).")
+
     @command(name="history")
     def history(
         self,
