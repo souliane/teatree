@@ -201,6 +201,38 @@ class ReviewContext(TypedDict, total=False):
     at: str
 
 
+class AdequacySection(TypedDict, total=False):
+    """One section of a :class:`PlanAdequacy` manifest — substantive OR explicitly-negated.
+
+    ``content`` is the substantive claim (free text for ``design``/``test_strategy``,
+    a list of items for ``integration_seams``/``edge_cases``). ``none_reason`` is the
+    explicit reasoned negative — the ``no_new_tests`` shape from
+    ``anti_vacuity_gate``: a section that genuinely has nothing to declare must SAY
+    so with a reason, so silence (both empty) can never pass as "none to declare".
+    """
+
+    content: str | list[str]
+    none_reason: str
+
+
+class PlanAdequacy(TypedDict, total=False):
+    """A four-section plan-adequacy manifest recorded on a ``PlanArtifact`` (SELFCATCH-3).
+
+    The structural substitute for judging whether a plan is a real plan or a thin
+    scope+acceptance spec. Each of the four sections must be substantive OR carry an
+    explicit reasoned negative (:class:`AdequacySection`) — a scope+acceptance-only
+    spec has no seams/edge-cases/test-strategy claims to make, so it structurally
+    fails ``plan_adequacy.is_adequate``. ``integration_seams.content`` is the list of
+    registries/contracts/sibling-paths the change touches; the plan-currency gate
+    reads it to decide when a moved target HEAD renders the plan stale.
+    """
+
+    design: AdequacySection
+    integration_seams: AdequacySection
+    edge_cases: AdequacySection
+    test_strategy: AdequacySection
+
+
 class AntiVacuityAttestation(TypedDict, total=False):
     """SHA-bound proof the diff is AC-mapped and its regression tests guard the fix (#1829).
 
