@@ -268,6 +268,8 @@ class ReviewLoop(models.Model):
             self.current_task = slot.task
             self.save(update_fields=["current_task", "updated_at"])
             return slot.task
+        # Intentionally NOT gated by plan_currency (SELFCATCH-3): the review-loop author
+        # leg is a post-review corrective re-entry, not a fresh PLANNED→CODED dispatch.
         task = self._make_task(
             phase=self.author_phase,
             reason=self._author_reason(findings or []),

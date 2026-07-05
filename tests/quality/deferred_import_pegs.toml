@@ -27,7 +27,6 @@
 "src/teatree/core/management/commands/_clear_preflight.py" = 1
 "src/teatree/core/management/commands/_e2e_discovery.py" = 1
 "src/teatree/core/management/commands/_ensure_pr.py" = 1
-"src/teatree/core/management/commands/_plan_gate_commands.py" = 3
 "src/teatree/core/management/commands/_rubric_commands.py" = 1
 "src/teatree/core/management/commands/_ship_exec.py" = 1
 "src/teatree/core/management/commands/_ship_gates.py" = 1
@@ -64,7 +63,7 @@
 "src/teatree/core/models/auto_review_dispatch.py" = 3
 "src/teatree/core/models/review_loop.py" = 3
 "src/teatree/core/models/task.py" = 7
-"src/teatree/core/models/ticket.py" = 19
+"src/teatree/core/models/ticket.py" = 13
 "src/teatree/core/notify.py" = 4
 "src/teatree/core/on_behalf_egress.py" = 2
 "src/teatree/core/on_behalf_gate_recorded.py" = 3
