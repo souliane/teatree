@@ -61,6 +61,7 @@ from teatree.cli.dogfood import dogfood_app
 from teatree.cli.dream import dream_app
 from teatree.cli.eval import eval_app
 from teatree.cli.eval.skill_command_lane import register_command_registry_provider
+from teatree.cli.goal import goal_app
 from teatree.cli.identities import identities_app
 from teatree.cli.loop import loop_app
 from teatree.cli.loops import loops_app
@@ -168,6 +169,7 @@ app.add_typer(update_app, name="update")
 app.add_typer(assess_app, name="assess")
 app.add_typer(overlay_dev_app, name="overlay")
 app.add_typer(loop_app, name="loop")
+app.add_typer(goal_app, name="goal")
 app.command("worker")(worker)
 app.add_typer(loops_app, name="loops")
 app.add_typer(mcp_app, name="mcp")

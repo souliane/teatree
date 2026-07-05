@@ -76,6 +76,7 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 loop_runner_enabled true` and start it once from a login     │
 │                 profile; the default stays the session-bound native `/loop`  │
 │                 crons above.                                                 │
+│ goal            Standing verified-green goals (PR-25).                       │
 │ loops           Manage DB-configured autonomous loops (#1796).               │
 │ mcp             Read-only MCP server exposing teatree's structured search    │
 │                 (stdio).                                                     │

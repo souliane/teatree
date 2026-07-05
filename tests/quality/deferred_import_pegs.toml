@@ -51,6 +51,7 @@
 "src/teatree/core/management/commands/review.py" = 2
 "src/teatree/core/management/commands/review_request_post.py" = 3
 "src/teatree/core/management/commands/speak.py" = 1
+"src/teatree/core/management/commands/standing_goal.py" = 3
 "src/teatree/core/management/commands/tasks.py" = 2
 "src/teatree/core/management/commands/ticket.py" = 5
 "src/teatree/core/management/commands/ticket_short_describe.py" = 2

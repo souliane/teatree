@@ -73,6 +73,7 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 loop_runner_enabled true` and start it once from a login     │
 │                 profile; the default stays the session-bound native `/loop`  │
 │                 crons above.                                                 │
+│ goal            Standing verified-green goals (PR-25).                       │
 │ loops           Manage DB-configured autonomous loops (#1796).               │
 │ mcp             Read-only MCP server exposing teatree's structured search    │
 │                 (stdio).                                                     │
@@ -3934,6 +3935,70 @@ Usage: t3 loop drain-queue start [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+### `t3 goal`
+
+```
+Usage: t3 goal [OPTIONS] COMMAND [ARGS]...
+
+ Standing verified-green goals (PR-25).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ set    Register (or re-arm) a standing verified-green goal.                  │
+│ clear  Delete one named standing goal, or every goal when no name is given.  │
+│ list   List every registered standing goal and its active state.             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 goal set`
+
+```
+Usage: t3 goal set [OPTIONS] NAME
+
+ Register (or re-arm) a standing verified-green goal.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    name      TEXT  Unique goal name (e.g. 'evals-green'). [required]       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --check        TEXT  Shell command that exits 0 when the goal is green.   │
+│                         [required]                                           │
+│    --json               Emit JSON.                                           │
+│    --help               Show this message and exit.                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 goal clear`
+
+```
+Usage: t3 goal clear [OPTIONS] [NAME]
+
+ Delete one named standing goal, or every goal when no name is given.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│   name      [NAME]  Goal name to clear; omit to clear ALL.                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit JSON.                                                   │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 goal list`
+
+```
+Usage: t3 goal list [OPTIONS]
+
+ List every registered standing goal and its active state.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit JSON.                                                   │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 ### `t3 loops`
 
 ```
@@ -4773,6 +4838,8 @@ Usage: t3 teatree gate [OPTIONS] COMMAND [ARGS]...
 │ gate-relaxation    Anti-relaxation + tach-soundness gate kill-switch         │
 │                    (self-rescue).                                            │
 │ raw-merge          Out-of-band raw-merge gate kill-switch (self-rescue).     │
+│ standing-goal      Standing verified-green stop-gate kill-switch             │
+│                    (self-rescue).                                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -5282,6 +5349,59 @@ Usage: t3 teatree gate raw-merge disable [OPTIONS]
 
 ```
 Usage: t3 teatree gate raw-merge enable [OPTIONS]
+
+ Re-enable the gate.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree gate standing-goal`
+
+```
+Usage: t3 teatree gate standing-goal [OPTIONS] COMMAND [ARGS]...
+
+ Standing verified-green stop-gate kill-switch (self-rescue).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ status   Show whether the gate is enabled.                                   │
+│ disable  Disable the gate (self-rescue from a lockout).                      │
+│ enable   Re-enable the gate.                                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate standing-goal status`
+
+```
+Usage: t3 teatree gate standing-goal status [OPTIONS]
+
+ Show whether the gate is enabled.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate standing-goal disable`
+
+```
+Usage: t3 teatree gate standing-goal disable [OPTIONS]
+
+ Disable the gate (self-rescue from a lockout).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate standing-goal enable`
+
+```
+Usage: t3 teatree gate standing-goal enable [OPTIONS]
 
  Re-enable the gate.
 

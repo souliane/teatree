@@ -777,6 +777,24 @@
       "subcommands": []
     },
     {
+      "help": "Register, clear, or list standing verified-green goals (PR-25).",
+      "name": "standing_goal",
+      "subcommands": [
+        {
+          "help": "Delete one named standing goal, or every goal when no name is given",
+          "name": "clear"
+        },
+        {
+          "help": "Register (or re-arm) a standing verified-green goal",
+          "name": "set"
+        },
+        {
+          "help": "List every registered standing goal and its active state",
+          "name": "list"
+        }
+      ]
+    },
+    {
       "help": "",
       "name": "standup",
       "subcommands": [
