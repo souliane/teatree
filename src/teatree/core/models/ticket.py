@@ -739,15 +739,15 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
 
     @transition(field=state, source=State.RETROSPECTED, target=State.DELIVERED)
     def mark_delivered(self) -> None:
-        """Reach DELIVERED past the Definition-of-Done gates.
+        """Reach DELIVERED past the Definition-of-Done gates — each NO-OP unless configured.
 
-        ``fix_record_dod`` (kind=fix), ``spec_coverage`` (#2232), and
-        ``integration_review`` (≥2-repo combined changeset, PR-08) each gate the
-        close; each is a NO-OP unless configured. A refusal keeps RETROSPECTED.
+        ``fix_record_dod``, ``spec_coverage`` (#2232), ``integration_review`` (PR-08), and
+        ``critic`` (SELFCATCH-5 — a CriticFinding per failing class, advisory) gate the close.
         """
         get_gate("fix_record_dod")(self)
         get_gate("spec_coverage")(self)
         get_gate("integration_review")(self)
+        get_gate("critic")(self)
 
     @transition(field=state, source=[State.CODED, State.TESTED, State.REVIEWED], target=State.STARTED)
     def rework(self) -> None:

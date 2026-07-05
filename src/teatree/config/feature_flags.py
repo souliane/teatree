@@ -91,6 +91,12 @@ FEATURE_FLAGS: dict[str, FeatureFlag] = {
         tracking_issue="souliane/teatree — SELFCATCH-3 plan_gate hardening",
         summary="Plan-adequacy + late-bound-plan gate; ships dark until the planner emits manifests.",
     ),
+    "critic_gate_live": FeatureFlag(
+        field="critic_gate_live",
+        stage=FlagStage.DARK,
+        tracking_issue="souliane/teatree — SELFCATCH-5 critic_gate v1",
+        summary="Autonomous user-proxy critic on mark_delivered; ships dark (advisory: records, never blocks).",
+    ),
 }
 
 

@@ -17,6 +17,17 @@ class NoCurrentPlanError(InvalidTransitionError):
     """
 
 
+class CriticGateError(InvalidTransitionError):
+    """mark_delivered() was refused because the critic recorded a FAIL and enforcement is live.
+
+    Raised by ``critic_gate.check_critic`` (SELFCATCH-5) ONLY when ``critic_gate_live``
+    is on for the ticket's overlay and at least one rubric item failed its predicate.
+    In the default ADVISORY posture the critic records the findings and this is never
+    raised — the delivery proceeds. The message names the failing rubric items plus
+    the kill-switch escape so the block is never a hard lock.
+    """
+
+
 class QualityGateError(ValueError):
     pass
 

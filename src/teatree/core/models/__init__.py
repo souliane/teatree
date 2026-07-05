@@ -14,6 +14,7 @@ from teatree.core.models.compliance_snapshot import (
 )
 from teatree.core.models.config_setting import ConfigSetting, ConfigSettingManager
 from teatree.core.models.consolidated_memory import BindingFeedbackError, ConsolidatedMemory
+from teatree.core.models.critic_finding import CriticFinding, CriticFindingSpec
 from teatree.core.models.daily_digest import DailyDigestMessage, DailyDigestThread
 from teatree.core.models.db_approval import DbApproval, DbApprovalError, DbAudit
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
@@ -21,7 +22,13 @@ from teatree.core.models.dream_qa_probe import DreamQaProbe
 from teatree.core.models.dream_run_marker import DreamRunMarker
 from teatree.core.models.e2e_bypass import E2EBypassApproval, E2EBypassApprovalError, E2EBypassAudit
 from teatree.core.models.e2e_mandatory_run import E2eMandatoryRun
-from teatree.core.models.errors import DirtyWorktreeError, InvalidTransitionError, NoPlanArtifactError, QualityGateError
+from teatree.core.models.errors import (
+    CriticGateError,
+    DirtyWorktreeError,
+    InvalidTransitionError,
+    NoPlanArtifactError,
+    QualityGateError,
+)
 from teatree.core.models.eval_run import (
     CostRegression,
     EvalRunRecord,
@@ -117,6 +124,9 @@ __all__ = [
     "ConfigSettingManager",
     "ConsolidatedMemory",
     "CostRegression",
+    "CriticFinding",
+    "CriticFindingSpec",
+    "CriticGateError",
     "DailyDigestMessage",
     "DailyDigestThread",
     "DbApproval",
