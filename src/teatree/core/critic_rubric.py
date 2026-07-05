@@ -1,48 +1,47 @@
 """The autonomous user-proxy critic's rubric (SELFCATCH-5) — the 8 seeded classes.
 
 Each :class:`CriticRubricItem` is one adversarial question the human had to ask
-this session, turned into a concrete deterministic predicate over the ticket's
-DELIVERED artifacts. The critic gate (:mod:`teatree.core.gates.critic_gate`) walks
-this registry at ``mark_delivered`` and records a
-:class:`~teatree.core.models.critic_finding.CriticFinding` for every item whose
-predicate CATCHES its failure class. The invariant the whole layer delivers: each
-class is human-caught AT MOST ONCE, then promoted here and caught upstream forever.
+this session, turned into a checkable verdict over the ticket's DELIVERED
+artifacts. The invariant the whole layer delivers: each class is human-caught AT
+MOST ONCE, then promoted here and caught upstream forever.
+
+Two kinds, honestly distinguished — do NOT claim every item is a deterministic
+predicate over delivered artifacts:
+
+DETERMINISTIC (the blocking teeth)
+    ``spec_not_plan``, ``done_not_done``, ``completeness`` — a pure predicate over
+    REAL artifacts (PlanArtifact adequacy, keystone MergeAudit + worktree state,
+    the spec_coverage manifest). Each REUSES its sibling gate rather than
+    re-implementing it, and fires on ABSENCE so an empty delivery cannot wave it
+    through. These are the items that BLOCK when enforcement is live — no LLM in
+    the blocking path.
+
+LLM (the semantic net, advisory)
+    ``coherence``, ``duplication``, ``deferred``, ``ignored_input``,
+    ``unenforced_guarantee`` — determinism cannot read them, so the async critic
+    (:class:`~teatree.core.models.critic_dispatch.CriticDispatch`) judges them
+    against the REAL delivered artifacts (plan text, the diff's changed files, the
+    intake attachment manifest) and returns a
+    :class:`~teatree.core.models.critic_verdict.CriticVerdict`. They are ADVISORY —
+    the gate records findings from the verdict, never blocks on it — and they do
+    NOT read any self-declared ``extra`` key that no producer writes.
 
 The registry is the frozen-dataclass + dotted-path-resolve + registry-walk-test
-idiom of :mod:`teatree.core.chokepoint_registry`: pure data, and a conformance test
-(``tests/teatree_core/test_critic_rubric.py``) resolves every ``predicate_path`` so
-a renamed/removed predicate fails the build rather than silently going phantom.
-
-Predicate contract
-    ``predicate(ticket) -> str | None`` — a NON-EMPTY detail string when the
-    failure class is PRESENT (a finding), ``None`` when the item is clean. The
-    detail names the offending artifact so the finding is dispatchable. A
-    predicate that RAISES is inconclusive: the gate records an
-    ``instrumentation_gap`` (counted as a FAIL, never a silent pass — the plan's
-    anti-theater doctrine).
-
-Determinism first
-    The MECHANICAL classes (``spec_not_plan``, ``done_not_done``, ``completeness``)
-    REUSE the sibling gates' checks — they never re-implement merge-evidence or
-    plan-adequacy, they call them — and fire on ABSENCE (no plan / no merged-SHA /
-    an uncovered criterion) so an empty delivery cannot wave them through. The
-    SEMANTIC classes (``coherence``, ``duplication``, ``deferred``,
-    ``ignored_input``, ``unenforced_guarantee``) enforce the plan's
-    silence-never-passes doctrine over the delivery's DECLARED claims: a declared
-    concept-merge / new-implementation / deferral / guarantee that omits its
-    justification is caught. Detecting an UNDECLARED conflation is the deferred LLM
-    critic's job; these predicates make an under-justified declaration louder than
-    an honest one.
+idiom of :mod:`teatree.core.chokepoint_registry`: a conformance test resolves every
+DETERMINISTIC item's ``predicate_path`` and asserts every LLM item's slug is one the
+critic dispatch prompt actually asks for — a renamed predicate or an LLM item the
+prompt forgets fails the build instead of going phantom.
 """
 
 import importlib
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from teatree.core.gates.merge_evidence_gate import has_merge_evidence
 from teatree.core.gates.plan_currency_gate import latest_plan_artifact
-from teatree.core.gates.spec_coverage_gate import uncovered_acs
+from teatree.core.gates.spec_coverage_gate import acceptance_criteria, override_reason, uncovered_acs
 from teatree.core.models.plan_adequacy import is_adequate
 from teatree.core.models.ticket_worktree_checks import collect_dirty_worktree_paths
 
@@ -50,6 +49,11 @@ if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket
 
 CriticPredicate = Callable[["Ticket"], "str | None"]
+
+
+class RubricKind(StrEnum):
+    DETERMINISTIC = "deterministic"
+    LLM = "llm"
 
 
 class CriticRubricResolutionError(ValueError):
@@ -75,12 +79,20 @@ def _resolve_predicate(path: str) -> CriticPredicate:
 
 @dataclass(frozen=True, slots=True)
 class CriticRubricItem:
-    """One rubric item: the adversarial question + the predicate that decides it."""
+    """One rubric item: the adversarial question + how its verdict is produced.
+
+    ``kind`` DETERMINISTIC → ``predicate_path`` names a pure predicate over real
+    artifacts and ``blocking`` decides whether a FAIL blocks under enforcement.
+    ``kind`` LLM → ``predicate_path`` is empty; the async critic judges it and the
+    item is always advisory.
+    """
 
     slug: str
     adversarial_question: str
-    predicate_path: str
+    kind: RubricKind
     origin: str
+    predicate_path: str = ""
+    blocking: bool = False
 
     def resolve(self) -> CriticPredicate:
         return _resolve_predicate(self.predicate_path)
@@ -90,25 +102,7 @@ class CriticRubricItem:
 
 
 # --------------------------------------------------------------------------- #
-# Shared readers over the delivery's declared critic claims.
-# --------------------------------------------------------------------------- #
-def _critic_claims(ticket: "Ticket", key: str) -> list[dict]:
-    """The declared ``ticket.extra['critic'][<key>]`` list of claim mappings, or []."""
-    manifest = (ticket.extra or {}).get("critic")
-    if not isinstance(manifest, dict):
-        return []
-    claims = manifest.get(key)
-    if not isinstance(claims, list):
-        return []
-    return [claim for claim in claims if isinstance(claim, dict)]
-
-
-def _blank(value: object) -> bool:
-    return not (isinstance(value, str) and value.strip())
-
-
-# --------------------------------------------------------------------------- #
-# Mechanical predicates — REUSE the sibling gates, fire on absence.
+# Deterministic predicates — REUSE the sibling gates, fire on absence.
 # --------------------------------------------------------------------------- #
 def spec_not_plan(ticket: "Ticket") -> "str | None":
     """Is the plan a real plan, or a thin scope+acceptance spec authored against a stale base?"""
@@ -137,121 +131,81 @@ def done_not_done(ticket: "Ticket") -> "str | None":
 
 
 def completeness(ticket: "Ticket") -> "str | None":
-    """Is every acceptance criterion delivered, or was the scope silently reduced to a subset?"""
+    """Is every acceptance criterion delivered, or was the scope silently reduced to a subset?
+
+    Matches the real ``check_spec_coverage`` gate: a recorded ``spec_coverage_override``
+    reason passes; a MISSING manifest is itself a FAIL (declaring done on zero proven
+    ACs is the partial-subset claim), not a pass-clean; an uncovered AC is a FAIL.
+    """
+    if override_reason(ticket):
+        return None
+    if not acceptance_criteria(ticket):
+        return (
+            "delivered with no spec-coverage manifest — zero acceptance criteria proven is the "
+            "partial-subset claim done cannot be declared on (record extra['spec_coverage'] or an override)"
+        )
     uncovered = uncovered_acs(ticket)
     if uncovered:
-        return (
-            f"{len(uncovered)} acceptance criterion(s) have no backing artifact — scope silently "
-            f"reduced to a subset: {', '.join(uncovered)}"
-        )
+        return f"{len(uncovered)} acceptance criterion(s) have no backing test — scope reduced: {', '.join(uncovered)}"
     return None
 
 
 # --------------------------------------------------------------------------- #
-# Semantic predicates — silence-never-passes over the delivery's declared claims.
-# --------------------------------------------------------------------------- #
-def coherence(ticket: "Ticket") -> "str | None":
-    """Any merged/renamed concept must cite the two concepts AND why they are one."""
-    for claim in _critic_claims(ticket, "concept_merges"):
-        if _blank(claim.get("rationale")):
-            merged = str(claim.get("merged") or claim.get("concepts") or "<unnamed merge>")
-            return f"concept-merge {merged!r} declared with no rationale — two distinct concepts may be conflated"
-    return None
-
-
-def duplication(ticket: "Ticket") -> "str | None":
-    """Was an existing implementation searched for before a new one was accepted?"""
-    for claim in _critic_claims(ticket, "new_implementations"):
-        if _blank(claim.get("existing_search")):
-            symbol = str(claim.get("symbol") or "<unnamed symbol>")
-            return (
-                f"new implementation {symbol!r} declared with no existing-implementation search — possible duplication"
-            )
-    return None
-
-
-def deferred(ticket: "Ticket") -> "str | None":
-    """Every 'deferred by design' claim needs a filed ticket — never bare prose."""
-    for claim in _critic_claims(ticket, "deferrals"):
-        if _blank(claim.get("ticket")):
-            what = str(claim.get("what") or "<unnamed deferral>")
-            return f"deferral {what!r} declared with no filed ticket — deferred-by-prose, not reconciled with reality"
-    return None
-
-
-def ignored_input(ticket: "Ticket") -> "str | None":
-    """Every user-provided URL/attachment/directive must be addressed or explicitly declined."""
-    extra = ticket.extra or {}
-    provided = extra.get("provided_inputs")
-    if not isinstance(provided, list):
-        return None
-    addressed_raw = extra.get("addressed_inputs")
-    addressed = {str(item).strip() for item in addressed_raw} if isinstance(addressed_raw, list) else set()
-    unaddressed = [str(item).strip() for item in provided if str(item).strip() and str(item).strip() not in addressed]
-    if unaddressed:
-        return f"user-provided input(s) neither addressed nor declined: {', '.join(unaddressed)}"
-    return None
-
-
-def unenforced_guarantee(ticket: "Ticket") -> "str | None":
-    """Any docstring asserting an invariant (never/always) must cite the test/gate enforcing it."""
-    for claim in _critic_claims(ticket, "guarantees"):
-        if _blank(claim.get("test")):
-            asserted = str(claim.get("claim") or "<unnamed guarantee>")
-            return f"guarantee {asserted!r} asserted with no citing test — an unenforced/vacuous-green invariant"
-    return None
-
-
-# --------------------------------------------------------------------------- #
-# The seeded registry — the 8 classes the human had to point out this session.
+# The seeded registry — 3 deterministic (blocking) + 5 LLM (advisory).
 # --------------------------------------------------------------------------- #
 CRITIC_RUBRIC: tuple[CriticRubricItem, ...] = (
     CriticRubricItem(
         slug="spec_not_plan",
         adversarial_question="Is this a real plan naming its files and seams, or a thin spec on a stale base?",
+        kind=RubricKind.DETERMINISTIC,
         predicate_path="teatree.core.critic_rubric.spec_not_plan",
+        blocking=True,
         origin="thin/underspecified plan; stale-base-not-rebased",
     ),
     CriticRubricItem(
         slug="done_not_done",
         adversarial_question="Is this actually done — merged with a real SHA — or just committed and believed done?",
+        kind=RubricKind.DETERMINISTIC,
         predicate_path="teatree.core.critic_rubric.done_not_done",
+        blocking=True,
         origin="believe-done-not-done",
     ),
     CriticRubricItem(
         slug="completeness",
         adversarial_question="Is every acceptance criterion delivered, or was the scope silently reduced to a subset?",
+        kind=RubricKind.DETERMINISTIC,
         predicate_path="teatree.core.critic_rubric.completeness",
+        blocking=True,
         origin="silent scope reduction",
     ),
     CriticRubricItem(
         slug="coherence",
         adversarial_question="Does any merged/renamed concept conflate two things that serve different intents?",
-        predicate_path="teatree.core.critic_rubric.coherence",
+        kind=RubricKind.LLM,
         origin="concept-conflation (companions vs requires)",
     ),
     CriticRubricItem(
         slug="duplication",
         adversarial_question="Was an existing implementation searched for before this new one was written?",
-        predicate_path="teatree.core.critic_rubric.duplication",
+        kind=RubricKind.LLM,
         origin="new implementation without a duplication check",
     ),
     CriticRubricItem(
         slug="deferred",
         adversarial_question="Is every 'deferred by design' backed by a filed ticket, or is it bare prose?",
-        predicate_path="teatree.core.critic_rubric.deferred",
+        kind=RubricKind.LLM,
         origin="TODO-list-not-reconciled-with-reality; deferred-by-prose",
     ),
     CriticRubricItem(
         slug="ignored_input",
         adversarial_question="Was every user-provided URL/attachment/directive addressed or explicitly declined?",
-        predicate_path="teatree.core.critic_rubric.ignored_input",
+        kind=RubricKind.LLM,
         origin="ignored user-provided context/paste",
     ),
     CriticRubricItem(
         slug="unenforced_guarantee",
         adversarial_question="Does every asserted invariant (never/always) cite the test or gate that enforces it?",
-        predicate_path="teatree.core.critic_rubric.unenforced_guarantee",
+        kind=RubricKind.LLM,
         origin="missing anti-vacuity / vacuous-green",
     ),
 )
@@ -260,3 +214,15 @@ CRITIC_RUBRIC: tuple[CriticRubricItem, ...] = (
 def rubric_items() -> tuple[CriticRubricItem, ...]:
     """The active critic rubric, in seeded order."""
     return CRITIC_RUBRIC
+
+
+def deterministic_items() -> tuple[CriticRubricItem, ...]:
+    return tuple(item for item in CRITIC_RUBRIC if item.kind is RubricKind.DETERMINISTIC)
+
+
+def llm_items() -> tuple[CriticRubricItem, ...]:
+    return tuple(item for item in CRITIC_RUBRIC if item.kind is RubricKind.LLM)
+
+
+def item_for(slug: str) -> "CriticRubricItem | None":
+    return next((item for item in CRITIC_RUBRIC if item.slug == slug), None)

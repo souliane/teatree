@@ -1,14 +1,13 @@
-"""The critic rubric (SELFCATCH-5): registry conformance + each predicate load-bearing.
+"""The critic rubric (SELFCATCH-5): registry conformance + each deterministic predicate load-bearing.
 
-Two guarantees. (1) The registry-walk conformance test resolves every item's
-``predicate_path`` against the live module tree — a renamed/removed predicate fails
-the build instead of going phantom (the ``chokepoint_registry`` drift-catch idiom).
-(2) Each of the 8 seeded predicates has a CAUGHT fixture (a delivery exhibiting the
-failure class this session's human had to point out) and a CLEAN twin — proving the
-predicate is load-bearing, not vacuous. The mechanical predicates fire over REAL
-production artifacts (PlanArtifact, MergeAudit, spec_coverage); the semantic ones
-prove their justification field is load-bearing (declared-unjustified → caught,
-declared-justified → clean, not merely absent-vs-present).
+Conformance: every DETERMINISTIC item's ``predicate_path`` resolves, and every LLM
+item's slug is one the dispatch contract actually asks the critic to judge — a
+renamed predicate or a forgotten LLM item fails the build. Each of the 3
+deterministic predicates has a CAUGHT fixture (over REAL production artifacts:
+PlanArtifact adequacy, keystone MergeAudit, the spec_coverage manifest) and a CLEAN
+twin, proving the predicate is load-bearing. The LLM items carry no predicate — they
+are judged by the async critic (covered in the gate tests), never by a self-declared
+key, so there is no vacuous predicate to test here.
 """
 
 import pytest
@@ -18,17 +17,16 @@ from teatree.core import critic_rubric
 from teatree.core.critic_rubric import (
     CRITIC_RUBRIC,
     CriticRubricResolutionError,
+    RubricKind,
     _resolve_predicate,
-    coherence,
     completeness,
-    deferred,
+    deterministic_items,
     done_not_done,
-    duplication,
-    ignored_input,
+    llm_items,
     rubric_items,
     spec_not_plan,
-    unenforced_guarantee,
 )
+from teatree.core.gates.critic_gate import build_critic_contract
 from teatree.core.models import MergeAudit, MergeClear, PlanArtifact, Ticket
 from teatree.core.models.plan_adequacy import all_negated_adequacy
 
@@ -63,14 +61,30 @@ def _merge_audit(ticket: Ticket) -> MergeAudit:
 
 
 class TestRegistryConformance(TestCase):
-    def test_every_predicate_path_resolves_to_a_callable(self) -> None:
-        for item in rubric_items():
-            assert callable(item.resolve()), item.slug
-
     def test_eight_seeded_items_with_unique_slugs(self) -> None:
         slugs = [item.slug for item in CRITIC_RUBRIC]
         assert len(slugs) == 8
         assert len(set(slugs)) == 8
+
+    def test_three_deterministic_blocking_five_llm_advisory(self) -> None:
+        deterministic = deterministic_items()
+        llm = llm_items()
+        assert {i.slug for i in deterministic} == {"spec_not_plan", "done_not_done", "completeness"}
+        assert all(i.blocking for i in deterministic)
+        assert len(llm) == 5
+        assert all(i.kind is RubricKind.LLM and not i.blocking and i.predicate_path == "" for i in llm)
+
+    def test_every_deterministic_predicate_path_resolves(self) -> None:
+        for item in deterministic_items():
+            assert callable(item.resolve()), item.slug
+
+    def test_every_llm_item_is_asked_by_the_dispatch_contract(self) -> None:
+        # A LLM item the critic prompt forgets would never get judged — pin that the
+        # contract asks for every LLM slug (production-shaped, over a real ticket).
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
+        contract = build_critic_contract(ticket, _FORTY_HEX)
+        for item in llm_items():
+            assert item.slug in contract, item.slug
 
     def test_every_item_carries_a_question_and_origin(self) -> None:
         for item in CRITIC_RUBRIC:
@@ -89,11 +103,11 @@ class TestRegistryConformance(TestCase):
 class TestSpecNotPlanPredicate(TestCase):
     def test_caught_when_no_plan_artifact(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
-        assert spec_not_plan(ticket)  # no PlanArtifact at all
+        assert spec_not_plan(ticket)
 
     def test_caught_when_plan_manifest_is_thin(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
-        _plan(ticket, adequacy={})  # a scope+acceptance thin spec — no four-section manifest
+        _plan(ticket, adequacy={})
         assert spec_not_plan(ticket)
 
     def test_clean_with_an_adequate_manifest(self) -> None:
@@ -105,7 +119,7 @@ class TestSpecNotPlanPredicate(TestCase):
 class TestDoneNotDonePredicate(TestCase):
     def test_caught_when_no_merge_evidence(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
-        assert done_not_done(ticket)  # no MergeAudit row, no PR to confirm merged
+        assert done_not_done(ticket)
 
     def test_clean_with_a_keystone_merge_audit(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
@@ -114,13 +128,18 @@ class TestDoneNotDonePredicate(TestCase):
 
 
 class TestCompletenessPredicate(TestCase):
+    def test_caught_when_no_spec_coverage_manifest(self) -> None:
+        # The no-manifest hole fix: zero proven ACs is a FAIL (matches check_spec_coverage), not pass-clean.
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
+        assert completeness(ticket)
+
     def test_caught_when_an_acceptance_criterion_is_unbacked(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
         ticket.extra = {
             "spec_coverage": {
                 "acceptance_criteria": [
                     {"id": "AC-1", "tests": ["tests/test_a.py::t"]},
-                    {"id": "AC-2", "tests": []},  # silently dropped
+                    {"id": "AC-2", "tests": []},
                 ]
             }
         }
@@ -131,83 +150,18 @@ class TestCompletenessPredicate(TestCase):
         ticket.extra = {"spec_coverage": {"acceptance_criteria": [{"id": "AC-1", "tests": ["tests/test_a.py::t"]}]}}
         assert completeness(ticket) is None
 
-
-class TestCoherencePredicate(TestCase):
-    def test_caught_when_a_concept_merge_has_no_rationale(self) -> None:
+    def test_clean_with_a_recorded_override(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
-        ticket.extra = {"critic": {"concept_merges": [{"merged": "companions into requires", "rationale": ""}]}}
-        assert coherence(ticket)
-
-    def test_clean_when_the_merge_cites_its_rationale(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
-        ticket.extra = {
-            "critic": {
-                "concept_merges": [{"merged": "companions into requires", "rationale": "both are load-order deps"}]
-            }
-        }
-        assert coherence(ticket) is None
+        ticket.extra = {"spec_coverage_override": {"reason": "pure docs change, no ACs"}}
+        assert completeness(ticket) is None
 
 
-class TestDuplicationPredicate(TestCase):
-    def test_caught_when_a_new_impl_did_no_existing_search(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
-        ticket.extra = {"critic": {"new_implementations": [{"symbol": "render_ref", "existing_search": ""}]}}
-        assert duplication(ticket)
-
-    def test_clean_when_the_new_impl_cites_its_search(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
-        ticket.extra = {
-            "critic": {"new_implementations": [{"symbol": "render_ref", "existing_search": "grep ref_render"}]}
-        }
-        assert duplication(ticket) is None
-
-
-class TestDeferredPredicate(TestCase):
-    def test_caught_when_a_deferral_has_no_filed_ticket(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
-        ticket.extra = {"critic": {"deferrals": [{"what": "seam-parity checker", "ticket": ""}]}}
-        assert deferred(ticket)
-
-    def test_clean_when_the_deferral_names_its_ticket(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
-        ticket.extra = {"critic": {"deferrals": [{"what": "seam-parity checker", "ticket": "souliane/teatree#123"}]}}
-        assert deferred(ticket) is None
-
-
-class TestIgnoredInputPredicate(TestCase):
-    def test_caught_when_a_provided_input_is_unaddressed(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
-        ticket.extra = {"provided_inputs": ["https://example.com/paste/abc"], "addressed_inputs": []}
-        assert ignored_input(ticket)
-
-    def test_clean_when_every_input_is_addressed(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
-        ticket.extra = {
-            "provided_inputs": ["https://example.com/paste/abc"],
-            "addressed_inputs": ["https://example.com/paste/abc"],
-        }
-        assert ignored_input(ticket) is None
-
-
-class TestUnenforcedGuaranteePredicate(TestCase):
-    def test_caught_when_a_guarantee_cites_no_test(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
-        ticket.extra = {"critic": {"guarantees": [{"claim": "never blocks", "test": ""}]}}
-        assert unenforced_guarantee(ticket)
-
-    def test_clean_when_the_guarantee_cites_its_test(self) -> None:
-        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
-        ticket.extra = {
-            "critic": {"guarantees": [{"claim": "never blocks", "test": "tests/gates/test_critic_gate.py::t"}]}
-        }
-        assert unenforced_guarantee(ticket) is None
-
-
-class TestModuleExportsEveryPredicateItReferences(TestCase):
-    def test_no_registry_item_points_outside_the_module(self) -> None:
-        # A predicate must live where the rubric says it does — the registry-walk
-        # already resolves it, this pins the intended home so a stray move is loud.
-        for item in CRITIC_RUBRIC:
+class TestModuleExportsEveryDeterministicPredicate(TestCase):
+    def test_no_deterministic_item_points_outside_the_module(self) -> None:
+        for item in deterministic_items():
             module, _, attr = item.predicate_path.rpartition(".")
             assert module == critic_rubric.__name__, item.slug
             assert hasattr(critic_rubric, attr), item.slug
+
+    def test_rubric_items_returns_the_full_registry(self) -> None:
+        assert rubric_items() == CRITIC_RUBRIC

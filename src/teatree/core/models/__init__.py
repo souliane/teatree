@@ -14,7 +14,9 @@ from teatree.core.models.compliance_snapshot import (
 )
 from teatree.core.models.config_setting import ConfigSetting, ConfigSettingManager
 from teatree.core.models.consolidated_memory import BindingFeedbackError, ConsolidatedMemory
+from teatree.core.models.critic_dispatch import CriticDispatch
 from teatree.core.models.critic_finding import CriticFinding, CriticFindingSpec
+from teatree.core.models.critic_verdict import CriticItemVerdict, CriticVerdict, CriticVerdictError
 from teatree.core.models.daily_digest import DailyDigestMessage, DailyDigestThread
 from teatree.core.models.db_approval import DbApproval, DbApprovalError, DbAudit
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
@@ -125,9 +127,13 @@ __all__ = [
     "ConfigSettingManager",
     "ConsolidatedMemory",
     "CostRegression",
+    "CriticDispatch",
     "CriticFinding",
     "CriticFindingSpec",
     "CriticGateError",
+    "CriticItemVerdict",
+    "CriticVerdict",
+    "CriticVerdictError",
     "DailyDigestMessage",
     "DailyDigestThread",
     "DbApproval",

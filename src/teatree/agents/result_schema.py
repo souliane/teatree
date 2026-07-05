@@ -57,6 +57,26 @@ class ReviewVerdictEnvelope(TypedDict, total=False):
     findings: list[ReviewFinding]
 
 
+class CriticItemVerdictDict(TypedDict, total=False):
+    slug: str
+    status: str  # "pass" | "fail" | "instrumentation_gap"
+    citation: str
+
+
+class CriticVerdictEnvelope(TypedDict, total=False):
+    """The autonomous user-proxy critic's typed verdict, recorded server-side (SELFCATCH-5).
+
+    A headless critic phase is denied the shell, so it RETURNS this instead of
+    recording a ``CriticVerdict`` itself: the orchestrator (``attempt_recorder`` →
+    ``critic_gate.record_returned_critic_verdict``) records it, so maker≠checker
+    holds by construction. ``items`` carries one per-rubric-item PASS/FAIL with a
+    citation (an uncited pass is stored as ``instrumentation_gap``).
+    """
+
+    grader_identity: str
+    items: list[CriticItemVerdictDict]
+
+
 class AgentResult(TypedDict, total=False):
     """Structured result from an agent task execution.
 
@@ -74,6 +94,7 @@ class AgentResult(TypedDict, total=False):
     tests_failed: int
     decisions: list[str]
     review_verdict: ReviewVerdictEnvelope
+    critic_verdict: "CriticVerdictEnvelope"
     needs_user_input: bool
     user_input_reason: str
     next_steps: list[str]
@@ -141,6 +162,24 @@ RESULT_JSON_SCHEMA: dict[str, object] = {
                 },
             },
             "required": ["verdict"],
+        },
+        "critic_verdict": {
+            "type": "object",
+            "description": "The autonomous user-proxy critic's typed verdict, recorded server-side (SELFCATCH-5).",
+            "properties": {
+                "grader_identity": {"type": "string"},
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "slug": {"type": "string"},
+                            "status": {"type": "string", "enum": ["pass", "fail", "instrumentation_gap"]},
+                            "citation": {"type": "string"},
+                        },
+                    },
+                },
+            },
         },
         "needs_user_input": {"type": "boolean"},
         "user_input_reason": {"type": "string"},
