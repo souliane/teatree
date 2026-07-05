@@ -259,7 +259,16 @@ def compute_s2(window: Window, overlay: str, now: datetime) -> Computation:  # n
     }
     if denom < MIN_SAMPLE:
         return Computation(SignalReading(0.0, denom, window.days, SignalStatus.INSUFFICIENT_DATA), evidence)
-    return Computation(SignalReading(numerator / denom, denom, window.days, SignalStatus.OK), evidence)
+    # #17 anti-vacuity, mirroring S1's dead-recorder guard: a window with real
+    # correction activity (red cards fired) but ZERO fix-classified tickets is
+    # the fingerprint of a silent Kind.FIX writer — a correction should also mint
+    # a FIX ticket. A 0-fix reading there is indistinguishable from a genuinely
+    # defect-free window, so refuse the fabricated clean value and fail loud. A
+    # window with NO correction activity at all is a legitimate clean reading.
+    status = SignalStatus.OK
+    if fix_created == 0 and red_card_count > 0:
+        status = SignalStatus.INSTRUMENTATION_GAP
+    return Computation(SignalReading(numerator / denom, denom, window.days, status), evidence)
 
 
 def _review_caught(slug: str, pr_id: int) -> bool:

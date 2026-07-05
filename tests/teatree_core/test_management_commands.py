@@ -1042,6 +1042,25 @@ class TestTasksCreateCommand(TestCase):
         with pytest.raises(SystemExit):
             call_command("tasks", "create", 99999, phase="coding", reason="x")
 
+    def test_create_kind_fix_records_ticket_kind(self) -> None:
+        # #17: `tasks create --kind fix` classifies the ticket (RED before the
+        # option existed — the ticket stayed FEATURE).
+        ticket = Ticket.objects.create(overlay="test")
+        call_command("tasks", "create", ticket.pk, phase="coding", reason="x", kind="fix")
+        ticket.refresh_from_db()
+        assert ticket.kind == Ticket.Kind.FIX
+
+    def test_create_without_kind_leaves_ticket_unchanged(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", kind=Ticket.Kind.FIX)
+        call_command("tasks", "create", ticket.pk, phase="coding", reason="x")
+        ticket.refresh_from_db()
+        assert ticket.kind == Ticket.Kind.FIX
+
+    def test_create_unknown_kind_is_refused(self) -> None:
+        ticket = Ticket.objects.create(overlay="test")
+        with pytest.raises(SystemExit):
+            call_command("tasks", "create", ticket.pk, phase="coding", reason="x", kind="bugfix")
+
 
 class TestTasksCancelCommand(TestCase):
     """Tests for the tasks cancel subcommand."""

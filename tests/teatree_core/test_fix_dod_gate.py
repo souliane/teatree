@@ -19,6 +19,9 @@ from teatree.core.gates.fix_dod_gate import (
     override_reason,
 )
 from teatree.core.models import Ticket
+from teatree.loop.dispatch import dispatch
+from teatree.loop.persistence import persist_agent_actions
+from teatree.loop.scanners.base import ScanSignal
 
 _COMPLETE_RECORD = {
     "root_cause": "carve-out resolved repo from ambient cwd, ignoring git -C target",
@@ -135,5 +138,54 @@ class TestMarkDeliveredFsmGate(TestCase):
 
     def test_fix_with_override_delivers(self) -> None:
         ticket = self._retrospected(kind=Ticket.Kind.FIX, extra={"fix_record_override": {"reason": "exempt"}})
+        ticket.mark_delivered()
+        assert ticket.state == Ticket.State.DELIVERED
+
+
+class TestFixRecordDodLivePath(TestCase):
+    """#17 end-to-end: a correction FLOW mints a real FIX ticket the DoD gate then enforces.
+
+    Unlike ``TestMarkDeliveredFsmGate`` (factory-injected ``kind=FIX``), the ticket
+    here is produced by the PRODUCTION red-card persistence handler — proving the
+    Kind.FIX writer (SIG-3) and the fix_record_dod consumer are wired live end to
+    end. Before the classifier wire-up the produced ticket defaulted to FEATURE and
+    the gate never fired.
+    """
+
+    def _correction_ticket(self) -> Ticket:
+        signal = ScanSignal(
+            kind="red_card.signal",
+            summary="RED CARD",
+            payload={"row_id": 917, "signal_kind": "red_circle", "signal_text": ":red_circle:", "overlay": "acme"},
+        )
+        actions = [action for action in dispatch([signal]) if action.kind == "agent"]
+        created = persist_agent_actions(actions)
+        assert len(created) == 1
+        ticket = created[0].ticket
+        assert ticket.kind == Ticket.Kind.FIX
+        return ticket
+
+    def _at_retrospected(self, ticket: Ticket, **extra_overrides: object) -> Ticket:
+        extra = {**(ticket.extra or {}), **extra_overrides}
+        Ticket.objects.filter(pk=ticket.pk).update(state=Ticket.State.RETROSPECTED, extra=extra)
+        ticket.refresh_from_db()
+        return ticket
+
+    def test_correction_ticket_without_record_is_refused_at_delivery(self) -> None:
+        ticket = self._at_retrospected(self._correction_ticket())
+        with pytest.raises(FixRecordDodError):
+            ticket.mark_delivered()
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.RETROSPECTED
+
+    def test_correction_ticket_with_record_delivers(self) -> None:
+        ticket = self._at_retrospected(self._correction_ticket(), fix_record=_COMPLETE_RECORD)
+        ticket.mark_delivered()
+        assert ticket.state == Ticket.State.DELIVERED
+
+    def test_correction_ticket_with_override_delivers(self) -> None:
+        ticket = self._at_retrospected(
+            self._correction_ticket(), fix_record_override={"reason": "trivial one-liner, no root cause"}
+        )
         ticket.mark_delivered()
         assert ticket.state == Ticket.State.DELIVERED

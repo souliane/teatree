@@ -20,6 +20,7 @@ from django.core.exceptions import ImproperlyConfigured
 
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_all_overlays, get_overlay_for_repo
+from teatree.core.ticket_kind_classification import classify_ticket_kind
 from teatree.core.worktree_env import CACHE_FILENAME
 from teatree.core.worktree_paths import _candidate_paths
 from teatree.utils import git
@@ -246,7 +247,7 @@ def _auto_register_from_git(cwd: str, ticket_hint: Ticket | None = None) -> Work
 
     ticket = Ticket.objects.get_or_create(
         issue_url=f"auto:{branch}",
-        defaults={"variant": "", "repos": [repo_name]},
+        defaults={"variant": "", "repos": [repo_name], "kind": classify_ticket_kind(title=branch)},
     )[0]
     return _get_or_refresh_worktree(ticket, repo_name, branch, cwd_path)
 

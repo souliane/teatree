@@ -464,6 +464,48 @@ class TestWorkspaceTicket(TestCase):
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
+    def test_explicit_kind_fix_is_recorded(self) -> None:
+        # #17: `workspace ticket --kind fix` stamps Ticket.kind=FIX (RED before
+        # the intake site classified — it defaulted to FEATURE).
+        ticket_id = cast(
+            "int",
+            call_command(
+                "workspace", "ticket", "https://example.com/issues/171", description="Add a thing", kind="fix"
+            ),
+        )
+        assert Ticket.objects.get(pk=ticket_id).kind == Ticket.Kind.FIX
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_fix_title_is_inferred_as_fix(self) -> None:
+        ticket_id = cast(
+            "int",
+            call_command(
+                "workspace", "ticket", "https://example.com/issues/172", description="fix: crash on empty password"
+            ),
+        )
+        assert Ticket.objects.get(pk=ticket_id).kind == Ticket.Kind.FIX
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_feature_title_stays_feature(self) -> None:
+        ticket_id = cast(
+            "int",
+            call_command("workspace", "ticket", "https://example.com/issues/173", description="Add dark mode toggle"),
+        )
+        assert Ticket.objects.get(pk=ticket_id).kind == Ticket.Kind.FEATURE
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_unknown_kind_is_refused_without_creating_a_ticket(self) -> None:
+        rc = call_command(
+            "workspace", "ticket", "https://example.com/issues/174", description="Add a thing", kind="bugfix"
+        )
+        assert rc == 0
+        assert not Ticket.objects.filter(issue_url="https://example.com/issues/174").exists()
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
     def test_repos_with_per_repo_branch_persists_branch_map(self) -> None:
         # #33: a split-branch ticket carries each repo's branch in --repos as
         # `repo:branch`; the map lands on extra['branches'] (repo -> branch) for

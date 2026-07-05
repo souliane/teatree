@@ -217,6 +217,22 @@ class TestResolveWorktree(TestCase):
         assert result.repo_path == "my-repo"
         assert result.extra["worktree_path"] == str(wt_dir)
 
+    def _auto_register_branch(self, branch: str) -> Ticket:
+        wt_dir = self._tmp_path / "my-repo"
+        wt_dir.mkdir()
+        (wt_dir / ".git").write_text("gitdir: /some/main/.git/worktrees/my-repo\n")
+        self._monkeypatch.setenv("T3_ORIG_CWD", str(wt_dir))
+        with patch("teatree.core.resolve.git.current_branch", return_value=branch):
+            resolve_worktree()
+        return Ticket.objects.get(issue_url=f"auto:{branch}")
+
+    def test_auto_registered_fix_branch_ticket_is_fix(self) -> None:
+        # #17: the auto-register intake site classifies from the branch name.
+        assert self._auto_register_branch("fix/login-crash").kind == Ticket.Kind.FIX
+
+    def test_auto_registered_feature_branch_ticket_is_feature(self) -> None:
+        assert self._auto_register_branch("feat/dark-mode").kind == Ticket.Kind.FEATURE
+
     def test_raises_when_nothing_found(self) -> None:
         self._monkeypatch.setenv("T3_ORIG_CWD", str(self._tmp_path))
 
