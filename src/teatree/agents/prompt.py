@@ -11,7 +11,7 @@ from teatree.agents.skill_injection import (
     _read_skill_contents_scoped,
 )
 from teatree.config_agent import resolve_agent_config
-from teatree.core.modelkit.phases import resolve_fanout_directive
+from teatree.core.modelkit.phases import normalize_phase, resolve_fanout_directive
 from teatree.core.models import Task, Ticket
 from teatree.skill_support.loading import FRAMEWORK_SKILL_NAMES
 
@@ -231,7 +231,7 @@ def build_task_prompt(task: Task, *, skills: list[str] | None = None) -> str:
         ),
     )
 
-    if task.phase == "coding":
+    if normalize_phase(task.phase) == "coding":
         lines.extend(("", "PHASE: coding", *head_state_brief_lines(task), *_coding_phase_directive(skills)))
 
     return "\n".join(lines)
@@ -396,20 +396,21 @@ def _phase_specific_lines(task: Task, skills: list[str]) -> tuple[str, ...]:
     Dispatches on the canonical phase token. coding/shipping carry their
     existing directives; planning/reviewing additionally surface an opted-in
     fan-out directive (default-OFF). One ``(role, phase)`` pair maps to one
-    block — they are mutually exclusive on ``task.phase``.
+    block — they are mutually exclusive on the canonical phase.
     """
-    if task.phase == "coding":
+    phase = normalize_phase(task.phase)
+    if phase == "coding":
         return (
             "",
             "PHASE: coding — builder dispatch contract",
             *head_state_brief_lines(task),
             *_coding_phase_directive(skills),
         )
-    if task.phase == "planning":
+    if phase == "planning":
         return _planning_phase_lines(task)
-    if task.phase == "reviewing":
+    if phase == "reviewing":
         return _reviewing_phase_lines(task)
-    if task.phase == "shipping":
+    if phase == "shipping":
         return _shipping_phase_lines()
     return ()
 
@@ -438,10 +439,11 @@ def build_system_context(task: Task, *, skills: list[str], lifecycle_skill: str 
             primary_skills = {lifecycle_skill}
             explicit_load_skills: set[str] | None = None
             suppress_names: set[str] | None = None
-            if task.phase == "reviewing":
+            phase = normalize_phase(task.phase)
+            if phase == "reviewing":
                 review_primary, explicit_load_skills = _review_phase_scoping(skills)
                 primary_skills |= review_primary
-            elif task.phase == "coding":
+            elif phase == "coding":
                 # Embed the architecture pass in full (see _CODING_PHASE_ALWAYS_FULL),
                 # not the ignorable "load if needed" summary the builder would skip.
                 primary_skills |= _CODING_PHASE_ALWAYS_FULL

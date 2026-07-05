@@ -115,7 +115,7 @@ class TestStatusEnforcesProvisionPostConditions(TestCase):
     def _run_status(self, worktree: Worktree) -> None:
         with (
             patch.object(worktree_cmd, "resolve_worktree", return_value=worktree),
-            patch.object(worktree_cmd, "get_overlay", return_value=_NoDbOverlay()),
+            patch.object(worktree_cmd, "get_overlay_for_worktree", return_value=_NoDbOverlay()),
             patch.object(worktree_cmd, "get_worktree_ports", return_value={}),
         ):
             call_command("worktree", "status", path=worktree.worktree_path)
