@@ -98,6 +98,10 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 live work loop. `run` is the manual escape hatch; `tick` is  │
 │                 the cadence-gated cron entry point.                          │
 │ mutation        Scoped mutation testing over high-value safety modules.      │
+│ outer           T4 autoresearch outer loop — propose → ratify → implement →  │
+│                 measure → keep-only-if-better. Ships QUADRUPLE-OFF (feature  │
+│                 flag + disabled loop row + off_live_tick + critic/signal     │
+│                 code guards); a full tick is a no-op at defaults.            │
 │ teatree         Commands for the t3-teatree overlay.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

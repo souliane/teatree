@@ -67,6 +67,7 @@ from teatree.cli.loop import loop_app
 from teatree.cli.loops import loops_app
 from teatree.cli.mcp import mcp_app
 from teatree.cli.mutation import mutation_app
+from teatree.cli.outer import outer_app
 from teatree.cli.overlay import OverlayAppBuilder
 from teatree.cli.overlay_dev import overlay_dev_app
 from teatree.cli.prompts import prompts_app
@@ -182,6 +183,7 @@ app.add_typer(dogfood_app, name="dogfood")
 app.add_typer(identities_app, name="identities")
 app.add_typer(dream_app, name="dream")
 app.add_typer(mutation_app, name="mutation")
+app.add_typer(outer_app, name="outer")
 
 
 # ── Django-dependent overlay command groups ───────────────────────────

@@ -40,6 +40,7 @@ _LOOP_DESCRIPTIONS = {
     "backlog_sweep": "Sweeps the backlog daily to propose closing stale issues; default-off (destructive-capable) behind backlog_sweep_disabled, gated by ask_before_backlog_sweep_closes.",
     "news": "Fires the daily news-scan task at 08:00 to surface relevant external releases and improvement ideas.",
     "dream": "Runs the nightly memory-consolidation pass at 03:00 — cross-link, merge, reindex MEMORY.md, decay — off the live tick.",
+    "outer_loop": "Advances at most one T4 autoresearch experiment one step per day (propose, ratify, implement, measure, keep-only-if-better), off the live tick; ships disabled behind the outer_loop_enabled flag and the critic-live guard.",
 }
 
 # The retired install-seed placeholder the arch_review prompt may still carry.

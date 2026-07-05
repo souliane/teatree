@@ -95,6 +95,10 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 live work loop. `run` is the manual escape hatch; `tick` is  │
 │                 the cadence-gated cron entry point.                          │
 │ mutation        Scoped mutation testing over high-value safety modules.      │
+│ outer           T4 autoresearch outer loop — propose → ratify → implement →  │
+│                 measure → keep-only-if-better. Ships QUADRUPLE-OFF (feature  │
+│                 flag + disabled loop row + off_live_tick + critic/signal     │
+│                 code guards); a full tick is a no-op at defaults.            │
 │ teatree         Commands for the t3-teatree overlay.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -4611,6 +4615,99 @@ Usage: t3 mutation run [OPTIONS]
 │                                 intentional, reviewed increase). Refused by  │
 │                                 default so the ratchet cannot loosen.        │
 │ --help                          Show this message and exit.                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 outer`
+
+```
+Usage: t3 outer [OPTIONS] COMMAND [ARGS]...
+
+ T4 autoresearch outer loop — propose → ratify → implement → measure →
+ keep-only-if-better. Ships QUADRUPLE-OFF (feature flag + disabled loop row +
+ off_live_tick + critic/signal code guards); a full tick is a no-op at
+ defaults.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ tick            Advance the outer loop one step IF its cadence has elapsed   │
+│                 (cron entry).                                                │
+│ status          Print the guard-chain verdict and the active experiment      │
+│                 (read-only).                                                 │
+│ propose         Record an operator hypothesis as a PROPOSED experiment       │
+│                 (refused while off).                                         │
+│ resolve-revert  Close a REVERT_PENDING experiment to terminal REVERTED,      │
+│                 freeing the slot.                                            │
+│ history         Print the recent experiment ledger (read-only).              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 outer tick`
+
+```
+Usage: t3 outer tick [OPTIONS]
+
+ Advance the outer loop one step IF its cadence has elapsed (cron entry).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 outer status`
+
+```
+Usage: t3 outer status [OPTIONS]
+
+ Print the guard-chain verdict and the active experiment (read-only).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 outer propose`
+
+```
+Usage: t3 outer propose [OPTIONS]
+
+ Record an operator hypothesis as a PROPOSED experiment (refused while off).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --hypothesis        TEXT  The operator hypothesis to test.                   │
+│ --target            TEXT  The signal provider_id to improve.                 │
+│ --help                    Show this message and exit.                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 outer resolve-revert`
+
+```
+Usage: t3 outer resolve-revert [OPTIONS] EXPERIMENT_ID
+
+ Close a REVERT_PENDING experiment to terminal REVERTED, freeing the slot.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    experiment_id      INTEGER  [required]                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --revert-sha        TEXT  The git revert commit sha (provenance).            │
+│ --help                    Show this message and exit.                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 outer history`
+
+```
+Usage: t3 outer history [OPTIONS]
+
+ Print the recent experiment ledger (read-only).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --limit        INTEGER  How many recent experiments to show. [default: 10]   │
+│ --help                  Show this message and exit.                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

@@ -174,6 +174,13 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "issue_implementer_cadence_hours": _parse_strict_int,
     "auto_disposition_enabled": _parse_strict_bool,
     "outer_loop_enabled": _parse_strict_bool,
+    # T4-PR-3 — the autoresearch outer-loop runtime bounds: the post-implement
+    # measurement horizon (days), the weekly experiment cap, and the convergence
+    # brake (park after N consecutive non-KEPT decisions). All DB-home,
+    # per-overlay overridable — an overlay can trial the loop on its own budget.
+    "outer_loop_measure_days": _parse_strict_int,
+    "outer_loop_max_per_week": _parse_strict_int,
+    "outer_loop_stop_after_consecutive_failures": _parse_strict_int,
     # T4-PR-2 — the SIG-PR-2 recipe/score seam OFF switch (DARK feature flag) and
     # the human-approved recipe sha the score stamps against. Both DB-home,
     # per-overlay overridable — an overlay can trial the score while the global stays OFF.
@@ -297,6 +304,7 @@ ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_LOOP_AUTO_UPDATE": ("auto_update_reinstall", _parse_env_bool),
     "T3_ORCHESTRATE_CLAIM_ENABLED": ("orchestrate_claim_enabled", _parse_env_bool),
     "T3_FACTORY_SCORE_ENABLED": ("factory_score_enabled", _parse_env_bool),
+    "T3_OUTER_LOOP_ENABLED": ("outer_loop_enabled", _parse_env_bool),
     "T3_BOOST_CONCURRENCY": ("boost_concurrency", _parse_strict_int),
     "T3_LOOP_RUNNER_ENABLED": ("loop_runner_enabled", _parse_env_bool),
     "T3_TEAMS_ENABLED": ("teams_enabled", _parse_env_bool),
@@ -1051,6 +1059,14 @@ class UserSettings:
     # pins stage=DARK => this default == its off_value (False), so the outer loop
     # can never be flipped default-ON without a code-reviewed stage demotion.
     outer_loop_enabled: bool = False
+    # T4-PR-3 — the autoresearch outer-loop runtime bounds (guard chain G4). Inert
+    # while the flag is off: the measurement horizon after an experiment merges,
+    # the max experiments admitted per rolling 7-day window, and the convergence
+    # brake — after this many consecutive non-KEPT decisions the loop parks itself
+    # (a DeferredQuestion) instead of proposing a fourth. Per-overlay overridable.
+    outer_loop_measure_days: int = 7
+    outer_loop_max_per_week: int = 1
+    outer_loop_stop_after_consecutive_failures: int = 3
     # T4-PR-2 — the SIG-PR-2 recipe/score seam OFF switch (a DARK ``FEATURE_FLAGS``
     # entry). Ships OFF: ``t3 <overlay> recipe score`` still COMPUTES read-only (for
     # calibrating recipe weights against real ledger data pre-enable), but ``--record``

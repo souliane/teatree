@@ -285,6 +285,18 @@ Run ONE enabled, due DB Loop by name (--loop) — the per-loop primitive each na
 | `post` | Post to a destination, token chosen by it: self-DM→bot, colleague/channel→xoxp (exit 0 on ``ok``) |
 | `react` | React on a destination, token chosen by it: self-DM→bot, colleague/channel→xoxp (exit 0 on ``ok``) |
 
+## `outer`
+
+Drive the T4 autoresearch outer loop (propose→ratify→implement→measure→keep-only-if-better).
+
+| Subcommand | Description |
+| --- | --- |
+| `tick` | Advance the outer loop one step IF the cadence elapsed (cron entry) |
+| `status` | Print the guard-chain verdict and the active experiment (read-only) |
+| `propose` | Record an operator hypothesis as a PROPOSED experiment (refused while off) |
+| `history` | Print the recent experiment ledger (read-only) |
+| `resolve-revert` | Close a REVERT_PENDING experiment to terminal REVERTED, freeing the slot |
+
 ## `overlay`
 
 | Subcommand | Description |
