@@ -113,9 +113,48 @@ class OwnershipStatus(NamedTuple):
     expires_at: datetime | None
     is_live: bool
     generation: int = 0
+    driver: str = ""
 
 
 class LoopLeaseQuerySet(models.QuerySet):
+    def take_over_ownership(
+        self,
+        name: str,
+        *,
+        session_id: str,
+        owner_pid: int | None = None,
+        ttl_seconds: int = 1800,
+        driver: str = "",
+    ) -> tuple[bool, str]:
+        """Unconditionally steal the ``name`` lease for ``session_id`` (the user hand-off).
+
+        The ``t3 loop claim --take-over`` path: an unconditional UPDATE on
+        ``name`` that evicts even a LIVE claimant, so the chat-only user can
+        wrest the loop back from a hijacking session within one tick. This is
+        the deliberate exception to :meth:`claim_ownership`'s pid-anchored CAS
+        (which never evicts a live owner). A steal that installs a DIFFERENT
+        holder bumps the fencing generation (§5) so the old holder's in-flight
+        worker is fenced at its next git write, and installs the incoming
+        ``driver`` verbatim; re-taking one's OWN claim keeps both.
+
+        Returns ``(True, current_owner_session)`` — always wins; the owner is
+        read back *after* the write.
+        """
+        now = timezone.now()
+        expires = now + timedelta(seconds=ttl_seconds)
+        self.get_or_create(name=name)
+        prior = self.filter(name=name).values_list("session_id", flat=True).first() or ""
+        self.filter(name=name).update(
+            session_id=session_id,
+            owner_pid=owner_pid,
+            acquired_at=now,
+            lease_expires_at=expires,
+            generation=self._generation_after(holder_changed=prior != session_id),
+            driver=self._driver_after(driver, holder_changed=prior != session_id),
+        )
+        current = self.filter(name=name).values_list("session_id", flat=True).first() or ""
+        return True, current
+
     def claim_ownership(
         self,
         name: str,
@@ -123,9 +162,12 @@ class LoopLeaseQuerySet(models.QuerySet):
         session_id: str,
         owner_pid: int | None = None,
         ttl_seconds: int = 1800,
-        take_over: bool = False,
+        driver: str = "",
     ) -> tuple[bool, str]:
         """Claim/refresh the persistent session-scoped t3-master row (#1073).
+
+        The pid-anchored CAS / per-tick heartbeat path — for the unconditional
+        user hand-off that evicts a live claimant, see :meth:`take_over_ownership`.
 
         Returns ``(won, current_owner_session)``. Ownership liveness is
         PID-ANCHORED: a live owner is a non-empty ``session_id`` whose lease
@@ -133,13 +175,12 @@ class LoopLeaseQuerySet(models.QuerySet):
         ``pid_alive(owner_pid)``. An alive owner process is therefore
         protected past its tick TTL — the invariant is "the loop stays with
         the existing session; it transfers ONLY on that session's process
-        termination or an explicit ``take_over``." The TTL is the FALLBACK
+        termination or an explicit take-over." The TTL is the FALLBACK
         release used only when ``owner_pid`` is null or dead. There is still
         NO ``renew()`` and no background timer (#54 doctrine preserved): the
         per-tick re-claim IS the heartbeat.
 
-        ``take_over=False`` (the per-tick path / the heartbeat). An
-        anonymous caller (``session_id == ""``) NEVER persists a row: it
+        An anonymous caller (``session_id == ""``) NEVER persists a row: it
         RUNS (``won=True``) iff there is no live owner and otherwise SKIPs
         (``won=False``). Pure-cron / no-session deployments (#1107) still
         run the tick when unowned, but the phantom "owned by nobody but not
@@ -162,11 +203,6 @@ class LoopLeaseQuerySet(models.QuerySet):
         (refresh), or stale (expired / never set), so a concurrent refresh
         between our read and the write is still guarded against.
 
-        ``take_over=True`` (the user hand-off — ``t3 loop claim
-        --take-over``): an unconditional UPDATE on ``name`` that evicts
-        even a live claimant, so the chat-only user can wrest the loop
-        back from a hijacking session within one tick.
-
         On a win the row's ``session_id``/``acquired_at``/
         ``lease_expires_at``/``owner_pid`` are set. The returned
         ``current_owner_session`` is read back *after* the write so a
@@ -183,21 +219,6 @@ class LoopLeaseQuerySet(models.QuerySet):
         now = timezone.now()
         expires = now + timedelta(seconds=ttl_seconds)
         self.get_or_create(name=name)
-
-        if take_over:
-            prior = self.filter(name=name).values_list("session_id", flat=True).first() or ""
-            self.filter(name=name).update(
-                session_id=session_id,
-                owner_pid=owner_pid,
-                acquired_at=now,
-                lease_expires_at=expires,
-                # A steal that installs a DIFFERENT holder bumps the fencing
-                # generation (§5) so the old holder's in-flight worker is fenced
-                # at its next git write; re-taking one's own claim keeps it.
-                generation=self._generation_after(holder_changed=prior != session_id),
-            )
-            current = self.filter(name=name).values_list("session_id", flat=True).first() or ""
-            return True, current
 
         row = self.filter(name=name).values("session_id", "owner_pid", "lease_expires_at").first()
         live_owner = self._live_foreign_owner_session(row, session_id, now)
@@ -225,6 +246,9 @@ class LoopLeaseQuerySet(models.QuerySet):
                     owner_pid=owner_pid,
                     acquired_at=now,
                     lease_expires_at=expires,
+                    # A same-process rotation is not a transfer, so preserve the
+                    # stored driver when detection comes back blank (edge-case 1).
+                    driver=self._driver_after(driver, holder_changed=False),
                 )
                 current = self.filter(name=name).values_list("session_id", flat=True).first() or ""
                 return won == 1, current
@@ -250,6 +274,7 @@ class LoopLeaseQuerySet(models.QuerySet):
                 # is a holder change → bump the fencing generation (§5). A same-
                 # session refresh keeps it (the per-tick heartbeat is not a transfer).
                 generation=self._generation_after(holder_changed=prior_session != session_id),
+                driver=self._driver_after(driver, holder_changed=prior_session != session_id),
             )
         )
         current = self.filter(name=name).values_list("session_id", flat=True).first() or ""
@@ -266,6 +291,23 @@ class LoopLeaseQuerySet(models.QuerySet):
         pre-read and this write cannot desync the counter.
         """
         return F("generation") + 1 if holder_changed else F("generation")
+
+    @staticmethod
+    def _driver_after(driver: str, *, holder_changed: bool) -> Combinable | str:
+        """The ``driver=`` value for a winning claim write (PR-26 tick-driver token).
+
+        A holder change installs the incoming ``driver`` VERBATIM (including ``""``):
+        a new holder that registers no driver is genuinely driverless, so it must
+        never inherit the dead owner's label. A same-holder refresh / same-process
+        self-reclaim PRESERVES the stored value when ``driver`` is empty
+        (``F("driver")``) — the per-tick heartbeat re-claims every tick, so a tick
+        whose detection momentarily returns blank must not wipe the registration.
+        Mirrors :meth:`_generation_after`'s F-expression idiom so the write stays
+        atomic against the row's live value.
+        """
+        if holder_changed:
+            return driver
+        return driver or F("driver")
 
     def fencing_generation(self, name: str) -> int:
         """Current fencing / lease-generation token for ``name`` (§5).
@@ -489,14 +531,20 @@ class LoopLeaseQuerySet(models.QuerySet):
         owner-past-TTL window the #1604 fix targets. A missing row reports
         ``("", None, False)`` — unclaimed.
         """
-        row = self.filter(name=name).values("session_id", "lease_expires_at", "owner_pid", "generation").first()
+        row = (
+            self.filter(name=name).values("session_id", "lease_expires_at", "owner_pid", "generation", "driver").first()
+        )
         if row is None:
-            return OwnershipStatus(owner_session="", expires_at=None, is_live=False, generation=0)
+            return OwnershipStatus(owner_session="", expires_at=None, is_live=False, generation=0, driver="")
         session = row["session_id"] or ""
         expires_at = row["lease_expires_at"]
         is_live = self._session_lease_is_live(session, row["owner_pid"], expires_at, timezone.now())
         return OwnershipStatus(
-            owner_session=session, expires_at=expires_at, is_live=is_live, generation=row["generation"]
+            owner_session=session,
+            expires_at=expires_at,
+            is_live=is_live,
+            generation=row["generation"],
+            driver=row["driver"] or "",
         )
 
     def release_ownership(self, name: str, *, session_id: str) -> bool:
@@ -513,6 +561,8 @@ class LoopLeaseQuerySet(models.QuerySet):
                 session_id="",
                 acquired_at=None,
                 lease_expires_at=None,
+                # Release = no owner = no driver, by definition.
+                driver="",
             )
         )
         return released == 1

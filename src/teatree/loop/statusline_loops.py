@@ -10,6 +10,7 @@ from teatree.loop.loop_cadences import (
 )
 from teatree.loop.loop_scoping import (
     current_session_owned_per_loop_slots,
+    is_per_loop_owner_slot,
     is_transient_tick_mutex,
     per_loop_chunk_visible,
 )
@@ -122,6 +123,26 @@ def _live_loop_leases() -> list[tuple[str, datetime | None]]:
     lease_model = apps.get_model("core", "LoopLease")
     rows = lease_model.objects.filter(lease_expires_at__gt=timezone.now()).only("name", "acquired_at").order_by("name")
     return [(row.name, row.acquired_at) for row in rows]
+
+
+def _live_lease_drivers() -> dict[str, tuple[str, str]]:
+    """Return ``{name: (session_id, driver)}`` for every live LoopLease row.
+
+    A thin DB-read seam (parallel to :func:`_live_loop_leases`) so the driver chip
+    stays a pure formatter concern — tests stub it rather than construct rows. Only
+    the pid-anchored ownership layer (``loop:<name>``) reads its driver from here;
+    a blank driver on an owned ``loop:<name>`` row is DRIVERLESS. Fails open to
+    ``{}`` so a broken read only drops the chips, never blanks the loop line.
+    """
+    from django.apps import apps  # noqa: PLC0415 — deferred: keep this module Django-free at import
+    from django.utils import timezone  # noqa: PLC0415 — deferred: keep this module Django-free at import
+
+    try:
+        lease_model = apps.get_model("core", "LoopLease")
+        rows = lease_model.objects.filter(lease_expires_at__gt=timezone.now()).only("name", "session_id", "driver")
+        return {row.name: (row.session_id, row.driver) for row in rows}
+    except Exception:  # noqa: BLE001 — fail-open: a broken driver read never blanks the loop line
+        return {}
 
 
 # The per-mini-loop next-fire reader lives up-stack in
@@ -250,14 +271,18 @@ def loop_owner_anchor(status: "OwnershipStatus", this_session: str) -> tuple[str
     "t3-master=session <short8> (NOT this session)")`` — RED, because a
     foreign owner is exactly the #1073 hijack the user must see.
 
-    Anything else (this session owns it, or no live owner) → ``("anchors",
-    "")``. Callers suppress empty lines.
+    THIS session owns it but registered NO tick driver → ``("action_needed",
+    "t3-master=this session · DRIVERLESS")`` — RED, because a driverless master
+    never ticks (PR-26). This session owns it WITH a driver, or no live owner →
+    ``("anchors", "")``. Callers suppress empty lines.
 
     ``short8`` is the first 8 chars of the owner session id.
     """
     if not status.is_live:
         return "anchors", ""
     if this_session and status.owner_session == this_session:
+        if not status.driver:
+            return "action_needed", "t3-master=this session · DRIVERLESS"
         return "anchors", ""
     short8 = status.owner_session[:8]
     return "action_needed", f"t3-master=session {short8} (NOT this session)"
@@ -285,15 +310,37 @@ def _live_lease_chunks(*, colorize: bool = False) -> list[str]:
     except Exception:  # noqa: BLE001
         return []
     owned_per_loop = current_session_owned_per_loop_slots()
+    drivers = _live_lease_drivers()
     return [
         _colorize_chunk(
             _loop_chunk(name, acquired_at),
             _lease_recency_color(name, acquired_at),
             colorize=colorize,
         )
+        + _driver_suffix(name, drivers, colorize=colorize)
         for name, acquired_at in leases
         if name != "t3-master" and not is_transient_tick_mutex(name) and per_loop_chunk_visible(name, owned_per_loop)
     ]
+
+
+def _driver_suffix(name: str, drivers: dict[str, tuple[str, str]], *, colorize: bool) -> str:
+    """Return the ``·<driver>`` / ``·DRIVERLESS`` suffix for a per-loop owner chunk.
+
+    Only ``loop:<name>`` per-loop owner leases carry a driver chip in the shared
+    loop line (``t3-master`` has its own anchor; infra leases never do — pinning
+    edge-case 6, e.g. ``loop-reinstall`` renders no chip). An owned row (non-empty
+    ``session_id``) with a registered driver renders ``·<driver>`` palette-neutral;
+    an owned row with a blank driver renders ``·DRIVERLESS`` in the alert palette;
+    an unowned row renders nothing.
+    """
+    if not is_per_loop_owner_slot(name):
+        return ""
+    session_id, driver = drivers.get(name, ("", ""))
+    if not session_id:
+        return ""
+    if driver:
+        return f"·{driver}"
+    return "·" + _colorize_chunk("DRIVERLESS", _ANSI_YELLOW, colorize=colorize)
 
 
 def _lease_recency_color(name: str, acquired_at: datetime | None) -> str:

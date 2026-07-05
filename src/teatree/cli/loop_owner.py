@@ -14,7 +14,9 @@ import typer
 from teatree.utils.django_bootstrap import ensure_django
 
 
-def _delegate(subcommand: str, *, slot: str | None, json_output: bool, extra: dict[str, bool] | None = None) -> None:
+def _delegate(
+    subcommand: str, *, slot: str | None, json_output: bool, extra: dict[str, str | bool] | None = None
+) -> None:
     """Call ``loop_owner <subcommand>``; map a mgmt-command ``SystemExit`` to ``typer.Exit``.
 
     ``loop_owner`` raises ``SystemExit(N)`` (correct on the Django
@@ -50,16 +52,29 @@ def register(loop_app: typer.Typer) -> None:
             help="Evict a live claimant — the chat-only user's loop hand-off (#1073).",
         ),
         slot: str = typer.Option("t3-master", "--slot", help="t3-master slot name (default: t3-master)."),
+        driver: str = typer.Option(
+            "",
+            "--driver",
+            help="Explicit tick driver (self_pump/loop_runner/external); overrides detection. "
+            "Use 'external' for a foreign scheduler.",
+        ),
         json_output: bool = typer.Option(False, "--json", help="Emit JSON."),
     ) -> None:
         """Claim the session-scoped t3-master slot for this Claude session (#1073).
 
         Without ``--take-over`` a live claimant blocks the claim. With it,
         the claim is unconditional — the hijacking session's next ``t3 loop
-        tick`` SKIPs within one tick, no restart needed. Exits 2 when not
-        running inside a Claude Code session (no session id to claim with).
+        tick`` SKIPs within one tick, no restart needed. ``--driver`` records
+        which mechanism fires this loop's ticks (PR-26); it is the only path to
+        ``external`` for a foreign scheduler. Exits 2 when not running inside a
+        Claude Code session, or on an invalid ``--driver`` value.
         """
-        _delegate("claim", slot=slot, json_output=json_output, extra={"take_over": True} if take_over else None)
+        extra: dict[str, str | bool] = {}
+        if take_over:
+            extra["take_over"] = True
+        if driver:
+            extra["driver"] = driver
+        _delegate("claim", slot=slot, json_output=json_output, extra=extra or None)
 
     @loop_app.command("owner")
     def owner_command(

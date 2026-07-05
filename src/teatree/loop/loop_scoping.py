@@ -68,6 +68,19 @@ def per_loop_chunk_visible(name: str, owned_per_loop: set[str] | None) -> bool:
     return name in owned_per_loop
 
 
+def is_per_loop_owner_slot(name: str) -> bool:
+    """Whether ``name`` is a per-loop owner slot (``loop:<name>``) — loop-side re-export.
+
+    Thin passthrough to :func:`teatree.core.loop_lease_manager.is_per_loop_owner_slot`
+    so the statusline (:mod:`teatree.loop.statusline_loops`) reads the predicate through
+    the loop layer — the tach graph forbids it importing ``teatree.core.loop_lease_manager``
+    directly, but ``teatree.loop.loop_scoping`` already may.
+    """
+    from teatree.core.loop_lease_manager import is_per_loop_owner_slot as _impl  # noqa: PLC0415 — deferred
+
+    return _impl(name)
+
+
 def is_transient_tick_mutex(name: str) -> bool:
     """Whether a lease ``name`` is a transient per-loop tick mutex (``loop-tick:<name>``).
 
@@ -87,6 +100,7 @@ def is_transient_tick_mutex(name: str) -> bool:
 
 __all__ = [
     "current_session_owned_per_loop_slots",
+    "is_per_loop_owner_slot",
     "is_transient_tick_mutex",
     "owned_per_loop_slots",
     "per_loop_chunk_visible",

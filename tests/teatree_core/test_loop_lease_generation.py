@@ -43,13 +43,13 @@ class TestFencingGenerationBumps(TestCase):
     def test_take_over_by_different_session_bumps(self) -> None:
         LoopLease.objects.claim_ownership(_SLOT, session_id="a", owner_pid=os.getpid())
         gen_before = LoopLease.objects.fencing_generation(_SLOT)
-        LoopLease.objects.claim_ownership(_SLOT, session_id="b", owner_pid=os.getpid(), take_over=True)
+        LoopLease.objects.take_over_ownership(_SLOT, session_id="b", owner_pid=os.getpid())
         assert LoopLease.objects.fencing_generation(_SLOT) == gen_before + 1
 
     def test_take_over_by_same_session_keeps_generation(self) -> None:
         LoopLease.objects.claim_ownership(_SLOT, session_id="a", owner_pid=os.getpid())
         gen_before = LoopLease.objects.fencing_generation(_SLOT)
-        LoopLease.objects.claim_ownership(_SLOT, session_id="a", owner_pid=os.getpid(), take_over=True)
+        LoopLease.objects.take_over_ownership(_SLOT, session_id="a", owner_pid=os.getpid())
         assert LoopLease.objects.fencing_generation(_SLOT) == gen_before
 
     def test_same_process_self_reclaim_across_rotation_keeps_generation(self) -> None:
@@ -74,7 +74,7 @@ class TestFencingTokenCheck(TestCase):
         LoopLease.objects.claim_ownership(_SLOT, session_id="a", owner_pid=os.getpid())
         worker_token = LoopLease.objects.fencing_generation(_SLOT)
         # A human steal bumps the generation; the worker's stamped token is now stale.
-        LoopLease.objects.claim_ownership(_SLOT, session_id="human", owner_pid=os.getpid(), take_over=True)
+        LoopLease.objects.take_over_ownership(_SLOT, session_id="human", owner_pid=os.getpid())
         assert LoopLease.objects.token_is_current(_SLOT, worker_token) is False
 
     def test_missing_row_reports_zero_and_admits_zero_token(self) -> None:

@@ -93,7 +93,7 @@ class TestHandoverClaimOnStart:
 
 class TestLoopWhoamiAndOwnerDisplay:
     def test_loop_owner_whoami_prints_session_id(self) -> None:
-        assert _call("loop_owner", "whoami").strip() == "this-session"
+        assert _call("loop_owner", "whoami").splitlines()[0].strip() == "this-session"
 
     def test_loop_owner_shows_you_are(self) -> None:
         out = _call("loop_owner", "owner")
