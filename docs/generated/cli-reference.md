@@ -5679,8 +5679,13 @@ Usage: t3 teatree worktree teardown [OPTIONS]
 ```
 Usage: t3 teatree worktree status [OPTIONS]
 
- Report FSM state, branch, allocated host ports, and the last provision report
- for one worktree.
+ Report FSM state, ports, the provision report, and the aggregate
+ post-conditions (PR-27).
+
+ A ``provisioned``/``services_up``/``ready`` worktree is only *really*
+ provisioned if every aggregate post-condition still holds; when one fails
+ (e.g. the env cache or DB was deleted) ``status`` reports it and exits
+ non-zero, never claiming green for a rotted provision.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --path        TEXT  Worktree path (auto-detects from PWD if empty).          │

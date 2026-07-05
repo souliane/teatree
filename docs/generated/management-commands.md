@@ -535,7 +535,7 @@ Run the singleton loop-timer worker (#1796) — K pinned executors, no OS schedu
 | `verify` | Run overlay health checks for one worktree |
 | `ready` | Run runtime readiness probes for one worktree |
 | `teardown` | Stop docker, drop DB, remove git worktree, delete row |
-| `status` | Report FSM state, branch, allocated host ports, and the last provision report for one worktree |
+| `status` | Report FSM state, ports, the provision report, and the aggregate post-conditions (PR-27) |
 | `diagnose` | Print a structured health checklist for one worktree |
 | `diagram` | Print a state diagram as Mermaid. Models: worktree, ticket, task |
 | `smoke-test` | Quick health check: overlay loads, CLI responds, imports OK |

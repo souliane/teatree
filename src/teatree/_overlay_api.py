@@ -8,4 +8,4 @@ teatree diverges from what they were built against — no silent
 misbehavior.
 """
 
-__overlay_api_version__ = "1"
+__overlay_api_version__ = "2"

@@ -401,8 +401,8 @@ class TestSubprocessOnlyStepSurvivesMissingProvisionTimebox(TestCase):
         assert exc_info.value.name == BROKEN_DEPENDENCY_NAME
 
 
-class TestParallelGroupSurvivesMissingProvisionTimebox(TestCase):
-    """A parallel group degrades / propagates the same as the serial path (#2664).
+class TestConcurrentWaveSurvivesMissingProvisionTimebox(TestCase):
+    """A concurrent wave degrades / propagates the same as the serial path (#2664).
 
     The parallel path pre-resolves each member's ceiling on the caller thread
     (``_resolve_step_timeout``) so the pool workers touch no ORM. That resolution
@@ -413,8 +413,8 @@ class TestParallelGroupSurvivesMissingProvisionTimebox(TestCase):
     def test_group_runs_when_module_absent(self) -> None:
         ran: list[str] = []
         steps = [
-            ProvisionStep(name="a", callable=partial(ran.append, "a"), subprocess_only=True, parallel_group="lane"),
-            ProvisionStep(name="b", callable=partial(ran.append, "b"), subprocess_only=True, parallel_group="lane"),
+            ProvisionStep(name="a", callable=partial(ran.append, "a"), subprocess_only=True),
+            ProvisionStep(name="b", callable=partial(ran.append, "b"), subprocess_only=True),
         ]
 
         with provision_timebox_unimportable():
@@ -425,8 +425,8 @@ class TestParallelGroupSurvivesMissingProvisionTimebox(TestCase):
 
     def test_group_propagates_when_module_present_but_internally_broken(self) -> None:
         steps = [
-            ProvisionStep(name="a", callable=lambda: None, subprocess_only=True, parallel_group="lane"),
-            ProvisionStep(name="b", callable=lambda: None, subprocess_only=True, parallel_group="lane"),
+            ProvisionStep(name="a", callable=lambda: None, subprocess_only=True),
+            ProvisionStep(name="b", callable=lambda: None, subprocess_only=True),
         ]
 
         with provision_timebox_internally_broken(), pytest.raises(ModuleNotFoundError) as exc_info:
@@ -435,7 +435,7 @@ class TestParallelGroupSurvivesMissingProvisionTimebox(TestCase):
         assert exc_info.value.name == BROKEN_DEPENDENCY_NAME
 
 
-class TestParallelGroupWorkersAreOrmFree(TestCase):
+class TestConcurrentWaveWorkersAreOrmFree(TestCase):
     """A pool worker must open NO DB connection — the regression guard for the leak.
 
     A Django connection opened on a ``ThreadPoolExecutor`` worker is never closed
@@ -455,8 +455,8 @@ class TestParallelGroupWorkersAreOrmFree(TestCase):
             return real_get_new_connection(self, conn_params)
 
         steps = [
-            ProvisionStep(name="a", callable=lambda: None, subprocess_only=True, parallel_group="lane"),
-            ProvisionStep(name="b", callable=lambda: None, subprocess_only=True, parallel_group="lane"),
+            ProvisionStep(name="a", callable=lambda: None, subprocess_only=True),
+            ProvisionStep(name="b", callable=lambda: None, subprocess_only=True),
         ]
         with patch.object(DatabaseWrapper, "get_new_connection", _record):
             report = run_provision_steps(steps)
@@ -589,17 +589,17 @@ class TestSkipProbe(TestCase):
         assert report.steps[0].skipped is False
 
 
-class TestParallelGroup(TestCase):
-    """Steps sharing a ``parallel_group`` run concurrently (souliane/teatree#2949).
+class TestDagConcurrency(TestCase):
+    """Independent ``subprocess_only`` steps run concurrently in one wave (PR-27).
 
-    ANTI-VACUITY: with the group-concurrency guard reverted (every step run
+    ANTI-VACUITY: with the wave-concurrency guard reverted (every step run
     sequentially) this test goes RED — the two barrier-gated steps deadlock
     since each waits for the other to have started before either can finish,
     and a serial runner never lets the second one start before the first
     returns.
     """
 
-    def test_steps_in_same_group_run_concurrently(self) -> None:
+    def test_independent_subprocess_steps_run_concurrently(self) -> None:
         barrier = threading.Barrier(2, timeout=5)
         order: list[str] = []
 
@@ -612,37 +612,42 @@ class TestParallelGroup(TestCase):
             order.append("b")
 
         steps = [
-            ProvisionStep(name="a", callable=step_a, subprocess_only=True, parallel_group="lane"),
-            ProvisionStep(name="b", callable=step_b, subprocess_only=True, parallel_group="lane"),
+            ProvisionStep(name="a", callable=step_a, subprocess_only=True),
+            ProvisionStep(name="b", callable=step_b, subprocess_only=True),
         ]
         report = run_provision_steps(steps)
         assert report.success is True
         assert {s.name for s in report.steps} == {"a", "b"}
         assert sorted(order) == ["a", "b"]
 
-    def test_orm_step_ignores_parallel_group_and_runs_serially(self) -> None:
+    def test_orm_step_runs_serially_in_process(self) -> None:
         ran_on: dict[str, int] = {}
         steps = [
             ProvisionStep(
-                name="orm-in-group",
+                name="orm-step",
                 callable=lambda: ran_on.__setitem__("tid", threading.get_ident()),
                 subprocess_only=False,
-                parallel_group="lane",
             ),
         ]
         run_provision_steps(steps)
         assert ran_on["tid"] == threading.get_ident()
 
-    def test_required_failure_in_group_halts_subsequent_steps(self) -> None:
+    def test_required_failure_halts_downstream_steps(self) -> None:
         def fail() -> None:
-            msg = "group-fail"
+            msg = "wave-fail"
             raise RuntimeError(msg)
 
         after_ran: list[str] = []
         steps = [
-            ProvisionStep(name="ok", callable=lambda: None, subprocess_only=True, parallel_group="lane"),
-            ProvisionStep(name="fail", callable=fail, subprocess_only=True, parallel_group="lane", required=True),
-            ProvisionStep(name="after", callable=partial(after_ran.append, "after"), required=True),
+            ProvisionStep(name="ok", callable=lambda: None, subprocess_only=True, produces=frozenset({"deps"})),
+            ProvisionStep(
+                name="fail", callable=fail, subprocess_only=True, produces=frozenset({"deps"}), required=True
+            ),
+            # ``after`` requires the failing wave's resource, so it is scheduled
+            # into a LATER wave that never starts once the first wave halts.
+            ProvisionStep(
+                name="after", callable=partial(after_ran.append, "after"), required=True, requires=frozenset({"deps"})
+            ),
         ]
         report = run_provision_steps(steps, stop_on_required_failure=True)
         assert after_ran == []
@@ -650,7 +655,21 @@ class TestParallelGroup(TestCase):
         names = {s.name for s in report.steps}
         assert names == {"ok", "fail"}
 
-    def test_ungrouped_steps_still_run_serially(self) -> None:
+    def test_dependent_steps_run_in_declared_order(self) -> None:
+        order: list[str] = []
+        steps = [
+            ProvisionStep(name="second", callable=partial(order.append, "second"), requires=frozenset({"db"})),
+            ProvisionStep(name="first", callable=partial(order.append, "first"), produces=frozenset({"db"})),
+        ]
+        run_provision_steps(steps)
+        assert order == ["first", "second"]
+
+    def test_requires_unproduced_token_fails_closed(self) -> None:
+        steps = [ProvisionStep(name="a", callable=lambda: None, requires=frozenset({"nowhere"}))]
+        with pytest.raises(ValueError, match="requires 'nowhere' which no step produces"):
+            run_provision_steps(steps)
+
+    def test_independent_steps_run_serially_when_not_subprocess(self) -> None:
         order: list[str] = []
         steps = [
             ProvisionStep(name="a", callable=partial(order.append, "a")),
@@ -658,6 +677,57 @@ class TestParallelGroup(TestCase):
         ]
         run_provision_steps(steps)
         assert order == ["a", "b"]
+
+
+class TestPostCondition(TestCase):
+    """A step's ``post_condition`` is folded into its success (PR-27)."""
+
+    def test_unmet_post_condition_marks_step_failed(self) -> None:
+        ran: list[str] = []
+        steps = [
+            ProvisionStep(
+                name="import-db",
+                callable=partial(ran.append, "import-db"),
+                required=True,
+                post_condition=lambda: False,
+            ),
+        ]
+        report = run_provision_steps(steps)
+        assert ran == ["import-db"]  # the callable DID run
+        assert report.success is False
+        assert report.steps[0].success is False
+        assert "post-condition" in report.steps[0].error
+
+    def test_met_post_condition_keeps_step_successful(self) -> None:
+        steps = [ProvisionStep(name="ok", callable=lambda: None, post_condition=lambda: True)]
+        report = run_provision_steps(steps)
+        assert report.success is True
+
+    def test_raising_post_condition_marks_step_failed_not_crash(self) -> None:
+        def boom() -> bool:
+            msg = "probe blew up"
+            raise RuntimeError(msg)
+
+        steps = [ProvisionStep(name="x", callable=lambda: None, post_condition=boom)]
+        report = run_provision_steps(steps)
+        assert report.success is False
+        assert "post-condition raised" in report.steps[0].error
+
+    def test_post_condition_not_checked_when_callable_failed(self) -> None:
+        def fail() -> None:
+            msg = "callable failed"
+            raise RuntimeError(msg)
+
+        checked: list[str] = []
+
+        def probe() -> bool:
+            checked.append("probed")
+            return True
+
+        steps = [ProvisionStep(name="x", callable=fail, post_condition=probe, required=False)]
+        report = run_provision_steps(steps)
+        assert report.steps[0].success is False
+        assert checked == []  # a failed callable's post-condition is never consulted
 
 
 class TestHeavyFlagPropagation(TestCase):
@@ -680,6 +750,6 @@ class TestHeavyFlagPropagation(TestCase):
     # worker CPU contention), the concurrent measurement is not reliably
     # faster in absolute or even self-relative terms — the flakiness is
     # environmental thread-scheduling noise, not a defect. The deterministic
-    # anti-vacuity proof is TestParallelGroup.test_steps_in_same_group_run_concurrently
+    # anti-vacuity proof is TestDagConcurrency.test_independent_subprocess_steps_run_concurrently
     # above, which uses a threading.Barrier(2) so a serialized (non-concurrent)
     # run deadlocks and fails outright — no wall clock involved.

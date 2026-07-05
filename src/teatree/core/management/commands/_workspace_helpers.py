@@ -95,7 +95,8 @@ def dslr_tenants_in_use() -> set[str]:
     The mapping ``variant → tenant`` is overlay-specific: an overlay may
     prefix the variant (``client-a`` → ``development-client-a``) while
     others return the variant verbatim. We consult
-    :meth:`OverlayBase.get_dslr_tenant_for_variant` per active variant.
+    :meth:`OverlayBase.resolve_variant` per active variant and read the
+    resolved ``canonical_tenant`` off the :class:`~teatree.core.variant.Variant`.
     """
     try:
         overlay = get_overlay()
@@ -106,7 +107,7 @@ def dslr_tenants_in_use() -> set[str]:
         for wt in Worktree.objects.filter(state=Worktree.State.CREATED).select_related("ticket")
         if wt.ticket is not None
     }
-    return {overlay.get_dslr_tenant_for_variant(v) for v in variants if v}
+    return {overlay.resolve_variant(v).canonical_tenant for v in variants if v}
 
 
 def prune_dslr_snapshots_skipping(*, keep: int, in_use_tenants: set[str]) -> list[str]:
