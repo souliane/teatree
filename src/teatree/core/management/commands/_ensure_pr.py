@@ -16,17 +16,22 @@ UNPUSHED_ORPHAN case; the post-push ``ensure-pr`` opens the PR against the
 now-current ref. Any other create failure is a real error and surfaces.
 """
 
-from typing import TypedDict
+from typing import TYPE_CHECKING, TypedDict
 
 from teatree.core.backend_factory import code_host_for_repo_from_overlay
-from teatree.core.backend_protocols import BackendResolutionError, PullRequestSpec
+from teatree.core.backend_protocols import BackendResolutionError, CodeHostBackend, PullRequestSpec
 from teatree.core.gates.architecture_precheck_gate import warn_if_precheck_incomplete
 from teatree.core.gates.open_questions_gate import warn_if_open_questions_missing
+from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_budget
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.pr_create_verify import verify_pr_exists
 from teatree.core.runners.ship import overlay_pr_labels, sanitize_close_keywords, should_close_ticket
 from teatree.utils import git, git_remote
 from teatree.utils.run import CommandFailedError
+
+if TYPE_CHECKING:
+    from teatree.core.models import Ticket
+    from teatree.types import RawAPIDict
 
 
 class EnsurePrResult(TypedDict, total=False):
@@ -37,22 +42,31 @@ class EnsurePrResult(TypedDict, total=False):
     error: str
 
 
+def _ticket_for_branch(branch_name: str) -> "Ticket | None":
+    """Return the owning ``Ticket`` for an orphan-branch PR, via the branch's ``Worktree`` row.
+
+    The orphan path runs inside the git pre-push hook with no ticket handle;
+    the most-recent ``Worktree`` on *branch_name* names its ticket. A genuinely
+    orphan branch (no row) yields ``None``.
+    """
+    from teatree.core.models import Worktree  # noqa: PLC0415 — avoid app-loading import cycle at module import
+
+    worktree = Worktree.objects.filter(branch=branch_name).order_by("-id").first()
+    return worktree.ticket if worktree is not None else None
+
+
 def _ticket_extra_for_branch(branch_name: str) -> dict | None:
     """Return the owning ticket's ``extra`` for an orphan-branch PR, if any.
 
-    The orphan path runs inside the git pre-push hook with no ticket
-    handle. Resolving the ``extra`` via the branch's ``Worktree`` row lets
+    Resolving the ``extra`` via the branch's ``Worktree`` row lets
     ``should_close_ticket`` honor an explicit ``more_prs_coming`` opt-out
     even on this fallback. A genuinely orphan branch (no row) yields
     ``None`` — ``should_close_ticket`` then applies the close-on-merge
     default driven solely by the overlay setting.
     """
-    from teatree.core.models import Worktree  # noqa: PLC0415 — avoid app-loading import cycle at module import
-
-    worktree = Worktree.objects.filter(branch=branch_name).order_by("-id").first()
-    if worktree is None:
+    ticket = _ticket_for_branch(branch_name)
+    if ticket is None:
         return None
-    ticket = worktree.ticket
     return ticket.extra if isinstance(ticket.extra, dict) else None
 
 
@@ -115,6 +129,16 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
     repo_slug = git_remote.slug_from_remote(remote)
     assignee = host.current_user() or git.config_value(key="user.name")
 
+    # North-star PR-2: refuse before opening when the ticket is already at its
+    # per-repo open-PR budget. Inert at the neutral default; a genuinely orphan
+    # branch (no owning ticket) has no budget scope, so the check is skipped.
+    owning_ticket = _ticket_for_branch(branch_name)
+    if owning_ticket is not None:
+        try:
+            check_pr_budget(owning_ticket, repo_slug)
+        except PrBudgetExceededError as exc:
+            return EnsurePrResult(branch=branch_name, error=str(exc))
+
     try:
         raw = host.create_pr(
             PullRequestSpec(
@@ -135,21 +159,24 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
                 hint=f"t3 <overlay> pr ensure-pr --branch {branch_name}",
             )
         raise
-    # #1222 / #1226: ``web_url`` is the cross-host canonical key (GitLab
-    # API native; GitHub backend was aligned to it). ``html_url`` is kept
-    # for raw GitHub API payloads piped through other producers. An empty
-    # / non-URL payload surfaces as ``error`` so the orphan-branch path
-    # never silently advances with no PR — same invariant the ship runner
-    # enforces.
+    return _verified_pr_result(host, raw, branch_name)
+
+
+def _verified_pr_result(host: CodeHostBackend, raw: "RawAPIDict", branch_name: str) -> EnsurePrResult:
+    """Turn a ``create_pr`` payload into a result, verifying the URL is a live PR.
+
+    #1222 / #1226: ``web_url`` is the cross-host canonical key (GitLab API
+    native; GitHub backend was aligned to it); ``html_url`` is kept for raw
+    GitHub payloads. An empty / non-URL payload surfaces as ``error`` so the
+    orphan-branch path never silently advances with no PR. #1194: a well-formed
+    URL is not proof — re-read it; a 404 means the create silently no-op'd.
+    """
     url = str(raw.get("web_url") or raw.get("html_url") or "")
     if not url.startswith(("http://", "https://")):
         return EnsurePrResult(
             branch=branch_name,
             error=f"host.create_pr returned no PR url (got {url!r}; payload keys={sorted(raw.keys())!r})",
         )
-    # #1194 verify-by-re-read: a well-formed URL is not proof the PR is live.
-    # Re-read it; a 404 means the create silently no-op'd — report the failure
-    # rather than hand back a phantom URL the caller records as a real PR.
     verified = verify_pr_exists(host, url)
     if not verified.confirmed:
         return EnsurePrResult(
