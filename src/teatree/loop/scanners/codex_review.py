@@ -10,21 +10,25 @@ Decision per open self-authored PR:
 
 1. ``draft: true`` → skip (the user is still iterating; auto-review
     would be noise)
-2. ``CodexReviewMarker.claim(slug, pr_id, head_sha)`` returns ``None``
-    (already dispatched on a previous tick for the same head SHA) → skip
-3. Otherwise → emit one ``codex_review.dispatch`` ``ScanSignal`` carrying
+2. Otherwise → emit one ``codex_review.dispatch`` ``ScanSignal`` carrying
     the dispatch variant (``codex:review`` by default, ``codex:adversarial-review``
     when the diff touches a high-stakes path) so the dispatcher can route
     it to the codex review agent.
 
+The scanner emits UNCONDITIONALLY per non-draft PR every tick — the
+per-SHA idempotency is enforced downstream at PERSIST time, where
+``persistence._handle_codex_review`` claims the ``CodexReviewMarker`` in the
+same transaction that creates the reviewer Task (#1 blocker fix). Before this
+move the scanner burned the marker on every tick even though persistence then
+dropped the dispatch, so the codex review never actually ran yet could not be
+retried. Keying the marker on ``head_sha`` still makes a force-push re-fire the
+review automatically.
+
 The CLI surface mirrors the agent zone naming: ``t3 codex review <pr_url>``
 spawns the same agent the scanner emits a signal for, so manual fire-and-
-forget invocation is available alongside the loop-driven auto-dispatch.
-
-Why a per-SHA marker rather than a PR-level marker: a force-push must
-re-fire the codex review (the diff changed). Keying on head_sha makes
-the re-fire automatic; a PR-level marker would silently skip the second
-review on a meaningful re-push.
+forget invocation is available alongside the loop-driven auto-dispatch. That
+manual path keeps claiming the marker itself (a human-triggered one-shot, not a
+loop persistence flow).
 """
 
 import json
@@ -35,7 +39,6 @@ from dataclasses import dataclass
 from typing import Protocol, TypedDict, cast, runtime_checkable
 
 from teatree.core.author_trust import classify_author
-from teatree.core.models.codex_review_marker import CodexReviewMarker
 from teatree.loop.scanners.base import ScannerError, ScanSignal, classify_gh_stderr
 from teatree.utils.run import run_allowed_to_fail
 
@@ -156,15 +159,12 @@ class CodexReviewScanner:
         if pr.is_draft:
             return None
         variant = _classify_variant(pr.changed_files, slug=pr.slug, author=pr.author)
-        marker = CodexReviewMarker.claim(
-            slug=pr.slug,
-            pr_id=pr.number,
-            head_sha=pr.head_sha,
-            overlay=self.overlay,
-            variant=variant,
-        )
-        if marker is None:
-            return None
+        # The scanner emits UNCONDITIONALLY per open non-draft PR (#1 blocker):
+        # the ``CodexReviewMarker`` idempotency claim moved to persist time
+        # (``persistence._handle_codex_review``) so it rides the same transaction
+        # that creates the reviewer Task — a dropped/failed persist rolls the
+        # marker back and re-fires next tick, instead of the scanner burning the
+        # marker before the review ever executed.
         return ScanSignal(
             kind="codex_review.dispatch",
             summary=f"codex review {pr.slug}#{pr.number} @ {pr.head_sha[:8]} ({variant})",
