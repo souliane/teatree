@@ -356,7 +356,7 @@ below mirrors it; consult the dataclass for type signatures and defaults.
 | `internal_publish_namespaces` | Destination allowlist (default `[]`) making the #1415/#1530 publish gates destination-aware: a target that prefix-matches is internal and skipped. #1672 unions it with `private_repos`, deciding the skip PER top-level segment — a chained/substituted public post or a raw-REST `api` segment forces the whole command SCANNED. FAIL-CLOSED (empty/unresolvable stay PUBLIC). `teatree.hooks.publish_destination`; env `T3_INTERNAL_PUBLISH_NAMESPACES` supplements. |
 | `owned_repos` | The repo SCOPE axis (orthogonal to `private_repos`/visibility and to `author_is_self`/collaboration): a forge-host-keyed dict `{normalized-host: [namespace-pattern, …]}` of the repos this overlay legitimately works on (`{"github.com": ["souliane", "acme-eng/widget-overlay"]}`). Host equality is matched EXACTLY before the namespace half (`slug_namespace_matches`), so a `gitlab.com` repo never matches a `github.com` scope. A `[overlays.<name>.owned_repos]` TOML table REPLACES the settings dict (authoritative-and-complete, no deep-merge). Sole-element `["*"]` is a whole-host wildcard (self-hosted forges only). `teatree.core.repo_scope`. |
 | `require_owned_repo_approval` | Opt-in (default `false`, ships INERT) for the unknown-repo gate (`teatree.core.gates.owned_repo_guard`): when `true` AND `owned_repos` non-empty, a push/merge to a repo no overlay owns is HELD for the operator. Fails CLOSED on a clean unknown verdict (opposite polarity to the visibility gate); enabling it therefore requires FIRST declaring the FULL owned host/namespace list (every private/customer forge the operator merges on) — a partial list would hold the operator's own private-forge merges as unknown. A **path-only** TOML overlay (`path` but no `class`) is skipped by `get_all_overlays` and cannot opt itself in; its repos go under an instantiable overlay's `owned_repos`. Opt in from private `~/.teatree.toml` (where brand/customer strings are allowed). Fails OPEN on a resolver exception / unresolvable host. Never-lockout: `[scope-push-ok: <reason>]` token + `[teatree] unknown_repo_push_gate_enabled = false` kill-switch. |
-| `speak` | #2060: text-to-speech config — `local` enum (`off`/`dm`/`all`) + `slack` bool. DB-home (#1775): a JSON-dict `ConfigSetting` row (`config_setting set speak '{"local":"all","slack":true}'`). See §10.1.1. |
+| `speak` | #2060: text-to-speech config — `local` enum (`off`/`dm`/`all`) + `slack` bool, plus the #2171 meeting-mute opt-in `presence_backend` (`""`/`msteams`) + its `presence_token_ref` (`pass` entry). DB-home (#1775): a JSON-dict `ConfigSetting` row (`config_setting set speak '{"local":"all","slack":true}'`); the presence keys are omitted from the stored dict when empty. See §10.1.1. |
 
 `notify_on_behalf` is NOT in this registry — it is derived (read-only),
 set by `_apply_autonomy` under `autonomy = "notify"`, never a user toml key.
@@ -392,16 +392,40 @@ is never suppressed by `slack`. The Stop-hook in-client read fires whenever
 double-play to suppress. The config lives in the DB store (read cold via
 `cold_reader` on the Stop path); there is no other per-run state.
 
-**Away-gate.** When availability resolves to `away` (§5.6.3), `resolve_speak()`
-forces `local` to `off` while preserving the configured `slack` value — so no
-audio plays through the local speakers while the user is unreachable, but a
-Slack-attached rendition still reaches their phone. The user's stored `speak`
-config is never mutated; the gate is purely effective-value.
-Both local consumers (`speak()` and the local leg of `deliver_user_dm`)
-resolve through `resolve_speak()`, so this single chokepoint silences all local
-playback when away. The away check is exception-safe — a resolution failure is
-treated as **not** away (local plays), so it can never spuriously mute audio or
-turn `slack` off.
+**Away-gate.** When availability resolves to `away` (§5.6.3), local playback is
+silenced while the configured `slack` value is preserved — so no audio plays
+through the local speakers while the user is unreachable, but a Slack-attached
+rendition still reaches their phone. The gate lives at the PLAYBACK call site
+(`speak._speak_local` consults `_is_away()`), not in `resolve_speak()`, so the
+user's stored `speak` config is never mutated and every local consumer (`speak()`
+and the local leg of `deliver_user_dm`) is gated by the one check. The away
+check is exception-safe — a resolution failure is treated as **not** away (local
+plays), so it can never spuriously mute audio or turn `slack` off.
+
+**Meeting-mute (#2171).** Beside the away-gate, `_speak_local` also silences
+local playback while a configured presence backend reports the user IN A
+MEETING — same call-site gate, same Slack-arm exemption (a Slack-attached
+rendition still reaches the phone). It is opt-in via `[teatree.speak]
+presence_backend` (`""` = off, `msteams` = MS Teams) with the backend's access
+token in the `pass` entry named by `presence_token_ref`. `teatree.core.presence`
+resolves it: it probes the backend (`current_presence()`), caches the result
+~60s, and returns `free` / `in_meeting` / `unknown`. Only a positive
+`in_meeting` mutes; an unconfigured opt-in, an unreachable backend, or any probe
+failure resolves to `unknown` and does NOT suppress (fail-safe to audible). The
+MS Teams backend (`teatree.backends.msteams.presence`) reads MS Graph
+`GET /me/presence` and maps `Busy`/`InAConferenceCall`/`Presenting` →
+`in_meeting`; acquiring the delegated-`Presence.Read` Graph token is an operator
+step. Core never imports the backend — `teatree.backends` registers the factory
+at app-ready, the same inversion `backend_registry` uses.
+
+**Question-mirror audio parity (#2171).** When `slack` is on, the AskUserQuestion
+Slack mirror (§17.1 invariant 9) also carries a spoken rendition to the user's
+phone, matching `notify_user` DMs. The router injects an audio enricher into the
+`teatree.hooks.slack_mirror` leaf (keeping the leaf import-clean); after the text
+question DM lands, the enricher spawns `t3 speak-dm` DETACHED (like the Stop-hook
+`t3 speak` read) so synthesis never blocks the mirror's hook budget. Both
+question surfaces — the present-mode mirror and the away-mode `DeferredQuestion`
+capture — carry audio.
 
 **Cross-process speaker mutual exclusion (#2152, bounded #2156).** Local
 playback fans out from two independent sources — each DM's local-read leg and

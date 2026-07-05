@@ -754,6 +754,11 @@
       "subcommands": []
     },
     {
+      "help": "Attach spoken audio to the DM at ``channel`` per [teatree.speak] (no-op unless slack/local on).",
+      "name": "speak_dm",
+      "subcommands": []
+    },
+    {
       "help": "",
       "name": "standup",
       "subcommands": [

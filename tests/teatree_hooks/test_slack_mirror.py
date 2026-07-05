@@ -145,6 +145,102 @@ class TestSlackPostDm:
         assert mock_post.call_args.kwargs == {"bot_token": "xoxb-tok", "thread_ts": "1700000000.0042"}
 
 
+def _ok_token(*_a: object, **_k: object) -> object:
+    return type("R", (), {"returncode": 0, "stdout": "xoxb-tok"})()
+
+
+class TestAudioEnrichment:
+    """``perform_slack_post`` fires the injected audio enricher AFTER a successful post (#2171).
+
+    Anti-vacuous: before the change the mirror never called any enricher, so
+    ``test_enriches_delivered_channel`` (asserting it IS called with the
+    delivered channel) fails on the pre-change code.
+    """
+
+    def test_enriches_delivered_channel(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+        slack_mirror.write_dm_channel_cache("U1", "D-cached")
+        monkeypatch.setattr(slack_mirror, "run_allowed_to_fail", _ok_token)
+        enrich = MagicMock()
+        with patch.object(slack_mirror, "slack_post_message", return_value="1700.1"):
+            slack_mirror.perform_slack_post(
+                ("ref", "U1"),
+                [{"question": "Ship?"}],
+                poster=MagicMock(),
+                resolve_thread=lambda _c: "1700.0000",
+                enrich_audio=enrich,
+            )
+        channel, text, thread_ts = enrich.call_args.args
+        assert channel == "D-cached"
+        assert "Ship?" in text
+        assert thread_ts == "1700.0000"
+
+    def test_enriches_freshly_opened_channel(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+        monkeypatch.setattr(slack_mirror, "run_allowed_to_fail", _ok_token)
+        enrich = MagicMock()
+        with (
+            patch.object(slack_mirror, "slack_open_dm", return_value="D-new"),
+            patch.object(slack_mirror, "slack_post_message", return_value="1700.1"),
+        ):
+            slack_mirror.perform_slack_post(
+                ("ref", "U1"),
+                [{"question": "Ship?"}],
+                poster=MagicMock(),
+                resolve_thread=_no_thread,
+                enrich_audio=enrich,
+            )
+        assert enrich.call_args.args[0] == "D-new"
+
+    def test_no_enricher_is_text_only(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+        slack_mirror.write_dm_channel_cache("U1", "D-cached")
+        monkeypatch.setattr(slack_mirror, "run_allowed_to_fail", _ok_token)
+        with patch.object(slack_mirror, "slack_post_message", return_value="1700.1"):
+            ts = slack_mirror.perform_slack_post(
+                ("ref", "U1"), [{"question": "Ship?"}], poster=MagicMock(), resolve_thread=_no_thread
+            )
+        assert ts == "1700.1"  # just the text post, no enricher, no raise
+
+    def test_enricher_not_invoked_when_post_fails(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+        monkeypatch.setattr(slack_mirror, "run_allowed_to_fail", _ok_token)
+        enrich = MagicMock()
+        with (
+            patch.object(slack_mirror, "slack_open_dm", return_value="D-new"),
+            patch.object(slack_mirror, "slack_post_message", return_value=""),
+        ):
+            slack_mirror.perform_slack_post(
+                ("ref", "U1"),
+                [{"question": "Ship?"}],
+                poster=MagicMock(),
+                resolve_thread=_no_thread,
+                enrich_audio=enrich,
+            )
+        enrich.assert_not_called()
+
+    def test_enricher_failure_never_breaks_the_post(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+        slack_mirror.write_dm_channel_cache("U1", "D-cached")
+        monkeypatch.setattr(slack_mirror, "run_allowed_to_fail", _ok_token)
+        enrich = MagicMock(side_effect=RuntimeError("synthesis blew up"))
+        with patch.object(slack_mirror, "slack_post_message", return_value="1700.1"):
+            ts = slack_mirror.perform_slack_post(
+                ("ref", "U1"),
+                [{"question": "Ship?"}],
+                poster=MagicMock(),
+                resolve_thread=_no_thread,
+                enrich_audio=enrich,
+            )
+        assert ts == "1700.1"  # the text question still lands
+
+    def test_enrich_skipped_when_channel_uncached(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))  # empty cache
+        enrich = MagicMock()
+        slack_mirror._enrich_delivered_dm(enrich, _no_thread, "U-unknown", "hi")
+        enrich.assert_not_called()
+
+
 class TestQuestionFormatting:
     def test_formats_question_with_numbered_options(self) -> None:
         text = slack_mirror.format_question_text(

@@ -401,6 +401,10 @@ Print the five factory signals over the trailing window vs its baseline.
 
 Read ``text`` aloud synchronously through the local speakers per [teatree.speak].
 
+## `speak_dm`
+
+Attach spoken audio to the DM at ``channel`` per [teatree.speak] (no-op unless slack/local on).
+
 ## `standup`
 
 | Subcommand | Description |
