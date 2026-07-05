@@ -97,10 +97,22 @@ class SpeakConfig:
     The feature does something iff ``local`` is not off OR ``slack`` is on;
     the whole thing is additionally gated on the ``say`` binary being present
     (:func:`teatree.core.speak.binary_available`).
+
+    :attr:`presence_backend` opts LOCAL playback into meeting-aware muting
+    (#2171): the name of a registered :class:`~teatree.core.presence.PresenceBackend`
+    (``msteams`` today) whose ``in_meeting`` verdict silences local ``say`` the
+    same way ``away`` does — the Slack arm is untouched, and the configured
+    ``local`` value is never rewritten. Empty (the default) = no probe, no
+    muting. :attr:`presence_token_ref` is the ``pass`` entry holding that
+    backend's access token. Both ride the ``[teatree.speak]`` sub-table and are
+    omitted from :meth:`to_dict` when empty so a speak config that opts out of
+    the feature round-trips byte-identically to the pre-#2171 shape.
     """
 
     local: LocalPlayback = LocalPlayback.OFF
     slack: bool = False
+    presence_backend: str = ""
+    presence_token_ref: str = ""
 
     def enabled(self) -> bool:
         return self.local is not LocalPlayback.OFF or self.slack
@@ -112,7 +124,12 @@ class SpeakConfig:
         return self.local is LocalPlayback.ALL
 
     def to_dict(self) -> dict[str, bool | str]:
-        return {"local": self.local.value, "slack": self.slack}
+        table: dict[str, bool | str] = {"local": self.local.value, "slack": self.slack}
+        if self.presence_backend:
+            table["presence_backend"] = self.presence_backend
+        if self.presence_token_ref:
+            table["presence_token_ref"] = self.presence_token_ref
+        return table
 
 
 class ScannerErrorClass(enum.StrEnum):

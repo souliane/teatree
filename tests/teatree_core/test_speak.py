@@ -15,7 +15,7 @@ import logging
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from teatree.core import availability
+from teatree.core import availability, presence
 from teatree.core import speak as speak_mod
 from teatree.types import LocalPlayback, SpeakConfig
 
@@ -113,6 +113,7 @@ class TestAwayGateAtPlayback:
             patch.object(speak_mod.shutil, "which", return_value="/usr/bin/say"),
             patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
             patch.object(availability, "resolve_mode", return_value=_resolution(availability.MODE_PRESENT)),
+            patch.object(speak_mod, "_in_meeting", return_value=False),
             patch.object(speak_mod, "run_allowed_to_fail") as run,
         ):
             speak_mod._speak_local("hello while present")
@@ -123,6 +124,7 @@ class TestAwayGateAtPlayback:
             patch.object(speak_mod.shutil, "which", return_value="/usr/bin/say"),
             patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
             patch.object(availability, "resolve_mode", side_effect=RuntimeError("boom")),
+            patch.object(speak_mod, "_in_meeting", return_value=False),
             patch.object(speak_mod, "run_allowed_to_fail") as run,
         ):
             speak_mod._speak_local("hello when resolution failed")
@@ -138,6 +140,63 @@ class TestAwayGateAtPlayback:
             patch.object(speak_mod.threading, "Thread") as thread_cls,
         ):
             speak_mod.deliver_user_dm(backend, channel="D-USER", text="hi")
+        backend.post_audio_dm.assert_called_once()
+        thread_cls.assert_called_once()
+
+
+class TestMeetingGateAtPlayback:
+    """Meeting-aware mute lives in ``_speak_local`` (#2171), beside the away gate.
+
+    Anti-vacuous: revert the ``_in_meeting()`` check in ``_speak_local`` and
+    ``test_in_meeting_skips_say_call`` goes RED (``run_allowed_to_fail`` IS
+    called while in a meeting, though ``speak.local = all``).
+    """
+
+    def test_in_meeting_skips_say_call(self, tmp_path: Path) -> None:
+        with (
+            patch.object(speak_mod.shutil, "which", return_value="/usr/bin/say"),
+            patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
+            patch.object(availability, "resolve_mode", return_value=_resolution(availability.MODE_PRESENT)),
+            patch.object(presence, "current_presence", return_value=presence.Presence.IN_MEETING),
+            patch.object(speak_mod, "run_allowed_to_fail") as run,
+        ):
+            speak_mod._speak_local("hello while in a meeting")
+        run.assert_not_called()
+
+    def test_free_plays(self, tmp_path: Path) -> None:
+        with (
+            patch.object(speak_mod.shutil, "which", return_value="/usr/bin/say"),
+            patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
+            patch.object(availability, "resolve_mode", return_value=_resolution(availability.MODE_PRESENT)),
+            patch.object(presence, "current_presence", return_value=presence.Presence.FREE),
+            patch.object(speak_mod, "run_allowed_to_fail") as run,
+        ):
+            speak_mod._speak_local("hello while free")
+        run.assert_called_once()
+
+    def test_unknown_does_not_suppress(self, tmp_path: Path) -> None:
+        with (
+            patch.object(speak_mod.shutil, "which", return_value="/usr/bin/say"),
+            patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
+            patch.object(availability, "resolve_mode", return_value=_resolution(availability.MODE_PRESENT)),
+            patch.object(presence, "current_presence", return_value=presence.Presence.UNKNOWN),
+            patch.object(speak_mod, "run_allowed_to_fail") as run,
+        ):
+            speak_mod._speak_local("hello unknown presence")
+        run.assert_called_once()
+
+    def test_in_meeting_still_attaches_slack_audio(self, tmp_path: Path) -> None:
+        audio = tmp_path / "speech.m4a"
+        audio.write_bytes(b"x")
+        backend = _backend()
+        with (
+            patch.object(speak_mod, "resolve_speak", return_value=SpeakConfig(local=LocalPlayback.ALL, slack=True)),
+            patch.object(speak_mod, "synthesise", return_value=audio),
+            patch.object(presence, "current_presence", return_value=presence.Presence.IN_MEETING),
+            patch.object(speak_mod.threading, "Thread") as thread_cls,
+        ):
+            speak_mod.deliver_user_dm(backend, channel="D-USER", text="hi")
+        # Slack audio arm is never gated by presence — the phone still gets audio.
         backend.post_audio_dm.assert_called_once()
         thread_cls.assert_called_once()
 
@@ -486,6 +545,7 @@ class TestSpeakLocal:
             patch.object(speak_mod.shutil, "which", return_value="/usr/bin/say"),
             patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
             patch.object(speak_mod, "_is_away", return_value=False),
+            patch.object(speak_mod, "_in_meeting", return_value=False),
             patch.object(speak_mod, "run_allowed_to_fail") as run,
         ):
             speak_mod._speak_local("hello")
@@ -498,6 +558,7 @@ class TestSpeakLocal:
             patch.object(speak_mod.shutil, "which", return_value=None),
             patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
             patch.object(speak_mod, "_is_away", return_value=False),
+            patch.object(speak_mod, "_in_meeting", return_value=False),
             patch.object(speak_mod, "run_allowed_to_fail") as run,
         ):
             speak_mod._speak_local("hello")
@@ -508,9 +569,27 @@ class TestSpeakLocal:
             patch.object(speak_mod.shutil, "which", return_value="/usr/bin/say"),
             patch.object(speak_mod, "_speaker_lock_path", return_value=tmp_path / "speaker.lock"),
             patch.object(speak_mod, "_is_away", return_value=False),
+            patch.object(speak_mod, "_in_meeting", return_value=False),
             patch.object(speak_mod, "run_allowed_to_fail", side_effect=OSError("nope")),
         ):
             speak_mod._speak_local("hello")  # must not raise
+
+
+class TestMeetingGateResolution:
+    """``_in_meeting`` maps the presence verdict; the read is Django-free (#2171)."""
+
+    def test_in_meeting_true_only_for_meeting_verdict(self) -> None:
+        with patch.object(presence, "current_presence", return_value=presence.Presence.IN_MEETING):
+            assert speak_mod._in_meeting() is True
+
+    def test_free_and_unknown_do_not_mute(self) -> None:
+        for verdict in (presence.Presence.FREE, presence.Presence.UNKNOWN):
+            with patch.object(presence, "current_presence", return_value=verdict):
+                assert speak_mod._in_meeting() is False
+
+    def test_presence_error_does_not_mute(self) -> None:
+        with patch.object(presence, "current_presence", side_effect=RuntimeError("boom")):
+            assert speak_mod._in_meeting() is False
 
 
 class TestSynthesise:

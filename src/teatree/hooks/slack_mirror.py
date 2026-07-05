@@ -55,6 +55,17 @@ class Poster(Protocol):
 type ThreadResolver = Callable[[str], str]
 
 
+# Audio enrichment for the mirrored question (#2171 TTS parity). Called
+# ``(channel, text, thread_ts)`` AFTER the text question DM lands, so the
+# spoken rendition reaches the user's phone the same way ``notify_user`` DMs
+# already do. INJECTED by the router (which resolves the Slack backend and
+# wraps ``teatree.core.speak.deliver_user_dm_sidecar``) so this leaf never
+# imports ``teatree.core`` — it stays a pure platform leaf. Best-effort by
+# contract: it must never raise into the post path, and the enrichment is
+# skipped entirely when ``None`` (``speak.slack`` off — today's text-only mirror).
+type AudioEnricher = Callable[[str, str, str], None]
+
+
 def slack_config_from_toml() -> tuple[str, str] | None:
     """Return ``(bot_token_ref, user_id)`` from the first slack-enabled overlay."""
     import tomllib  # noqa: PLC0415
@@ -196,12 +207,38 @@ def slack_post_dm(poster: Poster, resolve_thread: ThreadResolver, bot_token: str
     return ts
 
 
+def _enrich_delivered_dm(
+    enrich_audio: AudioEnricher | None,
+    resolve_thread: ThreadResolver,
+    user_id: str,
+    text: str,
+) -> None:
+    """Attach audio to the just-delivered question DM — best-effort, never raises (#2171).
+
+    Called by :func:`perform_slack_post` only after a confirmed post, so the
+    delivered channel is the one now in the DM cache. A ``None`` enricher
+    (``speak.slack`` off) is a no-op — today's text-only mirror — and any
+    failure inside the injected enricher is swallowed so a synthesis / upload
+    problem can NEVER retroactively break the text question that already landed.
+    """
+    if enrich_audio is None:
+        return
+    channel = read_dm_channel_cache(user_id)
+    if not channel:
+        return
+    try:
+        enrich_audio(channel, text, resolve_thread(channel))
+    except Exception:  # noqa: BLE001 — audio is a pure enhancement; the text question already landed
+        return
+
+
 def perform_slack_post(
     slack_cfg: tuple[str, str],
     questions: list[dict],
     *,
     poster: Poster,
     resolve_thread: ThreadResolver,
+    enrich_audio: AudioEnricher | None = None,
 ) -> str:
     """Resolve the bot token and post the question — runs synchronously.
 
@@ -211,13 +248,20 @@ def perform_slack_post(
     posted ``ts`` (``""`` on any failure) so the #1174 capture path can link
     the mirror row to its DM.
 
-    ``poster`` (the Slack ``SlackHttpClient.post``) and ``resolve_thread`` (the
-    ``IncomingEvent`` active-DM lookup) are injected by the router so this
-    transport stays a pure ``teatree.hooks`` leaf with no upward import.
+    ``poster`` (the Slack ``SlackHttpClient.post``), ``resolve_thread`` (the
+    ``IncomingEvent`` active-DM lookup) and ``enrich_audio`` (the
+    ``deliver_user_dm_sidecar`` wrapper, #2171) are injected by the router so
+    this transport stays a pure ``teatree.hooks`` leaf with no upward import.
+    On a successful post the audio enrichment fires against the delivered
+    channel so BOTH question surfaces carry audio to the user's phone.
     """
     token_ref, user_id = slack_cfg
     result = run_allowed_to_fail(["pass", "show", f"{token_ref}-bot"], expected_codes=None, timeout=2)
     bot_token = result.stdout.strip() if result.returncode == 0 else ""
     if not bot_token:
         return ""
-    return slack_post_dm(poster, resolve_thread, bot_token, user_id, format_question_text(questions))
+    text = format_question_text(questions)
+    ts = slack_post_dm(poster, resolve_thread, bot_token, user_id, text)
+    if ts:
+        _enrich_delivered_dm(enrich_audio, resolve_thread, user_id, text)
+    return ts

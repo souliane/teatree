@@ -110,6 +110,8 @@ from raw_review_post_guard import is_raw_review_write as _is_raw_review_write  #
 from secret_file_print_guard import handle_block_secret_file_print
 from self_dm_destinations import SelfDmDestinations as _SelfDmDestinations
 from self_dm_destinations import resolve_self_dm_destinations as _resolve_self_dm_destinations
+from slack_mirror_wiring import build_dm_audio_enricher
+from slack_mirror_wiring import slack_http_poster as _slack_http_poster
 from state_files import append_line, read_lines
 from stop_snapshot_slot import handle_stop_snapshot_slot
 from stop_snapshot_slot import open_prs_for_repo as _open_prs_for_repo
@@ -5608,21 +5610,6 @@ _GLAB_GH_API_RE = re.compile(r"\b(?:glab|gh)\s+api\b")
 # "_slack_config_from_toml" / "_read_dm_channel_cache")`` seam the handler tests
 # intercept.
 
-_SLACK_POST_TIMEOUT_SECONDS = 2.0
-
-
-def _slack_http_poster():  # noqa: ANN202 — Poster protocol from the lazily-imported leaf.
-    """Build the hook-budget Slack poster: ``SlackHttpClient.post``, no retry.
-
-    The mirror runs synchronously inside the ~30s hook timeout, so the client
-    carries the short per-call timeout and NO retry (a retry-with-backoff could
-    blow the budget). This is the router's platform→domain edge (the router is
-    tach-invisible), injected into the pure leaf.
-    """
-    from teatree.backends.slack.http import SlackHttpClient  # noqa: PLC0415
-
-    return SlackHttpClient(timeout=_SLACK_POST_TIMEOUT_SECONDS, max_retries=0).post
-
 
 def _active_dm_thread_for_channel(channel: str) -> str:
     """Resolve the user's active DM thread for ``channel`` from ``IncomingEvent``.
@@ -5655,6 +5642,7 @@ def _perform_slack_post(slack_cfg: tuple[str, str], questions: list[dict]) -> st
         questions,
         poster=_slack_http_poster(),
         resolve_thread=_active_dm_thread_for_channel,
+        enrich_audio=build_dm_audio_enricher(slack_enabled=_speak_settings()[1]),
     )
 
 
