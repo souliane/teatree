@@ -34,7 +34,19 @@ from teatree.loop.queue_drain import (
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
-DB_BACKEND = {"TASKS": {"default": {"BACKEND": "django_tasks_db.backend.DatabaseBackend"}}}
+# QUEUES mirrors the real ``settings.TASKS`` (``["default", "loops"]``): the fixture
+# only swaps Immediate→Database, it must not narrow the queue set. django-tasks
+# validates ``queue_name`` at Task-CREATION time (``Task.__post_init__``), so omitting
+# "loops" makes the module-level ``@task(queue_name="loops")`` ``loop_timer`` fail the
+# first time a shuffled collection order imports ``teatree.loops.timer_chains`` here.
+DB_BACKEND = {
+    "TASKS": {
+        "default": {
+            "BACKEND": "django_tasks_db.backend.DatabaseBackend",
+            "QUEUES": ["default", "loops"],
+        }
+    }
+}
 
 
 @pytest.fixture(autouse=True)
@@ -209,13 +221,9 @@ class TestDrainExcludesLoopsQueue:
     def test_drain_never_runs_loops_queue_rows(self) -> None:
         from teatree.loops.timer_chains import loop_timer  # noqa: PLC0415 — test-local: enqueue a loops-queue row
 
-        both_queues = {
-            "default": {"BACKEND": "django_tasks_db.backend.DatabaseBackend", "QUEUES": ["default", "loops"]}
-        }
-        with override_settings(TASKS=both_queues):
-            refresh_followup_snapshot.enqueue()  # default queue — drainable
-            loop_timer.enqueue("inbox")  # loops queue — must be left for the worker
-            drained = drain_ready_batch(max_jobs=5)
+        refresh_followup_snapshot.enqueue()  # default queue — drainable
+        loop_timer.enqueue("inbox")  # loops queue — must be left for the worker
+        drained = drain_ready_batch(max_jobs=5)
 
         assert drained == 1  # ONLY the default-queue job ran
         assert DBTaskResult.objects.get(queue_name="loops").status == TaskResultStatus.READY
