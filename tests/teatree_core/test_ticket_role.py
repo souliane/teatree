@@ -5,7 +5,7 @@ from django.test import TestCase
 
 from teatree.core.models import Task, Ticket
 from teatree.core.models.errors import InvalidTransitionError
-from teatree.core.models.ticket import schedule_external_review
+from teatree.core.models.ticket_external_review import schedule_external_review
 
 
 class TestTicketRoleField(TestCase):

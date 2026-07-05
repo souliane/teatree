@@ -273,7 +273,7 @@ def _advance_open_review_loop(recorded: ReviewVerdict) -> None:
 def _maybe_record_plan_artifact(task: Task, result: AgentResultBlob, *, phase: str) -> None:
     from teatree.core.models.plan_artifact import PlanArtifact  # noqa: PLC0415
 
-    effective_phase = phase or task.phase
+    effective_phase = normalize_phase(phase or task.phase)
     plan_text = result.get("plan_text")
     if effective_phase != "planning" or not isinstance(plan_text, str) or not plan_text.strip():
         return
