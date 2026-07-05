@@ -302,7 +302,7 @@ def compute_s3(window: Window, overlay: str, now: datetime) -> Computation:  # n
     return Computation(SignalReading(caught / denom, denom, window.days, SignalStatus.OK), evidence)
 
 
-def _superseding_context(overlay: str) -> tuple[dict[tuple[str, int], datetime], set[tuple[str, int]]]:
+def superseding_context(overlay: str) -> tuple[dict[tuple[str, int], datetime], set[tuple[str, int]]]:
     """The two supersede signals S4's staleness trip consults, each one grouped read (#15).
 
     ``(latest_issued, merged_keys)`` keyed on the raw ``MergeClear.slug`` (a
@@ -311,6 +311,13 @@ def _superseding_context(overlay: str) -> tuple[dict[tuple[str, int], datetime],
     ``(slug, pr_id)`` that already has a ``MergeAudit`` (the PR merged). Together
     they identify an unconsumed CLEAR the merge loop has moved past — a
     strictly-newer sibling re-reviewed it forward, or a merge already covers it.
+
+    Public because the waiting-lane covering-CLEAR match (:func:`~teatree.core.waiting._has_covering_clear`,
+    #21) reads the SAME context and applies the SAME :func:`clear_is_superseded`
+    predicate — a superseded orphan must not authorise a merge there while S4
+    excludes it here, or the two lanes diverge on the SIG-1 supersede semantics.
+    An empty ``overlay`` scopes globally, which is what the per-PR waiting match
+    wants so a ticket-less CLEAR's siblings are seen regardless of overlay.
     """
     clears = MergeClear.objects.all()
     audits = MergeAudit.objects.all()
@@ -324,6 +331,26 @@ def _superseding_context(overlay: str) -> tuple[dict[tuple[str, int], datetime],
             latest_issued[key] = issued_at
     merged_keys = {(slug, pr_id) for slug, pr_id in audits.values_list("clear__slug", "clear__pr_id")}
     return latest_issued, merged_keys
+
+
+def clear_is_superseded(
+    clear: MergeClear,
+    latest_issued: dict[tuple[str, int], datetime],
+    merged_keys: set[tuple[str, int]],
+) -> bool:
+    """True iff *clear* has been moved past — the shared SIG-1 supersede predicate (#15/#21).
+
+    A CLEAR is superseded when a ``MergeAudit`` already covers its ``(slug,
+    pr_id)`` (the PR merged) or a strictly-newer sibling CLEAR exists for the
+    same key (a head-move re-review issued forward). The single predicate S4's
+    staleness trip and the waiting-lane covering match both apply against a
+    :func:`superseding_context`, so an orphaned old CLEAR is treated identically
+    on both lanes instead of one counting it live and the other excluding it.
+    """
+    key = (clear.slug, clear.pr_id)
+    if key in merged_keys:
+        return True
+    return latest_issued.get(key, clear.issued_at) > clear.issued_at
 
 
 def _max_actionable_clear_age_hours(overlay: str, now: datetime) -> float | None:
@@ -344,12 +371,11 @@ def _max_actionable_clear_age_hours(overlay: str, now: datetime) -> float | None
     actionable = [clear for clear in qs if clear.is_actionable()]
     if not actionable:
         return None
-    latest_issued, merged_keys = _superseding_context(overlay)
+    latest_issued, merged_keys = superseding_context(overlay)
     ages = [
         (now - clear.issued_at).total_seconds() / 3600.0
         for clear in actionable
-        if (clear.slug, clear.pr_id) not in merged_keys
-        and latest_issued.get((clear.slug, clear.pr_id), clear.issued_at) <= clear.issued_at
+        if not clear_is_superseded(clear, latest_issued, merged_keys)
     ]
     return max(ages) if ages else None
 

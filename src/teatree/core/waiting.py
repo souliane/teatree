@@ -26,6 +26,7 @@ import enum
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
+from django.db.models import Q
 from django.utils import timezone
 
 from teatree.core.models.deferred_question import DeferredQuestion
@@ -104,12 +105,19 @@ def _question_entries(now: datetime) -> list[WaitingEntry]:
 
 
 def _merge_authorization_entries(now: datetime, overlay: str) -> list[WaitingEntry]:
-    prs = PullRequest.objects.filter(state=PullRequest.State.APPROVED).select_related("ticket")
+    prs = list(PullRequest.objects.filter(state=PullRequest.State.APPROVED).select_related("ticket"))
     if overlay:
-        prs = prs.filter(overlay__in=[overlay, ""])
+        prs = [pr for pr in prs if pr.overlay in {overlay, ""}]
+    if not prs:
+        return []
+    # One grouped supersede read for the whole set — global scope so a
+    # ticket-less CLEAR's siblings are seen regardless of overlay (#21).
+    from teatree.core.factory_signal_queries import superseding_context  # noqa: PLC0415 — deferred intra-core edge
+
+    latest_issued, merged_keys = superseding_context("")
     entries: list[WaitingEntry] = []
     for pr in prs:
-        if _has_covering_clear(pr):
+        if _has_covering_clear(pr, latest_issued, merged_keys):
             continue
         waited_from = pr.review_requested_at or pr.create_verified_at or now
         entries.append(
@@ -123,14 +131,41 @@ def _merge_authorization_entries(now: datetime, overlay: str) -> list[WaitingEnt
     return entries
 
 
-def _has_covering_clear(pr: PullRequest) -> bool:
-    """True iff an unconsumed, actionable CLEAR already authorises *pr*'s merge."""
+def _has_covering_clear(
+    pr: PullRequest,
+    latest_issued: dict[tuple[str, int], datetime],
+    merged_keys: set[tuple[str, int]],
+) -> bool:
+    """True iff an unconsumed, actionable, non-superseded, repo-matching CLEAR authorises *pr*.
+
+    Matches coverage the way the merge gate does (#21): a ticket-less
+    ``t3 <overlay> ticket clear`` CLEAR (``ticket IS NULL``) covers alongside a
+    ticket-linked one, and each candidate must resolve to *pr*'s own repo —
+    ``pr_id`` alone collides across repos. A CLEAR the merge loop has moved
+    past (a strictly-newer sibling, or a covering merge) is excluded via the
+    SAME :func:`~teatree.core.factory_signal_queries.clear_is_superseded`
+    predicate S4 applies, so the waiting lane and the staleness trip never
+    diverge on the SIG-1 supersede semantics.
+    """
     try:
         pr_id = int(pr.iid)
     except (TypeError, ValueError):
         return False
-    clears = MergeClear.objects.filter(ticket=pr.ticket, pr_id=pr_id, consumed_at__isnull=True)
-    return any(clear.is_actionable() for clear in clears)
+    from teatree.core.factory_signal_queries import clear_is_superseded  # noqa: PLC0415 — deferred intra-core edge
+    from teatree.core.merge import normalize_repo_slug, resolved_repo_slug  # noqa: PLC0415 — deferred merge edge
+
+    pr_repo = normalize_repo_slug(pr.repo)
+    clears = (
+        MergeClear.objects.filter(pr_id=pr_id, consumed_at__isnull=True)
+        .filter(Q(ticket=pr.ticket) | Q(ticket__isnull=True))
+        .select_related("ticket")
+    )
+    for clear in clears:
+        if not clear.is_actionable() or clear_is_superseded(clear, latest_issued, merged_keys):
+            continue
+        if pr_repo and normalize_repo_slug(resolved_repo_slug(clear)) == pr_repo:
+            return True
+    return False
 
 
 def _review_request_entries(now: datetime, overlay: str) -> list[WaitingEntry]:

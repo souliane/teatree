@@ -5,7 +5,7 @@ from datetime import timedelta
 import pytest
 
 from teatree.core.models.deferred_question import DeferredQuestion
-from teatree.core.models.merge_clear import ClearRequest, MergeClear
+from teatree.core.models.merge_clear import ClearRequest, MergeAudit, MergeClear
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.review_assignment import ReviewAssignment, ReviewIntent
 from teatree.core.models.ticket import Ticket
@@ -123,6 +123,69 @@ class TestOverlayScoping:
         pr.approve()
         pr.save()
         assert _kinds("") == [WaitingKind.MERGE_AUTHORIZATION]
+
+
+# ast-grep-ignore: ac-django-no-pytest-django-db
+@pytest.mark.django_db
+class TestCoveringClearHonorsTicketlessRepoScopedAndSupersede:
+    """#21: the covering-CLEAR match honours ticket-less CLEARs, repo scoping, and supersede."""
+
+    def _approved_pr(self, *, repo: str = "o/r", iid: str = "5") -> tuple[Ticket, PullRequest]:
+        ticket = Ticket.objects.create(overlay="teatree", issue_url="https://x/50")
+        pr = PullRequest.objects.create(
+            ticket=ticket,
+            overlay="teatree",
+            url=f"https://github.com/{repo}/pull/{iid}",
+            repo=repo,
+            iid=iid,
+        )
+        pr.request_review()
+        pr.approve()
+        pr.save()
+        return ticket, pr
+
+    def test_ticketless_repo_matching_clear_covers(self) -> None:
+        """A ticket-less ``t3 ticket clear`` for the PR's repo suppresses the nag (RED pre-fix)."""
+        _ticket, _pr = self._approved_pr()
+        MergeClear.issue(
+            ClearRequest(pr_id=5, slug="o/r", reviewed_sha="a" * 40, reviewer_identity="cold-reviewer", ticket=None)
+        )
+        assert WaitingKind.MERGE_AUTHORIZATION not in _kinds("teatree")
+
+    def test_clear_for_a_different_repo_does_not_cover(self) -> None:
+        """A ticket-linked CLEAR with the same pr_id but a FOREIGN repo must NOT cover (RED pre-fix)."""
+        ticket, _pr = self._approved_pr()
+        MergeClear.issue(
+            ClearRequest(
+                pr_id=5, slug="other/repo", reviewed_sha="a" * 40, reviewer_identity="cold-reviewer", ticket=ticket
+            )
+        )
+        assert WaitingKind.MERGE_AUTHORIZATION in _kinds("teatree")
+
+    def test_superseded_by_merge_clear_does_not_cover(self) -> None:
+        """An orphaned CLEAR whose (slug, pr_id) already merged is superseded — surfaced, not covered (RED pre-fix)."""
+        ticket, _pr = self._approved_pr()
+        # The live-but-orphaned CLEAR: ticket-linked, repo-matching, actionable —
+        # it clears every pre-supersede check, so ONLY the shared supersede
+        # predicate keeps it from falsely covering the PR.
+        MergeClear.issue(
+            ClearRequest(pr_id=5, slug="o/r", reviewed_sha="a" * 40, reviewer_identity="cold-reviewer", ticket=ticket)
+        )
+        merged = MergeClear.issue(
+            ClearRequest(pr_id=5, slug="o/r", reviewed_sha="b" * 40, reviewer_identity="cold-reviewer", ticket=ticket)
+        )
+        merged.consumed_at = merged.issued_at
+        merged.save(update_fields=["consumed_at"])
+        MergeAudit.objects.create(clear=merged, merged_sha="b" * 40, required_checks_status="green")
+        assert WaitingKind.MERGE_AUTHORIZATION in _kinds("teatree")
+
+    def test_non_superseded_ticket_linked_clear_still_covers(self) -> None:
+        """Positive control: a live ticket-linked repo-matching CLEAR still suppresses the nag."""
+        ticket, _pr = self._approved_pr()
+        MergeClear.issue(
+            ClearRequest(pr_id=5, slug="o/r", reviewed_sha="a" * 40, reviewer_identity="cold-reviewer", ticket=ticket)
+        )
+        assert WaitingKind.MERGE_AUTHORIZATION not in _kinds("teatree")
 
 
 class TestFormatAge:
