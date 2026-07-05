@@ -349,12 +349,6 @@ class TestF7PrSweepBoundSquashSurfacesSha(TestCase):
 
         def _gh(argv: list[str]) -> tuple[int, str, str]:
             joined = " ".join(argv)
-            if "headRefOid" in joined:
-                return (0, expected, "")
-            if "isDraft" in joined:
-                return (0, "false", "")
-            if "statusCheckRollup" in joined:
-                return (0, '[{"status": "COMPLETED", "conclusion": "SUCCESS"}]', "")
             if "pulls" in joined and "merge" in joined:
                 # The merge response carries no ``sha`` field — the bound path
                 # must fall back to the bound head, never a silent empty string.
@@ -362,7 +356,14 @@ class TestF7PrSweepBoundSquashSurfacesSha(TestCase):
             return (0, "", "")
 
         client = GhPrApiClient(token="")
-        with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh):
+        # The #18 floor re-reads the live not-draft + required-checks state at the
+        # merge chokepoint; a non-draft, green head clears it so the bound merge's
+        # sha-fallback contract is what gets exercised here.
+        with (
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh),
+            patch("teatree.core.merge.execution.fetch_pr_is_draft", return_value=False),
+            patch("teatree.core.merge.execution.fetch_required_checks_status", return_value="green"),
+        ):
             ok, sha = client.merge_pr_squash_bound(slug="owner/repo", pr_id=42, expected_head_oid=expected)
 
         assert ok is True
