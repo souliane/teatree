@@ -121,16 +121,25 @@ def _merge_audits_in(window: Window, overlay: str) -> list[MergeAudit]:
     return list(qs)
 
 
-def _clear_repo_key(clear: MergeClear) -> tuple[str, int] | None:
-    """``(owner/repo, pr_id)`` for a CLEAR, or ``None`` when its slug is a workstream.
+def _resolved_clear_key(clear: MergeClear) -> tuple[str, int] | None:
+    """``(owner/repo, pr_id)`` for a CLEAR, resolved to the real repo it targets.
 
-    The join key against ``RedMrFixAttempt.pr_url``: both sides canonicalise up
-    to ``owner/repo`` via :func:`normalize_repo_slug`. A workstream-slug CLEAR
-    (``normalize_repo_slug`` → ``""``) cannot be joined and is reported as
-    unmatched rather than silently counted as first-try-green.
+    ``MergeClear.slug`` is a *workstream* slug under teatree's dominant self-merge
+    convention, not ``owner/repo`` — so both S1 (join against ``RedMrFixAttempt``)
+    and S3 (join against ``ReviewVerdict``) resolve the CLEAR's real owner/repo via
+    :func:`resolve_pr_repo_slug` (the same key the merge gate stores the PR under)
+    before joining, offline (no network probe). Resolving-up beats stripping-down:
+    the workstream slug carries no repo, so ``normalize_repo_slug(clear.slug)``
+    would drop the dominant self-merge shape to ``""`` and collapse the sample. A
+    degenerate CLEAR that cannot be resolved (workstream slug, no ticket
+    ``issue_url``, no clone origin) is reported unmatched rather than joined on the
+    wrong slug.
     """
-    slug = normalize_repo_slug(clear.slug)
-    return (slug, clear.pr_id) if slug else None
+    try:
+        slug = resolve_pr_repo_slug(clear)
+    except MergePreconditionError:
+        return None
+    return (slug, clear.pr_id)
 
 
 def _red_pr_keys() -> tuple[set[tuple[str, int]], dict[tuple[str, int], set[str]]]:
@@ -158,12 +167,20 @@ def _red_pr_keys() -> tuple[set[tuple[str, int]], dict[tuple[str, int], set[str]
 
 
 def compute_s1(window: Window, overlay: str, now: datetime) -> Computation:  # noqa: ARG001 — uniform compute signature
-    """S1 first_try_green_rate: merged PRs with zero recorded CI-red fix attempts."""
+    """S1 first_try_green_rate: merged PRs with zero recorded CI-red fix attempts.
+
+    Each merge is joined to its CI-red record under the CLEAR's resolved owner/repo
+    slug (:func:`_resolved_clear_key`), so the workstream-slug CLEAR of the dominant
+    self-merge convention is resolved to its real repo and counts toward the
+    denominator instead of collapsing the whole sample to ``insufficient_data``. A
+    CLEAR whose owner/repo cannot be resolved is routed to ``unmatched_slug`` and
+    dropped from the denominator, the way S3 handles an unjoinable CLEAR.
+    """
     audits = _merge_audits_in(window, overlay)
     matchable: list[tuple[str, int]] = []
     unmatched = 0
     for audit in audits:
-        key = _clear_repo_key(audit.clear)
+        key = _resolved_clear_key(audit.clear)
         if key is None:
             unmatched += 1
         else:
@@ -235,23 +252,6 @@ def compute_s2(window: Window, overlay: str, now: datetime) -> Computation:  # n
     return Computation(SignalReading(numerator / denom, denom, window.days, SignalStatus.OK), evidence)
 
 
-def _verdict_repo_key(clear: MergeClear) -> tuple[str, int] | None:
-    """``(owner/repo, pr_id)`` for a CLEAR keyed the way its verdict is stored.
-
-    ``ReviewVerdict`` is keyed under :func:`resolve_pr_repo_slug` (the owner/repo
-    the merge gate targets), NOT the CLEAR's workstream slug — so S3 must resolve
-    the same owner/repo before ``for_pr``, mirroring how S1 canonicalises both
-    join sides. Offline (no network probe). A degenerate CLEAR that cannot be
-    resolved (workstream slug, no ticket ``issue_url``, no clone origin) is
-    reported unmatched rather than joined on the wrong (workstream) slug.
-    """
-    try:
-        slug = resolve_pr_repo_slug(clear)
-    except MergePreconditionError:
-        return None
-    return (slug, clear.pr_id)
-
-
 def _review_caught(slug: str, pr_id: int) -> bool:
     """True iff any recorded verdict for the PR held or surfaced a blocker/major."""
     for verdict in ReviewVerdict.objects.for_pr(slug, pr_id):
@@ -267,16 +267,17 @@ def compute_s3(window: Window, overlay: str, now: datetime) -> Computation:  # n
 
     The rubber-stamp detector: ≥MIN_SAMPLE merges with a catch rate of zero is a
     vacuous review lane, tripped RED by the red-floor of ``0.0``. Each merge is
-    joined to its verdict under the resolved owner/repo slug (:func:`_verdict_repo_key`,
-    the key ``ReviewVerdict`` is stored under); a CLEAR whose owner/repo cannot be
-    resolved is routed to ``unmatched_slug`` and dropped from the denominator, the
-    way S1 handles an unjoinable CLEAR — never mis-counted as a rubber-stamp.
+    joined to its verdict under the CLEAR's resolved owner/repo slug
+    (:func:`_resolved_clear_key`, the key ``ReviewVerdict`` is stored under); a CLEAR
+    whose owner/repo cannot be resolved is routed to ``unmatched_slug`` and dropped
+    from the denominator, the way S1 handles an unjoinable CLEAR — never mis-counted
+    as a rubber-stamp.
     """
     audits = _merge_audits_in(window, overlay)
     matchable: list[tuple[str, int]] = []
     unmatched = 0
     for audit in audits:
-        key = _verdict_repo_key(audit.clear)
+        key = _resolved_clear_key(audit.clear)
         if key is None:
             unmatched += 1
         else:

@@ -10,6 +10,7 @@ or out of the trailing / baseline window.
 """
 
 from datetime import timedelta
+from unittest import mock
 
 import pytest
 from django.test import TestCase
@@ -27,6 +28,8 @@ from teatree.core.factory_signals import (
     repair_iteration_burn,
     review_catch_rate,
 )
+from teatree.core.merge.errors import MergePreconditionError
+from teatree.core.merge.pr_slug_resolution import resolve_pr_repo_slug
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
@@ -152,6 +155,67 @@ class S1FirstTryGreenTests(FactorySignalsTestBase):
         assert row.reading.value == pytest.approx(0.2)
         assert row.tripped is True
         assert row.verdict == SignalVerdict.RED
+
+    def test_workstream_slug_clear_counts_toward_first_try_green(self) -> None:
+        # Dominant self-merge shape: each CLEAR carries a WORKSTREAM slug while its
+        # RedMrFixAttempt / MergeAudit rows are keyed under the resolved OWNER/REPO
+        # slug (the same `resolve_pr_repo_slug` the merge gate keys on). S1 must
+        # resolve that owner/repo before the join, mirroring S3 — so a real
+        # first_try_green_rate is computed instead of the whole sample collapsing
+        # to insufficient_data because every workstream-slug CLEAR was dropped.
+        for i in range(5):
+            pr_id = 971 + i
+            ticket = TicketFactory(issue_url=f"https://github.com/{self.SLUG}/issues/{pr_id}")
+            merged_at = self.now - timedelta(days=5)
+            clear = MergeClearFactory(
+                ticket=ticket,
+                pr_id=pr_id,
+                slug=f"{pr_id}-feat-x",
+                issued_at=merged_at - timedelta(hours=1),
+                consumed_at=merged_at,
+            )
+            MergeAuditFactory(clear=clear, merged_at=merged_at)
+        self._red(pr_id=971, days_ago=5)
+        self._red(pr_id=972, days_ago=5)
+        reading = first_try_green_rate(now=self.now)
+        assert reading.status == SignalStatus.OK
+        assert reading.status != SignalStatus.INSUFFICIENT_DATA
+        assert reading.value == pytest.approx(0.6)
+        assert reading.sample_size == 5
+
+    def test_unresolvable_clear_is_dropped_not_fabricated_green(self) -> None:
+        # A CLEAR whose owner/repo genuinely cannot be resolved is routed to
+        # unmatched_slug and dropped from the denominator — never fabricated as a
+        # first-try-green. The five resolvable merges (one CI-red) still yield a
+        # real 0.8; the unresolvable one moves the sample from 6 to 5, not into it.
+        for i in range(5):
+            self._merge(pr_id=981 + i, days_ago=5)
+        self._red(pr_id=981, days_ago=5)
+        orphan = MergeClearFactory(
+            pr_id=999,
+            slug="orphan-workstream",
+            issued_at=self.now - timedelta(days=5, hours=1),
+            consumed_at=self.now - timedelta(days=5),
+        )
+        MergeAuditFactory(clear=orphan, merged_at=self.now - timedelta(days=5))
+
+        def resolve_or_raise(clear: object) -> str:
+            if getattr(clear, "pr_id", None) == 999:
+                msg = "no resolvable repo"
+                raise MergePreconditionError(msg)
+            return resolve_pr_repo_slug(clear)
+
+        with mock.patch(
+            "teatree.core.factory_signal_queries.resolve_pr_repo_slug",
+            side_effect=resolve_or_raise,
+        ):
+            report = compute_factory_signals(now=self.now)
+        row = _row(report, "first_try_green")
+        assert row.evidence["unmatched_slug"] == 1
+        assert row.evidence["merges"] == 5
+        assert row.reading.sample_size == 5
+        assert row.reading.value == pytest.approx(0.8)
+        assert row.reading.status == SignalStatus.OK
 
 
 class S2DefectEscapeTests(FactorySignalsTestBase):
