@@ -428,15 +428,21 @@ class UserSettings:
     wip: Wip = Wip.MEDIUM
     # Loop tick interval in seconds (BLUEPRINT § 5.6). Default 12 minutes.
     loop_cadence_seconds: int = 720
-    # #1796 — the loop-worker kill-switch. When false (the default, fail-OFF) the
-    # native Claude `/loop` crons own the tick cadence exactly as today. When true
-    # the singleton `t3 worker` drains the self-rescheduling loop-timer chains and
-    # the SessionStart CronCreate path stands down, so the two drivers never both
-    # fire; the worker supervisor re-reads this flag every ~5s and stops on flip-off.
+    # #1796 / PR-28 — the loop-cadence kill-switch. Default ON: the singleton
+    # `t3 worker` owns the tick cadence, draining the self-rescheduling loop-timer
+    # chains, and the SessionStart supervisor keeps at-least-one worker alive. There
+    # is NO fallback plane — the legacy native-`/loop` cron mirror was retired in
+    # PR-28, so flipping this OFF is the instant runtime escape that STOPS the loops
+    # entirely; the worker supervisor re-reads this flag every ~5s and stops the
+    # executor pool on flip-off. The `default`-queue drain still runs under OFF via
+    # the reactive drain loop, so OFF halts loop ticks without stranding queued
+    # FSM/headless work.
     # DB-home (#1775): resolved from the `ConfigSetting` store (global + overlay
     # rows) + `T3_LOOP_RUNNER_ENABLED` env; a `[teatree]`/`[overlays.<name>]` TOML
     # value is ignored on read. Set via `config_setting set loop_runner_enabled`.
-    loop_runner_enabled: bool = False
+    # The worker_supervisor cold-read default is pinned equal to this by
+    # `tests/config/test_worker_default_parity.py` so a fresh install spawns a worker.
+    loop_runner_enabled: bool = True
     # #1838 Track-B PR#6 — the inert agent-teams WORK layer. When false (the
     # default, fail-OFF), the team-role registry (`teatree.teams.roles`) is
     # PURE DATA referenced by nothing in the loop/dispatch/claim path: the

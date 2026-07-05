@@ -11,13 +11,15 @@ A standalone infrastructure hook (like the sibling SessionStart ``bootstrap-cli.
 rather than a router handler: ``hook_router.py`` is a grandfathered shrink-only
 god-module, so a new SessionStart trigger lives here instead of growing it.
 
-Default-OFF and crash-proof / fail-open / silent: any failure to read the
+Default-ON (PR-28) and crash-proof / fail-open / silent: any failure to read the
 ``loop_runner_enabled`` flag, probe the flock, or spawn yields a no-op — never an
 exception into the SessionStart hook. The enable check boots NO Django (#2879
 parity): the DB-home flag is read via the Django-free ``teatree.config.cold_reader``
 stdlib-sqlite path, so a fresh, non-engaged session (contra #256) never pays a full
-``django.setup()`` on the session-start critical path just to read a default-OFF
-flag. On a fully-headless box with no Claude session ever opening, the operator
+``django.setup()`` on the session-start critical path just to read the flag. The
+cold-read default (:data:`_ENABLED_DEFAULT`) is pinned equal to the dataclass
+default, so a fresh install with no explicit row still spawns a worker. On a
+fully-headless box with no Claude session ever opening, the operator
 starts ``t3 worker`` once from a login profile (a dotfile, not a system scheduler);
 this hook only covers the session-present case.
 """
@@ -38,6 +40,15 @@ sys.modules.setdefault("hooks.scripts.worker_supervisor", sys.modules[__name__])
 #: Truthy tokens for the ``T3_LOOP_RUNNER_ENABLED`` env override — mirrors the
 #: hot-path ``teatree.config.settings._parse_env_bool`` and the ``autoload`` cold reader.
 _ENABLED_TRUTHY: frozenset[str] = frozenset({"1", "true", "yes", "on"})
+
+#: The cold-read default for ``loop_runner_enabled``. It MUST equal the
+#: ``UserSettings.loop_runner_enabled`` dataclass default: a fresh install has no
+#: explicit ``ConfigSetting`` row, so this Django-free cold read is what decides
+#: whether SessionStart spawns a worker. Pinning them together (PR-28 flipped both
+#: to ``True``) is what makes a fresh install actually tick — a drift here silently
+#: leaves a default-ON install with a worker that never spawns. Parity is enforced
+#: by ``tests/config/test_worker_default_parity.py``.
+_ENABLED_DEFAULT = True
 
 
 def _enabled_scope_chain() -> tuple[str, ...]:
@@ -60,9 +71,15 @@ def _worker_enabled() -> bool:
     ``T3_LOOP_RUNNER_ENABLED`` env wins (matching the hot-path
     ``ENV_SETTING_OVERRIDES``); otherwise the ``ConfigSetting`` store is read via the
     stdlib-only ``teatree.config.cold_reader`` (overlay scope, then global — the flag
-    is per-overlay overridable), defaulting OFF. A ``[teatree]`` TOML value is DB-home
-    and ignored on read, so there is no TOML fallback (as with ``autoload``). Any read
-    error → OFF, so a missing/unreadable DB never crashes the session (fail-open).
+    is per-overlay overridable), defaulting to :data:`_ENABLED_DEFAULT` (kept equal to
+    the dataclass default so a fresh install with no explicit row still spawns). A
+    ``[teatree]`` TOML value is DB-home and ignored on read, so there is no TOML
+    fallback (as with ``autoload``). The cold reader itself never raises — a missing
+    DB file, an absent table (a pre-``t3 setup`` box), a locked DB, or a corrupt value
+    all fail OPEN to the default, so a fresh install resolves ON and spawns. The
+    ``except`` below is the last-resort guard for a genuine read-path failure (an
+    unimportable ``bool_setting``, a scope-chain error) → OFF, so the session never
+    crashes.
     """
     env = os.environ.get("T3_LOOP_RUNNER_ENABLED", "").strip().lower()
     if env:
@@ -70,7 +87,7 @@ def _worker_enabled() -> bool:
     try:
         from teatree.config.cold_reader import bool_setting  # noqa: PLC0415
 
-        return bool_setting("loop_runner_enabled", default=False, scope_chain=_enabled_scope_chain())
+        return bool_setting("loop_runner_enabled", default=_ENABLED_DEFAULT, scope_chain=_enabled_scope_chain())
     except Exception:  # noqa: BLE001 — fast hook must never raise; silent fail-off.
         return False
 

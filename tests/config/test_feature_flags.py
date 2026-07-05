@@ -10,8 +10,10 @@ not a real ``bool`` ``UserSettings`` field registered in
 ON value — the Goodhart guard that keeps the outer loop's OFF switch un-flippable
 without a code-reviewed stage demotion.
 
-The registry is seeded with three real flags across two stages, so no invariant
-is vacuously true over an empty or single-entry set.
+The live registry is seeded with several real flags. It is currently all-``DARK``
+(PR-28 graduated the sole ``SETTLING`` flag ``loop_runner_enabled`` out into a
+durable kill-switch), so the stage-discrimination invariants are proven
+non-vacuously over a MIXED FIXTURE rather than the live set's accidental composition.
 """
 
 import dataclasses
@@ -32,19 +34,33 @@ def _user_settings_field_names() -> set[str]:
     return {f.name for f in dataclasses.fields(UserSettings)}
 
 
+def _mixed_stage_fixture() -> dict[str, FeatureFlag]:
+    """A fixture registry spanning every stage — the non-vacuity anchor for stage logic."""
+    return {
+        "a_dark": FeatureFlag(field="a_dark", stage=FlagStage.DARK, tracking_issue="#1", summary="s"),
+        "a_settling": FeatureFlag(field="a_settling", stage=FlagStage.SETTLING, tracking_issue="#2", summary="s"),
+        "a_remove": FeatureFlag(field="a_remove", stage=FlagStage.REMOVE, tracking_issue="#3", summary="s"),
+    }
+
+
 class TestRegistrySeededNonVacuously:
     """The registry is seeded so every invariant below has real entries to bite on."""
 
     def test_at_least_three_flags_registered(self) -> None:
         assert len(FEATURE_FLAGS) >= 3
 
-    def test_flags_span_at_least_two_stages(self) -> None:
-        stages = {flag.stage for flag in FEATURE_FLAGS.values()}
-        assert len(stages) >= 2, f"registry must exercise multiple stages, got {stages}"
+    def test_stage_machinery_spans_every_stage_over_a_fixture(self) -> None:
+        # The live registry is single-stage (all DARK) after PR-28's graduation, so the
+        # multi-stage guard bites on a MIXED FIXTURE — proving the stage type exercises
+        # every stage without pinning the live set's accidental composition.
+        stages = {flag.stage for flag in _mixed_stage_fixture().values()}
+        assert stages == set(FlagStage)
 
-    def test_canonical_seed_flags_present(self) -> None:
-        # The three the task pins: the new canonical flag plus two retro-classified.
-        assert {"outer_loop_enabled", "teams_enabled", "loop_runner_enabled"} <= set(FEATURE_FLAGS)
+    def test_canonical_seed_flag_present(self) -> None:
+        # The canonical DARK flag plus a retro-classified one — loop_runner_enabled was
+        # graduated OUT by PR-28 (durable kill-switch, no longer a dying flag).
+        assert {"outer_loop_enabled", "teams_enabled"} <= set(FEATURE_FLAGS)
+        assert "loop_runner_enabled" not in FEATURE_FLAGS
 
 
 class TestRegisteredHome:
@@ -134,6 +150,11 @@ class TestQueryHelpers:
     def test_dark_flags_returns_only_dark_stage(self) -> None:
         assert all(flag.stage is FlagStage.DARK for flag in dark_flags().values())
         assert set(dark_flags()) == {k for k, f in FEATURE_FLAGS.items() if f.stage is FlagStage.DARK}
+
+    def test_dark_flags_filters_non_dark_over_a_mixed_fixture(self) -> None:
+        # Non-vacuous FILTER proof: over a fixture spanning every stage, dark_flags
+        # keeps only the DARK entry — the live all-DARK registry can't prove this.
+        assert set(dark_flags(_mixed_stage_fixture())) == {"a_dark"}
 
 
 class TestAuditRenderSurfacesRemoveLoud:
