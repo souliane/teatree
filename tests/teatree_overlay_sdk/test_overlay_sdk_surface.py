@@ -9,8 +9,10 @@ same PR (and bump ``__overlay_api_version__`` for a removal/rename).
 
 import inspect
 
-from teatree import overlay_sdk
+import teatree.overlay_sdk
 from teatree.core.overlay import OverlayBase
+
+overlay_sdk = teatree.overlay_sdk
 
 EXPECTED_SURFACE: frozenset[str] = frozenset(
     {

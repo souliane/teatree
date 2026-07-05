@@ -68,7 +68,13 @@ _TACH = _REPO / "tach.toml"
 # drop out to offset. One new fan-in entry (teatree.loop.slack_answer) in the
 # correct lower→higher direction; it is a pure carve artifact and adds no new
 # coupling.
-_CORE_FANIN_BASELINE = 21
+# Bumped 21 → 22 (PR-27): teatree.overlay_sdk is the surface-frozen overlay-
+# authoring facade node. It re-exports OverlayBase / ProvisionStep / Variant /
+# the probe + config helpers from teatree.core (and teatree.types / .config /
+# .utils / .docker / .visual_qa), so it legitimately depends on teatree.core —
+# an integration-layer facade over the domain layer, the correct lower→higher
+# direction. One new fan-in entry; nothing in core imports it back.
+_CORE_FANIN_BASELINE = 22
 _MAX_DECLARED_TWO_CYCLES = 0
 
 
