@@ -121,25 +121,35 @@ def _merge_audits_in(window: Window, overlay: str) -> list[MergeAudit]:
     return list(qs)
 
 
-def _resolved_clear_key(clear: MergeClear) -> tuple[str, int] | None:
-    """``(owner/repo, pr_id)`` for a CLEAR, resolved to the real repo it targets.
+def resolved_repo_key(audit: MergeAudit) -> tuple[str, int] | None:
+    """The single canonical ``(owner/repo, pr_id)`` join key for a merge.
 
-    ``MergeClear.slug`` is a *workstream* slug under teatree's dominant self-merge
-    convention, not ``owner/repo`` — so both S1 (join against ``RedMrFixAttempt``)
-    and S3 (join against ``ReviewVerdict``) resolve the CLEAR's real owner/repo via
-    :func:`resolve_pr_repo_slug` (the same key the merge gate stores the PR under)
-    before joining, offline (no network probe). Resolving-up beats stripping-down:
-    the workstream slug carries no repo, so ``normalize_repo_slug(clear.slug)``
-    would drop the dominant self-merge shape to ``""`` and collapse the sample. A
-    degenerate CLEAR that cannot be resolved (workstream slug, no ticket
-    ``issue_url``, no clone origin) is reported unmatched rather than joined on the
-    wrong slug.
+    Used at EVERY audit→ledger join site — S1 (against ``RedMrFixAttempt``) and
+    S3 (against ``ReviewVerdict``) alike — so the two lanes can never diverge on
+    how a merge maps to a repo (the ``_clear_repo_key`` vs ``_verdict_repo_key``
+    split this replaces). Resolution, first match wins:
+
+    (1) ``MergeAudit.repo_slug`` — the merge-time truth the gate stamped for the
+        #1335-reconciled repo it actually merged against (#19). Present on every
+        merge recorded after #19; the authoritative key a cross-repo merge is
+        joined under, never the offline ticket-repo slug.
+    (2) ``resolve_pr_repo_slug(clear)`` — the offline fallback for a legacy row
+        with a blank ``repo_slug``. ``MergeClear.slug`` is a *workstream* slug
+        under the dominant self-merge convention, so resolving-up to owner/repo
+        (never ``normalize_repo_slug(clear.slug)``, which drops the workstream
+        shape to ``""`` and collapses the sample) keeps that shape in the join. A
+        degenerate CLEAR that cannot be resolved (workstream slug, no ticket
+        ``issue_url``, no clone origin) is reported unmatched rather than joined
+        on the wrong slug — never silently dropped from evidence.
     """
+    stamped = (audit.repo_slug or "").strip()
+    if stamped:
+        return (stamped, audit.clear.pr_id)
     try:
-        slug = resolve_pr_repo_slug(clear)
+        slug = resolve_pr_repo_slug(audit.clear)
     except MergePreconditionError:
         return None
-    return (slug, clear.pr_id)
+    return (slug, audit.clear.pr_id)
 
 
 def _red_pr_keys() -> tuple[set[tuple[str, int]], dict[tuple[str, int], set[str]]]:
@@ -169,18 +179,18 @@ def _red_pr_keys() -> tuple[set[tuple[str, int]], dict[tuple[str, int], set[str]
 def compute_s1(window: Window, overlay: str, now: datetime) -> Computation:  # noqa: ARG001 — uniform compute signature
     """S1 first_try_green_rate: merged PRs with zero recorded CI-red fix attempts.
 
-    Each merge is joined to its CI-red record under the CLEAR's resolved owner/repo
-    slug (:func:`_resolved_clear_key`), so the workstream-slug CLEAR of the dominant
+    Each merge is joined to its CI-red record under its canonical owner/repo key
+    (:func:`resolved_repo_key`), so the workstream-slug CLEAR of the dominant
     self-merge convention is resolved to its real repo and counts toward the
     denominator instead of collapsing the whole sample to ``insufficient_data``. A
-    CLEAR whose owner/repo cannot be resolved is routed to ``unmatched_slug`` and
-    dropped from the denominator, the way S3 handles an unjoinable CLEAR.
+    merge whose owner/repo cannot be resolved is routed to ``unmatched_slug`` and
+    dropped from the denominator, the way S3 handles an unjoinable merge.
     """
     audits = _merge_audits_in(window, overlay)
     matchable: list[tuple[str, int]] = []
     unmatched = 0
     for audit in audits:
-        key = _resolved_clear_key(audit.clear)
+        key = resolved_repo_key(audit)
         if key is None:
             unmatched += 1
         else:
@@ -267,17 +277,18 @@ def compute_s3(window: Window, overlay: str, now: datetime) -> Computation:  # n
 
     The rubber-stamp detector: ≥MIN_SAMPLE merges with a catch rate of zero is a
     vacuous review lane, tripped RED by the red-floor of ``0.0``. Each merge is
-    joined to its verdict under the CLEAR's resolved owner/repo slug
-    (:func:`_resolved_clear_key`, the key ``ReviewVerdict`` is stored under); a CLEAR
-    whose owner/repo cannot be resolved is routed to ``unmatched_slug`` and dropped
-    from the denominator, the way S1 handles an unjoinable CLEAR — never mis-counted
-    as a rubber-stamp.
+    joined to its verdict under its canonical owner/repo key
+    (:func:`resolved_repo_key`, the same key ``ReviewVerdict`` is stored under, so
+    a cross-repo merge joins its verdict instead of a false-RED rubber-stamp
+    miss); a merge whose owner/repo cannot be resolved is routed to
+    ``unmatched_slug`` and dropped from the denominator, the way S1 handles an
+    unjoinable merge — never mis-counted as a rubber-stamp.
     """
     audits = _merge_audits_in(window, overlay)
     matchable: list[tuple[str, int]] = []
     unmatched = 0
     for audit in audits:
-        key = _resolved_clear_key(audit.clear)
+        key = resolved_repo_key(audit)
         if key is None:
             unmatched += 1
         else:
@@ -291,12 +302,55 @@ def compute_s3(window: Window, overlay: str, now: datetime) -> Computation:  # n
     return Computation(SignalReading(caught / denom, denom, window.days, SignalStatus.OK), evidence)
 
 
+def _superseding_context(overlay: str) -> tuple[dict[tuple[str, int], datetime], set[tuple[str, int]]]:
+    """The two supersede signals S4's staleness trip consults, each one grouped read (#15).
+
+    ``(latest_issued, merged_keys)`` keyed on the raw ``MergeClear.slug`` (a
+    re-CLEAR of the same workstream PR shares its older sibling's ``(slug,
+    pr_id)``): the newest ``issued_at`` across ALL CLEARs for a key, and every
+    ``(slug, pr_id)`` that already has a ``MergeAudit`` (the PR merged). Together
+    they identify an unconsumed CLEAR the merge loop has moved past — a
+    strictly-newer sibling re-reviewed it forward, or a merge already covers it.
+    """
+    clears = MergeClear.objects.all()
+    audits = MergeAudit.objects.all()
+    if overlay:
+        clears = clears.filter(ticket__overlay=overlay)
+        audits = audits.filter(clear__ticket__overlay=overlay)
+    latest_issued: dict[tuple[str, int], datetime] = {}
+    for slug, pr_id, issued_at in clears.values_list("slug", "pr_id", "issued_at"):
+        key = (slug, pr_id)
+        if key not in latest_issued or issued_at > latest_issued[key]:
+            latest_issued[key] = issued_at
+    merged_keys = {(slug, pr_id) for slug, pr_id in audits.values_list("clear__slug", "clear__pr_id")}
+    return latest_issued, merged_keys
+
+
 def _max_actionable_clear_age_hours(overlay: str, now: datetime) -> float | None:
-    """Age in hours of the oldest actionable, unconsumed CLEAR, or ``None``."""
+    """Age in hours of the oldest actionable, non-superseded, unconsumed CLEAR, or ``None``.
+
+    A CLEAR the merge loop has moved past is NOT a stalled merge and is excluded
+    from the staleness trip (#15): a strictly-newer sibling CLEAR exists for the
+    same ``(slug, pr_id)``, or a ``MergeAudit`` already covers that PR (the
+    orphaned-row backstop to the merge-time sibling supersede in
+    ``record_merge_and_advance``, catching a legacy or cross-tick sibling the
+    supersede never reached). Without this, one head-move re-review left the older
+    CLEAR unconsumed forever and ratcheted S4 hard-red permanently after 48h. A
+    genuinely-stale CLEAR — no newer sibling, no covering merge — still trips.
+    """
     qs = MergeClear.objects.filter(consumed_at__isnull=True).select_related("ticket")
     if overlay:
         qs = qs.filter(ticket__overlay=overlay)
-    ages = [(now - clear.issued_at).total_seconds() / 3600.0 for clear in qs if clear.is_actionable()]
+    actionable = [clear for clear in qs if clear.is_actionable()]
+    if not actionable:
+        return None
+    latest_issued, merged_keys = _superseding_context(overlay)
+    ages = [
+        (now - clear.issued_at).total_seconds() / 3600.0
+        for clear in actionable
+        if (clear.slug, clear.pr_id) not in merged_keys
+        and latest_issued.get((clear.slug, clear.pr_id), clear.issued_at) <= clear.issued_at
+    ]
     return max(ages) if ages else None
 
 
@@ -349,9 +403,20 @@ def compute_s5(window: Window, overlay: str, now: datetime) -> Computation:  # n
     groups: dict[tuple[int, str], list[int]] = defaultdict(list)
     failed = 0
     for attempt in rows:
-        if attempt.exit_code not in {None, 0}:
+        # #16: an envelope-refusal failure is recorded with exit_code=0 AND a
+        # non-empty error, so classifying on exit_code alone counted N pure
+        # refusals as a clean success group. Classify on the error field: a
+        # genuine success is exit_code==0 with NO error; a non-zero/unknown
+        # exit_code OR any error string is a failure. A None exit_code (attempt
+        # in flight) is neither — excluded from both, unchanged. A named
+        # follow-up will replace this overloaded exit_code+error read with an
+        # explicit TaskAttempt outcome discriminator (success/refusal/crash) so a
+        # refusal is a first-class terminal state rather than an inference (#16).
+        is_failed = attempt.exit_code not in {None, 0} or bool(attempt.error)
+        is_success = attempt.exit_code == 0 and not attempt.error
+        if is_failed:
             failed += 1
-        if attempt.exit_code == 0:
+        if is_success:
             groups[attempt.task.ticket_id, attempt.task.phase].append(attempt.iteration)
     terminal_iters = [max(iters) for iters in groups.values()]
     sample = len(terminal_iters)
