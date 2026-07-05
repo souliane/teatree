@@ -27,6 +27,7 @@ from teatree.core.management.commands._workspace_relocate import RelocateIO, act
 from teatree.core.management.commands._workspace_salvage import emit_records_json, run_salvage
 from teatree.core.management.commands._workspace_ticket_intake import (
     ForeignIssueWorktreeRefusedError,
+    InvalidTicketKindError,
     RawTicketInputs,
     build_intake,
     build_ticket,
@@ -127,6 +128,9 @@ class Command(TyperCommand):
                 help="Adopt this EXISTING branch (implies --adopt). Omit to auto-detect from the current git worktree.",
             ),
         ] = "",
+        kind: Annotated[
+            str, typer.Option("--kind", help="Classify: 'fix' or 'feature' (blank infers from the title, #17).")
+        ] = "",
     ) -> int:
         """Create or update a ticket and trigger worktree provisioning.
 
@@ -158,10 +162,13 @@ class Command(TyperCommand):
                 "  Refused: --adopt needs a checked-out branch (HEAD is detached); pass --adopt-branch <branch>."
             )
             return 0
-        raw = RawTicketInputs(issue_url, repos, variant, description, take_over, adopt=adopt_ctx)
-        intake = build_intake(overlay, raw)
+        raw = RawTicketInputs(issue_url, repos, variant, description, take_over, adopt=adopt_ctx, kind=kind)
         try:
+            intake = build_intake(overlay, raw)
             ticket = build_ticket(self.stderr.write, overlay, intake, _worktree_root())
+        except InvalidTicketKindError as exc:
+            self.stderr.write(f"  Refused: {exc}")
+            return 0
         except ForeignIssueWorktreeRefusedError:
             return 0
 

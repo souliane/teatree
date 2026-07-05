@@ -11,6 +11,8 @@ import pytest
 from django.core.cache import cache
 from django.test import TestCase
 
+from teatree.backends.github import ProjectItem
+from teatree.backends.github.sync import GitHubSyncBackend
 from teatree.backends.gitlab.sync import GitLabSyncBackend
 from teatree.core.models import Ticket, Worktree
 from teatree.core.sync import _merge_results, sync_followup
@@ -147,6 +149,68 @@ class TestSyncReviewerMRs(TestCase):
 
 
 # ── GitHub sync ──────────────────────────────────────────────────────
+
+
+class TestSyncClassifiesTicketKind(TestCase):
+    """#17: the GitHub board-sync intake classifies Ticket.kind at create time.
+
+    Before the wire-up a board issue labeled ``bug`` (or titled ``fix …``) synced
+    as FEATURE forever — classification is create-only, so S2 stayed blind and the
+    fix-record DoD gate never fired for real board defects. RED before the create
+    passed ``kind=`` through (the ticket defaulted to FEATURE).
+    """
+
+    def _overlay(self) -> SyncOverlay:
+        return SyncOverlay(
+            gitlab_token="",
+            gitlab_username="",
+            github_token="gh-test-token",
+            github_owner="souliane",
+            github_project_number=1,
+        )
+
+    def _synced_ticket(self, *, url: str, title: str, labels: list[str]) -> Ticket:
+        overlay = self._overlay()
+        item = ProjectItem(
+            issue_number=71,
+            title=title,
+            url=url,
+            status="Todo",
+            position=0,
+            labels=labels,
+            updated_at="2026-04-01T00:00:00Z",
+        )
+        with (
+            _patch_overlay(overlay),
+            patch("teatree.backends.github.fetch_project_items", return_value=[item]),
+            patch.object(GitHubSyncBackend, "_sync_reviewer_prs"),
+        ):
+            GitHubSyncBackend().sync(overlay)
+        return Ticket.objects.get(issue_url=url)
+
+    def test_bug_labeled_board_issue_is_fix(self) -> None:
+        ticket = self._synced_ticket(
+            url="https://github.com/souliane/teatree/issues/711",
+            title="Login button unresponsive",
+            labels=["bug"],
+        )
+        assert ticket.kind == Ticket.Kind.FIX
+
+    def test_fix_titled_board_issue_is_fix(self) -> None:
+        ticket = self._synced_ticket(
+            url="https://github.com/souliane/teatree/issues/712",
+            title="fix: crash on empty export",
+            labels=[],
+        )
+        assert ticket.kind == Ticket.Kind.FIX
+
+    def test_plain_feature_board_issue_is_feature(self) -> None:
+        ticket = self._synced_ticket(
+            url="https://github.com/souliane/teatree/issues/713",
+            title="Add dark mode toggle",
+            labels=["enhancement"],
+        )
+        assert ticket.kind == Ticket.Kind.FEATURE
 
 
 class TestSyncGitHub(TestCase):
