@@ -93,6 +93,7 @@ from orchestration_boundary_signals import PYTEST_VERB_FINDER as _PYTEST_VERB_FI
 from orchestration_boundary_signals import PYTEST_VERB_RE as _PYTEST_VERB_RE
 from orchestration_boundary_signals import call_is_from_subagent as _call_is_from_subagent
 from orchestrator_investigation_gate import handle_enforce_orchestrator_investigation_boundary
+from plan_edit_gate import skip_plan_gate_token
 from question_gates import (
     FENCED_CODE_RE,
     handle_warn_batched_questions,
@@ -112,6 +113,7 @@ from self_dm_destinations import SelfDmDestinations as _SelfDmDestinations
 from self_dm_destinations import resolve_self_dm_destinations as _resolve_self_dm_destinations
 from slack_mirror_wiring import build_dm_audio_enricher
 from slack_mirror_wiring import slack_http_poster as _slack_http_poster
+from standing_goal_stop_gate import handle_standing_goal_stop
 from state_files import append_line, read_lines
 from stop_snapshot_slot import handle_stop_snapshot_slot
 from stop_snapshot_slot import open_prs_for_repo as _open_prs_for_repo
@@ -253,7 +255,7 @@ def _read_input() -> dict:
         return {}
 
 
-def emit_pretooluse_deny(reason: str) -> bool:
+def emit_pretooluse_deny(reason: str, *, gate_id: str | None = None) -> bool:
     """Emit a PreToolUse deny in the modern nested ``hookSpecificOutput`` schema.
 
     Claude Code 2.1.146 honours deny payloads only when (a) the JSON
@@ -287,10 +289,10 @@ def emit_pretooluse_deny(reason: str) -> bool:
     decision = _apply_deny_circuit_breaker(reason)
     if decision.allow:
         return False
-    return _write_pretooluse_deny(decision.reason)
+    return _write_pretooluse_deny(decision.reason, gate_id=gate_id)
 
 
-def _write_pretooluse_deny(reason: str) -> bool:
+def _write_pretooluse_deny(reason: str, *, gate_id: str | None = None) -> bool:
     payload = {
         # Legacy flat shape — kept for in-process consumers (existing
         # handler tests). Harmless to the harness because it ignores
@@ -304,6 +306,12 @@ def _write_pretooluse_deny(reason: str) -> bool:
             "permissionDecisionReason": reason,
         },
     }
+    # A small non-privacy-sensitive gate identity a gate can stamp on its deny
+    # (PR-25 plan_gate marker) so the transcript-conformance eval can key on the
+    # gate WITHOUT ever reading the raw (privacy-sensitive) deny reason.
+    if gate_id:
+        payload["gate_id"] = gate_id
+        payload["hookSpecificOutput"]["gate_id"] = gate_id
     json.dump(payload, sys.stdout)
     return True
 
@@ -393,13 +401,14 @@ def _danger_gate_fail_open_enabled() -> bool:
         return False
 
 
-def _fail_open_or_deny(data: dict, reason: str) -> bool:
+def _fail_open_or_deny(data: dict, reason: str, *, gate_id: str | None = None) -> bool:
     """Deny with ``reason`` unless a self-rescue command or fail-open says allow.
 
     The single chokepoint every OVER-DENY gate routes its deny through. A
     self-rescue command is always allowed; an enabled master fail-open switch
     allows everything; otherwise the deny is emitted. Returns ``True`` (deny
     emitted) or ``False`` (allow), so callers ``return _fail_open_or_deny(...)``.
+    ``gate_id`` stamps the optional non-privacy gate marker on the deny output.
 
     NEVER call this from the PUBLIC-egress leak path — that path stays
     fail-closed (see the module note above).
@@ -411,8 +420,8 @@ def _fail_open_or_deny(data: dict, reason: str) -> bool:
         if _danger_gate_fail_open_enabled():
             return False
     except Exception:  # noqa: BLE001 — a raising resolver must NEVER relax a gate; fail CLOSED to deny.
-        return emit_pretooluse_deny(reason)
-    return emit_pretooluse_deny(reason)
+        return emit_pretooluse_deny(reason, gate_id=gate_id)
+    return emit_pretooluse_deny(reason, gate_id=gate_id)
 
 
 def _state_file(session_id: str, suffix: str) -> Path:
@@ -1174,12 +1183,6 @@ def normalize_skill_name(name: str) -> str:
 # closed).
 _SKILL_LOAD_OK_RE = re.compile(r"\[skill-load-ok:\s*(\S[^\]]*?)\s*\]")
 
-# Per-call escape for the plan-edit gate: ``[skip-plan-gate: <non-empty-reason>]``
-# in the current Edit/Write tool call's new_string/content/file_path unblocks that
-# single call. Mirrors ``_SKILL_LOAD_OK_RE`` / ``_SKIP_SKILL_GATE_RE`` in shape
-# and 512-char truncation scope — buried tokens do not silently escape.
-_SKIP_PLAN_GATE_RE = re.compile(r"\[skip-plan-gate:\s*(\S[^\]]*?)\s*\]")
-
 
 def _skill_load_ok_token(data: dict) -> str | None:
     """Return the reason from a ``[skill-load-ok: <reason>]`` token, else None.
@@ -1199,30 +1202,6 @@ def _skill_load_ok_token(data: dict) -> str | None:
         if not isinstance(value, str) or not value:
             continue
         match = _SKILL_LOAD_OK_RE.search(value[:512])
-        if not match:
-            continue
-        reason = match.group(1).strip()
-        if reason:
-            return reason
-    return None
-
-
-def _skip_plan_gate_token(data: dict) -> str | None:
-    """Return the reason from a ``[skip-plan-gate: <reason>]`` token, else None.
-
-    Scans the current Edit/Write tool call's ``new_string``, ``content``,
-    and ``file_path`` within the first 512 characters of each field —
-    mirroring :func:`_skill_load_ok_token` — so a buried token in a long
-    body does not silently authorise the call. An empty reason returns None.
-    """
-    tool_input = data.get("tool_input", {})
-    if not isinstance(tool_input, dict):
-        return None
-    for field in ("new_string", "content", "file_path"):
-        value = tool_input.get(field, "")
-        if not isinstance(value, str) or not value:
-            continue
-        match = _SKIP_PLAN_GATE_RE.search(value[:512])
         if not match:
             continue
         reason = match.group(1).strip()
@@ -1587,7 +1566,7 @@ def handle_block_edit_before_planned(data: dict) -> bool:
         return False
     if state != "started":
         return False
-    if reason_token := _skip_plan_gate_token(data):
+    if reason_token := skip_plan_gate_token(data):
         sys.stderr.write(f"NOTE: plan-gate edit-block skipped via [skip-plan-gate: {reason_token}].\n")
         return False
     reason = (
@@ -1596,7 +1575,10 @@ def handle_block_edit_before_planned(data: dict) -> bool:
         "Run the planning phase first so the ticket advances to PLANNED. "
         "If this is a trivial mechanical edit, add `[skip-plan-gate: <reason>]` to proceed."
     )
-    return _fail_open_or_deny(data, reason)
+    # Stamp the non-privacy ``plan_gate`` marker so the transcript-conformance
+    # eval (``no_code_edit_before_planned``) keys on THIS gate's deny without
+    # reading the raw reason (PR-25 Part A).
+    return _fail_open_or_deny(data, reason, gate_id="plan_gate")
 
 
 # ── PreToolUse: protect-default-branch ─────────────────────────────
@@ -6721,6 +6703,7 @@ _HANDLERS: dict[str, list] = {
         handle_classifier_deny_stop_gate,
         handle_enforce_structured_question,
         handle_completion_claim_gate,
+        handle_standing_goal_stop,
         handle_enforce_answered_questions,
         handle_closure_reverify_stop,
         handle_consideration_gate,

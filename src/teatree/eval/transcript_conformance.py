@@ -142,6 +142,33 @@ def _is_t3_ticket_worktree_edit(path: str) -> bool:
     return bool(_T3_TICKET_WORKTREE_RE.search(path))
 
 
+# The non-privacy deny marker the plan-before-code edit-block gate stamps on its
+# deny output (``hook_router.handle_block_edit_before_planned`` →
+# ``_write_pretooluse_deny(..., gate_id="plan_gate")``). The invariant below keys
+# STRICTLY on this marker, never on the raw deny reason.
+_PLAN_GATE_MARKER = "plan_gate"
+
+
+def _check_no_code_edit_before_planned(events: list[SessionEvent]) -> InvariantResult:
+    """No worktree code edit was attempted before the ticket was planned.
+
+    Keyed STRICTLY on the ``plan_gate`` deny marker: a ``gate_id == "plan_gate"``
+    hook attachment is the record that the agent attempted a code edit while the
+    worktree ticket was still ``STARTED`` (unplanned) — a sequence the plan-gate
+    is built to forbid. It is NEVER keyed on "any PreToolUse deny on a worktree
+    edit" (a deny by a DIFFERENT gate carries a different / absent ``gate_id`` and
+    is ignored — the deny-then-retry false positive stays GREEN) nor on the
+    presence/absence of a ``t3 … ticket plan`` command (a headless-planner run
+    records its ``PlanArtifact`` via the ORM with no plan command, so a
+    command-keyed check would false-flag it — here it simply has no ``plan_gate``
+    deny and PASSES).
+    """
+    for index, event in enumerate(events):
+        if event.gate_id == _PLAN_GATE_MARKER:
+            return _violation(index, "code edit attempted before the ticket was planned (plan_gate deny fired)")
+    return _ok("no code edit before planned")
+
+
 def _check_no_edit_in_main_clone(events: list[SessionEvent]) -> InvariantResult:
     """No ``Edit``/``Write`` targets a teatree-managed main clone (worktree-first).
 
@@ -296,6 +323,13 @@ def _check_no_concurrent_unsafe_discard(events: list[SessionEvent]) -> Invariant
 # The live registry: only invariants run by :func:`replay` and the default
 # ``t3 eval transcript-replay`` run. All are GREEN-tier (``deterministic``).
 INVARIANT_REGISTRY: tuple[Invariant, ...] = (
+    Invariant(
+        id="no_code_edit_before_planned",
+        description="No code edit was attempted before the worktree ticket was planned (plan_gate deny marker).",
+        confidence="deterministic",
+        catalog_ref=_rule_ref("always-create-tasks"),
+        predicate=_check_no_code_edit_before_planned,
+    ),
     Invariant(
         id="no_edit_in_main_clone",
         description="No Edit/Write targets a teatree-managed main clone (worktree-first).",

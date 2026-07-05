@@ -19,6 +19,7 @@ leaks no fixture payload and clears the publication scanner; and a
 mirrored-constants lockstep test runs against ``hooks.scripts.hook_router``.
 """
 
+import json
 import re
 from pathlib import Path
 from typing import Final
@@ -208,6 +209,7 @@ def _bash_events(command: str) -> list[tc.SessionEvent]:
             hook_event=None,
             hook_exit_code=None,
             tool_use_id="t1",
+            gate_id=None,
             raw={},
         ),
     ]
@@ -273,6 +275,7 @@ def _edit_events(file_path: str, tool_name: str = "Edit") -> list[tc.SessionEven
             hook_event=None,
             hook_exit_code=None,
             tool_use_id="t1",
+            gate_id=None,
             raw={},
         ),
     ]
@@ -310,3 +313,78 @@ def test_no_edit_in_main_clone_still_flags_true_main_clone(file_path: str) -> No
     result = tc._check_no_edit_in_main_clone(_edit_events(file_path))
     assert not result.ok, f"failed to flag a genuine main-clone edit: {file_path!r}"
     assert result.offending_index == 0
+
+
+# ── no-code-edit-before-planned: strict plan_gate marker keying (PR-25) ────────
+#
+# The two known false-positive shapes MUST stay GREEN — they are why the invariant
+# keys STRICTLY on the ``plan_gate`` deny marker, never on "any PreToolUse deny on
+# a worktree edit" nor on the presence/absence of a plan command.
+_PLAN_GATE_FALSE_POSITIVE_FIXTURES = [
+    "plan_gate_false_positive_headless_planner.session.jsonl",
+    "plan_gate_false_positive_deny_then_retry.session.jsonl",
+]
+
+
+@pytest.mark.parametrize("fixture_name", _PLAN_GATE_FALSE_POSITIVE_FIXTURES)
+def test_no_code_edit_before_planned_stays_green_on_false_positives(fixture_name: str) -> None:
+    """The headless-planner and deny-then-retry shapes must NOT trip the plan-gate invariant."""
+    result = tc._check_no_code_edit_before_planned(_load(_FIXTURES / fixture_name))
+    assert result.ok, f"plan-gate invariant false-flagged {fixture_name} at event #{result.offending_index}"
+
+
+@pytest.mark.parametrize("fixture_name", _PLAN_GATE_FALSE_POSITIVE_FIXTURES)
+def test_false_positive_fixtures_are_green_on_every_live_invariant(fixture_name: str) -> None:
+    """A false-positive fixture is clean across the whole live registry (surgical fixtures)."""
+    events = _load(_FIXTURES / fixture_name)
+    for invariant in INVARIANT_REGISTRY:
+        result = invariant.predicate(events)
+        assert result.ok, f"{fixture_name} tripped {invariant.id} at event #{result.offending_index}"
+
+
+def _plan_gate_deny_attachment(gate_marker_stdout: str | None, top_level_gate_id: str | None) -> str:
+    """One PreToolUse deny attachment line, marker carried in stdout and/or top-level."""
+    attachment: dict = {"type": "hook_blocking_error", "hookEvent": "PreToolUse", "exitCode": 2, "toolUseID": "t1"}
+    if gate_marker_stdout is not None:
+        attachment["stdout"] = gate_marker_stdout
+    if top_level_gate_id is not None:
+        attachment["gate_id"] = top_level_gate_id
+    return json.dumps({"type": "attachment", "attachment": attachment})
+
+
+def test_gate_id_parsed_from_stdout_hook_specific_output() -> None:
+    """The parser lifts ``gate_id`` from the nested ``hookSpecificOutput`` of the stdout payload."""
+    stdout = '{"permissionDecision":"deny","hookSpecificOutput":{"gate_id":"plan_gate"}}'
+    events = parse_session_jsonl(_plan_gate_deny_attachment(stdout, None))
+    assert events[0].gate_id == "plan_gate"
+
+
+def test_gate_id_parsed_from_stdout_top_level() -> None:
+    """The parser lifts a top-level ``gate_id`` from the stdout deny payload."""
+    events = parse_session_jsonl(_plan_gate_deny_attachment('{"gate_id":"plan_gate"}', None))
+    assert events[0].gate_id == "plan_gate"
+
+
+def test_gate_id_parsed_from_attachment_top_level() -> None:
+    """A top-level ``attachment.gate_id`` wins even without a stdout payload."""
+    events = parse_session_jsonl(_plan_gate_deny_attachment(None, "plan_gate"))
+    assert events[0].gate_id == "plan_gate"
+
+
+def test_gate_id_is_none_without_a_marker() -> None:
+    """A deny attachment that stamped NO marker (a non-plan gate) yields gate_id None."""
+    stdout = '{"permissionDecision":"deny","permissionDecisionReason":"uncovered diff"}'
+    events = parse_session_jsonl(_plan_gate_deny_attachment(stdout, None))
+    assert events[0].gate_id is None
+
+
+def test_gate_id_ignores_undecodable_stdout() -> None:
+    """An undecodable stdout never raises and yields gate_id None (fail-soft)."""
+    events = parse_session_jsonl(_plan_gate_deny_attachment("not-json{", None))
+    assert events[0].gate_id is None
+
+
+def test_gate_id_ignores_non_dict_stdout_payload() -> None:
+    """A stdout that decodes to a non-object JSON value yields gate_id None (fail-soft)."""
+    events = parse_session_jsonl(_plan_gate_deny_attachment("[1, 2, 3]", None))
+    assert events[0].gate_id is None
