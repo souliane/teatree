@@ -27,8 +27,8 @@ import django  # noqa: E402
 import django_bootstrap  # noqa: E402
 import worker_supervisor as supervisor  # noqa: E402
 
-from teatree.loops.worker import WORKER_SINGLETON  # noqa: E402
 from teatree.utils import singleton  # noqa: E402
+from teatree.utils.singleton import WORKER_SINGLETON  # noqa: E402 — imported after the sys.path bootstrap above
 
 
 class _Spy:

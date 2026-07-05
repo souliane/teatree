@@ -126,9 +126,13 @@ def _check_dangling_editable_pth() -> bool:
 
 def _check_singletons() -> bool:
     """Clean up stale pid files for known singleton processes."""
-    from teatree.utils.singleton import default_pid_path, read_pid  # noqa: PLC0415
+    from teatree.utils.singleton import (  # noqa: PLC0415 — deferred: keeps the doctor-check import light
+        LEGACY_WORKER_SINGLETON,
+        default_pid_path,
+        read_pid,
+    )
 
-    for name in ("teatree-worker", "slack-listener", "loop-tick"):
+    for name in (LEGACY_WORKER_SINGLETON, "slack-listener", "loop-tick"):
         path = default_pid_path(name)
         had_file = path.is_file()
         if read_pid(path) is None and had_file:

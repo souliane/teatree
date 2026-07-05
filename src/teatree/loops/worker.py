@@ -21,16 +21,13 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
-from teatree.loops.timer_chains import kill_live_tick_process_groups
+from teatree.loops.timer_chains import _loop_runner_enabled, kill_live_tick_process_groups
 from teatree.loops.timer_reconciler import ensure_loop_timers, ensure_maintenance_chains
 
 if TYPE_CHECKING:
     from django_tasks_db.management.commands.db_worker import Worker
 
 logger = logging.getLogger(__name__)
-
-#: The flock singleton name — at most one worker drains the shared queue per box.
-WORKER_SINGLETON = "worker"
 
 #: The executor pool: 2 threads pinned to ``loops`` (reactive timers), 2 to
 #: ``default`` (FSM/headless work), so neither lane starves the other.
@@ -51,17 +48,6 @@ class _Executor(Protocol):
 
 class _Handle(Protocol):
     def join(self, timeout: float | None = None) -> None: ...
-
-
-def _loop_runner_enabled() -> bool:
-    """Whether the ``loop_runner_enabled`` kill-switch resolves ON (fail-safe OFF)."""
-    try:
-        from teatree.config import get_effective_settings  # noqa: PLC0415
-
-        return get_effective_settings().loop_runner_enabled
-    except Exception:
-        logger.debug("loop_runner_enabled read failed — treating worker as disabled", exc_info=True)
-        return False
 
 
 def _build_executor(queue_name: str, worker_id: str) -> "Worker":

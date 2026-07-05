@@ -8,7 +8,10 @@ the task runs a five-step body that re-schedules its own successor BEFORE doing
 the tick work, so a crash mid-tick always leaves a queued successor and the chain
 never stalls.
 
-The tick body, five fixed steps:
+The tick body is gated by the ``loop_runner_enabled`` kill-switch (step 0): a fire while
+the switch is OFF returns immediately without re-enqueueing a successor, so flipping the
+switch off terminates the chain at its source (not only at the worker supervisor). When
+the switch is ON the five fixed steps run:
 
 Step 1 — self-dedup: a second pending ``loop_timer`` for the same loop already
 carries the chain, so this one stops without chaining (collapses duplicates to one
@@ -100,6 +103,23 @@ IDLE_POLL_FLOOR_SECONDS = 60
 #: The tick subprocess deadline is ``max(MIN_TICK_DEADLINE_SECONDS, 3 x cadence)``.
 MIN_TICK_DEADLINE_SECONDS = 300.0
 DEADLINE_CADENCE_MULTIPLIER = 3
+
+
+def _loop_runner_enabled() -> bool:
+    """Whether the ``loop_runner_enabled`` kill-switch resolves ON (fail-safe OFF).
+
+    The single reader the worker's executor pool AND every :func:`loop_timer` fire
+    consult, so the kill-switch can never be honoured by one and silently bypassed by
+    the other. A read failure degrades to OFF: a kill-switch that cannot confirm it is
+    ON must not keep the chain alive.
+    """
+    try:
+        from teatree.config import get_effective_settings  # noqa: PLC0415 — deferred read
+
+        return get_effective_settings().loop_runner_enabled
+    except Exception:
+        logger.debug("loop_runner_enabled read failed — treating the loop runner as disabled", exc_info=True)
+        return False
 
 
 def _loop_timer_path() -> str:
@@ -314,6 +334,13 @@ def loop_timer(name: str) -> TimerResult:
     from teatree.core.models import Loop  # noqa: PLC0415
 
     now = timezone.now()
+
+    # (0) kill-switch — the loop runner is OFF, so terminate the chain at its source:
+    # do NOT re-enqueue a successor. The worker supervisor also stops on a flip-off, but
+    # honouring the switch here means a timer claimed just before the flip cannot
+    # perpetuate the chain, and neither can a stray inline drain of a loops-queue row.
+    if not _loop_runner_enabled():
+        return {"loop": name, "action": "halted"}
 
     # (1) self-dedup — another queued timer already carries the chain.
     if pending_loop_timers(name):

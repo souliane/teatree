@@ -78,7 +78,12 @@ class TestLoopTimerBody(django.test.TestCase):
     """The five-step tick body: dedup, successor-first, admission, tick, refinement."""
 
     def setUp(self) -> None:
+        from teatree.core.models import ConfigSetting  # noqa: PLC0415 — test-local deferred import
+
         Loop.objects.all().delete()
+        # A ``loop_timer`` only ever runs while a worker is alive, i.e. the kill-switch is
+        # ON; enable it so the step 0 guard does not halt these body tests (#5).
+        ConfigSetting.objects.set_value("loop_runner_enabled", value=True)
 
     def _enable_inbox(self, **kwargs: object) -> Loop:
         # ``inbox`` is a real registered live-tick loop, so a real enabled + due row
@@ -180,6 +185,63 @@ class TestLoopTimerBody(django.test.TestCase):
         assert successor_at_tick, "tick was not run"
         floor = before + dt.timedelta(seconds=timer_chains.IDLE_POLL_FLOOR_SECONDS - 2)
         assert successor_at_tick[0] >= floor  # step 2 floored → not immediately claimable
+
+
+@django.test.override_settings(USE_TZ=True, TASKS=_DB_TASKS)
+class TestLoopTimerKillSwitch(django.test.TestCase):
+    """``loop_runner_enabled`` terminates the chain at the timer source (#5).
+
+    The worker only ever runs a ``loop_timer`` row while the kill-switch is ON; a flip
+    to OFF that outlives a claimed timer must NOT let that timer re-enqueue its
+    successor, or the chain ticks forever with the worker gone. The check lives in the
+    tick body so the switch kills the chain at its source, not only at the supervisor.
+    """
+
+    def setUp(self) -> None:
+        Loop.objects.all().delete()
+
+    def _enable_inbox(self, **kwargs: object) -> Loop:
+        defaults: dict[str, object] = {"delay_seconds": 60, "enabled": True, "last_run_at": None}
+        defaults.update(kwargs)
+        return Loop.objects.create(name="inbox", script="src/teatree/loops/inbox/loop.py", **defaults)
+
+    def _set_kill_switch(self, *, enabled: bool) -> None:
+        from teatree.core.models import ConfigSetting  # noqa: PLC0415 — test-local deferred import
+
+        ConfigSetting.objects.set_value("loop_runner_enabled", value=enabled)
+
+    def test_kill_switch_off_halts_the_chain_without_a_successor(self) -> None:
+        self._enable_inbox()  # enabled + due, so admission alone would run it
+        self._set_kill_switch(enabled=False)
+        ran: list[str] = []
+
+        def _record_tick(name: str, *, deadline: float) -> dict[str, object]:
+            ran.append(name)
+            return {"timed_out": False, "returncode": 0}
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(timer_chains, "run_deadlined_tick", _record_tick)
+            result = timer_chains.loop_timer.func("inbox")
+
+        assert result["action"] == "halted"
+        assert ran == []  # tick NOT run
+        assert timer_chains.pending_loop_timers("inbox") == []  # NO successor — the chain terminates
+
+    def test_kill_switch_on_keeps_the_chain_alive(self) -> None:
+        # Anti-vacuity twin: the halt fires ONLY when the switch is OFF.
+        self._enable_inbox()
+        self._set_kill_switch(enabled=True)
+
+        def _fake_tick(name: str, *, deadline: float) -> dict[str, object]:
+            Loop.objects.mark_run(name, timezone.now())
+            return {"timed_out": False, "returncode": 0}
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(timer_chains, "run_deadlined_tick", _fake_tick)
+            result = timer_chains.loop_timer.func("inbox")
+
+        assert result["action"] == "ticked"
+        assert len(timer_chains.pending_loop_timers("inbox")) == 1  # successor enqueued — chain lives
 
 
 class TestLiveTickProcessGroups(django.test.SimpleTestCase):
