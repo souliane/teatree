@@ -123,7 +123,6 @@ _LEARNING_CUES = (
     "the culprit",
     "boils down to",
     "decided to",
-    "should have",
     "the takeaway",
 )
 

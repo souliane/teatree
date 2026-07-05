@@ -11,15 +11,19 @@ from pathlib import Path
 
 import pytest
 
+from teatree.skill_support.requires_parser import parse_companions as teatree_parse_companions
 from teatree.skill_support.requires_parser import parse_requires as teatree_parse
 
 _SCRIPTS_LIB = Path(__file__).resolve().parents[2] / "scripts"
 if str(_SCRIPTS_LIB) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_LIB))
 
-from lib.requires_parser import parse_requires as hook_parse  # noqa: E402
+import lib.requires_parser as hook_parser  # noqa: E402 — hook twin; import follows the sys.path insert above
 
-_PARSERS = pytest.mark.parametrize("parse", [teatree_parse, hook_parse], ids=["teatree", "hook"])
+_PARSERS = pytest.mark.parametrize("parse", [teatree_parse, hook_parser.parse_requires], ids=["teatree", "hook"])
+_COMPANION_PARSERS = pytest.mark.parametrize(
+    "parse", [teatree_parse_companions, hook_parser.parse_companions], ids=["teatree", "hook"]
+)
 
 
 @_PARSERS
@@ -51,3 +55,22 @@ class TestParseRequires:
     def test_requires_after_another_list_key(self, parse) -> None:
         md = "---\nname: x\ncompatibility: any\nrequires:\n  - rules\n---\n"
         assert parse(md) == ["rules"]
+
+
+@_COMPANION_PARSERS
+class TestParseCompanions:
+    """``parse_companions`` extracts only the ``companions:`` list — both twins agree."""
+
+    def test_missing_companions_returns_none(self, parse) -> None:
+        assert parse("---\nname: x\ndescription: d\n---\n") is None
+
+    def test_empty_companions_returns_empty_list(self, parse) -> None:
+        assert parse("---\nname: x\ncompanions:\n---\n") == []
+
+    def test_companions_members(self, parse) -> None:
+        md = "---\nname: code\ncompanions:\n  - rules\n  - writing-plans\n---\n"
+        assert parse(md) == ["rules", "writing-plans"]
+
+    def test_companions_does_not_capture_requires(self, parse) -> None:
+        md = "---\nname: x\nrequires:\n  - rules\ncompanions:\n  - writing-plans\n---\n"
+        assert parse(md) == ["writing-plans"]
