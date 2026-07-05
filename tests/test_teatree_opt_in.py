@@ -187,6 +187,22 @@ class TestEnforceLoopOnPromptGating:
         assert "reactive infra loops" in out
         assert "/self-improve" in out
 
+    def test_worker_owns_cadence_emits_cron_decommission_once(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # PR-28: when the worker owns the cadence, the owner session emits a one-time
+        # CronDelete reminder for stale pre-flip native crons — once per session.
+        from hooks.scripts import loop_registrations  # noqa: PLC0415 — deferred: test-local import
+
+        _mark_active("teatree-session")
+        monkeypatch.setattr(loop_registrations, "_worker_owns_cadence", lambda: True)
+        monkeypatch.setattr(loop_registrations, "_reactive_slot_directives", list)
+        handle_enforce_loop_on_prompt({"session_id": "teatree-session"})
+        assert "CronDelete" in capsys.readouterr().out
+        # Second prompt: the marker suppresses the re-emit.
+        handle_enforce_loop_on_prompt({"session_id": "teatree-session"})
+        assert "CronDelete" not in capsys.readouterr().out
+
     def test_marked_session_re_emit_is_suppressed_by_pending_marker(
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -44,6 +44,7 @@ _THREE_REACTIVE = ["/loop 5m /loop-slack-answer", "/loop 30m /loop-self-improve"
 class TestEmitLoopRegistrations:
     def test_emits_the_reactive_slot_prose_when_slots_resolve(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(loop_registrations, "_reactive_slot_directives", lambda: _THREE_REACTIVE)
+        monkeypatch.setattr(loop_registrations, "_worker_owns_cadence", lambda: False)  # isolate reactive behaviour
         out = io.StringIO()
         emitted = emit_loop_registrations(out)
         text = out.getvalue()
@@ -56,11 +57,29 @@ class TestEmitLoopRegistrations:
         for directive in _THREE_REACTIVE:
             assert directive in text
 
-    def test_fail_open_silent_when_no_reactive_slot_resolvable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_fail_open_silent_when_no_reactive_slot_and_no_reminder(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # No reactive slot AND the worker not owning the cadence (no decommission
+        # reminder) → the owner session stays silent.
         monkeypatch.setattr(loop_registrations, "_reactive_slot_directives", list)
+        monkeypatch.setattr(loop_registrations, "_worker_owns_cadence", lambda: False)
         out = io.StringIO()
         assert emit_loop_registrations(out) is False
         assert out.getvalue() == ""
+
+
+class TestCronDecommissionDirective:
+    """The one-time CronDelete reminder for stale pre-flip native crons (PR-28)."""
+
+    def test_directive_when_worker_owns_cadence(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(loop_registrations, "_worker_owns_cadence", lambda: True)
+        directive = loop_registrations.cron_decommission_directive()
+        assert directive is not None
+        assert "CronDelete" in directive
+        assert "t3 loops tick --loop <name>" in directive
+
+    def test_none_when_worker_disabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(loop_registrations, "_worker_owns_cadence", lambda: False)
+        assert loop_registrations.cron_decommission_directive() is None
 
 
 class TestPerLoopPromptRecognition:
