@@ -11,6 +11,7 @@ import logging
 from collections.abc import Callable
 
 from teatree.core.backend_factory import OverlayBackends
+from teatree.core.backend_protocols import MessagingBackend
 from teatree.loop.job_identity import PER_OVERLAY_DOMAINS, Domain, _ScannerJob
 from teatree.loop.scanner_factories import (
     _architectural_review_scanner_for,
@@ -479,32 +480,24 @@ def _failed_e2e_scanner_for(backend: OverlayBackends) -> Scanner | None:
     return failed_e2e_scanner_for(backend)
 
 
-def _messaging_jobs_for_backend(
-    backend: OverlayBackends,
-    tag: str,
-    *,
-    include_review_nag: bool = True,
-) -> list[_ScannerJob]:
-    """Per-overlay Slack scanners that need a resolved messaging backend.
+def _inbound_messaging_jobs(messaging: MessagingBackend, tag: str) -> list[_ScannerJob]:
+    """The inbound-messaging scanner jobs (mentions / DM / ask-reply / review-intent / red-card), sans nag.
 
-    ``SlackMentionsScanner`` owns the JSONL drain and fans reaction
-    events into the backend's reactions queue; ``SlackReviewIntentScanner``
-    must run after it so the queue is populated for the same tick.
-    Caller must check ``backend.messaging is not None`` before invoking;
-    a defensive early-return keeps the type narrow without a bare
-    ``assert``.
+    The single ordered inbound scanner set both the per-overlay
+    :func:`_messaging_jobs_for_backend` and the single-overlay
+    :func:`single_overlay_messaging_jobs` build from, so the two paths cannot
+    re-diverge on the inbound set (#23) — a new inbound scanner is added HERE
+    once and every messaging fan-out picks it up.
 
-    ``include_review_nag`` lets a high-cadence caller (the inbox mini-loop)
-    drop ``ReviewNagScanner`` so the nag is emitted by exactly one owner —
-    the followup mini-loop, whose 10-minute cadence matches the legacy
-    single emission. The legacy monolithic fan-out keeps the default.
+    ``SlackMentionsScanner`` owns the JSONL drain and fans reaction events into
+    the backend's reactions queue; ``SlackReviewIntentScanner`` must run after it
+    so the queue is populated for the same tick.
     """
-    messaging = backend.messaging
-    if messaging is None:
-        return []
-    jobs = [
+    return [
         _ScannerJob(scanner=SlackMentionsScanner(backend=messaging), overlay=tag),
         _ScannerJob(scanner=SlackDmInboundScanner(backend=messaging, overlay=tag), overlay=tag),
+        # #1174 applies each Slack reply to its live DeferredQuestion — the
+        # scanner the two single-overlay builders had silently dropped (#23).
         _ScannerJob(scanner=AskUserQuestionReplyScanner(backend=messaging, overlay=tag), overlay=tag),
         _ScannerJob(scanner=SlackReviewIntentScanner(backend=messaging, overlay=tag), overlay=tag),
         # #1130 RED CARD detection — user's structural "fix it upstream"
@@ -513,6 +506,44 @@ def _messaging_jobs_for_backend(
         # ``:no_entry_sign:`` plus the literal phrase in DMs.
         _ScannerJob(scanner=RedCardScanner(backend=messaging, overlay=tag), overlay=tag),
     ]
+
+
+def single_overlay_messaging_jobs(messaging: MessagingBackend) -> list[_ScannerJob]:
+    """Single-overlay (``overlay=""``) inbound-messaging scanner jobs — the #23 SSOT.
+
+    Both single-overlay callers import THIS builder — the inbox mini-loop's
+    single-overlay branch and ``build_default_jobs``' single-overlay messaging
+    branch — so they can never re-diverge on the inbound scanner set (the #23
+    drift, where both had dropped ``AskUserQuestionReplyScanner``). It is the
+    ``overlay=""`` projection of the same inbound scanners
+    :func:`_messaging_jobs_for_backend` fans out per overlay minus
+    ``ReviewNagScanner``, pinned identical by the coverage parity lane. A later
+    single-overlay inbound scanner registers by extending
+    :func:`_inbound_messaging_jobs`, never by re-forking this builder.
+    """
+    return _inbound_messaging_jobs(messaging, "")
+
+
+def _messaging_jobs_for_backend(
+    backend: OverlayBackends,
+    tag: str,
+    *,
+    include_review_nag: bool = True,
+) -> list[_ScannerJob]:
+    """Per-overlay Slack scanners that need a resolved messaging backend.
+
+    Caller must check ``backend.messaging is not None`` before invoking; a
+    defensive early-return keeps the type narrow without a bare ``assert``.
+
+    ``include_review_nag`` lets a high-cadence caller (the inbox mini-loop) drop
+    ``ReviewNagScanner`` so the nag is emitted by exactly one owner — the followup
+    mini-loop, whose 10-minute cadence matches the legacy single emission. The
+    legacy monolithic fan-out keeps the default.
+    """
+    messaging = backend.messaging
+    if messaging is None:
+        return []
+    jobs = _inbound_messaging_jobs(messaging, tag)
     if include_review_nag:
         nag = ReviewNagScanner(
             messaging=messaging,
