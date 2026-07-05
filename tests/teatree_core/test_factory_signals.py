@@ -598,6 +598,22 @@ class ReportShapeTests(FactorySignalsTestBase):
         for key in ("provider_id", "kind", "value", "sample_size", "window_days", "status", "red_when", "tripped"):
             assert key in first
 
+    def test_scope_field_stamps_the_overlay_on_dict_and_markdown(self) -> None:
+        # #25: a scoped reading must be distinguishable from a global one from the
+        # output alone — the scope is stamped in the dict AND the markdown header.
+        scoped = compute_factory_signals(overlay="t3-teatree", now=self.now)
+        assert scoped.overlay == "t3-teatree"
+        assert scoped.to_dict()["overlay"] == "t3-teatree"
+        assert "scope: t3-teatree" in scoped.to_markdown().splitlines()[0]
+
+    def test_global_scope_reads_empty_overlay_not_a_missing_key(self) -> None:
+        # An omitted overlay is the whole-factory GLOBAL view: the key is present
+        # and empty (never absent), so a consumer never has to guess the scope.
+        report = compute_factory_signals(now=self.now)
+        assert report.overlay == ""
+        assert report.to_dict()["overlay"] == ""
+        assert "scope: global" in report.to_markdown().splitlines()[0]
+
     def test_window_days_flows_through(self) -> None:
         report = compute_factory_signals(window_days=7, now=self.now)
         assert report.window_days == 7

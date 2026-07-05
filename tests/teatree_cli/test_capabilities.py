@@ -47,6 +47,7 @@ def _switch_handler_params() -> dict[str, set[str]]:
         followup,
         questions,
         queue,
+        signals,
         tasks,
         worktree,
     )
@@ -59,6 +60,10 @@ def _switch_handler_params() -> dict[str, set[str]]:
         "teatree worktree diagnose": worktree.Command.diagnose,
         "teatree availability show": availability.Command.show,
         "teatree questions list": questions.Command.list_pending,
+        # ``signals`` is a bare-``handle`` command (no subcommand token): like
+        # ``do``, django-typer replaces ``Command.handle`` with a generic wrapper,
+        # so its real ``--json`` param lives on the registered typer callback.
+        "teatree signals": signals.Command.typer_app.registered_commands[0].callback,
         "teatree checking show": checking.Command.show,
         "teatree env show": env.Command.show,
         # ``do`` is a bare-``handle`` command (no subcommand token); django-typer

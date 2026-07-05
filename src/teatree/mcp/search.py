@@ -145,11 +145,20 @@ def factory_signals(*, overlay: str | None = None, window_days: int = DEFAULT_WI
     """The derived-on-read factory quality/velocity signals report (read-only).
 
     Delegates to :func:`teatree.core.factory_signals.compute_factory_signals` —
-    the same computation path ``t3 <overlay> signals`` uses, so the CLI and MCP
-    surfaces can never drift. Returns the report's ``to_dict()``: the trailing
-    window's five signals (first-try-green, defect-escape, review-catch,
-    merge-latency, repair-burn) with their fail-loud statuses, red-floor trips,
-    and the top-level verdict the outer loop keys on.
+    the same computation path ``t3 <overlay> signals`` uses. Returns the report's
+    ``to_dict()``: the ``overlay`` scope, the trailing window's five signals
+    (first-try-green, defect-escape, review-catch, merge-latency, repair-burn)
+    with their fail-loud statuses, red-floor trips, and the top-level verdict the
+    outer loop keys on.
+
+    Scope: an omitted ``overlay`` means the whole-factory GLOBAL view (``""``) —
+    where the CLI reads ``T3_OVERLAY_NAME`` and scopes to the active overlay,
+    this MCP tool defaults global unless the caller passes one. Both surfaces now
+    stamp the resolved scope in the payload's ``overlay`` field so a global
+    reading is distinguishable from a scoped one from the output alone (#25). The
+    two surfaces are held schema-identical by the named
+    ``tests/conformance/test_signals_scope_parity.py`` lane — the parity guard
+    that replaced the earlier unenforced "can never drift" docstring claim.
     """
     report = compute_factory_signals(window_days=window_days, overlay=overlay or "")
     return report.to_dict()

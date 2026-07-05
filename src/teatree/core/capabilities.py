@@ -61,6 +61,7 @@ CAPABILITIES: tuple[Capability, ...] = (
     ),
     Capability("teatree availability show", json_output=True, exit_codes=("0",)),
     Capability("teatree questions list", json_output=True, exit_codes=("0",)),
+    Capability("teatree signals", json_output=True, exit_codes=("0",)),
     Capability(
         "teatree workspace emit",
         json_output=True,

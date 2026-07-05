@@ -16,12 +16,14 @@ from django.test import TestCase
 from teatree.core import critic_rubric
 from teatree.core.critic_rubric import (
     CRITIC_RUBRIC,
+    CriticRubricItem,
     CriticRubricResolutionError,
     RubricKind,
     _resolve_predicate,
     completeness,
     deterministic_items,
     done_not_done,
+    item_for,
     llm_items,
     rubric_items,
     spec_not_plan,
@@ -165,3 +167,46 @@ class TestModuleExportsEveryDeterministicPredicate(TestCase):
 
     def test_rubric_items_returns_the_full_registry(self) -> None:
         assert rubric_items() == CRITIC_RUBRIC
+
+
+class TestTransitionSelection:
+    """Accessors return only the items keyed to the requested transition (the PR-1 seam)."""
+
+    _PLAN_ITEM = CriticRubricItem(
+        slug="plan_only_probe",
+        adversarial_question="a plan-transition item that must not leak into mark_delivered",
+        kind=RubricKind.DETERMINISTIC,
+        origin="north-star plan critic",
+        predicate_path="teatree.core.critic_rubric.spec_not_plan",
+        blocking=True,
+        transition="plan",
+    )
+
+    def _mixed_rubric(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(critic_rubric, "CRITIC_RUBRIC", (*CRITIC_RUBRIC, self._PLAN_ITEM))
+
+    def test_seeded_items_default_to_mark_delivered(self) -> None:
+        assert all(item.transition == "mark_delivered" for item in CRITIC_RUBRIC)
+
+    def test_deterministic_items_excludes_a_foreign_transition(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._mixed_rubric(monkeypatch)
+        slugs = {item.slug for item in deterministic_items("mark_delivered")}
+        assert slugs == {"spec_not_plan", "done_not_done", "completeness"}
+        assert "plan_only_probe" not in slugs
+
+    def test_deterministic_items_selects_the_requested_transition(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._mixed_rubric(monkeypatch)
+        assert [item.slug for item in deterministic_items("plan")] == ["plan_only_probe"]
+
+    def test_llm_and_rubric_items_are_transition_scoped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._mixed_rubric(monkeypatch)
+        assert len(llm_items("mark_delivered")) == 5
+        assert llm_items("plan") == ()
+        assert len(rubric_items("mark_delivered")) == 8
+        assert [item.slug for item in rubric_items("plan")] == ["plan_only_probe"]
+
+    def test_item_for_is_scoped_to_its_transition(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._mixed_rubric(monkeypatch)
+        assert item_for("plan_only_probe", "plan") is self._PLAN_ITEM
+        assert item_for("plan_only_probe", "mark_delivered") is None
+        assert item_for("spec_not_plan", "mark_delivered") is not None

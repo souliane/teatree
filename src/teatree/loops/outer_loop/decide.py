@@ -12,8 +12,7 @@ import dataclasses
 
 from teatree.core.factory_score import FactoryScore, ScoredSignal
 from teatree.core.factory_signals import SignalVerdict
-
-_WORSE_VERDICTS = frozenset({SignalVerdict.REGRESSING.value, SignalVerdict.RED.value})
+from teatree.loops.shared.regression import no_collateral_regression
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -63,25 +62,8 @@ def decide_keep(
             ),
         )
 
-    regressed = _collateral_regression(baseline_by_id, post_by_id, target_provider_id=target_provider_id)
+    regressed = no_collateral_regression(baseline, post, exclude_provider_id=target_provider_id)
     if regressed:
         return Decision(keep=False, reason=f"non-target signal {regressed!r} regressed vs baseline — revert")
 
     return Decision(keep=True, reason=f"target {target_provider_id!r} improved {improvement:.3f}, no regression")
-
-
-def _collateral_regression(
-    baseline_by_id: dict[str, ScoredSignal],
-    post_by_id: dict[str, ScoredSignal],
-    *,
-    target_provider_id: str,
-) -> str:
-    """The id of the first non-target signal that turned worse vs baseline, or ``""``."""
-    for provider_id, after in post_by_id.items():
-        if provider_id == target_provider_id:
-            continue
-        before = baseline_by_id.get(provider_id)
-        was_worse = before is not None and before.verdict in _WORSE_VERDICTS
-        if after.verdict in _WORSE_VERDICTS and not was_worse:
-            return provider_id
-    return ""

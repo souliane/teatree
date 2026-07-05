@@ -121,15 +121,27 @@ class SignalRow:
 
 @dataclass(frozen=True, slots=True)
 class FactorySignalsReport:
-    """The composed read-only report over the trailing window vs its baseline."""
+    """The composed read-only report over the trailing window vs its baseline.
+
+    ``overlay`` is the SCOPE the reading was computed under — the overlay name a
+    ``t3 <overlay> signals`` / ``factory_signals(overlay=…)`` call scoped to, or
+    ``""`` for the whole-factory global view. It is stamped in ``to_dict()`` and
+    the ``to_markdown()`` header so the CLI and MCP surfaces are self-describing:
+    a consumer can tell an overlay-scoped reading from a global one from the
+    output alone (#25). The two surfaces are held identical by the named
+    ``tests/conformance/test_signals_scope_parity.py`` lane, not by a docstring
+    promise.
+    """
 
     window_days: int
     generated_at: datetime
     signals: list[SignalRow]
     verdict: SignalVerdict
+    overlay: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "overlay": self.overlay,
             "window_days": self.window_days,
             "generated_at": self.generated_at.isoformat(),
             "verdict": self.verdict.value,
@@ -137,7 +149,8 @@ class FactorySignalsReport:
         }
 
     def to_markdown(self) -> str:
-        header = f"## Factory signals (window {self.window_days}d) — verdict: {self.verdict.value}"
+        scope = self.overlay or "global"
+        header = f"## Factory signals (scope: {scope}, window {self.window_days}d) — verdict: {self.verdict.value}"
         lines = [header, "", "| signal | value | sample | status | verdict | baseline |", "|---|---|---|---|---|---|"]
         for row in self.signals:
             baseline = "—" if row.baseline_value is None else f"{row.baseline_value:.3f}"
@@ -330,4 +343,5 @@ def compute_factory_signals(
         generated_at=resolved,
         signals=rows,
         verdict=_aggregate_verdict(rows),
+        overlay=overlay,
     )
