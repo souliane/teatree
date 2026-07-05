@@ -149,6 +149,15 @@ class TestScanningNewsEnvelopeChannel(TestCase):
         assert task.status == Task.Status.FAILED
         assert PendingArticleSuggestion.objects.count() == 0
 
+    def test_url_less_suggestions_fail_the_task_persisting_nothing(self) -> None:
+        # The gate must refuse a nonempty-but-url-less hand-back the recorder
+        # would drop entirely — not complete the task over zero persisted rows.
+        task = self._claimed()
+        record_result_envelope(task, {"summary": "found 1", "article_suggestions": [{"title": "no url"}]})
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert PendingArticleSuggestion.objects.count() == 0
+
 
 class TestAnsweringEnvelopeChannel(TestCase):
     """A shell-denied answering agent hands its draft back for approval-gated posting (#9)."""
@@ -177,6 +186,15 @@ class TestAnsweringEnvelopeChannel(TestCase):
     def test_summary_only_answering_is_refused(self) -> None:
         task = self._claimed()
         record_result_envelope(task, {"summary": "drafted but not returned"})
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert DeferredQuestion.objects.count() == 0
+
+    def test_text_less_answer_fails_the_task_persisting_nothing(self) -> None:
+        # A draft with only a thread_ref persists no DeferredQuestion, so the gate
+        # must refuse it rather than complete over a dropped reply.
+        task = self._claimed()
+        record_result_envelope(task, {"summary": "drafted", "answer": {"thread_ref": "C1/1.0"}})
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
         assert DeferredQuestion.objects.count() == 0

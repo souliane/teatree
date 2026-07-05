@@ -48,3 +48,18 @@ class TestShellDeniedPhaseEvidenceGate:
         # no content is still a dropped scan, refused.
         assert check_evidence({"article_suggestions": []}, "scanning_news")
         assert check_evidence({"answer": {}}, "answering")
+
+    def test_url_less_article_suggestions_do_not_satisfy_the_gate(self) -> None:
+        # Nonempty-but-malformed: the recorder skips every url-less item, so this
+        # would persist ZERO rows. The gate predicate matches what persists — at
+        # least one url-bearing item — so a run that would drop everything is
+        # refused, not greened.
+        assert check_evidence({"article_suggestions": [{"title": "x"}]}, "scanning_news")
+        mixed = check_evidence({"article_suggestions": [{"title": "x"}, {"url": "https://e/a"}]}, "scanning_news")
+        assert mixed == ""
+
+    def test_text_less_answer_does_not_satisfy_the_gate(self) -> None:
+        # A draft with a thread_ref but no text persists no DeferredQuestion, so
+        # the gate refuses it rather than completing over a dropped reply.
+        assert check_evidence({"answer": {"thread_ref": "x"}}, "answering")
+        assert check_evidence({"answer": {"thread_ref": "x", "text": "hi"}}, "answering") == ""

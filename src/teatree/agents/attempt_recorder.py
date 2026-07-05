@@ -27,7 +27,9 @@ from teatree.agents.result_schema import (
     AnswerEnvelope,
     ArticleSuggestion,
     ReviewVerdictEnvelope,
+    answer_text,
     check_evidence,
+    suggestion_url,
 )
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import (
@@ -329,12 +331,10 @@ def _maybe_record_article_suggestions(task: Task, result: AgentResultBlob, *, ph
         return
     overlay = task.ticket.overlay
     for raw_item in suggestions:
-        if not isinstance(raw_item, dict):
-            continue
-        item = cast("ArticleSuggestion", raw_item)
-        url = str(item.get("url") or "").strip()
+        url = suggestion_url(raw_item)
         if not url:
             continue
+        item = cast("ArticleSuggestion", raw_item)
         PendingArticleSuggestion.record_candidate(
             url=url,
             title=str(item.get("title") or ""),
@@ -355,12 +355,10 @@ def _maybe_record_answer_draft(task: Task, result: AgentResultBlob, *, phase: st
     if normalize_phase(phase or task.phase) != _ANSWERING_PHASE:
         return
     raw_answer = result.get("answer")
-    if not isinstance(raw_answer, dict):
-        return
-    answer = cast("AnswerEnvelope", raw_answer)
-    text = str(answer.get("text") or "").strip()
+    text = answer_text(raw_answer)
     if not text:
         return
+    answer = cast("AnswerEnvelope", raw_answer)
     thread_ref = str(answer.get("thread_ref") or "").strip()
     where = f" (thread {thread_ref})" if thread_ref else ""
     DeferredQuestion.record(
