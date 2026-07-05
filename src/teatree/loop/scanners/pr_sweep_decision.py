@@ -9,19 +9,18 @@ orchestration and under the module-health LOC cap (same split rationale as
 """
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
+from typing import TYPE_CHECKING
 
 from teatree.core.author_trust import classify_author
+from teatree.core.merge import classify_required_rollup, failing_required_names
 from teatree.core.models.merge_clear import MergeClear
 from teatree.core.review_candidate import author_is_self
 from teatree.loop.pr_ticket_index import resolve_author_ticket
-from teatree.loop.scanners.pr_sweep_types import (
-    REPO_STATE_CHECK_NAMES,
-    REQUIRED_CHECK_NAME,
-    UV_AUDIT_CHECK_NAME,
-    CheckResult,
-    PrSummary,
-)
+from teatree.loop.scanners.pr_sweep_types import REPO_STATE_CHECK_NAMES, UV_AUDIT_CHECK_NAME, PrSummary
+
+if TYPE_CHECKING:
+    from teatree.types import RawAPIDict
 
 logger = logging.getLogger(__name__)
 
@@ -55,41 +54,53 @@ def pr_authored_by_self(*, author: str, self_identities: Iterable[str]) -> bool:
     return author_is_self(author, current_user=identities[0], self_identities=identities)
 
 
-def classify_checks(checks: tuple[CheckResult, ...]) -> str:
-    """Return ``green`` / ``green_with_uv_audit_red`` / ``pending`` / ``failed``.
+def classify_sweep_ci(
+    rollup: "list[RawAPIDict]",
+    required_names: set[str] | None,
+    *,
+    main_uv_audit_red: Callable[[], bool],
+) -> tuple[str | None, bool, set[str]]:
+    """The sweep's CI decision: ``(skip_reason, is_uv_audit_fallback, failing_required)``.
 
-    The required check is ``test(3.13)``: if it's not green the PR is not
-    mergeable. If it IS green and the ONLY red check is ``uv-audit``, the
-    PR falls into the documented fallback path that the scanner is
-    authorised to escalate (step 5).
+    Routes the core green/pending/failed verdict through the SAME
+    :func:`teatree.core.merge.classify_required_rollup` the §17.4 keystone uses
+    (#12), scoped to the SAME branch-protection required set — so the sweep and the
+    keystone can never re-diverge on which checks gate a merge. On top of that
+    shared verdict it layers the two sweep-only branches: the uv-audit fallback (the
+    ONLY failing required check is ``uv-audit`` AND ``main`` is red on it too, via
+    *main_uv_audit_red*) and, upstream, the repo-state remedy in ``_ci_block``.
+
+    A ``None`` *required_names* (indeterminate branch-protection lookup) fails CLOSED
+    with the ``required_checks_indeterminate`` skip. ``failing_required`` lets
+    ``_ci_block`` tell a repo-state-only red apart from a genuine test failure.
     """
-    required = next((c for c in checks if c.name == REQUIRED_CHECK_NAME), None)
-    if required is None or required.verdict != "green":
-        if any(c.verdict == "pending" for c in checks if c.name == REQUIRED_CHECK_NAME):
-            return "pending"
-        return "failed" if checks else "pending"
-    red = [c for c in checks if c.verdict == "failed"]
-    if not red:
-        if any(c.verdict == "pending" for c in checks):
-            return "pending"
-        return "green"
-    if all(c.name == UV_AUDIT_CHECK_NAME for c in red):
-        return "green_with_uv_audit_red"
-    return "failed"
+    if required_names is None:
+        return "required_checks_indeterminate", False, set()
+    verdict = classify_required_rollup(rollup, required_names)
+    failing = failing_required_names(rollup, required_names)
+    if verdict == "pending":
+        return "ci_pending", False, failing
+    if verdict == "failed":
+        if failing == {UV_AUDIT_CHECK_NAME}:
+            if main_uv_audit_red():
+                return None, True, failing
+            return "uv_audit_red_but_clean_on_main", False, failing
+        return "ci_red", False, failing
+    return None, False, failing
 
 
-def red_checks_are_all_repo_state(checks: tuple[CheckResult, ...]) -> bool:
-    """True iff there is at least one red check and EVERY red check is repo-state (#2045).
+def red_required_all_repo_state(failing_required: set[str]) -> bool:
+    """True iff there is ≥1 failing REQUIRED check and EVERY one is repo-state (#2045).
 
-    Repo-state checks (``REPO_STATE_CHECK_NAMES``) diff the head against the
-    base, so a fix already on ``main`` leaves them red on an un-updated branch
-    and a ``gh run rerun`` re-tests the stale base. When every failing check is
-    one of these, a merge-update is the remedy. A single non-repo-state red
-    (a genuine test failure) makes this ``False`` so the sweep keeps the bare
-    ``ci_red`` skip.
+    *failing_required* is the branch-protection-required set that is currently
+    failing (:func:`teatree.core.merge.failing_required_names`). Repo-state checks
+    (``REPO_STATE_CHECK_NAMES``) diff the head against the base, so a fix already
+    on ``main`` leaves them red on an un-updated branch and a ``gh run rerun``
+    re-tests the stale base — a merge-update is the remedy. A single non-repo-state
+    failing required check (a genuine test failure) makes this ``False`` so the
+    sweep keeps the bare ``ci_red`` skip.
     """
-    red = [c for c in checks if c.verdict == "failed"]
-    return bool(red) and all(c.name in REPO_STATE_CHECK_NAMES for c in red)
+    return bool(failing_required) and failing_required <= REPO_STATE_CHECK_NAMES
 
 
 def find_actionable_clear(*, slug: str, pr_id: int, head_sha: str) -> MergeClear | None:
