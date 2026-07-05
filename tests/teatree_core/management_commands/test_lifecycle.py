@@ -1090,7 +1090,7 @@ class TestLifecycleDiagram(TestCase):
 
         assert "stateDiagram-v2" in result
         assert "[*] --> created" in result
-        assert "provision()" in result
+        assert "created --> provisioned : provision" in result
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -1099,7 +1099,7 @@ class TestLifecycleDiagram(TestCase):
 
         assert "stateDiagram-v2" in result
         assert "[*] --> not_started" in result
-        assert "scope()" in result
+        assert "not_started --> scoped : scope" in result
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)

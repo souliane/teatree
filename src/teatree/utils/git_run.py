@@ -8,7 +8,9 @@ runners from here, so the runners live in exactly one place and a test that
 patches the subprocess boundary (``teatree.utils.run``) intercepts all of them.
 """
 
+import contextlib
 import os
+from collections.abc import Iterator
 
 from teatree.utils.run import run_allowed_to_fail, run_checked
 
@@ -38,3 +40,26 @@ def git_env_without_overrides() -> dict[str, str]:
     context must run with this env so it stays hermetic.
     """
     return {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+
+@contextlib.contextmanager
+def git_env_hermetic() -> Iterator[None]:
+    """Strip every ``GIT_*`` override from ``os.environ`` for the duration, restoring after.
+
+    The mutating sibling of :func:`git_env_without_overrides`, for a caller that
+    cannot pass an explicit ``env=`` — a child spawned by a library that merges
+    ``os.environ`` under the caller's overrides (e.g. the claude-agent-sdk
+    transport builds ``{**os.environ, ..., **options.env}``, a merge that cannot
+    DELETE a key the overrides omit). A dispatch fired from inside a git hook
+    inherits ``GIT_DIR``/``GIT_INDEX_FILE``/``GIT_WORK_TREE``; removing them from
+    ``os.environ`` for the spawn window is the only point such a child inherits a
+    hermetic environment. They are restored on exit so the rest of the process is
+    unaffected.
+    """
+    stripped = {k: v for k, v in os.environ.items() if k.startswith("GIT_")}
+    for key in stripped:
+        del os.environ[key]
+    try:
+        yield
+    finally:
+        os.environ.update(stripped)
