@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 from django.db import transaction
 
 from teatree.core.models import Task, Ticket
+from teatree.core.models.ticket_external_review import schedule_external_review
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.dispatch_gates import claim_red_mr_fix
 from teatree.loop.dispatch_tables import PERSISTED_AT_SOURCE_ZONES
@@ -171,8 +172,6 @@ def _handle_reviewer(action: DispatchAction) -> Task | None:
         # above, so a genuinely new revision is still reviewed.
         logger.debug("PR %s already approved at head %s — not re-enqueuing review", pr_url, head_sha)
         return None
-    from teatree.core.models.ticket import schedule_external_review  # noqa: PLC0415
-
     return schedule_external_review(ticket)
 
 

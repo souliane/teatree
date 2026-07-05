@@ -30,7 +30,7 @@ unit-level "is this unit already being delivered by someone else?".
 
 These live at module scope (not on ``Ticket``) to keep the model under the
 project's module-health LOC cap; semantically they are siblings of
-``ticket.schedule_external_review`` and friends.
+``schedule_external_review`` and friends.
 """
 
 from datetime import datetime, timedelta
