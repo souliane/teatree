@@ -32,3 +32,25 @@ class TestToolsForPhase:
 
     def test_review_phase_disallows_write_tools(self) -> None:
         assert {"write_file", "edit_file", "shell"} <= disallowed_tools_for_phase("reviewing")
+
+
+class TestDispatchablePhaseTotality:
+    """Every DIS-A/DIS-B dispatchable phase resolves an explicit, correct tool set."""
+
+    def test_bughunt_executes_but_never_writes(self) -> None:
+        bughunt = tools_for_phase("bughunt")
+        assert {"shell", "dispatch_subtask", "read_file", "search_files"} <= bughunt
+        assert "write_file" not in bughunt
+        assert "edit_file" not in bughunt
+
+    def test_debugging_gets_the_full_write_set(self) -> None:
+        debugging = tools_for_phase("debugging")
+        assert {"shell", "write_file", "edit_file", "read_file"} <= debugging
+
+    def test_codex_review_phases_are_read_only_no_write_no_shell(self) -> None:
+        for phase in ("codex_reviewing", "codex_adversarial_reviewing"):
+            tools = tools_for_phase(phase)
+            assert "read_file" in tools, phase
+            assert "write_file" not in tools, phase
+            assert "edit_file" not in tools, phase
+            assert "shell" not in tools, phase

@@ -1,5 +1,7 @@
 """Shared result-envelope recorder used by both dispatch backends."""
 
+from unittest.mock import patch
+
 import pytest
 from django.test import TestCase
 
@@ -10,7 +12,8 @@ from teatree.agents.attempt_recorder import (
     record_result_envelope,
     validate_result_keys,
 )
-from teatree.core.models import Session, Task, TaskAttempt, Ticket
+from teatree.core.models import DeferredQuestion, PendingArticleSuggestion, Session, Task, TaskAttempt, Ticket
+from teatree.verification.url_check import UrlCheckResult, UrlCheckStatus
 
 
 class TestParseResultEnvelope(TestCase):
@@ -105,3 +108,93 @@ class TestRecordResultEnvelope(TestCase):
         record_result_envelope(task, {"summary": "x", "bogus": True})
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
+
+
+class TestScanningNewsEnvelopeChannel(TestCase):
+    """A shell-denied scanning_news agent hands candidates back through the envelope (#9)."""
+
+    def _claimed(self) -> Task:
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED, overlay="acme")
+        session = Session.objects.create(ticket=ticket, agent_id="scanning_news")
+        task = Task.objects.create(ticket=ticket, session=session, phase="scanning_news")
+        task.claim(claimed_by="loop-slot")
+        return task
+
+    @patch("teatree.core.models.pending_article_suggestion.check_url")
+    def test_article_suggestions_round_trip_to_pending_rows(self, check_url: object) -> None:
+        check_url.return_value = UrlCheckResult(url="", status=UrlCheckStatus.OK, http_status=200)
+        task = self._claimed()
+        record_result_envelope(
+            task,
+            {
+                "summary": "2 candidates",
+                "article_suggestions": [
+                    {"title": "A", "url": "https://ex.com/a", "rationale": "why a"},
+                    {"title": "B", "url": "https://ex.com/b", "rationale": "why b"},
+                ],
+            },
+        )
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+        rows = PendingArticleSuggestion.objects.all()
+        assert rows.count() == 2
+        assert set(rows.values_list("url", flat=True)) == {"https://ex.com/a", "https://ex.com/b"}
+        assert {row.overlay for row in rows} == {"acme"}
+        assert {row.status for row in rows} == {PendingArticleSuggestion.Status.PENDING}
+
+    def test_summary_only_scanning_news_is_refused(self) -> None:
+        task = self._claimed()
+        record_result_envelope(task, {"summary": "nothing found today"})
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert PendingArticleSuggestion.objects.count() == 0
+
+    def test_url_less_suggestions_fail_the_task_persisting_nothing(self) -> None:
+        # The gate must refuse a nonempty-but-url-less hand-back the recorder
+        # would drop entirely — not complete the task over zero persisted rows.
+        task = self._claimed()
+        record_result_envelope(task, {"summary": "found 1", "article_suggestions": [{"title": "no url"}]})
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert PendingArticleSuggestion.objects.count() == 0
+
+
+class TestAnsweringEnvelopeChannel(TestCase):
+    """A shell-denied answering agent hands its draft back for approval-gated posting (#9)."""
+
+    def _claimed(self) -> Task:
+        ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED, overlay="acme")
+        session = Session.objects.create(ticket=ticket, agent_id="answering")
+        task = Task.objects.create(ticket=ticket, session=session, phase="answering")
+        task.claim(claimed_by="loop-slot")
+        return task
+
+    def test_answer_draft_routes_to_a_deferred_question(self) -> None:
+        task = self._claimed()
+        record_result_envelope(
+            task,
+            {"summary": "drafted", "answer": {"text": "Here is the reply.", "thread_ref": "C123/168.9"}},
+        )
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+        question = DeferredQuestion.objects.get()
+        assert question.parked_task_id == task.pk
+        assert "Here is the reply." in question.question
+        assert "C123/168.9" in question.question
+        assert question.is_pending
+
+    def test_summary_only_answering_is_refused(self) -> None:
+        task = self._claimed()
+        record_result_envelope(task, {"summary": "drafted but not returned"})
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert DeferredQuestion.objects.count() == 0
+
+    def test_text_less_answer_fails_the_task_persisting_nothing(self) -> None:
+        # A draft with only a thread_ref persists no DeferredQuestion, so the gate
+        # must refuse it rather than complete over a dropped reply.
+        task = self._claimed()
+        record_result_envelope(task, {"summary": "drafted", "answer": {"thread_ref": "C1/1.0"}})
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        assert DeferredQuestion.objects.count() == 0
