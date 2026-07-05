@@ -545,6 +545,23 @@ class TestLoopOwnerCli:
         assert result.exit_code == 0
         assert LoopLease.objects.get(name="loop-slack-answer-owner").session_id == "answer-sess"
 
+    def test_claim_driver_external_sets_the_driver(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The exact shape of the DRIVERLESS remediation `t3 loop claim --slot <slot> --driver external`.
+        from teatree.core.models import LoopLease  # noqa: PLC0415 — deferred
+
+        monkeypatch.setenv("CLAUDE_SESSION_ID", "ext-session")
+        result = runner.invoke(loop_app, ["claim", "--slot", "loop:dispatch", "--driver", "external"])
+
+        assert result.exit_code == 0, result.stdout
+        assert LoopLease.objects.get(name="loop:dispatch").driver == "external"
+
+    def test_claim_invalid_driver_is_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("CLAUDE_SESSION_ID", "ext-session")
+        result = runner.invoke(loop_app, ["claim", "--driver", "bogus"])
+
+        assert result.exit_code == 2
+        assert "invalid --driver" in result.stdout
+
     def test_claim_json_success_shape(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import json  # noqa: PLC0415
 

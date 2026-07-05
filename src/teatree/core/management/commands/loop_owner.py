@@ -63,12 +63,19 @@ def _claim(command: TyperCommand, slot: str, *, take_over: bool, driver: str, js
     import os  # noqa: PLC0415
 
     from teatree.core.loop_lease_manager import T3_MASTER_SLOT, is_per_loop_owner_slot  # noqa: PLC0415
-    from teatree.core.models import LoopLease  # noqa: PLC0415
+    from teatree.core.models import LoopDriver, LoopLease  # noqa: PLC0415 — deferred
     from teatree.loop.driver_detection import detect_driver  # noqa: PLC0415 — deferred
     from teatree.loop.session_identity import current_session_id, current_session_pid  # noqa: PLC0415
 
     stdout_write = command.stdout.write
     stderr_write = command.stderr.write
+    if driver and driver not in LoopDriver.values:
+        msg = f"invalid --driver {driver!r} — must be one of: {', '.join(LoopDriver.values)}"
+        if json_output:
+            stdout_write(json.dumps({"ok": False, "error": msg}, indent=2))
+        else:
+            stdout_write(f"ERROR  {msg}")
+        raise SystemExit(2)
     session_id = current_session_id()
     if not session_id:
         msg = "refusing to claim loop ownership without a Claude session id — run inside a Claude Code session"
