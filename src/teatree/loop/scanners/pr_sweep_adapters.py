@@ -12,12 +12,15 @@ import json
 import os
 import shutil
 from dataclasses import dataclass, field
-from typing import TypedDict, cast
+from typing import TYPE_CHECKING, TypedDict, cast
 
 from teatree.loop.scanners.base import ScannerError, classify_gh_stderr
-from teatree.loop.scanners.pr_sweep import GH_CONFLICT_MERGE_STATE, GH_CONFLICT_MERGEABLE, CheckResult, PrSummary
+from teatree.loop.scanners.pr_sweep import GH_CONFLICT_MERGE_STATE, GH_CONFLICT_MERGEABLE, PrSummary
 from teatree.loop.scanners.pr_sweep_types import MERGEABLE_AWAITING_REVIEW_REASON as _MERGEABLE_AWAITING_REVIEW_REASON
 from teatree.utils.run import run_allowed_to_fail
+
+if TYPE_CHECKING:
+    from teatree.types import RawAPIDict
 
 _GH_NOT_INSTALLED_RC = 127
 
@@ -46,16 +49,6 @@ class GhAuthorJson(TypedDict, total=False):
 class GhReviewJson(TypedDict, total=False):
     """Shape of one review entry inside ``GhPrJson.reviews``."""
 
-    state: str
-
-
-class GhCheckJson(TypedDict, total=False):
-    """Shape of one check entry inside ``GhPrJson.statusCheckRollup``."""
-
-    name: str
-    context: str
-    conclusion: str
-    status: str
     state: str
 
 
@@ -88,7 +81,7 @@ def _decode_pr(*, slug: str, raw: GhPrJson) -> PrSummary:
         head_sha=head_sha,
         is_draft=is_draft,
         has_changes_requested=_has_changes_requested(reviews),
-        checks=tuple(_decode_check(cast("GhCheckJson", item)) for item in rollup if isinstance(item, dict)),
+        rollup=tuple(cast("RawAPIDict", item) for item in rollup if isinstance(item, dict)),
         url=url,
         title=title,
         is_conflicted=_gh_is_conflicted(raw),
@@ -133,26 +126,6 @@ def _has_changes_requested(reviews: list[object]) -> bool:
         if state == "CHANGES_REQUESTED":
             return True
     return False
-
-
-def _decode_check(raw: GhCheckJson) -> CheckResult:
-    name = _as_str(raw.get("name")) or _as_str(raw.get("context"))
-    conclusion = _as_str(raw.get("conclusion"))
-    status = _as_str(raw.get("status"))
-    # Legacy StatusContext entries (no ``status`` field) carry ``state``;
-    # treat ``state == SUCCESS`` as a green completed check so non-Check-Run
-    # contexts (e.g. external CI) still classify correctly.
-    if not status and not conclusion:
-        state = _as_str(raw.get("state")).upper()
-        if state == "SUCCESS":
-            conclusion = "SUCCESS"
-            status = "COMPLETED"
-        elif state == "PENDING":
-            status = "IN_PROGRESS"
-        elif state:
-            conclusion = "FAILURE"
-            status = "COMPLETED"
-    return CheckResult(name=name, conclusion=conclusion, status=status)
 
 
 @dataclass(slots=True)

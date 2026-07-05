@@ -204,5 +204,17 @@ class TestPlanReaffirmUnderFlag(TestCase):
     def test_inadequate_without_fresh_manifest_raises_clean_reaffirm_error(self) -> None:
         """(iii) INADEQUATE with no fresh manifest → clean ReaffirmError, NEVER a raw ValueError/traceback."""
         ticket = self._ticket_with_plan(base_sha="", adequacy={})
-        with _flag_on(), pytest.raises(ReaffirmError, match="no adequate manifest to carry forward"):
+        with _flag_on(), pytest.raises(ReaffirmError, match="is not adequate"):
             reaffirm_plan(ticket=ticket, new_base_sha=self.new_base, dispositions=[], by="op")
+
+    def test_thin_fresh_manifest_is_refused_not_a_bypass(self) -> None:
+        """A thin/garbage fresh_adequacy is REFUSED — the fresh-manifest path is not an adequacy bypass."""
+        ticket = self._ticket_with_plan(base_sha="", adequacy={})
+        with _flag_on(), pytest.raises(ReaffirmError, match="is not adequate"):
+            reaffirm_plan(
+                ticket=ticket,
+                new_base_sha=self.new_base,
+                dispositions=[],
+                by="op",
+                fresh_adequacy={"design": {"content": "only a design, missing the other three sections"}},
+            )

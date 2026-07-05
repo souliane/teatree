@@ -27,7 +27,7 @@ from django.test import TestCase
 from teatree.core.merge import MergeOutcome, MergePreconditionError, merge_ticket_pr
 from teatree.core.models import MergeAudit, MergeClear, Ticket
 from teatree.core.models.review_verdict import HeadVerdictState, ReviewVerdict
-from teatree.loop.scanners.pr_sweep import CheckResult, PrSummary, PrSweepScanner
+from teatree.loop.scanners.pr_sweep import PrSummary, PrSweepScanner
 from teatree.loop.scanners.pr_sweep_adapters import NullMergeNotifier
 from teatree.loop.scanners.pr_sweep_decision import has_independent_cold_review
 from tests.teatree_loop.test_pr_sweep_scanner import FakeKeystone, FakePrApiClient
@@ -219,7 +219,16 @@ def _solo_pr() -> PrSummary:
         head_sha=_HEAD,
         is_draft=False,
         has_changes_requested=False,
-        checks=(CheckResult(name="test (3.13)", conclusion="SUCCESS", status="COMPLETED"),),
+        rollup=(
+            {
+                "__typename": "CheckRun",
+                "name": "test (3.13)",
+                "status": "COMPLETED",
+                "conclusion": "SUCCESS",
+                "startedAt": "2026-06-19T10:00:00Z",
+                "completedAt": "2026-06-19T10:05:00Z",
+            },
+        ),
         url=f"https://github.com/{_SLUG}/pull/{_PR}",
         title=f"PR {_PR}",
         author="souliane",
@@ -235,6 +244,12 @@ class TestSoloOverlayPathHonoursNewestWins(TestCase):
         monkeypatch.setattr(
             "teatree.loop.scanners.pr_sweep_substrate.fetch_pr_changed_paths",
             lambda *a, **k: ["src/teatree/loop/scanners/pr_sweep.py"],
+        )
+        # #12: the sweep's CI gate reads the branch-protection required set; the
+        # ``_solo_pr`` rollup carries a green ``test (3.13)`` so scope to just it.
+        monkeypatch.setattr(
+            "teatree.loop.scanners.pr_sweep.fetch_required_context_names",
+            lambda *a, **k: {"test (3.13)"},
         )
 
     def test_no_verdict_flags_not_merges(self) -> None:

@@ -23,8 +23,13 @@ from unittest.mock import patch
 
 from teatree.backends.forge_merge_rpc import GhMergeRpc
 from teatree.core.backend_protocols import rollup_query_failed
-from teatree.core.merge import fetch_required_checks_status
-from teatree.core.merge.ci_rollup import _check_name, _dedupe_newest_per_name, _required_contexts_verdict
+from teatree.core.merge import classify_required_rollup, failing_required_names, fetch_required_checks_status
+from teatree.core.merge.ci_rollup import (
+    _check_name,
+    _dedupe_newest_per_name,
+    _required_contexts_verdict,
+    fetch_required_context_names,
+)
 
 _SLUG = "souliane/teatree"
 _PR_ID = 2580
@@ -424,6 +429,66 @@ def _contexts_runner(
         return (0, "", "")
 
     return run
+
+
+class TestSharedClassifierHelpers:
+    """The #12 SSOT surface consumed by both the keystone and the PR-sweep gate."""
+
+    def test_classify_empty_required_is_green(self) -> None:
+        # No required-status-check gate → nothing to satisfy → green.
+        assert classify_required_rollup([_failed("eval")], set()) == "green"
+
+    def test_classify_scopes_to_required_and_dedupes(self) -> None:
+        # A non-required failing check is ignored; a stale required failure
+        # superseded by a newer success does not block.
+        rollup = [
+            _check_run("test (3.13)", conclusion="FAILURE", started_at=_T0, completed_at=_T1),
+            _check_run(
+                "test (3.13)",
+                conclusion="SUCCESS",
+                started_at="2026-06-19T11:00:00Z",
+                completed_at="2026-06-19T11:05:00Z",
+            ),
+            _failed("eval"),
+        ]
+        assert classify_required_rollup(rollup, {"test (3.13)"}) == "green"
+
+    def test_failing_required_names_is_present_and_failed_only(self) -> None:
+        # A failed required check is named; a missing required check (pending) is
+        # NOT — the sweep needs to tell "only uv-audit failing" from "still pending".
+        rollup = [_failed("uv-audit"), _green("test (3.13)")]
+        assert failing_required_names(rollup, {"uv-audit", "test (3.13)", "sbom"}) == {"uv-audit"}
+
+    def test_failing_required_names_dedupes_newest_wins(self) -> None:
+        rollup = [
+            _check_run(
+                "sbom",
+                conclusion="SUCCESS",
+                started_at="2026-06-19T11:00:00Z",
+                completed_at="2026-06-19T11:05:00Z",
+            ),
+            _check_run("sbom", conclusion="FAILURE", started_at=_T0, completed_at=_T1),
+        ]
+        assert failing_required_names(rollup, {"sbom"}) == set()
+
+    def test_fetch_required_context_names_returns_set(self) -> None:
+        with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_gh_stub([], required=["lint", "sbom"])):
+            assert fetch_required_context_names(_SLUG, _PR_ID, host_kind="github") == {"lint", "sbom"}
+
+    def test_fetch_required_context_names_none_on_fetch_failure(self) -> None:
+        # Fail CLOSED: an indeterminate required set is signalled as None.
+        with patch(
+            "teatree.backends.forge_merge_rpc.gh_runner",
+            return_value=_gh_stub([], protection_rc=1, protection_body="HTTP 403: Forbidden"),
+        ):
+            assert fetch_required_context_names(_SLUG, _PR_ID, host_kind="github") is None
+
+    def test_fetch_required_context_names_empty_on_no_gate(self) -> None:
+        with patch(
+            "teatree.backends.forge_merge_rpc.gh_runner",
+            return_value=_gh_stub([], protection_rc=1, protection_body="HTTP 404: Branch not protected"),
+        ):
+            assert fetch_required_context_names(_SLUG, _PR_ID, host_kind="github") == set()
 
 
 class TestRequiredStatusCheckContextsTransport:

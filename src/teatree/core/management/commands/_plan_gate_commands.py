@@ -226,11 +226,13 @@ def reaffirm_plan(
             adequacy=manifest,
         )
     except ValueError as exc:
+        # Covers BOTH an inadequate carried-forward manifest (no fresh supplied) and a
+        # thin/garbage fresh_adequacy — the fresh-manifest path is not an adequacy bypass.
         msg = (
-            f"cannot reaffirm ticket {ticket.pk} into an adequate plan: {exc} The prior plan has no adequate "
-            f"manifest to carry forward. Supply a complete four-section manifest with "
-            f"`--adequacy-json '<{{design,integration_seams,edge_cases,test_strategy}}>'`, OR record an audited "
-            f"bypass (`ticket plan-bypass {ticket.pk} --human-authorize <who> --reason <why>`), OR disable the gate "
-            f"(`config_setting set require_plan_adequacy false --overlay <name>`)."
+            f"cannot reaffirm ticket {ticket.pk} into an adequate plan: {exc} The manifest to record "
+            f"(carried-forward, or supplied via --adequacy-json) is not adequate. Supply a complete four-section "
+            f"manifest with `--adequacy-json '<{{design,integration_seams,edge_cases,test_strategy}}>'`, OR record "
+            f"an audited bypass (`ticket plan-bypass {ticket.pk} --human-authorize <who> --reason <why>`), OR "
+            f"disable the gate (`config_setting set require_plan_adequacy false --overlay <name>`)."
         )
         raise ReaffirmError(msg) from exc

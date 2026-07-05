@@ -19,6 +19,8 @@ pre-conditions. These tests pin every branch of the decision ladder:
     --squash`` iff the keystone refuses on that same path
 """
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from unittest.mock import MagicMock, patch
 
@@ -28,7 +30,7 @@ from teatree.core.models import AutoReviewDispatch, BotPing, MergeableNotified, 
 from teatree.core.models.merge_clear import ClearRequest, MergeClear
 from teatree.core.models.review_verdict import ReviewVerdict
 from teatree.loop.scanners.base import ScannerError, ScannerErrorClass
-from teatree.loop.scanners.pr_sweep import CheckResult, PrSummary, PrSweepScanner
+from teatree.loop.scanners.pr_sweep import PrSummary, PrSweepScanner
 from teatree.loop.scanners.pr_sweep_adapters import (
     AutoReviewTaskDispatcher,
     NullMergeNotifier,
@@ -36,6 +38,7 @@ from teatree.loop.scanners.pr_sweep_adapters import (
     _decode_pr,
 )
 from teatree.loop.substrate_pinger import NotifyWithFallbackSubstratePinger
+from teatree.types import RawAPIDict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -68,28 +71,66 @@ def _repo_internal_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("teatree.core.author_trust.repo_is_internal", lambda *a, **k: True)
 
 
+@pytest.fixture(autouse=True)
+def _required_test_3_13(monkeypatch: pytest.MonkeyPatch) -> None:
+    # #12: the sweep's CI gate scopes to the branch-protection required set instead
+    # of hardcoding ``test (3.13)``. Default the required set to just that one check
+    # so the green-path fixtures (a single green ``test (3.13)``) merge; a case that
+    # needs another check to gate declares it via ``with _required(...)``.
+    monkeypatch.setattr(
+        "teatree.loop.scanners.pr_sweep.fetch_required_context_names",
+        lambda *a, **k: {"test (3.13)"},
+    )
+
+
 SLUG = "souliane/teatree"
 HEAD = "feedfacecafebabe1234567890abcdef12345678"
 STALE = "deadbeef00000000000000000000000000000000"
 MAIN_SHA = "abcdef1234567890abcdef1234567890abcdef12"
 SELF_LOGIN = "souliane"
 COLLEAGUE_LOGIN = "a-teammate"
+_T0 = "2026-06-19T10:00:00Z"
+_T1 = "2026-06-19T10:05:00Z"
 
 
-def _green_required() -> CheckResult:
-    return CheckResult(name="test (3.13)", conclusion="SUCCESS", status="COMPLETED")
+def _check(name: str, *, conclusion: str = "SUCCESS", status: str = "COMPLETED") -> RawAPIDict:
+    """A raw ``statusCheckRollup`` CheckRun entry — the shape the sweep now carries."""
+    return {
+        "__typename": "CheckRun",
+        "name": name,
+        "status": status,
+        "conclusion": conclusion,
+        "startedAt": _T0,
+        "completedAt": _T1,
+    }
 
 
-def _red_uv_audit() -> CheckResult:
-    return CheckResult(name="uv-audit", conclusion="FAILURE", status="COMPLETED")
+def _green_required() -> RawAPIDict:
+    return _check("test (3.13)")
 
 
-def _red_lint() -> CheckResult:
-    return CheckResult(name="lint", conclusion="FAILURE", status="COMPLETED")
+def _red_uv_audit() -> RawAPIDict:
+    return _check("uv-audit", conclusion="FAILURE")
 
 
-def _red_blueprint_cross_pr() -> CheckResult:
-    return CheckResult(name="blueprint-cross-pr", conclusion="FAILURE", status="COMPLETED")
+def _red_lint() -> RawAPIDict:
+    return _check("lint", conclusion="FAILURE")
+
+
+def _red_blueprint_cross_pr() -> RawAPIDict:
+    return _check("blueprint-cross-pr", conclusion="FAILURE")
+
+
+@contextmanager
+def _required(*names: str) -> Iterator[None]:
+    """Stub the branch-protection required set the sweep's CI gate scopes to (#12).
+
+    The autouse default is ``{"test (3.13)"}``; a case that expects a red/pending
+    on another check to gate a merge declares that check required here (a check
+    NOT in the set is advisory and can never block — the anti-vacuity core of #12).
+    """
+    with patch("teatree.loop.scanners.pr_sweep.fetch_required_context_names", return_value=set(names)):
+        yield
 
 
 def _issue_clear(*, pr_id: int = 6230, sha: str = HEAD) -> MergeClear:
@@ -125,7 +166,7 @@ def _open_pr(  # noqa: PLR0913 — test helper: each kwarg maps 1:1 to a PrSumma
     head: str = HEAD,
     is_draft: bool = False,
     changes_requested: bool = False,
-    checks: tuple[CheckResult, ...] = (),
+    checks: tuple[RawAPIDict, ...] = (),
     behind_main: bool = False,
     author: str = SELF_LOGIN,
 ) -> PrSummary:
@@ -135,7 +176,7 @@ def _open_pr(  # noqa: PLR0913 — test helper: each kwarg maps 1:1 to a PrSumma
         head_sha=head,
         is_draft=is_draft,
         has_changes_requested=changes_requested,
-        checks=checks or (_green_required(),),
+        rollup=checks or (_green_required(),),
         url=f"https://github.com/{SLUG}/pull/{pr_id}",
         title=f"PR {pr_id}",
         behind_main=behind_main,
@@ -143,7 +184,7 @@ def _open_pr(  # noqa: PLR0913 — test helper: each kwarg maps 1:1 to a PrSumma
     )
 
 
-def _conflicted_pr(*, pr_id: int = 6230, checks: tuple[CheckResult, ...] = ()) -> PrSummary:
+def _conflicted_pr(*, pr_id: int = 6230, checks: tuple[RawAPIDict, ...] = ()) -> PrSummary:
     base = _open_pr(pr_id=pr_id, checks=checks)
     return replace(base, is_conflicted=True)
 
@@ -402,14 +443,15 @@ class TestSkipPaths:
         keystone = FakeKeystone()
         scanner, _ = _scanner(api=api, keystone=keystone)
 
-        signals = scanner.scan()
+        with _required("test (3.13)", "lint"):
+            signals = scanner.scan()
 
         assert keystone.calls == []
         assert signals[0].payload["reason"] == "ci_red"
 
     def test_required_check_not_green_blocks_merge(self) -> None:
         _issue_clear()
-        red_required = CheckResult(name="test (3.13)", conclusion="FAILURE", status="COMPLETED")
+        red_required = _check("test (3.13)", conclusion="FAILURE")
         api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(checks=(red_required,))]})
         keystone = FakeKeystone()
         scanner, _ = _scanner(api=api, keystone=keystone)
@@ -418,6 +460,43 @@ class TestSkipPaths:
 
         assert keystone.calls == []
         assert signals[0].payload["reason"] == "ci_red"
+
+    def test_failed_non_required_check_does_not_block_merge(self) -> None:
+        # #12 anti-vacuity (RED before the fix): a FAILED advisory check that is
+        # NOT in the branch-protection required set (`eval`) must NOT block — the
+        # pre-fix `classify_checks` counted every red and skipped on `ci_red`.
+        # Required set is the default `{"test (3.13)"}`; `eval` is advisory.
+        clear = _issue_clear()
+        api = FakePrApiClient(
+            prs_by_slug={SLUG: [_open_pr(checks=(_green_required(), _check("eval", conclusion="FAILURE")))]},
+        )
+        keystone = FakeKeystone()
+        scanner, _ = _scanner(api=api, keystone=keystone)
+
+        signals = scanner.scan()
+
+        assert keystone.calls == [int(clear.pk)]
+        assert signals[0].kind == "pr_sweep.merged"
+        assert signals[0].payload["reason"] == "all_green"
+
+    def test_stale_failure_superseded_by_newer_success_does_not_block(self) -> None:
+        # #12 anti-vacuity (RED before the fix): the sweep now dedupes newest-per-
+        # name like the keystone (#2583). A stale FAILURE for the required
+        # `test (3.13)` superseded by a newer SUCCESS must NOT block; the pre-fix
+        # sweep had no dedupe and skipped on the stale red.
+        clear = _issue_clear()
+        stale = _check("test (3.13)", conclusion="FAILURE")
+        stale["startedAt"] = "2026-06-19T09:00:00Z"
+        stale["completedAt"] = "2026-06-19T09:05:00Z"
+        fresh = _green_required()  # startedAt/completedAt at _T0/_T1 (newer)
+        api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(checks=(stale, fresh))]})
+        keystone = FakeKeystone()
+        scanner, _ = _scanner(api=api, keystone=keystone)
+
+        signals = scanner.scan()
+
+        assert keystone.calls == [int(clear.pk)]
+        assert signals[0].kind == "pr_sweep.merged"
 
 
 class TestUvAuditFallback:
@@ -430,7 +509,8 @@ class TestUvAuditFallback:
         keystone = FakeKeystone()
         scanner, notifier = _scanner(api=api, keystone=keystone)
 
-        signals = scanner.scan()
+        with _required("test (3.13)", "uv-audit"):
+            signals = scanner.scan()
 
         assert keystone.calls == []
         assert notifier.calls == []
@@ -445,7 +525,8 @@ class TestUvAuditFallback:
         keystone = FakeKeystone()
         scanner, notifier = _scanner(api=api, keystone=keystone)
 
-        signals = scanner.scan()
+        with _required("test (3.13)", "uv-audit"):
+            signals = scanner.scan()
 
         assert keystone.calls == [int(clear.pk)]
         assert api.merge_pr_calls == []  # keystone took it; no gh fallback
@@ -462,7 +543,8 @@ class TestUvAuditFallback:
         keystone = FakeKeystone(merged=False, error="uv-audit failing", merged_sha="")
         scanner, notifier = _scanner(api=api, keystone=keystone)
 
-        signals = scanner.scan()
+        with _required("test (3.13)", "uv-audit"):
+            signals = scanner.scan()
 
         assert api.merge_pr_calls == [(SLUG, 6230, HEAD)]
         assert notifier.calls == [(SLUG, 6230, MAIN_SHA, True)]
@@ -504,7 +586,8 @@ class TestNeedsBranchUpdate:
         keystone = FakeKeystone()
         scanner, notifier = _scanner(api=api, keystone=keystone)
 
-        signals = scanner.scan()
+        with _required("test (3.13)", "blueprint-cross-pr"):
+            signals = scanner.scan()
 
         assert keystone.calls == []
         assert signals[0].kind == "pr_sweep.needs_branch_update"
@@ -521,21 +604,23 @@ class TestNeedsBranchUpdate:
         keystone = FakeKeystone()
         scanner, _ = _scanner(api=api, keystone=keystone)
 
-        signals = scanner.scan()
+        with _required("test (3.13)", "uv-audit"):
+            signals = scanner.scan()
 
         assert keystone.calls == []
         assert signals[0].payload["decision"] == "needs_branch_update"
 
     def test_genuine_test_failure_still_classifies_ci_red_not_branch_update(self) -> None:
         _issue_clear()
-        red_required = CheckResult(name="test (3.13)", conclusion="FAILURE", status="COMPLETED")
+        red_required = _check("test (3.13)", conclusion="FAILURE")
         api = FakePrApiClient(
             prs_by_slug={SLUG: [_open_pr(checks=(red_required, _red_blueprint_cross_pr()), behind_main=True)]},
         )
         keystone = FakeKeystone()
         scanner, notifier = _scanner(api=api, keystone=keystone)
 
-        signals = scanner.scan()
+        with _required("test (3.13)", "blueprint-cross-pr"):
+            signals = scanner.scan()
 
         assert keystone.calls == []
         assert signals[0].payload["reason"] == "ci_red"
@@ -549,7 +634,8 @@ class TestNeedsBranchUpdate:
         keystone = FakeKeystone()
         scanner, notifier = _scanner(api=api, keystone=keystone)
 
-        signals = scanner.scan()
+        with _required("test (3.13)", "blueprint-cross-pr"):
+            signals = scanner.scan()
 
         assert keystone.calls == []
         assert signals[0].payload["reason"] == "ci_red"
@@ -563,7 +649,8 @@ class TestNeedsBranchUpdate:
         keystone = FakeKeystone()
         scanner, _ = _scanner(api=api, keystone=keystone)
 
-        signals = scanner.scan()
+        with _required("test (3.13)", "lint"):
+            signals = scanner.scan()
 
         assert keystone.calls == []
         assert signals[0].payload["reason"] == "ci_red"
@@ -580,7 +667,7 @@ class TestMultiRepo:
             head_sha=HEAD,
             is_draft=True,
             has_changes_requested=False,
-            checks=(_green_required(),),
+            rollup=(_green_required(),),
         )
         api = FakePrApiClient(prs_by_slug={SLUG: [pr_a], other: [pr_b]})
         keystone = FakeKeystone()
@@ -650,7 +737,8 @@ class TestSoloOverlayBypassesClearGate:
         keystone = FakeKeystone()
         scanner, notifier = _scanner(api=api, keystone=keystone, solo_overlay=True)
 
-        signals = scanner.scan()
+        with _required("test (3.13)", "lint"):
+            signals = scanner.scan()
 
         assert keystone.calls == []
         assert api.merge_pr_calls == []
@@ -859,7 +947,7 @@ class TestAutoReviewDispatch:
 
     def test_red_ci_suppresses_dispatch(self) -> None:
         # A red required check skips before the cold-review gate — no review task.
-        red_required = CheckResult(name="test (3.13)", conclusion="FAILURE", status="COMPLETED")
+        red_required = _check("test (3.13)", conclusion="FAILURE")
         dispatcher = FakeReviewDispatcher()
         api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(checks=(red_required,))]})
         scanner, _ = _scanner(
@@ -1264,7 +1352,8 @@ class TestMergeableAwaitingReviewFlag:
         api = FakePrApiClient(prs_by_slug={SLUG: [_open_pr(checks=(_green_required(), _red_lint()))]})
         scanner, notifier = _scanner(api=api, keystone=FakeKeystone())
 
-        signals = scanner.scan()
+        with _required("test (3.13)", "lint"):
+            signals = scanner.scan()
 
         assert notifier.flag_calls == []
         assert signals[0].kind == "pr_sweep.skip"
@@ -1593,7 +1682,8 @@ class TestSubstrateHoldPing:
         pinger = FakeSubstratePinger()
         scanner, notifier = _scanner(api=api, keystone=keystone, substrate_pinger=pinger)
 
-        signals = scanner.scan()
+        with _required("test (3.13)", "uv-audit"):
+            signals = scanner.scan()
 
         assert api.merge_pr_calls == []  # the raw gh fallback was NOT fired for substrate
         assert notifier.calls == []  # no merge announcement
@@ -1616,7 +1706,8 @@ class TestSubstrateHoldPing:
         pinger = FakeSubstratePinger()
         scanner, notifier = _scanner(api=api, keystone=keystone, substrate_pinger=pinger)
 
-        signals = scanner.scan()
+        with _required("test (3.13)", "uv-audit"):
+            signals = scanner.scan()
 
         assert api.merge_pr_calls == [(SLUG, 6230, HEAD)]  # non-substrate still escalates
         assert notifier.calls == [(SLUG, 6230, MAIN_SHA, True)]

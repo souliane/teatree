@@ -4,11 +4,13 @@ Held in a dependency-free leaf module so both the scanner core
 (:mod:`teatree.loop.scanners.pr_sweep`) and the decision predicates
 (:mod:`teatree.loop.scanners.pr_sweep_decision`) can import them without a
 circular edge. ``pr_sweep`` re-exports every name here, so existing
-``from teatree.loop.scanners.pr_sweep import CheckResult`` call sites are
+``from teatree.loop.scanners.pr_sweep import PrSummary`` call sites are
 unaffected.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from teatree.types import RawAPIDict
 
 GREEN_TERMINAL_CONCLUSIONS = frozenset({"SUCCESS", "NEUTRAL", "SKIPPED"})
 REQUIRED_CHECK_NAME = "test (3.13)"
@@ -50,32 +52,18 @@ MERGEABLE_AWAITING_REVIEW_REASON = "mergeable_awaiting_review"
 
 
 @dataclass(frozen=True, slots=True)
-class CheckResult:
-    """One required-status check on a PR head."""
-
-    name: str
-    conclusion: str
-    status: str
-
-    @property
-    def verdict(self) -> str:
-        upper_status = self.status.upper()
-        if upper_status and upper_status != "COMPLETED":
-            return "pending"
-        upper_conclusion = self.conclusion.upper()
-        if upper_conclusion in GREEN_TERMINAL_CONCLUSIONS:
-            return "green"
-        return "failed"
-
-
-@dataclass(frozen=True, slots=True)
 class PrSummary:
     """Decoded subset of a PR's ``gh`` payload the sweep needs.
 
-    ``author`` is the PR author's forge login (GitHub ``author.login``); it
-    scopes the loop's auto-review-arm to PRs the user authored so a
-    colleague's open PR in a watched repo is never auto-scheduled for review
-    (#2210). Empty when the payload omits the author — treated as "not ours".
+    ``rollup`` holds the RAW ``statusCheckRollup`` entries (CheckRun /
+    StatusContext dicts) verbatim so the sweep's CI gate classifies them through
+    the SAME :func:`teatree.core.merge.classify_required_rollup` the keystone uses
+    — newest-per-name dedupe and branch-protection-required scoping included —
+    instead of a divergent sibling classifier (#12). ``author`` is the PR author's
+    forge login (GitHub ``author.login``); it scopes the loop's auto-review-arm to
+    PRs the user authored so a colleague's open PR in a watched repo is never
+    auto-scheduled for review (#2210). Empty when the payload omits the author —
+    treated as "not ours".
     """
 
     slug: str
@@ -83,7 +71,7 @@ class PrSummary:
     head_sha: str
     is_draft: bool
     has_changes_requested: bool
-    checks: tuple[CheckResult, ...]
+    rollup: tuple[RawAPIDict, ...] = field(default_factory=tuple)
     url: str = ""
     title: str = ""
     is_conflicted: bool = False

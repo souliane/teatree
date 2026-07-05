@@ -95,11 +95,19 @@ class FactorySignalsTestBase(TestCase):
         tr = TicketTransitionFactory(ticket=ticket)
         TicketTransition.objects.filter(pk=tr.pk).update(created_at=self.now - timedelta(days=days_ago))
 
-    def _attempt(self, *, days_ago: float, iteration: int, exit_code: int = 0, phase: str = "coding") -> None:
+    def _attempt(
+        self,
+        *,
+        days_ago: float,
+        iteration: int,
+        exit_code: int = 0,
+        phase: str = "coding",
+        error: str = "",
+    ) -> None:
         ticket = TicketFactory()
         session = SessionFactory(ticket=ticket)
         task = TaskFactory(ticket=ticket, session=session, phase=phase)
-        att = TaskAttemptFactory(task=task, iteration=iteration, exit_code=exit_code)
+        att = TaskAttemptFactory(task=task, iteration=iteration, exit_code=exit_code, error=error)
         TaskAttempt.objects.filter(pk=att.pk).update(started_at=self.now - timedelta(days=days_ago))
 
 
@@ -180,6 +188,36 @@ class S1FirstTryGreenTests(FactorySignalsTestBase):
         reading = first_try_green_rate(now=self.now)
         assert reading.status == SignalStatus.OK
         assert reading.status != SignalStatus.INSUFFICIENT_DATA
+        assert reading.value == pytest.approx(0.6)
+        assert reading.sample_size == 5
+
+    def test_cross_repo_merge_repo_slug_drives_first_try_green_join(self) -> None:
+        # #19 mirror for S1: the merged repo (stamped MergeAudit.repo_slug) is
+        # where the RedMrFixAttempt rows are keyed. S1 must join the CI-red record
+        # under the stamped slug, not the CLEAR's ticket-issue-url repo — so two
+        # cross-repo red PRs correctly read as NOT first-try-green (0.6, not a
+        # fabricated 1.0 from a join miss).
+        real_repo = "downstream-org/downstream-repo"
+        for i in range(5):
+            pr_id = 661 + i
+            ticket = TicketFactory(issue_url=f"https://github.com/wrong-org/wrong-repo/issues/{pr_id}")
+            merged_at = self.now - timedelta(days=5)
+            clear = MergeClearFactory(
+                ticket=ticket,
+                pr_id=pr_id,
+                slug=f"{pr_id}-feat-x",
+                issued_at=merged_at - timedelta(hours=1),
+                consumed_at=merged_at,
+            )
+            MergeAuditFactory(clear=clear, merged_at=merged_at, repo_slug=real_repo)
+        for pr_id in (661, 662):
+            RedMrFixAttemptFactory(
+                pr_url=f"https://github.com/{real_repo}/pull/{pr_id}",
+                head_sha=f"{pr_id:040x}",
+                dispatched_at=self.now - timedelta(days=5),
+            )
+        reading = first_try_green_rate(now=self.now)
+        assert reading.status == SignalStatus.OK
         assert reading.value == pytest.approx(0.6)
         assert reading.sample_size == 5
 
@@ -309,6 +347,56 @@ class S3ReviewCatchTests(FactorySignalsTestBase):
         assert row.tripped is False
         assert row.verdict == SignalVerdict.OK
 
+    def test_cross_repo_merge_repo_slug_drives_the_verdict_join(self) -> None:
+        # #19: the merge lands in a DIFFERENT repo than the CLEAR's ticket names.
+        # The gate stamps MergeAudit.repo_slug with the real merged repo, and the
+        # verdict is keyed under that real repo. S3 must join under the stamped
+        # slug (merge-time truth), not the ticket-issue-url slug — otherwise a
+        # genuinely-held cross-repo lane false-REDs as a rubber-stamp.
+        real_repo = "downstream-org/downstream-repo"
+        for i in range(5):
+            pr_id = 641 + i
+            ticket = TicketFactory(issue_url=f"https://github.com/wrong-org/wrong-repo/issues/{pr_id}")
+            merged_at = self.now - timedelta(days=5)
+            clear = MergeClearFactory(
+                ticket=ticket,
+                pr_id=pr_id,
+                slug=f"{pr_id}-feat-x",
+                issued_at=merged_at - timedelta(hours=1),
+                consumed_at=merged_at,
+            )
+            MergeAuditFactory(clear=clear, merged_at=merged_at, repo_slug=real_repo)
+            ReviewVerdictFactory(hold=True, slug=real_repo, pr_id=pr_id)
+        report = compute_factory_signals(now=self.now)
+        row = _row(report, "review_catch")
+        assert row.reading.value == pytest.approx(1.0)
+        assert row.reading.sample_size == 5
+        assert row.tripped is False
+        assert row.verdict == SignalVerdict.OK
+
+    def test_legacy_blank_repo_slug_falls_back_to_the_resolver(self) -> None:
+        # A pre-#19 MergeAudit carries a blank repo_slug; resolved_repo_key falls
+        # back to resolve_pr_repo_slug(clear), recovering owner/repo from the
+        # ticket issue_url. The verdict keyed under that resolved repo still joins.
+        for i in range(5):
+            pr_id = 651 + i
+            ticket = TicketFactory(issue_url=f"https://github.com/{self.SLUG}/issues/{pr_id}")
+            merged_at = self.now - timedelta(days=5)
+            clear = MergeClearFactory(
+                ticket=ticket,
+                pr_id=pr_id,
+                slug=f"{pr_id}-feat-x",
+                issued_at=merged_at - timedelta(hours=1),
+                consumed_at=merged_at,
+            )
+            MergeAuditFactory(clear=clear, merged_at=merged_at, repo_slug="")
+            ReviewVerdictFactory(hold=True, slug=self.SLUG, pr_id=pr_id)
+        report = compute_factory_signals(now=self.now)
+        row = _row(report, "review_catch")
+        assert row.reading.value == pytest.approx(1.0)
+        assert row.reading.sample_size == 5
+        assert row.verdict == SignalVerdict.OK
+
 
 class S4MergeLatencyTests(FactorySignalsTestBase):
     def test_stale_actionable_clear_is_red_with_zero_merges(self) -> None:
@@ -337,6 +425,62 @@ class S4MergeLatencyTests(FactorySignalsTestBase):
         assert row.evidence["stale_clear_hours"] == pytest.approx(0.0)
         assert row.tripped is False
 
+    def test_re_cleared_then_merged_pr_does_not_ratchet_stale_red(self) -> None:
+        # #15: CLEAR@shaA (older, still unconsumed) + re-CLEAR@shaB for the SAME
+        # PR, merged via B. The merge stamps a MergeAudit covering the key, so the
+        # orphaned older CLEAR is superseded and no longer trips the 48h ratchet
+        # even at +49h — the aggregate verdict can go GREEN again.
+        ticket = TicketFactory()
+        merged_at = self.now - timedelta(hours=1)
+        clear_a = MergeClearFactory(
+            ticket=ticket,
+            pr_id=555,
+            slug="555-feat",
+            reviewed_sha="a" * 40,
+            issued_at=self.now - timedelta(hours=49),
+        )
+        clear_b = MergeClearFactory(
+            ticket=ticket,
+            pr_id=555,
+            slug="555-feat",
+            reviewed_sha="b" * 40,
+            issued_at=self.now - timedelta(hours=2),
+            consumed_at=merged_at,
+        )
+        MergeAuditFactory(clear=clear_b, merged_at=merged_at, repo_slug=self.SLUG)
+        assert clear_a.consumed_at is None  # older sibling left unconsumed (the ratchet source)
+        report = compute_factory_signals(now=self.now)
+        row = _row(report, "merge_latency")
+        assert row.tripped is False
+        assert row.verdict != SignalVerdict.RED
+
+    def test_older_clear_superseded_by_newer_unmerged_reissue_is_not_stale(self) -> None:
+        # #15: a re-review at a moved head issues a fresh CLEAR@shaB before any
+        # merge. The older CLEAR@shaA (+49h) is superseded by the strictly-newer
+        # sibling, so only the fresh sibling's age counts — no stale trip.
+        ticket = TicketFactory()
+        MergeClearFactory(
+            ticket=ticket, pr_id=556, slug="556-feat", reviewed_sha="a" * 40, issued_at=self.now - timedelta(hours=49)
+        )
+        MergeClearFactory(
+            ticket=ticket, pr_id=556, slug="556-feat", reviewed_sha="b" * 40, issued_at=self.now - timedelta(hours=2)
+        )
+        report = compute_factory_signals(now=self.now)
+        row = _row(report, "merge_latency")
+        assert row.evidence["stale_clear_hours"] < 48.0
+        assert row.tripped is False
+
+    def test_genuinely_stale_clear_with_no_sibling_still_trips_at_49h(self) -> None:
+        # Anti-vacuity twin: a lone actionable CLEAR at +49h with NO newer sibling
+        # and NO covering merge is a real stalled merge — it STILL trips RED. The
+        # supersede exclusion must not swallow a genuine stall.
+        MergeClearFactory(pr_id=557, slug="557-feat", issued_at=self.now - timedelta(hours=49))
+        report = compute_factory_signals(now=self.now)
+        row = _row(report, "merge_latency")
+        assert row.evidence["stale_clear_hours"] > 48.0
+        assert row.tripped is True
+        assert row.verdict == SignalVerdict.RED
+
 
 class S5RepairBurnTests(FactorySignalsTestBase):
     def test_low_burn_is_ok(self) -> None:
@@ -353,6 +497,32 @@ class S5RepairBurnTests(FactorySignalsTestBase):
         report = compute_factory_signals(now=self.now)
         row = _row(report, "repair_burn")
         assert row.evidence["failed_fraction"] > 0.0
+
+    def test_refusals_with_exit0_and_error_are_failures_not_successes(self) -> None:
+        # #16: an envelope-refusal is recorded with exit_code=0 AND a non-empty
+        # error. Classifying on exit_code alone counted N pure refusals as a clean
+        # success group (success_groups=N, failed_fraction=0). Classifying on the
+        # error field makes them failures: zero success groups, failed=N/N.
+        for _ in range(5):
+            self._attempt(days_ago=5, iteration=1, exit_code=0, error="refused: envelope missing required evidence")
+        report = compute_factory_signals(now=self.now)
+        row = _row(report, "repair_burn")
+        assert row.evidence["success_groups"] == 0
+        assert row.evidence["failed_fraction"] == pytest.approx(1.0)
+        # No genuine success groups -> the burn sample is empty, not a fake OK.
+        assert row.reading.status == SignalStatus.INSUFFICIENT_DATA
+
+    def test_genuine_success_still_counts_when_error_blank(self) -> None:
+        # Anti-vacuity twin: exit_code==0 with NO error is a real success and
+        # still forms a burn group — the error-field classification does not
+        # swallow genuine successes.
+        for _ in range(5):
+            self._attempt(days_ago=5, iteration=1, exit_code=0, error="")
+        report = compute_factory_signals(now=self.now)
+        row = _row(report, "repair_burn")
+        assert row.evidence["success_groups"] == 5
+        assert row.evidence["failed_fraction"] == pytest.approx(0.0)
+        assert row.reading.status == SignalStatus.OK
 
     def test_regressing_when_iterations_rise(self) -> None:
         for _ in range(5):

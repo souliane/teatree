@@ -253,11 +253,29 @@ def execute_bound_merge(
     hook idempotently instead of re-issuing the (then-405-bricking) merge.
     A policy refusal (not-mergeable / required-checks / 405 / 422) and a
     head-moved are NOT transient — they raise on the first attempt. Before the
-    retry loop, ``assert_review_verdict_gate`` (#2829) and ``assert_no_active_review_lock``
-    (#1405) run — the single chokepoint both merge paths cross.
+    retry loop, four gates run — the single chokepoint BOTH merge paths cross
+    (the keystone via ``assert_merge_preconditions`` AND the solo-overlay bypass
+    via ``merge_pr_squash_bound`` with NO preconditions run): ``assert_review_verdict_gate``
+    (#2829), ``assert_no_active_review_lock`` (#1405), and the #18 not-draft +
+    FAILED-live-CI floor. The latter re-reads the forge's LIVE state at the merge
+    chokepoint so a green→red / open→draft flip in the TOCTOU window between a
+    caller's snapshot and this PUT is refused here — the solo lane had NO such
+    re-check despite the sweep docstring claiming one. A FAILED required check is
+    a verdict expedite can NEVER waive, so it is refused unconditionally (no
+    expedite plumbing at this chokepoint; the pending-waiver lives only in
+    ``assert_merge_preconditions``, which the keystone runs first).
     """
     assert_review_verdict_gate(slug=slug, pr_id=pr_id, head_sha=expected_head_oid)
     assert_no_active_review_lock(slug=slug, pr_id=pr_id)
+    if fetch_pr_is_draft(slug, pr_id, host_kind=host_kind):
+        msg = f"{slug}#{pr_id} is in draft state — refusing bound merge (§17.4.3 step 4)"
+        raise MergePreconditionError(msg)
+    if fetch_required_checks_status(slug, pr_id, host_kind=host_kind) == "failed":
+        msg = (
+            f"live required-checks for {slug}#{pr_id} are failed — refusing bound merge "
+            f"(§17.4.3 step 3; a FAILED required check is a verdict expedite can never waive)"
+        )
+        raise MergePreconditionError(msg)
     for attempt in range(MERGE_TRANSIENT_ATTEMPTS):
         if attempt > 0:
             landed = _already_merged_at(
@@ -338,8 +356,9 @@ def record_merge_and_advance(
     merged_sha: str,
     required_checks_status: str,
     expedited_by: str = "",
+    repo_slug: str = "",
 ) -> str:
-    """Post hook: consume CLEAR, write audit, bind attestation, ``mark_merged()``.
+    """Post hook: consume CLEAR, write audit, supersede siblings, ``mark_merged()``.
 
     All in ONE ``transaction.atomic()`` so the FSM advance and the durable
     merge record land atomically (the §4 worker-enqueue / sync-atomicity
@@ -351,6 +370,21 @@ def record_merge_and_advance(
     :func:`assert_merge_preconditions` (the retry detects "already merged
     at ``reviewed_sha``" and runs this hook idempotently instead of
     re-issuing the merge). Returns the resulting ticket state.
+
+    ``repo_slug`` is the #1335-reconciled ``owner/repo`` the caller merged
+    against; it is stamped on the ``MergeAudit`` (#19) so the S1/S3 signal joins
+    read the merge-time truth first instead of re-resolving the CLEAR's offline
+    workstream slug. Empty only for a legacy/direct caller — the signal resolver
+    falls back to ``resolve_pr_repo_slug`` for a blank audit.
+
+    §15: a head-move re-review issues a fresh CLEAR at the new SHA, leaving the
+    older sibling unconsumed. Consuming ONE via a merge supersedes every sibling
+    unconsumed CLEAR for the same ``(slug, pr_id)`` in the same atomic block under
+    the row lock, so a stale orphan can no longer ratchet S4 hard-red forever. No
+    ``ReviewVerdict`` is moved: each sibling's verdict persists at its own
+    reviewed_sha and S3 counts it regardless of SHA, so there is no verdict-copy
+    path to hand-roll (GM-4's ``carry_forward`` is the primitive if one is ever
+    needed).
 
     The atomic block is wrapped in :func:`retry_on_locked` (#1520): a transient
     ``database is locked`` from a concurrent canonical-DB writer must not abort
@@ -391,7 +425,18 @@ def record_merge_and_advance(
                 merged_sha=merged_sha,
                 required_checks_status=required_checks_status,
                 expedited_by=expedited_by,
+                repo_slug=repo_slug,
             )
+            # §15: supersede every sibling unconsumed CLEAR for the same PR —
+            # re-review at a moved head issues a fresh CLEAR at the new SHA,
+            # leaving the older one unconsumed. Once THIS merge consumes one, its
+            # siblings are no longer a stalled merge, so consume them in the same
+            # atomic block (single serialized UPDATE) under the row lock.
+            MergeClear.objects.filter(
+                slug=locked.slug,
+                pr_id=locked.pr_id,
+                consumed_at__isnull=True,
+            ).exclude(pk=locked.pk).update(consumed_at=locked.consumed_at)
             ticket = locked.ticket
             if ticket is None:
                 return ""
@@ -534,6 +579,7 @@ def _merge_ticket_pr_inner(
         merged_sha=merged_sha,
         required_checks_status=checks,
         expedited_by=precheck.expedited_by,
+        repo_slug=slug,
     )
     logger.info(
         "merge keystone: %s#%s %s at %s; ticket state=%s",

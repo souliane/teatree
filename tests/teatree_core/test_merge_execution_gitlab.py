@@ -305,10 +305,13 @@ class TestExecuteBoundMergeGitLab(TestCase):
                 host_kind="gitlab",
             )
         assert result == "commit-sha-12345"
-        merge_calls = [c for c in stub.calls if "merge" in " ".join(c) and "merge_requests" in " ".join(c)]
-        assert merge_calls, f"expected at least one merge API call, got {stub.calls}"
+        # The #18 not-draft/CI floor also reads /merge_requests/<iid>[/pipelines]
+        # (both contain "merge_requests"); the bound-merge PUT is the one argv
+        # carrying "PUT" — select it specifically.
+        merge_calls = [c for c in stub.calls if "PUT" in c]
+        assert merge_calls, f"expected at least one merge PUT call, got {stub.calls}"
         joined = " ".join(merge_calls[0])
-        assert "PUT" in joined
+        assert "/merge" in joined
         assert _SHA in joined
 
     def test_merge_failure_raises_precondition_error(self) -> None:
@@ -352,9 +355,13 @@ class TestExecuteBoundMergeGitLab(TestCase):
                 if attempts["merge"] == 1:
                     return (1, "", "unexpected end of JSON input")
                 return (0, json.dumps({"merge_commit_sha": "glab-merged-0"}), "")
-            # Pre-retry merge-state probe: still OPEN (the failed call did not land).
+            # #18: the FAILED-live-CI floor re-reads the head pipeline — a green
+            # head pipeline at _SHA keeps the merge proceeding.
+            if "/pipelines" in joined:
+                return (0, json.dumps([{"id": 1, "status": "success", "sha": _SHA}]), "")
+            # Pre-retry merge-state probe (and the not-draft read): still OPEN.
             if "/merge_requests/" in joined:
-                return (0, json.dumps({"iid": _PR_IID, "state": "opened", "sha": _SHA}), "")
+                return (0, json.dumps({"iid": _PR_IID, "state": "opened", "sha": _SHA, "draft": False}), "")
             return (0, "", "")
 
         with (
