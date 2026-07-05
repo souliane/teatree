@@ -37,7 +37,6 @@ class FakeCodeHost:
     my_prs: list[RawAPIDict] = field(default_factory=list)
     approvals: dict[tuple[str, int], ApprovalState] = field(default_factory=dict)
     approval_calls: list[tuple[str, int]] = field(default_factory=list)
-    raise_not_implemented: bool = False
 
     def current_user(self) -> str:
         return self.user
@@ -88,9 +87,6 @@ class FakeCodeHost:
 
     def get_mr_approvals(self, *, repo: str, pr_iid: int) -> ApprovalState:
         self.approval_calls.append((repo, pr_iid))
-        if self.raise_not_implemented:
-            msg = "GitHub stub"
-            raise NotImplementedError(msg)
         return self.approvals.get(
             (repo, pr_iid),
             ApprovalState(approvals_left=1, approved_by=[], unresolved_resolvable=0),
@@ -279,27 +275,11 @@ class TestGitLabApprovalsScanner(TestCase):
         ticket = Ticket.objects.get(issue_url=url)
         assert ticket.extra["last_approval_sha"] == "sha-2"
 
-    def test_github_backend_silently_skipped(self) -> None:
-        """``get_mr_approvals`` raising NotImplementedError → scanner skips the PR."""
-        host = FakeCodeHost(
-            raise_not_implemented=True,
-            my_prs=[_gitlab_mr(iid=48, sha="ddd444")],
-        )
-        scanner = GitLabApprovalsScanner(host=host)
-
-        signals = scanner.scan()
-
-        assert signals == []
-        # The scanner must still have CALLED the backend — silent skip, not
-        # short-circuit. This catches a regression where a future "only call
-        # GitLab backends" filter forgets to call the unknown ones at all.
-        assert host.approval_calls == [("acme/backend", 48)]
-
     def test_github_url_pattern_skipped_without_backend_call(self) -> None:
         """GitHub PR URLs (``/pull/`` shape) are filtered out before the backend call.
 
         This keeps a mixed-host overlay from paying a backend round-trip per
-        tick to discover that the GitHub backend raises NotImplementedError.
+        tick — the GitLab auto-merge signal this scanner drives is GitLab-only.
         """
         host = FakeCodeHost(
             my_prs=[

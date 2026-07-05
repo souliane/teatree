@@ -1,5 +1,6 @@
 """GitHub backend — code host via the ``gh`` CLI."""
 
+import json
 import re
 from typing import cast
 from urllib.parse import quote_plus, urlparse
@@ -359,17 +360,29 @@ class GitHubCodeHost:  # noqa: PLR0904 — method count reflects the CodeHostBac
         )
         return {}
 
-    @staticmethod
-    def get_mr_approvals(*, repo: str, pr_iid: int) -> ApprovalState:
-        """Out of scope for #936 — GitLab-only approval polling for now.
+    def get_mr_approvals(self, *, repo: str, pr_iid: int) -> ApprovalState:
+        """Return GitHub's aggregate review decision as an approval snapshot (#8).
 
-        Raising rather than returning a vacuous zero state forces the caller
-        (``GitLabApprovalsScanner``) to skip GitHub PRs silently rather than
-        silently treating them as "approved with zero approvals_left".
+        GitHub exposes no numeric "approvals remaining" counter; its aggregate
+        ``reviewDecision`` (``gh pr view --json reviewDecision``) is the
+        merge-authorising signal — ``APPROVED`` means every required review is
+        satisfied. Maps to ``approvals_left=0`` on ``APPROVED`` and ``1``
+        otherwise, so a not-yet-approved (or a payload with no decision) is
+        never mis-read as merge-authorised. ``unresolved_resolvable`` is ``0``:
+        GitHub has no resolvable-thread merge block like GitLab's "must resolve"
+        policy, so nothing there gates the M7 waiting lane.
         """
-        _ = (repo, pr_iid)
-        msg = "GitHub approval state is not yet wired up (#936 is GitLab-scoped)"
-        raise NotImplementedError(msg)
+        result = _run_gh("gh", "pr", "view", str(pr_iid), "--repo", repo, "--json", "reviewDecision", token=self._token)
+        try:
+            data = json.loads(result.stdout or "{}")
+        except json.JSONDecodeError:
+            data = {}
+        decision = str(data.get("reviewDecision") or "").upper() if isinstance(data, dict) else ""
+        return ApprovalState(
+            approvals_left=0 if decision == "APPROVED" else 1,
+            approved_by=[],
+            unresolved_resolvable=0,
+        )
 
     def get_review_state(self, *, pr_url: str, reviewer: str) -> ReviewState:
         """Return *reviewer*'s current review state on the PR at *pr_url*.

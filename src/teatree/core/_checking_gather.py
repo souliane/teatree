@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from teatree.core.models.deferred_question import DeferredQuestion
-from teatree.core.models.merge_clear import MergeAudit, MergeClear
+from teatree.core.models.merge_clear import MergeAudit
 from teatree.core.models.task_attempt import TaskAttempt
 from teatree.core.models.ticket import Ticket
 from teatree.core.models.transition import TicketTransition
@@ -50,16 +50,6 @@ def pr_url_for(ticket: Ticket | None, *, repo_slug: str, pr_id: int, code_host: 
     if built:
         return built
     return ticket.issue_url if ticket is not None else ""
-
-
-def resolved_repo_slug(clear: MergeClear) -> str:
-    """The real ``owner/repo`` for *clear*'s PR, or ``""`` when unresolvable."""
-    from teatree.core.merge import MergePreconditionError, resolve_pr_repo_slug  # noqa: PLC0415
-
-    try:
-        return resolve_pr_repo_slug(clear)
-    except MergePreconditionError:
-        return ""
 
 
 def repo_entry_matches(declared: str, resolved_slug: str, *, overlay_owner: str | None) -> bool:
@@ -139,6 +129,7 @@ def merged_group_from_qs(
 ) -> tuple[list, int]:
     """Query and scope the merged audits; return (items, total)."""
     from teatree.core.checking import CheckItem  # noqa: PLC0415
+    from teatree.core.merge import resolved_repo_slug  # noqa: PLC0415 — deferred merge edge
 
     qs = (
         MergeAudit.objects.filter(merged_at__gte=since, merged_at__lt=now)
