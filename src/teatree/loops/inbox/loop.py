@@ -26,13 +26,15 @@ def _build_jobs(
     """Consume the per-overlay ``Domain.INBOX`` slice plus the global notion job.
 
     ``Domain.INBOX`` owns the per-overlay inbound Slack scanners
-    (mentions / DM / review-intent / red-card) and excludes ``review_nag``
-    — the followup mini-loop is its single owner, so the registry fan-out
-    emits one nag per tick, matching the legacy fan-out. The notion view
-    scanner and the single-overlay messaging path are global / ad-hoc and
-    are not part of the per-overlay fan-out, so they stay wired here.
+    (mentions / DM / ask-reply / review-intent / red-card) and excludes
+    ``review_nag`` — the followup mini-loop is its single owner, so the registry
+    fan-out emits one nag per tick, matching the legacy fan-out. The notion view
+    scanner is global / ad-hoc, so it stays wired here; the single-overlay
+    messaging path delegates to the shared
+    :func:`teatree.loop.domain_jobs.single_overlay_messaging_jobs` SSOT so it
+    cannot drift from the per-overlay inbound set (#23).
     """
-    from teatree.loop.domain_jobs import jobs_for_domain  # noqa: PLC0415
+    from teatree.loop.domain_jobs import jobs_for_domain, single_overlay_messaging_jobs  # noqa: PLC0415 (lazy import)
     from teatree.loop.job_identity import Domain, _ScannerJob  # noqa: PLC0415
     from teatree.loop.scanners import NotionViewScanner  # noqa: PLC0415
 
@@ -44,25 +46,8 @@ def _build_jobs(
     if notion_client is not None:
         jobs.append(_ScannerJob(scanner=NotionViewScanner(client=notion_client), overlay=""))
     if not backends and messaging is not None:
-        jobs.extend(_single_overlay_messaging_jobs(messaging))
+        jobs.extend(single_overlay_messaging_jobs(messaging))
     return jobs
-
-
-def _single_overlay_messaging_jobs(messaging: "MessagingBackend") -> "list[_ScannerJob]":
-    from teatree.loop.job_identity import _ScannerJob  # noqa: PLC0415
-    from teatree.loop.scanners import (  # noqa: PLC0415
-        RedCardScanner,
-        SlackDmInboundScanner,
-        SlackMentionsScanner,
-        SlackReviewIntentScanner,
-    )
-
-    return [
-        _ScannerJob(scanner=SlackMentionsScanner(backend=messaging), overlay=""),
-        _ScannerJob(scanner=SlackDmInboundScanner(backend=messaging, overlay=""), overlay=""),
-        _ScannerJob(scanner=SlackReviewIntentScanner(backend=messaging, overlay=""), overlay=""),
-        _ScannerJob(scanner=RedCardScanner(backend=messaging, overlay=""), overlay=""),
-    ]
 
 
 MINI_LOOP = MiniLoop(

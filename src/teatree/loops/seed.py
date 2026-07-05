@@ -152,6 +152,12 @@ DEFAULT_LOOPS: tuple[LoopSeedSpec, ...] = (
         "Demotes idle Agent-Teams maker panes past the idle threshold every 5m; inert unless team mode is enabled.",
     ),
     LoopSeedSpec(
+        "issue_disposition",
+        300,
+        "Auto-closes high-confidence DEAD backlog issues (already-shipped / duplicate / obsolete) "
+        "every 5m; default-off behind auto_disposition_enabled, bounded per tick.",
+    ),
+    LoopSeedSpec(
         "audit",
         1800,
         "Verifies and posts per-overlay failed-E2E results to Slack (driven by overlay watchers) every 30m.",
@@ -190,6 +196,12 @@ DEFAULT_LOOPS: tuple[LoopSeedSpec, ...] = (
         "eval_local",
         86400,
         "Runs the local behavioral eval suite; the scanner enforces its own weekly cadence (checked daily).",
+    ),
+    LoopSeedSpec(
+        "backlog_sweep",
+        86400,
+        "Sweeps the backlog daily to propose closing stale issues; default-off (destructive-capable) "
+        "behind backlog_sweep_disabled, gated by ask_before_backlog_sweep_closes.",
     ),
     LoopSeedSpec(
         "news",

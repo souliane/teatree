@@ -13,7 +13,7 @@ from pathlib import Path
 from teatree.config import TeamsDisplay, discover_active_overlay, discover_overlays, get_effective_settings, load_config
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend, MessagingBackend
-from teatree.loop.domain_jobs import _jobs_for_overlay_backend, jobs_for_domain
+from teatree.loop.domain_jobs import _jobs_for_overlay_backend, jobs_for_domain, single_overlay_messaging_jobs
 from teatree.loop.job_identity import _CANONICAL_CORE_OVERLAY, Domain, _ScannerJob
 from teatree.loop.scanners import (
     AssignedIssuesScanner,
@@ -24,15 +24,11 @@ from teatree.loop.scanners import (
     MyPrsScanner,
     NotionViewScanner,
     PaneReaperScanner,
-    RedCardScanner,
     ResourcePressureScanner,
     ReviewerPrsScanner,
     Scanner,
     ScanningNewsScanner,
     SelfUpdateScanner,
-    SlackDmInboundScanner,
-    SlackMentionsScanner,
-    SlackReviewIntentScanner,
     SnapshotWarmerScanner,
 )
 from teatree.loop.scanners.notion_view import NotionLike
@@ -422,15 +418,10 @@ def build_default_jobs(
                 ],
             )
         if messaging is not None:
-            jobs.extend(
-                [
-                    _ScannerJob(scanner=SlackMentionsScanner(backend=messaging), overlay=""),
-                    _ScannerJob(scanner=SlackDmInboundScanner(backend=messaging, overlay=""), overlay=""),
-                    _ScannerJob(scanner=SlackReviewIntentScanner(backend=messaging, overlay=""), overlay=""),
-                    # #1130 RED CARD detection for the single-overlay path.
-                    _ScannerJob(scanner=RedCardScanner(backend=messaging, overlay=""), overlay=""),
-                ]
-            )
+            # #23 single-overlay inbound messaging goes through the ONE shared
+            # SSOT builder (mentions / DM / ask-reply / review-intent / red-card),
+            # so this path can never re-drop AskUserQuestionReplyScanner.
+            jobs.extend(single_overlay_messaging_jobs(messaging))
 
     if notion_client is not None:
         jobs.append(_ScannerJob(scanner=NotionViewScanner(client=notion_client), overlay=""))

@@ -28,8 +28,11 @@ from teatree.core.managers import TaskQuerySet
 from teatree.core.modelkit.phases import SUBAGENT_BY_PHASE
 from teatree.core.models import Task
 from teatree.loop.dispatch_tables import AGENT_ZONES, PERSISTED_AT_SOURCE_ZONES
+from teatree.loop.job_identity import PER_OVERLAY_DOMAINS
 from teatree.loop.persistence import _HANDLER_TARGET_PHASES, _ZONE_HANDLERS
 from teatree.loop.phases import orchestrate
+from teatree.loops.registry import iter_loops
+from teatree.loops.seed import DEFAULT_LOOPS
 
 
 def assert_registry_covers(
@@ -154,6 +157,51 @@ class TestDispatchableFilterSsotParity:
         )
         for fn in consumers:
             assert "dispatchable_q" in inspect.getsource(fn), fn.__qualname__
+
+
+class TestLoopRegistryCoverageParity:
+    """LANE 3 — every per-overlay Domain / MiniLoop has its consumer + seed row (#22, #23).
+
+    The #22/#23 family: opt-in domains/scanners with no consuming MiniLoop (dead
+    on the live per-loop fan-out) and MiniLoops with no seed row (the fan-out can
+    never admit them). Every ``PER_OVERLAY_DOMAINS`` member is consumed by some
+    ``iter_loops()`` MiniLoop, and the registry and ``DEFAULT_LOOPS`` seed cover
+    each other. The runtime + single-overlay-builder lanes live in
+    ``tests/teatree_loop/test_loop_registry_coverage.py``.
+    """
+
+    @staticmethod
+    def _domains_consumed_by_miniloops() -> set[object]:
+        consumed: set[object] = set()
+        for loop in iter_loops():
+            source = inspect.getsource(loop.build_jobs)
+            consumed.update(domain for domain in PER_OVERLAY_DOMAINS if f"Domain.{domain.name}" in source)
+        return consumed
+
+    def test_every_per_overlay_domain_has_a_consuming_miniloop(self) -> None:
+        assert_registry_covers(
+            producers=PER_OVERLAY_DOMAINS,
+            consumers=self._domains_consumed_by_miniloops(),
+            label="PER_OVERLAY_DOMAINS -> consuming MiniLoop",
+        )
+
+    def test_every_registry_miniloop_is_seeded(self) -> None:
+        assert_registry_covers(
+            producers={loop.name for loop in iter_loops()},
+            consumers={spec.name for spec in DEFAULT_LOOPS},
+            label="registry MiniLoop -> DEFAULT_LOOPS seed row",
+        )
+
+    def test_every_seed_row_has_a_registry_miniloop(self) -> None:
+        assert_registry_covers(
+            producers={spec.name for spec in DEFAULT_LOOPS},
+            consumers={loop.name for loop in iter_loops()},
+            label="DEFAULT_LOOPS seed row -> registry MiniLoop",
+        )
+
+    def test_cardinality_floors_anti_vacuity(self) -> None:
+        assert len(PER_OVERLAY_DOMAINS) >= 10, PER_OVERLAY_DOMAINS
+        assert len(tuple(iter_loops())) >= 18
 
 
 class TestRegistryParityFrameworkFiresRed:
