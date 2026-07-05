@@ -186,6 +186,26 @@ class TestFactorySignals(TestCase):
         assert search.factory_signals(window_days=14)["window_days"] == 14
 
 
+class TestFactoryScore(TestCase):
+    def test_returns_the_score_payload_shape(self) -> None:
+        # Read-only compute is allowed regardless of the flag (calibration path).
+        payload = search.factory_score()
+
+        assert payload["verdict"] in {"ok", "regressing", "red"}
+        assert "recipe_sha" in payload
+        assert "recipe_approved" in payload
+        assert {row["provider_id"] for row in payload["signals"]} == {
+            "first_try_green",
+            "defect_escape",
+            "review_catch",
+            "merge_latency",
+            "repair_burn",
+        }
+
+    def test_window_days_flows_through(self) -> None:
+        assert search.factory_score(window_days=14)["window_days"] == 14
+
+
 class TestIncomingEventRecent(TestCase):
     def test_orders_newest_first_and_caps_limit(self) -> None:
         events = [IncomingEventFactory() for _ in range(4)]

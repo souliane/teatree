@@ -173,6 +173,11 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "issue_implementer_cadence_hours": _parse_strict_int,
     "auto_disposition_enabled": _parse_strict_bool,
     "outer_loop_enabled": _parse_strict_bool,
+    # T4-PR-2 — the SIG-PR-2 recipe/score seam OFF switch (DARK feature flag) and
+    # the human-approved recipe sha the score stamps against. Both DB-home,
+    # per-overlay overridable — an overlay can trial the score while the global stays OFF.
+    "factory_score_enabled": _parse_strict_bool,
+    "approved_recipe_sha": _parse_strict_str,
     "auto_disposition_max_closes_per_tick": _parse_strict_int,
     "orchestrate_claim_enabled": _parse_strict_bool,
     "boost_concurrency": _parse_strict_int,
@@ -290,6 +295,7 @@ ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_ISSUE_IMPLEMENTER_ENABLED": ("issue_implementer_enabled", _parse_env_bool),
     "T3_LOOP_AUTO_UPDATE": ("auto_update_reinstall", _parse_env_bool),
     "T3_ORCHESTRATE_CLAIM_ENABLED": ("orchestrate_claim_enabled", _parse_env_bool),
+    "T3_FACTORY_SCORE_ENABLED": ("factory_score_enabled", _parse_env_bool),
     "T3_BOOST_CONCURRENCY": ("boost_concurrency", _parse_strict_int),
     "T3_LOOP_RUNNER_ENABLED": ("loop_runner_enabled", _parse_env_bool),
     "T3_TEAMS_ENABLED": ("teams_enabled", _parse_env_bool),
@@ -1031,6 +1037,18 @@ class UserSettings:
     # pins stage=DARK => this default == its off_value (False), so the outer loop
     # can never be flipped default-ON without a code-reviewed stage demotion.
     outer_loop_enabled: bool = False
+    # T4-PR-2 — the SIG-PR-2 recipe/score seam OFF switch (a DARK ``FEATURE_FLAGS``
+    # entry). Ships OFF: ``t3 <overlay> recipe score`` still COMPUTES read-only (for
+    # calibrating recipe weights against real ledger data pre-enable), but ``--record``
+    # refuses, NO ``FactoryScoreSnapshot`` row is ever written, NO ``DeferredQuestion``
+    # is queued, and ``build_server()`` does not register the MCP ``factory_score`` tool
+    # — the outer loop physically has no metric surface. DB-home, per-overlay overridable.
+    factory_score_enabled: bool = False
+    # T4-PR-2 — the human-approved recipe sha (``config/factory_recipe.recipe_sha``).
+    # A scored read stamps ``recipe_approved`` by comparing the committed recipe's sha
+    # to this; unset (the default) means no recipe is approved, so every payload is
+    # ``recipe_approved=false`` until a human runs ``t3 <overlay> recipe approve``.
+    approved_recipe_sha: str = ""
     # PR-13 boost pool-refill target: how many live loop workers ``boost`` wip
     # keeps in flight. ``0`` (default) means UNSET — ``boost`` keeps today's
     # summed per-overlay ``max_concurrent_auto_starts`` target. A positive ``N``

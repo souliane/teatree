@@ -17,6 +17,7 @@ from asgiref.sync import sync_to_async
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
+from teatree.config import get_effective_settings
 from teatree.mcp import search
 
 _READ_ONLY = ToolAnnotations(readOnlyHint=True)
@@ -110,6 +111,20 @@ async def _factory_signals(*, overlay: str | None = None, window_days: int = 28)
     )
 
 
+async def _factory_score(*, overlay: str | None = None, window_days: int = 28) -> dict[str, Any]:
+    """The recipe-weighted factory score over the trailing window (read-only).
+
+    Returns the aggregate (``None`` when untrustworthy), the ``ok`` / ``regressing``
+    / ``red`` verdict, coverage vs the recipe floor, the recipe provenance
+    (``recipe_sha`` + ``recipe_approved``), the snapshot deltas, and the per-signal
+    contributions. Scope to an overlay with ``overlay``; widen with ``window_days``.
+    """
+    return await sync_to_async(search.factory_score, thread_sensitive=True)(
+        overlay=overlay,
+        window_days=window_days,
+    )
+
+
 async def _incoming_event_recent(
     *,
     limit: int = 20,
@@ -143,4 +158,10 @@ def build_server() -> FastMCP:
     server.add_tool(_loop_stats, name="loop_stats", annotations=_READ_ONLY)
     server.add_tool(_factory_signals, name="factory_signals", annotations=_READ_ONLY)
     server.add_tool(_incoming_event_recent, name="incoming_event_recent", annotations=_READ_ONLY)
+    # T4-PR-2 — the recipe-weighted score is a DARK feature-flagged surface: it is
+    # registered ONLY when factory_score_enabled is on, so the outer loop has no MCP
+    # metric-to-beat until enablement is a deliberate act (the shipped OFF state
+    # exposes no factory_score tool at all).
+    if get_effective_settings().factory_score_enabled:
+        server.add_tool(_factory_score, name="factory_score", annotations=_READ_ONLY)
     return server
