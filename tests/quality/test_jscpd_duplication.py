@@ -60,6 +60,10 @@ def _expected_clone_capable_files(min_lines: int) -> set[Path]:
     return {p.resolve() for p in _SRC.rglob("*.py") if "migrations" not in p.parts and _line_count(p) >= min_lines}
 
 
+# Whole-tree jscpd scan is ~60s standalone and stretches further under
+# concurrent-coder load; the 60s default pytest-timeout deterministically
+# tripped and blocked every push through the ci-critical-parity hook.
+@pytest.mark.timeout(300)
 @pytest.mark.integration
 @pytest.mark.skipif(shutil.which("npx") is None, reason="npx (node) not on PATH")
 class TestScanCoverage:

@@ -14,9 +14,15 @@ import sys
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
 import yaml
 
 from tests._git_repo import make_git_repo, run_git
+
+# Each subprocess-spawning class below runs the cli-reference generator/sync
+# checker, a full Django bootstrap that stretches past the 60s default
+# pytest-timeout under concurrent-coder load; give them headroom.
+_SCAN_TIMEOUT = pytest.mark.timeout(300)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _GENERATOR = _REPO_ROOT / "scripts" / "hooks" / "generate_cli_reference.py"
@@ -46,6 +52,7 @@ def _run(script: Path, *args: str, env_overrides: dict[str, str] | None = None) 
     )
 
 
+@_SCAN_TIMEOUT
 class TestGeneratorNoStageOptOut:
     """With CLI_REFERENCE_NO_STAGE set, the generator writes but never git-adds."""
 
@@ -57,6 +64,7 @@ class TestGeneratorNoStageOptOut:
         assert out.read_text(encoding="utf-8") == committed
 
 
+@_SCAN_TIMEOUT
 class TestDocsDriftGateCatchesStaleReference:
     """End-to-end: the working-tree-vs-index diff catches a stale committed doc.
 
@@ -105,6 +113,7 @@ class TestDocsDriftGateCatchesStaleReference:
         assert self._diff_is_clean(repo), "an in-sync committed reference must pass the gate"
 
 
+@_SCAN_TIMEOUT
 class TestSyncCheckerFiresOnDrift:
     """The loud sync checker detects a stale committed reference."""
 
@@ -127,6 +136,7 @@ class TestSyncCheckerFiresOnDrift:
         assert result.returncode == 1, f"checker must go red on stale doc:\n{result.stdout}"
 
 
+@_SCAN_TIMEOUT
 class TestSyncCheckerUnmaskableByGenerator:
     """The sync checker catches a stale COMMITTED doc even after the generator runs.
 
