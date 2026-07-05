@@ -1212,6 +1212,14 @@ class TestTransientMergeRetry(TestCase):
 
         def _empty_then_fail(argv: list[str]) -> tuple[int, str, str]:
             joined = " ".join(argv)
+            # #18: the not-draft + FAILED-live-CI floor at the top of
+            # execute_bound_merge must pass before the merge is attempted.
+            if (meta := _branch_protection_probe(joined, required=[])) is not None:
+                return meta
+            if "isDraft" in joined:
+                return (0, "false", "")
+            if "statusCheckRollup" in joined:
+                return (0, _GREEN, "")
             if "state,mergeCommit" in joined:
                 return (0, '{"state": "OPEN", "mergeCommit": null}', "")
             if "pulls" in joined and "merge" in joined:
@@ -1227,6 +1235,66 @@ class TestTransientMergeRetry(TestCase):
             execute_bound_merge(slug="souliane/teatree", pr_id=859, expected_head_oid=_SHA)
 
         assert attempts["merge"] >= 3, "an empty/truncated merge response was not retried"
+
+
+_RED_REQUIRED_ROLLUP = json.dumps(
+    [
+        {
+            "__typename": "CheckRun",
+            "name": "test (3.13)",
+            "status": "COMPLETED",
+            "conclusion": "FAILURE",
+            "startedAt": "2026-06-19T10:00:00Z",
+            "completedAt": "2026-06-19T10:05:00Z",
+        },
+    ],
+)
+
+
+class TestExecuteBoundMergeLiveFloor(TestCase):
+    """#18: the not-draft + FAILED-live-CI floor at the ``execute_bound_merge`` chokepoint.
+
+    The solo-overlay bypass (``merge_pr_squash_bound`` → ``execute_bound_merge``)
+    runs NO ``assert_merge_preconditions``, so before #18 a green→red / open→draft
+    flip in the TOCTOU window between the sweep's snapshot and the PUT merged
+    anyway. These call the primitive directly (no CLEAR/keystone) with a green
+    verdict seeded for the #2829 gate, so the ONLY thing standing between the call
+    and the merge is the new floor.
+    """
+
+    def _merge_calls(self, stub: _GhStub) -> list[list[str]]:
+        return [c for c in stub.calls if "pulls" in " ".join(c) and "merge" in " ".join(c)]
+
+    def test_draft_flip_between_snapshot_and_put_is_refused(self) -> None:
+        _record_merge_safe_verdict(pr_id=859, sha=_SHA)
+        stub = _GhStub(draft="true")
+        with (
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=stub),
+            pytest.raises(MergePreconditionError, match="draft"),
+        ):
+            execute_bound_merge(slug="souliane/teatree", pr_id=859, expected_head_oid=_SHA)
+        assert self._merge_calls(stub) == [], "a draft PR must be refused BEFORE the bound-merge PUT"
+
+    def test_ci_flip_to_failed_between_snapshot_and_put_is_refused(self) -> None:
+        _record_merge_safe_verdict(pr_id=859, sha=_SHA)
+        stub = _GhStub(checks=_RED_REQUIRED_ROLLUP, required=["test (3.13)"])
+        with (
+            patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=stub),
+            pytest.raises(MergePreconditionError, match="failed"),
+        ):
+            execute_bound_merge(slug="souliane/teatree", pr_id=859, expected_head_oid=_SHA)
+        assert self._merge_calls(stub) == [], "a FAILED required check must be refused BEFORE the PUT"
+
+    def test_not_draft_and_ci_green_proceeds(self) -> None:
+        # Anti-vacuity twin: the floor refuses ONLY on draft / FAILED. A
+        # not-draft PR whose required checks are green still merges — the floor
+        # is not a blanket block.
+        _record_merge_safe_verdict(pr_id=859, sha=_SHA)
+        stub = _GhStub()  # draft=false, green rollup, empty required set → green
+        with patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=stub):
+            merged_sha = execute_bound_merge(slug="souliane/teatree", pr_id=859, expected_head_oid=_SHA)
+        assert merged_sha
+        assert self._merge_calls(stub), "a green, not-draft head must reach the bound-merge PUT"
 
 
 def _run_git(*args: str, cwd: Path) -> None:

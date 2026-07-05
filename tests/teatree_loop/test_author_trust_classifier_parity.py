@@ -32,7 +32,7 @@ def _pr_sweep_summary(author: str) -> pr_sweep.PrSummary:
         head_sha="a" * 40,
         is_draft=False,
         has_changes_requested=False,
-        checks=(),
+        rollup=(),
         url=_URL,
         author=author,
     )

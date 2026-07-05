@@ -48,17 +48,18 @@ import logging
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
+from teatree.core.merge import fetch_required_context_names
 from teatree.core.models.merge_clear import MergeClear
 from teatree.loop.scanners import pr_sweep_substrate as substrate
 from teatree.loop.scanners.base import ScannerError, ScanSignal
 from teatree.loop.scanners.pr_sweep_decision import (
-    classify_checks,
+    classify_sweep_ci,
     find_actionable_clear,
     has_independent_cold_review,
     pr_authored_by_self,
     pr_ticket_under_external_delivery,
     record_mergeable_notified,
-    red_checks_are_all_repo_state,
+    red_required_all_repo_state,
     untrusted_public_author,
 )
 from teatree.loop.scanners.pr_sweep_types import (
@@ -69,7 +70,6 @@ from teatree.loop.scanners.pr_sweep_types import (
     REPO_STATE_CHECK_NAMES,
     REQUIRED_CHECK_NAME,
     UV_AUDIT_CHECK_NAME,
-    CheckResult,
     MergeAttempt,
     PrSummary,
 )
@@ -82,7 +82,6 @@ __all__ = [
     "REPO_STATE_CHECK_NAMES",
     "REQUIRED_CHECK_NAME",
     "UV_AUDIT_CHECK_NAME",
-    "CheckResult",
     "MergeAttempt",
     "PrSummary",
     "PrSweepScanner",
@@ -307,9 +306,9 @@ class PrSweepScanner:
         return self._evaluate_with_clear(pr, clear)
 
     def _evaluate_with_clear(self, pr: PrSummary, clear: MergeClear) -> MergeAttempt:
-        ci_skip, fallback = self._ci_gate(pr)
+        ci_skip, fallback, failing = self._ci_gate(pr)
         if ci_skip is not None:
-            return self._ci_block(pr, reason=ci_skip)
+            return self._ci_block(pr, reason=ci_skip, failing=failing)
         return self._merge(pr=pr, clear=clear, fallback=fallback)
 
     #: Skip reasons whose only failing checks are repo-state checks a rerun
@@ -319,10 +318,10 @@ class PrSweepScanner:
     #: uv-audit-only red whose fix already landed on main.
     _REPO_STATE_BLOCK_REASONS = frozenset({"ci_red", "uv_audit_red_but_clean_on_main"})
 
-    def _ci_block(self, pr: PrSummary, *, reason: str) -> MergeAttempt:
+    def _ci_block(self, pr: PrSummary, *, reason: str, failing: set[str]) -> MergeAttempt:
         """Convert a CI-red block into ``needs_branch_update`` when a rerun can't fix it (#2045).
 
-        A block whose only failing checks are repo-state checks (uv-audit,
+        A block whose only failing REQUIRED checks are repo-state checks (uv-audit,
         blueprint-cross-pr, …) on a branch that is BEHIND main is the
         rerun-can't-fix case: those checks diff the head against the base, the
         fix already merged to main, and ``gh run rerun --failed`` re-tests
@@ -332,7 +331,7 @@ class PrSweepScanner:
         skip. Every other red (a genuine test failure, or a repo-state red on
         an already-up-to-date branch a rerun CAN clear) stays a plain skip.
         """
-        if reason in self._REPO_STATE_BLOCK_REASONS and pr.behind_main and red_checks_are_all_repo_state(pr.checks):
+        if reason in self._REPO_STATE_BLOCK_REASONS and pr.behind_main and red_required_all_repo_state(failing):
             return self._flag_needs_branch_update(pr)
         return _skip(pr, reason=reason)
 
@@ -346,22 +345,20 @@ class PrSweepScanner:
             url=pr.url,
         )
 
-    def _ci_gate(self, pr: PrSummary) -> tuple[str | None, bool]:
-        """Run the shared CI verdict gate; return ``(skip_reason, is_uv_audit_fallback)``.
+    def _ci_gate(self, pr: PrSummary) -> tuple[str | None, bool, set[str]]:
+        """Delegate to :func:`classify_sweep_ci` over the live branch-protection required set.
 
-        ``skip_reason`` is non-``None`` when the PR must not merge (red /
-        pending checks, or a uv-audit-red PR whose ``main`` is clean). When
-        it is ``None`` the second element says whether the merge proceeds on
-        the documented uv-audit fallback path. Shared by the CLEAR path and
-        the solo-overlay bypass so the two gates cannot drift apart.
+        The core green/pending/failed verdict routes through the SAME
+        :func:`classify_required_rollup` the §17.4.3 keystone uses, scoped to the
+        SAME required set (:func:`fetch_required_context_names`) — so the sweep and
+        the keystone can never re-diverge (#12). Shared by the CLEAR path and the
+        solo-overlay bypass so the two gates cannot drift apart.
         """
-        check_verdict = classify_checks(pr.checks)
-        if check_verdict in {"failed", "pending"}:
-            return ("ci_red" if check_verdict == "failed" else "ci_pending"), False
-        fallback = check_verdict == "green_with_uv_audit_red"
-        if fallback and not self._main_uv_audit_red(slug=pr.slug):
-            return "uv_audit_red_but_clean_on_main", False
-        return None, fallback
+        return classify_sweep_ci(
+            list(pr.rollup),
+            fetch_required_context_names(pr.slug, pr.number),
+            main_uv_audit_red=lambda: self._main_uv_audit_red(slug=pr.slug),
+        )
 
     def _evaluate_solo_overlay(self, pr: PrSummary) -> MergeAttempt:
         """Merge a green+clean+cold-reviewed PR on a solo overlay without a CLEAR (#1309).
@@ -376,15 +373,17 @@ class PrSweepScanner:
         only-identity-on-the-repo maker can never self-merge. Once both the
         CI gate and the cold-review gate pass, calls
         :meth:`PrApiClient.merge_pr_squash_bound` — the bound merge runs the
-        §17.4.3 SHA-bind + not-draft + live-CI re-checks via
-        ``execute_bound_merge`` (the keystone CLEAR path can't be used here
-        because it needs a CLEAR row, but the SHA-bind primitive applies
-        without one, so a force-push in the TOCTOU window can no longer slip an
-        unreviewed head through this bypass — #1985).
+        §17.4.3 SHA-bind AND (since #18) the not-draft + FAILED-live-CI
+        re-checks inside ``execute_bound_merge`` itself, so a force-push OR a
+        green→red / open→draft flip in the TOCTOU window between this snapshot
+        and the PUT can no longer slip an unreviewed / broken head through this
+        bypass (the keystone CLEAR path can't be used here because it needs a
+        CLEAR row, but the SHA-bind + re-check floor applies without one —
+        #1985, #18).
         """
-        ci_skip, fallback = self._ci_gate(pr)
+        ci_skip, fallback, failing = self._ci_gate(pr)
         if ci_skip is not None:
-            return self._ci_block(pr, reason=ci_skip)
+            return self._ci_block(pr, reason=ci_skip, failing=failing)
         if not has_independent_cold_review(slug=pr.slug, pr_id=pr.number, head_sha=pr.head_sha):
             return self._flag_no_review(pr)
         if substrate.pr_diff_is_substrate(pr):
@@ -429,9 +428,9 @@ class PrSweepScanner:
         review and never merges. Every other case (colleague author, behind
         main, red/pending CI) falls through to the existing skip.
         """
-        ci_skip, _fallback = self._ci_gate(pr)
+        ci_skip, _fallback, failing = self._ci_gate(pr)
         if ci_skip is not None:
-            return self._ci_block(pr, reason=ci_skip)
+            return self._ci_block(pr, reason=ci_skip, failing=failing)
         if not pr_authored_by_self(author=pr.author, self_identities=self.self_identities) or pr.behind_main:
             return _skip(pr, reason="no_clear_for_head")
         if not record_mergeable_notified(pr=pr, overlay=self.overlay):

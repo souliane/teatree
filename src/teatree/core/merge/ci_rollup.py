@@ -222,17 +222,14 @@ def _check_name(entry: object) -> str:
     return str(typed.get("name") or typed.get("context") or "")
 
 
-def _required_contexts_verdict(deduped: "list[RawAPIDict]", required_names: set[str]) -> str:
-    """Verdict over ONLY the branch-protection-required contexts (§17.4.3 step 3).
+def _required_verdicts_by_name(deduped: "list[RawAPIDict]", required_names: set[str]) -> dict[str, str]:
+    """The worst deduped verdict per required context that actually reported.
 
-    The authoritative required set is *required_names* (the repo's branch-
-    protection ``required_status_checks`` contexts). Each required context must
-    have a reporting check that is green; a required context that is failing →
-    ``failed``, one still pending OR with no reporting check at all (missing) →
-    ``pending`` (both refuse the merge, fail closed). A check whose name is NOT
-    in *required_names* (``eval``, advisory lanes) is ignored entirely — it can
-    never block the merge regardless of its conclusion. When several rollup
-    entries share a required name the WORST verdict wins.
+    Keyed by name over ONLY *required_names*; a required context with no
+    reporting check at all is absent from the map (the caller treats missing as
+    pending). A non-required check (``eval``, advisory lanes) is dropped entirely
+    — it can never influence the verdict. When several rollup entries share a
+    required name the WORST verdict wins.
     """
     verdicts_by_name: dict[str, list[str]] = {}
     for check in deduped:
@@ -241,9 +238,82 @@ def _required_contexts_verdict(deduped: "list[RawAPIDict]", required_names: set[
             continue
         if verdict := _classify_check(check):
             verdicts_by_name.setdefault(name, []).append(verdict)
+    return {name: _rollup_verdict(verdicts) for name, verdicts in verdicts_by_name.items()}
+
+
+def _required_contexts_verdict(deduped: "list[RawAPIDict]", required_names: set[str]) -> str:
+    """Verdict over ONLY the branch-protection-required contexts (§17.4.3 step 3).
+
+    The authoritative required set is *required_names* (the repo's branch-
+    protection ``required_status_checks`` contexts). Each required context must
+    have a reporting check that is green; a required context that is failing →
+    ``failed``, one still pending OR with no reporting check at all (missing) →
+    ``pending`` (both refuse the merge, fail closed). When several rollup entries
+    share a required name the WORST verdict wins.
+    """
+    reported = _required_verdicts_by_name(deduped, required_names)
     # A required context with no reporting check at all is "pending" (missing → refuse).
-    per_context = [_rollup_verdict(verdicts_by_name.get(name) or ["pending"]) for name in required_names]
-    return _rollup_verdict(per_context)
+    return _rollup_verdict([reported.get(name, "pending") for name in required_names])
+
+
+def classify_required_rollup(rollup: "list[RawAPIDict]", required_names: set[str]) -> str:
+    """The SINGLE §17.4.3-step-3 verdict both the keystone and the PR-sweep route through.
+
+    Green/pending/failed over ONLY the branch-protection-``required_names`` set,
+    after deduping the rollup to the newest check-run per ``(typename, name)`` — a
+    stale/cancelled FAILURE superseded by a newer SUCCESS for the same name does
+    NOT block (parity with GitHub branch protection, which keys newest-per-context;
+    the #2583/#2580 incident). An empty *required_names* means the base branch has
+    no required-status-check gate → nothing to satisfy → ``green``.
+
+    Both consumers — :func:`fetch_required_checks_status` (the keystone merge gate)
+    and ``pr_sweep`` ``_ci_gate`` (the sweep pre-merge filter) — classify through
+    this one function so the two can never re-diverge (the #12 sibling-classifier
+    bug: the sweep hardcoded ``test (3.13)`` and blocked on non-required checks).
+    """
+    if not required_names:
+        return "green"
+    return _required_contexts_verdict(_dedupe_newest_per_name(rollup), required_names)
+
+
+def failing_required_names(rollup: "list[RawAPIDict]", required_names: set[str]) -> set[str]:
+    """The subset of *required_names* whose newest deduped check-run is failing.
+
+    Present-and-failed only — a required context that is missing or still pending
+    is NOT here. The PR-sweep reads this to tell its two special cases apart from a
+    plain red: the uv-audit fallback (the ONLY failing required check is
+    ``uv-audit``) and the repo-state remedy (every failing required check is a
+    base-diffing repo-state check). Deduped identically to
+    :func:`classify_required_rollup` so the failing set and the verdict agree.
+    """
+    reported = _required_verdicts_by_name(_dedupe_newest_per_name(rollup), required_names)
+    return {name for name, verdict in reported.items() if verdict == "failed"}
+
+
+def _required_context_names(backend: "CodeHostBackend", *, slug: str, pr_id: int) -> set[str] | None:
+    """The branch-protection required context names, or ``None`` when indeterminate.
+
+    ``None`` is the fail-CLOSED signal (the required-status-check endpoint could
+    not be read); an EMPTY set is the determinate "no required gate configured".
+    Both the keystone verdict and the sweep gate read the required set through
+    this one extractor so they share the same fail-closed / no-gate semantics.
+    """
+    required = backend.fetch_required_status_check_contexts(slug=slug, pr_id=pr_id)
+    if rollup_query_failed(required):
+        return None
+    return {str(entry["context"]) for entry in required if isinstance(entry, dict) and entry.get("context")}
+
+
+def fetch_required_context_names(slug: str, pr_id: int, *, host_kind: str = "github") -> set[str] | None:
+    """Live branch-protection required context names for the PR/MR base (the sweep's source).
+
+    ``None`` when the required set is indeterminate (fail CLOSED); an EMPTY set
+    when the base branch has no required-status-check gate (no gate → green). The
+    same required set :func:`fetch_required_checks_status` scopes its keystone
+    verdict to, exposed as a module-level function so ``pr_sweep`` reads the
+    identical set instead of hardcoding ``test (3.13)`` (#12).
+    """
+    return _required_context_names(_code_host_for(host_kind), slug=slug, pr_id=pr_id)
 
 
 def fetch_required_checks_status(slug: str, pr_id: int, *, host_kind: str = "github") -> str:
@@ -313,17 +383,14 @@ def _github_required_checks_verdict(
 ) -> str:
     """GitHub §17.4.3 verdict: scope the rollup to the branch-protection required contexts.
 
-    Fail CLOSED when the required set is indeterminate; ``green`` when no
-    required-status-check gate is configured; otherwise the verdict over only
-    the required contexts (a non-required check never blocks).
+    Fail CLOSED when the required set is indeterminate; otherwise the shared
+    :func:`classify_required_rollup` verdict over only the required contexts (an
+    empty required set → ``green``, a non-required check never blocks).
     """
-    required = backend.fetch_required_status_check_contexts(slug=slug, pr_id=pr_id)
-    if rollup_query_failed(required):
+    required_names = _required_context_names(backend, slug=slug, pr_id=pr_id)
+    if required_names is None:
         return "failed"  # fail CLOSED — the branch-protection required set is indeterminate
-    required_names = {str(entry["context"]) for entry in required if isinstance(entry, dict) and entry.get("context")}
-    if not required_names:
-        return "green"  # no required-status-check gate configured → nothing to satisfy
-    return _required_contexts_verdict(_dedupe_newest_per_name(rollup), required_names)
+    return classify_required_rollup(rollup, required_names)
 
 
 _GITLAB_PIPELINE_GREEN_STATUSES = frozenset({"success", "manual", "skipped"})

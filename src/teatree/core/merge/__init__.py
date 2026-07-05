@@ -9,10 +9,13 @@ from ``teatree.core.merge`` while each symbol keeps an explicit defining module
 
 from teatree.core.merge.authorization import MergePrecheck, PresentedApprovals, _assert_clear_authorized
 from teatree.core.merge.ci_rollup import (
+    classify_required_rollup,
+    failing_required_names,
     fetch_live_head_sha,
     fetch_pr_is_draft,
     fetch_pr_merge_state,
     fetch_required_checks_status,
+    fetch_required_context_names,
 )
 from teatree.core.merge.errors import MergeHeadMovedError, MergePreconditionError, MergeReplayError, MergeTransientError
 from teatree.core.merge.execution import (
@@ -37,11 +40,14 @@ __all__ = [
     "_assert_clear_authorized",
     "_looks_like_owner_repo",
     "assert_merge_preconditions",
+    "classify_required_rollup",
     "execute_bound_merge",
+    "failing_required_names",
     "fetch_live_head_sha",
     "fetch_pr_is_draft",
     "fetch_pr_merge_state",
     "fetch_required_checks_status",
+    "fetch_required_context_names",
     "merge_ticket_pr",
     "record_merge_and_advance",
     "resolve_pr_repo_slug",

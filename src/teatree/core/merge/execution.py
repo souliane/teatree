@@ -253,11 +253,29 @@ def execute_bound_merge(
     hook idempotently instead of re-issuing the (then-405-bricking) merge.
     A policy refusal (not-mergeable / required-checks / 405 / 422) and a
     head-moved are NOT transient — they raise on the first attempt. Before the
-    retry loop, ``assert_review_verdict_gate`` (#2829) and ``assert_no_active_review_lock``
-    (#1405) run — the single chokepoint both merge paths cross.
+    retry loop, four gates run — the single chokepoint BOTH merge paths cross
+    (the keystone via ``assert_merge_preconditions`` AND the solo-overlay bypass
+    via ``merge_pr_squash_bound`` with NO preconditions run): ``assert_review_verdict_gate``
+    (#2829), ``assert_no_active_review_lock`` (#1405), and the #18 not-draft +
+    FAILED-live-CI floor. The latter re-reads the forge's LIVE state at the merge
+    chokepoint so a green→red / open→draft flip in the TOCTOU window between a
+    caller's snapshot and this PUT is refused here — the solo lane had NO such
+    re-check despite the sweep docstring claiming one. A FAILED required check is
+    a verdict expedite can NEVER waive, so it is refused unconditionally (no
+    expedite plumbing at this chokepoint; the pending-waiver lives only in
+    ``assert_merge_preconditions``, which the keystone runs first).
     """
     assert_review_verdict_gate(slug=slug, pr_id=pr_id, head_sha=expected_head_oid)
     assert_no_active_review_lock(slug=slug, pr_id=pr_id)
+    if fetch_pr_is_draft(slug, pr_id, host_kind=host_kind):
+        msg = f"{slug}#{pr_id} is in draft state — refusing bound merge (§17.4.3 step 4)"
+        raise MergePreconditionError(msg)
+    if fetch_required_checks_status(slug, pr_id, host_kind=host_kind) == "failed":
+        msg = (
+            f"live required-checks for {slug}#{pr_id} are failed — refusing bound merge "
+            f"(§17.4.3 step 3; a FAILED required check is a verdict expedite can never waive)"
+        )
+        raise MergePreconditionError(msg)
     for attempt in range(MERGE_TRANSIENT_ATTEMPTS):
         if attempt > 0:
             landed = _already_merged_at(
