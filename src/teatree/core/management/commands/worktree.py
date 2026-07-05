@@ -16,6 +16,7 @@ import typer
 from django.db import transaction
 from django_typer.management import TyperCommand, command
 
+from teatree.core.diagrams import render_fsm_mermaid
 from teatree.core.gates.local_stack_gate import acquire_or_enqueue
 from teatree.core.machine_output import emit
 from teatree.core.management.commands._workspace_docker import reap_stale_local_stacks
@@ -530,30 +531,13 @@ class Command(TyperCommand):
 
             return build_ticket_lifecycle_mermaid(ticket)
 
-        model_map: dict[str, type] = {"worktree": Worktree, "ticket": Ticket}
+        model_map = {"worktree": Worktree, "ticket": Ticket}
         if model == "task":
             return _task_diagram()
         if model not in model_map:
             self.stderr.write(f"Unknown model: {model}. Choose from: worktree, ticket, task")
             raise SystemExit(1)
-        return _fsm_diagram(model_map[model])
-
-
-def _fsm_diagram(model: type) -> str:
-    """Generate a Mermaid state diagram from django-fsm transitions."""
-    field = model._meta.get_field("state")  # type: ignore[attr-defined]  # noqa: SLF001
-    default = field.default
-    lines = ["stateDiagram-v2", f"    [*] --> {default}"]
-
-    for t in field.get_all_transitions(model):
-        source = t.source
-        target = t.target
-        if source == "*":
-            for choice_val, _label in field.choices:
-                lines.append(f"    {choice_val} --> {target}: {t.name}()")
-        else:
-            lines.append(f"    {source} --> {target}: {t.name}()")
-    return "\n".join(lines)
+        return render_fsm_mermaid(model_map[model])
 
 
 def _task_diagram() -> str:
