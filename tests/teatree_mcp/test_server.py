@@ -12,6 +12,7 @@ import json
 from typing import Any
 
 from asgiref.sync import async_to_sync
+from django.core.management import call_command
 from django.test import TestCase
 
 from teatree.core.models import Task
@@ -88,3 +89,26 @@ class TestCallToolThroughServer(TestCase):
         result = async_to_sync(server.call_tool)("worktree_status", {"ticket": "999999"})
 
         assert _payloads(result) == []
+
+
+class TestFactoryScoreFlagGating(TestCase):
+    def test_factory_score_absent_when_flag_off(self) -> None:
+        # The shipped OFF state: the outer loop has no MCP metric-to-beat surface.
+        names = {tool.name for tool in asyncio.run(build_server().list_tools())}
+        assert "factory_score" not in names
+
+    def test_factory_score_registered_when_flag_on(self) -> None:
+        call_command("config_setting", "set", "factory_score_enabled", "true")
+        names = {tool.name for tool in asyncio.run(build_server().list_tools())}
+        assert "factory_score" in names
+
+    def test_factory_score_returns_a_score_payload_when_on(self) -> None:
+        call_command("config_setting", "set", "factory_score_enabled", "true")
+        server = build_server()
+
+        result = async_to_sync(server.call_tool)("factory_score", {})
+
+        payload = _payloads(result)[0]
+        assert payload["verdict"] in {"ok", "regressing", "red"}
+        assert "recipe_sha" in payload
+        assert len(payload["signals"]) == 5

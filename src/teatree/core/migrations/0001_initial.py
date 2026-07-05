@@ -38,6 +38,7 @@ _DEFAULT_LOOPS = (
     ("review", 300, None, None),
     ("ship", 300, None, None),
     ("pane_reaper", 300, None, None),
+    ("issue_disposition", 300, None, None),
     ("audit", 1800, None, None),
     ("followup", 1800, None, None),
     ("issue_implementer", 3600, None, None),
@@ -45,6 +46,7 @@ _DEFAULT_LOOPS = (
     ("arch_review", 10800, None, _ARCH_REVIEW_PROMPT_BODY),
     ("dogfood", 86400, None, None),
     ("eval_local", 86400, None, None),
+    ("backlog_sweep", 86400, None, None),
     ("news", 86400, datetime.time(8, 0), None),
     ("dream", 86400, datetime.time(3, 0), None),
 )

@@ -29,6 +29,7 @@ _LOOP_DESCRIPTIONS = {
     "review": "Reviews colleague-authored open PRs every 5m and posts inline findings (with the PR-sweep, codex double-check and Slack-broadcast helpers).",
     "ship": "Sweeps your own-authored open PRs every 5m: folds in approvals/CI and executes the keystone merge of your PRs (consumes the orchestrator's MergeClear).",
     "pane_reaper": "Demotes idle Agent-Teams maker panes past the idle threshold every 5m; inert unless team mode is enabled.",
+    "issue_disposition": "Auto-closes high-confidence DEAD backlog issues (already-shipped / duplicate / obsolete) every 5m; default-off behind auto_disposition_enabled, bounded per tick.",
     "audit": "Verifies and posts per-overlay failed-E2E results to Slack (driven by overlay watchers) every 30m.",
     "followup": "Intakes newly-assigned issues (auto-starting ready ones) and fires the review-request nag every 30m.",
     "issue_implementer": "Discovers and claims labelled backlog issues to auto-implement, kicking off the maker pipeline; hourly, default-off behind a triple gate.",
@@ -36,6 +37,7 @@ _LOOP_DESCRIPTIONS = {
     "arch_review": "Dispatches a sub-agent every 3h to run a holistic, codebase-wide architectural review via the ac-reviewing-codebase skill.",
     "dogfood": "Runs the overlay provisioning smoke test once a day to catch broken worktree setup.",
     "eval_local": "Runs the local behavioral eval suite; the scanner enforces its own weekly cadence (checked daily).",
+    "backlog_sweep": "Sweeps the backlog daily to propose closing stale issues; default-off (destructive-capable) behind backlog_sweep_disabled, gated by ask_before_backlog_sweep_closes.",
     "news": "Fires the daily news-scan task at 08:00 to surface relevant external releases and improvement ideas.",
     "dream": "Runs the nightly memory-consolidation pass at 03:00 — cross-link, merge, reindex MEMORY.md, decay — off the live tick.",
 }
