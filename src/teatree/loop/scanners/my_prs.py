@@ -5,6 +5,7 @@ from typing import cast
 
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.loop.scanners.base import ScanSignal, SignalPayload
+from teatree.loop.scanners.pr_payload import head_sha
 from teatree.loop.url_specificity import best_url_match_specificity
 from teatree.types import RawAPIDict
 
@@ -133,6 +134,10 @@ class MyPrsScanner:
                 "title": title,
                 "iid": iid,
                 "status": status,
+                # Carried on EVERY signal so ``my_pr.failed`` reaches
+                # ``claim_red_mr_fix`` with a real head sha — the RedMrFixAttempt
+                # ledger stayed empty (#7) while this was omitted.
+                "head_sha": head_sha(pr),
                 "raw": pr,
             }
             if _needs_attention(status):

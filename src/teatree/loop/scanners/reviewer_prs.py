@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, cast
 from teatree.core.backend_protocols import CodeHostBackend, PrOpenState, ReviewState
 from teatree.core.review_candidate import should_review_candidate_reasons
 from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.pr_payload import head_sha
 from teatree.loop.url_specificity import best_url_match_specificity
 from teatree.types import RawAPIDict
 
@@ -131,25 +132,6 @@ def _read_cache() -> dict[str, CacheEntry]:
             state=state if isinstance(state, str) else "",
         )
     return result
-
-
-def _head_sha(pr: RawAPIDict) -> str:
-    sha = pr.get("sha")
-    if isinstance(sha, str):
-        return sha
-    head = pr.get("head")
-    if isinstance(head, dict):
-        head_dict = cast("RawAPIDict", head)
-        head_sha = head_dict.get("sha")
-        if isinstance(head_sha, str):
-            return head_sha
-    diff_refs = pr.get("diff_refs")
-    if isinstance(diff_refs, dict):
-        diff_dict = cast("RawAPIDict", diff_refs)
-        head_sha = diff_dict.get("head_sha")
-        if isinstance(head_sha, str):
-            return head_sha
-    return ""
 
 
 def _pr_url(pr: RawAPIDict) -> str:
@@ -404,7 +386,7 @@ class ReviewerPrsScanner:
         primary_reviewer: str,
     ) -> list[ScanSignal]:
         """Emit the review signals (new_sha / unreviewed / approval_dismissed) for one PR."""
-        head = _head_sha(pr)
+        head = head_sha(pr)
         previous = cache.get(url, CacheEntry())
         if previous.sha and previous.sha != head:
             if ticket_model is not None:
