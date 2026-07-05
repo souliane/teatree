@@ -29,6 +29,90 @@ import re
 
 from teatree.hooks._shell_lexer import split_commands, tokenize
 
+# A ``gh``/``glab api`` REST call — the out-of-band merge/mutation surface.
+_GLAB_GH_API_RE = re.compile(r"\b(?:glab|gh)\s+api\b")
+# The REST merge endpoint: ``(merge_requests|pulls)/<n>/merge`` (GitLab + GitHub shapes).
+_MERGE_ENDPOINT_RE = re.compile(r"(?:merge_requests|pulls)/\d+/merge\b")
+# GitHub GraphQL merge-effecting mutations (each merges a PR / branch out of band).
+_GRAPHQL_MERGE_MUTATION_RE = re.compile(r"(?:mergePullRequest|enablePullRequestAutoMerge|mergeBranch)\s*\(")
+# The gh/glab HTTP-method flag, both empirically-valid forms: spaced/``=`` (``-X PUT``,
+# ``--method=POST``) and the no-space pflag shorthand (``-XPUT``). Consumers flatten the
+# two capture groups and keep last-wins effective-method semantics — the same classifier
+# ``hook_router._effective_method_is_write`` encodes, carried self-contained here so the
+# leaf stays importable by Lane B and the cold PreToolUse subprocess alike.
+_METHOD_FLAG_RE = re.compile(r"(?:-X|--method)[\s=]+['\"]?([A-Za-z]+)\b|(?<=-X)([A-Za-z]+)\b")
+_BODY_FLAG_RE = re.compile(r"(?:^|\s)(?:-f|--field|-F|--raw-field|--input|-d|--data)\b")
+
+_RAW_MERGE_DENY_REASON = (
+    "BLOCKED: raw `gh pr merge` / `glab mr merge` on a teatree-managed repo — "
+    "an out-of-band merge bypasses the FSM coherence mechanism (ledger update, "
+    "MergeClear validation, SHA-binding, privacy/AI-signature scan, mark_merged). "
+    "Use the sanctioned keystone transition `t3 <overlay> ticket merge <clear_id>` "
+    "(BLUEPRINT §17.1 invariant 8 / §17.4). kill-switch: `t3 <overlay> gate raw-merge disable`."
+)
+
+
+def _effective_method_is_write(command: str) -> bool:
+    """Whether a gh/glab REST command's EFFECTIVE HTTP method is a write (not GET).
+
+    The LAST ``-X``/``--method`` value wins; with no method flag the forge defaults
+    to POST when a body/field flag is present, else GET. A GET is the only read.
+    """
+    methods = [m.upper() for pair in _METHOD_FLAG_RE.findall(command) for m in pair if m]
+    if methods:
+        return methods[-1] != "GET"
+    return bool(_BODY_FLAG_RE.search(command))
+
+
+def is_raw_merge_api_write(command: str) -> bool:
+    """Whether *command* is a raw forge REST WRITE to a ``.../<n>/merge`` endpoint.
+
+    True only when the command targets a ``.../pulls/<n>/merge`` or
+    ``.../merge_requests/<n>/merge`` endpoint AND its effective HTTP method is not
+    GET (a GET reads merge status and must NOT be denied).
+    """
+    if not command or not _GLAB_GH_API_RE.search(command):
+        return False
+    if not _MERGE_ENDPOINT_RE.search(command):
+        return False
+    return _effective_method_is_write(command)
+
+
+def invokes_graphql_merge_mutation(command: str) -> bool:
+    """Whether *command* is a ``gh``/``glab api`` GraphQL merge-effecting mutation.
+
+    A ``mergePullRequest`` / ``enablePullRequestAutoMerge`` / ``mergeBranch`` call
+    has an unresolvable node-id target, so any occurrence in a forge-``api`` command
+    is treated as a merge (fail-closed). A query moved out of argv (``-F query=@file``
+    / ``--input``) is an accepted residual, matching the router gate.
+    """
+    if not command or not _GLAB_GH_API_RE.search(command):
+        return False
+    return bool(_GRAPHQL_MERGE_MUTATION_RE.search(command))
+
+
+def raw_merge_deny_reason(command: str) -> str | None:
+    """Return the raw-merge deny reason for *command*, or ``None`` when it is allowed.
+
+    Fires on any of the three out-of-band merge vectors — the literal subcommand
+    (``gh pr merge`` / ``glab mr merge``, action-aware), the REST-API merge write, or
+    a GraphQL merge mutation. This is the PURE detector shared by
+    :mod:`teatree.hooks.hard_deny_registry` (Lane B) and delegated to by the router's
+    cwd-aware merge gate; the unmanaged-repo carve-out (#126) is hook_router context
+    layered ON TOP of this detector, never part of it — Lane B is always jailed to a
+    managed worktree, so it denies every raw merge unconditionally.
+    """
+    if not command:
+        return None
+    if (
+        invokes_raw_merge_subcommand(command)
+        or is_raw_merge_api_write(command)
+        or invokes_graphql_merge_mutation(command)
+    ):
+        return _RAW_MERGE_DENY_REASON
+    return None
+
+
 # A heredoc body span: ``<<['"]?DELIM['"]?\n … \nDELIM``. Stripped before lexing
 # so a body line that BEGINS with the merge phrase cannot land at a command
 # position. Mirrors the shape used by ``_body_file_resolution._HEREDOC_RE``.
@@ -149,4 +233,9 @@ def _segment_word_lists(command: str) -> list[list[str]]:
     return [[token.value for token in segment] for segment in split_commands(tokenize(command))]
 
 
-__all__ = ["invokes_raw_merge_subcommand"]
+__all__ = [
+    "invokes_graphql_merge_mutation",
+    "invokes_raw_merge_subcommand",
+    "is_raw_merge_api_write",
+    "raw_merge_deny_reason",
+]
