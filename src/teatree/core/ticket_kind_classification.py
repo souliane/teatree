@@ -36,11 +36,11 @@ class TicketOrigin(enum.StrEnum):
     CORRECTION = "correction"
 
 
-# A curated tracker label names a defect when, lowercased, it CONTAINS one of
-# these tokens — labels are curated ("bug", "type: bug", "kind/bug", "hotfix",
-# "red-card"), so substring matching catches the conventions without a false hit.
+# A curated tracker label names a defect when a WHOLE segment-token of it — or
+# the separator-stripped whole label — equals one of these (see _labels_signal_fix
+# for why matching is token-boundary, never substring).
 _FIX_LABEL_KEYWORDS: frozenset[str] = frozenset(
-    {"bug", "fix", "hotfix", "regression", "defect", "red-card", "redcard"},
+    {"bug", "bugfix", "fix", "fixup", "hotfix", "regression", "defect", "redcard"},
 )
 
 # A title/branch classifies FIX only when its first word-token is a conventional
@@ -54,7 +54,19 @@ _TOKEN_SPLIT = re.compile(r"[^a-z0-9]+")
 
 
 def _labels_signal_fix(labels: Iterable[str]) -> bool:
-    return any(keyword in label.lower() for label in labels for keyword in _FIX_LABEL_KEYWORDS)
+    # Token/segment-boundary match, never substring: a curated label is split on
+    # its separators (":", "/", "-", "_", space) and a WHOLE token — or the
+    # separator-stripped whole label — must equal a defect keyword. Substring
+    # matching misfires ("debug" ⊃ "bug", "prefix"/"suffix" ⊃ "fix", "defective"
+    # ⊃ "defect"), flipping a feature to FIX and wedging the DoD gate; this keeps
+    # the label path as conservative as the title path.
+    for label in labels:
+        lowered = label.lower()
+        if any(token in _FIX_LABEL_KEYWORDS for token in _TOKEN_SPLIT.split(lowered)):
+            return True
+        if _TOKEN_SPLIT.sub("", lowered) in _FIX_LABEL_KEYWORDS:
+            return True
+    return False
 
 
 def _title_signals_fix(title: str) -> bool:

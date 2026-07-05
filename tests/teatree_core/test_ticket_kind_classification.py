@@ -24,11 +24,21 @@ class TestClassifyTicketKind:
     def test_bug_label_is_fix(self) -> None:
         assert classify_ticket_kind(labels=["type: bug"]) == Ticket.Kind.FIX
 
+    def test_kind_slash_bug_label_is_fix(self) -> None:
+        assert classify_ticket_kind(labels=["kind/bug"]) == Ticket.Kind.FIX
+
     def test_red_card_label_is_fix(self) -> None:
+        # Hyphenated multi-word label collapses to its separator-stripped form.
         assert classify_ticket_kind(labels=["red-card"]) == Ticket.Kind.FIX
 
     def test_non_fix_labels_stay_feature(self) -> None:
         assert classify_ticket_kind(labels=["enhancement", "documentation"]) == Ticket.Kind.FEATURE
+
+    def test_substring_lookalike_labels_are_not_fix(self) -> None:
+        # Token-boundary matching: "debug" ⊃ "bug", "prefix"/"suffix" ⊃ "fix",
+        # "defective" ⊃ "defect" — none may flip a feature to FIX.
+        for label in ("debug", "prefix", "suffix", "defective", "debugging"):
+            assert classify_ticket_kind(labels=[label]) == Ticket.Kind.FEATURE, label
 
     def test_conventional_fix_prefix_title_is_fix(self) -> None:
         assert classify_ticket_kind(title="fix: crash on empty password") == Ticket.Kind.FIX
