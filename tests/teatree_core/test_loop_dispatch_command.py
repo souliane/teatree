@@ -77,7 +77,7 @@ class TestPendingSpawn(_LoopDispatchTest):
         assert json.loads(stdout.getvalue()) == []
 
     def test_skips_tasks_with_no_registered_subagent(self) -> None:
-        # A scoping task on an author ticket → no _SUBAGENT_BY_PHASE entry → skipped.
+        # A scoping task on an author ticket → no SUBAGENT_BY_PHASE entry → skipped.
         ticket = Ticket.objects.create(overlay="acme", issue_url="https://example.com/issues/77")
         session = Session.objects.create(ticket=ticket, agent_id="scoping")
         Task.objects.create(ticket=ticket, session=session, phase="scoping")
