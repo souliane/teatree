@@ -57,7 +57,7 @@ from teatree.core.models.live_post_approval import (
 from teatree.core.models.local_stack_queue import LocalStackQueueItem
 from teatree.core.models.local_stack_reaper_marker import LocalStackReaperMarker
 from teatree.core.models.loop import Loop, LoopManager
-from teatree.core.models.loop_lease import LoopLease
+from teatree.core.models.loop_lease import LoopDriver, LoopLease
 from teatree.core.models.loop_state import LoopState, LoopStateManager, LoopStatus
 from teatree.core.models.merge_clear import ClearIssuanceError, ClearRequest, MergeAudit, MergeClear
 from teatree.core.models.mergeable_notified import MergeableNotified
@@ -180,6 +180,7 @@ __all__ = [
     "LocalStackQueueItem",
     "LocalStackReaperMarker",
     "Loop",
+    "LoopDriver",
     "LoopLease",
     "LoopManager",
     "LoopState",

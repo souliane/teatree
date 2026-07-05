@@ -96,6 +96,18 @@ def _owner_record_from_loop_registry() -> dict | None:
     return owner if isinstance(owner, dict) else None
 
 
+def owner_record() -> dict | None:
+    """The durable ``t3-loop-tick-owner`` registry record, or ``None`` (public accessor).
+
+    Exposes the same record :func:`_session_id_from_loop_registry` /
+    :func:`_pid_from_loop_registry` read (session id + pid of the tick owner)
+    so the driver-detection seam (:func:`teatree.loop.driver_detection.detect_driver`)
+    can decide self-pump without redeclaring the registry path logic a third
+    time. Fails open to ``None`` on any read error.
+    """
+    return _owner_record_from_loop_registry()
+
+
 def _session_id_from_loop_registry() -> str:
     """The tick-owner's durable session id from the loop registry, ``""`` on any error."""
     owner = _owner_record_from_loop_registry()
@@ -171,4 +183,4 @@ def current_session_id() -> str:
     )
 
 
-__all__ = ["current_session_id", "current_session_pid"]
+__all__ = ["current_session_id", "current_session_pid", "owner_record"]

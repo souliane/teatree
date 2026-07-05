@@ -63,6 +63,29 @@ from django.utils import timezone
 from teatree.core.managers import LoopLeaseManager
 
 
+class LoopDriver(models.TextChoices):
+    """What mechanism fires ticks for an owned loop slot (PR-26 / M9).
+
+    Ownership (a live ``session_id`` on the row) says WHO may run a loop;
+    the driver says WHAT actually fires its ticks. A claim that registers
+    under NONE of these is a stalled loop that still looks healthy — the
+    ``LoopLease.driver`` invariant makes that state observable (a blank
+    driver on an owned slot is DRIVERLESS, warned about loudly at claim
+    time and on the statusline).
+
+    Substrate-agnostic: detection reads the LIVE ``loop_runner_enabled``
+    setting and the LIVE worker flock, so the same code is correct before
+    and after the loop-runner default flip — only the observed distribution
+    of values changes. ``EXTERNAL`` is never auto-detected (a foreign
+    scheduler is invisible to teatree); it is set only via an explicit
+    ``--driver external`` override.
+    """
+
+    SELF_PUMP = "self_pump"
+    LOOP_RUNNER = "loop_runner"
+    EXTERNAL = "external"
+
+
 class LoopLease(models.Model):
     """One row per named machine-wide loop (e.g. ``loop-tick``)."""
 
@@ -72,6 +95,13 @@ class LoopLease(models.Model):
     owner_pid = models.IntegerField(null=True, blank=True, default=None)
     acquired_at = models.DateTimeField(null=True, blank=True)
     lease_expires_at = models.DateTimeField(null=True, blank=True)
+    # The tick driver for this owned slot (PR-26 / M9). Blank = DRIVERLESS: an
+    # owned slot with no recorded driver looks healthy but never ticks, so the
+    # blank is surfaced loudly. Detected at claim time and self-healed on every
+    # heartbeat re-claim; a same-holder refresh whose detection momentarily
+    # fails PRESERVES the stored value (``_driver_after``) so the heartbeat can
+    # never silently wipe the registration.
+    driver = models.CharField(max_length=16, blank=True, default="", choices=LoopDriver)
     # Fencing / lease-generation token (autonomous-lane redesign §5). A
     # monotonically increasing counter bumped on every CHANGE of holder
     # (failover after expiry, or a human take-over steal); a same-holder

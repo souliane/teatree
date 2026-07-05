@@ -549,11 +549,18 @@ class TestLoopOwnerCli:
         import json  # noqa: PLC0415
 
         monkeypatch.setenv("CLAUDE_SESSION_ID", "json-claimer")
+        monkeypatch.setattr("teatree.loop.driver_detection.detect_driver", lambda _s: "")
         result = runner.invoke(loop_app, ["claim", "--json"])
 
         assert result.exit_code == 0
         payload = json.loads(result.stdout)
-        assert payload == {"ok": True, "slot": "t3-master", "owner_session": "json-claimer"}
+        assert payload == {
+            "ok": True,
+            "slot": "t3-master",
+            "owner_session": "json-claimer",
+            "driver": "",
+            "driverless": True,
+        }
 
     def test_claim_json_no_session_id_error_shape(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import json  # noqa: PLC0415

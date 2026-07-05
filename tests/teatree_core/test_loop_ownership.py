@@ -74,7 +74,7 @@ class TestClaimOwnership(TestCase):
 
     def test_take_over_evicts_live_owner(self) -> None:
         LoopLease.objects.claim_ownership("t3-master", session_id="hijacker")
-        won, owner = LoopLease.objects.claim_ownership("t3-master", session_id="main-session", take_over=True)
+        won, owner = LoopLease.objects.take_over_ownership("t3-master", session_id="main-session")
         assert won is True
         assert owner == "main-session"
         assert LoopLease.objects.get(name="t3-master").session_id == "main-session"
@@ -144,7 +144,7 @@ class TestHeartbeatOwnership(TestCase):
 
     def test_heartbeat_fails_when_no_longer_owner(self) -> None:
         LoopLease.objects.claim_ownership("t3-master", session_id="sess-A")
-        LoopLease.objects.claim_ownership("t3-master", session_id="taker", take_over=True)
+        LoopLease.objects.take_over_ownership("t3-master", session_id="taker")
         assert LoopLease.objects.heartbeat_ownership("t3-master", session_id="sess-A") is False
 
 
@@ -295,7 +295,8 @@ def _make_alias(tmp_path: Path) -> str:
                 owner_pid INTEGER NULL,
                 acquired_at DATETIME NULL,
                 lease_expires_at DATETIME NULL,
-                generation INTEGER UNSIGNED NOT NULL DEFAULT 0
+                generation INTEGER UNSIGNED NOT NULL DEFAULT 0,
+                driver VARCHAR(16) NOT NULL DEFAULT ''
             )
             """
         )
@@ -614,7 +615,7 @@ class TestPerLoopOwnershipReusesGlobalMachinery(TestCase):
     def test_per_loop_take_over_evicts_live_owner(self) -> None:
         slot = per_loop_owner_slot("dispatch")
         LoopLease.objects.claim_ownership(slot, session_id="hijacker")
-        won, owner = LoopLease.objects.claim_ownership(slot, session_id="main", take_over=True)
+        won, owner = LoopLease.objects.take_over_ownership(slot, session_id="main")
         assert won is True
         assert owner == "main"
 
@@ -633,13 +634,22 @@ class TestPerLoopClaimThroughManagementCommand(TestCase):
         from django.core.management import call_command  # noqa: PLC0415
 
         slot = per_loop_owner_slot("dispatch")
-        with mock.patch("teatree.loop.session_identity.current_session_id", return_value="sess-dispatch"):
+        with (
+            mock.patch("teatree.loop.session_identity.current_session_id", return_value="sess-dispatch"),
+            mock.patch("teatree.loop.driver_detection.detect_driver", return_value=""),
+        ):
             out = io.StringIO()
             call_command("loop_owner", "claim", slot=slot, json_output=True, stdout=out)
         import json as _json  # noqa: PLC0415
 
         payload = _json.loads(out.getvalue())
-        assert payload == {"ok": True, "slot": "loop:dispatch", "owner_session": "sess-dispatch"}
+        assert payload == {
+            "ok": True,
+            "slot": "loop:dispatch",
+            "owner_session": "sess-dispatch",
+            "driver": "",
+            "driverless": True,
+        }
         assert LoopLease.objects.get(name=slot).session_id == "sess-dispatch"
         assert not LoopLease.objects.filter(name="t3-master", session_id="sess-dispatch").exists()
 

@@ -48,13 +48,27 @@ def _refresh_loop_owner_statusline() -> None:
         return
 
 
-def _claim(slot: str, *, take_over: bool, json_output: bool, stdout_write) -> None:  # noqa: ANN001
+_DRIVERLESS_WARNING = (
+    "WARN  loop slot {slot!r} claimed but DRIVERLESS — no tick driver is registered, so this loop "
+    "will not tick.\n"
+    "      Register one of:\n"
+    "        - run `t3 worker` (or `config_setting set loop_runner_enabled true` then restart the "
+    "session for the SessionStart resurrection) for the loop runner,\n"
+    "        - keep the owning Claude session alive for the Stop self-pump,\n"
+    "        - `t3 loop claim --slot {slot} --driver external` if a foreign scheduler drives it."
+)
+
+
+def _claim(command: TyperCommand, slot: str, *, take_over: bool, driver: str, json_output: bool) -> None:
     import os  # noqa: PLC0415
 
     from teatree.core.loop_lease_manager import T3_MASTER_SLOT, is_per_loop_owner_slot  # noqa: PLC0415
     from teatree.core.models import LoopLease  # noqa: PLC0415
+    from teatree.loop.driver_detection import detect_driver  # noqa: PLC0415 — deferred
     from teatree.loop.session_identity import current_session_id, current_session_pid  # noqa: PLC0415
 
+    stdout_write = command.stdout.write
+    stderr_write = command.stderr.write
     session_id = current_session_id()
     if not session_id:
         msg = "refusing to claim loop ownership without a Claude session id — run inside a Claude Code session"
@@ -79,19 +93,34 @@ def _claim(slot: str, *, take_over: bool, json_output: bool, stdout_write) -> No
     # ephemeral and don't need it.
     pid_anchored = slot == T3_MASTER_SLOT or is_per_loop_owner_slot(slot)
     owner_pid = (current_session_pid() or os.getppid()) if pid_anchored else None
-    won, owner = LoopLease.objects.claim_ownership(
-        slot, session_id=session_id, take_over=take_over, owner_pid=owner_pid
-    )
+    # Only the pid-anchored ownership layer (t3-master + loop:<name>) carries a
+    # driver; an explicit ``--driver`` overrides detection (the only path to
+    # ``external``, since a foreign scheduler is invisible to teatree).
+    resolved_driver = (driver or detect_driver(session_id)) if pid_anchored else ""
+    # take-over is an unconditional steal (evicts a live claimant); the plain
+    # claim is the pid-anchored CAS that never evicts a live owner.
+    claim = LoopLease.objects.take_over_ownership if take_over else LoopLease.objects.claim_ownership
+    won, owner = claim(slot, session_id=session_id, owner_pid=owner_pid, driver=resolved_driver)
     if won and slot == T3_MASTER_SLOT:
         # The lease now names THIS session — clear any stale foreign-hijack
         # anchor the rendered statusline still carries from before the claim.
         _refresh_loop_owner_statusline()
+    driverless = pid_anchored and not resolved_driver
     if json_output:
-        stdout_write(json.dumps({"ok": won, "slot": slot, "owner_session": owner}, indent=2))
+        stdout_write(
+            json.dumps(
+                {"ok": won, "slot": slot, "owner_session": owner, "driver": resolved_driver, "driverless": driverless},
+                indent=2,
+            )
+        )
     elif won:
         stdout_write(f"OK    claimed loop slot {slot!r} for this session ({session_id}).")
     else:
         stdout_write(f"SKIP  loop slot {slot!r} held by session {owner} — pass --take-over to seize it.")
+    # A successful pid-anchored claim with no driver is a silently-stalled loop —
+    # warn loudly (stderr) even though the claim itself succeeded.
+    if won and driverless:
+        stderr_write(_DRIVERLESS_WARNING.format(slot=slot))
 
 
 def _owner(slot: str, *, json_output: bool, stdout_write) -> None:  # noqa: ANN001
@@ -102,6 +131,7 @@ def _owner(slot: str, *, json_output: bool, stdout_write) -> None:  # noqa: ANN0
     # always knows whether IT is the owner — not just who the owner is.
     you = current_session_id()
     status = LoopLease.objects.ownership_status(slot)
+    driverless = status.is_live and not status.driver
     if json_output:
         stdout_write(
             json.dumps(
@@ -113,6 +143,8 @@ def _owner(slot: str, *, json_output: bool, stdout_write) -> None:  # noqa: ANN0
                     "expires_at": status.expires_at.isoformat() if status.expires_at else "",
                     "is_live": status.is_live,
                     "generation": status.generation,
+                    "driver": status.driver,
+                    "driverless": driverless,
                 },
                 indent=2,
             )
@@ -121,19 +153,24 @@ def _owner(slot: str, *, json_output: bool, stdout_write) -> None:  # noqa: ANN0
     stdout_write(f"you are: {you or '(no session id)'}")
     if status.is_live:
         stdout_write(f"OWNER {slot}: session {status.owner_session} (live until {status.expires_at.isoformat()}).")
+        stdout_write(f"driver: {status.driver or 'DRIVERLESS'}")
     else:
         stdout_write(f"OWNER {slot}: unclaimed (no live owner).")
 
 
 def _whoami(*, json_output: bool, stdout_write) -> None:  # noqa: ANN001
     """Print this Claude session's own id — the hand-off ``--to`` target."""
+    from teatree.loop.driver_detection import detect_driver  # noqa: PLC0415 — deferred
     from teatree.loop.session_identity import current_session_id  # noqa: PLC0415
 
     session_id = current_session_id()
+    driver = detect_driver(session_id)
     if json_output:
-        stdout_write(json.dumps({"session_id": session_id}, indent=2))
-    elif session_id:
+        stdout_write(json.dumps({"session_id": session_id, "driver": driver, "driverless": not driver}, indent=2))
+        return
+    if session_id:
         stdout_write(session_id)
+        stdout_write(f"driver: {driver or 'DRIVERLESS'}")
     else:
         stdout_write("(no Claude session id — not running inside a Claude Code session)")
 
@@ -167,10 +204,18 @@ class Command(TyperCommand):
             str,
             typer.Option("--slot", help="t3-master slot name (default: t3-master)."),
         ] = "t3-master",
+        driver: Annotated[
+            str,
+            typer.Option(
+                "--driver",
+                help="Explicit tick driver (self_pump/loop_runner/external); overrides detection. "
+                "Use 'external' for a foreign scheduler.",
+            ),
+        ] = "",
         json_output: Annotated[bool, typer.Option("--json", help="Emit JSON.")] = False,
     ) -> None:
         """Claim the t3-master slot for this session."""
-        _claim(slot, take_over=take_over, json_output=json_output, stdout_write=self.stdout.write)
+        _claim(self, slot, take_over=take_over, driver=driver, json_output=json_output)
 
     @command(name="owner")
     def owner(
