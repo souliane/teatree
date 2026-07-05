@@ -65,6 +65,7 @@ class TestDispatchLoopBuildJobs:
             "undelivered_notify",
             "deferred_question_poster",
             "waiting_digest",
+            "work_state",
         }
 
 

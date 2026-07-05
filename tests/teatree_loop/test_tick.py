@@ -924,7 +924,7 @@ def test_tick_captures_persist_agent_dispatches_exception(
 ) -> None:
     """If ``persist_agent_actions`` raises, the tick records it instead of crashing."""
 
-    def boom(_actions: object) -> None:
+    def boom(_actions: object, *, errors: object = None) -> None:
         msg = "persistence down"
         raise RuntimeError(msg)
 

@@ -161,21 +161,26 @@ def review_request_dispatch(signal: ScanSignal, pr_url: str) -> list[DispatchAct
     ]
 
 
-def claim_red_mr_fix(signal: ScanSignal) -> bool:
-    """Idempotency gate for capability D's ``my_pr.failed`` dispatch.
+def claim_red_mr_fix(payload: ActionPayload) -> bool:
+    """Idempotency claim for capability D's ``my_pr.failed`` fix dispatch.
 
-    Returns True when the ``(pr_url, head_sha)`` pair was not seen on a
-    previous tick — the caller proceeds to dispatch the agent. Returns
-    False when the same failing SHA already has a recorded attempt —
-    the statusline mirror still emits so the user sees the red MR but
-    the agent does not re-run. Best-effort: any DB issue defaults to
-    True so the fix-attempt path is not silently dropped on a missing
-    migration; the statusline always fires.
+    Called at PERSIST time (``persistence._handle_debug``, #1 blocker fix), not
+    at dispatch time: the claim rides the same ``transaction.atomic`` block that
+    creates the debugging Task, so a dropped/failed persist rolls the claim back
+    and the next tick retries — the marker can no longer be burned before the
+    action lands.
+
+    Returns True when the ``(pr_url, head_sha)`` pair was not seen on a previous
+    tick — the caller proceeds to create the Task. Returns False when the same
+    failing SHA already has a recorded attempt — the statusline mirror still
+    emitted at dispatch so the user sees the red MR, but no new Task is created.
+    Best-effort: any DB issue defaults to True so the fix path is not silently
+    dropped on a missing migration.
     """
     from django.db import DatabaseError  # noqa: PLC0415
 
-    pr_url = str(signal.payload.get("pr_url") or signal.payload.get("url") or "")
-    head_sha = str(signal.payload.get("head_sha", ""))
+    pr_url = str(payload.get("pr_url") or payload.get("url") or "")
+    head_sha = str(payload.get("head_sha", ""))
     if not pr_url or not head_sha:
         return True
     try:
@@ -184,8 +189,8 @@ def claim_red_mr_fix(signal: ScanSignal) -> bool:
         row = RedMrFixAttempt.claim(
             pr_url=pr_url,
             head_sha=head_sha,
-            overlay=str(signal.payload.get("overlay", "")),
-            worktree_hint=str(signal.payload.get("worktree_hint", "")),
+            overlay=str(payload.get("overlay", "")),
+            worktree_hint=str(payload.get("worktree_hint", "")),
         )
     except DatabaseError:
         return True

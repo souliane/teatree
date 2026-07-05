@@ -52,6 +52,7 @@ from teatree.loop.scanners import (
     TicketDispositionScanner,
     UndeliveredNotifyScanner,
     WaitingDigestScanner,
+    WorkStateScanner,
 )
 from teatree.loop.scanners.base import ScannerError
 from teatree.loop.tick_resolvers import _allowed_url_prefixes_for_host, _identity_alias_groups_for_overlay
@@ -84,6 +85,10 @@ def _global_dispatch_jobs() -> list[_ScannerJob]:
         _ScannerJob(scanner=UndeliveredNotifyScanner(), overlay=""),
         _ScannerJob(scanner=DeferredQuestionPosterScanner(), overlay=""),
         _ScannerJob(scanner=WaitingDigestScanner(), overlay=""),
+        # SELFCATCH-1: global (walks every ticket across overlays via
+        # ``reconcile_work_state_all``), so it runs once per tick here rather
+        # than redundantly once per overlay in the housekeeping domain.
+        _ScannerJob(scanner=WorkStateScanner(), overlay=""),
     ]
 
 

@@ -47,7 +47,10 @@ def _persist_agent_dispatches(report: "TickReport") -> None:
     from teatree.loop.persistence import persist_agent_actions  # noqa: PLC0415
 
     try:
-        persist_agent_actions(report.actions)
+        # Thread the report's error sink so a dropped/failed per-zone persist
+        # records ``errors["persist:<zone>"]`` (rendered in action_needed) rather
+        # than a silent ``logger.debug`` — the #1 blocker fail-loud contract.
+        persist_agent_actions(report.actions, errors=report.errors)
     except Exception as exc:
         logger.exception("Persisting agent dispatches failed")
         report.errors["dispatch_persist"] = f"{type(exc).__name__}: {exc}"
