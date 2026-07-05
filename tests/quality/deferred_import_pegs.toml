@@ -1,0 +1,97 @@
+# Per-file deferred (function-scoped) intra-package import pegs -- the ratchet ledger (#2385 / #2413).
+# A function-scoped `from teatree.core... / teatree.loop... import` hides an intra-package edge from
+# tach's acyclic guard. Each key is a repo-relative source file; the value is the exact number of
+# such deferred imports it may carry. Over-peg blocks (name the file); under-peg banks (lower the
+# entry); a file not listed pegs at 0. Two disjoint PRs never collide: git unions independent keys;
+# same-file contention surfaces as a textual conflict. The [intra_core] sum is the tach-invisible
+# core-cycle floor; [intra_loop] the loop floor. Lower an entry as its edge becomes a declared tach
+# sub-node edge; never raise one without the edge being genuinely load-bearing (rationale in the commit).
+
+[intra_core]
+"src/teatree/core/_checking_gather.py" = 5
+"src/teatree/core/apps.py" = 2
+"src/teatree/core/checking.py" = 2
+"src/teatree/core/cleanup.py" = 1
+"src/teatree/core/cost.py" = 1
+"src/teatree/core/gates/dod_gate.py" = 3
+"src/teatree/core/gates/e2e_mandatory_gate.py" = 3
+"src/teatree/core/gates/fix_dod_gate.py" = 1
+"src/teatree/core/gates/live_post_gate.py" = 1
+"src/teatree/core/gates/local_stack_gate.py" = 2
+"src/teatree/core/gates/owned_repo_guard.py" = 2
+"src/teatree/core/gates/plan_gate.py" = 2
+"src/teatree/core/gates/review_request_guard.py" = 5
+"src/teatree/core/gates/rubric_gate.py" = 2
+"src/teatree/core/handover.py" = 2
+"src/teatree/core/headless_dispatch.py" = 1
+"src/teatree/core/management/commands/_clear_preflight.py" = 1
+"src/teatree/core/management/commands/_e2e_discovery.py" = 1
+"src/teatree/core/management/commands/_ensure_pr.py" = 1
+"src/teatree/core/management/commands/_plan_gate_commands.py" = 3
+"src/teatree/core/management/commands/_rubric_commands.py" = 1
+"src/teatree/core/management/commands/_ship_exec.py" = 1
+"src/teatree/core/management/commands/_ship_gates.py" = 1
+"src/teatree/core/management/commands/checking.py" = 3
+"src/teatree/core/management/commands/cost.py" = 2
+"src/teatree/core/management/commands/db.py" = 1
+"src/teatree/core/management/commands/dogfood.py" = 1
+"src/teatree/core/management/commands/dream.py" = 2
+"src/teatree/core/management/commands/e2e.py" = 3
+"src/teatree/core/management/commands/followup.py" = 2
+"src/teatree/core/management/commands/handover.py" = 1
+"src/teatree/core/management/commands/lifecycle.py" = 3
+"src/teatree/core/management/commands/loop_dispatch.py" = 3
+"src/teatree/core/management/commands/loop_drain_queue.py" = 1
+"src/teatree/core/management/commands/loop_owner.py" = 4
+"src/teatree/core/management/commands/loop_self_improve.py" = 1
+"src/teatree/core/management/commands/loop_slack_answer.py" = 1
+"src/teatree/core/management/commands/notify.py" = 1
+"src/teatree/core/management/commands/pr.py" = 1
+"src/teatree/core/management/commands/retro.py" = 1
+"src/teatree/core/management/commands/review.py" = 2
+"src/teatree/core/management/commands/review_request_post.py" = 3
+"src/teatree/core/management/commands/speak.py" = 1
+"src/teatree/core/management/commands/tasks.py" = 2
+"src/teatree/core/management/commands/ticket.py" = 5
+"src/teatree/core/management/commands/ticket_short_describe.py" = 2
+"src/teatree/core/management/commands/worktree.py" = 1
+"src/teatree/core/managers.py" = 2
+"src/teatree/core/mcp_connectivity.py" = 1
+"src/teatree/core/merge/authorization.py" = 5
+"src/teatree/core/merge/execution.py" = 3
+"src/teatree/core/model_registries.py" = 5
+"src/teatree/core/models/auto_review_dispatch.py" = 3
+"src/teatree/core/models/review_loop.py" = 3
+"src/teatree/core/models/task.py" = 7
+"src/teatree/core/models/ticket.py" = 19
+"src/teatree/core/notify.py" = 4
+"src/teatree/core/on_behalf_egress.py" = 2
+"src/teatree/core/on_behalf_gate_recorded.py" = 3
+"src/teatree/core/on_behalf_post_receipt.py" = 1
+"src/teatree/core/overlay.py" = 3
+"src/teatree/core/overlay_loader.py" = 1
+"src/teatree/core/overlay_metadata.py" = 1
+"src/teatree/core/overlay_url.py" = 1
+"src/teatree/core/reference_linkifier.py" = 4
+"src/teatree/core/reply_transport.py" = 1
+"src/teatree/core/safe_kill.py" = 1
+"src/teatree/core/scope_cache.py" = 1
+"src/teatree/core/signals.py" = 6
+"src/teatree/core/speak.py" = 2
+"src/teatree/core/step_runner.py" = 4
+"src/teatree/core/sync.py" = 3
+"src/teatree/core/tasks.py" = 5
+"src/teatree/core/views/_rate_limit.py" = 1
+"src/teatree/core/worktree_tasks.py" = 1
+
+[intra_loop]
+"src/teatree/loop/domain_jobs.py" = 2
+"src/teatree/loop/global_scanner_factories.py" = 1
+"src/teatree/loop/loop_scoping.py" = 1
+"src/teatree/loop/phases/render.py" = 9
+"src/teatree/loop/scanners/failed_e2e_posts.py" = 1
+"src/teatree/loop/scanners/outbound_audit_overlay_verifiers.py" = 5
+"src/teatree/loop/scanners/slack_mentions.py" = 1
+"src/teatree/loop/sweep_on_demand.py" = 2
+"src/teatree/loop/tick_freshness.py" = 2
+"src/teatree/loop/tick_recovery.py" = 2

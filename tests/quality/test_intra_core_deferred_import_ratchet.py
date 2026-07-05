@@ -10,11 +10,14 @@ into their own tach nodes so the acyclic guard applies *within* ``core``; until
 that carve is complete (PR-2/PR-3 sever the ``models`` / ``managers`` up-edges),
 this ratchet keeps the deferred-import count from growing.
 
-It is a SHRINK-only peg: an AST walk counts every ``import``/``from`` whose
-enclosing scope is a function/method (not module-level) and whose target module
-starts with ``teatree.core``. ``current <= _FROZEN`` blocks growth; on
-``current < _FROZEN`` the message instructs lowering the peg so the gain is
-banked (mirroring ``test_module_health_ratchet.py`` and ``test_project_leaf.py``).
+It is a per-file peg ledger (``tests/quality/deferred_import_pegs.toml``
+``[intra_core]``, counted by the shared ``tests/quality/_deferred_imports.py``
+walker): each source file may carry at most its pegged number of function-scoped
+``teatree.core`` imports (a file not listed pegs at 0). Over-peg blocks (naming
+the file); under-peg banks (lower the entry). Per-file keying makes the ledger
+set-union mergeable — two disjoint peg bumps never collide, and same-file
+contention surfaces as a git textual conflict, not a post-merge red (the property
+a single repo-wide ``_FROZEN`` integer could not offer).
 
 The companion ``TestCoreModelkitLayer`` pins the PR-1 carve itself: the
 ``teatree.core.modelkit`` leaf is declared as a ``depends_on = []`` domain node,
@@ -29,121 +32,14 @@ import ast
 import tomllib
 from pathlib import Path
 
+from tests.quality._deferred_imports import diff_pegs, load_pegs, per_file_counts
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CORE_ROOT = _REPO_ROOT / "src" / "teatree" / "core"
 _MODELS_ROOT = _CORE_ROOT / "models"
 _TACH = _REPO_ROOT / "tach.toml"
-
-# Measured in-worktree after PR-2b converted the 17 deferred
-# `from teatree.core.models.X import Y` imports inside `managers.py` into
-# call-time `apps.get_model("core", "Y")` lookups (AppRegistry-safe,
-# tach-invisible) and declared `teatree.core.models` / `teatree.core.managers`
-# as tach sub-nodes — the core cycle is now structurally forbidden, not merely
-# severed. The drop from PR-2a's 206 is exactly those 17 converted imports.
-# SHRINK-ONLY: lower this as PR-3 converts remaining deferred edges into
-# declared tach sub-node edges; never raise it. Dropped 187→186 when both
-# `tasks.py` deferred `current_session_id` imports were hoisted to a single
-# module-scope import (session_identity is a stdlib-only leaf; tach stays green).
-# Rose 186→188 (#2009): the two task_repair-cycle-breaking deferrals stay
-# deferred (a genuine task.py↔task_repair module-level cycle); the two zero-dep
-# `repair_loop` deferrals were hoisted to module scope.
-# Dropped 188→184 (one-driver collapse): deleting the dead dedicated loop layer
-# and the duplicate `MiniLoopMarker` model removed 4 intra-`core` deferred
-# imports; banking the reduction.
-# Dropped 184→181 (loop-tick cutover): deleting `core/management/commands/loop_tick.py`
-# removed its 3 intra-`core` deferred imports; banking the reduction.
-# Rose 181→182 (headless question routing): `task_handoff.py` is split out of
-# `task.py` (at its module-health LOC cap) and imports `Task` at module scope,
-# so `task.py`'s `park_for_user_input` edge into it must stay function-scoped —
-# the same genuine `task.py`↔helper module-level cycle the #2009 `task_repair`
-# deferral pins. One deferral, banked here; not a new severable edge.
-# Rose 182→183 (#2826 / #2244 subprocess_only time-box): `step_runner` gains a
-# THIRD function-scoped `from teatree.core.provision_timebox import
-# run_timeboxed_callable` (in `_timeboxed_subprocess_callable_step`), joining the
-# pre-existing `run_timeboxed_step` / `alert_provision_user` deferrals. This edge
-# is load-bearing and CANNOT become a top-level (or declared tach sub-node) edge:
-#   1. it breaks a real `step_runner`↔`provision_timebox` module-level cycle —
-#      `provision_timebox` imports `StepResult`/`run_callable_step` from
-#      `step_runner` at module scope, so the reverse edge must be deferred;
-#   2. it serves the #2664 stale-base degradation — `step_runner` must import
-#      even when `provision_timebox` is ABSENT on a stale checkout, and a
-#      PRESENT-but-internally-broken module must re-raise at CALL time (pinned by
-#      `test_*_propagates_when_module_present_but_internally_broken`). A module-top
-#      import would move that detection to `step_runner`-import time, breaking
-#      those tests and taking down every `step_runner` consumer instead of
-#      localising the failure to the provision/teardown path.
-# Cycle-removal (relocating the shared primitives) still can't lift it to module
-# scope because of (2), and a tach sub-node edge needs a top-level import whose
-# bidirectional pair tach's acyclic guard rejects — so the deferral stays.
-# One deferral, banked here; not a new severable edge.
-# Rose 183→184 (#2650 master-tick removal): the reactive queue drain gains its
-# own `loop_drain_queue` management command, whose `handle()` defers
-# `from teatree.core.models import LoopLease` — the SAME conventional
-# management-command deferral its siblings `loop_slack_answer` / `loop_self_improve`
-# use. A command module is imported at app-discovery time, so a module-top models
-# import risks AppRegistryNotReady; the models import must wait until `handle()`
-# runs. Parallel structure with the existing reactive-loop commands; not a new
-# severable edge.
-# Rose 184->185 (parallel-provision connection-leak fix): `step_runner`'s
-# `_resolve_step_timeout` defers `from teatree.core.provision_timebox import
-# resolve_step_timeout_seconds` so the parallel group resolves each member's
-# time-box ceiling on the CALLER thread — a pool worker must touch no ORM (a
-# Django connection opened there leaks under a TestCase, whose atomic wrapping
-# vetoes close()). This rides the SAME `step_runner`->`provision_timebox`
-# cycle-forced deferral its sibling `_timeboxed_subprocess_callable_step` already
-# uses for `run_timeboxed_callable`; not a new severable edge.
-# Dropped 185->184 (#1936 PR-08 review-state gates): the integration-review /
-# review-request-state gate predicates and the `ticket bulk-close` / review-request
-# command block-methods import `teatree.core.models` at MODULE scope (the declared
-# `teatree.core -> teatree.core.models` tach edge), not via deferred function-scoped
-# imports. The gates load at `ready()` through `populate_model_registries` (models
-# available) and the command modules load lazily, so neither AppRegistry nor a cycle
-# forces a deferral. Deduping `review_request_post._anti_vacuity_block`'s
-# now-redundant deferred `Ticket` import banks the extra -1.
-# Dropped 184->183 (dispatch-preflight merge): hoisting `_execute_sdk`'s deferred
-# `get_overlay_for_ticket` to a module-scope import removed one more function-scoped
-# intra-core edge. This reduction is independent of the PR-08 gate reduction above,
-# so the two stack in the merged tree.
-# Rose 183->184 (PR-19 token-scope cache): `scope_cache._notify_user_deferred`
-# defers `from teatree.core.notify import notify_user`. It is load-bearing and
-# CANNOT become a module-top edge: `scope_cache` is consulted from the Django-free
-# Slack transport (`teatree.backends.slack.http.SlackHttpClient`), and
-# `teatree.core.notify` imports `teatree.core.models` at module scope — a top-level
-# import would force Django/AppRegistry on every importer of the transport (and on
-# the hooks that import it before `ensure_django`). The banner only fires at RUNTIME
-# on a real scope failure, well after bootstrap, so the deferral keeps the import
-# graph clean — the same AppRegistry-safe deferral the management-command siblings
-# above use. One deferral, banked here; not a new severable edge.
-_FROZEN_INTRA_CORE_DEFERRED = 184
-
-
-def _function_scoped_intra_core_imports(source: Path) -> int:
-    tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
-    parents: dict[ast.AST, ast.AST] = {}
-    for node in ast.walk(tree):
-        for child in ast.iter_child_nodes(node):
-            parents[child] = node
-
-    def in_function_scope(node: ast.AST) -> bool:
-        cur = parents.get(node)
-        while cur is not None:
-            if isinstance(cur, ast.FunctionDef | ast.AsyncFunctionDef):
-                return True
-            cur = parents.get(cur)
-        return False
-
-    count = 0
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
-            if (node.module or "").startswith("teatree.core") and in_function_scope(node):
-                count += 1
-        elif isinstance(node, ast.Import):
-            count += sum(1 for alias in node.names if alias.name.startswith("teatree.core") and in_function_scope(node))
-    return count
-
-
-def _count_all() -> int:
-    return sum(_function_scoped_intra_core_imports(py) for py in sorted(_CORE_ROOT.rglob("*.py")))
+_PREFIX = "teatree.core"
+_PEG_TABLE = "intra_core"
 
 
 def _module_entry(path: str) -> dict[str, object]:
@@ -195,25 +91,25 @@ def _model_files_importing(dotted: str) -> list[str]:
 
 
 class TestIntraCoreDeferredImportRatchet:
-    def test_count_does_not_exceed_frozen(self) -> None:
-        current = _count_all()
-        assert current <= _FROZEN_INTRA_CORE_DEFERRED, (
-            f"intra-teatree.core deferred (function-scoped) imports grew to {current}, "
-            f"over the frozen ceiling {_FROZEN_INTRA_CORE_DEFERRED}. A new function-scoped "
-            f"`from teatree.core... import` hides an intra-core edge from tach's acyclic "
-            f"guard. Make the edge a declared tach sub-node edge (#2385) instead of "
-            f"adding another deferred import."
+    def test_no_file_exceeds_its_peg(self) -> None:
+        drift = diff_pegs(per_file_counts(_CORE_ROOT, _PREFIX), load_pegs(_PEG_TABLE))
+        assert not drift.over_peg, (
+            "intra-teatree.core deferred (function-scoped) imports grew over their per-file peg. A new "
+            "function-scoped `from teatree.core... import` hides an intra-core edge from tach's acyclic "
+            "guard. Make it a declared tach sub-node edge (#2385), or — if the edge is genuinely "
+            "load-bearing — bump this file's peg in tests/quality/deferred_import_pegs.toml [intra_core] "
+            "with a rationale in the commit message:\n" + "\n".join(drift.over_lines())
         )
 
-    def test_count_is_not_below_frozen(self) -> None:
+    def test_no_file_is_under_its_peg(self) -> None:
         # Banks every reduction immediately: when an edge becomes a declared tach
-        # sub-node edge, the count drops and the peg must follow it down so a
-        # future regression cannot silently spend the gain.
-        current = _count_all()
-        assert current >= _FROZEN_INTRA_CORE_DEFERRED, (
-            f"intra-teatree.core deferred imports dropped to {current}, below the frozen "
-            f"ceiling {_FROZEN_INTRA_CORE_DEFERRED}. Lower _FROZEN_INTRA_CORE_DEFERRED to "
-            f"{current} to bank the reduction."
+        # sub-node edge the file's count drops, and its peg must follow it down so
+        # a future regression cannot silently spend the gain.
+        drift = diff_pegs(per_file_counts(_CORE_ROOT, _PREFIX), load_pegs(_PEG_TABLE))
+        assert not drift.under_peg, (
+            "intra-teatree.core deferred imports dropped below a per-file peg. Bank the reduction by "
+            "lowering (or removing) the entry in tests/quality/deferred_import_pegs.toml [intra_core]:\n"
+            + "\n".join(drift.under_lines())
         )
 
 

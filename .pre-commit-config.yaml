@@ -443,13 +443,23 @@ repos:
         stages: [manual]
 
   # Phase 8b - Pre-push
-  # No full-suite pytest gate here on purpose: the test suite is CI's job, never
+  # No FULL-suite pytest gate here on purpose: the whole suite is CI's job, never
   # the local push path. A host under load times out unrelated wall-clock and
   # concurrency tests and blocks the push (#112/#21/#38). push -> CI is the gate.
-  # The local-suite runners (dev/test-fast.sh, dev/test-matrix.sh) stay as
-  # explicit opt-ins. Guarded by tests/test_no_full_suite_on_pre_push.py.
+  # The local-suite runners (dev/test-fast.sh, dev/test-matrix.sh) and the exact
+  # full-CI predicate (dev/ci-parity.sh) stay as explicit opt-ins. The one push
+  # pytest below is deliberately PATH-SCOPED (tests/quality + the never-lockout
+  # contract + doctest collection over src/teatree) so the no-full-suite invariant
+  # stays satisfied. Guarded by tests/test_no_full_suite_on_pre_push.py.
   - repo: local
     hooks:
+      - id: ci-critical-parity
+        name: CI-critical parity (scoped static/AST + doctest lane; path-scoped, ~1-3 min)
+        language: system
+        entry: uv run pytest tests/quality tests/test_gate_never_lockout_contract.py --doctest-modules src/teatree -q
+        pass_filenames: false
+        always_run: true
+        stages: [push]
       - id: doc-update-gate
         name: README/BLUEPRINT update gate (#1461)
         language: system
