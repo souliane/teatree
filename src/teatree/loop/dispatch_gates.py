@@ -8,16 +8,27 @@ test can pin or stub the seam without touching the routing tables, and so the
 dispatcher module stays focused on the consult order.
 """
 
+import logging
+
 from teatree.config import get_effective_settings
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.loop.dispatch_reducer import slack_pr_url, task_pr_url
 from teatree.loop.dispatch_tables import STATUSLINE_ZONE_BY_KIND, ActionPayload, DispatchAction
 from teatree.loop.review_claim_signals import review_loop_enabled
 from teatree.loop.scanners.base import ScanSignal
+from teatree.loop.scanners.pr_payload import head_sha as _extract_head_sha
+
+logger = logging.getLogger(__name__)
 
 #: The display marker an untyped/empty spawn degrades to in :func:`spawn_display_name`.
 #: A real phase agent is always ``t3:<type>``, so this never names a live phase agent.
 GENERAL_PURPOSE_SUBAGENT = "general-purpose"
+
+#: Head-SHA placeholder for a red PR whose real sha the scanner never carried.
+#: The claim is keyed on ``(pr_url, sentinel)`` so at most ONE fix dispatches for
+#: that PR until a real sha appears — replacing the old blank-sha fail-OPEN
+#: (``return True`` forever) that let the same red PR re-dispatch every tick (#7).
+_BLANK_SHA_SENTINEL = "sha-unavailable"
 
 
 def spawn_display_name(subagent: str, task_id: int) -> str:
@@ -174,24 +185,43 @@ def claim_red_mr_fix(payload: ActionPayload) -> bool:
     tick — the caller proceeds to create the Task. Returns False when the same
     failing SHA already has a recorded attempt — the statusline mirror still
     emitted at dispatch so the user sees the red MR, but no new Task is created.
-    Best-effort: any DB issue defaults to True so the fix path is not silently
-    dropped on a missing migration.
+
+    SIG-2 (#7) hardens WHAT is claimed: the real head sha is recovered from
+    ``payload['raw']`` via the shared dual-forge helper when the top-level
+    ``head_sha`` is blank; a still-blank sha claims the :data:`_BLANK_SHA_SENTINEL`
+    keyed on ``pr_url`` (at most one dispatch per PR) and logs the instrumentation
+    gap — replacing the old fail-OPEN that re-dispatched forever. A ``DatabaseError``
+    still fails open (a missing migration must not silently drop the fix path) but
+    now logs at WARNING with the ``pr_url`` so the fail-open is visible and bounded.
     """
     from django.db import DatabaseError  # noqa: PLC0415
 
     pr_url = str(payload.get("pr_url") or payload.get("url") or "")
-    head_sha = str(payload.get("head_sha", ""))
-    if not pr_url or not head_sha:
+    if not pr_url:
         return True
+    sha = str(payload.get("head_sha") or "") or _sha_from_raw(payload)
+    if not sha:
+        logger.warning(
+            "claim_red_mr_fix: no head sha for red PR %s — claiming sentinel (one dispatch, gap surfaced)",
+            pr_url,
+        )
+        sha = _BLANK_SHA_SENTINEL
     try:
         from teatree.core.models import RedMrFixAttempt  # noqa: PLC0415
 
         row = RedMrFixAttempt.claim(
             pr_url=pr_url,
-            head_sha=head_sha,
+            head_sha=sha,
             overlay=str(payload.get("overlay", "")),
             worktree_hint=str(payload.get("worktree_hint", "")),
         )
     except DatabaseError:
+        logger.warning("claim_red_mr_fix: DB error claiming %s — failing open (bounded)", pr_url)
         return True
     return row is not None
+
+
+def _sha_from_raw(payload: ActionPayload) -> str:
+    """Recover the head sha from the raw forge PR dict on the payload, or ``""``."""
+    raw = payload.get("raw")
+    return _extract_head_sha(raw) if isinstance(raw, dict) else ""

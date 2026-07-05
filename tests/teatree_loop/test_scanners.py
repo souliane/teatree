@@ -13,6 +13,7 @@ from teatree.core.models import Ticket
 from teatree.loop.scanners.assigned_issues import AssignedIssuesScanner
 from teatree.loop.scanners.my_prs import MyPrsScanner
 from teatree.loop.scanners.notion_view import NotionViewScanner
+from teatree.loop.scanners.pr_payload import head_sha
 from teatree.loop.scanners.reviewer_prs import CacheEntry, ReviewerPrsScanner, _persist_entry
 from teatree.loop.scanners.reviewer_prs import mark_reviewed as _mark_reviewed_helper
 from teatree.loop.scanners.slack_mentions import SlackMentionsScanner
@@ -302,12 +303,10 @@ class TestReviewerPrsScanner(TestCase):
         assert signals[0].payload["head_sha"] == "feedface"
 
     def test_head_sha_returns_empty_when_no_field_present(self) -> None:
-        from teatree.loop.scanners.reviewer_prs import _head_sha  # noqa: PLC0415
-
-        assert _head_sha({}) == ""
-        assert _head_sha({"sha": 123}) == ""
-        assert _head_sha({"head": {"sha": 99}}) == ""
-        assert _head_sha({"diff_refs": {"head_sha": True}}) == ""
+        assert head_sha({}) == ""
+        assert head_sha({"sha": 123}) == ""
+        assert head_sha({"head": {"sha": 99}}) == ""
+        assert head_sha({"diff_refs": {"head_sha": True}}) == ""
 
     def test_dismissed_after_approval_emits_approval_dismissed_signal(self) -> None:
         url = "https://gitlab/x/-/merge_requests/9"
