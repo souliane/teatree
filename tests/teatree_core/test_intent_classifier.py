@@ -168,7 +168,9 @@ class TestMalformedWebhookSubObjects(TestCase):
 class TestIntentClassificationModel(TestCase):
     def test_intent_choices_match_issue_spec(self) -> None:
         names = {choice for choice, _label in IntentClassification.Intent.choices}
-        assert names == {"task", "question", "approval", "status_update", "escalation", "noise"}
+        # ``directive`` is the north-star PR-6 standing-constraint intent (routed to a
+        # Directive capture only when directive routing is enabled).
+        assert names == {"task", "question", "approval", "status_update", "escalation", "directive", "noise"}
 
     def test_confidence_must_be_between_zero_and_one(self) -> None:
         from django.core.exceptions import ValidationError  # noqa: PLC0415

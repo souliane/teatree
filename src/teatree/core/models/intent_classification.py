@@ -24,6 +24,11 @@ class IntentClassification(models.Model):
         APPROVAL = "approval", "Approval"
         STATUS_UPDATE = "status_update", "Status update"
         ESCALATION = "escalation", "Escalation"
+        # A standing behavioral constraint on teatree ITSELF ("always open MRs as
+        # drafts for overlay X"), vs TASK = "a piece of work to do now". Routed to a
+        # `Directive` capture only when `directive_loop_enabled` is on (north-star
+        # PR-6); while dark the classifier may label it but routing is unchanged.
+        DIRECTIVE = "directive", "Directive"
         NOISE = "noise", "Noise"
 
     event = models.OneToOneField(

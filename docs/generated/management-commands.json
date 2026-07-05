@@ -110,6 +110,24 @@
       ]
     },
     {
+      "help": "Capture and inspect plain-language directives about teatree's own behavior.",
+      "name": "directive",
+      "subcommands": [
+        {
+          "help": "Record a plain-language directive verbatim as a CAPTURED row",
+          "name": "capture"
+        },
+        {
+          "help": "Print one directive's state, sketch, and ratification (read-only)",
+          "name": "status"
+        },
+        {
+          "help": "Print the recent directive ledger (read-only)",
+          "name": "list"
+        }
+      ]
+    },
+    {
       "help": "Walk a ticket through the lifecycle, each phase's existing gate enforced.",
       "name": "do",
       "subcommands": []

@@ -20,6 +20,7 @@ from teatree.core.models import IncomingEvent, IntentClassification
 class _Kind(StrEnum):
     SCHEDULE_TASK = "schedule_task"
     SCHEDULE_MERGE = "schedule_merge"
+    CAPTURE_DIRECTIVE = "capture_directive"
     ALERT_USER = "alert_user"
     RECORD_ONLY = "record_only"
     DROP = "drop"
@@ -41,8 +42,27 @@ _INTENT_TO_PHASE = {
 }
 
 
-def route_event(event: IncomingEvent, classification: IntentClassification) -> RoutedAction:
+def route_event(
+    event: IncomingEvent,
+    classification: IntentClassification,
+    *,
+    directive_routing_enabled: bool = False,
+) -> RoutedAction:
+    """Route an event to a concrete action; a pure value, never a side effect.
+
+    ``directive_routing_enabled`` gates the north-star PR-6 ``DIRECTIVE`` intent:
+    while off (the default) a ``DIRECTIVE`` event is DROPped exactly as an
+    unrouteable intent — flag-off parity, so intake is inert until the loop opts
+    in. When on, it yields a ``CAPTURE_DIRECTIVE`` action the caller turns into a
+    ``Directive`` row.
+    """
     intent = classification.intent
+    if intent == IntentClassification.Intent.DIRECTIVE and directive_routing_enabled:
+        return RoutedAction(
+            kind=RoutedAction.Kind.CAPTURE_DIRECTIVE,
+            target_ref=event.channel_ref,
+            detail=event.body[:255],
+        )
     if intent in _INTENT_TO_PHASE:
         return RoutedAction(
             kind=RoutedAction.Kind.SCHEDULE_TASK,

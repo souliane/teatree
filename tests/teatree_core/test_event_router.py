@@ -104,3 +104,31 @@ class TestRouteEvent(TestCase):
         action = route_event(event, classification)
 
         assert action.kind == RoutedAction.Kind.DROP
+
+
+class TestDirectiveRouting(TestCase):
+    """North-star PR-6: a DIRECTIVE intent captures only when directive routing is on."""
+
+    def _directive_event(self) -> tuple[IncomingEvent, IntentClassification]:
+        event = _event(
+            IncomingEvent.Source.SLACK,
+            body="<@bot> always open MRs as drafts for overlay X",
+            key="slack:d1",
+            event={"type": "app_mention"},
+        )
+        classification = IntentClassification.objects.create(
+            event=event, intent=IntentClassification.Intent.DIRECTIVE, confidence=0.9
+        )
+        return event, classification
+
+    def test_directive_intent_is_dropped_while_routing_is_off_flag_off_parity(self) -> None:
+        event, classification = self._directive_event()
+        action = route_event(event, classification)  # default: directive_routing_enabled=False
+        assert action.kind == RoutedAction.Kind.DROP
+
+    def test_directive_intent_captures_when_routing_is_enabled(self) -> None:
+        event, classification = self._directive_event()
+        action = route_event(event, classification, directive_routing_enabled=True)
+        assert action.kind == RoutedAction.Kind.CAPTURE_DIRECTIVE
+        assert action.target_ref == event.channel_ref
+        assert "drafts" in action.detail

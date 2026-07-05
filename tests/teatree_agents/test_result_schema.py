@@ -63,3 +63,26 @@ class TestShellDeniedPhaseEvidenceGate:
         # the gate refuses it rather than completing over a dropped reply.
         assert check_evidence({"answer": {"thread_ref": "x"}}, "answering")
         assert check_evidence({"answer": {"thread_ref": "x", "text": "hi"}}, "answering") == ""
+
+
+class TestDirectiveInterpretationEvidenceGate:
+    """North-star PR-6: the interpret phase must hand back a real payload, not a summary."""
+
+    def test_directive_interpreting_requires_the_interpretation_envelope(self) -> None:
+        assert required_evidence_for_phase("directive_interpreting") == ("directive_interpretation",)
+
+    def test_a_summary_only_interpret_run_is_refused(self) -> None:
+        assert check_evidence({"summary": "interpreted it"}, "directive_interpreting")
+
+    def test_a_payloadless_envelope_is_refused(self) -> None:
+        # An envelope with only an identity persists nothing — the recorder drops it,
+        # so the gate refuses it rather than completing over zero recorded work (#9).
+        assert check_evidence({"directive_interpretation": {"interpreter_identity": "x"}}, "directive_interpreting")
+
+    def test_a_sketch_envelope_satisfies_the_gate(self) -> None:
+        result = {"directive_interpretation": {"sketch": {"kind": "setting_policy_gate"}}}
+        assert check_evidence(result, "directive_interpreting") == ""
+
+    def test_clarifying_questions_satisfy_the_gate(self) -> None:
+        result = {"directive_interpretation": {"clarifying_questions": ["open concurrently or ever?"]}}
+        assert check_evidence(result, "directive_interpreting") == ""

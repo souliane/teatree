@@ -12,8 +12,33 @@ from teatree.agents.attempt_recorder import (
     record_result_envelope,
     validate_result_keys,
 )
-from teatree.core.models import DeferredQuestion, PendingArticleSuggestion, Session, Task, TaskAttempt, Ticket
+from teatree.core.models import (
+    DeferredQuestion,
+    Directive,
+    DirectiveDispatch,
+    PendingArticleSuggestion,
+    Session,
+    Task,
+    TaskAttempt,
+    Ticket,
+)
 from teatree.verification.url_check import UrlCheckResult, UrlCheckStatus
+
+
+def _valid_sketch(**overrides: object) -> dict[str, object]:
+    sketch: dict[str, object] = {
+        "kind": "setting_policy_gate",
+        "setting_key": "max_open_prs_per_repo_per_ticket",
+        "setting_type": "int",
+        "neutral_default": 0,
+        "policy_chokepoint": "src/teatree/core/gates/pr_budget_gate.py::check_pr_budget",
+        "activation_scope": "t3-teatree",
+        "activation_value": 1,
+        "rejected_alternatives": ["an overlay-local hook — fails N=2"],
+        "acceptance_tests": ["tests/teatree_core/gates/test_pr_budget_gate.py::TestCheckPrBudget"],
+    }
+    sketch.update(overrides)
+    return sketch
 
 
 class TestParseResultEnvelope(TestCase):
@@ -198,3 +223,42 @@ class TestAnsweringEnvelopeChannel(TestCase):
         task.refresh_from_db()
         assert task.status == Task.Status.FAILED
         assert DeferredQuestion.objects.count() == 0
+
+
+class TestDirectiveInterpretationEnvelopeChannel(TestCase):
+    """A shell-denied directive interpreter hands its sketch back through the envelope (PR-6)."""
+
+    def _dispatched_task(self) -> tuple[Directive, Task]:
+        directive = Directive.objects.capture("max 1 MR per repo for overlay X", source=Directive.Source.CLI)
+        row = DirectiveDispatch.enqueue(directive=directive, contract="c")
+        assert row is not None
+        assert row.task is not None
+        return directive, row.task
+
+    def test_a_returned_sketch_completes_the_task_and_records_it(self) -> None:
+        directive, task = self._dispatched_task()
+        record_result_envelope(
+            task,
+            {
+                "summary": "interpreted",
+                "directive_interpretation": {"constraint_statement": "at most 1 open PR", "sketch": _valid_sketch()},
+            },
+            phase="directive_interpreting",
+        )
+        task.refresh_from_db()
+        assert task.status == Task.Status.COMPLETED
+        directive.refresh_from_db()
+        assert directive.state == Directive.State.INTERPRETED
+        assert directive.sketch is not None
+
+    def test_an_invalid_sketch_fails_the_task_recording_no_garbage(self) -> None:
+        directive, task = self._dispatched_task()
+        record_result_envelope(
+            task,
+            {"summary": "x", "directive_interpretation": {"sketch": _valid_sketch(rejected_alternatives=[])}},
+            phase="directive_interpreting",
+        )
+        task.refresh_from_db()
+        assert task.status == Task.Status.FAILED
+        directive.refresh_from_db()
+        assert directive.state == Directive.State.CAPTURED

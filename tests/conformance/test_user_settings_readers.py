@@ -91,6 +91,11 @@ _RESOLUTION_MARKERS = frozenset(
 # it gains a real reader or a conscious allowlist entry.
 FIELDS_WITHOUT_SRC_READER: frozenset[str] = frozenset(
     {
+        # The inert north-star PR-6 OFF switch: the directive-loop runtime reads it in a
+        # later PR (like outer_loop_enabled shipped before its loop). The router takes
+        # directive routing as a param, so nothing reads the flag yet — drop this entry
+        # when the loop's guard chain wires the reader.
+        "directive_loop_enabled",
         "e2e_confidence_threshold",
         "issue_implementer_cadence_hours",
         "privacy",

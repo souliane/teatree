@@ -51,6 +51,16 @@ Print cycle-to-date SDK-equivalent spend vs the monthly credit.
 | `restore-ci` | Restore the worktree database from the latest CI dump |
 | `reset-passwords` | Reset all user passwords to a known dev value |
 
+## `directive`
+
+Capture and inspect plain-language directives about teatree's own behavior.
+
+| Subcommand | Description |
+| --- | --- |
+| `capture` | Record a plain-language directive verbatim as a CAPTURED row |
+| `status` | Print one directive's state, sketch, and ratification (read-only) |
+| `list` | Print the recent directive ledger (read-only) |
+
 ## `do`
 
 Walk a ticket through the lifecycle, each phase's existing gate enforced.
