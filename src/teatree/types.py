@@ -352,10 +352,14 @@ class ProvisionStep:
     callable runs: a step whose callable succeeds but whose ``post_condition``
     returns ``False`` (or raises) is recorded FAILED — so a step that "ran" but
     did not actually produce its resource halts a required-step run instead of
-    reporting green. The aggregate of every step's ``post_condition`` is what the
-    FSM's ``PROVISIONED`` guard and ``worktree status`` evaluate to decide a
-    worktree is *really* provisioned (see
-    :mod:`teatree.core.provision_postconditions`).
+    reporting green. The aggregate of every step's ``post_condition`` is what
+    ``worktree status`` evaluates to decide a worktree is *really* provisioned
+    (see :mod:`teatree.core.provision_postconditions`). It MUST touch **no ORM**:
+    on a ``subprocess_only`` step it runs on the concurrent-wave pool worker (via
+    ``_apply_post_condition`` inside ``_run_single_step``), so a Django connection
+    opened there leaks a ``sqlite3`` ``ResourceWarning`` — the same reason
+    ``_resolve_step_timeout`` is hoisted to the caller thread. Keep it filesystem-
+    or subprocess-only, like the ``subprocess_only`` callable itself.
 
     ``heavy`` (souliane/teatree#2949) selects the step's time-box ceiling: a
     fast step (symlinks, settings, a compose override) defaults to a short

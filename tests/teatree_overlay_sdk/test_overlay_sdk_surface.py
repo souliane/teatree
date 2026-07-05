@@ -86,6 +86,7 @@ EXPECTED_SIGNATURES: dict[str, str] = {
     "get_envrc_lines": "(self, worktree: 'Worktree') -> list[str]",
     "get_eval_scenarios_dir": "(self) -> pathlib.Path | None",
     "get_health_checks": "(self, worktree: 'Worktree') -> list['HealthCheck']",
+    "get_health_signals": "(self) -> list['HealthSignal']",
     "get_issue_title": "(self, url: str) -> str",
     "get_lint_command": "(self, worktree: 'Worktree') -> list[str] | teatree.types.RunCommand",
     "get_mcp_provider_expectations": "(self) -> dict[str, str]",

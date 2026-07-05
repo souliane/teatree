@@ -8,7 +8,7 @@ broke the overlay *asynchronously* — the overlay's own CI caught it, long afte
 core merged.
 
 This module is the single documented import surface. Its ``__all__`` is the
-frozen contract; :mod:`tests.test_overlay_sdk_surface` snapshots that set AND
+frozen contract; :mod:`tests.teatree_overlay_sdk.test_overlay_sdk_surface` snapshots that set AND
 the extension-point method signatures in **core's** CI, so a rename or a
 signature change fails core *locally* — the conformance guard for extension-point
 drift. An overlay imports only from here::

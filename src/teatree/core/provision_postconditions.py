@@ -3,11 +3,10 @@
 A worktree row can claim FSM state ``provisioned`` while the artifacts that
 state promises — the env cache, the application database, each provision step's
 own resource — have since been deleted out from under it. The aggregate probe
-here is the truth test the ``PROVISIONED`` guard and ``worktree status``
-evaluate: a ``provisioned`` worktree is *really* provisioned only if every one
-of these post-conditions still holds. Deleting ``.t3-cache/.t3-env.cache`` or
-the worktree DB flips one to FAIL, so ``worktree status`` refuses green with a
-non-zero exit.
+here is the truth test ``worktree status`` evaluates: a ``provisioned`` worktree
+is *really* provisioned only if every one of these post-conditions still holds.
+Deleting ``.t3-cache/.t3-env.cache`` or the worktree DB flips one to FAIL, so
+``worktree status`` refuses green with a non-zero exit.
 
 The probes reuse :class:`teatree.core.readiness.Probe` — a check_fn returning a
 :class:`~teatree.core.readiness.ProbeResult` — so they run and report through

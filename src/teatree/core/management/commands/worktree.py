@@ -34,7 +34,7 @@ from teatree.core.runners import (
     heal_missing_provisioned_db,
 )
 from teatree.core.step_runner import ProvisionReport
-from teatree.core.worktree_env import CACHE_FILENAME, compose_project
+from teatree.core.worktree_env import compose_project, env_cache_path
 from teatree.docker.build import ensure_base_image
 from teatree.utils.ports import get_worktree_ports
 from teatree.utils.run import TimeoutExpired, run_allowed_to_fail
@@ -478,8 +478,7 @@ class Command(TyperCommand):
         """Print a structured health checklist for one worktree."""
         worktree = resolve_worktree(path)
         wt_path = (worktree.extra or {}).get("worktree_path", "")
-        ticket_dir = Path(wt_path).parent if wt_path else None
-        cache_file = ticket_dir / ".t3-cache" / CACHE_FILENAME if ticket_dir else None
+        cache_file = env_cache_path(worktree)
 
         project = compose_project(worktree)
         ps = run_allowed_to_fail(
