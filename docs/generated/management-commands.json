@@ -49,6 +49,10 @@
           "name": "clear"
         },
         {
+          "help": "The read-only dead-toggle audit report over the ``FEATURE_FLAGS`` registry",
+          "name": "flags"
+        },
+        {
           "help": "Print the resolved value for *key* and name its source (DB vs file/env)",
           "name": "get"
         },

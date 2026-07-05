@@ -189,6 +189,45 @@ class TestConfigSettingGet(TestCase):
             call_command("config_setting", "get", "not_a_real_setting", stderr=StringIO())
 
 
+class TestConfigSettingFlagTrailer(TestCase):
+    """Set/get of a feature-flag key carries a governance trailer, a setting does not."""
+
+    def test_set_of_a_flag_key_prints_the_flag_trailer(self) -> None:
+        out = StringIO()
+        call_command("config_setting", "set", "outer_loop_enabled", "true", stdout=out)
+        rendered = out.getvalue()
+        assert "feature flag" in rendered
+        assert "stage=dark" in rendered
+        assert "tracking" in rendered
+
+    def test_set_of_a_durable_setting_has_no_flag_trailer(self) -> None:
+        out = StringIO()
+        call_command("config_setting", "set", "issue_implementer_max_concurrent", "3", stdout=out)
+        assert "feature flag" not in out.getvalue()
+
+    def test_get_of_a_flag_key_prints_the_flag_trailer(self) -> None:
+        out = StringIO()
+        call_command("config_setting", "get", "outer_loop_enabled", stdout=out)
+        assert "feature flag" in out.getvalue()
+
+
+class TestConfigSettingFlagsAudit(TestCase):
+    """``config_setting flags`` is the read-only dead-toggle audit report."""
+
+    def test_flags_lists_every_registered_flag_with_its_stage(self) -> None:
+        out = StringIO()
+        call_command("config_setting", "flags", stdout=out)
+        rendered = out.getvalue()
+        for key in ("outer_loop_enabled", "teams_enabled", "loop_runner_enabled"):
+            assert key in rendered
+        assert "stage=dark" in rendered
+        assert "stage=settling" in rendered
+
+    def test_flags_is_read_only_creates_no_rows(self) -> None:
+        call_command("config_setting", "flags", stdout=StringIO())
+        assert ConfigSetting.objects.count() == 0
+
+
 class TestConfigSettingImport(TestCase):
     @pytest.fixture(autouse=True)
     def _config_path(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
