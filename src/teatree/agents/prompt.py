@@ -3,7 +3,11 @@
 import json
 from typing import cast
 
-from teatree.agents.dispatch_preflight import head_state_brief_lines, review_diff_brief_lines
+from teatree.agents.dispatch_preflight import (
+    declared_seams_brief_lines,
+    head_state_brief_lines,
+    review_diff_brief_lines,
+)
 from teatree.agents.skill_injection import (
     _ALWAYS_FULL_SKILLS,
     _explicit_load_name,
@@ -232,7 +236,15 @@ def build_task_prompt(task: Task, *, skills: list[str] | None = None) -> str:
     )
 
     if normalize_phase(task.phase) == "coding":
-        lines.extend(("", "PHASE: coding", *head_state_brief_lines(task), *_coding_phase_directive(skills)))
+        lines.extend(
+            (
+                "",
+                "PHASE: coding",
+                *head_state_brief_lines(task),
+                *declared_seams_brief_lines(task),
+                *_coding_phase_directive(skills),
+            )
+        )
 
     return "\n".join(lines)
 
@@ -357,6 +369,7 @@ def _reviewing_phase_lines(task: Task) -> tuple[str, ...]:
         "2. Run /t3:next when done — it handles retro + structured result + handoff.",
         *_VERIFICATION_BRIEF_LINES,
         *_REVIEW_VERDICT_RETURN_LINES,
+        *declared_seams_brief_lines(task),
         *review_diff_brief_lines(task),
     ]
     if fanout := _phase_fanout_directive(task):

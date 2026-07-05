@@ -10,6 +10,7 @@ from django_fsm import FSMField, TransitionNotAllowed, transition
 from teatree.config import Mode, get_effective_settings
 from teatree.core.managers import TicketManager
 from teatree.core.modelkit.gate_registry import get_gate, get_resolver
+from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.review_state import ReviewState
 from teatree.core.models.errors import DirtyWorktreeError, InvalidTransitionError
 from teatree.core.models.ticket_ledger import retire_phase_ledger
@@ -280,6 +281,7 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
 
     @transition(field=state, source=State.PLANNED, target=State.CODED)
     def code(self, *, parent_task: "Task | None" = None) -> None:
+        get_gate("plan_currency")(self)  # SELFCATCH-3: refuse a thin/stale plan (NO-OP unless flag on).
         self._refuse_if_worktree_dirty("coding")
         self._consume_pending_phase_tasks("coding")
         self.schedule_testing(parent_task=parent_task)
@@ -457,69 +459,68 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
 
     def schedule_planning(self, *, parent_task: "Task | None" = None) -> "Task":
         """Create a fresh headless planning task after provisioning completes."""
-        from teatree.core.models.session import Session  # noqa: PLC0415
-        from teatree.core.models.task import Task  # noqa: PLC0415
-
-        if self.role != self.Role.AUTHOR:
-            msg = f"schedule_planning requires role=author (got role={self.role!r})"
-            raise InvalidTransitionError(msg)
-        session = Session.objects.create(ticket=self, agent_id="planning")
-        return Task.objects.create(
-            ticket=self,
-            session=session,
-            phase="planning",
-            execution_target=Task.ExecutionTarget.HEADLESS,
-            execution_reason="Auto-scheduled planning — produce a plan before coding",
-            parent_task=parent_task,
+        return self._schedule_headless(
+            "planning", "Auto-scheduled planning — produce a plan before coding", parent_task, require_author=True
         )
 
     def schedule_coding(self, *, parent_task: "Task | None" = None) -> "Task":
-        """Create a fresh headless coding task after planning completes."""
+        """Create a fresh headless coding task after planning completes.
+
+        Gated by ``plan_currency`` (SELFCATCH-3) on the normal author PLANNED→CODED flow
+        (the same gate ``code()`` runs): no coding task for a thin/legacy or seam-stale
+        plan. NO-OP unless ``require_plan_adequacy`` is on; synthetic corrective
+        re-entries that mint a coding task directly are exempt (they carry no plan).
+        """
+        return self._schedule_headless(
+            "coding",
+            "Auto-scheduled coding — implement the ticket",
+            parent_task,
+            require_author=True,
+            gate="plan_currency",
+        )
+
+    def _schedule_headless(
+        self,
+        phase: str,
+        reason: str,
+        parent_task: "Task | None",
+        *,
+        require_author: bool = False,
+        gate: str | None = None,
+    ) -> "Task":
+        """Shared fresh-session headless scheduler for the auto-FSM phase tasks.
+
+        Optionally enforces ``role=author`` and runs an FSM ``gate`` (the
+        plan-currency leak-close), then mints the ``phase`` Session + headless Task.
+        The session ``agent_id`` is the ``phase`` (``reviewing`` uses ``review``).
+        """
         from teatree.core.models.session import Session  # noqa: PLC0415
         from teatree.core.models.task import Task  # noqa: PLC0415
 
-        if self.role != self.Role.AUTHOR:
-            msg = f"schedule_coding requires role=author (got role={self.role!r})"
+        if require_author and self.role != self.Role.AUTHOR:
+            msg = f"schedule_{phase} requires role=author (got role={self.role!r})"
             raise InvalidTransitionError(msg)
-        session = Session.objects.create(ticket=self, agent_id="coding")
+        if gate is not None:
+            get_gate(gate)(self)
+        session = Session.objects.create(
+            ticket=self, agent_id="review" if normalize_phase(phase) == "reviewing" else phase
+        )
         return Task.objects.create(
             ticket=self,
             session=session,
-            phase="coding",
+            phase=phase,
             execution_target=Task.ExecutionTarget.HEADLESS,
-            execution_reason="Auto-scheduled coding — implement the ticket",
+            execution_reason=reason,
             parent_task=parent_task,
         )
 
     def schedule_testing(self, *, parent_task: "Task | None" = None) -> "Task":
         """Create a fresh headless testing task after coding completes."""
-        from teatree.core.models.session import Session  # noqa: PLC0415
-        from teatree.core.models.task import Task  # noqa: PLC0415
-
-        session = Session.objects.create(ticket=self, agent_id="testing")
-        return Task.objects.create(
-            ticket=self,
-            session=session,
-            phase="testing",
-            execution_target=Task.ExecutionTarget.HEADLESS,
-            execution_reason="Auto-scheduled testing — run + QA the coding work",
-            parent_task=parent_task,
-        )
+        return self._schedule_headless("testing", "Auto-scheduled testing — run + QA the coding work", parent_task)
 
     def schedule_review(self, *, parent_task: "Task | None" = None) -> "Task":
         """Create a fresh headless review+retro task (new session for bias-free evaluation)."""
-        from teatree.core.models.session import Session  # noqa: PLC0415
-        from teatree.core.models.task import Task  # noqa: PLC0415
-
-        session = Session.objects.create(ticket=self, agent_id="review")
-        return Task.objects.create(
-            ticket=self,
-            session=session,
-            phase="reviewing",
-            execution_target=Task.ExecutionTarget.HEADLESS,
-            execution_reason="Auto-scheduled review + retro — fresh agent, no bias",
-            parent_task=parent_task,
-        )
+        return self._schedule_headless("reviewing", "Auto-scheduled review + retro — fresh agent, no bias", parent_task)
 
     def schedule_review_in_session(self, session: "Session", *, parent_task: "Task | None" = None) -> "Task":
         """Create a review task within an existing session (sub-agent, not a new session)."""

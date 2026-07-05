@@ -14,14 +14,7 @@ from teatree.core.management.commands._clear_preflight import clear_preflight_re
 from teatree.core.management.commands._close_commands import CloseCommands
 from teatree.core.management.commands._context_commands import ContextCommands
 from teatree.core.management.commands._merge_keystone_commands import MergeKeystoneCommands
-from teatree.core.management.commands._plan_gate_commands import (
-    PlanAdvanceError,
-    PlanReconcileResult,
-    PlanResult,
-    reconcile_inflight,
-    record_artifact_and_advance,
-    record_trivial_skip_and_advance,
-)
+from teatree.core.management.commands._plan_commands import PlanCommands
 from teatree.core.management.commands._rubric_commands import RubricCommands
 from teatree.core.management.commands._ticket_show import TicketShowCommands
 from teatree.core.management.commands._transition_names import ALLOWED_TRANSITIONS
@@ -93,6 +86,7 @@ logger = logging.getLogger(__name__)
 
 class Command(
     RubricCommands,
+    PlanCommands,
     TicketShowCommands,
     ContextCommands,
     CloseCommands,
@@ -178,44 +172,6 @@ class Command(
         self.stdout.write(f"  DoD local-E2E gate override recorded for ticket {ticket.pk}")
         return DodOverrideResult(ticket_id=int(ticket.pk), reason=cleaned, by=by.strip(), at=recorded_at)
 
-    @command()
-    def plan(
-        self,
-        ticket_id: int,
-        plan_text: Annotated[str, typer.Argument(help="The plan text recorded as the PlanArtifact.")],
-        *,
-        recorded_by: Annotated[
-            str,
-            typer.Option(help="Author identity recorded on the artifact (audit trail)."),
-        ] = "operator",
-    ) -> PlanResult:
-        """Record a PlanArtifact and advance the ticket STARTED → PLANNED.
-
-        The operator-facing plan recorder named by the ``NoPlanArtifactError``
-        message: a planning task that finished out-of-band, or a ticket the
-        planner never ran on, advances by recording the plan here. A blank
-        ``plan_text`` is refused — a vacuous artifact cannot advance the FSM. For
-        an *audited bypass* (no real plan, explicit human sign-off) use
-        ``plan-bypass``; for a trivial mechanical edit use ``skip-planning``.
-        """
-        cleaned_text = plan_text.strip()
-        if not cleaned_text:
-            self.stderr.write("  refused: plan_text is required (a vacuous plan cannot advance the FSM)")
-            raise SystemExit(1)
-
-        ticket = self._resolve_ticket(ticket_id)
-        try:
-            artifact = record_artifact_and_advance(
-                ticket=ticket, plan_text=cleaned_text, recorded_by=recorded_by.strip() or "operator"
-            )
-        except PlanAdvanceError as exc:
-            return PlanResult(ticket_id=int(ticket.pk), error=exc.message)
-
-        # #2217: external-owner FSM seam — refresh a LIVE lease (no-op without one).
-        refresh_external_delivery_if_active(ticket)
-        self.stdout.write(f"  plan recorded for ticket {ticket.pk} (artifact {artifact.pk}); state → {ticket.state}")
-        return PlanResult(ticket_id=int(ticket.pk), artifact_id=int(artifact.pk), state=ticket.state)
-
     @command(name="e2e-bypass")
     def e2e_bypass(
         self,
@@ -260,129 +216,6 @@ class Command(
             "head_sha": approval.head_sha,
             "approver": approval.approver_id,
         }
-
-    @command(name="plan-bypass")
-    def plan_bypass(
-        self,
-        ticket_id: int,
-        *,
-        human_authorize: Annotated[
-            str,
-            typer.Option(
-                "--human-authorize",
-                help="Username of the human explicitly authorising this plan bypass.",
-            ),
-        ],
-        reason: Annotated[
-            str,
-            typer.Option(help="Documented reason for bypassing the plan gate (required)."),
-        ],
-    ) -> PlanResult:
-        """Record an audited PlanArtifact bypass and advance the ticket to PLANNED.
-
-        The ONLY escape from the plan gate outside the normal planner flow.
-        Both --human-authorize and --reason are required; a silent bypass is
-        not allowed. Records a PlanArtifact with bypass_reason set, then
-        drives ticket.plan() → STARTED→PLANNED.
-        """
-        cleaned_reason = reason.strip()
-        cleaned_authorizer = human_authorize.strip()
-        if not cleaned_authorizer:
-            self.stderr.write("  refused: --human-authorize is required")
-            raise SystemExit(1)
-        if not cleaned_reason:
-            self.stderr.write("  refused: --reason is required (a silent plan bypass is not allowed)")
-            raise SystemExit(1)
-
-        ticket = self._resolve_ticket(ticket_id)
-        try:
-            artifact = record_artifact_and_advance(
-                ticket=ticket,
-                plan_text=f"[audited bypass by {cleaned_authorizer}] {cleaned_reason}",
-                recorded_by=cleaned_authorizer,
-            )
-        except PlanAdvanceError as exc:
-            return PlanResult(ticket_id=int(ticket.pk), error=exc.message)
-
-        self.stdout.write(
-            f"  plan bypass recorded for ticket {ticket.pk} "
-            f"(artifact {artifact.pk}, authorizer={cleaned_authorizer}); state → {ticket.state}"
-        )
-        return PlanResult(ticket_id=int(ticket.pk), artifact_id=int(artifact.pk), state=ticket.state)
-
-    @command(name="skip-planning")
-    def skip_planning(
-        self,
-        ticket_id: int,
-        *,
-        reason: Annotated[
-            str,
-            typer.Option(help="Why this ticket is a trivial mechanical edit that may skip planning (required)."),
-        ],
-        by: Annotated[
-            str,
-            typer.Option(help="Who recorded the skip (audit trail)."),
-        ] = "operator",
-    ) -> PlanResult:
-        """Mark a trivial ticket to skip planning and advance STARTED → PLANNED.
-
-        The LIGHTWEIGHT, audited sibling of ``plan-bypass`` for a trivial
-        mechanical edit (a typo, a one-line bump): records a durable
-        ``trivial_plan_skip`` marker (NO ``PlanArtifact``, no ``--human-authorize``)
-        that ``check_plan_artifact`` accepts and ``execute_provision`` reads to
-        skip the auto-planner. ``--reason`` is mandatory — an unreasoned skip is
-        refused and records nothing. See ``models.trivial_plan_skip``.
-        """
-        cleaned_reason = reason.strip()
-        if not cleaned_reason:
-            self.stderr.write("  refused: --reason is required (an unreasoned plan skip is not allowed)")
-            raise SystemExit(1)
-
-        ticket = self._resolve_ticket(ticket_id)
-        try:
-            record_trivial_skip_and_advance(ticket=ticket, reason=cleaned_reason, by=by.strip() or "operator")
-        except PlanAdvanceError as exc:
-            return PlanResult(ticket_id=int(ticket.pk), error=exc.message)
-
-        self.stdout.write(
-            f"  trivial plan skip recorded for ticket {ticket.pk} (reason={cleaned_reason!r}); state → {ticket.state}"
-        )
-        return PlanResult(ticket_id=int(ticket.pk), state=ticket.state)
-
-    @command(name="plan-reconcile-inflight")
-    def plan_reconcile_inflight(
-        self,
-        *,
-        human_authorize: Annotated[
-            str,
-            typer.Option(
-                "--human-authorize",
-                help="Human/operator authorising retroactive plan bypass for in-flight STARTED tickets.",
-            ),
-        ],
-        issue_ref: Annotated[
-            str,
-            typer.Option(help="Issue/PR reference identifying why this reconcile is necessary."),
-        ] = "",
-        dry_run: Annotated[
-            bool, typer.Option("--dry-run", help="List affected tickets without modifying them.")
-        ] = False,
-    ) -> PlanReconcileResult:
-        """Retroactively advance STARTED tickets to PLANNED after the gate was added.
-
-        One-time operator command (a data migration would fabricate an authorizer
-        it cannot name): see ``_plan_gate_commands.reconcile_inflight``. Requires
-        --human-authorize; --dry-run inspects which tickets would be affected.
-        """
-        cleaned_authorizer = human_authorize.strip()
-        if not cleaned_authorizer:
-            self.stderr.write("  refused: --human-authorize is required")
-            raise SystemExit(1)
-
-        result, log = reconcile_inflight(authorizer=cleaned_authorizer, issue_ref=issue_ref, dry_run=dry_run)
-        for line in log:
-            self.stdout.write(line)
-        return result
 
     def _resolve_ticket(self, ticket_id: int) -> Ticket:
         """Fetch a ticket or abort the subcommand with a nonzero exit (#932).

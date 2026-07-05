@@ -8002,9 +8002,11 @@ Usage: t3 teatree ticket plan [OPTIONS] TICKET_ID PLAN_TEXT
  The operator-facing plan recorder named by the ``NoPlanArtifactError``
  message: a planning task that finished out-of-band, or a ticket the
  planner never ran on, advances by recording the plan here. A blank
- ``plan_text`` is refused — a vacuous artifact cannot advance the FSM. For
- an *audited bypass* (no real plan, explicit human sign-off) use
- ``plan-bypass``; for a trivial mechanical edit use ``skip-planning``.
+ ``plan_text`` is refused — a vacuous artifact cannot advance the FSM. Under
+ ``require_plan_adequacy`` ``--base-sha`` + ``--adequacy-json`` are also
+ required (a thin spec is refused). For an *audited bypass* (no real plan,
+ explicit human sign-off) use ``plan-bypass``; for a trivial mechanical edit
+ use ``skip-planning``.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    ticket_id      INTEGER  [required]                                      │
@@ -8012,10 +8014,16 @@ Usage: t3 teatree ticket plan [OPTIONS] TICKET_ID PLAN_TEXT
 │                              [required]                                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --recorded-by        TEXT  Author identity recorded on the artifact (audit   │
-│                            trail).                                           │
-│                            [default: operator]                               │
-│ --help                     Show this message and exit.                       │
+│ --recorded-by          TEXT  Author identity recorded on the artifact (audit │
+│                              trail).                                         │
+│                              [default: operator]                             │
+│ --base-sha             TEXT  Target-branch HEAD (40-char hex) the plan was   │
+│                              authored against. Required under                │
+│                              require_plan_adequacy.                          │
+│ --adequacy-json        TEXT  Four-section adequacy manifest as a JSON object │
+│                              (design/integration_seams/edge_cases/test_stra… │
+│                              Required under require_plan_adequacy.           │
+│ --help                       Show this message and exit.                     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

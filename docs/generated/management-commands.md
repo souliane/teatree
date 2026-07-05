@@ -458,19 +458,20 @@ The ``ticket rubric-set`` / ``rubric-grade`` commands, mounted via MRO inheritan
 | `context` | Durable per-ticket knowledge store (#627, repo-namespaced key #2293) |
 | `show` | Show a ticket's state plus the per-phase ``attempt N/max`` budget (#2009) |
 | `expedite` | Flag a ticket as expedite/release-blocker (``--off`` clears it) (PR-07) |
-| `transition` | Transition a ticket to a new state |
 | `plan` | Record a PlanArtifact and advance the ticket STARTED → PLANNED |
+| `transition` | Transition a ticket to a new state |
 | `clear` | Issue a per-diff CLEAR — the orchestrator's only merge output (BLUEPRINT §17.4.2) |
 | `comment` | Post a comment to an issue or work item by its URL |
 | `bulk-close` | Close (``ignore``) a batch of tickets, gated by the no-bulk-close guard (PR-08) |
 | `integration-review-override` | Record the audited escape hatch for the cross-repo integration-review gate (PR-08) |
+| `plan-bypass` | Record an audited PlanArtifact bypass and advance the ticket to PLANNED |
+| `skip-planning` | Mark a trivial ticket to skip planning and advance STARTED → PLANNED |
+| `plan-reconcile-inflight` | Retroactively advance STARTED tickets to PLANNED after the gate was added |
+| `plan-reaffirm` | Re-bind a plan to a new base — the plan-currency gate's never-lockout escape |
 | `rubric-set` | Set a ticket's rubric from EXPLICIT JSON criteria, all PENDING (#2241) |
 | `rubric-grade` | Record a verifier's per-criterion PASS/FAIL on a ticket's rubric (#2241) |
 | `dod-override` | Record the DoD local-E2E gate escape hatch for a ticket (#88) |
 | `e2e-bypass` | Record a single-use user bypass of the mandatory-E2E gate (#1967) |
-| `plan-bypass` | Record an audited PlanArtifact bypass and advance the ticket to PLANNED |
-| `skip-planning` | Mark a trivial ticket to skip planning and advance STARTED → PLANNED |
-| `plan-reconcile-inflight` | Retroactively advance STARTED tickets to PLANNED after the gate was added |
 | `create-sub` | Create a child work item nested under a parent issue/work item |
 | `list` | List tickets, optionally filtered by state and/or overlay |
 | `sync-completions` | Check post-ship tickets against upstream issues and advance completed ones |
