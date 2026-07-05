@@ -15,12 +15,13 @@ bootstrap-config constraint #628 calls out).
 """
 
 import dataclasses
+import operator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import teatree.config as config_mod
-from teatree.config import get_effective_settings
+from teatree.config import FEATURE_FLAGS, get_effective_settings
 from teatree.config_mr_reminder import MrReminderConfig
 from teatree.paths import CANONICAL_DB, DATA_DIR, DATA_DIR_AUTO_ISOLATED
 from teatree.types import SpeakConfig
@@ -39,6 +40,7 @@ class ConfigView:
     config_exists: bool
     intent: dict[str, Any]
     derived: list[dict[str, Any]] = field(default_factory=list)
+    flags: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -46,6 +48,7 @@ class ConfigView:
             "config_exists": self.config_exists,
             "intent": self.intent,
             "derived": self.derived,
+            "flags": self.flags,
         }
 
 
@@ -60,10 +63,32 @@ def _json_safe(value: object) -> object:
 
 
 def _intent() -> dict[str, Any]:
+    # Feature flags are governed, lifecycle-staged toggles — not durable settings.
+    # They are partitioned OUT of the user-facing intent dump into their own
+    # stage-labelled ``flags`` section, so a temporary switch never reads as a knob
+    # the operator is meant to keep.
     settings = get_effective_settings()
-    out = {f.name: _json_safe(getattr(settings, f.name)) for f in dataclasses.fields(settings)}
+    out = {
+        f.name: _json_safe(getattr(settings, f.name))
+        for f in dataclasses.fields(settings)
+        if f.name not in FEATURE_FLAGS
+    }
     out["mode"] = str(out["mode"])
     return out
+
+
+def _flags() -> list[dict[str, Any]]:
+    settings = get_effective_settings()
+    return [
+        {
+            "name": key,
+            "value": getattr(settings, key),
+            "stage": flag.stage.value,
+            "tracking_issue": flag.tracking_issue,
+            "summary": flag.summary,
+        }
+        for key, flag in FEATURE_FLAGS.items()
+    ]
 
 
 def _ticket_session_counts() -> dict[str, int] | None:
@@ -110,6 +135,7 @@ def build_config_view() -> ConfigView:
         config_exists=config_path.is_file(),
         intent=_intent(),
         derived=_derived(),
+        flags=_flags(),
     )
 
 
@@ -122,11 +148,21 @@ def _render_derived_entry(entry: dict[str, Any]) -> str:
     return f"  {name}: {entry['path']} — {present}{extra}  [regenerable cache]"
 
 
+def _render_flag_entry(entry: dict[str, Any]) -> str:
+    return (
+        f"  {entry['name']} = {entry['value']}  "
+        f"[feature flag, stage={entry['stage']}, tracking {entry['tracking_issue']}]"
+    )
+
+
 def render_config_view(view: ConfigView) -> str:
     status = "present" if view.config_exists else "absent (defaults shown)"
     lines = [
         f"Intent — user-authored source of truth (TOML {view.config_path}, {status}; + DB ConfigSetting store):",
         *(f"  {key} = {view.intent[key]}" for key in sorted(view.intent)),
+        "",
+        "Flags — governed feature toggles (stage-labelled lifecycle; born and removed with the code they gate):",
+        *(_render_flag_entry(entry) for entry in sorted(view.flags, key=operator.itemgetter("name"))),
         "",
         "Derived — DB / data-dir regenerable cache (deletable, rebuilt from intent + repo):",
         *(_render_derived_entry(entry) for entry in view.derived),

@@ -30,7 +30,8 @@ from typing import Annotated
 import typer
 from django_typer.management import TyperCommand, command
 
-from teatree.config import OVERLAY_OVERRIDABLE_SETTINGS, get_effective_settings, load_config
+from teatree.config import FEATURE_FLAGS, OVERLAY_OVERRIDABLE_SETTINGS, get_effective_settings, load_config
+from teatree.config.feature_flags import flag_trailer, render_flags_audit
 from teatree.config.registries import REGISTRY_SETTINGS
 from teatree.core.config_migration import export_db_to_toml, import_toml_into_db
 from teatree.core.models import ConfigSetting
@@ -44,6 +45,16 @@ _OverlayOption = Annotated[
 def _scope_label(scope: str) -> str:
     """Human label for a row's scope: ``global`` for the empty scope else ``overlay '<name>'``."""
     return "global" if not scope else f"overlay {scope!r}"
+
+
+def _flag_suffix(key: str) -> str:
+    """A leading-space ``[feature flag, …]`` governance trailer for *key*, or ``""``.
+
+    So an operator flipping a governed, lifecycle-staged toggle sees it is a flag —
+    not a durable setting — and where its removal is tracked, without a second lookup.
+    """
+    trailer = flag_trailer(key)
+    return f"  {trailer}" if trailer else ""
 
 
 class Command(TyperCommand):
@@ -95,7 +106,7 @@ class Command(TyperCommand):
         ConfigSetting.objects.set_value(key, canonical, scope=overlay)
         # Verify-by-re-read: report the stored value the resolver will now see.
         stored = ConfigSetting.objects.get_effective(key, scope=overlay)
-        self.stdout.write(f"  set {key} = {stored!r}  [{_scope_label(overlay)}]")
+        self.stdout.write(f"  set {key} = {stored!r}  [{_scope_label(overlay)}]{_flag_suffix(key)}")
 
     @command()
     def clear(
@@ -127,6 +138,17 @@ class Command(TyperCommand):
             self.stdout.write(f"  {row.key} = {row.value!r}  [{_scope_label(row.scope)}]")
 
     @command()
+    def flags(self) -> None:
+        """The read-only dead-toggle audit report over the ``FEATURE_FLAGS`` registry.
+
+        Lists every governed feature flag with its lifecycle stage, off-value, and
+        tracking issue; a ``REMOVE``-stage flag (a toggle whose gated code is now
+        permanent) is surfaced LOUD so a dead toggle cannot rot unnoticed. Reads the
+        code-level registry only — it writes nothing to the ``ConfigSetting`` store.
+        """
+        self.stdout.write(render_flags_audit(FEATURE_FLAGS))
+
+    @command()
     def get(
         self,
         key: Annotated[str, typer.Argument(help="UserSettings field name to read (must be overridable).")],
@@ -147,10 +169,10 @@ class Command(TyperCommand):
             raise SystemExit(2)
         stored = ConfigSetting.objects.get_effective(key, scope=overlay)
         if stored is not None:
-            self.stdout.write(f"  {key} = {stored!r}  [source: db, {_scope_label(overlay)}]")
+            self.stdout.write(f"  {key} = {stored!r}  [source: db, {_scope_label(overlay)}]{_flag_suffix(key)}")
             return
         fallback = getattr(get_effective_settings(overlay or None), key, None)
-        self.stdout.write(f"  {key} = {fallback!r}  [source: file/env]")
+        self.stdout.write(f"  {key} = {fallback!r}  [source: file/env]{_flag_suffix(key)}")
 
     @command(name="import")
     def import_toml(

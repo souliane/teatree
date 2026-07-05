@@ -34,6 +34,7 @@ from teatree.config.enums import (
     TeamsDisplay,
     Wip,
 )
+from teatree.config.feature_flags import FEATURE_FLAGS, FeatureFlag, FlagStage, dark_flags, is_feature_flag
 from teatree.config.homes import BOOTSTRAP_FILE_ONLY_SETTINGS, DERIVED_FIELDS, SETTING_HOMES, SettingHome
 from teatree.config.loader import (
     CONFIG_PATH,
@@ -82,6 +83,7 @@ __all__ = [
     "DATA_DIR",
     "DERIVED_FIELDS",
     "ENV_SETTING_OVERRIDES",
+    "FEATURE_FLAGS",
     "OVERLAY_OVERRIDABLE_SETTINGS",
     "SETTING_HOMES",
     "TOML_OVERLAY_OVERRIDABLE_SETTINGS",
@@ -92,6 +94,8 @@ __all__ = [
     "ColdHookSetting",
     "E2ERepo",
     "EvalCredential",
+    "FeatureFlag",
+    "FlagStage",
     "MissingIssuePolicy",
     "Mode",
     "MrReminderConfig",
@@ -122,11 +126,13 @@ __all__ = [
     "cadence_seconds",
     "check_for_updates",
     "clone_root",
+    "dark_flags",
     "default_logging",
     "discover_active_overlay",
     "discover_overlays",
     "get_data_dir",
     "get_effective_settings",
+    "is_feature_flag",
     "load_config",
     "load_e2e_repos",
     "mr_reminder_from_table",

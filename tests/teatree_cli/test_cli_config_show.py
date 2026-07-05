@@ -19,6 +19,7 @@ from typer.testing import CliRunner
 
 from teatree.cli import app
 from teatree.cli.config_view import build_config_view
+from teatree.config import FEATURE_FLAGS
 from teatree.core.models import ConfigSetting
 
 runner = CliRunner()
@@ -68,6 +69,25 @@ class TestBuildConfigView(_TempConfig):
             view = build_config_view()
         names = {entry["name"] for entry in view.derived}
         assert "control DB" in names
+
+    def test_feature_flags_are_partitioned_out_of_intent(self) -> None:
+        with patch("teatree.config.CONFIG_PATH", self.config_path.parent / "absent.toml"):
+            view = build_config_view()
+        # A governed feature flag is NOT a durable setting: it must not appear in the
+        # user-facing intent dump — it lives in its own stage-labelled flags section.
+        for key in FEATURE_FLAGS:
+            assert key not in view.intent, f"feature flag {key!r} leaked into the intent dump"
+        flag_names = {entry["name"] for entry in view.flags}
+        assert set(FEATURE_FLAGS) <= flag_names
+
+    def test_flags_section_carries_stage_and_tracking(self) -> None:
+        with patch("teatree.config.CONFIG_PATH", self.config_path.parent / "absent.toml"):
+            view = build_config_view()
+        by_name = {entry["name"]: entry for entry in view.flags}
+        outer = by_name["outer_loop_enabled"]
+        assert outer["stage"] == "dark"
+        assert outer["tracking_issue"]
+        assert outer["value"] is False
 
 
 class TestConfigShowCommand(_TempConfig):
