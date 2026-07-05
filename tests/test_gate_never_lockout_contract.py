@@ -247,21 +247,6 @@ def test_every_pretooluse_deny_handler_is_never_lockout() -> None:
     )
 
 
-def test_loop_registration_gate_routes_through_fail_open() -> None:
-    """The incident gate itself must now fail-open-route (regression pin)."""
-    tree = _module_tree()
-    funcs = _call_graph_functions(tree)
-    reachable = _reachable_callees("handle_enforce_loop_registration", funcs)
-    assert _DENY_WRITER in reachable, "loop-registration gate must still be able to deny"
-    assert _FAIL_OPEN_ROUTER in reachable, (
-        "handle_enforce_loop_registration must route its deny through "
-        f"{_FAIL_OPEN_ROUTER} so the self-rescue + danger_gate_fail_open escapes apply"
-    )
-    assert "handle_enforce_loop_registration" not in _NEVER_LOCKOUT_EXEMPT_DENY_HANDLERS, (
-        "the loop-registration gate is FIXED (fail-open-routed); it must not be on the exemption allowlist"
-    )
-
-
 def test_plan_edit_gate_routes_through_fail_open() -> None:
     """The plan-edit gate fail-open-routes and is OFF the allowlist (#2384 PR-09 shrink).
 

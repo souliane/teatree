@@ -218,10 +218,12 @@ class TestConfigSettingFlagsAudit(TestCase):
         out = StringIO()
         call_command("config_setting", "flags", stdout=out)
         rendered = out.getvalue()
-        for key in ("outer_loop_enabled", "teams_enabled", "loop_runner_enabled"):
+        # loop_runner_enabled was graduated out by PR-28 (durable kill-switch, not a
+        # dying flag); the live registry is all-DARK, so its rows render stage=dark.
+        for key in ("outer_loop_enabled", "teams_enabled"):
             assert key in rendered
+        assert "loop_runner_enabled" not in rendered
         assert "stage=dark" in rendered
-        assert "stage=settling" in rendered
 
     def test_flags_is_read_only_creates_no_rows(self) -> None:
         call_command("config_setting", "flags", stdout=StringIO())

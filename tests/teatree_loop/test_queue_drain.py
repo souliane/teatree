@@ -26,6 +26,7 @@ from teatree.core.models import LoopLease
 from teatree.core.tasks import refresh_followup_snapshot
 from teatree.loop.queue_drain import (
     drain_ready_batch,
+    expire_stale_default_jobs,
     expire_stale_ready_jobs,
     expire_then_drain,
     stale_threshold_hours,
@@ -117,6 +118,38 @@ class TestExpireStaleReadyJobs:
         assert DBTaskResult.objects.get().status == TaskResultStatus.RUNNING
 
 
+class TestExpireStaleDefaultJobs:
+    """``expire_stale_default_jobs`` scopes the sweep to the ``default`` queue only (PR-28).
+
+    The worker's startup + hourly expiry MUST leave the ``loops``-queue timer chains
+    alone — the reconciler owns their staleness (stranded-RUNNING repair, surplus
+    prune), and a shared cutoff sweep marking a stale timer FAILED would break the
+    chain the reconciler just repaired.
+    """
+
+    def test_expires_a_stale_default_job(self) -> None:
+        refresh_followup_snapshot.enqueue()
+        _backdate(50)
+
+        retired = expire_stale_default_jobs()
+
+        assert retired == {"refresh_followup_snapshot": 1}
+        assert DBTaskResult.objects.get().status == TaskResultStatus.FAILED
+
+    def test_leaves_a_stale_loops_queue_timer_untouched(self) -> None:
+        from teatree.loops.timer_chains import loop_timer  # noqa: PLC0415 — enqueue a loops-queue row
+
+        refresh_followup_snapshot.enqueue()  # default queue — expirable
+        loop_timer.enqueue("inbox")  # loops queue — the reconciler owns its staleness
+        _backdate(50)  # both now well past the threshold
+
+        retired = expire_stale_default_jobs()
+
+        assert retired == {"refresh_followup_snapshot": 1}  # only the default-queue row
+        assert DBTaskResult.objects.get(queue_name="loops").status == TaskResultStatus.READY
+        assert DBTaskResult.objects.get(queue_name="default").status == TaskResultStatus.FAILED
+
+
 # ast-grep-ignore: ac-django-no-pytest-django-db
 @pytest.mark.django_db(transaction=True)
 class TestDrainReadyBatch:
@@ -170,10 +203,10 @@ class TestDrainReadyBatch:
 class TestWorkerSingletonProbe:
     """The drain stands down for the REAL worker singleton, never a wrong-name ghost (#5).
 
-    The probe must read the SAME constant the worker acquires — ``WORKER_SINGLETON``
-    (the #1796 :class:`LoopWorker`) and the legacy ``LEGACY_WORKER_SINGLETON`` (the
-    ``t3 <overlay> worker`` spawner still live during the deprecation window). A pid
-    file at either forces the tick drain to stand down.
+    The probe must read the SAME constant every worker acquires — the one
+    ``WORKER_SINGLETON`` (the #1796 :class:`LoopWorker` AND the ``t3 <overlay> worker``
+    db_worker spawner, after PR-28 completed the #5 deprecation of ``teatree-worker``).
+    A pid file at it forces the tick drain to stand down.
     """
 
     def _hold_pid(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str) -> None:
@@ -187,17 +220,6 @@ class TestWorkerSingletonProbe:
 
         refresh_followup_snapshot.enqueue()
         self._hold_pid(tmp_path, monkeypatch, WORKER_SINGLETON)
-
-        assert drain_ready_batch(max_jobs=5) == 0
-        assert DBTaskResult.objects.get().status == TaskResultStatus.READY
-
-    def test_drain_stands_down_for_legacy_worker_singleton(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from teatree.utils.singleton import LEGACY_WORKER_SINGLETON  # noqa: PLC0415 — test-local deferred import
-
-        refresh_followup_snapshot.enqueue()
-        self._hold_pid(tmp_path, monkeypatch, LEGACY_WORKER_SINGLETON)
 
         assert drain_ready_batch(max_jobs=5) == 0
         assert DBTaskResult.objects.get().status == TaskResultStatus.READY

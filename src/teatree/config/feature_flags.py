@@ -61,11 +61,13 @@ class FeatureFlag:
     off_value: bool = False
 
 
-# Seeded across two stages so no conformance invariant is vacuously true over an
-# empty or single-entry set: ``outer_loop_enabled`` is the canonical first flag
-# (DARK, the OFF switch the T4 autoresearch outer loop ships behind); the other
-# two are retro-classifications of existing DARK/SETTLING fields whose behaviour is
-# UNCHANGED — the registry only discriminates them.
+# ``outer_loop_enabled`` is the canonical DARK flag (the OFF switch the T4
+# autoresearch outer loop ships behind). The live registry is currently all-``DARK``
+# (PR-28 graduated the sole ``SETTLING`` flag ``loop_runner_enabled`` out — it became
+# a durable operational kill-switch, not a dying flag), so the stage-discrimination
+# machinery (:func:`dark_flags`, :func:`render_flags_audit`) is proven non-vacuously
+# over a MIXED FIXTURE in the conformance suite rather than over the live set's
+# accidental composition.
 FEATURE_FLAGS: dict[str, FeatureFlag] = {
     "outer_loop_enabled": FeatureFlag(
         field="outer_loop_enabled",
@@ -84,12 +86,6 @@ FEATURE_FLAGS: dict[str, FeatureFlag] = {
         stage=FlagStage.DARK,
         tracking_issue="souliane/teatree#1838",
         summary="Agent-teams WORK layer; ships dark until a pane-backed teammate lands.",
-    ),
-    "loop_runner_enabled": FeatureFlag(
-        field="loop_runner_enabled",
-        stage=FlagStage.SETTLING,
-        tracking_issue="souliane/teatree#1796",
-        summary="Singleton loop-worker tick driver, soaking before it owns the cadence by default.",
     ),
     "require_plan_adequacy": FeatureFlag(
         field="require_plan_adequacy",
@@ -111,13 +107,16 @@ def is_feature_flag(key: str) -> bool:
     return key in FEATURE_FLAGS
 
 
-def dark_flags() -> dict[str, FeatureFlag]:
-    """The subset of the registry still in the ``DARK`` stage.
+def dark_flags(flags: dict[str, FeatureFlag] | None = None) -> dict[str, FeatureFlag]:
+    """The subset of *flags* (the live registry by default) still in the ``DARK`` stage.
 
     The query hook a later self-catching critic uses to tie a dark flag to the
-    done-means-merged status of the code it gates.
+    done-means-merged status of the code it gates. Pure over its argument (like
+    :func:`render_flags_audit`) so the stage-filtering is proven non-vacuously over a
+    mixed fixture even when the live registry happens to be single-stage.
     """
-    return {key: flag for key, flag in FEATURE_FLAGS.items() if flag.stage is FlagStage.DARK}
+    registry = FEATURE_FLAGS if flags is None else flags
+    return {key: flag for key, flag in registry.items() if flag.stage is FlagStage.DARK}
 
 
 def flag_trailer(key: str) -> str:

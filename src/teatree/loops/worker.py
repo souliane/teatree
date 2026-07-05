@@ -7,9 +7,11 @@ supervisor thread re-reads the ``loop_runner_enabled`` kill-switch every ~5 s an
 stops every executor on a flip-off or a SIGTERM/SIGINT, joining and — after the join
 timeout — SIGKILLing any in-flight tick process group the join left orphaned, then
 exiting; the flock singleton (:func:`teatree.utils.singleton.singleton`) guarantees
-at most one worker per box. At startup the worker reconciles the loop-timer chains and seeds
-the maintenance chains, so a fresh or crash-recovered box catches up and self-heals
-with no OS scheduler (no cron / launchd / systemd). The worker supervisor +
+at most one worker per box. At startup the worker reconciles the loop-timer chains, seeds
+the maintenance chains, and expires the stale ``default``-queue backlog BEFORE spawning
+executors (so a box that queued days-old provision/ship jobs while no worker ran never
+blind-fires them on the default-ON flip), so a fresh or crash-recovered box catches up and
+self-heals with no OS scheduler (no cron / launchd / systemd). The worker supervisor +
 reconciler IS the process-watchdog surface.
 """
 
@@ -21,6 +23,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
+from teatree.loop.queue_drain import expire_stale_default_jobs
 from teatree.loops.timer_chains import _loop_runner_enabled, kill_live_tick_process_groups
 from teatree.loops.timer_reconciler import ensure_loop_timers, ensure_maintenance_chains
 
@@ -93,6 +96,7 @@ class WorkerSeams:
     enabled: Callable[[], bool] = _loop_runner_enabled
     reconcile: Callable[[], object] = ensure_loop_timers
     seed_chains: Callable[[], object] = ensure_maintenance_chains
+    expire: Callable[[], object] = expire_stale_default_jobs
     make_executor: Callable[[str, str], _Executor] = _build_executor
     spawn: Callable[[_Executor], _Handle] = _spawn_executor_thread
     kill_ticks: Callable[[], object] = kill_live_tick_process_groups
@@ -114,10 +118,14 @@ class LoopWorker:
         self._stop.set()
 
     def run(self) -> None:
-        """Reconcile, start the executors, supervise until stop, then join and exit."""
+        """Reconcile, expire stale jobs, start the executors, supervise until stop, then join and exit."""
         seams = self._seams
         seams.reconcile()
         seams.seed_chains()
+        # Expire the stale `default`-queue backlog BEFORE any executor spawns, so a box
+        # that queued days-old provision/ship jobs while no worker ran never blind-fires
+        # them the instant the worker starts (the default-ON flip's load-jam class).
+        seams.expire()
 
         self._executors = [
             seams.make_executor(queue, f"worker-{os.getpid()}-{index}-{queue}")

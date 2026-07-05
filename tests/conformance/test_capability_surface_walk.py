@@ -39,7 +39,6 @@ INTENTIONALLY_UNREGISTERED_MODULES: frozenset[str] = frozenset(
     {
         "handover",
         "health",
-        "loop_claude_spec",
         "loop_dispatch",
         "loop_drain_queue",
         "loop_list",

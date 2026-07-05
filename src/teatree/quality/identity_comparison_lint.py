@@ -27,8 +27,8 @@ against this same registry later:
 *   MW-B's SLUG family — canonical members are repo-slug forms, normalizers are
     ``normalize_repo_slug`` / ``resolve_pr_repo_slug``. Register as a
     ``LITERAL_MEMBER`` family (or an ``IDENTITY_ATTR`` guard on ``.slug``).
-*   A singleton-literal guard — the ``"worker"`` / ``"teatree-worker"`` process
-    name drift. Register as a ``LITERAL_MEMBER`` family with an EMPTY
+*   A singleton-literal guard — the ``"worker"`` process-singleton name drift.
+    Register as a ``LITERAL_MEMBER`` family with an EMPTY
     ``normalizer_calls`` set: with no normalizer, *any* comparison against the
     member literal is a violation, forcing callers onto the named constant.
 

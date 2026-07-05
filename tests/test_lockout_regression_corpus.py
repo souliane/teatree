@@ -10,16 +10,13 @@ Each corpus entry calls the same real gate function the PreToolUse hook uses:
 ``_extract_bash_ai_sig_payload`` (F1 double-space, F2 REST-API write routing),
 ``handle_block_out_of_band_merge`` (raw merge on managed repos),
 ``handle_enforce_skill_loading`` (skill-loading lockout vs bypass dimension),
-``handle_enforce_loop_registration`` (the #1677 incident gate's four
-never-lockout escapes), and ``_apply_deny_circuit_breaker`` (the UX-gate
-auto-relax that breaks a token-burning deny loop). No matchers are
-re-implemented in this test.
+and ``_apply_deny_circuit_breaker`` (the UX-gate auto-relax that breaks a
+token-burning deny loop). No matchers are re-implemented in this test.
 
-The loop-registration and circuit-breaker rows are the behavioral pin
-complementing the static AST never-lockout contract
-(``test_gate_never_lockout_contract.py``): the contract proves a deny gate
-*routes through* the escapes structurally; this corpus proves each escape
-*actually relaxes the deny* at runtime.
+The circuit-breaker rows are the behavioral pin complementing the static AST
+never-lockout contract (``test_gate_never_lockout_contract.py``): the contract
+proves a deny gate *routes through* the escapes structurally; this corpus proves
+each escape *actually relaxes the deny* at runtime.
 """
 
 import json
@@ -36,7 +33,6 @@ from hooks.scripts.hook_router import (
     _extract_bash_ai_sig_payload,
     handle_block_out_of_band_merge,
     handle_dispatch_prompt_quote_scanner_on_task_create,
-    handle_enforce_loop_registration,
     handle_enforce_orchestrator_boundary,
     handle_enforce_skill_loading,
     handle_quote_scanner_pretool,
@@ -780,87 +776,6 @@ class TestValidateMrMetadataMcpArm:
         verdict = handle_validate_mr_metadata(data)
         assert verdict is True, "BYPASS regression — malformed glab-MR MCP metadata was allowed."
         assert capsys.readouterr().out.strip(), "a deny must emit a hookSpecificOutput payload"
-
-
-class TestLoopRegistrationGateNeverLockout:
-    """The #1677 incident gate's four never-lockout escapes, pinned behaviorally.
-
-    ``handle_enforce_loop_registration`` hard-locked the whole factory several
-    times — the worst recurring incident. It denied every Bash/Edit/Write until
-    the loop cron was registered, with no escape for the agents that could not
-    register one. The fix layered four NEVER-LOCKOUT escapes; the static AST
-    contract (``test_gate_never_lockout_contract.py``) proves the gate *routes
-    through* them structurally. This corpus proves each escape *actually relaxes
-    the deny at runtime*:
-
-    1. sub-agent exemption — a sub-agent has no ``CronCreate``, so a deny is an
-        unrecoverable lockout that killed every spawned coder/reviewer;
-    2. the durable ``loop_registration_gate_enabled = false`` kill-switch;
-    3. ``_fail_open_or_deny`` routing — a self-rescue command is never denied;
-    4. ``_fail_open_or_deny`` routing — the master ``danger_gate_fail_open`` switch
-        relaxes the deny.
-
-    The must-DENY anchor (main session, gate on, no escape → blocked) is the
-    proof the must-ALLOW rows are escapes, not a gate that never fires.
-    """
-
-    @pytest.fixture(autouse=True)
-    def _state(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        state = tmp_path / "state"
-        state.mkdir()
-        monkeypatch.setattr(router, "STATE_DIR", state)
-        monkeypatch.setattr(router, "_teatree_active", lambda _session_id: True)
-        monkeypatch.setattr(router, "_autoload_enabled", lambda: True)
-        monkeypatch.setattr(router, "_session_drives_loop", lambda _session_id: True)
-
-    def _pending(self, session_id: str) -> None:
-        (router.STATE_DIR / f"{session_id}.loop-pending").write_text("1", encoding="utf-8")
-
-    def _event(self, session_id: str, *, command: str = "", agent_id: str = "") -> dict:
-        data: dict = {"session_id": session_id, "tool_name": "Bash", "tool_input": {"command": command}}
-        if agent_id:
-            data["agent_id"] = agent_id
-        return data
-
-    def test_must_deny_main_session_with_pending_marker(self, capsys: pytest.CaptureFixture[str]) -> None:
-        self._pending("anchor")
-        assert handle_enforce_loop_registration(self._event("anchor")) is True, (
-            "ANCHOR regression — the loop-registration nudge no longer fires for a main session "
-            "with a pending marker; the must-ALLOW rows below would then be vacuous."
-        )
-        assert "LOOP REGISTRATION" in capsys.readouterr().out
-
-    def test_must_allow_subagent_dispatch(self) -> None:
-        self._pending("sub")
-        assert handle_enforce_loop_registration(self._event("sub", agent_id="sub-1")) is False, (
-            "LOCKOUT regression (escape 1) — a sub-agent (no CronCreate tool) was nudge-blocked; "
-            "this is the unrecoverable lockout that killed every spawned coder/reviewer."
-        )
-
-    def test_must_allow_when_kill_switch_disables_gate(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        (Path.home() / ".teatree.toml").write_text(
-            "[teatree]\nloop_registration_gate_enabled = false\n", encoding="utf-8"
-        )
-        self._pending("off")
-        assert handle_enforce_loop_registration(self._event("off")) is False, (
-            "LOCKOUT regression (escape 2) — the durable loop_registration_gate_enabled=false "
-            "kill-switch no longer disables the nudge."
-        )
-
-    def test_must_allow_self_rescue_command(self) -> None:
-        self._pending("rescue")
-        assert handle_enforce_loop_registration(self._event("rescue", command="t3 teatree gate disable")) is False, (
-            "LOCKOUT regression (escape 3) — a self-rescue command was nudge-blocked; the gate must "
-            "never block the very commands that rescue a lockout."
-        )
-
-    def test_must_allow_when_master_fail_open_enabled(self) -> None:
-        (Path.home() / ".teatree.toml").write_text("[teatree]\ndanger_gate_fail_open = true\n", encoding="utf-8")
-        self._pending("failopen")
-        assert handle_enforce_loop_registration(self._event("failopen")) is False, (
-            "LOCKOUT regression (escape 4) — the master danger_gate_fail_open switch no longer relaxes the "
-            "loop-registration deny via _fail_open_or_deny."
-        )
 
 
 class TestCircuitBreakerRelaxesUxGate:

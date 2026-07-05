@@ -100,13 +100,28 @@ class TestMaintenanceChains(django.test.TestCase):
     def setUp(self) -> None:
         DBTaskResult.objects.all().delete()
 
-    def test_seeds_reconcile_and_prune_heads_once(self) -> None:
+    def test_seeds_reconcile_prune_and_expiry_heads_once(self) -> None:
         timer_reconciler.ensure_maintenance_chains()
         assert DBTaskResult.objects.filter(task_path=timer_reconciler.reconcile_timers.module_path).count() == 1
         assert DBTaskResult.objects.filter(task_path=timer_reconciler.prune_task_results.module_path).count() == 1
+        assert DBTaskResult.objects.filter(task_path=timer_reconciler.expire_stale_jobs.module_path).count() == 1
         # Idempotent: a second call adds no duplicates.
         timer_reconciler.ensure_maintenance_chains()
         assert DBTaskResult.objects.filter(task_path=timer_reconciler.reconcile_timers.module_path).count() == 1
+        assert DBTaskResult.objects.filter(task_path=timer_reconciler.expire_stale_jobs.module_path).count() == 1
+
+    def test_expire_stale_jobs_reschedules_itself(self) -> None:
+        result = timer_reconciler.expire_stale_jobs.func()
+        assert "deduped" not in result
+        pending = DBTaskResult.objects.filter(
+            task_path=timer_reconciler.expire_stale_jobs.module_path, status=TaskResultStatus.READY
+        )
+        assert pending.count() == 1  # a successor expiry chain is queued
+
+    def test_expire_stale_jobs_self_dedups(self) -> None:
+        timer_reconciler.expire_stale_jobs.using(run_after=timezone.now()).enqueue()
+        result = timer_reconciler.expire_stale_jobs.func()
+        assert result == {"deduped": 1}
 
     def test_reconcile_timers_reschedules_itself(self) -> None:
         result = timer_reconciler.reconcile_timers.func()

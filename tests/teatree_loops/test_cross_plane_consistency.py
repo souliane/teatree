@@ -2,10 +2,11 @@
 
 After LOOP-PR-A the loop-run sites share ONE combined verdict
 (``teatree.loop.loop_state_db.loop_enabled`` = ``Loop.enabled`` AND not
-``LoopState``-held): (1) **fan-out**:
+``LoopState``-held). The surviving driving plane is the **fan-out**:
 ``teatree.loops.loop_table.build_loop_table_jobs`` (the live loop-table fan-out,
-composing ``Loop.enabled`` + ``LoopsConfig.is_enabled``); (2) **registration**:
-``teatree.loops.claude_specs.enabled_loop_specs`` (the #2650 cron mirror).
+composing ``Loop.enabled`` + ``LoopsConfig.is_enabled``) — the worker's timer
+chains admit through the SAME verdict. (PR-28 retired the #2650 cron-mirror
+registration plane, so it is no longer a plane to keep consistent.)
 
 Two narrower tiers are layered into / beside that verdict and are pinned here so
 the planes can never silently drift apart. (a) ``LoopsConfig.is_enabled`` reads

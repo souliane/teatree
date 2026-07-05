@@ -19,9 +19,6 @@ Call sites wire this in (#1192, subsuming #1193 and #1202; #1194):
 
 *   :func:`teatree.backends.slack.reactions.add_reaction_verified` re-reads a
     posted Slack reaction via ``reactions.get`` before trusting ``reactions.add``.
-*   :func:`teatree.loops.claude_specs.verify_loop_registered` re-reads a native
-    Claude ``/loop`` cron registration against a harness ``CronList`` snapshot,
-    since only the agent — never a CLI — can call ``CronCreate``.
 *   :func:`teatree.core.pr_create_verify.verify_pr_exists` re-reads a just-created
     PR's open-state before the ship/ensure path trusts ``create_pr`` and records
     the URL, so a phantom PR (a 404 re-read) never advances the FSM (#1194).

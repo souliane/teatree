@@ -36,6 +36,7 @@ from teatree.cli._doctor_checks import (
     _check_stale_uv_venv,
     _check_statusline,
     _check_teatree_mcp_registration,
+    _check_worker_running,
 )
 from teatree.cli._doctor_plugin_repair import (
     _do_ensure_plugin_registered,
@@ -83,6 +84,7 @@ __all__ = (
     "_check_stale_uv_venv",
     "_check_statusline",
     "_check_teatree_mcp_registration",
+    "_check_worker_running",
     "_do_ensure_plugin_registered",
     "_ensure_plugin_registered",
     "_find_host_project_root",
@@ -562,6 +564,10 @@ def check() -> bool:
     from teatree.core.gates.schema_guard import doctor_check_self_db_migrations  # noqa: PLC0415
 
     ok = doctor_check_self_db_migrations() and ok
+
+    # PR-28: warn when the loop worker is enabled but no worker holds the flock —
+    # the default-ON loops are silently dead until `t3 worker ensure` spawns one.
+    ok = _check_worker_running() and ok
 
     # Pre-investigation stale-clone hard-fail gate (#948). Surfaces at
     # session start so a bug-investigation sub-agent cannot start root-

@@ -25,10 +25,9 @@ hard-deleted.
 Both are driven by the dedicated reactive drain-queue ``/loop``
 (``t3 loop drain-queue run`` → the ``loop_drain_queue`` management command →
 :func:`expire_then_drain`, behind the ``loop-drain-queue`` ``LoopLease``). The drain
-refuses to run while a live worker holds either worker-singleton flock
-(:data:`~teatree.utils.singleton.WORKER_SINGLETON` or the legacy
-:data:`~teatree.utils.singleton.LEGACY_WORKER_SINGLETON` — probed via the same
-constants the workers acquire), and it only drains the ``default`` queue — the
+refuses to run while a live worker holds the ``worker`` singleton flock
+(:data:`~teatree.utils.singleton.WORKER_SINGLETON` — probed via the same constant
+the workers acquire), and it only drains the ``default`` queue — the
 ``loops``-queue ``loop_timer`` rows advance ONLY on the worker's pinned executors, so
 the drain cannot become a second loop runner that bypasses the ``loop_runner_enabled``
 kill-switch.
@@ -145,29 +144,27 @@ def drain_batch_size() -> int:
 
 
 def a_worker_is_running() -> bool:
-    """True iff a live worker holds either worker-singleton flock.
+    """True iff a live worker holds the worker-singleton flock.
 
-    Two worker entry points can own the queue: the #1796 ``LoopWorker``
-    acquires :data:`~teatree.utils.singleton.WORKER_SINGLETON` (``"worker"``),
-    while the older ``t3 <overlay> worker`` spawner still acquires
-    :data:`~teatree.utils.singleton.LEGACY_WORKER_SINGLETON` (``"teatree-worker"``)
-    during the deprecation window. The probe imports the SAME constants the
-    workers acquire — so the name can never drift — and stands the in-process
-    tick drain down when either is alive, so the two never claim the same rows.
-    ``read_pid`` reports the live holder (and reaps a stale pid file) without
-    acquiring the lock, so probing here never disturbs a running worker.
+    Every worker entry point that can own the queue — the #1796 ``LoopWorker``
+    (``t3 worker``) AND the ``t3 <overlay> worker`` db_worker spawner — acquires the
+    ONE :data:`~teatree.utils.singleton.WORKER_SINGLETON` (``"worker"``) flock (PR-28
+    completed the #5 deprecation of the pre-#1796 ``teatree-worker`` singleton). The
+    probe imports the SAME constant the workers acquire — so the name can never drift
+    — and stands the in-process tick drain down while it is alive, so the two never
+    claim the same rows. ``read_pid`` reports the live holder (and reaps a stale pid
+    file) without acquiring the lock, so probing here never disturbs a running worker.
     """
     from teatree.utils.singleton import (  # noqa: PLC0415 — deferred: keeps queue_drain cold-import cheap
-        LEGACY_WORKER_SINGLETON,
         WORKER_SINGLETON,
         default_pid_path,
         read_pid,
     )
 
-    return any(read_pid(default_pid_path(name)) is not None for name in (WORKER_SINGLETON, LEGACY_WORKER_SINGLETON))
+    return read_pid(default_pid_path(WORKER_SINGLETON)) is not None
 
 
-def expire_stale_ready_jobs(*, threshold_hours: int | None = None) -> dict[str, int]:
+def expire_stale_ready_jobs(*, threshold_hours: int | None = None, queue_name: str | None = None) -> dict[str, int]:
     """Retire READY jobs older than the threshold, returning a count by task name.
 
     Conservative by design: only ``READY`` jobs whose ``enqueued_at`` predates
@@ -176,6 +173,12 @@ def expire_stale_ready_jobs(*, threshold_hours: int | None = None) -> dict[str, 
     the queue's terminal non-run state — carrying a :class:`StaleQueueJobError`
     so the reason is recorded and the row stays inspectable/re-enqueueable. No
     hard delete.
+
+    ``queue_name`` scopes the sweep to one queue when given. The worker's
+    startup + hourly expiry pass the ``default`` queue (via
+    :func:`expire_stale_default_jobs`) so it never touches the ``loops``-queue
+    timer chains — those are owned by the reconciler's own staleness repair
+    (stranded-RUNNING / surplus prune), and a shared cutoff sweep would fight it.
     """
     from django_tasks.base import TaskResultStatus  # noqa: PLC0415
     from django_tasks_db.models import DBTaskResult  # noqa: PLC0415
@@ -183,6 +186,8 @@ def expire_stale_ready_jobs(*, threshold_hours: int | None = None) -> dict[str, 
     hours = threshold_hours if threshold_hours is not None else stale_threshold_hours()
     cutoff = timezone.now() - dt.timedelta(hours=hours)
     stale = DBTaskResult.objects.filter(status=TaskResultStatus.READY, enqueued_at__lt=cutoff)
+    if queue_name is not None:
+        stale = stale.filter(queue_name=queue_name)
 
     retired: dict[str, int] = {}
     for job in stale.iterator():
@@ -200,6 +205,21 @@ def expire_stale_ready_jobs(*, threshold_hours: int | None = None) -> dict[str, 
     if retired:
         logger.info("Expired %d stale READY job(s) older than %dh: %s", sum(retired.values()), hours, retired)
     return retired
+
+
+def expire_stale_default_jobs() -> dict[str, int]:
+    """Retire stale READY jobs on the ``default`` queue only — the heavy FSM/headless backlog.
+
+    The worker's startup expiry (before it spawns executors) and its hourly
+    maintenance chain both call this so a box that accumulated days-old
+    provision/ship/teardown jobs while no worker ran does NOT blind-fire them the
+    instant the worker spawns (the default-ON flip's load-jam class). Scoped to the
+    ``default`` queue so the reconciler stays the sole owner of ``loops``-queue timer
+    staleness.
+    """
+    from django_tasks import DEFAULT_TASK_QUEUE_NAME  # noqa: PLC0415 — deferred: needs the app registry ready
+
+    return expire_stale_ready_jobs(queue_name=DEFAULT_TASK_QUEUE_NAME)
 
 
 def _run_one_ready_job() -> bool:

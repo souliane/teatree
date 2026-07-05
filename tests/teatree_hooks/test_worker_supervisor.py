@@ -39,6 +39,11 @@ class _Spy:
         self.calls += 1
 
 
+def _boom_scope_chain() -> tuple[str, ...]:
+    msg = "scope chain unavailable"
+    raise RuntimeError(msg)
+
+
 def test_spawns_when_enabled_and_flock_free() -> None:
     spawn = _Spy()
     action = supervisor.resurrect_worker(enabled=lambda: True, flock_free=lambda: True, spawn=spawn)
@@ -114,12 +119,19 @@ class TestWorkerEnabledColdRead:
         monkeypatch.delenv("T3_LOOP_RUNNER_ENABLED", raising=False)
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
 
-    def test_flag_off_returns_false_and_boots_no_django(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_no_row_defaults_on_and_boots_no_django(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         self._clear_env(monkeypatch)
-        _config_db(tmp_path, monkeypatch, rows=[])  # no loop_runner_enabled row -> default OFF
+        _config_db(tmp_path, monkeypatch, rows=[])  # no loop_runner_enabled row -> default ON (PR-28)
         boots = _arm_django_boot_spy(monkeypatch)
-        assert supervisor._worker_enabled() is False
-        assert boots == []  # the default-OFF flag read pays NO django.setup() (#2879 parity)
+        assert supervisor._worker_enabled() is True  # fresh install: cold-read default is ON
+        assert boots == []  # the default flag read pays NO django.setup() (#2879 parity)
+
+    def test_explicit_false_row_disables_via_cold_read(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._clear_env(monkeypatch)
+        _config_db(tmp_path, monkeypatch, rows=[("", "loop_runner_enabled", False)])  # kill-switch flipped OFF
+        boots = _arm_django_boot_spy(monkeypatch)
+        assert supervisor._worker_enabled() is False  # explicit OFF stops the spawn
+        assert boots == []
 
     def test_global_db_row_true_enables_via_cold_read(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         self._clear_env(monkeypatch)
@@ -148,12 +160,22 @@ class TestWorkerEnabledColdRead:
         assert supervisor._worker_enabled() is True
         assert boots == []
 
-    def test_unreadable_db_fails_off(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_absent_db_resolves_to_default_on(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A pre-`t3 setup` box has no config DB; the cold reader fails OPEN to the
+        # default, and PR-28's default is ON — so a fresh box spawns rather than
+        # silently sitting dead (Fable #1/#6). It still boots no Django and never crashes.
         self._clear_env(monkeypatch)
         monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "absent.sqlite3"))
         boots = _arm_django_boot_spy(monkeypatch)
-        assert supervisor._worker_enabled() is False  # fail-open to OFF, never a crash
+        assert supervisor._worker_enabled() is True
         assert boots == []
+
+    def test_read_path_exception_fails_safe_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The last-resort guard: a genuine read-path failure (an unimportable
+        # `bool_setting`) fails SAFE to OFF rather than crashing the SessionStart hook.
+        self._clear_env(monkeypatch)
+        monkeypatch.setattr(supervisor, "_enabled_scope_chain", _boom_scope_chain)
+        assert supervisor._worker_enabled() is False
 
 
 class TestFlockLivenessProbe:

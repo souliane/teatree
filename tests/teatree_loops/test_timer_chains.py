@@ -243,6 +243,28 @@ class TestLoopTimerKillSwitch(django.test.TestCase):
         assert result["action"] == "ticked"
         assert len(timer_chains.pending_loop_timers("inbox")) == 1  # successor enqueued — chain lives
 
+    def test_default_config_drives_the_chain(self) -> None:
+        # PR-28 anti-vacuity: with NO ConfigSetting row and no env override, the flip
+        # makes the DEFAULT resolve ON, so an enabled+due loop ticks rather than halting.
+        # RED on pre-flip code (default OFF -> "halted"): this is the behavioural proof
+        # that the worker owns the cadence out of the box.
+        from teatree.core.models import ConfigSetting  # noqa: PLC0415 — test-local deferred import
+
+        self._enable_inbox()
+        assert not ConfigSetting.objects.filter(key="loop_runner_enabled").exists()
+
+        def _fake_tick(name: str, *, deadline: float) -> dict[str, object]:
+            Loop.objects.mark_run(name, timezone.now())
+            return {"timed_out": False, "returncode": 0}
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.delenv("T3_LOOP_RUNNER_ENABLED", raising=False)
+            mp.setattr(timer_chains, "run_deadlined_tick", _fake_tick)
+            assert timer_chains._loop_runner_enabled() is True  # default resolves ON
+            result = timer_chains.loop_timer.func("inbox")
+
+        assert result["action"] == "ticked"
+
 
 class TestLiveTickProcessGroups(django.test.SimpleTestCase):
     """The worker-shutdown kill surface: in-flight tick groups are tracked + killed."""

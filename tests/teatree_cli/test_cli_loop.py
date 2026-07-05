@@ -137,15 +137,15 @@ class TestStatusCommand:
 
 
 class TestStartCommand:
-    def test_print_only_emits_per_loop_registration_guidance(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_print_only_emits_worker_owned_cadence_guidance(self, monkeypatch: pytest.MonkeyPatch) -> None:
         result = runner.invoke(loop_app, ["start", "--print-only"])
 
         assert result.exit_code == 0
-        # #2650: per-loop registration via the claude-spec path + the /t3:loops skill,
-        # NOT a single fat `/loop` slot.
-        assert "t3 loop claude-spec" in result.stdout
-        assert "t3 loops tick --loop" in result.stdout
-        assert "/t3:loops" in result.stdout
+        # PR-28: the worker owns the cadence; the guidance points at the worker status
+        # + per-loop enable/disable, NOT the retired claude-spec cron-mirror path.
+        assert "t3 worker status" in result.stdout
+        assert "t3 loop enable|disable" in result.stdout
+        assert "reactive infra loops" in result.stdout
         assert "--slot" not in result.stdout
 
     def test_inside_claude_session_falls_back_to_print(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -153,7 +153,7 @@ class TestStartCommand:
         result = runner.invoke(loop_app, ["start"])
 
         assert result.exit_code == 0
-        assert "t3 loop claude-spec" in result.stdout
+        assert "t3 worker status" in result.stdout
 
     def test_missing_claude_binary_exits_with_guidance(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("CLAUDECODE", raising=False)
@@ -165,7 +165,7 @@ class TestStartCommand:
 
         assert result.exit_code == 1
         assert "claude` not found" in result.stdout
-        assert "t3 loop claude-spec" in result.stdout
+        assert "t3 worker status" in result.stdout
 
     def test_spawns_claude_without_a_fat_slot(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("CLAUDECODE", raising=False)

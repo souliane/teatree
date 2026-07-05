@@ -66,8 +66,7 @@ class ReactiveSlot:
     """A reactive infra ``/loop`` slot — sub-minute, so it registers via the ``/loop <duration>`` form (#2650).
 
     The three reactive slots (Slack-answer, self-improve, drain-queue) have NO DB
-    ``Loop`` row: their sub-minute cadence cannot be a minute-granular cron
-    (:func:`teatree.loops.claude_specs.cron_for_loop` floors to whole minutes), so
+    ``Loop`` row: their sub-minute cadence cannot be a minute-granular cron, so
     each is its OWN dedicated ``/loop`` on a *duration* cadence. This bundles a
     slot's cadence reader (the SoT for its throttle seconds, above) with the
     ``t3 loop <slot> run`` it fires, so ``t3 loop <slot> start`` AND the
