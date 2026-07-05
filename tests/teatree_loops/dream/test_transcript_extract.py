@@ -4,6 +4,7 @@ from django.test import TestCase
 
 from teatree.loops.dream.transcript_extract import (
     high_signal_lines,
+    looks_like_learning,
     looks_like_user_ask,
     looks_like_user_correction,
     user_ask_lines,
@@ -132,6 +133,42 @@ class LooksLikeUserAskTestCase(TestCase):
         assert not looks_like_user_ask('{"type":"user","text":"the pipeline looks wedged today"}')
 
 
+class LooksLikeLearningTestCase(TestCase):
+    """The role-agnostic keeper for a SUBSTANTIVE learning line (#2986).
+
+    The richest raw drift is often a declarative finding/decision carrying none of
+    :data:`TRANSCRIPT_SIGNALS` and neither a correction nor an ask cue — an
+    assistant "root caused X to Y", or a user stating a lesson. This keeper catches
+    it, keyword-blind of the literal-signal list and, unlike the correction/ask
+    keepers, from EITHER role.
+    """
+
+    def test_root_cause_finding_is_flagged(self) -> None:
+        assert looks_like_learning('{"type":"assistant","text":"root caused the crash to a missing tenant filter"}')
+
+    def test_turns_out_discovery_is_flagged(self) -> None:
+        assert looks_like_learning('{"type":"assistant","text":"turns out the migration was never applied"}')
+
+    def test_the_bug_was_is_flagged(self) -> None:
+        assert looks_like_learning('{"type":"assistant","text":"the bug was an off-by-one in the paginator"}')
+
+    def test_decision_is_flagged(self) -> None:
+        assert looks_like_learning('{"type":"assistant","text":"decided to split the resolver into two passes"}')
+
+    def test_user_stated_lesson_is_flagged(self) -> None:
+        # A lesson stated by the USER (not a correction, not an ask) is still drift.
+        assert looks_like_learning('{"type":"user","text":"the reason is the tenant scope is applied too late"}')
+
+    def test_should_have_regret_is_flagged(self) -> None:
+        assert looks_like_learning('{"type":"assistant","text":"I should have run the gate before pushing"}')
+
+    def test_neutral_status_chatter_is_not_flagged(self) -> None:
+        assert not looks_like_learning('{"type":"assistant","text":"computed result row 7"}')
+
+    def test_neutral_filler_prose_is_not_flagged(self) -> None:
+        assert not looks_like_learning('{"type":"user","text":"a neutral request with no cue at all here"}')
+
+
 class UserAskLinesTestCase(TestCase):
     """The sibling of :func:`high_signal_lines` that keeps only user-ask turns."""
 
@@ -180,3 +217,11 @@ class HighSignalLinesTestCase(TestCase):
         # automation half needs it clustered — high_signal_lines must keep it too.
         raw = '{"type":"assistant","text":"noise"}\n{"type":"user","text":"please set up the hotfix lane"}'
         assert "please set up the hotfix lane" in high_signal_lines(raw)
+
+    def test_keeps_substantive_learning_prose_with_no_signal_keyword(self) -> None:
+        # #2986: a declarative learning carries no literal signal token and neither a
+        # correction nor an ask cue, yet it is the day's richest drift — the input the
+        # keyword gate starved before. high_signal_lines must keep it (either role).
+        learning = '{"type":"assistant","text":"root caused the empty owner crash to a missing tenant filter"}'
+        raw = f'{{"type":"assistant","text":"row noise"}}\n{learning}'
+        assert "root caused the empty owner crash" in high_signal_lines(raw)
