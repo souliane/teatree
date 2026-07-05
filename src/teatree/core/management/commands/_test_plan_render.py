@@ -501,14 +501,27 @@ def _test_plan_block(state: TestPlanState, workflow: str) -> list[str]:
 
 
 def _workflow_table(state: TestPlanState, workflow: str) -> list[str]:
-    """Heading + optional steps + ``| Dev | Local |`` table for one workflow."""
+    """Heading + optional steps + ``| Dev | Local |`` table for one workflow.
+
+    A backend-only workflow carries neither video nor screenshots on either
+    side; emitting the table header alone renders an empty ``| Dev | Local |``
+    grid that reads as missing evidence. Such a workflow renders as its heading
+    + steps only (the steps carry the ``Actual: ✅`` claim), no empty table.
+    """
     dev_video, dev_images = _cells(state["dev"], workflow)
     local_video, local_images = _cells(state["local"], workflow)
 
     lines = [f"### {workflow}", ""]
     lines.extend(_test_plan_block(state, workflow))
+
+    has_video = dev_video != _EMPTY_CELL or local_video != _EMPTY_CELL
+    has_images = bool(dev_images or local_images)
+    if not has_video and not has_images:
+        lines.append("")
+        return lines
+
     lines.extend(["| Dev | Local |", "|---|---|"])
-    if dev_video != _EMPTY_CELL or local_video != _EMPTY_CELL:
+    if has_video:
         lines.append(f"| {dev_video} | {local_video} |")
     for i in range(max(len(dev_images), len(local_images))):
         left = dev_images[i] if i < len(dev_images) else _EMPTY_CELL

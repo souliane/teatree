@@ -159,8 +159,12 @@ class LooksLikeLearningTestCase(TestCase):
         # A lesson stated by the USER (not a correction, not an ask) is still drift.
         assert looks_like_learning('{"type":"user","text":"the reason is the tenant scope is applied too late"}')
 
-    def test_should_have_regret_is_flagged(self) -> None:
-        assert looks_like_learning('{"type":"assistant","text":"I should have run the gate before pushing"}')
+    def test_generic_should_have_coordination_is_not_kept_but_real_learning_is(self) -> None:
+        # "should have" over-kept generic coordination hindsight that carries no
+        # substantive finding, so it was dropped from the cue list; a declarative
+        # learning that names the actual cause still rides a real cue.
+        assert not looks_like_learning('{"type":"user","text":"we should have pinged the release manager sooner"}')
+        assert looks_like_learning('{"type":"assistant","text":"the mistake was not running the gate before pushing"}')
 
     def test_neutral_status_chatter_is_not_flagged(self) -> None:
         assert not looks_like_learning('{"type":"assistant","text":"computed result row 7"}')

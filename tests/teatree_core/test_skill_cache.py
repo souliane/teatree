@@ -49,12 +49,21 @@ class TestBuildRequiresIndex:
         with patch.object(skill_cache_mod, "_CLAUDE_SKILLS_DIR", skills_dir):
             index = _build_requires_index()
 
-        assert index == [{"skill": "example", "requires": ["rules", "workspace"]}]
+        assert index == [{"skill": "example", "requires": ["rules", "workspace"], "companions": []}]
+
+    def test_indexes_companions_alongside_requires(self, tmp_path: Path) -> None:
+        frontmatter = (
+            "---\nname: example\ndescription: d\nrequires:\n    - rules\ncompanions:\n    - writing-plans\n---\n"
+        )
+        skills_dir = _make_skills_dir(tmp_path, {"example": frontmatter})
+        with patch.object(skill_cache_mod, "_CLAUDE_SKILLS_DIR", skills_dir):
+            index = _build_requires_index()
+        assert index == [{"skill": "example", "requires": ["rules"], "companions": ["writing-plans"]}]
 
     def test_skill_without_requires_gets_empty_list(self, tmp_path: Path) -> None:
         skills_dir = _make_skills_dir(tmp_path, {"plain": "---\nname: plain\n---\n# Body"})
         with patch.object(skill_cache_mod, "_CLAUDE_SKILLS_DIR", skills_dir):
-            assert _build_requires_index() == [{"skill": "plain", "requires": []}]
+            assert _build_requires_index() == [{"skill": "plain", "requires": [], "companions": []}]
 
     def test_sorts_by_skill_name(self, tmp_path: Path) -> None:
         skills_dir = _make_skills_dir(

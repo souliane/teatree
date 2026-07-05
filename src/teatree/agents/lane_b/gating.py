@@ -171,6 +171,19 @@ def hard_deny_reason(tool_name: str, tool_args: dict[str, Any], *, cwd: Path | N
 #: terminal :class:`UnexpectedModelBehavior` that ends the run instead of retrying.
 _DEFAULT_MAX_DENIALS: int = 3
 
+#: Cap on how many distinct runs' denial tallies :class:`HardDenyToolset` retains.
+#: ``denial_counts`` is shared across every ``for_run`` copy for the toolset's whole
+#: life, so without a bound it grows one entry per run forever. Only the in-flight
+#: run's tally is ever read, so evicting the oldest-inserted keys once the cap is
+#: crossed cannot lose a live count.
+_MAX_TRACKED_RUNS: int = 256
+
+
+def _bound_denial_counts(counts: dict[str, int]) -> None:
+    """Evict oldest-inserted run tallies until *counts* fits :data:`_MAX_TRACKED_RUNS`."""
+    while len(counts) > _MAX_TRACKED_RUNS:
+        counts.pop(next(iter(counts)))
+
 
 @dataclass
 class HardDenyToolset(WrapperToolset[None]):
@@ -189,9 +202,12 @@ class HardDenyToolset(WrapperToolset[None]):
     *max_denials* caps how many hard-denies a single run may raise: past it the
     deny is a terminal :class:`UnexpectedModelBehavior` (the run ends) rather than
     a :class:`ModelRetry`, so a predicate false-positive cannot loop the model.
-    *denial_counts* tallies denials per ``run_id``; it is a shared-by-``replace``
-    field (``for_run`` rebuilds the toolset), so all per-run copies increment the
-    same tally and each run's count is isolated by its own key.
+    *denial_counts* tallies denials per run; it is a shared-by-``replace`` field
+    (``for_run`` rebuilds the toolset), so all per-run copies increment the same
+    tally and each run's count is isolated by its own key. A run with no ``run_id``
+    keys off the context's identity rather than a shared ``""`` bucket (which would
+    pool unrelated runs' denials and trip the cap early), and the tally is bounded
+    to :data:`_MAX_TRACKED_RUNS` so it cannot grow one entry per run forever.
     """
 
     cwd: Path | None = None
@@ -203,9 +219,11 @@ class HardDenyToolset(WrapperToolset[None]):
     ) -> Any:  # noqa: ANN401 — the ``WrapperToolset.call_tool`` contract is ``-> Any``; matched here.
         reason = hard_deny_reason(name, tool_args, cwd=self.cwd)
         if reason is not None:
-            run_key = getattr(ctx, "run_id", "") or ""
-            self.denial_counts[run_key] = self.denial_counts.get(run_key, 0) + 1
-            if self.denial_counts[run_key] >= self.max_denials:
+            run_key = getattr(ctx, "run_id", "") or f"anon-{id(ctx)}"
+            count = self.denial_counts.get(run_key, 0) + 1
+            self.denial_counts[run_key] = count
+            _bound_denial_counts(self.denial_counts)
+            if count >= self.max_denials:
                 cap_reached = (
                     f"Lane-B hard-deny retry cap reached ({self.max_denials} refusals this run); "
                     f"aborting rather than looping. Last refusal — {reason}"

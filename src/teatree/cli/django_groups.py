@@ -104,6 +104,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
                 "post-test-plan",
                 "Post/update the ticket's single test-plan note (side-by-side Dev|Local test plan) from a manifest.",
             ),
+            ("retract-evidence", "Withdraw the ticket's single test-plan note."),
             (
                 "post-evidence",
                 "[Deprecated] Alias for post-test-plan (renamed; kept one release for back-compat).",

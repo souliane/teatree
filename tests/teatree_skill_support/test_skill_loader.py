@@ -39,8 +39,8 @@ class TestBuildRequiresIndex:
         # ``code`` requires the migrated companion + its declared deps.
         assert "workspace" in by_skill["code"]["requires"]
         assert "test-driven-development" in by_skill["code"]["requires"]
-        # Every entry has exactly the two keys.
-        assert all(set(e) == {"skill", "requires"} for e in index)
+        # Every entry has exactly the three keys.
+        assert all(set(e) == {"skill", "requires", "companions"} for e in index)
 
     def test_sorted_by_skill_name(self):
         if not SKILLS_DIR.is_dir():
@@ -56,7 +56,7 @@ class TestBuildRequiresIndex:
         skill_dir = tmp_path / "no-requires"
         skill_dir.mkdir()
         (skill_dir / "SKILL.md").write_text("---\nname: no-requires\n---\n# No requires")
-        assert build_requires_index([tmp_path]) == [{"skill": "no-requires", "requires": []}]
+        assert build_requires_index([tmp_path]) == [{"skill": "no-requires", "requires": [], "companions": []}]
 
     def test_dedup_across_search_dirs(self, tmp_path):
         first = tmp_path / "a"

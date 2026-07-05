@@ -88,6 +88,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "teams_idle_minutes": _parse_overridable_positive_int(30),
     "teams_display": TeamsDisplay.parse,
     "require_human_approval_to_merge": _parse_strict_bool,
+    "max_open_prs_per_repo_per_ticket": _parse_strict_int,
     "require_human_approval_to_answer": _parse_strict_bool,
     "on_behalf_post_mode": OnBehalfPostMode.parse,
     "missing_issue_ref_policy": MissingIssuePolicy.parse,
@@ -482,6 +483,16 @@ class UserSettings:
     # comfortable (BLUEPRINT § 5.6.2). No effect in `interactive` mode,
     # where every publishing action prompts regardless.
     require_human_approval_to_merge: bool = True
+    # Per-(repo, ticket) open-PR budget: the max number of concurrently-open
+    # (not-merged) PRs a single ticket may have in one repo. Enforced at the
+    # core PR-creation seam by ``pr_budget_gate`` before a PR is opened. The
+    # neutral default ``0`` means unlimited, so core ships INERT (no behaviour
+    # change) until an overlay opts in; set ``1`` to enforce "at most one open
+    # PR per repo per ticket" for that overlay. Constraint-as-data: the scope
+    # is a per-overlay ``ConfigSetting`` row, never a branch in core code, so a
+    # second overlay wanting a different value needs no code change. DB-home
+    # (#1775); per-overlay overridable.
+    max_open_prs_per_repo_per_ticket: int = 0
     # Training-wheel for the `t3:answerer` capability (#670, resolving
     # #654 Open Question #3): when true, the agent drafts a reply to an
     # inbound question, DMs the user for approval, and posts only on

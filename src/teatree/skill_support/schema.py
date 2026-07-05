@@ -8,10 +8,12 @@ Teatree frontmatter is a superset of APM's SKILL.md format:
 - Teatree adds: ``requires``, ``metadata``, ``compatibility``
 
 Unknown fields produce warnings (not errors) to preserve APM compatibility —
-APM or other tools may add fields teatree doesn't know about. The
-free-text-trigger fields (``triggers``, ``search_hints``, ``companions``) were
-removed with explicit skill loading; a stale one fails validation loud so a
-skill file never silently carries a dead mechanism.
+APM or other tools may add fields teatree doesn't know about. The free-text
+intent-trigger fields (``triggers``, ``search_hints``) were removed with
+explicit skill loading; a stale one fails validation loud so a skill file never
+silently carries a dead mechanism. ``companions`` is distinct and recognised: an
+optional SOFT suggestion list (complementary-not-mandatory), the counterpart to
+the hard, transitive ``requires`` dependency edge.
 """
 
 import sys
@@ -25,6 +27,7 @@ _KNOWN_TOP_LEVEL = frozenset(
         "description",
         "version",
         "requires",
+        "companions",
         "metadata",
         "compatibility",
         "eval_exempt",
@@ -38,7 +41,6 @@ _REMOVED_TOP_LEVEL = frozenset(
     {
         "triggers",
         "search_hints",
-        "companions",
     }
 )
 
@@ -113,9 +115,10 @@ def validate_skill_md(path: Path, *, known_skills: set[str] | None = None) -> tu
     if "eval_exempt" in fields:
         _validate_eval_exempt(path, frontmatter, errors)
 
-    # Validate requires references.
+    # Validate requires + companions references (both name skills).
     if known_skills is not None:
-        _validate_requires_refs(path, frontmatter, known_skills, errors)
+        _validate_list_field_refs(path, frontmatter, "requires", known_skills, errors)
+        _validate_list_field_refs(path, frontmatter, "companions", known_skills, errors)
 
     return errors, warnings
 
@@ -140,22 +143,24 @@ def _validate_eval_exempt(path: Path, frontmatter: str, errors: list[str]) -> No
         return
 
 
-def _validate_requires_refs(
+def _validate_list_field_refs(
     path: Path,
     frontmatter: str,
+    field_name: str,
     known_skills: set[str],
     errors: list[str],
 ) -> None:
-    in_requires = False
+    """Validate that every skill named under *field_name* (``requires``/``companions``) resolves."""
+    in_field = False
     for line in frontmatter.splitlines():
         stripped = line.strip()
         if not line.startswith((" ", "\t")) and ":" in stripped:
-            in_requires = stripped.split(":")[0].strip() == "requires"
+            in_field = stripped.split(":")[0].strip() == field_name
             continue
-        if in_requires and stripped.startswith("- "):
+        if in_field and stripped.startswith("- "):
             ref = stripped.removeprefix("- ").strip().strip("'\"")
             if ref and ref not in known_skills and ref not in _EXTERNAL_REQUIRES:
-                errors.append(f"{path}: requires unknown skill '{ref}'")
+                errors.append(f"{path}: {field_name} unknown skill '{ref}'")
 
 
 def validate_directory(root: Path) -> tuple[list[str], list[str]]:

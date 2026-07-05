@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from fnmatch import fnmatch
 from pathlib import Path
 
-from teatree.skill_support.deps import SkillIndex, resolve_requires
+from teatree.skill_support.deps import SkillIndex, companion_suggestions, resolve_requires
 from teatree.types import SkillMetadata
 from teatree.utils import git
 
@@ -103,6 +103,9 @@ class SkillSelectionResult:
     lifecycle_skill: str = ""
     ask_user: bool = False
     advisory_skills: tuple[str, ...] = ()
+    #: SOFT companion suggestions of the resolved skills — surfaced, never loaded
+    #: as a hard dependency (that is what ``requires`` → ``skills`` is for).
+    companion_suggestions: tuple[str, ...] = ()
 
 
 type OverlaySkillMetadata = SkillMetadata | dict[str, object]
@@ -214,9 +217,13 @@ class SkillLoadingPolicy:
         resolved = _dedupe(self._resolve_requires_chain(ordered, skill_index or []))
         suggestions = [skill for skill in resolved if skill not in loaded_skills]
         advisory = tuple(skill for skill in suggestions if skill not in hard_resolved)
+        companions = tuple(
+            skill for skill in companion_suggestions(resolved, skill_index or []) if skill not in loaded_skills
+        )
         return SkillSelectionResult(
             skills=suggestions,
             advisory_skills=advisory,
+            companion_suggestions=companions,
         )
 
     # ast-grep-ignore: ac-django-no-complexity-suppressions

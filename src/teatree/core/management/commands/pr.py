@@ -40,12 +40,14 @@ from teatree.core.management.commands._ship_gates import (
     BranchCurrencyFailure,
     E2EMandatoryGateFailure,
     NoCommitsAheadError,
+    PrBudgetGateFailure,
     VisualQAGateFailure,
 )
 from teatree.core.management.commands._ship_gates import assert_commits_ahead_of_base as _assert_commits_ahead_of_base
 from teatree.core.management.commands._ship_gates import check_shipping_gate as _check_shipping_gate
 from teatree.core.management.commands._ship_gates import run_branch_currency_gate as _run_branch_currency_gate
 from teatree.core.management.commands._ship_gates import run_e2e_mandatory_gate as _run_e2e_mandatory_gate
+from teatree.core.management.commands._ship_gates import run_pr_budget_gate as _run_pr_budget_gate
 from teatree.core.management.commands._ship_gates import run_visual_qa_gate as _run_visual_qa_gate
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import Ticket, Worktree
@@ -115,6 +117,7 @@ def _run_ship_gates(
     | VisualQAGateFailure
     | BranchCurrencyFailure
     | E2EMandatoryGateFailure
+    | PrBudgetGateFailure
     | PrValidationError
     | None
 ):
@@ -125,6 +128,11 @@ def _run_ship_gates(
     The branch-currency gate (#940) runs FIRST: a stale base would
     otherwise poison the visual-QA gate (it would render the
     pre-merge tree) and the cold reviewer's SHA attestation.
+
+    The PR-budget gate (north-star PR-2) runs right after the shipping
+    gate — both are cheap DB/state reads — and before the expensive
+    diff-rendering gates, so a ticket already at its per-repo open-PR
+    budget fails fast before any push creates an orphan remote branch.
 
     ``title`` is the explicit ``--title`` override: it has not yet been
     persisted to ``extra['pr_title_override']`` (that happens at ship time,
@@ -138,6 +146,9 @@ def _run_ship_gates(
     gate_error = _check_shipping_gate(ticket)
     if gate_error is not None:
         return gate_error
+    budget_error = _run_pr_budget_gate(ticket, worktree)
+    if budget_error is not None:
+        return budget_error
     # Overlay-scoped (#1012): no-op unless the overlay forbids auto-close
     # trailers; raises SystemExit with the offending line otherwise.
     run_close_keyword_gate(ticket, worktree)
@@ -228,6 +239,7 @@ class Command(TyperCommand):
         | VisualQAGateFailure
         | BranchCurrencyFailure
         | E2EMandatoryGateFailure
+        | PrBudgetGateFailure
         | ShippingGateFailure
         | WorktreeMissingError
         | NoCommitsAheadError

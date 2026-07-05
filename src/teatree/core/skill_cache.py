@@ -19,7 +19,7 @@ import teatree
 from teatree.core.overlay_loader import get_overlay
 from teatree.paths import DATA_DIR
 from teatree.skill_support.deps import resolve_all
-from teatree.skill_support.requires_parser import parse_requires
+from teatree.skill_support.requires_parser import parse_companions, parse_requires
 from teatree.skill_support.schema import validate_skill_md
 
 logger = logging.getLogger(__name__)
@@ -59,7 +59,7 @@ def _validate_skills(known_skills: set[str]) -> None:
 
 
 def _build_requires_index() -> list[dict]:
-    """Scan ``~/.claude/skills/*/SKILL.md`` and index each skill's ``requires:``."""
+    """Scan ``~/.claude/skills/*/SKILL.md`` and index each skill's ``requires:`` + ``companions:``."""
     index: list[dict] = []
 
     if not _CLAUDE_SKILLS_DIR.is_dir():
@@ -84,8 +84,13 @@ def _build_requires_index() -> list[dict]:
             text = skill_md.read_text(encoding="utf-8")
         except OSError:
             continue
-        requires = parse_requires(text)
-        index.append({"skill": skill_dir.name, "requires": requires or []})
+        index.append(
+            {
+                "skill": skill_dir.name,
+                "requires": parse_requires(text) or [],
+                "companions": parse_companions(text) or [],
+            }
+        )
 
     index.sort(key=operator.itemgetter("skill"))
     return index

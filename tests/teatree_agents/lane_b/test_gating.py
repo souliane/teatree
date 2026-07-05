@@ -8,6 +8,7 @@ from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.toolsets.function import FunctionToolset
 
 from teatree.agents.lane_b.gating import (
+    _MAX_TRACKED_RUNS,
     HardDenyToolset,
     hard_deny_reason,
     make_soft_gate_predicate,
@@ -162,6 +163,36 @@ class TestHardDenyRetryCap:
             asyncio.run(toolset.call_tool("shell", _DENIED_CALL, SimpleNamespace(run_id="run-1"), None))
         with pytest.raises(ModelRetry):
             asyncio.run(toolset.call_tool("shell", _DENIED_CALL, SimpleNamespace(run_id="run-2"), None))
+
+
+class TestDenialCountsBounded:
+    """``denial_counts`` stays bounded and never grows a shared ``""`` bucket (#81)."""
+
+    def test_tally_is_capped_across_many_runs(self) -> None:
+        # One deny per run over more distinct runs than the cap: without a bound the
+        # dict would grow one key per run forever; the reaper keeps it within the cap.
+        toolset = HardDenyToolset(FunctionToolset(), max_denials=2)
+        for i in range(_MAX_TRACKED_RUNS + 50):
+            with pytest.raises(ModelRetry):
+                asyncio.run(toolset.call_tool("shell", _DENIED_CALL, SimpleNamespace(run_id=f"run-{i}"), None))
+        assert len(toolset.denial_counts) <= _MAX_TRACKED_RUNS
+
+    def test_missing_run_id_does_not_create_an_empty_key_bucket(self) -> None:
+        toolset = HardDenyToolset(FunctionToolset(), max_denials=2)
+        with pytest.raises(ModelRetry):
+            asyncio.run(toolset.call_tool("shell", _DENIED_CALL, SimpleNamespace(), None))
+        assert "" not in toolset.denial_counts
+
+    def test_two_run_id_less_runs_do_not_share_a_tally(self) -> None:
+        # Distinct contexts with no run_id must not pool into one bucket and trip the
+        # cap early — each keys off its own context identity. Both are held live so
+        # their ids cannot be reused between the two calls.
+        toolset = HardDenyToolset(FunctionToolset(), max_denials=2)
+        ctx_a, ctx_b = SimpleNamespace(), SimpleNamespace()
+        with pytest.raises(ModelRetry):
+            asyncio.run(toolset.call_tool("shell", _DENIED_CALL, ctx_a, None))
+        with pytest.raises(ModelRetry):
+            asyncio.run(toolset.call_tool("shell", _DENIED_CALL, ctx_b, None))
 
 
 class TestSoftGate:
