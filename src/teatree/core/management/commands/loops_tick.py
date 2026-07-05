@@ -9,10 +9,10 @@ usage, so neither a human nor an agent can start a fat fan-out tick.
 
 Each per-loop tick first reconciles availability (#2544): both drivers that fire
 this command — the ``t3 worker``'s deadlined subprocess timer tick
-(``python -m teatree loops_tick --loop <name>``) and the legacy native Claude
-``/loop`` cron (which runs ``t3 loops tick --loop <name>``) — converge here, so
-consulting :func:`teatree.core.availability.resolve_mode` in ONE place reconciles
-both drivers identically. When the resolved mode's ``pauses_self_pump`` is true
+(``python -m teatree loops_tick --loop <name>``) and a manual by-hand
+``t3 loops tick --loop <name>`` — converge here, so consulting
+:func:`teatree.core.availability.resolve_mode` in ONE place reconciles both drivers
+identically. When the resolved mode's ``pauses_self_pump`` is true
 (holiday-``away`` only), the tick is skipped silently (parked) before any lease
 is claimed or overlay is preflighted; ``autonomous_away`` defers questions like
 ``away`` but does NOT pause here, so an unattended run keeps self-pumping.
@@ -205,16 +205,17 @@ class Command(TyperCommand):
     ) -> None:
         if not loop.strip():
             self.stderr.write(
-                "t3 loops tick requires --loop <name>. The loop is per-loop only (#2650): one native "
-                "Claude `/loop` per enabled DB Loop row, each firing `t3 loops tick --loop <name>` on its "
-                "own cadence. There is NO master tick. Run `t3 loops list` to see the loops, then "
-                "`t3 loop enable <name>` + register its `/loop` (see `/t3:loops`)."
+                "t3 loops tick requires --loop <name>. The loop is per-loop only (#2650): one "
+                "self-rescheduling loop_timer chain per enabled DB Loop row that the singleton "
+                "`t3 worker` drains, each firing `t3 loops tick --loop <name>` on its own cadence. "
+                "There is NO master tick. Run `t3 loops list` to see the loops, then "
+                "`t3 loop enable <name>` (the reconciler adds its timer); `t3 worker status` shows the worker."
             )
             raise SystemExit(2)
 
         # Availability reconciliation (#2544): both drivers of a per-loop tick —
-        # the `t3 worker`'s deadlined subprocess timer tick and the legacy native
-        # Claude `/loop` cron — converge on THIS command (`python -m teatree
+        # the `t3 worker`'s deadlined subprocess timer tick and a manual by-hand
+        # `t3 loops tick --loop <name>` — converge on THIS command (`python -m teatree
         # loops_tick --loop <name>` vs `t3 loops tick --loop <name>`), so gating
         # here reconciles both with zero duplicated logic. Only holiday-`away`
         # pauses the self-pump; `autonomous_away` defers questions but keeps the

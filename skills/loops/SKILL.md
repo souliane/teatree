@@ -14,7 +14,7 @@ metadata:
 
 The day's autonomous work is driven by **DB-configured loops** (#1796/#2513). Each `Loop` row is the durable definition of one autonomous loop — a unique name, exactly one of a `script` or a `Prompt` (the loop XOR), its cadence (`delay_seconds` interval or `daily_at` wall-clock), an `enabled` flag, and `last_run_at` (the cadence anchor). The DB `Loop` table is the **single source of truth** for which loops run and on whose cadence: the live tick reads the table (#2513 cutover), and so do the statusline and `t3 loop list`. The domain scanners under `teatree.loops` stay as the scan units a loop invokes — they are not separate loops.
 
-**One native Claude `/loop` per enabled row (#2650).** There is no single shared-tick cron and no master tick. The live set of native Claude Code `/loop`s **mirrors** the set of **enabled** `Loop` rows — ONE `/loop` per enabled loop (per-loop, not per-group), each firing `t3 loops tick --loop <name>` on that loop's own cadence. The **t3-master** session registers them all at session start (a non-owner registers nothing); enabling/disabling a loop mirrors into Claude Code by CronCreate/CronDelete-ing that one loop's `/loop` (see *Enabling / disabling* below).
+**The `t3 worker` owns the per-loop tick cadence (#2650 / PR-28).** There is no single shared-tick cron and no master tick. The singleton `t3 worker` drains one self-rescheduling `loop_timer` chain per **enabled** `Loop` row (default ON via `loop_runner_enabled`), each firing `t3 loops tick --loop <name>` on that loop's own cadence — so the DB loops run with no Claude session open. PR-28 retired the native Claude `/loop` cron mirror: enabling/disabling a loop is now just the DB toggle below (the reconciler adds/prunes that loop's timer at once); check the worker with `t3 worker status`, ensure one is running with `t3 worker ensure`.
 
 ## When to load
 
@@ -42,11 +42,11 @@ t3 loops list            # the DB Loop rows directly: name, enabled, cadence, la
 ## Triggering loops
 
 ```bash
-t3 loops tick --loop <name>   # run ONE enabled, due loop — the per-loop primitive each native Claude `/loop` fires (#2650)
+t3 loops tick --loop <name>   # run ONE enabled, due loop — the per-loop primitive the worker's timer chain fires (#2650)
 t3 loops tick                 # HARD ERROR: there is no master tick — `--loop <name>` is required (#2650)
 ```
 
-`t3 loops tick --loop <name>` is what each native Claude `/loop` runs on its own cadence: it scopes `build_loop_table_jobs` to that single row and claims the disjoint per-loop `loop:<name>` lease (so the N per-loop loops run in parallel, never serialised on the singleton `t3-master`). Running `t3 loops tick` with no `--loop` is a hard error — there is no master tick and no continuous interval-runner loop. It honours the enabled / due / unified-verdict gates on that one row.
+`t3 loops tick --loop <name>` is what the worker's `loop_timer` chain runs on each loop's own cadence (and what you run to trigger a loop by hand): it scopes `build_loop_table_jobs` to that single row and claims the disjoint per-loop `loop:<name>` lease (so the N per-loop loops run in parallel, never serialised on the singleton `t3-master`). Running `t3 loops tick` with no `--loop` is a hard error — there is no master tick and no continuous interval-runner loop. It honours the enabled / due / unified-verdict gates on that one row.
 
 Each per-loop tick claims that loop's `loop:<name>` lease; a non-owner session SKIPs. A loop runs only when its `Loop` row is `enabled` AND `is_due` AND `LoopsConfig.is_enabled` admits — a disabled or cooling row is skipped, AND a loop held by a `LoopState` pause/disable (`t3 loop pause`/`disable`) is skipped too (the unified verdict, #2584), so triggering a loop never runs a held loop and never bumps a held loop's cadence anchor. Loop control is `/loops` (`t3 loop enable`/`disable`/`pause`/`resume`) + the DB `LoopState` tier only — there is no env kill-switch. Each script-backed `Loop` row carries its OWN on-disk entry point `src/teatree/loops/<name>/loop.py` (the module exposing that loop's `MINI_LOOP`) — the `script` column is per-loop and load-bearing; there is no shared runner. The live tick reads each admitted row's column to decide what to dispatch, and the per-loop runner (`t3 loops tick --loop <name>`, which scopes `build_loop_table_jobs` to that one row — #2650) honours the SAME enabled / due / unified-verdict gates; a row whose `script` does not resolve to a real registered loop module raises loudly rather than silently running nothing. A prompt-backed loop runs its `Prompt` body as the per-tick instruction — `arch_review` is the one prompt-backed default, instructing a sub-agent to run an architectural review with the `ac-reviewing-codebase` skill — see `/t3:prompts`.
 
@@ -62,24 +62,13 @@ t3 loop loop-state <name> # read the durable LoopState status (ENABLED when neve
 
 `enable`/`disable`/`resume` move the TWO planes the #2584 unified verdict reads in lock-step inside one transaction: the durable `LoopState` control tier (#1913) AND the row-level `Loop.enabled` column that the loop tick gates on (`not row.enabled` skips a loop). They are the agent-facing way to toggle `enabled`; the Django admin (`Loop` rows) remains the place to edit a loop's cadence and prompt-vs-script. `pause` is the reversible control-plane hold only — it leaves `Loop.enabled` untouched so a paused loop returns to running with `resume` without re-enabling a row that was deliberately `disable`d.
 
-### Mirror the toggle into Claude Code (#2650)
+### The toggle IS the whole job (#2650 / PR-28)
 
-Flipping the DB row is only half the job: the live set of native Claude `/loop`s must mirror the enabled rows. A CLI **cannot** call `CronCreate`/`CronDelete` itself, so YOU (the agent, holding the harness cron tools) mirror it. `t3 loop claude-spec <name> [--json]` prints the loop's exact `/loop` spec — its stable `slot_id`, the `cron` derived from its cadence, and the recurring `prompt` (`t3 loops tick --loop <name>`).
+PR-28 retired the native Claude `/loop` cron mirror: the DB toggle is now the whole job. The enable/disable chokepoint runs the reconciler, which adds a `loop_timer` chain head for a newly-enabled loop and prunes the timers of a disabled one at once — so the worker starts/stops driving that loop with no `CronCreate`/`CronDelete` step. There is no `claude-spec` to read and no cron to register.
 
-**To enable a loop `X` and start its `/loop`:**
-
-1. `t3 loop enable X` — flips `Loop.enabled=True` + `LoopState=ENABLED`.
-2. `t3 loop claude-spec X --json` — read `{slot_id, cron, prompt}`.
-3. Call `CronCreate(cron=<cron>, prompt=<prompt>, recurring=true)` — register the native `/loop`.
-4. **Verify-by-reread (#1192):** `CronCreate`'s own success is not proof the registration is visible. Call `CronList`, save its JSON output, then `t3 loop verify-cron X --cron-list-json <path>` (or pipe: `... | t3 loop verify-cron X --cron-list-json -`). Exits 0 and prints `confirmed: ...` when the loop's registration is present in the snapshot; exits non-zero with a reason when it is not — retry the `CronCreate` in that case.
-
-**To disable a loop `X` and stop its `/loop`:**
-
-1. `t3 loop disable X` — flips `Loop.enabled=False` + `LoopState=DISABLED`.
-2. `t3 loop claude-spec X --json` — read the full `prompt`.
-3. `CronList`, find the job whose prompt **equals that full `prompt` string** (equivalently, contains the exact backtick-terminated token `` `t3 loops tick --loop X` `` — the **closing backtick is required**: a bare `--loop X` substring also matches a longer name like `X-fast`, so without it disabling `ship` could delete `ship-fast`'s cron). Then `CronDelete(id=<that job id>)` — remove the native `/loop`.
-
-(`t3 loop claude-spec` computes the spec from the row regardless of `enabled`, so reading it after a `disable` still works.)
+- **Enable a loop `X`:** `t3 loop enable X` — flips `Loop.enabled=True` + `LoopState=ENABLED`; the reconciler heads its timer chain and the worker drives it on its cadence.
+- **Disable a loop `X`:** `t3 loop disable X` — flips `Loop.enabled=False` + `LoopState=DISABLED`; the reconciler prunes its queued timers.
+- **Confirm the worker is running:** `t3 worker status` (the live flock holder + the resolved `loop_runner_enabled` + per-loop timer counts). If it is enabled but not running, `t3 worker ensure` spawns a detached worker. `loop_runner_enabled` OFF stops the loops entirely (the kill-switch).
 
 ## Reactive infra loops (not DB `Loop` rows)
 

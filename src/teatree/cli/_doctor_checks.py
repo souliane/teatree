@@ -6,6 +6,7 @@ pass/fail aggregation. Re-exported from ``teatree.cli.doctor`` for backward
 compatibility with existing test imports.
 """
 
+import contextlib
 from pathlib import Path
 
 import typer
@@ -137,6 +138,24 @@ def _check_singletons() -> bool:
         had_file = path.is_file()
         if read_pid(path) is None and had_file:
             typer.echo(f"OK    Cleared stale {name} pid file")
+    return True
+
+
+def _check_worker_running() -> bool:
+    """WARN when the loop worker is enabled but not running (PR-28).
+
+    Default-ON ``loop_runner_enabled`` with a FREE ``worker`` flock means no worker is
+    draining the loop-timer chains — the loops are silently dead. Actionable: run
+    ``t3 worker ensure``. Read-only; always returns ``True`` (a WARN, not a hard FAIL),
+    and any read error is swallowed so the doctor run never crashes on it.
+    """
+    # A doctor check must never crash the doctor run — any read error is swallowed.
+    with contextlib.suppress(Exception):
+        from teatree.config import get_effective_settings  # noqa: PLC0415 (deferred: light doctor-check import)
+        from teatree.utils.singleton import WORKER_SINGLETON, flock_is_held  # noqa: PLC0415 (deferred: light import)
+
+        if get_effective_settings().loop_runner_enabled and not flock_is_held(WORKER_SINGLETON):
+            typer.echo("WARN  loop_runner_enabled is ON but no worker holds the flock — run `t3 worker ensure`")
     return True
 
 

@@ -30,8 +30,6 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 UI.                                                          │
 │ admin           Run the Django admin for the teatree project on a local dev  │
 │                 server.                                                      │
-│ worker          Run the singleton loop-timer worker — the cadence owner      │
-│                 (#1796).                                                     │
 │ info            Installation info (bare) and read-only per-ticket artifact   │
 │                 discovery.                                                   │
 │ config          Configuration and autoloading.                               │
@@ -67,6 +65,11 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 re-dispatches it. Check the worker with `t3 worker status`;  │
 │                 ensure one is running with `t3 worker ensure`.               │
 │ goal            Standing verified-green goals (PR-25).                       │
+│ worker          The singleton loop-timer worker (#1796 / PR-28). Bare `t3    │
+│                 worker` runs it (the cadence owner, default ON via           │
+│                 `loop_runner_enabled`). `status` reports the live holder +   │
+│                 resolved kill-switch; `ensure` spawns a detached worker iff  │
+│                 enabled and the flock is free.                               │
 │ loops           Manage DB-configured autonomous loops (#1796).               │
 │ mcp             Read-only MCP server exposing teatree's structured search    │
 │                 (stdio).                                                     │
@@ -273,18 +276,6 @@ Usage: t3 admin [OPTIONS]
 │ --port              INTEGER  Port for the admin dev server. [default: 8000]  │
 │ --no-browser                 Do not open the browser at /admin/.             │
 │ --help                       Show this message and exit.                     │
-╰──────────────────────────────────────────────────────────────────────────────╯
-```
-
-### `t3 worker`
-
-```
-Usage: t3 worker [OPTIONS]
-
- Run the singleton loop-timer worker — the cadence owner (#1796).
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -3953,6 +3944,74 @@ Usage: t3 goal list [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --json          Emit JSON.                                                   │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 worker`
+
+```
+Usage: t3 worker [OPTIONS] COMMAND [ARGS]...
+
+ The singleton loop-timer worker (#1796 / PR-28). Bare `t3 worker` runs it (the
+ cadence owner, default ON via `loop_runner_enabled`). `status` reports the
+ live holder + resolved kill-switch; `ensure` spawns a detached worker iff
+ enabled and the flock is free.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ run     Run the singleton loop-timer worker — the cadence owner (#1796).     │
+│ status  Report the worker: the live flock holder, the resolved kill-switch + │
+│         tier, timer counts.                                                  │
+│ ensure  Spawn a detached worker iff ``loop_runner_enabled`` is ON and the    │
+│         flock is free.                                                       │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 worker run`
+
+```
+Usage: t3 worker run [OPTIONS]
+
+ Run the singleton loop-timer worker — the cadence owner (#1796).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 worker status`
+
+```
+Usage: t3 worker status [OPTIONS]
+
+ Report the worker: the live flock holder, the resolved kill-switch + tier,
+ timer counts.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit the status as JSON.                                     │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 worker ensure`
+
+```
+Usage: t3 worker ensure [OPTIONS]
+
+ Spawn a detached worker iff ``loop_runner_enabled`` is ON and the flock is
+ free.
+
+ Refuses (with the reason) when the kill-switch is OFF or a worker already
+ holds the
+ flock — an idempotent, cheap "make sure one is running" verb for a fresh
+ install or
+ a headless box, sharing the ONE spawner with the SessionStart supervisor.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit the outcome as JSON.                                    │
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

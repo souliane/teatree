@@ -79,7 +79,7 @@ from teatree.cli.task_alias import task_app
 from teatree.cli.teams import teams_app
 from teatree.cli.tools import tool_app
 from teatree.cli.update import update_app
-from teatree.cli.worker import worker
+from teatree.cli.worker import worker_app
 
 logger = logging.getLogger(__name__)
 
@@ -171,7 +171,7 @@ app.add_typer(assess_app, name="assess")
 app.add_typer(overlay_dev_app, name="overlay")
 app.add_typer(loop_app, name="loop")
 app.add_typer(goal_app, name="goal")
-app.command("worker")(worker)
+app.add_typer(worker_app, name="worker")
 app.add_typer(loops_app, name="loops")
 app.add_typer(mcp_app, name="mcp")
 app.add_typer(prompts_app, name="prompts")

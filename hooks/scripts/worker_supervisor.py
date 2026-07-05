@@ -26,8 +26,6 @@ this hook only covers the session-present case.
 
 import argparse
 import os
-import shutil
-import subprocess  # noqa: S404 — trusted internal spawn of the `t3` CLI (hook convention)
 import sys
 from collections.abc import Callable
 
@@ -116,17 +114,14 @@ def _flock_is_free() -> bool:
 
 
 def _spawn_worker() -> None:
-    """Spawn a detached ``t3 worker`` that outlives this session; a no-op if ``t3`` is absent."""
-    t3_bin = shutil.which("t3")
-    if not t3_bin:
-        return
-    subprocess.Popen(  # noqa: S603 — resolved binary, fixed argv, no shell, no user input.
-        [t3_bin, "worker"],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=True,
-    )
+    """Spawn a detached ``t3 worker`` that outlives this session; a no-op if ``t3`` is absent.
+
+    Delegates to the ONE stdlib-only spawner ``teatree.utils.worker_spawn`` shared with
+    ``t3 worker ensure`` so the two can never diverge on how the detached worker launches.
+    """
+    from teatree.utils.worker_spawn import spawn_detached_worker  # noqa: PLC0415 (deferred: cold-hook-safe import)
+
+    spawn_detached_worker()
 
 
 def resurrect_worker(

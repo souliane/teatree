@@ -33,8 +33,6 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 UI.                                                          │
 │ admin           Run the Django admin for the teatree project on a local dev  │
 │                 server.                                                      │
-│ worker          Run the singleton loop-timer worker — the cadence owner      │
-│                 (#1796).                                                     │
 │ info            Installation info (bare) and read-only per-ticket artifact   │
 │                 discovery.                                                   │
 │ config          Configuration and autoloading.                               │
@@ -70,6 +68,11 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 re-dispatches it. Check the worker with `t3 worker status`;  │
 │                 ensure one is running with `t3 worker ensure`.               │
 │ goal            Standing verified-green goals (PR-25).                       │
+│ worker          The singleton loop-timer worker (#1796 / PR-28). Bare `t3    │
+│                 worker` runs it (the cadence owner, default ON via           │
+│                 `loop_runner_enabled`). `status` reports the live holder +   │
+│                 resolved kill-switch; `ensure` spawns a detached worker iff  │
+│                 enabled and the flock is free.                               │
 │ loops           Manage DB-configured autonomous loops (#1796).               │
 │ mcp             Read-only MCP server exposing teatree's structured search    │
 │                 (stdio).                                                     │
