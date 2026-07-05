@@ -223,6 +223,7 @@ graph TD
     teatree.loop.statusline --> teatree.loop.statusline_loops
     teatree.loop.statusline --> teatree.loop.statusline_render
     teatree.loop.review_request_tracker --> teatree.core.models
+    teatree.loop.dispatch_tables --> teatree.core.modelkit
     teatree.loop.pr_ticket_index --> teatree.loop.dispatch_tables
     teatree.loop.review_claim_signals --> teatree.types
     teatree.loop.review_claim_signals --> teatree.core.models
@@ -346,7 +347,6 @@ graph TD
     teatree.loop.statusline_palette
     teatree.loop.loop_cadences
     teatree.loop.url_specificity
-    teatree.loop.dispatch_tables
     teatree.slack_mrkdwn
     teatree.memory_audit
 ```

@@ -65,8 +65,15 @@ class MyPrFailedDispatchTests(TestCase):
         assert ("agent", "t3:debug") in kinds_zones
         assert ("statusline", "action_needed") in kinds_zones
 
-    def test_my_pr_failed_idempotent_on_same_head_sha(self) -> None:
-        """Re-dispatching on the same ``(pr_url, head_sha)`` yields no second agent action (#1295 cap D)."""
+    def test_dispatch_always_emits_agent_action_dedup_is_persist_time(self) -> None:
+        """Dispatch emits the ``t3:debug`` agent action on EVERY tick (#1 blocker).
+
+        The RedMrFixAttempt idempotency claim moved from dispatch time to PERSIST
+        time (``persistence._handle_debug``), so a dropped/failed persist can no
+        longer burn the marker before the fix runs. Dispatch is therefore
+        unconditional; the per-SHA dedup is proven at persist time in
+        ``tests/teatree_loop/test_persistence_zone_handlers.py``.
+        """
         signal = ScanSignal(
             kind="my_pr.failed",
             summary="PR #1 failed",
@@ -74,12 +81,9 @@ class MyPrFailedDispatchTests(TestCase):
         )
         first = dispatch([signal])
         second = dispatch([signal])
-        first_agents = [a for a in first if a.kind == "agent"]
-        second_agents = [a for a in second if a.kind == "agent"]
-        assert len(first_agents) == 1
-        assert second_agents == []
-        # Statusline mirror still fires on every tick — user sees the
-        # red PR even though the agent does not re-run.
+        assert [a for a in first if a.kind == "agent"]
+        assert [a for a in second if a.kind == "agent"]
+        # Statusline mirror still fires on every tick — user always sees the red PR.
         assert any(a.kind == "statusline" for a in second)
 
 
