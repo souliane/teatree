@@ -43,7 +43,8 @@ from django.test import TestCase
 from teatree.core.backend_protocols import PrOpenState, ReviewState
 from teatree.core.models.session import Session
 from teatree.core.models.task import Task
-from teatree.core.models.ticket import Ticket, schedule_external_review
+from teatree.core.models.ticket import Ticket
+from teatree.core.models.ticket_external_review import schedule_external_review
 from teatree.loop.dispatch import dispatch
 from teatree.loop.mechanical import HANDLERS
 from teatree.loop.persistence import persist_agent_actions

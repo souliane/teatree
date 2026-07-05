@@ -30,7 +30,7 @@ from django.test import TestCase
 
 from teatree.agents.prompt import build_system_context
 from teatree.core.models import Task, Ticket
-from teatree.core.models.ticket import schedule_external_review
+from teatree.core.models.ticket_external_review import schedule_external_review
 
 
 def _config(body: str) -> Path:

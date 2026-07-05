@@ -10,6 +10,7 @@ from django_fsm import FSMField, TransitionNotAllowed, transition
 from teatree.config import Mode, get_effective_settings
 from teatree.core.managers import TicketManager
 from teatree.core.modelkit.gate_registry import get_gate, get_resolver
+from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.modelkit.review_state import ReviewState
 from teatree.core.models.errors import DirtyWorktreeError, InvalidTransitionError
 from teatree.core.models.ticket_ledger import retire_phase_ledger
@@ -501,7 +502,9 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
             raise InvalidTransitionError(msg)
         if gate is not None:
             get_gate(gate)(self)
-        session = Session.objects.create(ticket=self, agent_id="review" if phase == "reviewing" else phase)
+        session = Session.objects.create(
+            ticket=self, agent_id="review" if normalize_phase(phase) == "reviewing" else phase
+        )
         return Task.objects.create(
             ticket=self,
             session=session,
@@ -1014,32 +1017,3 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
             self.context = updated
             type(self).objects.filter(pk=self.pk).update(context=updated)
         return updated
-
-
-def schedule_external_review(ticket: Ticket, *, parent_task: "Task | None" = None) -> "Task":
-    """Create a reviewing task for a reviewer-role ticket (external PR).
-
-    Reviewer-role tickets represent PRs the user is requested to review
-    in someone else's repo — they have no implementation/test/ship
-    phases. After the review task completes, the ticket short-circuits
-    to ``DELIVERED`` via ``mark_reviewed_externally``.
-
-    Lives at module scope (not on ``Ticket``) to keep the model's
-    public-method count under the project's lint cap; semantically it is
-    a sibling of ``ticket.schedule_coding`` and friends.
-    """
-    from teatree.core.models.session import Session  # noqa: PLC0415
-    from teatree.core.models.task import Task  # noqa: PLC0415
-
-    if ticket.role != Ticket.Role.REVIEWER:
-        msg = f"schedule_external_review requires role=reviewer (got role={ticket.role!r})"
-        raise InvalidTransitionError(msg)
-    session = Session.objects.create(ticket=ticket, agent_id="external-review")
-    return Task.objects.create(
-        ticket=ticket,
-        session=session,
-        phase="reviewing",
-        execution_target=Task.ExecutionTarget.HEADLESS,
-        execution_reason=f"Auto-scheduled external review — review {ticket.issue_url}",
-        parent_task=parent_task,
-    )
