@@ -39,6 +39,35 @@ class ReviewFinding(TypedDict, total=False):
     line: int
 
 
+class ArticleSuggestion(TypedDict, total=False):
+    """One news-scan candidate a shell-denied scanning_news agent hands back (#9).
+
+    The headless scanning_news phase cannot run the ``t3`` CLI to enqueue
+    candidates, so it RETURNS these instead: the recorder creates one
+    :class:`~teatree.core.models.pending_article_suggestion.PendingArticleSuggestion`
+    per candidate behind the ask-gate (idempotent by ``url``). ``rationale`` is
+    the one-line why-this-matters that becomes the row's summary.
+    """
+
+    title: str
+    url: str
+    rationale: str
+
+
+class AnswerEnvelope(TypedDict, total=False):
+    """A shell-denied answering agent's drafted reply, handed back for approval (#9).
+
+    The headless answering phase cannot post on the user's behalf, so it
+    RETURNS the draft: the recorder routes ``text`` through the
+    :class:`~teatree.core.models.deferred_question.DeferredQuestion` approval
+    path (correlated to the task), and the orchestrator posts on confirmation.
+    ``thread_ref`` is the inbound thread the reply targets.
+    """
+
+    text: str
+    thread_ref: str
+
+
 class ReviewVerdictEnvelope(TypedDict, total=False):
     """A reviewing-phase agent's typed verdict, recorded server-side (corr-11).
 
@@ -74,6 +103,8 @@ class AgentResult(TypedDict, total=False):
     tests_failed: int
     decisions: list[str]
     review_verdict: ReviewVerdictEnvelope
+    article_suggestions: list[ArticleSuggestion]
+    answer: AnswerEnvelope
     needs_user_input: bool
     user_input_reason: str
     next_steps: list[str]
@@ -142,6 +173,28 @@ RESULT_JSON_SCHEMA: dict[str, object] = {
             },
             "required": ["verdict"],
         },
+        "article_suggestions": {
+            "type": "array",
+            "description": "Candidate news articles a shell-denied scanning_news agent hands back for queuing.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "url": {"type": "string"},
+                    "rationale": {"type": "string"},
+                },
+                "required": ["url"],
+            },
+        },
+        "answer": {
+            "type": "object",
+            "description": "A shell-denied answering agent's drafted reply, handed back for approval-gated posting.",
+            "properties": {
+                "text": {"type": "string"},
+                "thread_ref": {"type": "string"},
+            },
+            "required": ["text"],
+        },
         "needs_user_input": {"type": "boolean"},
         "user_input_reason": {"type": "string"},
         "next_steps": {
@@ -175,6 +228,11 @@ RESULT_JSON_SCHEMA: dict[str, object] = {
 #:   headless reviewer denied the shell proves the review happened by the
 #:   verdict it hands back, not only by a decision list.
 #: - ``shipping``: at least one command executed (``git push``, ``gh pr``...).
+#: - ``scanning_news``: at least one ``article_suggestion`` returned — the
+#:   shell-denied scanner hands its candidates back through the envelope, so a
+#:   summary-only run is a silently-dropped scan (#9), refused here.
+#: - ``answering``: an ``answer`` draft returned — same shell-denied hand-back;
+#:   a summary-only run dropped the drafted reply.
 #:
 #: Phases not in this map (``scoping``, ``retro``) carry no evidence
 #: requirement — they are intentionally lightweight.
@@ -184,6 +242,8 @@ PHASE_REQUIRED_EVIDENCE: dict[str, tuple[str, ...]] = {
     "testing": ("tests_run", "tests_passed"),
     "reviewing": ("decisions", "review_verdict"),
     "shipping": ("commands_executed",),
+    "scanning_news": ("article_suggestions",),
+    "answering": ("answer",),
 }
 
 
