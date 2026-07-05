@@ -8,7 +8,9 @@ from django.utils import timezone
 from django_fsm import FSMField
 
 from teatree.core.managers import TaskManager
+from teatree.core.modelkit.phases import SUBAGENT_BY_PHASE, phase_spellings
 from teatree.core.models.errors import InvalidTransitionError
+from teatree.core.models.external_delivery import not_under_external_delivery_q
 from teatree.core.models.session import Session
 from teatree.core.models.ticket import Ticket
 
@@ -120,6 +122,28 @@ class Task(models.Model):
         from teatree.core.modelkit.phases import subagent_for_phase  # noqa: PLC0415
 
         return bool(subagent_for_phase(role, phase))
+
+    @staticmethod
+    def dispatchable_q() -> Q:
+        """The single filter selecting loop-DISPATCHABLE Tasks — the SSOT (#6).
+
+        A Task is dispatchable when its ``(ticket.role, phase)`` pair has a
+        registered sub-agent (``SUBAGENT_BY_PHASE``, matched across every accepted
+        phase spelling via ``phase_spellings`` — the DB-side of ``loop_dispatched``)
+        AND its ticket is NOT under a live #2104 external-delivery lease
+        (``not_under_external_delivery_q``, #2217).
+
+        The ONE source of truth every dispatch consumer builds on: the
+        ``orchestrate`` planner's target + admit sweep and its in-flight budget
+        count, and the live ``claim-next``/``pending-spawn`` in ``loop_dispatch``
+        (which AND ``execution_target == INTERACTIVE`` on top). Because all sites
+        reference this symbol, the external-delivery exclusion and the role/phase
+        set can never diverge across them the way #2218's fix landed on one side.
+        """
+        role_phase = Q(pk__in=[])
+        for role, phase in SUBAGENT_BY_PHASE:
+            role_phase |= Q(ticket__role=role, phase__in=phase_spellings(phase))
+        return role_phase & not_under_external_delivery_q()
 
     def _default_loop_dispatched_to_interactive(self) -> None:
         """Route a freshly-created loop-dispatched phase task to INTERACTIVE.

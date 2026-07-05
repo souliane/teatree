@@ -1,0 +1,137 @@
+"""Feature-flag discrimination over ``UserSettings`` bool fields (T4-PR-1).
+
+A *setting* is a durable knob the operator tunes and keeps. A *feature flag* is a
+TEMPORARY switch that gates in-flight code and is meant to DIE — it is born with
+the code it guards and removed once that code is trusted (or abandoned). Both
+resolve their VALUE identically through the untouched
+``env -> ConfigSetting(overlay) -> ConfigSetting(global) -> dataclass-default``
+chain; this registry only DISCRIMINATES a flag from a setting, GOVERNS its
+lifecycle stage, and AUDITS dead toggles.
+
+The registry lives in CODE (a flag is born and dies with the code it gates); only
+the flag's VALUE lives in the ``ConfigSetting`` store. This is the
+typed-registry-plus-fitness-test idiom of ``SETTING_HOMES`` / ``COLD_HOOK_SETTINGS``
+/ ``BOOTSTRAP_FILE_ONLY_SETTINGS``: the registry is pure data, and the conformance
+suite in ``tests/config/test_feature_flags.py`` keeps every entry honest — each
+must name a real ``bool`` ``UserSettings`` field registered in
+``OVERLAY_OVERRIDABLE_SETTINGS``, carry a non-empty ``tracking_issue`` and a valid
+``stage``, and (for a ``DARK`` flag) default to its own ``off_value`` so a dark
+feature can never ship default-ON without a code-reviewed stage demotion.
+"""
+
+from dataclasses import dataclass
+from enum import StrEnum
+
+# The loud banner the audit view prints for a ``REMOVE``-stage flag: the gated
+# code is permanent, so the toggle is dead weight whose only job left is deletion.
+REMOVE_STAGE_BANNER = "DEAD TOGGLE — REMOVE (gated code is permanent)"
+
+
+class FlagStage(StrEnum):
+    """A feature flag's position in its birth-to-death lifecycle.
+
+    ``DARK`` — the gated code is in flight and ships OFF; the flag exists so the
+    code can land dark and be enabled per-install for a deliberate trial.
+    ``SETTLING`` — the gated code is trusted and default-enabling is imminent; the
+    flag survives only as an escape hatch during the soak.
+    ``REMOVE`` — the gated code is permanent; the flag is a dead toggle whose only
+    remaining job is to be deleted (the audit view surfaces it loud).
+    """
+
+    DARK = "dark"
+    SETTLING = "settling"
+    REMOVE = "remove"
+
+
+@dataclass(frozen=True)
+class FeatureFlag:
+    """Lifecycle metadata for one ``UserSettings`` bool field used as a feature flag.
+
+    ``field`` is the ``UserSettings`` field name (equal to this entry's key in
+    :data:`FEATURE_FLAGS`, pinned by the conformance suite). ``off_value`` is the
+    value that means "gated code stays OFF" — ``False`` for a positive-sense
+    ``*_enabled`` flag, ``True`` for an inverted-sense ``*_disabled`` flag — so the
+    dark-defaults-off invariant reads correctly for both senses.
+    """
+
+    field: str
+    stage: FlagStage
+    tracking_issue: str
+    summary: str
+    off_value: bool = False
+
+
+# Seeded across two stages so no conformance invariant is vacuously true over an
+# empty or single-entry set: ``outer_loop_enabled`` is the canonical first flag
+# (DARK, the OFF switch the T4 autoresearch outer loop ships behind); the other
+# two are retro-classifications of existing DARK/SETTLING fields whose behaviour is
+# UNCHANGED — the registry only discriminates them.
+FEATURE_FLAGS: dict[str, FeatureFlag] = {
+    "outer_loop_enabled": FeatureFlag(
+        field="outer_loop_enabled",
+        stage=FlagStage.DARK,
+        tracking_issue="souliane/teatree — autoresearch outer-loop (T4)",
+        summary="The OFF switch the T4 autoresearch outer-loop runtime ships behind.",
+    ),
+    "teams_enabled": FeatureFlag(
+        field="teams_enabled",
+        stage=FlagStage.DARK,
+        tracking_issue="souliane/teatree#1838",
+        summary="Agent-teams WORK layer; ships dark until a pane-backed teammate lands.",
+    ),
+    "loop_runner_enabled": FeatureFlag(
+        field="loop_runner_enabled",
+        stage=FlagStage.SETTLING,
+        tracking_issue="souliane/teatree#1796",
+        summary="Singleton loop-worker tick driver, soaking before it owns the cadence by default.",
+    ),
+}
+
+
+def is_feature_flag(key: str) -> bool:
+    """True when *key* is a governed feature flag rather than a durable setting."""
+    return key in FEATURE_FLAGS
+
+
+def dark_flags() -> dict[str, FeatureFlag]:
+    """The subset of the registry still in the ``DARK`` stage.
+
+    The query hook a later self-catching critic uses to tie a dark flag to the
+    done-means-merged status of the code it gates.
+    """
+    return {key: flag for key, flag in FEATURE_FLAGS.items() if flag.stage is FlagStage.DARK}
+
+
+def flag_trailer(key: str) -> str:
+    """The ``[feature flag, …]`` governance trailer for *key*, or ``""`` for a setting.
+
+    Appended by ``config_setting set``/``get`` so an operator touching a flag key
+    sees at a glance that they are flipping a governed, lifecycle-staged toggle —
+    not a durable setting — and where its removal is tracked.
+    """
+    flag = FEATURE_FLAGS.get(key)
+    if flag is None:
+        return ""
+    return f"[feature flag, stage={flag.stage.value}, tracking {flag.tracking_issue}]"
+
+
+def render_flags_audit(flags: dict[str, FeatureFlag]) -> str:
+    """Render the read-only dead-toggle audit report for *flags*.
+
+    One line per flag naming its stage, off-value and tracking issue; a
+    ``REMOVE``-stage flag is surfaced LOUD (:data:`REMOVE_STAGE_BANNER`) so a dead
+    toggle cannot hide as a decorative registry entry. Pure over its argument so
+    the conformance suite can prove the loud path with a ``REMOVE`` fixture without
+    a ``REMOVE`` flag in the live registry.
+    """
+    if not flags:
+        return "  (no feature flags registered)"
+    lines: list[str] = []
+    for key in sorted(flags):
+        flag = flags[key]
+        loud = f"  <<< {REMOVE_STAGE_BANNER} >>>" if flag.stage is FlagStage.REMOVE else ""
+        lines.append(
+            f"  {key}: stage={flag.stage.value}, off_value={flag.off_value}, "
+            f"tracking {flag.tracking_issue}{loud}\n      {flag.summary}"
+        )
+    return "\n".join(lines)

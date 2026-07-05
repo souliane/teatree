@@ -53,7 +53,7 @@ from typing import TYPE_CHECKING
 from django.db.models import Q
 
 from teatree.config import Wip, get_effective_settings
-from teatree.core.modelkit.phases import SUBAGENT_BY_PHASE, normalize_phase, phase_spellings, subagent_for_phase
+from teatree.core.modelkit.phases import normalize_phase, subagent_for_phase
 from teatree.loop.queue_drain import ADMISSION_ORDER, admission_claim_order, admission_priority_annotations
 
 if TYPE_CHECKING:
@@ -203,15 +203,17 @@ def _active_overlay_cap() -> int:
 
 
 def _dispatchable_filter() -> Q:
-    from teatree.core.models.external_delivery import not_under_external_delivery_q  # noqa: PLC0415
+    """The dispatchable-Task filter — the ``Task.dispatchable_q`` SSOT (#6).
 
-    q = Q(pk__in=[])
-    for role, phase in SUBAGENT_BY_PHASE:
-        q |= Q(ticket__role=role, phase__in=phase_spellings(phase))
-    # #2217: a unit under a live #2104 external-delivery lease is being
-    # hand-delivered; exclude EVERY phase on it so the loop never claims a
-    # second coder/reviewer the directly-implementing owner will never consume.
-    return q & not_under_external_delivery_q()
+    Role/phase pairs with a registered sub-agent AND not under a live #2104
+    external-delivery lease (#2217). The planner counts in-flight and admits
+    through this WITHOUT any ``execution_target`` narrowing, so a headless
+    in-flight claim consumes the boost budget exactly as an interactive one does
+    (``loop_dispatch`` gates its live claim on the same count).
+    """
+    from teatree.core.models.task import Task  # noqa: PLC0415 — deferred, matches this module's other Task imports
+
+    return Task.dispatchable_q()
 
 
 def _entry_for(task: "Task") -> ManifestEntry:

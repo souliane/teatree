@@ -171,6 +171,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "issue_implementer_max_concurrent": _parse_strict_int,
     "issue_implementer_cadence_hours": _parse_strict_int,
     "auto_disposition_enabled": _parse_strict_bool,
+    "outer_loop_enabled": _parse_strict_bool,
     "auto_disposition_max_closes_per_tick": _parse_strict_int,
     "orchestrate_claim_enabled": _parse_strict_bool,
     "boost_concurrency": _parse_strict_int,
@@ -1003,6 +1004,17 @@ class UserSettings:
     # per-overlay overridable and ``T3_ORCHESTRATE_CLAIM_ENABLED`` env wins over
     # both.
     orchestrate_claim_enabled: bool = False
+    # T4-PR-1 — the OFF switch the autoresearch outer-loop runtime ships behind,
+    # and the canonical first entry of the ``FEATURE_FLAGS`` lifecycle registry
+    # (``config/feature_flags.py``, stage=DARK). Ships behaviorally inert: NOTHING
+    # reads it in this PR — the later outer-loop runtime wires its scanner behind
+    # ``get_effective_settings().outer_loop_enabled``, so the governed OFF switch
+    # exists before the risky code lands. DB-home (#1775): resolved from the
+    # ``ConfigSetting`` store (global + overlay rows); a ``[teatree]`` /
+    # ``[overlays.<name>]`` TOML value is ignored on read. The conformance suite
+    # pins stage=DARK => this default == its off_value (False), so the outer loop
+    # can never be flipped default-ON without a code-reviewed stage demotion.
+    outer_loop_enabled: bool = False
     # PR-13 boost pool-refill target: how many live loop workers ``boost`` wip
     # keeps in flight. ``0`` (default) means UNSET — ``boost`` keeps today's
     # summed per-overlay ``max_concurrent_auto_starts`` target. A positive ``N``
