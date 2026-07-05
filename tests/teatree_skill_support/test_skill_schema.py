@@ -43,11 +43,27 @@ class TestValidateSkillMd:
         assert errors == []
         assert any("unknown field 'custom_field'" in w for w in warnings)
 
-    def test_removed_companions_field_fails_loud(self, tmp_path: Path):
+    def test_companions_field_is_recognised_not_removed(self, tmp_path: Path):
+        # companions is a distinct SOFT field again — recognised, no error, no
+        # "unknown field" warning (unlike the still-removed triggers/search_hints).
         skill_md = tmp_path / "SKILL.md"
-        skill_md.write_text("---\nname: test\ndescription: d\ncompanions:\n  - other-skill\n---\n")
-        errors, _warnings = validate_skill_md(skill_md)
-        assert any("'companions'" in e and "removed" in e for e in errors)
+        skill_md.write_text("---\nname: test\ndescription: d\ncompanions:\n  - rules\n---\n")
+        errors, warnings = validate_skill_md(skill_md, known_skills={"rules"})
+        assert errors == []
+        assert not any("'companions'" in w for w in warnings)
+
+    def test_companions_unknown_skill_ref_errors(self, tmp_path: Path):
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text("---\nname: test\ndescription: d\ncompanions:\n  - nonexistent\n---\n")
+        errors, _ = validate_skill_md(skill_md, known_skills={"workspace", "rules"})
+        assert any("companions unknown skill 'nonexistent'" in e for e in errors)
+
+    def test_companions_external_methodology_ref_ok(self, tmp_path: Path):
+        # An external methodology skill (no SKILL.md in-repo) is a valid companion.
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text("---\nname: test\ndescription: d\ncompanions:\n  - writing-plans\n---\n")
+        errors, _ = validate_skill_md(skill_md, known_skills={"rules"})
+        assert errors == []
 
     def test_removed_triggers_field_fails_loud(self, tmp_path: Path):
         skill_md = tmp_path / "SKILL.md"

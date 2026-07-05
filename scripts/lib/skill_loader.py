@@ -20,7 +20,7 @@ import re
 import sys
 from pathlib import Path
 
-from lib.requires_parser import parse_requires
+from lib.requires_parser import parse_companions, parse_requires
 
 _SRC_DIR = Path(__file__).resolve().parents[2] / "src"
 if str(_SRC_DIR) not in sys.path:
@@ -116,7 +116,13 @@ def build_requires_index(skill_search_dirs: list[Path]) -> list[dict]:
             except OSError:
                 continue
             seen.add(skill_name)
-            index.append({"skill": skill_name, "requires": parse_requires(text) or []})
+            index.append(
+                {
+                    "skill": skill_name,
+                    "requires": parse_requires(text) or [],
+                    "companions": parse_companions(text) or [],
+                }
+            )
 
     index.sort(key=operator.itemgetter("skill"))
     return index
@@ -199,11 +205,13 @@ def suggest_skills(data: dict) -> dict:
             loaded_skills, skill_search_dirs, supplementary_config.
 
     Returns:
-        Dict with keys: suggestions, advisory. ``advisory`` is the subset of
-        ``suggestions`` sourced ONLY from the supplementary keyword config
-        (``~/.teatree-skills.yml``). Those loose user-authored keyword regexes
-        (e.g. ``\bruff\b``) over-fire on incidental mentions, so the caller
-        suggests them but never adds them to the hard-block demand set.
+        Dict with keys: suggestions, advisory, companions. ``advisory`` is the
+        subset of ``suggestions`` sourced ONLY from the supplementary keyword
+        config (``~/.teatree-skills.yml``). Those loose user-authored keyword
+        regexes (e.g. ``\bruff\b``) over-fire on incidental mentions, so the
+        caller suggests them but never adds them to the hard-block demand set.
+        ``companions`` are the SOFT companion suggestions of the resolved skills
+        — surfaced, never a hard demand (unlike ``requires`` → ``suggestions``).
 
     """
     prompt = data.get("prompt", "")
@@ -226,6 +234,7 @@ def suggest_skills(data: dict) -> dict:
     return {
         "suggestions": selection.skills,
         "advisory": list(selection.advisory_skills),
+        "companions": list(selection.companion_suggestions),
     }
 
 

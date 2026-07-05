@@ -4,13 +4,17 @@ Builds a dependency graph from the skill index and resolves skills in
 topological order — dependencies before dependents.  Cycle detection uses
 DFS gray/black colouring.
 
-``requires`` is the single skill-dependency edge: always transitive, always
+``requires`` is the hard skill-dependency edge: always transitive, always
 topologically ordered. A required skill with no SKILL.md (an external
 framework skill such as ``test-driven-development``) passes through unchanged
 so the ``Skill`` tool still loads it; the loading policy warns about it.
+
+``companions`` is the SOFT counterpart handled by :func:`companion_suggestions`:
+surfaced but never enforced, and deliberately NOT transitive — a companion is a
+suggestion, not a dependency, so it is not folded into the hard requires chain.
 """
 
-# Skill index entries are dicts with ``skill`` and ``requires``.
+# Skill index entries are dicts with ``skill``, ``requires``, and optional ``companions``.
 type SkillIndex = list[dict[str, object]]
 
 # Gray = currently being visited (cycle if re-entered), Black = fully resolved.
@@ -64,15 +68,39 @@ def resolve_all(skill_index: SkillIndex) -> dict[str, list[str]]:
     return result
 
 
+def companion_suggestions(resolved: list[str], skill_index: SkillIndex) -> list[str]:
+    """Soft companion suggestions for an already-resolved (hard) skill set.
+
+    Unlike ``requires`` (the hard, transitive edge in :func:`resolve_requires`),
+    ``companions`` are surfaced but never enforced: this returns every skill named
+    in a resolved skill's ``companions`` list, in first-seen order, excluding any
+    skill already hard-resolved. It is deliberately NOT transitive — a companion's
+    own ``requires``/``companions`` are not pulled in.
+    """
+    companion_map = _build_list_field_map(skill_index, "companions")
+    already_resolved = set(resolved)
+    seen: set[str] = set()
+    suggestions: list[str] = []
+    for skill in resolved:
+        for companion in companion_map.get(skill, []):
+            if companion and companion not in already_resolved and companion not in seen:
+                seen.add(companion)
+                suggestions.append(companion)
+    return suggestions
+
+
 def _build_requires_map(skill_index: SkillIndex) -> dict[str, list[str]]:
+    return _build_list_field_map(skill_index, "requires")
+
+
+def _build_list_field_map(skill_index: SkillIndex, field_name: str) -> dict[str, list[str]]:
     result: dict[str, list[str]] = {}
     for entry in skill_index:
         skill = str(entry.get("skill", ""))
         if not skill:
             continue
-        raw = entry.get("requires", [])
-        requires = [str(r) for r in raw] if isinstance(raw, list) else []
-        result[skill] = requires
+        raw = entry.get(field_name, [])
+        result[skill] = [str(item) for item in raw] if isinstance(raw, list) else []
     return result
 
 

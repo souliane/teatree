@@ -1,10 +1,14 @@
 """The ONE shared registry of Bash-shaped hard-deny predicates (#2, souliane/teatree).
 
-A single source of truth for the shell-command refusals that BOTH lanes must
-enforce identically: the cold PreToolUse subprocess (``hooks/scripts/hook_router``
-and its sibling gates) AND the Lane-B ``pydantic_ai`` shell
+A single source of truth for the **Bash-shaped** shell-command refusals that BOTH
+lanes must enforce identically — the pure ``(command) -> reason`` matchers,
+consulted by the cold PreToolUse subprocess (``hooks/scripts/hook_router`` and its
+sibling gates) AND the Lane-B ``pydantic_ai`` shell
 (:func:`teatree.agents.lane_b.gating.hard_deny_reason`, which iterates this
-registry). Before this registry the two diverged — Lane B's ``hard_deny_reason``
+registry). It is NOT the whole shell-refusal set: the cwd-scoped
+main-clone-mutation gate and the payload-scoped privacy/banned-term gate are
+shell-command refusals too, but they carry per-call context and live outside this
+registry — Lane B composes all three. Before this registry the two diverged — Lane B's ``hard_deny_reason``
 checked only the main-clone + privacy gates, so a raw ``gh pr merge`` /
 ``git push --no-verify`` / secret-print / raw-review-post / reviewer-assign /
 raw-pid-kill was reachable under ``agent_harness=pydantic_ai`` with NO MergeClear
