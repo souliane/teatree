@@ -186,6 +186,43 @@ def sha_conflicts_with_target(repo: str, reviewed_sha: str, target: str = "origi
     )
 
 
+def fetch_target_head(repo: str, target: str = "origin/main") -> str:
+    """Fetch ``target``'s remote and return its live HEAD SHA; ``''`` when inconclusive.
+
+    The plan-currency probe's fetch step (SELFCATCH-3), reusing the same fetch
+    posture as the gates above. An empty return (failed fetch, unresolvable ref)
+    signals an inconclusive probe so the caller fails OPEN — a network outage must
+    not wedge coding.
+    """
+    if not _fetch_target(repo, target):
+        return ""
+    return _rev_parse(repo, target)
+
+
+def commits_between_touching_paths(
+    repo: str,
+    base_sha: str,
+    head_ref: str,
+    paths: tuple[str, ...] | list[str],
+) -> tuple[str, ...] | None:
+    """SHAs in ``base_sha..head_ref`` that modify any of ``paths`` (no fetch).
+
+    The seam-move probe (SELFCATCH-3): ``git log base_sha..head_ref -- <paths>``.
+    ``()`` ⇒ the base is current OR no intervening commit touched a declared seam;
+    a non-empty tuple ⇒ the plan's base moved and the move touched a seam (the plan
+    is stale). ``None`` ⇒ inconclusive (unresolvable ``base_sha``/range, old git)
+    so the caller fails OPEN — same posture as :func:`_merge_tree_conflicts`. An
+    empty ``paths`` short-circuits to ``()`` (a ``no_seams`` plan has nothing to
+    guard). The caller is expected to have fetched already.
+    """
+    if not paths:
+        return ()
+    rc, out = _git(repo, "log", "--format=%H", f"{base_sha}..{head_ref}", "--", *paths)
+    if rc != 0:
+        return None
+    return tuple(line for line in out.splitlines() if line.strip())
+
+
 def branch_behind_target(repo: str, branch: str, target: str = "origin/main") -> BranchStaleness | None:
     """Return staleness for ``branch`` vs ``target``, or ``None`` when current.
 

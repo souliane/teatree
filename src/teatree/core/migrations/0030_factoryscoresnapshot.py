@@ -6,7 +6,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0028_mergeaudit_repo_slug"),
+        ("core", "0029_planartifact_base_sha_adequacy"),
     ]
 
     operations = [

@@ -91,6 +91,12 @@ FEATURE_FLAGS: dict[str, FeatureFlag] = {
         tracking_issue="souliane/teatree#1796",
         summary="Singleton loop-worker tick driver, soaking before it owns the cadence by default.",
     ),
+    "require_plan_adequacy": FeatureFlag(
+        field="require_plan_adequacy",
+        stage=FlagStage.DARK,
+        tracking_issue="souliane/teatree — SELFCATCH-3 plan_gate hardening",
+        summary="Plan-adequacy + late-bound-plan gate; ships dark until the planner emits manifests.",
+    ),
 }
 
 

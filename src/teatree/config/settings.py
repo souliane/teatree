@@ -113,6 +113,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "require_reviewed_state_for_review_request": _parse_strict_bool,
     "require_integration_review": _parse_strict_bool,
     "require_merge_evidence": _parse_strict_bool,
+    "require_plan_adequacy": _parse_strict_bool,
     "bulk_close_threshold": _parse_strict_int,
     "require_rubric_verification": _parse_strict_bool,
     "require_spec_coverage": _parse_strict_bool,
@@ -637,6 +638,21 @@ class UserSettings:
     # back off is the operator's audited escape if a forge outage would otherwise
     # wedge a genuinely-merged ticket the forge cannot confirm. Per-overlay overridable.
     require_merge_evidence: bool = False
+    # SELFCATCH-3 Opt-in plan-adequacy + late-bound-plan gate on ``code()`` /
+    # ``schedule_coding`` (``plan_currency_gate``): coding is unreachable without an
+    # ADEQUATE plan (a complete four-section manifest — design, integration_seams,
+    # edge_cases, test_strategy — each substantive OR an explicit reasoned negative)
+    # that is BOUND to the current target HEAD (a plan whose base_sha moved and whose
+    # intervening commits touch a declared seam is treated ABSENT — stale-is-absent).
+    # Forecloses the named root cause of the 26-bug integration campaign:
+    # thin-spec-as-plan and stale-base coding. Also flips ``PlanArtifact.record()``
+    # strict — a new row needs a 40-char base_sha + complete manifest. Default false =
+    # NO-OP so the generic FSM never blocks; the operator flips it ON per-overlay
+    # (``config_setting set require_plan_adequacy true --overlay <name>``) once the
+    # planner produces manifests. Its OWN kill-switch (setting it back off) is the
+    # audited never-lockout escape alongside ``plan-reaffirm``. A feature flag
+    # (governed in ``FEATURE_FLAGS``). Per-overlay overridable.
+    require_plan_adequacy: bool = False
     # PR-08 No-bulk-close threshold: a single command/agent action closing more
     # than this many tickets/MRs is refused without an explicit per-item
     # confirmation token (``bulk_close_gate``). A close of ≤ threshold items is

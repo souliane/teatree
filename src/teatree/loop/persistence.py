@@ -338,6 +338,8 @@ def _handle_red_card(action: DispatchAction) -> Task | None:
     )
     if ticket.role != Ticket.Role.AUTHOR or _has_open_task(ticket, phase="coding"):
         return None
+    # Intentionally NOT gated by plan_currency (SELFCATCH-3): a redcard:// synthetic
+    # ticket carries no PlanArtifact, so the adequacy/currency gate would false-positive.
     return _create_phase_task(
         ticket,
         phase="coding",
@@ -484,6 +486,8 @@ def _handle_skill_drift(action: DispatchAction) -> Task | None:
     )
     if ticket.role != Ticket.Role.AUTHOR or _has_open_task(ticket, phase="coding"):
         return None
+    # Intentionally NOT gated by plan_currency (SELFCATCH-3): a t3:coder skill-drift
+    # synthetic ticket carries no PlanArtifact, so the currency gate would false-positive.
     return _create_phase_task(
         ticket,
         phase="coding",

@@ -893,12 +893,12 @@
           "name": "expedite"
         },
         {
-          "help": "Transition a ticket to a new state",
-          "name": "transition"
-        },
-        {
           "help": "Record a PlanArtifact and advance the ticket STARTED \u2192 PLANNED",
           "name": "plan"
+        },
+        {
+          "help": "Transition a ticket to a new state",
+          "name": "transition"
         },
         {
           "help": "Issue a per-diff CLEAR \u2014 the orchestrator's only merge output (BLUEPRINT \u00a717.4.2)",
@@ -917,6 +917,22 @@
           "name": "integration-review-override"
         },
         {
+          "help": "Record an audited PlanArtifact bypass and advance the ticket to PLANNED",
+          "name": "plan-bypass"
+        },
+        {
+          "help": "Mark a trivial ticket to skip planning and advance STARTED \u2192 PLANNED",
+          "name": "skip-planning"
+        },
+        {
+          "help": "Retroactively advance STARTED tickets to PLANNED after the gate was added",
+          "name": "plan-reconcile-inflight"
+        },
+        {
+          "help": "Re-bind a plan to a new base \u2014 the plan-currency gate's never-lockout escape",
+          "name": "plan-reaffirm"
+        },
+        {
           "help": "Set a ticket's rubric from EXPLICIT JSON criteria, all PENDING (#2241)",
           "name": "rubric-set"
         },
@@ -931,18 +947,6 @@
         {
           "help": "Record a single-use user bypass of the mandatory-E2E gate (#1967)",
           "name": "e2e-bypass"
-        },
-        {
-          "help": "Record an audited PlanArtifact bypass and advance the ticket to PLANNED",
-          "name": "plan-bypass"
-        },
-        {
-          "help": "Mark a trivial ticket to skip planning and advance STARTED \u2192 PLANNED",
-          "name": "skip-planning"
-        },
-        {
-          "help": "Retroactively advance STARTED tickets to PLANNED after the gate was added",
-          "name": "plan-reconcile-inflight"
         },
         {
           "help": "Create a child work item nested under a parent issue/work item",
