@@ -1,21 +1,23 @@
 # test-path: cross-cutting — tests hooks/scripts/loop_registrations.py (hooks/); no src/teatree/ mirror.
-"""Owner session auto-registers the background loops at session start (#2650).
+"""Owner session auto-registers the reactive infra loops at session start (PR-28).
 
-The owner session's ``UserPromptSubmit`` handler emits two families: ONE
-``register_cron`` directive per ENABLED ``Loop`` row (DB loops) AND one
-``/loop <duration>`` directive per always-on reactive infra slot (Slack-answer,
-self-improve, drain-queue). A non-owner / fresh session emits nothing; an owner
-with NO enabled DB loops still auto-registers the three reactive slots — they have
-no DB row and no master tick to piggyback on, so the owner drives them directly.
-The seams ``teatree.loops.claude_specs`` (DB loops) and
-``teatree.loop.loop_cadences`` (reactive slots) are the single sources of truth,
-shared with the ``/t3:loops`` skill and the ``t3 loop <slot> start`` CLI, so the
-hook directives and the CLI affordances agree.
+PR-28 retired the native ``/loop`` cron mirror of the DB ``Loop`` rows — the
+singleton ``t3 worker`` owns that cadence now. The owner session's
+``UserPromptSubmit`` handler emits ONLY the three always-on reactive infra slots
+(Slack-answer, self-improve, drain-queue), each via the ``/loop <duration>`` form
+(sub-minute cadence, not a cron). A non-owner / fresh session emits nothing; a
+loser with a live foreign owner backs off and writes no marker. The seam
+``teatree.loop.loop_cadences.reactive_slot_directives`` is the single source of
+truth, shared with the ``/t3:loops`` skill and the ``t3 loop <slot> start`` CLI.
+
+The pure prompt recognisers (``is_bare_loop_tick_prompt`` / ``loop_name_from_prompt``)
+stay: ``hook_router`` and ``cron_tracking`` still classify a per-loop tick prompt
+(fired by the worker's subprocess tick, or a stale pre-flip cron) without importing
+teatree.
 """
 
 import contextlib
 import io
-import json
 import os
 import shutil
 import tempfile
@@ -28,65 +30,33 @@ import pytest
 import hooks.scripts.hook_router as router
 from hooks.scripts import loop_registrations
 from hooks.scripts.loop_registrations import emit_loop_registrations, is_bare_loop_tick_prompt, loop_name_from_prompt
-from teatree.core.models import Loop, LoopLease, Prompt
-from teatree.loops.claude_specs import ClaudeLoopSpec, loop_run_prompt
+from teatree.core.models import LoopLease
 
 
-def _two_specs() -> list[ClaudeLoopSpec]:
-    return [
-        ClaudeLoopSpec("t3-loop-inbox", "*/1 * * * *", loop_run_prompt("inbox")),
-        ClaudeLoopSpec("t3-loop-ship", "*/5 * * * *", loop_run_prompt("ship")),
-    ]
+def _bare_tick_prompt(name: str) -> str:
+    """The bare per-loop tick prompt the worker's subprocess tick fires (recogniser input)."""
+    return f"Run `t3 loops tick --loop {name}` in Bash, then briefly report the tick summary."
+
+
+_THREE_REACTIVE = ["/loop 5m /loop-slack-answer", "/loop 30m /loop-self-improve", "/loop 2m /loop-drain-queue"]
 
 
 class TestEmitLoopRegistrations:
-    def test_emits_one_register_cron_entry_per_enabled_loop(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(loop_registrations, "_enabled_loop_specs", _two_specs)
+    def test_emits_the_reactive_slot_prose_when_slots_resolve(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(loop_registrations, "_reactive_slot_directives", lambda: _THREE_REACTIVE)
         out = io.StringIO()
         emitted = emit_loop_registrations(out)
         text = out.getvalue()
 
         assert emitted is True
-        directive = json.loads(text.splitlines()[0])
-        loops = directive["hookSpecificOutput"]["loops"]
-        assert directive["hookSpecificOutput"]["action"] == "register_cron"
-        assert [entry["slot_id"] for entry in loops] == ["t3-loop-inbox", "t3-loop-ship"]
-        assert loops[0]["cron"] == "*/1 * * * *"
-        assert "t3 loops tick --loop inbox" in loops[0]["prompt"]
-        # The prose fallback lists each loop's CronCreate so a harness that does
-        # not read the structured directive still registers all of them.
-        assert "t3-loop-inbox" in text
-        assert "t3-loop-ship" in text
-        # Verify-by-reread (#1192): the bulk SessionStart nudge must instruct the
-        # same confirm step the manual /t3:loops skill path already has, per
-        # loop name (not slot_id) — the CLI's positional arg is the DB Loop name.
-        assert "verify-cron" in text
-        assert "CronList" in text
-        assert "t3 loop verify-cron inbox --cron-list-json" in text
-        assert "t3 loop verify-cron ship --cron-list-json" in text
-
-    def test_no_db_loops_still_auto_registers_the_three_reactive_slots(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # No enabled DB loop, but the three always-on reactive slots have no DB
-        # row of their own — the owner registers each as its own ``/loop`` (#2650),
-        # so a fresh owner session with an empty Loop table still drives them.
-        monkeypatch.setattr(loop_registrations, "_enabled_loop_specs", list)
-        out = io.StringIO()
-        emitted = emit_loop_registrations(out)
-        text = out.getvalue()
-
-        assert emitted is True
-        # No DB loops => no structured ``register_cron`` directive, only the
-        # reactive ``/loop`` prose.
+        # No structured ``register_cron`` directive is ever emitted now (worker owns the cadence).
         assert "hookSpecificOutput" not in text
-        assert "t3 loop slack-answer run" in text
-        assert "t3 loop self-improve run --tier cheap" in text
-        assert "t3 loop drain-queue run" in text
+        assert "register_cron" not in text
+        assert "reactive infra loops" in text
+        for directive in _THREE_REACTIVE:
+            assert directive in text
 
-    def test_fail_open_silent_when_both_seams_unavailable(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Each seam accessor swallows errors and returns []; with NEITHER a DB
-        # loop NOR a resolvable reactive slot, the public entry point stays silent
-        # — never an exception into the fast hook.
-        monkeypatch.setattr(loop_registrations, "_enabled_loop_specs", list)
+    def test_fail_open_silent_when_no_reactive_slot_resolvable(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(loop_registrations, "_reactive_slot_directives", list)
         out = io.StringIO()
         assert emit_loop_registrations(out) is False
@@ -94,15 +64,15 @@ class TestEmitLoopRegistrations:
 
 
 class TestPerLoopPromptRecognition:
-    """The hot-path recogniser stays in lock-step with the seam's generated prompt."""
+    """The hot-path recogniser stays in lock-step with the worker's tick-prompt shape."""
 
-    def test_recognises_the_seams_generated_prompt(self) -> None:
-        prompt = loop_run_prompt("dream")
+    def test_recognises_the_bare_tick_prompt(self) -> None:
+        prompt = _bare_tick_prompt("dream")
         assert is_bare_loop_tick_prompt(prompt) is True
         assert loop_name_from_prompt(prompt) == "dream"
 
     def test_a_prompt_with_user_content_is_not_a_bare_tick(self) -> None:
-        prompt = loop_run_prompt("inbox") + " also please rebase my branch"
+        prompt = _bare_tick_prompt("inbox") + " also please rebase my branch"
         assert is_bare_loop_tick_prompt(prompt) is False
         # The command is still extractable for cron-job naming.
         assert loop_name_from_prompt(prompt) == "inbox"
@@ -122,72 +92,26 @@ def owner_session(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     session_id = "owner-session"
     (state / f"{session_id}.teatree-active").touch()  # opted into teatree
     monkeypatch.setattr(router, "_tick_meta_stale", lambda: True)
-    monkeypatch.setattr(router, "_session_has_loop", lambda sid: False)
+    monkeypatch.setattr(loop_registrations, "_reactive_slot_directives", lambda: _THREE_REACTIVE)
     return session_id
 
 
-class TestOwnerSessionEmitsPerLoop:
-    def test_owner_emits_one_directive_per_enabled_loop(
-        self, owner_session: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+class TestOwnerSessionEmitsReactiveSlots:
+    def test_owner_emits_the_reactive_slot_registrations(
+        self, owner_session: str, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        monkeypatch.setattr(loop_registrations, "_enabled_loop_specs", _two_specs)
         router.handle_enforce_loop_on_prompt({"session_id": owner_session})
         out = capsys.readouterr().out
-        directive = json.loads(out.splitlines()[0])
-        loops = directive["hookSpecificOutput"]["loops"]
-        assert [entry["slot_id"] for entry in loops] == ["t3-loop-inbox", "t3-loop-ship"]
+        assert "reactive infra loops" in out
+        assert "hookSpecificOutput" not in out  # never a cron directive
 
-    def test_owner_with_no_db_loops_still_auto_registers_the_three_reactive_slots(
-        self, owner_session: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    def test_owner_re_emit_is_suppressed_by_pending_marker(
+        self, owner_session: str, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """A FRESH owner with an empty Loop table auto-registers all three reactive slots (#2650).
-
-        This is the merge gate for master-tick removal: with no master tick to
-        piggyback the reactive cycles onto, the owner bootstrap must drive
-        Slack-answer / self-improve / drain-queue itself, each as its own
-        ``/loop``.  Runs the REAL ``teatree.loop.loop_cadences`` seam end-to-end.
-        """
-        monkeypatch.setattr(loop_registrations, "_enabled_loop_specs", list)
         router.handle_enforce_loop_on_prompt({"session_id": owner_session})
-        out = capsys.readouterr().out
-
-        assert "t3 loop slack-answer run" in out
-        assert "t3 loop self-improve run --tier cheap" in out
-        assert "t3 loop drain-queue run" in out
-        # Sub-minute cadence => the ``/loop <duration>`` form, never a cron directive.
-        assert "/loop " in out
-        assert "hookSpecificOutput" not in out
-
-    def test_owner_emits_when_tick_meta_fresh_but_session_has_no_cron(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        """Regression for #2714: release+claim must re-register even when tick-meta is fresh.
-
-        tick-meta.json can be fresh because the previous owner session was ticking
-        normally before ``t3 loop release``.  A new session that claims ownership
-        afterwards has no registered cron yet — _tick_meta_stale() returning False
-        must NOT prevent registration.  Only _session_has_loop() is the correct gate.
-        """
-        state = tmp_path / "state"
-        state.mkdir(parents=True, exist_ok=True)
-        monkeypatch.setattr(router, "STATE_DIR", state)
-        monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(tmp_path / "data"))
-        monkeypatch.setenv("T3_AUTOLOAD", "1")
-        session_id = "new-owner-after-claim"
-        (state / f"{session_id}.teatree-active").touch()
-        # tick-meta is FRESH — previous owner was ticking before release.
-        monkeypatch.setattr(router, "_tick_meta_stale", lambda: False)
-        # This new session has no registered cron yet.
-        monkeypatch.setattr(router, "_session_has_loop", lambda sid: False)
-        monkeypatch.setattr(loop_registrations, "_enabled_loop_specs", _two_specs)
-
-        router.handle_enforce_loop_on_prompt({"session_id": session_id})
-
-        out = capsys.readouterr().out
-        assert out != "", "must emit registration even when tick-meta is fresh after claim"
-        directive = json.loads(out.splitlines()[0])
-        loops = directive["hookSpecificOutput"]["loops"]
-        assert len(loops) == 2
+        capsys.readouterr()  # drain the first emission
+        router.handle_enforce_loop_on_prompt({"session_id": owner_session})
+        assert capsys.readouterr().out == ""  # emit-once per session
 
     def test_non_owner_session_emits_nothing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -197,24 +121,16 @@ class TestOwnerSessionEmitsPerLoop:
         monkeypatch.setattr(router, "STATE_DIR", state)
         monkeypatch.setenv("T3_AUTOLOAD", "1")
         # No ``.teatree-active`` marker => not the loop owner => never registers.
-        monkeypatch.setattr(loop_registrations, "_enabled_loop_specs", _two_specs)
+        monkeypatch.setattr(loop_registrations, "_reactive_slot_directives", lambda: _THREE_REACTIVE)
         router.handle_enforce_loop_on_prompt({"session_id": "stranger"})
         assert capsys.readouterr().out == ""
 
     def test_opted_in_loser_with_live_foreign_owner_registers_nothing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """A second OPTED-IN session that finds a LIVE different-session owner registers NOTHING (#2650).
+        """A second OPTED-IN session that finds a LIVE different-session owner registers NOTHING.
 
-        The contention bug: BOTH an opted-in owner session AND an opted-in second
-        session emitted ``register_cron`` directives, so both registered native
-        ``/loop`` crons whose ``t3 loops tick --loop <name>`` runs then ping-ponged
-        the per-loop ``loop:<name>`` leases — ~half the loops SKIP every round. The
-        loser must back off AUTOMATICALLY: emit nothing AND write no pending marker,
-        so the PreToolUse nudge (which requires the marker) also stays silent. Only
-        the rightful owner's crons fire. Distinct from
-        :meth:`test_non_owner_session_emits_nothing`, which covers a session that
-        never opted into teatree at all (a colleague who merely cloned the repo).
+        The loser must back off AUTOMATICALLY: emit nothing AND write no pending marker.
         """
         state = tmp_path / "state"
         state.mkdir(parents=True, exist_ok=True)
@@ -223,8 +139,7 @@ class TestOwnerSessionEmitsPerLoop:
         monkeypatch.setenv("T3_AUTOLOAD", "1")
         loser = "loser-session"
         (state / f"{loser}.teatree-active").touch()  # the loser DID opt into teatree
-        monkeypatch.setattr(router, "_session_has_loop", lambda sid: False)
-        monkeypatch.setattr(loop_registrations, "_enabled_loop_specs", _two_specs)
+        monkeypatch.setattr(loop_registrations, "_reactive_slot_directives", lambda: _THREE_REACTIVE)
         # A DIFFERENT, live (alive pid) session already holds the tick-owner record.
         router._write_loop_registry(
             {
@@ -241,7 +156,6 @@ class TestOwnerSessionEmitsPerLoop:
 
         assert capsys.readouterr().out == "", "a loser with a LIVE foreign owner must register NOTHING"
         assert not (state / f"{loser}.loop-pending").is_file(), "the loser must write no pending marker (no nudge)"
-        # The loser must NOT have wrested the tick-owner record from the live master.
         assert router._read_loop_registry()[router._OWNER_LOOP]["session_id"] == "master-session"
 
 
@@ -253,11 +167,7 @@ class TestTakeOverReconcilesFileRegistry(django.test.TestCase):
     file registry, the new owner's ``_claim_loop_ownership`` must consult the DB
     lease, see the hand-off, REWRITE the file registry to itself, and WIN — so
     ``_session_owns_loop`` reads True in the SAME hook and the emit path registers
-    crons for the new owner. The flip side of
-    :meth:`TestOwnerSessionEmitsPerLoop.test_opted_in_loser_with_live_foreign_owner_registers_nothing`:
-    without the DB consult the new owner emits nothing and the loop stalls until
-    the displaced session ends (the HOLD finding on #2851). A ``django.test.TestCase``
-    because the take-over is recorded in the real DB ``LoopLease`` row the hook reads.
+    the reactive slots for the new owner.
     """
 
     def test_db_take_over_reconciles_stale_file_owner_and_registers(self) -> None:
@@ -275,8 +185,7 @@ class TestTakeOverReconcilesFileRegistry(django.test.TestCase):
         with (
             mock.patch.object(router, "STATE_DIR", state),
             mock.patch.dict(os.environ, {"T3_LOOP_REGISTRY_DIR": str(tmp / "data"), "T3_AUTOLOAD": "1"}),
-            mock.patch.object(router, "_session_has_loop", return_value=False),
-            mock.patch.object(loop_registrations, "_enabled_loop_specs", _two_specs),
+            mock.patch.object(loop_registrations, "_reactive_slot_directives", return_value=_THREE_REACTIVE),
             contextlib.redirect_stdout(buf),
         ):
             # The displaced owner is STILL ALIVE in the file registry.
@@ -297,28 +206,8 @@ class TestTakeOverReconcilesFileRegistry(django.test.TestCase):
         # The file registry is reconciled to NEW, so it owns the loop in this hook.
         assert owns_loop is True
         assert reconciled_owner == new_owner
-        # And the emit path registered one cron per enabled loop for NEW.
-        out = buf.getvalue()
-        assert out != "", "the reconciled new owner must register its crons"
-        loops = json.loads(out.splitlines()[0])["hookSpecificOutput"]["loops"]
-        assert len(loops) == 2
-
-
-def _prompt(name: str = "demo-prompt") -> Prompt:
-    prompt, _ = Prompt.objects.get_or_create(name=name, defaults={"body": "do x"})
-    return prompt
-
-
-class TestSeamDrivesDirectivesFromTheDb(django.test.TestCase):
-    """End-to-end against the real seam: the directives mirror the enabled rows."""
-
-    def test_directives_reflect_enabled_rows(self) -> None:
-        Loop.objects.create(name="hook-on", delay_seconds=300, prompt=_prompt(), enabled=True)
-        Loop.objects.create(name="hook-off", delay_seconds=60, prompt=_prompt(), enabled=False)
-        directives = loop_registrations.loop_registration_directives()
-        slot_ids = {entry["slot_id"] for entry in directives}
-        assert "t3-loop-hook-on" in slot_ids
-        assert "t3-loop-hook-off" not in slot_ids
+        # And the emit path registered the reactive slots for NEW.
+        assert "reactive infra loops" in buf.getvalue()
 
 
 class TestReactiveSlotSeam:
@@ -326,7 +215,7 @@ class TestReactiveSlotSeam:
 
     ``teatree.loop.loop_cadences.reactive_slot_directives`` is a pure ``os.environ``
     read (no DB), so the three always-on infra loops resolve even when the DB is
-    unreachable — only the DB-loop directives would fall away.
+    unreachable.
     """
 
     def test_real_seam_yields_the_three_reactive_loop_directives(self) -> None:

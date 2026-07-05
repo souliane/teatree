@@ -23,7 +23,6 @@ import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import (
     _OWNER_LOOP,
     _loop_auto_load_active,
-    _loop_registration_exempt,
     _read_loop_registry,
     _t3_engaged,
     _teatree_active,
@@ -169,77 +168,38 @@ class TestEnforceLoopOnPromptGating:
         out = capsys.readouterr().out
         assert out == ""
 
-    def test_marked_session_with_stale_tick_emits_register_cron(
+    def test_marked_session_emits_reactive_slot_registrations(
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # #2650: the owner now registers ONE `/loop` per enabled DB Loop (the seam
-        # is patched here to two specs so this stays a DB-free gating test).
-        from hooks.scripts import loop_registrations  # noqa: PLC0415
-
-        class _Spec:
-            def __init__(self, slot_id: str) -> None:
-                self.slot_id = slot_id
-                self.cron = "*/5 * * * *"
-                self.prompt = f"Run `t3 loops tick --loop {slot_id}` in Bash, then briefly report the tick summary."
+        # PR-28: the owner registers ONLY the reactive infra `/loop`s (the worker owns
+        # the DB-loop cadence now). The seam is patched so this stays a DB-free gating test.
+        from hooks.scripts import loop_registrations  # noqa: PLC0415 — deferred: test-local import
 
         _mark_active("teatree-session")
-        monkeypatch.setattr(router, "_tick_meta_stale", lambda: True)
-        monkeypatch.setattr(router, "_session_has_loop", lambda sid: False)
-        monkeypatch.setattr(loop_registrations, "_enabled_loop_specs", lambda: [_Spec("inbox"), _Spec("ship")])
+        monkeypatch.setattr(
+            loop_registrations,
+            "_reactive_slot_directives",
+            lambda: ["/loop 30m /self-improve", "/loop 5m /slack-answer"],
+        )
         handle_enforce_loop_on_prompt({"session_id": "teatree-session"})
         out = capsys.readouterr().out
         assert out != ""
-        assert "register_cron" in out
+        assert "reactive infra loops" in out
+        assert "/self-improve" in out
 
+    def test_marked_session_re_emit_is_suppressed_by_pending_marker(
+        self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Emit-once idempotency: a second prompt does not re-nag once the loop-pending
+        # marker exists (it also feeds the skill-load bootstrap exemption).
+        from hooks.scripts import loop_registrations  # noqa: PLC0415 — deferred: test-local import
 
-# ── _loop_registration_exempt gating ─────────────────────────────────
-
-
-class TestLoopRegistrationExemptGating:
-    def test_fresh_session_without_marker_is_exempt(self) -> None:
-        assert _loop_registration_exempt({"session_id": "no-teatree", "tool_name": "Bash"}) is True
-
-    def test_unmarked_loop_driver_is_exempt_only_because_of_teatree_gate(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Anti-vacuous complement: an UNMARKED session that WOULD be the loop
-        # driver (empty registry => _session_drives_loop True) and that clears
-        # every other exemption (gate enabled, Bash tool, not a sub-agent) must
-        # still be exempt PURELY because the teatree-active gate fires first.
-        # Goes RED if the _teatree_active early-return is removed.
-        monkeypatch.setattr(router, "_loop_registration_gate_enabled", lambda: True)
-        assert _read_loop_registry() == {}
-        assert router._session_drives_loop("unmarked-driver") is True
-        result = _loop_registration_exempt({"session_id": "unmarked-driver", "tool_name": "Bash"})
-        assert result is True
-
-    def test_marked_loop_driver_is_not_exempt(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Symmetric must-fire: a MARKED session that is the loop driver clears
-        # the teatree gate and is genuinely non-exempt (must be nagged).
         _mark_active("teatree-session")
-        monkeypatch.setattr(router, "_loop_registration_gate_enabled", lambda: True)
-        assert _read_loop_registry() == {}
-        assert router._session_drives_loop("teatree-session") is True
-        result = _loop_registration_exempt({"session_id": "teatree-session", "tool_name": "Bash"})
-        assert result is False
-
-    def test_marked_non_driver_session_is_exempt(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # A MARKED session that a DIFFERENT live session owns is not the driver,
-        # so it is exempt despite passing the teatree gate.
-        _mark_active("teatree-session")
-        _write_loop_registry(
-            {
-                _OWNER_LOOP: {
-                    "session_id": "other-live-owner",
-                    "agent_id": "",
-                    "pid": _live_pid(),
-                }
-            }
-        )
-        monkeypatch.setattr(router, "_loop_registration_gate_enabled", lambda: True)
-        result = _loop_registration_exempt({"session_id": "teatree-session", "tool_name": "Bash"})
-        assert result is True
-
-    def test_no_session_id_is_always_exempt(self) -> None:
-        assert _loop_registration_exempt({"tool_name": "Bash"}) is True
+        monkeypatch.setattr(loop_registrations, "_reactive_slot_directives", lambda: ["/loop 30m /self-improve"])
+        handle_enforce_loop_on_prompt({"session_id": "teatree-session"})
+        capsys.readouterr()  # drain the first emission
+        handle_enforce_loop_on_prompt({"session_id": "teatree-session"})
+        assert capsys.readouterr().out == ""
 
 
 # ── handle_track_skill_usage sets marker ──────────────────────────────
@@ -455,7 +415,6 @@ class TestRisk6MidSessionOwnershipClaim:
     def test_marked_session_claims_ownership_when_no_live_owner(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _mark_active("mid-sess")
         monkeypatch.setattr(router, "_tick_meta_stale", lambda: True)
-        monkeypatch.setattr(router, "_session_has_loop", lambda sid: False)
 
         handle_enforce_loop_on_prompt({"session_id": "mid-sess"})
 
@@ -473,7 +432,6 @@ class TestRisk6MidSessionOwnershipClaim:
         # orthogonal mitigation (test_loop_disown_prevents_ownership_claim).
         _mark_active("mid-sess-disabled")
         monkeypatch.setattr(router, "_tick_meta_stale", lambda: True)
-        monkeypatch.setattr(router, "_session_has_loop", lambda sid: False)
 
         toml_path = tmp_path / ".teatree.toml"
         toml_path.write_text("[loops]\nenabled = false\n", encoding="utf-8")
@@ -492,7 +450,6 @@ class TestRisk6MidSessionOwnershipClaim:
         # (test_loop_disown_prevents_ownership_claim).
         _mark_active("mid-sess-env-disabled")
         monkeypatch.setattr(router, "_tick_meta_stale", lambda: True)
-        monkeypatch.setattr(router, "_session_has_loop", lambda sid: False)
         monkeypatch.setenv("T3_LOOPS_DISABLED", "all")
 
         handle_enforce_loop_on_prompt({"session_id": "mid-sess-env-disabled"})
@@ -504,7 +461,6 @@ class TestRisk6MidSessionOwnershipClaim:
     def test_loop_disown_prevents_ownership_claim(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _mark_active("mid-sess-disown")
         monkeypatch.setattr(router, "_tick_meta_stale", lambda: True)
-        monkeypatch.setattr(router, "_session_has_loop", lambda sid: False)
         monkeypatch.setenv("T3_LOOP_DISOWN", "1")
 
         handle_enforce_loop_on_prompt({"session_id": "mid-sess-disown"})
@@ -522,11 +478,11 @@ class TestRisk6MidSessionOwnershipClaim:
 class TestLoopAutoLoadOptInGate:
     """A teatree-marked session that did NOT enable autoload is silent (#256).
 
-    Symmetric must-fire/must-NOT-fire for ``_loop_auto_load_active`` and each of
-    the three injection points it now gates (bootstrap claim, prompt-time cron
-    nag, registration nudge exemption). The marker is always present here, so the
-    ONLY variable is the ``autoload`` opt-in — revert the ``_loop_auto_load_active``
-    gate at any call site and the matching ``*_silent`` assertion goes RED.
+    Symmetric must-fire/must-NOT-fire for ``_loop_auto_load_active`` and the two
+    injection points it gates (bootstrap claim, prompt-time reactive-slot nag). The
+    marker is always present here, so the ONLY variable is the ``autoload`` opt-in —
+    revert the ``_loop_auto_load_active`` gate at any call site and the matching
+    ``*_silent`` assertion goes RED.
     """
 
     @pytest.fixture(autouse=True)
@@ -569,7 +525,6 @@ class TestLoopAutoLoadOptInGate:
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(router, "_tick_meta_stale", lambda: True)
-        monkeypatch.setattr(router, "_session_has_loop", lambda sid: False)
         handle_enforce_loop_on_prompt({"session_id": "colleague"})
         assert capsys.readouterr().out == ""
         assert _read_loop_registry() == {}
@@ -577,31 +532,13 @@ class TestLoopAutoLoadOptInGate:
     def test_prompt_nag_fires_with_opt_in(
         self, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from hooks.scripts import loop_registrations  # noqa: PLC0415
-
-        class _Spec:
-            slot_id = "t3-loop-inbox"
-            cron = "*/1 * * * *"
-            prompt = "Run `t3 loops tick --loop inbox` in Bash, then briefly report the tick summary."
+        from hooks.scripts import loop_registrations  # noqa: PLC0415 — deferred: test-local import
 
         self._opt_in(monkeypatch)
         monkeypatch.setattr(router, "_tick_meta_stale", lambda: True)
-        monkeypatch.setattr(router, "_session_has_loop", lambda sid: False)
-        monkeypatch.setattr(loop_registrations, "_enabled_loop_specs", lambda: [_Spec()])
+        monkeypatch.setattr(loop_registrations, "_reactive_slot_directives", lambda: ["/loop 30m /self-improve"])
         handle_enforce_loop_on_prompt({"session_id": "colleague"})
-        assert "register_cron" in capsys.readouterr().out
-
-    # registration nudge exemption ─────────────────────────────────────
-    def test_registration_exempt_without_opt_in(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(router, "_loop_registration_gate_enabled", lambda: True)
-        monkeypatch.setattr(router, "_session_drives_loop", lambda sid: True)
-        assert _loop_registration_exempt({"session_id": "colleague", "tool_name": "Bash"}) is True
-
-    def test_registration_not_exempt_with_opt_in(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        self._opt_in(monkeypatch)
-        monkeypatch.setattr(router, "_loop_registration_gate_enabled", lambda: True)
-        monkeypatch.setattr(router, "_session_drives_loop", lambda sid: True)
-        assert _loop_registration_exempt({"session_id": "colleague", "tool_name": "Bash"}) is False
+        assert "reactive infra loops" in capsys.readouterr().out
 
 
 # ── Statusline shell script gating ────────────────────────────────────

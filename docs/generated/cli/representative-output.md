@@ -52,30 +52,23 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 branch.                                                      │
 │ assess          Codebase health assessment.                                  │
 │ overlay         Dev-mode overlay install/uninstall.                          │
-│ loop            Manage the tick-driven autonomous loops. Session-bound by    │
-│                 design: they run only while a Claude Code session is open.   │
-│                 Under #2650 each enabled DB `Loop` row is its own native     │
-│                 Claude `/loop` firing `t3 loops tick --loop <name>` on its   │
-│                 own cadence — there is no master tick. Each per-loop tick    │
+│ loop            Manage the tick-driven autonomous loops. Under #1796 / PR-28 │
+│                 the singleton `t3 worker` owns the per-loop tick cadence by  │
+│                 default (`loop_runner_enabled` ON): it drains durable        │
+│                 self-rescheduling loop-timer chains (django-tasks            │
+│                 `run_after` rows), one per enabled DB `Loop` row firing `t3  │
+│                 loops tick --loop <name>` on its own cadence — there is no   │
+│                 master tick, and the DB loops run with no Claude session     │
+│                 open (the SessionStart supervisor keeps one worker alive; on │
+│                 a headless box start it once from a login profile).          │
+│                 `loop_runner_enabled` is the kill-switch — set it false to   │
+│                 stop the loops entirely (there is no fallback plane; PR-28   │
+│                 retired the native `/loop` cron mirror). Each per-loop tick  │
 │                 atomically claims the next pending unit (`t3 loop            │
-│                 claim-next`) and spawns one fresh bounded sub-agent for it.  │
-│                 There is no roster of long-lived loop sub-agents to re-spawn │
-│                 (#786 WS3): if a loop's owner session dies, the next open    │
-│                 session claims its slot and keeps ticking; with zero         │
-│                 sessions open the loops are paused until the next session    │
-│                 start (no OS daemon — accepted, not a defect). A per-agent   │
-│                 Stop-hook self-pump re-continues the loop automatically      │
-│                 while consolidated work remains — exactly one consolidation  │
-│                 loop per agent identity, deduped across all sessions (#786   │
-│                 WS4); it idles when none. OPTIONAL worker (#1796, default    │
-│                 OFF): `t3 worker` is a self-owned singleton that drains      │
-│                 durable self-rescheduling loop-timer chains (django-tasks    │
-│                 `run_after` rows), owning the cadence instead of the native  │
-│                 `/loop` crons so the DB loops run with no Claude session     │
-│                 open. It is opt-in — enable with `config_setting set         │
-│                 loop_runner_enabled true` and start it once from a login     │
-│                 profile; the default stays the session-bound native `/loop`  │
-│                 crons above.                                                 │
+│                 claim-next`) and spawns one fresh bounded sub-agent for it;  │
+│                 a dying worker leaves its Task reclaimable and the next tick │
+│                 re-dispatches it. Check the worker with `t3 worker status`;  │
+│                 ensure one is running with `t3 worker ensure`.               │
 │ goal            Standing verified-green goals (PR-25).                       │
 │ loops           Manage DB-configured autonomous loops (#1796).               │
 │ mcp             Read-only MCP server exposing teatree's structured search    │
@@ -111,24 +104,19 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 ```
 Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 
- Manage the tick-driven autonomous loops. Session-bound by design: they run
- only while a Claude Code session is open. Under #2650 each enabled DB `Loop`
- row is its own native Claude `/loop` firing `t3 loops tick --loop <name>` on
- its own cadence — there is no master tick. Each per-loop tick atomically
- claims the next pending unit (`t3 loop claim-next`) and spawns one fresh
- bounded sub-agent for it. There is no roster of long-lived loop sub-agents to
- re-spawn (#786 WS3): if a loop's owner session dies, the next open session
- claims its slot and keeps ticking; with zero sessions open the loops are
- paused until the next session start (no OS daemon — accepted, not a defect). A
- per-agent Stop-hook self-pump re-continues the loop automatically while
- consolidated work remains — exactly one consolidation loop per agent identity,
- deduped across all sessions (#786 WS4); it idles when none. OPTIONAL worker
- (#1796, default OFF): `t3 worker` is a self-owned singleton that drains
- durable self-rescheduling loop-timer chains (django-tasks `run_after` rows),
- owning the cadence instead of the native `/loop` crons so the DB loops run
- with no Claude session open. It is opt-in — enable with `config_setting set
- loop_runner_enabled true` and start it once from a login profile; the default
- stays the session-bound native `/loop` crons above.
+ Manage the tick-driven autonomous loops. Under #1796 / PR-28 the singleton `t3
+ worker` owns the per-loop tick cadence by default (`loop_runner_enabled` ON):
+ it drains durable self-rescheduling loop-timer chains (django-tasks
+ `run_after` rows), one per enabled DB `Loop` row firing `t3 loops tick --loop
+ <name>` on its own cadence — there is no master tick, and the DB loops run
+ with no Claude session open (the SessionStart supervisor keeps one worker
+ alive; on a headless box start it once from a login profile).
+ `loop_runner_enabled` is the kill-switch — set it false to stop the loops
+ entirely (there is no fallback plane; PR-28 retired the native `/loop` cron
+ mirror). Each per-loop tick atomically claims the next pending unit (`t3 loop
+ claim-next`) and spawns one fresh bounded sub-agent for it; a dying worker
+ leaves its Task reclaimable and the next tick re-dispatches it. Check the
+ worker with `t3 worker status`; ensure one is running with `t3 worker ensure`.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -164,10 +152,6 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │                (alias of resume).                                            │
 │ loop-state     Read a mini-loop's durable state, read-only (ENABLED when     │
 │                never touched; no mutation).                                  │
-│ claude-spec    Print the native Claude `/loop` spec (slot_id, cron, prompt)  │
-│                for one DB Loop.                                              │
-│ verify-cron    Verify-by-reread: confirm NAME's CronCreate registration      │
-│                against a CronList snapshot.                                  │
 │ self-improve   Self-improving monitor — scheduled smell detection with a     │
 │                tiered action ladder. Runs as its own dedicated `/loop` slot  │
 │                on a separate `loop-self-improve` LoopLease so a long         │

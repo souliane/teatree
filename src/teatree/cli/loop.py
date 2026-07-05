@@ -1,27 +1,25 @@
 """``t3 loop`` — start, stop, status, and the reactive-loop lifecycle helpers.
 
-The autonomous loops run as native Claude Code ``/loop`` slots (#2650: one
-``/loop`` per enabled DB ``Loop`` row, each firing ``t3 loops tick --loop <name>``
-on its own cadence — there is no master tick). This CLI manages that lifecycle:
-``start`` spawns a Claude Code session whose loop-owner hook registers each
-enabled loop's ``/loop``; ``stop`` prints the slot id to unregister; ``list`` /
-``status`` read live loop state; and the reactive infra loops (``self-improve``,
-``slack-answer``, ``drain-queue``) each expose their own ``run`` / ``start``
-subcommands here.
+The autonomous loops run as durable self-rescheduling loop-timer chains that the
+singleton ``t3 worker`` drains (#1796 / PR-28: one ``loop_timer`` chain per enabled
+DB ``Loop`` row, each firing ``t3 loops tick --loop <name>`` on its own cadence —
+there is no master tick). This CLI manages that lifecycle: ``start`` spawns a Claude
+Code session (whose owner hook registers the reactive infra ``/loop``s); ``stop``
+prints the slot id to unregister; ``list`` / ``status`` read live loop state; and
+the reactive infra loops (``self-improve``, ``slack-answer``, ``drain-queue``) each
+expose their own ``run`` / ``start`` subcommands here.
 
-Durability model (by design; #786 WS3 retired the immortal roster): the loops are
-SESSION-BOUND and TICK-DRIVEN. They run only while at least one Claude Code
-session is open — spawning the per-unit sub-agent requires the Agent tool, which
-exists only inside a live session. There is no fixed roster of long-lived loop
-sub-agents and nothing to re-spawn from a brief: each enabled loop's own ``/loop``
-cron is the driver. Each per-loop tick atomically claims the next pending DB unit
-(``t3 loop claim-next``) and spawns ONE fresh, bounded sub-agent for just that
-unit, which returns. Statelessness across ticks is the compaction-proofing — a
-worker dying mid-task leaves its Task reclaimable and the next tick re-dispatches
-it. Ownership is per-loop (the ``loop:<name>`` lease); if the owning session dies,
-the next open session claims the slot and keeps ticking (it does NOT re-spawn
-anything). With ZERO sessions open the loops are DEAD until the next session
-starts — accepted, not a defect.
+Durability model: the worker owns the per-loop tick cadence by default, so the DB
+loops run with NO Claude Code session open (the SessionStart supervisor keeps at
+least one worker alive; ``loop_runner_enabled`` OFF stops them entirely — there is
+no fallback plane, PR-28 retired the native ``/loop`` cron mirror). Each per-loop
+tick atomically claims the next pending DB unit (``t3 loop claim-next``) and spawns
+ONE fresh, bounded sub-agent for just that unit, which returns; spawning the
+sub-agent requires the Agent tool, which exists only inside a live Claude session,
+so the worker's deadlined tick subprocess dispatches work when a session is present.
+Statelessness across ticks is the compaction-proofing — a worker dying mid-task
+leaves its Task reclaimable and the next tick re-dispatches it. Ownership is
+per-loop (the ``loop:<name>`` lease).
 """
 
 import os
@@ -32,13 +30,11 @@ from pathlib import Path
 import typer
 
 from teatree.cli.loop_claim_next import claim_next_command
-from teatree.cli.loop_claude_spec import register as register_claude_spec
 from teatree.cli.loop_drain_queue import drain_queue_app
 from teatree.cli.loop_list import list_command
 from teatree.cli.loop_owner import register as register_loop_owner
 from teatree.cli.loop_slack_answer import slack_answer_app
 from teatree.cli.loop_state import register as register_loop_state
-from teatree.cli.loop_verify_cron import register as register_verify_cron
 from teatree.config import cadence_seconds
 from teatree.loop.loop_cadences import reactive_slot
 from teatree.loop.statusline import default_path
@@ -47,24 +43,20 @@ from teatree.utils.django_bootstrap import ensure_django
 loop_app = typer.Typer(
     name="loop",
     help=(
-        "Manage the tick-driven autonomous loops. Session-bound by design: they run "
-        "only while a Claude Code session is open. Under #2650 each enabled DB `Loop` "
-        "row is its own native Claude `/loop` firing `t3 loops tick --loop <name>` on "
-        "its own cadence — there is no master tick. Each per-loop tick atomically "
-        "claims the next pending unit (`t3 loop claim-next`) and spawns one fresh "
-        "bounded sub-agent for it. There is no roster of long-lived loop sub-agents "
-        "to re-spawn (#786 WS3): if a loop's owner session dies, the next open "
-        "session claims its slot and keeps ticking; with zero sessions open the loops "
-        "are paused until the next session start (no OS daemon — accepted, not a "
-        "defect). A per-agent Stop-hook self-pump re-continues the loop automatically "
-        "while consolidated work remains — exactly one consolidation loop per agent "
-        "identity, deduped across all sessions (#786 WS4); it idles when none. "
-        "OPTIONAL worker (#1796, default OFF): `t3 worker` is a self-owned singleton "
-        "that drains durable self-rescheduling loop-timer chains (django-tasks "
-        "`run_after` rows), owning the cadence instead of the native `/loop` crons so "
-        "the DB loops run with no Claude session open. It is opt-in — enable with "
-        "`config_setting set loop_runner_enabled true` and start it once from a login "
-        "profile; the default stays the session-bound native `/loop` crons above."
+        "Manage the tick-driven autonomous loops. Under #1796 / PR-28 the singleton "
+        "`t3 worker` owns the per-loop tick cadence by default (`loop_runner_enabled` "
+        "ON): it drains durable self-rescheduling loop-timer chains (django-tasks "
+        "`run_after` rows), one per enabled DB `Loop` row firing "
+        "`t3 loops tick --loop <name>` on its own cadence — there is no master tick, "
+        "and the DB loops run with no Claude session open (the SessionStart supervisor "
+        "keeps one worker alive; on a headless box start it once from a login "
+        "profile). `loop_runner_enabled` is the kill-switch — set it false to stop the "
+        "loops entirely (there is no fallback plane; PR-28 retired the native `/loop` "
+        "cron mirror). Each per-loop tick atomically claims the next pending unit "
+        "(`t3 loop claim-next`) and spawns one fresh bounded sub-agent for it; a "
+        "dying worker leaves its Task reclaimable and the next tick re-dispatches it. "
+        "Check the worker with `t3 worker status`; ensure one is running with "
+        "`t3 worker ensure`."
     ),
     no_args_is_help=True,
 )
@@ -193,11 +185,13 @@ def _stdin_is_terminal() -> bool:
 
 
 _REGISTER_GUIDANCE = (
-    "Under #2650 there is no single fat `/loop`: each ENABLED loop is its own native Claude "
-    "`/loop` firing `t3 loops tick --loop <name>` on its own cadence, registered automatically "
-    "by the t3-master session at start. Inspect or mirror a loop's spec (slot_id + cron + "
-    "prompt) with `t3 loop claude-spec <name>`; the `/t3:loops` skill drives CronCreate (enable) "
-    "/ CronList→CronDelete (disable) with it."
+    "PR-28: the singleton `t3 worker` owns the per-loop tick cadence by default "
+    "(`loop_runner_enabled` ON), draining the durable self-rescheduling loop-timer "
+    "chains — so the DB loops run with no Claude session open. Check it with "
+    "`t3 worker status`; ensure one is running with `t3 worker ensure`. Enable or "
+    "disable an individual loop with `t3 loop enable|disable <name>` (the reconciler "
+    "adds/prunes its timer at once). This session still registers the reactive infra "
+    "loops (self-improve, slack-answer, drain-queue) automatically at start."
 )
 
 
@@ -387,13 +381,3 @@ loop_app.command("list")(list_command)
 # pause/resume/disable/enable <name>`` + ``t3 loop loop-state <name>``. Split
 # off (same module-health reason) into ``teatree.cli.loop_state``.
 register_loop_state(loop_app)
-
-# #2650 — flat ``t3 loop claude-spec <name>``: print a loop's native Claude
-# ``/loop`` spec (slot_id + cron + prompt) the ``/t3:loops`` enable/disable skill
-# mirrors via CronCreate/CronDelete. Split off (same module-health reason).
-register_claude_spec(loop_app)
-
-# #1192 — flat ``t3 loop verify-cron <name>``: verify-by-reread a loop's
-# CronCreate registration against a CronList snapshot. Split off (same
-# module-health reason).
-register_verify_cron(loop_app)

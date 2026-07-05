@@ -26,7 +26,6 @@ import hooks.scripts.hook_router as router
 # (reader function name, [teatree] key) — every [teatree]-table boolean flag reader.
 _FAIL_OPEN_READERS: tuple[tuple[str, str], ...] = (
     ("_deny_circuit_breaker_enabled", "deny_circuit_breaker_enabled"),
-    ("_loop_registration_gate_enabled", "loop_registration_gate_enabled"),
     ("_skill_loading_gate_enabled", "skill_loading_gate_enabled"),
     ("_plan_edit_gate_enabled", "plan_edit_gate_enabled"),
     ("_mcp_privacy_gate_enabled", "mcp_privacy_gate_enabled"),

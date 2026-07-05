@@ -1,12 +1,8 @@
-"""Register the owner session's native Claude ``/loop``s at session start (#2650).
+"""Register the owner session's reactive infra ``/loop``s at session start.
 
 Bare sibling of ``hook_router`` (hooks/CLAUDE.md: NEW hook logic lives in a
 sibling module, never in the shrink-only-capped router). The owner session's
-``UserPromptSubmit`` handler delegates here to register two families of loop.
-
-**DB loops** — ONE ``register_cron`` directive per ENABLED ``Loop`` row, so the
-live set of native Claude ``/loop``s MIRRORS the set of enabled rows (per-loop,
-not per-group).
+``UserPromptSubmit`` handler delegates here.
 
 **Reactive infra loops** — the three always-on reactive slots (Slack-answer,
 self-improve, drain-queue). They have NO DB ``Loop`` row and a sub-minute cadence
@@ -14,32 +10,29 @@ a cron cannot express, so each registers via the ``/loop <duration>`` form. Ther
 is no master tick to piggyback them onto, so the owner registers the three here —
 otherwise they would be dead until a manual ``t3 loop <slot> start``.
 
-The directive source of truth is two seams the ``t3 loop <slot> start`` CLI reads
-too, so the hook, the ``/t3:loops`` skill, and the CLI can never disagree: DB
-loops come from ``teatree.loops.claude_specs`` (``slot_id`` / ``cron`` /
-``prompt``) and reactive slots from
-``teatree.loop.loop_cadences.reactive_slot_directives`` (the ``/loop`` directive).
+PR-28 retired the native ``/loop`` cron mirror of the DB ``Loop`` rows: the
+singleton ``t3 worker`` now owns the per-loop tick cadence by default, so the
+owner session no longer emits a ``CronCreate`` per enabled DB loop. Only the
+reactive infra slots (front-end seam, not CronCreate) are registered here. The
+pure prompt recognisers (:func:`is_bare_loop_tick_prompt` / :func:`loop_name_from_prompt`)
+STAY — ``hook_router`` and ``cron_tracking`` still classify a per-loop tick prompt
+(fired by the worker's subprocess tick, or by any stale pre-flip cron not yet
+deleted) without importing teatree.
 
-Crash-proof / fail-open / silent: any failure to bootstrap Django or query a seam
-yields ZERO specs, so the handler stays silent — never an exception into the 30s
-``UserPromptSubmit`` hook. Reactive-slot resolution is a pure ``os.environ`` read,
-so the three infra loops still register even when the DB is unreachable (only the
-DB-loop directives fall away). With no enabled DB loops AND no reactive slots
-resolvable, nothing is emitted.
+The directive source of truth is the seam the ``t3 loop <slot> start`` CLI reads
+too, so the hook, the ``/t3:loops`` skill, and the CLI can never disagree: reactive
+slots come from ``teatree.loop.loop_cadences.reactive_slot_directives`` (the
+``/loop`` directive).
 
-**Verify-by-reread (#1192).** This is the primary, higher-traffic live loop
-registration path (every SessionStart with enabled loops), so it carries the
-same ``t3 loop verify-cron`` confirm-step nudge as the manual ``/t3:loops``
-skill workflow — see :mod:`teatree.core.verify_by_reread`.
+Crash-proof / fail-open / silent: any failure to bootstrap Django or query the seam
+yields ZERO directives, so the handler stays silent — never an exception into the
+30s ``UserPromptSubmit`` hook. Reactive-slot resolution is a pure ``os.environ``
+read, so the three infra loops still register even when the DB is unreachable.
 """
 
-import json
 import re
 import sys
-from typing import TYPE_CHECKING, Protocol
-
-if TYPE_CHECKING:
-    from teatree.loops.claude_specs import ClaudeLoopSpec
+from typing import Protocol
 
 # Alias the bare and ``hooks.scripts.`` identities so the handler the router
 # imports and a test patching a helper here operate on ONE module object.
@@ -52,33 +45,11 @@ class _Writable(Protocol):
 
 
 # The per-loop run command + its full bare-prompt shape, kept in sync with the
-# seam ``teatree.loops.claude_specs.loop_run_prompt`` (a parity test pins the two
-# together so they cannot drift). Used to RECOGNISE a fired per-loop tick prompt
-# from the hot ``UserPromptSubmit`` path WITHOUT importing teatree (no Django).
+# worker's subprocess-tick argv (``python -m teatree loops_tick --loop <name>``) and
+# the manual ``t3 loops tick --loop <name>``. Used to RECOGNISE a fired per-loop tick
+# prompt from the hot ``UserPromptSubmit`` path WITHOUT importing teatree (no Django).
 _RUN_CMD_RE = re.compile(r"t3 loops tick --loop (?P<name>[^\s`]+)")
 _BARE_PROMPT_RE = re.compile(r"^Run `t3 loops tick --loop \S+` in Bash, then briefly report the tick summary\.$")
-
-
-def _enabled_loop_specs() -> "list[ClaudeLoopSpec]":
-    """The enabled-loop specs from the seam; fail-open to ``[]`` on ANY error."""
-    try:
-        from django_bootstrap import bootstrap_teatree_django  # noqa: PLC0415
-
-        if not bootstrap_teatree_django():
-            return []
-        from teatree.loops.claude_specs import enabled_loop_specs  # noqa: PLC0415
-
-        return list(enabled_loop_specs())
-    except Exception:  # noqa: BLE001 — fast hook must never raise; silent fail-open.
-        return []
-
-
-def loop_registration_directives() -> list[dict]:
-    """One ``register_cron`` payload per enabled DB loop — the exact ``CronCreate`` args."""
-    return [
-        {"slot_id": spec.slot_id, "cron": spec.cron, "prompt": spec.prompt, "recurring": True}
-        for spec in _enabled_loop_specs()
-    ]
 
 
 def _reactive_slot_directives() -> list[str]:
@@ -96,55 +67,24 @@ def _reactive_slot_directives() -> list[str]:
 
 
 def emit_loop_registrations(stream: _Writable) -> bool:
-    """Emit the owner session's loop registrations — enabled DB loops + reactive infra loops.
+    """Emit the owner session's reactive infra ``/loop`` registrations.
 
-    Returns whether anything was emitted. Nothing to register — no enabled DB loop
-    AND no reactive slot resolvable — emits NOTHING and returns ``False`` so the
-    owner session stays silent.
+    Returns whether anything was emitted. Nothing to register — no reactive slot
+    resolvable — emits NOTHING and returns ``False`` so the owner session stays
+    silent. PR-28 retired the per-enabled-DB-loop ``CronCreate`` emission: the worker
+    owns that cadence now.
     """
-    loops = loop_registration_directives()
     reactive = _reactive_slot_directives()
-    if not loops and not reactive:
+    if not reactive:
         return False
-    if loops:
-        # Structured directive for a harness that auto-registers from
-        # ``hookSpecificOutput`` (best-effort, carries the full per-loop list); the
-        # prose below is the reliable fallback the agent reads to CronCreate each.
-        directive = {"hookSpecificOutput": {"action": "register_cron", "recurring": True, "loops": loops}}
-        json.dump(directive, stream)
-        stream.write("\n")
-        _write_prose(loops, stream)
-    if reactive:
-        _write_reactive_prose(reactive, stream)
+    _write_reactive_prose(reactive, stream)
     return True
-
-
-def _write_prose(loops: list[dict], stream: _Writable) -> None:
-    stream.write(
-        f"Session setup: the teatree background loops are not registered yet. Register one native "
-        f"Claude `/loop` per enabled loop ({len(loops)} enabled) — call CronCreate for each:\n"
-    )
-    for entry in loops:
-        stream.write(
-            f'  - {entry["slot_id"]}: CronCreate(cron="{entry["cron"]}", prompt="{entry["prompt"]}", recurring=true)\n'
-        )
-    stream.write(
-        "Verify-by-reread (#1192): each CronCreate's own success is not proof the registration is visible. "
-        "After calling CronCreate for every loop above, call CronList once, save its JSON output, then run "
-        "`t3 loop verify-cron <name> --cron-list-json <path>` for each loop below (or pipe: `... | t3 loop "
-        "verify-cron <name> --cron-list-json -`). Exits 0 and prints `confirmed: ...` when a loop's "
-        "registration is present in the snapshot; exits non-zero with a reason when it is not — retry that "
-        "loop's CronCreate in that case:\n"
-    )
-    for entry in loops:
-        name = loop_name_from_prompt(entry["prompt"]) or entry["slot_id"]
-        stream.write(f"  - {name}: t3 loop verify-cron {name} --cron-list-json <path>\n")
 
 
 def _write_reactive_prose(directives: list[str], stream: _Writable) -> None:
     stream.write(
-        f"Also register the {len(directives)} reactive infra loops — sub-minute cadence, so use the "
-        f"`/loop <duration>` form (NOT a cron). Run each slash command in this session:\n"
+        f"Session setup: register the {len(directives)} reactive infra loops — sub-minute cadence, so use "
+        f"the `/loop <duration>` form (NOT a cron). Run each slash command in this session:\n"
     )
     for directive in directives:
         stream.write(f"  - {directive}\n")

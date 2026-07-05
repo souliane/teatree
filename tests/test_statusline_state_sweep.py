@@ -77,11 +77,11 @@ class TestSweepStaleStateFiles:
 class TestSweepProtectsLiveReaderFiles:
     """``.crons`` must survive the sweep even when aged past the window.
 
-    ``.crons`` is read live by ``_session_has_loop`` to gate the loop-
-    registration directive, and its mtime only refreshes when the session
-    re-registers a cron. An active long-lived session therefore keeps an
-    aging ``.crons`` file. Sweeping it would make ``_session_has_loop``
-    return ``False`` and re-emit the loop-registration nag/deny.
+    ``.crons`` is read live by the statusline (it derives readable loop names
+    from the tracked cron/loop jobs), and its mtime only refreshes when the
+    session re-registers a cron. An active long-lived session therefore keeps an
+    aging ``.crons`` file. Sweeping it would blank the statusline's loop-name
+    display for a session that is already running the loop.
     """
 
     def test_aged_crons_survives_sweep(self) -> None:
@@ -89,13 +89,14 @@ class TestSweepProtectsLiveReaderFiles:
         _sweep_stale_state_files()
         assert crons.exists(), "an active session's .crons must survive the sweep"
 
-    def test_session_has_loop_stays_true_after_sweep(self) -> None:
+    def test_aged_crons_content_is_intact_after_sweep(self) -> None:
         crons = router.STATE_DIR / "live-session.crons"
-        crons.write_text('{"jobs": [{"id": "loop-tick"}]}', encoding="utf-8")
+        crons.write_text('{"jobs": {"loop-tick": {"name": "inbox"}}}', encoding="utf-8")
         mtime = time.time() - (_STATE_FILE_MAX_AGE_SECONDS + 3600)
         os.utime(crons, (mtime, mtime))
         _sweep_stale_state_files()
-        assert router._session_has_loop("live-session")
+        assert crons.exists()
+        assert "loop-tick" in crons.read_text(encoding="utf-8")  # the statusline's live read still resolves
 
     def test_aged_teatree_active_survives_while_ephemeral_is_swept(self) -> None:
         teatree_active = _touch("live-session.teatree-active", age_seconds=_STATE_FILE_MAX_AGE_SECONDS + 3600)

@@ -197,11 +197,11 @@ _SWEEP_SENTINEL = ".last-sweep"
 # behaviour on the file's presence AND the file's mtime does not refresh for
 # the life of an active session. ``.crons`` is written once by
 # ``handle_track_cron_jobs`` at registration and then read on every prompt by
-# ``_session_has_loop`` to gate the loop-registration directive/deny; an active
-# long-lived session that never changes its crons keeps an unmodified ``.crons``
-# that ages past the retention window. Sweeping it would make
-# ``_session_has_loop`` return False and re-emit the loop-registration nag for a
-# session that is already running the loop. ``.teatree-active`` is the same
+# the statusline (which derives readable loop names from the tracked cron/loop
+# jobs); an active long-lived session that never changes its crons keeps an
+# unmodified ``.crons`` that ages past the retention window. Sweeping it would
+# blank the statusline's loop-name display for a session that is already running
+# the loop. ``.teatree-active`` is the same
 # class: it is touched by ``handle_track_skill_usage`` when a teatree-activating
 # skill loads — in a normal session that happens at the start and is not
 # repeated for the life of the session — and ``statusline.sh`` gates the WHOLE
@@ -453,9 +453,9 @@ def _loop_auto_load_active(session_id: str) -> bool:
     """Whether this session may auto-arm the loop/statusline machinery (#256).
 
     The single gate every session-start auto-load injection point shares —
-    the loop-registration nudge (:func:`handle_enforce_loop_on_prompt`,
-    :func:`_loop_registration_exempt`) and the tick-owner bootstrap
-    (:func:`handle_session_start_bootstrap`). Two conditions must BOTH hold:
+    the reactive-loop registration (:func:`handle_enforce_loop_on_prompt`) and the
+    tick-owner bootstrap (:func:`handle_session_start_bootstrap`). Two conditions
+    must BOTH hold:
 
     - the session opted into teatree (:func:`_teatree_active` — a teatree
         skill was loaded), AND
@@ -735,17 +735,6 @@ def _tick_meta_stale() -> bool:
     return age > cadence * 2
 
 
-def _session_has_loop(session_id: str) -> bool:
-    crons_file = _state_file(session_id, "crons")
-    if not crons_file.is_file():
-        return False
-    try:
-        data = json.loads(crons_file.read_text(encoding="utf-8"))
-        return bool(data.get("jobs"))
-    except (json.JSONDecodeError, OSError):
-        return False
-
-
 def _cleanup_stale_pending(session_id: str) -> None:
     """Remove other sessions' per-session loop markers.
 
@@ -801,13 +790,14 @@ def _claim_loop_ownership(session_id: str) -> None:
 
 
 def handle_enforce_loop_on_prompt(data: dict) -> None:
-    """On first prompt, the loop OWNER registers one ``/loop`` per enabled DB Loop (#2650).
+    """On first prompt, the loop OWNER registers the reactive infra ``/loop``s.
 
-    One ``/loop`` per ENABLED ``Loop`` row, each on its own cadence; directive
-    building lives in the bare sibling :mod:`loop_registrations`. Fail-open:
-    zero enabled loops emits nothing. ``_session_has_loop`` is the sole
-    re-registration gate — a fresh ``tick-meta.json`` after release+claim must
-    NOT suppress registration (the #2714 stall bug).
+    PR-28 retired the per-enabled-DB-loop ``CronCreate`` mirror (the worker owns that
+    cadence now), so this emits ONLY the three reactive infra ``/loop <duration>``
+    slots (Slack-answer, self-improve, drain-queue) via the bare sibling
+    :mod:`loop_registrations`. Fail-open: no reactive slot resolvable emits nothing.
+    Emit-once per session, keyed on the ``loop-pending`` marker (also the
+    ``_skill_loading_exempt`` bootstrap signal), so a repeated prompt does not re-nag.
     """
     session_id = data.get("session_id", "")
     if not session_id:
@@ -817,111 +807,18 @@ def handle_enforce_loop_on_prompt(data: dict) -> None:
     _claim_loop_ownership(session_id)
     # STICKY ELECTION (#2650): only the OWNER registers. A session that did NOT
     # win/hold the tick-owner record (a DIFFERENT live session owns it) registers
-    # NOTHING and writes no pending marker — the loser backs off automatically, so
-    # two sessions never register competing crons that ping-pong the per-loop
-    # ``loop:<name>`` leases (~half the loops SKIP every round). ``_session_owns_loop``
-    # reads what ``_claim_loop_ownership`` just decided under the flock (file owner +
-    # the #1604 ``_pid_is_foreign`` DB cross-check); the PreToolUse nudge keys on the
-    # absent marker so it stays silent too, matching its ``_session_drives_loop`` exempt.
+    # NOTHING and writes no pending marker — the loser backs off automatically.
+    # ``_session_owns_loop`` reads what ``_claim_loop_ownership`` just decided under the
+    # flock (file owner + the #1604 ``_pid_is_foreign`` DB cross-check).
     if not _session_owns_loop(session_id):
         return
     _ensure_state_dir()
     _cleanup_stale_pending(session_id)
     pending = _state_file(session_id, "loop-pending")
-    if _session_has_loop(session_id):
-        pending.unlink(missing_ok=True)
+    if pending.is_file():  # reactive registrations already emitted this session — do not re-nag
         return
     if emit_loop_registrations(sys.stdout):
         pending.write_text("1", encoding="utf-8")
-
-
-def _loop_registration_gate_enabled() -> bool:
-    """Whether the loop-registration PreToolUse gate is enabled (default True).
-
-    Fails OPEN to enabled on a missing/broken config; an explicit ``false`` is
-    the one-line durable kill-switch — never a code edit (NEVER-LOCKOUT). See
-    :func:`_teatree_bool_setting` for the shared bare-boolean semantics.
-    """
-    return _teatree_bool_setting("loop_registration_gate_enabled", default=True)
-
-
-_LOOP_REGISTRATION_EXEMPT_TOOLS = frozenset(
-    {"CronCreate", "CronDelete", "CronList", "ScheduleWakeup", "Skill", "ToolSearch"}
-)
-
-
-def _loop_registration_exempt(data: dict) -> bool:
-    """True when this call must NOT be nudge-blocked for loop registration.
-
-    Groups the side-effect-free NEVER-LOCKOUT exemptions so the handler stays a
-    single decision. A call is exempt when any of these holds:
-
-    - the session has not opted into session-start loop auto-load
-        (``_loop_auto_load_active`` False — no teatree marker OR auto-load not
-        enabled, #256), so a colleague who merely cloned the repo is never
-        nagged to register a cron; default OFF until the owner opts in via
-        ``[teatree] autoload = true``;
-    - the tool is a cron-management / skill tool the agent uses to register the
-        loop (no point blocking the very tools that satisfy the gate);
-    - the call comes from a sub-agent (non-empty ``agent_id``) — a sub-agent has
-        no ``CronCreate`` tool, so a deny is an *unrecoverable* lockout that
-        killed every spawned coder/reviewer in the incident;
-    - the durable kill-switch ``[teatree] loop_registration_gate_enabled =
-        false`` is set (disable without a code edit);
-    - there is no ``session_id`` (no per-session marker to key on);
-    - this session is NOT the loop driver — a *different* live session already
-        owns the tick (``_session_drives_loop`` is False), so this is an
-        attended, non-owner interactive session. Nagging it to ``CronCreate`` a
-        competing ``t3 loops tick`` would only spawn a duplicate loop the
-        non-owner tick gate would SKIP anyway; the rightful owner (or, with no
-        live owner, the next eligible session — see ``_session_drives_loop``)
-        still gets nagged, so the loop is never left unregistered.
-    """
-    if not _loop_auto_load_active(data.get("session_id", "")):
-        return True
-    if data.get("tool_name", "") in _LOOP_REGISTRATION_EXEMPT_TOOLS:
-        return True
-    if _call_is_from_subagent(data):
-        return True
-    if not _loop_registration_gate_enabled():
-        return True
-    if not data.get("session_id"):
-        return True
-    return not _session_drives_loop(data["session_id"])
-
-
-def handle_enforce_loop_registration(data: dict) -> bool:
-    """Nudge-block Bash/Edit/Write until the background loop cron is registered.
-
-    NEVER-LOCKOUT: this is the loop-bootstrap NUDGE, not a safety gate, so it
-    must never be able to wedge a session (it hard-locked the factory several
-    times — the worst recurring incident). The exemptions in
-    :func:`_loop_registration_exempt` (cron tools, sub-agents, kill-switch,
-    no-session) cover the first two layers; the deny itself adds two more:
-
-    - it routes through :func:`_fail_open_or_deny`, so the always-allowed
-        self-rescue commands and the master ``danger_gate_fail_open`` switch relax it;
-    - the reason carries the ``LOOP REGISTRATION`` UX-gate prefix, so the
-        repeated-denial circuit breaker auto-relaxes it after K consecutive
-        denials instead of blocking forever.
-    """
-    if _loop_registration_exempt(data):
-        return False
-    session_id = data["session_id"]
-    pending = _state_file(session_id, "loop-pending")
-    if not pending.is_file():
-        return False
-    if _session_has_loop(session_id):
-        pending.unlink(missing_ok=True)
-        return False
-    reason = (
-        "LOOP REGISTRATION: the teatree background loops are not registered yet. "
-        "Register one native Claude `/loop` per enabled loop — see the session-start "
-        "registration directive, or run `t3 loops list`, then `t3 loop claude-spec <name>` "
-        "and CronCreate each. To run without the loops, set "
-        "[teatree] loop_registration_gate_enabled = false."
-    )
-    return _fail_open_or_deny(data, reason)
 
 
 # ── UserPromptSubmit: todo-freshness nudge ──────────────────────────
@@ -4861,8 +4758,8 @@ def _session_owns_loop(session_id: str) -> bool:
 def _session_drives_loop(session_id: str) -> bool:
     """True when this session is (or is the one expected to become) the loop driver.
 
-    The single signal both the loop-registration nudge and the inline-question
-    Stop gate share to decide "is this an autonomous/loop-driven turn vs an
+    The single signal the loop-driven Stop gates (inline-question, completion-claim,
+    standing-goal) share to decide "is this an autonomous/loop-driven turn vs an
     attended interactive one". Reuses the existing pid-anchored tick-owner
     registry (``_OWNER_LOOP`` / ``_session_owns_loop`` / ``_prune_dead_owner``)
     — no new ownership primitive. A session drives the loop when EITHER:
@@ -6651,7 +6548,6 @@ _HANDLERS: dict[str, list] = {
     "PreToolUse": [
         handle_allow_classifier_relax_settings_write,
         handle_route_away_mode_question,
-        handle_enforce_loop_registration,
         handle_block_edit_before_planned,
         handle_block_config_overwrite,
         handle_protect_default_branch,
