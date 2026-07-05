@@ -9,6 +9,8 @@ signal kind routes to; the dispatcher is the *order* the maps are consulted.
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from teatree.core.modelkit.phases import SUBAGENT_BY_PHASE
+
 ActionKind = Literal["statusline", "agent", "webhook", "mechanical"]
 type ActionPayload = dict[str, Any]
 
@@ -110,6 +112,13 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     "pr_sweep.flag_no_review": "action_needed",
     "pr_sweep.needs_branch_update": "action_needed",
     "pr_sweep.flag_mergeable": "action_needed",
+    # SELFCATCH-1 WorkStateScanner — committed-but-unpushed / done-but-unmerged /
+    # duplicate-scope drift the factory was blind to until a human asked. Each
+    # finding needs an operator decision (salvage/push/dedup), and an errored
+    # sweep (``probe_error``) fails closed to a surfaced finding — both land in
+    # action_needed so orphaned work is never silently green.
+    "workstate.drift": "action_needed",
+    "workstate.probe_error": "action_needed",
 }
 
 # Diagnostic signal kinds that intentionally do NOT render to the statusline.
@@ -245,3 +254,38 @@ MECHANICAL_BY_KIND: dict[str, tuple[ActionKind, str]] = {
     # ticket-critical-path provision.
     "snapshot_warmer.refresh_needed": ("mechanical", "refresh_snapshot"),
 }
+
+
+def _mechanical_agent_zones() -> frozenset[str]:
+    """The agent zones the mechanical table routes to (e.g. ``t3:e2e``, ``t3:coder``).
+
+    A handful of ``MECHANICAL_BY_KIND`` rows are ``("agent", <zone>)`` — a
+    scanner that mechanically classifies work but hands the *fix* to a phase
+    agent (failed-E2E → ``t3:e2e``, skill-drift → ``t3:coder``). They are agent
+    producers exactly like ``AGENT_BY_KIND``, so :data:`AGENT_ZONES` folds them
+    in structurally rather than re-listing the zones.
+    """
+    return frozenset(zone for kind, zone in MECHANICAL_BY_KIND.values() if kind == "agent")
+
+
+#: Every agent-dispatch *zone* a ``dispatch_*`` path can emit, derived
+#: structurally from its three producers so a new producer widens this set
+#: automatically: the ``AGENT_BY_KIND`` routes, the ``("agent", zone)`` rows of
+#: ``MECHANICAL_BY_KIND``, and every ``SUBAGENT_BY_PHASE`` value (the per-phase
+#: ``pending_task``/answering/codex targets). This is the PRODUCER side of the
+#: persistence executor contract: ``tests/conformance/test_registry_parity.py``
+#: asserts every zone here is either a ``persistence._ZONE_HANDLERS`` consumer or
+#: a ``PERSISTED_AT_SOURCE_ZONES`` no-op, so a new producer with no consumer
+#: fails CI instead of silently dropping the dispatch.
+AGENT_ZONES: frozenset[str] = (
+    frozenset(AGENT_BY_KIND.values()) | _mechanical_agent_zones() | frozenset(SUBAGENT_BY_PHASE.values())
+)
+
+#: Zones that are persisted *by construction* — the ``pending_task`` re-emission
+#: of rows that already exist as ``Task``s. ``dispatch_pending_task`` resolves a
+#: pending row's ``(role, phase)`` to its agent via ``SUBAGENT_BY_PHASE``, so
+#: every such value is a re-emission whose Task is already in the DB. Persisting
+#: it again is a deliberate no-op (keyed off the carried ``task_id``), never a
+#: silent fallthrough — the parity test proves ``AGENT_ZONES`` is exactly the
+#: union of the handler consumers and this set.
+PERSISTED_AT_SOURCE_ZONES: frozenset[str] = frozenset(SUBAGENT_BY_PHASE.values())

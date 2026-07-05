@@ -91,6 +91,22 @@ class TestSkipPlanGateToken(TestCase):
         assert blocked is True
         assert payload is not None
 
+    def test_plan_gate_deny_stamps_plan_gate_marker(self) -> None:
+        """The deny output carries the non-privacy ``gate_id == "plan_gate"`` marker (PR-25).
+
+        RED-on-revert: drop the ``gate_id="plan_gate"`` from the handler's
+        ``_fail_open_or_deny`` call and both assertions fail — the transcript
+        eval would then never see a plan_gate deny.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            toplevel = _git_repo(Path(tmp))
+            _started_ticket_in_repo(toplevel)
+            blocked, payload = _capture_block(self._edit_input(toplevel))
+        assert blocked is True
+        assert payload is not None
+        assert payload["gate_id"] == "plan_gate"
+        assert payload["hookSpecificOutput"]["gate_id"] == "plan_gate"
+
     def test_edit_carrying_skip_plan_gate_token_is_allowed(self) -> None:
         """[skip-plan-gate: trivial typo] in new_string → ALLOW.
 

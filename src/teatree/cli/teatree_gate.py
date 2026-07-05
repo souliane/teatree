@@ -47,6 +47,7 @@ MEMORY_RECALL_GATE_KEY = "memory_recall_enabled"
 SNAPSHOT_BASELINE_GATE_KEY = "snapshot_baseline_gate_enabled"
 GATE_RELAXATION_GATE_KEY = "gate_relaxation_gate_enabled"
 OUT_OF_BAND_MERGE_GATE_KEY = "out_of_band_merge_gate_enabled"
+STANDING_GOAL_GATE_KEY = "standing_goal_stop_gate_enabled"
 # Master fail-open switch (NEVER-LOCKOUT). Unlike the per-gate kill-switches
 # above (which default ENABLED and read ``is not False``), this is OFF by
 # default and reads ``is True`` — it must NEVER relax a gate by accident, only
@@ -336,6 +337,13 @@ def register_gate_commands(overlay_app: typer.Typer) -> None:
         name="raw-merge",
         key=OUT_OF_BAND_MERGE_GATE_KEY,
         label="Out-of-band raw-merge gate",
+    )
+
+    _register_keyed_gate(
+        gate_group,
+        name="standing-goal",
+        key=STANDING_GOAL_GATE_KEY,
+        label="Standing verified-green stop-gate",
     )
 
     overlay_app.add_typer(gate_group, name="gate")

@@ -415,6 +415,16 @@ Read ``text`` aloud synchronously through the local speakers per [teatree.speak]
 
 Attach spoken audio to the DM at ``channel`` per [teatree.speak] (no-op unless slack/local on).
 
+## `standing_goal`
+
+Register, clear, or list standing verified-green goals (PR-25).
+
+| Subcommand | Description |
+| --- | --- |
+| `clear` | Delete one named standing goal, or every goal when no name is given |
+| `set` | Register (or re-arm) a standing verified-green goal |
+| `list` | List every registered standing goal and its active state |
+
 ## `standup`
 
 | Subcommand | Description |
