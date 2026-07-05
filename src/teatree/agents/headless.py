@@ -17,7 +17,6 @@ process registry, no platform autostart.
 import asyncio
 import json
 import logging
-import os
 import shutil
 import time
 from dataclasses import dataclass
@@ -52,6 +51,7 @@ from teatree.llm.anthropic_limits import LimitMatch, classify_limit, classify_ra
 from teatree.llm.credentials import CredentialError
 from teatree.skill_support.loading import SkillLoadingPolicy
 from teatree.types import SkillMetadata
+from teatree.utils.git_run import git_env_hermetic, git_env_without_overrides
 
 if TYPE_CHECKING:
     from pydantic_ai.messages import ModelMessage
@@ -251,7 +251,8 @@ def run_headless(
     options = _build_options(task, system_context, phase=phase, skills=skills, env=child_env)
 
     try:
-        outcome = asyncio.run(_drive_with_heartbeat(task, prompt, options, harness))
+        with git_env_hermetic():
+            outcome = asyncio.run(_drive_with_heartbeat(task, prompt, options, harness))
     except CredentialError as exc:
         # A non-ClaudeSdkHarness resolves its own credential lazily inside
         # ``harness.open`` — this is the same "fail loud, record it" contract
@@ -394,9 +395,13 @@ def _provider_child_env(provider: AgentHarnessProvider | None, *, scope: str = "
             f"valid values: {', '.join(sorted(p.value for p in valid))}"
         )
         raise CredentialError(msg)
+    # Pin the credential onto a GIT_*-stripped base so ``options.env`` cannot
+    # re-introduce an outer git hook's GIT_DIR/GIT_INDEX_FILE (the SDK merges
+    # ``options.env`` over the inherited env, so a GIT_* here would reach the child).
+    base = git_env_without_overrides()
     if provider is AgentHarnessProvider.API_KEY:
-        return resolve_api_key_credential(scope=scope).child_env(os.environ)
-    return resolve_subscription_credential(scope=scope).child_env(os.environ)
+        return resolve_api_key_credential(scope=scope).child_env(base)
+    return resolve_subscription_credential(scope=scope).child_env(base)
 
 
 # souliane/teatree#657: the Layer-2 lane (subscription vs metered) each

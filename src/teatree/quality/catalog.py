@@ -64,7 +64,16 @@ class AntiPatternEntry:
 
 def load_catalog(path: Path | None = None) -> tuple[AntiPatternEntry, ...]:
     source = path or catalog_path()
-    text = source.read_text(encoding="utf-8")
+    return load_catalog_text(source.read_text(encoding="utf-8"))
+
+
+def load_catalog_text(text: str) -> tuple[AntiPatternEntry, ...]:
+    """Parse catalog YAML from an in-memory string.
+
+    The path-free entry point lets a drift gate render the catalog from the
+    YAML as it sits in the git index (``git show :<path>``) rather than the
+    working tree, so an unstaged edit cannot mask committed drift.
+    """
     try:
         loaded = yaml.safe_load(text)
     except yaml.YAMLError as exc:

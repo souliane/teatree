@@ -40,7 +40,7 @@ from teatree.utils.git_commit import (
     unsynced_commits,
 )
 from teatree.utils.git_remote_ops import config_value, remote_slug, remote_url
-from teatree.utils.git_run import check, git_env_without_overrides, run, run_strict
+from teatree.utils.git_run import check, git_env_hermetic, git_env_without_overrides, run, run_strict
 from teatree.utils.git_status import full_worktree_diff, status_porcelain, status_porcelain_strict
 from teatree.utils.git_sync import fetch, merge_abort, merge_no_edit, pull_ff_only, push, rebase
 from teatree.utils.git_worktree import (
@@ -69,6 +69,7 @@ __all__ = [
     "fetch",
     "first_commit_message",
     "full_worktree_diff",
+    "git_env_hermetic",
     "git_env_without_overrides",
     "head_sha",
     "last_commit_message",
