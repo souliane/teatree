@@ -734,6 +734,21 @@
       "subcommands": []
     },
     {
+      "help": "Session-lifecycle operations.",
+      "name": "session",
+      "subcommands": [
+        {
+          "help": "Refresh the durable recovery artifacts (idempotent, safe to re-run)",
+          "name": "prepare-stop"
+        }
+      ]
+    },
+    {
+      "help": "Print the five factory signals over the trailing window vs its baseline.",
+      "name": "signals",
+      "subcommands": []
+    },
+    {
       "help": "Read ``text`` aloud synchronously through the local speakers per [teatree.speak].",
       "name": "speak",
       "subcommands": []
@@ -799,6 +814,10 @@
       "name": "ticket",
       "subcommands": [
         {
+          "help": "Execute the missing IN_REVIEW \u2192 MERGED keystone transition (BLUEPRINT \u00a717.4)",
+          "name": "merge"
+        },
+        {
           "help": "Print (and with ``--fetch`` download) a ticket's referenced attachments",
           "name": "attachments"
         },
@@ -825,10 +844,6 @@
         {
           "help": "Issue a per-diff CLEAR \u2014 the orchestrator's only merge output (BLUEPRINT \u00a717.4.2)",
           "name": "clear"
-        },
-        {
-          "help": "Execute the missing IN_REVIEW \u2192 MERGED keystone transition (BLUEPRINT \u00a717.4)",
-          "name": "merge"
         },
         {
           "help": "Post a comment to an issue or work item by its URL",

@@ -11,6 +11,7 @@ from collections.abc import Iterator
 import httpx
 import pytest
 
+import teatree.core.scope_cache as scope_cache_module
 from teatree.backends.slack import http as slack_http
 from teatree.backends.slack.http import SlackHttpClient
 
@@ -241,6 +242,71 @@ class TestEnvConfiguration:
     def test_zero_retries_is_honoured(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("T3_SLACK_HTTP_MAX_RETRIES", "0")
         assert SlackHttpClient()._max_retries == 0
+
+
+def _missing_scope(scope: str) -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={"ok": False, "error": "missing_scope", "needed": scope, "provided": "channels:read,chat:write"},
+        request=httpx.Request("POST", "https://slack.com/api/x"),
+    )
+
+
+class TestScopeCacheWiring:
+    """The token-scope cache short-circuits a known-missing scope pre-HTTP (PR-19 item 6)."""
+
+    def test_missing_scope_caches_and_second_call_skips_http(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        banners: list[str] = []
+        monkeypatch.setattr(
+            scope_cache_module,
+            "_CACHE",
+            scope_cache_module.ScopeCache(
+                notifier=lambda text, *, kind, idempotency_key: banners.append(idempotency_key) is None,
+            ),
+        )
+        posts: list[int] = []
+
+        def fake_post(*_a: object, **_k: object) -> httpx.Response:
+            posts.append(1)
+            return _missing_scope("reactions:write")
+
+        monkeypatch.setattr(slack_http.httpx, "post", fake_post)
+        client = _client([])
+
+        first = client.post("reactions.add", token="xoxb-x", json={}, idempotent=True)
+        second = client.post("reactions.add", token="xoxb-x", json={}, idempotent=True)
+
+        # Live failure echoes Slack's verbatim body (``provided`` intact); the
+        # pre-HTTP short-circuit has no response to echo, so it reconstructs the
+        # minimal body every caller tolerates.
+        assert first == {
+            "ok": False,
+            "error": "missing_scope",
+            "needed": "reactions:write",
+            "provided": "channels:read,chat:write",
+        }
+        assert second == {"ok": False, "error": "missing_scope", "needed": "reactions:write"}
+        assert len(posts) == 1  # second call short-circuited pre-HTTP
+        assert banners == ["scope_missing:" + slack_http.token_scope_id("xoxb-x") + ":reactions:write"]
+
+    def test_unmapped_method_is_not_guarded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            scope_cache_module,
+            "_CACHE",
+            scope_cache_module.ScopeCache(notifier=lambda *a, **k: True),
+        )
+        posts: list[int] = []
+
+        def fake_post(*_a: object, **_k: object) -> httpx.Response:
+            posts.append(1)
+            return _missing_scope("chat:write")
+
+        monkeypatch.setattr(slack_http.httpx, "post", fake_post)
+        client = _client([])
+        # ``chat.update`` is not in SLACK_METHOD_SCOPES → every call hits HTTP.
+        client.post("chat.update", token="xoxb-x", json={}, idempotent=True)
+        client.post("chat.update", token="xoxb-x", json={}, idempotent=True)
+        assert len(posts) == 2
 
 
 def _raise_or_return(calls: Iterator[httpx.Response | BaseException]) -> httpx.Response:

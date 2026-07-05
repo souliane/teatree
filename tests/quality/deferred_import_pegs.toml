@@ -75,6 +75,7 @@
 "src/teatree/core/reference_linkifier.py" = 4
 "src/teatree/core/reply_transport.py" = 1
 "src/teatree/core/safe_kill.py" = 1
+"src/teatree/core/scope_cache.py" = 1
 "src/teatree/core/signals.py" = 6
 "src/teatree/core/speak.py" = 2
 "src/teatree/core/step_runner.py" = 4

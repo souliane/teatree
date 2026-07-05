@@ -193,5 +193,14 @@ def report_missing_authorizations(
 
 
 def authorizations() -> bool:
-    """Suggest absent recommended auto-mode authorizations (read-only)."""
+    """Suggest absent recommended auto-mode authorizations; re-test cached scope failures.
+
+    Read-only for settings. As the "am I authorized" re-check surface, it also
+    resets the in-process token-scope-failure cache (PR-19): once the operator
+    re-runs this after fixing a token's scopes, the next call re-tests the scope
+    live instead of short-circuiting on a stale cached miss.
+    """
+    from teatree.core.scope_cache import reset_scope_cache  # noqa: PLC0415 — deferred: keep this module import-light
+
+    reset_scope_cache()
     return report_missing_authorizations(typer.echo)

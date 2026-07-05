@@ -22,6 +22,7 @@ import typer
 from teatree.cli._doctor_checks import (
     _check_account_switch,
     _check_agent_session_pins,
+    _check_connector_manifest,
     _check_dangling_editable_pth,
     _check_dream_staleness,
     _check_editable_sanity,
@@ -67,6 +68,7 @@ __all__ = (
     "PackageNotFoundError",
     "_check_account_switch",
     "_check_agent_session_pins",
+    "_check_connector_manifest",
     "_check_dangling_editable_pth",
     "_check_dream_staleness",
     "_check_editable_sanity",
@@ -584,6 +586,12 @@ def check() -> bool:
     # the live `claude mcp list` probe reflects the post-recovery state. An
     # enabled-but-disconnected MCP is a hard FAIL; `claude` absent degrades to a WARN.
     ok = _check_mcp_connectivity() and ok
+
+    # Per-overlay claude.ai connector manifest (PR-19). Runs after the general MCP
+    # connectivity gate — it reuses the same live `claude mcp list` probe. A REQUIRED
+    # declared connector that is down is a hard FAIL with mode-correct guidance +
+    # RECONNECT lines; an optional one WARNs; `claude` absent degrades to a WARN.
+    ok = _check_connector_manifest() and ok
 
     # Teatree's own structured-search MCP server registration (#2863). WARN-only
     # (never gates the exit code) — the resolved main clone can legitimately lag

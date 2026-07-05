@@ -135,6 +135,51 @@ per-server values. The real per-overlay provider values live in the overlay
 repo (souliane/teatree#251); core ships only the extension point and the
 validation logic.
 
+### Connector account-scoping
+
+claude.ai connectors are scoped to the **Claude account** they were authorised
+under. After a `/login` that switches accounts, a connector authorised under the
+old account is no longer connected — the connector list is per-account, not
+global. So the two failure modes have different fixes: a connector that has
+**never** connected (absent from `claudeAiMcpEverConnected`) is a *first install*
+— add it under **claude.ai → Settings → Connectors** while signed in to the
+active account; one that **has** connected before but is now down is a
+*post-account-switch* case — reconnect it (`t3 mcp reconnect`).
+
+## 2.1.1 Per-overlay connector manifest + reconnect (PR-19)
+
+Beyond "is every *enabled* server connected" (§ 2.1), an overlay declares which
+claude.ai connectors it **hard-depends on** vs merely benefits from, by NAME, by
+overriding `OverlayBase.get_connector_manifest() -> list[ConnectorRequirement]`
+(default `[]`, the same method-override shape as `get_mcp_provider_expectations`;
+core is empty — teatree's own dogfood overlay hard-depends on no claude.ai
+connector). `teatree.core.connector_manifest.check_connector_manifest`
+reads the same enabled/connected ground truth the § 2.1 probe uses and classifies
+each declared-but-down connector by failure mode (first-install vs
+post-account-switch, from `claudeAiMcpEverConnected`):
+
+| Surface | Behaviour |
+|---------|-----------|
+| `t3 doctor check` | `_check_connector_manifest` FAILs on a down **required** connector with mode-correct guidance + a `RECONNECT <name> -> <target>` line; a down **optional** connector WARNs; `claude` absent degrades to a WARN. |
+| `t3 mcp reconnect` | Prints one `RECONNECT` line per down connector across every registered overlay's manifest (claude.ai connectors are re-authed in the UI, not headlessly); `--open` best-effort opens each URL; exits non-zero when a required connector is down. |
+| `t3 setup recover-account-switch` | After a switch leaves a connector down, prints the same `RECONNECT` lines (with `--open`). |
+| Loop start | `run_connector_preflight` refuses to start the loop when a **required** declared connector is down (a degraded probe never blocks). |
+| A connector-dependent feature | `require_connector(name)` raises one actionable `ConnectorUnavailableError` pointing at the doctor guidance rather than a silent no-op. |
+
+## 2.1.2 Token-scope-failure cache (PR-19)
+
+A backend call that fails on a missing OAuth **scope** is a hard config failure,
+not transient — retrying it this loop process fails identically. The in-process
+`teatree.core.scope_cache` records each known-missing `(token_id, scope)` pair so
+a guarded call short-circuits **pre-HTTP** on the second and later attempts
+(`ScopeMissingError(cached=True)`, zero network), and the first failure emits
+exactly ONE bot→user banner (idempotency key `scope_missing:<token_id>:<scope>`).
+`token_id` is a sha256 fingerprint — the literal token never enters the cache, a
+log line, or a banner. The Slack transport (`SlackHttpClient`) consults it via a
+static method→scope map (`reactions:write`, `chat:write`); the cache resets each
+tick (a new tick re-tests every scope) and `t3 doctor authorizations` clears it on
+a re-check.
+
 ## 2.2 Teatree's own bundled structured-search MCP server (souliane/teatree#2863)
 
 Teatree ships its own MCP server (`t3 mcp serve`, [#1023](https://github.com/souliane/teatree/issues/1023)) as a **plugin-bundled** server: a `.mcp.json` at the repo root (sibling of `.claude-plugin/`), the same convention official Claude Code plugins use for a bundled server. Claude Code starts a plugin-bundled server automatically once the plugin is enabled — `t3 setup` already enables the plugin (§ 3 below), so no separate `claude mcp add` step registers this one. Its five read-only tools (`ticket_search`, `worktree_status`, `pr_for_ticket`, `loop_stats`, `incoming_event_recent`) surface as `mcp__teatree__*`.
@@ -197,5 +242,8 @@ duplicates the other.
 | MCP / auto-mode permissions | user's own `~/.claude/settings.json` | not plugin-shipped, by design (§ 11.4) |
 | Enabled-MCP connectivity check | n/a — runs at session start / `t3 doctor` / account-switch | `teatree.core.mcp_connectivity.check_mcp_connectivity` (#2282) |
 | Per-server expected provider | overlay's `get_mcp_provider_expectations()` (real values in #251) | `teatree.core.overlay.OverlayBase` |
+| Per-overlay connector manifest | overlay overrides `get_connector_manifest()` (default `[]`) | `teatree.core.connector_manifest.check_connector_manifest` (PR-19) |
+| Connector reconnect | `t3 mcp reconnect [--open]` / `t3 setup recover-account-switch [--open]` | `teatree.cli.mcp.reconnect` (PR-19) |
+| Token-scope-failure cache | n/a — in-process, per loop tick; cleared by `t3 doctor authorizations` | `teatree.core.scope_cache` (PR-19) |
 | Teatree's own bundled MCP server | n/a — ships in `.mcp.json`, auto-starts with the plugin | `teatree.core.mcp_registration` (#2863) |
 | Recommended auto-mode set | suggested only — user pastes into `autoMode.allow` | `teatree.cli.recommended_authorizations` |

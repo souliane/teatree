@@ -28,7 +28,7 @@ from teatree.core.merge import (
     assert_merge_preconditions,
     ci_rollup,
     execute_bound_merge,
-    execution,
+    merge_response,
     merge_ticket_pr,
     record_merge_and_advance,
 )
@@ -987,26 +987,26 @@ class TestIsTransientMergeResponse(TestCase):
     """The pure classifier separating a transient forge response from a refusal."""
 
     def test_zero_rc_is_never_transient(self) -> None:
-        assert execution._is_transient_merge_response(0, '{"sha": "x"}', "") is False
+        assert merge_response._is_transient_merge_response(0, '{"sha": "x"}', "") is False
 
     def test_empty_body_failure_is_transient(self) -> None:
-        assert execution._is_transient_merge_response(1, "", "") is True
+        assert merge_response._is_transient_merge_response(1, "", "") is True
 
     def test_truncated_json_marker_is_transient(self) -> None:
-        assert execution._is_transient_merge_response(1, "", "unexpected end of JSON input") is True
+        assert merge_response._is_transient_merge_response(1, "", "unexpected end of JSON input") is True
 
     def test_5xx_marker_is_transient(self) -> None:
-        assert execution._is_transient_merge_response(1, "", "503 Service Unavailable") is True
+        assert merge_response._is_transient_merge_response(1, "", "503 Service Unavailable") is True
 
     def test_policy_refusal_is_not_transient(self) -> None:
-        assert execution._is_transient_merge_response(1, "", "Pull Request is not mergeable (405)") is False
+        assert merge_response._is_transient_merge_response(1, "", "Pull Request is not mergeable (405)") is False
 
     def test_policy_marker_wins_over_a_transient_token(self) -> None:
         # A refusal mentioning a transient-looking token is still a refusal.
-        assert execution._is_transient_merge_response(1, "", "422 unprocessable; gateway timeout") is False
+        assert merge_response._is_transient_merge_response(1, "", "422 unprocessable; gateway timeout") is False
 
     def test_explicit_non_transient_message_is_not_transient(self) -> None:
-        assert execution._is_transient_merge_response(1, "", "Validation failed: base must be a branch") is False
+        assert merge_response._is_transient_merge_response(1, "", "Validation failed: base must be a branch") is False
 
 
 def _green_probe_response(joined: str, *, head: str = _SHA) -> tuple[int, str, str] | None:

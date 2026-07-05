@@ -385,6 +385,18 @@ Signal *pid* only if it maps to a dead target AND is confirmed non-live.
 
 Idempotently seed the default loops + prompts (#2513).
 
+## `session`
+
+Session-lifecycle operations.
+
+| Subcommand | Description |
+| --- | --- |
+| `prepare-stop` | Refresh the durable recovery artifacts (idempotent, safe to re-run) |
+
+## `signals`
+
+Print the five factory signals over the trailing window vs its baseline.
+
 ## `speak`
 
 Read ``text`` aloud synchronously through the local speakers per [teatree.speak].
@@ -416,6 +428,7 @@ The ``ticket rubric-set`` / ``rubric-grade`` commands, mounted via MRO inheritan
 
 | Subcommand | Description |
 | --- | --- |
+| `merge` | Execute the missing IN_REVIEW → MERGED keystone transition (BLUEPRINT §17.4) |
 | `attachments` | Print (and with ``--fetch`` download) a ticket's referenced attachments |
 | `context` | Durable per-ticket knowledge store (#627, repo-namespaced key #2293) |
 | `show` | Show a ticket's state plus the per-phase ``attempt N/max`` budget (#2009) |
@@ -423,7 +436,6 @@ The ``ticket rubric-set`` / ``rubric-grade`` commands, mounted via MRO inheritan
 | `transition` | Transition a ticket to a new state |
 | `plan` | Record a PlanArtifact and advance the ticket STARTED → PLANNED |
 | `clear` | Issue a per-diff CLEAR — the orchestrator's only merge output (BLUEPRINT §17.4.2) |
-| `merge` | Execute the missing IN_REVIEW → MERGED keystone transition (BLUEPRINT §17.4) |
 | `comment` | Post a comment to an issue or work item by its URL |
 | `bulk-close` | Close (``ignore``) a batch of tickets, gated by the no-bulk-close guard (PR-08) |
 | `integration-review-override` | Record the audited escape hatch for the cross-repo integration-review gate (PR-08) |

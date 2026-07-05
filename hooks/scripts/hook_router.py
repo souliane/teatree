@@ -111,6 +111,9 @@ from secret_file_print_guard import handle_block_secret_file_print
 from self_dm_destinations import SelfDmDestinations as _SelfDmDestinations
 from self_dm_destinations import resolve_self_dm_destinations as _resolve_self_dm_destinations
 from state_files import append_line, read_lines
+from stop_snapshot_slot import handle_stop_snapshot_slot
+from stop_snapshot_slot import open_prs_for_repo as _open_prs_for_repo
+from stop_snapshot_slot import run_prepare_stop_best_effort as _run_prepare_stop_best_effort
 from subagent_no_commit import handle_subagent_stop_no_commit
 from subagent_skill_gate import is_file_safe, unreferenced_demand_reason
 from teatree_settings import autoload_enabled as _autoload_enabled
@@ -3705,45 +3708,6 @@ def _git_state_for_repo(repo_path: Path) -> dict[str, str] | None:
     }
 
 
-def _open_prs_for_repo(repo_path: Path) -> list[dict]:
-    """Return open PRs authored by the current user for *repo_path*.
-
-    Best-effort: a missing ``gh``, no auth, no network, or a non-GitHub
-    remote returns ``[]``. Never raises. Tests monkeypatch this symbol
-    directly to avoid hitting the network — see
-    ``tests/test_pre_compact_snapshot_enriched.py``.
-    """
-    if not (repo_path / ".git").exists():
-        return []
-    try:
-        out = subprocess.check_output(
-            [  # noqa: S607
-                "gh",
-                "pr",
-                "list",
-                "--author",
-                "@me",
-                "--state",
-                "open",
-                "--limit",
-                "20",
-                "--json",
-                "number,title,headRefName,isDraft",
-            ],
-            cwd=str(repo_path),
-            text=True,
-            timeout=3,
-            stderr=subprocess.DEVNULL,
-        )
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return []
-    try:
-        data = json.loads(out)
-    except json.JSONDecodeError:
-        return []
-    return data if isinstance(data, list) else []
-
-
 def _resolve_cwd_repo(data: dict) -> Path | None:
     """Resolve the harness-provided ``cwd`` to a directory, if any."""
     cwd = data.get("cwd", "")
@@ -3886,7 +3850,7 @@ def _durable_session_snapshot(session_id: str, data: dict | None = None) -> str:
 
     lines += _render_no_commit_section(session_id)
 
-    from teatree.core.management.commands.tasks_session_view import read_harness_todos  # noqa: PLC0415
+    from teatree.core.harness_todos import read_harness_todos  # noqa: PLC0415 — lazy cold-import
 
     todos = read_harness_todos(session_id)
     if todos:
@@ -3942,6 +3906,7 @@ def handle_pre_compact(data: dict) -> None:
         return
 
     _write_precompact_snapshot(session_id, data)
+    _run_prepare_stop_best_effort(session_id, data)
 
     skills_file = _state_file(session_id, "skills")
     loaded: set[str] = set()
@@ -5487,7 +5452,7 @@ _OUT_OF_BAND_MERGE_REASON = (
     "Use the sanctioned keystone transition `t3 <overlay> ticket merge <clear_id>` "
     "(BLUEPRINT §17.1 invariant 8 / §17.4). If this repo is genuinely not "
     "teatree-managed and the cwd could not be resolved, run the merge from inside "
-    "the repo's working tree so the gate can classify it."
+    "the repo's working tree so the gate can classify it. kill-switch: `t3 <overlay> gate raw-merge disable`."
 )
 
 
@@ -5577,20 +5542,21 @@ def handle_block_out_of_band_merge(data: dict) -> bool:
     if data.get("tool_name") != "Bash":
         return False
     command = data.get("tool_input", {}).get("command", "")
-    if not command:
+    # No command, or the kill-switch (`t3 <overlay> gate raw-merge disable`) is off → nothing to gate.
+    if not command or not _teatree_bool_setting("out_of_band_merge_gate_enabled", default=True):
         return False
     # Matches the mutation name in argv only: a query loaded from a file or stdin
     # (`gh api graphql -F query=@file` / `--input`) moves the text out of argv and
     # is NOT inspected — an accepted residual, not a silent miss.
     if _GLAB_GH_API_RE.search(command) and _GRAPHQL_MERGE_MUTATION_RE.search(command):
-        return emit_pretooluse_deny(_OUT_OF_BAND_MERGE_REASON)
+        return _fail_open_or_deny(data, _OUT_OF_BAND_MERGE_REASON)
     if not _invokes_raw_merge_subcommand(command) and not _is_raw_merge_api_write(command):
         return False
     if not merge_target_is_managed(command, _overlay_managed_repo_signals()[0]):
         cwd = _resolve_cwd_repo(data)
         if cwd is not None and _cwd_is_teatree_managed(cwd) is False:
             return False
-    return emit_pretooluse_deny(_OUT_OF_BAND_MERGE_REASON)
+    return _fail_open_or_deny(data, _OUT_OF_BAND_MERGE_REASON)
 
 
 # ── shared effective-HTTP-method regexes (#1164 raw-review-post gate extracted) ──
@@ -6771,6 +6737,7 @@ _HANDLERS: dict[str, list] = {
         handle_closure_reverify_stop,
         handle_consideration_gate,
         handle_speak_all_on_stop,
+        handle_stop_snapshot_slot,
         handle_loop_self_pump,
     ],
     "SubagentStop": [handle_subagent_stop_no_commit],

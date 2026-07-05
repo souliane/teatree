@@ -2402,8 +2402,8 @@ Usage: t3 doctor [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ authorizations  Suggest absent recommended auto-mode authorizations          │
-│                 (read-only).                                                 │
+│ authorizations  Suggest absent recommended auto-mode authorizations; re-test │
+│                 cached scope failures.                                       │
 │ check           Verify imports, required tools, and editable-install sanity. │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -2413,7 +2413,13 @@ Usage: t3 doctor [OPTIONS] COMMAND [ARGS]...
 ```
 Usage: t3 doctor authorizations [OPTIONS]
 
- Suggest absent recommended auto-mode authorizations (read-only).
+ Suggest absent recommended auto-mode authorizations; re-test cached scope
+ failures.
+
+ Read-only for settings. As the "am I authorized" re-check surface, it also
+ resets the in-process token-scope-failure cache (PR-19): once the operator
+ re-runs this after fixing a token's scopes, the next call re-tests the scope
+ live instead of short-circuiting on a stale cached miss.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │
@@ -3148,6 +3154,8 @@ Usage: t3 setup recover-account-switch [OPTIONS]
  connectors.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --open          Best-effort open each connector reconnect URL in a browser   │
+│                 (fail-open).                                                 │
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -3979,6 +3987,8 @@ Usage: t3 mcp [OPTIONS] COMMAND [ARGS]...
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
 │ serve              Run the structured-search MCP server over stdio (blocks   │
 │                    until stdin closes).                                      │
+│ reconnect          Reconnect (or print exact steps for) every                │
+│                    declared-but-down claude.ai connector.                    │
 │ browser-diagnosis  Report the optional chrome-devtools MCP registration      │
 │                    (default off).                                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -3992,6 +4002,26 @@ Usage: t3 mcp serve [OPTIONS]
  Run the structured-search MCP server over stdio (blocks until stdin closes).
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 mcp reconnect`
+
+```
+Usage: t3 mcp reconnect [OPTIONS]
+
+ Reconnect (or print exact steps for) every declared-but-down claude.ai
+ connector.
+
+ claude.ai-hosted connectors are re-authed in the claude.ai UI, not headlessly
+ via ``claude mcp`` — so this prints one ``RECONNECT <name> -> <target>`` line
+ per down connector across every registered overlay's manifest, and exits
+ non-zero when a REQUIRED connector is down so a caller (or CI) can gate on it.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --open          Best-effort open each reconnect URL in a browser             │
+│                 (fail-open).                                                 │
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -4540,6 +4570,7 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ checking        Terse 'what did I miss' report since the last check          │
 │                 (read-only).                                                 │
 │ handover        Hand all current work from this session to another session.  │
+│ session         Session-lifecycle operations.                                │
 │ lifecycle       Session lifecycle and phase tracking.                        │
 │ env             Inspect and mutate the worktree env cache.                   │
 │ ticket          Ticket state management.                                     │
@@ -4717,6 +4748,7 @@ Usage: t3 teatree gate [OPTIONS] COMMAND [ARGS]...
 │                    (self-rescue).                                            │
 │ gate-relaxation    Anti-relaxation + tach-soundness gate kill-switch         │
 │                    (self-rescue).                                            │
+│ raw-merge          Out-of-band raw-merge gate kill-switch (self-rescue).     │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -5173,6 +5205,59 @@ Usage: t3 teatree gate gate-relaxation disable [OPTIONS]
 
 ```
 Usage: t3 teatree gate gate-relaxation enable [OPTIONS]
+
+ Re-enable the gate.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree gate raw-merge`
+
+```
+Usage: t3 teatree gate raw-merge [OPTIONS] COMMAND [ARGS]...
+
+ Out-of-band raw-merge gate kill-switch (self-rescue).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ status   Show whether the gate is enabled.                                   │
+│ disable  Disable the gate (self-rescue from a lockout).                      │
+│ enable   Re-enable the gate.                                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate raw-merge status`
+
+```
+Usage: t3 teatree gate raw-merge status [OPTIONS]
+
+ Show whether the gate is enabled.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate raw-merge disable`
+
+```
+Usage: t3 teatree gate raw-merge disable [OPTIONS]
+
+ Disable the gate (self-rescue from a lockout).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+###### `t3 teatree gate raw-merge enable`
+
+```
+Usage: t3 teatree gate raw-merge enable [OPTIONS]
 
  Re-enable the gate.
 
@@ -7237,6 +7322,39 @@ Usage: t3 teatree handover claim-on-start [OPTIONS]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+#### `t3 teatree session`
+
+```
+Usage: t3 teatree session [OPTIONS] COMMAND [ARGS]...
+
+ Session-lifecycle operations.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ prepare-stop  Refresh the durable recovery artifacts (TODO mirror, resume    │
+│               plan, at-risk worktrees).                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree session prepare-stop`
+
+```
+Usage: t3 teatree session prepare-stop [OPTIONS]
+
+ Refresh the durable recovery artifacts (idempotent, safe to re-run).
+
+ Reports the resume-plan path, the TODO-mirror path, and any at-risk
+ worktrees whose working state was captured for recovery. Re-running
+ overwrites the files and the resume ref in place — no duplicate commits.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit JSON.                                                   │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
 #### `t3 teatree lifecycle`
 
 ```
@@ -7807,6 +7925,17 @@ Usage: t3 teatree ticket clear [OPTIONS] PR_ID SLUG
 │ --human-authorize                TEXT     ONLY for blast_class=substrate:    │
 │                                           the human/owner id authorising the │
 │                                           substrate merge.                   │
+│ --expedite-authorize             TEXT     PENDING-checks waiver: the         │
+│                                           human/owner id authorising a merge │
+│                                           on queued (never FAILED) required  │
+│                                           checks. Requires a ticket flagged  │
+│                                           expedited AND --local-ci-green-sha │
+│                                           bound to the reviewed tree.        │
+│ --local-ci-green-sha             TEXT     Attestation that the local full CI │
+│                                           lane (dev/test-cov.sh + ruff,      │
+│                                           tree-wide gates) ran green at      │
+│                                           exactly this reviewed SHA — must   │
+│                                           equal --reviewed-sha.              │
 │ --executing-loop-identity        TEXT     The loop that will execute the     │
 │                                           merge; the reviewer must differ    │
 │                                           (§17.8 clause 3).                  │
@@ -7853,13 +7982,21 @@ Usage: t3 teatree ticket merge [OPTIONS] CLEAR_ID
 │ *    clear_id      INTEGER  [required]                                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --loop-identity           TEXT  Identity of the executing loop (must differ  │
-│                                 from the CLEAR reviewer — §17.8 clause 3).   │
-│                                 [default: merge-loop]                        │
-│ --human-authorized        TEXT  Substrate-only: the recorded human           │
-│                                 authoriser id, re-presented to merge a       │
-│                                 substrate CLEAR.                             │
-│ --help                          Show this message and exit.                  │
+│ --loop-identity              TEXT  Identity of the executing loop (must      │
+│                                    differ from the CLEAR reviewer — §17.8    │
+│                                    clause 3).                                │
+│                                    [default: merge-loop]                     │
+│ --human-authorized           TEXT  Substrate-only: the recorded human        │
+│                                    authoriser id, re-presented to merge a    │
+│                                    substrate CLEAR.                          │
+│ --expedite-authorized        TEXT  Expedite-only: the recorded expedite      │
+│                                    authoriser id, re-presented to waive a    │
+│                                    PENDING (never FAILED) required check on  │
+│                                    an expedite CLEAR. Distinct from          │
+│                                    --human-authorized so the substrate hold  │
+│                                    and the pending waiver never              │
+│                                    cross-unlock.                             │
+│ --help                             Show this message and exit.               │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

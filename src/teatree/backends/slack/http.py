@@ -41,6 +41,8 @@ from typing import cast
 
 import httpx
 
+from teatree.backends.slack.scopes import SLACK_METHOD_SCOPES, slack_scope_failure
+from teatree.core.scope_cache import ScopeMissingError, guarded_scope_call, token_scope_id
 from teatree.types import RawAPIDict
 
 type SleepFn = Callable[[float], None]
@@ -60,6 +62,27 @@ DEFAULT_BACKOFF_BASE_SECONDS = 0.5
 _MAX_BACKOFF_SECONDS = 30.0
 _RATELIMITED = "ratelimited"
 _CONNECT_ERRORS = (httpx.ConnectTimeout, httpx.ConnectError, httpx.PoolTimeout)
+
+
+def _scope_guarded(method: str, token: str, call: Callable[[], RawAPIDict]) -> RawAPIDict:
+    """Run *call* under the token-scope cache (souliane/teatree#1450, PR-19).
+
+    A known-missing ``(token, method-scope)`` pair short-circuits pre-HTTP; the
+    first live ``missing_scope`` records the pair and banners once. The first live
+    failure returns Slack's verbatim body (its ``needed``/``provided`` fields
+    intact, so a caller can report exactly which scope is missing); the pre-HTTP
+    short-circuit — where no response exists — reconstructs the minimal
+    ``missing_scope`` body every caller already tolerates. A method with no mapped
+    scope is passed through unguarded.
+    """
+    token_id = token_scope_id(token)
+    scope = SLACK_METHOD_SCOPES.get(method, "")
+    try:
+        return guarded_scope_call(token_id, scope, call, slack_scope_failure)
+    except ScopeMissingError as exc:
+        if exc.body is not None:
+            return cast("RawAPIDict", exc.body)
+        return {"ok": False, "error": "missing_scope", "needed": exc.scope}
 
 
 class RetryClass(Enum):
@@ -138,7 +161,10 @@ class SlackHttpClient:
         json: RawAPIDict,
         idempotent: bool,
     ) -> RawAPIDict:
-        return cast("RawAPIDict", self._post_response(method, token=token, json=json, idempotent=idempotent).json())
+        def call() -> RawAPIDict:
+            return cast("RawAPIDict", self._post_response(method, token=token, json=json, idempotent=idempotent).json())
+
+        return _scope_guarded(method, token, call)
 
     def post_with_header(
         self,
@@ -180,7 +206,10 @@ class SlackHttpClient:
                 timeout=self._timeout,
             )
 
-        return cast("RawAPIDict", self._run(attempt, idempotent=True).json())
+        def call() -> RawAPIDict:
+            return cast("RawAPIDict", self._run(attempt, idempotent=True).json())
+
+        return _scope_guarded(method, token, call)
 
     def post_external(self, url: str, *, content: bytes) -> int:
         """POST raw ``content`` to an off-Slack upload URL, returning the status code.

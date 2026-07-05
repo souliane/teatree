@@ -16,11 +16,11 @@ class TestExpediteModel(TestCase):
     def test_defaults_false(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree")
         assert ticket.expedited is False
-        assert ticket.may_push_before_ci() is False
+        assert ticket.may_expedite() is False
 
-    def test_may_push_before_ci_reflects_flag(self) -> None:
+    def test_may_expedite_reflects_flag(self) -> None:
         ticket = Ticket.objects.create(overlay="t3-teatree", expedited=True)
-        assert ticket.may_push_before_ci() is True
+        assert ticket.may_expedite() is True
 
 
 class TestExpediteCommand(TestCase):

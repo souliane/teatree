@@ -18,6 +18,8 @@ import logging
 
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.connector_keys import GRANTED_SCOPES_KEY
+from teatree.core.connector_manifest import OverlayManifest, check_connector_manifest
+from teatree.core.mcp_connectivity import McpProbe
 from teatree.core.overlay_loader import get_all_overlays
 
 logger = logging.getLogger(__name__)
@@ -49,15 +51,33 @@ def assert_slack_scope(backend: MessagingBackend, scope: str) -> None:
         raise RuntimeError(msg)
 
 
+def assert_required_connectors(manifests: list[OverlayManifest], *, probe: McpProbe | None = None) -> None:
+    """Raise ``RuntimeError`` naming each declared REQUIRED connector that is down (PR-19).
+
+    The manifest counterpart to :func:`assert_slack_scope` at loop start: a
+    claude.ai connector an overlay hard-depends on that is not connected refuses
+    the loop rather than letting it degrade into silent no-ops. A degraded probe
+    (``claude`` absent) does NOT block — :func:`check_connector_manifest` cannot
+    prove a disconnection, so the loop proceeds and the doctor gate surfaces the
+    WARN separately. An empty manifest is a no-op.
+    """
+    outcome = check_connector_manifest(manifests=manifests, probe=probe)
+    if outcome.required_findings:
+        joined = "; ".join(outcome.required_findings)
+        msg = f"required claude.ai connector(s) not connected: {joined}"
+        raise RuntimeError(msg)
+
+
 def run_connector_preflight(overlay_name: str = "") -> None:
     """Run connector probes for every registered overlay (or one named).
 
     Each overlay contributes zero or more zero-arg callables via
-    :meth:`OverlayBase.get_connector_preflight`. A callable that raises
-    ``RuntimeError`` means a hard-dependency connector is unreachable;
-    this function then ``raise SystemExit(1)`` so the loop/lifecycle
-    entrypoint refuses to continue rather than degrade into silent
-    no-ops. A clean run returns ``None``.
+    :meth:`OverlayBase.get_connector_preflight`, plus its declared connector
+    manifest (:meth:`OverlayBase.get_connector_manifest`). A callable that raises
+    ``RuntimeError`` — or a required declared connector that is down — means a
+    hard-dependency connector is unreachable; this function then
+    ``raise SystemExit(1)`` so the loop/lifecycle entrypoint refuses to continue
+    rather than degrade into silent no-ops. A clean run returns ``None``.
     """
     overlays = get_all_overlays()
     if overlay_name:
@@ -65,6 +85,7 @@ def run_connector_preflight(overlay_name: str = "") -> None:
     else:
         selected = overlays
 
+    manifests: list[OverlayManifest] = []
     for name, overlay in selected.items():
         for check in overlay.get_connector_preflight():
             try:
@@ -80,6 +101,14 @@ def run_connector_preflight(overlay_name: str = "") -> None:
                 # non-zero exit). Follows teatree's mgmt-command exit
                 # convention (raise SystemExit, never typer.Exit).
                 raise SystemExit(msg) from exc
+        manifests.append(OverlayManifest(overlay=name, requirements=list(overlay.get_connector_manifest())))
+
+    try:
+        assert_required_connectors(manifests)
+    except RuntimeError as exc:
+        msg = f"Connector preflight failed: {exc}. Refusing to continue — reconnect the connector and retry."
+        logger.exception(msg)
+        raise SystemExit(msg) from exc
 
 
-__all__ = ["assert_slack_scope", "run_connector_preflight"]
+__all__ = ["assert_required_connectors", "assert_slack_scope", "run_connector_preflight"]

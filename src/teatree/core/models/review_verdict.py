@@ -228,6 +228,7 @@ class ReviewVerdict(models.Model):
         blast_class: str = MergeClear.BlastClass.LOGIC,
         gh_verify_result: str = MergeClear.VerifyResult.GREEN,
         ticket: Ticket | None = None,
+        expedited: bool = False,
     ) -> "ReviewVerdict":
         """The single guarded factory for a recorded verdict.
 
@@ -237,10 +238,12 @@ class ReviewVerdict(models.Model):
         a non-empty ``reviewer_identity``; a full 40-char hex ``reviewed_sha``
         (same bind-to-the-exact-tree rule ``MergeClear.issue`` enforces, so the
         live-head equality check in :meth:`is_stale_at` cannot silently fail).
-        A ``merge_safe`` verdict must carry a green ``gh_verify_result`` — the
-        same maker≠checker invariant that forbids a non-green CLEAR (§17.8
-        clause 3): a recorded HOLD on red checks can never be promoted to
-        merge-safe by a later live re-check.
+        A ``merge_safe`` verdict must NOT carry a FAILED ``gh_verify_result`` — the
+        same maker≠checker invariant that refuses a FAILED CLEAR (§17.8 clause 3):
+        a recorded HOLD on red checks can never be promoted to merge-safe by a
+        later live re-check. A PENDING snapshot is accepted on a ``merge_safe``
+        verdict ONLY when ``expedited`` is set (the sibling record of the
+        human-authorized, SHA-bound expedite waiver ``MergeClear.issue`` records).
         """
         normalized_verdict = verdict.strip().lower()
         valid_verdict = {choice.value for choice in cls.Verdict}
@@ -259,13 +262,23 @@ class ReviewVerdict(models.Model):
         if normalized_verify not in valid_verify:
             msg = f"Unknown gh_verify_result {gh_verify_result!r}; valid: {sorted(valid_verify)}"
             raise ReviewVerdictError(msg)
-        if normalized_verdict == cls.Verdict.MERGE_SAFE and normalized_verify != MergeClear.VerifyResult.GREEN:
-            msg = (
-                f"a merge_safe verdict requires gh_verify_result=green (got {normalized_verify!r}) — "
-                f"a recorded HOLD on non-green checks can never be promoted to merge-safe by a later "
-                f"live re-check (§17.8 clause 3; mirrors MergeClear.issue refusing a non-green CLEAR)"
-            )
-            raise ReviewVerdictError(msg)
+        if normalized_verdict == cls.Verdict.MERGE_SAFE:
+            if normalized_verify == MergeClear.VerifyResult.FAILED:
+                msg = (
+                    f"a merge_safe verdict can never carry gh_verify_result=failed (got "
+                    f"{normalized_verify!r}) — a FAILED required check is a real red verdict and "
+                    f"expedite can never waive it (§17.8 clause 3; mirrors MergeClear.issue refusing "
+                    f"a failed CLEAR)"
+                )
+                raise ReviewVerdictError(msg)
+            if normalized_verify == MergeClear.VerifyResult.PENDING and not expedited:
+                msg = (
+                    f"a merge_safe verdict on PENDING checks (got {normalized_verify!r}) requires the "
+                    f"expedite waiver (expedited=True) — a recorded HOLD on queued checks can never be "
+                    f"promoted to merge-safe by a later live re-check unless the CLEAR carries a "
+                    f"human-authorized, SHA-bound pending-waiver (§17.8 clause 3)"
+                )
+                raise ReviewVerdictError(msg)
 
         reviewer = reviewer_identity.strip()
         if not reviewer:

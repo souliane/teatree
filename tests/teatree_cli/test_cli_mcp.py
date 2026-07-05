@@ -14,8 +14,9 @@ from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 from typer.testing import CliRunner
 
-from teatree.cli.mcp import browser_diagnosis, serve
+from teatree.cli.mcp import browser_diagnosis, open_reconnect_targets, reconnect, serve
 from teatree.core.browser_diagnosis import BrowserDiagnosisRegistration
+from teatree.core.connector_manifest import ConnectorManifestOutcome, ConnectorRequirement, DownConnector
 
 runner = CliRunner()
 
@@ -24,6 +25,17 @@ _app.command()(serve)
 
 _diag_app = typer.Typer()
 _diag_app.command()(browser_diagnosis)
+
+_reconnect_app = typer.Typer()
+_reconnect_app.command()(reconnect)
+
+
+def _down(name: str, *, required: bool = True, ever: bool = True, instruction: str = "") -> DownConnector:
+    return DownConnector(
+        requirement=ConnectorRequirement(name, required=required, instruction=instruction),
+        overlay="ov",
+        ever_connected=ever,
+    )
 
 
 class TestServeCommand:
@@ -57,6 +69,78 @@ class TestBrowserDiagnosisCommand:
         assert result.exit_code == 0
         assert "Browser-diagnosis MCP" in result.stdout
         resolve_mock.assert_called_once()
+
+
+class TestReconnectCommand:
+    def test_all_connected_reports_and_exits_zero(self) -> None:
+        outcome = ConnectorManifestOutcome(ok=True)
+        with (
+            patch("teatree.cli.mcp.ensure_django"),
+            patch("teatree.core.connector_manifest.check_connector_manifest", return_value=outcome),
+        ):
+            result = runner.invoke(_reconnect_app, [])
+        assert result.exit_code == 0
+        assert "All declared connectors are connected." in result.stdout
+
+    def test_required_down_prints_reconnect_lines_and_exits_nonzero(self) -> None:
+        outcome = ConnectorManifestOutcome(ok=False, down=[_down("claude.ai Slack")])
+        with (
+            patch("teatree.cli.mcp.ensure_django"),
+            patch("teatree.core.connector_manifest.check_connector_manifest", return_value=outcome),
+        ):
+            result = runner.invoke(_reconnect_app, [])
+        assert result.exit_code == 1
+        assert "RECONNECT claude.ai Slack -> https://claude.ai/settings/connectors" in result.stdout
+
+    def test_optional_only_down_exits_zero(self) -> None:
+        outcome = ConnectorManifestOutcome(ok=True, down=[_down("claude.ai Sentry", required=False)])
+        with (
+            patch("teatree.cli.mcp.ensure_django"),
+            patch("teatree.core.connector_manifest.check_connector_manifest", return_value=outcome),
+        ):
+            result = runner.invoke(_reconnect_app, [])
+        assert result.exit_code == 0
+        assert "RECONNECT claude.ai Sentry" in result.stdout
+
+    def test_open_flag_opens_urls(self) -> None:
+        outcome = ConnectorManifestOutcome(ok=False, down=[_down("claude.ai Slack")])
+        opened: list[str] = []
+        with (
+            patch("teatree.cli.mcp.ensure_django"),
+            patch("teatree.core.connector_manifest.check_connector_manifest", return_value=outcome),
+            patch("teatree.cli.mcp.open_reconnect_targets", side_effect=lambda urls: opened.extend(urls) or len(urls)),
+        ):
+            result = runner.invoke(_reconnect_app, ["--open"])
+        assert result.exit_code == 1
+        assert opened == ["https://claude.ai/settings/connectors"]
+
+    def test_degraded_probe_warns_and_exits_zero(self) -> None:
+        outcome = ConnectorManifestOutcome(ok=True, degraded=True, probe_findings=["Could not live-probe (x)"])
+        with (
+            patch("teatree.cli.mcp.ensure_django"),
+            patch("teatree.core.connector_manifest.check_connector_manifest", return_value=outcome),
+        ):
+            result = runner.invoke(_reconnect_app, [])
+        assert result.exit_code == 0
+        assert "WARN" in result.stdout
+
+
+class TestOpenReconnectTargets:
+    def test_opens_only_http_targets(self) -> None:
+        opened: list[str] = []
+        count = open_reconnect_targets(
+            ["https://claude.ai/settings/connectors", "reconnect from the extension popup"],
+            opener=opened.append,
+        )
+        assert count == 1
+        assert opened == ["https://claude.ai/settings/connectors"]
+
+    def test_failing_opener_fails_open(self) -> None:
+        def boom(_url: str) -> None:
+            msg = "no display"
+            raise RuntimeError(msg)
+
+        assert open_reconnect_targets(["https://x"], opener=boom) == 0
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -118,6 +202,7 @@ class TestServeSubprocessSmoke:
             "worktree_status",
             "pr_for_ticket",
             "loop_stats",
+            "factory_signals",
             "incoming_event_recent",
         }
         assert payload == {

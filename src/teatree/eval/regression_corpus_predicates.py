@@ -149,7 +149,6 @@ def _exercise_substrate_authorize(*, autonomy: str, expect_cleared_without_human
                 executing_loop_identity=executor,
                 slug=slug,
                 pr_id=pr_id,
-                human_authorized="",
             )
         except MergePreconditionError:
             cleared_without_human = False
@@ -184,7 +183,6 @@ def _check_merge_precondition_maker_is_not_checker() -> bool:
             executing_loop_identity=identity,
             slug=slug,
             pr_id=pr_id,
-            human_authorized="",
         )
     except MergePreconditionError:
         return True

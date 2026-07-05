@@ -1,3 +1,4 @@
+# test-path: cross-cutting — drives hooks/scripts/hook_router.py + teatree.cli.teatree_gate; no src/teatree/ mirror.
 """Tests for the cwd-aware out-of-band merge gate in hook_router (#126).
 
 ``gh pr merge`` / ``glab mr merge`` must stay BLOCKED for a teatree-managed
@@ -13,11 +14,16 @@ plus a tmp ``~/.teatree.toml`` so the managed-repo signals resolve offline.
 import json
 import os
 import subprocess
+import tomllib
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
+import typer
+from typer.testing import CliRunner
 
 import hooks.scripts.hook_router as router
+from teatree.cli.teatree_gate import OUT_OF_BAND_MERGE_GATE_KEY, register_gate_commands
 
 
 class _FakeHomePath:
@@ -377,3 +383,70 @@ class TestCwdClassifyDoesNotCrashWithOverlayPath:
         repo = _repo_with_remote(tmp_path / "wt", "git@github.com:example-org/public-repo.git")
         assert router.handle_block_out_of_band_merge(_merge_event(command, repo)) is False
         assert capsys.readouterr().out.strip() == ""
+
+
+# ── raw-merge kill-switch (FIX-EXPEDITE PART B) ──────────────────────────────
+#
+# The gate was the only merge-adjacent gate denying via a bare emit; PART B gives
+# it the ``out_of_band_merge_gate_enabled`` kill-switch (default on) routed through
+# ``_fail_open_or_deny``, plus the ``t3 <overlay> gate raw-merge`` self-rescue CLI.
+
+
+class TestRawMergeKillSwitch:
+    """The ``out_of_band_merge_gate_enabled`` kill-switch: default-on denies, off allows."""
+
+    @pytest.fixture(autouse=True)
+    def _home(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _patch_home(tmp_path / "home", _MANAGED_CONFIG, monkeypatch)
+
+    def test_default_on_still_denies_managed_repo_merge(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Anti-vacuity: with no config the gate is enabled and the routing change
+        # did NOT silently fail open — a managed-repo raw merge is still denied.
+        repo = _repo_with_remote(tmp_path / "wt", "git@github.com:souliane/teatree.git")
+        assert router.handle_block_out_of_band_merge(_merge_event("gh pr merge 1", repo)) is True
+        deny = _parse_deny(capsys)
+        assert deny is not None
+        assert "gate raw-merge disable" in deny["permissionDecisionReason"]
+
+    def test_disabled_kill_switch_allows_managed_repo_merge(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        repo = _repo_with_remote(tmp_path / "wt", "git@github.com:souliane/teatree.git")
+        monkeypatch.setattr(
+            router,
+            "_teatree_bool_setting",
+            lambda key, default=True: False if key == "out_of_band_merge_gate_enabled" else default,
+        )
+        assert router.handle_block_out_of_band_merge(_merge_event("gh pr merge 1", repo)) is False
+        assert capsys.readouterr().out.strip() == ""
+
+
+class TestRawMergeGateCLI:
+    """``t3 <overlay> gate raw-merge disable/enable/status`` self-rescue CLI."""
+
+    def test_gate_key_constant(self) -> None:
+        assert OUT_OF_BAND_MERGE_GATE_KEY == "out_of_band_merge_gate_enabled"
+
+    def test_gate_raw_merge_subgroup_is_registered(self) -> None:
+        overlay_app = typer.Typer()
+        register_gate_commands(overlay_app)
+        result = CliRunner().invoke(overlay_app, ["gate", "raw-merge", "status"])
+        assert result.exit_code == 0
+        assert "gate" in result.output.lower()
+
+    def test_gate_raw_merge_disable_then_enable_round_trip(self, tmp_path: Path) -> None:
+        overlay_app = typer.Typer()
+        register_gate_commands(overlay_app)
+        runner = CliRunner()
+        config = tmp_path / ".teatree.toml"
+        with patch("teatree.cli.teatree_gate._config_path", return_value=config):
+            disabled = runner.invoke(overlay_app, ["gate", "raw-merge", "disable"])
+            assert disabled.exit_code == 0, disabled.output
+            with config.open("rb") as f:
+                assert tomllib.load(f)["teatree"][OUT_OF_BAND_MERGE_GATE_KEY] is False
+            enabled = runner.invoke(overlay_app, ["gate", "raw-merge", "enable"])
+            assert enabled.exit_code == 0, enabled.output
+            with config.open("rb") as f:
+                assert tomllib.load(f)["teatree"][OUT_OF_BAND_MERGE_GATE_KEY] is True

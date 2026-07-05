@@ -12,12 +12,34 @@ from teatree.core.mcp_connectivity import (
     check_mcp_connectivity,
     parse_mcp_list_output,
     read_enabled_mcp_servers,
+    read_ever_connected,
     resolve_provider,
 )
 
 
 def _write_claude_json(home: Path, payload: dict) -> None:
     (home / ".claude.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+class TestReadEverConnected:
+    def test_returns_the_ever_connected_set(self, tmp_path):
+        _write_claude_json(tmp_path, {"claudeAiMcpEverConnected": ["claude.ai Slack", "claude.ai Notion"]})
+        assert read_ever_connected(home=tmp_path) == {"claude.ai Slack", "claude.ai Notion"}
+
+    def test_missing_file_is_empty_set(self, tmp_path):
+        assert read_ever_connected(home=tmp_path) == set()
+
+    def test_absent_key_is_empty_set(self, tmp_path):
+        _write_claude_json(tmp_path, {"mcpServers": {"glab": {"type": "stdio"}}})
+        assert read_ever_connected(home=tmp_path) == set()
+
+    def test_malformed_json_is_empty_set(self, tmp_path):
+        (tmp_path / ".claude.json").write_text("{ not json", encoding="utf-8")
+        assert read_ever_connected(home=tmp_path) == set()
+
+    def test_non_dict_root_is_empty_set(self, tmp_path):
+        (tmp_path / ".claude.json").write_text("[]", encoding="utf-8")
+        assert read_ever_connected(home=tmp_path) == set()
 
 
 class TestReadEnabledMcpServers:

@@ -132,6 +132,23 @@ def _reset_webhook_rate_limiter() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_scope_cache() -> Iterator[None]:
+    """Reset the process-singleton token-scope cache with a no-op banner sink (PR-19).
+
+    The cache persists for the loop-process lifetime, so without a per-test reset a
+    ``missing_scope`` recorded in one test would short-circuit a later test's call,
+    and its default banner sink would reach the DB-backed ``notify_user`` from a
+    non-``django_db`` unit test. A no-op notifier keeps pure transport tests pure;
+    tests that assert on the banner inject their own recorder.
+    """
+    import teatree.core.scope_cache as _scope_cache  # noqa: PLC0415 — deferred: fixture-local reset of a process singleton
+
+    _scope_cache._CACHE = _scope_cache.ScopeCache(notifier=lambda *_a, **_k: True)
+    yield
+    _scope_cache._CACHE = None
+
+
+@pytest.fixture(autouse=True)
 def _unset_review_skill_by_default() -> Iterator[None]:
     """Pin the #1539 reviewing-phase gate to its NO-OP unless a test opts in.
 

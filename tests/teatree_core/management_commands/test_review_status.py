@@ -68,9 +68,10 @@ class TestRecordCommand(TestCase):
             call_command("review", "record", "1680", "souliane/teatree", reviewer_identity="r")
 
     def test_record_merge_safe_on_red_checks_is_refused(self) -> None:
+        # FIX-EXPEDITE: a merge_safe verdict can never carry a FAILED result (even expedited).
         result = _record(gh_verify_result="failed")
         assert not result["recorded"]
-        assert "green" in cast("str", result["error"]).lower()
+        assert "never carry gh_verify_result=failed" in cast("str", result["error"])
         assert ReviewVerdict.objects.count() == 0
 
     def test_record_invalid_findings_json_is_refused(self) -> None:

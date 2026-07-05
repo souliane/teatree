@@ -168,6 +168,24 @@ class TestLoopStats(TestCase):
         assert search.loop_stats()["dead_letter"] == 2
 
 
+class TestFactorySignals(TestCase):
+    def test_returns_the_five_signal_report_shape(self) -> None:
+        report = search.factory_signals()
+
+        assert report["window_days"] == 28
+        assert report["verdict"] in {"ok", "regressing", "red"}
+        assert {row["provider_id"] for row in report["signals"]} == {
+            "first_try_green",
+            "defect_escape",
+            "review_catch",
+            "merge_latency",
+            "repair_burn",
+        }
+
+    def test_window_days_flows_through(self) -> None:
+        assert search.factory_signals(window_days=14)["window_days"] == 14
+
+
 class TestIncomingEventRecent(TestCase):
     def test_orders_newest_first_and_caps_limit(self) -> None:
         events = [IncomingEventFactory() for _ in range(4)]
