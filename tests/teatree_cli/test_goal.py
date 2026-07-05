@@ -3,9 +3,11 @@
 import json
 
 from django.test import TestCase
+from django_typer.management import TyperCommand
 from typer.testing import CliRunner
 
 from teatree.cli.goal import goal_app
+from teatree.core.management.commands.standing_goal import Command
 from teatree.core.models import StandingGoal
 
 runner = CliRunner()
@@ -57,3 +59,25 @@ class TestGoalCli(TestCase):
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
         assert payload["goals"][0]["name"] == "evals-green"
+
+    def test_set_json_success_is_machine_readable(self) -> None:
+        result = runner.invoke(goal_app, ["set", "evals-green", "--check", "true", "--json"])
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output) == {"ok": True, "name": "evals-green", "check_command": "true"}
+
+    def test_set_json_error_on_empty_check(self) -> None:
+        result = runner.invoke(goal_app, ["set", "evals-green", "--check", "   ", "--json"])
+        assert result.exit_code != 0
+        payload = json.loads(result.output)
+        assert payload["ok"] is False
+        assert payload["error"]
+
+    def test_clear_json_reports_count_and_scope(self) -> None:
+        StandingGoal.objects.set_goal("a", "true")
+        result = runner.invoke(goal_app, ["clear", "--json"])
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.output) == {"ok": True, "cleared": 1, "scope": "all standing goals"}
+
+    def test_command_is_the_standing_goal_typer_command(self) -> None:
+        assert issubclass(Command, TyperCommand)
+        assert "standing" in Command.help.lower()

@@ -3,7 +3,7 @@
 import pytest
 from django.test import TestCase
 
-from teatree.core.models import StandingGoal, StandingGoalError
+from teatree.core.models import StandingGoal, StandingGoalError, StandingGoalManager
 
 
 class TestSetGoal(TestCase):
@@ -54,6 +54,18 @@ class TestActiveGoalsAndRetire(TestCase):
 
     def test_retire_absent_goal_is_false(self) -> None:
         assert StandingGoal.objects.retire("nope") is False
+
+
+class TestManagerAndStr(TestCase):
+    def test_objects_is_the_custom_manager(self) -> None:
+        assert isinstance(StandingGoal.objects, StandingGoalManager)
+
+    def test_str_reflects_active_then_retired_state(self) -> None:
+        goal = StandingGoal.objects.set_goal("evals-green", "true")
+        assert str(goal) == "standing-goal<evals-green:active>"
+        StandingGoal.objects.retire("evals-green")
+        goal.refresh_from_db()
+        assert str(goal) == "standing-goal<evals-green:retired>"
 
 
 class TestClear(TestCase):

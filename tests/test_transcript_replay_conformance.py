@@ -382,3 +382,9 @@ def test_gate_id_ignores_undecodable_stdout() -> None:
     """An undecodable stdout never raises and yields gate_id None (fail-soft)."""
     events = parse_session_jsonl(_plan_gate_deny_attachment("not-json{", None))
     assert events[0].gate_id is None
+
+
+def test_gate_id_ignores_non_dict_stdout_payload() -> None:
+    """A stdout that decodes to a non-object JSON value yields gate_id None (fail-soft)."""
+    events = parse_session_jsonl(_plan_gate_deny_attachment("[1, 2, 3]", None))
+    assert events[0].gate_id is None
