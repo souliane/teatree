@@ -25,10 +25,9 @@ hard-deleted.
 Both are driven by the dedicated reactive drain-queue ``/loop``
 (``t3 loop drain-queue run`` → the ``loop_drain_queue`` management command →
 :func:`expire_then_drain`, behind the ``loop-drain-queue`` ``LoopLease``). The drain
-refuses to run while a live worker holds either worker-singleton flock
-(:data:`~teatree.utils.singleton.WORKER_SINGLETON` or the legacy
-:data:`~teatree.utils.singleton.LEGACY_WORKER_SINGLETON` — probed via the same
-constants the workers acquire), and it only drains the ``default`` queue — the
+refuses to run while a live worker holds the ``worker`` singleton flock
+(:data:`~teatree.utils.singleton.WORKER_SINGLETON` — probed via the same constant
+the workers acquire), and it only drains the ``default`` queue — the
 ``loops``-queue ``loop_timer`` rows advance ONLY on the worker's pinned executors, so
 the drain cannot become a second loop runner that bypasses the ``loop_runner_enabled``
 kill-switch.
@@ -145,26 +144,24 @@ def drain_batch_size() -> int:
 
 
 def a_worker_is_running() -> bool:
-    """True iff a live worker holds either worker-singleton flock.
+    """True iff a live worker holds the worker-singleton flock.
 
-    Two worker entry points can own the queue: the #1796 ``LoopWorker``
-    acquires :data:`~teatree.utils.singleton.WORKER_SINGLETON` (``"worker"``),
-    while the older ``t3 <overlay> worker`` spawner still acquires
-    :data:`~teatree.utils.singleton.LEGACY_WORKER_SINGLETON` (``"teatree-worker"``)
-    during the deprecation window. The probe imports the SAME constants the
-    workers acquire — so the name can never drift — and stands the in-process
-    tick drain down when either is alive, so the two never claim the same rows.
-    ``read_pid`` reports the live holder (and reaps a stale pid file) without
-    acquiring the lock, so probing here never disturbs a running worker.
+    Every worker entry point that can own the queue — the #1796 ``LoopWorker``
+    (``t3 worker``) AND the ``t3 <overlay> worker`` db_worker spawner — acquires the
+    ONE :data:`~teatree.utils.singleton.WORKER_SINGLETON` (``"worker"``) flock (PR-28
+    completed the #5 deprecation of the pre-#1796 ``teatree-worker`` singleton). The
+    probe imports the SAME constant the workers acquire — so the name can never drift
+    — and stands the in-process tick drain down while it is alive, so the two never
+    claim the same rows. ``read_pid`` reports the live holder (and reaps a stale pid
+    file) without acquiring the lock, so probing here never disturbs a running worker.
     """
     from teatree.utils.singleton import (  # noqa: PLC0415 — deferred: keeps queue_drain cold-import cheap
-        LEGACY_WORKER_SINGLETON,
         WORKER_SINGLETON,
         default_pid_path,
         read_pid,
     )
 
-    return any(read_pid(default_pid_path(name)) is not None for name in (WORKER_SINGLETON, LEGACY_WORKER_SINGLETON))
+    return read_pid(default_pid_path(WORKER_SINGLETON)) is not None
 
 
 def expire_stale_ready_jobs(*, threshold_hours: int | None = None, queue_name: str | None = None) -> dict[str, int]:

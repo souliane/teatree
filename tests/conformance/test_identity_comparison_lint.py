@@ -125,9 +125,9 @@ class TestRegistryIsAdditiveAndWellFormed:
             name="singleton",
             kind=FamilyKind.LITERAL_MEMBER,
             normalizer_calls=frozenset(),
-            literal_members=frozenset({"worker", "teatree-worker"}),
+            literal_members=frozenset({"worker"}),
         )
-        flagged = [v.family for v in scan_source('if name == "teatree-worker":\n    pass\n', Path("<x>"), [singleton])]
+        flagged = [v.family for v in scan_source('if name == "worker":\n    pass\n', Path("<x>"), [singleton])]
         assert flagged == ["singleton"]
 
 
