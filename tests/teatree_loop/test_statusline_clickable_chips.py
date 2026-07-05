@@ -1,8 +1,7 @@
 """Every #N/!N chip is hyperlinked — canonical URL else tracker search (PR-17).
 
 Item 1: an unknown/404'd canonical URL must fall back to a clickable tracker
-search URL, never render as bare text. Item 3: the review-permalink status
-parenthetical must never repeat ``(review)`` per MR on one line.
+search URL, never render as bare text.
 """
 
 from unittest.mock import patch
@@ -64,21 +63,19 @@ class TestChipHyperlinkedNotBare:
         assert rendered == "#214"
 
 
-class TestReviewParentheticalNeverRepeats:
-    """Item 3: multiple MRs each carrying a review permalink must not repeat ``(review)``."""
+class TestChildMrChipsRenderOnePerRef:
+    """Each child MR ref renders as one terse ``!N`` chip on the line (#1377) — no per-MR fan-out."""
 
-    def test_no_repeated_review_chunk_on_one_line(self) -> None:
+    def test_every_child_mr_renders_one_chip(self) -> None:
         ctx = _LinkCtx(colorize=False, link=_link, search_base="")
         child_refs = [
-            _PRRef(iid=1, url="https://x/mr/1", review_permalink="https://slack.com/archives/C/p1"),
-            _PRRef(iid=2, url="https://x/mr/2", review_permalink="https://slack.com/archives/C/p2"),
-            _PRRef(iid=3, url="https://x/mr/3", review_permalink="https://slack.com/archives/C/p3"),
+            _PRRef(iid=1, url="https://x/mr/1"),
+            _PRRef(iid=2, url="https://x/mr/2"),
+            _PRRef(iid=3, url="https://x/mr/3"),
         ]
         rendered = _render_canonical_item(
             label="#7", url="https://x/issues/7", title="t", child_refs=child_refs, ctx=ctx
         )
-        assert rendered.count("(review)") <= 1, rendered
-        # All three MR chips still render, one chunk each — no per-MR fan-out.
         for iid in (1, 2, 3):
             assert f"!{iid}" in rendered, rendered
 

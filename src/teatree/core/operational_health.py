@@ -33,6 +33,7 @@ from enum import StrEnum
 
 from django.utils import timezone
 
+from teatree.core.loop_lease_manager import T3_MASTER_SLOT, is_per_loop_owner_slot, is_per_loop_tick_mutex
 from teatree.core.models.known_issue import KnownIssue
 from teatree.core.overlay_loader import get_all_overlays
 
@@ -104,30 +105,73 @@ def _overlay_health_signals() -> list[HealthSignal]:
     return signals
 
 
+def _lease_reference_seconds(name: str) -> int:
+    """Seconds a live lease may age before it counts as stale — its OWN cadence/TTL.
+
+    Mirrors the display resolver
+    :func:`teatree.loop.statusline_loops._cadence_for_loop`: each infra loop ticks
+    on its own schedule, so a single flat cadence over-reports. A reactive slot
+    resolves its env cadence; a per-loop owner lease (``loop:<name>``) uses the
+    pid-anchored claim TTL it was granted under; everything else (the bare
+    ``loop-tick`` mutex, an unknown or newly-added loop) falls back to the
+    ``loop-tick`` cadence, so a new loop surfaces without a change here.
+    """
+    from teatree.config import cadence_seconds  # noqa: PLC0415 — deferred to keep the module cold-import cheap
+    from teatree.loop.loop_cadences import (  # noqa: PLC0415 — deferred: pure os.environ readers, the SoT for each loop's cadence
+        drain_cadence_seconds,
+        loop_owner_ttl_seconds,
+        self_improve_cadence_seconds,
+        slack_answer_cadence_seconds,
+    )
+
+    if name == "loop-self-improve":
+        return self_improve_cadence_seconds()
+    if name == "loop-slack-answer":
+        return slack_answer_cadence_seconds()
+    if name == "loop-drain-queue":
+        return drain_cadence_seconds()
+    if is_per_loop_owner_slot(name):
+        return loop_owner_ttl_seconds()
+    return cadence_seconds()
+
+
 def _stale_tick_signals() -> list[HealthSignal]:
-    """One warning per live loop lease that has missed >2x its cadence.
+    """One warning per cadence-ticked loop lease that has overrun its OWN cadence.
 
     A held :class:`~teatree.core.models.loop_lease.LoopLease` whose last acquire
-    is older than :data:`_TICK_OVERRUN_MULTIPLE` x cadence has not ticked in too
-    long — the loop is wedged even though the lease is still nominally live.
-    Uses the resolved ``loop-tick`` cadence as the reference; fail-open to ``[]``.
+    is older than :data:`_TICK_OVERRUN_MULTIPLE` x the loop's OWN cadence/TTL
+    (:func:`_lease_reference_seconds`) has not ticked in too long — the loop is
+    wedged even though the lease is still nominally live.
+
+    Two leases are excluded, mirroring the display's
+    :func:`teatree.loop.statusline_loops._live_lease_chunks`:
+
+    *   ``t3-master`` is a pid-anchored session-ownership token, deliberately
+        NOT re-acquired while its owner is BUSY (busy != dead, #1073/#1604).
+        During a routine multi-minute busy window its ``acquired_at``
+        legitimately ages past any tick cutoff, so judging it as a tick would
+        spuriously redden the health chip on a healthy factory.
+    *   the transient per-loop tick mutex ``loop-tick:<name>`` (#2650) is a
+        concurrency lock held only for the beat, never a user-facing loop.
+
+    Fail-open to ``[]``.
     """
     try:
         from django.apps import apps  # noqa: PLC0415 — deferred so the app registry is only touched at read time
 
-        from teatree.config import cadence_seconds  # noqa: PLC0415 — deferred to keep the module cold-import cheap
-
-        cadence = cadence_seconds()
-        if cadence <= 0:
-            return []
         now = timezone.now()
-        cutoff = now - timedelta(seconds=cadence * _TICK_OVERRUN_MULTIPLE)
         lease_model = apps.get_model("core", "LoopLease")
         rows = lease_model.objects.filter(
             lease_expires_at__gt=now,
             acquired_at__isnull=False,
-            acquired_at__lt=cutoff,
         ).only("name", "acquired_at")
+        stale = [
+            row
+            for row in rows
+            if row.name != T3_MASTER_SLOT
+            and not is_per_loop_tick_mutex(row.name)
+            and row.acquired_at < now - timedelta(seconds=_TICK_OVERRUN_MULTIPLE * _lease_reference_seconds(row.name))
+        ]
     except Exception:  # noqa: BLE001 — fail-open: a broken health read must never crash the tick or blank the chip
         return []
     return [
@@ -137,7 +181,7 @@ def _stale_tick_signals() -> list[HealthSignal]:
             kind="stale_tick",
             summary=f"loop {row.name} has not ticked in over {_TICK_OVERRUN_MULTIPLE}x its cadence",
         )
-        for row in rows
+        for row in stale
     ]
 
 

@@ -5,6 +5,7 @@ computes the green/yellow/red factory-health verdict from deterministic durable
 signals and persists them as ``KnownIssue`` rows.
 """
 
+import os
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -12,10 +13,12 @@ import pytest
 from django.apps import apps
 from django.utils import timezone
 
+from teatree.core.models import Session, Task, Ticket
 from teatree.core.models.known_issue import KnownIssue
 from teatree.core.operational_health import (
     HealthSignal,
     HealthStatus,
+    _failed_task_signals,
     _overlay_health_signals,
     _stale_tick_signals,
     _status_from_issues,
@@ -110,6 +113,67 @@ class TestStaleTickCollector:
         )
         with patch("teatree.config.cadence_seconds", return_value=60):
             assert _stale_tick_signals() == []
+
+
+class TestStaleTickExclusions:
+    """Ownership tokens + transient mutexes excluded; each lease judged against its OWN cadence/TTL."""
+
+    def _lease(self, name: str, *, acquired_ago: timedelta, **kw: object) -> None:
+        lease_model = apps.get_model("core", "LoopLease")
+        now = timezone.now()
+        lease_model.objects.create(
+            name=name,
+            acquired_at=now - acquired_ago,
+            lease_expires_at=now + timedelta(minutes=5),
+            **kw,
+        )
+
+    def test_busy_t3_master_within_ttl_is_not_stale(self) -> None:
+        # A busy t3-master: acquired_at aged past the tick cutoff but still within
+        # its 1800s owner TTL (lease live) with the owner process alive. It is a
+        # pid-anchored ownership token (busy != dead, #1073/#1604), never a wedged
+        # tick — flagging it would redden the health chip on a healthy factory.
+        self._lease("t3-master", acquired_ago=timedelta(minutes=25), owner_pid=os.getpid(), session_id="sess-busy")
+        with patch("teatree.config.cadence_seconds", return_value=60):
+            assert _stale_tick_signals() == []
+
+    def test_exclusion_is_targeted_a_wedged_work_loop_still_signals(self) -> None:
+        # Same aged window across three leases: the ownership token and the
+        # transient per-loop mutex are excluded, but a genuinely-overdue WORK
+        # loop DOES still signal — the exclusion is targeted, not a blanket
+        # neutering of the detector.
+        self._lease("t3-master", acquired_ago=timedelta(minutes=25), owner_pid=os.getpid(), session_id="sess")
+        self._lease("loop-tick:dispatch", acquired_ago=timedelta(minutes=25))
+        self._lease("loop-tick", acquired_ago=timedelta(hours=3))
+        with patch("teatree.config.cadence_seconds", return_value=60):
+            fingerprints = {s.fingerprint for s in _stale_tick_signals()}
+        assert fingerprints == {"stale-tick:loop-tick"}
+
+    def test_reactive_lease_judged_against_its_own_cadence(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A self-improve lease aged 25min is stale against the 720s tick cadence
+        # (2x = 1440s) but fresh against its own 1800s cadence (2x = 3600s).
+        monkeypatch.setenv("T3_SELF_IMPROVE_CHEAP_CADENCE", "1800")
+        self._lease("loop-self-improve", acquired_ago=timedelta(minutes=25))
+        with patch("teatree.config.cadence_seconds", return_value=720):
+            assert _stale_tick_signals() == []
+
+
+class TestFailedTaskCollector:
+    def _ticket_session(self, issue_url: str) -> tuple[Ticket, Session]:
+        ticket = Ticket.objects.create(issue_url=issue_url, state=Ticket.State.STARTED)
+        return ticket, Session.objects.create(overlay="test", ticket=ticket)
+
+    def test_failed_task_in_window_yields_signal(self) -> None:
+        ticket, session = self._ticket_session("https://example.com/issues/1")
+        Task.objects.create(ticket=ticket, session=session, status=Task.Status.FAILED)
+        signals = _failed_task_signals()
+        assert [s.fingerprint for s in signals] == ["failed-tasks"]
+        assert signals[0].severity == KnownIssue.Severity.WARNING
+
+    def test_non_failed_task_yields_nothing(self) -> None:
+        ticket, session = self._ticket_session("https://example.com/issues/2")
+        Task.objects.create(ticket=ticket, session=session, status=Task.Status.COMPLETED)
+        assert _failed_task_signals() == []
 
 
 class TestOverlaySignalCollector:
