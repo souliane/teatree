@@ -24,7 +24,15 @@ from teatree.loop.rendering_classification import _ClassifiedActions, _classify_
 from teatree.loop.rendering_items import _IssueRef, _OverlayActionRefs, _PRRef
 from teatree.loop.rendering_permalinks import build_review_post_permalinks, enrich_pr_refs_with_permalinks
 from teatree.loop.rendering_zones import _MAX_PER_STATE, _populate_overlay_zones, _render_action_line, _render_pr_group
-from teatree.loop.statusline import StatuslineEntry, StatuslineZones, ZoneItem, colorize_enabled, live_loops_anchor
+from teatree.loop.statusline import (
+    StatuslineEntry,
+    StatuslineZones,
+    ZoneItem,
+    colorize_enabled,
+    health_chip,
+    live_loops_anchor,
+    overlays_anchor,
+)
 
 __all__ = [
     "_ClassifiedActions",
@@ -33,6 +41,9 @@ __all__ = [
     "_PRRef",
     "_classify_actions",
     "_issue_ref_from",
+    "_overlay_search_base",
+    "_populate_health_chip",
+    "_populate_overlays_anchor",
     "_render_action_line",
     "_render_pr_group",
     "cost_chip_lines",
@@ -64,12 +75,68 @@ def zones_for(
     # prepends the per-session t3-master badge to it; the live availability
     # segment rides on that line too (#1678).
     _populate_live_loops_anchor(zones, colorize=colorize)
+    _populate_overlays_anchor(zones)
+    _populate_health_chip(zones, colorize=colorize)
     c = _classify_actions(actions, identity_aliases)
     ticket_index = build_ticket_index(actions)
     enrich_pr_refs_with_permalinks(c, build_review_post_permalinks(actions))
-    _populate_overlay_zones(zones, c, ticket_index=ticket_index, colorize=colorize)
+    _populate_overlay_zones(
+        zones,
+        c,
+        ticket_index=ticket_index,
+        colorize=colorize,
+        search_base_of=_overlay_search_base,
+    )
     _append_capped_other(zones, c.other)
     return zones
+
+
+def _overlay_search_base(overlay: str) -> str:
+    """Return the overlay's tracker-search URL prefix, or ``""`` (PR-17).
+
+    Resolves the overlay's forge from its ``code_host`` (default GitHub) and
+    returns the issue-search prefix the renderer appends a term to, so a ref
+    with no canonical URL links to the tracker search instead of rendering bare.
+    Lives here (not in the core-free ``rendering_zones``) because resolving the
+    overlay needs ``teatree.core``; the resolved string is threaded down. Fails
+    open to ``""`` — an unresolvable overlay degrades to bare text, never a crash.
+    """
+    if not overlay:
+        return ""
+    try:
+        from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415 — deferred read
+
+        resolved = get_all_overlays().get(overlay)
+        if resolved is None:
+            return ""
+        host = (resolved.config.code_host or "github").strip().lower()
+    except Exception:  # noqa: BLE001 — fail-open: an unresolvable overlay degrades to bare text, never a crash
+        return ""
+    if host == "gitlab":
+        return "https://gitlab.com/search?scope=issues&search="
+    return "https://github.com/search?type=issues&q="
+
+
+def _populate_overlays_anchor(zones: StatuslineZones) -> None:
+    """Append the ``overlays: a · b · c`` configured-overlays summary line (#1663).
+
+    :func:`~teatree.loop.statusline.overlays_anchor` is itself fail-open, so
+    this wrapper exists only to do the append. Surfaces the multi-overlay
+    context directly instead of only when a ticket/PR happens to carry an
+    ``[ov]`` prefix.
+    """
+    zones.anchors.extend(overlays_anchor())
+
+
+def _populate_health_chip(zones: StatuslineZones, *, colorize: bool | None = None) -> None:
+    """Append the global-health chip (``health: ● N``) to the anchors zone (PR-17).
+
+    :func:`~teatree.loop.statusline.health_chip` reads the persisted verdict
+    read-only and is itself fail-open, so this wrapper only resolves the
+    ``NO_COLOR`` decision (matching the empty-jobs render path's ``bool | None``)
+    and does the append.
+    """
+    zones.anchors.extend(health_chip(colorize=colorize_enabled(colorize=colorize)))
 
 
 def _append_capped_other(zones: StatuslineZones, other: list[tuple[str, StatuslineEntry]]) -> None:

@@ -7,9 +7,18 @@ duplicate-free :class:`_ClassifiedActions` produced by
 :mod:`teatree.loop.rendering_classification`.
 """
 
+from collections.abc import Callable
+
 from teatree.loop.rendering_classification import ActiveTicketRow, _ClassifiedActions, _is_url
 from teatree.loop.rendering_dms import render_dm_line as _render_dm_line
-from teatree.loop.rendering_items import _format_mr_ref, _LinkCtx, _OverlayActionRefs, _PRRef, _render_canonical_item
+from teatree.loop.rendering_items import (
+    _effective_url,
+    _format_mr_ref,
+    _LinkCtx,
+    _OverlayActionRefs,
+    _PRRef,
+    _render_canonical_item,
+)
 from teatree.loop.statusline import StatuslineZones, plain_link
 from teatree.loop.statusline_render import _hyperlink
 from teatree.url_classify import Forge, forge_of
@@ -72,6 +81,17 @@ def _link(text: str, url: object, *, colorize: bool) -> str:
     return text
 
 
+# The tracker-search-base RESOLUTION lives in :mod:`teatree.loop.rendering`
+# (which may import ``teatree.core``) and is threaded in as a plain string per
+# overlay, so this line-builder module stays core-free (its tach node forbids a
+# ``teatree.core`` edge).
+
+
+def _link_with_search(text: str, url: str, *, search_base: str, colorize: bool) -> str:
+    """Link *text* to its canonical URL, else the tracker search (PR-17)."""
+    return _link(text, _effective_url(url, text, search_base), colorize=colorize)
+
+
 def _is_pr_url(url: str) -> bool:
     return _is_url(url) and forge_of(url) is not Forge.UNKNOWN
 
@@ -82,6 +102,7 @@ def _render_pr_group(
     *,
     ticket_index: dict[str, str] | None = None,
     colorize: bool,
+    search_base: str = "",
 ) -> str:
     """Render a flat list of PR refs, grouped per parent ticket when known."""
     prefix = f"[{overlay}] " if overlay else ""
@@ -96,7 +117,7 @@ def _render_pr_group(
         else:
             orphans.append(ref)
 
-    ctx = _LinkCtx(colorize=colorize, link=_link)
+    ctx = _LinkCtx(colorize=colorize, link=_link, search_base=search_base)
 
     chunks: list[str] = []
     for tnum in sorted(by_ticket):
@@ -113,7 +134,7 @@ def _render_ticket_line(
     pr_map: dict[str, list[_PRRef]],
     *,
     live_pr_urls: set[str] | None = None,
-    colorize: bool,
+    ctx: _LinkCtx,
 ) -> str:
     """Render the per-overlay anchor line grouped by FSM state (#130).
 
@@ -153,7 +174,7 @@ def _render_ticket_line(
                 url=row.issue_url,
                 title=row.title,
                 child_refs=pr_map.get(row.number, []),
-                ctx=_LinkCtx(colorize=colorize, link=_link),
+                ctx=ctx,
             ),
         )
     if not by_state:
@@ -170,13 +191,14 @@ def _render_ticket_line(
     return f"{prefix}{' · '.join(state_chunks)}"
 
 
-def _disposition_parts(action_refs: _OverlayActionRefs, *, colorize: bool) -> list[str]:
+def _disposition_parts(action_refs: _OverlayActionRefs, *, search_base: str, colorize: bool) -> list[str]:
     """Render the issue-disposition rows for one overlay.
 
     Covers generic dispositions, the explicit ``reassigned (from → to)``
     transition, and the collapsed ``N stale`` row. Each is one concise part
     with linked refs — the stale row in particular folds every stale ticket
-    for the overlay into a single line.
+    for the overlay into a single line. A ref with no canonical URL links to
+    the overlay's tracker search rather than rendering bare (PR-17).
     """
     parts: list[str] = []
     for reason, refs in action_refs.disposition_refs.items():
@@ -189,15 +211,15 @@ def _disposition_parts(action_refs: _OverlayActionRefs, *, colorize: bool) -> li
         if not usable:
             continue
         label = _DISPOSITION_LABELS.get(reason, reason)
-        items = " ".join(_link(r.label, r.url, colorize=colorize) for r in usable)
+        items = " ".join(_link_with_search(r.label, r.url, search_base=search_base, colorize=colorize) for r in usable)
         parts.append(f"{label}: {items}")
     for rr in action_refs.reassign_refs:
         to = ", ".join(rr.new_owners)
-        ref_link = _link(rr.ref.label, rr.ref.url, colorize=colorize)
+        ref_link = _link_with_search(rr.ref.label, rr.ref.url, search_base=search_base, colorize=colorize)
         parts.append(f"reassigned (from {rr.old_owner} → to {to}): {ref_link}")
     if action_refs.stale_refs:
         stale = action_refs.stale_refs
-        items = " ".join(_link(r.label, r.url, colorize=colorize) for r in stale)
+        items = " ".join(_link_with_search(r.label, r.url, search_base=search_base, colorize=colorize) for r in stale)
         parts.append(f"{len(stale)} stale: {items}")
     return parts
 
@@ -208,6 +230,7 @@ def _render_action_line(
     *,
     ticket_index: dict[str, str] | None = None,
     colorize: bool,
+    search_base: str = "",
 ) -> str:
     prefix = f"[{overlay}] " if overlay else ""
     prs_by_ticket: dict[str, list[_PRRef]] = {}
@@ -217,12 +240,13 @@ def _render_action_line(
             prs_by_ticket.setdefault(parent, []).append(ref)
     consumed_pr_urls: set[str] = set()
 
-    parts: list[str] = _disposition_parts(action_refs, colorize=colorize)
+    parts: list[str] = _disposition_parts(action_refs, search_base=search_base, colorize=colorize)
     if action_refs.ready_refs:
         # Cap the ready: row at _MAX_PER_STATE and append ``(+N more)``
         # overflow, matching the anchor state lines. Without the cap a
         # backlog of assigned issues spills the entire list onto a single
         # line.
+        ctx = _LinkCtx(colorize=colorize, link=_link, search_base=search_base)
         items: list[str] = []
         shown_refs = action_refs.ready_refs[:_MAX_PER_STATE]
         overflow = len(action_refs.ready_refs) - len(shown_refs)
@@ -235,7 +259,7 @@ def _render_action_line(
                     url=ref.url,
                     title=ref.title,
                     child_refs=prs,
-                    ctx=_LinkCtx(colorize=colorize, link=_link),
+                    ctx=ctx,
                 ),
             )
             consumed_pr_urls.update(p.url for p in prs)
@@ -248,7 +272,13 @@ def _render_action_line(
         if remaining:
             parts.insert(
                 0,
-                _render_pr_group(overlay, remaining, ticket_index=ticket_index, colorize=colorize).removeprefix(prefix),
+                _render_pr_group(
+                    overlay,
+                    remaining,
+                    ticket_index=ticket_index,
+                    colorize=colorize,
+                    search_base=search_base,
+                ).removeprefix(prefix),
             )
     if not parts:
         return ""
@@ -261,6 +291,7 @@ def _populate_overlay_zones(
     *,
     ticket_index: dict[str, str],
     colorize: bool,
+    search_base_of: Callable[[str], str] = lambda _overlay: "",
 ) -> None:
     all_overlays = sorted(
         {
@@ -296,12 +327,13 @@ def _populate_overlay_zones(
 
     for overlay_key in all_overlays:
         pr_map = all_pr_refs.get(overlay_key, {})
+        search_base = search_base_of(overlay_key)
         ticket_line = _render_ticket_line(
             overlay_key,
             c.active_tickets.get(overlay_key, []),
             pr_map,
             live_pr_urls=live_pr_urls_by_overlay.get(overlay_key, set()),
-            colorize=colorize,
+            ctx=_LinkCtx(colorize=colorize, link=_link, search_base=search_base),
         )
         if ticket_line:
             zones.anchors.append(ticket_line)
@@ -321,6 +353,7 @@ def _populate_overlay_zones(
             ),
             ticket_index=ticket_index,
             colorize=colorize,
+            search_base=search_base,
         )
         if action_line:
             zones.action_needed.append(action_line)
@@ -328,5 +361,11 @@ def _populate_overlay_zones(
         inflight_refs = c.inflight_prs.get(overlay_key, [])
         if inflight_refs:
             zones.in_flight.append(
-                _render_pr_group(overlay_key, inflight_refs, ticket_index=ticket_index, colorize=colorize)
+                _render_pr_group(
+                    overlay_key,
+                    inflight_refs,
+                    ticket_index=ticket_index,
+                    colorize=colorize,
+                    search_base=search_base,
+                )
             )

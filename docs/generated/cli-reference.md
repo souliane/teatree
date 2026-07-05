@@ -4590,6 +4590,7 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ standup         Auto-generated daily update (read-only).                     │
 │ checking        Terse 'what did I miss' report since the last check          │
 │                 (read-only).                                                 │
+│ health          Global operational-health verdict + known-issues registry.   │
 │ handover        Hand all current work from this session to another session.  │
 │ session         Session-lifecycle operations.                                │
 │ lifecycle       Session lifecycle and phase tracking.                        │
@@ -7270,6 +7271,69 @@ Usage: t3 teatree checking show [OPTIONS]
 │ --this-overlay              Scope to the current overlay only (default:      │
 │                             aggregate all configured overlays).              │
 │ --help                      Show this message and exit.                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree health`
+
+```
+Usage: t3 teatree health [OPTIONS] COMMAND [ARGS]...
+
+ Global operational-health verdict + known-issues registry.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ show     Reconcile and print the green/yellow/red verdict + open KnownIssue  │
+│          rows.                                                               │
+│ add      Record a manual operational-health issue the deterministic signals  │
+│          miss.                                                               │
+│ dismiss  Acknowledge and close an open KnownIssue by id.                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree health show`
+
+```
+Usage: t3 teatree health show [OPTIONS]
+
+ Reconcile and print the global-health verdict + open KnownIssue rows.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit the report as JSON instead of the table view.           │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree health add`
+
+```
+Usage: t3 teatree health add [OPTIONS] TEXT
+
+ Record a manual operational-health issue the deterministic signals miss.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    text      TEXT  The issue text to record. [required]                    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --critical          Record at critical severity (default: warning).          │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree health dismiss`
+
+```
+Usage: t3 teatree health dismiss [OPTIONS] ISSUE_ID
+
+ Acknowledge and close an open issue by id.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    issue_id      INTEGER  The KnownIssue id to dismiss. [required]         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

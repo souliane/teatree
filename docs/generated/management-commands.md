@@ -134,6 +134,16 @@ Hand all current work from this session to another session.
 | `whoami` | Print this Claude session's own id (the hand-off ``--to`` target) |
 | `claim-on-start` | Atomically claim an unclaimed hand-off for *session* and print its payload |
 
+## `health`
+
+``t3 <overlay> health`` group root.
+
+| Subcommand | Description |
+| --- | --- |
+| `show` | Reconcile and print the global-health verdict + open KnownIssue rows |
+| `add` | Record a manual operational-health issue the deterministic signals miss |
+| `dismiss` | Acknowledge and close an open issue by id |
+
 ## `honesty`
 
 ``t3 <overlay> honesty`` group root.
