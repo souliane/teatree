@@ -657,6 +657,20 @@
       ]
     },
     {
+      "help": "",
+      "name": "recipe",
+      "subcommands": [
+        {
+          "help": "Compute the recipe-weighted factory score over the trailing window",
+          "name": "score"
+        },
+        {
+          "help": "Pin the committed recipe's sha into ``approved_recipe_sha`` (the human EVOLVE gate)",
+          "name": "approve"
+        }
+      ]
+    },
+    {
       "help": "Report (and optionally recover) work stranded by an outage.",
       "name": "recover",
       "subcommands": []

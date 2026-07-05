@@ -343,6 +343,13 @@ Render a reusable prompt by name with its declared params (read-only; #2513).
 | `status` | Print the queue breakdown by status, and READY jobs by task name |
 | `expire-stale` | Retire stale READY jobs to FAILED so a drainer never runs them |
 
+## `recipe`
+
+| Subcommand | Description |
+| --- | --- |
+| `score` | Compute the recipe-weighted factory score over the trailing window |
+| `approve` | Pin the committed recipe's sha into ``approved_recipe_sha`` (the human EVOLVE gate) |
+
 ## `recover`
 
 Report (and optionally recover) work stranded by an outage.
