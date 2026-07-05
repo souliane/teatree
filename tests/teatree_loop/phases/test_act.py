@@ -35,7 +35,7 @@ def test_act_phase_runs_mechanical_handler_and_captures_its_error(monkeypatch: p
 
 
 def test_act_phase_captures_persist_failure_instead_of_raising(monkeypatch: pytest.MonkeyPatch) -> None:
-    def boom(_actions: object) -> None:
+    def boom(_actions: object, *, errors: object = None) -> None:
         msg = "persistence down"
         raise RuntimeError(msg)
 

@@ -4,10 +4,14 @@ The scanner is the structural fix for the "user has to remember to run
 ``/codex:review`` after every push" failure mode encoded in the
 ``feedback_fleet_of_agents_with_codex_doublecheck`` binding. It runs
 every tick, walks the configured repo list, and emits one
-``codex_review.dispatch`` signal per open self-authored PR whose head SHA
-the scanner hasn't seen before — keyed on ``(slug, pr_id, head_sha)``
-via :class:`CodexReviewMarker`. Re-ticking on the same SHA is a no-op;
-a force-push (new SHA) re-fires.
+``codex_review.dispatch`` signal per open non-draft self-authored PR.
+
+The per-SHA idempotency (keyed on ``(slug, pr_id, head_sha)`` via
+:class:`CodexReviewMarker`) moved DOWNSTREAM to persist time (#1 blocker):
+``persistence._handle_codex_review`` claims the marker in the same transaction
+that creates the reviewer Task, so the scanner emits UNCONDITIONALLY and a
+dropped persist rolls the marker back for retry. A force-push (new SHA) still
+re-fires because the marker key includes ``head_sha``.
 
 The scanner is the loop-level enforcement of the fleet-of-agents rule:
 the user never has to ask "have you run codex on this?" again.
@@ -105,18 +109,24 @@ class TestDispatchOnNewSha:
         assert payload["pr_url"] == f"https://github.com/{SLUG}/pull/1254"
         assert payload["overlay"] == "teatree"
 
-    def test_marker_row_persisted_after_dispatch(self) -> None:
-        """After dispatch, a :class:`CodexReviewMarker` row makes re-ticks a no-op."""
+    def test_scanner_does_not_claim_marker_at_scan_time(self) -> None:
+        """The per-SHA marker moved to PERSIST time — the scanner emits, no marker (#1)."""
         api = FakeCodexPrApi(prs_by_slug={SLUG: [_pr()]})
         scanner = _scanner(api=api)
 
-        scanner.scan()
+        signals = scanner.scan()
 
-        marker = CodexReviewMarker.objects.get(slug=SLUG, pr_id=1254, head_sha=HEAD)
-        assert marker.overlay == "teatree"
+        assert [s.kind for s in signals] == ["codex_review.dispatch"]
+        assert not CodexReviewMarker.objects.filter(slug=SLUG, pr_id=1254, head_sha=HEAD).exists()
 
-    def test_second_tick_on_same_head_does_not_redispatch(self) -> None:
-        """The hard requirement: re-ticking on the same SHA is silent."""
+    def test_second_tick_on_same_head_re_emits_dedup_is_persist_time(self) -> None:
+        """The scanner emits UNCONDITIONALLY every tick; dedup is now at persist time (#1).
+
+        Before the #1 blocker fix the scanner burned the marker on the first tick
+        and went silent thereafter — even though persistence then dropped the
+        dispatch, so the review never ran. Now the scanner re-emits and
+        ``persistence._handle_codex_review`` owns the per-SHA idempotency.
+        """
         api = FakeCodexPrApi(prs_by_slug={SLUG: [_pr()]})
         scanner = _scanner(api=api)
 
@@ -124,7 +134,7 @@ class TestDispatchOnNewSha:
         second = scanner.scan()
 
         assert [s.kind for s in first] == ["codex_review.dispatch"]
-        assert second == []
+        assert [s.kind for s in second] == ["codex_review.dispatch"]
 
     def test_new_head_sha_after_force_push_redispatches(self) -> None:
         """A new head SHA on the same PR (force-push) fires a fresh dispatch."""

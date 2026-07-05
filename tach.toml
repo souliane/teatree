@@ -503,7 +503,12 @@ depends_on = ["teatree.core.models"]
 [[modules]]
 path = "teatree.loop.dispatch_tables"
 layer = "domain"
-depends_on = []
+depends_on = [
+  # AGENT_ZONES (the producer SSOT the persistence executor contract is proven
+  # against) folds in SUBAGENT_BY_PHASE.values() — a forward same-layer edge the
+  # sibling dispatch_reducer/dispatch_gates already declare.
+  "teatree.core.modelkit"
+]
 
 [[modules]]
 path = "teatree.loop.pr_ticket_index"

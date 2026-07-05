@@ -54,6 +54,19 @@ def _agent_name(subagent: str) -> str:
     return subagent.removeprefix("t3:")
 
 
+#: Slash-command agents are resolved by the ``t3 codex`` CLI / ``/codex:*``
+#: slash command, NOT the Agent tool against ``agents/<name>.md``. They are a
+#: distinct spawn mechanism, so they are exempt from the ``t3:``-namespace and
+#: agents-file checks below — but they stay in this KNOWN allowlist so an
+#: arbitrary non-``t3:`` value still fails loud (the checks are not weakened for
+#: any other namespace).
+_SLASH_COMMAND_AGENTS: frozenset[str] = frozenset({"codex:review", "codex:adversarial-review"})
+
+
+def _is_slash_command_agent(subagent: str) -> bool:
+    return subagent in _SLASH_COMMAND_AGENTS
+
+
 class TestSubagentForPhaseConformance(TestCase):
     """The canonical ``subagent_for_phase`` map — the single source of truth."""
 
@@ -175,7 +188,7 @@ class TestEverySubagentResolvesToAnAgentDefinition(TestCase):
         missing = {
             (role, phase): subagent
             for (role, phase), subagent in SUBAGENT_BY_PHASE.items()
-            if not (AGENTS_DIR / f"{_agent_name(subagent)}.md").is_file()
+            if not _is_slash_command_agent(subagent) and not (AGENTS_DIR / f"{_agent_name(subagent)}.md").is_file()
         }
         assert missing == {}, (
             f"phases mapped to a sub-agent with no agents/<name>.md definition: {missing}. "
@@ -186,12 +199,16 @@ class TestEverySubagentResolvesToAnAgentDefinition(TestCase):
         offenders = {
             (role, phase): subagent
             for (role, phase), subagent in SUBAGENT_BY_PHASE.items()
-            if not subagent.startswith("t3:")
+            if not subagent.startswith("t3:") and not _is_slash_command_agent(subagent)
         }
-        assert offenders == {}, f"sub-agent values must be namespaced 't3:<name>': {offenders}"
+        assert offenders == {}, (
+            f"sub-agent values must be namespaced 't3:<name>' (or a known slash-command agent): {offenders}"
+        )
 
     def test_agent_definition_name_matches_its_filename(self) -> None:
         for (role, phase), subagent in SUBAGENT_BY_PHASE.items():
+            if _is_slash_command_agent(subagent):
+                continue  # resolved via the codex CLI / slash command, not agents/<name>.md
             name = _agent_name(subagent)
             agent_file = AGENTS_DIR / f"{name}.md"
             text = agent_file.read_text(encoding="utf-8")
@@ -199,6 +216,15 @@ class TestEverySubagentResolvesToAnAgentDefinition(TestCase):
                 f"{agent_file} frontmatter 'name:' must equal {name!r} so the Agent tool "
                 f"resolves {subagent!r} dispatched for ({role}, {phase})"
             )
+
+    def test_codex_review_phases_resolve_to_slash_command_agents(self) -> None:
+        # The #1 blocker revived codex auto-review by encoding the variant in the
+        # PHASE so the /loop slot resolves the matching /codex:* agent directly.
+        assert subagent_for_phase(Ticket.Role.REVIEWER, "codex_reviewing") == "codex:review"
+        assert subagent_for_phase(Ticket.Role.REVIEWER, "codex_adversarial_reviewing") == "codex:adversarial-review"
+
+    def test_debugging_phase_resolves_to_debugger_agent(self) -> None:
+        assert subagent_for_phase(Ticket.Role.AUTHOR, "debugging") == "t3:debugger"
 
 
 class TestFanoutRegistryConformance(TestCase):
