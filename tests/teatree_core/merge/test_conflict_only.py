@@ -17,9 +17,15 @@ from teatree.core.merge.conflict_only import (
     merge_commit_parents,
     rebind_clearance_after_conflict_only_merge,
 )
-from teatree.core.models import ClearRequest, MergeClear, ReviewVerdict, Ticket
+from teatree.core.models import ClearRequest, MergeClear, ReviewVerdict, ReviewVerdictError, Ticket
 
 _REVIEWER = "cold-reviewer-7"
+
+
+def _carry_forward_raises(self: ReviewVerdict, *, reviewed_sha: str) -> ReviewVerdict:
+    """A ``carry_forward`` stub that models a genuinely-unwaivable source row."""
+    msg = "unwaivable"
+    raise ReviewVerdictError(msg)
 
 
 def _fake_git(returncode: int = 0, stdout: str = "") -> "subprocess.CompletedProcess[str]":
@@ -252,6 +258,42 @@ def _clear_with_verdict(repo: Path, feature_tip: str) -> MergeClear:
     return clear
 
 
+def _expedited_pending_clear_with_verdict(feature_tip: str) -> MergeClear:
+    """An expedited (PENDING-checks) CLEAR + its sibling PENDING merge_safe verdict.
+
+    Models the human-authorized expedite waiver (§17.4.3): the ticket is flagged
+    expedited, the CLEAR carries a recorded authoriser and a full-CI-green
+    attestation bound to the reviewed tree, and the verdict snapshots ``pending``
+    checks under ``expedited=True``.
+    """
+    ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW, expedited=True)
+    clear = MergeClear.issue(
+        ClearRequest(
+            pr_id=42,
+            slug="souliane/teatree",
+            reviewed_sha=feature_tip,
+            reviewer_identity=_REVIEWER,
+            gh_verify_result=MergeClear.VerifyResult.PENDING,
+            blast_class=MergeClear.BlastClass.DOCS,
+            ticket=ticket,
+            expedite_authorizer="owner-x",
+            local_ci_green_sha=feature_tip,
+        ),
+    )
+    ReviewVerdict.record(
+        pr_id=42,
+        slug="souliane/teatree",
+        reviewed_sha=feature_tip,
+        verdict=ReviewVerdict.Verdict.MERGE_SAFE,
+        reviewer_identity=_REVIEWER,
+        gh_verify_result=MergeClear.VerifyResult.PENDING,
+        blast_class=MergeClear.BlastClass.DOCS,
+        ticket=ticket,
+        expedited=True,
+    )
+    return clear
+
+
 class TestRebindClearance(TestCase):
     def test_conflict_only_merge_rebinds_clearance_and_verdict(self) -> None:
         repo = Path(self._repo())
@@ -270,6 +312,64 @@ class TestRebindClearance(TestCase):
             reviewed_sha=merge_sha.lower(),
             verdict=ReviewVerdict.Verdict.MERGE_SAFE,
         ).exists()
+
+    def test_expedited_pending_clear_rebinds_preserving_the_waiver(self) -> None:
+        # RED before the fix: the carry-forward re-records the PENDING merge_safe
+        # verdict WITHOUT the expedite waiver, so ReviewVerdict.record raises an
+        # unhandled ReviewVerdictError and the whole rebind crashes.
+        repo = Path(self._repo())
+        _diverge(repo, "feature")
+        feature_tip = _git(repo, "rev-parse", "feature")
+        clear = _expedited_pending_clear_with_verdict(feature_tip)
+        merge_sha = _merge_main_resolving(repo, extra_edit=False)
+
+        rebound = rebind_clearance_after_conflict_only_merge(clear=clear, merge_sha=merge_sha, repo_root=str(repo))
+
+        assert rebound is True
+        clear.refresh_from_db()
+        assert clear.reviewed_sha == merge_sha.lower()
+        carried = ReviewVerdict.objects.get(
+            pr_id=42,
+            reviewed_sha=merge_sha.lower(),
+            verdict=ReviewVerdict.Verdict.MERGE_SAFE,
+        )
+        # The waiver is preserved: the carried-forward verdict keeps the PENDING
+        # snapshot (it could only exist under the human-authorized waiver).
+        assert carried.gh_verify_result == MergeClear.VerifyResult.PENDING
+        assert carried.reviewer_identity == _REVIEWER
+
+    def test_rebind_refuses_cleanly_when_a_verdict_cannot_be_carried_forward(self) -> None:
+        # A genuinely-unwaivable carry-forward must refuse cleanly (return False,
+        # atomic rollback), never surface a ReviewVerdictError traceback.
+        repo = Path(self._repo())
+        _diverge(repo, "feature")
+        feature_tip = _git(repo, "rev-parse", "feature")
+        clear = _clear_with_verdict(repo, feature_tip)
+        merge_sha = _merge_main_resolving(repo, extra_edit=False)
+
+        with patch.object(ReviewVerdict, "carry_forward", _carry_forward_raises):
+            rebound = rebind_clearance_after_conflict_only_merge(clear=clear, merge_sha=merge_sha, repo_root=str(repo))
+
+        assert rebound is False
+        clear.refresh_from_db()
+        assert clear.reviewed_sha == feature_tip.lower()
+        assert not ReviewVerdict.objects.filter(reviewed_sha=merge_sha.lower()).exists()
+
+    def test_rebind_command_refuses_cleanly_when_carry_forward_fails(self) -> None:
+        # The CLI boundary renders the clean refusal (no traceback) too.
+        repo = Path(self._repo())
+        _diverge(repo, "feature")
+        feature_tip = _git(repo, "rev-parse", "feature")
+        clear = _clear_with_verdict(repo, feature_tip)
+        merge_sha = _merge_main_resolving(repo, extra_edit=False)
+
+        with patch.object(ReviewVerdict, "carry_forward", _carry_forward_raises):
+            result = cast(
+                "dict[str, object]",
+                call_command("review", "rebind-clearance", str(clear.pk), merge_sha=merge_sha, repo_root=str(repo)),
+            )
+        assert result["rebound"] is False
+        assert result["reviewed_sha"] == feature_tip.lower()
 
     def test_substantive_merge_does_not_rebind(self) -> None:
         repo = Path(self._repo())

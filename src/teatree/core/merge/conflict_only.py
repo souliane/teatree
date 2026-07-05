@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING
 from django.db import transaction
 
 from teatree.core.models.merge_clear import is_commit_sha
-from teatree.core.models.review_verdict import HeadVerdictState, ReviewVerdict
+from teatree.core.models.review_verdict import HeadVerdictState, ReviewVerdict, ReviewVerdictError
 from teatree.utils.run import run_allowed_to_fail
 
 if TYPE_CHECKING:
@@ -115,6 +115,37 @@ def is_conflict_only_merge_commit(repo_root: str, merge_sha: str) -> bool:
     return all(path in conflicted_paths for path in deviations)
 
 
+def _carry_forward_candidates(*, clear: "MergeClear", merge: str, repo_root: str) -> "list[ReviewVerdict] | None":
+    """The merge_safe verdicts to carry forward, or ``None`` when re-bind is refused.
+
+    Returns ``None`` (no re-bind) unless ALL hold: (a) the merge commit's FIRST
+    parent is exactly the SHA the clearance was reviewed at, (b) the merge commit
+    is conflict-resolution-only, (c) at least one independent ``merge_safe``
+    verdict vouches for the reviewed tree and no unresolved HOLD supersedes it.
+    """
+    reviewed = str(getattr(clear, "reviewed_sha", "") or "").strip().lower()
+    if not is_commit_sha(reviewed) or not is_commit_sha(merge):
+        return None
+
+    parents = merge_commit_parents(repo_root, merge)
+    if len(parents) != _MERGE_PARENT_COUNT or parents[0].strip().lower() != reviewed:
+        return None
+    if not is_conflict_only_merge_commit(repo_root, merge):
+        return None
+
+    verdicts_at_reviewed = list(ReviewVerdict.objects.filter(pr_id=clear.pr_id, reviewed_sha=reviewed))
+    merge_safe = [verdict for verdict in verdicts_at_reviewed if verdict.is_merge_safe()]
+    if not merge_safe:
+        return None
+    # An unresolved HOLD at the reviewed tree must not be shed by the re-bind:
+    # if any slug's effective verdict is a HOLD, refuse (a fresh review is owed).
+    for slug in {verdict.slug for verdict in verdicts_at_reviewed}:
+        state = ReviewVerdict.objects.effective_state_at(slug=slug, pr_id=clear.pr_id, head_sha=reviewed)
+        if state is HeadVerdictState.HOLD:
+            return None
+    return merge_safe
+
+
 def rebind_clearance_after_conflict_only_merge(
     *,
     clear: "MergeClear",
@@ -128,47 +159,34 @@ def rebind_clearance_after_conflict_only_merge(
     literally the branch tip origin/main was merged INTO), (b) the merge commit is
     conflict-resolution-only, (c) an independent ``merge_safe`` verdict vouches
     for the reviewed tree and no unresolved HOLD supersedes it. On re-bind, every
-    such verdict is carried forward to the merge SHA (fresh rows keeping the
-    ORIGINAL independent reviewer identity — NOT a new self-review) and
+    such verdict is carried forward to the merge SHA via
+    :meth:`ReviewVerdict.carry_forward` (fresh rows keeping the ORIGINAL
+    independent reviewer identity — NOT a new self-review — and preserving the
+    human-authorized expedite waiver of a PENDING-checks CLEAR) and
     ``clear.reviewed_sha`` advances to the merge SHA, so the standard merge
     preconditions pass at the new head. Any failing condition returns ``False``
     and changes nothing — the SHA-bind gate keeps refusing the moved head, forcing
-    a fresh review.
+    a fresh review. A genuinely-unwaivable carry-forward
+    (:class:`ReviewVerdictError`) is caught and refused CLEANLY (``False`` +
+    atomic rollback), never a CLI traceback.
     """
-    reviewed = str(getattr(clear, "reviewed_sha", "") or "").strip().lower()
     merge = merge_sha.strip().lower()
-    if not is_commit_sha(reviewed) or not is_commit_sha(merge):
+    merge_safe = _carry_forward_candidates(clear=clear, merge=merge, repo_root=repo_root)
+    if merge_safe is None:
         return False
 
-    parents = merge_commit_parents(repo_root, merge)
-    if len(parents) != _MERGE_PARENT_COUNT or parents[0].strip().lower() != reviewed:
+    try:
+        with transaction.atomic():
+            for verdict in merge_safe:
+                verdict.carry_forward(reviewed_sha=merge)
+            clear.reviewed_sha = merge
+            clear.save(update_fields=["reviewed_sha"])
+    except ReviewVerdictError:
+        logger.warning(
+            "conflict-only rebind refused for CLEAR %s at %s: a merge_safe verdict could not be "
+            "carried forward; a fresh review is required",
+            getattr(clear, "pk", "?"),
+            merge[:8],
+        )
         return False
-    if not is_conflict_only_merge_commit(repo_root, merge):
-        return False
-
-    verdicts_at_reviewed = list(ReviewVerdict.objects.filter(pr_id=clear.pr_id, reviewed_sha=reviewed))
-    merge_safe = [verdict for verdict in verdicts_at_reviewed if verdict.is_merge_safe()]
-    if not merge_safe:
-        return False
-    # An unresolved HOLD at the reviewed tree must not be shed by the re-bind:
-    # if any slug's effective verdict is a HOLD, refuse (a fresh review is owed).
-    for slug in {verdict.slug for verdict in verdicts_at_reviewed}:
-        state = ReviewVerdict.objects.effective_state_at(slug=slug, pr_id=clear.pr_id, head_sha=reviewed)
-        if state is HeadVerdictState.HOLD:
-            return False
-
-    with transaction.atomic():
-        for verdict in merge_safe:
-            ReviewVerdict.record(
-                pr_id=verdict.pr_id,
-                slug=verdict.slug,
-                reviewed_sha=merge,
-                verdict=ReviewVerdict.Verdict.MERGE_SAFE,
-                reviewer_identity=verdict.reviewer_identity,
-                blast_class=verdict.blast_class,
-                gh_verify_result=verdict.gh_verify_result,
-                ticket=verdict.ticket,
-            )
-        clear.reviewed_sha = merge
-        clear.save(update_fields=["reviewed_sha"])
     return True
