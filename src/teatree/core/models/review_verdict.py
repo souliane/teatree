@@ -317,6 +317,34 @@ class ReviewVerdict(models.Model):
             MRReviewLock.resolve(slug=recorded.slug, pr_id=recorded.pr_id)
             return recorded
 
+    def carry_forward(self, *, reviewed_sha: str) -> "ReviewVerdict":
+        """Re-record this verdict at *reviewed_sha*, preserving the expedite waiver.
+
+        A carry-forward is a fresh row at the new tree keeping the ORIGINAL
+        reviewer identity and every snapshot field — the reusable primitive both
+        the conflict-only rebind (§17.4) and a superseding sibling-CLEAR use so
+        neither hand-rolls a divergent verdict-copy path. The waiver is
+        re-passed (``expedited=`` derived from the source's PENDING snapshot)
+        because :meth:`record` refuses a merge_safe verdict on PENDING checks
+        without it: a PENDING merge_safe row can only ever have been persisted
+        under the human-authorized, SHA-bound waiver (§17.8 clause 3), so
+        re-asserting it here re-binds the existing clearance, never grants a new
+        one. :class:`ReviewVerdictError` propagates on a genuinely-unwaivable
+        source row so the caller can refuse cleanly rather than crash.
+        """
+        return self.record(
+            pr_id=self.pr_id,
+            slug=self.slug,
+            reviewed_sha=reviewed_sha,
+            verdict=self.verdict,
+            reviewer_identity=self.reviewer_identity,
+            findings=self.structured_findings,
+            blast_class=self.blast_class,
+            gh_verify_result=self.gh_verify_result,
+            ticket=self.ticket,
+            expedited=(self.gh_verify_result == MergeClear.VerifyResult.PENDING),
+        )
+
     @property
     def structured_findings(self) -> list[Finding]:
         return [Finding.from_dict(raw) for raw in self.findings if isinstance(raw, dict)]
