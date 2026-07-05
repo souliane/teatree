@@ -222,6 +222,7 @@ PHASE_REQUIRED_EVIDENCE: dict[str, tuple[str, ...]] = {
     "coding": ("files_modified",),
     "testing": ("tests_run", "tests_passed"),
     "reviewing": ("decisions", "review_verdict"),
+    "critic_reviewing": ("critic_verdict",),
     "shipping": ("commands_executed",),
 }
 

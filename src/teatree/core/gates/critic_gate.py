@@ -13,19 +13,22 @@ Deterministic blocking teeth (no LLM in the blocking path)
 
 Async LLM semantic net (advisory)
     ``coherence`` / ``duplication`` / ``deferred`` / ``ignored_input`` /
-    ``unenforced_guarantee`` cannot be judged by determinism. On ``mark_delivered``,
-    when no fresh :class:`~teatree.core.models.critic_verdict.CriticVerdict` covers
-    the delivered head, the gate ENQUEUES a headless critic
-    (:class:`~teatree.core.models.critic_dispatch.CriticDispatch`) that reads the
-    delivered artifacts and RETURNS a verdict; ``attempt_recorder`` records it
-    server-side (maker≠checker). The gate mirrors the verdict's FAIL items into
-    ``CriticFinding`` — advisory, never blocking.
+    ``unenforced_guarantee`` cannot be judged by determinism. When ``critic_gate_live``
+    is on and no fresh :class:`~teatree.core.models.critic_verdict.CriticVerdict`
+    covers the delivered head, the gate ENQUEUES a headless critic on its OWN phase
+    (:class:`~teatree.core.models.critic_dispatch.CriticDispatch`,
+    ``phase="critic_reviewing"``) that reads the delivered artifacts and RETURNS a
+    ``critic_verdict`` envelope; ``attempt_recorder`` records it server-side
+    (maker≠checker). The gate mirrors the verdict's FAIL items into ``CriticFinding`` —
+    advisory, never blocking.
 
-Advisory-first
-    ``critic_gate_live`` (DARK, default OFF) gates only the BLOCKING raise; the
-    critic always records findings and always enqueues, so it ships dark and gathers
-    evidence on real deliveries. Its own kill-switch (set it back OFF) is the
-    never-lockout escape.
+Advisory-first, cost-safe while dark
+    ``critic_gate_live`` (DARK, default OFF) gates BOTH the BLOCKING raise AND the
+    EXPENSIVE async LLM dispatch. The cheap deterministic findings are recorded on every
+    delivery (advisory evidence); the async ``claude -p`` critic is armed only once an
+    overlay opts in — so a customer overlay that never sets the flag creates no
+    Session/Task/CriticDispatch. Enablement is per-overlay, the teatree/dogfood overlay
+    first. Its own kill-switch (set it back OFF) is the never-lockout escape.
 
 Enforcing-mode rollback safety
     ``mark_delivered`` runs inside ``transaction.atomic()``; a blocking raise would
@@ -241,16 +244,24 @@ def blocking_specs(specs: list[CriticFindingSpec]) -> list[CriticFindingSpec]:
 def check_critic(ticket: "Ticket") -> None:
     """Run the critic at ``mark_delivered``; block only on a deterministic BLOCKING finding when live.
 
-    Records findings (advisory), arms the async LLM critic, and — only when
-    ``critic_gate_live`` is on AND a BLOCKING deterministic item failed — raises
-    :class:`CriticGateError` carrying the specs so the caller can re-record them
-    outside the rolled-back delivery atomic.
+    Always records the cheap deterministic findings (advisory). Only when
+    ``critic_gate_live`` is on for the ticket's overlay does it (a) arm the EXPENSIVE
+    async LLM critic and (b) raise :class:`CriticGateError` on a BLOCKING deterministic
+    item — carrying the specs so the caller re-records them outside the rolled-back
+    delivery atomic. DARK (default) ⇒ no LLM dispatch, no block: truly inert on the
+    expensive path.
     """
     specs = run_critic(ticket)
     record_critic_findings(ticket, specs)
-    _enqueue_llm_critic(ticket, delivered_head_sha(ticket))
     if not critic_enforcement_live(ticket.overlay or None):
+        # DARK (default): the deterministic findings above are cheap advisory
+        # evidence, but the async LLM critic is EXPENSIVE (a headless `claude -p`
+        # reading plan+diff+attachments). Ship it truly inert — no Session/Task/
+        # CriticDispatch created — until an overlay opts in via `critic_gate_live`
+        # (the per-overlay flag scopes enablement to the teatree/dogfood overlay
+        # first, exactly like `require_merge_evidence`/`require_plan_adequacy`).
         return
+    _enqueue_llm_critic(ticket, delivered_head_sha(ticket))
     blockers = blocking_specs(specs)
     if not blockers:
         return

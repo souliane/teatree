@@ -21,9 +21,10 @@ class TestCriticDispatchEnqueue(TestCase):
         )
         assert row is not None
         assert row.task is not None
-        # phase="reviewing" is what the loop self-pump dispatches; the actual
-        # execution lane is the runtime's routing decision (Task.save), not ours.
-        assert row.task.phase == "reviewing"
+        # Its OWN phase so the result is measured against the critic evidence contract,
+        # not the reviewing one (the production dead-path fix). The execution lane is the
+        # runtime's routing decision (Task.save), not ours.
+        assert row.task.phase == "critic_reviewing"
         assert "judge this delivery" in row.task.execution_reason
         assert row.head_sha == _FORTY_HEX
 

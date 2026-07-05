@@ -20,6 +20,7 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
+from teatree.agents.attempt_recorder import record_result_envelope
 from teatree.config import UserSettings
 from teatree.core import tasks as core_tasks
 from teatree.core.gates import critic_gate
@@ -47,6 +48,16 @@ from teatree.core.runners.base import RunnerResult
 
 _FORTY_HEX = "a" * 40
 _LLM_SLUGS = ("coherence", "duplication", "deferred", "ignored_input", "unenforced_guarantee")
+
+
+def _critic_envelope() -> dict:
+    return {
+        "summary": "critic done",
+        "critic_verdict": {
+            "grader_identity": "critic-agent-7",
+            "items": [{"slug": "coherence", "status": "fail", "citation": "x conflated with y"}],
+        },
+    }
 
 
 @contextlib.contextmanager
@@ -154,19 +165,31 @@ class TestLlmItemsCaught(TestCase):
 
 
 class TestEnqueue(TestCase):
-    def test_mark_delivered_enqueues_the_async_critic_when_no_verdict(self) -> None:
+    def test_mark_delivered_enqueues_the_async_critic_when_live_and_no_verdict(self) -> None:
         ticket = _clean_delivered_ticket()
-        with _enforcement(live=False):
+        with _enforcement(live=True):
             check_critic(ticket)
         dispatch = CriticDispatch.objects.filter(ticket=ticket, transition="mark_delivered").first()
         assert dispatch is not None
         assert dispatch.task is not None
-        assert dispatch.task.phase == "reviewing"
+        assert dispatch.task.phase == "critic_reviewing"  # its OWN phase, not "reviewing"
+
+    def test_dark_flag_off_is_cost_inert_no_dispatch_created(self) -> None:
+        # The MED cost-leak fix: while the flag is DARK, the EXPENSIVE async LLM critic
+        # must not be armed — no Session / Task / CriticDispatch created on mark_delivered.
+        ticket = _clean_delivered_ticket()
+        sessions_before = Session.objects.count()
+        tasks_before = Task.objects.count()
+        with _enforcement(live=False):
+            check_critic(ticket)
+        assert not CriticDispatch.objects.filter(ticket=ticket).exists()
+        assert Session.objects.count() == sessions_before
+        assert Task.objects.count() == tasks_before
 
     def test_no_re_enqueue_when_a_verdict_already_covers_the_head(self) -> None:
         ticket = _clean_delivered_ticket()
         _record_verdict(ticket, slug="coherence", status="pass", citation="clean")
-        with _enforcement(live=False):
+        with _enforcement(live=True):
             check_critic(ticket)
         assert not CriticDispatch.objects.filter(ticket=ticket).exists()
 
@@ -305,6 +328,47 @@ class TestEnforcingBlockFindingsSurviveRollback(TestCase):
         assert result["ok"] is False
         assert ticket.state == Ticket.State.RETROSPECTED  # the delivery was refused
         assert CriticFinding.objects.filter(ticket=ticket, rubric_item="done_not_done").exists()  # survived rollback
+
+
+class TestProductionRecordingPath(TestCase):
+    """The LLM half must LAND through the REAL record_result_envelope, not only a direct call.
+
+    The subtle production bug: a completed critic task flows through
+    ``record_result_envelope``, which runs ``check_evidence`` BEFORE
+    ``record_returned_critic_verdict``. Under the old ``phase="reviewing"`` wiring a
+    critic result (only ``critic_verdict``) FAILED the reviewing evidence gate →
+    ``_record_failure`` → the verdict was never recorded. The dedicated
+    ``critic_reviewing`` phase (with its own ``critic_verdict`` evidence contract) closes it.
+    """
+
+    def test_verdict_and_finding_land_through_record_result_envelope(self) -> None:
+        ticket = _clean_delivered_ticket()
+        dispatch = CriticDispatch.enqueue(ticket=ticket, transition="mark_delivered", head_sha=_FORTY_HEX, contract="c")
+        assert dispatch is not None
+        assert dispatch.task.phase == "critic_reviewing"
+        with self.captureOnCommitCallbacks(execute=False):
+            record_result_envelope(dispatch.task, _critic_envelope())
+        assert CriticVerdict.objects.filter(ticket=ticket).exists()
+        assert CriticFinding.objects.filter(ticket=ticket, rubric_item="coherence").exists()
+
+    def test_red_before_the_reviewing_phase_wiring_records_nothing(self) -> None:
+        # Prove the dedicated phase is load-bearing: on the OLD wiring (phase="reviewing")
+        # the same critic result fails check_evidence("reviewing") -> _record_failure -> the
+        # verdict is NEVER recorded. This is the exact production dead-path the fix closes.
+        ticket = _clean_delivered_ticket()
+        session = Session.objects.create(ticket=ticket, agent_id="critic-dispatch")
+        task = Task.objects.create(
+            ticket=ticket,
+            session=session,
+            phase="reviewing",
+            execution_target=Task.ExecutionTarget.HEADLESS,
+            execution_reason="c",
+        )
+        CriticDispatch.objects.create(ticket=ticket, transition="mark_delivered", head_sha=_FORTY_HEX, task=task)
+        with self.captureOnCommitCallbacks(execute=False):
+            record_result_envelope(task, _critic_envelope())
+        assert not CriticVerdict.objects.filter(ticket=ticket).exists()
+        assert not CriticFinding.objects.filter(ticket=ticket, rubric_item="coherence").exists()
 
 
 class TestRegistration(TestCase):

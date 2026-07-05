@@ -108,6 +108,14 @@ SUBAGENT_BY_PHASE: dict[tuple[str, str], str] = {
     # namespace from the ``t3:``-agent-file checks.
     ("reviewer", "codex_reviewing"): "codex:review",
     ("reviewer", "codex_adversarial_reviewing"): "codex:adversarial-review",
+    # SELFCATCH-5 critic: the async user-proxy critic runs as its OWN phase so its
+    # result (which returns ONLY ``critic_verdict``) is measured against the critic
+    # evidence contract, not the reviewing one — a critic result would otherwise fail
+    # ``check_evidence("reviewing")`` (which wants ``decisions``/``review_verdict``)
+    # before ``record_returned_critic_verdict`` is reached. Reuses the ``t3:reviewer``
+    # read-only+web sub-agent; the per-task critic contract drives the ``critic_verdict``
+    # it returns. The dispatch runs on the delivered (author-role) ticket.
+    ("author", "critic_reviewing"): "t3:reviewer",
 }
 
 #: The chaining orchestrator must never be the target of an author phase
