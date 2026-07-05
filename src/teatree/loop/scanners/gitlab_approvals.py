@@ -21,9 +21,9 @@ Design notes
     ``Ticket.extra['last_approval_sha']``; a second tick whose payload
     carries the same head SHA is a no-op. A new push (different head SHA)
     resets the window — approval must be re-acquired on the new commit.
-* GitHub silently skipped. ``CodeHostBackend.get_mr_approvals`` raises
-    ``NotImplementedError`` on the GitHub backend; the scanner catches and
-    skips so a mixed-host overlay does not surface an error per tick.
+* GitHub silently skipped. The URL filter (:func:`is_gitlab_mr_url`) drops a
+    GitHub PR before any approval call, so a mixed-host overlay never pays the
+    round-trip — the merge signal this scanner drives is GitLab-only.
 """
 
 import logging
@@ -104,10 +104,9 @@ class GitLabApprovalsScanner:
     def _scan_one(self, pr: RawAPIDict) -> ScanSignal | None:
         # GitLab MRs carry a numeric ``iid`` and a ``project`` reference;
         # GitHub PRs carry a ``number`` and an ``html_url`` shape. The
-        # scanner only meaningfully runs against GitLab — GitHub backends
-        # raise NotImplementedError on ``get_mr_approvals`` and we skip
-        # silently. Differentiating on the URL host avoids paying the
-        # round-trip to discover that.
+        # scanner only drives the GitLab auto-merge signal, so a GitHub PR is
+        # dropped here by the URL host filter — never reaching the approval
+        # call, which is why differentiating on the URL avoids the round-trip.
         url = _str_field(pr, "web_url", "html_url")
         ref = pr_ref(url) if url else None
         repo_slug = ref.slug if ref is not None and ref.host_kind == "gitlab" else ""
@@ -118,9 +117,9 @@ class GitLabApprovalsScanner:
 
         approvals = self._fetch_approvals(repo_slug, iid)
         if approvals is None or approvals["approvals_left"] > 0:
-            # ``None`` → backend skipped (NotImplementedError or transient
-            # error). ``approvals_left > 0`` → not approved yet; the
-            # not-yet-approved case is steady state, not "blocked".
+            # ``None`` → a transient error swallowed per-MR. ``approvals_left
+            # > 0`` → not approved yet; the not-yet-approved case is steady
+            # state, not "blocked".
             return None
 
         # Approved. Idempotency gate: same head SHA as the last emission?
@@ -145,22 +144,19 @@ class GitLabApprovalsScanner:
         return signal
 
     def _fetch_approvals(self, repo_slug: str, iid: int) -> ApprovalState | None:
-        """Fetch approvals; return ``None`` on backend skip, raise on auth failure.
+        """Fetch approvals; return ``None`` on a transient defect, raise on auth failure.
 
-        Three outcomes. ``NotImplementedError`` becomes ``None`` (GitHub
-        stubs ``get_mr_approvals``; the URL filter usually drops these
-        before the call, this is the belt-and-braces case). An
-        ``httpx.HTTPStatusError`` or any other ``httpx.HTTPError`` is
-        translated into ``ScannerError`` so the dispatcher records the
-        error and DMs the user (#1287) — the previous ``return None``
-        silently converted a 401 into "not approved yet". Anything else
-        is logged and returned as ``None`` so a transient defect on one
-        MR does not break the scan for the others.
+        Only reached for a GitLab MR URL (the ``_scan_one`` host filter drops a
+        GitHub PR first), so ``get_mr_approvals`` is always the live GitLab
+        implementation here. An ``httpx.HTTPStatusError`` or any other
+        ``httpx.HTTPError`` is translated into ``ScannerError`` so the dispatcher
+        records the error and DMs the user (#1287) — the previous ``return None``
+        silently converted a 401 into "not approved yet". Anything else is
+        logged and returned as ``None`` so a transient defect on one MR does not
+        break the scan for the others.
         """
         try:
             return self.host.get_mr_approvals(repo=repo_slug, pr_iid=iid)
-        except NotImplementedError:
-            return None
         except ScannerError:
             raise
         except httpx.HTTPStatusError as exc:
