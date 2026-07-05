@@ -278,7 +278,19 @@ def _maybe_record_plan_artifact(task: Task, result: AgentResultBlob, *, phase: s
     if effective_phase != "planning" or not isinstance(plan_text, str) or not plan_text.strip():
         return
     recorded_by = (task.session.agent_id or "").strip() or "planning"
-    PlanArtifact.record(ticket=task.ticket, plan_text=plan_text, recorded_by=recorded_by)
+    # SELFCATCH-3: the planner envelope carries the base SHA it planned against and
+    # the four-section adequacy manifest. Under require_plan_adequacy, record()
+    # refuses a thin plan missing them — a planner that produced a scope-only spec
+    # fails loud here rather than dispatching a coder against nothing.
+    base_sha = result.get("base_sha")
+    adequacy = result.get("adequacy")
+    PlanArtifact.record(
+        ticket=task.ticket,
+        plan_text=plan_text,
+        recorded_by=recorded_by,
+        base_sha=base_sha if isinstance(base_sha, str) else "",
+        adequacy=adequacy if isinstance(adequacy, dict) else None,
+    )
 
 
 def _record_failure(task: Task, *, error: str) -> TaskAttempt:

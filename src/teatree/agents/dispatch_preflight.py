@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
+from teatree.core.models.plan_adequacy import declared_seam_paths
+from teatree.core.models.plan_artifact import PlanArtifact
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
@@ -84,6 +86,29 @@ def head_state_brief_lines(task: "Task") -> tuple[str, ...]:
         f'  HEAD: {state.short_sha} "{state.subject}" (committed {committed})',
         f"  {_trigger_line(state, getattr(task, 'created_at', None))}",
     )
+
+
+def declared_seams_brief_lines(task: "Task") -> tuple[str, ...]:
+    """Render the plan's declared integration seams for a maker/reviewer brief, or ``()``.
+
+    SELFCATCH-3 data-plumb: the plan-adequacy manifest names the
+    registries/contracts/sibling-paths the change touches. Surfacing them in the
+    coding brief tells the maker exactly which seams to wire to the consumer end;
+    in the review brief it tells the reviewer which seams to verify. Pure data —
+    ``()`` when the ticket has no plan or the plan declared no seams, so a dispatch
+    is byte-identical to today until a manifest actually names seams.
+    """
+    artifact = PlanArtifact.objects.filter(ticket=task.ticket).order_by("-recorded_at", "-pk").first()
+    if artifact is None:
+        return ()
+    seams = declared_seam_paths(artifact.adequacy)
+    if not seams:
+        return ()
+    header = (
+        "PLAN — declared integration seams (wire each producer end to its consumer; a diff touching an "
+        "UNDECLARED seam is a gap):"
+    )
+    return ("", header, *(f"  - {seam}" for seam in seams))
 
 
 _MAX_REVIEW_DIFF_CHARS = 24000

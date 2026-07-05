@@ -19,11 +19,17 @@ from typing import TYPE_CHECKING, TypedDict
 from django.db import transaction
 from django_fsm import TransitionNotAllowed
 
+from teatree.core.branch_currency import commits_between_touching_paths, fetch_target_head
 from teatree.core.models import Ticket
 from teatree.core.models.errors import InvalidTransitionError
+from teatree.core.models.plan_adequacy import declared_seam_paths, is_valid_base_sha
+from teatree.core.models.plan_artifact import PlanArtifact
+from teatree.core.models.ticket_worktree_checks import _resolve_base_branch, dispatch_worktree_path
+from teatree.core.models.trivial_plan_skip import mark_trivial_plan_skip
+from teatree.core.models.types import PlanAdequacy
 
 if TYPE_CHECKING:
-    from teatree.core.models.plan_artifact import PlanArtifact
+    from collections.abc import Callable
 
 
 class PlanResult(TypedDict, total=False):
@@ -48,19 +54,48 @@ class PlanAdvanceError(Exception):
         self.message = message
 
 
-def record_artifact_and_advance(*, ticket: Ticket, plan_text: str, recorded_by: str) -> "PlanArtifact":
+def record_artifact_and_advance(
+    *,
+    ticket: Ticket,
+    plan_text: str,
+    recorded_by: str,
+    base_sha: str = "",
+    adequacy: PlanAdequacy | dict | None = None,
+) -> "PlanArtifact":
     """Record a PlanArtifact and drive ``ticket.plan()`` in one atomic block.
 
     Raises :class:`PlanAdvanceError` (carrying the ticket + surfaced reason) when
     the artifact factory rejects the input or the FSM refuses the transition, so
     a failed advance rolls back the artifact write and the caller can return a
-    structured error.
+    structured error. ``base_sha``/``adequacy`` carry the late-bound-plan +
+    adequacy manifest (SELFCATCH-3). The audited human-authorized escape is the
+    sibling :func:`record_bypass_and_advance`.
     """
-    from teatree.core.models.plan_artifact import PlanArtifact  # noqa: PLC0415
+    return _advance_with(
+        ticket,
+        lambda: PlanArtifact.record(
+            ticket=ticket, plan_text=plan_text, recorded_by=recorded_by, base_sha=base_sha, adequacy=adequacy
+        ),
+    )
 
+
+def record_bypass_and_advance(*, ticket: Ticket, plan_text: str, recorded_by: str) -> "PlanArtifact":
+    """Record an adequacy-exempt bypass PlanArtifact and drive ``ticket.plan()`` (SELFCATCH-3).
+
+    The audited-bypass sibling of :func:`record_artifact_and_advance`; delegates to
+    :meth:`PlanArtifact.record_bypass` so the write is exempt from the strict
+    ``require_plan_adequacy`` enforcement.
+    """
+    return _advance_with(
+        ticket, lambda: PlanArtifact.record_bypass(ticket=ticket, plan_text=plan_text, recorded_by=recorded_by)
+    )
+
+
+def _advance_with(ticket: Ticket, make_artifact: "Callable[[], PlanArtifact]") -> "PlanArtifact":
+    """Create an artifact via *make_artifact* then drive ``ticket.plan()`` in one atomic block."""
     try:
         with transaction.atomic():
-            artifact = PlanArtifact.record(ticket=ticket, plan_text=plan_text, recorded_by=recorded_by)
+            artifact = make_artifact()
             ticket.plan()
             ticket.save()
     except (ValueError, TransitionNotAllowed, InvalidTransitionError) as exc:
@@ -76,8 +111,6 @@ def record_trivial_skip_and_advance(*, ticket: Ticket, reason: str, by: str) -> 
     :class:`PlanAdvanceError` on a rejected marker or a refused transition (the
     atomic block rolls the marker write back).
     """
-    from teatree.core.models.trivial_plan_skip import mark_trivial_plan_skip  # noqa: PLC0415
-
     try:
         with transaction.atomic():
             mark_trivial_plan_skip(ticket, reason=reason, by=by)
@@ -94,8 +127,6 @@ def reconcile_inflight(*, authorizer: str, issue_ref: str, dry_run: bool) -> tup
     emit. A per-ticket transition refusal is recorded as skipped, never raised,
     so one stuck ticket does not abort the sweep.
     """
-    from teatree.core.models.plan_artifact import PlanArtifact  # noqa: PLC0415
-
     started = list(Ticket.objects.filter(state=Ticket.State.STARTED))
     log: list[str] = [f"  found {len(started)} STARTED ticket(s)"]
     bypassed = 0
@@ -108,7 +139,7 @@ def reconcile_inflight(*, authorizer: str, issue_ref: str, dry_run: bool) -> tup
             continue
         try:
             with transaction.atomic():
-                PlanArtifact.record(
+                PlanArtifact.record_bypass(
                     ticket=ticket,
                     plan_text=f"[audited bypass by {authorizer}] {reason}",
                     recorded_by=authorizer,
@@ -121,3 +152,65 @@ def reconcile_inflight(*, authorizer: str, issue_ref: str, dry_run: bool) -> tup
             log.append(f"  ticket {ticket.pk}: skipped — {exc}")
             skipped += 1
     return PlanReconcileResult(inspected=len(started), bypassed=bypassed, skipped=skipped), log
+
+
+class ReaffirmError(Exception):
+    """A plan-reaffirm was refused; ``message`` is the surfaced reason."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
+def reaffirm_plan(*, ticket: Ticket, new_base_sha: str, dispositions: list[str], by: str) -> "PlanArtifact":
+    """Append a NEW PlanArtifact bound to ``new_base_sha`` (SELFCATCH-3 late-bound remediation).
+
+    The remediation the plan-currency gate names when a plan goes stale. It reads
+    the latest plan's declared seams, computes the intervening commits between the
+    old base and ``new_base_sha`` that touch a declared seam
+    (``git log old..new -- <seams>``), and REFUSES with :class:`ReaffirmError` unless
+    the operator supplies at least one ``--disposition`` per such commit — a
+    stale-base re-bind must reckon with every intervening seam change, never
+    rubber-stamp it. The carried-forward adequacy keeps the new row structurally
+    adequate; the new ``base_sha`` re-binds the plan to the current HEAD so
+    ``code()`` proceeds.
+    """
+    cleaned_new = new_base_sha.strip()
+    if not is_valid_base_sha(cleaned_new):
+        msg = f"--base-sha must be a full 40-char hex SHA (got {cleaned_new[:12]!r})"
+        raise ReaffirmError(msg)
+
+    latest = PlanArtifact.objects.filter(ticket=ticket).order_by("-recorded_at", "-pk").first()
+    if latest is None:
+        msg = f"ticket {ticket.pk} has no plan to reaffirm — record one with `ticket plan` first"
+        raise ReaffirmError(msg)
+
+    seams = declared_seam_paths(latest.adequacy)
+    intervening: tuple[str, ...] = ()
+    repo = dispatch_worktree_path(ticket)
+    if repo and seams:
+        fetch_target_head(repo, _resolve_base_branch(repo))
+        found = commits_between_touching_paths(repo, latest.base_sha, cleaned_new, seams)
+        intervening = found or ()
+
+    if intervening and len(dispositions) < len(intervening):
+        listed = "\n".join(f"    - {sha[:12]}" for sha in intervening)
+        msg = (
+            f"refusing to reaffirm ticket {ticket.pk}: {len(intervening)} intervening commit(s) touched a "
+            f"declared seam ({', '.join(seams)}) and only {len(dispositions)} disposition(s) were given. "
+            f"Pass one `--disposition <how-this-commit-affects-the-plan>` per intervening commit:\n{listed}"
+        )
+        raise ReaffirmError(msg)
+
+    carried = dict(latest.adequacy)
+    trail = f"[plan-reaffirm at {cleaned_new[:12]} by {by}; supersedes base {(latest.base_sha or '<none>')[:12]}"
+    if dispositions:
+        trail += "; dispositions: " + " | ".join(dispositions)
+    trail += f"]\n\n{latest.plan_text}"
+    return PlanArtifact.record(
+        ticket=ticket,
+        plan_text=trail,
+        recorded_by=by,
+        base_sha=cleaned_new,
+        adequacy=carried,
+    )
