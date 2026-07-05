@@ -99,6 +99,12 @@ FEATURE_FLAGS: dict[str, FeatureFlag] = {
         tracking_issue="souliane/teatree — SELFCATCH-5 critic_gate v1",
         summary="Autonomous user-proxy critic on mark_delivered; ships dark (advisory: records, never blocks).",
     ),
+    "directive_loop_enabled": FeatureFlag(
+        field="directive_loop_enabled",
+        stage=FlagStage.DARK,
+        tracking_issue="souliane/teatree — north-star PR-6 directive intake",
+        summary="The OFF switch the directive self-modification front-end (intake+interpret+ratify) ships behind.",
+    ),
 }
 
 

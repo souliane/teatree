@@ -175,6 +175,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "issue_implementer_cadence_hours": _parse_strict_int,
     "auto_disposition_enabled": _parse_strict_bool,
     "outer_loop_enabled": _parse_strict_bool,
+    "directive_loop_enabled": _parse_strict_bool,
     # T4-PR-3 — the autoresearch outer-loop runtime bounds: the post-implement
     # measurement horizon (days), the weekly experiment cap, and the convergence
     # brake (park after N consecutive non-KEPT decisions). All DB-home,
@@ -1076,6 +1077,16 @@ class UserSettings:
     # pins stage=DARK => this default == its off_value (False), so the outer loop
     # can never be flipped default-ON without a code-reviewed stage demotion.
     outer_loop_enabled: bool = False
+    # North-star PR-6 — the OFF switch the directive-driven self-modification front-end
+    # (intake + interpret + ratify) ships behind, and a DARK ``FEATURE_FLAGS`` entry.
+    # Ships behaviorally inert: the ``DIRECTIVE``-intent router is parity-off while this
+    # is off (a directive event DROPs exactly as an unrouteable intent), so nothing
+    # writes a ``Directive`` row unless the explicit ``t3 <overlay> directive capture``
+    # CLI is used. DB-home (#1775), per-overlay overridable — an overlay can trial
+    # directive intake on its own budget. The conformance suite pins stage=DARK => this
+    # default == its off_value (False), so it can never ship default-ON without a
+    # code-reviewed stage demotion.
+    directive_loop_enabled: bool = False
     # T4-PR-3 — the autoresearch outer-loop runtime bounds (guard chain G4). Inert
     # while the flag is off: the measurement horizon after an experiment merges,
     # the max experiments admitted per rolling 7-day window, and the convergence

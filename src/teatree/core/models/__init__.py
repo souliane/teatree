@@ -20,6 +20,8 @@ from teatree.core.models.critic_verdict import CriticItemVerdict, CriticVerdict,
 from teatree.core.models.daily_digest import DailyDigestMessage, DailyDigestThread
 from teatree.core.models.db_approval import DbApproval, DbApprovalError, DbAudit
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
+from teatree.core.models.directive import Directive, DirectiveError, DirectiveManager
+from teatree.core.models.directive_dispatch import DirectiveDispatch
 from teatree.core.models.dream_qa_probe import DreamQaProbe
 from teatree.core.models.dream_run_marker import DreamRunMarker
 from teatree.core.models.e2e_bypass import E2EBypassApproval, E2EBypassApprovalError, E2EBypassAudit
@@ -59,6 +61,7 @@ from teatree.core.models.local_stack_reaper_marker import LocalStackReaperMarker
 from teatree.core.models.loop import Loop, LoopManager
 from teatree.core.models.loop_lease import LoopDriver, LoopLease
 from teatree.core.models.loop_state import LoopState, LoopStateManager, LoopStatus
+from teatree.core.models.mechanism_sketch import MechanismSketch, MechanismSketchError
 from teatree.core.models.merge_clear import ClearIssuanceError, ClearRequest, MergeAudit, MergeClear
 from teatree.core.models.mergeable_notified import MergeableNotified
 from teatree.core.models.mr_review_lock import DEFAULT_LOCK_TTL, MRReviewLock
@@ -149,6 +152,10 @@ __all__ = [
     "DeferredQuestionAudit",
     "DeferredQuestionError",
     "DeliveryClaim",
+    "Directive",
+    "DirectiveDispatch",
+    "DirectiveError",
+    "DirectiveManager",
     "DirtyWorktreeError",
     "DreamQaProbe",
     "DreamRunMarker",
@@ -188,6 +195,8 @@ __all__ = [
     "LoopStatus",
     "MRReviewLock",
     "MatcherDetail",
+    "MechanismSketch",
+    "MechanismSketchError",
     "MergeAudit",
     "MergeClear",
     "MergeableNotified",

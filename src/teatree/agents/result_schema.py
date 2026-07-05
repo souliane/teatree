@@ -17,6 +17,7 @@ from collections.abc import Callable
 from typing import TypedDict, cast
 
 from teatree.core.modelkit.phases import normalize_phase
+from teatree.core.models.mechanism_sketch import MechanismSketchDict
 
 
 class FileChange(TypedDict, total=False):
@@ -107,6 +108,24 @@ class CriticVerdictEnvelope(TypedDict, total=False):
     items: list[CriticItemVerdictDict]
 
 
+class DirectiveInterpretationEnvelope(TypedDict, total=False):
+    """A directive interpreter's typed return, recorded server-side (north-star PR-6).
+
+    A headless ``directive_interpreting`` phase is denied the shell, so it RETURNS
+    this instead of writing the sketch itself: ``attempt_recorder`` →
+    ``directive_interpret_gate.record_returned_directive_interpretation`` records the
+    :class:`~teatree.core.models.mechanism_sketch.MechanismSketch` onto the
+    ``Directive`` (maker≠checker — a different actor than the one that captured the
+    text). The interpreter returns EITHER a ``sketch`` (→ ``INTERPRETED``) OR
+    ``clarifying_questions`` when the directive is ambiguous (→ ``CLARIFYING``).
+    """
+
+    interpreter_identity: str
+    constraint_statement: str
+    sketch: MechanismSketchDict
+    clarifying_questions: list[str]
+
+
 class AgentResult(TypedDict, total=False):
     """Structured result from an agent task execution.
 
@@ -125,6 +144,7 @@ class AgentResult(TypedDict, total=False):
     decisions: list[str]
     review_verdict: ReviewVerdictEnvelope
     critic_verdict: "CriticVerdictEnvelope"
+    directive_interpretation: "DirectiveInterpretationEnvelope"
     article_suggestions: list[ArticleSuggestion]
     answer: AnswerEnvelope
     needs_user_input: bool
@@ -213,6 +233,32 @@ RESULT_JSON_SCHEMA: dict[str, object] = {
                 },
             },
         },
+        "directive_interpretation": {
+            "type": "object",
+            "description": "A directive interpreter's typed return, recorded server-side (north-star PR-6).",
+            "properties": {
+                "interpreter_identity": {"type": "string"},
+                "constraint_statement": {"type": "string"},
+                "sketch": {
+                    "type": "object",
+                    "properties": {
+                        "kind": {"type": "string"},
+                        "setting_key": {"type": "string"},
+                        "setting_type": {"type": "string"},
+                        "neutral_default": {},
+                        "policy_chokepoint": {"type": "string"},
+                        "activation_scope": {"type": "string"},
+                        "activation_value": {},
+                        "rejected_alternatives": {"type": "array", "items": {"type": "string"}},
+                        "acceptance_tests": {"type": "array", "items": {"type": "string"}},
+                        "refactors": {"type": "array", "items": {"type": "string"}},
+                        "behavior_probe": {"type": "string"},
+                        "probe_none_reason": {"type": "string"},
+                    },
+                },
+                "clarifying_questions": {"type": "array", "items": {"type": "string"}},
+            },
+        },
         "article_suggestions": {
             "type": "array",
             "description": "Candidate news articles a shell-denied scanning_news agent hands back for queuing.",
@@ -282,6 +328,7 @@ PHASE_REQUIRED_EVIDENCE: dict[str, tuple[str, ...]] = {
     "testing": ("tests_run", "tests_passed"),
     "reviewing": ("decisions", "review_verdict"),
     "critic_reviewing": ("critic_verdict",),
+    "directive_interpreting": ("directive_interpretation",),
     "shipping": ("commands_executed",),
     "scanning_news": ("article_suggestions",),
     "answering": ("answer",),
@@ -315,6 +362,24 @@ def answer_text(answer: object) -> str:
     return str(cast("AnswerEnvelope", answer).get("text") or "").strip()
 
 
+def interpretation_carries_payload(envelope: object) -> bool:
+    """Whether a directive-interpretation envelope carries something the recorder persists.
+
+    A real interpret result is EITHER a non-empty ``sketch`` dict OR a non-empty
+    ``clarifying_questions`` list. An envelope with only an ``interpreter_identity``
+    would pass a coarse truthiness check yet be dropped by the recorder — the exact
+    gate/recorder-drift class (#9), refused here.
+    """
+    if not isinstance(envelope, dict):
+        return False
+    typed = cast("DirectiveInterpretationEnvelope", envelope)
+    sketch = typed.get("sketch")
+    if isinstance(sketch, dict) and sketch:
+        return True
+    questions = typed.get("clarifying_questions")
+    return isinstance(questions, list) and any(str(q).strip() for q in questions)
+
+
 #: Channels whose "evidence present" test is stricter than coarse truthiness:
 #: the field must carry what the recorder actually PERSISTS (a url-bearing
 #: suggestion, a text-bearing answer). Without this a schema-violating-but-
@@ -324,6 +389,7 @@ def answer_text(answer: object) -> str:
 _FIELD_PERSISTS: dict[str, Callable[[object], bool]] = {
     "article_suggestions": lambda v: isinstance(v, list) and any(suggestion_url(item) for item in v),
     "answer": lambda v: bool(answer_text(v)),
+    "directive_interpretation": interpretation_carries_payload,
 }
 
 

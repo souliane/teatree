@@ -116,6 +116,14 @@ SUBAGENT_BY_PHASE: dict[tuple[str, str], str] = {
     # read-only+web sub-agent; the per-task critic contract drives the ``critic_verdict``
     # it returns. The dispatch runs on the delivered (author-role) ticket.
     ("author", "critic_reviewing"): "t3:reviewer",
+    # North-star PR-6 directive interpreter: a headless read-only pass that turns a
+    # plain-language directive into a typed ``MechanismSketch``, running as its OWN
+    # phase so its result (which returns ONLY ``directive_interpretation``) is measured
+    # against the interpret evidence contract, not the planning one. Reuses the
+    # ``t3:planner`` read-only+codebase-search sub-agent — the interpreter must find
+    # the REAL core seam every overlay flows through. The per-task interpreter contract
+    # (the mechanism-design doctrine + the PR-2 exemplar) drives the sketch it returns.
+    ("author", "directive_interpreting"): "t3:planner",
 }
 
 #: The chaining orchestrator must never be the target of an author phase
