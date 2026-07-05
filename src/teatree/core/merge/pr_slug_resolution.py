@@ -181,6 +181,22 @@ def resolve_pr_repo_slug(clear: object) -> str:
     raise MergePreconditionError(msg)
 
 
+def resolved_repo_slug(clear: object) -> str:
+    """The real ``owner/repo`` for *clear*'s PR, or ``""`` when unresolvable.
+
+    The non-raising sibling of :func:`resolve_pr_repo_slug`, promoted here as the
+    single canonical helper every repo-scoping join site reads (the merged-audit
+    checking gather and the waiting-lane covering-CLEAR match). A CLEAR whose repo
+    cannot be resolved (a workstream slug with no ticket ``issue_url`` and no
+    clone origin) yields ``""`` so a repo-scoping caller drops it, instead of
+    surfacing the fail-closed :class:`MergePreconditionError`.
+    """
+    try:
+        return resolve_pr_repo_slug(clear)
+    except MergePreconditionError:
+        return ""
+
+
 def normalize_repo_slug(value: str) -> str:
     """Canonicalize *value* UP to a GitHub ``owner/repo`` slug, or ``""``.
 

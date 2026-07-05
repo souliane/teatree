@@ -112,6 +112,7 @@ PHASE_MEMBERS: frozenset[str] = frozenset(
         "debugging",
         "codex_reviewing",
         "codex_adversarial_reviewing",
+        "critic_reviewing",
     }
 )
 

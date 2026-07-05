@@ -31,6 +31,7 @@ from teatree.agents.result_schema import (
     check_evidence,
     suggestion_url,
 )
+from teatree.core.gates.critic_gate import record_returned_critic_verdict
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import (
     DeferredQuestion,
@@ -145,6 +146,10 @@ def record_result_envelope(
     verdict_error = _maybe_record_review_verdict(task, result, phase=phase)
     if verdict_error:
         return _record_failure(task, error=verdict_error)
+
+    critic_verdict_error = record_returned_critic_verdict(task, result)
+    if critic_verdict_error:
+        return _record_failure(task, error=critic_verdict_error)
 
     _maybe_record_plan_artifact(task, result, phase=phase)
     _maybe_record_article_suggestions(task, result, phase=phase)

@@ -291,6 +291,38 @@ class S2DefectEscapeTests(FactorySignalsTestBase):
         assert row.baseline_value == pytest.approx(0.1)
         assert row.verdict == SignalVerdict.REGRESSING
 
+    def test_red_cards_but_zero_fix_tickets_is_instrumentation_gap(self) -> None:
+        # #17 anti-vacuity (RED before the compute_s2 guard): ≥5 preceding merges
+        # and a red card fired in-window but ZERO fix-classified tickets is the
+        # fingerprint of a dead Kind.FIX writer — refuse the fabricated clean
+        # reading. On the pre-guard code this returned OK.
+        for i in range(5):
+            self._merge(pr_id=700 + i, days_ago=40)
+        RedCardSignalFactory(observed_at=self.now - timedelta(days=5))
+        reading = defect_escape_rate(now=self.now)
+        assert reading.status == SignalStatus.INSTRUMENTATION_GAP
+        assert reading.status != SignalStatus.OK
+
+    def test_fix_tickets_present_is_a_real_reading(self) -> None:
+        # Anti-vacuity twin: correction activity WITH a fix ticket is a genuine
+        # measurement, not a gap.
+        for i in range(5):
+            self._merge(pr_id=700 + i, days_ago=40)
+        RedCardSignalFactory(observed_at=self.now - timedelta(days=5))
+        self._fix_ticket(days_ago=5)
+        reading = defect_escape_rate(now=self.now)
+        assert reading.status == SignalStatus.OK
+
+    def test_no_correction_activity_stays_a_clean_reading(self) -> None:
+        # Anti-vacuity twin: ZERO fix tickets AND zero red cards is a legitimate
+        # defect-free window (rate 0.0, OK) — the guard only fires when
+        # corrections happened but no fix ticket was written.
+        for i in range(5):
+            self._merge(pr_id=700 + i, days_ago=40)
+        reading = defect_escape_rate(now=self.now)
+        assert reading.status == SignalStatus.OK
+        assert reading.value == pytest.approx(0.0)
+
 
 class S3ReviewCatchTests(FactorySignalsTestBase):
     def test_rubber_stamp_window_is_hard_red(self) -> None:

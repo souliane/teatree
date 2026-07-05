@@ -22,13 +22,15 @@ from teatree.core.models import InvalidTransitionError, Task, TaskAttempt, Ticke
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.session_identity import current_session_id
+from teatree.core.ticket_kind_classification import classify_ticket_kind
 
 logger = logging.getLogger(__name__)
 
 
 class Command(TyperCommand):
     @command()
-    def create(
+    # ast-grep-ignore: ac-django-no-complexity-suppressions
+    def create(  # noqa: PLR0913 — django-typer command: every param maps 1:1 to a CLI flag (ticket/--phase/--reason/--reason-file/--interactive/--kind); the arg list IS the public `tasks create` surface, not an internal design smell.
         self,
         ticket: Annotated[int, typer.Argument(help="Ticket PK (see `ticket_id` in `tasks list`).")],
         *,
@@ -48,12 +50,19 @@ class Command(TyperCommand):
             bool,
             typer.Option(help="Create an interactive task instead of the default headless one."),
         ] = False,
+        kind: Annotated[
+            str,
+            typer.Option(help="Classify the ticket as 'fix' or 'feature' (records Ticket.kind, #17)."),
+        ] = "",
     ) -> dict[str, int | str]:
         """Enqueue the next-phase task for a ticket.
 
         Used by `/t3:next` to hand off from one phase to the next. Headless by default so a worker
         claims it immediately; pass `--interactive` for tasks that require human input. A machine
         handoff: the created-task record is JSON on stdout, the human confirmation on stderr.
+
+        ``--kind`` (#17) records the ticket's FEATURE/FIX classification, arming the S2
+        defect-escape signal and the fix-record DoD gate for correction work.
         """
         if not phase.strip():
             self.stderr.write("--phase is required (scoping, coding, testing, reviewing, or shipping).")
@@ -70,6 +79,14 @@ class Command(TyperCommand):
         except Ticket.DoesNotExist:
             self.stderr.write(f"Ticket {ticket} not found.")
             raise SystemExit(1) from None
+
+        if kind.strip():
+            try:
+                ticket_obj.kind = classify_ticket_kind(explicit=kind)
+            except ValueError as exc:
+                self.stderr.write(str(exc))
+                raise SystemExit(1) from None
+            ticket_obj.save(update_fields=["kind"])
 
         # #801 SSOT: canonical earliest+locked policy (was -pk-latest
         # else an unlocked raw create); non-blank agent_id on miss.

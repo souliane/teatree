@@ -2,6 +2,7 @@
 
 import json
 import subprocess
+from contextlib import AbstractContextManager
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -21,6 +22,39 @@ from teatree.backends.github.api import (
 )
 from teatree.backends.github.projects import _gh_graphql
 from teatree.core.backend_protocols import PullRequestSpec
+
+
+class TestGetMrApprovals:
+    """GitHub aggregate ``reviewDecision`` mapped to an ``ApprovalState`` (#8)."""
+
+    def _run_gh_returning(self, stdout: str) -> AbstractContextManager[MagicMock]:
+        return patch.object(github_mod, "_run_gh", return_value=subprocess.CompletedProcess([], 0, stdout, ""))
+
+    def test_approved_decision_is_zero_approvals_left(self) -> None:
+        with self._run_gh_returning(json.dumps({"reviewDecision": "APPROVED"})) as mock_run:
+            state = GitHubCodeHost(token="tok").get_mr_approvals(repo="o/r", pr_iid=9)
+        assert state["approvals_left"] == 0
+        args = mock_run.call_args.args
+        assert args[:4] == ("gh", "pr", "view", "9")
+        assert "reviewDecision" in args
+
+    def test_non_approved_decision_is_positive_approvals_left(self) -> None:
+        with self._run_gh_returning(json.dumps({"reviewDecision": "REVIEW_REQUIRED"})):
+            state = GitHubCodeHost().get_mr_approvals(repo="o/r", pr_iid=9)
+        assert state["approvals_left"] == 1
+
+    def test_null_decision_is_not_approved(self) -> None:
+        # A PR requiring no review returns ``reviewDecision: null`` — never
+        # mis-read as merge-authorised.
+        with self._run_gh_returning(json.dumps({"reviewDecision": None})):
+            state = GitHubCodeHost().get_mr_approvals(repo="o/r", pr_iid=9)
+        assert state["approvals_left"] == 1
+
+    def test_unparsable_stdout_is_not_approved(self) -> None:
+        with self._run_gh_returning("not json"):
+            state = GitHubCodeHost().get_mr_approvals(repo="o/r", pr_iid=9)
+        assert state["approvals_left"] == 1
+        assert state["unresolved_resolvable"] == 0
 
 
 class TestIssueRepoShort:

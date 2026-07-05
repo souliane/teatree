@@ -20,6 +20,7 @@ from teatree.core.management.commands import _workspace_helpers as _wh
 from teatree.core.models import Ticket
 from teatree.core.models.external_delivery import mark_external_delivery
 from teatree.core.resolve import _get_user_cwd
+from teatree.core.ticket_kind_classification import classify_ticket_kind, parse_kind
 from teatree.core.worktree_collision import find_foreign_issue_worktrees
 from teatree.core.worktree_paths import ticket_dir_for
 from teatree.utils import git
@@ -36,6 +37,10 @@ class ForeignIssueWorktreeRefusedError(Exception):
     leaves no ticket row behind; the ``ticket`` command catches it and returns 0
     (the refusal message was already written to stderr).
     """
+
+
+class InvalidTicketKindError(ValueError):
+    """Raised by :func:`build_intake` when ``--kind`` is not a valid Ticket.Kind (#17)."""
 
 
 @dataclass(frozen=True)
@@ -70,6 +75,8 @@ class TicketIntake:
     # falls back to ``extra['branch']`` in the provisioner. Empty = uniform.
     branches: dict[str, str] = field(default_factory=dict)
     adopt: "AdoptContext | None" = None
+    # #17: explicit ``--kind`` (``fix``/``feature``). Blank defers to inference.
+    kind: str = ""
 
 
 @dataclass(frozen=True)
@@ -82,6 +89,7 @@ class RawTicketInputs:
     description: str
     take_over: bool
     adopt: "AdoptContext | None" = None
+    kind: str = ""
 
 
 def resolve_adopt_context(*, adopt: bool, adopt_branch: str) -> AdoptContext | None:
@@ -110,6 +118,11 @@ def build_intake(overlay: "OverlayBase", raw: RawTicketInputs) -> TicketIntake:
     so the CLI command body stays thin. In adopt mode (#2275) the repo set is
     the single adopted repo read from git, not the overlay/issue derivation.
     """
+    if raw.kind.strip():
+        try:
+            parse_kind(raw.kind)
+        except ValueError as exc:
+            raise InvalidTicketKindError(str(exc)) from exc
     repo_names = [raw.adopt.repo] if raw.adopt else resolve_repo_names(overlay, raw.issue_url, raw.repos)
     return TicketIntake(
         issue_url=raw.issue_url,
@@ -119,6 +132,7 @@ def build_intake(overlay: "OverlayBase", raw: RawTicketInputs) -> TicketIntake:
         take_over=raw.take_over,
         branches=parse_repo_branch_map(raw.repos),
         adopt=raw.adopt,
+        kind=raw.kind,
     )
 
 
@@ -134,7 +148,13 @@ def build_branch_name(repo_names: list[str], ticket_number: str, description: st
     return f"{ticket_number}-{slug}"
 
 
-def locked_get_or_create_ticket(issue_url: str, variant: str, repo_names: list[str]) -> Ticket:
+def locked_get_or_create_ticket(
+    issue_url: str,
+    variant: str,
+    repo_names: list[str],
+    *,
+    kind: Ticket.Kind = Ticket.Kind.FEATURE,
+) -> Ticket:
     """Get-or-create the ticket and lock it for the provisioning RMW.
 
     #800 N3: ``get_or_create`` does not lock the row; the subsequent
@@ -144,10 +164,13 @@ def locked_get_or_create_ticket(issue_url: str, variant: str, repo_names: list[s
     ``select_for_update``-locked (the ``ensure_session()`` pattern,
     ``ticket.py``); a freshly-created row is already exclusive to this
     transaction. Caller must be inside ``transaction.atomic()``.
+
+    ``kind`` (#17) is stamped only on a freshly-created row (``defaults``), so
+    re-running ``workspace ticket`` never reclassifies an existing ticket.
     """
     ticket, created = Ticket.objects.get_or_create(
         issue_url=issue_url,
-        defaults={"variant": variant, "repos": repo_names},
+        defaults={"variant": variant, "repos": repo_names, "kind": kind},
     )
     if created:
         return ticket
@@ -167,7 +190,16 @@ def build_ticket(
     freshly-created ticket so a refusal leaves zero DB trace.
     """
     with transaction.atomic():
-        ticket = locked_get_or_create_ticket(intake.issue_url, intake.variant, intake.repo_names)
+        # #17: classify BEFORE the get-or-create so the FIX/FEATURE kind is stamped
+        # in the row's ``defaults`` (create-only, never reclassifying an existing
+        # ticket). The title feeds the inference; an explicit ``--kind`` wins.
+        description = intake.description or overlay.get_issue_title(intake.issue_url)
+        ticket = locked_get_or_create_ticket(
+            intake.issue_url,
+            intake.variant,
+            intake.repo_names,
+            kind=classify_ticket_kind(title=description, explicit=intake.kind),
+        )
 
         # Refuse a silent rebind when --variant disagrees with the existing ticket's variant (#1306).
         _wh.reject_variant_mismatch(write, ticket, intake.variant)
@@ -176,8 +208,6 @@ def build_ticket(
             ticket.scope(issue_url=intake.issue_url, variant=intake.variant or None, repos=intake.repo_names)
 
         ticket.repos = list(dict.fromkeys((ticket.repos or []) + intake.repo_names))
-
-        description = intake.description or overlay.get_issue_title(intake.issue_url)
 
         extra = cast("TicketExtra", ticket.extra or {})
         if intake.adopt:

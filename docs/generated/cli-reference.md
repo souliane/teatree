@@ -5913,6 +5913,8 @@ Usage: t3 teatree workspace ticket [OPTIONS] ISSUE_URL
 │ --adopt-branch        TEXT  Adopt this EXISTING branch (implies --adopt).    │
 │                             Omit to auto-detect from the current git         │
 │                             worktree.                                        │
+│ --kind                TEXT  Classify: 'fix' or 'feature' (blank infers from  │
+│                             the title, #17).                                 │
 │ --help                      Show this message and exit.                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -7220,6 +7222,10 @@ Usage: t3 teatree tasks create [OPTIONS] TICKET
  handoff: the created-task record is JSON on stdout, the human confirmation on
  stderr.
 
+ ``--kind`` (#17) records the ticket's FEATURE/FIX classification, arming the
+ S2
+ defect-escape signal and the fix-record DoD gate for correction work.
+
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    ticket      INTEGER  Ticket PK (see `ticket_id` in `tasks list`).       │
 │                           [required]                                         │
@@ -7235,6 +7241,9 @@ Usage: t3 teatree tasks create [OPTIONS] TICKET
 │                                            instead of the default headless   │
 │                                            one.                              │
 │                                            [default: no-interactive]         │
+│ --kind                               TEXT  Classify the ticket as 'fix' or   │
+│                                            'feature' (records Ticket.kind,   │
+│                                            #17).                             │
 │ --help                                     Show this message and exit.       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

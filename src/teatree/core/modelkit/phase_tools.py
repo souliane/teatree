@@ -68,6 +68,7 @@ _TOOLS_BY_PHASE: Final[dict[str, frozenset[str]]] = {
     "codex_adversarial_reviewing": _READ_ONLY | _WEB,
     "requesting_review": _READ_ONLY,
     "scanning_news": _READ_ONLY | _WEB,
+    "critic_reviewing": _READ_ONLY | _WEB,
     "bughunt": _READ_ONLY | {"shell", "dispatch_subtask"},
     "shipping": _READ_ONLY | {"shell", "record_attempt"},
     "answering": _READ_ONLY | _WEB,

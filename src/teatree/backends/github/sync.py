@@ -40,6 +40,7 @@ class GitHubSyncBackend(SyncBackend):
         from teatree.backends.github import fetch_project_items, issue_repo_short  # noqa: PLC0415
         from teatree.core.models import Ticket  # noqa: PLC0415
         from teatree.core.overlay import OverlayBase  # noqa: PLC0415
+        from teatree.core.ticket_kind_classification import classify_ticket_kind  # noqa: PLC0415 — lazy: backend cycle
 
         if not isinstance(overlay, OverlayBase):
             return SyncResult(errors=["Invalid overlay"])
@@ -87,6 +88,7 @@ class GitHubSyncBackend(SyncBackend):
                     state=state,
                     extra=extra,
                     overlay=self._overlay_name(overlay),
+                    kind=classify_ticket_kind(labels=item.labels, title=item.title),
                 )
                 result.tickets_created += 1
                 if state == Ticket.State.DELIVERED:

@@ -114,6 +114,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "require_integration_review": _parse_strict_bool,
     "require_merge_evidence": _parse_strict_bool,
     "require_plan_adequacy": _parse_strict_bool,
+    "critic_gate_live": _parse_strict_bool,
     "bulk_close_threshold": _parse_strict_int,
     "require_rubric_verification": _parse_strict_bool,
     "require_spec_coverage": _parse_strict_bool,
@@ -661,6 +662,19 @@ class UserSettings:
     # audited never-lockout escape alongside ``plan-reaffirm``. A feature flag
     # (governed in ``FEATURE_FLAGS``). Per-overlay overridable.
     require_plan_adequacy: bool = False
+    # SELFCATCH-5 The autonomous user-proxy critic's ENFORCEMENT switch on
+    # ``mark_delivered`` (``critic_gate``). The critic ALWAYS runs at the final
+    # done-claim and RECORDS a ``CriticFinding`` per failing rubric item (the 8
+    # seeded classes this session's human had to point out); this flag decides
+    # only whether a finding BLOCKS the delivery. Default false = ADVISORY: the
+    # rubric runs, findings are recorded, RETROSPECTED→DELIVERED still proceeds —
+    # so the critic ships DARK and gathers evidence without ever wedging a real
+    # ticket. Flip true per-overlay once the rubric has proven non-vacuous on real
+    # deliveries and a finding SHOULD hard-block (fail-closed, an
+    # ``InvalidTransitionError`` keeps the ticket RETROSPECTED). Its OWN
+    # kill-switch (setting it back false) is the audited never-lockout escape. A
+    # feature flag (governed in ``FEATURE_FLAGS``). Per-overlay overridable.
+    critic_gate_live: bool = False
     # PR-08 No-bulk-close threshold: a single command/agent action closing more
     # than this many tickets/MRs is refused without an explicit per-item
     # confirmation token (``bulk_close_gate``). A close of ≤ threshold items is

@@ -248,6 +248,75 @@ class TestAnswererZoneRevived(TestCase):
         assert created[0].ticket.role == Ticket.Role.AUTHOR
 
 
+class TestCorrectionZonesClassifyKindFix(TestCase):
+    """#17: correction-origin zones stamp ``kind=FIX`` so the S2 signal + DoD gate see them.
+
+    On the pre-wire code every correction ticket defaulted to ``FEATURE`` — the
+    fix-record DoD gate never fired and S2 read a vacuous FEATURE-only world.
+    Codex-review and answerer tickets are NOT corrections and stay ``FEATURE``.
+    """
+
+    def _created_ticket(self, signal: ScanSignal) -> Ticket:
+        created = persist_agent_actions(_agent_actions(signal))
+        assert len(created) == 1
+        return created[0].ticket
+
+    def test_red_card_ticket_is_fix(self) -> None:
+        signal = ScanSignal(
+            kind="red_card.signal",
+            summary="RED CARD",
+            payload={"row_id": 71, "signal_kind": "red_circle", "signal_text": ":red_circle:", "overlay": "acme"},
+        )
+        assert self._created_ticket(signal).kind == Ticket.Kind.FIX
+
+    def test_red_mr_fix_ticket_is_fix(self) -> None:
+        signal = ScanSignal(
+            kind="my_pr.failed",
+            summary="PR failed",
+            payload={"pr_url": "https://x/pr/71", "head_sha": "sha-71", "overlay": "acme"},
+        )
+        assert self._created_ticket(signal).kind == Ticket.Kind.FIX
+
+    def test_e2e_fix_ticket_is_fix(self) -> None:
+        signal = ScanSignal(
+            kind="e2e.failure_detected",
+            summary="Failed E2E",
+            payload={"spec": "e2e/specs/x.spec.ts", "test_title": "x", "skill_overlay": "acme"},
+        )
+        assert self._created_ticket(signal).kind == Ticket.Kind.FIX
+
+    def test_skill_drift_ticket_is_fix(self) -> None:
+        signal = ScanSignal(
+            kind="skill_drift_detected",
+            summary="drift",
+            payload={"repo": "/r", "file_path": "a/SKILL.md", "finding_fingerprint": "fp71", "overlay": "acme"},
+        )
+        assert self._created_ticket(signal).kind == Ticket.Kind.FIX
+
+    def test_codex_review_ticket_stays_feature(self) -> None:
+        signal = ScanSignal(
+            kind="codex_review.dispatch",
+            summary="codex review",
+            payload={
+                "slug": "o/r",
+                "pr_id": 71,
+                "head_sha": "csha-71",
+                "pr_url": "https://github.com/o/r/pull/71",
+                "variant": "codex:review",
+                "overlay": "acme",
+            },
+        )
+        assert self._created_ticket(signal).kind == Ticket.Kind.FEATURE
+
+    def test_answerer_ticket_stays_feature(self) -> None:
+        signal = ScanSignal(
+            kind="incoming_event.task_needed",
+            summary="task request (answering): what is X?",
+            payload={"event_id": 71, "phase": "answering", "detail": "what is X?"},
+        )
+        assert self._created_ticket(signal).kind == Ticket.Kind.FEATURE
+
+
 class TestFailLoudOnUnhandledZone(TestCase):
     def test_unhandled_zone_records_persist_error(self) -> None:
         # An agent zone that is neither handled nor persisted-at-source is a

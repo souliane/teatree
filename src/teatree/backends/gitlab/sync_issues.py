@@ -13,6 +13,7 @@ import httpx
 
 from teatree.backends.gitlab import GitLabCodeHost
 from teatree.core.models import Ticket
+from teatree.core.ticket_kind_classification import classify_ticket_kind
 from teatree.types import SyncResult
 
 if TYPE_CHECKING:
@@ -60,12 +61,16 @@ def fetch_assigned_issues(
                 result.tickets_updated += 1
             continue
 
+        raw_labels = issue.get("labels")
+        labels = [str(label) for label in raw_labels] if isinstance(raw_labels, list) else []
+        issue_title = str(issue.get("title", ""))
         Ticket.objects.create(
             issue_url=issue_url,
             repos=[repo_short] if repo_short else [],
-            extra={"issue_title": str(issue.get("title", ""))},
+            extra={"issue_title": issue_title},
             state=Ticket.State.NOT_STARTED,
             overlay=overlay_name,
+            kind=classify_ticket_kind(labels=labels, title=issue_title),
         )
         result.tickets_created += 1
 

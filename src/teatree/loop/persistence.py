@@ -20,6 +20,7 @@ from django.db import transaction
 
 from teatree.core.models import Task, Ticket
 from teatree.core.models.ticket_external_review import schedule_external_review
+from teatree.core.ticket_kind_classification import TicketOrigin, classify_ticket_kind
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.dispatch_gates import claim_red_mr_fix
 from teatree.loop.dispatch_tables import PERSISTED_AT_SOURCE_ZONES
@@ -260,6 +261,7 @@ def _get_or_create_ticket(
     role: str,
     overlay: str,
     extra: "TicketExtra | None" = None,
+    kind: Ticket.Kind = Ticket.Kind.FEATURE,
 ) -> tuple[Ticket, bool]:
     """``get_or_create`` a ticket keyed on ``url`` + reconcile its overlay.
 
@@ -270,10 +272,14 @@ def _get_or_create_ticket(
     ``_reconcile_existing_overlay`` re-infers a pre-existing row from its
     ``issue_url`` and never blanks a set value (#743), so a synthetic key whose
     inference is empty is left untouched.
+
+    ``kind`` (#17) is stamped only on a freshly-created row (``defaults``); the
+    correction-origin handlers pass ``FIX`` so the fix-record DoD gate and S2
+    defect-escape signal actually see the corrective work they are meant to.
     """
     ticket, created = Ticket.objects.get_or_create(
         issue_url=url,
-        defaults={"overlay": overlay, "role": role, "extra": extra or {}},
+        defaults={"overlay": overlay, "role": role, "extra": extra or {}, "kind": kind},
     )
     _reconcile_existing_overlay(ticket, created=created)
     return ticket, created
@@ -334,6 +340,7 @@ def _handle_red_card(action: DispatchAction) -> Task | None:
             "red_card_signal_text": str(payload.get("signal_text") or ""),
             "red_card_offending_text": str(payload.get("offending_message_text") or ""),
         },
+        kind=classify_ticket_kind(origin=TicketOrigin.CORRECTION),
     )
     if ticket.role != Ticket.Role.AUTHOR or _has_open_task(ticket, phase="coding"):
         return None
@@ -369,6 +376,7 @@ def _handle_debug(action: DispatchAction) -> Task | None:
             pr_url,
             role=Ticket.Role.AUTHOR,
             overlay=_owning_overlay(pr_url, str(payload.get("overlay") or "")),
+            kind=classify_ticket_kind(origin=TicketOrigin.CORRECTION),
         )
         if ticket.role != Ticket.Role.AUTHOR or _has_open_task(ticket, phase="debugging"):
             return None
@@ -449,6 +457,7 @@ def _handle_e2e_fix(action: DispatchAction) -> Task | None:
         role=Ticket.Role.AUTHOR,
         overlay=overlay,
         extra={"e2e_spec": spec, "e2e_test_title": str(payload.get("test_title") or "")},
+        kind=classify_ticket_kind(origin=TicketOrigin.CORRECTION),
     )
     if ticket.role != Ticket.Role.AUTHOR or _has_open_task(ticket, phase="e2e"):
         return None
@@ -482,6 +491,7 @@ def _handle_skill_drift(action: DispatchAction) -> Task | None:
             "drift_file": file_path,
             "drift_fingerprint": str(payload.get("finding_fingerprint") or ""),
         },
+        kind=classify_ticket_kind(origin=TicketOrigin.CORRECTION),
     )
     if ticket.role != Ticket.Role.AUTHOR or _has_open_task(ticket, phase="coding"):
         return None

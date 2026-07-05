@@ -7,8 +7,10 @@ from django.tasks import task
 from teatree.config import get_effective_settings, worktree_root
 from teatree.core.attachment_manifest import attachment_gate_refusal, attachments_dir_for, ticket_text_sources
 from teatree.core.backend_factory import code_host_from_overlay
+from teatree.core.gates.critic_gate import record_critic_findings
 from teatree.core.landscape_gather import run_landscape
 from teatree.core.models import LandscapeArtifact, Task, Ticket
+from teatree.core.models.errors import CriticGateError
 from teatree.core.models.external_delivery import under_external_delivery
 from teatree.core.models.trivial_plan_skip import is_trivial_plan_skip
 from teatree.core.runners import RetroExecutor, ShipExecutor, WorktreeProvisioner, WorktreeTeardown
@@ -204,26 +206,50 @@ def execute_retrospect(ticket_id: int) -> TransitionResult:
     for the same transition — a lost update or a redelivered job must be safe.
 
     On success, advances ``RETROSPECTED → DELIVERED`` via ``mark_delivered()``.
+
+    When the SELFCATCH-5 critic gate blocks (enforcing mode), it raises
+    ``CriticGateError`` from inside this atomic, rolling back the ``CriticFinding``
+    rows it just wrote. We re-record them on a FRESH transaction (a sibling of the
+    rolled-back delivery atomic, so they survive) before reporting the refusal — the
+    operator sees the very findings the block tells them to resolve.
     """
-    with transaction.atomic():
-        ticket = Ticket.objects.select_for_update().get(pk=ticket_id)
-        if ticket.state != Ticket.State.RETROSPECTED:
-            logger.info(
-                "execute_retrospect skipped for ticket %s: state=%s (not RETROSPECTED)",
-                ticket_id,
-                ticket.state,
-            )
-            return {"ticket_id": ticket_id, "skipped": True, "state": str(ticket.state)}
+    try:
+        with transaction.atomic():
+            ticket = Ticket.objects.select_for_update().get(pk=ticket_id)
+            if ticket.state != Ticket.State.RETROSPECTED:
+                logger.info(
+                    "execute_retrospect skipped for ticket %s: state=%s (not RETROSPECTED)",
+                    ticket_id,
+                    ticket.state,
+                )
+                return {"ticket_id": ticket_id, "skipped": True, "state": str(ticket.state)}
 
-        result = RetroExecutor(ticket).run()
-        if not result.ok:
-            logger.warning("Retro failed for ticket %s: %s", ticket_id, result.detail)
-            return {"ticket_id": ticket_id, "ok": False, "detail": result.detail}
+            result = RetroExecutor(ticket).run()
+            if not result.ok:
+                logger.warning("Retro failed for ticket %s: %s", ticket_id, result.detail)
+                return {"ticket_id": ticket_id, "ok": False, "detail": result.detail}
 
-        ticket.mark_delivered()
-        ticket.save()
+            ticket.mark_delivered()
+            ticket.save()
+    except CriticGateError as exc:
+        _persist_critic_block(ticket_id, exc)
+        return {"ticket_id": ticket_id, "ok": False, "detail": str(exc)}
 
     return {"ticket_id": ticket_id, "ok": True, "detail": result.detail}
+
+
+def _persist_critic_block(ticket_id: int, exc: "CriticGateError") -> None:
+    """Re-record the blocked delivery's critic findings on a fresh transaction (#SELFCATCH-5).
+
+    Runs after the delivery atomic has rolled back, so the rows persist despite the
+    block. Best-effort: a recording failure must not mask the original refusal.
+    """
+    try:
+        with transaction.atomic():
+            ticket = Ticket.objects.get(pk=ticket_id)
+            record_critic_findings(ticket, exc.specs)
+    except Exception as recording_error:  # noqa: BLE001 — never mask the delivery refusal with a recording failure.
+        logger.warning("critic block finding re-record failed for ticket %s: %s", ticket_id, recording_error)
 
 
 @task()

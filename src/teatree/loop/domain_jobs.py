@@ -39,6 +39,7 @@ from teatree.loop.scanners import (
     MyPrsScanner,
     OutboundAuditScanner,
     PendingTasksScanner,
+    PrApprovalScanner,
     RedCardScanner,
     ReviewerPrsScanner,
     ReviewNagScanner,
@@ -505,6 +506,11 @@ def _inbound_messaging_jobs(messaging: MessagingBackend, tag: str) -> list[_Scan
         # drain reactions; this one only cares about ``:red_circle:`` /
         # ``:no_entry_sign:`` plus the literal phrase in DMs.
         _ScannerJob(scanner=RedCardScanner(backend=messaging, overlay=tag), overlay=tag),
+        # #8: forge-approval poll that revives the M7 merge_authorization
+        # waiting lane — drives REVIEW_REQUESTED PRs to APPROVED so the
+        # waiting-digest DM + the (on-behalf-gated) #961 approval reaction fire.
+        # Resolves its own code host from the overlay; no messaging dependency.
+        _ScannerJob(scanner=PrApprovalScanner(overlay=tag), overlay=tag),
     ]
 
 
