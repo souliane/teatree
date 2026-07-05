@@ -22,7 +22,7 @@ from teatree.core.machine_output import emit
 from teatree.core.management.commands._workspace_docker import reap_stale_local_stacks
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayBase
-from teatree.core.overlay_loader import get_overlay
+from teatree.core.overlay_loader import get_overlay, get_overlay_for_worktree
 from teatree.core.provision_postconditions import PostConditionOutcome, evaluate_post_conditions
 from teatree.core.readiness import run_and_report_probes
 from teatree.core.resolve import _ticket_by_number, resolve_worktree
@@ -460,7 +460,7 @@ class Command(TyperCommand):
         provisioned_states = {Worktree.State.PROVISIONED, Worktree.State.SERVICES_UP, Worktree.State.READY}
         if worktree.state not in provisioned_states:
             return 0
-        outcomes, failures = evaluate_post_conditions(get_overlay(), worktree)
+        outcomes, failures = evaluate_post_conditions(get_overlay_for_worktree(worktree), worktree)
         result["post_conditions"] = outcomes
         result["provisioned_ok"] = failures == 0
         return failures

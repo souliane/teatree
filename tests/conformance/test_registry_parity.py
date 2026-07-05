@@ -18,14 +18,17 @@ enumeration cannot turn a lane vacuous-green.
 
 import inspect
 from collections.abc import Iterable
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from django.db.models import Q
 
+from teatree.agents.sdk_tool_map import CAPABILITY_TO_SDK_TOOLS
 from teatree.core.management.commands import loop_dispatch
 from teatree.core.managers import TaskQuerySet
-from teatree.core.modelkit.phases import SUBAGENT_BY_PHASE
+from teatree.core.modelkit.phase_tools import _TOOLS_BY_PHASE, tools_for_phase
+from teatree.core.modelkit.phases import SUBAGENT_BY_PHASE, normalize_phase
 from teatree.core.models import Task
 from teatree.loop.dispatch_tables import AGENT_ZONES, PERSISTED_AT_SOURCE_ZONES
 from teatree.loop.job_identity import PER_OVERLAY_DOMAINS
@@ -226,3 +229,115 @@ class TestRegistryParityFrameworkFiresRed:
             label="self-test",
             allowlist={"t3:DELIBERATE-NO-CONSUMER"},
         )
+
+
+class TestPhaseToolsTotalityParity:
+    """LANE 4 — every dispatchable phase has an EXPLICIT least-privilege entry (#10).
+
+    ``bughunt`` (and, after DIS-A, ``debugging`` / ``codex_reviewing`` /
+    ``codex_adversarial_reviewing``) were dispatchable through
+    ``SUBAGENT_BY_PHASE`` yet absent from ``_TOOLS_BY_PHASE``, so
+    ``tools_for_phase`` silently resolved them to the read-only fallback — a
+    bughunter whose brief tells it to reproduce findings could not run the
+    shell. Every ``SUBAGENT_BY_PHASE`` phase must carry an explicit
+    ``_TOOLS_BY_PHASE`` key; the read-only fallback stays as defense-in-depth
+    for a genuinely unregistered phase, never as the silent resolution for a
+    dispatchable one — the #10 recurrence dies in CI.
+    """
+
+    @staticmethod
+    def _dispatchable_phases() -> set[str]:
+        return {normalize_phase(phase) for _role, phase in SUBAGENT_BY_PHASE}
+
+    def test_every_dispatchable_phase_has_an_explicit_tool_entry(self) -> None:
+        assert_registry_covers(
+            producers=self._dispatchable_phases(),
+            consumers=set(_TOOLS_BY_PHASE),
+            label="SUBAGENT_BY_PHASE phase -> explicit _TOOLS_BY_PHASE entry",
+        )
+
+    def test_bughunt_can_reproduce_findings_but_not_write(self) -> None:
+        tools = tools_for_phase("bughunt")
+        assert {"shell", "dispatch_subtask", "read_file"} <= tools
+        assert "write_file" not in tools
+        assert "edit_file" not in tools
+
+    def test_cardinality_floor_anti_vacuity(self) -> None:
+        assert len(self._dispatchable_phases()) >= 12, self._dispatchable_phases()
+        assert len(_TOOLS_BY_PHASE) >= 12, set(_TOOLS_BY_PHASE)
+
+
+#: teatree capability name <- each ``claude_sdk`` built-in tool an agent md may list.
+_SDK_TOOL_TO_CAPABILITY: dict[str, str] = {
+    sdk_name: capability for capability, sdk_names in CAPABILITY_TO_SDK_TOOLS.items() for sdk_name in sdk_names
+}
+_AGENTS_DIR = Path(__file__).resolve().parents[2] / "agents"
+#: The shell-denied reactive phases whose headless agents hand work back through
+#: the result envelope (DIS-B, #9). Their briefs must not promise the shell the
+#: lane strips, or the article-ideas / approved-reply silent-drop class returns.
+_ENVELOPE_SHELL_DENIED_PHASES = ("scanning_news", "answering")
+
+
+def _agent_allowlist_tools(agent_file_stem: str) -> frozenset[str] | None:
+    """Teatree capabilities an ``agents/<stem>.md`` ``tools:`` allowlist grants.
+
+    ``None`` for a brief using the ``disallowedTools:`` denylist convention (a
+    different mechanism) or missing frontmatter — this lane checks only positive
+    allowlist briefs, where a listed tool is a direct promise of that capability.
+    """
+    path = _AGENTS_DIR / f"{agent_file_stem}.md"
+    if not path.is_file():
+        return None
+    in_tools = False
+    listed: list[str] = []
+    for number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        stripped = raw.strip()
+        if number > 1 and stripped == "---":
+            break
+        if not raw.startswith((" ", "\t")) and ":" in stripped:
+            in_tools = stripped.split(":", 1)[0].strip() == "tools"
+            continue
+        if in_tools and stripped.startswith("- "):
+            listed.append(stripped.removeprefix("- ").strip())
+    if not listed:
+        return None
+    return frozenset(_SDK_TOOL_TO_CAPABILITY[name] for name in listed if name in _SDK_TOOL_TO_CAPABILITY)
+
+
+def _agent_for_phase(target_phase: str) -> str:
+    for (_role, phase), agent in SUBAGENT_BY_PHASE.items():
+        if phase == target_phase:
+            return agent
+    return ""
+
+
+class TestAgentMdPhaseToolParity:
+    """LANE 5 — a headless brief never promises a tool its phase denies (#9).
+
+    ``scanning-news.md`` / ``answerer.md`` listed ``Bash`` while their
+    ``phase_tools`` entry is shell-denied, so the lane stripped the shell the
+    brief promised and a run that tried to use it dropped its work. These
+    reactive phases now hand results back through the typed envelope channel
+    BECAUSE they cannot shell out; their ``tools:`` allowlist must match the
+    SSOT (no shell), or the silent-drop class returns. Scoped to the two
+    envelope-channel phases DIS-B owns — the planner/shipper allowlist briefs
+    carry separate pre-existing divergences outside this PR's file ownership.
+    """
+
+    @pytest.mark.parametrize("phase", _ENVELOPE_SHELL_DENIED_PHASES)
+    def test_agent_tools_are_a_subset_of_the_phase_allowance(self, phase: str) -> None:
+        agent = _agent_for_phase(phase)
+        assert agent, f"no dispatched agent for phase {phase!r}"
+        declared = _agent_allowlist_tools(agent.removeprefix("t3:"))
+        assert declared is not None, f"{agent} has no tools: allowlist to check"
+        allowed = tools_for_phase(phase)
+        assert declared <= allowed, f"{agent} promises {sorted(declared - allowed)} denied by phase {phase!r}"
+        assert "shell" not in declared, f"{agent} declares the shell but phase {phase!r} is shell-denied"
+
+    def test_both_reactive_agents_are_actually_checked(self) -> None:
+        checked = [
+            _agent_allowlist_tools(_agent_for_phase(phase).removeprefix("t3:"))
+            for phase in _ENVELOPE_SHELL_DENIED_PHASES
+        ]
+        assert all(tools is not None for tools in checked), checked
+        assert len(checked) >= 2

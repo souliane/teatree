@@ -15,7 +15,7 @@ from django.utils import timezone
 from teatree.agents.model_tiering import TIER_MODELS
 from teatree.core.models import Session, Task, Ticket
 from teatree.core.models.external_delivery import mark_external_delivery
-from teatree.core.models.ticket import schedule_external_review
+from teatree.core.models.ticket_external_review import schedule_external_review
 from teatree.loop.admit_budget import write_admit_budget
 
 

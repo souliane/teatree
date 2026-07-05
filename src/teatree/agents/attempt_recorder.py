@@ -21,10 +21,21 @@ from typing import TYPE_CHECKING, cast
 from django.utils import timezone
 
 from teatree.agents.outage_classifier import outage_signature
-from teatree.agents.result_schema import RESULT_JSON_SCHEMA, AgentResultBlob, ReviewVerdictEnvelope, check_evidence
+from teatree.agents.result_schema import (
+    RESULT_JSON_SCHEMA,
+    AgentResultBlob,
+    AnswerEnvelope,
+    ArticleSuggestion,
+    ReviewVerdictEnvelope,
+    answer_text,
+    check_evidence,
+    suggestion_url,
+)
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import (
+    DeferredQuestion,
     Finding,
+    PendingArticleSuggestion,
     ReviewLoop,
     ReviewLoopRound,
     ReviewVerdict,
@@ -136,6 +147,8 @@ def record_result_envelope(
         return _record_failure(task, error=verdict_error)
 
     _maybe_record_plan_artifact(task, result, phase=phase)
+    _maybe_record_article_suggestions(task, result, phase=phase)
+    _maybe_record_answer_draft(task, result, phase=phase)
 
     attempt = TaskAttempt.objects.create(
         task=task,
@@ -273,7 +286,7 @@ def _advance_open_review_loop(recorded: ReviewVerdict) -> None:
 def _maybe_record_plan_artifact(task: Task, result: AgentResultBlob, *, phase: str) -> None:
     from teatree.core.models.plan_artifact import PlanArtifact  # noqa: PLC0415
 
-    effective_phase = phase or task.phase
+    effective_phase = normalize_phase(phase or task.phase)
     plan_text = result.get("plan_text")
     if effective_phase != "planning" or not isinstance(plan_text, str) or not plan_text.strip():
         return
@@ -290,6 +303,68 @@ def _maybe_record_plan_artifact(task: Task, result: AgentResultBlob, *, phase: s
         recorded_by=recorded_by,
         base_sha=base_sha if isinstance(base_sha, str) else "",
         adequacy=adequacy if isinstance(adequacy, dict) else None,
+    )
+
+
+#: Shell-denied reactive phases whose headless agent hands its work back through
+#: a typed envelope channel (#9): the agent cannot run the ``t3`` CLI, so the
+#: recorder is the server-side half that persists the returned structure. The
+#: ``PHASE_REQUIRED_EVIDENCE`` gate has already refused a summary-only run before
+#: these fire, so the channel field is present and non-empty here.
+_SCANNING_NEWS_PHASE = "scanning_news"
+_ANSWERING_PHASE = "answering"
+
+
+def _maybe_record_article_suggestions(task: Task, result: AgentResultBlob, *, phase: str) -> None:
+    """Persist a scanning_news agent's returned ``article_suggestions`` (corr-11, #9).
+
+    One ``PENDING`` :class:`PendingArticleSuggestion` per candidate, idempotent by
+    source URL (a re-scan never duplicates) and behind the same ask-gate the
+    scanner used to enqueue directly — the shell-denied agent hands the batch
+    back, the server persists it. A non-scanning_news phase or a result with no
+    ``article_suggestions`` list is a no-op.
+    """
+    if normalize_phase(phase or task.phase) != _SCANNING_NEWS_PHASE:
+        return
+    suggestions = result.get("article_suggestions")
+    if not isinstance(suggestions, list):
+        return
+    overlay = task.ticket.overlay
+    for raw_item in suggestions:
+        url = suggestion_url(raw_item)
+        if not url:
+            continue
+        item = cast("ArticleSuggestion", raw_item)
+        PendingArticleSuggestion.record_candidate(
+            url=url,
+            title=str(item.get("title") or ""),
+            summary=str(item.get("rationale") or ""),
+            overlay=overlay,
+        )
+
+
+def _maybe_record_answer_draft(task: Task, result: AgentResultBlob, *, phase: str) -> None:
+    """Route an answering agent's returned ``answer`` draft to the approval path (corr-11, #9).
+
+    The shell-denied answerer cannot post on the user's behalf, so it hands the
+    draft back: this records a :class:`DeferredQuestion` (correlated to the task
+    via ``parked_task``) asking the user to approve the reply — the orchestrator
+    posts on confirmation. A non-answering phase or a result with no ``answer``
+    text is a no-op.
+    """
+    if normalize_phase(phase or task.phase) != _ANSWERING_PHASE:
+        return
+    raw_answer = result.get("answer")
+    text = answer_text(raw_answer)
+    if not text:
+        return
+    answer = cast("AnswerEnvelope", raw_answer)
+    thread_ref = str(answer.get("thread_ref") or "").strip()
+    where = f" (thread {thread_ref})" if thread_ref else ""
+    DeferredQuestion.record(
+        question=f"Approve this drafted reply{where}?\n\n{text}",
+        session_id=task.claimed_by_session or "",
+        parked_task=task,
     )
 
 

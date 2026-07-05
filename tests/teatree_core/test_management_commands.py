@@ -18,6 +18,7 @@ import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.runners.worktree_provision as worktree_provision_mod
 import teatree.utils.run as utils_run_mod
 from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket, Worktree
+from teatree.core.models.ticket_external_review import schedule_external_review
 from teatree.core.overlay import DbImportStrategy, OverlayBase, ProvisionStep, RunCommands
 from tests._ansi import strip_ansi as _strip_ansi
 from tests.teatree_agents._sdk_fake import fake_sdk, success_stream
@@ -918,8 +919,6 @@ class TestTicketCommand(TestCase):
 
     def test_transition_mark_review_no_action_delivers_reviewer_ticket(self) -> None:
         """#1077: the no-action disposition is reachable via the CLI transition."""
-        from teatree.core.models.ticket import schedule_external_review  # noqa: PLC0415
-
         ticket = Ticket.objects.create(
             overlay="test",
             issue_url="https://gitlab/x/-/merge_requests/1077c",
