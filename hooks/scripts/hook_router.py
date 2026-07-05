@@ -111,6 +111,7 @@ from raw_review_post_guard import is_raw_review_write as _is_raw_review_write  #
 from secret_file_print_guard import handle_block_secret_file_print
 from self_dm_destinations import SelfDmDestinations as _SelfDmDestinations
 from self_dm_destinations import resolve_self_dm_destinations as _resolve_self_dm_destinations
+from skill_suggestion_render import render_skill_suggestion_message
 from slack_mirror_wiring import build_dm_audio_enricher
 from slack_mirror_wiring import slack_http_poster as _slack_http_poster
 from standing_goal_stop_gate import handle_standing_goal_stop
@@ -610,31 +611,14 @@ def handle_user_prompt_submit(data: dict) -> None:
     finally:
         sys.path.pop(0)
 
-    suggestions = result.get("suggestions", [])
-    advisory = set(result.get("advisory", []))
-
     # Deterministic t3 CLI reminder — injected when prompt matches
     # workspace/infrastructure patterns, regardless of skill suggestions.
     t3_reminder = _T3_CLI_REMINDER if _T3_CLI_REMINDER_RE.search(prompt) else ""
-
-    if not suggestions:
-        if t3_reminder:
-            print(t3_reminder)  # noqa: T201
-        return
-
-    skill_list = ", ".join(f"/{s}" for s in suggestions)
-    # Advisory skills come from the loose supplementary keyword config
-    # (~/.teatree-skills.yml), whose bare-token regexes (e.g. \bruff\b)
-    # over-fire on incidental mentions (#1683). They are suggested but kept
-    # OUT of <session>.pending so the PreToolUse gate never hard-blocks a
-    # Bash/Edit/Write on an incidental keyword match. Only intent / framework
-    # / overlay / companion skills enforce load-first.
-    demanded = [s for s in suggestions if s not in advisory]
-    pending.write_text("\n".join(normalize_skill_name(s) for s in demanded) + "\n", encoding="utf-8")
-    parts = [f"LOAD THESE SKILLS NOW (call the Skill tool for each, before doing anything else): {skill_list}."]
-    if t3_reminder:
-        parts.append(t3_reminder)
-    print("\n".join(parts))  # noqa: T201
+    message = render_skill_suggestion_message(
+        result, pending=pending, t3_reminder=t3_reminder, normalize=normalize_skill_name
+    )
+    if message:
+        print(message)  # noqa: T201 — hook stdout is the UserPromptSubmit message channel
 
 
 # ── UserPromptSubmit: live-presence heartbeat (#58 away-misclassification) ────
