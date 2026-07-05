@@ -10,7 +10,7 @@ recipe), so re-weighting the recipe cannot mask a real regression behind its own
 sha.
 
 Flag-gated OFF is the shipped state: with ``factory_score_enabled`` false NO row
-is ever written (``t3 recipe score --record`` refuses), so the migrated table
+is ever written (``t3 <overlay> recipe score --record`` refuses), so the migrated table
 stays empty — the only persistent footprint, matching the ``ConfigSetting``
 empty-table doctrine.
 """

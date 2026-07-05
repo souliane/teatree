@@ -87,16 +87,16 @@ class FactoryScore:
 def _normalize(value: float, direction: Direction, cap: float | None) -> tuple[float, bool]:
     """Map a reading to ``0..1`` (higher = healthier). Returns ``(normalized, in_range)``.
 
-    A capped magnitude signal (``merge_latency`` hours, ``repair_burn`` iterations)
-    scales by its cap and clamps — a reading above the cap is fully bad (``0.0``),
-    always in range. An uncapped rate must already be in ``[0, 1]``; a reading
-    outside it is ``in_range=False`` so the caller folds it RED rather than clamp.
+    A capped magnitude signal scales by its cap and clamps — a reading above the cap
+    is fully bad (``0.0``), always in range. An uncapped rate must already be in
+    ``[0, 1]``; a reading outside it is ``in_range=False`` so the caller folds it RED
+    rather than clamp.
     """
     if cap is not None:
-        fraction = value / cap
-        if direction == Direction.HIGHER_IS_BETTER:
-            return min(1.0, max(0.0, fraction)), True
-        return min(1.0, max(0.0, 1.0 - fraction)), True
+        # The recipe loader permits a cap ONLY on the LOWER_IS_BETTER magnitude
+        # signals (merge_latency, repair_burn), so a capped reading always
+        # normalises as "closer to zero is healthier", clamped to 0..1.
+        return max(0.0, 1.0 - value / cap), True
     in_range = 0.0 <= value <= 1.0
     normalized = value if direction == Direction.HIGHER_IS_BETTER else 1.0 - value
     return normalized, in_range
@@ -161,7 +161,7 @@ def score_report(
     Composes worst-wins honesty (see the module docstring) into a
     :class:`FactoryScore`. ``recipe_approved`` is stamped by comparing the
     recipe's ``recipe_sha`` to *approved_recipe_sha* whole — a mismatch (the
-    shipped state until a human runs ``t3 recipe approve``) stamps ``False``.
+    shipped state until a human runs ``t3 <overlay> recipe approve``) stamps ``False``.
     Deltas are left ``None``; :func:`score` fills them from the snapshot ledger.
     """
     rows = {row.provider_id: row for row in report.signals}
