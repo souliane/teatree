@@ -38,6 +38,7 @@ def populate_model_registries() -> None:
         dod_gate,
         fix_dod_gate,
         integration_review_gate,
+        merge_evidence_gate,
         plan_gate,
         review_context_gate,
         spec_coverage_gate,

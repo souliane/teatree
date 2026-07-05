@@ -682,19 +682,20 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         """Schedule worktree teardown.
 
         The worker removes git worktrees, deletes the local branch, drops the
-        per-worktree DB and runs overlay cleanup hooks. FSM invariant
-        (BLUEPRINT §4): transition bodies stay pure — long I/O is offloaded
-        to an ``@task`` worker, enqueued after commit so the state change and
-        the queued work land atomically.
+        per-worktree DB and runs overlay cleanup hooks. FSM invariant (BLUEPRINT
+        §4): transition bodies stay pure — long I/O is offloaded to an ``@task``
+        worker, enqueued after commit so state change and queued work land atomically.
 
-        Source ``[IN_REVIEW, MERGED]`` makes re-firing idempotent: if a
-        previous teardown reported errors, the operator can re-call
-        ``mark_merged()`` to retry. The worker is best-effort and does not
-        advance the FSM, so retries are safe.
+        Source ``[IN_REVIEW, MERGED]`` makes re-firing idempotent: if a previous
+        teardown reported errors, the operator can re-call ``mark_merged()`` to
+        retry. The worker is best-effort and does not advance the FSM, so retries
+        are safe. The ``execute_teardown`` enqueue is the ``post_transition``
+        receiver's job (``teatree.core.signals``), keyed on the transition (#2385).
 
-        The ``execute_teardown`` enqueue is the ``post_transition`` receiver's
-        job (``teatree.core.signals``), keyed on the transition name (#2385).
+        The ``merge_evidence`` gate (#4a) preflights: MERGED is unreachable without
+        a real merged-SHA row, so the ungated ``_advance_ticket`` walk fails loud.
         """
+        get_gate("merge_evidence")(self)
 
     @transition(
         field=state,
@@ -704,22 +705,21 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
     def reconcile_merged(self) -> None:
         """State-complete FSM catch-up to ``MERGED`` on PR-merge (#1343).
 
-        The merge keystone (``merge.execution.record_merge_and_advance``)
-        calls this from its post hook: an authorised, audited PR-merge is
-        the authority — whatever pre-merged state the ticket sat in, the
-        FSM must follow. Mirrors ``reconcile_reviewed`` (#808) — the source
-        is derived from the pre-merged set so a future-added pre-merged
-        state cannot silently re-introduce the stale-``started`` class.
+        The merge keystone (``merge.execution.record_merge_and_advance``) calls
+        this from its post hook: an authorised, audited PR-merge is the authority
+        — whatever pre-merged state the ticket sat in, the FSM must follow. Mirrors
+        ``reconcile_reviewed`` (#808) — the source is derived from the pre-merged
+        set so a future-added pre-merged state cannot re-introduce the stale class.
+        Post-MERGED states (``RETROSPECTED``/``DELIVERED``) and ``IGNORED`` are NOT
+        sources: the keystone must never drag a ticket BACKWARD past MERGED.
 
-        Post-MERGED states (``RETROSPECTED``/``DELIVERED``) and ``IGNORED``
-        are NOT sources: the keystone must never drag a ticket BACKWARD
-        from a state past MERGED.
+        Schedules the same teardown work as ``mark_merged`` (the ``post_transition``
+        receiver enqueues ``execute_teardown`` for this transition too, #2385).
 
-        Schedules the same teardown work as ``mark_merged`` so a
-        keystone-driven reconcile cleans up worktrees identically to the
-        normal IN_REVIEW → MERGED path — the ``post_transition`` receiver
-        enqueues ``execute_teardown`` for this transition too (#2385).
+        Gated by ``merge_evidence`` (#4a): the keystone writes the MergeAudit row
+        BEFORE this call, so authorised merges pass and an evidence-less reconcile is refused.
         """
+        get_gate("merge_evidence")(self)
 
     @transition(field=state, source=[State.MERGED, State.RETROSPECTED], target=State.RETROSPECTED)
     def retrospect(self) -> None:
