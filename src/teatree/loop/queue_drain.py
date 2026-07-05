@@ -24,10 +24,14 @@ hard-deleted.
 
 Both are driven by the dedicated reactive drain-queue ``/loop``
 (``t3 loop drain-queue run`` → the ``loop_drain_queue`` management command →
-:func:`expire_then_drain`, behind the ``loop-drain-queue`` ``LoopLease``), and the
-drain refuses to run while a real ``db_worker`` holds the machine-wide
-``teatree-worker`` flock singleton — so the two drainers never compete for the
-same rows.
+:func:`expire_then_drain`, behind the ``loop-drain-queue`` ``LoopLease``). The drain
+refuses to run while a live worker holds either worker-singleton flock
+(:data:`~teatree.utils.singleton.WORKER_SINGLETON` or the legacy
+:data:`~teatree.utils.singleton.LEGACY_WORKER_SINGLETON` — probed via the same
+constants the workers acquire), and it only drains the ``default`` queue — the
+``loops``-queue ``loop_timer`` rows advance ONLY on the worker's pinned executors, so
+the drain cannot become a second loop runner that bypasses the ``loop_runner_enabled``
+kill-switch.
 """
 
 import datetime as dt
@@ -141,17 +145,26 @@ def drain_batch_size() -> int:
 
 
 def a_worker_is_running() -> bool:
-    """True iff a live ``manage.py db_worker`` holds the ``teatree-worker`` flock.
+    """True iff a live worker holds either worker-singleton flock.
 
-    ``t3 <overlay> worker`` wraps its workers in the ``teatree-worker``
-    machine-wide flock singleton. When one is alive, the in-process tick
-    drain must stand down so the two never claim the same rows. ``read_pid``
-    reports the live holder (and reaps a stale pid file) without acquiring
-    the lock, so probing here never disturbs a running worker.
+    Two worker entry points can own the queue: the #1796 ``LoopWorker``
+    acquires :data:`~teatree.utils.singleton.WORKER_SINGLETON` (``"worker"``),
+    while the older ``t3 <overlay> worker`` spawner still acquires
+    :data:`~teatree.utils.singleton.LEGACY_WORKER_SINGLETON` (``"teatree-worker"``)
+    during the deprecation window. The probe imports the SAME constants the
+    workers acquire — so the name can never drift — and stands the in-process
+    tick drain down when either is alive, so the two never claim the same rows.
+    ``read_pid`` reports the live holder (and reaps a stale pid file) without
+    acquiring the lock, so probing here never disturbs a running worker.
     """
-    from teatree.utils.singleton import default_pid_path, read_pid  # noqa: PLC0415
+    from teatree.utils.singleton import (  # noqa: PLC0415 — deferred: keeps queue_drain cold-import cheap
+        LEGACY_WORKER_SINGLETON,
+        WORKER_SINGLETON,
+        default_pid_path,
+        read_pid,
+    )
 
-    return read_pid(default_pid_path("teatree-worker")) is not None
+    return any(read_pid(default_pid_path(name)) is not None for name in (WORKER_SINGLETON, LEGACY_WORKER_SINGLETON))
 
 
 def expire_stale_ready_jobs(*, threshold_hours: int | None = None) -> dict[str, int]:
@@ -196,16 +209,30 @@ def _run_one_ready_job() -> bool:
     both are terminal outcomes that drain the queue), ``False`` when no READY
     job was available. The row is locked + claimed inside an exclusive
     transaction so a concurrent drainer cannot pick the same job.
+
+    Only the ``default`` queue is drained: the self-rescheduling ``loop_timer``
+    chains ride the separate ``loops`` queue and run ONLY on the worker's pinned
+    executors, so the tick drain never becomes an accidental loop runner that
+    bypasses the ``loop_runner_enabled`` kill-switch. ``"loops"`` is the only
+    non-``default`` queue, so scoping the claim to ``DEFAULT_TASK_QUEUE_NAME``
+    leaves the timer rows for the worker.
     """
     from django.db import close_old_connections  # noqa: PLC0415
-    from django_tasks import DEFAULT_TASK_BACKEND_ALIAS  # noqa: PLC0415
+    from django_tasks import (  # noqa: PLC0415 — deferred: django_tasks needs the app registry ready
+        DEFAULT_TASK_BACKEND_ALIAS,
+        DEFAULT_TASK_QUEUE_NAME,
+    )
     from django_tasks.signals import task_finished, task_started  # noqa: PLC0415
     from django_tasks.utils import get_random_id  # noqa: PLC0415
     from django_tasks_db.models import DBTaskResult  # noqa: PLC0415
     from django_tasks_db.utils import exclusive_transaction  # noqa: PLC0415
 
     worker_id = f"tickdrain-{os.getpid()}-{get_random_id()}"
-    ready = DBTaskResult.objects.ready().filter(backend_name=DEFAULT_TASK_BACKEND_ALIAS)
+    ready = (
+        DBTaskResult.objects.ready()
+        .filter(backend_name=DEFAULT_TASK_BACKEND_ALIAS)
+        .filter(queue_name=DEFAULT_TASK_QUEUE_NAME)
+    )
 
     with exclusive_transaction(ready.db):
         try:
@@ -246,12 +273,12 @@ def _run_one_ready_job() -> bool:
 def drain_ready_batch(*, max_jobs: int | None = None) -> int:
     """Drain at most ``max_jobs`` READY jobs in-process; return how many ran.
 
-    Stands down entirely when a real ``db_worker`` is alive (it owns the
-    drain — see :func:`a_worker_is_running`). Stops early the moment the queue
-    is empty, so an idle tick costs one ``ready()`` query and returns ``0``.
+    Stands down entirely when a real worker is alive (it owns the drain — see
+    :func:`a_worker_is_running`). Stops early the moment the queue is empty, so
+    an idle tick costs one ``ready()`` query and returns ``0``.
     """
     if a_worker_is_running():
-        logger.debug("Skipping in-process queue drain: a db_worker holds the teatree-worker singleton.")
+        logger.debug("Skipping in-process queue drain: a live worker holds a worker singleton.")
         return 0
     limit = max_jobs if max_jobs is not None else drain_batch_size()
     drained = 0

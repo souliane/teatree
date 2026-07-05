@@ -10,8 +10,9 @@ prints a one-line summary (or the JSON report when ``--json`` is passed).
 No loop-owner gate is needed here (unlike ``loop_slack_answer`` /
 ``loop_self_improve``): the drain is a mechanical DB-queue drain with no
 user-facing hijack surface, and the ``loop-drain-queue`` lease mutex plus the
-``teatree-worker`` flock check (:func:`teatree.loop.queue_drain.a_worker_is_running`)
-already make concurrent drainers impossible.
+worker-singleton flock check (:func:`teatree.loop.queue_drain.a_worker_is_running`,
+which probes both worker singletons) keep the tick drain from competing with a
+live worker for the same rows.
 """
 
 import datetime as dt

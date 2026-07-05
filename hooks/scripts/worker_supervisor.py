@@ -88,8 +88,10 @@ def _flock_is_free() -> bool:
     not-spawning.
     """
     try:
-        from teatree.loops.worker import WORKER_SINGLETON  # noqa: PLC0415
-        from teatree.utils.singleton import flock_is_held  # noqa: PLC0415
+        from teatree.utils.singleton import (  # noqa: PLC0415 — deferred: cold-hook safe, no teatree at import
+            WORKER_SINGLETON,
+            flock_is_held,
+        )
 
         return not flock_is_held(WORKER_SINGLETON)
     except Exception:  # noqa: BLE001 — can't tell -> do NOT spawn a possible duplicate.
