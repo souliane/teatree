@@ -20,6 +20,7 @@ from teatree.cli.setup.clone import find_main_clone, validate_repo
 from teatree.cli.setup.mcp_registrar import McpServerRegistrar
 from teatree.cli.setup.plugin_registrar import PluginRegistrar
 from teatree.cli.setup.skill_linker import CORE_EXCLUDED_SKILLS, SkillLinker
+from teatree.cli.setup.statusline_installer import StatuslineInstall, install_statusline
 from teatree.cli.setup.tool_installer import ToolInstaller
 from teatree.cli.slack_dm_provisioning import provision_all_overlay_dm_channels
 from teatree.cli.slack_provision import slack_provision
@@ -31,6 +32,17 @@ setup_app = typer.Typer(
     help="First-time setup and global skill management.",
     invoke_without_command=True,
 )
+
+
+def _report_statusline_install(settings_json: Path, repo: Path) -> None:
+    """Install the Claude Code statusLine block and echo the outcome (PR-17)."""
+    result = install_statusline(settings_json, repo)
+    if result is StatuslineInstall.INSTALLED:
+        typer.echo("OK    Installed statusLine block into settings.json.")
+    elif result is StatuslineInstall.ALREADY_PRESENT:
+        typer.echo("OK    statusLine already configured — left untouched.")
+    else:
+        typer.echo("WARN  settings.json unparsable — skipped statusLine install.")
 
 
 @setup_app.callback()
@@ -57,9 +69,12 @@ def run(
 
     ApmInstaller(repo).install()
 
-    stripped = strip_apm_hooks(Path.home() / ".claude" / "settings.json")
+    settings_json = Path.home() / ".claude" / "settings.json"
+    stripped = strip_apm_hooks(settings_json)
     if stripped:
         typer.echo(f"OK    Stripped {stripped} APM-injected hook(s) from settings.json.")
+
+    _report_statusline_install(settings_json, repo)
 
     from teatree.config import clone_root, load_config  # noqa: PLC0415
 

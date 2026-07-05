@@ -30,6 +30,7 @@ from teatree.utils.run import CommandFailedError, TimeoutExpired
 if TYPE_CHECKING:
     from teatree.core.connector_manifest import ConnectorRequirement
     from teatree.core.models import Worktree
+    from teatree.core.operational_health import HealthSignal
     from teatree.core.readiness import Probe
     from teatree.types import RawAPIDict
     from teatree.utils.django_db import DjangoDbImportConfig
@@ -574,20 +575,19 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
         return []
 
     def reap_worktree_external_resources(self, worktree: "Worktree") -> list[str]:
-        """Remove out-of-band resources a reaped worktree leaves behind.
+        """Remove out-of-band resources a reaped worktree leaves behind (default none).
 
-        Called by ``cleanup_worktree`` for every worktree it tears down. The
-        docker case: a worktree's compose stack leaves per-worktree containers
-        and a multi-GB application image that the git/DB teardown never touches.
-        Docker is an overlay concern — core stays overlay-agnostic, so the
-        reaping engine (:mod:`teatree.docker.reap`) is a configurable core
-        utility the docker-using overlay reaches through this hook.
-
-        Returns human-readable one-line outcomes (empty when nothing was
-        removed). The default is ``[]`` — an overlay with no external resources
-        opts out without action.
+        Called by ``cleanup_worktree`` per torn-down worktree. The docker case: a
+        compose stack leaves per-worktree containers + a multi-GB image the git/DB
+        teardown never touches, reaped through :mod:`teatree.docker.reap` (core
+        stays overlay-agnostic). Returns human-readable one-line outcomes; the
+        default ``[]`` opts an overlay with no external resources out.
         """
         _ = worktree
+        return []
+
+    def get_health_signals(self) -> list["HealthSignal"]:
+        """Overlay operational-health signals for the global aggregator (PR-17; default none)."""
         return []
 
     def get_health_checks(self, worktree: "Worktree") -> list["HealthCheck"]:

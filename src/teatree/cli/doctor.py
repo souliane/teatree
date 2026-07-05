@@ -34,6 +34,7 @@ from teatree.cli._doctor_checks import (
     _check_skills,
     _check_stale_path_t3,
     _check_stale_uv_venv,
+    _check_statusline,
     _check_teatree_mcp_registration,
 )
 from teatree.cli._doctor_plugin_repair import (
@@ -80,6 +81,7 @@ __all__ = (
     "_check_skills",
     "_check_stale_path_t3",
     "_check_stale_uv_venv",
+    "_check_statusline",
     "_check_teatree_mcp_registration",
     "_do_ensure_plugin_registered",
     "_ensure_plugin_registered",
@@ -545,6 +547,10 @@ def check() -> bool:
     ok = _check_stale_uv_venv() and ok
     ok = _check_stale_path_t3() and ok
     ok = _check_agent_session_pins() and ok
+    # Verify the Claude Code statusLine block (PR-17): present, absolute path,
+    # executable target — with exact remediation. A missing block is a WARN
+    # (`t3 setup` installs it); a relative/non-executable one is a hard FAIL.
+    ok = _check_statusline() and ok
 
     # ``check`` is a plain Typer command in the Django-free CLI group, so
     # Django is not configured by the time the self-DB schema guard runs.
