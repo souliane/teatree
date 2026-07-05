@@ -91,6 +91,7 @@ from teatree.core.models.ticket_artifacts import (
 from teatree.core.models.transition import TicketTransition
 from teatree.core.models.trusted_identity import TrustedIdentity, TrustedIdentityManager
 from teatree.core.models.types import Ports, TicketExtra, WorktreeExtra, validated_ticket_extra
+from teatree.core.models.waiting_item import WaitingItem, WaitingItemError, WaitingItemManager
 from teatree.core.models.worktree import Worktree, WorktreeEnvOverride
 
 __all__ = [
@@ -221,6 +222,9 @@ __all__ = [
     "TrajectoryToolCall",
     "TrustedIdentity",
     "TrustedIdentityManager",
+    "WaitingItem",
+    "WaitingItemError",
+    "WaitingItemManager",
     "Worktree",
     "WorktreeArtifact",
     "WorktreeEnvOverride",

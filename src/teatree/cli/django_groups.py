@@ -208,6 +208,15 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         ],
         core_dispatch=True,
     ),
+    "waiting": DjangoGroup(
+        "The durable 'waiting on you' lane — questions, merge authorizations, reviews, manual items.",
+        [
+            ("list", "List everything currently waiting on the user (all kinds), computed live."),
+            ("add", "Record a manual waiting item the live sources cannot see."),
+            ("resolve", "Resolve a manual waiting item by id."),
+        ],
+        core_dispatch=True,
+    ),
     "handover": DjangoGroup(
         "Hand all current work from this session to another session.",
         [

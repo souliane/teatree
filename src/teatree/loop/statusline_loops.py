@@ -347,10 +347,11 @@ def live_loops_anchor(*, colorize: bool = False) -> list[str]:
         availability, read live at render time (:func:`_availability_segment`)
         so the user always sees the present/away value and which layer decided
         it, never a cached one.
-    *   ``waiting: <subject>`` — appended ONLY when the loop is blocked on
-        the user (there are unresolved :class:`DeferredQuestion` rows), so
-        the dashboard surfaces "the loop is held, you owe it an answer"
-        without the user hunting for it.
+    *   ``waiting=N`` — appended ONLY when N > 0 things are waiting on the
+        user across the durable waiting-on-you lane (unresolved questions,
+        PRs awaiting a merge authorization, pending review requests, manual
+        items — :func:`teatree.core.waiting.gather_waiting`), so the dashboard
+        surfaces "you owe N things" without the user hunting for them.
 
     Each per-loop chunk is colored by its imminence relative to its own
     cadence (:func:`_loop_recency_color`) when *colorize* is on — green when
@@ -397,30 +398,30 @@ def _availability_segment() -> str:
 
 
 def _waiting_clause() -> str:
-    """Return ``waiting: N questions`` when blocked on the user, else ``""``.
+    """Return ``waiting=N`` when N > 0 things wait on the user, else ``""`` (PR-21).
 
     Fails open to ``""`` (no clause) on any read error so a broken
-    :class:`DeferredQuestion` query never blanks the loop line.
+    :func:`teatree.core.waiting.gather_waiting` read never blanks the loop line.
     """
     try:
-        pending = _pending_questions()
+        count = _waiting_count()
     except Exception:  # noqa: BLE001
         return ""
-    if pending <= 0:
+    if count <= 0:
         return ""
-    noun = "question" if pending == 1 else "questions"
-    return f"waiting: {pending} {noun}"
+    return f"waiting={count}"
 
 
-def _pending_questions() -> int:
-    """Count unresolved deferred questions (the loop's user-blocked signal).
+def _waiting_count() -> int:
+    """Count every entry waiting on the user across all kinds (PR-21).
 
     Thin DB-read seam so :func:`live_loops_anchor` stays a pure formatter —
-    tests stub this rather than constructing ``DeferredQuestion`` fixtures.
+    tests stub this rather than constructing the underlying fixtures. Scoped to
+    every overlay (``""``) so the loop line shows the operator's whole backlog.
     """
-    from teatree.core.availability import pending_questions_count  # noqa: PLC0415
+    from teatree.core.waiting import gather_waiting  # noqa: PLC0415 — deferred: keep this module Django-free at import
 
-    return pending_questions_count()
+    return len(gather_waiting(""))
 
 
 def _short_loop_name(name: str) -> str:

@@ -11,7 +11,7 @@ Regression-locks the dashboard contract the user kept hitting:
     ``state:`` label (``coded:`` / ``tested:`` / ``scoped:`` …), joined by
     `` · `` and ordered by state priority — one physical line per overlay.
 3.  The single loop line carries a leading state word (``running`` / ``idle``)
-    and a ``waiting: <subject>`` clause when blocked on the user.
+    and a ``waiting=N`` clause when things wait on the user.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -204,7 +204,7 @@ class TestLoopLineStateAndWaiting:
         with (
             patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
             patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
-            patch("teatree.loop.statusline_loops._pending_questions", return_value=0),
+            patch("teatree.loop.statusline_loops._waiting_count", return_value=0),
         ):
             lines = live_loops_anchor()
         assert len(lines) == 1, repr(lines)
@@ -217,10 +217,10 @@ class TestLoopLineStateAndWaiting:
         with (
             patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
             patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
-            patch("teatree.loop.statusline_loops._pending_questions", return_value=2),
+            patch("teatree.loop.statusline_loops._waiting_count", return_value=2),
         ):
             lines = live_loops_anchor()
-        assert "waiting: 2 questions" in lines[0], lines[0]
+        assert "waiting=2" in lines[0], lines[0]
 
     def test_no_waiting_clause_when_no_pending(self) -> None:
         acquired_at = datetime.now(UTC) - timedelta(seconds=60)
@@ -228,18 +228,18 @@ class TestLoopLineStateAndWaiting:
         with (
             patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
             patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
-            patch("teatree.loop.statusline_loops._pending_questions", return_value=0),
+            patch("teatree.loop.statusline_loops._waiting_count", return_value=0),
         ):
             lines = live_loops_anchor()
         assert "waiting" not in lines[0], lines[0]
 
-    def test_pending_questions_failure_is_fail_open(self) -> None:
+    def test_waiting_count_failure_is_fail_open(self) -> None:
         acquired_at = datetime.now(UTC) - timedelta(seconds=60)
         leases = [("loop-tickets", acquired_at)]
         with (
             patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
             patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
-            patch("teatree.loop.statusline_loops._pending_questions", side_effect=RuntimeError("db down")),
+            patch("teatree.loop.statusline_loops._waiting_count", side_effect=RuntimeError("db down")),
         ):
             lines = live_loops_anchor()
         assert lines[0].startswith("tickets"), lines[0]

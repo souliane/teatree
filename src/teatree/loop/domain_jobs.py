@@ -51,6 +51,7 @@ from teatree.loop.scanners import (
     TicketCompletionScanner,
     TicketDispositionScanner,
     UndeliveredNotifyScanner,
+    WaitingDigestScanner,
 )
 from teatree.loop.scanners.base import ScannerError
 from teatree.loop.tick_resolvers import _allowed_url_prefixes_for_host, _identity_alias_groups_for_overlay
@@ -82,6 +83,7 @@ def _global_dispatch_jobs() -> list[_ScannerJob]:
         _ScannerJob(scanner=OutboundAuditScanner(notifier=default_drift_notifier), overlay=""),
         _ScannerJob(scanner=UndeliveredNotifyScanner(), overlay=""),
         _ScannerJob(scanner=DeferredQuestionPosterScanner(), overlay=""),
+        _ScannerJob(scanner=WaitingDigestScanner(), overlay=""),
     ]
 
 
