@@ -29,7 +29,17 @@ Teatree IS the Django project. Overlays are lightweight Python packages:
 ```bash
 uv run pytest                    # full suite, parallel (-n auto), no coverage — fast default
 bash dev/test-cov.sh             # coverage lane: --cov --doctest-modules, 93% floor (CI parity)
+bash dev/ci-parity.sh            # the EXACT full CI predicate in one command (see below)
 uv run ruff check                # lint
 uv run ruff format               # format
 t3 --help                        # CLI (installed via `uv tool install --editable .`)
 ```
+
+**Before pushing a src-touching PR, run `bash dev/ci-parity.sh`.** It chains the
+exact blocking CI predicate (prek all-files, `makemigrations --check`,
+`t3 tool test-path-mirror`, `dev/test-cov.sh`, `t3 ci coverage`) so a floor/gate
+failure is caught locally instead of on the first CI cycle. It is opt-in by
+workflow, never a push hook — the 93% whole-tree coverage floor is a whole-tree
+property no diff-scoped push subset can prove, and the full suite must never gate
+a push (`tests/test_no_full_suite_on_pre_push.py`). The push-stage
+`ci-critical-parity` hook covers only the fast doctest/never-lockout classes.

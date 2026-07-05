@@ -9,7 +9,8 @@ from django.test import TestCase
 from teatree.core.management.commands._ticket_show import TicketShowResult, render_ticket_show
 from teatree.core.models import Ticket
 from teatree.loop.rendering_classification import ActiveTicketRow
-from teatree.loop.rendering_zones import _render_ticket_line
+from teatree.loop.rendering_items import _LinkCtx
+from teatree.loop.rendering_zones import _link, _render_ticket_line
 
 
 class TestExpediteModel(TestCase):
@@ -67,7 +68,7 @@ class TestExpediteStatuslineChip:
             "t3-teatree",
             [ActiveTicketRow(number="42", state="coded", issue_url="", title="topic", expedite=True)],
             {},
-            colorize=False,
+            ctx=_LinkCtx(colorize=False, link=_link),
         )
         assert "⚡#42" in line
 
@@ -76,7 +77,7 @@ class TestExpediteStatuslineChip:
             "t3-teatree",
             [ActiveTicketRow(number="42", state="coded", issue_url="", title="topic", expedite=False)],
             {},
-            colorize=False,
+            ctx=_LinkCtx(colorize=False, link=_link),
         )
         assert "⚡" not in line
         assert "#42" in line

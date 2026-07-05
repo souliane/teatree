@@ -199,6 +199,15 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         ],
         core_dispatch=True,
     ),
+    "health": DjangoGroup(
+        "Global operational-health verdict + known-issues registry.",
+        [
+            ("show", "Reconcile and print the green/yellow/red verdict + open KnownIssue rows."),
+            ("add", "Record a manual operational-health issue the deterministic signals miss."),
+            ("dismiss", "Acknowledge and close an open KnownIssue by id."),
+        ],
+        core_dispatch=True,
+    ),
     "handover": DjangoGroup(
         "Hand all current work from this session to another session.",
         [

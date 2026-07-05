@@ -26,6 +26,7 @@ import teatree.cli.cost as _cost
 import teatree.cli.info as _info
 import teatree.cli.sessions as _sessions
 import teatree.cli.speak as _speak
+import teatree.cli.speak_dm as _speak_dm
 import teatree.cli.tokens as _tokens
 import teatree.cli.ui as _ui
 from teatree.cli import (
@@ -149,6 +150,7 @@ app.command()(_sessions.sessions)
 app.command()(_cost.cost)
 app.command()(_tokens.tokens)
 app.command()(_speak.speak)
+app.command(name="speak-dm")(_speak_dm.speak_dm)
 app.add_typer(_info.info_app, name="info")
 app.command()(_ui.ui)
 app.command()(_admin.admin)

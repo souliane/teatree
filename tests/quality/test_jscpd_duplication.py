@@ -95,8 +95,10 @@ class TestScanCoverage:
         assert not escaped, f"source files not scanned by jscpd: {escaped}"
 
     def test_tree_has_no_duplication(self, tmp_path: Path) -> None:
+        # Its own ``--output`` dir so two concurrent jscpd runs (this and the
+        # ``analyzed`` fixture, under ``-n auto``) never share an artifact dir.
         result = subprocess.run(
-            [_NPX, "--yes", "jscpd@4", "--config", str(_CONFIG), "--silent", str(_SRC)],
+            [_NPX, "--yes", "jscpd@4", "--config", str(_CONFIG), "--output", str(tmp_path), "--silent", str(_SRC)],
             cwd=_REPO_ROOT,
             check=False,
             capture_output=True,

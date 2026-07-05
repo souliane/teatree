@@ -36,6 +36,7 @@ from teatree.core.models.honesty_escalation import HonestyEscalation
 from teatree.core.models.implemented_issue_marker import NEEDS_TRIAGE_LABEL, ImplementedIssueMarker
 from teatree.core.models.incoming_event import IncomingEvent
 from teatree.core.models.intent_classification import IntentClassification
+from teatree.core.models.known_issue import KnownIssue, KnownIssueManager
 from teatree.core.models.landscape_artifact import LandscapeArtifact
 from teatree.core.models.live_post_approval import (
     LIVE_POST_APPROVAL_TTL_MINUTES,
@@ -143,6 +144,8 @@ __all__ = [
     "IntentClassification",
     "InvalidTransitionError",
     "InvariantOutcome",
+    "KnownIssue",
+    "KnownIssueManager",
     "LandscapeArtifact",
     "LandscapeArtifactRef",
     "LivePostApproval",

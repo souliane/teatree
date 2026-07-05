@@ -47,6 +47,65 @@ def availability_segment(resolution: "Resolution") -> str:
     return f"availability: {resolution.mode} ({resolution.source})"
 
 
+def _configured_overlay_names() -> list[str]:
+    """Return the sorted names of every configured overlay.
+
+    Thin discovery seam so :func:`overlays_anchor` stays a pure formatter —
+    tests stub this rather than registering real overlays. Production reads
+    the unified entry-point + ``~/.teatree.toml`` discovery in
+    :meth:`teatree.core.overlay_loader.OverlayConfigResolver.all_names`.
+    """
+    from teatree.core.overlay_loader import OverlayConfigResolver  # noqa: PLC0415 — deferred read
+
+    return sorted(OverlayConfigResolver.all_names())
+
+
+def overlays_anchor() -> list[str]:
+    """Return the single configured-overlays summary line, or ``[]``.
+
+    Surfaces the user's multi-overlay context (``overlays: a · b · c``)
+    directly, rather than leaving overlays to appear only implicitly when a
+    ticket or PR happens to carry an ``[ov]`` prefix. Returns ``[]`` when no
+    overlay is configured. Fails open: any discovery error degrades to ``[]``
+    so a broken config can never blank the statusline.
+    """
+    try:
+        names = _configured_overlay_names()
+    except Exception:  # noqa: BLE001 — fail-open: a broken config can never blank the statusline
+        return []
+    if not names:
+        return []
+    return [f"overlays: {' · '.join(names)}"]
+
+
+def health_chip(*, colorize: bool = False) -> list[str]:
+    """Return the single global-health chip line, or ``[]`` (PR-17).
+
+    Reads the persisted operational-health verdict (read-only —
+    :func:`teatree.core.operational_health.read_health`, never a reconcile at
+    render time) and renders a colored status dot plus the open-issue count:
+    ``health: ●`` when green and clean, ``health: ● 3`` when three issues are
+    open. The dot is green/yellow/red per the verdict; when *colorize* is set it
+    resets to the loop line's dim baseline (not a full reset) so the ``health:``
+    label and count stay dim around it. Fails open to ``[]`` so a broken read
+    never blanks the statusline.
+    """
+    try:
+        from teatree.core.operational_health import HealthStatus, read_health  # noqa: PLC0415 — deferred read
+
+        report = read_health()
+    except Exception:  # noqa: BLE001 — fail-open: a broken health read never blanks the statusline
+        return []
+    color = {
+        HealthStatus.GREEN: _ANSI_GREEN,
+        HealthStatus.YELLOW: _ANSI_YELLOW,
+        HealthStatus.RED: _ANSI_RED,
+    }.get(report.status, _ANSI_GREEN)
+    dot = _colorize_chunk("●", color, colorize=colorize)
+    count = f" {report.open_count}" if report.open_count else ""
+    return [f"health: {dot}{count}"]
+
+
 def _live_loop_leases() -> list[tuple[str, datetime | None]]:
     """Return ``(loop_name, acquired_at)`` for every currently-live LoopLease.
 

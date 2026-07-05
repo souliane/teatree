@@ -268,6 +268,24 @@
       ]
     },
     {
+      "help": "``t3 <overlay> health`` group root.",
+      "name": "health",
+      "subcommands": [
+        {
+          "help": "Reconcile and print the global-health verdict + open KnownIssue rows",
+          "name": "show"
+        },
+        {
+          "help": "Record a manual operational-health issue the deterministic signals miss",
+          "name": "add"
+        },
+        {
+          "help": "Acknowledge and close an open issue by id",
+          "name": "dismiss"
+        }
+      ]
+    },
+    {
       "help": "``t3 <overlay> honesty`` group root.",
       "name": "honesty",
       "subcommands": [
@@ -751,6 +769,11 @@
     {
       "help": "Read ``text`` aloud synchronously through the local speakers per [teatree.speak].",
       "name": "speak",
+      "subcommands": []
+    },
+    {
+      "help": "Attach spoken audio to the DM at ``channel`` per [teatree.speak] (no-op unless slack/local on).",
+      "name": "speak_dm",
       "subcommands": []
     },
     {

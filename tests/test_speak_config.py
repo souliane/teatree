@@ -14,7 +14,7 @@ from django.test import TestCase
 
 import teatree.config as config_facade
 from teatree.config import get_effective_settings
-from teatree.config_speak import resolve_speak
+from teatree.config_speak import parse_speak_setting, resolve_speak
 from teatree.core.models import ConfigSetting
 from teatree.types import LocalPlayback, SpeakConfig
 
@@ -65,6 +65,37 @@ class TestSpeakConfigHelpers:
     def test_to_dict_has_local_string_and_slack_bool(self) -> None:
         assert SpeakConfig(local=LocalPlayback.ALL, slack=True).to_dict() == {"local": "all", "slack": True}
         assert SpeakConfig().to_dict() == {"local": "off", "slack": False}
+
+
+class TestPresenceFields:
+    """The ``[teatree.speak]`` presence opt-in fields (#2171) round-trip, default empty."""
+
+    def test_default_presence_fields_empty(self) -> None:
+        cfg = SpeakConfig()
+        assert cfg.presence_backend == ""
+        assert cfg.presence_token_ref == ""
+
+    def test_to_dict_omits_empty_presence_fields(self) -> None:
+        # A speak config that opts OUT of meeting-mute must serialize byte-identically
+        # to the pre-#2171 shape, so no stored config is disturbed.
+        assert SpeakConfig(local=LocalPlayback.ALL, slack=True).to_dict() == {"local": "all", "slack": True}
+
+    def test_to_dict_includes_set_presence_fields(self) -> None:
+        cfg = SpeakConfig(presence_backend="msteams", presence_token_ref="ms/tok")
+        assert cfg.to_dict() == {
+            "local": "off",
+            "slack": False,
+            "presence_backend": "msteams",
+            "presence_token_ref": "ms/tok",
+        }
+
+    def test_resolve_speak_reads_presence_fields(self) -> None:
+        cfg = resolve_speak({"speak": {"local": "all", "presence_backend": "msteams", "presence_token_ref": "ms/tok"}})
+        assert cfg == SpeakConfig(local=LocalPlayback.ALL, presence_backend="msteams", presence_token_ref="ms/tok")
+
+    def test_parse_setting_round_trips_presence(self) -> None:
+        canonical = parse_speak_setting({"local": "dm", "presence_backend": "msteams"})
+        assert canonical == {"local": "dm", "slack": False, "presence_backend": "msteams"}
 
 
 class TestSpeakDbResolution(TestCase):

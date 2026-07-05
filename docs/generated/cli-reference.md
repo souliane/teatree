@@ -24,6 +24,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 status.                                                      │
 │ speak           Read text aloud through the local speakers per  (no-op       │
 │                 unless local = all).                                         │
+│ speak-dm        Attach spoken audio to a user DM per  (no-op unless          │
+│                 slack/local on).                                             │
 │ ui              Browse and run every t3 command in an interactive terminal   │
 │                 UI.                                                          │
 │ admin           Run the Django admin for the teatree project on a local dev  │
@@ -224,6 +226,25 @@ Usage: t3 speak [OPTIONS] TEXT
 │ --overlay        TEXT  Set T3_OVERLAY_NAME for the call (per-overlay Slack   │
 │                        creds).                                               │
 │ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 speak-dm`
+
+```
+Usage: t3 speak-dm [OPTIONS]
+
+ Attach spoken audio to a user DM per  (no-op unless slack/local on).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ *  --channel          TEXT  Slack DM channel id the audio attaches to.       │
+│                             [required]                                       │
+│ *  --text             TEXT  Text to speak. Use '-' to read it from stdin.    │
+│                             [required]                                       │
+│    --thread-ts        TEXT  Thread the audio DM under this ts.               │
+│    --overlay          TEXT  Set T3_OVERLAY_NAME for the call (per-overlay    │
+│                             Slack creds).                                    │
+│    --help                   Show this message and exit.                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -2941,20 +2962,20 @@ Usage: t3 tool test-path-mirror [OPTIONS]
 
  Forward-guard: test files mirror their ``src/teatree/<pkg>/...`` module path.
 
- Baseline-ratchet (fails only when the live mis-pathed count exceeds the
- committed baseline), so the relocation sweep can only shrink the floor. A CI /
- report check, never a PreToolUse gate — it can never lock the agent's tools.
+ Per-path ledger (RED on a live violation missing from the ledger, RED on a
+ stale ledger entry that no longer violates), so the relocation sweep can only
+ shrink the floor and disjoint PRs never collide. A CI / report check, never a
+ PreToolUse gate — it can never lock the agent's tools.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --root                    PATH  Repo root to analyse (default: cwd)          │
 │ --json                          Emit machine-readable JSON.                  │
-│ --update-baseline               Rewrite the committed violation-count        │
-│                                 baseline to the current measurement.         │
-│ --allow-regression              With --update-baseline, permit writing a     │
-│                                 HIGHER count than the committed baseline (an │
-│                                 intentional, reviewed rise). Refused by      │
-│                                 default so the ratchet cannot silently       │
-│                                 loosen.                                      │
+│ --update-baseline               Rewrite the committed grandfathered ledger   │
+│                                 to the exact live violation set.             │
+│ --allow-regression              With --update-baseline, permit ADDING a new  │
+│                                 grandfathered entry (an intentional,         │
+│                                 reviewed rise). Refused by default so the    │
+│                                 ratchet cannot silently loosen.              │
 │ --help                          Show this message and exit.                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -4569,6 +4590,7 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ standup         Auto-generated daily update (read-only).                     │
 │ checking        Terse 'what did I miss' report since the last check          │
 │                 (read-only).                                                 │
+│ health          Global operational-health verdict + known-issues registry.   │
 │ handover        Hand all current work from this session to another session.  │
 │ session         Session-lifecycle operations.                                │
 │ lifecycle       Session lifecycle and phase tracking.                        │
@@ -7254,6 +7276,69 @@ Usage: t3 teatree checking show [OPTIONS]
 │ --this-overlay              Scope to the current overlay only (default:      │
 │                             aggregate all configured overlays).              │
 │ --help                      Show this message and exit.                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree health`
+
+```
+Usage: t3 teatree health [OPTIONS] COMMAND [ARGS]...
+
+ Global operational-health verdict + known-issues registry.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ show     Reconcile and print the green/yellow/red verdict + open KnownIssue  │
+│          rows.                                                               │
+│ add      Record a manual operational-health issue the deterministic signals  │
+│          miss.                                                               │
+│ dismiss  Acknowledge and close an open KnownIssue by id.                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree health show`
+
+```
+Usage: t3 teatree health show [OPTIONS]
+
+ Reconcile and print the global-health verdict + open KnownIssue rows.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --json          Emit the report as JSON instead of the table view.           │
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree health add`
+
+```
+Usage: t3 teatree health add [OPTIONS] TEXT
+
+ Record a manual operational-health issue the deterministic signals miss.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    text      TEXT  The issue text to record. [required]                    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --critical          Record at critical severity (default: warning).          │
+│ --help              Show this message and exit.                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree health dismiss`
+
+```
+Usage: t3 teatree health dismiss [OPTIONS] ISSUE_ID
+
+ Acknowledge and close an open issue by id.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    issue_id      INTEGER  The KnownIssue id to dismiss. [required]         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

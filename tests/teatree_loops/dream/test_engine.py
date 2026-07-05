@@ -416,6 +416,18 @@ class BuildExtractTestCase(TestCase):
         joined = "\n".join(s.text for s in extract.snippets)
         assert "computed result row" not in joined
 
+    def test_keeps_substantive_learning_prose_with_no_signal_keyword(self) -> None:
+        # #2986: the day's richest drift is a declarative finding carrying no literal
+        # signal token and no correction/ask cue. The keyword gate starved it before,
+        # so a plain pass distilled 0 clusters from a corpus full of real learnings.
+        chatter = "\n".join(f'{{"type":"assistant","text":"computed result row {i}"}}' for i in range(50))
+        learning = '{"type":"assistant","text":"root caused the empty owner crash to a missing tenant filter"}'
+        member = self._member("session.jsonl", chatter + "\n" + learning, kind="main")
+        extract = build_extract([member])
+        joined = "\n".join(s.text for s in extract.snippets)
+        assert "root caused the empty owner crash" in joined
+        assert "computed result row 25" not in joined
+
     def test_transcript_floor_survives_high_weight_memory_flood(self) -> None:
         flood = [self._member(f"feedback_{i}.md", "BINDING: " + ("x" * 50_000)) for i in range(20)]
         correction = '{"type":"user","text":"why did you do this again? do not, stop, I told you"}'
@@ -467,6 +479,34 @@ class CorrectionProseProducesGroundedClusterTestCase(TestCase):
             run_consolidation(overlay="", since=None, dry_run=False, distiller=_distill)
 
         assert ConsolidatedMemory.objects.filter(cluster_key="correction").count() == 1
+
+    def test_substantive_learning_only_transcript_yields_a_grounded_cluster(self) -> None:
+        # #2986: a transcript whose only substance is a declarative learning (no
+        # signal token, no correction/ask cue) must still reach the distiller and
+        # ground a cluster. RED before the fix: the keyword gate dropped the line, the
+        # extract was empty, the distiller was never called, 0 rows were written.
+        chatter = "\n".join(f'{{"type":"assistant","text":"computed result row {i}"}}' for i in range(30))
+        finding = '{"type":"assistant","text":"root caused the empty owner crash to a missing tenant filter"}'
+        member = TranscriptMember(path=self.tmp / "session.jsonl", kind="main")
+        member.path.write_text(chatter + "\n" + finding)
+
+        def _distill(extract: ConsolidationExtract) -> list[DistilledCluster]:
+            snippet = extract.snippets[0]
+            return [
+                DistilledCluster(
+                    cluster_key="learning",
+                    rule="Guard resolve_owner against a missing tenant filter.",
+                    source_files=[str(snippet.path)],
+                    is_binding=False,
+                    verified_citation="root caused the empty owner crash to a missing tenant filter",
+                    durable_destination="",
+                )
+            ]
+
+        with patch.object(engine, "enumerate_members", return_value=[member]):
+            run_consolidation(overlay="", since=None, dry_run=False, distiller=_distill)
+
+        assert ConsolidatedMemory.objects.filter(cluster_key="learning").count() == 1
 
 
 class WeightedSnippetTestCase(TestCase):

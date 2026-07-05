@@ -776,7 +776,6 @@ def test_canonical_item_drops_review_permalink_chunk() -> None:
             _PRRef(
                 iid=145,
                 url="https://x/mr/145",
-                annotation="",
                 review_permalink="https://slack.com/archives/C9/p17790001",
             ),
         ],

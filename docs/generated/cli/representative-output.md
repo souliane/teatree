@@ -27,6 +27,8 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 status.                                                      │
 │ speak           Read text aloud through the local speakers per  (no-op       │
 │                 unless local = all).                                         │
+│ speak-dm        Attach spoken audio to a user DM per  (no-op unless          │
+│                 slack/local on).                                             │
 │ ui              Browse and run every t3 command in an interactive terminal   │
 │                 UI.                                                          │
 │ admin           Run the Django admin for the teatree project on a local dev  │

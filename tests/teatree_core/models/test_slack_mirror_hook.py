@@ -14,6 +14,7 @@ from unittest.mock import patch
 import pytest
 
 import hooks.scripts.hook_router as router
+import hooks.scripts.slack_mirror_wiring as wiring
 from teatree.core.models.deferred_question import DeferredQuestion
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -247,7 +248,7 @@ class TestRouterDomainWiring:
         poster = router._slack_http_poster()
         client = poster.__self__
         assert client._max_retries == 0
-        assert client._timeout == pytest.approx(router._SLACK_POST_TIMEOUT_SECONDS)
+        assert client._timeout == pytest.approx(wiring._SLACK_POST_TIMEOUT_SECONDS)
 
     def test_active_dm_thread_resolves_most_recent_ref_for_channel(self) -> None:
         from teatree.core.models import IncomingEvent  # noqa: PLC0415

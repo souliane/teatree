@@ -16,9 +16,13 @@ _DEFAULT_SPEAK = SpeakConfig()
 def speak_from_subtable(subtable: dict[str, Any], *, base: SpeakConfig = _DEFAULT_SPEAK) -> SpeakConfig:
     """Build a :class:`SpeakConfig` from a ``[teatree.speak]`` sub-table; keys absent fall back to ``base``."""
     local = subtable.get("local")
+    presence_backend = subtable.get("presence_backend")
+    presence_token_ref = subtable.get("presence_token_ref")
     return SpeakConfig(
         local=LocalPlayback.parse(local) if local is not None else base.local,
         slack=bool(subtable.get("slack", base.slack)),
+        presence_backend=str(presence_backend) if presence_backend is not None else base.presence_backend,
+        presence_token_ref=str(presence_token_ref) if presence_token_ref is not None else base.presence_token_ref,
     )
 
 

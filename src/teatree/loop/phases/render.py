@@ -22,7 +22,7 @@ from teatree.loop.domain_jobs import _identity_groups_for_overlay
 from teatree.loop.job_identity import _ScannerJob
 from teatree.loop.manual_pr_reconcile import reconcile_manual_prs
 from teatree.loop.phases.orchestrate import orchestrate_phase
-from teatree.loop.rendering import zones_for
+from teatree.loop.rendering import _populate_health_chip, _populate_overlays_anchor, zones_for
 from teatree.loop.statusline import StatuslineZones, render
 from teatree.loop.tick_freshness import _write_tick_meta
 
@@ -50,6 +50,7 @@ def render_phase(
     so a quiet tick still keeps the dashboard live. Both paths write the
     open-PR cache, fold in the open-PR + t3-master anchors, and render.
     """
+    _reconcile_health()
     if jobs:
         zones = zones_for(report.actions, colorize=colorize, identity_aliases=_identity_aliases_for_request(request))
         _write_tick_meta(report.started_at, target=statusline_path)
@@ -57,6 +58,8 @@ def render_phase(
     else:
         zones = StatuslineZones()
         _populate_live_loops_in_anchors(zones, colorize=colorize)
+        _populate_overlays_anchor(zones)
+        _populate_health_chip(zones, colorize=colorize)
     _write_open_prs_cache(report.signals, target=statusline_path)
     _reconcile_manual_prs(report.signals)
     _populate_open_prs_in_anchors(zones, target=statusline_path, colorize=colorize)
@@ -66,6 +69,21 @@ def render_phase(
     report.statusline_path = render(zones, target=statusline_path, colorize=colorize)
     if not jobs:
         _write_tick_meta(report.started_at, target=statusline_path)
+
+
+def _reconcile_health() -> None:
+    """Refresh the operational-health registry once per tick, fail-open (PR-17).
+
+    The reconcile derives the ``KnownIssue`` rows the read-only statusline chip
+    reads back this same render, so the chip is current. Any error degrades to a
+    no-op — a broken health read never blocks the tick's render.
+    """
+    try:
+        from teatree.core.operational_health import reconcile_health  # noqa: PLC0415 — deferred read
+
+        reconcile_health()
+    except Exception:  # noqa: BLE001 — fail-open: a broken health reconcile must never block the tick's render
+        logger.debug("operational-health reconcile skipped — tick render continues")
 
 
 def _orchestrate(request: "TickRequest", *, statusline_path: Path | None) -> None:

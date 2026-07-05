@@ -64,6 +64,7 @@ from pathlib import Path
 from typing import IO
 
 from teatree.config import get_effective_settings
+from teatree.core import presence
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.paths import get_data_dir
 from teatree.types import RawAPIDict, SpeakConfig
@@ -182,6 +183,22 @@ def _is_away() -> bool:
         return availability.resolve_mode().defers_questions
     except Exception as exc:  # noqa: BLE001 — a resolution failure must never mute local audio
         logger.debug("availability resolution failed; treating as present: %s", exc)
+        return False
+
+
+def _in_meeting() -> bool:
+    """Whether a configured presence backend reports the user in a meeting (#2171).
+
+    Only a positive ``IN_MEETING`` mutes local playback; every other verdict
+    (incl. any error) fails safe to audible. The Slack-audio arm is not gated.
+    Runs on the local-TTS daemon threads, so the presence resolution reads
+    config Django-free (see :func:`presence._effective_speak`) — no ORM
+    connection is opened on the worker thread.
+    """
+    try:
+        return presence.current_presence() is presence.Presence.IN_MEETING
+    except Exception as exc:  # noqa: BLE001 — a presence failure must never mute local audio
+        logger.debug("presence resolution failed; treating as not-in-meeting: %s", exc)
         return False
 
 
@@ -514,10 +531,11 @@ def _acquire_within_budget(lock_fh: IO[str]) -> bool:
 
 
 def _speak_local(text: str) -> None:
-    """Play ``text`` through the macOS speakers via ``say`` — no-op if absent or away.
+    """Play ``text`` through the macOS speakers via ``say`` — no-op if absent, away, or in a meeting.
 
-    Applies the away gate at the playback call site: if the user is currently
-    away, the read is skipped silently. This keeps availability out of config
+    Applies the away AND meeting gates at the playback call site (#2171): a
+    presence-reported meeting mutes local playback exactly as ``away`` does,
+    with the same Slack-arm exemption. Availability stays out of config
     resolution — :func:`resolve_speak` returns the user's configured value
     unchanged; only playback is gated.
 
@@ -530,7 +548,7 @@ def _speak_local(text: str) -> None:
     (``run_allowed_to_fail`` with ``expected_codes=None``); a transport/timeout
     error is logged and dropped so the speak seam never raises into the caller.
     """
-    if _is_away():
+    if _is_away() or _in_meeting():
         return
     say_bin = shutil.which(SAY_BINARY)
     if say_bin is None:

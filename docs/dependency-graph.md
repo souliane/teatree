@@ -55,7 +55,9 @@ graph TD
     teatree.core --> teatree.core.modelkit
     teatree.core --> teatree.core.models.errors
     teatree.core --> teatree.core.models
+    teatree.core --> teatree.core.loop_lease_manager
     teatree.core --> teatree.core.session_identity
+    teatree.core --> teatree.loop.loop_cadences
     teatree.core.loop_lease_manager --> teatree.utils
     teatree.core.managers --> teatree.config
     teatree.core.managers --> teatree.utils

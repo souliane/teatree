@@ -128,3 +128,23 @@ class TestColoredChunksRideTheLoopLine:
         assert _ANSI_RED in lines[0], repr(lines[0])
         # The text content is unchanged — color wraps it, never replaces it.
         assert "inbox due" in lines[0], repr(lines[0])
+
+    def test_two_lease_segments_colored_independently(self) -> None:
+        """PR-17 item 4: each live-loop segment carries its own color on one line."""
+        now = datetime.now(UTC)
+        leases = [
+            ("loop-slack-answer", now - timedelta(seconds=690)),  # 30s left of 720 → red
+            ("loop-self-improve", now - timedelta(seconds=30)),  # 690s left of 720 → green
+        ]
+        with (
+            patch("teatree.loop.statusline_loops._live_loop_leases", return_value=leases),
+            patch("teatree.loop.statusline_loops._cadence_for_loop", return_value=720),
+            patch("teatree.loop.statusline_loops._availability_segment", return_value=""),
+            patch("teatree.loop.statusline_loops._pending_questions", return_value=0),
+        ):
+            lines = live_loops_anchor(colorize=True)
+        assert len(lines) == 1, lines
+        # Both colors appear on the single line — the two segments are NOT
+        # painted one uniform color.
+        assert _ANSI_RED in lines[0], repr(lines[0])
+        assert _ANSI_GREEN in lines[0], repr(lines[0])

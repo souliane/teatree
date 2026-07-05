@@ -345,6 +345,7 @@ below mirrors it; consult the dataclass for type signatures and defaults.
 | `orchestrator_turn_wall_clock_seconds` | #1733 §2: the **wall-clock** dimension of the same responsiveness nudge (default `180`; `0` disables). Independent of `orchestrator_turn_budget` — once a MAIN-agent turn has run more than this many seconds of wall-clock since it started (the last user-visible action), the same one-time yield nudge fires even when few tool calls were made (the slow-but-few-calls case the count dimension misses). Both dimensions share one per-turn idempotent marker; advisory only; orchestration calls and sub-agents exempt. |
 | `skill_loading_gate_enabled` | #1488: kill-switch (default `true`) for the §17.6.4 skill-loading gate that blocks `Bash`/`Edit`/`Write` and the fanned-out `TaskCreated` counterpart until the resolvable pending teatree skills load. Read directly by the hook layer; set `false` under `[teatree]` or per-overlay, or disable via `t3 <overlay> gate skill-loading disable`. |
 | `plan_edit_gate_enabled` | Kill-switch (default `true`) for the §17.6.4 gate 16 early DX signal (`handle_block_edit_before_planned`) that denies `Edit`/`Write` while the worktree's ticket is in `STARTED` state. Read directly by the hook layer; set `false` under `[teatree]` or disable via `t3 <overlay> gate plan disable`. Per-call escape: `[skip-plan-gate: <reason>]` in `new_string`/`content`/`file_path` (first 512 chars). |
+| `loop_registration_gate_enabled` | Kill-switch (default `true`) for the §17.6.4 loop-registration NUDGE (`handle_enforce_loop_registration`) that soft-blocks `Bash`/`Edit`/`Write` until the tick-owner session registers one native Claude `/loop` per enabled loop (the `<session>.loop-pending` marker). Read directly by the hook layer; set `false` under `[teatree]` to run without the loops. NEVER-LOCKOUT: it is exempt for non-owner / not-autoloaded sessions, cron-management tools, and sub-agents, routes through `_fail_open_or_deny` (self-rescue allowlist + master `danger_gate_fail_open`), and the `LOOP REGISTRATION` circuit-breaker auto-relaxes it after K consecutive denials. |
 | `gate_relaxation_gate_enabled` | Kill-switch (default `true`, [#850](https://github.com/souliane/teatree/issues/850)) for the §17.6.1/§17.6.2 anti-relaxation + tach-soundness prek gate (`scripts/hooks/check_gate_relaxation.py`) that refuses a commit whose staged diff relaxes a lint/coverage constraint or a tach boundary. DB-home (per-overlay overridable): the hook resolves it DB-first through `get_effective_settings`, so `config_setting set gate_relaxation_gate_enabled false` actuates it exactly like the sibling gates, and `t3 <overlay> gate gate-relaxation disable` is the self-rescue. Per-commit escape: the `ALLOW_GATE_RELAX='<reason>'` env marker (non-empty reason) records a sanctioned relaxation and lets the commit through. |
 | `mcp_privacy_gate_enabled` | #171: canary off-switch (default `true`) for the Slack-MCP arm of the #1213 quote-scanner and #1218 bare-reference publish-privacy gates (reachable via the `mcp__.*[Ss]lack.*` matcher). Fails OPEN; set `false` to disable the Slack-MCP arm alone if it misfires. The Bash arm of both gates is unaffected. |
 | `dispatch_quote_gate_on_task_create_enabled` | #171: opt-in switch (default `false`) for the `TaskCreated` dispatch-quote gate (`handle_dispatch_prompt_quote_scanner_on_task_create`) — the fan-out counterpart of the `PreToolUse` dispatch-quote gate (the `Task`/`Workflow` fan-out bypasses `PreToolUse`, so only `TaskCreated` reaches a fanned-out dispatch). Fails CLOSED (unvalidated fan-out gate stays inert by default); set `true` to scan fanned-out task subjects/descriptions for HIGH verbatim user quotes. Clears on a `[quote-ok: <reason>]` token. |
@@ -356,7 +357,7 @@ below mirrors it; consult the dataclass for type signatures and defaults.
 | `internal_publish_namespaces` | Destination allowlist (default `[]`) making the #1415/#1530 publish gates destination-aware: a target that prefix-matches is internal and skipped. #1672 unions it with `private_repos`, deciding the skip PER top-level segment — a chained/substituted public post or a raw-REST `api` segment forces the whole command SCANNED. FAIL-CLOSED (empty/unresolvable stay PUBLIC). `teatree.hooks.publish_destination`; env `T3_INTERNAL_PUBLISH_NAMESPACES` supplements. |
 | `owned_repos` | The repo SCOPE axis (orthogonal to `private_repos`/visibility and to `author_is_self`/collaboration): a forge-host-keyed dict `{normalized-host: [namespace-pattern, …]}` of the repos this overlay legitimately works on (`{"github.com": ["souliane", "acme-eng/widget-overlay"]}`). Host equality is matched EXACTLY before the namespace half (`slug_namespace_matches`), so a `gitlab.com` repo never matches a `github.com` scope. A `[overlays.<name>.owned_repos]` TOML table REPLACES the settings dict (authoritative-and-complete, no deep-merge). Sole-element `["*"]` is a whole-host wildcard (self-hosted forges only). `teatree.core.repo_scope`. |
 | `require_owned_repo_approval` | Opt-in (default `false`, ships INERT) for the unknown-repo gate (`teatree.core.gates.owned_repo_guard`): when `true` AND `owned_repos` non-empty, a push/merge to a repo no overlay owns is HELD for the operator. Fails CLOSED on a clean unknown verdict (opposite polarity to the visibility gate); enabling it therefore requires FIRST declaring the FULL owned host/namespace list (every private/customer forge the operator merges on) — a partial list would hold the operator's own private-forge merges as unknown. A **path-only** TOML overlay (`path` but no `class`) is skipped by `get_all_overlays` and cannot opt itself in; its repos go under an instantiable overlay's `owned_repos`. Opt in from private `~/.teatree.toml` (where brand/customer strings are allowed). Fails OPEN on a resolver exception / unresolvable host. Never-lockout: `[scope-push-ok: <reason>]` token + `[teatree] unknown_repo_push_gate_enabled = false` kill-switch. |
-| `speak` | #2060: text-to-speech config — `local` enum (`off`/`dm`/`all`) + `slack` bool. DB-home (#1775): a JSON-dict `ConfigSetting` row (`config_setting set speak '{"local":"all","slack":true}'`). See §10.1.1. |
+| `speak` | #2060: text-to-speech config — `local` enum (`off`/`dm`/`all`) + `slack` bool, plus the #2171 meeting-mute opt-in `presence_backend` (`""`/`msteams`) + its `presence_token_ref` (`pass` entry). DB-home (#1775): a JSON-dict `ConfigSetting` row (`config_setting set speak '{"local":"all","slack":true}'`); the presence keys are omitted from the stored dict when empty. See §10.1.1. |
 
 `notify_on_behalf` is NOT in this registry — it is derived (read-only),
 set by `_apply_autonomy` under `autonomy = "notify"`, never a user toml key.
@@ -392,16 +393,40 @@ is never suppressed by `slack`. The Stop-hook in-client read fires whenever
 double-play to suppress. The config lives in the DB store (read cold via
 `cold_reader` on the Stop path); there is no other per-run state.
 
-**Away-gate.** When availability resolves to `away` (§5.6.3), `resolve_speak()`
-forces `local` to `off` while preserving the configured `slack` value — so no
-audio plays through the local speakers while the user is unreachable, but a
-Slack-attached rendition still reaches their phone. The user's stored `speak`
-config is never mutated; the gate is purely effective-value.
-Both local consumers (`speak()` and the local leg of `deliver_user_dm`)
-resolve through `resolve_speak()`, so this single chokepoint silences all local
-playback when away. The away check is exception-safe — a resolution failure is
-treated as **not** away (local plays), so it can never spuriously mute audio or
-turn `slack` off.
+**Away-gate.** When availability resolves to `away` (§5.6.3), local playback is
+silenced while the configured `slack` value is preserved — so no audio plays
+through the local speakers while the user is unreachable, but a Slack-attached
+rendition still reaches their phone. The gate lives at the PLAYBACK call site
+(`speak._speak_local` consults `_is_away()`), not in `resolve_speak()`, so the
+user's stored `speak` config is never mutated and every local consumer (`speak()`
+and the local leg of `deliver_user_dm`) is gated by the one check. The away
+check is exception-safe — a resolution failure is treated as **not** away (local
+plays), so it can never spuriously mute audio or turn `slack` off.
+
+**Meeting-mute (#2171).** Beside the away-gate, `_speak_local` also silences
+local playback while a configured presence backend reports the user IN A
+MEETING — same call-site gate, same Slack-arm exemption (a Slack-attached
+rendition still reaches the phone). It is opt-in via `[teatree.speak]
+presence_backend` (`""` = off, `msteams` = MS Teams) with the backend's access
+token in the `pass` entry named by `presence_token_ref`. `teatree.core.presence`
+resolves it: it probes the backend (`current_presence()`), caches the result
+~60s, and returns `free` / `in_meeting` / `unknown`. Only a positive
+`in_meeting` mutes; an unconfigured opt-in, an unreachable backend, or any probe
+failure resolves to `unknown` and does NOT suppress (fail-safe to audible). The
+MS Teams backend (`teatree.backends.msteams.presence`) reads MS Graph
+`GET /me/presence` and maps `Busy`/`InAConferenceCall`/`Presenting` →
+`in_meeting`; acquiring the delegated-`Presence.Read` Graph token is an operator
+step. Core never imports the backend — `teatree.backends` registers the factory
+at app-ready, the same inversion `backend_registry` uses.
+
+**Question-mirror audio parity (#2171).** When `slack` is on, the AskUserQuestion
+Slack mirror (§17.1 invariant 9) also carries a spoken rendition to the user's
+phone, matching `notify_user` DMs. The router injects an audio enricher into the
+`teatree.hooks.slack_mirror` leaf (keeping the leaf import-clean); after the text
+question DM lands, the enricher spawns `t3 speak-dm` DETACHED (like the Stop-hook
+`t3 speak` read) so synthesis never blocks the mirror's hook budget. Both
+question surfaces — the present-mode mirror and the away-mode `DeferredQuestion`
+capture — carry audio.
 
 **Cross-process speaker mutual exclusion (#2152, bounded #2156).** Local
 playback fans out from two independent sources — each DM's local-read leg and

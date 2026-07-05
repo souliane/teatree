@@ -122,15 +122,9 @@ def _pr_ref(action: DispatchAction) -> _PRRef | None:
         if isinstance(url, str) and action.detail.startswith(_REVIEWER_SUMMARY_PREFIXES):
             tail = _ticket_number_from_url(url)
             if tail.isdigit():
-                return _PRRef(iid=int(tail), url=url, annotation="review", title=title)
+                return _PRRef(iid=int(tail), url=url, title=title)
         return None
-    draft_count = payload.get("draft_count")
-    status = payload.get("status", "")
-    if isinstance(draft_count, int) and draft_count > 0:
-        return _PRRef(iid=iid, url=url, annotation=f"{draft_count} notes", title=title)
-    if status in {"failed", "failure", "error"}:
-        return _PRRef(iid=iid, url=url, annotation=f"pipeline {status}", title=title)
-    return _PRRef(iid=iid, url=url, annotation="", title=title)
+    return _PRRef(iid=iid, url=url, title=title)
 
 
 @dataclass(slots=True)
