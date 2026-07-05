@@ -142,6 +142,26 @@ class TicketExtra(TypedDict, total=False):
     # (pops) its entry, so the map never accumulates stale threads. See
     # ``teatree.agents.pydantic_ai_resume``.
     pydantic_ai_threads: dict[str, list[object]]
+    # #1 dispatch-zone executor contract: metadata the revived correction-zone
+    # persistence handlers stamp so the dispatched agent has its context.
+    # Codex auto-review: the resolved ``/codex:*`` variant on a reviewer ticket.
+    codex_variant: str
+    # RED CARD corrective action: the ``RedCardSignal`` row + surfaces so the
+    # agent can file the enforcement issue and record it via ``link_issue``.
+    red_card_signal_id: int
+    red_card_signal_kind: str
+    red_card_signal_text: str
+    red_card_offending_text: str
+    # Failed-E2E fix: the spec + test title the fix targets.
+    e2e_spec: str
+    e2e_test_title: str
+    # Skill-drift fix: the drifted repo/file + the finding fingerprint.
+    drift_repo: str
+    drift_file: str
+    drift_fingerprint: str
+    # Answerer: the inbound event id + the question detail.
+    answer_event_id: int
+    answer_detail: str
 
 
 class ReviewSkillRun(TypedDict, total=False):

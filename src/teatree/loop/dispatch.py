@@ -20,12 +20,7 @@ the per-tick ``dispatch`` loop that swallows per-signal errors.
 import logging
 from typing import TYPE_CHECKING
 
-from teatree.loop.dispatch_gates import (
-    claim_red_mr_fix,
-    dispatch_incoming_task,
-    dispatch_slack_message,
-    gate_review_intent,
-)
+from teatree.loop.dispatch_gates import dispatch_incoming_task, dispatch_slack_message, gate_review_intent
 from teatree.loop.dispatch_reducer import (
     codex_review_dispatch,
     dispatch_assigned_issue,
@@ -102,13 +97,14 @@ def _dispatch_one(signal: ScanSignal) -> list[DispatchAction]:
     agent = AGENT_BY_KIND.get(signal.kind)
     if agent is not None:
         actions: list[DispatchAction] = []
-        # #1295 cap D: gate the agent action on the RedMrFixAttempt
-        # idempotency ledger so the same failing head_sha never
-        # re-dispatches. The statusline mirror still fires below.
-        if signal.kind != "my_pr.failed" or claim_red_mr_fix(signal):
-            actions.append(
-                DispatchAction(kind="agent", zone=agent, detail=signal.summary, payload=signal.payload),
-            )
+        # The agent action is emitted unconditionally; the RedMrFixAttempt
+        # idempotency claim for ``my_pr.failed`` (#1295 cap D) now lives at
+        # PERSIST time (``persistence._handle_debug``, #1 blocker), so a dropped
+        # persist rolls the claim back and the next tick retries — the claim can
+        # no longer be burned before the Task is created.
+        actions.append(
+            DispatchAction(kind="agent", zone=agent, detail=signal.summary, payload=signal.payload),
+        )
         if signal.kind in DUAL_DISPATCH:
             actions.append(
                 DispatchAction(
