@@ -18,8 +18,12 @@ class Command(TyperCommand):
     help = "Run the singleton loop-timer worker (#1796) — K pinned executors, no OS scheduler."
 
     def handle(self) -> None:
-        from teatree.loops.worker import WORKER_SINGLETON, LoopWorker  # noqa: PLC0415
-        from teatree.utils.singleton import AlreadyRunningError, singleton  # noqa: PLC0415
+        from teatree.loops.worker import LoopWorker  # noqa: PLC0415 — deferred: pulls the timer machinery
+        from teatree.utils.singleton import (  # noqa: PLC0415 — deferred with LoopWorker
+            WORKER_SINGLETON,
+            AlreadyRunningError,
+            singleton,
+        )
 
         try:
             with singleton(WORKER_SINGLETON):

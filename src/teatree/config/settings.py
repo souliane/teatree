@@ -112,6 +112,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "require_anti_vacuity_attestation": _parse_strict_bool,
     "require_reviewed_state_for_review_request": _parse_strict_bool,
     "require_integration_review": _parse_strict_bool,
+    "require_merge_evidence": _parse_strict_bool,
     "bulk_close_threshold": _parse_strict_int,
     "require_rubric_verification": _parse_strict_bool,
     "require_spec_coverage": _parse_strict_bool,
@@ -618,6 +619,17 @@ class UserSettings:
     # combined changeset. A single-repo ticket never trips it. Default false =
     # NO-OP. Per-overlay overridable.
     require_integration_review: bool = False
+    # #4a Opt-in merge-evidence FSM gate on ``mark_merged`` / ``reconcile_merged``
+    # (``merge_evidence_gate``): the terminal MERGED state is unreachable without
+    # real merged-SHA evidence — a keystone ``MergeAudit`` row OR the forge itself
+    # confirming the PR merged (fail-closed live probe). Kills "believe work is
+    # done when it's not" at the FSM root: the ungated ``_advance_ticket`` walk
+    # can no longer mark an unpushed/unmerged ticket done. Default false = NO-OP so
+    # the generic FSM never blocks; flipped ON for the teatree overlay so it bites
+    # real teatree tickets. Its OWN kill-switch (never another gate's) — setting it
+    # back off is the operator's audited escape if a forge outage would otherwise
+    # wedge a genuinely-merged ticket the forge cannot confirm. Per-overlay overridable.
+    require_merge_evidence: bool = False
     # PR-08 No-bulk-close threshold: a single command/agent action closing more
     # than this many tickets/MRs is refused without an explicit per-item
     # confirmation token (``bulk_close_gate``). A close of ≤ threshold items is

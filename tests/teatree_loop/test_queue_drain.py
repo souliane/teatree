@@ -11,6 +11,8 @@ in-process against the ephemeral test DB, never the canonical queue.
 """
 
 import datetime as dt
+import os
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -39,6 +41,21 @@ DB_BACKEND = {"TASKS": {"default": {"BACKEND": "django_tasks_db.backend.Database
 def _db_task_backend() -> object:
     with override_settings(**DB_BACKEND):
         yield
+
+
+@pytest.fixture(autouse=True)
+def _isolate_singleton_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point the worker-singleton probe at an empty per-test dir.
+
+    ``a_worker_is_running`` reads pid files under ``DATA_DIR``; the real machine dir may
+    hold a live ``worker.pid`` (a running worker, or a parallel ``test_worker_supervisor``
+    holding the singleton), which would non-deterministically stand the drain down. The
+    probe itself is exercised against controlled pid files in ``TestWorkerSingletonProbe``.
+    """
+    from teatree.utils import singleton as singleton_mod  # noqa: PLC0415 — test-local: patch the module attr
+
+    monkeypatch.setattr(singleton_mod, "DATA_DIR", tmp_path / "singletons")
+    (tmp_path / "singletons").mkdir()
 
 
 def _backdate(hours: float) -> None:
@@ -134,6 +151,75 @@ class TestDrainReadyBatch:
         from teatree.loop.queue_drain import a_worker_is_running  # noqa: PLC0415
 
         assert a_worker_is_running() is False
+
+
+# ast-grep-ignore: ac-django-no-pytest-django-db
+@pytest.mark.django_db(transaction=True)
+class TestWorkerSingletonProbe:
+    """The drain stands down for the REAL worker singleton, never a wrong-name ghost (#5).
+
+    The probe must read the SAME constant the worker acquires — ``WORKER_SINGLETON``
+    (the #1796 :class:`LoopWorker`) and the legacy ``LEGACY_WORKER_SINGLETON`` (the
+    ``t3 <overlay> worker`` spawner still live during the deprecation window). A pid
+    file at either forces the tick drain to stand down.
+    """
+
+    def _hold_pid(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+        from teatree.utils import singleton as singleton_mod  # noqa: PLC0415 — test-local: patch the module attr
+
+        monkeypatch.setattr(singleton_mod, "DATA_DIR", tmp_path)
+        (tmp_path / f"{name}.pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
+
+    def test_drain_stands_down_for_live_worker_singleton(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from teatree.utils.singleton import WORKER_SINGLETON  # noqa: PLC0415 — test-local deferred import
+
+        refresh_followup_snapshot.enqueue()
+        self._hold_pid(tmp_path, monkeypatch, WORKER_SINGLETON)
+
+        assert drain_ready_batch(max_jobs=5) == 0
+        assert DBTaskResult.objects.get().status == TaskResultStatus.READY
+
+    def test_drain_stands_down_for_legacy_worker_singleton(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from teatree.utils.singleton import LEGACY_WORKER_SINGLETON  # noqa: PLC0415 — test-local deferred import
+
+        refresh_followup_snapshot.enqueue()
+        self._hold_pid(tmp_path, monkeypatch, LEGACY_WORKER_SINGLETON)
+
+        assert drain_ready_batch(max_jobs=5) == 0
+        assert DBTaskResult.objects.get().status == TaskResultStatus.READY
+
+    def test_drain_proceeds_when_no_singleton_pid_is_held(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from teatree.utils import singleton as singleton_mod  # noqa: PLC0415 — test-local: patch the module attr
+
+        monkeypatch.setattr(singleton_mod, "DATA_DIR", tmp_path)  # empty dir — no pid file for any name
+        refresh_followup_snapshot.enqueue()
+
+        assert drain_ready_batch(max_jobs=5) == 1
+
+
+# ast-grep-ignore: ac-django-no-pytest-django-db
+@pytest.mark.django_db(transaction=True)
+class TestDrainExcludesLoopsQueue:
+    """loops-queue loop_timer rows run only on the worker's executors, never the tick drain (#5)."""
+
+    def test_drain_never_runs_loops_queue_rows(self) -> None:
+        from teatree.loops.timer_chains import loop_timer  # noqa: PLC0415 — test-local: enqueue a loops-queue row
+
+        both_queues = {
+            "default": {"BACKEND": "django_tasks_db.backend.DatabaseBackend", "QUEUES": ["default", "loops"]}
+        }
+        with override_settings(TASKS=both_queues):
+            refresh_followup_snapshot.enqueue()  # default queue — drainable
+            loop_timer.enqueue("inbox")  # loops queue — must be left for the worker
+            drained = drain_ready_batch(max_jobs=5)
+
+        assert drained == 1  # ONLY the default-queue job ran
+        assert DBTaskResult.objects.get(queue_name="loops").status == TaskResultStatus.READY
+        assert DBTaskResult.objects.get(queue_name="default").status == TaskResultStatus.SUCCESSFUL
 
 
 # ast-grep-ignore: ac-django-no-pytest-django-db

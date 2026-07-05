@@ -20,7 +20,7 @@ drain_queue_app = typer.Typer(
         "DB queue advancing without an always-on `db_worker`. Runs on a tight "
         "cadence (default 30s) on the `loop-drain-queue` LoopLease: it retires "
         "stale READY jobs, then drains a bounded batch of the fresh remainder, and "
-        "stands down while a real `db_worker` holds the `teatree-worker` singleton."
+        "stands down while a live worker holds either worker singleton."
     ),
     no_args_is_help=True,
 )

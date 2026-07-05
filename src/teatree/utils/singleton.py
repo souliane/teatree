@@ -28,6 +28,19 @@ from pathlib import Path
 
 from teatree.paths import DATA_DIR
 
+#: The #1796 :class:`~teatree.loops.worker.LoopWorker` flock singleton name — at most
+#: one worker drains the shared queue per box. Homed here, next to the singleton
+#: mechanism, so the worker's acquire and the tick drain's stand-down probe read the
+#: SAME constant (no ``"worker"`` vs ``"teatree-worker"`` drift) without a cross-layer
+#: import between ``teatree.loops`` and ``teatree.loop``.
+WORKER_SINGLETON = "worker"
+
+#: The pre-#1796 singleton name, still acquired by the ``t3 <overlay> worker`` spawner.
+#: The drain probes it too so it stands down for either worker during the deprecation
+#: window. TODO(#5): remove once that spawner adopts WORKER_SINGLETON and no pre-fix
+#: worker can still be in flight.
+LEGACY_WORKER_SINGLETON = "teatree-worker"
+
 
 class AlreadyRunningError(RuntimeError):
     """A live process already holds the named singleton."""

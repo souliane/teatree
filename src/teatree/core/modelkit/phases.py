@@ -95,6 +95,19 @@ SUBAGENT_BY_PHASE: dict[tuple[str, str], str] = {
     # transition, so not in ``_PHASE_ALIASES``/``CANONICAL_PHASES``. Registered
     # here so it is dispatchable and carries the find-then-verify fan-out below.
     ("author", "bughunt"): "t3:bughunter",
+    # Red-MR auto-fix (#1295 cap D): the loop persistence handler for a failing
+    # ``my_pr.failed`` PR creates an author ``debugging`` task the /loop slot
+    # dispatches to the ``debugger`` sub-agent. ``debug`` is the AGENT_BY_KIND
+    # dispatch *zone*; ``debugging`` is the phase this row runs under.
+    ("author", "debugging"): "t3:debugger",
+    # Codex auto-review (#1254): the codex_review.dispatch persistence handler
+    # creates a reviewer task whose PHASE encodes the review variant, so the
+    # /loop slot resolves the matching ``/codex:*`` slash-command agent directly
+    # (no per-task variant override needed). These are slash-command agents, not
+    # ``agents/*.md`` sub-agents — the conformance guard exempts the ``codex:``
+    # namespace from the ``t3:``-agent-file checks.
+    ("reviewer", "codex_reviewing"): "codex:review",
+    ("reviewer", "codex_adversarial_reviewing"): "codex:adversarial-review",
 }
 
 #: The chaining orchestrator must never be the target of an author phase

@@ -180,7 +180,7 @@ Usage: t3 loop [OPTIONS] COMMAND [ARGS]...
 │                `db_worker`. Runs on a tight cadence (default 30s) on the     │
 │                `loop-drain-queue` LoopLease: it retires stale READY jobs,    │
 │                then drains a bounded batch of the fresh remainder, and       │
-│                stands down while a real `db_worker` holds the                │
-│                `teatree-worker` singleton.                                   │
+│                stands down while a live worker holds either worker           │
+│                singleton.                                                    │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

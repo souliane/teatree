@@ -6747,26 +6747,32 @@ def main() -> None:
         # fail-open is incomplete can neither (a) surface its crash as a deny
         # that hard-blocks the tool, nor (b) disable every downstream gate. The
         # diagnostic goes to stderr (never stdout) so it cannot be read as a
-        # deny payload. Only an explicit ``True`` return is a deny — it stops the
-        # chain to avoid writing multiple JSON objects to stdout (invalid JSON).
+        # deny payload. A truthy return is a DECISION that stops the chain (to
+        # avoid writing multiple JSON objects to stdout): ``True`` is a deny
+        # (exit 2), the ``Verdict.ALLOW`` sentinel is an explicit allow (exit 0,
+        # #3). ``None`` / ``False`` are "no decision" — the chain continues.
         try:
             verdict = handler(data)
         except Exception:  # noqa: BLE001 — crash-proof router: a broken gate fails open, never denies.
             traceback.print_exc(file=sys.stderr)
             continue
-        if verdict is True:
-            deny_emitted = True
+        if verdict:
+            deny_emitted = verdict is True
             break
 
     # A PreToolUse call that ran the whole chain without a deny is genuine
     # progress: reset the deny-streak so only CONSECUTIVE identical denials
-    # accumulate in the circuit breaker.
+    # accumulate in the circuit breaker. A ``Verdict.ALLOW`` decision leaves
+    # ``deny_emitted`` False, so a sanctioned allow resets the streak too.
     if args.event == "PreToolUse" and not deny_emitted:
         _reset_deny_streak(data.get("session_id", ""))
 
     # Exit-code contract is per-event. PreToolUse / TaskCreated denies are only
     # honoured at exit code 2 (#1447) and their reason rides ``hookSpecificOutput``
     # / ``continue:false`` on stdout, which the harness reads even at exit 2.
+    # A ``Verdict.ALLOW`` decision must NOT exit 2: the harness honours a PreToolUse
+    # allow only at exit 0 with the nested envelope, so ``deny_emitted`` gates the
+    # exit-2 branch and an allow falls through to the exit-0 default (#3).
     # Stop / SubagentStop and the other top-level-``decision`` events INVERT this:
     # exit 2 is a blocking error that makes the harness discard the stdout JSON
     # and read stderr instead — so a Stop block must exit 0 to let its

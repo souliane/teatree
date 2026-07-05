@@ -157,6 +157,61 @@ class TestRecordContract(TestCase):
         assert verdict.verdict == ReviewVerdict.Verdict.MERGE_SAFE
 
 
+class TestCarryForward(TestCase):
+    """The reusable carry-forward primitive (re-record at a new tree, waiver-preserving)."""
+
+    def test_carry_forward_copies_every_snapshot_field_to_the_new_tree(self) -> None:
+        original = ReviewVerdict.record(
+            pr_id=7,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="merge_safe",
+            reviewer_identity="cold-reviewer",
+            blast_class=MergeClear.BlastClass.SUBSTRATE,
+            findings=[Finding(severity="nit", summary="rename x", file="a.py", line=3)],
+        )
+        carried = original.carry_forward(reviewed_sha=_OTHER_SHA)
+        assert carried.pk != original.pk
+        assert carried.reviewed_sha == _OTHER_SHA
+        assert carried.reviewer_identity == "cold-reviewer"
+        assert carried.blast_class == MergeClear.BlastClass.SUBSTRATE
+        assert carried.gh_verify_result == MergeClear.VerifyResult.GREEN
+        assert carried.structured_findings[0].location() == "a.py:3"
+
+    def test_carry_forward_preserves_the_expedite_waiver(self) -> None:
+        # A PENDING merge_safe verdict carries forward WITHOUT re-tripping the
+        # expedite refusal — the waiver is re-passed from the source snapshot.
+        original = ReviewVerdict.record(
+            pr_id=8,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict="merge_safe",
+            reviewer_identity="cold-reviewer",
+            gh_verify_result="pending",
+            expedited=True,
+        )
+        carried = original.carry_forward(reviewed_sha=_OTHER_SHA)
+        assert carried.is_merge_safe()
+        assert carried.gh_verify_result == MergeClear.VerifyResult.PENDING
+
+    def test_carry_forward_surfaces_a_typed_error_on_an_unwaivable_verdict(self) -> None:
+        # A genuinely-unwaivable source (merge_safe on FAILED checks — a shape
+        # record() forbids) surfaces the typed ReviewVerdictError, never a crash,
+        # and writes no row.
+        unwaivable = ReviewVerdict(
+            pr_id=9,
+            slug="souliane/teatree",
+            reviewed_sha=_SHA,
+            verdict=ReviewVerdict.Verdict.MERGE_SAFE,
+            reviewer_identity="cold-reviewer",
+            blast_class=MergeClear.BlastClass.LOGIC,
+            gh_verify_result=MergeClear.VerifyResult.FAILED,
+        )
+        with pytest.raises(ReviewVerdictError, match="never carry gh_verify_result=failed"):
+            unwaivable.carry_forward(reviewed_sha=_OTHER_SHA)
+        assert not ReviewVerdict.objects.filter(reviewed_sha=_OTHER_SHA).exists()
+
+
 class TestQueryHelpers(TestCase):
     def test_latest_for_pr_returns_the_freshest_verdict(self) -> None:
         ReviewVerdict.record(

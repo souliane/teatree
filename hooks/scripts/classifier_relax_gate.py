@@ -54,6 +54,7 @@ import re
 import sys
 from pathlib import Path
 
+from pretooluse_verdict import Verdict, emit_pretooluse_allow
 from question_gates import read_transcript_entries as _read_transcript_entries
 
 # Alias the bare and ``hooks.scripts.`` identities so the handler the router
@@ -141,15 +142,57 @@ def _user_entry_affirms_relax(entry: dict) -> bool:
     return bool(_CLASSIFIER_RELAX_AFFIRMATIVE.search(" ".join(texts).strip()))
 
 
+def _denied_settings_write_ids(entries: list, start: int) -> set[str]:
+    """Return the ``tool_use_id``s of settings writes DENIED since ``start``.
+
+    A settings.json write that this gate denies leaves an ``is_error`` tool_result
+    in the transcript; that attempt never landed. Its id is collected here so the
+    consume-once scan does NOT treat it as spending the consent — the approval
+    survives a denied attempt (a false-block, or any deny) so a corrected retry is
+    still allowed (#3/#4). Fail-safe: an unparsable block is skipped.
+    """
+    from hook_router import _entry_content  # noqa: PLC0415, PLC2701 — cold-hook lazy back-import
+
+    denied: set[str] = set()
+    for k in range(start, len(entries)):
+        for block in _entry_content(entries[k]):
+            if not isinstance(block, dict) or block.get("type") != "tool_result" or not block.get("is_error"):
+                continue
+            tool_use_id = block.get("tool_use_id")
+            if isinstance(tool_use_id, str):
+                denied.add(tool_use_id)
+    return denied
+
+
+def _consent_unconsumed(entries: list, start: int) -> bool:
+    """True when no LANDED settings write has spent the consent since ``start``.
+
+    A settings write whose ``tool_use_id`` carries an is_error tool_result was
+    denied — it did not land, so it does not consume the consent (the approval
+    survives a denied attempt, #3/#4). Any other settings write since the approval
+    is a completed write that spends it (a replay of consumed consent).
+    """
+    from hook_router import _entry_content  # noqa: PLC0415, PLC2701 — cold-hook lazy back-import
+
+    denied_ids = _denied_settings_write_ids(entries, start)
+    for k in range(start, len(entries)):
+        for block in _entry_content(entries[k]):
+            if isinstance(block, dict) and _block_is_settings_write(block) and block.get("id") not in denied_ids:
+                return False
+    return True
+
+
 def _has_sanctioned_relax_approval(transcript_path: str) -> bool:
     """Return True only for an unconsumed, most-recent Step-3 relax approval.
 
     Walk the transcript from the END to the most-recent assistant
     ``AskUserQuestion`` offering the verbatim relax option; require the first
     subsequent user turn to affirmatively select it; then consume-once — a
-    settings.json write already performed since that approval spends the consent
-    (return False, the pending write would be a replay). Fail-safe to "no allow"
-    on any missing/unmatched condition.
+    settings.json write that ACTUALLY LANDED since that approval spends the consent
+    (return False, the pending write would be a replay). A write that was DENIED
+    (its ``tool_use_id`` carries an ``is_error`` tool_result) did not land, so it
+    does NOT consume the consent — the approval survives a denied attempt. Fail-safe
+    to "no allow" on any missing/unmatched condition.
     """
     from hook_router import _entry_content, _entry_role  # noqa: PLC0415, PLC2701 — cold-hook lazy back-imports
 
@@ -172,10 +215,7 @@ def _has_sanctioned_relax_approval(transcript_path: str) -> bool:
             break
         if approval_user_idx is None:
             return False
-        for k in range(approval_user_idx + 1, len(entries)):
-            if any(isinstance(block, dict) and _block_is_settings_write(block) for block in _entry_content(entries[k])):
-                return False
-        return True
+        return _consent_unconsumed(entries, approval_user_idx + 1)
     return False
 
 
@@ -232,10 +272,23 @@ def _validate_full_content(content: str) -> str | None:
 
 
 def _new_string_adds_blanket_rule(new_string: str) -> str | None:
-    """Return an error if an Edit ``new_string`` adds a blanket-wildcard rule."""
-    for token in re.findall(r'"([^"]*)"', new_string):
-        if _is_blanket_rule(token):
-            return f"blanket-wildcard rule `{token}` — use the smallest rule that covers the use case"
+    """Return an error if an Edit ``new_string`` adds a blanket-wildcard rule.
+
+    Only quoted tokens that are allow-list *entries* are candidate rules. A quoted
+    token followed by a colon is a JSON KEY (``"allow":``, ``"permissions":``), not a
+    permission rule, so it is skipped — otherwise the key ``allow`` matches the
+    bare-tool blanket-rule shape and a legitimate Edit adding a scoped rule under an
+    allow list is false-blocked (#4). Quotes are paired with ``finditer`` on the full
+    ``"[^"]*"`` literal (a lookahead-``findall`` re-anchors on a key's closing quote
+    and mis-pairs the rest, letting a real bare-tool entry slip past). This
+    raw-fragment scan is only the FALLBACK; ``validate_relax_write`` prefers the
+    parsed applied-content check, which validates real list entries and never keys.
+    """
+    for match in re.finditer(r'"([^"]*)"', new_string):
+        if new_string[match.end() :].lstrip().startswith(":"):
+            continue  # a JSON key, not a rule entry
+        if _is_blanket_rule(match.group(1)):
+            return f"blanket-wildcard rule `{match.group(1)}` — use the smallest rule that covers the use case"
     return None
 
 
@@ -262,35 +315,38 @@ def _applied_edit_content(tool_input: dict) -> str | None:
 def validate_relax_write(tool_name: str | None, tool_input: dict) -> str | None:
     """Return an error string if the relax settings write is malformed, else ``None`` (#857).
 
-    A ``Write`` validates its full ``content``; an ``Edit`` validates its
-    ``new_string`` fragment for a blanket-wildcard rule and — when the current
-    file is readable and the ``old_string`` matches — the applied result as full
-    JSON. The user has approved THAT a write occurs; this check enforces the
-    sanctioned SHAPE of the payload so a corrupting or over-broad write is
-    refused pre-persist.
+    A ``Write`` validates its full ``content``. An ``Edit`` prefers the parsed
+    applied-content check when the current file is readable and the ``old_string``
+    matches — ``_validate_full_content`` parses the resulting JSON and validates the
+    real allow-list *entries* (never keys), so a legitimate rule added under an
+    ``"allow":`` key is not false-blocked (#4). Only when the applied result is
+    unresolvable (file unreadable / ``old_string`` absent) does it fall back to the
+    raw ``new_string`` fragment scan, whose regex also excludes JSON keys. The user
+    has approved THAT a write occurs; this check enforces the sanctioned SHAPE so a
+    corrupting or over-broad write is refused pre-persist.
     """
     if tool_name == "Write":
         return _validate_full_content(str(tool_input.get("content", "")))
-    fragment_error = _new_string_adds_blanket_rule(str(tool_input.get("new_string", "")))
-    if fragment_error is not None:
-        return fragment_error
     applied = _applied_edit_content(tool_input)
     if applied is not None:
         return _validate_full_content(applied)
-    return None
+    return _new_string_adds_blanket_rule(str(tool_input.get("new_string", "")))
 
 
-def handle_allow_classifier_relax_settings_write(data: dict) -> bool | None:
+def handle_allow_classifier_relax_settings_write(data: dict) -> bool | Verdict | None:
     """Allow Edit/Write to ~/.claude/settings.json after sanctioned Step-3 approval.
 
-    Emits ``{"permissionDecision": "allow"}`` and returns ``True`` when the tool
-    is ``Edit``/``Write``, the target resolves to ``~/.claude/settings.json``, the
-    transcript carries an unconsumed Step-3 relax approval, AND the payload passes
-    content-schema validation (#857). A payload that fails validation with a
-    recorded approval is REFUSED (the user approved that a write occurs, not a
-    malformed one). Any other condition returns ``None`` — later handlers stay in
-    play. Registered FIRST in the PreToolUse chain so it fires before the
-    settings-write deny.
+    Emits the nested ``hookSpecificOutput`` allow envelope and returns the distinct
+    :data:`Verdict.ALLOW` sentinel — which ``main()`` translates to exit 0 (the
+    harness only honours a PreToolUse allow at exit 0 with the nested shape) — when
+    the tool is ``Edit``/``Write``, the target resolves to ``~/.claude/settings.json``,
+    the transcript carries an unconsumed Step-3 relax approval, AND the payload passes
+    content-schema validation (#857). Returning ``True`` here instead (the pre-#3 bug)
+    made ``main()`` exit 2, so the human approval acted as a BLOCK and burned the
+    one-shot consent. A payload that fails validation with a recorded approval is
+    REFUSED (the user approved that a write occurs, not a malformed one). Any other
+    condition returns ``None`` — later handlers stay in play. Registered FIRST in the
+    PreToolUse chain so it fires before the settings-write deny.
     """
     if data.get("tool_name") not in {"Edit", "Write"}:
         return None
@@ -310,5 +366,4 @@ def handle_allow_classifier_relax_settings_write(data: dict) -> bool | None:
             f"{schema_error}. Only a smallest-scope string rule may be appended to permissions.allow / "
             "autoMode.allow; no blanket wildcard, and the result must stay valid JSON.",
         )
-    json.dump({"permissionDecision": "allow"}, sys.stdout)
-    return True
+    return emit_pretooluse_allow()
