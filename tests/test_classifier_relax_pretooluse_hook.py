@@ -60,8 +60,9 @@ from pathlib import Path
 import pytest
 
 import hooks.scripts.hook_router as router
-from hooks.scripts.classifier_relax_gate import _is_blanket_rule, validate_relax_write
+from hooks.scripts.classifier_relax_gate import _is_blanket_rule, _new_string_adds_blanket_rule, validate_relax_write
 from hooks.scripts.hook_router import handle_allow_classifier_relax_settings_write
+from hooks.scripts.pretooluse_verdict import Verdict
 
 # ── Transcript helpers (mirrors test_structured_question_hook.py) ─────
 
@@ -112,6 +113,20 @@ def _decision(capsys: pytest.CaptureFixture[str]) -> dict:
     return json.loads(out) if out else {}
 
 
+def _assert_sanctioned_allow(decision: dict, result: object) -> None:
+    """Assert the emitted decision + return value are the #3 nested-allow verdict.
+
+    The handler must return the distinct ``Verdict.ALLOW`` sentinel (so ``main()``
+    exits 0, not the deny exit 2) and emit the nested ``hookSpecificOutput`` allow
+    envelope the harness reads. The legacy flat ``permissionDecision`` key rides
+    alongside for back-compat.
+    """
+    assert result is Verdict.ALLOW, f"a sanctioned allow must return Verdict.ALLOW, got {result!r}"
+    assert decision["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+    assert decision["hookSpecificOutput"]["permissionDecision"] == "allow"
+    assert decision["permissionDecision"] == "allow"
+
+
 # ── Test data helpers ─────────────────────────────────────────────────
 
 
@@ -150,8 +165,7 @@ class TestClassifierRelaxAllow:
             }
         )
 
-        assert _decision(capsys) == {"permissionDecision": "allow"}
-        assert result is True
+        _assert_sanctioned_allow(_decision(capsys), result)
 
     def test_allow_write_settings_json_after_affirmative(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -170,8 +184,7 @@ class TestClassifierRelaxAllow:
             }
         )
 
-        assert _decision(capsys) == {"permissionDecision": "allow"}
-        assert result is True
+        _assert_sanctioned_allow(_decision(capsys), result)
 
     def test_allow_with_tilde_path(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         """The tilde form ~/.claude/settings.json is normalised before comparison."""
@@ -185,8 +198,7 @@ class TestClassifierRelaxAllow:
             }
         )
 
-        assert _decision(capsys) == {"permissionDecision": "allow"}
-        assert result is True
+        _assert_sanctioned_allow(_decision(capsys), result)
 
     def test_allow_when_user_says_allow_it(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         """User response "Allow it" (substring of the full option) is treated as affirmative."""
@@ -200,8 +212,7 @@ class TestClassifierRelaxAllow:
             }
         )
 
-        assert _decision(capsys) == {"permissionDecision": "allow"}
-        assert result is True
+        _assert_sanctioned_allow(_decision(capsys), result)
 
     def test_allow_when_user_says_yes(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         """User response "yes" is treated as affirmative."""
@@ -215,8 +226,7 @@ class TestClassifierRelaxAllow:
             }
         )
 
-        assert _decision(capsys) == {"permissionDecision": "allow"}
-        assert result is True
+        _assert_sanctioned_allow(_decision(capsys), result)
 
     def test_allow_when_user_says_relax_classifier(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         """User response "relax classifier" (the protocol shorthand) is affirmative.
@@ -235,8 +245,7 @@ class TestClassifierRelaxAllow:
             }
         )
 
-        assert _decision(capsys) == {"permissionDecision": "allow"}
-        assert result is True
+        _assert_sanctioned_allow(_decision(capsys), result)
 
 
 # ── Tests for wrong tool / wrong path ────────────────────────────────
@@ -645,8 +654,7 @@ class TestClassifierRelaxConsumeOnce:
             }
         )
 
-        assert _decision(capsys) == {"permissionDecision": "allow"}
-        assert result is True
+        _assert_sanctioned_allow(_decision(capsys), result)
 
 
 # ── Affirmative-pattern precision (review Findings 3/4) ────────────────
@@ -670,8 +678,7 @@ class TestClassifierRelaxAffirmativePrecision:
             }
         )
 
-        assert _decision(capsys) == {"permissionDecision": "allow"}
-        assert result is True
+        _assert_sanctioned_allow(_decision(capsys), result)
 
     def test_please_relax_the_check_is_not_affirmative(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -740,8 +747,7 @@ class TestClassifierRelaxHelperDefensiveBranches:
             }
         )
 
-        assert _decision(capsys) == {"permissionDecision": "allow"}
-        assert result is True
+        _assert_sanctioned_allow(_decision(capsys), result)
 
     def test_block_is_settings_write_false_for_non_edit_tool(self) -> None:
         block = {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}}
@@ -849,8 +855,7 @@ class TestClassifierRelaxHelperDefensiveBranches:
             }
         )
 
-        assert _decision(capsys) == {"permissionDecision": "allow"}
-        assert result is True
+        _assert_sanctioned_allow(_decision(capsys), result)
 
 
 # ── #857: content-schema validation of the relax write payload ─────────
@@ -969,3 +974,149 @@ class TestRelaxWriteSchemaDeniesHandler:
         )
         assert result is True
         assert _decision(capsys) != {"permissionDecision": "allow"}
+
+
+# ── #4: JSON-key fragments must not be read as blanket rules ───────────
+
+
+class TestNewStringBlanketRuleExcludesJsonKeys:
+    """`_new_string_adds_blanket_rule` must skip JSON KEYS, not treat them as rules.
+
+    CORR-10 widened `_is_blanket_rule` to all bare words, so the fragment scan read
+    the JSON key `allow` / `permissions` as a whole-tool blanket grant and
+    false-blocked a legitimate Edit that adds a scoped rule under an allow list —
+    burning the consume-once approval (#4). A quoted token followed by a colon is a
+    key and is excluded; a real list ENTRY (bare tool) is still refused.
+    """
+
+    def test_scoped_rule_under_allow_key_is_not_blanket(self) -> None:
+        # The exact audit case: '"allow": [\n "Bash(uv run pytest:*)",' → None.
+        assert _new_string_adds_blanket_rule('"allow": [\n    "Bash(uv run pytest:*)",') is None
+
+    def test_permissions_and_allow_keys_alone_are_not_blanket(self) -> None:
+        assert _new_string_adds_blanket_rule('"permissions": {\n    "allow": [') is None
+
+    def test_key_with_space_before_colon_is_still_a_key(self) -> None:
+        assert _new_string_adds_blanket_rule('"allow" : [\n    "Bash(gh pr view *)",') is None
+
+    def test_bare_tool_list_entry_after_keys_still_refused(self) -> None:
+        # The multi-key case a lookahead-findall mis-pairs and lets slip: a bare
+        # `"Bash",` ENTRY sitting after `"permissions":`/`"allow":` keys must refuse.
+        reason = _new_string_adds_blanket_rule('"permissions": {\n    "allow": [\n        "Bash",')
+        assert reason is not None
+        assert "blanket-wildcard" in reason
+        assert "`Bash`" in reason
+
+    def test_bare_tool_list_entry_alone_still_refused(self) -> None:
+        reason = _new_string_adds_blanket_rule('    "Bash",')
+        assert reason is not None
+        assert "blanket-wildcard" in reason
+
+    def test_validate_relax_write_edit_json_key_fragment_passes(self) -> None:
+        # Through the public validator, fragment fallback (empty old_string → the
+        # applied-content path is skipped): the JSON key must not false-block.
+        assert validate_relax_write("Edit", {"new_string": '"allow": [\n    "Bash(uv run pytest:*)",'}) is None
+
+
+# ── #3/#4: consent survives a DENIED attempt (not burned by a false-block) ──
+
+
+def _settings_write_tool_with_id(tool_use_id: str, name: str = "Edit") -> dict:
+    """An Edit/Write tool_use targeting settings.json, carrying a tool_use ``id``."""
+    return {
+        "type": "tool_use",
+        "id": tool_use_id,
+        "name": name,
+        "input": {"file_path": str(Path("~/.claude/settings.json").expanduser())},
+    }
+
+
+def _tool_result(tool_use_id: str, *, is_error: bool) -> dict:
+    """A user-turn tool_result block referencing ``tool_use_id`` (denied when is_error)."""
+    return {
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": tool_use_id, "is_error": is_error, "content": "x"}],
+        },
+    }
+
+
+class TestConsentSurvivesDeniedAttempt:
+    """A settings write that was DENIED did not land, so it must not spend the consent.
+
+    Before the fix a false-block denied the write, but the denied attempt's tool_use
+    still sat in the transcript and the consume-once scan read it as a completed
+    write — refusing the corrected retry as a replay (consent burned). The fix keys
+    consumption on whether the write LANDED: a write whose ``tool_use_id`` carries an
+    ``is_error`` tool_result did not land, so the approval survives for the retry.
+    """
+
+    def test_denied_attempt_does_not_consume_consent(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        transcript = _write_transcript(
+            tmp_path,
+            [
+                _user("file the issue"),
+                _assistant(
+                    "Choose:",
+                    tool_uses=[
+                        _ask_question_tool(["Allow it (relax classifier)", "Keep the denial (do it differently)"])
+                    ],
+                ),
+                _user("Allow it (relax classifier)"),
+                # A first attempt that the gate DENIED (its tool_result is is_error):
+                {
+                    "type": "assistant",
+                    "message": {"role": "assistant", "content": [_settings_write_tool_with_id("toolu_denied")]},
+                },
+                _tool_result("toolu_denied", is_error=True),
+            ],
+        )
+
+        result = handle_allow_classifier_relax_settings_write(
+            {
+                "tool_name": "Edit",
+                "tool_input": {"file_path": _settings_json_path()},
+                "transcript_path": str(transcript),
+            }
+        )
+
+        _assert_sanctioned_allow(_decision(capsys), result)
+
+    def test_landed_write_still_consumes_consent(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """Anti-vacuity twin: a write that LANDED (success tool_result) still consumes it.
+
+        Without this, the denied-attempt carve-out could vacuously allow every replay.
+        A settings write whose tool_result is NOT an error did land — the retry is a
+        replay of consumed consent and must be refused.
+        """
+        transcript = _write_transcript(
+            tmp_path,
+            [
+                _user("file the issue"),
+                _assistant(
+                    "Choose:",
+                    tool_uses=[
+                        _ask_question_tool(["Allow it (relax classifier)", "Keep the denial (do it differently)"])
+                    ],
+                ),
+                _user("Allow it (relax classifier)"),
+                {
+                    "type": "assistant",
+                    "message": {"role": "assistant", "content": [_settings_write_tool_with_id("toolu_ok")]},
+                },
+                _tool_result("toolu_ok", is_error=False),
+            ],
+        )
+
+        result = handle_allow_classifier_relax_settings_write(
+            {
+                "tool_name": "Edit",
+                "tool_input": {"file_path": _settings_json_path()},
+                "transcript_path": str(transcript),
+            }
+        )
+
+        assert _decision(capsys) == {}
+        assert result is not True
+        assert result is not Verdict.ALLOW
