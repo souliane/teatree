@@ -26,6 +26,7 @@ from teatree.core.models import LoopLease
 from teatree.core.tasks import refresh_followup_snapshot
 from teatree.loop.queue_drain import (
     drain_ready_batch,
+    expire_stale_default_jobs,
     expire_stale_ready_jobs,
     expire_then_drain,
     stale_threshold_hours,
@@ -115,6 +116,38 @@ class TestExpireStaleReadyJobs:
 
         assert retired == {}
         assert DBTaskResult.objects.get().status == TaskResultStatus.RUNNING
+
+
+class TestExpireStaleDefaultJobs:
+    """``expire_stale_default_jobs`` scopes the sweep to the ``default`` queue only (PR-28).
+
+    The worker's startup + hourly expiry MUST leave the ``loops``-queue timer chains
+    alone — the reconciler owns their staleness (stranded-RUNNING repair, surplus
+    prune), and a shared cutoff sweep marking a stale timer FAILED would break the
+    chain the reconciler just repaired.
+    """
+
+    def test_expires_a_stale_default_job(self) -> None:
+        refresh_followup_snapshot.enqueue()
+        _backdate(50)
+
+        retired = expire_stale_default_jobs()
+
+        assert retired == {"refresh_followup_snapshot": 1}
+        assert DBTaskResult.objects.get().status == TaskResultStatus.FAILED
+
+    def test_leaves_a_stale_loops_queue_timer_untouched(self) -> None:
+        from teatree.loops.timer_chains import loop_timer  # noqa: PLC0415 — enqueue a loops-queue row
+
+        refresh_followup_snapshot.enqueue()  # default queue — expirable
+        loop_timer.enqueue("inbox")  # loops queue — the reconciler owns its staleness
+        _backdate(50)  # both now well past the threshold
+
+        retired = expire_stale_default_jobs()
+
+        assert retired == {"refresh_followup_snapshot": 1}  # only the default-queue row
+        assert DBTaskResult.objects.get(queue_name="loops").status == TaskResultStatus.READY
+        assert DBTaskResult.objects.get(queue_name="default").status == TaskResultStatus.FAILED
 
 
 # ast-grep-ignore: ac-django-no-pytest-django-db

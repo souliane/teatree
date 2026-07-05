@@ -167,7 +167,7 @@ def a_worker_is_running() -> bool:
     return any(read_pid(default_pid_path(name)) is not None for name in (WORKER_SINGLETON, LEGACY_WORKER_SINGLETON))
 
 
-def expire_stale_ready_jobs(*, threshold_hours: int | None = None) -> dict[str, int]:
+def expire_stale_ready_jobs(*, threshold_hours: int | None = None, queue_name: str | None = None) -> dict[str, int]:
     """Retire READY jobs older than the threshold, returning a count by task name.
 
     Conservative by design: only ``READY`` jobs whose ``enqueued_at`` predates
@@ -176,6 +176,12 @@ def expire_stale_ready_jobs(*, threshold_hours: int | None = None) -> dict[str, 
     the queue's terminal non-run state — carrying a :class:`StaleQueueJobError`
     so the reason is recorded and the row stays inspectable/re-enqueueable. No
     hard delete.
+
+    ``queue_name`` scopes the sweep to one queue when given. The worker's
+    startup + hourly expiry pass the ``default`` queue (via
+    :func:`expire_stale_default_jobs`) so it never touches the ``loops``-queue
+    timer chains — those are owned by the reconciler's own staleness repair
+    (stranded-RUNNING / surplus prune), and a shared cutoff sweep would fight it.
     """
     from django_tasks.base import TaskResultStatus  # noqa: PLC0415
     from django_tasks_db.models import DBTaskResult  # noqa: PLC0415
@@ -183,6 +189,8 @@ def expire_stale_ready_jobs(*, threshold_hours: int | None = None) -> dict[str, 
     hours = threshold_hours if threshold_hours is not None else stale_threshold_hours()
     cutoff = timezone.now() - dt.timedelta(hours=hours)
     stale = DBTaskResult.objects.filter(status=TaskResultStatus.READY, enqueued_at__lt=cutoff)
+    if queue_name is not None:
+        stale = stale.filter(queue_name=queue_name)
 
     retired: dict[str, int] = {}
     for job in stale.iterator():
@@ -200,6 +208,21 @@ def expire_stale_ready_jobs(*, threshold_hours: int | None = None) -> dict[str, 
     if retired:
         logger.info("Expired %d stale READY job(s) older than %dh: %s", sum(retired.values()), hours, retired)
     return retired
+
+
+def expire_stale_default_jobs() -> dict[str, int]:
+    """Retire stale READY jobs on the ``default`` queue only — the heavy FSM/headless backlog.
+
+    The worker's startup expiry (before it spawns executors) and its hourly
+    maintenance chain both call this so a box that accumulated days-old
+    provision/ship/teardown jobs while no worker ran does NOT blind-fire them the
+    instant the worker spawns (the default-ON flip's load-jam class). Scoped to the
+    ``default`` queue so the reconciler stays the sole owner of ``loops``-queue timer
+    staleness.
+    """
+    from django_tasks import DEFAULT_TASK_QUEUE_NAME  # noqa: PLC0415 — deferred: needs the app registry ready
+
+    return expire_stale_ready_jobs(queue_name=DEFAULT_TASK_QUEUE_NAME)
 
 
 def _run_one_ready_job() -> bool:

@@ -11,9 +11,12 @@ healthy set is a no-op.
 It runs at three moments: at worker startup, on its own ~5-minute self-rescheduling
 chain (:func:`reconcile_timers`), and from the loop enable/disable chokepoint so a
 newly-enabled loop gets its head at once and a disabled one is pruned at once. A
-daily :func:`prune_task_results` chain caps DBTaskResult table growth. Both
-maintenance chains are seeded by :func:`ensure_maintenance_chains` at worker
-startup and self-perpetuate, so a worker restart re-arms them.
+daily :func:`prune_task_results` chain caps DBTaskResult table growth, and an hourly
+:func:`expire_stale_jobs` chain keeps the ``default``-queue backlog swept for a
+long-lived worker (so it never blind-fires days-old provision/ship jobs even without
+the front-end drain loop). The three maintenance chains are seeded by
+:func:`ensure_maintenance_chains` at worker startup and self-perpetuate, so a worker
+restart re-arms them.
 """
 
 import datetime as dt
@@ -36,6 +39,9 @@ RECONCILE_INTERVAL_SECONDS = 300
 #: The result-prune cadence and how long a finished result is kept before pruning.
 PRUNE_INTERVAL_SECONDS = 86400
 PRUNE_RETENTION_SECONDS = 86400
+#: The stale-job expiry cadence — hourly, so a long-lived worker keeps the
+#: ``default``-queue backlog swept without depending on the front-end drain loop.
+EXPIRE_INTERVAL_SECONDS = 3600
 #: Grace past a tick's deadline before its still-RUNNING timer is deemed stranded.
 STUCK_GRACE_SECONDS = 60
 
@@ -177,10 +183,30 @@ def prune_task_results() -> dict[str, int]:
     return {"pruned": deleted}
 
 
+@task(queue_name=LOOPS_QUEUE)
+def expire_stale_jobs() -> dict[str, int]:
+    """Expire the stale ``default``-queue backlog, then re-schedule this chain ~1h out.
+
+    Self-dedups first (another pending expiry carries the chain), mirroring the
+    reconcile/prune contract, so an at-least-once redelivery collapses to one. Runs on
+    the ``loops`` queue like its sibling maintenance chains — it never runs the heavy
+    jobs, it only retires the stale READY ones to FAILED (reversible, auditable).
+    """
+    from teatree.loop.queue_drain import expire_stale_default_jobs  # noqa: PLC0415 — deferred: task-body import
+
+    if _pending_for_path(expire_stale_jobs.module_path):
+        return {"deduped": 1}
+    retired = expire_stale_default_jobs()
+    expire_stale_jobs.using(run_after=timezone.now() + dt.timedelta(seconds=EXPIRE_INTERVAL_SECONDS)).enqueue()
+    return {"retired": sum(retired.values())}
+
+
 def ensure_maintenance_chains() -> None:
-    """Seed the reconcile + prune chain heads if absent — self-perpetuating after that."""
+    """Seed the reconcile + prune + stale-job-expiry chain heads if absent — self-perpetuating after that."""
     now = timezone.now()
     if not _pending_for_path(reconcile_timers.module_path):
         reconcile_timers.using(run_after=now + dt.timedelta(seconds=RECONCILE_INTERVAL_SECONDS)).enqueue()
     if not _pending_for_path(prune_task_results.module_path):
         prune_task_results.using(run_after=now + dt.timedelta(seconds=PRUNE_INTERVAL_SECONDS)).enqueue()
+    if not _pending_for_path(expire_stale_jobs.module_path):
+        expire_stale_jobs.using(run_after=now + dt.timedelta(seconds=EXPIRE_INTERVAL_SECONDS)).enqueue()
