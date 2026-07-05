@@ -8,7 +8,9 @@ engine is a typed seam.
 """
 
 import datetime as dt
+import tempfile
 from io import StringIO
+from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 from unittest.mock import patch
 
@@ -19,7 +21,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models import ConsolidatedMemory, DreamRunMarker, Loop, LoopLease
-from teatree.loops.dream.engine import DreamRunResult
+from teatree.loops.dream.engine import ConsolidationExtract, DistilledCluster, DreamRunResult, TranscriptMember
 from teatree.loops.dream.loop import DREAM_LEASE_NAME, DREAM_LEASE_SECONDS, DREAM_LOOP_NAME
 
 
@@ -857,6 +859,82 @@ class DreamPriorArchivedPointerStampsSucceededTestCase(TestCase):
         out = stdout.getvalue()
         assert "re-indexed" in out  # real maintenance happened
         assert "acceptance gate(s) FAILED" not in out
+        marker = DreamRunMarker.objects.get(name=DreamRunMarker.NAME)
+        assert marker.last_succeeded_at is not None
+        assert DreamRunMarker.objects.is_stale(timezone.now()) is False
+
+
+class DreamConsolidatesRawTranscriptLearningTestCase(TestCase):
+    """A raw transcript learning reaches the distiller, grounds, passes the gates, and stamps (#2986).
+
+    The input-starvation regression, end-to-end through the command with the REAL
+    engine + REAL §4 gates + REAL marker (only the LLM distiller and the member
+    enumeration are faked). A realistic session transcript carries a substantive
+    finding that holds NONE of the literal signal tokens and neither a correction
+    nor an ask cue. Before the fix the keyword gate dropped it, the extract was
+    empty, the distiller was never called, 0 clusters were recorded, the §4
+    consolidation gate FAILED, and the DreamRunMarker was never stamped succeeded
+    (the >48h staleness alarm never cleared). The file-side phases are OFF so the
+    ONLY path to a passing consolidation gate is a genuinely-grounded cluster — the
+    gate stays anti-vacuous. The memory dir + transcript are TMP; ``~/.claude`` is
+    never touched.
+    """
+
+    def setUp(self) -> None:
+        self.memdir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        topic = "the worktree provision lease pid claim guard owner liveness anchored"
+        (self.memdir / "mem_a.md").write_text(f"name: mem_a\n{topic}\n", encoding="utf-8")
+        session_dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.jsonl = session_dir / "session-xyz.jsonl"
+        chatter = "\n".join(f'{{"type":"assistant","text":"computed result row {i}"}}' for i in range(30))
+        self.finding = "root caused the empty owner crash to a missing tenant filter in resolve_owner"
+        self.jsonl.write_text(chatter + "\n" + f'{{"type":"assistant","text":"{self.finding}"}}', encoding="utf-8")
+
+    def _run(self, stdout: StringIO) -> None:
+        member = TranscriptMember(path=self.jsonl, kind="main")
+
+        def _distill(extract: ConsolidationExtract) -> list[DistilledCluster]:
+            snippet = next(s for s in extract.snippets if s.kind != "memory")
+            return [
+                DistilledCluster(
+                    cluster_key="raw-learning",
+                    rule="Guard resolve_owner against a missing tenant filter.",
+                    source_files=[str(snippet.path)],
+                    is_binding=False,
+                    verified_citation=self.finding,
+                    durable_destination="",
+                )
+            ]
+
+        with (
+            patch("teatree.loops.dream.engine.enumerate_members", return_value=[member]),
+            patch("teatree.loops.dream.sdk_distiller.sdk_distill", side_effect=_distill),
+            patch("teatree.memory_audit.discover_memory_dirs", return_value=[self.memdir]),
+            patch.dict(
+                "os.environ",
+                {
+                    "T3_DREAM_PROPOSE_EVALS": "0",
+                    "T3_DREAM_CROSS_LINK": "0",
+                    "T3_DREAM_MERGE": "0",
+                    "T3_DREAM_REINDEX": "0",
+                    "T3_DREAM_DECAY": "0",
+                },
+                clear=False,
+            ),
+        ):
+            call_command("dream", "run", stdout=stdout)
+
+    def test_raw_learning_grounds_a_cluster_passes_gates_and_stamps_marker(self) -> None:
+        stdout = StringIO()
+        self._run(stdout)
+        out = stdout.getvalue()
+        # (1) genuinely consolidated real learnings — one grounded cluster recorded.
+        assert ConsolidatedMemory.objects.filter(cluster_key="raw-learning").count() == 1
+        assert "1 cluster(s) recorded" in out
+        # (2) passed acceptance on real non-empty input (no gate laundering).
+        assert "all acceptance gates passed" in out
+        assert "acceptance gate(s) FAILED" not in out
+        # (3) advanced the cadence marker — the >48h staleness alarm cleared.
         marker = DreamRunMarker.objects.get(name=DreamRunMarker.NAME)
         assert marker.last_succeeded_at is not None
         assert DreamRunMarker.objects.is_stale(timezone.now()) is False

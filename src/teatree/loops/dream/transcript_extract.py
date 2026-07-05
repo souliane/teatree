@@ -81,6 +81,52 @@ _ASK_CUES = (
     "rollback",
 )
 
+#: Declarative INSIGHT / root-cause / decision markers of a SUBSTANTIVE learning
+#: line — the keyword-blind (of :data:`TRANSCRIPT_SIGNALS`) keeper for the rich raw
+#: drift the literal-signal gate dropped. The correction/ask keepers cover the USER's
+#: own prose, but the day's richest drift is often a DECLARATIVE finding the agent
+#: recorded ("root caused the crash to a missing tenant filter", "turns out the
+#: migration never applied", "decided to split the resolver"). Without this keeper the
+#: keyword gate filtered that out before the distiller ever saw it, so a plain pass
+#: distilled 0 clusters from a corpus full of real learnings (#2986). Unlike the
+#: correction/ask keepers this is ROLE-AGNOSTIC — the literal-signal keeper already is,
+#: and a lesson is a lesson whether the user stated it or the agent found it. The cues
+#: stay tight to genuine finding/decision vocabulary, so mechanical status chatter
+#: ("computed result row 7") and cue-free filler carry none of it and stay dropped.
+_LEARNING_CUES = (
+    "root cause",
+    "root-cause",
+    "root caused",
+    "turns out",
+    "turned out",
+    "the bug was",
+    "the bug is",
+    "the issue was",
+    "the issue is",
+    "the problem was",
+    "the problem is",
+    "the fix was",
+    "the fix is",
+    "fixed by",
+    "caused by",
+    "discovered that",
+    "discovered the",
+    "realized",
+    "realised",
+    "learned that",
+    "the lesson",
+    "the mistake was",
+    "the mistake is",
+    "the reason was",
+    "the reason is",
+    "figured out",
+    "the culprit",
+    "boils down to",
+    "decided to",
+    "should have",
+    "the takeaway",
+)
+
 _USER_TURN_RE = re.compile(r'"(?:type|role)"\s*:\s*"user"')
 _WHY_QUESTION_RE = re.compile(r"\bwhy\b[^?]*\?")
 
@@ -130,6 +176,21 @@ def looks_like_user_ask(line: str) -> bool:
     return any(cue in lowered for cue in _ASK_CUES)
 
 
+def looks_like_learning(line: str) -> bool:
+    """True when *line* reads like a SUBSTANTIVE learning: a finding, or a decision.
+
+    Keyword-blind of :data:`TRANSCRIPT_SIGNALS` and, unlike the correction/ask
+    keepers, ROLE-AGNOSTIC: the declarative drift the literal-signal gate dropped is
+    frequently the agent's own recorded finding ("root caused the crash to a missing
+    tenant filter"), not only the user's prose — and a lesson is a lesson whichever
+    turn states it. Mechanical status chatter ("computed result row 7") and cue-free
+    filler carry none of :data:`_LEARNING_CUES`, so the widening keeps substance, not
+    volume. Necessary-not-sufficient alongside the other keepers (#2986).
+    """
+    lowered = line.lower()
+    return any(cue in lowered for cue in _LEARNING_CUES)
+
+
 def _repeated_user_turns(lines: Sequence[str]) -> set[str]:
     user_lines = [line for line in lines if _USER_TURN_HINT in line and _USER_TURN_RE.search(line)]
     counts = Counter(line.strip() for line in user_lines if line.strip())
@@ -137,12 +198,16 @@ def _repeated_user_turns(lines: Sequence[str]) -> set[str]:
 
 
 def high_signal_lines(raw: str) -> str:
-    """Keep the lines worth distilling: keyword signals, correction prose, or asks.
+    """Keep the lines worth distilling: keyword signals, corrections, asks, or learnings.
 
     The user-ask keeper rides here too (#2663) so a recurring manual directive
     reaches the distiller and clusters into an automatable-ask gap — otherwise the
     keyword gate would drop a directive that carries no correction cue and no signal
-    token before the engine ever saw it.
+    token before the engine ever saw it. The learning keeper rides here too (#2986):
+    a declarative finding/decision (from either role) carries no literal signal token
+    and neither a correction nor an ask cue, yet it is the day's richest drift — so the
+    keyword gate used to starve it out and a plain pass distilled 0 clusters from a
+    corpus full of real learnings.
     """
     lines = raw.splitlines()
     repeated = _repeated_user_turns(lines)
@@ -152,6 +217,7 @@ def high_signal_lines(raw: str) -> str:
         if any(signal in line for signal in TRANSCRIPT_SIGNALS)
         or looks_like_user_correction(line)
         or looks_like_user_ask(line)
+        or looks_like_learning(line)
         or line.strip() in repeated
     ]
     return "\n".join(kept)
@@ -171,6 +237,7 @@ def user_ask_lines(raw: str) -> str:
 __all__ = [
     "TRANSCRIPT_SIGNALS",
     "high_signal_lines",
+    "looks_like_learning",
     "looks_like_user_ask",
     "looks_like_user_correction",
     "user_ask_lines",
