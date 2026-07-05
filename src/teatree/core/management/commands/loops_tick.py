@@ -235,6 +235,7 @@ class Command(TyperCommand):
 
         run_loop_connector_preflight(loop)
 
+        from teatree.loop.driver_detection import detect_driver  # noqa: PLC0415 — deferred
         from teatree.loop.session_identity import current_session_id, current_session_pid  # noqa: PLC0415
 
         owner_slot = per_loop_owner_slot(loop)
@@ -248,8 +249,16 @@ class Command(TyperCommand):
         # durable session pid comes from the loop registry; ``os.getppid()`` is the
         # fallback only for a direct in-session invocation with no registry record.
         owner_pid = current_session_pid() or os.getppid()
+        # The per-tick re-claim IS the heartbeat, so it self-heals the driver: a
+        # tick that detects a live driver registers/updates it, while a tick whose
+        # detection momentarily returns blank PRESERVES the stored value
+        # (``_driver_after`` preserve-on-empty) — the heartbeat can never wipe it.
         won, owner_session = LoopLease.objects.claim_ownership(
-            owner_slot, session_id=session_id, ttl_seconds=loop_owner_ttl_seconds(), owner_pid=owner_pid
+            owner_slot,
+            session_id=session_id,
+            ttl_seconds=loop_owner_ttl_seconds(),
+            owner_pid=owner_pid,
+            driver=detect_driver(session_id),
         )
         if not won:
             self._emit_skip(

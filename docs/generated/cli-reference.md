@@ -3526,14 +3526,19 @@ Usage: t3 loop claim [OPTIONS]
 
  Without ``--take-over`` a live claimant blocks the claim. With it,
  the claim is unconditional — the hijacking session's next ``t3 loop
- tick`` SKIPs within one tick, no restart needed. Exits 2 when not
- running inside a Claude Code session (no session id to claim with).
+ tick`` SKIPs within one tick, no restart needed. ``--driver`` records
+ which mechanism fires this loop's ticks (PR-26); it is the only path to
+ ``external`` for a foreign scheduler. Exits 2 when not running inside a
+ Claude Code session, or on an invalid ``--driver`` value.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --take-over              Evict a live claimant — the chat-only user's loop   │
 │                          hand-off (#1073).                                   │
 │ --slot             TEXT  t3-master slot name (default: t3-master).           │
 │                          [default: t3-master]                                │
+│ --driver           TEXT  Explicit tick driver                                │
+│                          (self_pump/loop_runner/external); overrides         │
+│                          detection. Use 'external' for a foreign scheduler.  │
 │ --json                   Emit JSON.                                          │
 │ --help                   Show this message and exit.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
