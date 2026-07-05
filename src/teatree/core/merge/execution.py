@@ -356,8 +356,9 @@ def record_merge_and_advance(
     merged_sha: str,
     required_checks_status: str,
     expedited_by: str = "",
+    repo_slug: str = "",
 ) -> str:
-    """Post hook: consume CLEAR, write audit, bind attestation, ``mark_merged()``.
+    """Post hook: consume CLEAR, write audit, supersede siblings, ``mark_merged()``.
 
     All in ONE ``transaction.atomic()`` so the FSM advance and the durable
     merge record land atomically (the §4 worker-enqueue / sync-atomicity
@@ -369,6 +370,21 @@ def record_merge_and_advance(
     :func:`assert_merge_preconditions` (the retry detects "already merged
     at ``reviewed_sha``" and runs this hook idempotently instead of
     re-issuing the merge). Returns the resulting ticket state.
+
+    ``repo_slug`` is the #1335-reconciled ``owner/repo`` the caller merged
+    against; it is stamped on the ``MergeAudit`` (#19) so the S1/S3 signal joins
+    read the merge-time truth first instead of re-resolving the CLEAR's offline
+    workstream slug. Empty only for a legacy/direct caller — the signal resolver
+    falls back to ``resolve_pr_repo_slug`` for a blank audit.
+
+    §15: a head-move re-review issues a fresh CLEAR at the new SHA, leaving the
+    older sibling unconsumed. Consuming ONE via a merge supersedes every sibling
+    unconsumed CLEAR for the same ``(slug, pr_id)`` in the same atomic block under
+    the row lock, so a stale orphan can no longer ratchet S4 hard-red forever. No
+    ``ReviewVerdict`` is moved: each sibling's verdict persists at its own
+    reviewed_sha and S3 counts it regardless of SHA, so there is no verdict-copy
+    path to hand-roll (GM-4's ``carry_forward`` is the primitive if one is ever
+    needed).
 
     The atomic block is wrapped in :func:`retry_on_locked` (#1520): a transient
     ``database is locked`` from a concurrent canonical-DB writer must not abort
@@ -409,7 +425,18 @@ def record_merge_and_advance(
                 merged_sha=merged_sha,
                 required_checks_status=required_checks_status,
                 expedited_by=expedited_by,
+                repo_slug=repo_slug,
             )
+            # §15: supersede every sibling unconsumed CLEAR for the same PR —
+            # re-review at a moved head issues a fresh CLEAR at the new SHA,
+            # leaving the older one unconsumed. Once THIS merge consumes one, its
+            # siblings are no longer a stalled merge, so consume them in the same
+            # atomic block (single serialized UPDATE) under the row lock.
+            MergeClear.objects.filter(
+                slug=locked.slug,
+                pr_id=locked.pr_id,
+                consumed_at__isnull=True,
+            ).exclude(pk=locked.pk).update(consumed_at=locked.consumed_at)
             ticket = locked.ticket
             if ticket is None:
                 return ""
@@ -552,6 +579,7 @@ def _merge_ticket_pr_inner(
         merged_sha=merged_sha,
         required_checks_status=checks,
         expedited_by=precheck.expedited_by,
+        repo_slug=slug,
     )
     logger.info(
         "merge keystone: %s#%s %s at %s; ticket state=%s",

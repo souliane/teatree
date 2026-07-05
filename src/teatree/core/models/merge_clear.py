@@ -469,6 +469,13 @@ class MergeAudit(models.Model):
     merged_sha = models.CharField(max_length=64)
     merged_at = models.DateTimeField(default=timezone.now)
     required_checks_status = models.CharField(max_length=32)
+    # The #1335-reconciled ``owner/repo`` the gate actually merged against,
+    # stamped at merge time inside ``record_merge_and_advance``'s atomic block
+    # (#19). It is the merge-time truth the S1/S3 signal joins read FIRST — a
+    # cross-repo merge is joined under its real repo, never the CLEAR's offline
+    # workstream slug. Blank for legacy rows written before #19; the signal
+    # resolver falls back to ``resolve_pr_repo_slug(clear)`` for those.
+    repo_slug = models.CharField(max_length=255, blank=True, default="")
     # The expedite authoriser whose PENDING-checks waiver this merge actually used
     # (§17.4.3 / PR-07). Empty for every normal merge; non-empty only when the merge
     # proceeded on ``required_checks_status='pending'`` via the human-authorized

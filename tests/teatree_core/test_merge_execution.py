@@ -899,6 +899,77 @@ class TestConcurrentConsumptionReplayDefence(TestCase):
         assert MergeAudit.objects.filter(clear=clear).count() == 1
 
 
+class TestSiblingClearSupersedeAndRepoSlugStamp(TestCase):
+    """§15 sibling-CLEAR supersede + #19 ``MergeAudit.repo_slug`` stamp in the post hook."""
+
+    def test_post_hook_stamps_the_reconciled_repo_slug_on_the_audit(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _clear(ticket)
+        record_merge_and_advance(
+            clear=clear,
+            merged_sha="landeddeadbeef",
+            required_checks_status="green",
+            repo_slug="downstream-org/downstream-repo",
+        )
+        audit = MergeAudit.objects.get(clear=clear)
+        assert audit.repo_slug == "downstream-org/downstream-repo"
+
+    def test_merge_supersedes_only_same_pr_sibling_unconsumed_clears(self) -> None:
+        # #15: consuming ONE CLEAR by a merge supersedes every sibling unconsumed
+        # CLEAR for the SAME (slug, pr_id) — a head-move re-review's orphaned older
+        # CLEAR is consumed in the same atomic block, so it can no longer ratchet
+        # S4 stale-RED. A different PR's CLEAR is untouched.
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        older = MergeClear.objects.create(
+            ticket=ticket,
+            pr_id=555,
+            slug="555-feat",
+            reviewed_sha="a" * 40,
+            reviewer_identity="cold-reviewer",
+            gh_verify_result=MergeClear.VerifyResult.GREEN,
+            blast_class=MergeClear.BlastClass.DOCS,
+        )
+        merged = MergeClear.objects.create(
+            ticket=ticket,
+            pr_id=555,
+            slug="555-feat",
+            reviewed_sha="b" * 40,
+            reviewer_identity="cold-reviewer",
+            gh_verify_result=MergeClear.VerifyResult.GREEN,
+            blast_class=MergeClear.BlastClass.DOCS,
+        )
+        unrelated = MergeClear.objects.create(
+            ticket=ticket,
+            pr_id=999,
+            slug="999-other",
+            reviewed_sha="c" * 40,
+            reviewer_identity="cold-reviewer",
+            gh_verify_result=MergeClear.VerifyResult.GREEN,
+            blast_class=MergeClear.BlastClass.DOCS,
+        )
+        record_merge_and_advance(
+            clear=merged,
+            merged_sha="landeddeadbeef",
+            required_checks_status="green",
+            repo_slug="souliane/teatree",
+        )
+        older.refresh_from_db()
+        merged.refresh_from_db()
+        unrelated.refresh_from_db()
+        assert merged.consumed_at is not None, "the merged CLEAR is consumed"
+        assert older.consumed_at is not None, "the sibling for the same PR is superseded"
+        assert unrelated.consumed_at is None, "a different PR's CLEAR must NOT be superseded"
+        # Only the merged CLEAR gets an audit — superseding writes no extra audit.
+        assert MergeAudit.objects.count() == 1
+
+    def test_full_keystone_stamps_the_repo_slug_it_merged_against(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        clear = _clear(ticket)
+        _run(clear, _GhStub())
+        audit = MergeAudit.objects.get(clear=clear)
+        assert audit.repo_slug == "souliane/teatree"
+
+
 _LOCKED = "database is locked"
 
 
