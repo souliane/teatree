@@ -13,6 +13,7 @@ from teatree.core.gates.merge_guard import MergeGuard
 from teatree.core.health import HealthCheck
 from teatree.core.health import default_health_checks as _default_health_checks
 from teatree.core.overlay_metadata import OverlayMetadata
+from teatree.core.variant import Variant
 from teatree.types import (
     BaseImageConfig,
     DbImportStrategy,
@@ -56,6 +57,7 @@ __all__ = [
     "SymlinkSpec",
     "ToolCommand",
     "ValidationResult",
+    "Variant",
 ]
 
 
@@ -407,28 +409,20 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
     def get_db_import_strategy(self, worktree: "Worktree") -> DbImportStrategy | None:
         return None
 
-    def get_dslr_tenant_for_variant(self, variant: str) -> str:
-        """Return the DSLR snapshot tenant name for *variant*.
+    def resolve_variant(self, name: str) -> Variant:
+        """Resolve a variant *name* into a first-class :class:`Variant` (PR-27, #787).
 
-        Overlays whose DB-import strategy uses DSLR translate the
-        ``Ticket.variant`` string into the tenant suffix that appears in
-        DSLR snapshot names. Two transformations may stack:
-
-        1.  **Prefix** — e.g. an overlay may turn ``client-a`` into the
-            tenant ``development-client-a`` so the snapshot key carries
-            the environment alongside the tenant identity.
-        2.  **Alias** — a child variant whose data is identical to its
-            parent (e.g. ``client-a-regional`` shares snapshots with
-            ``client-a``) maps to the parent's tenant so the snapshot
-            lookup actually finds the right file (#1306).
-
-        The default returns the variant verbatim, which is correct for
-        overlays that don't prefix or alias the tenant. Used by
-        ``workspace clean-all`` to compute the in-use tenant set, and by
-        overlays computing ``DjangoDbImportConfig.ref_db_name`` for the
-        DSLR snapshot lookup.
+        The single seam turning a bare variant name into its resolved tenant /
+        language / DSLR snapshot / E2E credentials — no overlay hook takes a raw
+        ``variant: str`` any more. An override may stack a **prefix**
+        (``client-a`` → tenant ``development-client-a``) and an **alias** (a
+        child variant maps to the parent's ``canonical_tenant`` so a shared
+        snapshot resolves, #1306). The default returns :meth:`Variant.bare` — the
+        tenant is the name verbatim — correct for an overlay that neither
+        prefixes nor aliases. Consumed by ``workspace clean-all`` (in-use tenant
+        set) and by overlays building a ``DjangoDbImportConfig``.
         """
-        return variant
+        return Variant.bare(name)
 
     def get_snapshot_warmer_configs(self) -> list["DjangoDbImportConfig"]:
         """Reference-DB configs the snapshot-warmer loop keeps current, one per variant.
