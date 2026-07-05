@@ -45,6 +45,7 @@ from typing import Final
 import pytest
 
 import hooks.scripts.hook_router as router
+from hooks.scripts.pretooluse_verdict import Verdict
 from teatree.core.overlay import OverlayBase, OverlayConfig
 from teatree.hooks import _repo_visibility
 
@@ -93,7 +94,7 @@ class GateRow:
     """One deny/enforcement gate. Adding a gate is exactly one of these rows."""
 
     gate_id: str
-    handler: Callable[[dict], bool | None]
+    handler: Callable[[dict], bool | Verdict | None]
     event: str
     matched: str
     deny_input: PayloadBuilder
@@ -162,7 +163,7 @@ def _gate_is_reachable(row: GateRow) -> bool:
 # ── deny detection ───────────────────────────────────────────────────────
 
 
-def _denied(handler: Callable[[dict], bool | None], event_input: dict) -> bool:
+def _denied(handler: Callable[[dict], bool | Verdict | None], event_input: dict) -> bool:
     """Run *handler*; True iff it denied (returned ``True``).
 
     Every deny gate in scope signals a deny via a ``True`` return — the
@@ -1129,7 +1130,7 @@ def test_phantom_roster_is_explicit_and_loud() -> None:
     )
 
 
-_NON_DENY_PRETOOLUSE_HANDLERS: Final[frozenset[Callable[[dict], bool | None]]] = frozenset(
+_NON_DENY_PRETOOLUSE_HANDLERS: Final[frozenset[Callable[[dict], bool | Verdict | None]]] = frozenset(
     {
         # Emits ``permissionDecision=allow`` (or ``None``) — it unblocks the
         # settings.json write, it never denies content.
@@ -1171,7 +1172,7 @@ def test_every_pretooluse_deny_handler_has_a_registry_row() -> None:
     Exempting a genuinely-non-deny handler requires a deliberate, reviewable
     addition to the allow-list, not a silent omission.
     """
-    registry: list[Callable[[dict], bool | None]] = router._HANDLERS["PreToolUse"]
+    registry: list[Callable[[dict], bool | Verdict | None]] = router._HANDLERS["PreToolUse"]
     allowlisted = _NON_DENY_PRETOOLUSE_HANDLERS - set(registry)
     assert not allowlisted, (
         "Non-deny allow-list names handlers absent from the live PreToolUse "
