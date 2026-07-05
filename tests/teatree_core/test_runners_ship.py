@@ -13,8 +13,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.test import TestCase
 
+from teatree.config import UserSettings
 from teatree.core.backend_protocols import BackendResolutionError, PrOpenState
-from teatree.core.models import Ticket, Worktree
+from teatree.core.gates import pr_budget_gate
+from teatree.core.models import PullRequest, Ticket, Worktree
 from teatree.core.runners import ShipExecutor
 from teatree.core.runners.base import RunnerResult
 from teatree.core.runners.ship import overlay_pr_labels, sanitize_close_keywords, should_close_ticket
@@ -65,6 +67,70 @@ class TestShipExecutor(TestCase):
 
         ticket.refresh_from_db()
         assert ticket.extra["pr_urls"] == ["https://example.com/mr/1"]
+
+    def test_loop_ship_path_refuses_second_pr_at_repo_budget(self) -> None:
+        # North-star PR-2: the autonomous loop's task-driven ship reaches
+        # host.create_pr through ShipExecutor.run WITHOUT _run_ship_gates, so the
+        # budget gate must live at the ShipExecutor chokepoint. With the cap at 1
+        # and one open PR already recorded for this (repo, ticket), the ship is
+        # refused and NO PR is created. RED before the _open_pr_and_record guard:
+        # host.create_pr is called on the pre-fix code.
+        slug = "souliane/teatree"
+        ticket = self._ticket_with_worktree()
+        PullRequest.objects.create(
+            ticket=ticket,
+            url=f"https://github.com/{slug}/pull/1",
+            repo=slug,
+            iid="1",
+            overlay="test",
+        )
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": f"https://github.com/{slug}/pull/2"}
+        host.current_user.return_value = "souliane"
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.git.push"),
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "body")),
+            patch("teatree.core.runners.ship.git.remote_slug", return_value=slug),
+            patch.object(
+                pr_budget_gate,
+                "get_effective_settings",
+                return_value=UserSettings(max_open_prs_per_repo_per_ticket=1),
+            ),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is False
+        assert "max_open_prs_per_repo_per_ticket" in result.detail
+        host.create_pr.assert_not_called()
+
+    def test_loop_ship_path_allows_pr_when_budget_not_reached(self) -> None:
+        # Inert-at-limit companion: with the cap at 1 and no existing open PR for
+        # this (repo, ticket), the loop ship proceeds and opens the PR.
+        slug = "souliane/teatree"
+        ticket = self._ticket_with_worktree()
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": f"https://github.com/{slug}/pull/1"}
+        host.current_user.return_value = "souliane"
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.git.push"),
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "body")),
+            patch("teatree.core.runners.ship.git.remote_slug", return_value=slug),
+            patch.object(
+                pr_budget_gate,
+                "get_effective_settings",
+                return_value=UserSettings(max_open_prs_per_repo_per_ticket=1),
+            ),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is True
+        host.create_pr.assert_called_once()
 
     def test_returns_failure_when_no_code_host(self) -> None:
         ticket = self._ticket_with_worktree()

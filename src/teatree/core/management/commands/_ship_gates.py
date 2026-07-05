@@ -15,6 +15,7 @@ from typing import TypedDict, cast
 from teatree import visual_qa
 from teatree.core.branch_currency import require_current_branch
 from teatree.core.gates.e2e_mandatory_gate import E2EMandatoryGateError, check_e2e_mandatory, resolve_gate_inputs
+from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_budget
 from teatree.core.management.commands._ship_exec import ShippingGateFailure
 from teatree.core.management.commands._ship_fsm import reconcile_fsm_for_ship
 from teatree.core.modelkit.phases import normalize_phase
@@ -307,4 +308,40 @@ def run_e2e_mandatory_gate(ticket: Ticket) -> E2EMandatoryGateFailure | None:
         check_e2e_mandatory(inputs)
     except E2EMandatoryGateError as exc:
         return E2EMandatoryGateFailure(allowed=False, error=str(exc))
+    return None
+
+
+class PrBudgetGateFailure(TypedDict):
+    """Pre-ship per-(repo, ticket) open-PR budget refusal (north-star PR-2).
+
+    Returned when the overlay set ``max_open_prs_per_repo_per_ticket`` and this
+    ticket already has that many open PRs in the ship repo. Inert (never
+    returned) at the neutral default ``0``. ``error`` names the offending count
+    and the operator escape verbatim.
+    """
+
+    allowed: bool
+    error: str
+
+
+def run_pr_budget_gate(ticket: Ticket, worktree: Worktree) -> PrBudgetGateFailure | None:
+    """Refuse a ship that would breach the ticket's open-PR budget in this repo.
+
+    Resolves the ship repo's slug from the worktree's git remote and delegates to
+    the core :func:`check_pr_budget` policy (constraint-as-data). Returns a typed
+    failure (the ship-gate chain's return style) rather than letting the raise
+    escape. Inert unless the overlay opted into a positive cap; a repo whose slug
+    cannot be resolved is a no-op (nothing to budget against).
+    """
+    repo_path = (worktree.worktree_path or worktree.repo_path) if worktree else "."
+    try:
+        slug = git.remote_slug(repo=repo_path)
+    except CommandFailedError:
+        return None
+    if not slug:
+        return None
+    try:
+        check_pr_budget(ticket, slug)
+    except PrBudgetExceededError as exc:
+        return PrBudgetGateFailure(allowed=False, error=str(exc))
     return None

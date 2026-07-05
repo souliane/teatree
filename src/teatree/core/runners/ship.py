@@ -10,6 +10,7 @@ from teatree.core.branch_currency import sha_conflicts_with_target
 from teatree.core.close_trailer_scanner import apply_publish_gate
 from teatree.core.gates.architecture_precheck_gate import warn_if_precheck_incomplete
 from teatree.core.gates.open_questions_gate import warn_if_open_questions_missing
+from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_budget
 from teatree.core.mr_metadata import ensure_standard_body
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.pr_create_verify import verify_pr_exists
@@ -304,6 +305,18 @@ class ShipExecutor(RunnerBase):
         ``web_url`` is the cross-host canonical key; ``html_url`` is kept
         for raw GitHub API payloads piped through other producers.
         """
+        # North-star PR-2: THE chokepoint both the interactive `pr create` async
+        # worker and the autonomous loop's task-driven ship converge on (routes
+        # that reach here without `_run_ship_gates`). Refuse before opening when
+        # the ticket is at its per-repo open-PR budget; inert at the neutral
+        # default. `_run_ship_gates` additionally fail-fasts this before the push
+        # for the interactive path.
+        expected_slug = git.remote_slug(repo=spec.repo)
+        if expected_slug:
+            try:
+                check_pr_budget(ticket, expected_slug)
+            except PrBudgetExceededError as exc:
+                return RunnerResult(ok=False, detail=str(exc))
         pr = host.create_pr(spec)
         url = str(pr.get("web_url") or pr.get("html_url") or "")
         if not url.startswith(("http://", "https://")):
@@ -314,7 +327,6 @@ class ShipExecutor(RunnerBase):
         # #1120 (a): verify the PR URL targets the expected repo.  A valid URL
         # for the *wrong* repo (e.g. a cross-project CI mirror mis-resolved by
         # the overlay) must not silently advance the FSM to ``in_review``.
-        expected_slug = git.remote_slug(repo=spec.repo)
         if expected_slug and expected_slug not in url:
             return RunnerResult(
                 ok=False,

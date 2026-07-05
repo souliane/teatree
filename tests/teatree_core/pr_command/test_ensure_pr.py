@@ -6,11 +6,14 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
+from teatree.config import UserSettings
 from teatree.core.backend_protocols import BackendResolutionError, PrOpenState
+from teatree.core.gates import pr_budget_gate
 from teatree.core.gates.orphan_guard import BranchReport, BranchStatus
 from teatree.core.management.commands import _ensure_pr as ensure_pr_mod
 from teatree.core.management.commands import pr as pr_command
 from teatree.core.management.commands._ensure_pr import create_or_defer_pr
+from teatree.core.models import PullRequest, Ticket, Worktree
 from tests.teatree_core.cleanup._shared import _run_git
 
 from ._shared import _MOCK_OVERLAY
@@ -288,6 +291,43 @@ class TestEnsurePr(TestCase):
             pytest.raises(CommandFailedError, match="rate limit"),
         ):
             call_command("pr", "ensure-pr")
+
+    def test_refuses_when_ticket_is_at_its_open_pr_budget(self) -> None:
+        """North-star PR-2: the orphan path refuses before creating when at budget."""
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW)
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path=".", branch="feat-q")
+        PullRequest.objects.create(
+            ticket=ticket,
+            url="https://github.com/souliane/teatree/pull/1",
+            repo="souliane/teatree",
+            iid="1",
+            overlay="test",
+        )
+        host = MagicMock()
+        host.current_user.return_value = "souliane"
+        self._monkeypatch.setattr(ensure_pr_mod, "code_host_for_repo_from_overlay", lambda _repo_path: host)
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command.git, "current_branch", return_value="feat-q"),
+            patch.object(ensure_pr_mod.git, "remote_url", return_value="git@github.com:souliane/teatree.git"),
+            patch.object(ensure_pr_mod, "_branch_own_commit_message", return_value=("feat: x", "body")),
+            patch.object(
+                pr_budget_gate,
+                "get_effective_settings",
+                return_value=UserSettings(max_open_prs_per_repo_per_ticket=1),
+            ),
+            patch.object(
+                pr_command,
+                "classify_branch",
+                return_value=BranchReport(repo=".", branch="feat-q", status=BranchStatus.PUSHED_ORPHAN, ahead_count=3),
+            ),
+        ):
+            result = cast("dict[str, object]", call_command("pr", "ensure-pr"))
+
+        assert "max_open_prs_per_repo_per_ticket" in str(result["error"])
+        assert "souliane/teatree/pull/1" in str(result["error"])
+        host.create_pr.assert_not_called()
 
 
 class TestCreatePrTitleSourcing(TestCase):
