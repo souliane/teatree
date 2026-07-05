@@ -75,7 +75,7 @@ def delivered_head_sha(ticket: "Ticket") -> str:
 
 def _deterministic_specs(ticket: "Ticket", head_sha: str) -> list[CriticFindingSpec]:
     specs: list[CriticFindingSpec] = []
-    for item in deterministic_items():
+    for item in deterministic_items(_TRANSITION):
         try:
             detail = item.evaluate(ticket)
         except Exception as exc:  # noqa: BLE001 — an inconclusive predicate is a finding, not a crash of the gate.
@@ -114,7 +114,7 @@ def _llm_specs(ticket: "Ticket", head_sha: str) -> list[CriticFindingSpec]:
         return []
     specs: list[CriticFindingSpec] = []
     for failed in verdict.failed_items():
-        item = item_for(failed.slug)
+        item = item_for(failed.slug, _TRANSITION)
         if item is None:
             continue  # a verdict slug outside the rubric is ignored, never recorded as a phantom finding
         status = (
@@ -167,14 +167,14 @@ def build_critic_contract(ticket: "Ticket", head_sha: str) -> str:
     self-declared claim. The contract instructs the critic to RETURN a
     ``critic_verdict`` envelope (corr-11) — it has no shell to record it itself.
     """
-    questions = "\n".join(f"  - {item.slug}: {item.adversarial_question}" for item in llm_items())
+    questions = "\n".join(f"  - {item.slug}: {item.adversarial_question}" for item in llm_items(_TRANSITION))
     plan = latest_plan_artifact(ticket)
     plan_text = (plan.plan_text if plan else "").strip() or "<no plan recorded>"
     manifest = AttachmentManifest.latest_for(ticket)
     entries = manifest.entries if manifest else []
     inputs = [str(e.get("source_url") or "").strip() for e in entries if isinstance(e, dict)]
     inputs_block = "\n".join(f"  - {url}" for url in inputs if url) or "  - <none recorded>"
-    item_slugs = ", ".join(item.slug for item in llm_items())
+    item_slugs = ", ".join(item.slug for item in llm_items(_TRANSITION))
     return (
         f"You are the autonomous user-proxy CRITIC judging the DELIVERY of ticket {ticket.pk}. Read the "
         f"delivered artifacts — the merged PR diff at head {head_sha[:8] or '<unknown>'}, the plan below, and the "
@@ -238,7 +238,7 @@ def record_returned_critic_verdict(task: object, result: dict) -> str:
 
 def blocking_specs(specs: list[CriticFindingSpec]) -> list[CriticFindingSpec]:
     """The subset of *specs* whose rubric item BLOCKS under enforcement (the deterministic teeth)."""
-    return [spec for spec in specs if (item := item_for(spec.rubric_item)) is not None and item.blocking]
+    return [spec for spec in specs if (item := item_for(spec.rubric_item, _TRANSITION)) is not None and item.blocking]
 
 
 def check_critic(ticket: "Ticket") -> None:
