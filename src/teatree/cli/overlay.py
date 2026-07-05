@@ -15,6 +15,7 @@ import typer
 from teatree.agents.skill_injection import build_subagent_skill_preamble
 from teatree.cli.autonomy import register_autonomy_commands
 from teatree.cli.django_groups import DJANGO_GROUPS, DjangoGroup
+from teatree.cli.overlay_leaves import register_core_passthrough_leaves
 from teatree.cli.teatree_gate import register_gate_commands
 from teatree.cli.wip import register_wip_commands
 from teatree.skill_support.loading import DEFAULT_SKILLS_DIR
@@ -376,41 +377,7 @@ class OverlayAppBuilder:
             # Same as ``full-status``: ``followup`` is core-only (#1318).
             managepy_core("followup", "sync", overlay_name=overlay_name)
 
-        @overlay_app.command(
-            name="safe-kill",
-            context_settings={
-                "allow_extra_args": True,
-                "allow_interspersed_args": False,
-                "ignore_unknown_options": True,
-            },
-            add_help_option=False,
-        )
-        def safe_kill(ctx: typer.Context) -> None:
-            """Signal a pid only if it maps to a dead target AND is confirmed non-live (#2225)."""
-            # ``safe_kill`` is a teatree-CORE management command — dispatch via
-            # ``python -m teatree`` so an overlay clone with its own ``manage.py``
-            # does not crash with ``Unknown command`` (#1318). The pid argument
-            # and ``--hang-cause`` are forwarded verbatim.
-            managepy_core("safe_kill", *ctx.args, overlay_name=overlay_name)
-
-        @overlay_app.command(
-            name="do",
-            context_settings={
-                "allow_extra_args": True,
-                "allow_interspersed_args": False,
-                "ignore_unknown_options": True,
-            },
-            add_help_option=False,
-        )
-        def do(ctx: typer.Context) -> None:
-            """Walk a ticket through the lifecycle via each phase's existing gate (PR-31)."""
-            # ``do`` is a teatree-CORE management command that reads the canonical
-            # control DB the shipping gate consults, so it dispatches via
-            # ``python -m teatree`` (same #2925/#126 reasoning as ``pr``/``lifecycle``)
-            # — a cwd inside a ticket worktree must not resolve that worktree's own
-            # ``manage.py``. The ticket-ref, ``--plan`` and ``--json`` are forwarded
-            # verbatim; the faithful-child-exit bridge propagates its exit code.
-            managepy_core("do", *ctx.args, overlay_name=overlay_name)
+        register_core_passthrough_leaves(overlay_app, overlay_name)
 
         self._register_agent_command()
 

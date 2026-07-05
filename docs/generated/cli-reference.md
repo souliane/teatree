@@ -4731,6 +4731,8 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │                 confirmed non-live (#2225).                                  │
 │ do              Walk a ticket through the lifecycle via each phase's         │
 │                 existing gate (PR-31).                                       │
+│ signals         Read-only factory quality/velocity signals over the trailing │
+│                 window (SIG-PR-1).                                           │
 │ agent           Launch Claude Code with overlay context and auto-detected    │
 │                 skills.                                                      │
 │ skill-preamble  Emit the inline SKILL.md preamble a raw Agent-tool sub-agent │
@@ -4859,6 +4861,15 @@ Usage: t3 teatree safe-kill [OPTIONS]
 Usage: t3 teatree do [OPTIONS]
 
  Walk a ticket through the lifecycle via each phase's existing gate (PR-31).
+```
+
+#### `t3 teatree signals`
+
+```
+Usage: t3 teatree signals [OPTIONS]
+
+ Read-only factory quality/velocity signals over the trailing window
+ (SIG-PR-1).
 ```
 
 #### `t3 teatree agent`
