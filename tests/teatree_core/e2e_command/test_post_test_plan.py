@@ -240,6 +240,48 @@ class TestRenderBody:
         body = _test_plan.render_body(state)
         assert "**How to test:**" not in body
 
+    def test_backend_only_workflow_suppresses_the_empty_dev_local_table(self) -> None:
+        # A backend/API workflow carries neither video nor screenshots on either
+        # side — only its steps, which include the `Actual: ✅` claim. Emitting
+        # the `| Dev | Local |` header alone renders an empty grid that reads as
+        # missing evidence; the workflow renders as heading + steps only.
+        state = self._state(
+            local={"commits": {}, "workflows": {}},
+            steps={"Backend fee removal": ["Load the offer serializer", "Actual: ✅ fee line absent from payload"]},
+        )
+        body = _test_plan.render_body(state)
+        assert "### Backend fee removal" in body
+        assert "1. Load the offer serializer" in body
+        assert "2. Actual: ✅ fee line absent from payload" in body
+        assert "| Dev | Local |" not in body
+        assert "|---|---|" not in body
+
+    def test_empty_embed_workflow_suppresses_the_empty_dev_local_table(self) -> None:
+        # A workflow present in a side's map but carrying an empty embed (no
+        # video, no screenshots) is the same imageless case — suppress its table.
+        state = self._state(
+            local={"commits": {}, "workflows": {"Backend claim": self._embedded()}},
+        )
+        body = _test_plan.render_body(state)
+        assert "### Backend claim" in body
+        assert "| Dev | Local |" not in body
+
+    def test_media_bearing_workflow_still_renders_the_table_alongside_a_backend_one(self) -> None:
+        # A backend-only workflow suppresses its table; a media-bearing sibling
+        # in the same plan still renders its Dev | Local comparison table.
+        state = self._state(
+            local={
+                "commits": {},
+                "workflows": {"UI login": self._embedded(images=("![i](/uploads/s/l1.png)",))},
+            },
+            steps={"Backend fee removal": ["Load the serializer", "Actual: ✅ absent"]},
+        )
+        body = _test_plan.render_body(state)
+        assert "### UI login" in body
+        assert "| Dev | Local |" in body  # the media-bearing workflow keeps its table
+        assert "| — | ![i](/uploads/s/l1.png) |" in body
+        assert "### Backend fee removal" in body
+
     def test_commit_shas_render_as_clickable_links_derived_from_mrs(self) -> None:
         # The repo short-name (client) matches the MR URL .../org/client/...,
         # so its SHA links to that project's commit page.

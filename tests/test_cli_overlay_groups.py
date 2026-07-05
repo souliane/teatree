@@ -7,6 +7,7 @@ that table is unreachable via the overlay CLI even though the core
 """
 
 from teatree.cli.overlay import DJANGO_GROUPS
+from teatree.core.management.commands.e2e import Command as E2eCommand
 from teatree.core.management.commands.honesty import Command as HonestyCommand
 from teatree.core.management.commands.learnings import Command as LearningsCommand
 from teatree.core.management.commands.lifecycle import Command as LifecycleCommand
@@ -66,6 +67,19 @@ def test_e2e_group_exposes_deprecated_post_evidence_alias() -> None:
     # ``post-evidence``; without a bridge entry in DJANGO_GROUPS the alias
     # is unreachable via ``t3 <overlay> e2e post-evidence``.
     assert "post-evidence" in _e2e_subcommands()
+
+
+def test_e2e_group_exposes_retract_evidence() -> None:
+    # ``retract-evidence`` is defined on the e2e management command but was
+    # absent from DJANGO_GROUPS, so ``t3 <overlay> e2e retract-evidence`` was
+    # unreachable from the installed CLI even though the command exists — the
+    # class of regression this table guards.
+    assert "retract-evidence" in _e2e_subcommands()
+
+
+def test_e2e_subcommands_map_to_real_command_methods() -> None:
+    for name in _e2e_subcommands():
+        assert hasattr(E2eCommand, name.replace("-", "_")), name
 
 
 def test_pr_group_exposes_deprecated_post_evidence_alias() -> None:

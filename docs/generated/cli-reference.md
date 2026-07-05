@@ -6424,16 +6424,17 @@ Usage: t3 teatree e2e [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ run             Run E2E tests — dispatches to project or external runner     │
-│                 based on overlay config.                                     │
-│ trigger-ci      Trigger E2E tests on a remote CI pipeline.                   │
-│ external        Run Playwright tests from the external test repo             │
-│                 (T3_PRIVATE_TESTS).                                          │
-│ project         Run E2E tests from the project's own test directory.         │
-│ post-test-plan  Post/update the ticket's single test-plan note (side-by-side │
-│                 Dev|Local test plan) from a manifest.                        │
-│ post-evidence   [Deprecated] Alias for post-test-plan (renamed; kept one     │
-│                 release for back-compat).                                    │
+│ run               Run E2E tests — dispatches to project or external runner   │
+│                   based on overlay config.                                   │
+│ trigger-ci        Trigger E2E tests on a remote CI pipeline.                 │
+│ external          Run Playwright tests from the external test repo           │
+│                   (T3_PRIVATE_TESTS).                                        │
+│ project           Run E2E tests from the project's own test directory.       │
+│ post-test-plan    Post/update the ticket's single test-plan note             │
+│                   (side-by-side Dev|Local test plan) from a manifest.        │
+│ retract-evidence  Withdraw the ticket's single test-plan note.               │
+│ post-evidence     [Deprecated] Alias for post-test-plan (renamed; kept one   │
+│                   release for back-compat).                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -6653,6 +6654,19 @@ Usage: t3 teatree e2e post-test-plan [OPTIONS]
 │                                                    no-allow-no-video]        │
 │ --help                                             Show this message and     │
 │                                                    exit.                     │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree e2e retract-evidence`
+
+```
+Usage: t3 teatree e2e retract-evidence [OPTIONS]
+
+ Withdraw the ticket's single test-plan note.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --ticket        TEXT                                                         │
+│ --help                Show this message and exit.                            │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

@@ -232,6 +232,8 @@ t3 <overlay> e2e post-test-plan --manifest artifacts/<TICKET>/manifest.json
 
 Do step 1 — never push a UI-visible ticket with no recorded E2E artifact. Then do step 3 — a deployed-env (`dev`) E2E run plus a posted test plan is what closes the loop on a UI-visible ticket; merging without it leaves "done" half-proven.
 
+The posted test plan the gate expects is the **comprehensive ticket test plan**, not just proof a green local run happened: one workflow per affected UI surface with a red-boxed screenshot, plus an explicit `Actual: ✅ <result>` for every backend/API claim (a backend-only workflow renders as its steps + `Actual` line, not an empty Dev|Local table). A green local E2E artifact satisfies the ship gate; the comprehensive plan is what makes the posted evidence trustworthy.
+
 `Ticket.ship()` refuses to ship a **UI-visible** ticket — one whose scope includes a repo in the active overlay's `frontend_repos` — until a **green local-stack E2E artifact** exists. The durable `Ticket.extra['e2e_recipe'].last_run` must be `result == "green"` AND `env == "local"`; a `dev` run records provenance but does NOT satisfy the gate. A dev-after-merge run is deliberately not enough — the whole point is to catch missing scope *before* the merge, not after. A green local run is recorded automatically by `t3 <overlay> e2e run <work-item>` (which resolves an on-disk workspace, so `env` defaults to `local`).
 
 The gate raises `DodLocalE2EError` (a transition refusal, like the dirty-worktree preflight) and the FSM stays put. Escape hatch for a genuinely non-UI or exempt ticket the heuristic mis-flags:
