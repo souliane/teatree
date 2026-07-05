@@ -197,7 +197,7 @@ def _format_deny(goal_name: str, token: str) -> str:
         f"    [standing-goal-hold: {token} <one-line reason>]\n"
         "The token dies after one use, so a hold is one checkpoint — not a blanket bypass; the deny "
         "re-fires on the next stop while the goal is unmet.\n"
-        "To retire the goal or disable the gate: `t3 <overlay> goal clear <name>` / "
+        "To retire the goal or disable the gate: `t3 goal clear <name>` / "
         "`t3 <overlay> gate standing-goal disable`."
     )
 
