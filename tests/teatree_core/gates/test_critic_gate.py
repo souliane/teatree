@@ -22,7 +22,9 @@ from django.test import TestCase
 
 from teatree.agents.attempt_recorder import record_result_envelope
 from teatree.config import UserSettings
+from teatree.core import critic_rubric
 from teatree.core import tasks as core_tasks
+from teatree.core.critic_rubric import CRITIC_RUBRIC, CriticRubricItem, RubricKind
 from teatree.core.gates import critic_gate
 from teatree.core.gates.critic_gate import (
     check_critic,
@@ -369,6 +371,33 @@ class TestProductionRecordingPath(TestCase):
             record_result_envelope(task, _critic_envelope())
         assert not CriticVerdict.objects.filter(ticket=ticket).exists()
         assert not CriticFinding.objects.filter(ticket=ticket, rubric_item="coherence").exists()
+
+
+class TestTransitionScoping(TestCase):
+    """check_critic evaluates only the mark_delivered rubric subset (PR-1 transition seam).
+
+    A deterministic item keyed to another transition, injected into the registry, must NOT
+    be run by the mark_delivered gate — otherwise a plan/merge critic's items would fire at
+    the wrong FSM point. Anti-vacuity: the same ticket makes the mark_delivered items fire,
+    so the exclusion is a real filter, not an empty pass.
+    """
+
+    def test_run_critic_ignores_a_foreign_transition_item(self) -> None:
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.RETROSPECTED)
+        foreign = CriticRubricItem(
+            slug="plan_transition_probe",
+            adversarial_question="a plan-transition item must not run at mark_delivered",
+            kind=RubricKind.DETERMINISTIC,
+            origin="north-star plan critic",
+            predicate_path="teatree.core.critic_rubric.spec_not_plan",
+            blocking=True,
+            transition="plan",
+        )
+        with patch.object(critic_rubric, "CRITIC_RUBRIC", (*CRITIC_RUBRIC, foreign)):
+            specs = run_critic(ticket)
+        flagged = {spec.rubric_item for spec in specs}
+        assert "plan_transition_probe" not in flagged
+        assert "spec_not_plan" in flagged  # the mark_delivered items DID run — not a blanket-empty pass
 
 
 class TestRegistration(TestCase):

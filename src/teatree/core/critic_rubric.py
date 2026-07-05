@@ -50,6 +50,13 @@ if TYPE_CHECKING:
 
 CriticPredicate = Callable[["Ticket"], "str | None"]
 
+# The FSM transition an item is judged at. The seeded rubric all lands here (the
+# critic gate runs at ``mark_delivered``); the north-star arc adds ``plan``/``merge``
+# items on the SAME registry, selected by transition — keeping the models
+# (CriticDispatch/CriticVerdict/CriticFinding), which are already transition-keyed,
+# and the rubric in step.
+DEFAULT_TRANSITION = "mark_delivered"
+
 
 class RubricKind(StrEnum):
     DETERMINISTIC = "deterministic"
@@ -93,6 +100,7 @@ class CriticRubricItem:
     origin: str
     predicate_path: str = ""
     blocking: bool = False
+    transition: str = DEFAULT_TRANSITION
 
     def resolve(self) -> CriticPredicate:
         return _resolve_predicate(self.predicate_path)
@@ -211,18 +219,20 @@ CRITIC_RUBRIC: tuple[CriticRubricItem, ...] = (
 )
 
 
-def rubric_items() -> tuple[CriticRubricItem, ...]:
-    """The active critic rubric, in seeded order."""
-    return CRITIC_RUBRIC
+def rubric_items(transition: str = DEFAULT_TRANSITION) -> tuple[CriticRubricItem, ...]:
+    """The active critic rubric for *transition*, in seeded order."""
+    return tuple(item for item in CRITIC_RUBRIC if item.transition == transition)
 
 
-def deterministic_items() -> tuple[CriticRubricItem, ...]:
-    return tuple(item for item in CRITIC_RUBRIC if item.kind is RubricKind.DETERMINISTIC)
+def deterministic_items(transition: str = DEFAULT_TRANSITION) -> tuple[CriticRubricItem, ...]:
+    return tuple(
+        item for item in CRITIC_RUBRIC if item.transition == transition and item.kind is RubricKind.DETERMINISTIC
+    )
 
 
-def llm_items() -> tuple[CriticRubricItem, ...]:
-    return tuple(item for item in CRITIC_RUBRIC if item.kind is RubricKind.LLM)
+def llm_items(transition: str = DEFAULT_TRANSITION) -> tuple[CriticRubricItem, ...]:
+    return tuple(item for item in CRITIC_RUBRIC if item.transition == transition and item.kind is RubricKind.LLM)
 
 
-def item_for(slug: str) -> "CriticRubricItem | None":
-    return next((item for item in CRITIC_RUBRIC if item.slug == slug), None)
+def item_for(slug: str, transition: str = DEFAULT_TRANSITION) -> "CriticRubricItem | None":
+    return next((item for item in CRITIC_RUBRIC if item.slug == slug and item.transition == transition), None)
