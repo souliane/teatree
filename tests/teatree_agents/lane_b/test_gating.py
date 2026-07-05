@@ -1,15 +1,24 @@
+import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
-from pydantic_ai.exceptions import ApprovalRequired
+from pydantic_ai.exceptions import ApprovalRequired, ModelRetry, UnexpectedModelBehavior
 from pydantic_ai.tools import ToolDefinition
+from pydantic_ai.toolsets.function import FunctionToolset
 
-from teatree.agents.lane_b.gating import hard_deny_reason, make_soft_gate_predicate, raise_if_soft_gated
+from teatree.agents.lane_b.gating import (
+    HardDenyToolset,
+    hard_deny_reason,
+    make_soft_gate_predicate,
+    raise_if_soft_gated,
+)
 from teatree.hooks import _repo_visibility
 from tests._git_repo import make_git_repo, run_git
 from tests.teatree_agents.lane_b._managed_clone import linked_worktree, managed_main_clone
 
 _MUTATIONS = ("git reset --hard HEAD~1", "git checkout my-feature", "git stash pop")
+_DENIED_CALL = {"command": "gh pr merge 5"}  # a registry hard-deny (raw forge merge)
 
 
 class TestHardDenyReason:
@@ -126,6 +135,33 @@ class TestHardDenyReason:
                 }
                 lane_a_denied = router.handle_block_main_clone_mutation(event)
                 assert lane_b_denied is lane_a_denied, (command, cwd)
+
+
+class TestHardDenyRetryCap:
+    """A hard-deny is a retryable ``ModelRetry`` UNTIL the per-run cap, then terminal.
+
+    A predicate false-positive the model cannot satisfy (or a blocked path it keeps
+    re-attempting with variations) would loop, burning tokens; the cap converts the
+    N-th refusal in a run into a terminal :class:`UnexpectedModelBehavior` so the
+    run ends cleanly instead of looping.
+    """
+
+    def test_denials_retry_until_the_cap_then_abort(self) -> None:
+        toolset = HardDenyToolset(FunctionToolset(), max_denials=3)
+        ctx = SimpleNamespace(run_id="run-1")
+        for _ in range(2):
+            with pytest.raises(ModelRetry):
+                asyncio.run(toolset.call_tool("shell", _DENIED_CALL, ctx, None))
+        with pytest.raises(UnexpectedModelBehavior):
+            asyncio.run(toolset.call_tool("shell", _DENIED_CALL, ctx, None))
+
+    def test_the_cap_is_isolated_per_run(self) -> None:
+        # A fresh run_id starts a fresh tally — the cap is per-run, not per-toolset.
+        toolset = HardDenyToolset(FunctionToolset(), max_denials=2)
+        with pytest.raises(ModelRetry):
+            asyncio.run(toolset.call_tool("shell", _DENIED_CALL, SimpleNamespace(run_id="run-1"), None))
+        with pytest.raises(ModelRetry):
+            asyncio.run(toolset.call_tool("shell", _DENIED_CALL, SimpleNamespace(run_id="run-2"), None))
 
 
 class TestSoftGate:

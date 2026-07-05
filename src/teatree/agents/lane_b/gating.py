@@ -2,22 +2,39 @@
 
 Two gate kinds, mirroring Lane A.
 
-Hard-deny — a command that must never run (a main-clone working-tree mutation, a
-privacy/banned-term leak). :func:`hard_deny_reason` is the single shared
-evaluator; it consults the SAME importable ``teatree`` functions Lane A's
-PreToolUse hook wraps (:func:`teatree.core.gates.main_clone_guard.find_main_clone_git_mutation`,
-and :func:`teatree.hooks.quote_scanner.extract_publish_payload` → :func:`~teatree.hooks.quote_scanner.scan_text`
-for the privacy scan — scoped to a PUBLISH payload, never every string argument —
-then a HIGH finding routed through Lane A's OWN destination gate
-(:func:`teatree.hooks.public_visibility.gate_skips_for_visibility` +
-:func:`teatree.hooks.publish_surface.command_targets_private_only`, the two
-predicates Lane A's ``resolve_high_verdict`` composes), never an unconditional
-deny-any-HIGH), so the two lanes refuse the identical set by construction — same
-payload scoping AND same destination-awareness — not by a parallel
-re-implementation.
+Hard-deny — a command that must never run. :func:`hard_deny_reason` is the single
+shared evaluator; it composes THREE importable-``teatree`` deny families, each the
+SAME code Lane A's PreToolUse gates consult, so the two lanes refuse the same set.
+
+Family 1, the main-clone working-tree mutation, is
+:func:`~teatree.core.gates.main_clone_env.main_clone_git_deny_reason`, scoped by
+*cwd* (the worktree jail), exactly as Lane A's main-clone gate. Family 2, the
+Bash-shaped hard-denies, is the shared
+:func:`teatree.hooks.hard_deny_registry.hard_deny_reason`, iterating the ONE
+registry (raw forge-merge, ``--no-verify``/hooksPath, secret-file-print,
+raw-review-post, self-reviewer-assign, raw-pid-kill) that the cold PreToolUse
+guards delegate to. Before this registry, Lane B checked only families 1 and 3, so
+a raw forge merge or a hook-silencing push was reachable under
+``agent_harness=pydantic_ai`` with NO MergeClear or CI verification (the "Lane-B
+bypass" class, souliane/teatree#2 — closed here). Family 3, the privacy/banned-term
+leak, is the publish payload
+(:func:`~teatree.hooks.quote_scanner.extract_publish_payload`, ``None`` for a
+non-publish call), privacy-scanned, then a HIGH finding routed through Lane A's OWN
+destination gate (:func:`~teatree.hooks.public_visibility.gate_skips_for_visibility`
++ :func:`~teatree.hooks.publish_surface.command_targets_private_only`), never an
+unconditional deny-any-HIGH.
+
+The two lanes refuse the SAME set because they run the SAME predicates — not
+"identical by construction" of two parallel re-implementations (that claim was
+false: it omitted family 2 entirely). The deny-corpus parity test
+(``tests/teatree_agents/lane_b/test_parity.py``) feeds every Lane-A deny fixture
+through :func:`hard_deny_reason` and asserts identical refusals, so a future
+divergence fails CI.
+
 :class:`HardDenyToolset` wraps a toolset and raises the refusal into the model as
 a ``RetryPromptPart`` (the model sees the reason and must adapt) exactly as a
-Lane-A PreToolUse deny surfaces its message.
+Lane-A PreToolUse deny surfaces its message — under a per-run retry cap so a
+predicate false-positive aborts the run cleanly instead of looping the model.
 
 Soft-gate — a command that needs a human's approval (the ask-gate).
 :func:`make_soft_gate_predicate` builds the ``approval_required`` predicate; a
@@ -28,12 +45,12 @@ approve/deny.
 """
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from pydantic_ai import RunContext
-from pydantic_ai.exceptions import ApprovalRequired, ModelRetry
+from pydantic_ai.exceptions import ApprovalRequired, ModelRetry, UnexpectedModelBehavior
 from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.toolsets.abstract import ToolsetTool
 from pydantic_ai.toolsets.wrapper import WrapperToolset
@@ -99,14 +116,20 @@ def hard_deny_reason(tool_name: str, tool_args: dict[str, Any], *, cwd: Path | N
     """Return the refusal reason for a tool call, or ``None`` when it is allowed.
 
     The single shared hard-deny evaluator, consulting the same ``teatree``
-    functions Lane A's PreToolUse hook does. First, a command-tool call is run
-    through the FULL main-clone gate (:func:`main_clone_git_deny_reason`),
-    mirroring Lane A: it resolves the command's effective dir (honouring
-    ``-C``/``--git-dir``) and refuses a ``checkout <feature>`` / ``reset --hard``
-    / ``restore`` / ``stash pop`` ONLY when it targets a managed MAIN CLONE —
-    the same routine worktree git ops Lane A ALLOWS pass here too, since Lane B
-    tools are jailed to *cwd* (the worktree). Then the call's PUBLISH payload — the
-    body of a publish command, resolved through the SAME
+    functions Lane A's PreToolUse hook does, in three families. FIRST, a
+    command-tool call is run through the FULL main-clone gate
+    (:func:`main_clone_git_deny_reason`), mirroring Lane A: it resolves the
+    command's effective dir (honouring ``-C``/``--git-dir``) and refuses a
+    ``checkout <feature>`` / ``reset --hard`` / ``restore`` / ``stash pop`` ONLY
+    when it targets a managed MAIN CLONE — the same routine worktree git ops Lane A
+    ALLOWS pass here too, since Lane B tools are jailed to *cwd* (the worktree).
+    SECOND, the command runs through the shared Bash-shaped hard-deny registry
+    (:func:`teatree.hooks.hard_deny_registry.hard_deny_reason`) — the ONE set the
+    cold PreToolUse guards also iterate (raw forge-merge, ``--no-verify``/hooksPath,
+    secret-file-print, raw-review-post, self-reviewer-assign, raw-pid-kill), so a
+    raw ``gh pr merge`` / ``git push --no-verify`` is denied here exactly as Lane A
+    denies it. THIRD, the call's PUBLISH payload — the body of a publish command,
+    resolved through the SAME
     :func:`~teatree.hooks.quote_scanner.extract_publish_payload` scoping Lane A's
     PreToolUse uses — is privacy-scanned; a HIGH finding is routed through Lane A's
     OWN destination gate (:func:`_publish_high_denies`) and refuses the call ONLY
@@ -117,6 +140,9 @@ def hard_deny_reason(tool_name: str, tool_args: dict[str, Any], *, cwd: Path | N
     identical publish set, not a wider everything-scan nor a wider deny-any-HIGH.
     """
     from teatree.core.gates.main_clone_env import main_clone_git_deny_reason  # noqa: PLC0415
+    from teatree.hooks.hard_deny_registry import (  # noqa: PLC0415 (lazy, mirrors the other in-function hard-deny imports)
+        hard_deny_reason as bash_hard_deny_reason,
+    )
     from teatree.hooks.quote_scanner import HIGH, scan_text  # noqa: PLC0415
 
     command = _command_of(tool_name, tool_args)
@@ -124,6 +150,9 @@ def hard_deny_reason(tool_name: str, tool_args: dict[str, Any], *, cwd: Path | N
         main_clone_reason = main_clone_git_deny_reason(command, cwd)
         if main_clone_reason is not None:
             return main_clone_reason
+        registry_reason = bash_hard_deny_reason(command)
+        if registry_reason is not None:
+            return registry_reason
 
     payload = _publish_payload(command, cwd)
     if payload is not None:
@@ -133,6 +162,14 @@ def hard_deny_reason(tool_name: str, tool_args: dict[str, Any], *, cwd: Path | N
             return f"BLOCKED: privacy/banned-term gate — {high.name}: {high.excerpt!r}"
 
     return None
+
+
+#: How many hard-denies one run may raise before the run is aborted. A refusal is
+#: a ``ModelRetry`` the model is meant to adapt to; but a predicate FALSE-positive
+#: it cannot satisfy (or a genuinely-blocked path the model keeps re-attempting
+#: with variations) would loop, burning tokens. Past this cap the deny becomes a
+#: terminal :class:`UnexpectedModelBehavior` that ends the run instead of retrying.
+_DEFAULT_MAX_DENIALS: int = 3
 
 
 @dataclass
@@ -148,15 +185,32 @@ class HardDenyToolset(WrapperToolset[None]):
     git ops. It is a dataclass FIELD (not a plain attribute) because
     ``WrapperToolset`` rebuilds itself via ``dataclasses.replace`` in ``for_run``
     — a non-field would be dropped and reset each run.
+
+    *max_denials* caps how many hard-denies a single run may raise: past it the
+    deny is a terminal :class:`UnexpectedModelBehavior` (the run ends) rather than
+    a :class:`ModelRetry`, so a predicate false-positive cannot loop the model.
+    *denial_counts* tallies denials per ``run_id``; it is a shared-by-``replace``
+    field (``for_run`` rebuilds the toolset), so all per-run copies increment the
+    same tally and each run's count is isolated by its own key.
     """
 
     cwd: Path | None = None
+    max_denials: int = _DEFAULT_MAX_DENIALS
+    denial_counts: dict[str, int] = field(default_factory=dict)
 
     async def call_tool(
         self, name: str, tool_args: dict[str, Any], ctx: RunContext[None], tool: ToolsetTool[None]
     ) -> Any:  # noqa: ANN401 — the ``WrapperToolset.call_tool`` contract is ``-> Any``; matched here.
         reason = hard_deny_reason(name, tool_args, cwd=self.cwd)
         if reason is not None:
+            run_key = getattr(ctx, "run_id", "") or ""
+            self.denial_counts[run_key] = self.denial_counts.get(run_key, 0) + 1
+            if self.denial_counts[run_key] >= self.max_denials:
+                cap_reached = (
+                    f"Lane-B hard-deny retry cap reached ({self.max_denials} refusals this run); "
+                    f"aborting rather than looping. Last refusal — {reason}"
+                )
+                raise UnexpectedModelBehavior(cap_reached)
             raise ModelRetry(reason)
         return await super().call_tool(name, tool_args, ctx, tool)
 

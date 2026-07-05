@@ -5443,21 +5443,19 @@ _OUT_OF_BAND_MERGE_REASON = (
 def _is_raw_merge_api_write(command: str) -> bool:
     """Whether *command* is a raw forge REST WRITE to a merge endpoint.
 
-    True only when the command targets a ``.../pulls/<n>/merge`` or
-    ``.../merge_requests/<n>/merge`` endpoint AND its EFFECTIVE HTTP method is
-    not GET. Reuses the gate-3 effective-method classifier: the LAST
-    ``-X``/``--method`` value wins; with no method flag the default is POST
-    when a body/field flag is present, else GET. A GET to the merge endpoint
-    reads merge status and must NOT be denied.
-
-    Uses a word-boundary regex (not plain ``in``) so double-space variants
-    are caught (same class as F4).
+    Delegates to :func:`teatree.hooks.raw_merge_detect.is_raw_merge_api_write` —
+    the SAME leaf the shared hard-deny registry (Lane B) uses, so the two lanes
+    classify the merge API write identically. Fails CLOSED (treats the command as
+    a possible merge write) on any import error so a broken environment cannot
+    weaken the gate; the cwd-managed check then blocks on uncertainty.
     """
-    if not _GLAB_GH_API_RE.search(command):
-        return False
-    if not _MERGE_ENDPOINT_RE.search(command):
-        return False
-    return _effective_method_is_write(command)
+    try:
+        with _teatree_src_on_path():
+            from teatree.hooks import raw_merge_detect  # noqa: PLC0415 (lazy src-bootstrap import)
+
+            return raw_merge_detect.is_raw_merge_api_write(command)
+    except Exception:  # noqa: BLE001 (fail-closed: a broken import must not weaken the merge gate)
+        return True
 
 
 def _cwd_is_teatree_managed(cwd: Path) -> bool | None:

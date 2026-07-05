@@ -16,6 +16,7 @@ consults, surfacing an ``is_error`` :class:`ToolResultBlock`.
 
 import asyncio
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 import pydantic_ai.models
@@ -40,14 +41,61 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
+import hooks.scripts.no_self_reviewer_assign as _reviewer_guard
+import hooks.scripts.secret_file_print_guard as _secret_guard
+from hooks.scripts.direct_command_guard import deny_match as _direct_deny_match
 from hooks.scripts.quote_verdict import resolve_high_verdict
+from hooks.scripts.raw_review_post_guard import is_raw_review_write as raw_review_write_lane_a
 from teatree.agents.harness import PydanticAiHarness
 from teatree.agents.lane_b.gating import hard_deny_reason
-from teatree.hooks import _repo_visibility
+from teatree.hooks import (
+    _repo_visibility,
+    raw_merge_detect,
+    raw_review_post_detect,
+    safe_kill_detect,
+    secret_file_print_detect,
+    self_reviewer_assign_detect,
+)
 from teatree.hooks.quote_scanner import extract_publish_payload, scan_text
 from tests.teatree_agents.lane_b._managed_clone import linked_worktree, managed_main_clone
+from tests.test_hook_router_classifier_relax_wire import run_hook_router
 
 pydantic_ai.models.ALLOW_MODEL_REQUESTS = False  # ty: ignore[invalid-assignment] — the zero-token test guard.
+
+# Lane-A Bash-shaped deny matchers, imported from the cold PreToolUse guards — the
+# INDEPENDENT implementations the Lane-B leaves must agree with. raw-merge and
+# raw-pid-kill are already unified (the router guards DELEGATE to the leaves), so
+# their "Lane A denies" proof reads the shared detector; the other four guards keep
+# their own matcher, making the parity check a genuine cross-implementation compare.
+bash_assigns_reviewer_lane_a = _reviewer_guard._bash_assigns_reviewer
+_secret_print_lane_a = _secret_guard._is_secret_print
+
+
+def _lane_a_direct_denies(command: str) -> bool:
+    return _direct_deny_match(command) is not None
+
+
+def _lane_a_secret_denies(command: str) -> bool:
+    return _secret_print_lane_a(command)
+
+
+def _lane_a_review_denies(command: str) -> bool:
+    return raw_review_write_lane_a(command)
+
+
+def _lane_a_reviewer_denies(command: str) -> bool:
+    return bash_assigns_reviewer_lane_a(command)
+
+
+def _lane_a_raw_merge_denies(command: str) -> bool:
+    # The router's out-of-band-merge gate delegates its detection to
+    # raw_merge_detect and denies when the repo is managed; the detector firing IS
+    # the Lane-A deny trigger (Lane B is always jailed to a managed worktree).
+    return raw_merge_detect.raw_merge_deny_reason(command) is not None
+
+
+def _lane_a_pid_kill_denies(command: str) -> bool:
+    return safe_kill_detect.detect_raw_pid_kill(command).is_raw_pid_kill
 
 
 def _streaming_model(*, tool_command: str) -> FunctionModel:
@@ -302,6 +350,116 @@ class TestPrivacyGateParity:
         args = self._post("someowner/mystery", self._HIGH_BODY)
         assert hard_deny_reason("shell", args, cwd=tmp_path) is None
         assert self._lane_a_denies("shell", args, tmp_path) is False
+
+
+class TestBashHardDenyCorpusParity:
+    """Every Lane-A Bash-shaped hard-deny fires identically on Lane B (souliane/teatree#2).
+
+    The structural capstone for the "Lane-B bypass" class: before the shared
+    :mod:`teatree.hooks.hard_deny_registry`, Lane B's :func:`hard_deny_reason`
+    checked only main-clone + privacy, so a raw ``gh pr merge`` /
+    ``git push --no-verify`` / secret-print / raw-review-post / reviewer-assign /
+    raw-pid-kill was reachable under ``agent_harness=pydantic_ai`` with NO
+    MergeClear or CI verification. This test feeds each Lane-A deny fixture through
+    Lane B's ``hard_deny_reason`` (via the SAME registry) and asserts an identical
+    refusal — and, per family, feeds a fixture through the Lane-A guard matcher AND
+    the Lane-B leaf and asserts they agree, so a future divergence fails CI.
+    """
+
+    # (label, command, lane_a_denies) — every row is a REAL Lane-A Bash-shaped deny
+    # (the last field is the ANTI-VACUITY proof: the Lane-A guard denies it too).
+    _CORPUS: tuple[tuple[str, str, Callable[[str], bool]], ...] = (
+        ("raw gh pr merge", "gh pr merge 5 --repo o/x", _lane_a_raw_merge_denies),
+        ("raw glab mr merge", "glab mr merge 7", _lane_a_raw_merge_denies),
+        ("raw merge api PUT", "gh api repos/o/x/pulls/7/merge -X PUT", _lane_a_raw_merge_denies),
+        ("git commit no-verify", "git commit -m x --no-" + "verify", _lane_a_direct_denies),
+        ("git push no-verify", "git push --no-" + "verify", _lane_a_direct_denies),
+        ("git hooksPath silencer", "git -c core.hooks" + "Path=/dev/null commit -m x", _lane_a_direct_denies),
+        ("secret cat netrc", "cat ~/.netrc", _lane_a_secret_denies),
+        ("pass show unredirected", "pass show ci/token", _lane_a_secret_denies),
+        (
+            "raw review POST",
+            "glab api projects/42/merge_requests/7/discussions -X POST -f body=hi",
+            _lane_a_review_denies,
+        ),
+        ("glab reviewer assign", "glab mr update 7 --reviewer alice", _lane_a_reviewer_denies),
+        ("gh reviewer assign", "gh pr edit 7 --add-reviewer bob", _lane_a_reviewer_denies),
+        ("raw pid kill", "kill -9 4242", _lane_a_pid_kill_denies),
+    )
+
+    @pytest.mark.parametrize(("label", "command", "lane_a_denies"), _CORPUS, ids=[row[0] for row in _CORPUS])
+    def test_lane_b_denies_every_lane_a_bash_hard_deny(
+        self, label: str, command: str, lane_a_denies: Callable[[str], bool], tmp_path: Path
+    ) -> None:
+        # Anti-vacuity: the fixture is a genuine Lane-A refusal.
+        assert lane_a_denies(command), f"{label}: fixture is not a Lane-A deny — the parity claim is vacuous"
+        # RED before the registry wiring: Lane B returned None (the command was reachable).
+        reason = hard_deny_reason("shell", {"command": command}, cwd=tmp_path)
+        assert reason is not None, f"{label}: Lane B must refuse a command Lane A refuses (the bypass class)"
+        assert "BLOCKED" in reason
+
+    def test_benign_commands_are_allowed_on_lane_b(self, tmp_path: Path) -> None:
+        # The anti-over-block twin: a benign shell command Lane A allows is allowed.
+        for command in ("ls -la", "gh pr view 5", "git commit -m 'normal'", "gh api repos/o/x/pulls/7/comments"):
+            assert hard_deny_reason("shell", {"command": command}, cwd=tmp_path) is None, command
+
+    # (leaf-predicate, INDEPENDENT lane-a-matcher, commands) — the divergence guard:
+    # for each command (deny AND allow shapes), the Lane-B leaf and the Lane-A guard
+    # (a separate hooks/scripts implementation) must agree. raw-merge and raw-pid-kill
+    # are omitted here — the router guards DELEGATE to those leaves, so there is no
+    # independent implementation to diverge (the corpus test covers them).
+    def test_each_leaf_agrees_with_its_independent_lane_a_guard(self) -> None:
+        pairs: tuple[tuple[Callable[[str], bool], Callable[[str], bool], tuple[str, ...]], ...] = (
+            (
+                secret_file_print_detect.is_secret_print,
+                _secret_print_lane_a,
+                ("cat ~/.netrc", "pass show ci/token", "cat README.md", "TOKEN=$(pass show x)", "ls"),
+            ),
+            (
+                raw_review_post_detect.is_raw_review_write,
+                raw_review_write_lane_a,
+                (
+                    "glab api projects/42/merge_requests/7/discussions -X POST -f body=hi",
+                    "glab api projects/42/merge_requests/7/discussions",
+                    "gh api repos/o/x/pulls/7/comments -X GET",
+                    "ls",
+                ),
+            ),
+            (
+                self_reviewer_assign_detect.bash_assigns_reviewer,
+                bash_assigns_reviewer_lane_a,
+                (
+                    "glab mr update 7 --reviewer alice",
+                    "gh pr create --reviewer bob",
+                    "glab api projects/1/merge_requests/2 -X PUT -f reviewer_ids=3",
+                    "gh api repos/o/x/pulls/7/requested_reviewers",
+                    "git commit -m 'note about --reviewer'",
+                ),
+            ),
+        )
+        for leaf_matcher, guard_matcher, commands in pairs:
+            for command in commands:
+                assert leaf_matcher(command) == guard_matcher(command), command
+
+
+class TestBashHardDenyWireParity:
+    """Wire-level: a command Lane A's real PreToolUse subprocess denies, Lane B denies too.
+
+    Reuses GM-1's ``run_hook_router`` subprocess harness so the check runs through
+    the actual ``hook_router.main()`` exit-code translation (not the in-process
+    matcher), closing the "tests exercise the unit but never the wire" pattern for
+    this seam. ``git … --no-verify`` is the fixture: the direct-command guard denies
+    it unconditionally (no cwd carve-out), so the subprocess reliably exits 2.
+    """
+
+    def test_no_verify_denied_at_the_wire_and_on_lane_b(self, tmp_path: Path) -> None:
+        command = "git commit -m x --no-" + "verify"
+        home = str(tmp_path / "home")
+        Path(home).mkdir(parents=True, exist_ok=True)
+        result = run_hook_router("PreToolUse", {"tool_name": "Bash", "tool_input": {"command": command}}, home=home)
+        assert result.returncode == 2, f"Lane A's PreToolUse subprocess must deny --no-verify; got {result.returncode}"
+        # The SAME command is refused on Lane B through the shared registry.
+        assert hard_deny_reason("shell", {"command": command}, cwd=tmp_path) is not None
 
 
 def test_zero_tokens_enforced() -> None:
