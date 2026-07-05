@@ -49,6 +49,7 @@ _DEFAULT_LOOPS = (
     ("backlog_sweep", 86400, None, None),
     ("news", 86400, datetime.time(8, 0), None),
     ("dream", 86400, datetime.time(3, 0), None),
+    ("outer_loop", 86400, None, None),
 )
 
 

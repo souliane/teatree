@@ -46,6 +46,12 @@ def is_statusline_dropped(signal: ScanSignal) -> bool:
         return False
     if signal.kind == "review_request_merge_react.missing_scope":
         return False
+    # T4-PR-3: the outer loop's keep/revert DECISION is operator-facing and must
+    # escape the ``outer_loop.`` drop prefix (which suppresses the per-tick
+    # ``outer_loop.refused`` bookkeeping) — the same exemption shape as the
+    # CI-green self_update skip and the pr_sweep flags above.
+    if signal.kind == "outer_loop.decision":
+        return False
     return signal.kind in STATUSLINE_DROP_KINDS or signal.kind.startswith(STATUSLINE_DROP_PREFIXES)
 
 

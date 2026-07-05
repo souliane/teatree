@@ -216,6 +216,13 @@ DEFAULT_LOOPS: tuple[LoopSeedSpec, ...] = (
         "reindex MEMORY.md, decay — off the live tick.",
         daily_at=dt.time(3, 0),
     ),
+    LoopSeedSpec(
+        "outer_loop",
+        86400,
+        "Advances at most one T4 autoresearch experiment one step per day (propose, "
+        "ratify, implement, measure, keep-only-if-better), off the live tick; ships "
+        "disabled behind the outer_loop_enabled flag and the critic-live guard.",
+    ),
 )
 
 

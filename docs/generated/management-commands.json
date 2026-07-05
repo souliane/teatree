@@ -533,6 +533,28 @@
       ]
     },
     {
+      "help": "Drive the T4 autoresearch outer loop (propose\u2192ratify\u2192implement\u2192measure\u2192keep-only-if-better).",
+      "name": "outer",
+      "subcommands": [
+        {
+          "help": "Advance the outer loop one step IF the cadence elapsed (cron entry)",
+          "name": "tick"
+        },
+        {
+          "help": "Print the guard-chain verdict and the active experiment (read-only)",
+          "name": "status"
+        },
+        {
+          "help": "Record an operator hypothesis as a PROPOSED experiment (refused while off)",
+          "name": "propose"
+        },
+        {
+          "help": "Print the recent experiment ledger (read-only)",
+          "name": "history"
+        }
+      ]
+    },
+    {
       "help": "",
       "name": "overlay",
       "subcommands": [

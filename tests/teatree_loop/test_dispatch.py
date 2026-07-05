@@ -766,3 +766,19 @@ def test_dispatch_without_errors_param_still_works() -> None:
     """``dispatch()`` remains callable without the ``errors`` param (backward compat)."""
     actions = dispatch([ScanSignal(kind="my_pr.open", summary="x")])
     assert actions[0].kind == "statusline"
+
+
+class OuterLoopStatuslineTests(TestCase):
+    """T4-PR-3: the keep/revert DECISION surfaces; the per-tick refusals are dropped."""
+
+    def _zone(self, kind: str) -> str | None:
+        actions = dispatch([ScanSignal(kind=kind, summary=f"outer loop {kind}")])
+        return actions[0].zone if actions else None
+
+    def test_decision_surfaces_in_action_needed(self) -> None:
+        assert self._zone("outer_loop.decision") == "action_needed"
+
+    def test_refused_is_dropped(self) -> None:
+        # The quadruple-OFF loop refuses most ticks; the reason is counted but the
+        # per-tick bookkeeping must not flood the statusline.
+        assert self._zone("outer_loop.refused") is None

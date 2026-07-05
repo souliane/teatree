@@ -55,6 +55,12 @@ from teatree.core.models.mergeable_notified import MergeableNotified
 from teatree.core.models.mr_review_lock import DEFAULT_LOCK_TTL, MRReviewLock
 from teatree.core.models.on_behalf_approval import OnBehalfApproval, OnBehalfApprovalError, OnBehalfAudit
 from teatree.core.models.outbound_claim import OutboundClaim
+from teatree.core.models.outer_loop_experiment import (
+    OuterLoopExperiment,
+    OuterLoopExperimentError,
+    OuterLoopExperimentManager,
+    ProposalSpec,
+)
 from teatree.core.models.pending_article_suggestion import PendingArticleSuggestion
 from teatree.core.models.pending_chat_injection import PendingChatInjection
 from teatree.core.models.pending_reinstall import PendingReinstall
@@ -173,6 +179,9 @@ __all__ = [
     "OnBehalfApprovalError",
     "OnBehalfAudit",
     "OutboundClaim",
+    "OuterLoopExperiment",
+    "OuterLoopExperimentError",
+    "OuterLoopExperimentManager",
     "PendingArticleSuggestion",
     "PendingChatInjection",
     "PendingReinstall",
@@ -185,6 +194,7 @@ __all__ = [
     "PromptManager",
     "PromptVersion",
     "PromptVersionManager",
+    "ProposalSpec",
     "PullMainCloneMarker",
     "PullRequest",
     "QualityGateError",
