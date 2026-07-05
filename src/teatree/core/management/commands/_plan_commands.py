@@ -232,21 +232,35 @@ class PlanCommands(TyperCommand):
                 help="How an intervening seam-touching commit affects the plan. Repeat one per such commit.",
             ),
         ] = [],  # noqa: B006 — django-typer resolves a list Option default per-invocation.
+        adequacy_json: Annotated[
+            str,
+            typer.Option(
+                "--adequacy-json",
+                help="Fresh four-section manifest (JSON) — supply to turn a legacy/INADEQUATE plan adequate; "
+                "omit to carry the prior (adequate) plan's manifest forward for a STALE-base rebind.",
+            ),
+        ] = "",
         by: Annotated[str, typer.Option(help="Who is reaffirming (audit trail).")] = "operator",
     ) -> PlanResult:
-        """Re-bind a stale plan to the new base after dispositioning intervening seam changes.
+        """Re-bind a plan to a new base — the plan-currency gate's never-lockout escape.
 
-        The remediation the plan-currency gate (SELFCATCH-3) names when a plan goes
-        stale: appends a NEW PlanArtifact at ``--base-sha`` carrying the prior plan's
-        adequacy forward, but REFUSES unless a ``--disposition`` is supplied for each
-        intervening commit that touched a declared integration seam. This is the
-        never-lockout escape — a stale plan is never a hard trap, only a demand to
-        reckon with what moved.
+        Appends a NEW PlanArtifact at ``--base-sha``. For a STALE-but-adequate plan it
+        carries the prior manifest forward but REFUSES unless a ``--disposition`` is
+        supplied for each intervening commit that touched a declared seam. For a
+        legacy/INADEQUATE plan (no adequate manifest to carry) supply a fresh one with
+        ``--adequacy-json`` to make it adequate and current. A stale/inadequate plan is
+        never a hard trap — only a demand to reckon with what moved or to supply a
+        real plan.
         """
+        fresh_adequacy = self._parse_adequacy_json(adequacy_json)
         ticket = self._resolve_plan_ticket(ticket_id)
         try:
             artifact = reaffirm_plan(
-                ticket=ticket, new_base_sha=base_sha, dispositions=disposition, by=by.strip() or "operator"
+                ticket=ticket,
+                new_base_sha=base_sha,
+                dispositions=disposition,
+                by=by.strip() or "operator",
+                fresh_adequacy=fresh_adequacy,
             )
         except ReaffirmError as exc:
             self.stderr.write(f"  plan-reaffirm refused: {exc.message}")

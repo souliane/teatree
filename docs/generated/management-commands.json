@@ -915,7 +915,7 @@
           "name": "plan-reconcile-inflight"
         },
         {
-          "help": "Re-bind a stale plan to the new base after dispositioning intervening seam changes",
+          "help": "Re-bind a plan to a new base \u2014 the plan-currency gate's never-lockout escape",
           "name": "plan-reaffirm"
         },
         {

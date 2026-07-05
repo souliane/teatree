@@ -467,7 +467,7 @@ The ``ticket rubric-set`` / ``rubric-grade`` commands, mounted via MRO inheritan
 | `plan-bypass` | Record an audited PlanArtifact bypass and advance the ticket to PLANNED |
 | `skip-planning` | Mark a trivial ticket to skip planning and advance STARTED → PLANNED |
 | `plan-reconcile-inflight` | Retroactively advance STARTED tickets to PLANNED after the gate was added |
-| `plan-reaffirm` | Re-bind a stale plan to the new base after dispositioning intervening seam changes |
+| `plan-reaffirm` | Re-bind a plan to a new base — the plan-currency gate's never-lockout escape |
 | `rubric-set` | Set a ticket's rubric from EXPLICIT JSON criteria, all PENDING (#2241) |
 | `rubric-grade` | Record a verifier's per-criterion PASS/FAIL on a ticket's rubric (#2241) |
 | `dod-override` | Record the DoD local-E2E gate escape hatch for a ticket (#88) |

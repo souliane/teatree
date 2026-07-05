@@ -17,10 +17,12 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
+from teatree.config import UserSettings
 from teatree.core.gates import plan_currency_gate
 from teatree.core.gates.plan_currency_gate import check_plan_current
 from teatree.core.management.commands._plan_gate_commands import ReaffirmError, reaffirm_plan
 from teatree.core.models import Ticket, Worktree
+from teatree.core.models import plan_artifact as plan_artifact_module
 from teatree.core.models.plan_artifact import PlanArtifact
 
 _SEAM = "src/seam.py"
@@ -87,6 +89,16 @@ def _gate(*, required: bool) -> Iterator[None]:
         yield
 
 
+@contextlib.contextmanager
+def _flag_on() -> Iterator[None]:
+    # Patches record()'s enforcement AND check_plan_current's flag in one shot: both
+    # resolve plan_adequacy_required through plan_artifact.get_effective_settings.
+    with patch.object(
+        plan_artifact_module, "get_effective_settings", return_value=UserSettings(require_plan_adequacy=True)
+    ):
+        yield
+
+
 class TestPlanReaffirm(TestCase):
     def setUp(self) -> None:
         self._tmp = Path(__import__("tempfile").mkdtemp())
@@ -135,3 +147,62 @@ class TestPlanReaffirm(TestCase):
         fresh = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLANNED)
         with pytest.raises(ReaffirmError, match="no plan to reaffirm"):
             reaffirm_plan(ticket=fresh, new_base_sha="a" * 40, dispositions=["x"], by="op")
+
+
+class TestPlanReaffirmUnderFlag(TestCase):
+    """reaffirm under ``require_plan_adequacy=True`` — the never-lockout escape must WORK, not crash.
+
+    Closes the gap the cold review found: the prior tests never exercised reaffirm
+    with record()'s adequacy enforcement ON, so the legacy/inadequate case that would
+    raise an uncaught ValueError went unproven.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = Path(__import__("tempfile").mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(self._tmp, ignore_errors=True))
+        self.bare = _make_remote(self._tmp)
+        self.clone = _clone(self._tmp, self.bare)
+        self.old_base = _git(self.clone, "rev-parse", "HEAD")
+        _advance_remote(self._tmp, self.bare, path=_SEAM)
+        _git(self.clone, "fetch", "origin")
+        self.new_base = _git(self.clone, "rev-parse", "origin/main")
+
+    def _ticket_with_plan(self, *, base_sha: str, adequacy: dict) -> Ticket:
+        ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLANNED)
+        Worktree.objects.create(
+            ticket=ticket, repo_path=str(self.clone), branch="feature", extra={"worktree_path": str(self.clone)}
+        )
+        PlanArtifact.objects.create(
+            ticket=ticket, plan_text="prior plan", recorded_by="t3:planner", base_sha=base_sha, adequacy=adequacy
+        )
+        return ticket
+
+    def test_adequate_carry_rebind_under_flag_reaches_current(self) -> None:
+        """(i) STALE-but-adequate → carry the adequate manifest forward, rebind, pass the gate."""
+        ticket = self._ticket_with_plan(base_sha=self.old_base, adequacy=_adequacy())
+        with _flag_on():
+            artifact = reaffirm_plan(ticket=ticket, new_base_sha=self.new_base, dispositions=["seam reviewed"], by="op")
+            assert artifact.base_sha == self.new_base
+            assert artifact.adequacy["integration_seams"]["content"] == [_SEAM]  # carried forward
+            assert check_plan_current(ticket) is True  # current-bound → CODED reachable
+
+    def test_legacy_inadequate_plus_fresh_manifest_reaches_current(self) -> None:
+        """(ii) INADEQUATE/legacy → supply a fresh manifest → adequate, current-bound, gate passes."""
+        ticket = self._ticket_with_plan(base_sha="", adequacy={})  # legacy blank-adequacy row
+        with _flag_on():
+            artifact = reaffirm_plan(
+                ticket=ticket,
+                new_base_sha=self.new_base,
+                dispositions=[],
+                by="op",
+                fresh_adequacy=_adequacy(),
+            )
+            assert artifact.base_sha == self.new_base
+            assert artifact.adequacy["design"]["content"] == "implement the change"  # the fresh manifest
+            assert check_plan_current(ticket) is True
+
+    def test_inadequate_without_fresh_manifest_raises_clean_reaffirm_error(self) -> None:
+        """(iii) INADEQUATE with no fresh manifest → clean ReaffirmError, NEVER a raw ValueError/traceback."""
+        ticket = self._ticket_with_plan(base_sha="", adequacy={})
+        with _flag_on(), pytest.raises(ReaffirmError, match="no adequate manifest to carry forward"):
+            reaffirm_plan(ticket=ticket, new_base_sha=self.new_base, dispositions=[], by="op")

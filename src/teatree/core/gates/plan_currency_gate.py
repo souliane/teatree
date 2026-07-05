@@ -130,24 +130,32 @@ def _detect_stale_on_seam(ticket: "Ticket", artifact: "PlanArtifact") -> tuple[s
 
 
 def _inadequate_reason(ticket: "Ticket") -> str:
+    # An INADEQUATE plan cannot be fixed by carrying it forward — the remediation is
+    # to SUPPLY a manifest (or bypass / disable), distinct from the STALE case below.
     return (
         f"Refusing to advance ticket {ticket.pk} to CODED — its latest plan is not adequate "
         f"(require_plan_adequacy). A plan must carry a complete four-section manifest "
-        f"(design, integration_seams, edge_cases, test_strategy). A legacy/thin plan is treated "
-        f"as absent. Reaffirm a real plan bound to the current base with "
-        f"`t3 <overlay> ticket plan-reaffirm {ticket.pk} --base-sha <current-40-char-HEAD>`, or "
-        f"disable the gate: `t3 <overlay> config_setting set require_plan_adequacy false --overlay <name>`."
+        f"(design, integration_seams, edge_cases, test_strategy). A legacy/thin plan is treated as absent. "
+        f"Supply a real manifest (which also re-binds the base) with "
+        f"`t3 <overlay> ticket plan-reaffirm {ticket.pk} --base-sha <current-40-char-HEAD> "
+        f"--adequacy-json '<four-section manifest>'`, OR record an audited bypass "
+        f"(`t3 <overlay> ticket plan-bypass {ticket.pk} --human-authorize <who> --reason <why>`), OR "
+        f"disable the gate (`t3 <overlay> config_setting set require_plan_adequacy false --overlay <name>`)."
     )
 
 
 def _stale_reason(ticket: "Ticket", base_sha: str, head: str, seams: tuple[str, ...], commits: tuple[str, ...]) -> str:
+    # A STALE-but-adequate plan IS fixable by carrying it forward — the remediation
+    # is reaffirm + a per-intervening-commit disposition. The printed `--base-sha` is
+    # the full 40-char HEAD so the command is copy-paste runnable (reaffirm rejects a
+    # short SHA).
     return (
         f"Refusing to advance ticket {ticket.pk} to CODED — its plan is STALE (require_plan_adequacy). "
         f"The plan was authored against base {base_sha[:8]} but the target HEAD is now {head[:8]}, and "
         f"{len(commits)} intervening commit(s) touched a declared integration seam "
         f"({', '.join(seams) or '<none>'}). A stale plan is treated as ABSENT — coding against a moved "
         f"base is the named root cause of the integration-bug campaign. Reaffirm at the new base with "
-        f"`t3 <overlay> ticket plan-reaffirm {ticket.pk} --base-sha {head[:12]}… --disposition <per-commit "
+        f"`t3 <overlay> ticket plan-reaffirm {ticket.pk} --base-sha {head} --disposition <per-commit "
         f"disposition>`, or disable the gate: "
         f"`t3 <overlay> config_setting set require_plan_adequacy false --overlay <name>`."
     )

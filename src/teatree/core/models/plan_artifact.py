@@ -106,12 +106,12 @@ class PlanArtifact(models.Model):
 
         The sibling of :meth:`record` for the human-authorized ``plan-bypass`` and
         the retroactive reconcile. It writes an all-negatives manifest (a
-        ``no_seams`` plan) so the row is structurally adequate and carries no seams
-        for the currency gate to guard — ``plan()`` advances end-to-end even under
-        the strict flag, without a special case in the gate. A bypassed plan has no
-        ``base_sha`` bind, so under the flag it still needs ``plan-reaffirm`` to
-        reach CODED. A purpose-typed method, not a flag on :meth:`record`, so the
-        exemption is explicit at the call site.
+        ``no_seams`` plan) so the row is structurally adequate and declares no seams.
+        Because it has no declared seams, the currency gate finds nothing to guard —
+        ``check_plan_current`` passes it DIRECTLY (a ``no_seams`` plan can never be
+        stale on a seam), so a bypassed plan reaches CODED with no ``plan-reaffirm``
+        step even under the strict flag. A purpose-typed method, not a flag on
+        :meth:`record`, so the exemption is explicit at the call site.
         """
         cleaned_text, cleaned_author = _clean_required(plan_text, recorded_by)
         manifest = dict(all_negated_adequacy(cleaned_text))

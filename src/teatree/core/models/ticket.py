@@ -465,10 +465,10 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
     def schedule_coding(self, *, parent_task: "Task | None" = None) -> "Task":
         """Create a fresh headless coding task after planning completes.
 
-        Gated by ``plan_currency`` (SELFCATCH-3): closes the coder-dispatch leak —
-        no coding task is minted for a ticket whose plan is thin/legacy or stale on
-        a declared seam, even when a session drives ``schedule_coding`` outside the
-        ``code()`` transition. NO-OP unless ``require_plan_adequacy`` is on.
+        Gated by ``plan_currency`` (SELFCATCH-3) on the normal author PLANNED→CODED flow
+        (the same gate ``code()`` runs): no coding task for a thin/legacy or seam-stale
+        plan. NO-OP unless ``require_plan_adequacy`` is on; synthetic corrective
+        re-entries that mint a coding task directly are exempt (they carry no plan).
         """
         return self._schedule_headless(
             "coding",

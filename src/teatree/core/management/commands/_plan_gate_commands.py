@@ -162,18 +162,28 @@ class ReaffirmError(Exception):
         self.message = message
 
 
-def reaffirm_plan(*, ticket: Ticket, new_base_sha: str, dispositions: list[str], by: str) -> "PlanArtifact":
+def reaffirm_plan(
+    *,
+    ticket: Ticket,
+    new_base_sha: str,
+    dispositions: list[str],
+    by: str,
+    fresh_adequacy: dict | None = None,
+) -> "PlanArtifact":
     """Append a NEW PlanArtifact bound to ``new_base_sha`` (SELFCATCH-3 late-bound remediation).
 
-    The remediation the plan-currency gate names when a plan goes stale. It reads
-    the latest plan's declared seams, computes the intervening commits between the
-    old base and ``new_base_sha`` that touch a declared seam
-    (``git log old..new -- <seams>``), and REFUSES with :class:`ReaffirmError` unless
-    the operator supplies at least one ``--disposition`` per such commit — a
-    stale-base re-bind must reckon with every intervening seam change, never
-    rubber-stamp it. The carried-forward adequacy keeps the new row structurally
-    adequate; the new ``base_sha`` re-binds the plan to the current HEAD so
-    ``code()`` proceeds.
+    Handles BOTH remediation cases the plan-currency gate can name. STALE-but-adequate:
+    the prior plan's manifest is adequate but its base moved — carry the manifest
+    forward, re-bind to ``new_base_sha``, and REFUSE with :class:`ReaffirmError` unless
+    a ``--disposition`` is supplied per intervening commit that touched a declared seam
+    (``git log old..new -- <seams>``); a stale-base re-bind reckons with every seam
+    change, never rubber-stamps it. INADEQUATE/legacy: the prior plan has no adequate
+    manifest to carry (a legacy blank-adequacy row), so the operator supplies a fresh
+    complete manifest via ``fresh_adequacy`` to turn it into an adequate, current plan.
+
+    Either way the final ``record`` re-runs the adequacy enforcement; a residual failure
+    (no fresh manifest for an inadequate plan) is surfaced as a clean
+    :class:`ReaffirmError` naming the working remediations, never a raw ``ValueError``.
     """
     cleaned_new = new_base_sha.strip()
     if not is_valid_base_sha(cleaned_new):
@@ -202,15 +212,25 @@ def reaffirm_plan(*, ticket: Ticket, new_base_sha: str, dispositions: list[str],
         )
         raise ReaffirmError(msg)
 
-    carried = dict(latest.adequacy)
+    manifest = dict(fresh_adequacy) if fresh_adequacy else dict(latest.adequacy)
     trail = f"[plan-reaffirm at {cleaned_new[:12]} by {by}; supersedes base {(latest.base_sha or '<none>')[:12]}"
     if dispositions:
         trail += "; dispositions: " + " | ".join(dispositions)
     trail += f"]\n\n{latest.plan_text}"
-    return PlanArtifact.record(
-        ticket=ticket,
-        plan_text=trail,
-        recorded_by=by,
-        base_sha=cleaned_new,
-        adequacy=carried,
-    )
+    try:
+        return PlanArtifact.record(
+            ticket=ticket,
+            plan_text=trail,
+            recorded_by=by,
+            base_sha=cleaned_new,
+            adequacy=manifest,
+        )
+    except ValueError as exc:
+        msg = (
+            f"cannot reaffirm ticket {ticket.pk} into an adequate plan: {exc} The prior plan has no adequate "
+            f"manifest to carry forward. Supply a complete four-section manifest with "
+            f"`--adequacy-json '<{{design,integration_seams,edge_cases,test_strategy}}>'`, OR record an audited "
+            f"bypass (`ticket plan-bypass {ticket.pk} --human-authorize <who> --reason <why>`), OR disable the gate "
+            f"(`config_setting set require_plan_adequacy false --overlay <name>`)."
+        )
+        raise ReaffirmError(msg) from exc
