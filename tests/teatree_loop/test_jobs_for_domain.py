@@ -108,6 +108,7 @@ class JobsForDomainPartitionTestCase(TestCase):
             "undelivered_notify",
             "deferred_question_poster",
             "waiting_digest",
+            "work_state",
         }
         assert all(job.overlay == "" for job in dispatch_jobs)
 
