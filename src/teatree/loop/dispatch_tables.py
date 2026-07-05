@@ -110,6 +110,13 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     "pr_sweep.flag_no_review": "action_needed",
     "pr_sweep.needs_branch_update": "action_needed",
     "pr_sweep.flag_mergeable": "action_needed",
+    # SELFCATCH-1 WorkStateScanner — committed-but-unpushed / done-but-unmerged /
+    # duplicate-scope drift the factory was blind to until a human asked. Each
+    # finding needs an operator decision (salvage/push/dedup), and an errored
+    # sweep (``probe_error``) fails closed to a surfaced finding — both land in
+    # action_needed so orphaned work is never silently green.
+    "workstate.drift": "action_needed",
+    "workstate.probe_error": "action_needed",
 }
 
 # Diagnostic signal kinds that intentionally do NOT render to the statusline.
