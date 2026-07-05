@@ -231,6 +231,27 @@ class PlanAdequacy(TypedDict, total=False):
     integration_seams: AdequacySection
     edge_cases: AdequacySection
     test_strategy: AdequacySection
+    # North-star PR-3 debt-delta waivers: the audited escape the ``debt_delta_gate``
+    # honours. Each entry (:class:`ApprovedDebt`) names a suppression pattern the
+    # plan explicitly approves plus the reason it is acceptable — so a net-new
+    # ``noqa`` / ``type-ignore`` / lowered floor ships only against a recorded,
+    # reasoned approval, never silently. Absent/empty on a plan that introduces no
+    # debt (the common case); it does NOT participate in the four-section
+    # :func:`plan_adequacy.is_adequate` check.
+    approved_debt: list["ApprovedDebt"]
+
+
+class ApprovedDebt(TypedDict, total=False):
+    """One plan-manifest debt waiver — the audited ``debt_delta_gate`` escape.
+
+    ``pattern`` is matched (case-insensitive substring) against a scanned debt
+    introduction's offending line, its signal kind, or its file path; ``reason``
+    is the non-empty justification the operator recorded at plan/ratify time. A
+    waiver with a blank reason covers nothing — an audited escape must say why.
+    """
+
+    pattern: str
+    reason: str
 
 
 class AntiVacuityAttestation(TypedDict, total=False):

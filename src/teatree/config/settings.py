@@ -115,6 +115,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "require_integration_review": _parse_strict_bool,
     "require_merge_evidence": _parse_strict_bool,
     "require_plan_adequacy": _parse_strict_bool,
+    "require_debt_delta": _parse_strict_bool,
     "critic_gate_live": _parse_strict_bool,
     "bulk_close_threshold": _parse_strict_int,
     "require_rubric_verification": _parse_strict_bool,
@@ -680,6 +681,21 @@ class UserSettings:
     # audited never-lockout escape alongside ``plan-reaffirm``. A feature flag
     # (governed in ``FEATURE_FLAGS``). Per-overlay overridable.
     require_plan_adequacy: bool = False
+    # North-star PR-3 The deterministic no-new-tech-debt MERGE gate on ``pr create``
+    # (``debt_delta_gate`` in ``_run_ship_gates``): a ship diff that introduces
+    # NET-NEW debt — a new ``noqa`` / ``type-ignore`` / ``pragma-no-cover`` comment,
+    # an unreferenced ``pytest.mark.skip`` / ``xfail``, a new ``per-file-ignores``
+    # entry, or a lowered ``fail_under`` coverage floor — is refused unless the plan
+    # manifest records an ``approved_debt`` waiver naming the pattern + reason.
+    # Delta, not absolute: only diff-ADDED lines are scanned, so pre-existing debt
+    # is never flagged and removing debt is always allowed (the shrink-only ratchet).
+    # Mechanizes CLAUDE.md's "no tech debt without explicit approval" — the approval
+    # becomes a recorded, audited artifact. Default false = NO-OP so the generic ship
+    # chain never blocks; the operator flips it ON per-overlay
+    # (``config_setting set require_debt_delta true --overlay <name>``). Its OWN
+    # kill-switch (setting it back false) is the audited never-lockout escape. A
+    # feature flag (governed in ``FEATURE_FLAGS``). Per-overlay overridable.
+    require_debt_delta: bool = False
     # SELFCATCH-5 The autonomous user-proxy critic's ENFORCEMENT switch on
     # ``mark_delivered`` (``critic_gate``). The critic ALWAYS runs at the final
     # done-claim and RECORDS a ``CriticFinding`` per failing rubric item (the 8

@@ -105,6 +105,12 @@ FEATURE_FLAGS: dict[str, FeatureFlag] = {
         tracking_issue="souliane/teatree — north-star PR-6 directive intake",
         summary="The OFF switch the directive self-modification front-end (intake+interpret+ratify) ships behind.",
     ),
+    "require_debt_delta": FeatureFlag(
+        field="require_debt_delta",
+        stage=FlagStage.DARK,
+        tracking_issue="souliane/teatree — north-star PR-3 debt_delta_gate",
+        summary="Deterministic no-new-tech-debt merge gate in _run_ship_gates; ships dark until an overlay opts in.",
+    ),
 }
 
 

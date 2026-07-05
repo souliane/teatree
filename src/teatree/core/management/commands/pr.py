@@ -38,6 +38,7 @@ from teatree.core.management.commands._ship_exec import (
 from teatree.core.management.commands._ship_fsm import reconcile_fsm_for_ship
 from teatree.core.management.commands._ship_gates import (
     BranchCurrencyFailure,
+    DebtDeltaGateFailure,
     E2EMandatoryGateFailure,
     NoCommitsAheadError,
     PrBudgetGateFailure,
@@ -46,6 +47,7 @@ from teatree.core.management.commands._ship_gates import (
 from teatree.core.management.commands._ship_gates import assert_commits_ahead_of_base as _assert_commits_ahead_of_base
 from teatree.core.management.commands._ship_gates import check_shipping_gate as _check_shipping_gate
 from teatree.core.management.commands._ship_gates import run_branch_currency_gate as _run_branch_currency_gate
+from teatree.core.management.commands._ship_gates import run_debt_delta_gate as _run_debt_delta_gate
 from teatree.core.management.commands._ship_gates import run_e2e_mandatory_gate as _run_e2e_mandatory_gate
 from teatree.core.management.commands._ship_gates import run_pr_budget_gate as _run_pr_budget_gate
 from teatree.core.management.commands._ship_gates import run_visual_qa_gate as _run_visual_qa_gate
@@ -106,6 +108,32 @@ _IMAGE_URL_RE = re.compile(r"!\[([^\]]*)\]\((/uploads/[^\)]+)\)")
 _EXTERNAL_LINK_RE = re.compile(r"https?://(?:www\.)?(?:notion\.so|linear\.app|jira\.\S+)/\S+")
 
 
+def _run_precheck_ship_gates(
+    ticket: Ticket,
+    worktree: Worktree,
+) -> ShippingGateFailure | BranchCurrencyFailure | PrBudgetGateFailure | DebtDeltaGateFailure | None:
+    """The cheap state/text prechecks — first failure or ``None``.
+
+    Grouped so ``_run_ship_gates`` stays within the return-count gate and the
+    cheap gates run as one fail-fast block before the expensive diff-rendering
+    gates. Order: branch-currency (#940, first so the rest see the post-merge
+    tree), the phase/shipping gate (#694), the PR-budget gate (north-star PR-2),
+    then the debt-delta gate (north-star PR-3) — the last two both cheap, so a
+    ticket over its open-PR budget or introducing net-new tech debt fails before
+    any push creates an orphan remote branch.
+    """
+    currency_error = _run_branch_currency_gate(ticket, worktree)
+    if currency_error is not None:
+        return currency_error
+    gate_error = _check_shipping_gate(ticket)
+    if gate_error is not None:
+        return gate_error
+    budget_error = _run_pr_budget_gate(ticket, worktree)
+    if budget_error is not None:
+        return budget_error
+    return _run_debt_delta_gate(ticket, worktree)
+
+
 def _run_ship_gates(
     ticket: Ticket,
     worktree: Worktree,
@@ -118,6 +146,7 @@ def _run_ship_gates(
     | BranchCurrencyFailure
     | E2EMandatoryGateFailure
     | PrBudgetGateFailure
+    | DebtDeltaGateFailure
     | PrValidationError
     | None
 ):
@@ -125,14 +154,11 @@ def _run_ship_gates(
 
     Composed out of ``create`` so the command stays within the
     return-count gate and the gate sequence is independently testable.
-    The branch-currency gate (#940) runs FIRST: a stale base would
-    otherwise poison the visual-QA gate (it would render the
-    pre-merge tree) and the cold reviewer's SHA attestation.
-
-    The PR-budget gate (north-star PR-2) runs right after the shipping
-    gate — both are cheap DB/state reads — and before the expensive
-    diff-rendering gates, so a ticket already at its per-repo open-PR
-    budget fails fast before any push creates an orphan remote branch.
+    The cheap state/text prechecks (:func:`_run_precheck_ship_gates` —
+    branch-currency, shipping, PR-budget, debt-delta) run FIRST as one
+    fail-fast block, then the overlay close-keyword gates, then the
+    expensive diff-rendering gates (visual-QA, mandatory-E2E) so all of
+    them see the post-branch-currency tree.
 
     ``title`` is the explicit ``--title`` override: it has not yet been
     persisted to ``extra['pr_title_override']`` (that happens at ship time,
@@ -140,15 +166,9 @@ def _run_ship_gates(
     here — otherwise the preflight would validate the regenerated commit
     subject rather than the title that will actually ship.
     """
-    currency_error = _run_branch_currency_gate(ticket, worktree)
-    if currency_error is not None:
-        return currency_error
-    gate_error = _check_shipping_gate(ticket)
-    if gate_error is not None:
-        return gate_error
-    budget_error = _run_pr_budget_gate(ticket, worktree)
-    if budget_error is not None:
-        return budget_error
+    precheck_error = _run_precheck_ship_gates(ticket, worktree)
+    if precheck_error is not None:
+        return precheck_error
     # Overlay-scoped (#1012): no-op unless the overlay forbids auto-close
     # trailers; raises SystemExit with the offending line otherwise.
     run_close_keyword_gate(ticket, worktree)

@@ -14,6 +14,7 @@ from typing import TypedDict, cast
 
 from teatree import visual_qa
 from teatree.core.branch_currency import require_current_branch
+from teatree.core.gates.debt_delta_gate import evaluate_debt_delta
 from teatree.core.gates.e2e_mandatory_gate import E2EMandatoryGateError, check_e2e_mandatory, resolve_gate_inputs
 from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_budget
 from teatree.core.management.commands._ship_exec import ShippingGateFailure
@@ -344,4 +345,33 @@ def run_pr_budget_gate(ticket: Ticket, worktree: Worktree) -> PrBudgetGateFailur
         check_pr_budget(ticket, slug)
     except PrBudgetExceededError as exc:
         return PrBudgetGateFailure(allowed=False, error=str(exc))
+    return None
+
+
+class DebtDeltaGateFailure(TypedDict):
+    """Pre-ship net-new-tech-debt refusal (north-star PR-3).
+
+    Returned when ``require_debt_delta`` is on and the ship diff introduces a
+    net-new suppression (``# noqa`` / ``# type: ignore`` / ``# pragma: no cover``
+    / unreferenced skip / new ``per-file-ignores`` / lowered coverage floor) that
+    no plan-manifest ``approved_debt`` waiver covers. Inert (never returned) at the
+    DARK default. ``error`` names each offending line and the operator escape.
+    """
+
+    allowed: bool
+    error: str
+
+
+def run_debt_delta_gate(ticket: Ticket, worktree: Worktree) -> DebtDeltaGateFailure | None:
+    """Refuse a ship whose diff introduces unwaived net-new tech debt.
+
+    Resolves the ship worktree's repo path and delegates to the shared
+    :func:`evaluate_debt_delta` orchestration (the same one the ``ensure-pr`` orphan
+    path uses), wrapping its refusal message into the ship-gate chain's return style.
+    Inert at the DARK default and a no-op on an unverifiable worktree.
+    """
+    repo_path = (worktree.worktree_path or worktree.repo_path) if worktree else "."
+    error = evaluate_debt_delta(ticket, repo_path)
+    if error is not None:
+        return DebtDeltaGateFailure(allowed=False, error=error)
     return None

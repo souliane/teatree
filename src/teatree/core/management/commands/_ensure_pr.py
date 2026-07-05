@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, TypedDict
 from teatree.core.backend_factory import code_host_for_repo_from_overlay
 from teatree.core.backend_protocols import BackendResolutionError, CodeHostBackend, PullRequestSpec
 from teatree.core.gates.architecture_precheck_gate import warn_if_precheck_incomplete
+from teatree.core.gates.debt_delta_gate import evaluate_debt_delta
 from teatree.core.gates.open_questions_gate import warn_if_open_questions_missing
 from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_budget
 from teatree.core.overlay_loader import get_overlay
@@ -129,15 +130,19 @@ def create_or_defer_pr(repo_path: str, branch_name: str) -> EnsurePrResult:
     repo_slug = git_remote.slug_from_remote(remote)
     assignee = host.current_user() or git.config_value(key="user.name")
 
-    # North-star PR-2: refuse before opening when the ticket is already at its
-    # per-repo open-PR budget. Inert at the neutral default; a genuinely orphan
-    # branch (no owning ticket) has no budget scope, so the check is skipped.
+    # North-star PR-2/PR-3: refuse before opening when the ticket is already at its
+    # per-repo open-PR budget, or when the branch introduces unwaived net-new tech
+    # debt. Both inert at their DARK/neutral defaults; a genuinely orphan branch (no
+    # owning ticket) has no budget/plan scope, so the checks are skipped.
     owning_ticket = _ticket_for_branch(branch_name)
     if owning_ticket is not None:
         try:
             check_pr_budget(owning_ticket, repo_slug)
         except PrBudgetExceededError as exc:
             return EnsurePrResult(branch=branch_name, error=str(exc))
+        debt_error = evaluate_debt_delta(owning_ticket, repo_path)
+        if debt_error is not None:
+            return EnsurePrResult(branch=branch_name, error=debt_error)
 
     try:
         raw = host.create_pr(

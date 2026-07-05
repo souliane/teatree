@@ -8,7 +8,7 @@ from django.test import TestCase
 
 from teatree.config import UserSettings
 from teatree.core.backend_protocols import BackendResolutionError, PrOpenState
-from teatree.core.gates import pr_budget_gate
+from teatree.core.gates import debt_delta_gate, pr_budget_gate
 from teatree.core.gates.orphan_guard import BranchReport, BranchStatus
 from teatree.core.management.commands import _ensure_pr as ensure_pr_mod
 from teatree.core.management.commands import pr as pr_command
@@ -327,6 +327,36 @@ class TestEnsurePr(TestCase):
 
         assert "max_open_prs_per_repo_per_ticket" in str(result["error"])
         assert "souliane/teatree/pull/1" in str(result["error"])
+        host.create_pr.assert_not_called()
+
+    def test_refuses_when_branch_introduces_net_new_debt(self) -> None:
+        """North-star PR-3: the orphan path refuses before creating on unwaived debt."""
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.IN_REVIEW)
+        Worktree.objects.create(ticket=ticket, overlay="test", repo_path=".", branch="feat-d")
+        host = MagicMock()
+        host.current_user.return_value = "souliane"
+        self._monkeypatch.setattr(ensure_pr_mod, "code_host_for_repo_from_overlay", lambda _repo_path: host)
+        new_noqa = (
+            "diff --git a/src/teatree/m.py b/src/teatree/m.py\n"
+            "--- a/src/teatree/m.py\n+++ b/src/teatree/m.py\n@@ -1,1 +1,2 @@\n"
+            " keep = 1\n+risky = frobnicate()  # noqa: F821\n"
+        )
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch.object(pr_command.git, "current_branch", return_value="feat-d"),
+            patch.object(ensure_pr_mod.git, "remote_url", return_value="git@github.com:souliane/teatree.git"),
+            patch.object(ensure_pr_mod, "_branch_own_commit_message", return_value=("feat: x", "body")),
+            patch.object(debt_delta_gate, "get_effective_settings", return_value=UserSettings(require_debt_delta=True)),
+            patch.object(debt_delta_gate.git, "branch_diff", return_value=new_noqa),
+            patch.object(
+                pr_command,
+                "classify_branch",
+                return_value=BranchReport(repo=".", branch="feat-d", status=BranchStatus.PUSHED_ORPHAN, ahead_count=1),
+            ),
+        ):
+            result = cast("dict[str, object]", call_command("pr", "ensure-pr"))
+
+        assert "debt_delta_gate" in str(result["error"])
         host.create_pr.assert_not_called()
 
 
