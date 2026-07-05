@@ -11,9 +11,12 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TypedDict
+from typing import TYPE_CHECKING, TypedDict
 
 from teatree.utils.run import run_allowed_to_fail
+
+if TYPE_CHECKING:
+    from teatree.types import ProvisionStep
 
 logger = logging.getLogger(__name__)
 
@@ -370,28 +373,53 @@ def _run_single_step(step, *, write: Callable[[str], object], timeout: float | N
         result = _timeboxed_subprocess_callable_step(step.name, step.callable, heavy=step.heavy, timeout=timeout)
     else:
         result = run_callable_step(step.name, step.callable)
+    success, error = _apply_post_condition(step, result, write=write)
     return StepResult(
         name=result.name,
-        success=result.success,
+        success=success,
         duration=result.duration,
         stdout=result.stdout,
         stderr=result.stderr,
-        error=result.error,
+        error=error,
         required=step.required,
     )
+
+
+def _apply_post_condition(
+    step: "ProvisionStep", result: StepResult, *, write: Callable[[str], object]
+) -> tuple[bool, str]:
+    """Fold a step's ``post_condition`` into its success (PR-27).
+
+    A callable that succeeded but whose ``post_condition`` does not hold is
+    recorded FAILED — it "ran" without producing its resource. A raising
+    post-condition is treated as "not satisfied" (a failure signal, never a
+    crash); an already-failed callable is left untouched.
+    """
+    if not result.success or step.post_condition is None:
+        return result.success, result.error
+    try:
+        held = step.post_condition()
+    except Exception as exc:  # noqa: BLE001 — a raising post-condition is a failure, not a crash
+        logger.warning("post_condition for step %r raised: %s", step.name, exc)
+        write(f"  Post-condition failed: {step.name} ({type(exc).__name__}: {str(exc)[:120]})")
+        return False, f"post-condition raised: {type(exc).__name__}: {str(exc)[:200]}"
+    if not held:
+        write(f"  Post-condition not satisfied: {step.name}")
+        return False, "post-condition not satisfied"
+    return True, result.error
 
 
 def _run_group_concurrently(group: list, *, write: Callable[[str], object]) -> list[StepResult]:
     """Run every step in *group* concurrently on a bounded thread pool.
 
-    Only ``subprocess_only`` steps ever reach here (souliane/teatree#2949) —
-    each already runs time-boxed on its own worker thread, so running several
-    concurrently is the same thread-safety contract, just parallel. Results
-    are returned in the SAME order as *group* regardless of completion order,
-    so the caller's reporting stays deterministic.
+    Only ``subprocess_only`` steps reach here (souliane/teatree#2949, PR-27) —
+    each already runs time-boxed on its own worker thread, so several concurrently
+    is the same thread-safety contract, just parallel. Membership is decided by
+    the dependency DAG (no path between the steps), not a group name; results
+    come back in *group* order regardless of completion order.
     """
     names = ", ".join(s.name for s in group)
-    write(f"  Running (parallel group {group[0].parallel_group!r}): {names}")
+    write(f"  Running concurrently: {names}")
     # Resolve each member's time-box ceiling HERE, on the caller thread: a pool
     # worker must touch NO ORM. ``resolve_step_timeout_seconds`` reads the
     # ``ConfigSetting`` store, and a Django connection opened on a pool thread is
@@ -455,6 +483,40 @@ def _report_one_result(  # noqa: PLR0913 — each kwarg is a documented output s
     return False
 
 
+def _resolve_step_deps(steps: list) -> dict[str, set[str]]:
+    """Map each step name to the set of step names it must run AFTER (PR-27 DAG).
+
+    Edges come from ``requires``/``produces``: a step depends on every step that
+    produces a token it requires. A required token no step produces raises loud
+    (fail-closed) — never a silently-skipped declared dependency.
+    """
+    producers: dict[str, set[str]] = {}
+    for step in steps:
+        for token in step.produces:
+            producers.setdefault(token, set()).add(step.name)
+    deps: dict[str, set[str]] = {}
+    for step in steps:
+        step_deps: set[str] = set()
+        for token in step.requires:
+            if token not in producers:
+                msg = f"provision step {step.name!r} requires {token!r} which no step produces"
+                raise ValueError(msg)
+            step_deps |= producers[token] - {step.name}
+        deps[step.name] = step_deps
+    return deps
+
+
+def _run_subprocess_wave(subprocess_ready: list, *, write: Callable[[str], object]) -> list[StepResult]:
+    """Run a wave's independent, ORM-free ``subprocess_only`` steps, concurrently when >1.
+
+    A bounded pool is the same thread-safety contract as one worker; results come
+    back in *subprocess_ready* order.
+    """
+    if len(subprocess_ready) > 1:
+        return _run_group_concurrently(subprocess_ready, write=write)
+    return [_run_single_step(subprocess_ready[0], write=write)]
+
+
 def run_provision_steps(
     steps: list,
     *,
@@ -463,47 +525,60 @@ def run_provision_steps(
     stderr_writer: Callable[[str], object] | None = None,
     stop_on_required_failure: bool = True,
 ) -> ProvisionReport:
-    """Execute a list of ProvisionStep objects and collect results.
+    """Execute ProvisionStep objects in dependency order and collect results (PR-27).
 
-    When *stop_on_required_failure* is True (default), execution halts after
-    the first failure of a step with ``required=True``.  Optional steps
-    (``required=False``) never halt execution.
-
-    Steps sharing a non-empty ``parallel_group`` (and ``subprocess_only=True``
-    — souliane/teatree#2949) run concurrently as one unit, at the position
-    the first member of the group appears in *steps*; every other step runs
-    serially as before.
+    Steps run in a topological schedule from their ``requires``/``produces``
+    edges; steps with no dependency path between them run in one wave — the
+    ``subprocess_only`` ones concurrently on a bounded pool, ORM steps serially
+    in-process — and each step's ``post_condition`` is folded into its success.
+    With *stop_on_required_failure* True (default) the run halts after a wave in
+    which a required step failed, so downstream steps never start. A ``requires``
+    token no step produces, or a cycle, raises ``ValueError`` (fail-closed).
     """
     report = ProvisionReport()
     write = stdout_writer or (lambda _msg: None)
     write_err = stderr_writer or (lambda _msg: None)
-    executed_names: set[str] = set()
 
-    for step in steps:
-        if step.name in executed_names:
-            continue
+    deps = _resolve_step_deps(steps)
+    completed: set[str] = set()
+    pending = list(steps)
 
-        if step.parallel_group and step.subprocess_only:
-            group = [s for s in steps if s.parallel_group == step.parallel_group and s.subprocess_only]
-            results = _run_group_concurrently(group, write=write)
-        else:
-            group = [step]
-            results = [_run_single_step(step, write=write)]
+    def _record(step: "ProvisionStep", result: StepResult) -> bool:
+        completed.add(step.name)
+        report.steps.append(result)
+        return _report_one_result(
+            step,
+            result,
+            verbose=verbose,
+            write=write,
+            write_err=write_err,
+            stop_on_required_failure=stop_on_required_failure,
+        )
+
+    while pending:
+        ready = [step for step in pending if deps[step.name] <= completed]
+        if not ready:
+            blocked = [step.name for step in pending]
+            msg = f"provision steps have an unsatisfiable dependency cycle among {blocked}"
+            raise ValueError(msg)
 
         halt = False
-        for member, result in zip(group, results, strict=True):
-            executed_names.add(member.name)
-            report.steps.append(result)
-            if _report_one_result(
-                member,
-                result,
-                verbose=verbose,
-                write=write,
-                write_err=write_err,
-                stop_on_required_failure=stop_on_required_failure,
-            ):
-                halt = True
+        # Concurrent subprocess batch first (already launched, so its whole
+        # result set is reported), then ORM steps serially with fail-fast BETWEEN
+        # them — so the default no-edge case keeps the old sequential halt
+        # semantics while independent subprocess steps still run concurrently.
+        subprocess_ready = [step for step in ready if step.subprocess_only]
+        if subprocess_ready:
+            for step, result in zip(subprocess_ready, _run_subprocess_wave(subprocess_ready, write=write), strict=True):
+                halt = _record(step, result) or halt
+        for step in ready:
+            if step.subprocess_only:
+                continue
+            if halt:
+                break
+            halt = _record(step, _run_single_step(step, write=write)) or halt
 
+        pending = [step for step in pending if step.name not in completed]
         if halt:
             break
 

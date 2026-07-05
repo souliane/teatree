@@ -259,7 +259,10 @@ class TestLifecycleProvision(TestCase):
         wt_backend.refresh_from_db()
         assert wt_backend.state == Worktree.State.SERVICES_UP
 
-        with patch.object(worktree_mod, "get_worktree_ports", return_value={"backend": 8001, "frontend": 4201}):
+        with (
+            _patch_overlay(),
+            patch.object(worktree_mod, "get_worktree_ports", return_value={"backend": 8001, "frontend": 4201}),
+        ):
             status = cast("dict[str, str]", call_command("worktree", "status", path=backend_path))
         assert status["state"] == Worktree.State.SERVICES_UP
         assert status["repo_path"] == "backend"

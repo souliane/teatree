@@ -1031,7 +1031,7 @@
           "name": "teardown"
         },
         {
-          "help": "Report FSM state, branch, allocated host ports, and the last provision report for one worktree",
+          "help": "Report FSM state, ports, the provision report, and the aggregate post-conditions (PR-27)",
           "name": "status"
         },
         {

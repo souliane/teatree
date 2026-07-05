@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 
 from teatree.core.overlay import MergeGuard, OverlayBase, ProvisionStep
 from teatree.core.runners.base import RunnerBase, RunnerResult
+from teatree.core.variant import Variant
 
 
 class _MinimalOverlay(OverlayBase):
@@ -34,11 +35,12 @@ def test_get_env_extra_returns_empty_dict():
     assert overlay.get_env_extra(_make_worktree()) == {}
 
 
-def test_get_dslr_tenant_for_variant_default_returns_variant_verbatim():
-    """The default hook is identity (#1306) — overlays override for prefix/alias."""
+def test_resolve_variant_default_returns_bare_variant():
+    """The default hook resolves to a bare variant (#1306, PR-27) — the tenant is the name."""
     overlay = _MinimalOverlay()
-    assert overlay.get_dslr_tenant_for_variant("client-a") == "client-a"
-    assert overlay.get_dslr_tenant_for_variant("") == ""
+    assert overlay.resolve_variant("client-a") == Variant.bare("client-a")
+    assert overlay.resolve_variant("client-a").canonical_tenant == "client-a"
+    assert overlay.resolve_variant("").canonical_tenant == ""
 
 
 def test_classify_customer_display_impact_default_fails_closed():
@@ -53,25 +55,26 @@ def test_classify_customer_display_impact_default_fails_closed():
     assert overlay.classify_customer_display_impact([]) is True
 
 
-def test_get_dslr_tenant_for_variant_supports_alias_mapping_in_override():
-    """An overlay can map a child variant to its parent tenant (#1306).
+def test_resolve_variant_supports_alias_mapping_in_override():
+    """An overlay can map a child variant to its parent tenant (#1306, PR-27).
 
     The motivating case: a child variant (e.g. ``client-a-regional``)
     shares snapshots with its parent (``client-a``). Without the alias
-    hook the DSLR lookup tried ``development-client-a-regional`` and
-    found nothing; with it the overlay returns ``development-client-a``
-    and the existing parent snapshot satisfies the lookup.
+    the DSLR lookup tried ``development-client-a-regional`` and found
+    nothing; with it the overlay resolves ``canonical_tenant`` to
+    ``development-client-a`` and the existing parent snapshot satisfies
+    the lookup.
     """
 
     class _AliasOverlay(_MinimalOverlay):
-        def get_dslr_tenant_for_variant(self, variant: str) -> str:
+        def resolve_variant(self, name: str) -> Variant:
             aliases = {"client-a-regional": "client-a"}
-            return f"development-{aliases.get(variant, variant)}"
+            return Variant(name=name, canonical_tenant=f"development-{aliases.get(name, name)}")
 
     overlay = _AliasOverlay()
-    assert overlay.get_dslr_tenant_for_variant("client-a") == "development-client-a"
-    assert overlay.get_dslr_tenant_for_variant("client-a-regional") == "development-client-a"
-    assert overlay.get_dslr_tenant_for_variant("client-b") == "development-client-b"
+    assert overlay.resolve_variant("client-a").canonical_tenant == "development-client-a"
+    assert overlay.resolve_variant("client-a-regional").canonical_tenant == "development-client-a"
+    assert overlay.resolve_variant("client-b").canonical_tenant == "development-client-b"
 
 
 def test_get_run_commands_returns_empty_dict():

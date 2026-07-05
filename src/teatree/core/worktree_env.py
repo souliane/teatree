@@ -77,6 +77,22 @@ def compose_project(worktree: Worktree) -> str:
     return f"{worktree.repo_path}-wt{ticket.pk}" if ticket else worktree.repo_path
 
 
+def env_cache_path(worktree: Worktree) -> Path | None:
+    """Return the canonical env-cache path ``<ticket_dir>/.t3-cache/.t3-env.cache``.
+
+    ``None`` when the worktree has not been materialised on disk yet (no
+    ``worktree_path``), so a caller checking the cache's presence can tell
+    "not provisioned yet" apart from "provisioned but the cache is gone". The
+    single home of the path computation — the aggregate provision post-condition
+    and the diagnose/status commands resolve through here rather than
+    re-joining the segments.
+    """
+    wt_path = worktree.worktree_path
+    if not wt_path:
+        return None
+    return Path(wt_path).parent / CACHE_DIRNAME / CACHE_FILENAME
+
+
 def _docker_host_address() -> str:
     """Return the address Docker containers should use to reach the host."""
     if platform.system() in {"Darwin", "Windows"}:

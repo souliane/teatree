@@ -1,10 +1,36 @@
 """``t3 <overlay> worktree status`` renders the last provision report."""
 
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
+
 import pytest
+from django.core.management import call_command
 from django.test import TestCase
 
+from teatree.core.management.commands import worktree as worktree_cmd
 from teatree.core.management.commands.worktree import _provision_summary
 from teatree.core.models import Ticket, Worktree
+from teatree.core.overlay import OverlayBase
+from teatree.core.worktree_env import CACHE_DIRNAME, CACHE_FILENAME
+
+
+class _NoDbOverlay(OverlayBase):
+    """An overlay with no db strategy and no provision-step post-conditions.
+
+    The aggregate provision post-conditions then reduce to the two core
+    checks (worktree dir + env cache), so the falsification below isolates the
+    env-cache deletion cleanly.
+    """
+
+    def get_repos(self) -> list[str]:
+        return ["repo"]
+
+    def get_provision_steps(self, worktree):
+        return []
+
+    def get_db_import_strategy(self, worktree):
+        return None
 
 
 def _step(name: str, *, success: bool = True, duration: float = 0.0, error: str = "") -> dict[str, object]:
@@ -58,6 +84,67 @@ class TestProvisionSummary(TestCase):
         worktree = Worktree.objects.create(ticket=self.ticket, repo_path="backend", branch="b")
         worktree.extra = None
         assert _provision_summary(worktree) is None
+
+
+class TestStatusEnforcesProvisionPostConditions(TestCase):
+    """``worktree status`` refuses green when a provisioned worktree's post-conditions fail.
+
+    PR-27 falsification (souliane/teatree#1385): deleting the env cache under a
+    ``provisioned`` worktree flips an aggregate post-condition to FAIL, so status
+    exits non-zero.
+    """
+
+    def setUp(self) -> None:
+        self.ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/9")
+
+    def _provisioned_worktree(self, root: Path) -> tuple[Worktree, Path]:
+        wt_dir = root / "repo"
+        wt_dir.mkdir()
+        cache = root / CACHE_DIRNAME / CACHE_FILENAME
+        cache.parent.mkdir()
+        cache.write_text("WT_DB_NAME=x\n", encoding="utf-8")
+        worktree = Worktree.objects.create(
+            ticket=self.ticket,
+            repo_path="repo",
+            branch="b",
+            extra={"worktree_path": str(wt_dir)},
+            state=Worktree.State.PROVISIONED,
+        )
+        return worktree, cache
+
+    def _run_status(self, worktree: Worktree) -> None:
+        with (
+            patch.object(worktree_cmd, "resolve_worktree", return_value=worktree),
+            patch.object(worktree_cmd, "get_overlay", return_value=_NoDbOverlay()),
+            patch.object(worktree_cmd, "get_worktree_ports", return_value={}),
+        ):
+            call_command("worktree", "status", path=worktree.worktree_path)
+
+    def test_status_is_green_when_post_conditions_hold(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree, _cache = self._provisioned_worktree(Path(tmp))
+            self._run_status(worktree)  # must NOT raise SystemExit
+
+    def test_status_exits_nonzero_when_env_cache_deleted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            worktree, cache = self._provisioned_worktree(Path(tmp))
+            cache.unlink()
+            with pytest.raises(SystemExit) as exc_info:
+                self._run_status(worktree)
+            assert exc_info.value.code == 1
+
+    def test_created_worktree_has_nothing_to_verify(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            wt_dir = Path(tmp) / "repo"
+            wt_dir.mkdir()
+            worktree = Worktree.objects.create(
+                ticket=self.ticket,
+                repo_path="repo",
+                branch="b",
+                extra={"worktree_path": str(wt_dir)},
+                state=Worktree.State.CREATED,
+            )
+            self._run_status(worktree)  # a CREATED worktree provisioned nothing → green
 
 
 class TestWorktreeHumanRenderers:

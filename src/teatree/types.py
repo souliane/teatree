@@ -316,16 +316,29 @@ class ProvisionStep:
     A probe that raises is treated as "cannot tell, so don't skip" (the callable
     still runs) rather than crashing the provision.
 
-    ``parallel_group`` (souliane/teatree#2949) opts a ``subprocess_only`` step
-    into concurrent execution with every other step sharing the same non-empty
-    group name: :func:`run_provision_steps` runs each group's steps on a bounded
-    thread pool instead of serially. An empty string (the default) means "no
-    group" — the step always runs on its own, serially with its neighbours. Only
-    ``subprocess_only`` steps may declare a group; an ORM-touching step
-    (``subprocess_only=False``) ignores ``parallel_group`` and always runs
-    serially in-process (the same thread-safety contract as above). *(This
-    field is an interim mechanism: PR-27 replaces it with a ``requires``/
-    ``produces`` DAG and deletes it in that cutover.)*
+    ``requires`` / ``produces`` are the dependency-DAG edges (PR-27, replacing
+    the interim concurrency-group field). A step's ``produces`` names the
+    resources it makes available (``{"env-cache"}``, ``{"app-db"}``); another
+    step's ``requires`` names the resources it needs first.
+    :func:`run_provision_steps` schedules steps in dependency order — a step
+    runs only once every step producing a token it ``requires`` has succeeded —
+    and runs steps with **no dependency path between them** concurrently (the
+    ``subprocess_only`` ones on a bounded thread pool, ORM steps serially
+    in-process, the same thread-safety contract as ``subprocess_only`` above). A
+    ``requires`` token that no step ``produces`` is a misconfiguration and fails
+    the run loud (fail-closed), never a silent skip. Independent steps (empty
+    ``requires``/``produces``, the default) run concurrently when
+    ``subprocess_only`` — declaring an edge is how an overlay serialises two
+    steps that a shared resource orders.
+
+    ``post_condition`` (PR-27) is an optional truth check evaluated **after** the
+    callable runs: a step whose callable succeeds but whose ``post_condition``
+    returns ``False`` (or raises) is recorded FAILED — so a step that "ran" but
+    did not actually produce its resource halts a required-step run instead of
+    reporting green. The aggregate of every step's ``post_condition`` is what the
+    FSM's ``PROVISIONED`` guard and ``worktree status`` evaluate to decide a
+    worktree is *really* provisioned (see
+    :mod:`teatree.core.provision_postconditions`).
 
     ``heavy`` (souliane/teatree#2949) selects the step's time-box ceiling: a
     fast step (symlinks, settings, a compose override) defaults to a short
@@ -340,7 +353,9 @@ class ProvisionStep:
     description: str = ""
     subprocess_only: bool = False
     skip_probe: Callable[[], bool] | None = None
-    parallel_group: str = ""
+    requires: frozenset[str] = frozenset()
+    produces: frozenset[str] = frozenset()
+    post_condition: Callable[[], bool] | None = None
     heavy: bool = False
 
 

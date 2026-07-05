@@ -113,12 +113,8 @@ graph TD
     teatree.backends.github --> teatree.backends.errors
     teatree.backends.github --> teatree.backends.types
     teatree.backends.github --> teatree.backends.forge_merge_rpc
-    teatree.contrib --> teatree.types
     teatree.contrib --> teatree.core
-    teatree.contrib --> teatree.config
-    teatree.contrib --> teatree.docker
-    teatree.contrib --> teatree.utils
-    teatree.contrib --> teatree.visual_qa
+    teatree.contrib --> teatree.overlay_sdk
     teatree.cli --> teatree.paths
     teatree.cli --> teatree.project
     teatree.cli --> teatree.config
@@ -302,6 +298,12 @@ graph TD
     teatree.loops --> teatree.messaging
     teatree.loops --> teatree.notify
     teatree.loops --> teatree.utils
+    teatree.overlay_sdk --> teatree.types
+    teatree.overlay_sdk --> teatree.core
+    teatree.overlay_sdk --> teatree.config
+    teatree.overlay_sdk --> teatree.utils
+    teatree.overlay_sdk --> teatree.docker
+    teatree.overlay_sdk --> teatree.visual_qa
     teatree.docker --> teatree.types
     teatree.docker --> teatree.utils
     teatree.visual_qa --> teatree.core

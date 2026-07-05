@@ -7,14 +7,20 @@ teatree's own repo, skills, and GitHub project as the target.
 from pathlib import Path
 from typing import override
 
-from teatree.config import clone_root, discover_overlays
 from teatree.core.models import Worktree
-from teatree.core.overlay import OverlayBase, OverlayConfig, OverlayMetadata
-from teatree.core.worktree_env import compose_project
-from teatree.docker.reap import reap_compose_project
-from teatree.types import ProvisionStep, SkillMetadata
-from teatree.utils.run import run_checked
-from teatree.visual_qa import matches_triggers
+from teatree.overlay_sdk import (
+    OverlayBase,
+    OverlayConfig,
+    OverlayMetadata,
+    ProvisionStep,
+    SkillMetadata,
+    clone_root,
+    compose_project,
+    discover_overlays,
+    matches_triggers,
+    reap_compose_project,
+    run_checked,
+)
 
 _SETTINGS_MODULE = "teatree.contrib.t3_teatree.overlay_settings"
 _DEFAULT_FOLLOWUP_REPOS = ["souliane/teatree"]
@@ -155,18 +161,29 @@ class TeatreeOverlay(OverlayBase):
         # (souliane/teatree#2244). The teatree overlay declares NO db_import strategy,
         # so these are the ONLY provision steps it runs; without the bound the
         # dogfooding path had no ceiling/heartbeat/alert at all.
+        #
+        # PR-27 DAG edge: ``install-overlays-editable`` runs ``uv pip install -e``
+        # into the venv that ``sync-dependencies`` (``uv sync``) creates, so it
+        # ``requires`` the ``python-deps`` token the sync step ``produces`` — the
+        # runner then orders them instead of racing them concurrently.
+        def python_env_ready() -> bool:
+            return (repo / ".venv").is_dir()
+
         return [
             ProvisionStep(
                 name="sync-dependencies",
                 callable=sync_deps,
                 description="Install Python dependencies with uv sync",
                 subprocess_only=True,
+                produces=frozenset({"python-deps"}),
+                post_condition=python_env_ready,
             ),
             ProvisionStep(
                 name="install-overlays-editable",
                 callable=install_overlays_editable,
                 description="Install discovered overlays editable from their ticket worktrees",
                 subprocess_only=True,
+                requires=frozenset({"python-deps"}),
             ),
         ]
 

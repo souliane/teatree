@@ -324,7 +324,7 @@ depends_on = [
 [[modules]]
 path = "teatree.contrib"
 layer = "integration"
-depends_on = ["teatree.types", "teatree.core", "teatree.config", "teatree.docker", "teatree.utils", "teatree.visual_qa"]
+depends_on = ["teatree.core", "teatree.overlay_sdk"]
 
 [[modules]]
 path = "teatree.cli"
@@ -663,6 +663,11 @@ depends_on = [
   "teatree.notify",
   "teatree.utils"
 ]
+
+[[modules]]
+path = "teatree.overlay_sdk"
+layer = "integration"
+depends_on = ["teatree.types", "teatree.core", "teatree.config", "teatree.utils", "teatree.docker", "teatree.visual_qa"]
 
 [[modules]]
 path = "teatree.docker"

@@ -23,6 +23,7 @@ from teatree.core.management.commands._workspace_docker import reap_stale_local_
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import get_overlay
+from teatree.core.provision_postconditions import PostConditionOutcome, evaluate_post_conditions
 from teatree.core.readiness import run_and_report_probes
 from teatree.core.resolve import _ticket_by_number, resolve_worktree
 from teatree.core.runners import (
@@ -55,6 +56,8 @@ class WorktreeStatus(TypedDict, total=False):
     branch: str
     ports: dict[str, int]
     provision_report: ProvisionSummary
+    post_conditions: list[PostConditionOutcome]
+    provisioned_ok: bool
 
 
 class WorktreeDiagnose(TypedDict):
@@ -164,6 +167,11 @@ def _render_status(result: "WorktreeStatus", stream: IO[str]) -> None:
             f"provision: total={summary['total_duration']:.1f}s steps={summary['steps']} "
             f"success={summary['success']} slowest={summary['slowest_step']}\n"
         )
+    post_conditions = result.get("post_conditions")
+    if post_conditions is not None:
+        stream.write(f"provisioned_ok: {result.get('provisioned_ok', False)}\n")
+        for pc in post_conditions:
+            stream.write(f"  [{'OK' if pc['passed'] else 'FAIL'}] {pc['name']} — {pc['reason']}\n")
 
 
 def _render_diagnose(checks: "WorktreeDiagnose", stream: IO[str]) -> None:
@@ -411,7 +419,13 @@ class Command(TyperCommand):
             typer.Option("--json", help="Emit the status as JSON on stdout instead of the human view."),
         ] = False,
     ) -> WorktreeStatus:
-        """Report FSM state, branch, allocated host ports, and the last provision report for one worktree."""
+        """Report FSM state, ports, the provision report, and the aggregate post-conditions (PR-27).
+
+        A ``provisioned``/``services_up``/``ready`` worktree is only *really*
+        provisioned if every aggregate post-condition still holds; when one fails
+        (e.g. the env cache or DB was deleted) ``status`` reports it and exits
+        non-zero, never claiming green for a rotted provision.
+        """
         worktree = resolve_worktree(path)
         ports = get_worktree_ports(compose_project(worktree))
         result: WorktreeStatus = {
@@ -423,6 +437,7 @@ class Command(TyperCommand):
         summary = _provision_summary(worktree)
         if summary is not None:
             result["provision_report"] = summary
+        failures = self._evaluate_provision_post_conditions(worktree, result)
         self.print_result = False
         emit(
             result,
@@ -431,7 +446,24 @@ class Command(TyperCommand):
             err=cast("IO[str]", self.stderr),
             human=lambda stream: _render_status(result, stream),
         )
+        if failures:
+            self.stderr.write(f"  {failures} provision post-condition(s) failed — worktree is not truly provisioned")
+            raise SystemExit(1)
         return result
+
+    def _evaluate_provision_post_conditions(self, worktree: Worktree, result: WorktreeStatus) -> int:
+        """Populate ``result`` with the aggregate post-conditions; return the failure count.
+
+        Only evaluated for a ``provisioned``/``services_up``/``ready`` worktree —
+        a ``created`` row has provisioned nothing to verify.
+        """
+        provisioned_states = {Worktree.State.PROVISIONED, Worktree.State.SERVICES_UP, Worktree.State.READY}
+        if worktree.state not in provisioned_states:
+            return 0
+        outcomes, failures = evaluate_post_conditions(get_overlay(), worktree)
+        result["post_conditions"] = outcomes
+        result["provisioned_ok"] = failures == 0
+        return failures
 
     @command()
     def diagnose(
