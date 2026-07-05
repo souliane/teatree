@@ -15,6 +15,8 @@ correctly ignored.
 import ast
 from pathlib import Path
 
+import pytest
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _TESTS_ROOT = _REPO_ROOT / "tests"
 
@@ -84,6 +86,9 @@ def writes_into_live_src(source: str) -> list[str]:
     return offenders
 
 
+# Whole-tree AST scan of every tests/**/*.py — headroom over the 60s default
+# pytest-timeout so it never trips under concurrent-coder load in the push hook.
+@pytest.mark.timeout(300)
 class TestNoTestWritesUnderSrc:
     def test_no_test_module_writes_into_the_live_src_tree(self) -> None:
         offenders: dict[str, list[str]] = {}
