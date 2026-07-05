@@ -149,7 +149,7 @@ When invoked with `--periodic` (from the teatree loop's periodic dispatcher, or 
 
 ## Scheduling via the teatree main loop
 
-The teatree main loop owns periodic dispatch. The `ScanningNewsScanner` (in `teatree.loop.scanners.scanning_news`) fires once every 24 hours by default and queues a `scanning_news` Task; the dispatcher then routes it to this skill via the `_SUBAGENT_BY_PHASE` table in `loop_dispatch.py`.
+The teatree main loop owns periodic dispatch. The `ScanningNewsScanner` (in `teatree.loop.scanners.scanning_news`) fires once every 24 hours by default and queues a `scanning_news` Task; the dispatcher then routes it to this skill via `subagent_for_phase` (the canonical `SUBAGENT_BY_PHASE` map in `teatree.core.modelkit.phases`), which `loop_dispatch.py` consults.
 
 These knobs are DB-home — set them in the `ConfigSetting` store (a value left in `~/.teatree.toml` is ignored on read; add `--overlay <name>` for a per-overlay value):
 

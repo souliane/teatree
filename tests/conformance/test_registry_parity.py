@@ -16,13 +16,20 @@ never a rewrite. Every lane carries an anti-vacuity floor so emptying an
 enumeration cannot turn a lane vacuous-green.
 """
 
+import inspect
 from collections.abc import Iterable
+from unittest.mock import patch
 
 import pytest
+from django.db.models import Q
 
+from teatree.core.management.commands import loop_dispatch
+from teatree.core.managers import TaskQuerySet
 from teatree.core.modelkit.phases import SUBAGENT_BY_PHASE
+from teatree.core.models import Task
 from teatree.loop.dispatch_tables import AGENT_ZONES, PERSISTED_AT_SOURCE_ZONES
 from teatree.loop.persistence import _HANDLER_TARGET_PHASES, _ZONE_HANDLERS
+from teatree.loop.phases import orchestrate
 
 
 def assert_registry_covers(
@@ -89,6 +96,64 @@ class TestDispatchZoneExecutorParity:
         # a NON-pending-task path (AGENT_BY_KIND / MECHANICAL / conditional).
         for zone in ("t3:debug", "t3:e2e", "t3:coder", "t3:answerer", "codex:review", "codex:adversarial-review"):
             assert zone in _ZONE_HANDLERS, f"dark zone {zone!r} still has no persistence handler"
+
+
+class TestDispatchableFilterSsotParity:
+    """LANE 2 — the ONE ``Task.dispatchable_q`` SSOT gates every dispatch site (#6).
+
+    The #2218 recurrence class: the dispatchable filter re-hand-rolled per
+    consumer, so a fix to one copy (the #2217 external-delivery exclusion) never
+    reached the other — the live ``claim-next``/``pending-spawn`` double-dispatched
+    onto leased tickets while ``orchestrate`` correctly excluded them. Now every
+    consumer builds ON ``Task.dispatchable_q``: ``orchestrate`` returns it
+    verbatim, ``claim-next`` ANDs the INTERACTIVE narrowing, ``pending-spawn``
+    shares ``claim-next``'s helper, and the admit-budget gate counts through the
+    un-narrowed SSOT. A consumer that stops referencing the symbol fails here.
+    """
+
+    _SENTINEL = Q(pk__in=[-98765])
+    _INTERACTIVE = Q(execution_target=Task.ExecutionTarget.INTERACTIVE)
+
+    def test_orchestrate_filter_delegates_to_the_ssot(self) -> None:
+        with patch.object(Task, "dispatchable_q", return_value=self._SENTINEL):
+            assert orchestrate._dispatchable_filter() == self._SENTINEL
+
+    def test_claim_filter_is_the_ssot_narrowed_to_interactive(self) -> None:
+        with patch.object(Task, "dispatchable_q", return_value=self._SENTINEL):
+            assert loop_dispatch._dispatchable_q() == self._SENTINEL & self._INTERACTIVE
+
+    def test_budget_gate_counts_through_the_un_narrowed_ssot(self) -> None:
+        # The boost budget is computed (orchestrate) over the SSOT WITHOUT the
+        # execution_target narrowing, so a HEADLESS in-flight claim consumes it;
+        # the live gate must count with the SAME set — the un-narrowed SSOT, never
+        # ``_dispatchable_q()`` — or it overshoots N with headless workers running.
+        with (
+            patch.object(Task, "dispatchable_q", return_value=self._SENTINEL),
+            patch.object(TaskQuerySet, "in_flight_claimed_count", return_value=0) as count,
+            patch.object(loop_dispatch, "read_admit_budget", return_value=5),
+        ):
+            loop_dispatch._admit_budget_exhausted()
+        count.assert_called_once_with(self._SENTINEL)
+
+    def test_pending_spawn_shares_the_claim_filter(self) -> None:
+        # Structural: the in-session preview MUST filter through the same
+        # ``_dispatchable_q()`` the atomic claim uses, so it cannot drift back to
+        # a role/phase-only filter that ignores the external-delivery exclusion.
+        source = inspect.getsource(loop_dispatch.Command.pending_spawn)
+        assert "_dispatchable_q()" in source
+
+    def test_ssot_is_referenced_by_all_three_live_consumers(self) -> None:
+        # The parity claim made explicit: orchestrate, claim-next, and the budget
+        # gate each name ``dispatchable_q`` in their own source (pending-spawn is
+        # covered above via ``_dispatchable_q``), so no consumer can re-hand-roll
+        # the filter and silently diverge.
+        consumers = (
+            orchestrate._dispatchable_filter,
+            loop_dispatch._dispatchable_q,
+            loop_dispatch._admit_budget_exhausted,
+        )
+        for fn in consumers:
+            assert "dispatchable_q" in inspect.getsource(fn), fn.__qualname__
 
 
 class TestRegistryParityFrameworkFiresRed:

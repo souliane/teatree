@@ -14,7 +14,9 @@ from django.utils import timezone
 
 from teatree.agents.model_tiering import TIER_MODELS
 from teatree.core.models import Session, Task, Ticket
+from teatree.core.models.external_delivery import mark_external_delivery
 from teatree.core.models.ticket import schedule_external_review
+from teatree.loop.admit_budget import write_admit_budget
 
 
 class _LoopDispatchTest(TestCase):
@@ -75,7 +77,7 @@ class TestPendingSpawn(_LoopDispatchTest):
         assert json.loads(stdout.getvalue()) == []
 
     def test_skips_tasks_with_no_registered_subagent(self) -> None:
-        # A scoping task on an author ticket → no _SUBAGENT_BY_PHASE entry → skipped.
+        # A scoping task on an author ticket → no SUBAGENT_BY_PHASE entry → skipped.
         ticket = Ticket.objects.create(overlay="acme", issue_url="https://example.com/issues/77")
         session = Session.objects.create(ticket=ticket, agent_id="scoping")
         Task.objects.create(ticket=ticket, session=session, phase="scoping")
@@ -601,6 +603,113 @@ class TestPendingSpawnClaimableOnly(_LoopDispatchTest):
             with patch("teatree.core.management.commands.loop_dispatch.default_path", return_value=sl):
                 call_command("loop_dispatch", "pending-spawn", "--json", stdout=stdout)
         assert len(json.loads(stdout.getvalue())) == 1
+
+
+class TestExternalDeliveryExclusion(_LoopDispatchTest):
+    """#6/#2217: the live claim/spawn paths honour the external-delivery lease.
+
+    A unit hand-delivered by an external agent (a live #2104 lease) is being
+    implemented directly with no loop-armed sub-agent, so the loop must NOT
+    claim a second coder/reviewer on it. ``orchestrate`` already excluded it,
+    but the live ``claim-next``/``pending-spawn`` in ``loop_dispatch`` did not —
+    the #2218 "fix landed on one side" recurrence. Both must now share the
+    ``Task.dispatchable_q`` SSOT, which carries the exclusion.
+    """
+
+    def _lease(self, task: Task) -> None:
+        mark_external_delivery(task.ticket)
+        task.ticket.refresh_from_db()
+
+    def test_claim_next_skips_a_ticket_under_external_delivery(self) -> None:
+        # RED before the fix: loop_dispatch's filter lacked the exclusion, so
+        # claim-next double-dispatched onto the leased ticket.
+        task = self._author_task()
+        self._lease(task)
+        stdout = StringIO()
+        call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
+        assert json.loads(stdout.getvalue()) == []
+        task.refresh_from_db()
+        assert task.status == Task.Status.PENDING  # left for the delivery owner
+
+    def test_pending_spawn_skips_a_ticket_under_external_delivery(self) -> None:
+        # RED before the fix: pending-spawn filtered on role/phase only (no
+        # exclusion), so the /loop slot would spawn onto the leased ticket.
+        task = self._author_task()
+        self._lease(task)
+        stdout = StringIO()
+        call_command("loop_dispatch", "pending-spawn", "--json", stdout=stdout)
+        assert json.loads(stdout.getvalue()) == []
+
+    def test_claim_next_claims_a_ticket_not_under_external_delivery(self) -> None:
+        # Anti-vacuity twin: an unleased dispatchable task IS claimed — the
+        # exclusion is not blanket suppression.
+        task = self._author_task()
+        stdout = StringIO()
+        call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
+        payload = json.loads(stdout.getvalue())
+        assert [e["task_id"] for e in payload] == [task.pk]
+
+    def test_pending_spawn_lists_a_ticket_not_under_external_delivery(self) -> None:
+        # Anti-vacuity twin for the preview path.
+        task = self._author_task()
+        stdout = StringIO()
+        call_command("loop_dispatch", "pending-spawn", "--json", stdout=stdout)
+        payload = json.loads(stdout.getvalue())
+        assert [e["task_id"] for e in payload] == [task.pk]
+
+
+class TestBudgetCountsHeadlessInFlight(_LoopDispatchTest):
+    """#6: the admit-budget gate counts HEADLESS in-flight claims, not just INTERACTIVE.
+
+    ``orchestrate`` computes the target and its ``in_flight`` subtraction over
+    the dispatchable filter WITHOUT any execution_target narrowing, so a
+    headless worker in flight consumes budget. The live claimer must count with
+    the SAME set; the pre-fix gate counted only INTERACTIVE in-flight, so with N
+    headless workers already running it saw zero and overshot the boost budget.
+    """
+
+    def _headless_in_flight(self, n: int) -> list[Task]:
+        """Seed *n* dispatchable HEADLESS CLAIMED tasks with a live lease."""
+        claimed: list[Task] = []
+        for i in range(n):
+            task = self._author_task(url=f"https://example.com/issues/headless/{i}")
+            # A raw UPDATE forces HEADLESS without the save() re-route back to
+            # INTERACTIVE (a loop-dispatched phase under the default runtime).
+            Task.objects.filter(pk=task.pk).update(execution_target=Task.ExecutionTarget.HEADLESS)
+            task.refresh_from_db()
+            task.claim(claimed_by="headless-worker")
+            claimed.append(task)
+        return claimed
+
+    def _run_claim_next(self, sl: Path) -> list[dict]:
+        stdout = StringIO()
+        with patch("teatree.core.management.commands.loop_dispatch.default_path", return_value=sl):
+            call_command("loop_dispatch", "claim-next", "--json", stdout=stdout)
+        return json.loads(stdout.getvalue())
+
+    def test_headless_in_flight_at_budget_refuses_the_next_claim(self) -> None:
+        # RED before the fix: budget 2, 2 HEADLESS dispatchable claims in flight,
+        # one INTERACTIVE pending. The pre-fix gate counted only INTERACTIVE
+        # in-flight (0) and claimed the pending row, overshooting N to 3.
+        with tempfile.TemporaryDirectory() as d:
+            sl = Path(d) / "statusline.txt"
+            self._headless_in_flight(2)
+            self._author_task(url="https://example.com/issues/pending")
+            write_admit_budget(2, statusline_path=sl)
+            payload = self._run_claim_next(sl)
+        assert payload == []
+        assert Task.objects.filter(status=Task.Status.PENDING).count() == 1
+
+    def test_headless_in_flight_below_budget_still_admits(self) -> None:
+        # Anti-vacuity twin: 1 headless in-flight < budget 2 → the INTERACTIVE
+        # pending claim lands (the gate is the only thing holding the row).
+        with tempfile.TemporaryDirectory() as d:
+            sl = Path(d) / "statusline.txt"
+            self._headless_in_flight(1)
+            pending = self._author_task(url="https://example.com/issues/pending")
+            write_admit_budget(2, statusline_path=sl)
+            payload = self._run_claim_next(sl)
+        assert [e["task_id"] for e in payload] == [pending.pk]
 
 
 class TestSpawnClaim(_LoopDispatchTest):

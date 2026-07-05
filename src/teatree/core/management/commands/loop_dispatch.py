@@ -18,12 +18,7 @@ from django.db.models import Q
 from django_typer.management import TyperCommand, command
 
 from teatree.config import cadence_seconds
-from teatree.core.modelkit.phases import (
-    SUBAGENT_BY_PHASE,
-    phase_spellings,
-    resolve_fanout_directive,
-    subagent_for_phase,
-)
+from teatree.core.modelkit.phases import resolve_fanout_directive, subagent_for_phase
 from teatree.core.models import Task
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.loop.admit_budget import read_admit_budget
@@ -32,38 +27,29 @@ from teatree.loop.statusline import default_path
 
 logger = logging.getLogger(__name__)
 
-# The phase → sub-agent authority is the single canonical map in
-# ``teatree.core.modelkit.phases``. Each author phase dispatches to its OWN agent
-# (coding → t3:coder, testing → t3:tester, reviewing → t3:reviewer,
-# shipping → t3:shipper); the reviewer-role reviewing entry stays. The
-# loop is the per-phase dispatcher, never a single orchestrator that
-# chains the phases inline (BLUEPRINT §5.2 / §17.8 invariant 10).
-_SUBAGENT_BY_PHASE = SUBAGENT_BY_PHASE
-
 
 def _subagent_for(task: Task) -> str:
     return subagent_for_phase(task.ticket.role, task.phase)
 
 
 def _dispatchable_q() -> Q:
-    """DB-side mirror of ``_subagent_for`` for the atomic claim filter.
+    """The in-session claim filter — the ``dispatchable_q`` SSOT narrowed to INTERACTIVE (#6).
 
-    ``Q`` matching the (ticket.role, task.phase) pairs that have a
-    registered subagent, so the atomic claim restricts to dispatchable
-    tasks (one source of truth). Phase is matched across every accepted
-    spelling (``phase_spellings``) so a short-verb ``code``/``review`` task
-    resolves the same as the canonical token ``_subagent_for`` normalizes.
+    ``Task.dispatchable_q()`` is the single source of truth (role/phase pairs
+    with a registered sub-agent AND not under a live #2104 external-delivery
+    lease, #2217). Sharing it means ``claim-next`` and ``pending-spawn`` honour
+    the external-delivery exclusion the same as the ``orchestrate`` planner — the
+    #2218 "fix landed on one side" recurrence dies.
 
     The in-session ``/loop`` claims only INTERACTIVE tasks: under a headless
     ``agent_runtime`` a loop-dispatched phase task is HEADLESS and owned by the
     headless lane (``execute_headless_task``), so AND-ing ``execution_target ==
     INTERACTIVE`` keeps the two lanes disjoint — the same task is never claimed
-    in-session AND run headless.
+    in-session AND run headless. The admit-budget count deliberately does NOT
+    apply this narrowing (``_admit_budget_exhausted``), so a headless claim in
+    flight still consumes the boost budget.
     """
-    q = Q(pk__in=[])  # matches nothing; OR-folded below
-    for role, phase in _SUBAGENT_BY_PHASE:
-        q |= Q(ticket__role=role, phase__in=phase_spellings(phase))
-    return q & Q(execution_target=Task.ExecutionTarget.INTERACTIVE)
+    return Task.dispatchable_q() & Q(execution_target=Task.ExecutionTarget.INTERACTIVE)
 
 
 def _admit_budget_exhausted() -> bool:
@@ -79,6 +65,13 @@ def _admit_budget_exhausted() -> bool:
     **Fail open to UNCLAMPED** (returns ``False``) when the budget is absent
     (medium / toggle-off — today's throughput), stale (> TTL, a dead loop wrote
     it), or any read error — a dead loop must never wrongly clamp live dispatch.
+
+    #6: the in-flight count runs over ``Task.dispatchable_q()`` WITHOUT the
+    ``execution_target == INTERACTIVE`` narrowing — the SAME filter set the
+    ``orchestrate`` planner used to compute the target. A HEADLESS loop-dispatched
+    phase task in flight (under a headless ``agent_runtime``) therefore consumes
+    the boost budget too; the pre-fix gate counted only INTERACTIVE in-flight and
+    overshot ``N`` whenever headless workers were running.
     """
     try:
         budget = read_admit_budget(statusline_path=default_path(), cadence_seconds=cadence_seconds())
@@ -86,7 +79,7 @@ def _admit_budget_exhausted() -> bool:
         return False
     if budget is None:
         return False
-    return Task.objects.in_flight_claimed_count(_dispatchable_q()) >= budget
+    return Task.objects.in_flight_claimed_count(Task.dispatchable_q()) >= budget
 
 
 def _task_to_dict(task: Task) -> dict[str, Any]:
@@ -222,13 +215,16 @@ class Command(TyperCommand):
     ) -> None:
         """List pending Tasks the ``/loop`` slot should spawn in-session.
 
-        Tasks are returned in FIFO order (oldest pending first). The
-        ``subagent`` field tells the slot which subagent_type to pass
-        to its ``Agent`` tool; an empty string means the role+phase pair
-        has no registered subagent (operator triage) and is filtered out —
-        a general-purpose spawn never reaches the slot. The ``display_name``
-        field (``t3-<type>-<id>``, PR-12) is the Agent tool ``description`` the
-        slot passes, so every spawn is attributable and type-prefixed.
+        Tasks are returned in FIFO order (oldest pending first), filtered through
+        the SAME ``_dispatchable_q()`` the atomic ``claim-next`` uses (#6) — the
+        ``Task.dispatchable_q`` SSOT narrowed to INTERACTIVE — so the
+        in-session preview cannot drift from the claim: a non-dispatchable pair,
+        a HEADLESS task owned by the headless lane, and a ticket under a live
+        #2104 external-delivery lease are all excluded here exactly as they are
+        at claim time. The ``subagent`` field tells the slot which subagent_type
+        to pass to its ``Agent`` tool; the ``display_name`` field
+        (``t3-<type>-<id>``, PR-12) is the Agent tool ``description`` the slot
+        passes, so every spawn is attributable and type-prefixed.
 
         ``--claimable-only`` (TODO #100) applies the SAME admit-budget gate
         ``claim-next`` applies, so the probe answers "is there a unit a claim
@@ -243,8 +239,13 @@ class Command(TyperCommand):
         if claimable_only and _admit_budget_exhausted():
             payload: list[dict[str, Any]] = []
         else:
-            pending = Task.objects.filter(status=Task.Status.PENDING).select_related("ticket").order_by("pk")
-            payload = [_task_to_dict(task) for task in pending if _subagent_for(task)]
+            pending = (
+                Task.objects.filter(status=Task.Status.PENDING)
+                .filter(_dispatchable_q())
+                .select_related("ticket")
+                .order_by("pk")
+            )
+            payload = [_task_to_dict(task) for task in pending]
         if json_output:
             self.stdout.write(json.dumps(payload, indent=2))
             return

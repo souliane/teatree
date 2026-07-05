@@ -12,6 +12,7 @@ import importlib.util
 import json
 from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
 
 from django.core.management import call_command
 from django.test import TestCase
@@ -114,10 +115,12 @@ class TestSubagentForPhaseConformance(TestCase):
 
 
 class TestLoopDispatchCommandConformance(TestCase):
-    """``_SUBAGENT_BY_PHASE`` (the pending-spawn map) mirrors the canonical map."""
+    """The command's ``_subagent_for`` resolver mirrors ``SUBAGENT_BY_PHASE`` — no drift copy."""
 
-    def test_command_map_is_the_canonical_map(self) -> None:
-        assert loop_dispatch_cmd._SUBAGENT_BY_PHASE is SUBAGENT_BY_PHASE
+    def test_command_resolver_mirrors_the_canonical_map(self) -> None:
+        for (role, phase), agent in SUBAGENT_BY_PHASE.items():
+            task = SimpleNamespace(ticket=SimpleNamespace(role=role), phase=phase)
+            assert loop_dispatch_cmd._subagent_for(task) == agent
 
     def test_every_author_phase_has_a_non_orchestrator_subagent(self) -> None:
         for phase, expected in EXPECTED_AUTHOR_AGENT.items():
