@@ -88,8 +88,10 @@ def cron_decommission_directive() -> str | None:
     ``t3 loops tick --loop <name>`` crons registered in the harness. The worker's per-loop
     ``loop-tick:<name>`` mutex + the ``Loop.last_run_at`` CAS make a stale cron BENIGN (a
     wasted subprocess, never double work), but it should be cleaned up. Returns the
-    directive only when the worker owns the cadence (``loop_runner_enabled`` ON); the
-    owner-session handler emits it once per session (a ``cron-decommission`` marker).
+    directive only when the worker owns the cadence (``loop_runner_enabled`` ON);
+    :func:`emit_loop_registrations` prepends it to the reactive-slot emission, so it is
+    emitted once per session under the SAME ``loop-pending`` marker that gates that
+    emission.
     """
     if not _worker_owns_cadence():
         return None

@@ -398,22 +398,31 @@ reads, so no overlay context is needed.
 
 ### 2. Loop & Statusline
 
-A set of long-running `/loop` slots in the interactive Claude Code session drives
-the day — one `/loop` per enabled DB `Loop` row (#2650), each firing
-`t3 loops tick --loop <name>` on its own cadence. Those ticks fan out to
-scanners that watch assigned issues, open PRs, PRs assigned for review, Slack
-mentions, the Notion → GitLab bridge, and the local task queue. Findings render
-to `${XDG_DATA_HOME:-~/.local/share}/teatree/statusline.txt` (three zones:
-anchors / action needed / in flight). The Claude Code statusline hook `cat`s
-that file in <10ms, so live status sits at the top of every session without
-polling.
+The singleton `t3 worker` drives the day (#1796 / PR-28, default ON): it drains one
+self-rescheduling `loop_timer` chain per enabled DB `Loop` row, each firing
+`t3 loops tick --loop <name>` on its own cadence, so the loops run with no Claude
+Code session open. Those ticks fan out to scanners that watch assigned issues, open
+PRs, PRs assigned for review, Slack mentions, the Notion → GitLab bridge, and the
+local task queue. Findings render to
+`${XDG_DATA_HOME:-~/.local/share}/teatree/statusline.txt` (three zones: anchors /
+action needed / in flight). The Claude Code statusline hook `cat`s that file in
+<10ms, so live status sits at the top of every session without polling.
 
 ```bash
-# Spawn the loop-owner session (registers one /loop per enabled loop):
+# Run the worker (the cadence owner). Bare `t3 worker` is the run alias:
+t3 worker
+
+# Check the worker: live flock holder, resolved loop_runner_enabled + source, timer counts:
+t3 worker status            # --json for a machine-readable payload
+# Ensure one is running (spawns a detached worker iff enabled AND the flock is free):
+t3 worker ensure            # refuses (with the reason) when OFF or already running
+
+# Spawn a Claude Code session (registers the reactive infra loops: self-improve/slack-answer/drain-queue):
 t3 loop start
 
-# Or, from inside an existing session, register one loop's /loop manually:
-/loop 12m Run `t3 loops tick --loop dispatch`.
+# Enable/disable an individual loop (the reconciler adds/prunes its timer at once):
+t3 loop enable <name>
+t3 loop disable <name>
 
 # Out of band, run one by-hand full-scan tick or read the last-rendered statusline:
 t3 loop tick
@@ -424,8 +433,11 @@ t3 loops list
 ```
 
 The cadence is configurable via `T3_LOOP_CADENCE` (seconds), or by setting
-`loop_cadence_seconds` in `~/.teatree.toml` (env wins; default `720`). To stop
-the loop, run `/loop unregister t3-loop` in the Claude Code session.
+`loop_cadence_seconds` in `~/.teatree.toml` (env wins; default `720`).
+`loop_runner_enabled` is the kill-switch — set it `false` to stop the loops
+entirely (there is no fallback plane; PR-28 retired the native `/loop` cron mirror).
+On a headless box with no Claude session ever opening, start `t3 worker` once from a
+login profile.
 
 **Wire up the Claude Code statusline hook** so the rendered file actually shows
 in the bottom bar. This is a top-level `statusLine` key in
