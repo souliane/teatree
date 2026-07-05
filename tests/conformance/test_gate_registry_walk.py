@@ -81,6 +81,13 @@ class TestGateRegistryBidirectionalWalk:
 
     @pytest.mark.parametrize(("register_fn", "get_fn", "kind"), _REGISTRY_PAIRS)
     def test_every_registration_has_a_call_site(self, register_fn: str, get_fn: str, kind: str) -> None:
+        # Known low-risk false-positive: a gate invoked ONLY via the dynamic
+        # ``get_gate(gate)`` loop (a variable arg the static walk cannot resolve)
+        # would show here as "registered, no literal call site". It is loud (a RED
+        # naming the gate, not a silent pass) and today never triggers — the one
+        # dynamically-dispatched gate (``plan_currency``) also has a direct literal
+        # ``get_gate("plan_currency")`` call. A future dynamic-only gate resolves it
+        # by adding one literal call site or an explicit allowlist.
         _assert_covers(
             producers=_literal_call_names(register_fn),
             consumers=_literal_call_names(get_fn),
@@ -119,6 +126,10 @@ class TestGateRegistryWalkCardinalityFloors:
         assert len(called) >= 8, sorted(called)
 
     def test_resolver_floor(self) -> None:
+        # Pinned at the exact current count: there are exactly 2 registered resolvers
+        # (``infer_overlay_for_url`` + ``resolve_overlay_name``), so ``>= 2`` is a
+        # proof the walk found the resolver seam AND a regression tripwire if one is
+        # dropped. Raise the floor when a 3rd resolver lands.
         assert len(_literal_call_names("register_resolver")) >= 2
         assert len(_literal_call_names("get_resolver")) >= 2
 

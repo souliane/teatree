@@ -165,6 +165,28 @@ def _produced(kind: str, literals: set[str], prefixes: set[str]) -> bool:
     return kind in literals or any(kind.startswith(prefix) for prefix in prefixes)
 
 
+def unrouted_kinds(literals: set[str]) -> list[str]:
+    """Emitted literal kinds with no explicit route/drop/allowlist — the forward predicate.
+
+    Shared by the real assertion and the anti-vacuity self-test so the gate is
+    proven to fire by running the SAME predicate over an injected emitted-set.
+    """
+    return sorted(
+        kind
+        for kind in literals
+        if kind not in _EXPLICITLY_ROUTED_KINDS and not _prefix_dropped(kind) and kind not in INTENTIONAL_FALLBACK_KINDS
+    )
+
+
+def dead_routes(literals: set[str], prefixes: set[str]) -> list[str]:
+    """Dispatch-route keys no scanner produces and not pre-provisioned — the reverse predicate."""
+    return sorted(
+        kind
+        for kind in _DISPATCH_ROUTE_KEYS
+        if not _produced(kind, literals, prefixes) and kind not in ROUTES_WITHOUT_STATIC_PRODUCER
+    )
+
+
 class TestEveryEmittedKindHasAnExplicitRoute:
     """Forward — a scanner-emitted kind is never a silent in_flight fallback.
 
@@ -175,13 +197,7 @@ class TestEveryEmittedKindHasAnExplicitRoute:
 
     def test_no_emitted_kind_falls_through_to_the_generic_fallback(self) -> None:
         literals, _ = emitted_signal_kinds()
-        uncovered = sorted(
-            kind
-            for kind in literals
-            if kind not in _EXPLICITLY_ROUTED_KINDS
-            and not _prefix_dropped(kind)
-            and kind not in INTENTIONAL_FALLBACK_KINDS
-        )
+        uncovered = unrouted_kinds(literals)
         assert not uncovered, (
             "scanner-emitted signal kind(s) with no explicit dispatch/statusline route — "
             "each falls through to the generic ('statusline', 'in_flight') fallback (a silent drop). "
@@ -216,11 +232,7 @@ class TestEveryDispatchRouteHasAProducer:
 
     def test_no_dispatch_route_key_is_a_dead_route(self) -> None:
         literals, prefixes = emitted_signal_kinds()
-        dead = sorted(
-            kind
-            for kind in _DISPATCH_ROUTE_KEYS
-            if not _produced(kind, literals, prefixes) and kind not in ROUTES_WITHOUT_STATIC_PRODUCER
-        )
+        dead = dead_routes(literals, prefixes)
         assert not dead, (
             "dispatch-route key(s) with no scanner producing the kind (dead route) — "
             "wire a producer or add to ROUTES_WITHOUT_STATIC_PRODUCER on purpose: " + str(dead)
@@ -250,19 +262,19 @@ class TestSignalRouteTotalityFiresRed:
     """Anti-vacuity — the lane must actually catch a new-kind silent drop and a dead route."""
 
     def test_a_synthetic_unrouted_kind_is_reported(self) -> None:
-        # A synthetic kind that no table routes, no prefix drops, and no allowlist
-        # names is exactly the silent-drop class — the forward predicate flags it.
+        # Run the REAL forward predicate over an injected emitted-set: a synthetic
+        # kind that no table routes, no prefix drops, and no allowlist names is
+        # named, a genuinely-routed kind is not — the silent-drop class fires.
         synthetic = "synthetic_scanner.brandnew_unrouted_kind"
-        assert synthetic not in _EXPLICITLY_ROUTED_KINDS
-        assert not _prefix_dropped(synthetic)
-        assert synthetic not in INTENTIONAL_FALLBACK_KINDS
+        result = unrouted_kinds({synthetic, "reviewer_pr.new_sha"})
+        assert result == [synthetic], result
 
     def test_a_synthetic_dead_route_is_reported(self) -> None:
-        # A route key produced by no scanner and not pre-provisioned is a dead route.
-        literals, prefixes = emitted_signal_kinds()
-        synthetic = "synthetic_route.no_producer"
-        assert not _produced(synthetic, literals, prefixes)
-        assert synthetic not in ROUTES_WITHOUT_STATIC_PRODUCER
+        # Run the REAL reverse predicate over an empty emitted-set: every dispatch
+        # route key except the pre-provisioned allowlist is then unproduced (dead).
+        dead = dead_routes(set(), set())
+        assert set(_DISPATCH_ROUTE_KEYS) - set(ROUTES_WITHOUT_STATIC_PRODUCER) == set(dead)
+        assert dead, "reverse predicate must name dead routes when nothing is produced"
 
     def test_a_resolved_family_prefix_covers_its_dynamic_kinds(self) -> None:
         # The reverse walk must not false-positive on dynamically-built kinds: the
