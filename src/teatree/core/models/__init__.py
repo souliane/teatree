@@ -39,6 +39,7 @@ from teatree.core.models.eval_run import (
     ScenarioRegression,
     TrajectoryToolCall,
 )
+from teatree.core.models.factory_score_snapshot import FactoryScoreSnapshot, FactoryScoreSnapshotManager
 from teatree.core.models.honesty_escalation import HonestyEscalation
 from teatree.core.models.implemented_issue_marker import NEEDS_TRIAGE_LABEL, ImplementedIssueMarker
 from teatree.core.models.incoming_event import IncomingEvent
@@ -147,6 +148,8 @@ __all__ = [
     "EvalRunRecord",
     "EvalScenarioResult",
     "EvalVerdict",
+    "FactoryScoreSnapshot",
+    "FactoryScoreSnapshotManager",
     "Finding",
     "HonestyEscalation",
     "ImplementedIssueMarker",

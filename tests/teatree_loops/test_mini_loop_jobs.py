@@ -163,10 +163,11 @@ class TestInboxLoopBuildJobs:
 
     def test_single_overlay_messaging_path(self, stub_messaging: Any) -> None:
         jobs = INBOX_LOOP.build_jobs(messaging=stub_messaging)
-        # mentions, dms, review_intent, red_card
-        assert len(jobs) == 4
+        # mentions, dms, ask-reply, review_intent, red_card — the shared #23 SSOT
+        assert len(jobs) == 5
         names = {j.scanner.name for j in jobs}
         assert "slack_mentions" in names
+        assert "askuserquestion_reply" in names
         assert "red_card" in names
 
     def test_with_notion_client_only(self) -> None:

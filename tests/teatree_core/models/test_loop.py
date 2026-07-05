@@ -267,11 +267,12 @@ class TestLoopSeed(TestCase):
         assert loop.delay_seconds == 86400
 
     def test_every_loop_is_its_own_autonomous_row(self) -> None:
-        # 19 default loops (#2584, +1 for souliane/teatree#2949 snapshot_warmer):
-        # the orphan ``slack_answer`` is never seeded (the one loop with no
-        # registry MiniLoop). The seeded set equals ``iter_loops()`` — pinned by
+        # 21 default loops (#2584, +1 for souliane/teatree#2949 snapshot_warmer,
+        # +2 for #22 issue_disposition + backlog_sweep): the orphan ``slack_answer``
+        # is never seeded (the one loop with no registry MiniLoop). The seeded set
+        # equals ``iter_loops()`` — pinned by
         # tests/teatree_loops/test_seed.py::test_seeded_loop_table_matches_iter_loops.
-        assert Loop.objects.count() == 19
+        assert Loop.objects.count() == 21
         assert Loop.objects.filter(name="dispatch").exists()
 
 
