@@ -104,6 +104,10 @@ _GIT_REPO_FIXTURE_SCENARIOS = frozenset(
         "ship_no_coauthored_by_trailer",
         "ship_squash_before_merge_when_policy",
         "review_skips_mr_already_eyes_claimed",
+        # The prompt presupposes a helper at ``src/teatree/util/money.py`` the
+        # agent "just wrote"; the git_repo fixture seeds that file so the agent
+        # can see the function to test instead of investigating an empty cwd.
+        "test_new_code_ships_with_tests",
     }
 )
 
