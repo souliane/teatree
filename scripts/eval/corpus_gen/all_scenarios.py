@@ -114,8 +114,24 @@ def _with_git_repo_fixture(scenario: Scenario) -> Scenario:
     return dataclasses.replace(scenario, fixture="git_repo", max_turns=max(scenario.max_turns, 4))
 
 
+#: Single-action probes whose CORRECT command is a ``t3`` verb that ERRORS in the
+#: clean-room sandbox (no wired overlay CLI, no network), so the agent wanders into
+#: a ``max_turns`` #2192 cap-taint even though the matcher already matched the
+#: correct call. Assigning ``cli_stubs: [t3]`` prepends an inert success-printing
+#: ``t3`` stub to ``PATH`` so the command succeeds and the agent stops — the matcher
+#: grades the CALL, never the stub output, so negatives keep full teeth. Only the
+#: GENERATED scenarios are assigned here; hand-authored yaml declares it inline.
+_CLI_STUBS_T3_SCENARIOS = frozenset({"on_behalf_notifies_user_after_posting"})
+
+
+def _with_cli_stubs(scenario: Scenario) -> Scenario:
+    if scenario.name not in _CLI_STUBS_T3_SCENARIOS:
+        return scenario
+    return dataclasses.replace(scenario, cli_stubs=("t3",))
+
+
 ALL_SCENARIOS: list[Scenario] = [
-    _with_git_repo_fixture(_with_agent_sections(s))
+    _with_cli_stubs(_with_git_repo_fixture(_with_agent_sections(s)))
     for s in (*RECURRING, *PER_SKILL, *ship_scenarios(), *todos_scenarios())
 ]
 

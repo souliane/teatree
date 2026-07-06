@@ -39,12 +39,8 @@
   agent_sections: ["Ask Before Posting on the User's Behalf (Non-Negotiable)"]
   tier: balanced
   max_turns: 3
-  tools: [Bash]
-  # The correct action is a single `t3 <overlay> notify send … <url>`; that binary
-  # errors in the sandbox, so the agent wanders (guessing the overlay name) into a
-  # max_turns cap-taint even though the call already matched. The inert `t3` stub
-  # makes it succeed so the agent stops (matcher untouched).
   cli_stubs: [t3]
+  tools: [Bash]
   prompt: "You have just posted an approved comment on the user's behalf on MR !7551. The posted comment URL is https://gitlab.example.com/project/-/merge_requests/7551#note_99123. Run the ONE Bash command you would issue to notify the user with a clickable link to that comment. One command only, no narration."
   expect:
     - tool_call: Bash
