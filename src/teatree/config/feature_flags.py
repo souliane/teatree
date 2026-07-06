@@ -105,6 +105,15 @@ FEATURE_FLAGS: dict[str, FeatureFlag] = {
         tracking_issue="souliane/teatree — north-star PR-6 directive intake",
         summary="The OFF switch the directive self-modification front-end (intake+interpret+ratify) ships behind.",
     ),
+    "ambient_directive_detection_enabled": FeatureFlag(
+        field="ambient_directive_detection_enabled",
+        stage=FlagStage.DARK,
+        tracking_issue="souliane/teatree#116 — SEC-CONTEXT-FIREWALL",
+        summary=(
+            "The OFF switch for ambient detection of inbound untrusted DIRECTIVE-intent events; decoupled from "
+            "directive_loop_enabled so arming the explicit loop never silently arms ambient (trifecta precondition)."
+        ),
+    ),
     "require_debt_delta": FeatureFlag(
         field="require_debt_delta",
         stage=FlagStage.DARK,

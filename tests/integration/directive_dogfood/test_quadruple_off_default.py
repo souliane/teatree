@@ -38,7 +38,7 @@ class TestQuadrupleOffDefault(TestCase):
 
     def test_directive_intent_drops_at_default_routing(self) -> None:
         # Flag-off parity on the real router: a DIRECTIVE-classified event DROPs while
-        # directive_routing_enabled is off (its default), so intake is inert.
+        # ambient_directive_detection_enabled is off (its default), so intake is inert.
         event = IncomingEvent(source=IncomingEvent.Source.SLACK, channel_ref="C1", body=PROOF_CASE_TEXT)
         classification = IntentClassification(event=event, intent=IntentClassification.Intent.DIRECTIVE)
 

@@ -182,6 +182,8 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "auto_disposition_enabled": _parse_strict_bool,
     "outer_loop_enabled": _parse_strict_bool,
     "directive_loop_enabled": _parse_strict_bool,
+    # #116 context firewall — the DARK ambient-directive-detection routing flag.
+    "ambient_directive_detection_enabled": _parse_strict_bool,
     # North-star PR-7 — the directive VERIFYING horizon (days) after activation.
     "directive_verify_days": _parse_strict_int,
     # T4-PR-3 — the autoresearch outer-loop runtime bounds: the post-implement
@@ -1160,6 +1162,16 @@ class UserSettings:
     # default == its off_value (False), so it can never ship default-ON without a
     # code-reviewed stage demotion.
     directive_loop_enabled: bool = False
+    # #116 context firewall — the OFF switch for AMBIENT directive detection (routing an
+    # inbound untrusted DIRECTIVE-intent event to the reader→recorder firewall). A DARK
+    # ``FEATURE_FLAGS`` entry, decoupled from ``directive_loop_enabled`` ON PURPOSE:
+    # arming the explicit directive loop must NEVER silently arm ambient detection of
+    # untrusted inbound content (the lethal-trifecta precondition). Ships inert — no
+    # ``Intent.DIRECTIVE`` producer exists yet, and the ONLY IncomingEvent→Directive
+    # path is the fail-closed reader→recorder, so even flag-on cannot mint a routable
+    # directive from unvalidated content. DB-home (#1775), per-overlay overridable. The
+    # conformance suite pins stage=DARK => this default == its off_value (False).
+    ambient_directive_detection_enabled: bool = False
     # North-star PR-7 — the directive-loop VERIFYING horizon in days: after the ratified
     # activation is applied, the five evidence classes (activation live, acceptance green,
     # behavior probe clean, no collateral regression, zero open critic findings) are

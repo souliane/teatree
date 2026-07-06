@@ -21,6 +21,7 @@ from teatree.core.models.daily_digest import DailyDigestMessage, DailyDigestThre
 from teatree.core.models.db_approval import DbApproval, DbApprovalError, DbAudit
 from teatree.core.models.deferred_question import DeferredQuestion, DeferredQuestionAudit, DeferredQuestionError
 from teatree.core.models.directive import Directive, DirectiveError, DirectiveManager
+from teatree.core.models.directive_candidate import DirectiveCandidate, DirectiveCandidateError
 from teatree.core.models.directive_dispatch import DirectiveDispatch
 from teatree.core.models.dream_qa_probe import DreamQaProbe
 from teatree.core.models.dream_run_marker import DreamRunMarker
@@ -79,6 +80,7 @@ from teatree.core.models.pending_reinstall import PendingReinstall
 from teatree.core.models.plan_artifact import PlanArtifact
 from teatree.core.models.project_learning import ProjectLearning, ProjectLearningManager
 from teatree.core.models.prompt import Prompt, PromptManager, PromptVersion, PromptVersionManager
+from teatree.core.models.provenance import Provenance
 from teatree.core.models.pull_main_clone_marker import PullMainCloneMarker
 from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.red_card_signal import RedCardIntent, RedCardSignal
@@ -153,6 +155,8 @@ __all__ = [
     "DeferredQuestionError",
     "DeliveryClaim",
     "Directive",
+    "DirectiveCandidate",
+    "DirectiveCandidateError",
     "DirectiveDispatch",
     "DirectiveError",
     "DirectiveManager",
@@ -221,6 +225,7 @@ __all__ = [
     "PromptVersion",
     "PromptVersionManager",
     "ProposalSpec",
+    "Provenance",
     "PullMainCloneMarker",
     "PullRequest",
     "QualityGateError",

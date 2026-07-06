@@ -32,6 +32,7 @@ from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.factory_score_snapshot import FactoryScoreSnapshot
 from teatree.core.models.incoming_event import IncomingEvent
 from teatree.core.models.mechanism_sketch import MechanismSketch
+from teatree.core.models.provenance import Provenance
 from teatree.core.models.ticket import Ticket
 
 
@@ -62,8 +63,25 @@ class DirectiveManager(models.Manager["Directive"]):
             source=source,
             scope_overlay=scope_overlay,
             source_event=source_event,
+            taint=self._derive_taint(source, source_event),
             state=Directive.State.CAPTURED,
         )
+
+    @staticmethod
+    def _derive_taint(source: str, source_event: "IncomingEvent | None") -> str:
+        """The taint bound at capture — from the source event, fail-closed otherwise (#116).
+
+        An ambient directive inherits its event's stamped provenance (the true trust,
+        never the reader's echo). A ``CLI`` directive is the operator speaking directly
+        (``owner``). Anything else with no event — a future feeder — is ``public``
+        (fail-closed to untrusted), so an un-provenanced directive never floors to
+        auto-approve.
+        """
+        if source_event is not None and source_event.provenance:
+            return source_event.provenance
+        if source == Directive.Source.CLI:
+            return Provenance.OWNER
+        return Provenance.PUBLIC
 
     def active(self) -> "models.QuerySet[Directive]":
         """Non-terminal directives (the working set the loop advances)."""
@@ -131,6 +149,11 @@ class Directive(models.Model):
         related_name="directives",
     )
     scope_overlay = models.CharField(max_length=64, blank=True, default="")
+    # #116 context firewall: the trust taint bound at capture (from the source event's
+    # provenance, ``owner`` for CLI, else ``public``). Fail-closed default ``public`` so
+    # a directly-created row is never read as trusted. ``approval_policy`` floors any
+    # taint != ``owner`` to ASK — the human-in-the-loop guarantee for untrusted intake.
+    taint = models.CharField(max_length=32, default=Provenance.PUBLIC.value)
     constraint_statement = models.TextField(blank=True, default="")
     mechanism_sketch = models.JSONField(null=True, blank=True)
     generation = models.PositiveIntegerField(default=0)
@@ -191,6 +214,11 @@ class Directive(models.Model):
     @property
     def is_terminal(self) -> bool:
         return self.state in self.TERMINAL_STATES
+
+    @property
+    def taint_is_untrusted(self) -> bool:
+        """True iff this directive's origin is not the operator (#116) — floored to ASK."""
+        return self.taint != Provenance.OWNER
 
     @property
     def sketch(self) -> "MechanismSketch | None":
