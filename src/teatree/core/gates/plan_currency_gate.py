@@ -82,34 +82,50 @@ def check_plan_current(ticket: "Ticket") -> bool:
     :class:`NoCurrentPlanError` (an ``InvalidTransitionError`` subclass) on a block
     so callers get a typed exception with the ``plan-reaffirm`` remediation.
 
-    NO-OP when ``require_plan_adequacy`` is off (the opt-in default) or when a
-    trivial-skip marker carries the ticket (a trivial mechanical edit has no plan
-    or seams to bind). Otherwise the latest plan must be ADEQUATE and CURRENT;
-    inconclusive probes (no worktree, failed fetch, unresolvable range) fail OPEN.
+    The general ADEQUATE-and-CURRENT teeth are NO-OP when ``require_plan_adequacy``
+    is off (the opt-in default) or when a trivial-skip marker carries the ticket (a
+    trivial mechanical edit has no plan or seams to bind); when on, the latest plan
+    must be ADEQUATE and CURRENT, and inconclusive probes (no worktree, failed
+    fetch, unresolvable range) fail OPEN.
+
+    The directive ``mechanism_conforms`` teeth run REGARDLESS of that flag (H3): a
+    directive-linked plan is checked against its ratified sketch unconditionally,
+    matching ``merge_quality_gate``'s "directive tickets unconditionally" doctrine.
+    The check is a no-op for ordinary work (no linked directive), so ordinary
+    tickets are never over-blocked.
 
     Also arms the ADVISORY design critic here (north-star PR-5) — this is the plan
     seam every directive-implementation ticket flows through (``schedule_coding`` +
     ``code()``). Registry-dispatched so no import cycle with ``design_critic_gate``;
     a strict NO-OP (one settings read) unless ``design_critic_live`` is on AND the
-    ticket implements a directive. It never blocks — the ``mechanism_conforms`` teeth
-    below (gated by ``require_plan_adequacy``) are the deterministic block.
+    ticket implements a directive. It never blocks — ``mechanism_conforms`` is the
+    deterministic block.
     """
     get_gate("design_critic")(ticket)
+
+    artifact = latest_plan_artifact(ticket)
+
+    # H3 — directive plan teeth are decoupled from ``require_plan_adequacy``: a
+    # directive-linked plan is checked against its ratified sketch even when the
+    # general plan-adequacy flag is off, matching ``merge_quality_gate``'s
+    # "directive tickets unconditionally" doctrine. The check is a strict no-op for
+    # ordinary work (no linked directive) and for a not-yet-interpreted directive
+    # (no sketch to conform to), so ordinary tickets are never over-blocked.
+    if artifact is not None:
+        _check_mechanism_placement(ticket, artifact)
+
     overlay = getattr(ticket, "overlay", "") or None
     if not plan_adequacy_required(overlay):
         return True
     if is_trivial_plan_skip(ticket):
         return True
 
-    artifact = latest_plan_artifact(ticket)
     if artifact is None:
         # No plan at all — absence is the plan-first gate's (plan()) concern, not
         # this one's; do not introduce a second absence-block. Currency is moot.
         return True
     if not is_adequate(artifact.adequacy):
         raise NoCurrentPlanError(_inadequate_reason(ticket))
-
-    _check_mechanism_placement(ticket, artifact)
 
     stale = _detect_stale_on_seam(ticket, artifact)
     if stale is not None:
@@ -181,13 +197,16 @@ def _mechanism_reason(ticket: "Ticket", finding: str) -> str:
     # fix the plan to conform, OR amend the directive (re-interpret → re-ratify) if the
     # ratified shape was wrong. A genuine no-mechanism plan waives via a mechanism_placement
     # reasoned negative; the flag kill-switch is the always-available never-lockout.
+    # Directive mechanism teeth are UNCONDITIONAL (H3) — ``require_plan_adequacy`` no
+    # longer disables them, so it is NOT offered as the escape here. The escapes are
+    # fix-the-plan, amend-the-directive, or the audited all-reasoned-negative bypass.
     return (
         f"Refusing to advance ticket {ticket.pk} to CODED — its plan's mechanism_placement does not conform to "
-        f"the ratified sketch (require_plan_adequacy, north-star PR-5): {finding}. Fix the plan's "
-        f"mechanism_placement section to declare the ratified generic shape, OR amend the directive if the "
-        f"ratified shape was wrong (re-interpret → re-ratify). A genuinely mechanism-less plan records a "
-        f"mechanism_placement reasoned negative; the never-lockout kill-switch is "
-        f"`t3 <overlay> config_setting set require_plan_adequacy false --overlay <name>`."
+        f"the ratified sketch (directive tickets are checked unconditionally, north-star PR-5): {finding}. Fix the "
+        f"plan's mechanism_placement section to declare the ratified generic shape, OR amend the directive if the "
+        f"ratified shape was wrong (re-interpret → re-ratify). A genuinely mechanism-less plan records an audited "
+        f"all-reasoned-negative plan-bypass manifest "
+        f"(`t3 <overlay> ticket plan-bypass {ticket.pk} --human-authorize <who> --reason <why>`)."
     )
 
 

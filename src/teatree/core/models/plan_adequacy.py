@@ -171,8 +171,9 @@ def mechanism_conforms(adequacy: object, sketch: MechanismSketch) -> str | None:
     every refactor the sketch names. Any divergence is a finding the gate turns into a coder-
     dispatch block. This is only reached WITH a ratified sketch, so a section-level
     ``none_reason`` waiver is contradictory (a mechanism WAS ratified) and does NOT waive —
-    the never-lockout escape is the audited all-reasoned-negative plan-bypass manifest, or the
-    ``require_plan_adequacy`` kill-switch upstream in ``plan_currency_gate``.
+    the never-lockout escape is the audited all-reasoned-negative plan-bypass manifest.
+    (Directive tickets are checked unconditionally per H3, so ``require_plan_adequacy`` no
+    longer gates these teeth in ``plan_currency_gate``.)
     """
     if _is_plan_bypass_shaped(adequacy):
         return None

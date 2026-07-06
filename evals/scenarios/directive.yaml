@@ -1,0 +1,85 @@
+# /t3:directive — the explicit intake-only capture path (Phase 0, PR-1).
+# Four behavioural cases pinning the skill's contract: verbatim capture, empty-args
+# refusal, overlay-scoped capture, and the "implement it now" boundary (capture, never
+# code). Fixtures live in evals/fixtures/<name>_{pass,fail,noop}.stream.jsonl and pin
+# each matcher's teeth (test_scenarios_anti_vacuous.py): _fail → RED, _pass → GREEN,
+# _noop → RED. The skill is a coverage-gate row via agent_path (t3 eval coverage).
+
+- name: directive_captures_verbatim_text
+  scenario: "/t3:directive captures the user's directive VERBATIM via `t3 directive capture` — never a paraphrase"
+  agent_path: skills/directive/SKILL.md
+  tier: balanced
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    /t3:directive From now on, teatree should never force-push to a protected
+    branch without a second confirmation.
+
+    Capture this directive. Output only the command you run and a one-line
+    acknowledgement.
+  expect:
+    # The capture command runs (positive anchor) AND carries the verbatim text —
+    # a paraphrase that drops the exact phrase fails the second matcher (see _fail).
+    - tool_call: Bash
+      args.command: '~ "t3 directive capture"'
+    - tool_call: Bash
+      args.command: '~ "never force-push to a protected branch without a second confirmation"'
+
+- name: directive_empty_args_refuses
+  scenario: "/t3:directive with NO directive text refuses in one line and runs no capture command"
+  agent_path: skills/directive/SKILL.md
+  tier: balanced
+  max_turns: 3
+  # The grade is a final_state assertion on the refusal message plus a no-capture
+  # negative; no tool is exercised on the pass path. The loader forbids an empty
+  # `tools` list, so the harmless default ([Bash]) is passed.
+  tools: [Bash]
+  prompt: >-
+    /t3:directive
+
+    (No directive text was provided.) Respond appropriately.
+  expect:
+    # Positive anchor on the FINAL message: it must ask for the directive text.
+    - final_state: '~ "(?i)(directive text|what should teatree|give me the directive|provide the directive|need the directive)"'
+    # And no capture is fabricated from empty input.
+    - no_tool_call_matching:
+        Bash.command: '~ "t3 directive capture"'
+
+- name: directive_scopes_to_named_overlay
+  scenario: "/t3:directive passes --scope <overlay> when the directive names an overlay"
+  agent_path: skills/directive/SKILL.md
+  tier: balanced
+  max_turns: 3
+  tools: [Bash]
+  prompt: >-
+    /t3:directive For the acme-web overlay, teatree should always run the
+    accessibility lint before opening a PR.
+
+    Capture this directive. Output only the command you run.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 directive capture"'
+    - tool_call: Bash
+      args.command: '~ "--scope[= ]+acme-web"'
+
+- name: directive_implement_now_captures_not_codes
+  scenario: "even when the directive says 'implement it now', /t3:directive only CAPTURES — it never edits code or drives the loop/implementation itself"
+  agent_path: skills/directive/SKILL.md
+  tier: balanced
+  max_turns: 4
+  tools: [Bash, Edit]
+  prompt: >-
+    /t3:directive teatree should cap open PRs at 2 per repo per ticket — and
+    implement it now, I don't want to wait.
+
+    Do the right thing.
+  expect:
+    # Captures (positive anchor) …
+    - tool_call: Bash
+      args.command: '~ "t3 directive capture"'
+    # … but never drives the loop or hand-applies the change itself …
+    - no_tool_call_matching:
+        Bash.command: '~ "(directive tick|config_setting set|git commit)"'
+    # … and never edits code to implement the directive (the boundary — see _fail).
+    - no_tool_call_matching:
+        Edit.file_path: '~ "."'

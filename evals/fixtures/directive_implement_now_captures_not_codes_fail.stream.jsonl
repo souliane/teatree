@@ -1,0 +1,6 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-directive_implement_now_captures_not_codes-fail-01", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "On it \u2014 capturing and implementing."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 directive capture \"teatree should cap open PRs at 2 per repo per ticket \u2014 and implement it now, I don't want to wait.\"", "description": "step"}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_02", "name": "Edit", "input": {"file_path": "src/teatree/core/gates/pr_budget_gate.py", "old_string": "x", "new_string": "y"}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Captured and implemented directive #15."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}
