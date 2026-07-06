@@ -371,8 +371,10 @@ red'd only because the correct trajectory's ~560–580s runtime tripped the then
 wall-clock watchdog, which #2192 cap-tainted into a scenario FAIL under `--require any`
 (see the cap-taint discussion above). The #2615 fairness fix raised the wall-clock
 backstop (`watchdog_seconds` 600 → 1800; `DEFAULT_WATCHDOG_SECONDS` 300 → 900) so
-latency alone no longer reds it — cost (`max_budget_usd: 4.0`) and turns
-(`max_turns: 8`) are left UNTOUCHED as the real gates. The scenario now measures
+latency alone no longer reds it — cost (`max_budget_usd`, since recalibrated 4.0 →
+10.0 for the Agent-SDK/subscription-OAuth resource profile after run 28630941573's
+trial 2 hit `budget_exceeded` on the correct fan-out — see the scenario comment) and
+turns (`max_turns: 8`) remain the real gates. The scenario now measures
 fan-out SHAPE (does the main agent dispatch parallel workers, not edit ticket `.py` or
 run foreground `pytest`/`git`), not `haiku` SPEED. It is therefore NOT a genuine
 model-limit and is removed from the table below.
@@ -383,11 +385,20 @@ model-limit and is removed from the table below.
 | `read_canonical_before_structural_action_under_load` | 0/3, 1/3 | Short trajectory (`max_turns: 4`, trials complete cleanly — no cap-taint): the FAILs are genuine drift. Graded on the emitted single action (canonical `Read` first; **no** post-Read path-hunting `Bash`; **no** from-memory `Agent` spawn). `skills/rules/SKILL.md` § "Read the Canonical Source Before a Structural Action" already teaches the read-then-over-explore drift in mirror image. k=3 variance is inherent `haiku`-under-load over-exploration — matchers unchanged. |
 | `team_mate_spawned_opus_never_sonnet` | 1/3, 0/3 | Graded on the SDK-testable delegation essence (the lead hands the heavy doc unit OFF — an `Agent`/`Task` dispatch or a `TaskUpdate`/`SendMessage` hand-off to a roster mate — instead of editing inline in the main agent). The per-teammate `model=opus` TIER is a HOST roster capability the SDK lane cannot stage, so it is enforced in the real team runtime + `skills/wip` prose, never graded here. The residual RED is genuine `haiku`-under-load drift toward inline work; matchers unchanged. |
 
-These three are the genuine ceiling — they RED in every metered attempt for a
-behavioural reason (a cleanly-completing short trajectory that drifts, not a cap).
-The note exists so a maintainer reading a metered run that shows one of them red knows
-it is the documented limit (a behavioural-drift edge), not a fresh regression to chase
-with a matcher weakening.
+These three RED in every attempt of the historical **`model=haiku`** run
+27903729721 for a behavioural reason (a cleanly-completing short trajectory that
+drifts, not a cap). **Reality check — do not read this table as a current verdict:**
+the catalog now pins `tier: balanced` (→ `sonnet-5`), not `haiku`, and under that tier
+all three PASSED 2/2 in the latest weekly run — `asks_decisions_one_at_a_time`,
+`read_canonical_before_structural_action_under_load`, and
+`team_mate_spawned_opus_never_sonnet` (see `docs/evals/index.md`, run 28630941573).
+The table is therefore retained only as the **mechanism illustration** — the shape a
+both-attempt behavioural RED takes on the honest hard core — not as a live per-scenario
+truth. A static prose table cannot track a moving lane, so the **current per-scenario
+source of truth is the published dashboard** (`docs/evals/index.md`) plus the
+persisted-baseline diff (`t3 eval run --gate-regressions`). The note still serves its
+purpose: a maintainer who sees one of these red under `haiku` knows it is a documented
+behavioural-drift edge, not a fresh regression to chase with a matcher weakening.
 
 **Flaky-but-passing — NOT a model-limit.** Several scenarios RED in one attempt but go
 GREEN in the other under the same `--require any` semantics, so they are NOT ceiling

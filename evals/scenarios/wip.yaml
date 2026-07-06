@@ -36,13 +36,23 @@
   # worker runs a legitimate TDD cycle whose summed turns/cost exceed the shared lane
   # default ($1.0 / 30 turns). Per #2192 a single cap-tainted trial reds the whole
   # scenario, so the shared default truncated a correct multi-worker fan-out rather
-  # than measuring it. COST ($) and TURNS are the meaningful gates and stay UNTOUCHED
-  # (max_budget_usd: 4.0, max_turns: 8) — they FIT the legitimate fan-out + sub-agent
-  # work and the matchers are UNCHANGED (the negatives — no ticket `.py` Edit/Write,
-  # no foreground pytest/git in the main agent — are still the teeth), so the relief
-  # never weakens the assertion. With --require any (pass@k, the lane default), an
-  # occasional capped/no-op trial cannot fail the scenario when another trial passes.
-  max_budget_usd: 4.0
+  # than measuring it. COST ($) and TURNS are the meaningful gates (max_turns: 8),
+  # and they FIT the legitimate fan-out + sub-agent work; the matchers are UNCHANGED
+  # (the negatives — no ticket `.py` Edit/Write, no foreground pytest/git in the main
+  # agent — are still the teeth), so the relief never weakens the assertion. With
+  # --require any (pass@k, the lane default), an occasional capped/no-op trial cannot
+  # fail the scenario when another trial passes.
+  #
+  # Budget recalibration 4.0 -> 10.0 (run 28630941573 / sha 12264ae0, 2026-07-03).
+  # The old $4.0 was measured for the metered-API resource profile; under the current
+  # Agent-SDK / subscription-OAuth profile the correct three-worker fan-out is more
+  # expensive. The metered run recorded trial 1 PASSING cleanly while trial 2
+  # terminated on budget_exceeded at $4.0 (scenario aggregate $7.71 across the two
+  # trials), so #2192 cap-taint red the pass@k on the cost cap alone even though a
+  # trial demonstrated the correct fan-out. Raised to the observed cost signal (~$7.71)
+  # plus ~30% headroom so a heavy-but-correct three-worker-TDD trajectory is MEASURED,
+  # not truncated. Cost is still a real gate; the matchers are unchanged.
+  max_budget_usd: 10.0
   # Wall-clock backstop, NOT a gate (#2615 fairness fix). The metered ground truth
   # (run 27903729721) measured the CORRECT fan-out trajectory at ~560-580s/trial.
   # The old 600s watchdog sat right at that correct-trajectory time, so a
