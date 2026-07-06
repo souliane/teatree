@@ -7,8 +7,8 @@ signal-upsert, the auto-resolve rule, and the two operator verbs.
 
 import pytest
 
+from teatree.core.factory.operational_health import HealthSignal
 from teatree.core.models.known_issue import KnownIssue
-from teatree.core.operational_health import HealthSignal
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db

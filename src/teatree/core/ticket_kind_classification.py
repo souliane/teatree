@@ -1,7 +1,7 @@
 """Canonical ``FEATURE`` vs ``FIX`` classification for every ticket-intake site (#17).
 
 ``Ticket.Kind.FIX`` gates two downstream consumers — the S2 defect-escape signal
-(:func:`teatree.core.factory_signal_queries.compute_s2`) and the fix-record
+(:func:`teatree.core.factory.factory_signal_queries.compute_s2`) and the fix-record
 Definition-of-Done merge gate (:mod:`teatree.core.gates.fix_dod_gate`) — yet
 before #17 no production path ever *wrote* it, so S2 read a vacuous FEATURE-only
 world and the DoD gate was a permanent no-op contradicting BLUEPRINT.md.

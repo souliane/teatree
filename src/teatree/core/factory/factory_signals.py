@@ -9,11 +9,11 @@ migrations, no LLM calls, no network — every query underneath is a select, so
 this runs for free in any session or future outer-loop tick.
 
 This module owns the public report model and composition; the ledger queries
-live in :mod:`teatree.core.factory_signal_queries`. Each signal fails loud,
+live in :mod:`teatree.core.factory.factory_signal_queries`. Each signal fails loud,
 never fake-green: it is a **provider-shaped** function returning
 :class:`SignalReading` (value, sample_size, window_days, status ∈
 {ok, insufficient_data, instrumentation_gap}) so the PR-2 recipe registry can
-register them verbatim. A sample below :data:`~teatree.core.factory_signal_queries.MIN_SAMPLE`
+register them verbatim. A sample below :data:`~teatree.core.factory.factory_signal_queries.MIN_SAMPLE`
 reports ``insufficient_data``; a provably-silent upstream recorder reports
 ``instrumentation_gap`` — never a fabricated 100%. :func:`compute_factory_signals`
 composes the five readings against the immediately-preceding window as a rolling
@@ -30,7 +30,7 @@ from typing import Any
 
 from django.utils import timezone
 
-from teatree.core.factory_signal_queries import (
+from teatree.core.factory.factory_signal_queries import (
     Computation,
     SignalReading,
     SignalStatus,

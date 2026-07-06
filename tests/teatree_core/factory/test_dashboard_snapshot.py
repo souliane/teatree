@@ -12,9 +12,9 @@ from pathlib import Path
 
 from django.test import TestCase
 
-from teatree.core.dashboard_snapshot import _canonical_html, render_dashboard_snapshot
+from teatree.core.factory.dashboard_snapshot import _canonical_html, render_dashboard_snapshot
 
-_CANONICAL = Path(__file__).resolve().parents[2] / "docs/generated/dashboard/admin-index.html"
+_CANONICAL = Path(__file__).resolve().parents[3] / "docs/generated/dashboard/admin-index.html"
 
 
 class DashboardSnapshotTests(TestCase):

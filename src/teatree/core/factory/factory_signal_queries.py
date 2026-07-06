@@ -1,6 +1,6 @@
 """Derived-on-read ledger queries for the factory signals (SIG-PR-1).
 
-The query engine behind :mod:`teatree.core.factory_signals`: the low-level
+The query engine behind :mod:`teatree.core.factory.factory_signals`: the low-level
 value types (:class:`SignalReading`, :class:`Window`) plus the five per-signal
 ``_compute_s*`` functions that read the merge/review/CI/repair ledgers, and the
 rolling-baseline regression predicates. Kept separate from the report-model +
@@ -86,7 +86,7 @@ class Computation:
     """A reading plus its evidence and any companion hard-red trip.
 
     The public provider functions expose only :attr:`reading`;
-    :func:`teatree.core.factory_signals.compute_factory_signals` also reads
+    :func:`teatree.core.factory.factory_signals.compute_factory_signals` also reads
     :attr:`evidence` (companion scalars) and :attr:`hard_red` (S4's stale-CLEAR
     trip, which fires even when the latency sample itself is insufficient).
     """

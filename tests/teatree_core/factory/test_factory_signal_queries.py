@@ -15,9 +15,9 @@ from unittest import mock
 from django.test import TestCase
 from django.utils import timezone
 
-import teatree.core.factory_signal_queries as fsq
-from teatree.core.factory_signal_queries import resolved_repo_key
-from teatree.core.factory_signals import compute_factory_signals
+import teatree.core.factory.factory_signal_queries as fsq
+from teatree.core.factory.factory_signal_queries import resolved_repo_key
+from teatree.core.factory.factory_signals import compute_factory_signals
 from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.merge.pr_slug_resolution import resolve_pr_repo_slug
 from tests.factories import MergeAuditFactory, MergeClearFactory, TicketFactory

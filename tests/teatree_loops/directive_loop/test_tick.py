@@ -11,8 +11,8 @@ from types import SimpleNamespace
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.factory_signal_queries import SignalReading, SignalStatus
-from teatree.core.factory_signals import Direction, FactorySignalsReport, SignalRow, SignalVerdict
+from teatree.core.factory.factory_signal_queries import SignalReading, SignalStatus
+from teatree.core.factory.factory_signals import Direction, FactorySignalsReport, SignalRow, SignalVerdict
 from teatree.core.models import ConfigSetting, DeferredQuestion, Directive, Ticket
 from teatree.core.models.mechanism_sketch import sketch_from_envelope
 from teatree.loop.self_improve.budget import BudgetVerdict

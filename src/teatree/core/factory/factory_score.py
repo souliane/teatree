@@ -14,7 +14,7 @@ fabricated value. The aggregate is a number ONLY when the verdict is OK or
 REGRESSING; a RED score always carries ``aggregate=None``.
 
 :func:`score_report` is the pure fold over a given
-:class:`~teatree.core.factory_signals.FactorySignalsReport` (deterministic,
+:class:`~teatree.core.factory.factory_signals.FactorySignalsReport` (deterministic,
 unit-tested with constructed reports); :func:`score` is the DB-aware wrapper that
 computes the report via the read-only ``compute_factory_signals`` seam and looks
 up the snapshot deltas the outer loop diffs.
@@ -24,8 +24,8 @@ import dataclasses
 from datetime import datetime
 from typing import Any
 
-from teatree.core.factory_recipe import Recipe, RecipeSignal, load_recipe
-from teatree.core.factory_signals import (
+from teatree.core.factory.factory_recipe import Recipe, RecipeSignal, load_recipe
+from teatree.core.factory.factory_signals import (
     DEFAULT_WINDOW_DAYS,
     Direction,
     FactorySignalsReport,

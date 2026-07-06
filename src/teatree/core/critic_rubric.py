@@ -27,7 +27,7 @@ LLM (the semantic net, advisory)
     NOT read any self-declared ``extra`` key that no producer writes.
 
 The registry is the frozen-dataclass + dotted-path-resolve + registry-walk-test
-idiom of :mod:`teatree.core.chokepoint_registry`: a conformance test resolves every
+idiom of :mod:`teatree.core.factory.chokepoint_registry`: a conformance test resolves every
 DETERMINISTIC item's ``predicate_path`` and asserts every LLM item's slug is one the
 critic dispatch prompt actually asks for — a renamed predicate or an LLM item the
 prompt forgets fails the build instead of going phantom.

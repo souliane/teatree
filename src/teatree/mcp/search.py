@@ -20,8 +20,8 @@ from typing import Any
 from django.db.models import Count, Q
 
 from teatree.config import get_effective_settings
-from teatree.core.factory_score import score as factory_score_compute
-from teatree.core.factory_signals import DEFAULT_WINDOW_DAYS, compute_factory_signals
+from teatree.core.factory.factory_score import score as factory_score_compute
+from teatree.core.factory.factory_signals import DEFAULT_WINDOW_DAYS, compute_factory_signals
 from teatree.core.models import IncomingEvent, PullRequest, ReplyDispatch, Task, Ticket, Worktree
 from teatree.mcp.serializers import (
     serialize_incoming_event,
@@ -144,7 +144,7 @@ def loop_stats(*, overlay: str | None = None) -> dict[str, Any]:
 def factory_signals(*, overlay: str | None = None, window_days: int = DEFAULT_WINDOW_DAYS) -> dict[str, Any]:
     """The derived-on-read factory quality/velocity signals report (read-only).
 
-    Delegates to :func:`teatree.core.factory_signals.compute_factory_signals` —
+    Delegates to :func:`teatree.core.factory.factory_signals.compute_factory_signals` —
     the same computation path ``t3 <overlay> signals`` uses. Returns the report's
     ``to_dict()``: the ``overlay`` scope, the trailing window's five signals
     (first-try-green, defect-escape, review-catch, merge-latency, repair-burn)
@@ -167,7 +167,7 @@ def factory_signals(*, overlay: str | None = None, window_days: int = DEFAULT_WI
 def factory_score(*, overlay: str | None = None, window_days: int = DEFAULT_WINDOW_DAYS) -> dict[str, Any]:
     """The recipe-weighted factory score over the trailing window (read-only).
 
-    Delegates to :func:`teatree.core.factory_score.score` — the same recipe fold
+    Delegates to :func:`teatree.core.factory.factory_score.score` — the same recipe fold
     ``t3 <overlay> recipe score`` uses. Returns the score payload: the aggregate
     (``None`` when untrustworthy), the ``ok`` / ``regressing`` / ``red`` verdict,
     coverage vs floor, the recipe provenance (``recipe_sha`` + ``recipe_approved``),

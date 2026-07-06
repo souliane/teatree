@@ -2,7 +2,7 @@
 
 import pytest
 
-from teatree.core.chokepoint_registry import (
+from teatree.core.factory.chokepoint_registry import (
     ChokepointResolutionError,
     GateSpec,
     GuardedChokepoint,

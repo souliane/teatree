@@ -4,11 +4,11 @@ Extracted from :mod:`teatree.loops.outer_loop.decide` so BOTH the outer loop's
 keep-only-if-better rule AND the directive loop's VERIFYING step read ONE
 implementation of the same question: did any factory signal turn RED/REGRESSING vs
 the admission baseline? A pure fold over two
-:class:`~teatree.core.factory_score.FactoryScore` snapshots — no DB, table-tested.
+:class:`~teatree.core.factory.factory_score.FactoryScore` snapshots — no DB, table-tested.
 """
 
-from teatree.core.factory_score import FactoryScore, ScoredSignal
-from teatree.core.factory_signals import SignalVerdict
+from teatree.core.factory.factory_score import FactoryScore, ScoredSignal
+from teatree.core.factory.factory_signals import SignalVerdict
 
 _WORSE_VERDICTS = frozenset({SignalVerdict.REGRESSING.value, SignalVerdict.RED.value})
 

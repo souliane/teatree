@@ -26,7 +26,7 @@ from datetime import datetime
 from typing import Protocol
 
 from teatree.core import models as core_models
-from teatree.core.factory_signals import FactorySignalsReport, SignalStatus, compute_factory_signals
+from teatree.core.factory.factory_signals import FactorySignalsReport, SignalStatus, compute_factory_signals
 from teatree.core.models import OuterLoopExperiment
 from teatree.loop.self_improve.budget import BudgetVerdict, precheck_budget
 

@@ -16,7 +16,7 @@ import pytest
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.factory_signals import (
+from teatree.core.factory.factory_signals import (
     FactorySignalsReport,
     SignalReading,
     SignalStatus,
@@ -244,7 +244,7 @@ class S1FirstTryGreenTests(FactorySignalsTestBase):
             return resolve_pr_repo_slug(clear)
 
         with mock.patch(
-            "teatree.core.factory_signal_queries.resolve_pr_repo_slug",
+            "teatree.core.factory.factory_signal_queries.resolve_pr_repo_slug",
             side_effect=resolve_or_raise,
         ):
             report = compute_factory_signals(now=self.now)

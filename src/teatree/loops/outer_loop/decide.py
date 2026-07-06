@@ -4,14 +4,14 @@ The anti-Goodhart core: an experiment is KEPT only when its target signal improv
 beyond its own ``regress_band`` AND nothing else regressed vs the admission
 baseline. Optimising the target at the expense of another signal — or on noise
 inside the band — is never a keep. The rule is a pure fold over the two
-:class:`~teatree.core.factory_score.FactoryScore` snapshots, so it is fully
+:class:`~teatree.core.factory.factory_score.FactoryScore` snapshots, so it is fully
 deterministic and table-tested without touching the DB.
 """
 
 import dataclasses
 
-from teatree.core.factory_score import FactoryScore, ScoredSignal
-from teatree.core.factory_signals import SignalVerdict
+from teatree.core.factory.factory_score import FactoryScore, ScoredSignal
+from teatree.core.factory.factory_signals import SignalVerdict
 from teatree.loops.shared.regression import no_collateral_regression
 
 

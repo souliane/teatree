@@ -19,7 +19,7 @@ from typer.testing import CliRunner
 
 import teatree.core.management.commands.workspace as workspace_mod
 from teatree.cli import app
-from teatree.core.capabilities import CAPABILITIES, capabilities_report
+from teatree.core.factory.capabilities import CAPABILITIES, capabilities_report
 
 
 def _run(*argv: str) -> tuple[str, str, object]:

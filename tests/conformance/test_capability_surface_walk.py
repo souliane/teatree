@@ -25,7 +25,7 @@ import click
 from django.core.management import get_commands, load_command_class
 from typer.main import get_command
 
-from teatree.core.capabilities import CAPABILITIES
+from teatree.core.factory.capabilities import CAPABILITIES
 
 _APP_LABEL = "teatree.core"
 _JSON_OPTS = frozenset({"--json", "--format"})

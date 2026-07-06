@@ -14,9 +14,9 @@ import pytest
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.factory_recipe import load_recipe
-from teatree.core.factory_score import FactoryScore, score, score_report
-from teatree.core.factory_signals import (
+from teatree.core.factory.factory_recipe import load_recipe
+from teatree.core.factory.factory_score import FactoryScore, score, score_report
+from teatree.core.factory.factory_signals import (
     Direction,
     FactorySignalsReport,
     SignalReading,

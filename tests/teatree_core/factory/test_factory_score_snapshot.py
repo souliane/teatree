@@ -3,7 +3,7 @@
 import pytest
 from django.test import TestCase
 
-from teatree.core.factory_score import FactoryScore, ScoredSignal
+from teatree.core.factory.factory_score import FactoryScore, ScoredSignal
 from teatree.core.models.factory_score_snapshot import FactoryScoreSnapshot
 
 

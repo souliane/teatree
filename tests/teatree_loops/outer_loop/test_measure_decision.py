@@ -7,7 +7,7 @@ the invariant the whole outer loop exists to protect — a non-improving
 experiment must never be kept.
 """
 
-from teatree.core.factory_score import FactoryScore, ScoredSignal
+from teatree.core.factory.factory_score import FactoryScore, ScoredSignal
 from teatree.loops.outer_loop.decide import decide_keep
 
 

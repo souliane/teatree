@@ -13,8 +13,15 @@ from pathlib import Path
 import pytest
 import yaml
 
-from teatree.core.factory_recipe import CAP_REQUIRED_IDS, RECIPE_PATH, Recipe, RecipeError, load_recipe, recipe_sha
-from teatree.core.factory_signals import SIGNALS
+from teatree.core.factory.factory_recipe import (
+    CAP_REQUIRED_IDS,
+    RECIPE_PATH,
+    Recipe,
+    RecipeError,
+    load_recipe,
+    recipe_sha,
+)
+from teatree.core.factory.factory_signals import SIGNALS
 
 _REGISTRY_IDS = frozenset(spec.provider_id for spec in SIGNALS)
 

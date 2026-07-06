@@ -1,6 +1,6 @@
 """The declarative factory-score recipe loader (SIG-PR-2).
 
-``evals/recipe.yaml`` names the SIG-PR-1 :data:`~teatree.core.factory_signals.SIGNALS`
+``evals/recipe.yaml`` names the SIG-PR-1 :data:`~teatree.core.factory.factory_signals.SIGNALS`
 registry ids and assigns each a weight, an optional red-floor, and — for the two
 magnitude signals whose readings are not a 0..1 rate — a normalisation cap. This
 module parses that committed file into typed frozen dataclasses and fails loud on
@@ -23,11 +23,12 @@ from typing import Any
 
 import yaml
 
-from teatree.core.factory_signals import SIGNALS
+from teatree.core.factory.factory_signals import SIGNALS
 
-#: The committed recipe, resolved from this module's path so ``core`` stays a leaf
-#: (the same ``parents[3] / "evals"`` convention :mod:`teatree.eval.cost_bounds` uses).
-RECIPE_PATH = Path(__file__).resolve().parents[3] / "evals" / "recipe.yaml"
+#: The committed recipe, resolved from this module's path so ``core`` stays a leaf.
+#: This module sits in ``core/factory/`` — one level deeper than
+#: :mod:`teatree.eval.cost_bounds` — so it reaches the repo root at ``parents[4]``.
+RECIPE_PATH = Path(__file__).resolve().parents[4] / "evals" / "recipe.yaml"
 
 #: The registry ids the recipe must name — exactly, no more and no fewer.
 _REGISTRY_IDS: frozenset[str] = frozenset(spec.provider_id for spec in SIGNALS)

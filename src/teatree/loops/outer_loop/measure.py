@@ -15,7 +15,7 @@ human-ratified revert bound the risk; a KEPT decision is "correlated better", no
 
 from datetime import datetime, timedelta
 
-from teatree.core.factory_score import FactoryScore, ScoredSignal
+from teatree.core.factory.factory_score import FactoryScore, ScoredSignal
 from teatree.core.models import FactoryScoreSnapshot, OuterLoopExperiment
 from teatree.loops.outer_loop.decide import Decision, decide_keep
 from teatree.loops.outer_loop.score import read_score
