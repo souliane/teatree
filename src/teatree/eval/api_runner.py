@@ -41,7 +41,7 @@ import os
 import shutil
 import time
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions, Message, query
@@ -56,6 +56,7 @@ from teatree.eval.api_errors import (
     classify_terminal_error,
     is_success_result_error,
 )
+from teatree.eval.cli_stub_fixture import prepend_to_path, provision_cli_stubs
 from teatree.eval.context_budget import extract_sections
 from teatree.eval.ephemeral_checkout import ephemeral_checkout_env, provision_ephemeral_checkout
 from teatree.eval.git_fixture import provision_git_fixture
@@ -569,18 +570,29 @@ class ApiInProcessRunner:
         Without this, a spawned sub-agent locates the real clone via the editable
         install + shared ``.git`` (a neutral cwd does NOT block that) and does
         destructive git work on it — the corruption this isolation prevents.
+
+        A scenario declaring ``cli_stubs`` additionally gets a throwaway ``bin/`` of
+        inert CLI stubs prepended to ``PATH`` (a SEPARATE lever from ``fixture``, so
+        the two compose): the correct ``t3``/``gh``/``glab`` command resolves and
+        exits 0 instead of erroring, so the agent stops rather than wandering into a
+        ``max_turns`` cap-taint. The stubs hold no state; the matchers still grade
+        the CALL, so negatives keep full teeth.
         """
-        with isolated_claude_env(self._conflicting_vars) as (env, cwd):
+        with ExitStack() as stack:
+            env, cwd = stack.enter_context(isolated_claude_env(self._conflicting_vars))
+            if spec.cli_stubs:
+                bindir = stack.enter_context(provision_cli_stubs(spec.cli_stubs))
+                env = prepend_to_path(env, bindir)
             if spec.fixture:
-                with provision_git_fixture(spec.fixture) as repo:
-                    yield repo, str(repo), env
+                repo = stack.enter_context(provision_git_fixture(spec.fixture))
+                yield repo, str(repo), env
                 return
             if not scenario_exposes_subagent_spawn(spec):
                 yield self._workspace, cwd, env
                 return
-            with provision_ephemeral_checkout() as checkout:
-                isolated_env = ephemeral_checkout_env(env, checkout)
-                yield checkout, str(checkout), isolated_env
+            checkout = stack.enter_context(provision_ephemeral_checkout())
+            isolated_env = ephemeral_checkout_env(env, checkout)
+            yield checkout, str(checkout), isolated_env
 
     @staticmethod
     def _terminal_run(spec: EvalSpec, *, terminal_reason: str, cost_usd: float = 0.0) -> EvalRun:

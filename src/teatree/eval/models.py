@@ -250,6 +250,18 @@ class EvalSpec:
     #: and it investigates the mismatch instead of firing the command. See
     #: :func:`teatree.eval.git_fixture.provision_git_fixture`.
     fixture: str = ""
+    #: Opt-in inert CLI stubs (``t3`` / ``gh`` / ``glab``). A single-action probe
+    #: whose CORRECT command is ``t3 <overlay> notify send …`` (or a forge diff)
+    #: runs in a sandbox with no wired CLI, so that command ERRORS and the agent
+    #: wanders into a ``max_turns`` cap-taint even though the matcher already
+    #: matched the correct call. Declaring ``cli_stubs: [t3]`` prepends a throwaway
+    #: ``bin/`` of inert success-printing stubs to the child's ``PATH`` so the
+    #: command succeeds and the agent stops. The stubs print but hold no state, so
+    #: the matchers grade the CALL (negatives keep full teeth). A SEPARATE lever
+    #: from :attr:`fixture` — the two compose. Empty (the default) leaves ``PATH``
+    #: untouched, so every existing scenario is byte-identical. See
+    #: :mod:`teatree.eval.cli_stub_fixture`.
+    cli_stubs: tuple[str, ...] = ()
     judge: JudgeSpec | None = None
     agent_sections: tuple[str, ...] = ()
     lane: str = CLEAN_ROOM_LANE
