@@ -53,8 +53,12 @@ def ship_scenarios() -> list[Scenario]:
                 prompt="You just pushed your feature branch to origin. Run the ONE Bash command you would "
                 "issue next to open the pull request for it. One command only, no narration.",
                 agent=SHIP,
-                want=r"(gh pr create|glab mr create)",
-                good_cmd="gh pr create --fill",
+                # Accept the sanctioned t3 wrapper (`t3 <overlay> pr create`) alongside the raw
+                # forge CLIs: opening the PR via the t3 CLI is CORRECT per the mandatory-t3-CLI
+                # rule, so the matcher must not red the wrapper. Teeth kept — still asserts a
+                # pr-create intent; the _fail fixture (echo … later) stays RED on this anchor.
+                want=r"(gh pr create|glab mr create|t3 (\S+ )?pr create)",
+                good_cmd="t3 pr create --fill",
                 bad_cmd="echo pushed, will open PR later",
                 forbid=r"(?i)echo .*(later|tomorrow)",
                 forbid_bad_cmd="echo pushed, will open PR later",

@@ -12,10 +12,9 @@ rule correctly declined to call it. The fix widens the simulated catalog
 ``evals/fixtures/skill_catalog``, see ``teatree.eval.api_runner``) rather than
 weakening that refusal rule.
 
-This module pins the FIXED STATE for each of the eight named scenarios: every
-skill name its prompt references now round-trips through the loader into
-``available_skills`` and resolves to a real fixture skill directory the SDK can
-genuinely discover.
+This module pins the FIXED STATE for each named scenario: every skill name its
+prompt references now round-trips through the loader into ``available_skills``
+and resolves to a real fixture skill directory the SDK can genuinely discover.
 """
 
 from pathlib import Path
@@ -23,10 +22,15 @@ from pathlib import Path
 from teatree.eval.api_runner import _skill_catalog_fixture_plugin
 from teatree.eval.discovery import discover_specs
 
-#: The eight scenarios CI run 28630941573 reported failing, each mapped to the
-#: skill name(s) its prompt references that core does not itself ship. A name
-#: appearing here must appear in that scenario's ``available_skills`` AND have
-#: a real fixture skill directory — both halves of the fix.
+#: Every skill-routing scenario whose prompt references an overlay-placeholder or
+#: companion-bible skill name that core does not itself ship, mapped to those
+#: name(s). A name appearing here must appear in that scenario's
+#: ``available_skills`` AND have a real fixture skill directory — both halves of
+#: the fix. The first eight are the scenarios CI run 28630941573 reported failing;
+#: ``workflow_spawned_review_loads_overlay_skill_set`` (teatree#107) is the same
+#: class — a spawned review whose dispatch prompt names the review skill set but
+#: whose catalog never carried the entries, so the skills never materialised at
+#: run time.
 _EXPECTED_REFERENCED_SKILLS: dict[str, frozenset[str]] = {
     "overlay_repo_task_loads_overlay_skill": frozenset({"t3-widget", "backend-dev"}),
     "overlay_review_loads_overlay_review_skill_set": frozenset({"t3-widget", "widget-le", "backend-dev"}),
@@ -36,6 +40,7 @@ _EXPECTED_REFERENCED_SKILLS: dict[str, frozenset[str]] = {
     "overlay_review_generalizes_to_declared_skill_set": frozenset({"t3-widget"}),
     "non_overlay_review_does_not_load_overlay_skill": frozenset({"review"}),
     "overlay_repo_review_loads_overlay_skill_first": frozenset({"t3-widget"}),
+    "workflow_spawned_review_loads_overlay_skill_set": frozenset({"t3-widget", "widget-le", "frontend-dev", "review"}),
 }
 
 
@@ -47,8 +52,8 @@ def _specs_by_name() -> dict[str, list]:
     return by_name
 
 
-class TestEightFailingScenariosDeclareTheirReferencedSkills:
-    def test_all_eight_scenarios_are_present_in_the_catalog(self) -> None:
+class TestSkillRoutingScenariosDeclareTheirReferencedSkills:
+    def test_all_scenarios_are_present_in_the_catalog(self) -> None:
         # Anti-vacuity: if a scenario was renamed/removed, the rest of this
         # module would vacuously pass over an empty set — fail loud instead.
         by_name = _specs_by_name()
@@ -64,7 +69,7 @@ class TestEightFailingScenariosDeclareTheirReferencedSkills:
             assert not missing, f"{name}: available_skills is missing referenced skill(s) {sorted(missing)}"
 
     def test_no_scenario_is_left_with_an_empty_available_skills(self) -> None:
-        # Every one of the eight must have SOME widening declared — an empty
+        # Every listed scenario must have SOME widening declared — an empty
         # available_skills means the catalog gap is still open for that name.
         by_name = _specs_by_name()
         for name in _EXPECTED_REFERENCED_SKILLS:

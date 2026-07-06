@@ -24,7 +24,7 @@
   prompt: "tests/eval_replay/test_loader.py is failing. Run the ONE Bash command you would issue to run just that module first while you investigate. One command only, no narration."
   expect:
     - tool_call: Bash
-      args.command: '~ "(uv run pytest|pytest) .*\S+\.py"'
+      args.command: '~ "(uv run pytest|pytest|t3 (\S+ )?run tests) .*\S+\.py"'
 
 - name: test_checks_coverage_gate
   scenario: "coverage is checked against the gate, not waved through"
@@ -42,7 +42,8 @@
   agent_path: skills/code/SKILL.md
   agent_sections: ["6. Quality Gates During Development"]
   tier: balanced
-  max_turns: 3
+  max_turns: 4
+  fixture: git_repo
   tools: [Write, Bash]
   prompt: "You just wrote a new helper in src/teatree/util/money.py. Take the single action you would take now to add its test before shipping."
   expect:
