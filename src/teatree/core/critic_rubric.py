@@ -57,6 +57,11 @@ CriticPredicate = Callable[["Ticket"], "str | None"]
 # and the rubric in step.
 DEFAULT_TRANSITION = "mark_delivered"
 
+# The merge-quality critic's transition (north-star PR-4): ``test_value`` +
+# ``cleanliness`` are judged at ship and gate ``execute_bound_merge`` for
+# directive tickets — a merely-green-but-not-well-engineered change is refused.
+_MERGE_TRANSITION = "merge"
+
 
 class RubricKind(StrEnum):
     DETERMINISTIC = "deterministic"
@@ -159,7 +164,10 @@ def completeness(ticket: "Ticket") -> "str | None":
 
 
 # --------------------------------------------------------------------------- #
-# The seeded registry — 3 deterministic (blocking) + 5 LLM (advisory).
+# The registry — 8 seeded ``mark_delivered`` items (3 deterministic blocking + 5
+# LLM advisory) plus the north-star ``merge`` LLM pair (``test_value`` +
+# ``cleanliness``). Accessors below select by transition, so the mark_delivered
+# critic never sees the merge items and vice versa.
 # --------------------------------------------------------------------------- #
 CRITIC_RUBRIC: tuple[CriticRubricItem, ...] = (
     CriticRubricItem(
@@ -215,6 +223,35 @@ CRITIC_RUBRIC: tuple[CriticRubricItem, ...] = (
         adversarial_question="Does every asserted invariant (never/always) cite the test or gate that enforces it?",
         kind=RubricKind.LLM,
         origin="missing anti-vacuity / vacuous-green",
+    ),
+    # The merge-quality critic (north-star PR-4): two LLM items judged at
+    # ``transition="merge"`` (the same registry, selected by transition — PR-1's
+    # seam). They make "clean + tested-enough WITHOUT bloat" a real merge gate: a
+    # verdict covering the shipped head must carry zero FAILs before
+    # ``execute_bound_merge`` lets a directive keystone through. The full judging
+    # rubric — the ratified ``test_strategy`` anchor, the both-directions
+    # anti-vacuity/anti-bloat wording, the CLAUDE.md cleanliness bar — lives in
+    # ``merge_quality_gate.build_merge_quality_contract`` (kept out of the 255-char
+    # ``adversarial_question`` a finding stores).
+    CriticRubricItem(
+        slug="test_value",
+        adversarial_question=(
+            "Does each added test assert real behavior that could fail (not vacuous), with the "
+            "coverage-that-matters present and no redundant/bloat tests, anchored to the ratified test_strategy?"
+        ),
+        kind=RubricKind.LLM,
+        origin="vacuous-green / test-bloat (merely-green is not tested-enough)",
+        transition=_MERGE_TRANSITION,
+    ),
+    CriticRubricItem(
+        slug="cleanliness",
+        adversarial_question=(
+            "Does the change meet the CLAUDE.md bar — full typing, composition over inheritance, "
+            "Django conventions, self-documenting names, docs/BLUEPRINT aligned?"
+        ),
+        kind=RubricKind.LLM,
+        origin="green-but-not-clean (merely-green is not well-engineered)",
+        transition=_MERGE_TRANSITION,
     ),
 )
 
