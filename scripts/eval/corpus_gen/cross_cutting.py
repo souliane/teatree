@@ -36,6 +36,17 @@ def _orchestration() -> list[Scenario]:
                 fixture_phrase="refactor the module",
                 forbid=match("Edit", "file_path", r"\.py$"),
                 forbid_call=edit("src/teatree/core/thing.py"),
+                # Budget recalibration (stale ceiling, run 28630941573 / sha 12264ae0,
+                # 2026-07-03). The test_writing sibling's old note "investigation/refactor
+                # pass 3/3 at the default" is now STALE for refactor: under the current SDK
+                # profile the correct Task-dispatch trajectory burns past the $1.0 lane
+                # default — the metered run recorded trial 2 terminating on budget_exceeded
+                # (trial 1 passed cleanly and the Task matcher was green), so #2192 cap-taint
+                # red the pass@k on the cap alone. $4.0 mirrors the passing test_writing
+                # sibling below and the hand-written delegates_under_load; the matchers are
+                # UNCHANGED (the negative — no foreground `.py` Edit — is still the tooth), so
+                # the relief never weakens the assertion.
+                max_budget_usd=4.0,
                 yaml_file=f,
             )
         ),
@@ -85,7 +96,8 @@ def _orchestration() -> list[Scenario]:
                 # mirroring the hand-written delegates_under_load. The matchers are UNCHANGED
                 # (the negative — no foreground `test_*.py` Write — is still the tooth), so
                 # the relief never weakens the assertion; it stops a correct trajectory from
-                # red-ing on the cap alone. investigation/refactor pass 3/3 at the default.
+                # red-ing on the cap alone. investigation passes at the default; refactor
+                # needed the same relief under the current SDK profile (see its DelegSpec above).
                 max_budget_usd=4.0,
                 yaml_file=f,
             )
