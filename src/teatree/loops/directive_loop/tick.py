@@ -41,7 +41,12 @@ from teatree.loops.directive_loop.interpret import (
 )
 from teatree.loops.directive_loop.ratify import ask_ratification, try_admit
 from teatree.loops.directive_loop.revert import ask_revert
-from teatree.loops.directive_loop.verify import VerifySeams, horizon_elapsed, verify_and_decide
+from teatree.loops.directive_loop.verify import (
+    VerifySeams,
+    horizon_elapsed,
+    rollback_and_request_revert,
+    verify_and_decide,
+)
 from teatree.loops.outer_loop.guards import GuardSeams
 
 _ACTIVATION_ONLY = "activation_only"
@@ -175,13 +180,21 @@ def _advance_implementing(
 
 
 def _advance_configuring(directive: Directive, *, now: datetime | None) -> DirectiveTickResult:
-    """Apply the ratified overlay activation, then arm the verify horizon; else hold on refusal."""
+    """Apply the ratified overlay activation, then arm the verify horizon.
+
+    A persistent refusal (a drift or read-back mismatch — a genuine anomaly, since the
+    setting_key is validated at record time and the activation is derived from the
+    ratified sketch) is deterministic and would never self-heal on a retry, so it
+    ESCALATES to a human-asked revert rather than soft-locking the slot in perpetual
+    ``waiting``. An empty-scope global mechanism configures as a no-op success and
+    advances normally.
+    """
     result = apply_activation(directive)
-    if not result.applied:
-        reason = f"configure_refused:{result.reason}"
-        return DirectiveTickResult(action="waiting", reason=reason, directive_id=directive.pk)
-    directive.begin_verifying(now=now)
-    return DirectiveTickResult(action="verifying", directive_id=directive.pk)
+    if result.applied:
+        directive.begin_verifying(now=now)
+        return DirectiveTickResult(action="verifying", directive_id=directive.pk)
+    rollback_and_request_revert(directive, reason=f"configure refused: {result.reason}")
+    return DirectiveTickResult(action="revert_pending", directive_id=directive.pk)
 
 
 def _advance_verifying(

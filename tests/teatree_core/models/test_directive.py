@@ -151,6 +151,18 @@ class TestPostAdmittedArc(TestCase):
         assert directive.state == Directive.State.REVERT_PENDING
         assert not directive.is_terminal
 
+    def test_request_revert_from_configuring_escalates_a_persistent_refusal(self) -> None:
+        # A persistent configure refusal escalates to a human-asked revert from
+        # CONFIGURING — never a soft-lock in perpetual waiting.
+        directive = _admitted_directive()
+        directive.begin_implementation(
+            Ticket.objects.create(issue_url="https://e.com/cfg", role=Ticket.Role.AUTHOR),
+            baseline_snapshot=_snapshot(),
+        )
+        directive.begin_configuring()
+        directive.request_revert(reason="configure refused: read-back mismatch")
+        assert directive.state == Directive.State.REVERT_PENDING
+
     def test_record_reverted_requires_a_consumed_revert_question(self) -> None:
         # RED-before: revert is human-ratified. A REVERT_PENDING directive whose
         # revert question is unanswered cannot reach REVERTED.

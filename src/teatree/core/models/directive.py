@@ -306,8 +306,13 @@ class Directive(models.Model):
         self.save(update_fields=fields)
 
     def request_revert(self, *, reason: str, post_snapshot: "FactoryScoreSnapshot | None" = None) -> None:
-        """``VERIFYING`` → ``REVERT_PENDING``: an evidence class failed; await a human revert."""
-        self._require_state(self.State.VERIFYING)
+        """``VERIFYING`` / ``CONFIGURING`` → ``REVERT_PENDING``: await a human revert.
+
+        Reachable from ``VERIFYING`` (an evidence class failed) and from ``CONFIGURING``
+        (a persistent activation refusal — a genuine anomaly that must escalate to a
+        human-asked revert, never soft-lock the loop in perpetual ``waiting``).
+        """
+        self._require_state(self.State.VERIFYING, self.State.CONFIGURING)
         fields = ["decision_reason", "state"]
         if post_snapshot is not None:
             self.post_snapshot = post_snapshot

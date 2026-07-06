@@ -378,6 +378,10 @@ t3 dream run [--since <iso>] [--dry-run]  # run one memory-consolidation pass NO
 t3 dream tick                   # cadence-gated cron entry point (~04:00 schedule, decoupled from live loop)
 t3 outer status|history         # T4 autoresearch outer loop — guard-chain verdict + experiment ledger (read-only)
 t3 outer tick                   # cadence-gated cron entry (propose→ratify→measure→keep-only-if-better; ships quadruple-OFF)
+t3 directive capture "<text>" [--scope <overlay>]   # record a plain-language directive about teatree's own behaviour (verbatim, CAPTURED)
+t3 directive list|status <id>|history               # inspect the directive ledger, one directive's sketch/state, decisions (read-only)
+t3 directive tick               # cadence-gated cron entry (implement→configure→verify→keep-or-revert; ships quadruple-OFF)
+t3 directive resolve-revert <id> [--revert-sha <sha>]  # close a REVERT_PENDING directive to terminal REVERTED (config already rolled back)
 ```
 
 > Replace `teatree` with your overlay's name (`t3 <overlay>`) when working in

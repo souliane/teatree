@@ -144,14 +144,32 @@ class TestExecutionBranches(TestCase):
         directive.refresh_from_db()
         assert directive.verify_started_at is not None
 
-    def test_configuring_holds_when_the_activation_refuses(self) -> None:
-        # An empty-scope sketch cannot be configured — the tick holds, does not advance.
+    def test_empty_scope_configures_as_a_no_op_and_advances_to_verify(self) -> None:
+        # A global (empty-scope) mechanism configures as a no-op success — the tick
+        # advances to VERIFYING, never soft-locks.
         directive = _admitted(kind="activation_only", acceptance_tests=[], activation_scope="")
         run_tick(settings=_open_settings(), seams=_seams())  # ADMITTED → CONFIGURING
-        result = run_tick(settings=_open_settings(), seams=_seams())  # refused
-        assert result.action == "waiting"
-        assert result.reason.startswith("configure_refused")
-        assert Directive.objects.get(pk=directive.pk).state == Directive.State.CONFIGURING
+        result = run_tick(settings=_open_settings(), seams=_seams())  # CONFIGURING → VERIFYING
+        assert result.action == "verifying"
+        assert Directive.objects.get(pk=directive.pk).state == Directive.State.VERIFYING
+
+    def test_configure_refusal_escalates_to_revert_pending_not_soft_lock(self) -> None:
+        # A persistent configure refusal (a setting_policy_gate whose implementation
+        # never added the setting → read-back mismatch) escalates to a human-asked
+        # revert, never an infinite waiting that holds the slot.
+        directive = _admitted(setting_key="never_added_setting_xyz")  # setting_policy_gate default
+        run_tick(settings=_open_settings(), seams=_seams())  # ADMITTED → IMPLEMENTING
+        directive.refresh_from_db()
+        Ticket.objects.filter(pk=directive.ticket_id).update(state=Ticket.State.MERGED)
+        run_tick(settings=_open_settings(), seams=_seams())  # IMPLEMENTING → CONFIGURING
+        result = run_tick(settings=_open_settings(), seams=_seams())  # CONFIGURING refuses → REVERT_PENDING
+        assert result.action == "revert_pending"
+        directive.refresh_from_db()
+        assert directive.state == Directive.State.REVERT_PENDING
+        assert ConfigSetting.objects.get_effective("never_added_setting_xyz", scope=_SCOPE) is None
+        # The next tick visibly asks the human (no dead-end).
+        ask = run_tick(settings=_open_settings(), seams=_seams())
+        assert ask.action == "revert_asked"
 
     def test_implementing_real_merged_probe_reads_the_ticket_state(self) -> None:
         directive = _admitted()

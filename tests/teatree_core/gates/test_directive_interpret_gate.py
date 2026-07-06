@@ -11,6 +11,7 @@ from django.test import TestCase
 from teatree.core.gates.directive_interpret_gate import (
     record_returned_directive_interpretation,
     validate_activation_scope,
+    validate_setting_key,
 )
 from teatree.core.models import DeferredQuestion, Directive, DirectiveDispatch, Session, Task, Ticket
 from tests.teatree_core.models.test_mechanism_sketch import valid_envelope
@@ -61,6 +62,16 @@ class TestRecordSketch(TestCase):
         directive.refresh_from_db()
         assert directive.state == Directive.State.CAPTURED
 
+    def test_an_activation_only_sketch_with_a_bogus_setting_fails_at_record(self) -> None:
+        # RED-before the record-time setting_key check: a non-existent setting on an
+        # activation_only sketch is rejected at interpret, never parked at configure.
+        directive, task = _dispatched_directive()
+        sketch = valid_envelope(kind="activation_only", acceptance_tests=[], setting_key="never_added_setting_xyz")
+        error = record_returned_directive_interpretation(task, {"directive_interpretation": {"sketch": sketch}})
+        assert "not a known setting" in error
+        directive.refresh_from_db()
+        assert directive.state == Directive.State.CAPTURED
+
 
 class TestValidateActivationScope(TestCase):
     def test_an_empty_scope_is_a_valid_global_mechanism(self) -> None:
@@ -73,6 +84,22 @@ class TestValidateActivationScope(TestCase):
         finding = validate_activation_scope(valid_envelope(activation_scope="no-such-overlay-xyz"))
         assert finding is not None
         assert "registered overlay" in finding
+
+
+class TestValidateSettingKey(TestCase):
+    def test_activation_only_with_a_real_setting_is_accepted(self) -> None:
+        assert validate_setting_key(valid_envelope(kind="activation_only", acceptance_tests=[])) is None
+
+    def test_activation_only_with_a_bogus_setting_is_rejected(self) -> None:
+        finding = validate_setting_key(
+            valid_envelope(kind="activation_only", acceptance_tests=[], setting_key="never_added_setting_xyz")
+        )
+        assert finding is not None
+        assert "not a known setting" in finding
+
+    def test_setting_policy_gate_with_a_new_setting_is_not_required_to_exist(self) -> None:
+        # A setting_policy_gate creates the setting — it need not exist at record time.
+        assert validate_setting_key(valid_envelope(setting_key="brand_new_setting_the_impl_adds")) is None
 
 
 class TestRecordClarifications(TestCase):

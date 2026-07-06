@@ -55,11 +55,15 @@ class TestApplyActivation(TestCase):
         directive = Directive.objects.capture("x", source=Directive.Source.CLI)
         assert apply_activation(directive).applied is False
 
-    def test_empty_scope_is_refused(self) -> None:
+    def test_empty_scope_is_a_no_op_success(self) -> None:
+        # A global (empty-scope) mechanism needs no per-overlay ConfigSetting — configure
+        # is a no-op success so the directive advances to VERIFYING (agreeing with the
+        # interpret gate, which blesses an empty scope as a valid global mechanism).
         directive = _admitted(activation_scope="")
         result = apply_activation(directive)
-        assert result.applied is False
-        assert "scope is empty" in result.reason
+        assert result.applied is True
+        assert "global mechanism" in result.reason
+        assert ConfigSetting.objects.get_effective(_KEY, scope="") is None
 
     def test_read_back_mismatch_clears_and_refuses(self) -> None:
         # A setting_key that is a valid identifier but not a real UserSettings field

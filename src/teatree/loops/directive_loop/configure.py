@@ -68,7 +68,11 @@ def apply_activation(directive: Directive, *, activation: Activation | None = No
     if not activation_conforms(resolved, sketch):
         return ConfigureResult(applied=False, reason="activation drifted from the ratified sketch — refused")
     if not resolved.scope:
-        return ConfigureResult(applied=False, reason="activation_scope is empty — refused (scoped activation only)")
+        # A global (empty-scope) mechanism IS the merged core change — there is no
+        # per-overlay ConfigSetting row to write. Configure is a no-op success (the
+        # interpret gate blesses an empty scope as a valid global mechanism), so the
+        # directive advances to VERIFYING rather than parking.
+        return ConfigureResult(applied=True, reason="global mechanism — no per-overlay activation needed")
     ConfigSetting.objects.set_value(resolved.setting_key, resolved.value, scope=resolved.scope)
     effective = getattr(get_effective_settings(resolved.scope), resolved.setting_key, _MISSING)
     if effective != resolved.value:
