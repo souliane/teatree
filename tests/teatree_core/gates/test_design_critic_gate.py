@@ -51,6 +51,21 @@ def _sketch() -> MechanismSketch:
     )
 
 
+def _conforming_manifest() -> dict:
+    """A plan adequacy carrying a mechanism_placement that conforms to :func:`_sketch`."""
+    sketch = _sketch()
+    return {
+        "mechanism_placement": {
+            "setting_key": sketch.setting_key,
+            "neutral_default": sketch.neutral_default,
+            "policy_chokepoint": sketch.policy_chokepoint,
+            "activation_scope": sketch.activation_scope,
+            "activation_value": sketch.activation_value,
+            "rejected_alternatives": list(sketch.rejected_alternatives),
+        }
+    }
+
+
 def _directive_ticket(*, with_sketch: bool = True, with_plan: bool = True) -> Ticket:
     ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.PLANNED)
     directive = Directive.objects.capture("max 1 open PR per repo per ticket", source=Directive.Source.CLI)
@@ -250,8 +265,16 @@ class TestPlanTransitionWiring(TestCase):
         directive.mechanism_sketch = _sketch().to_dict()
         directive.ticket = ticket
         directive.save(update_fields=["mechanism_sketch", "ticket"])
+        # plan() → schedule_coding() → plan_currency_gate, whose directive mechanism teeth
+        # now run UNCONDITIONALLY (H3) — so a directive plan must CONFORM to its sketch to
+        # reach coder dispatch, regardless of require_plan_adequacy. A conforming plan keeps
+        # these tests focused on the design-critic arming they exercise.
         PlanArtifact.objects.create(
-            ticket=ticket, plan_text="plan", recorded_by="t3:planner", base_sha=_FORTY_HEX, adequacy={}
+            ticket=ticket,
+            plan_text="plan",
+            recorded_by="t3:planner",
+            base_sha=_FORTY_HEX,
+            adequacy=_conforming_manifest(),
         )
         return ticket
 

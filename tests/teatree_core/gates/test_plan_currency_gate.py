@@ -329,12 +329,50 @@ class TestMechanismPlacement(TestCase):
             assert check_plan_current(ticket) is True  # no ratified sketch → nothing to conform to → open
 
 
-class TestMechanismPlacementNeverLockout(TestCase):
-    def test_flag_off_skips_the_mechanism_check(self) -> None:
-        ticket = _directive_ticket(placement=_placement(policy_chokepoint="src/teatree/overlays/acme/hook.py::cap"))
-        with _gate(required=False):
-            assert check_plan_current(ticket) is True  # gate off → the whole check is a no-op
+class TestDirectivePlanTeethDecoupled(TestCase):
+    """H3: a directive-linked plan is checked against its ratified sketch regardless of the flag.
 
+    ``_check_mechanism_placement`` runs ABOVE the ``require_plan_adequacy``
+    early-return, so a directive plan's anti-hack teeth hold even when the general
+    plan-adequacy flag is off — matching ``merge_quality_gate``'s "directive tickets
+    unconditionally" doctrine. Ordinary work stays untouched (no linked directive →
+    the check is a no-op).
+    """
+
+    def test_directive_hack_plan_blocked_even_with_flag_off(self) -> None:
+        # The decoupling: an overlay-chokepoint directive plan is refused with the flag OFF.
+        ticket = _directive_ticket(placement=_placement(policy_chokepoint="src/teatree/overlays/acme/hook.py::cap"))
+        with _gate(required=False), pytest.raises(NoCurrentPlanError, match="not a core seam"):
+            check_plan_current(ticket)
+
+    def test_missing_mechanism_placement_blocked_even_with_flag_off(self) -> None:
+        ticket = _directive_ticket(placement=None)
+        with _gate(required=False), pytest.raises(NoCurrentPlanError, match="mechanism_placement"):
+            check_plan_current(ticket)
+
+    def test_conforming_directive_plan_passes_with_flag_off(self) -> None:
+        ticket = _directive_ticket(placement=_placement())
+        with _gate(required=False):
+            assert check_plan_current(ticket) is True
+
+    def test_ordinary_ticket_unaffected_with_flag_off(self) -> None:
+        # No linked directive → the mechanism check is a no-op; the flag-off fast path stays green.
+        ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLANNED)
+        PlanArtifact.objects.create(ticket=ticket, plan_text="p", recorded_by="op")  # thin legacy plan
+        with _gate(required=False):
+            assert check_plan_current(ticket) is True
+
+    def test_directive_not_yet_interpreted_fails_open_with_flag_off(self) -> None:
+        ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLANNED)
+        directive = Directive.objects.capture("no sketch yet", source=Directive.Source.CLI)
+        directive.ticket = ticket
+        directive.save(update_fields=["ticket"])  # sketch is None → nothing to conform to
+        PlanArtifact.objects.create(ticket=ticket, plan_text="p", recorded_by="op", base_sha="a" * 40)
+        with _gate(required=False):
+            assert check_plan_current(ticket) is True
+
+
+class TestMechanismPlacementNeverLockout(TestCase):
     def test_a_plan_bypass_manifest_waives(self) -> None:
         # The audited plan-bypass escape (all-reasoned-negative manifest) works on a directive
         # ticket too — a no_seams plan has no mechanism to conform to.
