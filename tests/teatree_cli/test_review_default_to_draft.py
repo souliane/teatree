@@ -32,12 +32,14 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
+import httpx
 import pytest
 from django.utils import timezone
 from typer.testing import CliRunner
 
 from teatree.cli import app
 from teatree.cli.review import ReviewService
+from teatree.cli.review.default_draft import notify_draft_created, resolve_reviewed_head_sha
 from teatree.config import OnBehalfPostMode
 from teatree.core.models import BotPing, ConfigSetting, LivePostApproval
 
@@ -234,6 +236,45 @@ class TestDraftCommentNotificationIsOneTerseLinePerMr:
         sent = " ".join(str(a) for a in self.backend.post_message.call_args.args)
         sent += " ".join(f"{k}={v}" for k, v in self.backend.post_message.call_args.kwargs.items())
         assert "<https://gitlab.example.com/org/repo/-/merge_requests/6521|org/repo!6521>" in sent
+
+
+class _RaisingAPI:
+    """A ``GitLabAPI`` stand-in whose MR-detail GET raises the given error.
+
+    Exercises ``resolve_reviewed_head_sha``'s best-effort degrade — a
+    transport/status error (``httpx.HTTPError``) or a malformed body
+    (``ValueError`` from ``response.json()``) must yield ``""``, not raise.
+    """
+
+    def __init__(self, exc: Exception) -> None:
+        self._exc = exc
+
+    def get_json(self, endpoint: str) -> object:
+        raise self._exc
+
+
+class TestResolveReviewedHeadShaDegradesOnLookupFailure:
+    """A failed head-SHA lookup returns ``""`` → the notify key degrades to the UTC day."""
+
+    @pytest.fixture(autouse=True)
+    def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _write_cfg(tmp_path, monkeypatch)
+        self.backend = _wire_notify_backend(monkeypatch)
+
+    @pytest.mark.parametrize("exc", [httpx.HTTPError("boom"), ValueError("bad json")])
+    def test_lookup_failure_degrades_notify_key_to_utc_day(self, exc: Exception) -> None:
+        head_sha = resolve_reviewed_head_sha(_RaisingAPI(exc), "org/repo", 6521)
+        assert head_sha == ""
+
+        notify_draft_created(
+            repo="org/repo",
+            mr=6521,
+            mr_url="https://gitlab.example.com/org/repo/-/merge_requests/6521",
+            reviewed_head_sha=head_sha,
+        )
+
+        today = datetime.now(tz=UTC).strftime("%Y-%m-%d")
+        assert BotPing.objects.filter(idempotency_key=f"post_comment_draft:org/repo!6521:{today}").exists()
 
 
 class TestPostCommentLiveRefusedWithoutToken:
