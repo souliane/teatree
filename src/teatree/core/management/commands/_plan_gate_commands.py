@@ -19,7 +19,6 @@ from typing import TYPE_CHECKING, TypedDict
 from django.db import transaction
 from django_fsm import TransitionNotAllowed
 
-from teatree.core.branch_currency import commits_between_touching_paths, fetch_target_head
 from teatree.core.models import Ticket
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.plan_adequacy import declared_seam_paths, is_valid_base_sha
@@ -27,6 +26,7 @@ from teatree.core.models.plan_artifact import PlanArtifact
 from teatree.core.models.ticket_worktree_checks import _resolve_base_branch, dispatch_worktree_path
 from teatree.core.models.trivial_plan_skip import mark_trivial_plan_skip
 from teatree.core.models.types import PlanAdequacy
+from teatree.core.worktree.branch_currency import commits_between_touching_paths, fetch_target_head
 
 if TYPE_CHECKING:
     from collections.abc import Callable

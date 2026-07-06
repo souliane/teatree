@@ -79,7 +79,7 @@ def _reconcile_health() -> None:
     no-op — a broken health read never blocks the tick's render.
     """
     try:
-        from teatree.core.operational_health import reconcile_health  # noqa: PLC0415 — deferred read
+        from teatree.core.factory.operational_health import reconcile_health  # noqa: PLC0415 — deferred read
 
         reconcile_health()
     except Exception:  # noqa: BLE001 — fail-open: a broken health reconcile must never block the tick's render

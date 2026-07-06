@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import handle_validate_mr_metadata
-from teatree.core.mr_metadata import validate_mr_metadata
+from teatree.core.review.mr_metadata import validate_mr_metadata
 from teatree.types import DEFAULT_MR_TITLE_REGEX
 
 

@@ -2,7 +2,7 @@ import logging
 import re
 from pathlib import Path
 
-from teatree.core.step_runner import StepResult, run_step
+from teatree.core.provision.step_runner import StepResult, run_step
 
 logger = logging.getLogger(__name__)
 

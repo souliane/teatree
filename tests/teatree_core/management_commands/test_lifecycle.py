@@ -454,7 +454,7 @@ class TestLifecycleSetup(TestCase):
             "_print_diagnostics removed in worktree FSM refactor — "
             "diagnostics moved to the t3 worktree diagnose subcommand; needs rewrite",
         )
-        from teatree.core.step_runner import ProvisionReport, StepResult  # noqa: PLC0415
+        from teatree.core.provision.step_runner import ProvisionReport, StepResult  # noqa: PLC0415
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -513,7 +513,7 @@ class TestLifecycleSetupHelpers(TestCase):
 
     def test_write_env_cache_returns_none_without_path(self) -> None:
         """write_env_cache returns None when worktree has no worktree_path."""
-        from teatree.core.worktree_env import write_env_cache  # noqa: PLC0415
+        from teatree.core.worktree.worktree_env import write_env_cache  # noqa: PLC0415
 
         ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/issues/250")
         wt = Worktree.objects.create(

@@ -18,8 +18,8 @@ from django.test import TestCase
 
 from teatree.config import UserSettings
 from teatree.core.gates import debt_delta_gate as debt_gate_mod
-from teatree.core.management.commands import _ship_gates as ship_gates_mod
-from teatree.core.management.commands._ship_gates import run_debt_delta_gate
+from teatree.core.management.commands._ship import gates as ship_gates_mod
+from teatree.core.management.commands._ship.gates import run_debt_delta_gate
 from teatree.core.models import PlanArtifact, Ticket, Worktree
 from teatree.utils.run import CommandFailedError
 

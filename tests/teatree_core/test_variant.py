@@ -3,7 +3,7 @@
 import inspect
 
 from teatree.core.overlay import OverlayBase, OverlayConfig
-from teatree.core.variant import Variant
+from teatree.core.provision.variant import Variant
 
 
 class _StubOverlay(OverlayBase):

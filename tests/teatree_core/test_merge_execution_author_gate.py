@@ -18,12 +18,12 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
-from teatree.core import author_trust
 from teatree.core.merge import authorization, execution
 from teatree.core.merge.authorization import assert_public_repo_author_trusted
 from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.merge.execution import merge_ticket_pr
 from teatree.core.models import MergeClear, Ticket, TrustedIdentity
+from teatree.core.review import author_trust
 from tests.teatree_core.conftest import CommandOverlay, seed_merge_safe_verdict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db

@@ -615,13 +615,13 @@ class SelfUpdateScannerStaleNoticeTests(TestCase):
     def test_dirty_clone_skip_emits_durable_notice(self) -> None:
         from unittest.mock import patch  # noqa: PLC0415
 
-        from teatree.core.stale_clone_notice import StaleCloneReason  # noqa: PLC0415
+        from teatree.core.worktree.stale_clone_notice import StaleCloneReason  # noqa: PLC0415
 
         clone = self._tmp / "teatree"
         _clone_trailing_by_one_commit(origin=self.origin, clone=clone)
         _make_tracked_dirty(clone)
 
-        with patch("teatree.core.stale_clone_notice.notify_stale_clone_skip") as spy:
+        with patch("teatree.core.worktree.stale_clone_notice.notify_stale_clone_skip") as spy:
             self._scanner(clone).scan()
 
         spy.assert_called_once()
@@ -633,13 +633,13 @@ class SelfUpdateScannerStaleNoticeTests(TestCase):
     def test_feature_branch_skip_emits_off_default_notice(self) -> None:
         from unittest.mock import patch  # noqa: PLC0415
 
-        from teatree.core.stale_clone_notice import StaleCloneReason  # noqa: PLC0415
+        from teatree.core.worktree.stale_clone_notice import StaleCloneReason  # noqa: PLC0415
 
         clone = self._tmp / "teatree"
         _clone_trailing_by_one_commit(origin=self.origin, clone=clone)
         _checkout_feature_branch(clone)
 
-        with patch("teatree.core.stale_clone_notice.notify_stale_clone_skip") as spy:
+        with patch("teatree.core.worktree.stale_clone_notice.notify_stale_clone_skip") as spy:
             self._scanner(clone).scan()
 
         spy.assert_called_once()
@@ -653,7 +653,7 @@ class SelfUpdateScannerStaleNoticeTests(TestCase):
         clone = self._tmp / "teatree"
         _clone_up_to_date(origin=self.origin, clone=clone)
 
-        with patch("teatree.core.stale_clone_notice.notify_stale_clone_skip") as spy:
+        with patch("teatree.core.worktree.stale_clone_notice.notify_stale_clone_skip") as spy:
             self._scanner(clone).scan()
 
         spy.assert_not_called()

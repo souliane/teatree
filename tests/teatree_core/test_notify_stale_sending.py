@@ -27,8 +27,8 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.models import BotPing, DeliveryClaim
+from teatree.core.notify import NotifyKind, notify_user
 from teatree.messaging.notify_with_fallback import _primary_failure_is_recoverable
-from teatree.notify import NotifyKind, notify_user
 
 _KEY = "loops_tick_errors:2026-06-04"
 

@@ -7,8 +7,8 @@ title inference (a mis-classified feature would wedge the fix-record DoD gate).
 
 import pytest
 
+from teatree.core.intake.ticket_kind_classification import TicketOrigin, classify_ticket_kind, parse_kind
 from teatree.core.models import Ticket
-from teatree.core.ticket_kind_classification import TicketOrigin, classify_ticket_kind, parse_kind
 
 
 class TestClassifyTicketKind:

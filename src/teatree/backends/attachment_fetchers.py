@@ -1,6 +1,6 @@
 """Register the per-source attachment downloaders into core (PR-15, M5).
 
-The intake attachment manifest (``teatree.core.attachment_manifest``) resolves a
+The intake attachment manifest (``teatree.core.intake.attachment_manifest``) resolves a
 per-kind fetcher from the core registry; the transport lives here in the backends
 layer. ``BackendsConfig.ready`` calls :func:`install_attachment_fetchers` so the
 downloaders are available to ``ticket attachments --fetch`` — the same
@@ -18,11 +18,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from teatree.backends import notion
-from teatree.core.attachment_fetch_registry import register_attachment_fetcher
-from teatree.core.attachment_manifest import AttachmentKind
+from teatree.core.intake.attachment_fetch_registry import register_attachment_fetcher
+from teatree.core.intake.attachment_manifest import AttachmentKind
 
 if TYPE_CHECKING:
-    from teatree.core.attachment_manifest import AttachmentRef
+    from teatree.core.intake.attachment_manifest import AttachmentRef
 
 
 def _fetch_notion(ref: "AttachmentRef", dest: Path) -> Path:

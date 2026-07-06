@@ -1340,7 +1340,7 @@ def _resolve_worktree_state(toplevel: str) -> str | None:
     """Return the ticket FSM state for the worktree at on-disk *toplevel*.
 
     Delegates the path → ``Worktree`` row resolution to the canonical
-    :func:`teatree.core.resolve.match_worktree_by_path` (the single source of
+    :func:`teatree.core.intake.resolve.match_worktree_by_path` (the single source of
     truth for matching an on-disk path against ``extra['worktree_path']``,
     incl. the macOS ``/var`` ↔ ``/private/var`` symlink variants and the
     subdirectory walk) rather than a hand-rolled query — a hand-rolled
@@ -1350,7 +1350,7 @@ def _resolve_worktree_state(toplevel: str) -> str | None:
     a programming error so the caller can log it loudly rather than swallow it
     into a silent fail-open.
     """
-    from teatree.core.resolve import match_worktree_by_path  # noqa: PLC0415
+    from teatree.core.intake.resolve import match_worktree_by_path  # noqa: PLC0415
 
     worktree = match_worktree_by_path(toplevel)
     if worktree is None or worktree.ticket is None:

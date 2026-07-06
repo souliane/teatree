@@ -26,8 +26,8 @@ import typer
 from django_typer.management import TyperCommand, command
 
 from teatree.config import get_effective_settings
-from teatree.core.factory_recipe import load_recipe
-from teatree.core.factory_score import FactoryScore, score
+from teatree.core.factory.factory_recipe import load_recipe
+from teatree.core.factory.factory_score import FactoryScore, score
 from teatree.core.models import ConfigSetting
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.factory_score_snapshot import FactoryScoreSnapshot

@@ -10,7 +10,7 @@ artifact produced by the intake FSM step* (``execute_provision``, after the
 worktrees materialise and before ``schedule_planning()``). It mirrors
 :class:`LandscapeArtifact`: a dedicated append-only row alongside ``Ticket``, the
 latest governs, older rows are an immutable audit trail. The gate
-(:func:`teatree.core.attachment_manifest.attachment_gate_refusal`) reads the
+(:func:`teatree.core.intake.attachment_manifest.attachment_gate_refusal`) reads the
 latest manifest and refuses the planner hand-off while any entry is un-fetched.
 
 Each entry is the JSON-serialisable shape ``{source_url, kind, local_path,
@@ -35,7 +35,7 @@ class AttachmentManifest(models.Model):
     found nothing, which the gate reads as "clear". Only ``recorded_by`` is
     required so every snapshot is attributable; ``entries`` defaults to the empty
     list. ``latest_for`` returns the governing snapshot; the module-level
-    :func:`teatree.core.attachment_manifest.build_manifest` owns the
+    :func:`teatree.core.intake.attachment_manifest.build_manifest` owns the
     idempotent-append decision so a re-survey with an unchanged set writes no row.
     """
 

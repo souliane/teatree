@@ -38,7 +38,7 @@ from teatree.core.on_behalf_gate_recorded import (
     require_on_behalf_approval,
 )
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
-from teatree.core.review_message_cache import persist_review_message
+from teatree.core.review.review_message_cache import persist_review_message
 from teatree.loop.review_request_tracker import record_review_request_post
 from teatree.types import RawAPIDict
 

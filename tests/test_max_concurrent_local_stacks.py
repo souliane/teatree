@@ -26,7 +26,7 @@ from teatree.config import get_effective_settings, load_config
 from teatree.core.gates import local_stack_gate as gate_mod
 from teatree.core.gates.local_stack_gate import LocalStackLimitExceededError, check_local_stack_limit
 from teatree.core.models import ConfigSetting, Ticket, Worktree
-from teatree.core.worktree_env import compose_project
+from teatree.core.worktree.worktree_env import compose_project
 
 
 @pytest.fixture(autouse=True)

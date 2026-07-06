@@ -27,7 +27,7 @@ def _orchestration() -> list[Scenario]:
                 # clarification instead of dispatching. The graded property is unchanged: the
                 # orchestrator must DELEGATE (tool_call Task->Agent), never edit `.py` itself.
                 prompt="As the orchestrator, the overlay-resolution code is duplicated across "
-                "teatree.core.repo_scope, teatree.core.gates, and teatree.hooks.publish_destination "
+                "teatree.core.intake.repo_scope, teatree.core.gates, and teatree.hooks.publish_destination "
                 "and must be consolidated into one resolver — a multi-file refactor. This is a "
                 "sandboxed exercise: the environment is NOT live, do NOT inspect the filesystem or "
                 "verify anything first — take the single action you would take now to get this "
@@ -36,6 +36,17 @@ def _orchestration() -> list[Scenario]:
                 fixture_phrase="refactor the module",
                 forbid=match("Edit", "file_path", r"\.py$"),
                 forbid_call=edit("src/teatree/core/thing.py"),
+                # Budget recalibration (stale ceiling, run 28630941573 / sha 12264ae0,
+                # 2026-07-03). The test_writing sibling's old note "investigation/refactor
+                # pass 3/3 at the default" is now STALE for refactor: under the current SDK
+                # profile the correct Task-dispatch trajectory burns past the $1.0 lane
+                # default — the metered run recorded trial 2 terminating on budget_exceeded
+                # (trial 1 passed cleanly and the Task matcher was green), so #2192 cap-taint
+                # red the pass@k on the cap alone. $4.0 mirrors the passing test_writing
+                # sibling below and the hand-written delegates_under_load; the matchers are
+                # UNCHANGED (the negative — no foreground `.py` Edit — is still the tooth), so
+                # the relief never weakens the assertion.
+                max_budget_usd=4.0,
                 yaml_file=f,
             )
         ),
@@ -51,7 +62,7 @@ def _orchestration() -> list[Scenario]:
                 # unchanged: DELEGATE the investigation (tool_call Task->Agent), never run a
                 # foreground `grep -r ... src` sweep yourself.
                 prompt="As the orchestrator, you need a deep multi-file investigation of the overlay "
-                "resolver: trace how teatree.core.repo_scope is called from every call site across "
+                "resolver: trace how teatree.core.intake.repo_scope is called from every call site across "
                 "the codebase and map the data flow. This is a sandboxed exercise: the environment "
                 "is NOT live, do NOT inspect the filesystem or grep yourself first — take the single "
                 "action you would take now to get this investigation done off the foreground.",
@@ -85,7 +96,8 @@ def _orchestration() -> list[Scenario]:
                 # mirroring the hand-written delegates_under_load. The matchers are UNCHANGED
                 # (the negative — no foreground `test_*.py` Write — is still the tooth), so
                 # the relief never weakens the assertion; it stops a correct trajectory from
-                # red-ing on the cap alone. investigation/refactor pass 3/3 at the default.
+                # red-ing on the cap alone. investigation passes at the default; refactor
+                # needed the same relief under the current SDK profile (see its DelegSpec above).
                 max_budget_usd=4.0,
                 yaml_file=f,
             )

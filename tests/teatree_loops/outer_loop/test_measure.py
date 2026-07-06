@@ -6,7 +6,7 @@ from unittest import mock
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.factory_score import FactoryScore, ScoredSignal
+from teatree.core.factory.factory_score import FactoryScore, ScoredSignal
 from teatree.core.models import DeferredQuestion, FactoryScoreSnapshot, OuterLoopExperiment, ProposalSpec, Ticket
 from teatree.loops.outer_loop.measure import arm_measurement, horizon_elapsed, measure_and_decide
 

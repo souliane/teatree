@@ -22,7 +22,7 @@ import typer
 from django_typer.management import TyperCommand, command, initialize
 
 from teatree.core.models import Ports, Ticket, TicketArtifacts, Worktree
-from teatree.core.worktree_env import compose_project
+from teatree.core.worktree.worktree_env import compose_project
 from teatree.utils.ports import get_worktree_ports
 
 _VALID_FORMATS = ("text", "json")

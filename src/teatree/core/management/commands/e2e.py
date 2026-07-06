@@ -8,13 +8,13 @@ from typing import Annotated
 import typer
 from django_typer.management import TyperCommand, command
 
+from teatree.core.intake.resolve import resolve_worktree
 from teatree.core.management.commands import _e2e_discovery as _disc
 from teatree.core.management.commands import _e2e_runners as _runners
-from teatree.core.management.commands import _test_plan
+from teatree.core.management.commands._test_plan import post as _test_plan_post
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
-from teatree.core.resolve import resolve_worktree
-from teatree.core.worktree_env import compose_project
+from teatree.core.worktree.worktree_env import compose_project
 from teatree.utils.run import run_streamed
 
 # Re-exports for back-compat with tests and external callers (#1322 split).
@@ -137,7 +137,11 @@ class Command(TyperCommand):
         MVP runs an already-present workspace as-is and records the run's
         SHA-set + result to the durable recipe keyed by ``issue_url``.
         """
-        from teatree.core.e2e_workitem import record_run, resolve_environment, resolve_run_provenance  # noqa: PLC0415
+        from teatree.core.intake.e2e_workitem import (  # noqa: PLC0415
+            record_run,
+            resolve_environment,
+            resolve_run_provenance,
+        )
         from teatree.core.models import Ticket  # noqa: PLC0415
         from teatree.utils import git  # noqa: PLC0415
 
@@ -491,7 +495,7 @@ class Command(TyperCommand):
         body_file: str = "",
         template: str = _TEMPLATE_OPTION,
         allow_no_video: bool = _ALLOW_NO_VIDEO_OPTION,
-    ) -> _test_plan.PostTestPlanResult:
+    ) -> _test_plan_post.PostTestPlanResult:
         """Post (or update) the ticket's single test-plan note from a manifest.
 
         ONE note per ticket (never an MR); a re-run merges the env(s) it
@@ -503,10 +507,10 @@ class Command(TyperCommand):
         ``--skip-validation`` bypasses the image preflight; ``--allow-no-video``
         permits a stills-only manifest (refused by default); ``--body-file``
         posts a pre-authored body verbatim (no upload; mutually exclusive with
-        ``--manifest``). See :mod:`._test_plan`. ``post-evidence`` is a hidden,
+        ``--manifest``). See :mod:`._test_plan.post`. ``post-evidence`` is a hidden,
         deprecated alias.
         """
-        return _test_plan.run_post_test_plan(
+        return _test_plan_post.run_post_test_plan(
             manifest=manifest,
             ticket=ticket,
             title=title,
@@ -526,7 +530,7 @@ class Command(TyperCommand):
         ticket: str = "",
     ) -> None:
         """Withdraw the ticket's single test-plan note."""
-        return _test_plan.run_retract_evidence(
+        return _test_plan_post.run_retract_evidence(
             ticket=ticket,
             write_out=self.stdout.write,
             write_err=self.stderr.write,
@@ -545,7 +549,7 @@ class Command(TyperCommand):
         body_file: str = "",
         template: str = _TEMPLATE_OPTION,
         allow_no_video: bool = _ALLOW_NO_VIDEO_OPTION,
-    ) -> _test_plan.PostTestPlanResult:
+    ) -> _test_plan_post.PostTestPlanResult:
         """Deprecated alias for ``post-test-plan`` (renamed; kept one release for back-compat)."""
         return self.post_test_plan(
             manifest=manifest,

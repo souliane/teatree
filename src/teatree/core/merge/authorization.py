@@ -8,11 +8,11 @@ The result type :class:`MergePrecheck` and the guard functions
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from teatree.core.author_trust import classify_author
 from teatree.core.merge.ci_rollup import fetch_pr_author
 from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.models.mr_review_lock import MRReviewLock
 from teatree.core.models.review_verdict import HeadVerdictState, ReviewVerdict
+from teatree.core.review.author_trust import classify_author
 
 if TYPE_CHECKING:
     from teatree.core.models import MergeClear

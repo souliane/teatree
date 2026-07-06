@@ -187,7 +187,7 @@ class TestEnvMigrateSecrets(TestCase):
     def test_single_worktree_migration_writes_to_pass_and_regenerates_cache(self) -> None:
         from tempfile import TemporaryDirectory  # noqa: PLC0415
 
-        from teatree.core.worktree_env import CACHE_DIRNAME, CACHE_FILENAME  # noqa: PLC0415
+        from teatree.core.worktree.worktree_env import CACHE_DIRNAME, CACHE_FILENAME  # noqa: PLC0415
 
         with TemporaryDirectory() as tmp:
             ticket_dir = Path(tmp) / "ticket-42"
@@ -230,7 +230,7 @@ class TestEnvMigrateSecrets(TestCase):
     def test_reports_already_migrated_when_no_literal_present(self) -> None:
         from tempfile import TemporaryDirectory  # noqa: PLC0415
 
-        from teatree.core.worktree_env import CACHE_DIRNAME, CACHE_FILENAME  # noqa: PLC0415
+        from teatree.core.worktree.worktree_env import CACHE_DIRNAME, CACHE_FILENAME  # noqa: PLC0415
 
         with TemporaryDirectory() as tmp:
             ticket_dir = Path(tmp) / "ticket-7"
@@ -266,7 +266,7 @@ class TestEnvMigrateSecrets(TestCase):
     def test_returns_nonzero_when_pass_not_available(self) -> None:
         from tempfile import TemporaryDirectory  # noqa: PLC0415
 
-        from teatree.core.worktree_env import CACHE_DIRNAME, CACHE_FILENAME  # noqa: PLC0415
+        from teatree.core.worktree.worktree_env import CACHE_DIRNAME, CACHE_FILENAME  # noqa: PLC0415
 
         with TemporaryDirectory() as tmp:
             ticket_dir = Path(tmp) / "ticket-99"

@@ -2,7 +2,7 @@
 
 A front-end discovers teatree's machine interface here instead of scraping
 ``--help``: which commands emit JSON and their exit-code contract. Pure data
-(``teatree.core.capabilities``) — no Django bootstrap needed. Follows the same
+(``teatree.core.factory.capabilities``) — no Django bootstrap needed. Follows the same
 stdout/stderr split as the ``emit`` seam: ``--json`` emits the registry on
 stdout; the human listing goes to stderr so stdout stays a clean JSON channel.
 """
@@ -11,7 +11,7 @@ import json as _json
 
 import typer
 
-from teatree.core.capabilities import CapabilitiesReport, capabilities_report
+from teatree.core.factory.capabilities import CapabilitiesReport, capabilities_report
 
 
 def capabilities(

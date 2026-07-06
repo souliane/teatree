@@ -1,6 +1,6 @@
 """Tests for the verified-delivery notify wrapper (#1181).
 
-``notify_with_fallback`` tries the canonical :func:`teatree.notify.notify_user`
+``notify_with_fallback`` tries the canonical :func:`teatree.core.notify.notify_user`
 path first and, when that path does not deliver (the #1173 silent-rc=1
 class), automatically falls back to a direct messaging-backend send, then
 **round-trip verifies** delivery via ``fetch_message`` and records which

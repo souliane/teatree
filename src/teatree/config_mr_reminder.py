@@ -7,7 +7,7 @@ cohesive concern with a single dependency (:mod:`teatree.types`).
 
 This module holds the *data* only. The repo-slug → channel routing
 policy and the cross-repo message assembly live in
-:mod:`teatree.core.mr_reminder` (the domain layer that may reach the
+:mod:`teatree.core.review.mr_reminder` (the domain layer that may reach the
 host-stripped namespace matcher), keeping config a pure data layer.
 """
 

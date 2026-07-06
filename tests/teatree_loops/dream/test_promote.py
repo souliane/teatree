@@ -19,7 +19,7 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
-from teatree.core.review_findings import find_bare_references
+from teatree.core.review.review_findings import find_bare_references
 from teatree.eval.discovery import SCENARIOS_DIR
 from teatree.eval.loader import _parse_spec, load_eval_yaml
 from teatree.eval.models import EvalSpec

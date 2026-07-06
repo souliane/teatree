@@ -14,7 +14,7 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
-from teatree.core.factory_recipe import recipe_sha
+from teatree.core.factory.factory_recipe import recipe_sha
 from teatree.core.models import ConfigSetting
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.factory_score_snapshot import FactoryScoreSnapshot

@@ -400,7 +400,7 @@ class TestSyncGitHub(TestCase):
         """
         from teatree.backends.github import ProjectItem  # noqa: PLC0415
         from teatree.backends.github.sync import GitHubSyncBackend  # noqa: PLC0415
-        from teatree.core.cleanup import CleanupResult  # noqa: PLC0415
+        from teatree.core.cleanup.cleanup import CleanupResult  # noqa: PLC0415
 
         overlay = self._make_overlay()
         ticket = Ticket.objects.create(

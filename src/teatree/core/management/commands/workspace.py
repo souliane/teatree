@@ -1,9 +1,8 @@
 """Workspace management: create ticket worktrees, finalize, clean stale branches."""
 
 import os
-from contextlib import suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, cast
+from typing import Annotated
 
 import typer
 from django.db import transaction
@@ -12,49 +11,38 @@ from django_typer.management import TyperCommand, command
 
 from teatree.config import worktree_root as _config_worktree_root
 from teatree.core.gates.local_stack_gate import acquire_or_enqueue
-from teatree.core.management.commands import _workspace_helpers as _wh
-from teatree.core.management.commands._workspace_clean_all import CleanAllIO, run_clean_all
-from teatree.core.management.commands._workspace_cleanup import _die, _fix_drift
-from teatree.core.management.commands._workspace_docker import reap_stale_local_stacks, reap_stale_report
-from teatree.core.management.commands._workspace_finalize import run_finalize
-from teatree.core.management.commands._workspace_landscape import LandscapeReport, run_landscape
-from teatree.core.management.commands._workspace_provision_parallel import (
+from teatree.core.intake.resolve import WorktreeNotFoundError, _get_user_cwd, resolve_worktree, workspace_owner_ticket
+from teatree.core.management.commands._workspace import helpers as _wh
+from teatree.core.management.commands._workspace.clean_all import CleanAllIO, run_clean_all
+from teatree.core.management.commands._workspace.cleanup import _die, _fix_drift
+from teatree.core.management.commands._workspace.docker import reap_stale_local_stacks, reap_stale_report
+from teatree.core.management.commands._workspace.finalize import run_finalize
+from teatree.core.management.commands._workspace.landscape import LandscapeReport, run_landscape
+from teatree.core.management.commands._workspace.provision_parallel import (
     provision_worktree_subprocess,
     render_worktree_report,
     run_worktree_provisions_in_parallel,
 )
-from teatree.core.management.commands._workspace_relocate import RelocateIO, active_overlay_name, run_relocate
-from teatree.core.management.commands._workspace_salvage import emit_records_json, run_salvage
-from teatree.core.management.commands._workspace_ticket_intake import (
+from teatree.core.management.commands._workspace.relocate import RelocateIO, active_overlay_name, run_relocate
+from teatree.core.management.commands._workspace.salvage import emit_records_json, run_salvage
+from teatree.core.management.commands._workspace.ticket_intake import (
     ForeignIssueWorktreeRefusedError,
     InvalidTicketKindError,
     RawTicketInputs,
+    adopt_preflight_refusal,
     build_intake,
     build_ticket,
+    finalize_ticket_provision,
     resolve_adopt_context,
 )
 from teatree.core.models import Ticket, Worktree
-from teatree.core.models.project_learning import ProjectLearning
-from teatree.core.models.ticket_display import format_intake_summary
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.public_identity import StampResult, is_public_github_remote, set_local_noreply_identity
-from teatree.core.reconcile import reconcile_all, reconcile_ticket
-from teatree.core.resolve import WorktreeNotFoundError, _get_user_cwd, resolve_worktree, workspace_owner_ticket
-from teatree.core.runners import WorktreeProvisioner, WorktreeStartRunner, WorktreeTeardownRunner
-from teatree.core.worktree_done import reap_done_worktrees
-from teatree.core.worktree_paths import ticket_dir_for
+from teatree.core.runners import WorktreeStartRunner, WorktreeTeardownRunner
+from teatree.core.worktree.reconcile import reconcile_all, reconcile_ticket
+from teatree.core.worktree.worktree_done import reap_done_worktrees
 from teatree.docker.reclaim import reclaim_disk
 from teatree.utils import git
-from teatree.utils.url_slug import project_slug_from_ref
-
-if TYPE_CHECKING:
-    from teatree.core.models.types import TicketExtra
-
-
-def _project_learnings_for_ticket(ticket: Ticket) -> str:
-    """Durable per-repo learnings (#2892) for *ticket*'s repo, or "" when none recorded."""
-    slug = project_slug_from_ref(ticket.issue_url)
-    return ProjectLearning.objects.content_for_slug(slug) if slug else ""
 
 
 def _worktree_root() -> Path:
@@ -128,6 +116,13 @@ class Command(TyperCommand):
                 help="Adopt this EXISTING branch (implies --adopt). Omit to auto-detect from the current git worktree.",
             ),
         ] = "",
+        adopt_closed: Annotated[
+            bool,
+            typer.Option(
+                "--adopt-closed",
+                help="Override the --adopt guard that refuses a CLOSED/nonexistent target issue/PR URL.",
+            ),
+        ] = False,
         kind: Annotated[
             str, typer.Option("--kind", help="Classify: 'fix' or 'feature' (blank infers from the title, #17).")
         ] = "",
@@ -157,10 +152,9 @@ class Command(TyperCommand):
         # default ``get_overlay()`` env-var path still wins when set.
         overlay = get_overlay(_wh.resolve_overlay_name_for_url(issue_url))
         adopt_ctx = resolve_adopt_context(adopt=adopt, adopt_branch=adopt_branch)
-        if adopt_ctx is not None and (not adopt_ctx.branch or adopt_ctx.branch == git.DETACHED_HEAD):
-            self.stderr.write(
-                "  Refused: --adopt needs a checked-out branch (HEAD is detached); pass --adopt-branch <branch>."
-            )
+        adopt_refusal = adopt_preflight_refusal(overlay, issue_url, adopt_ctx, allow_closed=adopt_closed)
+        if adopt_refusal is not None:
+            self.stderr.write(adopt_refusal)
             return 0
         raw = RawTicketInputs(issue_url, repos, variant, description, take_over, adopt=adopt_ctx, kind=kind)
         try:
@@ -172,42 +166,13 @@ class Command(TyperCommand):
         except ForeignIssueWorktreeRefusedError:
             return 0
 
-        branch = cast("TicketExtra", ticket.extra)["branch"]
-        # In adopt mode the checkout lives where the operator ran the command, not
-        # under the worktree root — surface that path in the summary.
-        ticket_dir = Path(adopt_ctx.worktree_path).parent if adopt_ctx else ticket_dir_for(_worktree_root(), branch)
-
-        # Run the provisioner synchronously so the CLI gives immediate feedback;
-        # the worker that ``start()`` enqueued is idempotent and no-ops when it
-        # finds the worktrees already in place. Single source of truth: the runner.
-        result = WorktreeProvisioner(ticket).run()
-        if not result.ok and not ticket.worktrees.exists():  # ty: ignore[unresolved-attribute]
-            self.stderr.write(f"  Provisioning failed: {result.detail}")
-            # #748: only discard the ticket if it carries NO phase
-            # attestation. ``get_or_create`` may have resolved an
-            # existing loop/coordinator-built ticket whose sessions hold
-            # genuinely-completed-work phase records; ``Session.ticket``
-            # is ``on_delete=CASCADE``, so ``ticket.delete()`` here would
-            # cascade-reap that attestation (the observed session-reaper).
-            # A failed provision must never destroy attested work — leave
-            # the ticket + sessions intact and just report the failure.
-            visited, _ = ticket.aggregate_phase_records()
-            if not visited:
-                ticket.delete()
-                with suppress(OSError):
-                    ticket_dir.rmdir()
-            return 0
-        if not result.ok:
-            self.stderr.write(f"  WARNING: {result.detail}")
-        self.stdout.write(
-            format_intake_summary(
-                ticket,
-                str(ticket_dir),
-                branch,
-                project_learnings=_project_learnings_for_ticket(ticket),
-            )
+        return finalize_ticket_provision(
+            self.stdout.write,
+            self.stderr.write,
+            ticket,
+            adopt_ctx,
+            _worktree_root(),
         )
-        return int(ticket.pk)
 
     @command()
     def provision(
@@ -581,7 +546,7 @@ class Command(TyperCommand):
         The read-only structured EMIT the judgment skill consumes: a JSON array of
         records (path, branch, kind, unique_commit_shas, merged_with_post_merge_work,
         banned_terms_status, liveness, last_commit_date, owner — schema in
-        ``teatree.core.cleanup_emit``). Removes nothing — ``clean-all`` does the
+        ``teatree.core.cleanup.cleanup_emit``). Removes nothing — ``clean-all`` does the
         auto-deletion of provably-redundant items; this surfaces the rest for the
         skill to route (superseded / salvage-to-fresh-PR / defer-live).
         """

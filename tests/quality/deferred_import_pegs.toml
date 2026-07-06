@@ -11,7 +11,7 @@
 "src/teatree/core/_checking_gather.py" = 5
 "src/teatree/core/apps.py" = 2
 "src/teatree/core/checking.py" = 2
-"src/teatree/core/cleanup.py" = 1
+"src/teatree/core/cleanup/cleanup.py" = 1
 "src/teatree/core/cost.py" = 1
 "src/teatree/core/gates/dod_gate.py" = 3
 "src/teatree/core/gates/e2e_mandatory_gate.py" = 3
@@ -28,8 +28,8 @@
 "src/teatree/core/management/commands/_e2e_discovery.py" = 1
 "src/teatree/core/management/commands/_ensure_pr.py" = 1
 "src/teatree/core/management/commands/_rubric_commands.py" = 1
-"src/teatree/core/management/commands/_ship_exec.py" = 1
-"src/teatree/core/management/commands/_ship_gates.py" = 1
+"src/teatree/core/management/commands/_ship/exec.py" = 1
+"src/teatree/core/management/commands/_ship/gates.py" = 1
 "src/teatree/core/management/commands/checking.py" = 3
 "src/teatree/core/management/commands/cost.py" = 2
 "src/teatree/core/management/commands/db.py" = 1
@@ -75,10 +75,10 @@
 "src/teatree/core/reference_linkifier.py" = 4
 "src/teatree/core/reply_transport.py" = 1
 "src/teatree/core/safe_kill.py" = 1
-"src/teatree/core/scope_cache.py" = 1
+"src/teatree/core/intake/scope_cache.py" = 1
 "src/teatree/core/signals.py" = 6
 "src/teatree/core/speak.py" = 2
-"src/teatree/core/step_runner.py" = 4
+"src/teatree/core/provision/step_runner.py" = 4
 "src/teatree/core/sync.py" = 3
 "src/teatree/core/tasks.py" = 5
 "src/teatree/core/views/_rate_limit.py" = 1
@@ -87,7 +87,7 @@
 # repo resolver — deferred for import-weight (merge/__init__ pulls the whole merge
 # subtree, factory_signal_queries the signal stack) to keep waiting.py light.
 "src/teatree/core/waiting.py" = 3
-"src/teatree/core/worktree_tasks.py" = 1
+"src/teatree/core/worktree/worktree_tasks.py" = 1
 
 [intra_loop]
 "src/teatree/loop/domain_jobs.py" = 2

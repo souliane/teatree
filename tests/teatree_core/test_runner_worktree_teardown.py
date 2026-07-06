@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
-from teatree.core.cleanup import CleanupResult
+from teatree.core.cleanup.cleanup import CleanupResult
 from teatree.core.models import Ticket, Worktree
 from teatree.core.runners.worktree_teardown import WorktreeTeardownRunner
 

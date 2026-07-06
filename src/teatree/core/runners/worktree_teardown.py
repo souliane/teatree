@@ -1,6 +1,6 @@
 import logging
 
-from teatree.core.cleanup import cleanup_worktree
+from teatree.core.cleanup.cleanup import cleanup_worktree
 from teatree.core.models import Worktree
 from teatree.core.models.types import WorktreeExtra
 from teatree.core.runners.base import RunnerBase, RunnerResult

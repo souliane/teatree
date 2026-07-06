@@ -156,7 +156,7 @@ class TestPrGroupCoreDispatch:
     ``pr`` subcommands live in ``teatree.core.management.commands.pr`` —
     teatree CORE — and ``create`` gate-validates against the teatree-core
     control DB the shipping gate reads
-    (``teatree.core.db_anchor.assert_lifecycle_db_is_canonical``). Without the
+    (``teatree.core.provision.db_anchor.assert_lifecycle_db_is_canonical``). Without the
     ``core_dispatch`` marker, the overlay project-path resolver prefers any
     ``manage.py`` discovered from the invoking cwd — from inside a ticket
     worktree that is the worktree's OWN ``manage.py``, running against its

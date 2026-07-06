@@ -20,7 +20,7 @@ from teatree.core.gates.owned_repo_guard import (
     require_owned_or_approved,
 )
 from teatree.core.overlay import OverlayBase, OverlayConfig
-from teatree.core.review_candidate import should_review_candidate
+from teatree.core.review.review_candidate import should_review_candidate
 
 
 class _Overlay(OverlayBase):

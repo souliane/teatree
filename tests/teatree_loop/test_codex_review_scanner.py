@@ -43,7 +43,7 @@ def _repo_internal_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     # The #1773 untrusted-public-author variant routing is exercised by
     # TestUntrustedPublicAuthor; the pre-#1773 path-footprint tests treat the
     # repo as internal so the author gate is a no-op for them.
-    monkeypatch.setattr("teatree.core.author_trust.repo_is_internal", lambda *a, **k: True)
+    monkeypatch.setattr("teatree.core.review.author_trust.repo_is_internal", lambda *a, **k: True)
 
 
 SLUG = "souliane/teatree"
@@ -202,7 +202,7 @@ class TestUntrustedPublicAuthor:
         api = FakeCodexPrApi(prs_by_slug={SLUG: [_pr(author="evilhacker", changed_files=("README.md",))]})
         scanner = _scanner(api=api)
 
-        with patch("teatree.core.author_trust.repo_is_internal", return_value=False):
+        with patch("teatree.core.review.author_trust.repo_is_internal", return_value=False):
             signals = scanner.scan()
 
         assert signals[0].payload["variant"] == ADVERSARIAL_REVIEW_VARIANT
@@ -214,7 +214,7 @@ class TestUntrustedPublicAuthor:
         api = FakeCodexPrApi(prs_by_slug={SLUG: [_pr(author="souliane", changed_files=("README.md",))]})
         scanner = _scanner(api=api)
 
-        with patch("teatree.core.author_trust.repo_is_internal", return_value=False):
+        with patch("teatree.core.review.author_trust.repo_is_internal", return_value=False):
             signals = scanner.scan()
 
         assert signals[0].payload["variant"] == STANDARD_REVIEW_VARIANT
@@ -223,7 +223,7 @@ class TestUntrustedPublicAuthor:
         api = FakeCodexPrApi(prs_by_slug={SLUG: [_pr(author="evilhacker", changed_files=("README.md",))]})
         scanner = _scanner(api=api)
 
-        with patch("teatree.core.author_trust.repo_is_internal", return_value=True):
+        with patch("teatree.core.review.author_trust.repo_is_internal", return_value=True):
             signals = scanner.scan()
 
         assert signals[0].payload["variant"] == STANDARD_REVIEW_VARIANT

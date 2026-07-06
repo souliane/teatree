@@ -141,17 +141,18 @@ installed editable from a clone; the eval harness ships inside it.
   the job loud instead of an all-skipped green. The deterministic lanes are gated
   by prek per push + pytest per PR, not re-run here. See "Triggering" below.
   **Lane+shard fan-out ([#2492](https://github.com/souliane/teatree/issues/2492)).**
-  The full 181-scenario x 3-trial suite (`clean_room` 167 / `under_load` 14) does
-  not fit a single `2 x 80min` job budget, and the catalog is not evenly split —
-  one leg per *lane* leaves a 167-scenario `clean_room` leg that hits the same
-  wall. So a `prepare` job computes a `{lane, shard}` matrix
-  (`scripts/eval/lane_matrix.py`: every permitted lane for the scheduled/default
-  run, or the one explicit `lane` input, each split into `ceil(count / 14)`
-  contiguous shards — a deterministic partition by scenario name, none dropped or
-  duplicated). The `eval` job fans OUT — ONE matrix leg per SHARD, each metering at
-  most 14 scenarios (the proven-to-fit size) that fits the budget, in parallel
-  (`clean_room` → 12 shards, `under_load` → 1). `fail-fast: false` keeps each leg's
-  verdict independent. Each leg runs
+  The full multi-hundred-scenario x 3-trial suite (the `clean_room` lane dominates
+  the `under_load` lane in count) does not fit a single `2 x 80min` job budget, and
+  the catalog is not evenly split — one leg per *lane* leaves an outsized
+  `clean_room` leg that hits the same wall. So a `prepare` job computes a
+  `{lane, shard}` matrix (`scripts/eval/lane_matrix.py`: every permitted lane for
+  the scheduled/default run, or the one explicit `lane` input, each split into
+  `ceil(count / 14)` contiguous shards — a deterministic partition by scenario
+  name, none dropped or duplicated). The `eval` job fans OUT — ONE matrix leg per
+  SHARD, each metering at most 14 scenarios (the proven-to-fit shard size) that
+  fits the budget, in parallel (the `clean_room` lane fans into several shards,
+  `under_load` into fewer). `fail-fast: false` keeps each leg's verdict
+  independent. Each leg runs
   `t3 eval run --lane "$EVAL_LANE" --shard "$EVAL_SHARD"` and uploads a per-shard
   `eval-report-<lane>-<index>-<total>` artifact. `--shard` resolves through
   `teatree.eval.lane_shard.filter_specs_by_shard`, the single chokepoint the CLI
@@ -370,8 +371,10 @@ red'd only because the correct trajectory's ~560–580s runtime tripped the then
 wall-clock watchdog, which #2192 cap-tainted into a scenario FAIL under `--require any`
 (see the cap-taint discussion above). The #2615 fairness fix raised the wall-clock
 backstop (`watchdog_seconds` 600 → 1800; `DEFAULT_WATCHDOG_SECONDS` 300 → 900) so
-latency alone no longer reds it — cost (`max_budget_usd: 4.0`) and turns
-(`max_turns: 8`) are left UNTOUCHED as the real gates. The scenario now measures
+latency alone no longer reds it — cost (`max_budget_usd`, since recalibrated 4.0 →
+10.0 for the Agent-SDK/subscription-OAuth resource profile after run 28630941573's
+trial 2 hit `budget_exceeded` on the correct fan-out — see the scenario comment) and
+turns (`max_turns: 8`) remain the real gates. The scenario now measures
 fan-out SHAPE (does the main agent dispatch parallel workers, not edit ticket `.py` or
 run foreground `pytest`/`git`), not `haiku` SPEED. It is therefore NOT a genuine
 model-limit and is removed from the table below.
@@ -382,11 +385,20 @@ model-limit and is removed from the table below.
 | `read_canonical_before_structural_action_under_load` | 0/3, 1/3 | Short trajectory (`max_turns: 4`, trials complete cleanly — no cap-taint): the FAILs are genuine drift. Graded on the emitted single action (canonical `Read` first; **no** post-Read path-hunting `Bash`; **no** from-memory `Agent` spawn). `skills/rules/SKILL.md` § "Read the Canonical Source Before a Structural Action" already teaches the read-then-over-explore drift in mirror image. k=3 variance is inherent `haiku`-under-load over-exploration — matchers unchanged. |
 | `team_mate_spawned_opus_never_sonnet` | 1/3, 0/3 | Graded on the SDK-testable delegation essence (the lead hands the heavy doc unit OFF — an `Agent`/`Task` dispatch or a `TaskUpdate`/`SendMessage` hand-off to a roster mate — instead of editing inline in the main agent). The per-teammate `model=opus` TIER is a HOST roster capability the SDK lane cannot stage, so it is enforced in the real team runtime + `skills/wip` prose, never graded here. The residual RED is genuine `haiku`-under-load drift toward inline work; matchers unchanged. |
 
-These three are the genuine ceiling — they RED in every metered attempt for a
-behavioural reason (a cleanly-completing short trajectory that drifts, not a cap).
-The note exists so a maintainer reading a metered run that shows one of them red knows
-it is the documented limit (a behavioural-drift edge), not a fresh regression to chase
-with a matcher weakening.
+These three RED in every attempt of the historical **`model=haiku`** run
+27903729721 for a behavioural reason (a cleanly-completing short trajectory that
+drifts, not a cap). **Reality check — do not read this table as a current verdict:**
+the catalog now pins `tier: balanced` (→ `sonnet-5`), not `haiku`, and under that tier
+all three PASSED 2/2 in the latest weekly run — `asks_decisions_one_at_a_time`,
+`read_canonical_before_structural_action_under_load`, and
+`team_mate_spawned_opus_never_sonnet` (see `docs/evals/index.md`, run 28630941573).
+The table is therefore retained only as the **mechanism illustration** — the shape a
+both-attempt behavioural RED takes on the honest hard core — not as a live per-scenario
+truth. A static prose table cannot track a moving lane, so the **current per-scenario
+source of truth is the published dashboard** (`docs/evals/index.md`) plus the
+persisted-baseline diff (`t3 eval run --gate-regressions`). The note still serves its
+purpose: a maintainer who sees one of these red under `haiku` knows it is a documented
+behavioural-drift edge, not a fresh regression to chase with a matcher weakening.
 
 **Flaky-but-passing — NOT a model-limit.** Several scenarios RED in one attempt but go
 GREEN in the other under the same `--require any` semantics, so they are NOT ceiling

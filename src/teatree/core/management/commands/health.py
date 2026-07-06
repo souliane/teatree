@@ -1,6 +1,6 @@
 """``t3 <overlay> health show`` — the global operational-health detail view (PR-17).
 
-Reconciles the operational-health registry (:mod:`teatree.core.operational_health`)
+Reconciles the operational-health registry (:mod:`teatree.core.factory.operational_health`)
 so the view is current, then prints the green/yellow/red verdict plus every open
 :class:`~teatree.core.models.known_issue.KnownIssue` row as a table with clickable
 evidence. ``add`` and ``dismiss`` are the two operator verbs — record a manual
@@ -17,8 +17,8 @@ from typing import Annotated
 import typer
 from django_typer.management import TyperCommand, command, initialize
 
+from teatree.core.factory.operational_health import HealthReport, reconcile_health
 from teatree.core.models.known_issue import KnownIssue
-from teatree.core.operational_health import HealthReport, reconcile_health
 from teatree.core.ref_render import render_ref
 from teatree.core.table_output import print_table
 

@@ -11,8 +11,8 @@ from django_typer.management import TyperCommand, command
 
 from teatree.core.gates.db_approval_gate import ApprovalScope, require_approval
 from teatree.core.gates.schema_guard import SelfDbMigrationError, migrate_self_db
+from teatree.core.intake.resolve import resolve_worktree
 from teatree.core.overlay_loader import get_overlay
-from teatree.core.resolve import resolve_worktree
 from teatree.types import SqlRow
 from teatree.utils.approval import ApprovalRefusedError
 

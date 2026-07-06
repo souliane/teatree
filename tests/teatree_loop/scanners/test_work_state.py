@@ -8,12 +8,12 @@ finding surfaces in the action-needed statusline zone rather than staying silent
 from pathlib import Path
 from unittest.mock import patch
 
-from teatree.core.reconcile import DoneButUnmerged, Drift, DuplicateScope, UnpushedWork
+from teatree.core.worktree.reconcile import DoneButUnmerged, Drift, DuplicateScope, UnpushedWork
 from teatree.loop.dispatch import dispatch
 from teatree.loop.domain_jobs import _global_dispatch_jobs
 from teatree.loop.scanners import ScanSignal, WorkStateScanner
 
-_MOD = "teatree.core.reconcile.reconcile_work_state_all"
+_MOD = "teatree.core.worktree.reconcile.reconcile_work_state_all"
 
 
 def _drift(**kwargs: object) -> Drift:

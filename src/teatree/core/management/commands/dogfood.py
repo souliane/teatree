@@ -123,7 +123,7 @@ class Command(TyperCommand):
         Exits 0 on PASS, 11-19 on categorised failure (see
         :func:`_exit_code_for`) via ``raise SystemExit(code)`` so the code
         propagates under ``call_command``. DMs the user via
-        :func:`teatree.notify.notify_user` on any non-PASS outcome
+        :func:`teatree.core.notify.notify_user` on any non-PASS outcome
         unless ``--no-notify-on-failure`` is passed (CI hook).
         """
         target_overlay = overlay or _resolve_active_overlay()

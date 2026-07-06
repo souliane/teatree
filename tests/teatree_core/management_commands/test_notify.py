@@ -1,6 +1,6 @@
 """Tests for ``t3 <overlay> notify send`` management command (#1030).
 
-Wraps :func:`teatree.notify.notify_user` so sub-agent identities can DM
+Wraps :func:`teatree.core.notify.notify_user` so sub-agent identities can DM
 the user directly from the shell instead of relaying through the parent
 turn. Only the unstoppable Slack HTTP boundary
 (:func:`messaging_from_overlay`) is mocked — the rest of the notify path

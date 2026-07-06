@@ -9,8 +9,8 @@ import pytest
 
 import teatree.backends.notion as notion_mod
 from teatree.backends.attachment_fetchers import install_attachment_fetchers
-from teatree.core.attachment_fetch_registry import resolve_attachment_fetcher
-from teatree.core.attachment_manifest import AttachmentKind, AttachmentRef
+from teatree.core.intake.attachment_fetch_registry import resolve_attachment_fetcher
+from teatree.core.intake.attachment_manifest import AttachmentKind, AttachmentRef
 
 
 class TestInstallAttachmentFetchers:

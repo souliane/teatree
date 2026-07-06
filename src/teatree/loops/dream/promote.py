@@ -44,7 +44,7 @@ from typing import TypedDict
 
 import yaml
 
-from teatree.core.review_findings import find_bare_references, neutralize_bare_references
+from teatree.core.review.review_findings import find_bare_references, neutralize_bare_references
 from teatree.eval.discovery import SCENARIOS_DIR
 from teatree.eval.loader import load_eval_yaml
 from teatree.eval.models import UNDER_LOAD_LANE, EvalSpec

@@ -3,7 +3,7 @@
 Default mode extracts frames from a video file at a fixed interval using
 ffmpeg, producing numbered PNG images that an AI agent can read and analyze.
 
-``--verify`` mode runs the deterministic ``teatree.core.video_evidence`` check
+``--verify`` mode runs the deterministic ``teatree.core.evidence.video_evidence`` check
 (leading blank/static pre-roll budget) and exits non-zero on failure — the same
 gate ``e2e post-test-plan`` machine-enforces — so a human or agent can check a
 recording directly before posting it.
@@ -90,7 +90,7 @@ def _resolve_local_source(source: str) -> Path:
 
 def _run_verify(source: str, *, max_dead_lead: float) -> None:
     """Run the deterministic video-evidence check and exit non-zero on failure."""
-    from teatree.core.video_evidence import DEFAULT_MAX_DEAD_LEAD_SECONDS, check_video_evidence
+    from teatree.core.evidence.video_evidence import DEFAULT_MAX_DEAD_LEAD_SECONDS, check_video_evidence
 
     video_path = _resolve_local_source(source)
     budget = max_dead_lead if max_dead_lead > 0 else DEFAULT_MAX_DEAD_LEAD_SECONDS
@@ -157,7 +157,7 @@ def main(  # noqa: PLR0913, PLR0917
     Default: extracts frames at a fixed interval (default: 1 per second) or at
     scene changes, prints numbered PNG paths the agent can Read.
 
-    ``--verify``: runs the deterministic ``teatree.core.video_evidence`` check
+    ``--verify``: runs the deterministic ``teatree.core.evidence.video_evidence`` check
     (leading blank/static pre-roll budget) and exits non-zero when the recording
     opens with too much dead pre-roll — the same gate ``e2e post-test-plan``
     enforces.

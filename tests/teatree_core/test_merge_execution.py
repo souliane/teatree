@@ -1455,9 +1455,9 @@ class TestMergeKeystoneTearsDownWorktree(TestCase):
         with (
             override_settings(**_IMMEDIATE_BACKEND),
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch("teatree.core.cleanup.clone_root", return_value=self.workspace),
+            patch("teatree.core.cleanup.cleanup.clone_root", return_value=self.workspace),
             patch("teatree.core.runners.teardown.clone_root", return_value=self.workspace),
-            patch("teatree.core.cleanup.get_overlay_for_worktree") as cleanup_overlay,
+            patch("teatree.core.cleanup.cleanup.get_overlay_for_worktree") as cleanup_overlay,
             patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_GhStub()),
             self.captureOnCommitCallbacks(execute=True),
         ):
@@ -1486,7 +1486,7 @@ class TestMergeKeystoneTearsDownWorktree(TestCase):
         clear = _clear(ticket, slug="souliane/teatree")
 
         with patch(
-            "teatree.core.cleanup._drop_worktree_db",
+            "teatree.core.cleanup.cleanup._drop_worktree_db",
             side_effect=lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("dropdb timed out")),
         ):
             outcome = self._merge(clear)

@@ -38,7 +38,7 @@ import shutil
 from dataclasses import dataclass
 from typing import Protocol, TypedDict, cast, runtime_checkable
 
-from teatree.core.author_trust import classify_author
+from teatree.core.review.author_trust import classify_author
 from teatree.loop.scanners.base import ScannerError, ScanSignal, classify_gh_stderr
 from teatree.utils.run import run_allowed_to_fail
 

@@ -5,7 +5,7 @@ from django.test import TestCase
 from teatree.core.management.commands._e2e_discovery import resolve_linked_worktree
 from teatree.core.management.commands.e2e import _ticket_frontend_projects
 from teatree.core.models import Ticket, Worktree
-from teatree.core.worktree_env import compose_project
+from teatree.core.worktree.worktree_env import compose_project
 
 
 class TicketFrontendProjectsTests(TestCase):

@@ -47,7 +47,7 @@ _EXAMPLE_OVERLAYS = frozenset({"acme", "example", "myoverlay"})
 # the gate picks up after that PR merges; grandfathered (not exempted) until then.
 _CARVED_OUT_FILES = frozenset(
     {
-        "src/teatree/core/management/commands/_workspace_cleanup.py",
+        "src/teatree/core/management/commands/_workspace/cleanup.py",
     }
 )
 

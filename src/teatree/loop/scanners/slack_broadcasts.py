@@ -58,11 +58,11 @@ from typing import Protocol
 
 from django.db import OperationalError, ProgrammingError
 
-from teatree.core.author_trust import classify_author
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import BroadcastObservation, ScannedBroadcast
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
-from teatree.core.review_candidate import eyes_reacted_by_other
+from teatree.core.review.author_trust import classify_author
+from teatree.core.review.review_candidate import eyes_reacted_by_other
 from teatree.loop.review_claim_signals import (
     filter_review_intent_signals,
     reaction_already_present,

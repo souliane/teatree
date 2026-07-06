@@ -2,7 +2,7 @@
 
 from django.test import TestCase
 
-from teatree.core.factory_score import FactoryScore
+from teatree.core.factory.factory_score import FactoryScore
 from teatree.loops.outer_loop.score import read_score
 
 

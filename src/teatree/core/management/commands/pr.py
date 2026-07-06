@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING, TypedDict, cast
 from django_typer.management import TyperCommand, command
 
 from teatree.core.backend_factory import code_host_from_overlay
-from teatree.core.db_anchor import assert_lifecycle_db_is_canonical
 from teatree.core.gates.orphan_guard import BranchStatus, classify_branch
 from teatree.core.management.commands._close_keyword_gate import run_close_keyword_gate
 from teatree.core.management.commands._closes_issue_crosscheck import run_closes_issue_crosscheck
@@ -28,15 +27,15 @@ from teatree.core.management.commands._pr_ticket_resolve import (
     resolve_ticket,
     ticket_not_found_error,
 )
-from teatree.core.management.commands._ship_exec import (
+from teatree.core.management.commands._ship.exec import (
     ShipEnqueued,
     ShipExecuted,
     ShippingGateFailure,
     _enqueue_ship,
     _ship_sync,
 )
-from teatree.core.management.commands._ship_fsm import reconcile_fsm_for_ship
-from teatree.core.management.commands._ship_gates import (
+from teatree.core.management.commands._ship.fsm import reconcile_fsm_for_ship
+from teatree.core.management.commands._ship.gates import (
     BranchCurrencyFailure,
     DebtDeltaGateFailure,
     E2EMandatoryGateFailure,
@@ -44,13 +43,13 @@ from teatree.core.management.commands._ship_gates import (
     PrBudgetGateFailure,
     VisualQAGateFailure,
 )
-from teatree.core.management.commands._ship_gates import assert_commits_ahead_of_base as _assert_commits_ahead_of_base
-from teatree.core.management.commands._ship_gates import check_shipping_gate as _check_shipping_gate
-from teatree.core.management.commands._ship_gates import run_branch_currency_gate as _run_branch_currency_gate
-from teatree.core.management.commands._ship_gates import run_debt_delta_gate as _run_debt_delta_gate
-from teatree.core.management.commands._ship_gates import run_e2e_mandatory_gate as _run_e2e_mandatory_gate
-from teatree.core.management.commands._ship_gates import run_pr_budget_gate as _run_pr_budget_gate
-from teatree.core.management.commands._ship_gates import run_visual_qa_gate as _run_visual_qa_gate
+from teatree.core.management.commands._ship.gates import assert_commits_ahead_of_base as _assert_commits_ahead_of_base
+from teatree.core.management.commands._ship.gates import check_shipping_gate as _check_shipping_gate
+from teatree.core.management.commands._ship.gates import run_branch_currency_gate as _run_branch_currency_gate
+from teatree.core.management.commands._ship.gates import run_debt_delta_gate as _run_debt_delta_gate
+from teatree.core.management.commands._ship.gates import run_e2e_mandatory_gate as _run_e2e_mandatory_gate
+from teatree.core.management.commands._ship.gates import run_pr_budget_gate as _run_pr_budget_gate
+from teatree.core.management.commands._ship.gates import run_visual_qa_gate as _run_visual_qa_gate
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import Ticket, Worktree
 from teatree.core.on_behalf_gate_recorded import (
@@ -60,6 +59,7 @@ from teatree.core.on_behalf_gate_recorded import (
 )
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
 from teatree.core.overlay_loader import get_overlay
+from teatree.core.provision.db_anchor import assert_lifecycle_db_is_canonical
 from teatree.core.public_identity import MergeResult
 from teatree.core.runners.ship import resolve_and_reconcile_branch, resolve_ship_worktree
 from teatree.types import RawAPIDict

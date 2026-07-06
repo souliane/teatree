@@ -7,7 +7,7 @@ shared :func:`~teatree.loops.shared.regression.no_collateral_regression` fold. T
 is the inverse of the snapshot's own serialization — a pure mapping, no DB.
 """
 
-from teatree.core.factory_score import FactoryScore, ScoredSignal
+from teatree.core.factory.factory_score import FactoryScore, ScoredSignal
 from teatree.core.models.factory_score_snapshot import FactoryScoreSnapshot
 
 

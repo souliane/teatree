@@ -15,8 +15,8 @@ from pathlib import Path
 import typer
 
 from teatree.config import E2ERepo, load_e2e_repos
+from teatree.core.intake.resolve import _find_env_cache, _get_user_cwd, _parse_env_file
 from teatree.core.overlay_loader import get_overlay
-from teatree.core.resolve import _find_env_cache, _get_user_cwd, _parse_env_file
 from teatree.paths import get_data_dir
 from teatree.utils.run import CommandFailedError, run_checked
 

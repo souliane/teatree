@@ -16,7 +16,7 @@ from django.test import TestCase
 
 from teatree.core.models import Ticket, Worktree
 from teatree.core.runners import WorktreeTeardown
-from teatree.core.worktree_done import ReapOutcome
+from teatree.core.worktree.worktree_done import ReapOutcome
 from tests.teatree_core.conftest import CommandOverlay
 
 _GIT = shutil.which("git") or "git"
@@ -184,8 +184,8 @@ class TestWorktreeTeardownUnpushedGuard(TestCase):
     def _teardown(self, ticket: Ticket) -> object:
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch("teatree.core.cleanup.clone_root", return_value=self.workspace),
-            patch("teatree.core.cleanup.get_overlay_for_worktree") as mock_overlay,
+            patch("teatree.core.cleanup.cleanup.clone_root", return_value=self.workspace),
+            patch("teatree.core.cleanup.cleanup.get_overlay_for_worktree") as mock_overlay,
         ):
             mock_overlay.return_value.get_cleanup_steps.return_value = []
             return WorktreeTeardown(ticket).run()

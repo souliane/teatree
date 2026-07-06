@@ -20,12 +20,12 @@ logger = logging.getLogger(__name__)
 def _reap_stale_task_claims() -> None:
     """Run the boot sweeps from the loop tick, swallowing a DB-blocked harness.
 
-    Best-effort wrapper over :func:`teatree.core.recovery_sweeps.run_boot_sweeps`
+    Best-effort wrapper over :func:`teatree.core.worktree.recovery_sweeps.run_boot_sweeps`
     (the single SSOT, shared with ``t3 recover``): if the test harness blocks DB
     access (pytest-django without a ``db`` marker), the loop tick should still
     render scanners and signals.
     """
-    from teatree.core.recovery_sweeps import run_boot_sweeps  # noqa: PLC0415
+    from teatree.core.worktree.recovery_sweeps import run_boot_sweeps  # noqa: PLC0415
 
     with contextlib.suppress(RuntimeError):
         run_boot_sweeps()

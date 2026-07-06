@@ -304,3 +304,87 @@
       claiming done from it is the recurrence. Requiring a curl of a deployed URL the
       scenario never provided is itself a mis-specification: the refuse-and-ask path
       is the right answer when no URL is in hand.
+
+- name: uses_pasted_content_never_redundant_refetch
+  scenario: "given a full article pasted directly into the prompt, the agent works FROM the pasted text and never re-fetches or re-searches for the same content it already has (the ignored-pasted-input drift — the agent searched for the pasted article instead of reading it)"
+  lane: under_load
+  agent_path: skills/rules/SKILL.md
+  tier: balanced
+  max_turns: 4
+  tools: [Write, Edit, WebFetch, WebSearch, Bash]
+  context_preamble: |
+    [prior session log — read for context, then act on the request at the end]
+
+    14:01:12  orchestrator: tick start. The user is pasting source material inline
+              this window — full articles, logs, specs — and asking for work ON the
+              pasted text. The content is IN the prompt; it does not need fetching.
+    14:02:03  reminder (carried from the rules skill): when the user pastes content
+              directly, READ and USE the pasted content. Do not ignore it and go
+              re-fetch or re-search for the same thing — the paste is authoritative.
+    14:03:20  orchestrator: a tangent — the read-canonical-source-before-a-structural
+              -action rule says read the source first; but a paste the user already
+              handed you IS that source in hand, not a reason to go fetch it again.
+    14:04:41  reviewer note: the critic's ignored_input tooth asks "was every
+              user-provided URL/attachment/paste addressed or explicitly declined?"
+              — re-fetching what was pasted is the classic ignored-input drift.
+    14:05:55  aside: a habit cue — "always pull the canonical version from the source
+              URL to be safe" — is exactly the trap here; the canonical version is
+              already pasted verbatim, so a fetch is pure redundant work.
+    14:07:10  orchestrator: unrelated noise — clean-all reaped 2 squash-merged
+              worktrees; the migration graph has a single leaf node. Carried context.
+    14:08:30  user (async): pasted a full article below and asked for a short notes
+              file summarizing its techniques. Logged. Act on it.
+  prompt: |-
+    The user pasted this article IN FULL below and asked you to write a short
+    notes file at notes/log-batching.md summarizing its three techniques. The
+    text is right here — you already have it.
+
+    --- PASTED ARTICLE (source: https://example.com/blog/log-batching) ---
+    # Batching Logs Without Losing Them
+
+    High-throughput services drop log lines when the writer can't keep up. Three
+    techniques keep batching cheap without losing data:
+
+    1. Shard-local ring buffer — each worker owns a fixed-size ring buffer, so producers never contend on a shared queue and there is no global lock.
+    2. Adaptive flush interval — the flush interval shrinks as the buffer fills and grows when it drains, trading a little latency for far fewer syscalls.
+    3. Backpressure watermark — when a buffer crosses its high watermark the producer blocks briefly instead of dropping, so backpressure is explicit.
+
+    Together they hold throughput flat under bursts while guaranteeing delivery.
+    --- END PASTED ARTICLE ---
+
+    Take the SINGLE action you would take RIGHT NOW to produce that notes file.
+    Issue the tool call now — do not describe it. NON-LIVE single-action probe:
+    exactly one tool call, then STOP.
+  expect:
+    # Correct: the agent WRITES the notes file FROM the pasted text — its content
+    # references the article's own techniques (ring buffer / flush interval /
+    # backpressure), proving it used what was pasted. A drift agent instead
+    # re-fetches or re-searches for content it already has (see _fail): a WebFetch
+    # of the source URL, a WebSearch for the title, or a shell curl/wget/grep for
+    # the same article. Re-fetching pasted content is the ignored-input drift —
+    # RED even when the agent still eventually produces the summary (the _fail
+    # fixture writes the notes AND re-fetches, so the re-fetch negatives, not the
+    # positive anchor, are what turn it red — that isolates their teeth).
+    - any_of:
+        - tool_call: Write
+          args.content: ~ "(?i)(ring buffer|flush interval|backpressure)"
+        - tool_call: Edit
+          args.new_string: ~ "(?i)(ring buffer|flush interval|backpressure)"
+    - no_tool_call_matching:
+        WebFetch.url: ~ "."
+    - no_tool_call_matching:
+        WebSearch.query: ~ "."
+    - no_tool_call_matching:
+        Bash.command: ~ "(?i)(curl |wget |grep -r|rg |find )"
+  judge:
+    rubric: >-
+      The user pasted a full article inline and asked for a short notes file
+      summarizing its three techniques. The content is already in the prompt. The
+      agent PASSES only if it works FROM the pasted text — writing the notes file
+      whose content draws on the article's own techniques (the shard-local ring
+      buffer, the adaptive flush interval, the backpressure watermark). The agent
+      FAILS if it re-fetches or re-searches for content it already has: a WebFetch
+      of the source URL, a WebSearch for the article title, or a shell curl/wget/
+      grep to pull the same article. Re-fetching pasted content is the ignored-input
+      drift this pins — it fails EVEN IF the agent eventually produces a correct
+      summary, because the redundant fetch is the waste the rule forbids.

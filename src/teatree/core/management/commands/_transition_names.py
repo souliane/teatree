@@ -27,4 +27,11 @@ ALLOWED_TRANSITIONS = {
     # stranded at ``in_review`` after a failed ship can be reconciled
     # without a code-level workaround.
     "reconcile_reviewed",
+    # Abandon/neutralize a mis-adopted or stray ticket: ``ignore`` drives the
+    # reversible terminal IGNORED state (its body only stamps ``ignored_from``;
+    # it enqueues no teardown/ship task and posts nothing to the forge), and
+    # ``unignore`` restores the pre-abandon state. Both are FSM-model methods
+    # the CLI merely refused to dispatch.
+    "ignore",
+    "unignore",
 }

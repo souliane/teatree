@@ -10,7 +10,7 @@ velocity.
 
 The scanner only *schedules*; the dispatcher picks up the queued task
 and shells out to ``t3 dogfood overlay-provision-smoke``. Failures DM
-the user via :mod:`teatree.notify` from inside the management command,
+the user via :mod:`teatree.core.notify` from inside the management command,
 so the scanner has no responsibility for the verdict pipeline beyond
 keeping its cadence honest.
 """

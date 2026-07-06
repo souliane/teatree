@@ -19,7 +19,7 @@ from django.test import TestCase
 import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayBase, ProvisionStep
-from teatree.core.worktree_env import _declared_core_keys, render_env_cache
+from teatree.core.worktree.worktree_env import _declared_core_keys, render_env_cache
 from teatree.types import DbImportStrategy
 from teatree.utils.compose_contract import ComposeVarRef, check_contract, extract_refs, unproduced_declared_keys
 

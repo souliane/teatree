@@ -11,8 +11,8 @@ from types import SimpleNamespace
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.factory_signal_queries import SignalReading, SignalStatus
-from teatree.core.factory_signals import Direction, FactorySignalsReport, SignalRow, SignalVerdict
+from teatree.core.factory.factory_signal_queries import SignalReading, SignalStatus
+from teatree.core.factory.factory_signals import Direction, FactorySignalsReport, SignalRow, SignalVerdict
 from teatree.core.models import ConfigSetting, DeferredQuestion, Directive, Ticket
 from teatree.core.models.mechanism_sketch import sketch_from_envelope
 from teatree.loop.self_improve.budget import BudgetVerdict
@@ -234,6 +234,47 @@ class TestFullHappyPathAndKeepRule(TestCase):
         second = run_tick(settings=_open_settings(), seams=_seams())
         assert second.action == "waiting"
         assert second.reason == "awaiting_human_revert"
+
+
+class TestDirectiveSpawnedTicketsDoNotCollide(TestCase):
+    """The full real tick's two spawned tickets keep distinct namespaced keys (#102).
+
+    The FULL real tick spawns an interpret ticket AND an impl ticket under one
+    umbrella (#3009). Both anchor on the same umbrella URL with only a URL fragment
+    to disambiguate (``#directive=<pk>`` vs ``#directive-impl=<pk>``), so their
+    ``repo_namespaced_key`` must stay distinct — the whole full-tick path throws an
+    IntegrityError on the ``unique_nonempty_repo_namespaced_key`` constraint otherwise
+    (the PR-8 dogfood collision that blocks enabling ``directive_loop_enabled``).
+    """
+
+    def _drive_captured_to_implementing(self) -> Directive:
+        directive = Directive.objects.capture("max 1 MR", source=Directive.Source.CLI, scope_overlay=_SCOPE)
+        # CAPTURED → interpret_dispatched: creates the synthetic interpret ticket under #3009.
+        assert _tick().action == "interpret_dispatched"
+        # The recorder binds the sketch (INTERPRETED).
+        directive.refresh_from_db()
+        directive.record_interpretation(sketch_from_envelope(valid_envelope()), constraint_statement="c")
+        # INTERPRETED → ratify_asked: records the human-approval question.
+        assert _tick().action == "ratify_asked"
+        directive.refresh_from_db()
+        DeferredQuestion.consume(directive.ratify_question_id, answer="approve")
+        # RATIFY_PENDING → admitted.
+        assert _tick().action == "admitted"
+        # ADMITTED → implementing: creates the impl ticket under the SAME #3009 umbrella.
+        assert _tick().action == "implementing"
+        directive.refresh_from_db()
+        return directive
+
+    def test_full_tick_spawns_both_tickets_without_key_collision(self) -> None:
+        directive = self._drive_captured_to_implementing()
+        interpret_url = f"https://github.com/souliane/teatree/issues/3009#directive={directive.pk}"
+        impl_url = f"https://github.com/souliane/teatree/issues/3009#directive-impl={directive.pk}"
+        interpret_ticket = Ticket.objects.get(issue_url=interpret_url)
+        impl_ticket = Ticket.objects.get(issue_url=impl_url)
+        # Both spawned tickets exist and carry DISTINCT, non-empty namespaced keys.
+        assert interpret_ticket.repo_namespaced_key
+        assert impl_ticket.repo_namespaced_key
+        assert interpret_ticket.repo_namespaced_key != impl_ticket.repo_namespaced_key
 
 
 class TestIdle(TestCase):

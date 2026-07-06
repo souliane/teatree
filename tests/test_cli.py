@@ -19,8 +19,8 @@ import teatree.cli as cli_mod
 import teatree.cli.agent as cli_agent_mod
 import teatree.cli.review.request as cli_review_request_mod
 import teatree.config as config_mod
+import teatree.core.intake.resolve as resolve_mod
 import teatree.core.overlay_loader as overlay_loader_mod
-import teatree.core.resolve as resolve_mod
 import teatree.utils.run as utils_run_mod
 from teatree.cli import _ensure_editable_if_contributing, _find_overlay_project, _find_project_root, app
 from teatree.cli import doctor as cli_doctor_mod

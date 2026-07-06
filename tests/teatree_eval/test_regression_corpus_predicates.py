@@ -74,7 +74,7 @@ class TestPredicatesAreAntiVacuous(TestCase):
             assert predicates._check_forge_resolves_by_host_not_token() is False
 
     def test_first_line_predicate_red_when_validator_accepts_everything(self) -> None:
-        with patch("teatree.core.mr_metadata.validate_mr_metadata", return_value=[]):
+        with patch("teatree.core.review.mr_metadata.validate_mr_metadata", return_value=[]):
             # A validator that never rejects → the must-reject leg fails.
             assert predicates._check_mr_description_first_line_validated() is False
 

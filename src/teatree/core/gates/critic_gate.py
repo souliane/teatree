@@ -42,7 +42,6 @@ import logging
 from typing import TYPE_CHECKING
 
 from teatree.config import get_effective_settings
-from teatree.core.critic_rubric import deterministic_items, item_for, llm_items
 from teatree.core.gates.plan_currency_gate import latest_plan_artifact
 from teatree.core.modelkit.gate_registry import register_gate
 from teatree.core.models.attachment_manifest import AttachmentManifest
@@ -51,6 +50,7 @@ from teatree.core.models.critic_finding import CriticFinding, CriticFindingSpec
 from teatree.core.models.critic_verdict import CriticVerdict, CriticVerdictError
 from teatree.core.models.errors import CriticGateError
 from teatree.core.models.merge_clear import MergeAudit
+from teatree.core.review.critic_rubric import deterministic_items, item_for, llm_items
 
 if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket

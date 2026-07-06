@@ -32,7 +32,7 @@ error) releases the claim so a future tick retries; a definitive
 Self-authored skip (#1838): the bot must never react on a review-request
 the *user themselves* posted for their *own* MR. Before claiming the row
 the merge author is fetched from the code host and matched against the
-user's forge identities via :func:`teatree.core.review_candidate.author_is_self`
+user's forge identities via :func:`teatree.core.review.review_candidate.author_is_self`
 — the same notion of "self" the review-candidate skip-conditions use.
 A self-authored merged MR closes the row (so the nag train stops too)
 without reacting; an unresolved author is not provably self, so it is
@@ -48,7 +48,7 @@ from django.utils import timezone
 from teatree.core.backend_protocols import CodeHostBackend, MessagingBackend, PrOpenState
 from teatree.core.models import ReviewRequestPost
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
-from teatree.core.review_candidate import author_is_self
+from teatree.core.review.review_candidate import author_is_self
 from teatree.loop.scanners.base import ScanSignal
 from teatree.types import RawAPIDict
 

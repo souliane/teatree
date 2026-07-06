@@ -9,7 +9,7 @@ setup — clone resolution must degrade to "no clone" rather than crash.
 
 from pathlib import Path
 
-from teatree.core.clone_paths import find_clone_path
+from teatree.core.worktree.clone_paths import find_clone_path
 from tests.teatree_core.cleanup._shared import _run_git
 
 

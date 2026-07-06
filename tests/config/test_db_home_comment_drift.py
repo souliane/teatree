@@ -12,7 +12,7 @@ import inspect
 from pathlib import Path
 
 import teatree.config.settings as settings_mod
-import teatree.core.close_trailer_scanner as close_trailer_mod
+import teatree.core.intake.close_trailer_scanner as close_trailer_mod
 
 _BANNED_PHRASES = ("[teatree.publish_gates]", "parsed from", "Parsed from")
 _SETTING = "ban_close_trailers_on_namespaces"

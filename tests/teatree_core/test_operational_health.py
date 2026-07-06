@@ -1,6 +1,6 @@
 """The global operational-health aggregator (PR-17, M6).
 
-Distinct from ``teatree.core.health`` (per-worktree readiness). This module
+Distinct from ``teatree.core.worktree.health`` (per-worktree readiness). This module
 computes the green/yellow/red factory-health verdict from deterministic durable
 signals and persists them as ``KnownIssue`` rows.
 """
@@ -13,9 +13,7 @@ import pytest
 from django.apps import apps
 from django.utils import timezone
 
-from teatree.core.models import Session, Task, Ticket
-from teatree.core.models.known_issue import KnownIssue
-from teatree.core.operational_health import (
+from teatree.core.factory.operational_health import (
     HealthSignal,
     HealthStatus,
     _failed_task_signals,
@@ -25,6 +23,8 @@ from teatree.core.operational_health import (
     read_health,
     reconcile_health,
 )
+from teatree.core.models import Session, Task, Ticket
+from teatree.core.models.known_issue import KnownIssue
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -71,19 +71,19 @@ class TestReconcileHealth:
             HealthSignal("sig-a", KnownIssue.Severity.WARNING, "a"),
             HealthSignal("sig-b", KnownIssue.Severity.CRITICAL, "b"),
         ]
-        with patch("teatree.core.operational_health.collect_signals", return_value=signals):
+        with patch("teatree.core.factory.operational_health.collect_signals", return_value=signals):
             report = reconcile_health()
         assert report.status is HealthStatus.RED
         assert report.open_count == 2
         # Next reconcile with sig-a gone auto-resolves it, leaves the critical.
-        with patch("teatree.core.operational_health.collect_signals", return_value=signals[1:]):
+        with patch("teatree.core.factory.operational_health.collect_signals", return_value=signals[1:]):
             report2 = reconcile_health()
         assert report2.open_count == 1
         assert set(KnownIssue.objects.open().values_list("fingerprint", flat=True)) == {"sig-b"}
 
     def test_reconcile_failure_falls_open_to_read(self) -> None:
         KnownIssue.objects.record_signal(HealthSignal("live", KnownIssue.Severity.WARNING, "s"))
-        with patch("teatree.core.operational_health.collect_signals", side_effect=RuntimeError("boom")):
+        with patch("teatree.core.factory.operational_health.collect_signals", side_effect=RuntimeError("boom")):
             report = reconcile_health()
         # The pre-existing open row survives; the crash never resolves it.
         assert report.open_count == 1
@@ -187,7 +187,7 @@ class TestOverlaySignalCollector:
                 raise RuntimeError(_OVERLAY_ON_FIRE)
 
         with patch(
-            "teatree.core.operational_health.get_all_overlays",
+            "teatree.core.factory.operational_health.get_all_overlays",
             return_value={"acme": _Good(), "broken": _Broken()},
         ):
             signals = _overlay_health_signals()

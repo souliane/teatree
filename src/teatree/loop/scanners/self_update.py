@@ -202,7 +202,7 @@ def _maybe_notify_stale_clone(*, label: str, path: Path, outcome: _PullOutcome) 
     """
     if outcome.outcome != "skipped":
         return
-    from teatree.core.stale_clone_notice import (  # noqa: PLC0415
+    from teatree.core.worktree.stale_clone_notice import (  # noqa: PLC0415
         StaleCloneReason,
         StaleCloneSkip,
         notify_stale_clone_skip,

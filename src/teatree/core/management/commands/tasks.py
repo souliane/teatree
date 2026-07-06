@@ -11,6 +11,7 @@ from django_typer.management import TyperCommand, command
 from teatree.agents._headless_options import UUID_RE
 from teatree.agents.prompt import build_interactive_context
 from teatree.agents.skill_bundle import resolve_skill_bundle
+from teatree.core.intake.ticket_kind_classification import classify_ticket_kind
 from teatree.core.machine_output import emit
 from teatree.core.management.commands.tasks_session_view import (
     TaskRow,
@@ -22,7 +23,6 @@ from teatree.core.models import InvalidTransitionError, Task, TaskAttempt, Ticke
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
 from teatree.core.overlay_loader import get_overlay_for_ticket
 from teatree.core.session_identity import current_session_id
-from teatree.core.ticket_kind_classification import classify_ticket_kind
 
 logger = logging.getLogger(__name__)
 
@@ -195,7 +195,7 @@ class Command(TyperCommand):
         from django.db import transaction  # noqa: PLC0415
         from django.utils import timezone  # noqa: PLC0415
 
-        from teatree.core.completion_evidence import (  # noqa: PLC0415
+        from teatree.core.review.completion_evidence import (  # noqa: PLC0415
             CompletionEvidenceError,
             check_completion_evidence,
             normalize_artifact_pointers,

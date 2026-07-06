@@ -76,7 +76,7 @@ def _check_branch_currency_conflict_only() -> bool:
     * return a finding when the reviewed SHA truly conflicts with the target, and
     * return ``None`` when the SHA is merely behind but conflict-free.
     """
-    from teatree.core.branch_currency import sha_conflicts_with_target  # noqa: PLC0415
+    from teatree.core.worktree.branch_currency import sha_conflicts_with_target  # noqa: PLC0415
 
     with tempfile.TemporaryDirectory() as raw:
         work = Path(raw)
@@ -400,7 +400,7 @@ def _check_mr_description_first_line_validated() -> bool:
     * reject a description whose first line is not conventional-commit, and
     * accept a conventional-commit first line with a What/Why body.
     """
-    from teatree.core.mr_metadata import DEFAULT_MR_TITLE_REGEX, validate_mr_metadata  # noqa: PLC0415
+    from teatree.core.review.mr_metadata import DEFAULT_MR_TITLE_REGEX, validate_mr_metadata  # noqa: PLC0415
 
     title = "feat(ship): add the gate (#1367)"
     bad_first_line = "## Summary\nAdds the gate.\n\n## Why\nThe convention is missed often."

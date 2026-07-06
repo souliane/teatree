@@ -1,4 +1,4 @@
-"""Tests for teatree.core.reconcile — state drift detector."""
+"""Tests for teatree.core.worktree.reconcile — state drift detector."""
 
 import shutil
 import subprocess
@@ -10,12 +10,12 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
-import teatree.core.branch_classification as bc
 import teatree.core.overlay_loader as overlay_loader_mod
+import teatree.core.worktree.branch_classification as bc
 from teatree.core.models import Ticket, Worktree
 from teatree.core.models.merge_clear import MergeAudit, MergeClear
 from teatree.core.overlay import OverlayBase
-from teatree.core.reconcile import (
+from teatree.core.worktree.reconcile import (
     DoneButUnmerged,
     Drift,
     DuplicateScope,
@@ -32,7 +32,7 @@ from teatree.core.reconcile import (
     reconcile_ticket,
     reconcile_work_state_all,
 )
-from teatree.core.worktree_env import write_env_cache
+from teatree.core.worktree.worktree_env import write_env_cache
 from teatree.utils import git
 from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git
 from tests.teatree_core.conftest import CommandOverlay
@@ -125,9 +125,9 @@ class TestReconcileTicket(TestCase):
         with (
             tempfile.TemporaryDirectory() as tmp,
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=_COMMAND),
-            patch("teatree.core.reconcile._find_docker_containers", return_value=[]),
-            patch("teatree.core.reconcile._find_worktree_paths_on_disk", return_value=set()),
-            patch("teatree.core.reconcile.db_exists", return_value=True),
+            patch("teatree.core.worktree.reconcile._find_docker_containers", return_value=[]),
+            patch("teatree.core.worktree.reconcile._find_worktree_paths_on_disk", return_value=set()),
+            patch("teatree.core.worktree.reconcile.db_exists", return_value=True),
         ):
             ticket, _, _ = _make(tmp)
             drift = reconcile_ticket(ticket)
@@ -139,9 +139,9 @@ class TestReconcileTicket(TestCase):
         with (
             tempfile.TemporaryDirectory() as tmp,
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=_COMMAND),
-            patch("teatree.core.reconcile._find_docker_containers", return_value=[]),
-            patch("teatree.core.reconcile._find_worktree_paths_on_disk", return_value=set()),
-            patch("teatree.core.reconcile.db_exists", return_value=True),
+            patch("teatree.core.worktree.reconcile._find_docker_containers", return_value=[]),
+            patch("teatree.core.worktree.reconcile._find_worktree_paths_on_disk", return_value=set()),
+            patch("teatree.core.worktree.reconcile.db_exists", return_value=True),
         ):
             ticket, wt, _ = _make(tmp)
             spec = write_env_cache(wt)
@@ -157,9 +157,9 @@ class TestReconcileTicket(TestCase):
         with (
             tempfile.TemporaryDirectory() as tmp,
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=_COMMAND),
-            patch("teatree.core.reconcile._find_docker_containers", return_value=[]),
-            patch("teatree.core.reconcile._find_worktree_paths_on_disk", return_value=set()),
-            patch("teatree.core.reconcile.db_exists", return_value=True),
+            patch("teatree.core.worktree.reconcile._find_docker_containers", return_value=[]),
+            patch("teatree.core.worktree.reconcile._find_worktree_paths_on_disk", return_value=set()),
+            patch("teatree.core.worktree.reconcile.db_exists", return_value=True),
         ):
             ticket, wt, wt_path = _make(tmp)
             write_env_cache(wt)
@@ -173,11 +173,11 @@ class TestReconcileTicket(TestCase):
             tempfile.TemporaryDirectory() as tmp,
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=_COMMAND),
             patch(
-                "teatree.core.reconcile._find_docker_containers",
+                "teatree.core.worktree.reconcile._find_docker_containers",
                 return_value=["backend-wt99-web-1"],
             ),
-            patch("teatree.core.reconcile._find_worktree_paths_on_disk", return_value=set()),
-            patch("teatree.core.reconcile.db_exists", return_value=True),
+            patch("teatree.core.worktree.reconcile._find_worktree_paths_on_disk", return_value=set()),
+            patch("teatree.core.worktree.reconcile.db_exists", return_value=True),
         ):
             ticket, wt, _ = _make(tmp)
             wt.state = Worktree.State.CREATED  # post-teardown
@@ -190,9 +190,9 @@ class TestReconcileTicket(TestCase):
         with (
             tempfile.TemporaryDirectory() as tmp,
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=_COMMAND),
-            patch("teatree.core.reconcile._find_docker_containers", return_value=[]),
-            patch("teatree.core.reconcile._find_worktree_paths_on_disk", return_value=set()),
-            patch("teatree.core.reconcile.db_exists", return_value=True),
+            patch("teatree.core.worktree.reconcile._find_docker_containers", return_value=[]),
+            patch("teatree.core.worktree.reconcile._find_worktree_paths_on_disk", return_value=set()),
+            patch("teatree.core.worktree.reconcile.db_exists", return_value=True),
         ):
             ticket, wt, _ = _make(tmp)
             write_env_cache(wt)
@@ -221,9 +221,9 @@ class TestReconcileMissingDbUsesWorktreePgUser(TestCase):
         with (
             tempfile.TemporaryDirectory() as tmp,
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=self._OVERLAYS),
-            patch("teatree.core.reconcile._find_docker_containers", return_value=[]),
-            patch("teatree.core.reconcile._find_worktree_paths_on_disk", return_value=set()),
-            patch("teatree.core.reconcile.db_exists", side_effect=self._existing_only_as_superuser),
+            patch("teatree.core.worktree.reconcile._find_docker_containers", return_value=[]),
+            patch("teatree.core.worktree.reconcile._find_worktree_paths_on_disk", return_value=set()),
+            patch("teatree.core.worktree.reconcile.db_exists", side_effect=self._existing_only_as_superuser),
         ):
             ticket, wt, _ = _make(tmp)
             write_env_cache(wt)
@@ -234,9 +234,9 @@ class TestReconcileMissingDbUsesWorktreePgUser(TestCase):
         with (
             tempfile.TemporaryDirectory() as tmp,
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=self._OVERLAYS),
-            patch("teatree.core.reconcile._find_docker_containers", return_value=[]),
-            patch("teatree.core.reconcile._find_worktree_paths_on_disk", return_value=set()),
-            patch("teatree.core.reconcile.db_exists", return_value=False),
+            patch("teatree.core.worktree.reconcile._find_docker_containers", return_value=[]),
+            patch("teatree.core.worktree.reconcile._find_worktree_paths_on_disk", return_value=set()),
+            patch("teatree.core.worktree.reconcile.db_exists", return_value=False),
         ):
             ticket, wt, _ = _make(tmp)
             write_env_cache(wt)
@@ -253,9 +253,9 @@ class TestReconcileUnresolvableOverlay(TestCase):
     def _patches(self):
         return (
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=_COMMAND),
-            patch("teatree.core.reconcile._find_docker_containers", return_value=[]),
-            patch("teatree.core.reconcile._find_worktree_paths_on_disk", return_value=set()),
-            patch("teatree.core.reconcile.db_exists", return_value=True),
+            patch("teatree.core.worktree.reconcile._find_docker_containers", return_value=[]),
+            patch("teatree.core.worktree.reconcile._find_worktree_paths_on_disk", return_value=set()),
+            patch("teatree.core.worktree.reconcile.db_exists", return_value=True),
         )
 
     def test_records_unresolvable_overlay_instead_of_raising(self) -> None:
@@ -319,8 +319,8 @@ class TestStaleWorktreeDirAttributionIsSegmentAnchored(TestCase):
         drift = Drift(ticket_pk=ticket.pk)
         foreign = "/ws/90-other/repo"  # belongs to ticket 90, not 9
         with (
-            patch("teatree.core.reconcile._find_worktree_paths_on_disk", return_value={foreign}),
-            patch("teatree.core.reconcile.resolve_clone_path", return_value=Path("/ws/repo")),
+            patch("teatree.core.worktree.reconcile._find_worktree_paths_on_disk", return_value={foreign}),
+            patch("teatree.core.worktree.reconcile.resolve_clone_path", return_value=Path("/ws/repo")),
         ):
             _collect_stale_worktree_dirs(drift, [wt], ticket, Path("/ws"))
 
@@ -331,8 +331,8 @@ class TestStaleWorktreeDirAttributionIsSegmentAnchored(TestCase):
         drift = Drift(ticket_pk=ticket.pk)
         genuine = "/ws/9-elsewhere/repo"  # a stale dir genuinely for ticket 9
         with (
-            patch("teatree.core.reconcile._find_worktree_paths_on_disk", return_value={genuine}),
-            patch("teatree.core.reconcile.resolve_clone_path", return_value=Path("/ws/repo")),
+            patch("teatree.core.worktree.reconcile._find_worktree_paths_on_disk", return_value={genuine}),
+            patch("teatree.core.worktree.reconcile.resolve_clone_path", return_value=Path("/ws/repo")),
         ):
             _collect_stale_worktree_dirs(drift, [wt], ticket, Path("/ws"))
 

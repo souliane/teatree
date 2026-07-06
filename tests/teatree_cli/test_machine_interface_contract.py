@@ -52,8 +52,8 @@ class TestWorkspaceSalvageSingleEmit(TestCase):
     """
 
     def test_outcome_line_prints_exactly_once(self) -> None:
-        import teatree.core.management.commands._workspace_salvage as ws_salvage_mod  # noqa: PLC0415
-        from teatree.core.cleanup_salvage import SalvageResult  # noqa: PLC0415
+        import teatree.core.management.commands._workspace.salvage as ws_salvage_mod  # noqa: PLC0415
+        from teatree.core.cleanup.cleanup_salvage import SalvageResult  # noqa: PLC0415
 
         result = SalvageResult(salvaged=True, deleted=True, pr_url="https://x/pr/9", salvage_branch="salvage/feat")
         with (

@@ -28,14 +28,14 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 # git work to a file. The ``cleanup_*.py`` family is globbed so a new sibling is
 # covered automatically.
 _SCANNED_MODULES: tuple[Path, ...] = (
-    _REPO_ROOT / "src" / "teatree" / "core" / "cleanup.py",
+    _REPO_ROOT / "src" / "teatree" / "core" / "cleanup" / "cleanup.py",
     _REPO_ROOT / "src" / "teatree" / "core" / "handover.py",
     _REPO_ROOT / "src" / "teatree" / "core" / "stop_snapshot.py",
-    _REPO_ROOT / "src" / "teatree" / "core" / "worktree_done.py",
+    _REPO_ROOT / "src" / "teatree" / "core" / "worktree" / "worktree_done.py",
     _REPO_ROOT / "src" / "teatree" / "utils" / "git_worktree.py",
     _REPO_ROOT / "src" / "teatree" / "utils" / "git.py",
     _REPO_ROOT / "hooks" / "scripts" / "hook_router.py",
-    *sorted((_REPO_ROOT / "src" / "teatree" / "core").glob("cleanup_*.py")),
+    *sorted((_REPO_ROOT / "src" / "teatree" / "core" / "cleanup").glob("cleanup_*.py")),
 )
 
 # Each pattern matches a git-work-to-file SERIALIZATION call, not the benign word

@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
-from teatree.core.cleanup import _branch_pr_is_merged
+from teatree.core.cleanup.cleanup import _branch_pr_is_merged
 
 
 def _dispatch(gh_stdout: str, glab_stdout: str) -> Callable[..., subprocess.CompletedProcess[str]]:
