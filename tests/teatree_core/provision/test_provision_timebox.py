@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.test import TestCase, override_settings
 
-from teatree.core.provision_timebox import (
+from teatree.core.provision.provision_timebox import (
     DEFAULT_FAST_STEP_TIMEOUT_SECONDS,
     DEFAULT_STEP_TIMEOUT_SECONDS,
     detect_migration_conflict,
@@ -25,7 +25,7 @@ from teatree.core.provision_timebox import (
     run_timeboxed_db_import,
     run_timeboxed_step,
 )
-from teatree.core.step_runner import run_step
+from teatree.core.provision.step_runner import run_step
 
 
 class TestDetectMigrationConflict(TestCase):
@@ -66,19 +66,19 @@ class TestResolveStepTimeout(TestCase):
 
     @override_settings()
     def test_heavy_override_wins(self) -> None:
-        with patch("teatree.core.provision_timebox.get_effective_settings") as mock_settings:
+        with patch("teatree.core.provision.provision_timebox.get_effective_settings") as mock_settings:
             mock_settings.return_value = MagicMock(provision_step_timeout_seconds=42)
             assert resolve_step_timeout_seconds(heavy=True) == 42
 
     @override_settings()
     def test_fast_override_wins(self) -> None:
-        with patch("teatree.core.provision_timebox.get_effective_settings") as mock_settings:
+        with patch("teatree.core.provision.provision_timebox.get_effective_settings") as mock_settings:
             mock_settings.return_value = MagicMock(provision_fast_step_timeout_seconds=7)
             assert resolve_step_timeout_seconds() == 7
 
     @override_settings()
     def test_non_positive_heavy_value_falls_back_to_default(self) -> None:
-        with patch("teatree.core.provision_timebox.get_effective_settings") as mock_settings:
+        with patch("teatree.core.provision.provision_timebox.get_effective_settings") as mock_settings:
             mock_settings.return_value = MagicMock(provision_step_timeout_seconds=0)
             assert resolve_step_timeout_seconds(heavy=True) == DEFAULT_STEP_TIMEOUT_SECONDS
 
@@ -86,8 +86,8 @@ class TestResolveStepTimeout(TestCase):
 class TestRunTimeboxedStep(TestCase):
     """A timeout fails loud + alerts; a conflict is diagnosed; progress heartbeats."""
 
-    @patch("teatree.core.provision_timebox.notify_user")
-    @patch("teatree.core.provision_timebox.run_allowed_to_fail")
+    @patch("teatree.core.provision.provision_timebox.notify_user")
+    @patch("teatree.core.provision.provision_timebox.run_allowed_to_fail")
     def test_timeout_aborts_and_alerts(self, mock_run: MagicMock, mock_notify: MagicMock) -> None:
         mock_run.side_effect = subprocess.TimeoutExpired(cmd=["migrate"], timeout=1)
         result = run_timeboxed_step("migrate", ["manage.py", "migrate"], timeout=1)
@@ -97,8 +97,8 @@ class TestRunTimeboxedStep(TestCase):
         alert_text = mock_notify.call_args.args[0]
         assert "migrate" in alert_text
 
-    @patch("teatree.core.provision_timebox.notify_user")
-    @patch("teatree.core.provision_timebox.run_allowed_to_fail")
+    @patch("teatree.core.provision.provision_timebox.notify_user")
+    @patch("teatree.core.provision.provision_timebox.run_allowed_to_fail")
     def test_migration_conflict_diagnosed_in_alert(self, mock_run: MagicMock, mock_notify: MagicMock) -> None:
         mock_run.return_value = MagicMock(
             returncode=1,
@@ -112,16 +112,16 @@ class TestRunTimeboxedStep(TestCase):
         assert "migration" in alert_text.lower()
         assert "makemigrations --merge" in alert_text
 
-    @patch("teatree.core.provision_timebox.notify_user")
-    @patch("teatree.core.provision_timebox.run_allowed_to_fail")
+    @patch("teatree.core.provision.provision_timebox.notify_user")
+    @patch("teatree.core.provision.provision_timebox.run_allowed_to_fail")
     def test_success_does_not_alert(self, mock_run: MagicMock, mock_notify: MagicMock) -> None:
         mock_run.return_value = MagicMock(returncode=0, stdout="ok", stderr="")
         result = run_timeboxed_step("migrate", ["manage.py", "migrate"], timeout=300)
         assert result.success is True
         assert not mock_notify.called
 
-    @patch("teatree.core.provision_timebox.notify_user")
-    @patch("teatree.core.provision_timebox.run_allowed_to_fail")
+    @patch("teatree.core.provision.provision_timebox.notify_user")
+    @patch("teatree.core.provision.provision_timebox.run_allowed_to_fail")
     def test_heartbeat_fires_while_running(self, mock_run: MagicMock, mock_notify: MagicMock) -> None:
         beats: list[str] = []
 
@@ -144,7 +144,7 @@ class TestRunTimeboxedStep(TestCase):
 class TestRunStepUsesTimebox(TestCase):
     """`run_step` routes long-blocking steps through the time-box on timeout."""
 
-    @patch("teatree.core.provision_timebox.notify_user")
+    @patch("teatree.core.provision.provision_timebox.notify_user")
     @patch("teatree.utils.run.subprocess")
     def test_run_step_timeout_emits_alert(self, mock_sp: MagicMock, mock_notify: MagicMock) -> None:
         mock_sp.run.side_effect = subprocess.TimeoutExpired(cmd=["slow"], timeout=1)
@@ -164,7 +164,7 @@ class TestRunTimeboxedCallable(TestCase):
     ``run_callable_step`` does.
     """
 
-    @patch("teatree.core.provision_timebox.notify_user")
+    @patch("teatree.core.provision.provision_timebox.notify_user")
     def test_overrun_aborts_and_names_step(self, mock_notify: MagicMock) -> None:
         release = threading.Event()
         result = run_timeboxed_callable(
@@ -177,7 +177,7 @@ class TestRunTimeboxedCallable(TestCase):
         assert mock_notify.called
         assert "sync-dependencies" in mock_notify.call_args.args[0]
 
-    @patch("teatree.core.provision_timebox.notify_user")
+    @patch("teatree.core.provision.provision_timebox.notify_user")
     def test_clean_completed_process_is_interpreted(self, mock_notify: MagicMock) -> None:
         ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="done", stderr="")
         result = run_timeboxed_callable("sync-dependencies", lambda: ok, timeout=5)
@@ -185,14 +185,14 @@ class TestRunTimeboxedCallable(TestCase):
         assert result.stdout == "done"
         assert not mock_notify.called
 
-    @patch("teatree.core.provision_timebox.notify_user")
+    @patch("teatree.core.provision.provision_timebox.notify_user")
     def test_failed_completed_process_is_a_failure(self, mock_notify: MagicMock) -> None:
         bad = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="boom")
         result = run_timeboxed_callable("sync-dependencies", lambda: bad, timeout=5)
         assert result.success is False
         assert "boom" in result.error
 
-    @patch("teatree.core.provision_timebox.notify_user")
+    @patch("teatree.core.provision.provision_timebox.notify_user")
     def test_heartbeat_fires_while_running(self, mock_notify: MagicMock) -> None:
         _ = mock_notify
         beats: list[str] = []
@@ -214,17 +214,17 @@ class TestRunTimeboxedDbImport(TestCase):
     instead of hanging on a child stuck on its PIPE.
     """
 
-    @patch("teatree.core.provision_timebox.notify_user")
+    @patch("teatree.core.provision.provision_timebox.notify_user")
     def test_passes_through_success(self, mock_notify: MagicMock) -> None:
         assert run_timeboxed_db_import(lambda: True, timeout=5) is True
         assert not mock_notify.called
 
-    @patch("teatree.core.provision_timebox.notify_user")
+    @patch("teatree.core.provision.provision_timebox.notify_user")
     def test_passes_through_failure(self, mock_notify: MagicMock) -> None:
         assert run_timeboxed_db_import(lambda: False, timeout=5) is False
         assert not mock_notify.called
 
-    @patch("teatree.core.provision_timebox.notify_user")
+    @patch("teatree.core.provision.provision_timebox.notify_user")
     def test_overrun_returns_false_with_actionable_alert(self, mock_notify: MagicMock) -> None:
         release = threading.Event()
         result = run_timeboxed_db_import(lambda: release.wait(timeout=3) or True, timeout=0.1, heartbeat_interval=0.05)
@@ -235,7 +235,7 @@ class TestRunTimeboxedDbImport(TestCase):
         assert "dslr snapshot" in alert_text
         assert "db refresh" in alert_text
 
-    @patch("teatree.core.provision_timebox.notify_user")
+    @patch("teatree.core.provision.provision_timebox.notify_user")
     def test_reraises_a_callable_exception(self, mock_notify: MagicMock) -> None:
         def boom() -> bool:
             msg = "kaboom"

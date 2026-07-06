@@ -10,7 +10,13 @@ from django.db.backends.sqlite3.base import DatabaseWrapper
 from django.test import TestCase
 
 from teatree.core.overlay import ProvisionStep
-from teatree.core.step_runner import ProvisionReport, StepResult, run_callable_step, run_provision_steps, run_step
+from teatree.core.provision.step_runner import (
+    ProvisionReport,
+    StepResult,
+    run_callable_step,
+    run_provision_steps,
+    run_step,
+)
 from tests.teatree_core._provision_timebox_stub import (
     BROKEN_DEPENDENCY_NAME,
     provision_timebox_internally_broken,
@@ -113,7 +119,7 @@ class TestRunStepSurvivesMissingProvisionTimebox(TestCase):
 
     Teardown runs the WORKTREE's own checkout (``uv --directory <worktree>
     run``). A worktree whose base predates ``provision_timebox`` (#2220) cannot
-    import it, so the lazy ``from teatree.core.provision_timebox import
+    import it, so the lazy ``from teatree.core.provision.provision_timebox import
     run_timeboxed_step`` in ``run_step`` raised ``ModuleNotFoundError`` and
     aborted the whole teardown runner mid-stream — skipping every step ordered
     after the abort (DB drop, ``Worktree`` row delete, docker down). The
@@ -169,7 +175,7 @@ class TestRunStepSurvivesMissingProvisionTimebox(TestCase):
         """A present ``provision_timebox`` failing on its OWN broken import must NOT be swallowed.
 
         The catch is narrowed to the module's own absence (``ModuleNotFoundError.name`` ==
-        ``teatree.core.provision_timebox``). A present-but-internally-broken module raises a
+        ``teatree.core.provision.provision_timebox``). A present-but-internally-broken module raises a
         ``ModuleNotFoundError`` whose ``.name`` is the missing DEPENDENCY, so ``run_step`` must
         re-raise it rather than silently degrading to a plain run — which would disable the
         timeout/heartbeat/alert for every healthy install and mask the real bug.
@@ -319,8 +325,8 @@ class TestSubprocessOnlyStepIsTimeBoxed(TestCase):
     recorded SUCCESS with no alert.
     """
 
-    @patch("teatree.core.provision_timebox.notify_user")
-    @patch("teatree.core.provision_timebox.resolve_step_timeout_seconds", return_value=0.1)
+    @patch("teatree.core.provision.provision_timebox.notify_user")
+    @patch("teatree.core.provision.provision_timebox.resolve_step_timeout_seconds", return_value=0.1)
     def test_blocking_subprocess_step_aborts_loud_and_alerts(
         self, mock_ceiling: MagicMock, mock_notify: MagicMock
     ) -> None:
@@ -733,13 +739,13 @@ class TestPostCondition(TestCase):
 class TestHeavyFlagPropagation(TestCase):
     """``ProvisionStep.heavy`` selects the time-box ceiling (souliane/teatree#2949)."""
 
-    @patch("teatree.core.provision_timebox.resolve_step_timeout_seconds", return_value=999)
+    @patch("teatree.core.provision.provision_timebox.resolve_step_timeout_seconds", return_value=999)
     def test_heavy_subprocess_step_requests_heavy_ceiling(self, mock_resolve: MagicMock) -> None:
         steps = [ProvisionStep(name="heavy-step", callable=lambda: None, subprocess_only=True, heavy=True)]
         run_provision_steps(steps)
         mock_resolve.assert_called_once_with(heavy=True)
 
-    @patch("teatree.core.provision_timebox.resolve_step_timeout_seconds", return_value=999)
+    @patch("teatree.core.provision.provision_timebox.resolve_step_timeout_seconds", return_value=999)
     def test_fast_subprocess_step_requests_fast_ceiling(self, mock_resolve: MagicMock) -> None:
         steps = [ProvisionStep(name="fast-step", callable=lambda: None, subprocess_only=True, heavy=False)]
         run_provision_steps(steps)

@@ -714,7 +714,7 @@ class TestCleanupWorktreeSurvivesMissingProvisionTimebox(TestCase):
 
     The benign prek hook-cleanup path (``_remove_git_worktree`` →
     ``prek_hook.remove_stale_hooks`` → ``_shared_hooks_dir`` → ``run_step``)
-    drags in a lazy ``import teatree.core.provision_timebox``. When the executing
+    drags in a lazy ``import teatree.core.provision.provision_timebox``. When the executing
     checkout's base predates that module the import raised ``ModuleNotFoundError``
     and aborted ``cleanup_worktree`` mid-stream — every step ordered AFTER the
     abort (DB drop, pass-entry removal, ``Worktree`` row delete) was SKIPPED,

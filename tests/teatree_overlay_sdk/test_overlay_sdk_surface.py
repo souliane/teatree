@@ -110,7 +110,7 @@ EXPECTED_SIGNATURES: dict[str, str] = {
     "reap_worktree_external_resources": "(self, worktree: 'Worktree') -> list[str]",
     "resolve_issue_token": "(self, iid: int) -> str | None",
     "resolve_mr_token": "(self, iid: int) -> str | None",
-    "resolve_variant": "(self, name: str) -> teatree.core.variant.Variant",
+    "resolve_variant": "(self, name: str) -> teatree.core.provision.variant.Variant",
 }
 
 

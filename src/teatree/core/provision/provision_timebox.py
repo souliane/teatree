@@ -39,7 +39,7 @@ from pathlib import Path
 
 from teatree.config import get_effective_settings
 from teatree.core.notify import NotifyKind, notify_user
-from teatree.core.step_runner import StepResult, run_callable_step
+from teatree.core.provision.step_runner import StepResult, run_callable_step
 from teatree.utils.run import run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
@@ -130,7 +130,7 @@ def alert_provision_user(*, step: str, repo: str, detail: str) -> None:
 
     The single egress for #2220's "alert, never silently grind" requirement —
     used by the subprocess time-box here and by
-    :func:`teatree.core.step_runner.run_provision_steps` for callable-based
+    :func:`teatree.core.provision.step_runner.run_provision_steps` for callable-based
     steps. Best-effort: :func:`notify_user` never raises (degrades to a
     recorded NOOP when no backend resolves), so a failed alert never aborts the
     caller.
@@ -296,7 +296,7 @@ def run_timeboxed_callable(  # noqa: PLR0913 — each kwarg is a documented opt-
     network stall — hangs the whole provision with no output. On overrunning the
     ceiling this returns a FAILED :class:`StepResult` naming the step and fires
     the loud user alert — it never hangs. A clean return is interpreted exactly
-    as :func:`teatree.core.step_runner.run_callable_step` does
+    as :func:`teatree.core.provision.step_runner.run_callable_step` does
     (``CompletedProcess`` → success/failure, exception → FAILED), so the
     contract is identical whether or not the step overran.
 

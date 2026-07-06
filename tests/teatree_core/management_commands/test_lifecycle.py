@@ -454,7 +454,7 @@ class TestLifecycleSetup(TestCase):
             "_print_diagnostics removed in worktree FSM refactor — "
             "diagnostics moved to the t3 worktree diagnose subcommand; needs rewrite",
         )
-        from teatree.core.step_runner import ProvisionReport, StepResult  # noqa: PLC0415
+        from teatree.core.provision.step_runner import ProvisionReport, StepResult  # noqa: PLC0415
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

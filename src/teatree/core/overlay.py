@@ -11,7 +11,7 @@ import httpx
 
 from teatree.core.gates.merge_guard import MergeGuard
 from teatree.core.overlay_metadata import OverlayMetadata
-from teatree.core.variant import Variant
+from teatree.core.provision.variant import Variant
 from teatree.core.worktree.health import HealthCheck
 from teatree.core.worktree.health import default_health_checks as _default_health_checks
 from teatree.types import (

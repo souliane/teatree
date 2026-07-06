@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING, TypedDict, cast
 from django_typer.management import TyperCommand, command
 
 from teatree.core.backend_factory import code_host_from_overlay
-from teatree.core.db_anchor import assert_lifecycle_db_is_canonical
 from teatree.core.gates.orphan_guard import BranchStatus, classify_branch
 from teatree.core.management.commands._close_keyword_gate import run_close_keyword_gate
 from teatree.core.management.commands._closes_issue_crosscheck import run_closes_issue_crosscheck
@@ -60,6 +59,7 @@ from teatree.core.on_behalf_gate_recorded import (
 )
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
 from teatree.core.overlay_loader import get_overlay
+from teatree.core.provision.db_anchor import assert_lifecycle_db_is_canonical
 from teatree.core.public_identity import MergeResult
 from teatree.core.runners.ship import resolve_and_reconcile_branch, resolve_ship_worktree
 from teatree.types import RawAPIDict

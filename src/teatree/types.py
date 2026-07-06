@@ -304,7 +304,7 @@ class ProvisionStep:
     """One unit of work in a worktree's provisioning sequence.
 
     ``subprocess_only`` is the thread-safety contract that decides how
-    :func:`teatree.core.step_runner.run_provision_steps` executes the callable
+    :func:`teatree.core.provision.step_runner.run_provision_steps` executes the callable
     (souliane/teatree#2244):
 
     - ``False`` (default) — the callable MAY touch the ORM (mutate the
@@ -354,7 +354,7 @@ class ProvisionStep:
     did not actually produce its resource halts a required-step run instead of
     reporting green. The aggregate of every step's ``post_condition`` is what
     ``worktree status`` evaluates to decide a worktree is *really* provisioned
-    (see :mod:`teatree.core.provision_postconditions`). It MUST touch **no ORM**:
+    (see :mod:`teatree.core.provision.provision_postconditions`). It MUST touch **no ORM**:
     on a ``subprocess_only`` step it runs on the concurrent-wave pool worker (via
     ``_apply_post_condition`` inside ``_run_single_step``), so a Django connection
     opened there leaks a ``sqlite3`` ``ResourceWarning`` — the same reason
@@ -365,7 +365,7 @@ class ProvisionStep:
     fast step (symlinks, settings, a compose override) defaults to a short
     ceiling so a hang surfaces in seconds, not half an hour; a heavy step (a DB
     import, a frontend build) opts into the long ceiling by setting this
-    ``True``. See :func:`teatree.core.provision_timebox.resolve_step_timeout_seconds`.
+    ``True``. See :func:`teatree.core.provision.provision_timebox.resolve_step_timeout_seconds`.
     """
 
     name: str

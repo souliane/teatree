@@ -96,7 +96,7 @@ def dslr_tenants_in_use() -> set[str]:
     prefix the variant (``client-a`` → ``development-client-a``) while
     others return the variant verbatim. We consult
     :meth:`OverlayBase.resolve_variant` per active variant and read the
-    resolved ``canonical_tenant`` off the :class:`~teatree.core.variant.Variant`.
+    resolved ``canonical_tenant`` off the :class:`~teatree.core.provision.variant.Variant`.
     """
     try:
         overlay = get_overlay()

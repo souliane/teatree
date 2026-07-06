@@ -25,7 +25,7 @@ from teatree.config import clone_root, discover_overlays
 from teatree.core.gates.merge_guard import MergeGuard
 from teatree.core.overlay import DEFAULT_TRANSITION_EMOJIS, FailedE2EWatcher, OverlayBase, OverlayConfig
 from teatree.core.overlay_metadata import OverlayMetadata
-from teatree.core.variant import Variant
+from teatree.core.provision.variant import Variant
 from teatree.core.worktree.health import HealthCheck
 from teatree.core.worktree.readiness import (
     CommandProbeSpec,

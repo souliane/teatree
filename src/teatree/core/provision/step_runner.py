@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_PROVISION_TIMEBOX_MODULE = "teatree.core.provision_timebox"
+_PROVISION_TIMEBOX_MODULE = "teatree.core.provision.provision_timebox"
 
 # Fallback hard ceiling (seconds) for the degraded plain-subprocess path, which
 # runs only when ``provision_timebox`` is ABSENT and so cannot consult its
@@ -165,7 +165,7 @@ def run_step(  # noqa: PLR0913
     Unlike raw ``subprocess.run(..., check=False)``, this always captures
     output and reports duration, making failures diagnosable.
 
-    Routed through :func:`teatree.core.provision_timebox.run_timeboxed_step`
+    Routed through :func:`teatree.core.provision.provision_timebox.run_timeboxed_step`
     so a timeout, or a non-zero exit whose output shows a forked migration
     graph, fires a loud out-of-band user alert and names the diagnosed cause —
     a long provisioning step that cannot complete must alert, never hang
@@ -219,7 +219,7 @@ def _timeboxed_step(
     every healthy install.
     """
     try:
-        from teatree.core.provision_timebox import run_timeboxed_step  # noqa: PLC0415
+        from teatree.core.provision.provision_timebox import run_timeboxed_step  # noqa: PLC0415
     except ModuleNotFoundError as exc:
         if exc.name != _PROVISION_TIMEBOX_MODULE:
             raise
@@ -238,7 +238,7 @@ def _plain_subprocess_step(
 ) -> StepResult:
     """Time-box-free subprocess run with the same :class:`StepResult` contract.
 
-    Mirrors :func:`teatree.core.provision_timebox.run_timeboxed_step`'s outcomes
+    Mirrors :func:`teatree.core.provision.provision_timebox.run_timeboxed_step`'s outcomes
     minus the heartbeat / migration alert: a timeout surfaces a ``"timed out"``
     error, a missing binary a ``"command not found"`` error, and a non-zero exit
     a captured failure — so every ``run_step`` consumer classifies the result
@@ -319,14 +319,14 @@ def _timeboxed_subprocess_callable_step(
     connection invisible to the caller.
 
     ``heavy`` selects the ceiling (souliane/teatree#2949):
-    :func:`teatree.core.provision_timebox.resolve_step_timeout_seconds` — a
+    :func:`teatree.core.provision.provision_timebox.resolve_step_timeout_seconds` — a
     fast step (the default) aborts within seconds of the short ceiling; a
     heavy step (a DB import, a frontend build) keeps the long one. A caller
     that pre-resolved the ceiling (the parallel path, to keep pool workers
     ORM-free) passes it as *timeout*, bypassing the ``heavy`` lookup here.
     """
     try:
-        from teatree.core.provision_timebox import run_timeboxed_callable  # noqa: PLC0415
+        from teatree.core.provision.provision_timebox import run_timeboxed_callable  # noqa: PLC0415
     except ModuleNotFoundError as exc:
         if exc.name != _PROVISION_TIMEBOX_MODULE:
             raise
@@ -437,14 +437,14 @@ def _run_group_concurrently(group: list, *, write: Callable[[str], object]) -> l
 def _resolve_step_timeout(step) -> float | None:  # noqa: ANN001
     """The time-box ceiling for *step*, resolved on the CALLER thread.
 
-    :func:`teatree.core.provision_timebox.resolve_step_timeout_seconds` reads the
+    :func:`teatree.core.provision.provision_timebox.resolve_step_timeout_seconds` reads the
     ``ConfigSetting`` store — an ORM access that must not run on a pool worker
     thread (see :func:`_run_group_concurrently`). Degrades to ``None`` — letting
     the time-box fall back to its own plain path — when ``provision_timebox`` is
     absent on a stale base (souliane/teatree#2664).
     """
     try:
-        from teatree.core.provision_timebox import resolve_step_timeout_seconds  # noqa: PLC0415
+        from teatree.core.provision.provision_timebox import resolve_step_timeout_seconds  # noqa: PLC0415
     except ModuleNotFoundError as exc:
         if exc.name != _PROVISION_TIMEBOX_MODULE:
             raise
@@ -601,13 +601,13 @@ def _alert_on_migration_conflict(result: StepResult) -> None:
     import bug re-raises rather than silently suppressing the alert.
     """
     try:
-        from teatree.core.provision_timebox import alert_provision_user, detect_migration_conflict  # noqa: PLC0415
+        from teatree.core.provision import provision_timebox  # noqa: PLC0415 — lazy: base may predate the module
     except ModuleNotFoundError as exc:
         if exc.name != _PROVISION_TIMEBOX_MODULE:
             raise
         return
 
-    conflict = detect_migration_conflict(f"{result.stdout}\n{result.stderr}\n{result.error}")
+    conflict = provision_timebox.detect_migration_conflict(f"{result.stdout}\n{result.stderr}\n{result.error}")
     if conflict is not None:
         logger.warning("Provisioning step %r hit a %s", result.name, conflict)
-        alert_provision_user(step=result.name, repo="", detail=conflict)
+        provision_timebox.alert_provision_user(step=result.name, repo="", detail=conflict)

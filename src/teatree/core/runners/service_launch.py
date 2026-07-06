@@ -2,8 +2,8 @@ import re
 from typing import TYPE_CHECKING
 
 from teatree.core.overlay_loader import get_overlay_for_worktree
+from teatree.core.provision.step_runner import run_provision_steps
 from teatree.core.runners.base import RunnerBase, RunnerResult
-from teatree.core.step_runner import run_provision_steps
 from teatree.core.worktree.worktree_env import compose_project
 from teatree.types import RunCommand
 from teatree.utils.run import run_streamed

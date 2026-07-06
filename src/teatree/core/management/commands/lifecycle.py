@@ -8,7 +8,6 @@ from django.db import transaction
 from django_fsm import TransitionNotAllowed
 from django_typer.management import TyperCommand, command, initialize
 
-from teatree.core.db_anchor import assert_lifecycle_db_is_canonical
 from teatree.core.gates.review_context_gate import ReviewContextError, check_review_context
 from teatree.core.gates.review_skill_gate import ReviewSkillEvidenceError, check_review_skill_evidence
 from teatree.core.modelkit.phases import normalize_phase, phase_transition
@@ -16,6 +15,7 @@ from teatree.core.models import Ticket
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.models.merge_clear import is_non_reviewer_role
 from teatree.core.models.ticket_ledger import retire_phase_ledger
+from teatree.core.provision.db_anchor import assert_lifecycle_db_is_canonical
 
 logger = logging.getLogger(__name__)
 

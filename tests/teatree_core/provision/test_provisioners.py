@@ -1,4 +1,4 @@
-"""Tests for teatree.core.provisioners — generic provisioning utilities."""
+"""Tests for teatree.core.provision.provisioners — generic provisioning utilities."""
 
 import tempfile
 from pathlib import Path
@@ -6,8 +6,8 @@ from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
 
-import teatree.core.provisioners as provisioners_mod
-from teatree.core.provisioners import apply_symlinks, inject_settings, start_services
+import teatree.core.provision.provisioners as provisioners_mod
+from teatree.core.provision.provisioners import apply_symlinks, inject_settings, start_services
 
 
 class TestApplySymlinks(TestCase):
