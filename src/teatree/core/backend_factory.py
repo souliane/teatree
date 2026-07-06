@@ -8,11 +8,15 @@ need to extract tokens or branch on platform themselves.
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from django.core.exceptions import ImproperlyConfigured
 
 from teatree.core.backend_protocols import BackendResolutionError, CIService, CodeHostBackend, MessagingBackend
 from teatree.core.backend_registry import get_backend_provider
+
+if TYPE_CHECKING:
+    from teatree.core.backend_registry import NotionPageClient
 from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import get_all_overlays, get_overlay
 from teatree.paths import find_overlay_db
@@ -165,6 +169,25 @@ def ci_service_from_overlay(overlay_name: str | None = None) -> CIService | None
         gitlab_token=overlay.config.get_gitlab_token(),
         gitlab_url=overlay.config.gitlab_url,
     )
+
+
+def notion_client_from_overlay(overlay_name: str | None = None) -> "NotionPageClient | None":
+    """Build a direct-Notion API client from the active overlay's token.
+
+    Returns ``None`` when no ``notion_token`` resolves (the default-safe posture
+    — the runtime status-sync then no-ops). Mirrors :func:`messaging_from_overlay`
+    but stays uncached: the client holds no live connection, and skipping the
+    cache avoids cross-overlay token bleed in tests.
+    """
+    key = _active_overlay_name(overlay_name)
+    try:
+        overlay = get_overlay(key or None)
+    except ImproperlyConfigured:
+        return None
+    token = overlay.config.get_notion_token()
+    if not token:
+        return None
+    return get_backend_provider().build_notion_client(token=token)
 
 
 def _messaging_from_toml_overlay(overlay_name: str) -> MessagingBackend | None:
@@ -464,5 +487,6 @@ __all__ = [
     "code_host_from_overlay",
     "iter_overlay_backends",
     "messaging_from_overlay",
+    "notion_client_from_overlay",
     "reset_backend_caches",
 ]

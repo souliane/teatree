@@ -4,20 +4,35 @@ Covers fetch_review_permalinks, fetch_notion_statuses, _overlay_name,
 resolve_issue 404 handling, tracker-404 memoization and detect_e2e_test_plan.
 """
 
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import httpx
 import pytest
 from django.test import TestCase
 
+import teatree.core.sync as sync_mod
 from teatree.backends.gitlab.api import ProjectInfo
 from teatree.backends.gitlab.sync_issues import fetch_issue_labels, resolve_issue
 from teatree.backends.gitlab.sync_prs import detect_e2e_test_plan
 from teatree.backends.slack.review_sync import fetch_review_permalinks
 from teatree.core.models import Ticket
-from teatree.core.sync import _overlay_name, fetch_notion_statuses
+from teatree.core.sync import _overlay_name, fetch_notion_statuses, push_notion_status, sync_followup
 from teatree.types import RawAPIDict, SyncResult
 from tests.teatree_core.sync._overlays import SyncOverlay, _patch_overlay
+
+_PAGE_ID = "1a2b3c4d5e6f47a89b0c1d2e3f405162"
+_NOTION_URL = f"https://www.notion.so/team/My-Ticket-{_PAGE_ID}"
+
+
+def _patch_notion_transport(monkeypatch: pytest.MonkeyPatch, handler: object) -> None:
+    original = httpx.Client.__init__
+
+    def patched(self: httpx.Client, **kwargs: object) -> None:
+        kwargs["transport"] = httpx.MockTransport(handler)
+        original(self, **kwargs)
+
+    monkeypatch.setattr(httpx.Client, "__init__", patched)
 
 
 class TestFetchReviewPermalinks(TestCase):
@@ -185,10 +200,116 @@ class TestFetchReviewPermalinks(TestCase):
         assert result.reviews_synced == 0
 
 
-class TestFetchNotionStatuses:
-    def test_raises(self) -> None:
-        with pytest.raises(NotImplementedError, match="Notion status sync"):
+class TestFetchNotionStatuses(TestCase):
+    @pytest.fixture(autouse=True)
+    def _inject(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._monkeypatch = monkeypatch
+
+    def test_fetch_notion_statuses_hits_api_notion_com_not_connector(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", extra={"notion_url": _NOTION_URL})
+        seen: dict[str, str] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["url"] = str(request.url)
+            seen["auth"] = request.headers.get("Authorization", "")
+            seen["version"] = request.headers.get("Notion-Version", "")
+            return httpx.Response(200, json={"properties": {"Status": {"status": {"name": "In review"}}}})
+
+        _patch_notion_transport(self._monkeypatch, handler)
+        with _patch_overlay(SyncOverlay(notion_token="ntn_secret")):
             fetch_notion_statuses()
+
+        assert seen["url"] == f"https://api.notion.com/v1/pages/{_PAGE_ID}"
+        assert seen["auth"] == "Bearer ntn_secret"
+        assert seen["version"]
+        ticket.refresh_from_db()
+        assert ticket.extra["notion_status"] == "In review"
+
+    def test_fetch_notion_statuses_no_token_is_clean_noop_not_raise(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", extra={"notion_url": _NOTION_URL})
+        calls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(str(request.url))
+            return httpx.Response(200, json={"properties": {}})
+
+        _patch_notion_transport(self._monkeypatch, handler)
+        with _patch_overlay(SyncOverlay(notion_token="")):
+            fetch_notion_statuses()
+
+        assert calls == []
+        ticket.refresh_from_db()
+        assert "notion_status" not in ticket.extra
+
+    def test_direct_path_taken_when_token_present_connector_branch_gone(self) -> None:
+        source = Path(sync_mod.__file__).read_text(encoding="utf-8")
+        assert "requires Claude MCP" not in source
+        assert "NotImplementedError" not in source
+
+        for _ in range(3):
+            Ticket.objects.create(overlay="test", extra={"notion_url": _NOTION_URL})
+        hits = {"count": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.host == "api.notion.com"
+            hits["count"] += 1
+            return httpx.Response(200, json={"properties": {"Status": {"status": {"name": "Done"}}}})
+
+        _patch_notion_transport(self._monkeypatch, handler)
+        with _patch_overlay(SyncOverlay(notion_token="ntn_secret")):
+            fetch_notion_statuses()
+
+        assert hits["count"] == 3
+
+    def test_skips_tickets_without_page_id_or_status(self) -> None:
+        no_url = Ticket.objects.create(overlay="test", extra={})
+        no_status = Ticket.objects.create(overlay="test", extra={"notion_url": _NOTION_URL})
+        calls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(str(request.url))
+            return httpx.Response(200, json={"properties": {}})
+
+        _patch_notion_transport(self._monkeypatch, handler)
+        with _patch_overlay(SyncOverlay(notion_token="ntn_secret")):
+            fetch_notion_statuses()
+
+        assert len(calls) == 1  # only the ticket carrying a notion_url is fetched
+        for ticket in (no_url, no_status):
+            ticket.refresh_from_db()
+            assert "notion_status" not in ticket.extra
+
+    def test_update_page_status_gated_by_write_back_flag(self) -> None:
+        patches: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            patches.append(request.method)
+            return httpx.Response(200, json={"object": "page", "id": _PAGE_ID})
+
+        _patch_notion_transport(self._monkeypatch, handler)
+
+        with _patch_overlay(SyncOverlay(notion_token="ntn_secret", notion_write_back=False)):
+            assert push_notion_status(_PAGE_ID, "Merged") is False
+        assert patches == []
+
+        with _patch_overlay(SyncOverlay(notion_token="ntn_secret", notion_write_back=True)):
+            assert push_notion_status(_PAGE_ID, "Merged") is True
+        assert patches == ["PATCH"]
+
+    def test_push_notion_status_write_back_on_but_no_token_is_noop(self) -> None:
+        with _patch_overlay(SyncOverlay(notion_token="", notion_write_back=True)):
+            assert push_notion_status(_PAGE_ID, "Merged") is False
+
+    def test_sync_followup_surfaces_notion_error_without_aborting(self) -> None:
+        def _boom() -> None:
+            msg = "notion down"
+            raise RuntimeError(msg)
+
+        self._monkeypatch.setattr("teatree.core.sync.fetch_notion_statuses", _boom)
+        with _patch_overlay(SyncOverlay(gitlab_token="", github_token="")):
+            result = sync_followup()
+
+        assert any("Notion status sync failed: notion down" in err for err in result.errors)
 
 
 class TestOverlayName:

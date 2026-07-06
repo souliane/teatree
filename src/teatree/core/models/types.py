@@ -64,6 +64,10 @@ class TicketExtra(TypedDict, total=False):
     provision: dict[str, str]
     shipping_skipped: str
     tracker_status: str
+    # Notion status-sync: the tracked page URL (input) and the last status read
+    # from it via the direct Notion API (``core.sync.fetch_notion_statuses``).
+    notion_url: str
+    notion_status: str
     issue_title: str
     labels: list[str]
     auto_started: bool

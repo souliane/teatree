@@ -70,6 +70,8 @@ overlay_init/, contrib/, docker/, templates/overlay/
 
 Plus top-level: `agents/` (phase sub-agent definitions), `skills/*/` (workflow skills), `hooks/` (plugin hooks), `tests/` (pytest suite), `scripts/` (utility scripts), `.claude-plugin/`, `apm.yml`, `settings.json`.
 
+**Runtime platform access is connector-free (direct official APIs).** Every runtime read/write of an external platform goes through that platform's official REST API with a stored token, never a claude.ai MCP connector: Slack (`slack.com/api`), Sentry (`sentry.io/api`), Figma (`api.figma.com`), and Notion page status (`api.notion.com/v1`). `core.sync.fetch_notion_statuses` reads each in-flight ticket's `extra['notion_url']` page into `extra['notion_status']`, token-gated on `get_notion_token()` (`notion_token_pass_key`) and a clean no-op until a token is configured; the opt-in reverse write (`push_notion_status`) is gated behind `notion_write_back` (default off). The `connector_manifest` / `mcp_connectivity` diagnostics serve the human's interactive claude.ai session only — no registered overlay declares a REQUIRED connector, so the loop never `SystemExit`s on one.
+
 Per-overlay Slack bot setup (`t3 setup slack-bot --overlay <name>`) — and the one-command `t3 setup slack-provision` that runs the whole lifecycle (manifest scopes, OAuth URL, channel join, tokens) idempotently ([#1686](https://github.com/souliane/teatree/issues/1686)) — are detailed in [docs/blueprint/configuration.md](docs/blueprint/configuration.md) §10.1 "Slack bot setup", cited from `src/teatree/backends/slack/bot.py`, `src/teatree/cli/slack_setup.py`, and `src/teatree/cli/slack_provision.py` as `BLUEPRINT §3.6`.
 
 ---

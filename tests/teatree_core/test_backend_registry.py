@@ -24,6 +24,7 @@ class TestBackendProviderRegistry:
             assert provider.get_messaging(object()) is None
             assert provider.get_ci_service(gitlab_token="t", gitlab_url="u") is None
             assert provider.build_sync_backends() == []
+            assert provider.build_notion_client(token="t") is None
             provider.reset_caches()
         finally:
             backend_registry.register_backend_provider(original)
