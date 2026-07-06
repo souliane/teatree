@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 from django.core.management import call_command
 from django.test import TestCase, override_settings
@@ -25,6 +26,7 @@ import teatree.core.management.commands._workspace_cleanup as ws_cleanup_mod
 import teatree.core.management.commands._workspace_docker as ws_docker_mod
 import teatree.core.management.commands._workspace_salvage as ws_salvage_mod
 import teatree.core.management.commands._workspace_stash as ws_stash_mod
+import teatree.core.management.commands._workspace_ticket_intake as workspace_intake_mod
 import teatree.core.management.commands.workspace as workspace_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.runners.provision as provision_mod
@@ -33,6 +35,7 @@ import teatree.utils.db as db_mod
 import teatree.utils.git as git_mod
 import teatree.utils.git_commit as git_commit_mod
 import teatree.utils.run as utils_run_mod
+from teatree.backends.errors import IssueNotFoundError
 from teatree.config import load_config
 from teatree.core.cleanup_liveness import LivenessVerdict
 from teatree.core.gates.provision_admission_gate import ProvisionAdmissionVerdict
@@ -359,6 +362,135 @@ class TestWorkspaceTicketAdopt(TestCase):
         assert rc == 0
         assert not Ticket.objects.filter(issue_url="https://example.com/issues/2275").exists()
 
+    def _patch_issue_host(self, host: MagicMock) -> None:
+        self.enterContext(
+            patch.object(workspace_intake_mod, "get_code_host_for_url", return_value=host),
+        )
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_adopt_refuses_closed_target(self) -> None:
+        worktree = self._clone_and_worktree("feature-x")
+        self._enter_adopt_patches(worktree)
+        host = MagicMock()
+        host.get_issue.return_value = {"state": "closed", "title": "An unrelated closed PR"}
+        self._patch_issue_host(host)
+
+        rc = call_command("workspace", "ticket", "https://github.com/souliane/teatree/issues/89", adopt=True)
+
+        assert rc == 0
+        assert not Ticket.objects.filter(issue_url="https://github.com/souliane/teatree/issues/89").exists()
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_adopt_refuses_nonexistent_target(self) -> None:
+        worktree = self._clone_and_worktree("feature-x")
+        self._enter_adopt_patches(worktree)
+        url = "https://github.com/souliane/teatree/issues/999999"
+        host = MagicMock()
+        host.get_issue.side_effect = IssueNotFoundError(url)
+        self._patch_issue_host(host)
+
+        rc = call_command("workspace", "ticket", url, adopt=True)
+
+        assert rc == 0
+        assert not Ticket.objects.filter(issue_url=url).exists()
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_adopt_closed_override_proceeds(self) -> None:
+        worktree = self._clone_and_worktree("feature-x")
+        self._enter_adopt_patches(worktree)
+        host = MagicMock()
+        host.get_issue.return_value = {"state": "closed", "title": "Closed but intentionally adopted"}
+        self._patch_issue_host(host)
+
+        ticket_id = cast(
+            "int",
+            call_command(
+                "workspace",
+                "ticket",
+                "https://github.com/souliane/teatree/issues/89",
+                adopt=True,
+                adopt_closed=True,
+            ),
+        )
+
+        ticket = Ticket.objects.get(pk=ticket_id)
+        assert ticket.extra["branch"] == "feature-x"
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_adopt_refuses_error_dict_target(self) -> None:
+        worktree = self._clone_and_worktree("feature-x")
+        self._enter_adopt_patches(worktree)
+        url = "https://github.com/souliane/teatree/pull/89"
+        host = MagicMock()
+        host.get_issue.return_value = {"error": f"Not a GitHub issue URL: {url}"}
+        self._patch_issue_host(host)
+
+        rc = call_command("workspace", "ticket", url, adopt=True)
+
+        assert rc == 0
+        assert not Ticket.objects.filter(issue_url=url).exists()
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_adopt_proceeds_on_transient_forge_error(self) -> None:
+        worktree = self._clone_and_worktree("feature-x")
+        self._enter_adopt_patches(worktree)
+        url = "https://github.com/souliane/teatree/issues/7"
+        host = MagicMock()
+        host.get_issue.side_effect = httpx.ConnectError("forge unreachable")
+        self._patch_issue_host(host)
+
+        ticket_id = cast("int", call_command("workspace", "ticket", url, adopt=True))
+
+        ticket = Ticket.objects.get(pk=ticket_id)
+        assert ticket.extra["branch"] == "feature-x"
+
+    @_patch_overlays(FULL_OVERLAY)
+    @override_settings(**SETTINGS)
+    def test_adopt_open_target_succeeds(self) -> None:
+        worktree = self._clone_and_worktree("feature-x")
+        self._enter_adopt_patches(worktree)
+        host = MagicMock()
+        host.get_issue.return_value = {"state": "open", "title": "A genuine open issue"}
+        self._patch_issue_host(host)
+
+        ticket_id = cast(
+            "int",
+            call_command("workspace", "ticket", "https://github.com/souliane/teatree/issues/42", adopt=True),
+        )
+
+        ticket = Ticket.objects.get(pk=ticket_id)
+        assert ticket.extra["branch"] == "feature-x"
+        assert ticket.repos == ["myrepo"]
+
+
+class TestFinalizeTicketProvision(TestCase):
+    """#748: a failed provision never discards a ticket that carries phase attestation."""
+
+    @pytest.fixture(autouse=True)
+    def _tmp(self, tmp_path: Path) -> None:
+        self.workspace = tmp_path
+
+    def test_failed_provision_keeps_attested_ticket(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", extra={"branch": "748-keep"})
+        provisioner = MagicMock()
+        provisioner.run.return_value = RunnerResult(ok=False, detail="boom")
+        errs: list[str] = []
+        with (
+            patch.object(workspace_intake_mod, "WorktreeProvisioner", return_value=provisioner),
+            patch.object(Ticket, "aggregate_phase_records", return_value=(["coding"], {})),
+        ):
+            rc = workspace_intake_mod.finalize_ticket_provision(
+                lambda _s: None, errs.append, ticket, None, self.workspace
+            )
+        assert rc == 0
+        assert Ticket.objects.filter(pk=ticket.pk).exists()
+        assert any("Provisioning failed" in line for line in errs)
+
 
 class TestWorkspaceTicket(TestCase):
     def setUp(self) -> None:
@@ -408,7 +540,7 @@ class TestWorkspaceTicket(TestCase):
             (workspace / "42-someone-else-already-here").mkdir()
             with (
                 patch.object(workspace_mod, "_worktree_root", return_value=workspace),
-                patch.object(workspace_mod, "WorktreeProvisioner") as provisioner,
+                patch.object(workspace_intake_mod, "WorktreeProvisioner") as provisioner,
             ):
                 provisioner.return_value.run.return_value = RunnerResult(ok=True, detail="ok")
                 rc = call_command("workspace", "ticket", "https://example.com/issues/42", take_over=True)
@@ -424,7 +556,7 @@ class TestWorkspaceTicket(TestCase):
             workspace = Path(tmp)
             with (
                 patch.object(workspace_mod, "_worktree_root", return_value=workspace),
-                patch.object(workspace_mod, "WorktreeProvisioner") as provisioner,
+                patch.object(workspace_intake_mod, "WorktreeProvisioner") as provisioner,
             ):
                 provisioner.return_value.run.return_value = RunnerResult(ok=True, detail="ok")
                 first = call_command("workspace", "ticket", "https://example.com/issues/42")
@@ -1446,7 +1578,7 @@ class TestWorkspaceMultiOverlayResolution(TestCase):
         with (
             patch.dict(os.environ, env_without_overlay, clear=True),
             patch.object(overlay_loader_mod, "_discover_overlays", new=_fake_discover),
-            patch.object(workspace_mod, "WorktreeProvisioner", return_value=provisioner),
+            patch.object(workspace_intake_mod, "WorktreeProvisioner", return_value=provisioner),
         ):
             ticket_id = cast("int", call_command("workspace", "ticket", url, repos="backend"))
 

@@ -47,7 +47,7 @@ class TestProvisionRollbackPreservesAttestationSessions(TestCase):
         # the SAME ticket via get_or_create, then provisioning fails with
         # no worktrees → the rollback path (`ticket.delete()`) fires.
         with patch(
-            "teatree.core.management.commands.workspace.WorktreeProvisioner",
+            "teatree.core.management.commands._workspace_ticket_intake.WorktreeProvisioner",
         ) as prov:
             prov.return_value.run.return_value = type("R", (), {"ok": False, "detail": "provision boom"})()
             call_command("workspace", "ticket", "https://example.com/issues/748")
