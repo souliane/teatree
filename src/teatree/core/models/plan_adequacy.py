@@ -17,6 +17,7 @@ passes.
 import string
 from typing import TYPE_CHECKING, cast
 
+from teatree.core.models.mechanism_sketch import MechanismSketch, is_core_seam_chokepoint
 from teatree.core.models.types import AdequacySection, PlanAdequacy
 
 if TYPE_CHECKING:
@@ -24,6 +25,12 @@ if TYPE_CHECKING:
 
 # The four sections every real plan must speak to. Missing any one is a thin spec.
 REQUIRED_ADEQUACY_SECTIONS: tuple[str, ...] = ("design", "integration_seams", "edge_cases", "test_strategy")
+
+# The fifth section a DIRECTIVE-linked ticket's plan must also declare (north-star
+# PR-5): the generic-shape decision, structured so ``mechanism_conforms`` can check it
+# against the ratified sketch deterministically. Ordinary tickets keep the four.
+MECHANISM_PLACEMENT_SECTION: str = "mechanism_placement"
+DIRECTIVE_ADEQUACY_SECTIONS: tuple[str, ...] = (*REQUIRED_ADEQUACY_SECTIONS, MECHANISM_PLACEMENT_SECTION)
 
 _SHA_LEN = 40
 
@@ -55,6 +62,14 @@ def section_complete(section: object) -> bool:
     return isinstance(none_reason, str) and bool(none_reason.strip())
 
 
+def sections_adequate(adequacy: object, sections: tuple[str, ...]) -> bool:
+    """Whether *adequacy* completes every named *section* (:func:`section_complete`)."""
+    if not isinstance(adequacy, dict):
+        return False
+    fields = cast("Mapping[str, object]", adequacy)
+    return all(section_complete(fields.get(name)) for name in sections)
+
+
 def is_adequate(adequacy: object) -> bool:
     """Whether *adequacy* is a complete four-section manifest.
 
@@ -62,10 +77,20 @@ def is_adequate(adequacy: object) -> bool:
     A scope+acceptance-only thin spec — no seams/edge-cases/test-strategy claims —
     fails here, which is the whole point.
     """
-    if not isinstance(adequacy, dict):
-        return False
-    sections = cast("Mapping[str, object]", adequacy)
-    return all(section_complete(sections.get(name)) for name in REQUIRED_ADEQUACY_SECTIONS)
+    return sections_adequate(adequacy, REQUIRED_ADEQUACY_SECTIONS)
+
+
+def required_sections_for(ticket: object) -> tuple[str, ...]:
+    """The adequacy sections *ticket*'s plan must carry — five for a directive ticket, else four.
+
+    A directive-implementation ticket carries the ``extra["directive_id"]`` marker,
+    so its plan must ALSO declare ``mechanism_placement`` (the generic-shape decision).
+    Pure and duck-typed (reads ``.extra`` only) so the leaf never imports the DB;
+    the gate resolves the ratified sketch it conforms to.
+    """
+    extra = getattr(ticket, "extra", None)
+    directive_id = extra.get("directive_id") if isinstance(extra, dict) else None
+    return DIRECTIVE_ADEQUACY_SECTIONS if directive_id is not None else REQUIRED_ADEQUACY_SECTIONS
 
 
 def declared_seam_paths(adequacy: object) -> tuple[str, ...]:
@@ -109,3 +134,101 @@ def all_negated_adequacy(reason: str) -> PlanAdequacy:
         edge_cases=negated_section(reason),
         test_strategy=negated_section(reason),
     )
+
+
+# --------------------------------------------------------------------------- #
+# mechanism_placement (north-star PR-5) — the directive-scoped 5th section: the
+# plan's recorded generic-shape decision, checked against the ratified sketch.
+# --------------------------------------------------------------------------- #
+def _mechanism_placement_declaration(adequacy: object) -> "Mapping[str, object]":
+    """The ``mechanism_placement`` section's declared fields, or an empty mapping."""
+    if not isinstance(adequacy, dict):
+        return {}
+    section = cast("Mapping[str, object]", adequacy).get(MECHANISM_PLACEMENT_SECTION)
+    return cast("Mapping[str, object]", section) if isinstance(section, dict) else {}
+
+
+def _declared_str_list(value: object) -> tuple[str, ...]:
+    """Normalise a declared JSON list (or lone string) to non-blank strings."""
+    if isinstance(value, str):
+        return (value.strip(),) if value.strip() else ()
+    if isinstance(value, (list, tuple)):
+        return tuple(str(item).strip() for item in value if str(item).strip())
+    return ()
+
+
+def _is_reasoned_negative(section: "Mapping[str, object]") -> bool:
+    reason = section.get("none_reason")
+    return isinstance(reason, str) and bool(reason.strip())
+
+
+def _is_plan_bypass_shaped(adequacy: object) -> bool:
+    """Whether *adequacy* is an all-reasoned-negative bypass manifest (:func:`all_negated_adequacy`).
+
+    Every seam/edge/test section is a reasoned negative with no content — the shape
+    ``PlanArtifact.record_bypass`` writes. ``mechanism_conforms`` waives such a plan so
+    the audited plan-bypass escape works on a directive ticket too (never-lockout).
+    """
+    if not isinstance(adequacy, dict):
+        return False
+    fields = cast("Mapping[str, object]", adequacy)
+    non_design = tuple(name for name in REQUIRED_ADEQUACY_SECTIONS if name != "design")
+    return all(
+        isinstance(fields.get(name), dict) and _is_reasoned_negative(cast("Mapping[str, object]", fields.get(name)))
+        for name in non_design
+    )
+
+
+def mechanism_conforms(adequacy: object, sketch: MechanismSketch) -> str | None:
+    """A finding if the plan's ``mechanism_placement`` drifts from the ratified *sketch*, else ``None``.
+
+    The deterministic anti-hack teeth at plan time (§4 Layer 2): the plan must declare
+    the SAME generic-shape decision the human ratified — a CORE-seam chokepoint (never an
+    overlay-package patch), the constraint expressed as the ratified setting with its neutral
+    default, the ratified per-overlay activation, the N=2-litmus rejected alternatives, and
+    every refactor the sketch names. Any divergence is a finding the gate turns into a coder-
+    dispatch block. Two never-lockout escapes mirror the plan gate: an all-reasoned-negative
+    bypass manifest, or the section itself carrying an explicit ``none_reason`` waiver.
+    """
+    if _is_plan_bypass_shaped(adequacy):
+        return None
+    section = _mechanism_placement_declaration(adequacy)
+    if _is_reasoned_negative(section):
+        return None
+    if not section:
+        return (
+            "the plan declares no mechanism_placement section — a directive ticket's plan must record the "
+            "generic-shape decision (core-seam chokepoint, setting + neutral default, per-overlay activation, "
+            "rejected alternatives) that conforms to the ratified sketch"
+        )
+    chokepoint = str(section.get("policy_chokepoint", "")).strip()
+    if not is_core_seam_chokepoint(chokepoint):
+        return (
+            f"mechanism_placement declares chokepoint {chokepoint or '<none>'!r}, which is not a core seam — the "
+            f"constraint must live at a src/teatree/... chokepoint every overlay flows through, never an "
+            f"overlay-package one-off (the hack the N=2 litmus rejects)"
+        )
+    return _conformance_finding(section, sketch, chokepoint)
+
+
+def _conformance_finding(section: "Mapping[str, object]", sketch: MechanismSketch, chokepoint: str) -> str | None:
+    drifts: tuple[tuple[bool, str], ...] = (
+        (chokepoint != sketch.policy_chokepoint, "chokepoint"),
+        (str(section.get("setting_key", "")).strip() != sketch.setting_key, "setting_key"),
+        (section.get("neutral_default") != sketch.neutral_default, "neutral_default"),
+        (str(section.get("activation_scope", "")).strip() != sketch.activation_scope, "activation_scope"),
+        (section.get("activation_value") != sketch.activation_value, "activation_value"),
+    )
+    for failed, field in drifts:
+        if failed:
+            return f"mechanism_placement {field} drifts from the ratified sketch"
+    if not _declared_str_list(section.get("rejected_alternatives")):
+        return (
+            "mechanism_placement names no rejected_alternatives — the N=2 litmus (this generic shape over the "
+            "overlay-local one-off) must be recorded"
+        )
+    declared_refactors = set(_declared_str_list(section.get("refactors")))
+    missing = [refactor for refactor in sketch.refactors if refactor not in declared_refactors]
+    if missing:
+        return f"mechanism_placement omits refactors the ratified sketch requires: {', '.join(missing)}"
+    return None

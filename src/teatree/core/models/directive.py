@@ -69,6 +69,22 @@ class DirectiveManager(models.Manager["Directive"]):
         """Non-terminal directives (the working set the loop advances)."""
         return self.exclude(state__in=Directive.TERMINAL_STATES)
 
+    def linked_to(self, ticket: "Ticket") -> "Directive | None":
+        """The directive *ticket* implements, or ``None`` for ordinary work.
+
+        The single resolver both the plan-time (``mechanism_conforms``) and merge-time
+        (``merge_quality_gate``) directive gates use: the synthetic implementation
+        ticket's ``extra["directive_id"]`` marker first, then the ``Directive.ticket``
+        reverse FK — either identifies a directive ticket.
+        """
+        extra = ticket.extra if isinstance(ticket.extra, dict) else {}
+        directive_id = extra.get("directive_id")
+        if directive_id is not None:
+            by_id = self.filter(pk=directive_id).first()
+            if by_id is not None:
+                return by_id
+        return self.filter(ticket=ticket).order_by("-created_at").first()
+
 
 class Directive(models.Model):
     """One directive: raw text → typed sketch → human ratification → admission."""

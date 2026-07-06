@@ -42,9 +42,10 @@ must not wedge coding. The teeth are on the deterministic stale-on-a-seam case.
 from typing import TYPE_CHECKING
 
 from teatree.core.branch_currency import commits_between_touching_paths, fetch_target_head
-from teatree.core.modelkit.gate_registry import register_gate
+from teatree.core.modelkit.gate_registry import get_gate, register_gate
+from teatree.core.models.directive import Directive
 from teatree.core.models.errors import NoCurrentPlanError
-from teatree.core.models.plan_adequacy import declared_seam_paths, is_adequate
+from teatree.core.models.plan_adequacy import declared_seam_paths, is_adequate, mechanism_conforms
 from teatree.core.models.plan_artifact import PlanArtifact, plan_adequacy_required
 from teatree.core.models.ticket_worktree_checks import _resolve_base_branch, dispatch_worktree_path
 from teatree.core.models.trivial_plan_skip import is_trivial_plan_skip
@@ -85,7 +86,15 @@ def check_plan_current(ticket: "Ticket") -> bool:
     trivial-skip marker carries the ticket (a trivial mechanical edit has no plan
     or seams to bind). Otherwise the latest plan must be ADEQUATE and CURRENT;
     inconclusive probes (no worktree, failed fetch, unresolvable range) fail OPEN.
+
+    Also arms the ADVISORY design critic here (north-star PR-5) — this is the plan
+    seam every directive-implementation ticket flows through (``schedule_coding`` +
+    ``code()``). Registry-dispatched so no import cycle with ``design_critic_gate``;
+    a strict NO-OP (one settings read) unless ``design_critic_live`` is on AND the
+    ticket implements a directive. It never blocks — the ``mechanism_conforms`` teeth
+    below (gated by ``require_plan_adequacy``) are the deterministic block.
     """
+    get_gate("design_critic")(ticket)
     overlay = getattr(ticket, "overlay", "") or None
     if not plan_adequacy_required(overlay):
         return True
@@ -100,12 +109,35 @@ def check_plan_current(ticket: "Ticket") -> bool:
     if not is_adequate(artifact.adequacy):
         raise NoCurrentPlanError(_inadequate_reason(ticket))
 
+    _check_mechanism_placement(ticket, artifact)
+
     stale = _detect_stale_on_seam(ticket, artifact)
     if stale is not None:
         head, seam_commits = stale
         seams = declared_seam_paths(artifact.adequacy)
         raise NoCurrentPlanError(_stale_reason(ticket, artifact.base_sha, head, seams, seam_commits))
     return True
+
+
+def _check_mechanism_placement(ticket: "Ticket", artifact: "PlanArtifact") -> None:
+    """Refuse coder dispatch when a DIRECTIVE ticket's plan drifts from its ratified sketch.
+
+    NO-OP for ordinary work (no linked directive) and for a directive not yet
+    interpreted (no sketch to conform to — fail-open). Otherwise
+    :func:`mechanism_conforms` is the deterministic anti-hack teeth (§4 Layer 2): an
+    overlay-package chokepoint, a drifted setting/activation, or a missing N=2-litmus
+    rejected alternative is a finding raised as :class:`NoCurrentPlanError`, so a coder
+    is never dispatched against a hack-shaped directive plan.
+    """
+    directive = Directive.objects.linked_to(ticket)
+    if directive is None:
+        return
+    sketch = directive.sketch
+    if sketch is None:
+        return
+    finding = mechanism_conforms(artifact.adequacy, sketch)
+    if finding is not None:
+        raise NoCurrentPlanError(_mechanism_reason(ticket, finding))
 
 
 def _detect_stale_on_seam(ticket: "Ticket", artifact: "PlanArtifact") -> tuple[str, tuple[str, ...]] | None:
@@ -141,6 +173,21 @@ def _inadequate_reason(ticket: "Ticket") -> str:
         f"--adequacy-json '<four-section manifest>'`, OR record an audited bypass "
         f"(`t3 <overlay> ticket plan-bypass {ticket.pk} --human-authorize <who> --reason <why>`), OR "
         f"disable the gate (`t3 <overlay> config_setting set require_plan_adequacy false --overlay <name>`)."
+    )
+
+
+def _mechanism_reason(ticket: "Ticket", finding: str) -> str:
+    # A non-conformant mechanism_placement is TWO-SIDED, mirroring the plan gate's escape:
+    # fix the plan to conform, OR amend the directive (re-interpret → re-ratify) if the
+    # ratified shape was wrong. A genuine no-mechanism plan waives via a mechanism_placement
+    # reasoned negative; the flag kill-switch is the always-available never-lockout.
+    return (
+        f"Refusing to advance ticket {ticket.pk} to CODED — its plan's mechanism_placement does not conform to "
+        f"the ratified sketch (require_plan_adequacy, north-star PR-5): {finding}. Fix the plan's "
+        f"mechanism_placement section to declare the ratified generic shape, OR amend the directive if the "
+        f"ratified shape was wrong (re-interpret → re-ratify). A genuinely mechanism-less plan records a "
+        f"mechanism_placement reasoned negative; the never-lockout kill-switch is "
+        f"`t3 <overlay> config_setting set require_plan_adequacy false --overlay <name>`."
     )
 
 

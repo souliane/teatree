@@ -23,10 +23,12 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.gates import plan_currency_gate
+from teatree.core.gates.design_critic_gate import check_design_critic
 from teatree.core.gates.plan_currency_gate import check_plan_current, is_bound_to
 from teatree.core.modelkit import gate_registry
-from teatree.core.models import Ticket, Worktree
+from teatree.core.models import Directive, Ticket, Worktree
 from teatree.core.models.errors import NoCurrentPlanError
+from teatree.core.models.mechanism_sketch import MechanismSketch
 from teatree.core.models.plan_artifact import PlanArtifact
 from teatree.core.models.trivial_plan_skip import mark_trivial_plan_skip
 
@@ -226,6 +228,140 @@ class TestFsmIntegration(TestCase):
         assert self.ticket.state == Ticket.State.CODED
 
 
+_CORE_CHOKEPOINT = "src/teatree/core/gates/pr_budget_gate.py::check_pr_budget"
+
+
+def _sketch() -> MechanismSketch:
+    return MechanismSketch(
+        kind="setting_policy_gate",
+        setting_key="max_open_prs_per_repo_per_ticket",
+        setting_type="int",
+        neutral_default=0,
+        policy_chokepoint=_CORE_CHOKEPOINT,
+        activation_scope="example-overlay",
+        activation_value=1,
+        rejected_alternatives=("an overlay-local hook — a second overlay wanting max 2 needs new code",),
+    )
+
+
+def _placement(**overrides: object) -> dict:
+    section = {
+        "setting_key": "max_open_prs_per_repo_per_ticket",
+        "neutral_default": 0,
+        "policy_chokepoint": _CORE_CHOKEPOINT,
+        "activation_scope": "example-overlay",
+        "activation_value": 1,
+        "rejected_alternatives": ["an overlay-local hook — a second overlay wanting max 2 needs new code"],
+    }
+    section.update(overrides)
+    return section
+
+
+def _directive_manifest(section: dict | None) -> dict:
+    manifest = _adequacy([_CORE_CHOKEPOINT.split("::", maxsplit=1)[0]])
+    if section is not None:
+        manifest["mechanism_placement"] = section
+    return manifest
+
+
+def _directive_ticket(*, placement: dict | None) -> Ticket:
+    """A PLANNED directive-implementation ticket (no worktree → staleness fails open) + a linked sketch."""
+    ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLANNED)
+    directive = Directive.objects.capture("max 1 open PR per repo per ticket", source=Directive.Source.CLI)
+    directive.mechanism_sketch = _sketch().to_dict()
+    directive.ticket = ticket
+    directive.save(update_fields=["mechanism_sketch", "ticket"])
+    PlanArtifact.objects.create(
+        ticket=ticket,
+        plan_text="real plan",
+        recorded_by="t3:planner",
+        base_sha="a" * 40,
+        adequacy=_directive_manifest(placement),
+    )
+    return ticket
+
+
+class TestMechanismPlacement(TestCase):
+    """The directive-scoped 5th section blocks coder dispatch on a hack-shaped plan (north-star PR-5)."""
+
+    def test_a_conforming_directive_plan_passes(self) -> None:
+        ticket = _directive_ticket(placement=_placement())
+        with _gate(required=True):
+            assert check_plan_current(ticket) is True
+
+    def test_an_overlay_chokepoint_plan_blocks_coder_dispatch(self) -> None:
+        # Anti-vacuity (a): a directive plan whose chokepoint is an overlay-package one-off → REFUSED.
+        ticket = _directive_ticket(placement=_placement(policy_chokepoint="src/teatree/overlays/acme/hook.py::cap"))
+        with _gate(required=True), pytest.raises(NoCurrentPlanError, match="not a core seam"):
+            check_plan_current(ticket)
+
+    def test_a_missing_mechanism_placement_blocks(self) -> None:
+        ticket = _directive_ticket(placement=None)
+        with _gate(required=True), pytest.raises(NoCurrentPlanError, match="mechanism_placement"):
+            check_plan_current(ticket)
+
+    def test_an_ordinary_ticket_is_unaffected(self) -> None:
+        # No linked directive → the mechanism check is a no-op (only the base 4-section gate applies).
+        ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLANNED)
+        PlanArtifact.objects.create(
+            ticket=ticket, plan_text="p", recorded_by="op", base_sha="a" * 40, adequacy=_adequacy([])
+        )
+        with _gate(required=True):
+            assert check_plan_current(ticket) is True
+
+    def test_gate_is_load_bearing_the_hack_dispatches_without_it(self) -> None:
+        # RED-before proof: neutralise mechanism_conforms → the SAME overlay-chokepoint plan passes
+        # (the pre-PR-5 behaviour where a hack-shaped directive plan dispatched a coder).
+        ticket = _directive_ticket(placement=_placement(policy_chokepoint="src/teatree/overlays/acme/hook.py::cap"))
+        with _gate(required=True), patch.object(plan_currency_gate, "mechanism_conforms", return_value=None):
+            assert check_plan_current(ticket) is True
+
+    def test_a_directive_not_yet_interpreted_fails_open(self) -> None:
+        ticket = Ticket.objects.create(overlay="acme", role=Ticket.Role.AUTHOR, state=Ticket.State.PLANNED)
+        directive = Directive.objects.capture("no sketch yet", source=Directive.Source.CLI)
+        directive.ticket = ticket
+        directive.save(update_fields=["ticket"])  # sketch is None
+        PlanArtifact.objects.create(
+            ticket=ticket, plan_text="p", recorded_by="op", base_sha="a" * 40, adequacy=_adequacy([])
+        )
+        with _gate(required=True):
+            assert check_plan_current(ticket) is True  # no ratified sketch → nothing to conform to → open
+
+
+class TestMechanismPlacementNeverLockout(TestCase):
+    def test_flag_off_skips_the_mechanism_check(self) -> None:
+        ticket = _directive_ticket(placement=_placement(policy_chokepoint="src/teatree/overlays/acme/hook.py::cap"))
+        with _gate(required=False):
+            assert check_plan_current(ticket) is True  # gate off → the whole check is a no-op
+
+    def test_a_section_reasoned_negative_waives(self) -> None:
+        ticket = _directive_ticket(placement={"none_reason": "configuration-only directive, no mechanism"})
+        with _gate(required=True):
+            assert check_plan_current(ticket) is True
+
+
+class TestMechanismPlacementFsmIntegration(TestCase):
+    """code() / schedule_coding refuse a directive ticket whose plan is a hack (coder never dispatched)."""
+
+    def _hack_ticket(self) -> Ticket:
+        return _directive_ticket(placement=_placement(policy_chokepoint="src/teatree/overlays/acme/hook.py::cap"))
+
+    def test_code_refused_on_a_hack_plan(self) -> None:
+        ticket = self._hack_ticket()
+        with _gate(required=True), pytest.raises(NoCurrentPlanError, match="not a core seam"):
+            ticket.code()
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.PLANNED  # did NOT advance to CODED
+
+    def test_schedule_coding_refused_on_a_hack_plan(self) -> None:
+        ticket = self._hack_ticket()
+        with _gate(required=True), pytest.raises(NoCurrentPlanError):
+            ticket.schedule_coding()
+
+
 class TestRegistration(TestCase):
     def test_plan_currency_gate_is_registered(self) -> None:
         assert gate_registry.get_gate("plan_currency") is check_plan_current
+
+    def test_design_critic_gate_is_registered(self) -> None:
+        assert gate_registry.get_gate("design_critic") is check_design_critic

@@ -29,11 +29,16 @@ from teatree.core.critic_rubric import (
     spec_not_plan,
 )
 from teatree.core.gates.critic_gate import build_critic_contract
+from teatree.core.gates.design_critic_gate import build_design_contract
 from teatree.core.gates.merge_quality_gate import build_merge_quality_contract
 from teatree.core.models import MergeAudit, MergeClear, PlanArtifact, Ticket
 from teatree.core.models.plan_adequacy import all_negated_adequacy
 
 _FORTY_HEX = "a" * 40
+
+#: The north-star PR-5 design critic's four ``transition="plan"`` LLM items, in seeded order.
+_PLAN_DESIGN_SLUG_ORDER = ("generality", "sketch_conformance", "convention_fit", "refactor_honesty")
+_PLAN_DESIGN_SLUGS = set(_PLAN_DESIGN_SLUG_ORDER)
 
 
 def _adequate_manifest() -> dict:
@@ -219,9 +224,10 @@ class TestTransitionSelection:
     def test_llm_and_rubric_items_are_transition_scoped(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._mixed_rubric(monkeypatch)
         assert len(llm_items("mark_delivered")) == 5
-        assert llm_items("plan") == ()
+        # PR-5's four design items are the LLM items at transition="plan"; the probe is deterministic.
+        assert {item.slug for item in llm_items("plan")} == _PLAN_DESIGN_SLUGS
         assert len(rubric_items("mark_delivered")) == 8
-        assert [item.slug for item in rubric_items("plan")] == ["plan_only_probe"]
+        assert [item.slug for item in rubric_items("plan")] == [*_PLAN_DESIGN_SLUG_ORDER, "plan_only_probe"]
 
     def test_item_for_is_scoped_to_its_transition(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._mixed_rubric(monkeypatch)
@@ -255,4 +261,32 @@ class TestMergeTransitionItems(TestCase):
         ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
         contract = build_merge_quality_contract(ticket, _FORTY_HEX)
         for item in llm_items("merge"):
+            assert item.slug in contract, item.slug
+
+
+class TestPlanTransitionItems(TestCase):
+    """The north-star PR-5 design pair-of-pairs at ``transition="plan"`` — the generic-vs-hack judgment.
+
+    Four LLM advisory items on the SAME registry, selected by transition — the
+    mark_delivered and merge critics never see them, and the design critic never sees
+    the seeded eight or the merge pair.
+    """
+
+    def test_four_plan_llm_items(self) -> None:
+        plan = llm_items("plan")
+        assert {item.slug for item in plan} == _PLAN_DESIGN_SLUGS
+        assert all(item.kind is RubricKind.LLM and not item.blocking and item.transition == "plan" for item in plan)
+
+    def test_plan_items_do_not_leak_into_other_transitions(self) -> None:
+        for other in ("mark_delivered", "merge"):
+            other_slugs = {item.slug for item in rubric_items(other)}
+            assert not (_PLAN_DESIGN_SLUGS & other_slugs), other
+        assert deterministic_items("plan") == ()  # all four design items are LLM-advisory, none deterministic
+
+    def test_every_plan_llm_item_is_asked_by_the_design_contract(self) -> None:
+        # A design item the critic prompt forgets would never get judged — pin that the
+        # design contract asks for every plan slug (production-shaped, over a real ticket).
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.PLANNED)
+        contract = build_design_contract(ticket, _FORTY_HEX)
+        for item in llm_items("plan"):
             assert item.slug in contract, item.slug

@@ -140,17 +140,32 @@ def chokepoint_path(policy_chokepoint: str) -> str:
     return policy_chokepoint.split("::", 1)[0].strip()
 
 
+def is_core_seam_chokepoint(policy_chokepoint: str) -> bool:
+    """Whether *policy_chokepoint* names a CORE seam (``src/teatree/...``), not an overlay patch.
+
+    The structural refusal of the one-off hack (§4.0 step 2 / no-overlay-leak Layer 1):
+    a chokepoint under an ``overlays/`` or ``contrib/`` package is an overlay-local patch,
+    not the core seam every overlay flows through. Shared by the interpreter recorder here
+    AND by ``plan_adequacy.mechanism_conforms`` (the plan-time ``mechanism_placement`` check),
+    so both refuse an overlay-package chokepoint by the identical rule.
+    """
+    path = chokepoint_path(policy_chokepoint)
+    if not path:
+        return False
+    normalized = path.replace("\\", "/")
+    return normalized.startswith(_CORE_SEAM_ROOT) and not any(marker in normalized for marker in _OVERLAY_PATH_MARKERS)
+
+
 def _validate_chokepoint(policy_chokepoint: str) -> str | None:
     path = chokepoint_path(policy_chokepoint)
     if not path:
         return "policy_chokepoint is required (a `src/teatree/...::symbol` core seam)"
-    normalized = path.replace("\\", "/")
-    if not normalized.startswith(_CORE_SEAM_ROOT) or any(marker in normalized for marker in _OVERLAY_PATH_MARKERS):
+    if not is_core_seam_chokepoint(policy_chokepoint):
         return (
             f"policy_chokepoint {path!r} is not a core seam: the constraint must live at a "
             f"{_CORE_SEAM_ROOT}... chokepoint every overlay flows through, never an overlay-local patch"
         )
-    if not (_repo_root() / normalized).is_file():
+    if not (_repo_root() / path.replace("\\", "/")).is_file():
         return f"policy_chokepoint file {path!r} does not exist at HEAD"
     return None
 

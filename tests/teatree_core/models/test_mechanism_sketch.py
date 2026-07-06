@@ -14,6 +14,7 @@ from django.test import TestCase
 from teatree.core.models.mechanism_sketch import (
     MechanismSketch,
     MechanismSketchError,
+    is_core_seam_chokepoint,
     sketch_from_envelope,
     validate_sketch_structure,
 )
@@ -105,3 +106,20 @@ class TestSketchRoundTrip(TestCase):
     def test_from_envelope_raises_on_an_invalid_sketch(self) -> None:
         with pytest.raises(MechanismSketchError):
             sketch_from_envelope(valid_envelope(rejected_alternatives=[]))
+
+
+class TestIsCoreSeamChokepoint:
+    """The shared core-seam predicate reused by the plan-time mechanism_placement check (PR-5)."""
+
+    def test_a_core_seam_is_accepted(self) -> None:
+        assert is_core_seam_chokepoint(_CORE_CHOKEPOINT) is True
+        assert is_core_seam_chokepoint("src/teatree/core/runners/ship.py") is True
+
+    def test_an_overlay_package_chokepoint_is_rejected(self) -> None:
+        assert is_core_seam_chokepoint("src/teatree/overlays/acme/hook.py::cap") is False
+        assert is_core_seam_chokepoint("overlays/acme/hook.py::cap") is False
+        assert is_core_seam_chokepoint("contrib/acme/patch.py::cap") is False
+
+    def test_a_non_core_or_blank_path_is_rejected(self) -> None:
+        assert is_core_seam_chokepoint("some/other/repo.py::x") is False
+        assert is_core_seam_chokepoint("") is False
