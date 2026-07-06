@@ -8,7 +8,9 @@ the swap is invisible to the grader. The SDK is mocked here — no metered calls
 
 import asyncio
 import dataclasses
+import json
 import os
+import re
 from collections.abc import AsyncIterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -19,6 +21,7 @@ import pytest
 from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ToolUseBlock
 
 from teatree.eval.api_runner import (
+    _SKILL_CATALOG_PLUGIN_NAME,
     CLAUDE_RESOLVE_MAX_ATTEMPTS,
     DEFAULT_WATCHDOG_SECONDS,
     MAX_BUDGET_USD,
@@ -28,11 +31,14 @@ from teatree.eval.api_runner import (
     ClaudeCliMissingError,
     CleanRoomConfig,
     CreditExhaustedError,
+    _qualify_catalog_skill,
+    _skill_catalog_fixture_plugin,
     build_sdk_options,
     classify_terminal_error,
     is_success_result_error,
     resolve_claude_path,
 )
+from teatree.eval.discovery import discover_specs
 from teatree.eval.models import (
     DEFAULT_MAX_TURNS,
     AnyOf,
@@ -691,9 +697,19 @@ class TestBuildSdkOptionsSkillCatalog:
         assert options.plugins == []
 
     def test_declared_skills_populate_the_skills_filter(self, tmp_path: Path) -> None:
+        # The filter carries the plugin-qualified `<plugin>:<skill>` key the CLI
+        # lists a plugin's skills under (verified: the init event exposes
+        # `eval-skill-catalog:t3-widget`) — the unambiguous canonical form.
         config = _skills_config(tmp_path, skills=("t3-widget", "ac-django"))
         options = build_sdk_options(config)
-        assert options.skills == ["t3-widget", "ac-django"]
+        assert options.skills == ["eval-skill-catalog:t3-widget", "eval-skill-catalog:ac-django"]
+
+    def test_already_qualified_declared_skill_is_not_double_qualified(self, tmp_path: Path) -> None:
+        # Qualification is idempotent: a name that already carries the plugin
+        # prefix is passed through untouched, never `eval-skill-catalog:eval-skill-catalog:…`.
+        config = _skills_config(tmp_path, skills=("eval-skill-catalog:t3-widget",))
+        options = build_sdk_options(config)
+        assert options.skills == ["eval-skill-catalog:t3-widget"]
 
     def test_declared_skills_register_the_fixture_plugin(self, tmp_path: Path) -> None:
         config = _skills_config(tmp_path, skills=("t3-widget",))
@@ -711,6 +727,38 @@ class TestBuildSdkOptionsSkillCatalog:
         plugin_dir = Path(_skill_catalog_fixture_plugin()["path"])
         assert (plugin_dir / ".claude-plugin" / "plugin.json").is_file()
         assert list(plugin_dir.glob("skills/*/SKILL.md")), "fixture plugin ships no skills"
+
+    def test_plugin_name_constant_matches_the_fixture_plugin_json(self) -> None:
+        # The qualified skill key `<plugin>:<skill>` is built from this constant;
+        # if the fixture's plugin.json `name` ever drifts from it, the CLI would
+        # list the skills under a DIFFERENT prefix and the filter would silently
+        # resolve empty again. Pin the two together at their single seam.
+        plugin_json = Path(_skill_catalog_fixture_plugin()["path"]) / ".claude-plugin" / "plugin.json"
+        assert json.loads(plugin_json.read_text(encoding="utf-8"))["name"] == _SKILL_CATALOG_PLUGIN_NAME
+
+    def test_qualification_preserves_every_shipped_positive_skill_anchor(self) -> None:
+        # The fix qualifies each declared skill name UP to `<plugin>:<skill>`.
+        # Prove that qualification does not desynchronise the filter from the
+        # matchers: for every shipped scenario declaring available_skills, each
+        # positive `Skill` matcher's `args.skill` regex must still be satisfied
+        # by at least one QUALIFIED available-skill name — else the model would
+        # load a skill whose recorded tool-call value no longer matches the
+        # positive anchor (a silent re-red in the other direction).
+        for spec in discover_specs():
+            if not spec.available_skills:
+                continue
+            qualified = [_qualify_catalog_skill(name) for name in spec.available_skills]
+            for item in spec.matchers:
+                positives = item.alternatives if isinstance(item, AnyOf) else [item]
+                for matcher in positives:
+                    if not isinstance(matcher, Matcher) or matcher.kind != "positive":
+                        continue
+                    if canonicalize_tool(matcher.tool) != "Skill" or matcher.operator != "~":
+                        continue
+                    assert any(re.search(matcher.value, name) for name in qualified), (
+                        f"{spec.name}: positive Skill anchor /{matcher.value}/ matches no "
+                        f"qualified available_skill in {qualified}"
+                    )
 
     def test_every_scenario_declared_skill_has_a_fixture_entry(self) -> None:
         # Anti-drift: every skill name any shipped scenario declares via
@@ -738,7 +786,7 @@ class TestBuildSdkOptionsSkillCatalog:
             patch("teatree.eval.api_runner.query", query),
         ):
             ApiInProcessRunner(workspace=tmp_path).run(spec)
-        assert captured["options"].skills == ["t3-widget", "widget-le"]
+        assert captured["options"].skills == ["eval-skill-catalog:t3-widget", "eval-skill-catalog:widget-le"]
         assert len(captured["options"].plugins) == 1
 
     def test_runner_without_available_skills_matches_prior_behaviour(self, tmp_path: Path) -> None:

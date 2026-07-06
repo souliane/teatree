@@ -20,7 +20,12 @@ genuinely discover.
 
 from pathlib import Path
 
-from teatree.eval.api_runner import _skill_catalog_fixture_plugin
+from teatree.eval.api_runner import (
+    CleanRoomConfig,
+    _qualify_catalog_skill,
+    _skill_catalog_fixture_plugin,
+    build_sdk_options,
+)
 from teatree.eval.discovery import discover_specs
 
 #: The eight scenarios CI run 28630941573 reported failing, each mapped to the
@@ -109,8 +114,10 @@ class TestClaudeAgentOptionsCarryTheWidenedCatalog:
     """End-to-end: the loaded spec's available_skills reaches the SDK options."""
 
     def test_build_sdk_options_lists_exactly_the_declared_names(self, tmp_path: Path) -> None:
-        from teatree.eval.api_runner import CleanRoomConfig, build_sdk_options  # noqa: PLC0415
-
+        # The CLI lists a plugin's skills under the plugin-qualified
+        # `<plugin>:<skill>` key, so the options filter carries the qualified
+        # form of each declared name (see `_qualify_catalog_skill`) — the
+        # unambiguous canonical key that matches the CLI's own listing.
         by_name = _specs_by_name()
         (spec,) = by_name["overlay_django_coding_loads_companion_bible"]
         config = CleanRoomConfig(
@@ -124,5 +131,5 @@ class TestClaudeAgentOptionsCarryTheWidenedCatalog:
             skills=spec.available_skills,
         )
         options = build_sdk_options(config)
-        assert set(options.skills or []) == set(spec.available_skills)
+        assert set(options.skills or []) == {_qualify_catalog_skill(name) for name in spec.available_skills}
         assert len(options.plugins) == 1

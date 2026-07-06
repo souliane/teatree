@@ -217,6 +217,20 @@ EMPTY_SETTINGS = '{"hooks":{}}'
 #: hook these scenarios' prompts say "did not fire" to force a genuine self-load.
 _SKILL_CATALOG_FIXTURE_RELATIVE_PATH = ("evals", "fixtures", "skill_catalog")
 
+#: The fixture plugin's registered name — MUST equal the ``name`` in
+#: ``evals/fixtures/skill_catalog/.claude-plugin/plugin.json``
+#: (pinned by ``test_plugin_name_constant_matches_the_fixture_plugin_json``).
+#: The bundled ``claude`` CLI lists a plugin's skills under the plugin-qualified
+#: ``<plugin>:<skill>`` key (verified against the binary: the ``system/init``
+#: event exposes ``eval-skill-catalog:t3-widget``). The SDK ``skills`` filter
+#: accepts either that qualified key OR the bare SKILL.md ``name`` (types.py:
+#: "Names match the SKILL.md name / directory name, or plugin:skill"), so the
+#: qualified form is the unambiguous canonical key (§8 identity-normalization) —
+#: it matches the CLI's own listing exactly and stays correct if a future CLI
+#: build ever tightens the filter to the qualified form only.
+#: :func:`_qualify_catalog_skill` canonicalizes each declared name UP to it.
+_SKILL_CATALOG_PLUGIN_NAME = "eval-skill-catalog"
+
 #: Typed alias callers may ``raise``/``except`` against. The SDK raises a bare
 #: ``Exception`` for the budget breaker, so the runner ALSO matches the message
 #: substring — this alias only types the direct-raise path, never narrows it.
@@ -311,6 +325,19 @@ class CleanRoomConfig:
     skills: tuple[str, ...] = ()
 
 
+def _qualify_catalog_skill(name: str) -> str:
+    """Canonicalize a fixture-catalog skill name UP to the CLI's ``<plugin>:<skill>`` key.
+
+    The plugin-qualified form is the unambiguous canonical key the CLI lists a
+    plugin's skills under (see :data:`_SKILL_CATALOG_PLUGIN_NAME`). An
+    already-qualified name (any name containing ``":"``) is returned unchanged,
+    so the transform is idempotent.
+    """
+    if ":" in name:
+        return name
+    return f"{_SKILL_CATALOG_PLUGIN_NAME}:{name}"
+
+
 def _skill_catalog_fixture_plugin() -> SdkPluginConfig:
     """The local-plugin config for the eval-only skill-catalog fixture.
 
@@ -355,9 +382,12 @@ def build_sdk_options(config: CleanRoomConfig) -> ClaudeAgentOptions:
     ``skills``/``plugins`` widen the simulated Skill-tool catalog for a scenario
     that declares ``config.skills`` (threaded from ``EvalSpec.available_skills``):
     the eval-only fixture plugin is registered and the listing filtered to
-    exactly the declared names. Empty ``config.skills`` (the default) renders
-    ``skills=None`` and ``plugins=[]`` — the SDK's own untouched defaults, so a
-    scenario declaring none is byte-identical to before this lever existed.
+    exactly the declared names, each canonicalized UP to the plugin-qualified
+    ``<plugin>:<skill>`` key the CLI actually lists them under
+    (:func:`_qualify_catalog_skill` — a bare-name filter matches nothing). Empty
+    ``config.skills`` (the default) renders ``skills=None`` and ``plugins=[]`` —
+    the SDK's own untouched defaults, so a scenario declaring none is
+    byte-identical to before this lever existed.
     """
     available = list(config.available_tools) if config.available_tools else None
     return ClaudeAgentOptions(
@@ -378,7 +408,7 @@ def build_sdk_options(config: CleanRoomConfig) -> ClaudeAgentOptions:
         model=config.model,
         fallback_model=FALLBACK_MODEL,
         effort=config.effort,
-        skills=list(config.skills) if config.skills else None,
+        skills=[_qualify_catalog_skill(name) for name in config.skills] if config.skills else None,
         plugins=[_skill_catalog_fixture_plugin()] if config.skills else [],
     )
 
