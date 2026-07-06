@@ -28,8 +28,8 @@
 "src/teatree/core/management/commands/_e2e_discovery.py" = 1
 "src/teatree/core/management/commands/_ensure_pr.py" = 1
 "src/teatree/core/management/commands/_rubric_commands.py" = 1
-"src/teatree/core/management/commands/_ship_exec.py" = 1
-"src/teatree/core/management/commands/_ship_gates.py" = 1
+"src/teatree/core/management/commands/_ship/exec.py" = 1
+"src/teatree/core/management/commands/_ship/gates.py" = 1
 "src/teatree/core/management/commands/checking.py" = 3
 "src/teatree/core/management/commands/cost.py" = 2
 "src/teatree/core/management/commands/db.py" = 1
