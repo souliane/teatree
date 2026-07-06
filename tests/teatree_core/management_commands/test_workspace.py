@@ -421,7 +421,10 @@ class TestWorkspaceTicketAdopt(TestCase):
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
-    def test_adopt_refuses_error_dict_target(self) -> None:
+    def test_adopt_proceeds_on_unparsable_pull_url(self) -> None:
+        # A GitHub /pull/<n> URL is unparsable by get_issue's issue-only ref
+        # parser, so a resolvable host returns {"error": ...} — ambiguity, not a
+        # positive bad signal. A valid OPEN PR adopted via /pull/<n> must PROCEED.
         worktree = self._clone_and_worktree("feature-x")
         self._enter_adopt_patches(worktree)
         url = "https://github.com/souliane/teatree/pull/89"
@@ -429,10 +432,10 @@ class TestWorkspaceTicketAdopt(TestCase):
         host.get_issue.return_value = {"error": f"Not a GitHub issue URL: {url}"}
         self._patch_issue_host(host)
 
-        rc = call_command("workspace", "ticket", url, adopt=True)
+        ticket_id = cast("int", call_command("workspace", "ticket", url, adopt=True))
 
-        assert rc == 0
-        assert not Ticket.objects.filter(issue_url=url).exists()
+        ticket = Ticket.objects.get(pk=ticket_id)
+        assert ticket.extra["branch"] == "feature-x"
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)

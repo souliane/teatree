@@ -149,9 +149,10 @@ def adopt_target_refusal(overlay: "OverlayBase", issue_url: str, *, allow_closed
     ``--adopt-closed`` override (``allow_closed``) is the explicit escape.
 
     Fail-open on the ambiguous cases — a URL no code host can resolve (an
-    unknown tracker) or a transient forge error is NOT proof of a bad target,
-    so it proceeds. The refusal fires only on a POSITIVE closed / not-found
-    signal from a resolvable host.
+    unknown tracker), a transient forge error, or an error dict from a host that
+    could not parse the URL as an issue (a GitHub ``/pull/<n>`` URL) is NOT proof
+    of a bad target, so it proceeds. The refusal fires only on a POSITIVE signal:
+    a genuine 404 (``IssueNotFoundError``) or a resolvable-but-CLOSED target.
     """
     host = get_code_host_for_url(overlay, issue_url)
     if host is None:
@@ -164,7 +165,12 @@ def adopt_target_refusal(overlay: "OverlayBase", issue_url: str, *, allow_closed
         logger.warning("adopt-target validation could not resolve %s: %s", issue_url, exc)
         return None
     if not isinstance(data, dict) or data.get("error"):
-        return f"  Refused: --adopt target {issue_url} does not resolve to a real issue/PR. Check the URL."
+        # An error dict means the host could not PARSE/resolve the URL as an issue
+        # (e.g. a GitHub /pull/<n> URL, which the issue-only ref parser rejects) —
+        # ambiguity, not a positive bad signal. Fail open like the transient case;
+        # only a genuine 404 (IssueNotFoundError, above) or a resolvable-closed
+        # target refuses.
+        return None
     if overlay.is_issue_done(data) and not allow_closed:
         return (
             f"  Refused: --adopt target {issue_url} is CLOSED. Adopting a closed issue/PR is the "
