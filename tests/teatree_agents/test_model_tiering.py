@@ -22,8 +22,8 @@ from teatree.agents.model_tiering import (
     TIER_MODELS,
     VERIFICATION_PHASES,
     _resolve_pydantic_ai_tier,
-    assert_chinese_model_allowed,
-    is_chinese_origin_model,
+    assert_model_allowed_on_regulated_path,
+    is_regulated_path_eligible,
     model_supports_thinking,
     resolve_phase_harness,
     resolve_phase_model,
@@ -501,43 +501,63 @@ class TestHarnessScopedEffortDefaultHarness(TestCase):
         assert resolve_tier_effort("frontier", config_path=self.cfg) == "max"
 
 
-class TestIsChineseOriginModel:
-    """:func:`is_chinese_origin_model` matches the #2887 marker set, case-insensitively."""
+class TestIsRegulatedPathEligible:
+    """:func:`is_regulated_path_eligible` — membership in the explicit allowlist, case-insensitively."""
 
-    @pytest.mark.parametrize("model_id", ["deepseek-v3", "DeepSeek-R1", "qwen2.5-72b", "GLM-4.5"])
-    def test_matches_a_known_chinese_model_family(self, model_id: str) -> None:
-        assert is_chinese_origin_model(model_id)
+    @pytest.mark.parametrize("model_id", ["anthropic/claude-opus-4.8", "Anthropic/Claude-Sonnet", "google/gemini-3"])
+    def test_an_allowlisted_pattern_is_eligible(self, model_id: str) -> None:
+        assert is_regulated_path_eligible(model_id, ["anthropic/", "google/"])
 
-    @pytest.mark.parametrize("model_id", list(TIER_MODELS.values()))
-    def test_no_shipped_tier_model_is_chinese_origin(self, model_id: str) -> None:
-        assert not is_chinese_origin_model(model_id)
+    @pytest.mark.parametrize("model_id", ["deepseek/deepseek-v4-pro", "qwen/qwen3.6-plus"])
+    def test_a_model_off_the_allowlist_is_ineligible(self, model_id: str) -> None:
+        assert not is_regulated_path_eligible(model_id, ["anthropic/", "google/"])
 
-
-class TestAssertChineseModelAllowed:
-    """:func:`assert_chinese_model_allowed` — the #2887 OrcaRouter allowlist gate."""
-
-    def test_non_chinese_model_never_raises(self) -> None:
-        assert_chinese_model_allowed(TIER_MODELS["frontier"], chinese_models_allowed=False)
-
-    def test_chinese_model_allowed_true_is_a_noop(self) -> None:
-        assert_chinese_model_allowed("deepseek-v3", chinese_models_allowed=True)
-
-    def test_chinese_model_allowed_false_raises(self) -> None:
-        with pytest.raises(ValueError, match="Chinese-origin"):
-            assert_chinese_model_allowed("deepseek-v3", chinese_models_allowed=False)
+    def test_empty_allowlist_makes_nothing_eligible(self) -> None:
+        assert not is_regulated_path_eligible("anthropic/claude-opus-4.8", [])
 
 
-class TestAssertChineseModelAllowedDefaultSetting(TestCase):
-    """The default ``chinese_models_allowed=None`` reads the resolved DB-home setting."""
+class TestAssertModelAllowedOnRegulatedPath:
+    """:func:`assert_model_allowed_on_regulated_path` — the regulated-lane allowlist gate."""
 
-    def test_default_reads_the_resolved_chinese_models_allowed_setting(self) -> None:
-        ConfigSetting.objects.set_value("chinese_models_allowed", value=False)
-        with pytest.raises(ValueError, match="Chinese-origin"):
-            assert_chinese_model_allowed("qwen2.5-72b")
+    def test_unenforced_lane_never_raises(self) -> None:
+        # The teatree factory lane carries no regulated data — any model runs.
+        assert_model_allowed_on_regulated_path("deepseek/deepseek-v4-pro", enforce_regulated_path=False, allowlist=[])
 
-    def test_default_true_never_raises(self) -> None:
-        ConfigSetting.objects.set_value("chinese_models_allowed", value=True)
-        assert_chinese_model_allowed("qwen2.5-72b")
+    def test_allowlisted_model_on_the_regulated_path_is_a_noop(self) -> None:
+        assert_model_allowed_on_regulated_path(
+            "anthropic/claude-opus-4.8", enforce_regulated_path=True, allowlist=["anthropic/"]
+        )
+
+    def test_model_off_the_allowlist_is_refused_on_the_regulated_path(self) -> None:
+        with pytest.raises(ValueError, match="not eligible for the regulated path"):
+            assert_model_allowed_on_regulated_path(
+                "deepseek/deepseek-v4-pro", enforce_regulated_path=True, allowlist=["anthropic/"]
+            )
+
+    def test_enforced_but_empty_allowlist_refuses_everything(self) -> None:
+        with pytest.raises(ValueError, match="not eligible for the regulated path"):
+            assert_model_allowed_on_regulated_path(
+                "anthropic/claude-opus-4.8", enforce_regulated_path=True, allowlist=[]
+            )
+
+
+class TestAssertModelAllowedDefaultSettings(TestCase):
+    """The default (params ``None``) reads the resolved DB-home regulated-path settings."""
+
+    def test_default_unenforced_never_raises(self) -> None:
+        # No row set — enforce_regulated_path defaults False, so nothing is gated.
+        assert_model_allowed_on_regulated_path("deepseek/deepseek-v4-pro")
+
+    def test_default_reads_the_resolved_regulated_path_settings(self) -> None:
+        ConfigSetting.objects.set_value("enforce_regulated_path", value=True)
+        ConfigSetting.objects.set_value("regulated_path_model_allowlist", value=["anthropic/"])
+        with pytest.raises(ValueError, match="not eligible for the regulated path"):
+            assert_model_allowed_on_regulated_path("deepseek/deepseek-v4-pro")
+
+    def test_allowlisted_model_passes_under_enforcement(self) -> None:
+        ConfigSetting.objects.set_value("enforce_regulated_path", value=True)
+        ConfigSetting.objects.set_value("regulated_path_model_allowlist", value=["anthropic/", "claude"])
+        assert_model_allowed_on_regulated_path("anthropic/claude-opus-4.8")
 
 
 class TestPydanticAiTierModels:
@@ -614,7 +634,7 @@ class TestResolvePydanticAiModel:
 
 
 class TestResolvePhaseHarness:
-    """:func:`resolve_phase_harness` — the CN-model verifier pin (plan §4 guardrail #2)."""
+    """:func:`resolve_phase_harness` — the cheap-model verifier pin (plan §4 guardrail #2)."""
 
     def test_verification_phases_are_pinned_to_claude_sdk(self) -> None:
         assert set(PHASE_HARNESS) == set(VERIFICATION_PHASES)
@@ -622,7 +642,7 @@ class TestResolvePhaseHarness:
 
     @pytest.mark.parametrize("phase", sorted(VERIFICATION_PHASES))
     def test_a_verification_phase_forces_claude_sdk_even_when_pydantic_ai_configured(self, phase: str) -> None:
-        # The MAKER may run cheap CN via pydantic_ai; the checker stays on Claude.
+        # The MAKER may run a cheap open-source model via pydantic_ai; the checker stays on Claude.
         assert resolve_phase_harness(AgentHarness.PYDANTIC_AI, phase) is AgentHarness.CLAUDE_SDK
 
     @pytest.mark.parametrize("phase", ["coding", "planning", "debugging", "shipping"])

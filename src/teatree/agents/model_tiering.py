@@ -28,7 +28,7 @@ spawns emit no effort and inherit the SDK default.
 :data:`TIER_MODELS` is the ``claude_sdk`` catalog — Claude ids in DASH-form
 (``claude-opus-4-8``). The ``pydantic_ai`` harness's OrcaRouter provider does NOT
 carry those dash-form ids (Orca serves provider-prefixed ids —
-``anthropic/claude-opus-4.8``, the CN pool, and named router handles), so its
+``anthropic/claude-opus-4.8``, the open-source pool, and named router handles), so its
 catalog is the SEPARATE :data:`PYDANTIC_AI_TIER_MODELS` (all tiers collapsing to
 one router handle; the router's own bandit does the mundane-vs-hard tiering).
 :func:`resolve_pydantic_ai_model` is the boundary that normalises a resolved
@@ -66,7 +66,7 @@ configured default applies unchanged.
 """
 
 import tomllib
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 
 from teatree.config import CONFIG_PATH, AgentHarness, get_effective_settings
@@ -90,7 +90,7 @@ TIER_MODELS: dict[str, str] = {
 # serves OrcaRouter's provider-prefixed catalog, so its tier map is SEPARATE —
 # :data:`TIER_MODELS`'s dash-form ids (``claude-opus-4-8``) do NOT exist in
 # OrcaRouter's catalog (Orca carries ``anthropic/claude-opus-4.8`` dot-form and
-# provider-prefixed CN ids), so trusting them here would send an unresolvable id.
+# provider-prefixed open-source ids), so trusting them here would send an unresolvable id.
 # All three abstract tiers collapse to ONE router handle by design: the router's
 # own adaptive/gated bandit does the mundane-vs-hard tiering, so teatree's
 # abstract tiers need not fan out on this harness. Overridable per tier via
@@ -175,9 +175,9 @@ DEFAULT_PHASE_MODELS: dict[str, str] = {
 VERIFICATION_PHASES: frozenset[str] = frozenset({"reviewing", "requesting_review", "testing"})
 
 # Phases PINNED to a specific harness regardless of the overlay's ``agent_harness``
-# setting — the CN-model verifier backstop (OrcaRouter setup plan §4 guardrail #2).
-# When a MAKER phase runs on a cheap CN model via ``pydantic_ai``/OrcaRouter, the
-# VERIFICATION phases (the checker in the maker≠checker pipeline) stay on the
+# setting — the cheap-model verifier backstop (OrcaRouter setup plan §4 guardrail #2).
+# When a MAKER phase runs on a cheap open-source model via ``pydantic_ai``/OrcaRouter,
+# the VERIFICATION phases (the checker in the maker≠checker pipeline) stay on the
 # trusted ``claude_sdk`` lane, so the reliability backstop is a Claude verifier +
 # CI, never the cheap maker model checking its own work. Data-driven so the pinned
 # set is one place, not a branch in :func:`resolve_harness`.
@@ -197,41 +197,62 @@ def resolve_phase_harness(configured: AgentHarness, phase: str | None) -> AgentH
     return configured
 
 
-# The Chinese-models allowlist (#2887): substrings identifying a Chinese-origin
-# model family reachable through OrcaRouter's routing handle. Matched
-# case-insensitively against a resolved
-# OrcaRouter model name in :func:`assert_chinese_model_allowed`. No shipped
-# :data:`TIER_MODELS` entry matches today (every tier is a Claude model), so the
-# check is currently a no-op for the shipped defaults — it exists for the day a
-# tier (or a ``phase_models`` / ``tier_models`` override) points at one of these.
-_CHINESE_MODEL_MARKERS: frozenset[str] = frozenset({"deepseek", "qwen", "glm"})
+def is_regulated_path_eligible(model_id: str, allowlist: Sequence[str]) -> bool:
+    """Whether *model_id* is on the regulated-path *allowlist* (case-insensitive substring).
 
-
-def is_chinese_origin_model(model_id: str) -> bool:
-    """Whether *model_id* names a Chinese-origin model family (:data:`_CHINESE_MODEL_MARKERS`)."""
-    lowered = model_id.lower()
-    return any(marker in lowered for marker in _CHINESE_MODEL_MARKERS)
-
-
-def assert_chinese_model_allowed(model_id: str, *, chinese_models_allowed: bool | None = None) -> None:
-    """Raise ``ValueError`` when *model_id* is Chinese-origin and disallowed for the active overlay.
-
-    *chinese_models_allowed* is injectable for tests; the default reads the
-    resolved ``chinese_models_allowed`` DB-home setting (#2887) — ``True`` for
-    teatree's own default posture, overridden ``False`` per-overlay by an
-    overlay serving client work under a no-Chinese-models policy. A non-Chinese
-    *model_id*, or an allowed one, is a no-op.
+    The regulated path carries client/bank data, so the models eligible to run on
+    it are governed by EU data-residency & regulatory compliance (GDPR, data
+    residency, processor jurisdiction) and enumerated in an EXPLICIT
+    operator-configured allowlist
+    (:data:`~teatree.config.UserSettings.regulated_path_model_allowlist`) — a
+    BYOK / residency-controlled set, never inferred from the model in code. A model
+    is eligible only when its id matches an allowlist pattern; an empty allowlist
+    makes nothing eligible (fail-closed for a regulated lane).
     """
-    allowed = (
-        chinese_models_allowed
-        if chinese_models_allowed is not None
-        else get_effective_settings().chinese_models_allowed
-    )
-    if not allowed and is_chinese_origin_model(model_id):
+    lowered = model_id.lower()
+    return any(pattern.lower() in lowered for pattern in allowlist)
+
+
+def assert_model_allowed_on_regulated_path(
+    model_id: str,
+    *,
+    enforce_regulated_path: bool | None = None,
+    allowlist: Sequence[str] | None = None,
+) -> None:
+    """Raise ``ValueError`` when *model_id* is not eligible for a REGULATED lane's path.
+
+    A lane that carries regulated client/bank data (a future regulated / EU-residency lane)
+    restricts inference to a compliance-vetted model set — an EU data-residency &
+    regulatory-compliance requirement (GDPR, data residency, processor jurisdiction),
+    not a model-origin question. The gate is the DB-home ``enforce_regulated_path``
+    (default ``False`` — the teatree factory lane carries no regulated data and runs
+    unrestricted, incl. cheap open-source models); when ``True``, only a model whose
+    id is on the EXPLICIT ``regulated_path_model_allowlist`` (a per-overlay,
+    BYOK / residency-controlled allowlist) may run — everything else is refused as a
+    config-policy violation.
+
+    CLIENT-SIDE ONLY (best-effort): this rejects an ineligible id BEFORE the request,
+    but with the default ``orcarouter/teatree-factory`` router handle the OrcaRouter
+    SERVER-SIDE bandit can still route to a model not on the allowlist. An operator
+    needing a HARD regulated-path restriction must ALSO constrain the OrcaRouter
+    dashboard (Allowed-models glob) or pin explicit model ids.
+
+    *enforce_regulated_path* / *allowlist* are injectable for tests; the defaults
+    read the resolved DB-home settings.
+    """
+    if enforce_regulated_path is None or allowlist is None:
+        settings = get_effective_settings()
+        if enforce_regulated_path is None:
+            enforce_regulated_path = settings.enforce_regulated_path
+        if allowlist is None:
+            allowlist = settings.regulated_path_model_allowlist
+    if enforce_regulated_path and not is_regulated_path_eligible(model_id, allowlist):
         msg = (
-            f"model {model_id!r} is a Chinese-origin model but chinese_models_allowed is False "
-            "for the active overlay; set a non-Chinese tier/model or "
-            "`t3 <overlay> config_setting set chinese_models_allowed true --overlay <name>`"
+            f"model {model_id!r} is not eligible for the regulated path "
+            "(enforce_regulated_path is True and the id is not on regulated_path_model_allowlist — "
+            "the EU data-residency / regulatory-compliance allowlist for the regulated lane); "
+            "add the model to regulated_path_model_allowlist for the overlay, or "
+            "`t3 <overlay> config_setting set enforce_regulated_path false --overlay <name>`"
         )
         raise ValueError(msg)
 
@@ -281,7 +302,7 @@ def resolve_pydantic_ai_model(model_name: str | None, *, config_path: Path | Non
     (:func:`_resolve_pydantic_ai_tier`). An explicit Orca-native pin (ANY
     provider-prefixed id, e.g. an operator ``phase_models`` override to
     ``deepseek/deepseek-v4-pro``) passes through UNCHANGED — the caller then still
-    runs it past :func:`assert_chinese_model_allowed`.
+    runs it past :func:`assert_model_allowed_on_regulated_path`.
     """
     if model_name and "/" in model_name:
         return model_name

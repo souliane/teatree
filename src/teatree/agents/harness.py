@@ -57,7 +57,7 @@ from teatree.agents.lane_b.config import LaneBToolConfig
 from teatree.agents.lane_b.toolsets import build_lane_b_toolsets
 from teatree.agents.model_tiering import (
     HARNESS_EFFORT_SCALE,
-    assert_chinese_model_allowed,
+    assert_model_allowed_on_regulated_path,
     resolve_phase_harness,
     resolve_pydantic_ai_model,
 )
@@ -284,7 +284,7 @@ class PydanticAiHarnessSession:
         self._phase = phase
         # The per-run sequential-request cap (OrcaRouter setup plan §4 guardrail
         # #1). A positive value becomes ``UsageLimits(request_limit=...)`` on each
-        # ``run_stream`` so a cheap CN maker can't drift on a long tool loop;
+        # ``run_stream`` so a cheap-model maker can't drift on a long tool loop;
         # ``None``/``<= 0`` leaves the run uncapped (the ``claude_sdk`` behaviour).
         self._request_limit = request_limit
         self._pending_prompt: str | None = None
@@ -417,10 +417,10 @@ class PydanticAiHarness:
     pydantic_ai's own :class:`~pydantic_ai.models.test.TestModel` /
     :class:`~pydantic_ai.models.function.FunctionModel` doubles, with no network
     and no :class:`~teatree.llm.credentials.CredentialError` risk. A resolved
-    model name is checked against the Chinese-models allowlist
-    (:func:`~teatree.agents.model_tiering.assert_chinese_model_allowed`, #2887)
-    before it reaches the provider — a no-op today since no shipped
-    :data:`~teatree.agents.model_tiering.TIER_MODELS` entry is Chinese-origin.
+    model name is checked against the regulated-path allowlist policy
+    (:func:`~teatree.agents.model_tiering.assert_model_allowed_on_regulated_path`, #2887)
+    before it reaches the provider — a no-op unless the lane sets
+    ``enforce_regulated_path``.
 
     *history* (#2886) is the rehydrated conversation of a RESUMED park, if
     any — passed straight through to the opened :class:`PydanticAiHarnessSession`
@@ -474,13 +474,13 @@ class PydanticAiHarness:
         # carry — so it maps to the router handle; an explicit Orca-native pin
         # passes through.
         model_name = resolve_pydantic_ai_model(options.model)
-        # CN gate on the ORIGINAL pin (before normalisation laundered a bare CN id
-        # into the CN-routing handle) — a config-policy refusal that must surface
-        # BEFORE the credential step, so it fires even when OrcaRouter credentials
-        # are absent. ``options.model`` catches both a bare CN name and an explicit
-        # provider-prefixed CN pin (which passes through normalisation unchanged);
-        # an absent pin falls back to the resolved handle (never itself CN).
-        assert_chinese_model_allowed(options.model or model_name)
+        # Regulated-path allowlist gate on the ORIGINAL pin (before normalisation
+        # laundered a bare ineligible id into the router handle) — a config-policy
+        # refusal that must surface BEFORE the credential step, so it fires even when
+        # OrcaRouter credentials are absent. ``options.model`` catches both a bare
+        # ineligible name and an explicit provider-prefixed pin (which passes through
+        # normalisation unchanged); an absent pin falls back to the resolved handle.
+        assert_model_allowed_on_regulated_path(options.model or model_name)
         return OpenAIChatModel(
             model_name, provider=_build_orca_provider(lane=self._orca.lane, pass_path=self._orca.pass_path)
         )
@@ -548,8 +548,8 @@ def resolve_harness(task: "Task | None" = None, *, phase: str | None = None) -> 
     The configured ``agent_harness`` is first run through
     :func:`~teatree.agents.model_tiering.resolve_phase_harness`, which PINS a
     verification *phase* to ``claude_sdk`` regardless of the setting (OrcaRouter
-    setup plan §4 guardrail #2) — so when a MAKER phase rides a cheap CN model on
-    ``pydantic_ai``/OrcaRouter, the checker (reviewing / requesting_review /
+    setup plan §4 guardrail #2) — so when a MAKER phase rides a cheap open-source
+    model on ``pydantic_ai``/OrcaRouter, the checker (reviewing / requesting_review /
     testing) stays on the trusted Claude lane. A verification phase therefore
     never rehydrates a pydantic_ai resume thread (it isn't one).
     """
@@ -557,7 +557,7 @@ def resolve_harness(task: "Task | None" = None, *, phase: str | None = None) -> 
     harness = resolve_phase_harness(settings.agent_harness, phase)
     if harness is AgentHarness.PYDANTIC_AI:
         resumed = rehydrate_thread_for_resume(task) if task is not None else None
-        # The CN-model guardrails resolve HERE (sync), not inside the async
+        # The cheap-model guardrails resolve HERE (sync), not inside the async
         # ``open`` where a DB read fails safe to defaults: the per-run step cap
         # (§4 #1) and the OrcaRouter pass-path override (§3.6).
         return PydanticAiHarness(

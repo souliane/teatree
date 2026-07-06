@@ -389,41 +389,39 @@ class TestRunHeadlessCachedResumeParity(TestCase):
         assert str(self.task.pk) not in self.ticket.extra.get("pydantic_ai_threads", {})
 
 
-class TestPydanticAiHarnessChineseModelGate(TestCase):
-    """#2887: a disallowed Chinese-origin model never reaches the OrcaRouter provider."""
+class TestPydanticAiHarnessRegulatedPathGate(TestCase):
+    """#2887: on a regulated lane, a model off the allowlist never reaches the OrcaRouter provider."""
 
     def setUp(self) -> None:
         os.environ.pop("ORCA_ROUTER_BASE_URL", None)
         os.environ.pop("ORCA_ROUTER_API_KEY", None)
 
-    def test_disallowed_chinese_model_raises_before_credential_resolution(self) -> None:
-        # No OrcaRouter credential configured — proves the Chinese-model check
-        # fires FIRST (a config-policy ValueError), not the credential check
+    def test_model_off_the_allowlist_raises_before_credential_resolution(self) -> None:
+        # No OrcaRouter credential configured — proves the regulated-path allowlist
+        # check fires FIRST (a config-policy ValueError), not the credential check
         # (which would instead raise CredentialError naming ORCA_ROUTER).
-        ConfigSetting.objects.set_value("chinese_models_allowed", value=False)
-        harness = PydanticAiHarness()
-        options = ClaudeAgentOptions(model="deepseek-v3")
+        ConfigSetting.objects.set_value("enforce_regulated_path", value=True)
+        ConfigSetting.objects.set_value("regulated_path_model_allowlist", value=["anthropic/"])
+        options = ClaudeAgentOptions(model="deepseek/deepseek-v4-pro")
 
-        with pytest.raises(ValueError, match="Chinese-origin"):
-            harness._resolve_model(options)
+        with pytest.raises(ValueError, match="not eligible for the regulated path"):
+            PydanticAiHarness()._resolve_model(options)
 
-    def test_disallowed_setting_does_not_block_a_non_chinese_model(self) -> None:
-        ConfigSetting.objects.set_value("chinese_models_allowed", value=False)
-        harness = PydanticAiHarness()
-        options = ClaudeAgentOptions()  # falls back to the default (Claude) tier
-
-        # No Chinese-origin model involved, so resolution proceeds to the
-        # (here unconfigured) credential step instead of the allowlist gate.
-        with pytest.raises(CredentialError, match="ORCA_ROUTER"):
-            harness._resolve_model(options)
-
-    def test_chinese_model_allowed_reaches_the_credential_step(self) -> None:
-        ConfigSetting.objects.set_value("chinese_models_allowed", value=True)
-        harness = PydanticAiHarness()
-        options = ClaudeAgentOptions(model="deepseek-v3")
+    def test_unenforced_lane_reaches_the_credential_step(self) -> None:
+        # Default enforce_regulated_path=False — the factory lane is unrestricted,
+        # so resolution proceeds to the (here unconfigured) credential step.
+        options = ClaudeAgentOptions(model="deepseek/deepseek-v4-pro")
 
         with pytest.raises(CredentialError, match="ORCA_ROUTER"):
-            harness._resolve_model(options)
+            PydanticAiHarness()._resolve_model(options)
+
+    def test_allowlisted_model_reaches_the_credential_step(self) -> None:
+        ConfigSetting.objects.set_value("enforce_regulated_path", value=True)
+        ConfigSetting.objects.set_value("regulated_path_model_allowlist", value=["deepseek/"])
+        options = ClaudeAgentOptions(model="deepseek/deepseek-v4-pro")
+
+        with pytest.raises(CredentialError, match="ORCA_ROUTER"):
+            PydanticAiHarness()._resolve_model(options)
 
 
 class TestPydanticAiHarnessSession:
@@ -662,9 +660,10 @@ class TestPydanticAiModelIdNormalization(TestCase):
         model = PydanticAiHarness()._resolve_model(ClaudeAgentOptions(model="deepseek/deepseek-v4-pro"))
         assert model.model_name == "deepseek/deepseek-v4-pro"
 
-    def test_an_explicit_chinese_pin_is_refused_when_disallowed(self) -> None:
-        ConfigSetting.objects.set_value("chinese_models_allowed", value=False)
-        with pytest.raises(ValueError, match="Chinese-origin"):
+    def test_a_model_off_the_regulated_allowlist_is_refused(self) -> None:
+        ConfigSetting.objects.set_value("enforce_regulated_path", value=True)
+        ConfigSetting.objects.set_value("regulated_path_model_allowlist", value=["anthropic/"])
+        with pytest.raises(ValueError, match="not eligible for the regulated path"):
             PydanticAiHarness()._resolve_model(ClaudeAgentOptions(model="deepseek/deepseek-v4-pro"))
 
 

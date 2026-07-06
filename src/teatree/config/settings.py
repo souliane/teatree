@@ -77,7 +77,8 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "agent_runtime": AgentRuntime.parse,
     "agent_harness": AgentHarness.parse,
     "agent_harness_provider": AgentHarnessProvider.parse,
-    "chinese_models_allowed": _parse_strict_bool,
+    "enforce_regulated_path": _parse_strict_bool,
+    "regulated_path_model_allowlist": _parse_str_list,
     "pydantic_ai_request_limit": _parse_strict_int,
     "orca_router_pass_path": _parse_strict_str,
     "eval_credential": EvalCredential.parse,
@@ -303,7 +304,7 @@ ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_AGENT_RUNTIME": ("agent_runtime", AgentRuntime.parse),
     "T3_AGENT_HARNESS": ("agent_harness", AgentHarness.parse),
     "T3_AGENT_HARNESS_PROVIDER": ("agent_harness_provider", AgentHarnessProvider.parse),
-    "T3_CHINESE_MODELS_ALLOWED": ("chinese_models_allowed", _parse_env_bool),
+    "T3_ENFORCE_REGULATED_PATH": ("enforce_regulated_path", _parse_env_bool),
     "T3_EVAL_CREDENTIAL": ("eval_credential", EvalCredential.parse),
     "T3_ON_BEHALF_POST_MODE": ("on_behalf_post_mode", OnBehalfPostMode.parse),
     "T3_MISSING_ISSUE_POLICY": ("missing_issue_ref_policy", MissingIssuePolicy.parse),
@@ -407,20 +408,28 @@ class UserSettings:
     # branch on that path. Per-overlay overridable; ``T3_AGENT_HARNESS_PROVIDER``
     # env wins.
     agent_harness_provider: AgentHarnessProvider | None = None
-    # Whether a Chinese-origin model (DeepSeek, Qwen, GLM) may be selected through
-    # the ``pydantic_ai`` harness's OrcaRouter routing handle (#2887). Default ``True``:
-    # teatree's own default posture is permissive (the no-Chinese-models
-    # constraint is a client-work policy, not a teatree one) — an overlay serving
-    # client work under that policy overrides this to ``False`` for itself.
-    # Enforced by ``teatree.agents.model_tiering.assert_chinese_model_allowed``,
-    # called from ``PydanticAiHarness`` before a resolved OrcaRouter model name is
-    # used; a no-op today since no shipped ``TIER_MODELS`` entry is Chinese-origin.
-    # Per-overlay overridable; ``T3_CHINESE_MODELS_ALLOWED`` env wins.
-    chinese_models_allowed: bool = True
+    # Whether this overlay's headless lane is the REGULATED path — carrying client/
+    # bank data under EU data-residency & regulatory compliance (GDPR, data
+    # residency, processor jurisdiction) (#2887). Default ``False``: the teatree
+    # factory lane carries no regulated data, so it runs unrestricted (any model,
+    # incl. cheap open-source ones). A regulated lane sets this ``True``,
+    # restricting inference to the models on ``regulated_path_model_allowlist``.
+    # Enforced by ``teatree.agents.model_tiering.assert_model_allowed_on_regulated_path``,
+    # called from ``PydanticAiHarness`` before a resolved OrcaRouter model name is used
+    # (CLIENT-SIDE, best-effort — the OrcaRouter dashboard Allowed-models glob is the
+    # hard boundary). Per-overlay overridable; ``T3_ENFORCE_REGULATED_PATH`` env wins.
+    enforce_regulated_path: bool = False
+    # The EXPLICIT allowlist of model-id patterns eligible to run on the regulated
+    # path (matched case-insensitively as substrings). A BYOK / residency-controlled
+    # set the operator enumerates for their regulated lane; empty (the default) makes
+    # nothing eligible, so a lane with ``enforce_regulated_path`` on and an empty
+    # allowlist refuses every model (fail-closed). Inert while ``enforce_regulated_path``
+    # is ``False`` (the teatree factory default). Per-overlay overridable.
+    regulated_path_model_allowlist: list[str] = field(default_factory=list)
     # Per-run sequential-request cap for the ``pydantic_ai``/OrcaRouter harness
     # (OrcaRouter setup plan §4 guardrail #1). Passed as pydantic_ai
     # ``UsageLimits(request_limit=...)`` on every ``PydanticAiHarnessSession`` run
-    # so a cheap CN maker cannot drift on a long tool loop — the FSM already
+    # so a cheap-model maker cannot drift on a long tool loop — the FSM already
     # chunks work into phases and the orchestrator re-dispatches, so a tight
     # per-run cap composes with orchestration rather than killing tasks. Applies
     # ONLY to the ``pydantic_ai`` harness (the default ``claude_sdk`` harness is
