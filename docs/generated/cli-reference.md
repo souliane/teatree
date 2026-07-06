@@ -6057,6 +6057,8 @@ Usage: t3 teatree workspace ticket [OPTIONS] ISSUE_URL
 │ --adopt-branch        TEXT  Adopt this EXISTING branch (implies --adopt).    │
 │                             Omit to auto-detect from the current git         │
 │                             worktree.                                        │
+│ --adopt-closed              Override the --adopt guard that refuses a        │
+│                             CLOSED/nonexistent target issue/PR URL.          │
 │ --kind                TEXT  Classify: 'fix' or 'feature' (blank infers from  │
 │                             the title, #17).                                 │
 │ --help                      Show this message and exit.                      │

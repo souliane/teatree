@@ -17,9 +17,11 @@ import teatree.core.management.commands.worktree as worktree_cmd
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.runners.worktree_provision as worktree_provision_mod
 import teatree.utils.run as utils_run_mod
+from teatree.core.management.commands._transition_names import ALLOWED_TRANSITIONS
 from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket, Worktree
 from teatree.core.models.ticket_external_review import schedule_external_review
 from teatree.core.overlay import DbImportStrategy, OverlayBase, ProvisionStep, RunCommands
+from teatree.core.signals import _TICKET_TRANSITION_TASKS
 from tests._ansi import strip_ansi as _strip_ansi
 from tests.teatree_agents._sdk_fake import fake_sdk, success_stream
 
@@ -916,6 +918,42 @@ class TestTicketCommand(TestCase):
         assert reason in str(result["error"])
         ticket.refresh_from_db()
         assert ticket.state == Ticket.State.REVIEWED
+
+    def test_ignore_and_unignore_are_cli_allowed_and_enqueue_no_task(self) -> None:
+        """#2275 cleanup: abandon (ignore) is CLI-reachable and never drives teardown/ship/post.
+
+        The two names must be in the CLI allow-list, and neither may map to a
+        ``_TICKET_TRANSITION_TASKS`` executor — that mapping is what enqueues
+        ``execute_teardown`` / ``execute_ship`` (the only transition side effects
+        that post to the forge). Their absence is the structural proof that
+        abandoning a mis-adopted ticket is non-posting.
+        """
+        assert {"ignore", "unignore"} <= ALLOWED_TRANSITIONS
+        assert "ignore" not in _TICKET_TRANSITION_TASKS
+        assert "unignore" not in _TICKET_TRANSITION_TASKS
+
+    def test_transition_ignore_reaches_ignored_state(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+        result = cast(
+            "dict[str, object]",
+            call_command("ticket", "transition", ticket.pk, "ignore"),
+        )
+        assert result["state"] == Ticket.State.IGNORED
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.IGNORED
+        assert ticket.extra["ignored_from"] == Ticket.State.STARTED
+
+    def test_transition_unignore_restores_prior_state(self) -> None:
+        ticket = Ticket.objects.create(overlay="test", state=Ticket.State.STARTED)
+        call_command("ticket", "transition", ticket.pk, "ignore")
+        result = cast(
+            "dict[str, object]",
+            call_command("ticket", "transition", ticket.pk, "unignore"),
+        )
+        assert result["state"] == Ticket.State.STARTED
+        ticket.refresh_from_db()
+        assert ticket.state == Ticket.State.STARTED
+        assert "ignored_from" not in (ticket.extra or {})
 
     def test_transition_mark_review_no_action_delivers_reviewer_ticket(self) -> None:
         """#1077: the no-action disposition is reachable via the CLI transition."""

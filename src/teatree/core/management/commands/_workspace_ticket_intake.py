@@ -7,27 +7,40 @@ double-dispatch guard that runs inside that transaction so a refusal rolls the
 freshly-created ticket back and leaves no DB trace.
 """
 
+import json
+import logging
 import re
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
+import httpx
 from django.db import transaction
 
+from teatree.backends.errors import IssueNotFoundError
+from teatree.backends.loader import get_code_host_for_url
 from teatree.core.dev_repo import parse_repo_branch_map, resolve_repo_names
 from teatree.core.management.commands import _workspace_helpers as _wh
 from teatree.core.models import Ticket
 from teatree.core.models.external_delivery import mark_external_delivery
+from teatree.core.models.project_learning import ProjectLearning
+from teatree.core.models.ticket_display import format_intake_summary
 from teatree.core.resolve import _get_user_cwd
+from teatree.core.runners import WorktreeProvisioner
 from teatree.core.ticket_kind_classification import classify_ticket_kind, parse_kind
 from teatree.core.worktree_collision import find_foreign_issue_worktrees
 from teatree.core.worktree_paths import ticket_dir_for
 from teatree.utils import git
+from teatree.utils.run import CommandFailedError, TimeoutExpired
+from teatree.utils.url_slug import project_slug_from_ref
 
 if TYPE_CHECKING:
     from teatree.core.models.types import TicketExtra
     from teatree.core.overlay import OverlayBase
+
+logger = logging.getLogger(__name__)
 
 
 class ForeignIssueWorktreeRefusedError(Exception):
@@ -108,6 +121,62 @@ def resolve_adopt_context(*, adopt: bool, adopt_branch: str) -> AdoptContext | N
     branch = adopt_branch or git.current_branch(repo=worktree_path)
     repo = git.remote_slug(repo=worktree_path) or Path(worktree_path).name
     return AdoptContext(branch=branch, worktree_path=worktree_path, repo=repo)
+
+
+def adopt_preflight_refusal(
+    overlay: "OverlayBase", issue_url: str, adopt_ctx: AdoptContext | None, *, allow_closed: bool
+) -> str | None:
+    """The full ``--adopt`` precondition check: refusal message, or ``None`` to proceed.
+
+    Not adopting (``adopt_ctx is None``) is always fine. Otherwise the branch
+    must be checked out (a detached HEAD has nothing to register), and the
+    target issue/PR must not be CLOSED or nonexistent (:func:`adopt_target_refusal`).
+    """
+    if adopt_ctx is None:
+        return None
+    if not adopt_ctx.branch or adopt_ctx.branch == git.DETACHED_HEAD:
+        return "  Refused: --adopt needs a checked-out branch (HEAD is detached); pass --adopt-branch <branch>."
+    return adopt_target_refusal(overlay, issue_url, allow_closed=allow_closed)
+
+
+def adopt_target_refusal(overlay: "OverlayBase", issue_url: str, *, allow_closed: bool) -> str | None:
+    """Refusal message when ``--adopt``'s target issue/PR is CLOSED or nonexistent, else ``None``.
+
+    Anti-recurrence guard: ``--adopt`` binds a Ticket to whatever ``issue_url``
+    the operator typed, and the recorded failure was adopting a stray number
+    that resolved to a CLOSED, unrelated PR. We resolve the URL's live state
+    through the per-URL code host and refuse a closed or not-found target; the
+    ``--adopt-closed`` override (``allow_closed``) is the explicit escape.
+
+    Fail-open on the ambiguous cases — a URL no code host can resolve (an
+    unknown tracker), a transient forge error, or an error dict from a host that
+    could not parse the URL as an issue (a GitHub ``/pull/<n>`` URL) is NOT proof
+    of a bad target, so it proceeds. The refusal fires only on a POSITIVE signal:
+    a genuine 404 (``IssueNotFoundError``) or a resolvable-but-CLOSED target.
+    """
+    host = get_code_host_for_url(overlay, issue_url)
+    if host is None:
+        return None
+    try:
+        data = host.get_issue(issue_url)
+    except IssueNotFoundError:
+        return f"  Refused: --adopt target {issue_url} does not exist (HTTP 404). Check the issue/PR URL."
+    except (httpx.HTTPError, CommandFailedError, TimeoutExpired, json.JSONDecodeError, OSError) as exc:
+        logger.warning("adopt-target validation could not resolve %s: %s", issue_url, exc)
+        return None
+    if not isinstance(data, dict) or data.get("error"):
+        # An error dict means the host could not PARSE/resolve the URL as an issue
+        # (e.g. a GitHub /pull/<n> URL, which the issue-only ref parser rejects) —
+        # ambiguity, not a positive bad signal. Fail open like the transient case;
+        # only a genuine 404 (IssueNotFoundError, above) or a resolvable-closed
+        # target refuses.
+        return None
+    if overlay.is_issue_done(data) and not allow_closed:
+        return (
+            f"  Refused: --adopt target {issue_url} is CLOSED. Adopting a closed issue/PR is the "
+            "recorded mis-adoption failure; pass --adopt-closed to override if this is intentional."
+        )
+    return None
 
 
 def build_intake(overlay: "OverlayBase", raw: RawTicketInputs) -> TicketIntake:
@@ -289,3 +358,53 @@ def _refuse_on_foreign_issue_worktree(
         "someone may already be working it. Re-run with --take-over to proceed."
     )
     raise ForeignIssueWorktreeRefusedError
+
+
+def _project_learnings_for_ticket(ticket: Ticket) -> str:
+    """Durable per-repo learnings (#2892) for *ticket*'s repo, or "" when none recorded."""
+    slug = project_slug_from_ref(ticket.issue_url)
+    return ProjectLearning.objects.content_for_slug(slug) if slug else ""
+
+
+def finalize_ticket_provision(
+    write_out: Callable[[str], None],
+    write_err: Callable[[str], None],
+    ticket: Ticket,
+    adopt_ctx: AdoptContext | None,
+    workspace_root: Path,
+) -> int:
+    """Provision the ticket's worktrees, discard an unattested failure, print the summary.
+
+    The second half of ``workspace ticket``, split from the command module to
+    keep it under the per-module LOC cap. Returns the ticket pk on success (or a
+    soft-failure warning), or 0 when an unrecoverable provision aborted and the
+    unattested ticket was discarded.
+    """
+    branch = cast("TicketExtra", ticket.extra)["branch"]
+    # In adopt mode the checkout lives where the operator ran the command, not
+    # under the worktree root — surface that path in the summary.
+    ticket_dir = Path(adopt_ctx.worktree_path).parent if adopt_ctx else ticket_dir_for(workspace_root, branch)
+
+    # Run the provisioner synchronously so the CLI gives immediate feedback; the
+    # worker that ``start()`` enqueued is idempotent and no-ops when it finds the
+    # worktrees already in place. Single source of truth: the runner.
+    result = WorktreeProvisioner(ticket).run()
+    if not result.ok and not ticket.worktrees.exists():  # ty: ignore[unresolved-attribute]
+        write_err(f"  Provisioning failed: {result.detail}")
+        # #748: only discard the ticket if it carries NO phase attestation.
+        # ``get_or_create`` may have resolved an existing loop/coordinator-built
+        # ticket whose sessions hold genuinely-completed-work phase records;
+        # ``Session.ticket`` is ``on_delete=CASCADE``, so ``ticket.delete()``
+        # here would cascade-reap that attestation. A failed provision must never
+        # destroy attested work — leave the ticket + sessions intact.
+        visited, _ = ticket.aggregate_phase_records()
+        if not visited:
+            ticket.delete()
+            with suppress(OSError):
+                ticket_dir.rmdir()
+        return 0
+    if not result.ok:
+        write_err(f"  WARNING: {result.detail}")
+    learnings = _project_learnings_for_ticket(ticket)
+    write_out(format_intake_summary(ticket, str(ticket_dir), branch, project_learnings=learnings))
+    return int(ticket.pk)
