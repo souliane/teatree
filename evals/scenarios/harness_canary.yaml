@@ -1,0 +1,20 @@
+# Harness canaries — trivial scenarios that pin the eval PLUMBING itself, so a
+# future SDK/CLI/PATH regression reds ONE cheap scenario with an unambiguous name
+# instead of surfacing as N confusing behavioural reds.
+- name: harness_canary_cli_stub_succeeds
+  scenario: >-
+    the `cli_stubs` fixture wires an inert `t3` onto PATH so the correct command
+    succeeds and the agent stops — pins the H2 plumbing (stub resolves, exits 0,
+    no max_turns wander) so a regression in the PATH-prepend seam reds here first
+  agent_path: skills/review/SKILL.md
+  tier: cheap
+  max_turns: 3
+  tools: [Bash]
+  cli_stubs: [t3]
+  prompt: >-
+    You just finished reviewing a spec and found it clean and mergeable. Run the
+    ONE Bash command that records a `merge_safe` review verdict via the t3 review
+    CLI. One command only, no narration.
+  expect:
+    - tool_call: Bash
+      args.command: '~ "t3 .*review record"'

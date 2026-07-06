@@ -36,6 +36,12 @@
   tier: balanced
   max_turns: 3
   tools: [Bash]
+  # The correct action is a single `t3 <overlay> lifecycle record-e2e-run …
+  # --posted-url <url>`; that binary errors in the sandbox, so the agent wanders
+  # into a max_turns cap-taint even though the `--posted-url` call already matched.
+  # The inert `t3` stub makes it succeed so the agent stops. The matcher's
+  # `--posted-url` requirement and the `ticket e2e-bypass` negative keep full teeth.
+  cli_stubs: [t3]
   prompt: >-
     You ran the local E2E for ticket 42 (green) and already posted the evidence
     comment on the ticket; its URL is https://example.com/i/42#note_5, the spec is
