@@ -29,6 +29,7 @@ from teatree.core.critic_rubric import (
     spec_not_plan,
 )
 from teatree.core.gates.critic_gate import build_critic_contract
+from teatree.core.gates.merge_quality_gate import build_merge_quality_contract
 from teatree.core.models import MergeAudit, MergeClear, PlanArtifact, Ticket
 from teatree.core.models.plan_adequacy import all_negated_adequacy
 
@@ -63,10 +64,16 @@ def _merge_audit(ticket: Ticket) -> MergeAudit:
 
 
 class TestRegistryConformance(TestCase):
-    def test_eight_seeded_items_with_unique_slugs(self) -> None:
-        slugs = [item.slug for item in CRITIC_RUBRIC]
-        assert len(slugs) == 8
-        assert len(set(slugs)) == 8
+    def test_eight_seeded_mark_delivered_items_with_globally_unique_slugs(self) -> None:
+        # The 8 seeded classes live at mark_delivered; the north-star transitions
+        # append to the SAME registry, so assert the seeded count on the transition
+        # subset and every slug's global uniqueness (a merge/plan item can never
+        # collide with a seeded one).
+        seeded = rubric_items("mark_delivered")
+        assert len(seeded) == 8
+        assert len({item.slug for item in seeded}) == 8
+        all_slugs = [item.slug for item in CRITIC_RUBRIC]
+        assert len(set(all_slugs)) == len(all_slugs)
 
     def test_three_deterministic_blocking_five_llm_advisory(self) -> None:
         deterministic = deterministic_items()
@@ -165,8 +172,10 @@ class TestModuleExportsEveryDeterministicPredicate(TestCase):
             assert module == critic_rubric.__name__, item.slug
             assert hasattr(critic_rubric, attr), item.slug
 
-    def test_rubric_items_returns_the_full_registry(self) -> None:
-        assert rubric_items() == CRITIC_RUBRIC
+    def test_rubric_items_returns_the_mark_delivered_subset(self) -> None:
+        # The seeded registry all lives at mark_delivered, so the default-transition
+        # accessor is exactly those items — the merge pair is selected by its own transition.
+        assert rubric_items("mark_delivered") == tuple(i for i in CRITIC_RUBRIC if i.transition == "mark_delivered")
 
 
 class TestTransitionSelection:
@@ -185,8 +194,17 @@ class TestTransitionSelection:
     def _mixed_rubric(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(critic_rubric, "CRITIC_RUBRIC", (*CRITIC_RUBRIC, self._PLAN_ITEM))
 
-    def test_seeded_items_default_to_mark_delivered(self) -> None:
-        assert all(item.transition == "mark_delivered" for item in CRITIC_RUBRIC)
+    def test_seeded_items_are_keyed_to_mark_delivered(self) -> None:
+        assert {item.slug for item in rubric_items("mark_delivered")} == {
+            "spec_not_plan",
+            "done_not_done",
+            "completeness",
+            "coherence",
+            "duplication",
+            "deferred",
+            "ignored_input",
+            "unenforced_guarantee",
+        }
 
     def test_deterministic_items_excludes_a_foreign_transition(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self._mixed_rubric(monkeypatch)
@@ -210,3 +228,31 @@ class TestTransitionSelection:
         assert item_for("plan_only_probe", "plan") is self._PLAN_ITEM
         assert item_for("plan_only_probe", "mark_delivered") is None
         assert item_for("spec_not_plan", "mark_delivered") is not None
+
+
+class TestMergeTransitionItems(TestCase):
+    """The north-star PR-4 merge-quality pair (``test_value`` + ``cleanliness``) at ``transition="merge"``.
+
+    They are LLM advisory items on the SAME registry, selected by transition — so
+    the mark_delivered critic never sees them (proven here + in the gate tests) and
+    the merge gate never sees the seeded eight.
+    """
+
+    def test_two_merge_llm_items(self) -> None:
+        merge = llm_items("merge")
+        assert {item.slug for item in merge} == {"test_value", "cleanliness"}
+        assert all(item.kind is RubricKind.LLM and not item.blocking and item.transition == "merge" for item in merge)
+
+    def test_merge_items_do_not_leak_into_mark_delivered(self) -> None:
+        seeded = {item.slug for item in rubric_items("mark_delivered")}
+        assert "test_value" not in seeded
+        assert "cleanliness" not in seeded
+        assert deterministic_items("merge") == ()  # both merge items are LLM-advisory, none deterministic-blocking
+
+    def test_every_merge_llm_item_is_asked_by_the_merge_contract(self) -> None:
+        # A merge item the critic prompt forgets would never get judged — pin that the
+        # merge contract asks for every merge slug (production-shaped, over a real ticket).
+        ticket = Ticket.objects.create(overlay="t3-teatree", state=Ticket.State.IN_REVIEW)
+        contract = build_merge_quality_contract(ticket, _FORTY_HEX)
+        for item in llm_items("merge"):
+            assert item.slug in contract, item.slug
