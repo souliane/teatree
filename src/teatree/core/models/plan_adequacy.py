@@ -27,10 +27,10 @@ if TYPE_CHECKING:
 REQUIRED_ADEQUACY_SECTIONS: tuple[str, ...] = ("design", "integration_seams", "edge_cases", "test_strategy")
 
 # The fifth section a DIRECTIVE-linked ticket's plan must also declare (north-star
-# PR-5): the generic-shape decision, structured so ``mechanism_conforms`` can check it
-# against the ratified sketch deterministically. Ordinary tickets keep the four.
+# PR-5): the generic-shape decision, structured so ``mechanism_conforms`` checks it
+# against the ratified sketch deterministically (its own presence check is the 5th-
+# section enforcement — the base four still go through ``is_adequate``).
 MECHANISM_PLACEMENT_SECTION: str = "mechanism_placement"
-DIRECTIVE_ADEQUACY_SECTIONS: tuple[str, ...] = (*REQUIRED_ADEQUACY_SECTIONS, MECHANISM_PLACEMENT_SECTION)
 
 _SHA_LEN = 40
 
@@ -62,14 +62,6 @@ def section_complete(section: object) -> bool:
     return isinstance(none_reason, str) and bool(none_reason.strip())
 
 
-def sections_adequate(adequacy: object, sections: tuple[str, ...]) -> bool:
-    """Whether *adequacy* completes every named *section* (:func:`section_complete`)."""
-    if not isinstance(adequacy, dict):
-        return False
-    fields = cast("Mapping[str, object]", adequacy)
-    return all(section_complete(fields.get(name)) for name in sections)
-
-
 def is_adequate(adequacy: object) -> bool:
     """Whether *adequacy* is a complete four-section manifest.
 
@@ -77,20 +69,10 @@ def is_adequate(adequacy: object) -> bool:
     A scope+acceptance-only thin spec — no seams/edge-cases/test-strategy claims —
     fails here, which is the whole point.
     """
-    return sections_adequate(adequacy, REQUIRED_ADEQUACY_SECTIONS)
-
-
-def required_sections_for(ticket: object) -> tuple[str, ...]:
-    """The adequacy sections *ticket*'s plan must carry — five for a directive ticket, else four.
-
-    A directive-implementation ticket carries the ``extra["directive_id"]`` marker,
-    so its plan must ALSO declare ``mechanism_placement`` (the generic-shape decision).
-    Pure and duck-typed (reads ``.extra`` only) so the leaf never imports the DB;
-    the gate resolves the ratified sketch it conforms to.
-    """
-    extra = getattr(ticket, "extra", None)
-    directive_id = extra.get("directive_id") if isinstance(extra, dict) else None
-    return DIRECTIVE_ADEQUACY_SECTIONS if directive_id is not None else REQUIRED_ADEQUACY_SECTIONS
+    if not isinstance(adequacy, dict):
+        return False
+    fields = cast("Mapping[str, object]", adequacy)
+    return all(section_complete(fields.get(name)) for name in REQUIRED_ADEQUACY_SECTIONS)
 
 
 def declared_seam_paths(adequacy: object) -> tuple[str, ...]:
@@ -187,14 +169,14 @@ def mechanism_conforms(adequacy: object, sketch: MechanismSketch) -> str | None:
     overlay-package patch), the constraint expressed as the ratified setting with its neutral
     default, the ratified per-overlay activation, the N=2-litmus rejected alternatives, and
     every refactor the sketch names. Any divergence is a finding the gate turns into a coder-
-    dispatch block. Two never-lockout escapes mirror the plan gate: an all-reasoned-negative
-    bypass manifest, or the section itself carrying an explicit ``none_reason`` waiver.
+    dispatch block. This is only reached WITH a ratified sketch, so a section-level
+    ``none_reason`` waiver is contradictory (a mechanism WAS ratified) and does NOT waive —
+    the never-lockout escape is the audited all-reasoned-negative plan-bypass manifest, or the
+    ``require_plan_adequacy`` kill-switch upstream in ``plan_currency_gate``.
     """
     if _is_plan_bypass_shaped(adequacy):
         return None
     section = _mechanism_placement_declaration(adequacy)
-    if _is_reasoned_negative(section):
-        return None
     if not section:
         return (
             "the plan declares no mechanism_placement section — a directive ticket's plan must record the "
@@ -211,13 +193,23 @@ def mechanism_conforms(adequacy: object, sketch: MechanismSketch) -> str | None:
     return _conformance_finding(section, sketch, chokepoint)
 
 
+def _typed_equal(declared: object, ratified: object) -> bool:
+    """Value equality that is TYPE-aware — ``0`` (int) never matches ``False`` (bool).
+
+    Plain ``==`` collapses ``0 == False`` / ``1 == True``, so a JSON ``false`` plan value
+    would silently pass as the int ``0`` ratified neutral default. Requiring identical
+    types keeps a bool-vs-int (or int-vs-float) neutral_default/activation_value a drift.
+    """
+    return type(declared) is type(ratified) and declared == ratified
+
+
 def _conformance_finding(section: "Mapping[str, object]", sketch: MechanismSketch, chokepoint: str) -> str | None:
     drifts: tuple[tuple[bool, str], ...] = (
         (chokepoint != sketch.policy_chokepoint, "chokepoint"),
         (str(section.get("setting_key", "")).strip() != sketch.setting_key, "setting_key"),
-        (section.get("neutral_default") != sketch.neutral_default, "neutral_default"),
+        (not _typed_equal(section.get("neutral_default"), sketch.neutral_default), "neutral_default"),
         (str(section.get("activation_scope", "")).strip() != sketch.activation_scope, "activation_scope"),
-        (section.get("activation_value") != sketch.activation_value, "activation_value"),
+        (not _typed_equal(section.get("activation_value"), sketch.activation_value), "activation_value"),
     )
     for failed, field in drifts:
         if failed:

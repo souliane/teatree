@@ -6,11 +6,8 @@ test-strategy claims) fails ``is_adequate`` — the named root cause of the 26-b
 integration campaign made structurally impossible at the manifest level.
 """
 
-from types import SimpleNamespace
-
 from teatree.core.models.mechanism_sketch import MechanismSketch
 from teatree.core.models.plan_adequacy import (
-    DIRECTIVE_ADEQUACY_SECTIONS,
     REQUIRED_ADEQUACY_SECTIONS,
     _is_plan_bypass_shaped,
     all_negated_adequacy,
@@ -19,9 +16,7 @@ from teatree.core.models.plan_adequacy import (
     is_valid_base_sha,
     mechanism_conforms,
     negated_section,
-    required_sections_for,
     section_complete,
-    sections_adequate,
 )
 
 
@@ -169,24 +164,6 @@ def _directive_manifest(section: dict | None) -> dict:
     return manifest
 
 
-class TestSectionsAdequateAndRequiredSections:
-    def test_sections_adequate_generalises_is_adequate_over_a_section_tuple(self) -> None:
-        manifest = dict(all_negated_adequacy("clean"))
-        assert sections_adequate(manifest, REQUIRED_ADEQUACY_SECTIONS) is True
-        assert sections_adequate(manifest, ("mechanism_placement",)) is False  # section absent
-
-    def test_directive_sections_are_the_four_plus_mechanism_placement(self) -> None:
-        assert (*REQUIRED_ADEQUACY_SECTIONS, "mechanism_placement") == DIRECTIVE_ADEQUACY_SECTIONS
-
-    def test_required_sections_for_a_directive_ticket_is_five(self) -> None:
-        directive_ticket = SimpleNamespace(extra={"directive_id": 7})
-        assert required_sections_for(directive_ticket) == DIRECTIVE_ADEQUACY_SECTIONS
-
-    def test_required_sections_for_an_ordinary_ticket_is_four(self) -> None:
-        assert required_sections_for(SimpleNamespace(extra={})) == REQUIRED_ADEQUACY_SECTIONS
-        assert required_sections_for(object()) == REQUIRED_ADEQUACY_SECTIONS
-
-
 class TestMechanismConforms:
     def test_a_conforming_placement_passes(self) -> None:
         assert mechanism_conforms(_directive_manifest(_conforming_section()), _sketch()) is None
@@ -246,12 +223,32 @@ class TestMechanismConforms:
         section = _conforming_section(refactors=[refactor])
         assert mechanism_conforms(_directive_manifest(section), sketch) is None
 
+    def test_a_bool_neutral_default_is_type_blind_drift(self) -> None:
+        # F4: 0 == False under plain `==`; a JSON `false` plan value must NOT pass as the
+        # int 0 ratified neutral default — mismatched types are a drift.
+        section = _conforming_section(neutral_default=False)  # bool, not the ratified int 0
+        assert "neutral_default" in (mechanism_conforms(_directive_manifest(section), _sketch()) or "")
+
+    def test_a_bool_activation_value_is_type_blind_drift(self) -> None:
+        sketch = _sketch(activation_value=1)  # int
+        section = _conforming_section(activation_value=True)  # bool True == 1 under plain ==
+        assert "activation_value" in (mechanism_conforms(_directive_manifest(section), sketch) or "")
+
 
 class TestNeverLockoutEscapes:
-    def test_a_section_reasoned_negative_waives(self) -> None:
-        # (d) never-lockout: an explicit reasoned-negative section waives the structured check.
+    def test_a_section_none_reason_does_not_waive_when_a_sketch_was_ratified(self) -> None:
+        # F2: a "genuinely mechanism-less" section waiver is contradictory when a sketch
+        # exists — mechanism_conforms is only reached WITH a ratified sketch, so it blocks.
         section = {"none_reason": "genuinely mechanism-less directive — configuration only"}
-        assert mechanism_conforms(_directive_manifest(section), _sketch()) is None
+        assert mechanism_conforms(_directive_manifest(section), _sketch()) is not None
+
+    def test_a_none_reason_over_an_overlay_hack_still_blocks(self) -> None:
+        # F2: a none_reason cannot launder an overlay-package chokepoint past the teeth.
+        section = {
+            "none_reason": "config only",
+            "policy_chokepoint": "src/teatree/overlays/acme/hook.py::cap",
+        }
+        assert mechanism_conforms(_directive_manifest(section), _sketch()) is not None
 
     def test_a_plan_bypass_shaped_manifest_waives(self) -> None:
         # (d) never-lockout: the audited plan-bypass manifest (all reasoned negatives) waives too.

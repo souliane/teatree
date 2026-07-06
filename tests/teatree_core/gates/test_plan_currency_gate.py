@@ -29,6 +29,7 @@ from teatree.core.modelkit import gate_registry
 from teatree.core.models import Directive, Ticket, Worktree
 from teatree.core.models.errors import NoCurrentPlanError
 from teatree.core.models.mechanism_sketch import MechanismSketch
+from teatree.core.models.plan_adequacy import all_negated_adequacy
 from teatree.core.models.plan_artifact import PlanArtifact
 from teatree.core.models.trivial_plan_skip import mark_trivial_plan_skip
 
@@ -334,10 +335,25 @@ class TestMechanismPlacementNeverLockout(TestCase):
         with _gate(required=False):
             assert check_plan_current(ticket) is True  # gate off → the whole check is a no-op
 
-    def test_a_section_reasoned_negative_waives(self) -> None:
-        ticket = _directive_ticket(placement={"none_reason": "configuration-only directive, no mechanism"})
+    def test_a_plan_bypass_manifest_waives(self) -> None:
+        # The audited plan-bypass escape (all-reasoned-negative manifest) works on a directive
+        # ticket too — a no_seams plan has no mechanism to conform to.
+        ticket = _directive_ticket(placement=None)
+        artifact = PlanArtifact.objects.filter(ticket=ticket).first()
+        assert artifact is not None
+        artifact.adequacy = dict(all_negated_adequacy("audited plan-bypass"))
+        artifact.save(update_fields=["adequacy"])
         with _gate(required=True):
             assert check_plan_current(ticket) is True
+
+    def test_a_section_none_reason_does_not_launder_a_hack(self) -> None:
+        # F2: a section-level none_reason is contradictory once a sketch is ratified — it must
+        # NOT waive the deterministic teeth. The kill-switch and plan-bypass remain the escapes.
+        ticket = _directive_ticket(
+            placement={"none_reason": "config only", "policy_chokepoint": "src/teatree/overlays/acme/hook.py::cap"}
+        )
+        with _gate(required=True), pytest.raises(NoCurrentPlanError):
+            check_plan_current(ticket)
 
 
 class TestMechanismPlacementFsmIntegration(TestCase):
