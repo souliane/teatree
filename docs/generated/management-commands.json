@@ -722,6 +722,28 @@
       "subcommands": []
     },
     {
+      "help": "Group root \u2014 forces sub-commands to be addressed by name.",
+      "name": "repro",
+      "subcommands": [
+        {
+          "help": "Record a HUMAN-authorized waiver of the forced-repro gate (#118)",
+          "name": "waive"
+        },
+        {
+          "help": "Show the recorded RED/GREEN/provenance/waiver state for a ticket (audit)",
+          "name": "status"
+        },
+        {
+          "help": "Record the harness-run FAILING RED reproduction for a FIX ticket (#118)",
+          "name": "record-red"
+        },
+        {
+          "help": "Record the harness-run PASSING GREEN and freeze the provenance verdict (#118)",
+          "name": "record-green"
+        }
+      ]
+    },
+    {
       "help": "``t3 <overlay> retro`` group root.",
       "name": "retro",
       "subcommands": [

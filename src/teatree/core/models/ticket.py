@@ -663,15 +663,15 @@ class Ticket(models.Model):  # noqa: PLR0904 — FSM transition surface; method 
         The worker's own state guard skips duplicate work if push already
         succeeded.
 
-        Two preflight guards run before any scheduling side effect, mirroring
-        each other: ``_refuse_if_worktree_dirty`` (#884) and the #88 DoD gate
-        (``check_local_e2e_dod`` — a UI-visible ticket must have a green
-        local-stack E2E artifact, or an explicit recorded override). Both
-        raise a :class:`InvalidTransitionError` subclass so the loop's outer
-        atomic rolls the advance back and the FSM stays put.
+        Three preflight guards run first, each raising an
+        :class:`InvalidTransitionError` subclass (the outer atomic rolls back):
+        ``_refuse_if_worktree_dirty`` (#884), the #88 DoD gate
+        (``check_local_e2e_dod``, green local E2E for a UI-visible ticket), and
+        the #118 forced-repro gate (``check_forced_repro``, a no-op while off).
         """
         self._refuse_if_worktree_dirty("shipping")
         get_gate("local_e2e_dod")(self)
+        get_gate("forced_repro")(self)
         self._consume_pending_phase_tasks("shipping")
 
     @transition(field=state, source=State.SHIPPED, target=State.IN_REVIEW)

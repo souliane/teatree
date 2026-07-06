@@ -111,6 +111,12 @@ FEATURE_FLAGS: dict[str, FeatureFlag] = {
         tracking_issue="souliane/teatree — north-star PR-3 debt_delta_gate",
         summary="Deterministic no-new-tech-debt merge gate in _run_ship_gates; ships dark until an overlay opts in.",
     ),
+    "require_executed_repro": FeatureFlag(
+        field="require_executed_repro",
+        stage=FlagStage.DARK,
+        tracking_issue="souliane/teatree#118",
+        summary="Executed RED->GREEN repro gate on ship() for FIX tickets; ships dark until an overlay opts in.",
+    ),
     "require_merge_quality_verdict": FeatureFlag(
         field="require_merge_quality_verdict",
         stage=FlagStage.DARK,
