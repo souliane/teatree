@@ -26,10 +26,6 @@ from pathlib import Path
 
 import pytest
 
-# The whole-tree jscpd scan is the ~63s cost that made every push time out; it is
-# deselected at push (`-m "not push_heavy"`) and runs in CI instead.
-pytestmark = pytest.mark.push_heavy
-
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CONFIG = _REPO_ROOT / ".jscpd.json"
 _SRC = _REPO_ROOT / "src" / "teatree"
@@ -66,7 +62,9 @@ def _expected_clone_capable_files(min_lines: int) -> set[Path]:
 
 # Whole-tree jscpd scan is ~60s standalone and stretches further under
 # concurrent-coder load; the 60s default pytest-timeout deterministically
-# tripped and blocked every push through the ci-critical-parity hook.
+# tripped and blocked every push through the ci-critical-parity hook. It is
+# deselected at push (`-m "not push_heavy"`) and runs in CI instead.
+@pytest.mark.push_heavy
 @pytest.mark.timeout(300)
 @pytest.mark.integration
 @pytest.mark.skipif(shutil.which("npx") is None, reason="npx (node) not on PATH")

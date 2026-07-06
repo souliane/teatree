@@ -12,15 +12,19 @@ src/teatree`` (fast static/AST + doctest collection), which cannot drag in the
 wall-clock/concurrency suites the invariant forbids. ``TestCiCriticalParityHook``
 guards that it stays scoped and cannot silently widen to the full suite.
 
-The two whole-tree subprocess checks that dominated the push wall-clock -- the
-~63s jscpd duplication scan (``tests/quality/test_jscpd_duplication.py``) and the
-mutmut kill-proof run (``tests/quality/test_mutation_kill_proof.py``) -- carry a
-``push_heavy`` marker and are DESELECTED at push (``-m "not push_heavy"``). They
-are RELOCATED to CI, not dropped: CI's ``test-shard`` lane runs the whole suite
-with NO marker filter, so both still gate on every PR. ``TestPushHeavyRelocatedToCI``
-pins that relocation -- excluded at push, present in CI.
+The two whole-tree subprocess CLASSES that dominated the push wall-clock -- the
+~63s jscpd scan (``TestScanCoverage``) and the mutmut kill-proof run
+(``TestMutmutKillsTheMutant``) -- carry a ``push_heavy`` marker and are DESELECTED
+at push (``-m "not push_heavy"``). The marker is CLASS-scoped, not module-scoped,
+so the fast/deterministic siblings (``TestConfigPin``, ``TestManualMutantKilled``)
+stay SELECTED at push for quick feedback on a config / manual-mutant regression.
+The heavy checks are RELOCATED to CI, not dropped: CI's ``test-shard`` lane runs
+the whole suite with NO marker filter, so both still gate on every PR.
+``TestPushHeavyRelocatedToCI`` pins that relocation -- heavy excluded at push,
+cheap still selected, everything present in CI.
 """
 
+import ast
 import re
 from pathlib import Path
 
@@ -30,10 +34,21 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 _CONFIG = _REPO_ROOT / ".pre-commit-config.yaml"
 _PYPROJECT = _REPO_ROOT / "pyproject.toml"
 _CI_WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "ci.yml"
-_HEAVY_FILES = (
-    _REPO_ROOT / "tests" / "quality" / "test_jscpd_duplication.py",
-    _REPO_ROOT / "tests" / "quality" / "test_mutation_kill_proof.py",
-)
+
+# Per heavy file: the CLASS that runs the expensive subprocess (marked
+# `push_heavy`, deselected at push) vs the fast/deterministic class that must
+# stay SELECTED at push. Marking the whole module would lift the cheap classes
+# off the push gate too, losing fast feedback on a config / manual-mutant regression.
+_HEAVY_CHECKS = {
+    _REPO_ROOT / "tests" / "quality" / "test_jscpd_duplication.py": {
+        "heavy": ("TestScanCoverage",),
+        "cheap": ("TestConfigPin",),
+    },
+    _REPO_ROOT / "tests" / "quality" / "test_mutation_kill_proof.py": {
+        "heavy": ("TestMutmutKillsTheMutant",),
+        "cheap": ("TestManualMutantKilled",),
+    },
+}
 
 # A pytest invocation with no path/marker scoping -- the full-suite signature.
 # Matches "pytest", "uv run pytest", "uv run -p 3.13 pytest" not followed by a
@@ -132,14 +147,32 @@ def _ci_shard_pytest() -> str:
     return "\n".join(runs)
 
 
+def _class_decorators(source: str) -> dict[str, list[str]]:
+    return {
+        node.name: [ast.unparse(dec) for dec in node.decorator_list]
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.ClassDef)
+    }
+
+
+def _has_module_push_heavy(source: str) -> bool:
+    for node in ast.parse(source).body:
+        targets = node.targets if isinstance(node, ast.Assign) else []
+        if any(isinstance(t, ast.Name) and t.id == "pytestmark" for t in targets):
+            return "push_heavy" in ast.unparse(node.value)
+    return False
+
+
 class TestPushHeavyRelocatedToCI:
-    """The two whole-tree checks are OFF the push gate but STILL run in CI.
+    """The heavy CLASSES are OFF the push gate; the cheap ones stay ON; CI runs all.
 
     The invariant is relocation, not deletion: nothing that gated before the
     push-hook slim-down is ungated after -- the jscpd + mutmut checks simply move
-    from push-time to CI-time. This class pins all four halves of that contract:
-    the checks carry the marker, the marker is registered (``--strict-markers``),
-    the push hook deselects it, and CI's shard lane does NOT.
+    from push-time to CI-time. The marker is CLASS-scoped so the fast siblings keep
+    gating at push. This class pins every half of that contract: the marker is
+    registered (``--strict-markers``), the heavy classes carry it, the cheap
+    classes (and the module) do NOT, the push hook deselects it, and CI's shard
+    lane does NOT.
     """
 
     def test_push_heavy_marker_is_registered(self) -> None:
@@ -151,13 +184,30 @@ class TestPushHeavyRelocatedToCI:
             "[tool.pytest.ini_options] markers -- --strict-markers rejects it otherwise."
         )
 
-    def test_heavy_checks_carry_the_marker(self) -> None:
-        for path in _HEAVY_FILES:
+    def test_heavy_classes_carry_the_marker(self) -> None:
+        for path, classes in _HEAVY_CHECKS.items():
+            decorators = _class_decorators(path.read_text())
+            for cls in classes["heavy"]:
+                assert cls in decorators, f"{path.name}::{cls} not found -- update _HEAVY_CHECKS."
+                assert "pytest.mark.push_heavy" in decorators[cls], (
+                    f"{path.name}::{cls} runs the expensive subprocess and must be decorated "
+                    "`@pytest.mark.push_heavy` so the push hook deselects it."
+                )
+
+    def test_cheap_classes_stay_push_selected(self) -> None:
+        for path, classes in _HEAVY_CHECKS.items():
             source = path.read_text()
-            assert re.search(r"pytest\.mark\.push_heavy", source), (
-                f"{path.relative_to(_REPO_ROOT).as_posix()} must carry the `push_heavy` marker "
-                "so the push hook can deselect its whole-tree scan."
+            assert not _has_module_push_heavy(source), (
+                f"{path.name} must NOT carry a module-level `push_heavy` pytestmark -- that would "
+                "lift the fast config-pin / manual-mutant checks off the push gate too."
             )
+            decorators = _class_decorators(source)
+            for cls in classes["cheap"]:
+                assert cls in decorators, f"{path.name}::{cls} not found -- update _HEAVY_CHECKS."
+                assert "pytest.mark.push_heavy" not in decorators[cls], (
+                    f"{path.name}::{cls} is fast + deterministic and must stay SELECTED at push -- "
+                    "it must not carry the `push_heavy` marker."
+                )
 
     def test_ci_shard_lane_does_not_deselect_push_heavy(self) -> None:
         # Relocation proof: the shard lane runs the WHOLE suite with no marker
