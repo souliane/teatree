@@ -13,13 +13,14 @@ from teatree.backends.github import GitHubCodeHost
 from teatree.backends.github import sync as github_sync
 from teatree.backends.gitlab import GitLabCodeHost
 from teatree.backends.gitlab import sync as gitlab_sync
+from teatree.backends.notion import NotionClient
 from teatree.backends.slack import SlackReviewSearchRequest, read_recent_review_matches
 from teatree.backends.slack.bot import SlackBotBackend
 from teatree.core.backend_registry import register_backend_provider
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import CIService, CodeHostBackend, MessagingBackend
-    from teatree.core.backend_registry import ReviewHistoryReadLike, ReviewSearchSpec
+    from teatree.core.backend_registry import NotionPageClient, ReviewHistoryReadLike, ReviewSearchSpec
     from teatree.core.overlay import OverlayBase
     from teatree.types import SyncBackend
 
@@ -69,6 +70,9 @@ class SlackBackendProvider:
 
     def build_sync_backends(self) -> "list[SyncBackend]":  # noqa: PLR6301
         return [github_sync.GitHubSyncBackend(), gitlab_sync.GitLabSyncBackend()]
+
+    def build_notion_client(self, *, token: str) -> "NotionPageClient | None":  # noqa: PLR6301 — BackendProvider protocol method
+        return NotionClient(token=token)
 
     def read_recent_review_matches(self, spec: "ReviewSearchSpec") -> "ReviewHistoryReadLike":  # noqa: PLR6301
         return read_recent_review_matches(

@@ -132,6 +132,13 @@ class OverlayConfig:
     max_concurrent_auto_starts: int = 1
     stale_threshold_days: int = 3
     notion_database_id: str = ""
+    # The Notion page property teatree reads for a ticket's status
+    # (``core.sync.fetch_notion_statuses``). Non-secret; TOML/ConfigSetting
+    # overridable per overlay.
+    notion_status_property: str = "Status"
+    # WRITE-back gate (default OFF): ``core.sync.push_notion_status`` PATCHes
+    # the Notion Status property only when this is True. Read-only otherwise.
+    notion_write_back: bool = False
     mr_close_ticket: bool = False
     # When True the pre-push ship gate REJECTS any auto-close keyword
     # (Closes/Fixes/Resolves #N, full-URL forms) in the MR description or
@@ -286,6 +293,12 @@ class OverlayConfig:
         return ""
 
     def get_slack_token(self) -> str:
+        return ""
+
+    def get_notion_token(self) -> str:
+        # Wired via ``notion_token_pass_key`` in ~/.teatree.toml (the generic
+        # ``*_pass_key`` mechanism registers a pass-resolving reader). Default
+        # empty means the runtime Notion status-sync is a clean no-op.
         return ""
 
     # ── Structured getters (need logic, can't be plain constants) ────
