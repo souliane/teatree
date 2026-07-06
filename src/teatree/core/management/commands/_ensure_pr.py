@@ -24,8 +24,8 @@ from teatree.core.gates.architecture_precheck_gate import warn_if_precheck_incom
 from teatree.core.gates.debt_delta_gate import evaluate_debt_delta
 from teatree.core.gates.open_questions_gate import warn_if_open_questions_missing
 from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_budget
+from teatree.core.merge.pr_create_verify import verify_pr_exists
 from teatree.core.overlay_loader import get_overlay
-from teatree.core.pr_create_verify import verify_pr_exists
 from teatree.core.runners.ship import overlay_pr_labels, sanitize_close_keywords, should_close_ticket
 from teatree.utils import git, git_remote
 from teatree.utils.run import CommandFailedError

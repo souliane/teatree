@@ -11,8 +11,8 @@ from teatree.core.gates.debt_delta_gate import evaluate_debt_delta
 from teatree.core.gates.open_questions_gate import warn_if_open_questions_missing
 from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_budget
 from teatree.core.intake.close_trailer_scanner import apply_publish_gate
+from teatree.core.merge.pr_create_verify import verify_pr_exists
 from teatree.core.overlay_loader import get_overlay
-from teatree.core.pr_create_verify import verify_pr_exists
 from teatree.core.review.mr_metadata import ensure_standard_body
 from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.core.worktree.branch_currency import sha_conflicts_with_target

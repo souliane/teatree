@@ -1,9 +1,9 @@
-"""Behaviour tests for ``teatree.core.pr_create_verify`` — PR existence re-read (#1194)."""
+"""Behaviour tests for ``teatree.core.merge.pr_create_verify`` — PR existence re-read (#1194)."""
 
 from django.test import SimpleTestCase
 
 from teatree.core.backend_protocols import PrOpenState
-from teatree.core.pr_create_verify import verify_pr_exists
+from teatree.core.merge.pr_create_verify import verify_pr_exists
 
 _URL = "https://github.com/souliane/teatree/pull/7"
 
