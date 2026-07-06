@@ -36,6 +36,7 @@ def populate_model_registries() -> None:
     from teatree.core.cost import register_cost_factories  # noqa: PLC0415
     from teatree.core.gates import (  # noqa: F401, PLC0415
         critic_gate,
+        design_critic_gate,
         dod_gate,
         fix_dod_gate,
         integration_review_gate,

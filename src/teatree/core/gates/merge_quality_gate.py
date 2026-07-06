@@ -66,18 +66,11 @@ class MergeQualityVerdictError(MergePreconditionError):
 def linked_directive(ticket: "Ticket") -> "Directive | None":
     """The :class:`Directive` this ticket implements, or ``None`` for ordinary work.
 
-    Resolves the design's ``extra["directive_id"]`` marker first (the synthetic
-    directive-implementation ticket carries it), then the ``Directive.ticket``
-    reverse FK — either marker identifies a directive ticket, so the gate fires
-    regardless of which the loop set.
+    The single resolver — ``extra["directive_id"]`` marker first, then the reverse FK —
+    lives on the manager (``Directive.objects.linked_to``) so the plan-time and merge-time
+    directive gates identify a directive ticket by the identical rule.
     """
-    extra = ticket.extra if isinstance(ticket.extra, dict) else {}
-    directive_id = extra.get("directive_id")
-    if directive_id is not None:
-        by_id = Directive.objects.filter(pk=directive_id).first()
-        if by_id is not None:
-            return by_id
-    return Directive.objects.filter(ticket=ticket).order_by("-created_at").first()
+    return Directive.objects.linked_to(ticket)
 
 
 def is_directive_ticket(ticket: "Ticket") -> bool:

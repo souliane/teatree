@@ -62,6 +62,12 @@ DEFAULT_TRANSITION = "mark_delivered"
 # directive tickets — a merely-green-but-not-well-engineered change is refused.
 _MERGE_TRANSITION = "merge"
 
+# The design critic's transition (north-star PR-5): the generic-vs-hack judgment at
+# PLAN time. The four items judge the ratified MechanismSketch/plan for what
+# determinism can't — the LLM half of the anti-hack teeth, the deterministic
+# ``mechanism_placement`` adequacy section catches the structural shape.
+_PLAN_TRANSITION = "plan"
+
 
 class RubricKind(StrEnum):
     DETERMINISTIC = "deterministic"
@@ -252,6 +258,52 @@ CRITIC_RUBRIC: tuple[CriticRubricItem, ...] = (
         kind=RubricKind.LLM,
         origin="green-but-not-clean (merely-green is not well-engineered)",
         transition=_MERGE_TRANSITION,
+    ),
+    # The design critic (north-star PR-5): four LLM items judged at
+    # ``transition="plan"`` for directive tickets — the generic-vs-hack judgment the
+    # deterministic ``mechanism_placement`` section can't make. Advisory-first behind
+    # the ``design_critic_live`` DARK flag; the deterministic ``mechanism_conforms``
+    # section is the blocking teeth, these are the semantic net. The full judging
+    # rubric (the ratified sketch, the N=2 litmus) lives in
+    # ``design_critic_gate.build_design_contract``.
+    CriticRubricItem(
+        slug="generality",
+        adversarial_question=(
+            "Would a second overlay wanting a different value need any code change? Is the mechanism a core "
+            "setting + policy at the seam every overlay flows through, or a special-case one-off?"
+        ),
+        kind=RubricKind.LLM,
+        origin="overlay-local one-off instead of a generic core mechanism (fails the N=2 litmus)",
+        transition=_PLAN_TRANSITION,
+    ),
+    CriticRubricItem(
+        slug="sketch_conformance",
+        adversarial_question=(
+            "Does the plan implement the ratified sketch and nothing unratified? Name any semantic drift "
+            "the deterministic field-equality check can't see."
+        ),
+        kind=RubricKind.LLM,
+        origin="plan drifts from the ratified sketch in spirit",
+        transition=_PLAN_TRANSITION,
+    ),
+    CriticRubricItem(
+        slug="convention_fit",
+        adversarial_question=(
+            "Does it follow the substrate conventions — settings recipe, flag-vs-setting discrimination, "
+            "gate-registry idiom, tests-mirror-src — or invent a parallel mechanism?"
+        ),
+        kind=RubricKind.LLM,
+        origin="parallel mechanism instead of the substrate convention",
+        transition=_PLAN_TRANSITION,
+    ),
+    CriticRubricItem(
+        slug="refactor_honesty",
+        adversarial_question=(
+            "Are the refactors the seam needs named and sequenced, or is the plan bolting onto a mess silently?"
+        ),
+        kind=RubricKind.LLM,
+        origin="silent bolt-on onto an unrefactored seam",
+        transition=_PLAN_TRANSITION,
     ),
 )
 

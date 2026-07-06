@@ -117,6 +117,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "require_plan_adequacy": _parse_strict_bool,
     "require_debt_delta": _parse_strict_bool,
     "require_merge_quality_verdict": _parse_strict_bool,
+    "design_critic_live": _parse_strict_bool,
     "critic_gate_live": _parse_strict_bool,
     "bulk_close_threshold": _parse_strict_int,
     "require_rubric_verification": _parse_strict_bool,
@@ -711,6 +712,18 @@ class UserSettings:
     # never-lockout escape. A feature flag (governed in ``FEATURE_FLAGS``).
     # Per-overlay overridable.
     require_merge_quality_verdict: bool = False
+    # north-star PR-5 The design critic's OFF switch — the generic-vs-hack judgment
+    # at PLAN time. When on for a directive ticket's overlay, the four
+    # ``transition="plan"`` LLM rubric items (``generality`` / ``sketch_conformance`` /
+    # ``convention_fit`` / ``refactor_honesty``) are judged by the async critic and
+    # their FAIL items recorded as ``CriticFinding(transition="plan")``. ADVISORY-first:
+    # the deterministic ``mechanism_placement`` adequacy section (``mechanism_conforms``
+    # in ``plan_currency_gate``) is the blocking teeth; this surfaces what determinism
+    # can't and never blocks. Default false = fully inert (one settings read at plan
+    # time, no async dispatch). Its OWN kill-switch (setting it back false) is the
+    # never-lockout escape. A feature flag (governed in ``FEATURE_FLAGS``).
+    # Per-overlay overridable.
+    design_critic_live: bool = False
     # SELFCATCH-5 The autonomous user-proxy critic's ENFORCEMENT switch on
     # ``mark_delivered`` (``critic_gate``). The critic ALWAYS runs at the final
     # done-claim and RECORDS a ``CriticFinding`` per failing rubric item (the 8

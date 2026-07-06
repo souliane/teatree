@@ -120,6 +120,15 @@ FEATURE_FLAGS: dict[str, FeatureFlag] = {
             "directive tickets are gated unconditionally, so this flag ships dark until an overlay opts in."
         ),
     ),
+    "design_critic_live": FeatureFlag(
+        field="design_critic_live",
+        stage=FlagStage.DARK,
+        tracking_issue="souliane/teatree — north-star PR-5 design critic",
+        summary=(
+            "The design critic's transition=plan generic-vs-hack judgment for directive tickets; advisory "
+            "(records CriticFinding, never blocks — mechanism_conforms is the teeth), ships dark."
+        ),
+    ),
 }
 
 
