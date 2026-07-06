@@ -298,7 +298,11 @@ class ReviewService:
         documented in :meth:`_run_pre_publish_gates`.
         """
         from teatree.cli.review.authorize import resolve_live_authorization  # noqa: PLC0415
-        from teatree.cli.review.default_draft import check_live_post, notify_draft_created  # noqa: PLC0415
+        from teatree.cli.review.default_draft import (  # noqa: PLC0415 — lazy: monkeypatchable + defers ORM
+            check_live_post,
+            notify_draft_created,
+            resolve_reviewed_head_sha,
+        )
 
         if not live:
             msg, code = self.post_draft_note(
@@ -314,7 +318,12 @@ class ReviewService:
                 allow_bloat=allow_bloat,
             )
             if code == 0:
-                notify_draft_created(repo=repo, mr=mr, mr_url=gitlab_mr_url(self._resolve_base_url(), repo, mr))
+                notify_draft_created(
+                    repo=repo,
+                    mr=mr,
+                    mr_url=gitlab_mr_url(self._resolve_base_url(), repo, mr),
+                    reviewed_head_sha=resolve_reviewed_head_sha(self._get_api(), repo, mr),
+                )
             return msg, code
         # One-step authorization gate (#126): a single ``t3 review authorize``
         # is the satisfier. Surface the unified refusal naming that one

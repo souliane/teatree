@@ -27,7 +27,7 @@ This suite exercises every leg of the acceptance criteria:
     full whole-word/negation matrix.
 """
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -127,58 +127,96 @@ class TestPostCommentDefaultsToDraft:
     def test_default_emits_slack_dm_with_link(self) -> None:
         _, code = self.svc.post_comment("org/repo", 7, "lgtm")
         assert code == 0
-        # The key is scoped to the MR (no per-comment digest suffix) so all
-        # draft comments on one MR coalesce into a single DM.
-        assert BotPing.objects.filter(idempotency_key="post_comment_draft:org/repo!7").exists()
+        # The key is scoped to the MR + reviewed revision (a single
+        # per-comment-free discriminator), so all draft comments on one MR
+        # revision coalesce into a single DM. The bare ``_StubAPI`` returns no
+        # diff_refs, so the discriminator degrades to the UTC-day fallback.
+        assert BotPing.objects.filter(idempotency_key__startswith="post_comment_draft:org/repo!7:").exists()
 
 
-class _CountingStubAPI(_StubAPI):
-    """A ``_StubAPI`` whose successive draft posts return distinct note ids.
+class _RoundStubAPI(_StubAPI):
+    """A ``_StubAPI`` that counts note ids AND serves an MR head SHA.
 
-    Distinct ids give each ``post-comment`` call a distinct result message.
-    The pre-fix per-message idempotency digest keyed one DM off that message,
-    so N comments produced N separate essay DMs. This stub is what makes the
-    "N comments → N messages" regression observable — the per-MR key must
-    coalesce them regardless of how many distinct comments were posted.
+    Successive draft posts return distinct note ids (so each ``post-comment``
+    call has a distinct result message — the shape the pre-fix per-comment
+    digest fanned out to N DMs). ``head_sha`` is mutable so a test can simulate
+    the author pushing a new revision between review rounds; an empty
+    ``head_sha`` exercises the UTC-day fallback (no diff_refs resolvable).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, head_sha: str = "sha-round-1") -> None:
         super().__init__()
         self._next_id = 100
+        self.head_sha = head_sha
 
     def post_json(self, endpoint: str, payload: object) -> dict[str, object]:
         self.calls.append(("post_json", endpoint, payload))
         self._next_id += 1
         return {"id": self._next_id, "notes": [{"type": "DiffNote"}], "line_code": f"abc_{self._next_id}_10"}
 
+    def get_json(self, endpoint: str) -> object:
+        self.calls.append(("get_json", endpoint, None))
+        tail = endpoint.rsplit("/merge_requests/", 1)[-1]
+        if "/merge_requests/" in endpoint and tail.isdigit():  # the MR-detail GET
+            return {"diff_refs": {"head_sha": self.head_sha, "base_sha": "b", "start_sha": "s"}}
+        return []
+
 
 class TestDraftCommentNotificationIsOneTerseLinePerMr:
-    """N draft comments on one MR → ONE terse, clickable DM (not N essays)."""
+    """Draft comments on one MR revision → ONE terse, clickable DM (not N essays)."""
 
     @pytest.fixture(autouse=True)
     def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _write_cfg(tmp_path, monkeypatch)
         self.backend = _wire_notify_backend(monkeypatch)
         self.svc = ReviewService(token="t")
-        self.stub = _CountingStubAPI()
+        self.stub = _RoundStubAPI()
         monkeypatch.setattr(self.svc, "_get_api", lambda: self.stub)
         # Pin the forge base URL so the MR link is deterministic across hosts.
         monkeypatch.setattr(self.svc, "_resolve_base_url", lambda: "https://gitlab.example.com/api/v4")
 
-    def test_many_comments_coalesce_to_one_message(self) -> None:
+    def test_many_comments_in_one_pass_coalesce_to_one_message(self) -> None:
         for note in ("looks good", "clean helper here", "nice separation"):
             _, code = self.svc.post_comment("org/repo", 6521, note)
             assert code == 0
 
-        rows = BotPing.objects.filter(idempotency_key__startswith="post_comment_draft:org/repo!6521")
+        rows = BotPing.objects.filter(idempotency_key__startswith="post_comment_draft:org/repo!6521:")
         assert rows.count() == 1, [r.idempotency_key for r in rows]
-        assert rows.get().idempotency_key == "post_comment_draft:org/repo!6521"
+        assert rows.get().idempotency_key == "post_comment_draft:org/repo!6521:sha-round-1"
+
+    def test_new_round_new_head_sha_re_notifies(self) -> None:
+        # Round 1 — two comments against sha-round-1 → one DM.
+        for note in ("looks good", "one more"):
+            _, code = self.svc.post_comment("org/repo", 6521, note)
+            assert code == 0
+        # Author pushes a fix; the reviewed head moves. Round 2 must re-notify —
+        # a bare per-MR key would suppress it forever (SENT rows never expire).
+        self.stub.head_sha = "sha-round-2"
+        _, code = self.svc.post_comment("org/repo", 6521, "round-two finding")
+        assert code == 0
+
+        keys = sorted(
+            r.idempotency_key
+            for r in BotPing.objects.filter(idempotency_key__startswith="post_comment_draft:org/repo!6521:")
+        )
+        assert keys == [
+            "post_comment_draft:org/repo!6521:sha-round-1",
+            "post_comment_draft:org/repo!6521:sha-round-2",
+        ], keys
+
+    def test_falls_back_to_utc_day_when_head_sha_unavailable(self) -> None:
+        self.stub.head_sha = ""  # unresolvable head → UTC-day discriminator
+        _, code = self.svc.post_comment("org/repo", 6521, "looks good")
+        assert code == 0
+
+        today = datetime.now(tz=UTC).strftime("%Y-%m-%d")
+        assert BotPing.objects.filter(idempotency_key=f"post_comment_draft:org/repo!6521:{today}").exists()
 
     def test_message_is_a_single_clickable_line(self) -> None:
         _, code = self.svc.post_comment("org/repo", 6521, "looks good")
         assert code == 0
 
-        row = BotPing.objects.get(idempotency_key="post_comment_draft:org/repo!6521")
+        row = BotPing.objects.get(idempotency_key="post_comment_draft:org/repo!6521:sha-round-1")
         # One terse line: no per-comment breakdown, no publish/discard essay.
         assert row.text == (
             "Posted draft comments on [org/repo!6521](https://gitlab.example.com/org/repo/-/merge_requests/6521)"
