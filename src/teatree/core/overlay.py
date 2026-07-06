@@ -616,7 +616,7 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
 
         An overlay declares its non-impacting paths (tests, migrations,
         tooling) and returns
-        :func:`~teatree.core.customer_display_impact.classify_paths`; an overlay
+        :func:`~teatree.core.evidence.customer_display_impact.classify_paths`; an overlay
         with no customer surfaces at all (the dogfood overlay) returns
         ``False``.
         """

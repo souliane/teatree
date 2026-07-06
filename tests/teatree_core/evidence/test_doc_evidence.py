@@ -1,6 +1,6 @@
 """Field-context evidence probe for generated-doc / export verification (#2296).
 
-The probe in :mod:`teatree.core.doc_evidence` binds a generated-doc/export
+The probe in :mod:`teatree.core.evidence.doc_evidence` binds a generated-doc/export
 evidence assertion to a NAMED structured anchor — a field or a table column —
 so an AC-constrained term must be found in the field/row the AC constrains, NOT
 anywhere on the page. The canonical false-positive these tests pin: the term
@@ -14,7 +14,7 @@ network — so it unit-tests in isolation.
 
 import pytest
 
-from teatree.core.doc_evidence import (
+from teatree.core.evidence.doc_evidence import (
     ColumnClaim,
     DocEvidenceError,
     FieldClaim,

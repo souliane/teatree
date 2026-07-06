@@ -18,10 +18,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TypedDict
 
-from teatree.core import test_plan_validation as _tpv
-from teatree.core import video_evidence as _vev
 from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.backend_protocols import CodeHostBackend
+from teatree.core.evidence import test_plan_validation as _tpv
+from teatree.core.evidence import video_evidence as _vev
+from teatree.core.evidence.test_plan_blocked_gate import BlockedTestPlanPostError, check_blocked_body_from_config
 from teatree.core.intake.resolve import WorktreeNotFoundError, resolve_worktree
 from teatree.core.management.commands._test_plan_render import (
     SideManifest,
@@ -47,7 +48,6 @@ from teatree.core.on_behalf_gate_recorded import (
     require_on_behalf_approval,
 )
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
-from teatree.core.test_plan_blocked_gate import BlockedTestPlanPostError, check_blocked_body_from_config
 from teatree.types import RawAPIDict
 
 # Re-exports so callers/tests import the test-plan surface from one module.
@@ -221,7 +221,7 @@ def _preflight_images(manifest: TestPlanManifest, *, skip: bool, allow_no_video:
 
     Refuses (fail-loud) on a missing red box, a byte-identical duplicate, a
     stills-only manifest, or a video with excessive blank/static pre-roll
-    (:mod:`teatree.core.video_evidence`; ffmpeg-absent skips cleanly) — re-raising
+    (:mod:`teatree.core.evidence.video_evidence`; ffmpeg-absent skips cleanly) — re-raising
     as a :class:`TestPlanValidationError` so the command's single arm exits
     non-zero before any upload. ``skip`` bypasses image AND video gates;
     ``allow_no_video`` is the stills-only escape (both user-authorised).

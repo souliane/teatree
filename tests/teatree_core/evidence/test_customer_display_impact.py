@@ -9,7 +9,7 @@ the rules did not anticipate. Only a set whose every path is explicitly
 non-impacting resolves to ``False``.
 """
 
-from teatree.core.customer_display_impact import classify_paths
+from teatree.core.evidence.customer_display_impact import classify_paths
 
 _NON_IMPACTING = ("*/test_*.py", "*/tests/*", "test_*.py", "*/migrations/*.py", "*.md", "tooling/*")
 

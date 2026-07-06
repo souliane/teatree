@@ -4,13 +4,13 @@ The recurrence this forecloses: an E2E test-plan VIDEO with ~40s of blank/static
 pre-roll (out of a ~70s recording) and an unclear final frame was posted to a
 customer ticket, and neither the author nor the e2e-review gate caught it. The
 ``e2e post-test-plan`` path machine-enforces SCREENSHOT quality
-(:mod:`teatree.core.test_plan_validation`: red-box pixel gate + md5 dedup +
+(:mod:`teatree.core.evidence.test_plan_validation`: red-box pixel gate + md5 dedup +
 media-kind), but had ZERO quality check on the recorded video, and
 ``scripts/analyze_video.py`` only dumped frames for manual viewing with no
 verdict.
 
 This module is the deterministic substitute, mirroring the
-:mod:`teatree.core.test_plan_validation` / :mod:`teatree.core.doc_evidence`
+:mod:`teatree.core.evidence.test_plan_validation` / :mod:`teatree.core.evidence.doc_evidence`
 shape — a dedicated error subclass, a frozen report dataclass, and pure logic
 over an on-disk path with a clear refusal message. It is NOT an LLM check: it
 shells ``ffprobe``/``ffmpeg`` to measure the LEADING static-or-blank run from
@@ -206,7 +206,7 @@ def validate_manifest_videos(videos: list[Path], *, skip: bool = False) -> None:
     """Raise on the first manifest video that opens with excessive blank/static pre-roll.
 
     The post-path entry point mirroring
-    :func:`teatree.core.test_plan_validation.validate_test_plan_images`: it runs
+    :func:`teatree.core.evidence.test_plan_validation.validate_test_plan_images`: it runs
     the raising :func:`check_video_evidence` over every referenced video and
     re-raises the first :class:`VideoEvidenceError` so the caller's single
     validation-error arm aborts the post before any upload. ``skip=True`` is the

@@ -2,7 +2,11 @@ from pathlib import Path
 
 from django_typer.management import TyperCommand, command
 
-from teatree.core.doc_render import build_skill_catalogue_payload, render_skill_catalogue_markdown, write_generated_doc
+from teatree.core.evidence.doc_render import (
+    build_skill_catalogue_payload,
+    render_skill_catalogue_markdown,
+    write_generated_doc,
+)
 
 
 class Command(TyperCommand):

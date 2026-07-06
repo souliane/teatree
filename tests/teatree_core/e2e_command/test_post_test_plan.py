@@ -30,8 +30,8 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
-from teatree.core import test_plan_validation as _validation
 from teatree.core.backend_protocols import UploadVerification
+from teatree.core.evidence import test_plan_validation as _validation
 from teatree.core.management.commands import _test_plan
 from teatree.core.management.commands import _test_plan_render as _render
 from teatree.core.management.commands import _test_plan_scenario as _scenario

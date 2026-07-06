@@ -11,7 +11,7 @@ a false "verified" PDF.
 
 A remembered rule ("verify by field context, not a page-wide substring") did
 not hold under load; this module is the deterministic substitute, mirroring the
-:mod:`teatree.core.test_plan_validation` shape — pure string logic over a parsed
+:mod:`teatree.core.evidence.test_plan_validation` shape — pure string logic over a parsed
 document, a dedicated error subclass, and a clear message naming exactly what is
 missing — so it unit-tests in isolation with no ORM, host, or network.
 

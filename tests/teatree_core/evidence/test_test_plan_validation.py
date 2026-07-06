@@ -1,6 +1,6 @@
 """Deterministic pre-post validation of E2E evidence images.
 
-The preflight in :mod:`teatree.core.test_plan_validation` refuses a post when ANY
+The preflight in :mod:`teatree.core.evidence.test_plan_validation` refuses a post when ANY
 image lacks a red highlight box or two images are byte-identical, and warns
 (without refusing) when an image is dramatically older than the freshest in its
 set. Pure pixel/byte/mtime logic — no ORM, no host, no network — so it
@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 from PIL import Image, ImageDraw
 
-from teatree.core.test_plan_validation import (
+from teatree.core.evidence.test_plan_validation import (
     TestPlanImageValidationError,
     has_red_highlight_box,
     validate_test_plan_images,

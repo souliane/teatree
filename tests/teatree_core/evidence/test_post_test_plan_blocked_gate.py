@@ -9,12 +9,12 @@ import pytest
 from django.test import TestCase
 
 from teatree.config.settings import UserSettings
-from teatree.core.management.commands import _test_plan
-from teatree.core.test_plan_blocked_gate import (
+from teatree.core.evidence.test_plan_blocked_gate import (
     BlockedTestPlanPostError,
     check_blocked_body,
     check_blocked_body_from_config,
 )
+from teatree.core.management.commands import _test_plan
 from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate
 from tests.teatree_core.conftest import CommandOverlay
 
@@ -90,13 +90,13 @@ class TestCheckBlockedBodyMustAllow:
         check_blocked_body(_CLEAN_BODY, _FAKE_SOLO_URL, colleague_re=_FAKE_COLLEAGUE_RE, solo_re=_FAKE_SOLO_RE)
 
     def test_blocked_body_solo_warns_not_refuses(self, caplog: pytest.LogCaptureFixture) -> None:
-        with caplog.at_level(logging.WARNING, logger="teatree.core.test_plan_blocked_gate"):
+        with caplog.at_level(logging.WARNING, logger="teatree.core.evidence.test_plan_blocked_gate"):
             check_blocked_body(_BLOCKED_BODY, _FAKE_SOLO_URL, colleague_re=_FAKE_COLLEAGUE_RE, solo_re=_FAKE_SOLO_RE)
         assert any("blocked phrase" in r.message for r in caplog.records)
 
     def test_blocked_body_solo_e2e_warns_not_refuses(self, caplog: pytest.LogCaptureFixture) -> None:
         url = "https://gitlab.com/fake-owner/my-solo-tool-e2e/-/issues/5"
-        with caplog.at_level(logging.WARNING, logger="teatree.core.test_plan_blocked_gate"):
+        with caplog.at_level(logging.WARNING, logger="teatree.core.evidence.test_plan_blocked_gate"):
             check_blocked_body(_BLOCKED_BODY, url, colleague_re=_FAKE_COLLEAGUE_RE, solo_re=_FAKE_SOLO_RE)
         assert any("blocked phrase" in r.message for r in caplog.records)
 
@@ -116,20 +116,20 @@ def _fake_settings() -> UserSettings:
 
 class TestCheckBlockedBodyFromConfig:
     def test_refuses_colleague_url_via_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import teatree.core.test_plan_blocked_gate as _gate  # noqa: PLC0415
+        import teatree.core.evidence.test_plan_blocked_gate as _gate  # noqa: PLC0415
 
         monkeypatch.setattr(_gate, "get_effective_settings", _fake_settings)
         with pytest.raises(BlockedTestPlanPostError):
             check_blocked_body_from_config(_BLOCKED_BODY, _FAKE_COLLEAGUE_URL)
 
     def test_allows_clean_body_via_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import teatree.core.test_plan_blocked_gate as _gate  # noqa: PLC0415
+        import teatree.core.evidence.test_plan_blocked_gate as _gate  # noqa: PLC0415
 
         monkeypatch.setattr(_gate, "get_effective_settings", _fake_settings)
         check_blocked_body_from_config(_CLEAN_BODY, _FAKE_COLLEAGUE_URL)
 
     def test_anti_vacuity_config_wrapper_goes_red_without_gate(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import teatree.core.test_plan_blocked_gate as _gate  # noqa: PLC0415
+        import teatree.core.evidence.test_plan_blocked_gate as _gate  # noqa: PLC0415
 
         monkeypatch.setattr(_gate, "get_effective_settings", _fake_settings)
         with pytest.raises(BlockedTestPlanPostError):
@@ -147,7 +147,7 @@ class TestBlockedGateAtBodyFilePath(TestCase):
         self._monkeypatch = monkeypatch
         self._tmp = tmp_path
         disable_on_behalf_gate(tmp_path_factory, monkeypatch)
-        import teatree.core.test_plan_blocked_gate as _gate  # noqa: PLC0415
+        import teatree.core.evidence.test_plan_blocked_gate as _gate  # noqa: PLC0415
 
         monkeypatch.setattr(_gate, "get_effective_settings", _fake_settings)
 
@@ -226,7 +226,7 @@ class TestStructuredManifestRenderIsNotGated(TestCase):
     def _inject(self, monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory) -> None:
         self._monkeypatch = monkeypatch
         disable_on_behalf_gate(tmp_path_factory, monkeypatch)
-        import teatree.core.test_plan_blocked_gate as _gate  # noqa: PLC0415
+        import teatree.core.evidence.test_plan_blocked_gate as _gate  # noqa: PLC0415
 
         monkeypatch.setattr(_gate, "get_effective_settings", _fake_settings)
 

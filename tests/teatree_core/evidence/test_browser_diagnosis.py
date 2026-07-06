@@ -6,7 +6,7 @@ opts in, the resolver emits the exact ``claude mcp add`` registration line.
 
 from django.test import TestCase
 
-from teatree.core.browser_diagnosis import CHROME_DEVTOOLS_SERVER_NAME, resolve_browser_diagnosis
+from teatree.core.evidence.browser_diagnosis import CHROME_DEVTOOLS_SERVER_NAME, resolve_browser_diagnosis
 from teatree.core.models.config_setting import ConfigSetting
 
 
