@@ -97,13 +97,28 @@ def repo_namespaced_key_from_path(url_path: str) -> str:
 
 
 def repo_namespaced_key(url: str) -> str:
-    """Return :func:`repo_namespaced_key_from_path` for a full issue *url*.
+    """Return the collision-free ticket-context cache key for a full issue *url*.
 
     The canonical, collision-free ticket-context cache key (#2293):
     ``acme-eng/bugs#42`` and ``acme-product#42`` share a bare numeric IID
     but never collide on this key, since the full repo path is part of it.
+
+    A URL **fragment** is appended when present, so the key stays as unique
+    as the ``issue_url`` it is derived from (#102). Synthetic loop tickets
+    (the directive interpret + implement tickets, the outer-loop experiment
+    tickets) all anchor on ONE umbrella issue and disambiguate solely via a
+    fragment — ``.../issues/3009#directive=5`` vs ``#directive-impl=5`` vs
+    ``#outer-loop-experiment=7``. Without the fragment they would all collapse
+    to ``souliane/teatree#3009`` and collide on the ``Ticket`` unique
+    constraint; the fragment restores the "distinct ``issue_url`` ⇒ distinct
+    key" invariant the constraint depends on. A real ``.../issues/42`` (no
+    fragment) is unchanged.
     """
-    return repo_namespaced_key_from_path(urlparse(url).path)
+    parsed = urlparse(url)
+    base = repo_namespaced_key_from_path(parsed.path)
+    if base and parsed.fragment:
+        return f"{base}#{parsed.fragment}"
+    return base
 
 
 def project_slug_from_ref(ref: str) -> str:
