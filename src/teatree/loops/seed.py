@@ -223,6 +223,13 @@ DEFAULT_LOOPS: tuple[LoopSeedSpec, ...] = (
         "ratify, implement, measure, keep-only-if-better), off the live tick; ships "
         "disabled behind the outer_loop_enabled flag and the critic-live guard.",
     ),
+    LoopSeedSpec(
+        "directive_loop",
+        86400,
+        "Advances one ratified directive one step per day (implement, configure, verify, "
+        "keep-only-if-verified, else human-asked revert), off the live tick; ships disabled "
+        "behind the directive_loop_enabled flag and the critic-live guard.",
+    ),
 )
 
 

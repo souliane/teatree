@@ -16,12 +16,15 @@ A task with no dispatch row, or a result without the envelope, is a no-op (``""`
 
 from typing import TYPE_CHECKING
 
+from teatree.config import get_effective_settings
 from teatree.core.models import DeferredQuestion, Directive, DirectiveError
 from teatree.core.models.mechanism_sketch import MechanismSketchError, sketch_from_envelope
 from teatree.core.overlay_loader import resolve_overlay_name
 
 if TYPE_CHECKING:
     from teatree.core.models import Task
+
+_ACTIVATION_ONLY = "activation_only"
 
 
 def validate_activation_scope(raw_sketch: dict) -> str | None:
@@ -34,6 +37,28 @@ def validate_activation_scope(raw_sketch: dict) -> str | None:
     scope = str(raw_sketch.get("activation_scope", "")).strip()
     if scope and resolve_overlay_name(scope) is None:
         return f"activation_scope {scope!r} does not resolve to a registered overlay"
+    return None
+
+
+def validate_setting_key(raw_sketch: dict) -> str | None:
+    """For an ``activation_only`` sketch, the setting must already exist in the registry.
+
+    An ``activation_only`` mechanism 'already exists' generically, so its ``setting_key``
+    must resolve to a real ``UserSettings`` field — a bogus key passes the model's
+    ``isidentifier`` check but would read-back-mismatch at CONFIGURE and park. A
+    ``setting_policy_gate``'s setting is NEW (the implementation adds it), so it is not
+    required to exist yet; the model's identifier check plus the configure read-back and
+    the acceptance tests guard that case. Lives in the gate because it reads the settings
+    registry, which the pure model layer must not import.
+    """
+    if str(raw_sketch.get("kind", "")).strip() != _ACTIVATION_ONLY:
+        return None
+    setting_key = str(raw_sketch.get("setting_key", "")).strip()
+    if not hasattr(get_effective_settings(None), setting_key):
+        return (
+            f"setting_key {setting_key!r} is not a known setting; an activation_only mechanism "
+            f"must reference an existing setting"
+        )
     return None
 
 
@@ -87,6 +112,9 @@ def _record_sketch(directive: Directive, envelope: dict) -> str:
     scope_finding = validate_activation_scope(raw_sketch)
     if scope_finding is not None:
         return f"directive sketch recording refused: {scope_finding}"
+    key_finding = validate_setting_key(raw_sketch)
+    if key_finding is not None:
+        return f"directive sketch recording refused: {key_finding}"
     try:
         sketch = sketch_from_envelope(raw_sketch)
     except MechanismSketchError as exc:

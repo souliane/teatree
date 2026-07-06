@@ -7,7 +7,7 @@ from django.test import TestCase
 
 import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.core.gates.merge_guard import MergeGuard
-from teatree.core.models import IncomingEvent, ReplyDispatch
+from teatree.core.models import ConfigSetting, Directive, IncomingEvent, IntentClassification, ReplyDispatch
 from teatree.core.models.incoming_event import MAX_INGEST_ATTEMPTS
 from teatree.core.overlay import OverlayBase
 from teatree.loop.scanners.incoming_events import IncomingEventsScanner
@@ -562,3 +562,41 @@ class TestIncomingEventsScannerReliability(TestCase):
             IncomingEventsScanner().scan()
 
         handle.assert_not_called()
+
+
+class TestCaptureDirectiveWiring(TestCase):
+    """The inbound CAPTURE_DIRECTIVE path (north-star PR-7, #63) — gated by the flag."""
+
+    def _directive_event(self) -> IncomingEvent:
+        return _event(
+            source=IncomingEvent.Source.SLACK,
+            body="always open MRs as drafts for overlay X",
+            key="slack:dir1",
+            event={"type": "app_mention"},
+        )
+
+    @staticmethod
+    def _directive_classification(event: IncomingEvent) -> IntentClassification:
+        return IntentClassification(event=event, intent=IntentClassification.Intent.DIRECTIVE, confidence=0.9)
+
+    @patch("teatree.loop.scanners.incoming_events.classify_event")
+    def test_captures_a_directive_when_the_flag_is_on(self, mock_classify: object) -> None:
+        ConfigSetting.objects.set_value("directive_loop_enabled", value=True)
+        event = self._directive_event()
+        mock_classify.return_value = self._directive_classification(event)
+        signals = IncomingEventsScanner().scan()
+        event.refresh_from_db()
+        assert event.processed_at is not None
+        assert Directive.objects.filter(source=Directive.Source.INCOMING_EVENT).count() == 1
+        assert any(s.kind == "incoming_event.directive_captured" for s in signals)
+
+    @patch("teatree.loop.scanners.incoming_events.classify_event")
+    def test_flag_off_drops_a_directive_event_without_capturing(self, mock_classify: object) -> None:
+        # Flag-off parity at the scanner: a DIRECTIVE event with the flag off is DROPped
+        # exactly as an unrouteable intent — no Directive row is written.
+        event = self._directive_event()
+        mock_classify.return_value = self._directive_classification(event)
+        IncomingEventsScanner().scan()
+        event.refresh_from_db()
+        assert event.processed_at is not None
+        assert Directive.objects.count() == 0

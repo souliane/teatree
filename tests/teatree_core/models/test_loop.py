@@ -16,6 +16,7 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from teatree.core.models import Loop, Prompt
+from teatree.loops.seed import DEFAULT_LOOPS
 
 
 def _prompt(name: str = "demo-prompt", body: str = "do x") -> Prompt:
@@ -267,12 +268,12 @@ class TestLoopSeed(TestCase):
         assert loop.delay_seconds == 86400
 
     def test_every_loop_is_its_own_autonomous_row(self) -> None:
-        # 22 default loops (#2584, +1 snapshot_warmer, +2 for #22 issue_disposition +
-        # backlog_sweep, +1 for the T4 outer_loop): the orphan ``slack_answer`` is
-        # never seeded (the one loop with no registry MiniLoop). The seeded set
-        # equals ``iter_loops()`` — pinned by
+        # The seeded set equals the canonical ``DEFAULT_LOOPS`` (== ``iter_loops()``);
+        # the orphan ``slack_answer`` is never seeded (the one loop with no registry
+        # MiniLoop). Derived, not hardcoded, so a newly-added default loop bumps this
+        # automatically — pinned by
         # tests/teatree_loops/test_seed.py::test_seeded_loop_table_matches_iter_loops.
-        assert Loop.objects.count() == 22
+        assert Loop.objects.count() == len(DEFAULT_LOOPS)
         assert Loop.objects.filter(name="dispatch").exists()
 
 

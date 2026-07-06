@@ -41,6 +41,7 @@ _LOOP_DESCRIPTIONS = {
     "news": "Fires the daily news-scan task at 08:00 to surface relevant external releases and improvement ideas.",
     "dream": "Runs the nightly memory-consolidation pass at 03:00 — cross-link, merge, reindex MEMORY.md, decay — off the live tick.",
     "outer_loop": "Advances at most one T4 autoresearch experiment one step per day (propose, ratify, implement, measure, keep-only-if-better), off the live tick; ships disabled behind the outer_loop_enabled flag and the critic-live guard.",
+    "directive_loop": "Advances one ratified directive one step per day (implement, configure, verify, keep-only-if-verified, else human-asked revert), off the live tick; ships disabled behind the directive_loop_enabled flag and the critic-live guard.",
 }
 
 # The retired install-seed placeholder the arch_review prompt may still carry.

@@ -53,13 +53,16 @@ Print cycle-to-date SDK-equivalent spend vs the monthly credit.
 
 ## `directive`
 
-Capture and inspect plain-language directives about teatree's own behavior.
+Capture, drive, and inspect plain-language directives about teatree's own behavior.
 
 | Subcommand | Description |
 | --- | --- |
 | `capture` | Record a plain-language directive verbatim as a CAPTURED row |
 | `status` | Print one directive's state, sketch, and ratification (read-only) |
+| `tick` | Advance the directive loop one step IF the cadence elapsed (cron entry) |
+| `history` | Print the recent directive ledger with decisions (read-only) |
 | `list` | Print the recent directive ledger (read-only) |
+| `resolve-revert` | Close a REVERT_PENDING directive to terminal REVERTED (config already rolled back) |
 
 ## `do`
 

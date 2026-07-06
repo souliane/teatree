@@ -110,7 +110,7 @@
       ]
     },
     {
-      "help": "Capture and inspect plain-language directives about teatree's own behavior.",
+      "help": "Capture, drive, and inspect plain-language directives about teatree's own behavior.",
       "name": "directive",
       "subcommands": [
         {
@@ -122,8 +122,20 @@
           "name": "status"
         },
         {
+          "help": "Advance the directive loop one step IF the cadence elapsed (cron entry)",
+          "name": "tick"
+        },
+        {
+          "help": "Print the recent directive ledger with decisions (read-only)",
+          "name": "history"
+        },
+        {
           "help": "Print the recent directive ledger (read-only)",
           "name": "list"
+        },
+        {
+          "help": "Close a REVERT_PENDING directive to terminal REVERTED (config already rolled back)",
+          "name": "resolve-revert"
         }
       ]
     },

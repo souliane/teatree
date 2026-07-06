@@ -178,6 +178,8 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "auto_disposition_enabled": _parse_strict_bool,
     "outer_loop_enabled": _parse_strict_bool,
     "directive_loop_enabled": _parse_strict_bool,
+    # North-star PR-7 — the directive VERIFYING horizon (days) after activation.
+    "directive_verify_days": _parse_strict_int,
     # T4-PR-3 — the autoresearch outer-loop runtime bounds: the post-implement
     # measurement horizon (days), the weekly experiment cap, and the convergence
     # brake (park after N consecutive non-KEPT decisions). All DB-home,
@@ -1116,6 +1118,12 @@ class UserSettings:
     # default == its off_value (False), so it can never ship default-ON without a
     # code-reviewed stage demotion.
     directive_loop_enabled: bool = False
+    # North-star PR-7 — the directive-loop VERIFYING horizon in days: after the ratified
+    # activation is applied, the five evidence classes (activation live, acceptance green,
+    # behavior probe clean, no collateral regression, zero open critic findings) are
+    # judged once this many days elapse. DB-home, per-overlay overridable. Inert while
+    # ``directive_loop_enabled`` is off (nothing reaches VERIFYING).
+    directive_verify_days: int = 7
     # T4-PR-3 — the autoresearch outer-loop runtime bounds (guard chain G4). Inert
     # while the flag is off: the measurement horizon after an experiment merges,
     # the max experiments admitted per rolling 7-day window, and the convergence

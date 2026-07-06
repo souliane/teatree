@@ -30,12 +30,13 @@ if TYPE_CHECKING:
 
 INTERPRET_PHASE = "directive_interpreting"
 
-#: The standing umbrella issue every directive's synthetic interpret ticket anchors
-#: under; the ``#directive=<pk>`` fragment makes each unique while still resolving
-#: the ``souliane/teatree`` overlay via ``infer_overlay_for_url`` (the outer-loop
-#: synthetic-ticket idiom — the interpret phase needs a ``Task``, and a ``Task``
-#: needs a ``Ticket``).
-DIRECTIVE_UMBRELLA_URL = "https://github.com/souliane/teatree/issues/63"
+#: The standing north-star self-modification umbrella every directive's synthetic
+#: interpret ticket anchors under; the ``#directive=<pk>`` fragment makes each unique
+#: while still resolving the ``souliane/teatree`` overlay via ``infer_overlay_for_url``
+#: (the outer-loop synthetic-ticket idiom — the interpret phase needs a ``Task``, and a
+#: ``Task`` needs a ``Ticket``). Shares the north-star umbrella with the outer loop and
+#: the directive-implementation ticket; the ``#directive=`` fragment disambiguates.
+DIRECTIVE_UMBRELLA_URL = "https://github.com/souliane/teatree/issues/3009"
 
 
 def synthetic_interpret_ticket(directive: "Directive") -> Ticket:
