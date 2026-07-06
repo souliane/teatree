@@ -123,6 +123,12 @@ class Scenario:
     #: prompt matches the sandbox and the agent fires the command instead of
     #: investigating the empty-cwd mismatch.
     fixture: str = ""
+    #: Opt-in inert CLI stubs emitted as the YAML ``cli_stubs:`` list (``()`` →
+    #: omitted). Prepends a throwaway ``bin/`` of success-printing ``t3``/``gh``/
+    #: ``glab`` stubs to the child ``PATH`` so a single-action probe whose correct
+    #: command would error in the sandbox succeeds and the agent stops, instead of
+    #: wandering into a ``max_turns`` cap-taint. A SEPARATE lever from ``fixture``.
+    cli_stubs: tuple[str, ...] = ()
 
     @property
     def has_negative(self) -> bool:
@@ -225,6 +231,8 @@ def scenario_yaml(scenario: Scenario) -> str:
         lines.append(f"  max_budget_usd: {scenario.max_budget_usd}")
     if scenario.fixture:
         lines.append(f"  fixture: {scenario.fixture}")
+    if scenario.cli_stubs:
+        lines.append(f"  cli_stubs: [{', '.join(scenario.cli_stubs)}]")
     lines += [
         f"  tools: {tools}",
         f"  prompt: {json.dumps(scenario.prompt, ensure_ascii=False)}",

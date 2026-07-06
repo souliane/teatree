@@ -16,6 +16,7 @@ from typing import Any
 import yaml
 
 from teatree.agents.model_tiering import TIER_MODELS
+from teatree.eval.cli_stub_fixture import KNOWN_CLI_STUBS
 from teatree.eval.models import (
     CLEAN_ROOM_LANE,
     DEFAULT_MAX_TURNS,
@@ -85,6 +86,7 @@ def _parse_spec(entry: object, path: Path, default_agent_path: str | None) -> Ev
     tools = _parse_tools(spec_map, name, path)
     agent_sections = _parse_agent_sections(spec_map, name, path)
     available_skills = _parse_available_skills(spec_map, name, path)
+    cli_stubs = _parse_cli_stubs(spec_map, name, path)
     return EvalSpec(
         name=name,
         scenario=scenario,
@@ -105,6 +107,7 @@ def _parse_spec(entry: object, path: Path, default_agent_path: str | None) -> Ev
         max_budget_usd=_parse_positive_float(spec_map, "max_budget_usd", name, path),
         watchdog_seconds=_parse_positive_float(spec_map, "watchdog_seconds", name, path),
         available_skills=available_skills,
+        cli_stubs=cli_stubs,
     )
 
 
@@ -226,6 +229,28 @@ def _parse_available_skills(entry: Mapping[str, Any], spec_name: str, path: Path
     if not isinstance(raw, list) or not raw or not all(isinstance(s, str) and s.strip() for s in raw):
         raise EvalSpecError(
             path, None, f"spec {spec_name!r}: `available_skills` must be a non-empty list of skill-name strings"
+        )
+    return tuple(raw)
+
+
+def _parse_cli_stubs(entry: Mapping[str, Any], spec_name: str, path: Path) -> tuple[str, ...]:
+    """Parse the optional ``cli_stubs`` list of inert-CLI names, or ``()``.
+
+    Mirrors :func:`_parse_available_skills`: absent means "stub nothing" (every
+    existing scenario keeps an untouched ``PATH``); present must be a non-empty
+    list of names drawn from :data:`teatree.eval.cli_stub_fixture.KNOWN_CLI_STUBS`
+    — an unknown name (a typo, an unimplemented binary) is a spec error, not a
+    silent no-op, since the sandbox would still error on that command.
+    """
+    raw = entry.get("cli_stubs")
+    if raw is None:
+        return ()
+    if not isinstance(raw, list) or not raw or not all(isinstance(s, str) and s.strip() for s in raw):
+        raise EvalSpecError(path, None, f"spec {spec_name!r}: `cli_stubs` must be a non-empty list of CLI-name strings")
+    unknown = [s for s in raw if s not in KNOWN_CLI_STUBS]
+    if unknown:
+        raise EvalSpecError(
+            path, None, f"spec {spec_name!r}: unknown cli_stubs {unknown} (known: {sorted(KNOWN_CLI_STUBS)})"
         )
     return tuple(raw)
 
