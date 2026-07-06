@@ -32,6 +32,7 @@ import asyncio
 import json
 from collections.abc import AsyncIterator, Iterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, suppress
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from claude_agent_sdk import (
@@ -43,19 +44,58 @@ from claude_agent_sdk import (
     ToolResultBlock,
     ToolUseBlock,
 )
+from openai import AsyncOpenAI
 from pydantic_ai import Agent
 from pydantic_ai.messages import ModelRequest, ModelResponse, RetryPromptPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIChatModelSettings, ReasoningEffort
 from pydantic_ai.providers.openai import OpenAIProvider
+from pydantic_ai.usage import UsageLimits
 
 from teatree.agents.lane_b.compaction import compact_history
 from teatree.agents.lane_b.config import LaneBToolConfig
 from teatree.agents.lane_b.toolsets import build_lane_b_toolsets
-from teatree.agents.model_tiering import DEFAULT_TIER, HARNESS_EFFORT_SCALE, assert_chinese_model_allowed, resolve_tier
+from teatree.agents.model_tiering import (
+    HARNESS_EFFORT_SCALE,
+    assert_chinese_model_allowed,
+    resolve_phase_harness,
+    resolve_pydantic_ai_model,
+)
 from teatree.agents.pydantic_ai_resume import rehydrate_thread_for_resume
 from teatree.config import AgentHarness, get_effective_settings
-from teatree.llm.credentials import resolve_orca_router_provider_config
+from teatree.llm.credentials import OrcaRouterCredential, resolve_orca_router_provider_config
+
+# The OrcaRouter dispatch-lane header (OrcaRouter setup plan §3.4). Rides every
+# ``pydantic_ai`` request as ``x-lane: <factory|eval>`` so the router's analytics
+# — and a future DSL rule that keys on it — can tell the factory (headless
+# dispatch) lane from the eval lane. Informational under the shipped
+# ``gated_adaptive`` router strategy; cheap to wire now.
+_X_LANE_HEADER = "x-lane"
+LANE_FACTORY = "factory"
+LANE_EVAL = "eval"
+
+
+@dataclass(frozen=True)
+class OrcaLaneConfig:
+    """The OrcaRouter per-dispatch runtime knobs threaded into :class:`PydanticAiHarness`.
+
+    Bundled into one cohesive config object (composition) so the harness
+    constructor stays narrow, and — critically — so ALL of these DB-home settings
+    are resolved SYNCHRONOUSLY by :func:`resolve_harness` before the async
+    ``open`` runs (a ``get_effective_settings`` read from inside the ``asyncio.run``
+    event loop fails safe to defaults under Django's async-unsafe guard).
+
+    *   ``lane`` — the ``x-lane`` header (``factory`` | ``eval``, plan §3.4).
+    *   ``request_limit`` — the per-run sequential-request cap (plan §4 #1);
+        ``None``/``<= 0`` leaves the run uncapped.
+    *   ``pass_path`` — the ``orca_router_pass_path`` override (plan §3.6);
+        ``None`` keeps the credential's built-in ``orca-router/api-key`` path.
+    """
+
+    lane: str = LANE_FACTORY
+    request_limit: int | None = None
+    pass_path: str | None = None
+
 
 if TYPE_CHECKING:
     from pydantic_ai.messages import ModelMessage
@@ -233,6 +273,7 @@ class PydanticAiHarnessSession:
         model_name: str,
         history: "list[ModelMessage] | None" = None,
         phase: str | None = None,
+        request_limit: int | None = None,
     ) -> None:
         self._agent = agent
         self._model_name = model_name
@@ -241,6 +282,11 @@ class PydanticAiHarnessSession:
         # un-phased run stays history-identical to #2885 — a resumed thread is
         # sent verbatim, never trimmed.
         self._phase = phase
+        # The per-run sequential-request cap (OrcaRouter setup plan §4 guardrail
+        # #1). A positive value becomes ``UsageLimits(request_limit=...)`` on each
+        # ``run_stream`` so a cheap CN maker can't drift on a long tool loop;
+        # ``None``/``<= 0`` leaves the run uncapped (the ``claude_sdk`` behaviour).
+        self._request_limit = request_limit
         self._pending_prompt: str | None = None
         self._active_task: asyncio.Task[str] | None = None
         self._active_stream: StreamedRunResult[None, str] | None = None
@@ -265,7 +311,9 @@ class PydanticAiHarnessSession:
         # phased run is byte-identical. An un-phased run sends its history
         # verbatim, so a resumed #2885 thread is never trimmed.
         sent_history = compact_history(self._history) if self._phase else self._history
-        async with self._agent.run_stream(prompt, message_history=sent_history) as stream:
+        async with self._agent.run_stream(
+            prompt, message_history=sent_history, usage_limits=self._usage_limits()
+        ) as stream:
             self._active_stream = stream
             task = asyncio.ensure_future(self._drain(stream))
             self._active_task = task
@@ -308,6 +356,18 @@ class PydanticAiHarnessSession:
             model_usage={self._model_name: {}},
         )
 
+    def _usage_limits(self) -> UsageLimits | None:
+        """The per-run step cap as pydantic_ai ``UsageLimits``, or ``None`` when uncapped.
+
+        A positive :attr:`_request_limit` caps the model-request count per run
+        (OrcaRouter setup plan §4 guardrail #1); ``None``/``<= 0`` returns ``None``
+        so the run is uncapped — the shipped behaviour for a resumed #2885 thread
+        opened with no cap.
+        """
+        if self._request_limit is not None and self._request_limit > 0:
+            return UsageLimits(request_limit=self._request_limit)
+        return None
+
     @staticmethod
     async def _drain(stream: "StreamedRunResult[None, str]") -> str:
         parts = [chunk async for chunk in stream.stream_text(delta=True)]
@@ -320,6 +380,25 @@ class PydanticAiHarnessSession:
         if self._active_stream is not None:
             await self._active_stream.cancel()
         self._active_task.cancel()
+
+
+def _build_orca_provider(*, lane: str, pass_path: str | None = None) -> OpenAIProvider:
+    """Build the OrcaRouter OpenAI-compatible provider with the ``x-lane`` header (§3.4).
+
+    Resolves the BYOK credential + base_url
+    (:func:`~teatree.llm.credentials.resolve_orca_router_provider_config`).
+    *pass_path* is the DB-home ``orca_router_pass_path`` override (resolved
+    SYNCHRONOUSLY by :func:`resolve_harness`, never here — this runs in the async
+    event loop), so an operator can point teatree at an existing per-account
+    ``pass`` entry with no copy (``None``/empty → the credential's built-in
+    ``orca-router/api-key`` path; ``ORCA_ROUTER_API_KEY`` env still wins). The
+    provider is built from an :class:`~openai.AsyncOpenAI` client carrying a
+    default ``x-lane: <lane>`` header on every request — the only way to inject a
+    default header, since :class:`OpenAIProvider` sets none itself.
+    """
+    config = resolve_orca_router_provider_config(credential=OrcaRouterCredential(pass_path_override=pass_path or None))
+    client = AsyncOpenAI(base_url=config.base_url, api_key=config.api_key, default_headers={_X_LANE_HEADER: lane})
+    return OpenAIProvider(openai_client=client)
 
 
 class PydanticAiHarness:
@@ -365,10 +444,15 @@ class PydanticAiHarness:
         history: "list[ModelMessage] | None" = None,
         resume_source: "Task | None" = None,
         phase: str | None = None,
+        orca: OrcaLaneConfig | None = None,
     ) -> None:
         self._model = model
         self._history = history
         self.resume_source = resume_source
+        # The OrcaRouter per-dispatch runtime knobs (lane, step cap, pass-path
+        # override), resolved SYNCHRONOUSLY by :func:`resolve_harness`. Absent → the
+        # defaults (factory lane, uncapped, built-in pass path).
+        self._orca = orca or OrcaLaneConfig()
         # *phase* opts the dispatch into the Lane-B tool layer (PR-03): a set
         # phase resolves the phase-scoped, gated toolsets (:mod:`teatree.agents.lane_b`).
         # ``None`` (the default, and every construction that predates the tool
@@ -384,14 +468,22 @@ class PydanticAiHarness:
     def _resolve_model(self, options: ClaudeAgentOptions) -> Model:
         if self._model is not None:
             return self._model
-        model_name = options.model or resolve_tier(DEFAULT_TIER)
-        # Checked BEFORE the credential resolution below: an allowlist policy
-        # violation is a config-policy refusal, not a missing-credential one, and
-        # should surface as such even when OrcaRouter credentials are absent too.
-        assert_chinese_model_allowed(model_name)
-        config = resolve_orca_router_provider_config()
-        provider = OpenAIProvider(base_url=config.base_url, api_key=config.api_key)
-        return OpenAIChatModel(model_name, provider=provider)
+        # Normalise the resolved id to what OrcaRouter's catalog actually carries
+        # (OrcaRouter setup plan §3.2): ``options.model`` is a teatree-abstract-tier
+        # default in Claude DASH-form (``claude-opus-4-8``), which Orca does NOT
+        # carry — so it maps to the router handle; an explicit Orca-native pin
+        # passes through.
+        model_name = resolve_pydantic_ai_model(options.model)
+        # CN gate on the ORIGINAL pin (before normalisation laundered a bare CN id
+        # into the CN-routing handle) — a config-policy refusal that must surface
+        # BEFORE the credential step, so it fires even when OrcaRouter credentials
+        # are absent. ``options.model`` catches both a bare CN name and an explicit
+        # provider-prefixed CN pin (which passes through normalisation unchanged);
+        # an absent pin falls back to the resolved handle (never itself CN).
+        assert_chinese_model_allowed(options.model or model_name)
+        return OpenAIChatModel(
+            model_name, provider=_build_orca_provider(lane=self._orca.lane, pass_path=self._orca.pass_path)
+        )
 
     @asynccontextmanager
     async def open(self, options: ClaudeAgentOptions) -> AsyncIterator[HarnessSession]:
@@ -416,7 +508,13 @@ class PydanticAiHarness:
         # exit — a bare ``Agent(...)`` never closes it, leaking a client per
         # dispatch until GC.
         async with agent:
-            yield PydanticAiHarnessSession(agent, model_name=model.model_name, history=self._history, phase=self._phase)
+            yield PydanticAiHarnessSession(
+                agent,
+                model_name=model.model_name,
+                history=self._history,
+                phase=self._phase,
+                request_limit=self._orca.request_limit,
+            )
 
 
 def resolve_harness(task: "Task | None" = None, *, phase: str | None = None) -> Harness:
@@ -446,13 +544,30 @@ def resolve_harness(task: "Task | None" = None, *, phase: str | None = None) -> 
     harness's ``resume_source`` records which ancestor it came from — a
     caller that ends up refusing the dispatch before the harness genuinely
     opens (souliane/teatree#2916) restores it from there.
+
+    The configured ``agent_harness`` is first run through
+    :func:`~teatree.agents.model_tiering.resolve_phase_harness`, which PINS a
+    verification *phase* to ``claude_sdk`` regardless of the setting (OrcaRouter
+    setup plan §4 guardrail #2) — so when a MAKER phase rides a cheap CN model on
+    ``pydantic_ai``/OrcaRouter, the checker (reviewing / requesting_review /
+    testing) stays on the trusted Claude lane. A verification phase therefore
+    never rehydrates a pydantic_ai resume thread (it isn't one).
     """
-    if get_effective_settings().agent_harness is AgentHarness.PYDANTIC_AI:
+    settings = get_effective_settings()
+    harness = resolve_phase_harness(settings.agent_harness, phase)
+    if harness is AgentHarness.PYDANTIC_AI:
         resumed = rehydrate_thread_for_resume(task) if task is not None else None
+        # The CN-model guardrails resolve HERE (sync), not inside the async
+        # ``open`` where a DB read fails safe to defaults: the per-run step cap
+        # (§4 #1) and the OrcaRouter pass-path override (§3.6).
         return PydanticAiHarness(
             history=resumed.history if resumed else None,
             resume_source=resumed.ancestor if resumed else None,
             phase=phase,
+            orca=OrcaLaneConfig(
+                request_limit=settings.pydantic_ai_request_limit,
+                pass_path=settings.orca_router_pass_path or None,
+            ),
         )
     return ClaudeSdkHarness()
 

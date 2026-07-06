@@ -21,6 +21,9 @@ the existing ``[agent.phase_models]`` table)::
     [agent.tier_models]           # override the concrete model id of an abstract tier
     frontier = "claude-opus-4-9"  # adopt a new frontier model with one config line
 
+    [agent.pydantic_ai_tier_models]   # the same override, per abstract tier, for the OrcaRouter harness
+    frontier = "orcarouter/teatree-factory"
+
     [agent.tier_effort]           # override the reasoning effort of an abstract tier
     balanced = "xhigh"            # raise the balanced-tier spawn effort with one line
 
@@ -106,6 +109,15 @@ class AgentConfig:
         line. Empty by default → the shipped :data:`TIER_MODELS` stands unchanged.
         Mirrors ``skill_models`` (a typed ``[agent.tier_models]`` sub-table); a
         non-table value or a non-string entry value yields no override.
+    *   ``pydantic_ai_tier_models`` — the ``tier_models`` sibling for the
+        ``pydantic_ai`` (OrcaRouter) harness: abstract-tier-name → OrcaRouter
+        model/router-handle id, merged OVER
+        :data:`teatree.agents.model_tiering.PYDANTIC_AI_TIER_MODELS`. Distinct from
+        ``tier_models`` because the two harnesses target different catalogs — the
+        ``claude_sdk`` harness serves Claude dash-form ids, the ``pydantic_ai``
+        harness serves OrcaRouter's provider-prefixed ids. Empty by default → the
+        shipped router-handle default stands. Same table mechanics/tolerance as
+        ``tier_models``.
     *   ``tier_effort`` — abstract-tier-name → reasoning effort, merged OVER
         :data:`teatree.agents.model_tiering.TIER_EFFORT`. The per-tier reasoning
         dial that reaches every sub-agent spawn. Empty by default → the shipped
@@ -141,6 +153,7 @@ class AgentConfig:
     phase_fanout: dict[str, bool | int] = field(default_factory=dict)
     honesty_model: str = "opus"
     tier_models: dict[str, str] = field(default_factory=dict)
+    pydantic_ai_tier_models: dict[str, str] = field(default_factory=dict)
     tier_effort: dict[str, str] = field(default_factory=dict)
 
 
@@ -198,6 +211,17 @@ def _tier_models_from(raw: object) -> dict[str, str]:
     return resolved
 
 
+def _pydantic_ai_tier_models_from(raw: object) -> dict[str, str]:
+    """Normalise the ``[agent.pydantic_ai_tier_models]`` table into a tier → id override map.
+
+    The ``pydantic_ai``/OrcaRouter sibling of :func:`_tier_models_from` — identical
+    tolerance (non-table → empty, a non-string-or-blank entry skipped) so a
+    malformed override never poisons the shipped
+    :data:`teatree.agents.model_tiering.PYDANTIC_AI_TIER_MODELS` default.
+    """
+    return _tier_models_from(raw)
+
+
 def _tier_effort_from(raw: object) -> dict[str, str]:
     """Normalise the ``[agent.tier_effort]`` table into a tier → effort override map.
 
@@ -243,6 +267,7 @@ def _agent_config_from_table(agent: Mapping[str, object]) -> AgentConfig:
         phase_fanout=_phase_fanout_from(agent.get("phase_fanout")),
         honesty_model=_honesty_model_from(agent.get("honesty_model")),
         tier_models=_tier_models_from(agent.get("tier_models")),
+        pydantic_ai_tier_models=_pydantic_ai_tier_models_from(agent.get("pydantic_ai_tier_models")),
         tier_effort=_tier_effort_from(agent.get("tier_effort")),
     )
 

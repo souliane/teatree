@@ -31,6 +31,7 @@ from teatree.agents.harness import (
     ClaudeSdkHarness,
     Harness,
     HarnessSession,
+    OrcaLaneConfig,
     PydanticAiHarness,
     PydanticAiHarnessSession,
     _extract_system_prompt,
@@ -41,7 +42,7 @@ from teatree.agents.harness import (
 from teatree.agents.headless import LoopWatchdog, TaskUsage, _build_options, _drive_with_heartbeat, run_headless
 from teatree.config import get_effective_settings
 from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket
-from teatree.llm.credentials import CredentialError
+from teatree.llm.credentials import CredentialError, OrcaRouterProviderConfig
 from tests.teatree_agents._sdk_fake import FakeHarness, FakeHarnessSession, assistant_text, result_message
 
 
@@ -636,3 +637,156 @@ class TestResolveEffort:
     def test_absent_effort_is_none(self) -> None:
         options = ClaudeAgentOptions(effort=None)
         assert _resolve_effort(options) is None
+
+
+class TestPydanticAiModelIdNormalization(TestCase):
+    """``_resolve_model`` sends OrcaRouter an id its catalog carries (plan §3.2 bug fix)."""
+
+    @pytest.fixture(autouse=True)
+    def _orca_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ORCA_ROUTER_BASE_URL", "https://api.orcarouter.ai/v1")
+        monkeypatch.setenv("ORCA_ROUTER_API_KEY", "sk-orca-test")
+
+    def test_claude_dash_form_default_is_normalised_to_the_router_handle(self) -> None:
+        # The bug: options.model carries a teatree-abstract-tier default in Claude
+        # dash-form (claude-opus-4-8), which OrcaRouter does NOT carry. It must be
+        # normalised to the router handle, never sent verbatim.
+        model = PydanticAiHarness()._resolve_model(ClaudeAgentOptions(model="claude-opus-4-8"))
+        assert model.model_name == "orcarouter/teatree-factory"
+
+    def test_no_model_pin_resolves_to_the_router_handle(self) -> None:
+        model = PydanticAiHarness()._resolve_model(ClaudeAgentOptions())
+        assert model.model_name == "orcarouter/teatree-factory"
+
+    def test_explicit_orca_native_pin_passes_through(self) -> None:
+        model = PydanticAiHarness()._resolve_model(ClaudeAgentOptions(model="deepseek/deepseek-v4-pro"))
+        assert model.model_name == "deepseek/deepseek-v4-pro"
+
+    def test_an_explicit_chinese_pin_is_refused_when_disallowed(self) -> None:
+        ConfigSetting.objects.set_value("chinese_models_allowed", value=False)
+        with pytest.raises(ValueError, match="Chinese-origin"):
+            PydanticAiHarness()._resolve_model(ClaudeAgentOptions(model="deepseek/deepseek-v4-pro"))
+
+
+class TestBuildOrcaProvider(TestCase):
+    """``_build_orca_provider`` — the OrcaRouter provider + x-lane header (plan §3.4)."""
+
+    @pytest.fixture(autouse=True)
+    def _orca_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ORCA_ROUTER_BASE_URL", "https://api.orcarouter.ai/v1")
+        monkeypatch.setenv("ORCA_ROUTER_API_KEY", "sk-orca-test")
+
+    def test_factory_lane_rides_the_x_lane_header(self) -> None:
+        provider = harness_mod._build_orca_provider(lane=harness_mod.LANE_FACTORY)
+        assert provider.client.default_headers["x-lane"] == "factory"
+        assert str(provider.client.base_url).rstrip("/") == "https://api.orcarouter.ai/v1"
+
+    def test_eval_lane_rides_the_x_lane_header(self) -> None:
+        provider = harness_mod._build_orca_provider(lane=harness_mod.LANE_EVAL)
+        assert provider.client.default_headers["x-lane"] == "eval"
+
+    def _capture_pass_path(self, pass_path: str | None) -> str:
+        captured: dict[str, str] = {}
+
+        def _spy(*, credential: object) -> object:
+            captured["path"] = credential._effective_spec().pass_path
+            return OrcaRouterProviderConfig(api_key="sk", base_url="https://api.orcarouter.ai/v1")
+
+        with patch.object(harness_mod, "resolve_orca_router_provider_config", _spy):
+            harness_mod._build_orca_provider(lane=harness_mod.LANE_FACTORY, pass_path=pass_path)
+        return captured["path"]
+
+    def test_configured_pass_path_is_injected_into_the_credential(self) -> None:
+        # The orca_router_pass_path DB-home setting points teatree at an existing
+        # per-account pass entry with NO copy (plan §3.6 / task item 4).
+        path = "orcarouter/office@example.com/api-key"
+        assert self._capture_pass_path(path) == path
+
+    def test_empty_pass_path_keeps_the_builtin(self) -> None:
+        assert self._capture_pass_path(None) == "orca-router/api-key"
+
+
+class TestPydanticAiStepCap(TestCase):
+    """The per-run sequential-request cap via pydantic_ai ``UsageLimits`` (plan §4 guardrail #1)."""
+
+    def test_positive_limit_becomes_usage_limits(self) -> None:
+        session = PydanticAiHarnessSession(Agent(TestModel()), model_name="t", request_limit=5)
+        limits = session._usage_limits()
+        assert limits is not None
+        assert limits.request_limit == 5
+
+    def test_disabled_limit_is_uncapped(self) -> None:
+        for value in (0, None):
+            with self.subTest(value=value):
+                session = PydanticAiHarnessSession(Agent(TestModel()), model_name="t", request_limit=value)
+                assert session._usage_limits() is None
+
+    def test_resolve_harness_reads_the_configured_request_limit_synchronously(self) -> None:
+        # Resolved SYNC in resolve_harness (before asyncio.run) — a read inside the
+        # async open would fail safe to the default.
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+        ConfigSetting.objects.set_value("pydantic_ai_request_limit", value=3)
+        harness = resolve_harness(phase="coding")
+        assert isinstance(harness, PydanticAiHarness)
+        assert harness._orca.request_limit == 3
+
+    def test_open_threads_the_request_limit_into_the_session(self) -> None:
+        harness = PydanticAiHarness(model=TestModel(), orca=OrcaLaneConfig(request_limit=4))
+
+        async def drive() -> int | None:
+            async with harness.open(ClaudeAgentOptions()) as session:
+                assert isinstance(session, PydanticAiHarnessSession)
+                return session._request_limit
+
+        assert asyncio.run(drive()) == 4
+
+    def test_default_setting_is_a_conservative_cap(self) -> None:
+        assert get_effective_settings().pydantic_ai_request_limit == 5
+
+
+class TestVerifierPinnedToClaude(TestCase):
+    """A verification phase stays on claude_sdk even when pydantic_ai is configured (plan §4 #2)."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_AGENT_HARNESS", raising=False)
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+
+    def setUp(self) -> None:
+        ConfigSetting.objects.set_value("agent_harness", "pydantic_ai")
+
+    def test_verification_phase_forces_claude_sdk(self) -> None:
+        for phase in ("reviewing", "requesting_review", "testing"):
+            with self.subTest(phase=phase):
+                assert isinstance(resolve_harness(phase=phase), ClaudeSdkHarness)
+
+    def test_maker_phase_uses_the_configured_pydantic_ai(self) -> None:
+        for phase in ("coding", "planning", "debugging"):
+            with self.subTest(phase=phase):
+                assert isinstance(resolve_harness(phase=phase), PydanticAiHarness)
+
+    def test_no_phase_uses_the_configured_pydantic_ai(self) -> None:
+        assert isinstance(resolve_harness(), PydanticAiHarness)
+
+
+class TestOrcaInertByDefault(TestCase):
+    """DEFAULT config keeps every dispatch on claude_sdk — OrcaRouter is inert until enabled."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("T3_AGENT_HARNESS", raising=False)
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+
+    def test_default_harness_is_claude_sdk(self) -> None:
+        assert get_effective_settings().agent_harness.value == "claude_sdk"
+
+    def test_every_phase_stays_on_claude_sdk_by_default(self) -> None:
+        for phase in ("coding", "reviewing", "testing", "planning", "requesting_review", "shipping"):
+            with self.subTest(phase=phase):
+                assert isinstance(resolve_harness(phase=phase), ClaudeSdkHarness)
+
+    def test_orca_credential_is_never_resolved_on_the_default_path(self) -> None:
+        with patch.object(harness_mod, "resolve_orca_router_provider_config") as resolve_orca:
+            harness = resolve_harness(phase="coding")
+            assert isinstance(harness, ClaudeSdkHarness)
+        resolve_orca.assert_not_called()

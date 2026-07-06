@@ -1,11 +1,13 @@
 """Per-phase headless model tiering by ABSTRACT TIER (#880, #562 §3).
 
-Every concrete model id in teatree lives in EXACTLY ONE place: the
-:data:`TIER_MODELS` constant below. Everything else — production phase dispatch,
-eval scenarios, the benchmark, and the tests — references an abstract TIER
-(``frontier`` / ``balanced`` / ``cheap``), never a concrete model id. Adopting a
-new model is one edit to :data:`TIER_MODELS` (or one ``[agent.tier_models]`` TOML
-line), with zero scenario, test, or dispatch edits.
+Every concrete Claude model id in teatree lives in EXACTLY ONE place: the
+:data:`TIER_MODELS` constant below (the ``claude_sdk`` catalog; the
+``pydantic_ai``/OrcaRouter harness has its own :data:`PYDANTIC_AI_TIER_MODELS`
+catalog — see the harness-scoped note below). Everything else — production phase
+dispatch, eval scenarios, the benchmark, and the tests — references an abstract
+TIER (``frontier`` / ``balanced`` / ``cheap``), never a concrete model id.
+Adopting a new model is one edit to :data:`TIER_MODELS` (or one
+``[agent.tier_models]`` TOML line), with zero scenario, test, or dispatch edits.
 
 The three tiers map to the price points #562 reasons about: ``frontier`` is the
 full-reasoning tier (genuine design work), ``balanced`` the mid tier, ``cheap``
@@ -22,14 +24,17 @@ effort exactly as :func:`resolve_phase_model` resolves phase → tier → model
 effort by default — ``cheap`` (Haiku, which rejects the lever) is absent, so its
 spawns emit no effort and inherit the SDK default.
 
-**Harness-scoped effort ([#2885](https://github.com/souliane/teatree/issues/2885)).**
-:data:`TIER_MODELS` is harness-INDEPENDENT by design: both the ``claude_sdk`` and
-``pydantic_ai`` headless harnesses (:mod:`teatree.agents.harness`) ultimately
-target the SAME concrete Claude model catalog — OrcaRouter (the ``pydantic_ai``
-harness's BYOK provider) proxies those identical models rather than a distinct
-one, so one shared table is the honest shape; a future harness with a genuinely
-different model catalog is the trigger to fork it. The reasoning-EFFORT dial is
-different: the two harnesses' supported effort vocabularies are not identical —
+**Harness-scoped model + effort ([#2885](https://github.com/souliane/teatree/issues/2885)).**
+:data:`TIER_MODELS` is the ``claude_sdk`` catalog — Claude ids in DASH-form
+(``claude-opus-4-8``). The ``pydantic_ai`` harness's OrcaRouter provider does NOT
+carry those dash-form ids (Orca serves provider-prefixed ids —
+``anthropic/claude-opus-4.8``, the CN pool, and named router handles), so its
+catalog is the SEPARATE :data:`PYDANTIC_AI_TIER_MODELS` (all tiers collapsing to
+one router handle; the router's own bandit does the mundane-vs-hard tiering).
+:func:`resolve_pydantic_ai_model` is the boundary that normalises a resolved
+teatree-native id UP to that router handle for the OrcaRouter harness, while an
+explicit Orca-native pin passes through. The reasoning-EFFORT dial is
+similarly harness-scoped: the two harnesses' supported effort vocabularies are not identical —
 the ``claude-agent-sdk`` CLI's scale tops out at ``max``
 (:data:`teatree.config_agent.EFFORT_SCALE`), while ``pydantic_ai``'s OpenAI-compatible
 ``ReasoningEffort`` tops out at ``xhigh`` (no ``max``) — so :func:`resolve_tier_effort`
@@ -78,6 +83,31 @@ TIER_MODELS: dict[str, str] = {
     "balanced": "claude-sonnet-5",
     "cheap": "claude-haiku-4-5",
 }
+
+# The ``pydantic_ai``/OrcaRouter parallel of :data:`TIER_MODELS`. The
+# ``claude_sdk`` harness serves the Claude dash-form ids above; the
+# ``pydantic_ai`` harness (:class:`~teatree.agents.harness.PydanticAiHarness`)
+# serves OrcaRouter's provider-prefixed catalog, so its tier map is SEPARATE —
+# :data:`TIER_MODELS`'s dash-form ids (``claude-opus-4-8``) do NOT exist in
+# OrcaRouter's catalog (Orca carries ``anthropic/claude-opus-4.8`` dot-form and
+# provider-prefixed CN ids), so trusting them here would send an unresolvable id.
+# All three abstract tiers collapse to ONE router handle by design: the router's
+# own adaptive/gated bandit does the mundane-vs-hard tiering, so teatree's
+# abstract tiers need not fan out on this harness. Overridable per tier via
+# ``[agent.pydantic_ai_tier_models]`` (merged OVER this default) — if the
+# dashboard keeps a different router name, that is the one string to change.
+PYDANTIC_AI_TIER_MODELS: dict[str, str] = {
+    "frontier": "orcarouter/teatree-factory",
+    "balanced": "orcarouter/teatree-factory",
+    "cheap": "orcarouter/teatree-factory",
+}
+
+# Reverse of the abstract-tier → Claude-family relationship, for normalising a
+# resolved Claude id back to its abstract tier when picking the ``pydantic_ai``
+# router handle (:func:`resolve_pydantic_ai_model`). The pricing-side sibling is
+# ``teatree.core.cost._FAMILY_TO_TIER``; this copy lives here because
+# ``model_tiering`` OWNS the abstract tiers.
+_CLAUDE_FAMILY_TO_TIER: dict[str, str] = {"opus": "frontier", "sonnet": "balanced", "haiku": "cheap"}
 
 # THE SINGLE SOURCE OF TRUTH for per-tier reasoning EFFORT — the parallel of
 # :data:`TIER_MODELS` for the effort axis. Abstract tier name -> CLI effort level
@@ -144,6 +174,29 @@ DEFAULT_PHASE_MODELS: dict[str, str] = {
 # without an active escalation these phases resolve exactly as today.
 VERIFICATION_PHASES: frozenset[str] = frozenset({"reviewing", "requesting_review", "testing"})
 
+# Phases PINNED to a specific harness regardless of the overlay's ``agent_harness``
+# setting — the CN-model verifier backstop (OrcaRouter setup plan §4 guardrail #2).
+# When a MAKER phase runs on a cheap CN model via ``pydantic_ai``/OrcaRouter, the
+# VERIFICATION phases (the checker in the maker≠checker pipeline) stay on the
+# trusted ``claude_sdk`` lane, so the reliability backstop is a Claude verifier +
+# CI, never the cheap maker model checking its own work. Data-driven so the pinned
+# set is one place, not a branch in :func:`resolve_harness`.
+PHASE_HARNESS: dict[str, AgentHarness] = dict.fromkeys(VERIFICATION_PHASES, AgentHarness.CLAUDE_SDK)
+
+
+def resolve_phase_harness(configured: AgentHarness, phase: str | None) -> AgentHarness:
+    """The harness a *phase* dispatch actually uses — *configured*, unless the phase is pinned.
+
+    A phase in :data:`PHASE_HARNESS` (the verification phases) forces its pinned
+    harness (``claude_sdk``) even when the overlay configured ``pydantic_ai`` — so
+    the checker stays on the trusted lane while the maker rides the cheap one. Every
+    other phase (and an absent *phase*) uses *configured* unchanged.
+    """
+    if phase is not None and phase in PHASE_HARNESS:
+        return PHASE_HARNESS[phase]
+    return configured
+
+
 # The Chinese-models allowlist (#2887): substrings identifying a Chinese-origin
 # model family reachable through OrcaRouter's routing handle. Matched
 # case-insensitively against a resolved
@@ -197,6 +250,51 @@ def resolve_tier(tier: str, *, config_path: Path | None = None) -> str:
     config = resolve_agent_config(config_path=config_path)
     merged = {**TIER_MODELS, **config.tier_models}
     return merged.get(tier, tier)
+
+
+def _resolve_pydantic_ai_tier(tier: str, *, config_path: Path | None = None) -> str:
+    """Resolve an abstract *tier* to its OrcaRouter router handle for the pydantic_ai harness.
+
+    The :func:`resolve_tier` sibling for the ``pydantic_ai`` harness: reads
+    :data:`PYDANTIC_AI_TIER_MODELS`, each entry OVERRIDABLE via
+    ``[agent.pydantic_ai_tier_models]`` (merged OVER the shipped default). Unlike
+    :func:`resolve_tier` — which passes an unknown *tier* through unchanged so a
+    caller may hand it a concrete id — an unknown tier here falls back to the
+    :data:`DEFAULT_TIER` handle: the ``pydantic_ai`` harness MUST resolve to a
+    handle OrcaRouter's catalog carries, never a bare tier name it would reject.
+    """
+    config = resolve_agent_config(config_path=config_path)
+    merged = {**PYDANTIC_AI_TIER_MODELS, **config.pydantic_ai_tier_models}
+    return merged.get(tier) or merged.get(DEFAULT_TIER, PYDANTIC_AI_TIER_MODELS[DEFAULT_TIER])
+
+
+def resolve_pydantic_ai_model(model_name: str | None, *, config_path: Path | None = None) -> str:
+    """Normalise a resolved model id for the ``pydantic_ai`` (OrcaRouter) harness.
+
+    THE dash-form id normalisation (OrcaRouter setup plan §3.2). teatree's abstract
+    tiers resolve (via :data:`TIER_MODELS`) to Claude ids in DASH-form
+    (``claude-opus-4-8``) that OrcaRouter's catalog does NOT carry — Orca serves
+    PROVIDER-PREFIXED ids (``anthropic/claude-opus-4.8``, ``deepseek/deepseek-v4-pro``,
+    ``orcarouter/teatree-factory``). So a teatree-native id (no provider ``/``
+    prefix — the :data:`TIER_MODELS` default form, or ``None``) is normalised UP to
+    the OrcaRouter router handle for the id's abstract tier
+    (:func:`_resolve_pydantic_ai_tier`). An explicit Orca-native pin (ANY
+    provider-prefixed id, e.g. an operator ``phase_models`` override to
+    ``deepseek/deepseek-v4-pro``) passes through UNCHANGED — the caller then still
+    runs it past :func:`assert_chinese_model_allowed`.
+    """
+    if model_name and "/" in model_name:
+        return model_name
+    return _resolve_pydantic_ai_tier(_abstract_tier_of(model_name), config_path=config_path)
+
+
+def _abstract_tier_of(model_name: str | None) -> str:
+    """The abstract tier a teatree-native Claude id belongs to, else :data:`DEFAULT_TIER`."""
+    lowered = (model_name or "").lower()
+    for family, tier in _CLAUDE_FAMILY_TO_TIER.items():
+        if family in lowered:
+            return tier
+    return DEFAULT_TIER
 
 
 def resolve_tier_effort(

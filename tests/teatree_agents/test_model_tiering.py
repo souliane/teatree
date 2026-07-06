@@ -16,12 +16,18 @@ from teatree.agents.model_tiering import (
     DEFAULT_PHASE_MODELS,
     DEFAULT_TIER,
     HARNESS_EFFORT_SCALE,
+    PHASE_HARNESS,
+    PYDANTIC_AI_TIER_MODELS,
     TIER_EFFORT,
     TIER_MODELS,
+    VERIFICATION_PHASES,
+    _resolve_pydantic_ai_tier,
     assert_chinese_model_allowed,
     is_chinese_origin_model,
     model_supports_thinking,
+    resolve_phase_harness,
     resolve_phase_model,
+    resolve_pydantic_ai_model,
     resolve_spawn_effort,
     resolve_spawn_model,
     resolve_tier,
@@ -532,3 +538,102 @@ class TestAssertChineseModelAllowedDefaultSetting(TestCase):
     def test_default_true_never_raises(self) -> None:
         ConfigSetting.objects.set_value("chinese_models_allowed", value=True)
         assert_chinese_model_allowed("qwen2.5-72b")
+
+
+class TestPydanticAiTierModels:
+    """:data:`PYDANTIC_AI_TIER_MODELS` — the OrcaRouter catalog, SEPARATE from :data:`TIER_MODELS`."""
+
+    def test_three_named_tiers_collapse_to_the_router_handle(self) -> None:
+        # All abstract tiers point at ONE router handle — the router's own bandit
+        # does the mundane-vs-hard tiering (OrcaRouter setup plan §3.3).
+        assert set(PYDANTIC_AI_TIER_MODELS) == {"frontier", "balanced", "cheap"}
+        assert set(PYDANTIC_AI_TIER_MODELS.values()) == {"orcarouter/teatree-factory"}
+
+    def test_orca_catalog_never_carries_a_claude_dash_form_id(self) -> None:
+        # The whole reason the table is forked: Orca does not carry the dash-form
+        # Claude ids TIER_MODELS emits.
+        for handle in PYDANTIC_AI_TIER_MODELS.values():
+            assert "claude-" not in handle
+
+    def test_resolve_pydantic_ai_tier_reads_the_constant(self) -> None:
+        for tier, handle in PYDANTIC_AI_TIER_MODELS.items():
+            assert _resolve_pydantic_ai_tier(tier, config_path=_ABSENT) == handle
+
+    def test_unknown_tier_falls_back_to_the_default_handle(self) -> None:
+        # NEVER passed through as a bare tier name — Orca would reject it.
+        assert _resolve_pydantic_ai_tier("nonsense", config_path=_ABSENT) == PYDANTIC_AI_TIER_MODELS[DEFAULT_TIER]
+
+    def test_config_overrides_a_pydantic_ai_tier(self, tmp_path: Path) -> None:
+        cfg = tmp_path / ".teatree.toml"
+        _write_toml(cfg, '[agent.pydantic_ai_tier_models]\nfrontier = "orcarouter/other-router"\n')
+        assert _resolve_pydantic_ai_tier("frontier", config_path=cfg) == "orcarouter/other-router"
+        # An untouched tier keeps the shipped handle.
+        assert _resolve_pydantic_ai_tier("balanced", config_path=cfg) == PYDANTIC_AI_TIER_MODELS["balanced"]
+
+    def test_pydantic_ai_override_does_not_leak_into_claude_tier_models(self, tmp_path: Path) -> None:
+        # The two catalogs are independent: overriding the OrcaRouter table never
+        # touches the claude_sdk TIER_MODELS resolution.
+        cfg = tmp_path / ".teatree.toml"
+        _write_toml(cfg, '[agent.pydantic_ai_tier_models]\nfrontier = "orcarouter/other-router"\n')
+        assert resolve_tier("frontier", config_path=cfg) == TIER_MODELS["frontier"]
+
+
+class TestResolvePydanticAiModel:
+    """:func:`resolve_pydantic_ai_model` — THE dash-form id normalisation (plan §3.2)."""
+
+    @pytest.mark.parametrize("claude_id", list(TIER_MODELS.values()))
+    def test_a_claude_dash_form_default_maps_to_the_router_handle(self, claude_id: str) -> None:
+        # The bug: options.model is a teatree-abstract-tier default in Claude
+        # dash-form, which OrcaRouter does not carry. It must NOT be sent verbatim.
+        resolved = resolve_pydantic_ai_model(claude_id, config_path=_ABSENT)
+        assert resolved == "orcarouter/teatree-factory"
+        assert resolved != claude_id
+
+    def test_none_maps_to_the_default_router_handle(self) -> None:
+        assert resolve_pydantic_ai_model(None, config_path=_ABSENT) == PYDANTIC_AI_TIER_MODELS[DEFAULT_TIER]
+
+    def test_each_claude_tier_maps_to_its_pydantic_tier_handle(self, tmp_path: Path) -> None:
+        # Tier-faithful: a per-tier handle override is honoured because the Claude
+        # id is normalised back to its abstract tier first.
+        cfg = tmp_path / ".teatree.toml"
+        _write_toml(
+            cfg,
+            '[agent.pydantic_ai_tier_models]\nfrontier = "orcarouter/hard"\ncheap = "orcarouter/mundane"\n',
+        )
+        assert resolve_pydantic_ai_model(TIER_MODELS["frontier"], config_path=cfg) == "orcarouter/hard"
+        assert resolve_pydantic_ai_model(TIER_MODELS["cheap"], config_path=cfg) == "orcarouter/mundane"
+
+    @pytest.mark.parametrize(
+        "orca_native_id",
+        ["deepseek/deepseek-v4-pro", "anthropic/claude-opus-4.8", "orcarouter/teatree-factory", "qwen/qwen3.6-plus"],
+    )
+    def test_an_explicit_orca_native_pin_passes_through_unchanged(self, orca_native_id: str) -> None:
+        # A provider-prefixed id is an explicit operator pin in Orca's own
+        # namespace — never remapped to the router handle.
+        assert resolve_pydantic_ai_model(orca_native_id, config_path=_ABSENT) == orca_native_id
+
+
+class TestResolvePhaseHarness:
+    """:func:`resolve_phase_harness` — the CN-model verifier pin (plan §4 guardrail #2)."""
+
+    def test_verification_phases_are_pinned_to_claude_sdk(self) -> None:
+        assert set(PHASE_HARNESS) == set(VERIFICATION_PHASES)
+        assert set(PHASE_HARNESS.values()) == {AgentHarness.CLAUDE_SDK}
+
+    @pytest.mark.parametrize("phase", sorted(VERIFICATION_PHASES))
+    def test_a_verification_phase_forces_claude_sdk_even_when_pydantic_ai_configured(self, phase: str) -> None:
+        # The MAKER may run cheap CN via pydantic_ai; the checker stays on Claude.
+        assert resolve_phase_harness(AgentHarness.PYDANTIC_AI, phase) is AgentHarness.CLAUDE_SDK
+
+    @pytest.mark.parametrize("phase", ["coding", "planning", "debugging", "shipping"])
+    def test_a_maker_phase_uses_the_configured_harness(self, phase: str) -> None:
+        assert resolve_phase_harness(AgentHarness.PYDANTIC_AI, phase) is AgentHarness.PYDANTIC_AI
+        assert resolve_phase_harness(AgentHarness.CLAUDE_SDK, phase) is AgentHarness.CLAUDE_SDK
+
+    def test_absent_phase_uses_the_configured_harness(self) -> None:
+        assert resolve_phase_harness(AgentHarness.PYDANTIC_AI, None) is AgentHarness.PYDANTIC_AI
+
+    def test_a_verification_phase_never_overrides_a_claude_sdk_config(self) -> None:
+        # The pin only ever forces claude_sdk — it never flips a maker onto pydantic.
+        for phase in VERIFICATION_PHASES:
+            assert resolve_phase_harness(AgentHarness.CLAUDE_SDK, phase) is AgentHarness.CLAUDE_SDK

@@ -78,6 +78,8 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "agent_harness": AgentHarness.parse,
     "agent_harness_provider": AgentHarnessProvider.parse,
     "chinese_models_allowed": _parse_strict_bool,
+    "pydantic_ai_request_limit": _parse_strict_int,
+    "orca_router_pass_path": _parse_strict_str,
     "eval_credential": EvalCredential.parse,
     "contribute": _parse_strict_bool,
     "excluded_skills": _parse_str_list,
@@ -415,6 +417,24 @@ class UserSettings:
     # used; a no-op today since no shipped ``TIER_MODELS`` entry is Chinese-origin.
     # Per-overlay overridable; ``T3_CHINESE_MODELS_ALLOWED`` env wins.
     chinese_models_allowed: bool = True
+    # Per-run sequential-request cap for the ``pydantic_ai``/OrcaRouter harness
+    # (OrcaRouter setup plan §4 guardrail #1). Passed as pydantic_ai
+    # ``UsageLimits(request_limit=...)`` on every ``PydanticAiHarnessSession`` run
+    # so a cheap CN maker cannot drift on a long tool loop — the FSM already
+    # chunks work into phases and the orchestrator re-dispatches, so a tight
+    # per-run cap composes with orchestration rather than killing tasks. Applies
+    # ONLY to the ``pydantic_ai`` harness (the default ``claude_sdk`` harness is
+    # bounded by the loop watchdog instead), so it is inert until an overlay opts
+    # into ``agent_harness=pydantic_ai``. ``0`` disables the cap (the escape
+    # hatch). Per-overlay overridable.
+    pydantic_ai_request_limit: int = 5
+    # The ``pass`` store path the OrcaRouter BYOK key is read from, overriding the
+    # ``OrcaRouterCredential`` built-in default ``orca-router/api-key``. Empty (the
+    # default) keeps the built-in path. Lets an operator point teatree at an
+    # existing per-account ``pass`` entry (e.g. ``orcarouter/<account>/api-key``)
+    # with no copy; the ``ORCA_ROUTER_API_KEY`` env still wins over the ``pass``
+    # store either way. Per-overlay overridable.
+    orca_router_pass_path: str = ""
     # Which Anthropic credential the automated eval lane (the metered ``api``
     # backend + the LLM judge) authenticates with. ``subscription_oauth`` (default,
     # reverses #2707) rides the plan's OAuth token — no per-token bill, but a
