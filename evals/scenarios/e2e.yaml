@@ -176,6 +176,12 @@
   tier: balanced
   max_turns: 4
   tools: [Bash]
+  # The correct action posts via `t3 <overlay> e2e post-test-plan --manifest …`;
+  # that binary errors in the sandbox ("no code host configured"), so the agent
+  # wanders into a max_turns cap-taint even though the `e2e post-test-plan` +
+  # `steps` calls already matched. The inert `t3` stub makes it succeed so the
+  # agent stops. The `gh/glab api … uploads` negative keeps full teeth.
+  cli_stubs: [t3]
   prompt: >-
     You are in a ticket worktree and have already run the E2E test for issue
     #4242 on the local environment. Artifacts are on disk in the per-env

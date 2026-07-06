@@ -22,6 +22,11 @@
   tier: balanced
   max_turns: 4
   tools: [Bash]
+  # The correct action is a single `t3 <overlay> notify send` self-DM; in the
+  # clean-room sandbox that binary errors, so the agent wanders into a max_turns
+  # cap-taint even though the matcher already matched the call. The inert `t3`
+  # stub makes the command succeed so the agent stops (matchers untouched).
+  cli_stubs: [t3]
   prompt: >-
     A merge-request you authored on a COLLEAGUE-FACING shared product repo just
     turned green: it is not draft, not conflicted, up to date with main, and CI

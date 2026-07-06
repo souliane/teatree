@@ -311,6 +311,68 @@ def _agent_for_phase(target_phase: str) -> str:
     return ""
 
 
+def _phases_for_agent(subagent: str) -> set[str]:
+    """Every phase the loop dispatches to *subagent* (reverse of ``SUBAGENT_BY_PHASE``)."""
+    return {phase for (_role, phase), agent in SUBAGENT_BY_PHASE.items() if agent == subagent}
+
+
+def _phase_envelope(subagent: str) -> frozenset[str]:
+    """Capability envelope for *subagent*: the union of every phase's allowance.
+
+    An agent dispatched for more than one phase (``t3:planner`` → ``planning`` +
+    ``directive_interpreting``) declares the SUPERSET its most-privileged phase
+    needs; each phase's ``phase_tools`` entry narrows it below at dispatch (Lane A
+    injects the per-phase complement). So the coherent floor is that a declared
+    capability be usable in AT LEAST ONE phase the agent serves — the union — not
+    that every phase allow every declared tool.
+    """
+    envelope: set[str] = set()
+    for phase in _phases_for_agent(subagent):
+        envelope |= tools_for_phase(phase)
+    return frozenset(envelope)
+
+
+def _agent_uses_denylist(agent_file_stem: str) -> bool:
+    """True when ``agents/<stem>.md`` declares tools via the ``disallowedTools:`` denylist.
+
+    A denylist brief is the complementary convention to the ``tools:`` allowlist:
+    the phase policy is its strict ceiling (Lane A applies the per-phase disallow
+    on top), so it cannot over-promise a phase-denied tool — the over-promise
+    class the envelope lane guards. Recognising it keeps the coverage claim
+    honest: every dispatched agent is EITHER allowlist-checked OR denylist-known,
+    never a silent third state with no tool declaration at all.
+    """
+    path = _AGENTS_DIR / f"{agent_file_stem}.md"
+    if not path.is_file():
+        return False
+    for number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        stripped = raw.strip()
+        if number > 1 and stripped == "---":
+            break
+        if not raw.startswith((" ", "\t")) and stripped.split(":", 1)[0].strip() == "disallowedTools":
+            return True
+    return False
+
+
+def _dispatched_allowlist_agents() -> dict[str, frozenset[str]]:
+    """Every dispatched ``t3:`` agent that uses the ``tools:`` allowlist → its capabilities.
+
+    Skips the ``codex:`` slash-command agents (resolved via the codex CLI, not an
+    ``agents/*.md`` brief) and the ``disallowedTools:`` denylist agents (a
+    different mechanism — the phase policy is their strict ceiling and can only
+    narrow, so a denylist brief cannot over-promise a phase-denied tool).
+    """
+    declared_by_agent: dict[str, frozenset[str]] = {}
+    for subagent in set(SUBAGENT_BY_PHASE.values()):
+        if not subagent.startswith("t3:"):
+            continue
+        declared = _agent_allowlist_tools(subagent.removeprefix("t3:"))
+        if declared is None:
+            continue
+        declared_by_agent[subagent] = declared
+    return declared_by_agent
+
+
 class TestAgentMdPhaseToolParity:
     """LANE 5 — a headless brief never promises a tool its phase denies (#9).
 
@@ -341,3 +403,78 @@ class TestAgentMdPhaseToolParity:
         ]
         assert all(tools is not None for tools in checked), checked
         assert len(checked) >= 2
+
+
+class TestEveryDispatchedAgentMdMatchesPhasePolicy:
+    """LANE 5b — NO dispatched ``tools:`` brief promises a tool its phases deny (#89).
+
+    LANE 5 above pinned only the two envelope-channel phases; the planner/shipper
+    allowlist briefs carried pre-existing declaration↔SSOT divergences #3012
+    deferred as "outside this PR's file ownership": ``planner.md`` declared
+    ``Bash`` while ``planning`` was shell-denied, and ``shipper.md`` declared
+    ``Write``/``Edit`` while ``shipping`` denies write. This lane closes the whole
+    surface — every dispatched ``t3:`` agent using the ``tools:`` allowlist must
+    declare only capabilities its phase envelope (:func:`_phase_envelope`) grants,
+    so any future declaration-vs-``phase_tools`` divergence fails here in CI, not
+    silently at dispatch where Lane A strips the promised-but-denied tool.
+    """
+
+    def test_no_dispatched_allowlist_brief_promises_a_phase_denied_tool(self) -> None:
+        offenders = {
+            subagent: sorted(declared - _phase_envelope(subagent))
+            for subagent, declared in _dispatched_allowlist_agents().items()
+            if declared - _phase_envelope(subagent)
+        }
+        assert offenders == {}, (
+            f"agent tools: allowlist promises capabilities no phase it serves allows "
+            f"(declaration diverges from the phase_tools SSOT): {offenders}"
+        )
+
+    def test_planning_phase_grants_shell_for_git_archaeology(self) -> None:
+        # The authoritative side for planning is the DECLARATION: an honest plan
+        # needs git archaeology (fetch, log, base_sha capture), so the policy is
+        # widened to the shell planner.md already declares — not the declaration
+        # narrowed. bughunt/shipping are the shell-in-a-read-mostly-phase precedent.
+        assert "shell" in tools_for_phase("planning")
+        assert "shell" in _agent_allowlist_tools("planner")
+
+    def test_directive_interpreting_stays_read_only_no_shell(self) -> None:
+        # Planner serves planning AND directive_interpreting; only planning is
+        # widened. The read-only interpreter keeps least privilege — it drafts a
+        # sketch and never shells out, so its phase strips the planner's shell.
+        assert "shell" not in tools_for_phase("directive_interpreting")
+
+    def test_shipping_phase_authoritative_declaration_drops_write(self) -> None:
+        # The authoritative side for shipping is the POLICY: shipping commits,
+        # pushes, and opens MRs via the shell — it never edits source, so the
+        # declaration is narrowed to match, not the policy widened to grant write.
+        declared = _agent_allowlist_tools("shipper")
+        assert declared is not None
+        assert "write_file" not in declared, "shipper.md must not declare Write — shipping denies write"
+        assert "edit_file" not in declared, "shipper.md must not declare Edit — shipping denies write"
+        assert {"write_file", "edit_file"} & tools_for_phase("shipping") == set()
+
+    def test_every_dispatched_agent_md_declares_tools_by_one_convention(self) -> None:
+        # Exhaustiveness: every dispatched t3: agent is EITHER an allowlist brief
+        # (checked by the envelope lane above) OR a recognised disallowedTools
+        # denylist brief. A future agent added with no tool declaration at all
+        # would silently escape both — this closes that blind spot so "cover ALL
+        # agents" stays honest, not a shell.
+        allowlist = set(_dispatched_allowlist_agents())
+        unclassified = {
+            subagent
+            for subagent in set(SUBAGENT_BY_PHASE.values())
+            if subagent.startswith("t3:")
+            and subagent not in allowlist
+            and not _agent_uses_denylist(subagent.removeprefix("t3:"))
+        }
+        assert unclassified == set(), (
+            f"dispatched agent(s) with no tools:/disallowedTools: declaration to check: {sorted(unclassified)}"
+        )
+
+    def test_allowlist_agent_coverage_floor_anti_vacuity(self) -> None:
+        # Emptying SUBAGENT_BY_PHASE or the agents/ dir must not make the lane
+        # vacuously green. Nine t3: allowlist agents are dispatched today
+        # (answerer, bughunter, coder, debugger, e2e, planner, scanning-news,
+        # shipper, tester); the floor sits safely below.
+        assert len(_dispatched_allowlist_agents()) >= 8, sorted(_dispatched_allowlist_agents())
