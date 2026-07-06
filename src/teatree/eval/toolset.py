@@ -21,73 +21,7 @@ provisions the generic delegate the runner hands to ``ClaudeAgentOptions.agents`
 from claude_agent_sdk import AgentDefinition
 
 from teatree.eval.models import AnyOf, EvalSpec, Matcher, canonicalize_tool
-
-#: The COMPLETE set of the bundled ``claude`` CLI's built-in tool names (28,
-#: validated against the binary — a name the CLI does NOT register is REJECTED
-#: with ``Permission deny rule "<name>" matches no known tool — check for
-#: typos.`` on EVERY ``--disallowedTools`` invocation. Because the set is
-#: complete, no built-in (PushNotification etc.) can leak past the denylist.
-#:
-#: ``MultiEdit`` was REMOVED from the CLI's tool registry (current bundled CLI
-#: 2.1.x). Leaving it here named a tool the CLI no longer knows, so EVERY
-#: clean-room SDK invocation printed the "matches no known tool" warning —
-#: harmless on its own (the rule is just dropped) but a stale, noisy denylist
-#: that no longer agreed with the binary. The drift-detecting parity test
-#: ``tests/teatree_eval/test_toolset_parity.py`` probes the bundled binary so a
-#: future add/remove fails CI instead of drifting silently.
-#:
-#: The three Agent-Team tools — ``SendMessage``, ``TaskCreate``, ``TaskUpdate`` —
-#: are genuine CLI built-ins the team-mode runtime grants (verified by ``strings``
-#: on the binary: each carries its own tool description, e.g. "TaskCreate adds an
-#: item to the task list and takes ``subject`` and ``description``…" and "use the
-#: SendMessage tool with ``to: "<name>"`` to send messages to specific teammates").
-#: They were MISSING from the set, so the team scenarios that declare them
-#: (``team_mode_delegates_to_fixed_roster_not_spawn_per_task``,
-#: ``team_mate_spawned_opus_never_sonnet``) produced a ``--tools`` allowlist whose
-#: denylist-complement was NOT exhaustive over the real built-in set — an
-#: incomplete set is exactly the leak this constant exists to prevent. Including
-#: them keeps the allowlist/denylist pair consistent so the ``Agent`` tool the
-#: spawn-vs-delegate scenarios depend on is reliably exposed.
-#:
-#: ``DesignSync`` and ``RemoteTrigger`` (#2601) are two further genuine CLI
-#: built-ins of the same ``strings``-on-the-binary provenance, and the bundled CLI
-#: ACCEPTS both as ``--disallowedTools`` deny rules (only a bogus name is rejected).
-#: They were absent, so a scenario building a ``--tools`` allowlist whose denylist-
-#: complement omitted them would not reliably deny them — the same denylist-
-#: incompleteness leak. Adding them keeps the "complete set" honest.
-#:
-#: ``Skill`` is deliberately ABSENT — it is left untouched so a scenario can always
-#: load a skill (the CLI auto-appends ``Skill`` to the allowlist anyway).
-KNOWN_BUILTIN_TOOLS: tuple[str, ...] = (
-    "Agent",
-    "AskUserQuestion",
-    "Bash",
-    "BashOutput",
-    "DesignSync",
-    "Edit",
-    "EnterPlanMode",
-    "ExitPlanMode",
-    "Glob",
-    "Grep",
-    "KillBash",
-    "KillShell",
-    "ListMcpResources",
-    "Monitor",
-    "NotebookEdit",
-    "PushNotification",
-    "Read",
-    "ReadMcpResource",
-    "RemoteTrigger",
-    "SendMessage",
-    "Task",
-    "TaskCreate",
-    "TaskUpdate",
-    "TodoWrite",
-    "ToolSearch",
-    "WebFetch",
-    "WebSearch",
-    "Write",
-)
+from teatree.llm.builtin_tools import KNOWN_BUILTIN_TOOLS
 
 #: The canonical CLI sub-agent SPAWN tool name. The bundled ``claude`` registers
 #: the delegate-to-a-sub-agent tool as ``Agent`` (NOT ``Task`` — ``Task`` resolves

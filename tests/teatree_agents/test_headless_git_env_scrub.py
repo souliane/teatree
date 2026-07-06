@@ -21,6 +21,7 @@ import teatree.agents.headless as headless_mod
 from teatree.agents.headless import _provider_child_env, run_headless
 from teatree.config import AgentHarnessProvider
 from teatree.core.models import Session, Task, Ticket
+from teatree.llm.builtin_tools import KNOWN_BUILTIN_TOOLS
 from tests.teatree_agents._sdk_fake import FakeHarnessSession, success_stream
 
 
@@ -125,8 +126,8 @@ class TestReaderPhaseEnvScrubbedAtDispatch(TestCase):
             assert options_env.get("ANTHROPIC_API_KEY") == "sk-ant"
             assert "DATABASE_URL" not in options_env
             assert "SLACK_BOT_TOKEN" not in options_env
-            # C1: no tool from any source — extended denylist + settings/mcp suppressed
-            assert {"SlashCommand", "TodoWrite", "ExitPlanMode"} <= cast("set[str]", captured["disallowed"])
+            # C1: no tool from any source — exhaustive built-in denylist + settings/mcp suppressed
+            assert set(KNOWN_BUILTIN_TOOLS) <= cast("set[str]", captured["disallowed"])
             assert captured["setting_sources"] == []
             assert captured["strict_mcp"] is True
             # restored for the rest of the (possibly hook) process

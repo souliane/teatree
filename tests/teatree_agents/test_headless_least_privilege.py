@@ -10,6 +10,7 @@ from django.test import TestCase
 
 from teatree.agents._headless_options import _build_options, _disallowed_tools_for_phase
 from teatree.core.models import Session, Task, Ticket
+from teatree.llm.builtin_tools import KNOWN_BUILTIN_TOOLS
 
 
 class TestDisallowedToolsForPhase(TestCase):
@@ -32,12 +33,14 @@ class TestDisallowedToolsForPhase(TestCase):
         assert list(result) == sorted(result)
         assert len(result) == len(set(result))
 
-    def test_reader_phase_denies_every_capability_and_the_extra_built_ins(self) -> None:
-        # #116 (C1): the reader denies the full capability complement PLUS the built-ins
-        # outside the capability vocabulary, so no tool of any kind remains.
+    def test_reader_phase_denies_the_exhaustive_known_builtin_registry(self) -> None:
+        # #116 (C1): the reader denies EVERY known CLI built-in (the binary-validated
+        # registry), so no built-in of any kind — including the external-effect
+        # PushNotification/RemoteTrigger and tool-acquisition ToolSearch — remains
+        # reachable. Anti-vacuous: dropping any built-in from the derivation → RED.
         disallowed = set(_disallowed_tools_for_phase("directive_reading"))
-        assert {"Read", "Bash", "WebFetch", "Agent", "Task", "Write", "Edit"} <= disallowed
-        assert {"SlashCommand", "TodoWrite", "ExitPlanMode"} <= disallowed
+        assert set(KNOWN_BUILTIN_TOOLS) <= disallowed, set(KNOWN_BUILTIN_TOOLS) - disallowed
+        assert {"PushNotification", "RemoteTrigger", "ToolSearch"} <= disallowed
 
 
 class TestBuildOptionsHarnessPin(TestCase):
@@ -73,7 +76,7 @@ class TestBuildOptionsHarnessPin(TestCase):
         assert reader.setting_sources == []
         assert reader.strict_mcp_config is True
         assert reader.mcp_servers == {}
-        assert {"SlashCommand", "TodoWrite", "ExitPlanMode"} <= set(reader.disallowed_tools)
+        assert set(KNOWN_BUILTIN_TOOLS) <= set(reader.disallowed_tools)
 
         coding = self._options_for("coding")
         assert coding.setting_sources is None

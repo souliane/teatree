@@ -22,6 +22,7 @@ from teatree.agents.reader_profile import is_reader_phase
 from teatree.agents.sdk_tool_map import sdk_disallowed_tools_for_phase
 from teatree.core.models import Task
 from teatree.core.models.worktree import Worktree
+from teatree.llm.builtin_tools import KNOWN_BUILTIN_TOOLS
 
 # Headless agent default permission mode: a detached run has no human to grant
 # tool permissions, so it bypasses the per-tool prompt and runs unattended.
@@ -37,11 +38,6 @@ _MAX_TURNS = 0
 # the user. The per-phase least-privilege complement (PR-11) is added on top of
 # this floor at build time — see :func:`_disallowed_tools_for_phase`.
 _DISALLOWED_TOOLS = ("AskUserQuestion",)
-# #116 reader hardening: built-in tools OUTSIDE the ``phase_tools`` capability
-# vocabulary (so not covered by ``sdk_disallowed_tools_for_phase``) that a
-# bypassPermissions spawn could otherwise reach. Denied by name for the reader phase
-# on top of the full capability complement, so the reader has NO built-in either.
-_READER_EXTRA_DENIED_TOOLS = ("SlashCommand", "TodoWrite", "ExitPlanMode")
 # Adaptive thinking, pinned EXPLICITLY on every reasoning-capable production
 # spawn. Opus 4.8 runs WITHOUT thinking when the ``thinking`` option is omitted,
 # so the Opus-4.8 planning/coding/debugging/reviewing phases would silently lose
@@ -65,13 +61,15 @@ def _disallowed_tools_for_phase(phase: str) -> list[str]:
     denies the shell (git-write), ``Write``/``Edit``, and the spawn tools — the
     cold-review least-privilege that keeps the transcript at its verdict. A write
     phase's complement is empty, so its list stays exactly ``[AskUserQuestion]``,
-    byte-identical to before the lever. The #116 reader phase additionally denies the
-    non-capability built-ins (:data:`_READER_EXTRA_DENIED_TOOLS`) so no tool of ANY
-    kind remains. Sorted & deduplicated for determinism.
+    byte-identical to before the lever. The #116 reader phase denies the EXHAUSTIVE
+    :data:`~teatree.llm.builtin_tools.KNOWN_BUILTIN_TOOLS` set (the binary-validated
+    registry — its available set is empty), so every known built-in including the
+    external-effect ones (``PushNotification`` / ``RemoteTrigger``) and ``ToolSearch``
+    is denied — no tool of ANY kind remains. Sorted & deduplicated for determinism.
     """
     denied = set(_DISALLOWED_TOOLS) | set(sdk_disallowed_tools_for_phase(phase))
     if is_reader_phase(phase):
-        denied |= set(_READER_EXTRA_DENIED_TOOLS)
+        denied |= set(KNOWN_BUILTIN_TOOLS)
     return sorted(denied)
 
 
