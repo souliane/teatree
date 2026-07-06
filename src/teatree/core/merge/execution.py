@@ -253,10 +253,12 @@ def execute_bound_merge(
     hook idempotently instead of re-issuing the (then-405-bricking) merge.
     A policy refusal (not-mergeable / required-checks / 405 / 422) and a
     head-moved are NOT transient — they raise on the first attempt. Before the
-    retry loop, four gates run — the single chokepoint BOTH merge paths cross
+    retry loop, five gates run — the single chokepoint BOTH merge paths cross
     (the keystone via ``assert_merge_preconditions`` AND the solo-overlay bypass
     via ``merge_pr_squash_bound`` with NO preconditions run): ``assert_review_verdict_gate``
-    (#2829), ``assert_no_active_review_lock`` (#1405), and the #18 not-draft +
+    (#2829), ``assert_no_active_review_lock`` (#1405), ``assert_merge_quality_verdict``
+    (north-star PR-4 — a directive keystone / opted-in ordinary ticket needs a clean
+    recorded merge-quality verdict at the shipped head), and the #18 not-draft +
     FAILED-live-CI floor. The latter re-reads the forge's LIVE state at the merge
     chokepoint so a green→red / open→draft flip in the TOCTOU window between a
     caller's snapshot and this PUT is refused here — the solo lane had NO such
@@ -267,6 +269,17 @@ def execute_bound_merge(
     """
     assert_review_verdict_gate(slug=slug, pr_id=pr_id, head_sha=expected_head_oid)
     assert_no_active_review_lock(slug=slug, pr_id=pr_id)
+    # north-star PR-4: merely-green-but-not-well-engineered does not merge. A
+    # directive keystone (and, under `require_merge_quality_verdict`, an ordinary
+    # ticket) is refused unless a clean recorded merge-quality CriticVerdict
+    # (test_value + cleanliness) covers this exact shipped head. Lazy-imported like
+    # the other keystone gates so core.merge stays free of an import-time gate edge.
+    # The gate import is function-scoped on purpose: a module-level core.merge ->
+    # core.gates edge is a tach cycle (core.gates already imports core.merge.errors),
+    # so it stays deferred like the sibling merge-precondition gates.
+    from teatree.core.gates import merge_quality_gate  # noqa: PLC0415 avoids a core.merge/core.gates cycle
+
+    merge_quality_gate.assert_merge_quality_verdict(slug=slug, pr_id=pr_id, head_sha=expected_head_oid)
     if fetch_pr_is_draft(slug, pr_id, host_kind=host_kind):
         msg = f"{slug}#{pr_id} is in draft state — refusing bound merge (§17.4.3 step 4)"
         raise MergePreconditionError(msg)

@@ -58,7 +58,7 @@
 "src/teatree/core/managers.py" = 2
 "src/teatree/core/mcp_connectivity.py" = 1
 "src/teatree/core/merge/authorization.py" = 5
-"src/teatree/core/merge/execution.py" = 3
+"src/teatree/core/merge/execution.py" = 4
 "src/teatree/core/model_registries.py" = 5
 "src/teatree/core/models/auto_review_dispatch.py" = 3
 "src/teatree/core/models/review_loop.py" = 3

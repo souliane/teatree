@@ -116,6 +116,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "require_merge_evidence": _parse_strict_bool,
     "require_plan_adequacy": _parse_strict_bool,
     "require_debt_delta": _parse_strict_bool,
+    "require_merge_quality_verdict": _parse_strict_bool,
     "critic_gate_live": _parse_strict_bool,
     "bulk_close_threshold": _parse_strict_int,
     "require_rubric_verification": _parse_strict_bool,
@@ -696,6 +697,18 @@ class UserSettings:
     # kill-switch (setting it back false) is the audited never-lockout escape. A
     # feature flag (governed in ``FEATURE_FLAGS``). Per-overlay overridable.
     require_debt_delta: bool = False
+    # north-star PR-4 The merge-quality critic's ENFORCEMENT switch for ORDINARY
+    # tickets on the keystone merge precondition (``merge_quality_gate``): a
+    # ``transition="merge"`` ``CriticVerdict`` (``test_value`` + ``cleanliness``)
+    # covering the exact shipped head must exist and carry zero FAILs, or the merge
+    # is refused. DIRECTIVE tickets are held to this bar UNCONDITIONALLY (self-
+    # modification gets no benefit of the doubt) — this flag governs only whether
+    # ORDINARY tickets are gated too. Default false = NO-OP for ordinary tickets:
+    # they merge unchanged. Flip true per-overlay once the merge critic has proven
+    # non-vacuous. Its OWN kill-switch (setting it back false) is the audited
+    # never-lockout escape. A feature flag (governed in ``FEATURE_FLAGS``).
+    # Per-overlay overridable.
+    require_merge_quality_verdict: bool = False
     # SELFCATCH-5 The autonomous user-proxy critic's ENFORCEMENT switch on
     # ``mark_delivered`` (``critic_gate``). The critic ALWAYS runs at the final
     # done-claim and RECORDS a ``CriticFinding`` per failing rubric item (the 8
