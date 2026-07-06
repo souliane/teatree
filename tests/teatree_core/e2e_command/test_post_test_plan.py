@@ -32,9 +32,9 @@ from django.test import TestCase
 
 from teatree.core.backend_protocols import UploadVerification
 from teatree.core.evidence import test_plan_validation as _validation
-from teatree.core.management.commands import _test_plan
-from teatree.core.management.commands import _test_plan_render as _render
-from teatree.core.management.commands import _test_plan_scenario as _scenario
+from teatree.core.management.commands._test_plan import post as _test_plan
+from teatree.core.management.commands._test_plan import render as _render
+from teatree.core.management.commands._test_plan import scenario as _scenario
 from teatree.core.overlay import OverlayMetadata
 from tests.teatree_core.conftest import CommandOverlay
 
@@ -1728,15 +1728,15 @@ class TestBodyFile(TestCase):
             body_path.write_text("<!-- t3-e2e-evidence ticket=8521 -->\n## Test Plan\n\nSome steps.\n")
             host = self._patch_host()
             with (
-                patch("teatree.core.management.commands._test_plan.code_host_from_overlay", return_value=host),
-                patch("teatree.core.management.commands._test_plan._resolve_worktree_or_none", return_value=None),
+                patch("teatree.core.management.commands._test_plan.post.code_host_from_overlay", return_value=host),
+                patch("teatree.core.management.commands._test_plan.post._resolve_worktree_or_none", return_value=None),
                 patch("teatree.core.models.Ticket.objects.resolve", return_value=self._ticket()),
                 patch(
-                    "teatree.core.management.commands._test_plan.require_on_behalf_approval",
+                    "teatree.core.management.commands._test_plan.post.require_on_behalf_approval",
                     side_effect=lambda **kw: kw["publish"](),
                 ),
-                patch("teatree.core.management.commands._test_plan.on_behalf_block_message", return_value=""),
-                patch("teatree.core.management.commands._test_plan.notify_user_on_behalf_post"),
+                patch("teatree.core.management.commands._test_plan.post.on_behalf_block_message", return_value=""),
+                patch("teatree.core.management.commands._test_plan.post.notify_user_on_behalf_post"),
                 patch("teatree.core.overlay_loader.get_overlay", return_value=_MOCK_OVERLAY_VALUE),
             ):
                 call_command("e2e", "post-test-plan", ticket="8521", body_file=str(body_path))
@@ -1751,7 +1751,7 @@ class TestBodyFile(TestCase):
             with (
                 pytest.raises(SystemExit) as exc_info,
                 patch(
-                    "teatree.core.management.commands._test_plan.code_host_from_overlay",
+                    "teatree.core.management.commands._test_plan.post.code_host_from_overlay",
                     return_value=self._patch_host(),
                 ),
                 patch("teatree.core.overlay_loader.get_overlay", return_value=_MOCK_OVERLAY_VALUE),
@@ -1766,7 +1766,7 @@ class TestBodyFile(TestCase):
             with (
                 pytest.raises(SystemExit) as exc_info,
                 patch(
-                    "teatree.core.management.commands._test_plan.code_host_from_overlay",
+                    "teatree.core.management.commands._test_plan.post.code_host_from_overlay",
                     return_value=self._patch_host(),
                 ),
                 patch("teatree.core.overlay_loader.get_overlay", return_value=_MOCK_OVERLAY_VALUE),
@@ -1902,7 +1902,7 @@ class TestTemplateFlag(TestCase):
             manifest=json.dumps({"ticket": "8521", "local": {}, "workflows": [{"workflow": "Login", "steps": ["s"]}]}),
             template="browser-click-first",
         )
-        with patch("teatree.core.management.commands._test_plan._resolve_worktree_or_none", return_value=None):
+        with patch("teatree.core.management.commands._test_plan.post._resolve_worktree_or_none", return_value=None):
             ticket = MagicMock()
             ticket.issue_url = _ISSUE_URL
             ticket.ticket_number = "8521"

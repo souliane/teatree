@@ -6751,7 +6751,7 @@ Usage: t3 teatree e2e post-test-plan [OPTIONS]
  ``--skip-validation`` bypasses the image preflight; ``--allow-no-video``
  permits a stills-only manifest (refused by default); ``--body-file``
  posts a pre-authored body verbatim (no upload; mutually exclusive with
- ``--manifest``). See :mod:`._test_plan`. ``post-evidence`` is a hidden,
+ ``--manifest``). See :mod:`._test_plan.post`. ``post-evidence`` is a hidden,
  deprecated alias.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮

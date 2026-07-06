@@ -3,9 +3,9 @@
 Its own module so :mod:`teatree.core.management.commands.workspace` stays under
 the module-health LOC cap — the CLI method is a thin wrapper that delegates the
 ordered cleanup passes here. The individual passes live in their focused sibling
-modules (``_workspace_cleanup`` / ``_workspace_docker`` /
-``_workspace_isolated_roots`` / ``_workspace_orphan_worktrees`` /
-``_workspace_stash``) and in :mod:`teatree.core.worktree.worktree_done` (the one
+modules (``cleanup`` / ``docker`` /
+``isolated_roots`` / ``orphan_worktrees`` /
+``stash``) and in :mod:`teatree.core.worktree.worktree_done` (the one
 consolidated done+redundant Worktree-row reaper); this module only sequences them.
 """
 
@@ -13,17 +13,17 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from teatree.core.management.commands import _workspace_helpers as _wh
-from teatree.core.management.commands._workspace_cleanup import (
+from teatree.core.management.commands._workspace import helpers as _wh
+from teatree.core.management.commands._workspace.cleanup import (
     WorktreeReaper,
     _raise_on_cleanup_failures,
     drop_orphan_databases,
     prune_branches,
 )
-from teatree.core.management.commands._workspace_docker import reap_orphan_worktree_docker
-from teatree.core.management.commands._workspace_isolated_roots import reap_orphan_isolated_worktree_roots
-from teatree.core.management.commands._workspace_orphan_worktrees import reap_orphan_raw_worktrees
-from teatree.core.management.commands._workspace_stash import drop_orphaned_stashes
+from teatree.core.management.commands._workspace.docker import reap_orphan_worktree_docker
+from teatree.core.management.commands._workspace.isolated_roots import reap_orphan_isolated_worktree_roots
+from teatree.core.management.commands._workspace.orphan_worktrees import reap_orphan_raw_worktrees
+from teatree.core.management.commands._workspace.stash import drop_orphaned_stashes
 from teatree.core.worktree.worktree_done import reap_done_worktrees
 
 

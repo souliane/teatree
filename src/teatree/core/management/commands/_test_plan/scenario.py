@@ -2,12 +2,12 @@
 
 The acceptance-scenario shape — a ``### Scenario N — <surface>`` block with
 Preconditions / numbered Steps / Expected / Actual and either captioned inline
-screenshots or an API-contract marker — split out of :mod:`._test_plan_render`
+screenshots or an API-contract marker — split out of :mod:`.render`
 so each module stays a single concern under the module-health cap. Everything
 here is a pure transform over the persisted scenario data; nothing touches the
 ORM, the code host, or the CLI.
 
-The dependency is one-directional: ``_test_plan_render`` imports these types and
+The dependency is one-directional: ``render`` imports these types and
 :func:`render_scenario_plan`; this module imports nothing from the render layer.
 """
 

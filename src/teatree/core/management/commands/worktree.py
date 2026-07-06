@@ -20,7 +20,7 @@ from teatree.core.diagrams import render_fsm_mermaid
 from teatree.core.gates.local_stack_gate import acquire_or_enqueue
 from teatree.core.intake.resolve import _ticket_by_number, resolve_worktree
 from teatree.core.machine_output import emit
-from teatree.core.management.commands._workspace_docker import reap_stale_local_stacks
+from teatree.core.management.commands._workspace.docker import reap_stale_local_stacks
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import get_overlay, get_overlay_for_worktree

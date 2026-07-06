@@ -14,7 +14,7 @@ from teatree.core.evidence.test_plan_blocked_gate import (
     check_blocked_body,
     check_blocked_body_from_config,
 )
-from teatree.core.management.commands import _test_plan
+from teatree.core.management.commands._test_plan import post as _test_plan
 from tests.teatree_core._on_behalf_gate_helpers import disable_on_behalf_gate
 from tests.teatree_core.conftest import CommandOverlay
 

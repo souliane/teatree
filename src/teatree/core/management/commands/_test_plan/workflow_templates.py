@@ -1,8 +1,8 @@
 """The non-default workflow-shaped body templates (``browser-click-first`` / ``link-api``).
 
-Split out of :mod:`._test_plan_render` so the render layer stays a single
+Split out of :mod:`.render` so the render layer stays a single
 concern under the module-health cap, mirroring the ``scenario-plan`` split in
-:mod:`._test_plan_scenario`. Both alternate renderers iterate the merged state's
+:mod:`.scenario`. Both alternate renderers iterate the merged state's
 workflows the same way the default capture-matrix table does; they reuse the
 render layer's two shared helpers — workflow enumeration and the numbered
 ``How to test`` block — passed in as callables so the runtime dependency stays
@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from teatree.core.management.commands._test_plan_render import TestPlanState
+    from teatree.core.management.commands._test_plan.render import TestPlanState
 
 
 def render_browser_click_first(

@@ -16,8 +16,8 @@ from teatree import visual_qa
 from teatree.core.gates.debt_delta_gate import evaluate_debt_delta
 from teatree.core.gates.e2e_mandatory_gate import E2EMandatoryGateError, check_e2e_mandatory, resolve_gate_inputs
 from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_budget
-from teatree.core.management.commands._ship_exec import ShippingGateFailure
-from teatree.core.management.commands._ship_fsm import reconcile_fsm_for_ship
+from teatree.core.management.commands._ship.exec import ShippingGateFailure
+from teatree.core.management.commands._ship.fsm import reconcile_fsm_for_ship
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import Session, Ticket, Worktree
 from teatree.core.models.types import TicketExtra, VisualQASummary

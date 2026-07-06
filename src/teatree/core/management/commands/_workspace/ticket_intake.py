@@ -23,7 +23,7 @@ from teatree.backends.errors import IssueNotFoundError
 from teatree.backends.loader import get_code_host_for_url
 from teatree.core.intake.resolve import _get_user_cwd
 from teatree.core.intake.ticket_kind_classification import classify_ticket_kind, parse_kind
-from teatree.core.management.commands import _workspace_helpers as _wh
+from teatree.core.management.commands._workspace import helpers as _wh
 from teatree.core.models import Ticket
 from teatree.core.models.external_delivery import mark_external_delivery
 from teatree.core.models.project_learning import ProjectLearning

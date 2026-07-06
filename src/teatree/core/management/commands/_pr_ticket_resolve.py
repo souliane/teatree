@@ -4,7 +4,7 @@ Pure, command-class-free helpers that turn the CLI ``ticket_id``
 argument (pk / issue number / issue URL) into a ``Ticket`` — or, when
 no canonical row exists, an actionable structured error instead of a
 bare ``Ticket.DoesNotExist`` (#1051). Kept as a sibling module (same
-pattern as ``_pr_preview.py`` / ``_ship_exec.py``) so ``pr.py`` stays
+pattern as ``_pr_preview.py`` / ``_ship/exec.py``) so ``pr.py`` stays
 within the module-health LOC budget and the "ticket resolution" concern
 is named by its own file (self-documenting hierarchy).
 """

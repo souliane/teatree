@@ -399,7 +399,7 @@ def _remove_git_worktree(
         # that exist on no remote at all (the bug that destroyed worktrees).
         # It is never skipped except by an explicit force override.
         #
-        # One narrower path is NOT routed here: _workspace_cleanup.
+        # One narrower path is NOT routed here: _workspace.cleanup.
         # _prune_squash_merged() deletes a branch+worktree directly via
         # git.worktree_remove/branch_delete, but only AFTER is_squash_merged()
         # has confirmed the content is on a remote (merged PR or empty diff vs

@@ -12,20 +12,20 @@ from django_typer.management import TyperCommand, command
 from teatree.config import worktree_root as _config_worktree_root
 from teatree.core.gates.local_stack_gate import acquire_or_enqueue
 from teatree.core.intake.resolve import WorktreeNotFoundError, _get_user_cwd, resolve_worktree, workspace_owner_ticket
-from teatree.core.management.commands import _workspace_helpers as _wh
-from teatree.core.management.commands._workspace_clean_all import CleanAllIO, run_clean_all
-from teatree.core.management.commands._workspace_cleanup import _die, _fix_drift
-from teatree.core.management.commands._workspace_docker import reap_stale_local_stacks, reap_stale_report
-from teatree.core.management.commands._workspace_finalize import run_finalize
-from teatree.core.management.commands._workspace_landscape import LandscapeReport, run_landscape
-from teatree.core.management.commands._workspace_provision_parallel import (
+from teatree.core.management.commands._workspace import helpers as _wh
+from teatree.core.management.commands._workspace.clean_all import CleanAllIO, run_clean_all
+from teatree.core.management.commands._workspace.cleanup import _die, _fix_drift
+from teatree.core.management.commands._workspace.docker import reap_stale_local_stacks, reap_stale_report
+from teatree.core.management.commands._workspace.finalize import run_finalize
+from teatree.core.management.commands._workspace.landscape import LandscapeReport, run_landscape
+from teatree.core.management.commands._workspace.provision_parallel import (
     provision_worktree_subprocess,
     render_worktree_report,
     run_worktree_provisions_in_parallel,
 )
-from teatree.core.management.commands._workspace_relocate import RelocateIO, active_overlay_name, run_relocate
-from teatree.core.management.commands._workspace_salvage import emit_records_json, run_salvage
-from teatree.core.management.commands._workspace_ticket_intake import (
+from teatree.core.management.commands._workspace.relocate import RelocateIO, active_overlay_name, run_relocate
+from teatree.core.management.commands._workspace.salvage import emit_records_json, run_salvage
+from teatree.core.management.commands._workspace.ticket_intake import (
     ForeignIssueWorktreeRefusedError,
     InvalidTicketKindError,
     RawTicketInputs,

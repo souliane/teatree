@@ -16,12 +16,12 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree import paths
-from teatree.core.management.commands import _workspace_isolated_roots as reaper
+from teatree.core.management.commands._workspace import isolated_roots as reaper
 from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.models.external_delivery import mark_external_delivery
 from tests._git_repo import make_git_repo
 
-_REAP = "teatree.core.management.commands._workspace_isolated_roots"
+_REAP = "teatree.core.management.commands._workspace.isolated_roots"
 
 
 def _make_env_dir(root: Path, slug: str) -> Path:

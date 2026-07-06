@@ -20,12 +20,12 @@ from pathlib import Path
 from typing import NotRequired, TypedDict
 from urllib.parse import urlparse
 
-from teatree.core.management.commands._test_plan_scenario import (
+from teatree.core.management.commands._test_plan.scenario import (
     ScenarioSection,
     coerce_scenario_section,
     render_scenario_plan,
 )
-from teatree.core.management.commands._test_plan_workflow_templates import render_browser_click_first, render_link_api
+from teatree.core.management.commands._test_plan.workflow_templates import render_browser_click_first, render_link_api
 from teatree.utils.media import MediaKind, media_kind
 from teatree.utils.url_slug import pr_ref_from_url
 

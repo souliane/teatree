@@ -27,15 +27,15 @@ from teatree.core.management.commands._pr_ticket_resolve import (
     resolve_ticket,
     ticket_not_found_error,
 )
-from teatree.core.management.commands._ship_exec import (
+from teatree.core.management.commands._ship.exec import (
     ShipEnqueued,
     ShipExecuted,
     ShippingGateFailure,
     _enqueue_ship,
     _ship_sync,
 )
-from teatree.core.management.commands._ship_fsm import reconcile_fsm_for_ship
-from teatree.core.management.commands._ship_gates import (
+from teatree.core.management.commands._ship.fsm import reconcile_fsm_for_ship
+from teatree.core.management.commands._ship.gates import (
     BranchCurrencyFailure,
     DebtDeltaGateFailure,
     E2EMandatoryGateFailure,
@@ -43,13 +43,13 @@ from teatree.core.management.commands._ship_gates import (
     PrBudgetGateFailure,
     VisualQAGateFailure,
 )
-from teatree.core.management.commands._ship_gates import assert_commits_ahead_of_base as _assert_commits_ahead_of_base
-from teatree.core.management.commands._ship_gates import check_shipping_gate as _check_shipping_gate
-from teatree.core.management.commands._ship_gates import run_branch_currency_gate as _run_branch_currency_gate
-from teatree.core.management.commands._ship_gates import run_debt_delta_gate as _run_debt_delta_gate
-from teatree.core.management.commands._ship_gates import run_e2e_mandatory_gate as _run_e2e_mandatory_gate
-from teatree.core.management.commands._ship_gates import run_pr_budget_gate as _run_pr_budget_gate
-from teatree.core.management.commands._ship_gates import run_visual_qa_gate as _run_visual_qa_gate
+from teatree.core.management.commands._ship.gates import assert_commits_ahead_of_base as _assert_commits_ahead_of_base
+from teatree.core.management.commands._ship.gates import check_shipping_gate as _check_shipping_gate
+from teatree.core.management.commands._ship.gates import run_branch_currency_gate as _run_branch_currency_gate
+from teatree.core.management.commands._ship.gates import run_debt_delta_gate as _run_debt_delta_gate
+from teatree.core.management.commands._ship.gates import run_e2e_mandatory_gate as _run_e2e_mandatory_gate
+from teatree.core.management.commands._ship.gates import run_pr_budget_gate as _run_pr_budget_gate
+from teatree.core.management.commands._ship.gates import run_visual_qa_gate as _run_visual_qa_gate
 from teatree.core.modelkit.phases import normalize_phase
 from teatree.core.models import Ticket, Worktree
 from teatree.core.on_behalf_gate_recorded import (

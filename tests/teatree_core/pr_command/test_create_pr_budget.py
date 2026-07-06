@@ -16,8 +16,8 @@ from django.test import TestCase
 
 from teatree.config import UserSettings
 from teatree.core.gates import pr_budget_gate
-from teatree.core.management.commands import _ship_gates as ship_gates_mod
-from teatree.core.management.commands._ship_gates import run_pr_budget_gate
+from teatree.core.management.commands._ship import gates as ship_gates_mod
+from teatree.core.management.commands._ship.gates import run_pr_budget_gate
 from teatree.core.models import PullRequest, Ticket, Worktree
 
 from ._shared import _MOCK_OVERLAY, _shippable_ticket

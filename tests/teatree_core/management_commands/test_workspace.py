@@ -20,12 +20,12 @@ from django.utils.module_loading import import_string
 
 import teatree.core.cleanup.clean_ignore as clean_ignore_mod
 import teatree.core.cleanup.cleanup as cleanup_mod
-import teatree.core.management.commands._workspace_clean_all as ws_clean_all_mod
-import teatree.core.management.commands._workspace_cleanup as ws_cleanup_mod
-import teatree.core.management.commands._workspace_docker as ws_docker_mod
-import teatree.core.management.commands._workspace_salvage as ws_salvage_mod
-import teatree.core.management.commands._workspace_stash as ws_stash_mod
-import teatree.core.management.commands._workspace_ticket_intake as workspace_intake_mod
+import teatree.core.management.commands._workspace.clean_all as ws_clean_all_mod
+import teatree.core.management.commands._workspace.cleanup as ws_cleanup_mod
+import teatree.core.management.commands._workspace.docker as ws_docker_mod
+import teatree.core.management.commands._workspace.salvage as ws_salvage_mod
+import teatree.core.management.commands._workspace.stash as ws_stash_mod
+import teatree.core.management.commands._workspace.ticket_intake as workspace_intake_mod
 import teatree.core.management.commands.workspace as workspace_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.runners.provision as provision_mod
@@ -39,8 +39,8 @@ from teatree.backends.errors import IssueNotFoundError
 from teatree.config import load_config
 from teatree.core.cleanup.cleanup_liveness import LivenessVerdict
 from teatree.core.gates.provision_admission_gate import ProvisionAdmissionVerdict
-from teatree.core.management.commands._workspace_provision_parallel import WorktreeProvisionResult
-from teatree.core.management.commands._workspace_ticket_intake import build_branch_name
+from teatree.core.management.commands._workspace.provision_parallel import WorktreeProvisionResult
+from teatree.core.management.commands._workspace.ticket_intake import build_branch_name
 from teatree.core.management.commands.workspace import _branch_prefix, _worktree_root
 from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.overlay import OverlayBase, ProvisionStep
@@ -67,7 +67,7 @@ def _fake_provision_ok(worktree: Worktree, **_kwargs: object) -> WorktreeProvisi
 def _allow_provision_admission() -> AbstractContextManager[MagicMock]:
     """Force the RAM-admission gate to always allow — never sample the real host's RAM in a test."""
     return patch(
-        "teatree.core.management.commands._workspace_provision_parallel.check_provision_admission",
+        "teatree.core.management.commands._workspace.provision_parallel.check_provision_admission",
         return_value=ProvisionAdmissionVerdict.allow(),
     )
 
@@ -803,7 +803,7 @@ class TestWorkspaceTicket(TestCase):
         ]
         stderr_buf = StringIO()
         with patch(
-            "teatree.core.management.commands._workspace_helpers.find_orphans_in_workspace",
+            "teatree.core.management.commands._workspace.helpers.find_orphans_in_workspace",
             return_value=fake_orphans,
         ):
             call_command("workspace", "ticket", "https://example.com/issues/500", stderr=stderr_buf)
@@ -1519,7 +1519,7 @@ class TestWorkspaceMultiOverlayResolution(TestCase):
             patch.dict(os.environ, env_without_overlay, clear=True),
             patch.object(overlay_loader_mod, "_discover_overlays", new=_fake_discover),
         ):
-            from teatree.core.management.commands._workspace_helpers import (  # noqa: PLC0415
+            from teatree.core.management.commands._workspace.helpers import (  # noqa: PLC0415
                 resolve_overlay_name_for_url,
             )
 
@@ -1535,7 +1535,7 @@ class TestWorkspaceMultiOverlayResolution(TestCase):
             patch.dict(os.environ, {**env_without_overlay, "T3_OVERLAY_NAME": "beta"}, clear=True),
             patch.object(overlay_loader_mod, "_discover_overlays", new=_fake_discover),
         ):
-            from teatree.core.management.commands._workspace_helpers import (  # noqa: PLC0415
+            from teatree.core.management.commands._workspace.helpers import (  # noqa: PLC0415
                 resolve_overlay_name_for_url,
             )
 

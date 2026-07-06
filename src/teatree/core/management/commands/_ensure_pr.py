@@ -1,6 +1,6 @@
 """Orphan-branch PR creation with the #792 pre-push-deadlock deferral.
 
-Split out of ``pr.py`` (same sibling-module pattern as ``_ship_fsm``) so
+Split out of ``pr.py`` (same sibling-module pattern as ``_ship.fsm``) so
 ``pr.py`` stays within the module-health LOC budget and the "create the PR
 for an orphan branch, or defer when the remote ref is not yet current"
 concern is named by its own file.

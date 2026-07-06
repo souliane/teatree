@@ -1,6 +1,6 @@
 """Orphan per-worktree docker reaping used by ``t3 teatree workspace clean-all``.
 
-Its own module so :mod:`teatree.core.management.commands._workspace_cleanup`
+Its own module so :mod:`teatree.core.management.commands._workspace.cleanup`
 stays under the module-health function cap. The per-worktree (on-teardown)
 half lives on the overlay hook ``reap_worktree_external_resources``; this is
 the orphan half — compose projects whose worktree directory is already gone.

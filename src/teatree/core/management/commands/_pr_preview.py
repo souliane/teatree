@@ -2,7 +2,7 @@
 
 Pure, command-class-free helpers that derive the PR title/description from the
 ticket's last commit and validate them against the overlay's metadata rules.
-Kept as a sibling module (same pattern as ``_ship_fsm.py``) so ``pr.py`` stays
+Kept as a sibling module (same pattern as ``_ship/fsm.py``) so ``pr.py`` stays
 within the module-health LOC budget and the "ship preview" concern is named
 by its own file (self-documenting hierarchy).
 

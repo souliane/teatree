@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 from django.test import TestCase
 
 from teatree.core.gates.provision_admission_gate import ProvisionAdmissionVerdict
-from teatree.core.management.commands._workspace_provision_parallel import (
+from teatree.core.management.commands._workspace.provision_parallel import (
     WorktreeProvisionResult,
     provision_worktree_subprocess,
     render_worktree_report,
@@ -195,7 +195,7 @@ class TestProvisionWorktreeSubprocess(TestCase):
         )
 
     def test_builds_the_expected_command(self) -> None:
-        with patch("teatree.core.management.commands._workspace_provision_parallel.run_allowed_to_fail") as mock_run:
+        with patch("teatree.core.management.commands._workspace.provision_parallel.run_allowed_to_fail") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="  9 step(s) ok\n", stderr="")
             result = provision_worktree_subprocess(self.worktree, overlay_name="test", slow_import=False)
         cmd = mock_run.call_args.args[0]
@@ -207,21 +207,21 @@ class TestProvisionWorktreeSubprocess(TestCase):
         assert result.detail == "9 step(s) ok"
 
     def test_slow_import_flag_appended(self) -> None:
-        with patch("teatree.core.management.commands._workspace_provision_parallel.run_allowed_to_fail") as mock_run:
+        with patch("teatree.core.management.commands._workspace.provision_parallel.run_allowed_to_fail") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="ok\n", stderr="")
             provision_worktree_subprocess(self.worktree, overlay_name="test", slow_import=True)
         cmd = mock_run.call_args.args[0]
         assert cmd[-1] == "--slow-import"
 
     def test_nonzero_exit_is_not_ok(self) -> None:
-        with patch("teatree.core.management.commands._workspace_provision_parallel.run_allowed_to_fail") as mock_run:
+        with patch("teatree.core.management.commands._workspace.provision_parallel.run_allowed_to_fail") as mock_run:
             mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="Provision failed for backend\n")
             result = provision_worktree_subprocess(self.worktree, overlay_name="test", slow_import=False)
         assert result.ok is False
         assert "Provision failed for backend" in result.detail
 
     def test_timeout_is_reported_as_failure(self) -> None:
-        with patch("teatree.core.management.commands._workspace_provision_parallel.run_allowed_to_fail") as mock_run:
+        with patch("teatree.core.management.commands._workspace.provision_parallel.run_allowed_to_fail") as mock_run:
             mock_run.side_effect = TimeoutExpired(cmd=["t3"], timeout=1)
             result = provision_worktree_subprocess(self.worktree, overlay_name="test", slow_import=False, timeout=1)
         assert result.ok is False

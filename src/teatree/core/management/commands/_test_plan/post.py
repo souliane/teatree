@@ -2,7 +2,7 @@
 
 The ORM + code-host side of the one-note-per-ticket test-plan model. The pure
 string/JSON layer — the manifest parse, the persisted :class:`TestPlanState`,
-the merge, and the side-by-side render — lives in :mod:`._test_plan_render`;
+the merge, and the side-by-side render — lives in :mod:`.render`;
 this module resolves the ticket, uploads the artifacts (embedding the relative
 ``/uploads/<secret>/<file>`` reference GitLab claims on save; #2165), merges
 this run's side(s) over the prior state, and creates-or-updates the single note.
@@ -24,7 +24,7 @@ from teatree.core.evidence import test_plan_validation as _tpv
 from teatree.core.evidence import video_evidence as _vev
 from teatree.core.evidence.test_plan_blocked_gate import BlockedTestPlanPostError, check_blocked_body_from_config
 from teatree.core.intake.resolve import WorktreeNotFoundError, resolve_worktree
-from teatree.core.management.commands._test_plan_render import (
+from teatree.core.management.commands._test_plan.render import (
     SideManifest,
     TestPlanManifest,
     TestPlanState,
