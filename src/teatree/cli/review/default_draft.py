@@ -9,7 +9,8 @@ the GitLab-MR review mechanics module stays under the OOP/LOC ceiling
     when ``post_comment(..., live=True)`` is called; returns the
     user-facing refusal message on a miss.
 * :func:`notify_draft_created` — fire-and-forget Slack DM with the
-    GitLab draft link, emitted once per successful default-draft post.
+    clickable MR link, emitted once per MR (coalescing every default-draft
+    comment on that MR into a single terse line, not one essay per comment).
 
 The shape mirrors :mod:`teatree.cli.review.on_behalf` exactly: the
 service method calls a thin module helper that owns the lazy ORM
@@ -42,34 +43,27 @@ def check_live_post(*, repo: str, mr: int) -> str:
     return ""
 
 
-def notify_draft_created(*, repo: str, mr: int, body: str, message: str) -> None:
-    """DM the user when a default-draft ``post-comment`` lands (#1207).
+def notify_draft_created(*, repo: str, mr: int, mr_url: str) -> None:
+    """DM the user ONCE PER MR when default-draft ``post-comment`` notes land (#1207).
 
-    Fire-and-forget — never raises into the caller. The idempotency key
-    pins the DM to a stable cross-process digest of the result message
-    so a re-post of the same body on the same MR doesn't trigger a
-    second notification within the ``BotPing`` ledger window. ``hashlib``
-    (not the builtin ``hash``) is used because the builtin is salted by
-    ``PYTHONHASHSEED`` — two CLI invocations would produce different
-    keys for the same message and bypass the dedupe gate.
+    Fire-and-forget — never raises into the caller. The idempotency key is
+    scoped to the MR (``post_comment_draft:{repo}!{mr}``) with no per-comment
+    suffix, so every draft comment posted on the same MR coalesces into a
+    single DM through the ``BotPing`` ledger's SENT-idempotency no-op — one
+    terse line per MR, never one essay per comment.
+
+    The body is exactly one line — ``Posted draft comments on
+    [<repo>!<mr>](<mr_url>)``. ``maybe_linkify`` (applied by ``notify_user``)
+    rewrites the ``[label](url)`` markdown into a clickable Slack
+    ``<url|label>`` link, and the ``INFO`` kind supplies the
+    ``:information_source:`` marker. No per-comment breakdown, no
+    publish/discard instructions.
     """
-    import hashlib  # noqa: PLC0415
-
     from teatree.core.notify import NotifyKind  # noqa: PLC0415
     from teatree.messaging import notify_with_fallback  # noqa: PLC0415
 
-    body_preview = body.strip().splitlines()[0][:200] if body.strip() else ""
-    text = (
-        f"Posted a draft comment on `{repo}!{mr}` (#1207 default-draft gate).\n\n"
-        f"{message}\n\n"
-        f"Body: {body_preview}\n\n"
-        f"Publish:  `t3 review publish-draft-notes {repo} {mr}`\n"
-        f"Discard:  `t3 review list-draft-notes {repo} {mr}` then "
-        f"`t3 review delete-draft-note {repo} {mr} <id>`"
-    )
-    digest = hashlib.sha1(message.encode("utf-8"), usedforsecurity=False).hexdigest()[:8]
     notify_with_fallback(
-        text,
+        f"Posted draft comments on [{repo}!{mr}]({mr_url})",
         kind=NotifyKind.INFO,
-        idempotency_key=f"post_comment_draft:{repo}!{mr}:{digest}",
+        idempotency_key=f"post_comment_draft:{repo}!{mr}",
     )

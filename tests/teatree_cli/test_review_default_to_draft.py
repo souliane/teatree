@@ -127,7 +127,75 @@ class TestPostCommentDefaultsToDraft:
     def test_default_emits_slack_dm_with_link(self) -> None:
         _, code = self.svc.post_comment("org/repo", 7, "lgtm")
         assert code == 0
-        assert BotPing.objects.filter(idempotency_key__startswith="post_comment_draft:org/repo!7:").exists()
+        # The key is scoped to the MR (no per-comment digest suffix) so all
+        # draft comments on one MR coalesce into a single DM.
+        assert BotPing.objects.filter(idempotency_key="post_comment_draft:org/repo!7").exists()
+
+
+class _CountingStubAPI(_StubAPI):
+    """A ``_StubAPI`` whose successive draft posts return distinct note ids.
+
+    Distinct ids give each ``post-comment`` call a distinct result message.
+    The pre-fix per-message idempotency digest keyed one DM off that message,
+    so N comments produced N separate essay DMs. This stub is what makes the
+    "N comments → N messages" regression observable — the per-MR key must
+    coalesce them regardless of how many distinct comments were posted.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._next_id = 100
+
+    def post_json(self, endpoint: str, payload: object) -> dict[str, object]:
+        self.calls.append(("post_json", endpoint, payload))
+        self._next_id += 1
+        return {"id": self._next_id, "notes": [{"type": "DiffNote"}], "line_code": f"abc_{self._next_id}_10"}
+
+
+class TestDraftCommentNotificationIsOneTerseLinePerMr:
+    """N draft comments on one MR → ONE terse, clickable DM (not N essays)."""
+
+    @pytest.fixture(autouse=True)
+    def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        _write_cfg(tmp_path, monkeypatch)
+        self.backend = _wire_notify_backend(monkeypatch)
+        self.svc = ReviewService(token="t")
+        self.stub = _CountingStubAPI()
+        monkeypatch.setattr(self.svc, "_get_api", lambda: self.stub)
+        # Pin the forge base URL so the MR link is deterministic across hosts.
+        monkeypatch.setattr(self.svc, "_resolve_base_url", lambda: "https://gitlab.example.com/api/v4")
+
+    def test_many_comments_coalesce_to_one_message(self) -> None:
+        for note in ("looks good", "clean helper here", "nice separation"):
+            _, code = self.svc.post_comment("org/repo", 6521, note)
+            assert code == 0
+
+        rows = BotPing.objects.filter(idempotency_key__startswith="post_comment_draft:org/repo!6521")
+        assert rows.count() == 1, [r.idempotency_key for r in rows]
+        assert rows.get().idempotency_key == "post_comment_draft:org/repo!6521"
+
+    def test_message_is_a_single_clickable_line(self) -> None:
+        _, code = self.svc.post_comment("org/repo", 6521, "looks good")
+        assert code == 0
+
+        row = BotPing.objects.get(idempotency_key="post_comment_draft:org/repo!6521")
+        # One terse line: no per-comment breakdown, no publish/discard essay.
+        assert row.text == (
+            "Posted draft comments on [org/repo!6521](https://gitlab.example.com/org/repo/-/merge_requests/6521)"
+        )
+        assert "\n" not in row.text
+        for essay_marker in ("Publish:", "Discard:", "Body:", "draft_note_id", "default-draft gate"):
+            assert essay_marker not in row.text
+
+    def test_delivered_slack_message_has_a_clickable_mr_link(self) -> None:
+        _, code = self.svc.post_comment("org/repo", 6521, "looks good")
+        assert code == 0
+
+        # The delivered Slack payload rewrites the markdown link into Slack
+        # mrkdwn ``<url|label>`` — a clickable MR reference.
+        sent = " ".join(str(a) for a in self.backend.post_message.call_args.args)
+        sent += " ".join(f"{k}={v}" for k, v in self.backend.post_message.call_args.kwargs.items())
+        assert "<https://gitlab.example.com/org/repo/-/merge_requests/6521|org/repo!6521>" in sent
 
 
 class TestPostCommentLiveRefusedWithoutToken:
