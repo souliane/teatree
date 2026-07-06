@@ -15,7 +15,7 @@ worktree lifecycle. It wraps a single provisioning subprocess so that:
     (:func:`resolve_step_timeout_seconds`); on the ceiling the op aborts with a
     clear, actionable error — it never hangs;
 2. it emits a **loud out-of-band user alert** (the same bot→user
-    :func:`teatree.notify.notify_user` egress the codebase already uses) on a
+    :func:`teatree.core.notify.notify_user` egress the codebase already uses) on a
     timeout, so an away user is told the step is slow and was aborted;
 3. a **forked migration graph** detected in the step's output
     (:func:`detect_migration_conflict`) is surfaced *immediately* as the
@@ -23,7 +23,7 @@ worktree lifecycle. It wraps a single provisioning subprocess so that:
 4. a **progress heartbeat** fires while the op runs so a slow-but-progressing
     step is distinguishable from a true hang.
 
-The alert is best-effort: :func:`teatree.notify.notify_user` never raises into
+The alert is best-effort: :func:`teatree.core.notify.notify_user` never raises into
 the caller, so a missing Slack backend degrades to a recorded NOOP, never a
 crash of the provisioning path.
 """

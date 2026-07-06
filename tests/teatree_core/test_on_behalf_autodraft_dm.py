@@ -2,7 +2,7 @@
 
 When the gate verdict is :attr:`~teatree.on_behalf_gate.OnBehalfVerdict.AUTO_DRAFT`,
 ``require_on_behalf_approval`` calls
-:func:`teatree.notify.notify_user` with an idempotency key uniquely
+:func:`teatree.core.notify.notify_user` with an idempotency key uniquely
 keyed off the ``(target, action)`` pair. The Slack backend is mocked at
 the ``MessagingBackend`` boundary (``open_dm`` + ``post_message`` +
 ``get_permalink``) — only the unstoppable external transport is

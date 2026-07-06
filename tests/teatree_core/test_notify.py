@@ -7,7 +7,7 @@ from django.test import TestCase
 
 from teatree.core import notify as notify_module
 from teatree.core.models import BotPing, IncomingEvent
-from teatree.notify import NotifyKind, notify_user
+from teatree.core.notify import NotifyKind, notify_user
 
 _DB_LOCKED = OperationalError("database is locked")
 

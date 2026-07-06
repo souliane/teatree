@@ -183,7 +183,6 @@ graph TD
     teatree.loop --> teatree.backends.github
     teatree.loop --> teatree.backends.gitlab
     teatree.loop --> teatree.backends.slack
-    teatree.loop --> teatree.notify
     teatree.loop --> teatree.messaging
     teatree.loop --> teatree.teams
     teatree.loop --> teatree.loop.loop_cadences
@@ -299,7 +298,6 @@ graph TD
     teatree.loops --> teatree.loop
     teatree.loops --> teatree.loop.loop_state_db
     teatree.loops --> teatree.messaging
-    teatree.loops --> teatree.notify
     teatree.loops --> teatree.utils
     teatree.overlay_sdk --> teatree.types
     teatree.overlay_sdk --> teatree.core
@@ -314,9 +312,7 @@ graph TD
     teatree.identity --> teatree.config
     teatree.on_behalf_gate --> teatree.config
     teatree.missing_issue_policy --> teatree.config
-    teatree.notify --> teatree.core
     teatree.messaging --> teatree.core
-    teatree.messaging --> teatree.notify
     teatree.messaging --> teatree.backends
     teatree.outbound_claim --> teatree.core.models
     teatree.outbound_claim --> teatree.core.session_identity

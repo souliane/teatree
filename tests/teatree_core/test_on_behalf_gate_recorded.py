@@ -286,6 +286,6 @@ class TestAutoDraftDmFailureNeverRaises:
     def test_notify_user_returning_false_does_not_raise(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _set_mode(tmp_path, monkeypatch, "draft_or_ask")
 
-        with patch("teatree.notify.notify_user", return_value=False):
+        with patch("teatree.core.notify.notify_user", return_value=False):
             # Must return cleanly even when the DM degraded to a no-op.
             require_on_behalf_approval(target="org/repo!7", action="post_draft_note", publish=_noop)

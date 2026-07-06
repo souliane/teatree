@@ -2,7 +2,7 @@
 
 ``send`` is the bot→user DM peer of ``t3 <overlay> questions`` /
 ``t3 <overlay> pending_chat`` for the third
-:class:`~teatree.notify.NotifyKind` (``INFO``). Sub-agent identities
+:class:`~teatree.core.notify.NotifyKind` (``INFO``). Sub-agent identities
 (review/plan sub-agents, the codex rescue agent) can DM the user
 directly when they finish work instead of handing the finding back to
 the parent turn for a follow-up dispatch — the parent turn ending before
@@ -29,9 +29,9 @@ Every subcommand resolves the backend via
 :func:`~teatree.core.backend_factory.messaging_from_overlay`, setting
 ``T3_OVERLAY_NAME`` for the duration of the call so the right
 per-overlay credentials resolve. ``notify_user`` is imported from
-``teatree.core`` directly, not the ``teatree.notify`` re-export, so the
+``teatree.core`` directly, not the ``teatree.core.notify`` re-export, so the
 module graph stays acyclic — ``teatree.core.management`` may not depend
-on the top-level ``teatree.notify``.
+on the top-level ``teatree.core.notify``.
 """
 
 import os

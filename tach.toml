@@ -419,7 +419,6 @@ depends_on = [
   "teatree.backends.github",
   "teatree.backends.gitlab",
   "teatree.backends.slack",
-  "teatree.notify",
   "teatree.messaging",
   "teatree.teams",
   "teatree.loop.loop_cadences",
@@ -667,7 +666,6 @@ depends_on = [
   "teatree.loop",
   "teatree.loop.loop_state_db",
   "teatree.messaging",
-  "teatree.notify",
   "teatree.utils"
 ]
 
@@ -702,14 +700,9 @@ layer = "platform"
 depends_on = ["teatree.config"]
 
 [[modules]]
-path = "teatree.notify"
-layer = "integration"
-depends_on = ["teatree.core"]
-
-[[modules]]
 path = "teatree.messaging"
 layer = "integration"
-depends_on = ["teatree.core", "teatree.notify", "teatree.backends"]
+depends_on = ["teatree.core", "teatree.backends"]
 
 [[modules]]
 path = "teatree.outbound_claim"

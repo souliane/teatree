@@ -5,7 +5,7 @@ from unittest.mock import MagicMock
 from django.test import TestCase
 
 from teatree.core.models import OutboundClaim
-from teatree.notify import NotifyKind, notify_user
+from teatree.core.notify import NotifyKind, notify_user
 
 
 def _backend(*, permalink: str = "https://acme.slack.com/archives/D-USER/p1700000000000000") -> MagicMock:
@@ -55,7 +55,7 @@ class NotifyUserRecordsOutboundClaimTests(TestCase):
         fake_settings = MagicMock()
         fake_settings.notify_user_via_bot = False
         # `notify_user` lives in `teatree.core.notify` since #1009 — the
-        # top-level `teatree.notify` is a thin re-export. Patch where the
+        # top-level `teatree.core.notify` is a thin re-export. Patch where the
         # real `get_effective_settings` is bound.
         with patch("teatree.core.notify.get_effective_settings", return_value=fake_settings):
             notify_user(

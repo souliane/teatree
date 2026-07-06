@@ -12,6 +12,7 @@ from collections.abc import Callable
 
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import MessagingBackend
+from teatree.core.notify import NotifyKind
 from teatree.loop.job_identity import PER_OVERLAY_DOMAINS, Domain, _ScannerJob
 from teatree.loop.scanner_factories import (
     _architectural_review_scanner_for,
@@ -59,7 +60,6 @@ from teatree.loop.scanners import (
 from teatree.loop.scanners.base import ScannerError
 from teatree.loop.tick_resolvers import _allowed_url_prefixes_for_host, _identity_alias_groups_for_overlay
 from teatree.messaging import notify_with_fallback
-from teatree.notify import NotifyKind
 
 logger = logging.getLogger(__name__)
 
@@ -451,7 +451,7 @@ def _notify_scanner_error(*, label: str, exc: ScannerError, overlay: str) -> Non
     """DM the user that a scanner is degraded — once per day per class (#1287).
 
     Idempotency key is ``scanner_error:<scanner>:<error_class>:<utc-date>``
-    so :func:`teatree.notify.notify_user`'s ``BotPing`` ledger dedups
+    so :func:`teatree.core.notify.notify_user`'s ``BotPing`` ledger dedups
     repeat ticks of the same failure inside one UTC day. The next day
     re-notifies — if the issue is still there, the user wants the
     reminder; if it cleared, no DM goes out.

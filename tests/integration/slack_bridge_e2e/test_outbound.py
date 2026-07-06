@@ -14,7 +14,7 @@ from teatree.core import notify as core_notify
 from teatree.core import speak as core_speak
 from teatree.core.backend_factory import iter_overlay_backends, messaging_from_overlay
 from teatree.core.models import BotPing
-from teatree.notify import NotifyKind, notify_user
+from teatree.core.notify import NotifyKind, notify_user
 from teatree.types import SpeakConfig
 from tests.integration.slack_bridge_e2e.conftest import FakeSlackTransport, _FakeConfig
 
