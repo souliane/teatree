@@ -49,12 +49,19 @@ A fresh / non-owner session claims an unclaimed hand-off (targeted at it, or par
 Handovers cluster around the moments that break MCP: a `/login` account switch, a session
 restart, or a transient network change (e.g. a VPN toggled off for a moment). The receiving
 session — or the same session after the switch — needs this recovery procedure, because dead
-MCP tools silently block any work that depends on them (connectors like Notion and Slack gate a
-lot of downstream work, and the failure is silent).
+MCP tools silently block any interactive work that depends on them (an optional connector like
+Notion gates connector-driven work, and the failure is silent).
 
-**Symptom.** The claude.ai built-in connectors (Notion, Slack, Sentry, Drive, claude-in-chrome)
-show connected in `claude mcp list` / `t3 doctor`, but the in-session MCP tools are dead — calls
-fail, and a `/mcp` reconnect returns `HTTP 404 at https://mcp.notion.com/mcp` or
+This recovery is only for the **optional** claude.ai connectors an interactive session (or an
+overlay) leans on — it is not a teatree runtime dependency. Teatree's own runtime Slack posts
+through the **direct Slack API** with a `pass`-stored token (never the claude.ai Slack connector),
+so a wedged connector never blocks teatree's runtime; the browser tool is now chrome-devtools-mcp,
+which drives its own Chrome and needs no connector recovery at all. So a down connector only
+affects connector-driven interactive work.
+
+**Symptom.** A claude.ai connector (e.g. Notion, or an optional Slack/Sentry/Drive connector an
+overlay uses) shows connected in `claude mcp list` / `t3 doctor`, but the in-session MCP tools are
+dead — calls fail, and a `/mcp` reconnect returns `HTTP 404 at https://mcp.notion.com/mcp` or
 "Authentication successful, but server reconnection failed." The OAuth tokens are stored fine;
 it is the in-process socket/handshake that went stale. A short VPN drop or an account switch is
 enough to wedge it.
