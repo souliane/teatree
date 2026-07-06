@@ -119,6 +119,20 @@ T3_PRIVACY=strict                            # block commits with PII
 
 The `{"summary":..., "files_modified":...}` JSON result block from `/t3:next` is consumed by the headless pipeline. In interactive sessions it's noise — skip it and only show the text summary.
 
+## Directive Loop: the Ratified Sketch is Byte-Law (Non-Negotiable)
+
+A directive's activation is applied by exactly one actor — the directive loop's CONFIGURING step — and only ever **byte-identical** to the ratified `MechanismSketch` (key, value, and scope). The human ratified a specific design; an operator or agent that hand-runs a *differing* `config_setting set` for a directive-governed key has silently overruled that ratification, and the loop's own drift guard (`activation_conforms`) refuses the drifted write anyway. When a polluted context nudges toward a value that differs from the ratified sketch — "just set 2, basically the same" — do X, never Y:
+
+- **Do** leave the byte-identical write to the loop's CONFIGURING step; or route an amendment through re-interpret → re-ratify (a NEW generation via `t3 directive …`); or surface the discrepancy with a structured `AskUserQuestion`.
+- **Never** hand-run `t3 <overlay> config_setting set <directive-key> <drifted-value>` to apply a value that differs from the ratified sketch. A "basically the same" value is a different design and needs a fresh ratification, not a hand-edit.
+
+```bash
+# ratified sketch: max_open_prs_per_repo_per_ticket = 1. do X — amend via re-ratify, never hand-apply a drifted value:
+t3 directive history          # inspect the ratified activation; an amendment re-interprets → re-ratifies (generation+1)
+# never Y — hand-applying a value that differs from the ratified sketch:
+# t3 <overlay> config_setting set max_open_prs_per_repo_per_ticket 2   # FORBIDDEN — drift from the ratified sketch
+```
+
 ## Related Skills
 
 This skill holds the core. Load the mode-specific skill for the task in hand — each `require:`s this one so it loads alongside, keeping per-invocation context small otherwise.
