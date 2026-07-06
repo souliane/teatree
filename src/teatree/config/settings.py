@@ -118,6 +118,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "require_integration_review": _parse_strict_bool,
     "require_merge_evidence": _parse_strict_bool,
     "require_plan_adequacy": _parse_strict_bool,
+    "require_executed_repro": _parse_strict_bool,
     "require_debt_delta": _parse_strict_bool,
     "require_merge_quality_verdict": _parse_strict_bool,
     "design_critic_live": _parse_strict_bool,
@@ -715,6 +716,20 @@ class UserSettings:
     # audited never-lockout escape alongside ``plan-reaffirm``. A feature flag
     # (governed in ``FEATURE_FLAGS``). Per-overlay overridable.
     require_plan_adequacy: bool = False
+    # #118 Opt-in forced-repro gate on ``ship()`` for FIX-kind tickets
+    # (``repro_gate``): a fix cannot ship without a harness-recorded, provenance-
+    # verified RED->GREEN reproduction — a failing command captured against the
+    # pre-fix tree (``merge-base --is-ancestor red green`` with ``red != green``),
+    # then the SAME command passing once the fix is applied. The harness runs both
+    # commands and stamps both SHAs, so exit codes and provenance cannot be forged
+    # in prose. A genuinely repro-less failure (race/heisenbug) is unblocked by a
+    # HUMAN-authorized ``ReproWaiver`` (maker != checker — the agent can never
+    # self-waive). Default false = NO-OP so the generic ship chain never blocks;
+    # the operator flips it ON per-overlay
+    # (``config_setting set require_executed_repro true --overlay <name>``). Its OWN
+    # kill-switch (setting it back false) is the audited never-lockout escape. A
+    # feature flag (governed in ``FEATURE_FLAGS``). Per-overlay overridable.
+    require_executed_repro: bool = False
     # North-star PR-3 The deterministic no-new-tech-debt MERGE gate on ``pr create``
     # (``debt_delta_gate`` in ``_run_ship_gates``): a ship diff that introduces
     # NET-NEW debt — a new ``noqa`` / ``type-ignore`` / ``pragma-no-cover`` comment,
