@@ -48,6 +48,18 @@ def _default_messaging_resolver(overlay: str) -> MessagingBackend | None:
     return messaging_from_overlay(overlay or None)
 
 
+def _directive_routing_enabled() -> bool:
+    """Whether inbound DIRECTIVE events route to capture — the global ``directive_loop_enabled``.
+
+    Resolved globally: an inbound Slack directive carries no forge URL to pick an
+    overlay, so the global flag governs. Off (the default) keeps ``route_event``
+    dropping DIRECTIVE events exactly as an unrouteable intent — flag-off parity.
+    """
+    from teatree.config import get_effective_settings  # noqa: PLC0415 — cross-layer import cycle
+
+    return bool(get_effective_settings(None).directive_loop_enabled)
+
+
 def _event_forge_url(event: "IncomingEvent") -> str:
     """Best-effort forge URL/slug for *event*, for overlay resolution.
 
@@ -127,7 +139,7 @@ class IncomingEventsScanner:
     def _handle(self, event: "IncomingEvent") -> ScanSignal | None:
         self._resolve_parent_text(event)
         classification = classify_event(event)
-        action = route_event(event, classification)
+        action = route_event(event, classification, directive_routing_enabled=_directive_routing_enabled())
         return self._execute(event, action)
 
     def _resolve_parent_text(self, event: "IncomingEvent") -> None:
@@ -198,8 +210,30 @@ class IncomingEventsScanner:
                     summary=f"status update from {event.source}",
                     payload={"event_id": event.pk, "target_ref": action.target_ref},
                 )
+            case RoutedAction.Kind.CAPTURE_DIRECTIVE:
+                return self._capture_directive(event)
             case RoutedAction.Kind.DROP:
                 return None
+
+    @staticmethod
+    def _capture_directive(event: "IncomingEvent") -> ScanSignal | None:
+        """Capture an inbound DIRECTIVE event as a ``CAPTURED`` ``Directive`` (#63 path).
+
+        Reached only when ``directive_loop_enabled`` gated ``route_event`` into a
+        ``CAPTURE_DIRECTIVE`` action, so intake stays inert at default config. The
+        directive is captured verbatim (the classifier only labels non-trivial text);
+        a blank body is dropped rather than raising into the queue's dead-letter path.
+        """
+        from teatree.core.models import Directive  # noqa: PLC0415 — cross-layer import cycle
+
+        if not (event.body or "").strip():
+            return None
+        directive = Directive.objects.capture(event.body, source=Directive.Source.INCOMING_EVENT, source_event=event)
+        return ScanSignal(
+            kind="incoming_event.directive_captured",
+            summary=f"directive captured from {event.source}: {directive.raw_text[:60]}",
+            payload={"event_id": event.pk, "directive_id": directive.pk},
+        )
 
     @staticmethod
     def _handle_schedule_merge(event: "IncomingEvent", action: RoutedAction) -> ScanSignal:

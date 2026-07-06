@@ -95,6 +95,11 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 measure → keep-only-if-better. Ships QUADRUPLE-OFF (feature  │
 │                 flag + disabled loop row + off_live_tick + critic/signal     │
 │                 code guards); a full tick is a no-op at defaults.            │
+│ directive       Directive-driven self-modification — capture → interpret →   │
+│                 human-ratify → implement → configure → verify →              │
+│                 keep-or-revert. Ships QUADRUPLE-OFF (feature flag + disabled │
+│                 loop row + off_live_tick + critic/signal code guards); a     │
+│                 full tick is a no-op at defaults.                            │
 │ teatree         Commands for the t3-teatree overlay.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -4720,6 +4725,121 @@ Usage: t3 outer history [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --limit        INTEGER  How many recent experiments to show. [default: 10]   │
+│ --help                  Show this message and exit.                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+### `t3 directive`
+
+```
+Usage: t3 directive [OPTIONS] COMMAND [ARGS]...
+
+ Directive-driven self-modification — capture → interpret → human-ratify →
+ implement → configure → verify → keep-or-revert. Ships QUADRUPLE-OFF (feature
+ flag + disabled loop row + off_live_tick + critic/signal code guards); a full
+ tick is a no-op at defaults.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ capture         Record a plain-language directive verbatim as a CAPTURED     │
+│                 row.                                                         │
+│ tick            Advance the directive loop one step IF its cadence has       │
+│                 elapsed (cron entry).                                        │
+│ status          Print one directive's state, sketch, and ratification        │
+│                 (read-only).                                                 │
+│ list            Print the recent directive ledger (read-only).               │
+│ resolve-revert  Close a REVERT_PENDING directive to terminal REVERTED        │
+│                 (config already rolled back).                                │
+│ history         Print the recent directive ledger with decisions             │
+│                 (read-only).                                                 │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 directive capture`
+
+```
+Usage: t3 directive capture [OPTIONS] TEXT
+
+ Record a plain-language directive verbatim as a CAPTURED row.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    text      TEXT  [required]                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --scope        TEXT  The overlay the directive is scoped to (blank =         │
+│                      global).                                                │
+│ --help               Show this message and exit.                             │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 directive tick`
+
+```
+Usage: t3 directive tick [OPTIONS]
+
+ Advance the directive loop one step IF its cadence has elapsed (cron entry).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 directive status`
+
+```
+Usage: t3 directive status [OPTIONS] DIRECTIVE_ID
+
+ Print one directive's state, sketch, and ratification (read-only).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    directive_id      INTEGER  [required]                                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 directive list`
+
+```
+Usage: t3 directive list [OPTIONS]
+
+ Print the recent directive ledger (read-only).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --limit        INTEGER  How many recent directives to show. [default: 20]    │
+│ --help                  Show this message and exit.                          │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 directive resolve-revert`
+
+```
+Usage: t3 directive resolve-revert [OPTIONS] DIRECTIVE_ID
+
+ Close a REVERT_PENDING directive to terminal REVERTED (config already rolled
+ back).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    directive_id      INTEGER  [required]                                   │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --revert-sha        TEXT  The git revert commit sha (provenance).            │
+│ --help                    Show this message and exit.                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 directive history`
+
+```
+Usage: t3 directive history [OPTIONS]
+
+ Print the recent directive ledger with decisions (read-only).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --limit        INTEGER  How many recent directives to show. [default: 10]    │
 │ --help                  Show this message and exit.                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

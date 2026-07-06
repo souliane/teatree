@@ -10,7 +10,7 @@ directive (the structural human-in-the-loop of self-modification).
 import pytest
 from django.test import TestCase
 
-from teatree.core.models import DeferredQuestion, Directive, DirectiveError
+from teatree.core.models import DeferredQuestion, Directive, DirectiveError, FactoryScoreSnapshot, Ticket
 from teatree.core.models.mechanism_sketch import sketch_from_envelope
 from tests.teatree_core.models.test_mechanism_sketch import valid_envelope
 
@@ -18,6 +18,22 @@ from tests.teatree_core.models.test_mechanism_sketch import valid_envelope
 def _interpreted_directive() -> Directive:
     directive = Directive.objects.capture("max 1 MR per repo for overlay X", source=Directive.Source.CLI)
     directive.record_interpretation(sketch_from_envelope(valid_envelope()), constraint_statement="at most 1 open PR")
+    return directive
+
+
+def _snapshot() -> FactoryScoreSnapshot:
+    return FactoryScoreSnapshot.objects.create(
+        overlay="", window_days=7, recipe_sha="s", aggregate=0.7, verdict="ok", coverage=1.0, coverage_floor=0.6
+    )
+
+
+def _verifying_directive() -> "Directive":
+    directive = _admitted_directive()
+    directive.begin_implementation(
+        Ticket.objects.create(issue_url="https://e.com/v", role=Ticket.Role.AUTHOR), baseline_snapshot=_snapshot()
+    )
+    directive.begin_configuring()
+    directive.begin_verifying()
     return directive
 
 
@@ -83,6 +99,85 @@ class TestAdmitIsHumanGated(TestCase):
         question = DeferredQuestion.record("Ratify?", options_hash="directive_ratify:test3")
         with pytest.raises(DirectiveError):
             directive.attach_ratification(question)
+
+
+def _admitted_directive() -> Directive:
+    directive = _interpreted_directive()
+    question = DeferredQuestion.record("Ratify?", options_hash=f"directive_ratify:{directive.pk}")
+    directive.attach_ratification(question)
+    DeferredQuestion.consume(question.pk, answer="approve")
+    directive.refresh_from_db()
+    directive.admit()
+    return directive
+
+
+class TestPostAdmittedArc(TestCase):
+    """The directive-loop arc past ADMITTED — guarded, mirroring OuterLoopExperiment."""
+
+    def test_begin_implementation_binds_the_ticket_and_baseline(self) -> None:
+        directive = _admitted_directive()
+        ticket = Ticket.objects.create(issue_url="https://e.com/1", role=Ticket.Role.AUTHOR)
+        baseline = _snapshot()
+        directive.begin_implementation(ticket, baseline_snapshot=baseline)
+        assert directive.state == Directive.State.IMPLEMENTING
+        assert directive.ticket_id == ticket.pk
+        assert directive.baseline_snapshot_id == baseline.pk
+
+    def test_activation_only_skips_implementing_to_configuring(self) -> None:
+        directive = _admitted_directive()
+        directive.skip_to_configuring(baseline_snapshot=_snapshot())
+        assert directive.state == Directive.State.CONFIGURING
+        assert directive.ticket_id is None
+
+    def test_begin_configuring_then_verifying_stamps_the_horizon_clock(self) -> None:
+        directive = _admitted_directive()
+        directive.begin_implementation(Ticket.objects.create(issue_url="https://e.com/2", role=Ticket.Role.AUTHOR))
+        directive.begin_configuring()
+        assert directive.state == Directive.State.CONFIGURING
+        directive.begin_verifying()
+        assert directive.state == Directive.State.VERIFYING
+        assert directive.activation_applied_at is not None
+        assert directive.verify_started_at is not None
+
+    def test_record_fulfilled_from_verifying(self) -> None:
+        directive = _verifying_directive()
+        directive.record_fulfilled(reason="all five green")
+        assert directive.state == Directive.State.FULFILLED
+        assert directive.is_terminal
+
+    def test_request_revert_from_verifying(self) -> None:
+        directive = _verifying_directive()
+        directive.request_revert(reason="collateral regression")
+        assert directive.state == Directive.State.REVERT_PENDING
+        assert not directive.is_terminal
+
+    def test_record_reverted_requires_a_consumed_revert_question(self) -> None:
+        # RED-before: revert is human-ratified. A REVERT_PENDING directive whose
+        # revert question is unanswered cannot reach REVERTED.
+        directive = _verifying_directive()
+        directive.request_revert(reason="regression")
+        question = DeferredQuestion.record("Revert?", options_hash=f"directive_revert:{directive.pk}")
+        directive.attach_revert_question(question)
+        with pytest.raises(DirectiveError):
+            directive.record_reverted()
+        directive.refresh_from_db()
+        assert directive.state == Directive.State.REVERT_PENDING
+        DeferredQuestion.consume(question.pk, answer="reverted")
+        directive.refresh_from_db()
+        directive.record_reverted(revert_sha="deadbeef")
+        assert directive.state == Directive.State.REVERTED
+        assert directive.is_terminal
+        assert directive.extra["revert_sha"] == "deadbeef"
+
+    def test_begin_configuring_from_admitted_raises(self) -> None:
+        directive = _admitted_directive()
+        with pytest.raises(DirectiveError):
+            directive.begin_configuring()
+
+    def test_record_fulfilled_from_admitted_raises(self) -> None:
+        directive = _admitted_directive()
+        with pytest.raises(DirectiveError):
+            directive.record_fulfilled(reason="premature")
 
 
 class TestIllegalTransitionsRaise(TestCase):

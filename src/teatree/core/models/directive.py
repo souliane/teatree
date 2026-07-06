@@ -22,6 +22,7 @@ is on, the ``DIRECTIVE``-intent router; at default config nothing writes a row, 
 the migrated table stays empty (the ``ConfigSetting`` empty-table doctrine).
 """
 
+from datetime import datetime
 from typing import ClassVar
 
 from django.db import models
@@ -245,3 +246,100 @@ class Directive(models.Model):
         self.state = self.State.REJECTED
         self.decision_reason = reason
         self.save(update_fields=["state", "decision_reason"])
+
+    def begin_implementation(self, ticket: Ticket, *, baseline_snapshot: "FactoryScoreSnapshot | None" = None) -> None:
+        """``ADMITTED`` → ``IMPLEMENTING``: bind the synthetic mechanism ticket + admission baseline.
+
+        The ``setting_policy_gate`` path — a real mechanism must be built. The
+        baseline snapshot is the admission reference the VERIFYING no-collateral-
+        regression evidence compares against, exactly like ``OuterLoopExperiment``.
+        """
+        self._require_state(self.State.ADMITTED)
+        self.ticket = ticket
+        fields = ["ticket", "state"]
+        if baseline_snapshot is not None:
+            self.baseline_snapshot = baseline_snapshot
+            fields.append("baseline_snapshot")
+        self.state = self.State.IMPLEMENTING
+        self.save(update_fields=fields)
+
+    def skip_to_configuring(self, *, baseline_snapshot: "FactoryScoreSnapshot | None" = None) -> None:
+        """``ADMITTED`` → ``CONFIGURING``: the ``activation_only`` path — the mechanism already exists.
+
+        A directive whose interpreter found an existing generic mechanism
+        (``kind="activation_only"``) has nothing to build, so it skips
+        ``IMPLEMENTING`` straight to the overlay-config write, still stamping the
+        admission baseline the VERIFYING regression evidence needs.
+        """
+        self._require_state(self.State.ADMITTED)
+        fields = ["state"]
+        if baseline_snapshot is not None:
+            self.baseline_snapshot = baseline_snapshot
+            fields.append("baseline_snapshot")
+        self.state = self.State.CONFIGURING
+        self.save(update_fields=fields)
+
+    def begin_configuring(self) -> None:
+        """``IMPLEMENTING`` → ``CONFIGURING``: the mechanism ticket merged; apply activation next."""
+        self._require_state(self.State.IMPLEMENTING)
+        self.state = self.State.CONFIGURING
+        self.save(update_fields=["state"])
+
+    def begin_verifying(self, *, now: datetime | None = None) -> None:
+        """``CONFIGURING`` → ``VERIFYING``: activation applied; start the verify horizon clock."""
+        self._require_state(self.State.CONFIGURING)
+        moment = now or timezone.now()
+        self.activation_applied_at = moment
+        self.verify_started_at = moment
+        self.state = self.State.VERIFYING
+        self.save(update_fields=["activation_applied_at", "verify_started_at", "state"])
+
+    def record_fulfilled(self, *, reason: str, post_snapshot: "FactoryScoreSnapshot | None" = None) -> None:
+        """``VERIFYING`` → ``FULFILLED``: all five evidence classes green."""
+        self._require_state(self.State.VERIFYING)
+        fields = ["decision_reason", "state"]
+        if post_snapshot is not None:
+            self.post_snapshot = post_snapshot
+            fields.append("post_snapshot")
+        self.decision_reason = reason
+        self.state = self.State.FULFILLED
+        self.save(update_fields=fields)
+
+    def request_revert(self, *, reason: str, post_snapshot: "FactoryScoreSnapshot | None" = None) -> None:
+        """``VERIFYING`` → ``REVERT_PENDING``: an evidence class failed; await a human revert."""
+        self._require_state(self.State.VERIFYING)
+        fields = ["decision_reason", "state"]
+        if post_snapshot is not None:
+            self.post_snapshot = post_snapshot
+            fields.append("post_snapshot")
+        self.decision_reason = reason
+        self.state = self.State.REVERT_PENDING
+        self.save(update_fields=fields)
+
+    def attach_revert_question(self, question: DeferredQuestion) -> None:
+        """Bind the human revert-approval question while in ``REVERT_PENDING``."""
+        self._require_state(self.State.REVERT_PENDING)
+        self.revert_question = question
+        self.save(update_fields=["revert_question"])
+
+    def record_reverted(self, *, revert_sha: str = "") -> None:
+        """``REVERT_PENDING`` → ``REVERTED`` — gated on a consumed revert question.
+
+        Revert is human-ratified, never automatic: RAISES unless
+        :attr:`revert_question` is a consumed (answered) row, mirroring
+        ``OuterLoopExperiment.record_reverted``. The overlay config is already rolled
+        back the instant the directive entered ``REVERT_PENDING`` (the config write is
+        reversible with no deploy); the human performs the code revert and closes out
+        here. ``revert_sha`` is stamped into ``extra`` for provenance.
+        """
+        self._require_state(self.State.REVERT_PENDING)
+        question = self.revert_question
+        if question is None or question.answered_at is None:
+            msg = "cannot revert without a consumed (answered) revert DeferredQuestion"
+            raise DirectiveError(msg)
+        fields = ["state"]
+        if revert_sha:
+            self.extra = {**(self.extra or {}), "revert_sha": revert_sha}
+            fields.append("extra")
+        self.state = self.State.REVERTED
+        self.save(update_fields=fields)

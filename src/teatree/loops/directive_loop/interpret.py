@@ -15,7 +15,7 @@ the overlay-local one-off in writing. The PR-2 ``pr_budget_gate`` mechanism is c
 as the canonical exemplar the interpreter shapes its sketch after.
 """
 
-from teatree.core.models import Directive, DirectiveDispatch
+from teatree.core.models import DeferredQuestion, Directive, DirectiveDispatch
 
 #: The canonical exemplar the interpreter shapes its sketch after — the PR-2
 #: proof-case mechanism, hand-built as the reference generic shape.
@@ -70,3 +70,30 @@ def dispatch_interpretation(directive: Directive) -> "DirectiveDispatch | None":
     already armed — the dedup that keeps a re-tick from spawning a second interpreter.
     """
     return DirectiveDispatch.enqueue(directive=directive, contract=build_interpreter_contract(directive))
+
+
+def clarifications_answered(directive: Directive) -> bool:
+    """Whether every clarify question for the directive's CURRENT generation is answered.
+
+    The interpret recorder parks a ``CLARIFYING`` directive with one
+    :class:`DeferredQuestion` per ambiguity, keyed ``directive_clarify:<pk>:<gen>:<n>``.
+    Re-interpretation waits until all of THIS generation's questions are answered;
+    an unanswered one keeps the directive parked (never a re-dispatch on partial input).
+    """
+    questions = DeferredQuestion.objects.filter(
+        options_hash__startswith=f"directive_clarify:{directive.pk}:{directive.generation}:"
+    )
+    if not questions.exists():
+        return False
+    return not questions.filter(answered_at__isnull=True).exists()
+
+
+def reinterpret_after_clarification(directive: Directive) -> "DirectiveDispatch | None":
+    """Bump the generation and arm a fresh interpreter with the answers appended.
+
+    Called once every clarify question for the current generation is answered — the
+    ``CLARIFYING`` → re-``INTERPRETED`` round-trip. Bumps ``generation`` first so the
+    dispatch dedups on the NEW generation (one fresh interpreter, never a duplicate).
+    """
+    directive.bump_generation()
+    return dispatch_interpretation(directive)

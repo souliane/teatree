@@ -98,6 +98,11 @@ Usage: t3 [OPTIONS] COMMAND [ARGS]...
 │                 measure → keep-only-if-better. Ships QUADRUPLE-OFF (feature  │
 │                 flag + disabled loop row + off_live_tick + critic/signal     │
 │                 code guards); a full tick is a no-op at defaults.            │
+│ directive       Directive-driven self-modification — capture → interpret →   │
+│                 human-ratify → implement → configure → verify →              │
+│                 keep-or-revert. Ships QUADRUPLE-OFF (feature flag + disabled │
+│                 loop row + off_live_tick + critic/signal code guards); a     │
+│                 full tick is a no-op at defaults.                            │
 │ teatree         Commands for the t3-teatree overlay.                         │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```

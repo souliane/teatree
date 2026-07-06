@@ -56,6 +56,7 @@ from teatree.cli.banned_terms import banned_terms_app
 from teatree.cli.ci import ci_app
 from teatree.cli.codex import codex_app
 from teatree.cli.config import config_app
+from teatree.cli.directive import directive_app
 from teatree.cli.doctor import DoctorService, IntrospectionHelpers, doctor_app
 from teatree.cli.dogfood import dogfood_app
 from teatree.cli.dream import dream_app
@@ -184,6 +185,7 @@ app.add_typer(identities_app, name="identities")
 app.add_typer(dream_app, name="dream")
 app.add_typer(mutation_app, name="mutation")
 app.add_typer(outer_app, name="outer")
+app.add_typer(directive_app, name="directive")
 
 
 # ── Django-dependent overlay command groups ───────────────────────────

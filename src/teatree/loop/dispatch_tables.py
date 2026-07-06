@@ -83,6 +83,9 @@ STATUSLINE_ZONE_BY_KIND: dict[str, str] = {
     "incoming_event.merge_blocked": "action_needed",
     "incoming_event.merge_escalation": "action_needed",
     "incoming_event.recorded": "in_flight",
+    # A captured inbound DIRECTIVE (north-star PR-7) surfaces for the operator — a new
+    # self-modification directive awaits interpretation + human ratification.
+    "incoming_event.directive_captured": "action_needed",
     # #128 resource-pressure scanner — WARN-band advisories and any
     # cleanup failure surface in action_needed; the freeing itself routes
     # through the mechanical handler below. ``ram_kill_candidate`` is
