@@ -211,7 +211,13 @@ def repo_root_is_teatree_managed(repo_root: str) -> bool:
     except (OSError, RuntimeError):
         return False
     for base in paths:
-        with contextlib.suppress(OSError, RuntimeError):
+        # ``Path.relative_to`` raises ``ValueError`` (NOT OSError/RuntimeError)
+        # when ``root_resolved`` is not under ``base`` — the normal "this repo is
+        # not under that managed base" case when several overlays register bases.
+        # It must be suppressed so a non-matching base is skipped and the next
+        # base is tried, instead of crashing the whole managed-repo classifier
+        # (which fails the caller open, silently disabling the main-clone guard).
+        with contextlib.suppress(OSError, RuntimeError, ValueError):
             root_resolved.relative_to(base)
             return True
     try:
