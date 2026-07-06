@@ -15,8 +15,10 @@ process registry, no platform autostart.
 """
 
 import asyncio
+import contextlib
 import json
 import logging
+import os
 import shutil
 import time
 from dataclasses import dataclass
@@ -29,6 +31,7 @@ from django.db import close_old_connections
 from django.db.models import Sum
 from django.utils import timezone
 
+from teatree.agents._headless_env import _overlay_scope, _provider_child_env
 from teatree.agents._headless_options import _build_options
 from teatree.agents.harness import (
     ClaudeSdkHarness,
@@ -41,17 +44,17 @@ from teatree.agents.harness import (
 from teatree.agents.headless_budget import TicketBudget
 from teatree.agents.headless_usage import _attempt_usage
 from teatree.agents.pydantic_ai_resume import maybe_persist_on_park, persist_parked_thread
+from teatree.agents.reader_profile import is_reader_phase, reader_child_env, reader_env_hermetic
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA
 from teatree.agents.skill_bundle import resolve_skill_bundle
-from teatree.config import AgentHarness, AgentHarnessProvider, get_effective_settings
+from teatree.config import AgentHarnessProvider, get_effective_settings
 from teatree.core.models import Task, TaskAttempt
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
-from teatree.credential_config import resolve_api_key_credential, resolve_subscription_credential
 from teatree.llm.anthropic_limits import LimitMatch, classify_limit, classify_rate_limit_type
 from teatree.llm.credentials import CredentialError
 from teatree.skill_support.loading import SkillLoadingPolicy
 from teatree.types import SkillMetadata
-from teatree.utils.git_run import git_env_hermetic, git_env_without_overrides
+from teatree.utils.git_run import git_env_hermetic
 
 if TYPE_CHECKING:
     from pydantic_ai.messages import ModelMessage
@@ -240,7 +243,7 @@ def run_headless(
     )
 
     provider = get_effective_settings().agent_harness_provider
-    child_env_result = _resolve_child_env_or_failure(task, harness, provider)
+    child_env_result = _resolve_child_env_or_failure(task, harness, provider, phase=phase)
     if isinstance(child_env_result, TaskAttempt):
         return child_env_result
     child_env = child_env_result
@@ -251,7 +254,13 @@ def run_headless(
     options = _build_options(task, system_context, phase=phase, skills=skills, env=child_env)
 
     try:
-        with git_env_hermetic():
+        # The quarantined reader (#116) also spawns inside ``reader_env_hermetic`` so its
+        # ``os.environ`` is reduced to the allowlist: the SDK merges ``os.environ`` under
+        # ``options.env`` and cannot delete an omitted key, so scrubbing here is the only
+        # point the child is guaranteed credential-free (belt; ``options.env`` is the
+        # suspenders). A no-op ``nullcontext`` for every non-reader phase.
+        reader_scrub = reader_env_hermetic() if is_reader_phase(phase) else contextlib.nullcontext()
+        with git_env_hermetic(), reader_scrub:
             outcome = asyncio.run(_drive_with_heartbeat(task, prompt, options, harness))
     except CredentialError as exc:
         # A non-ClaudeSdkHarness resolves its own credential lazily inside
@@ -305,7 +314,7 @@ def _resolve_backend_or_failure(task: Task, *, phase: str = "") -> Harness | Tas
 
 
 def _resolve_child_env_or_failure(
-    task: Task, harness: Harness, provider: AgentHarnessProvider | None
+    task: Task, harness: Harness, provider: AgentHarnessProvider | None, *, phase: str = ""
 ) -> dict[str, str] | TaskAttempt | None:
     """Resolve the ``claude`` CLI child env for a :class:`~teatree.agents.harness.ClaudeSdkHarness` dispatch.
 
@@ -318,6 +327,12 @@ def _resolve_child_env_or_failure(
     unconditionally for it (no CLI child, no child env), and that harness's
     ``CredentialError`` is caught by the broad guard around the drive call in
     ``run_headless``.
+
+    For the #116 quarantined reader phase, the resolved env is filtered through
+    :func:`~teatree.agents.reader_profile.reader_child_env` so ``options.env`` carries
+    ONLY the inference credential + minimal runtime — never the full ambient env the
+    provider base is built from (which would re-introduce every secret over the
+    ``os.environ`` scrub). This is the suspenders to :func:`reader_env_hermetic`'s belt.
     """
     if not isinstance(harness, ClaudeSdkHarness):
         return None
@@ -326,10 +341,16 @@ def _resolve_child_env_or_failure(
     if shutil.which("claude") is None:
         return _record_failure(task, error="claude is not installed")
     try:
-        return _provider_child_env(provider, scope=_overlay_scope(task))
+        base_env = _provider_child_env(provider, scope=_overlay_scope(task))
     except CredentialError as exc:
         logger.warning("Refusing dispatch for task %s: %s", task.pk, exc)
         return _record_failure(task, error=str(exc))
+    if is_reader_phase(phase):
+        # ``base_env is None`` means "provider unset → use ambient os.environ"; the
+        # reader instead pins exactly the allowlist (inference credential survives if
+        # ambiently present, everything else dropped).
+        return reader_child_env(base_env if base_env is not None else dict(os.environ))
+    return base_env
 
 
 def _outcome_failure(task: Task, outcome: HarnessOutcome) -> TaskAttempt | None:
@@ -350,58 +371,6 @@ def _outcome_failure(task: Task, outcome: HarnessOutcome) -> TaskAttempt | None:
         logger.warning("Task %s ended in a failed run: %s", task.pk, error_reason)
         return _record_failure(task, error=error_reason)
     return None
-
-
-def _overlay_scope(task: Task) -> str:
-    """The overlay the credential selector routes for — the task's ticket overlay.
-
-    Empty (the ``GLOBAL_SCOPE`` sentinel) when the ticket carries no overlay, so the
-    selector falls back to the global routing list.
-    """
-    return task.ticket.overlay or ""
-
-
-def _provider_child_env(provider: AgentHarnessProvider | None, *, scope: str = "") -> dict[str, str] | None:
-    """The child-process env that pins the Layer-2 credential for a ``claude_sdk`` dispatch (#2887).
-
-    ``provider is None`` (the default — no explicit Layer-2 pin) returns
-    ``None``: the ambient environment is used UNCHANGED, so an operator who
-    never configured ``agent_harness_provider`` is never forced through an
-    eager credential lookup — the ``claude`` CLI's own ambient auth state
-    (however it was set up) applies, exactly as before #2887. An explicit
-    ``api_key`` forces the metered ``ANTHROPIC_API_KEY`` (stripping the
-    subscription token); an explicit ``subscription_oauth`` forces the
-    subscription ``CLAUDE_CODE_OAUTH_TOKEN`` (stripping the API key) so the
-    spawned ``claude`` CLI rides the plan, not the meter. *scope* is the
-    overlay the per-account routing selector picks an account for, so two
-    overlays ride distinct subscription accounts. The sole caller
-    (:func:`_resolve_child_env_or_failure`) is already scoped to a
-    :class:`~teatree.agents.harness.ClaudeSdkHarness` dispatch, so a
-    NON-``None`` *provider* must be a Layer-2 provider valid under Layer 1
-    ``agent_harness=claude_sdk`` (:meth:`~teatree.config.AgentHarnessProvider.valid_for`) —
-    an ``orca_router_byok`` provider reaching here is a genuine cross-layer
-    misconfiguration and raises :class:`CredentialError` loud rather than
-    silently falling through to the ambient env. Also raises when the selected
-    token resolves from neither the env nor the ``pass`` store (or every
-    configured account is exhausted), so a misconfigured headless run always
-    fails loud.
-    """
-    if provider is None:
-        return None
-    valid = AgentHarnessProvider.valid_for(AgentHarness.CLAUDE_SDK)
-    if provider not in valid:
-        msg = (
-            f"agent_harness_provider={provider.value!r} is not valid under agent_harness=claude_sdk; "
-            f"valid values: {', '.join(sorted(p.value for p in valid))}"
-        )
-        raise CredentialError(msg)
-    # Pin the credential onto a GIT_*-stripped base so ``options.env`` cannot
-    # re-introduce an outer git hook's GIT_DIR/GIT_INDEX_FILE (the SDK merges
-    # ``options.env`` over the inherited env, so a GIT_* here would reach the child).
-    base = git_env_without_overrides()
-    if provider is AgentHarnessProvider.API_KEY:
-        return resolve_api_key_credential(scope=scope).child_env(base)
-    return resolve_subscription_credential(scope=scope).child_env(base)
 
 
 # souliane/teatree#657: the Layer-2 lane (subscription vs metered) each

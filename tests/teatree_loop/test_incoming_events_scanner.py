@@ -580,15 +580,21 @@ class TestCaptureDirectiveWiring(TestCase):
         return IntentClassification(event=event, intent=IntentClassification.Intent.DIRECTIVE, confidence=0.9)
 
     @patch("teatree.loop.scanners.incoming_events.classify_event")
-    def test_captures_a_directive_when_the_ambient_flag_is_on(self, mock_classify: object) -> None:
+    def test_ambient_flag_on_signals_reader_needed_and_mints_no_raw_directive(self, mock_classify: object) -> None:
+        # #116 (RED scenario B1): even flag-on, the ambient path NEVER mints a Directive
+        # from the raw event.body — it only signals a quarantined reader dispatch is
+        # needed (#105). Restoring the raw mint turns this RED (a Directive appears).
         ConfigSetting.objects.set_value("ambient_directive_detection_enabled", value=True)
         event = self._directive_event()
         mock_classify.return_value = self._directive_classification(event)
         signals = IncomingEventsScanner().scan()
         event.refresh_from_db()
         assert event.processed_at is not None
-        assert Directive.objects.filter(source=Directive.Source.INCOMING_EVENT).count() == 1
-        assert any(s.kind == "incoming_event.directive_captured" for s in signals)
+        assert Directive.objects.count() == 0
+        assert any(s.kind == "incoming_event.directive_reader_needed" for s in signals)
+        assert not any(s.kind == "incoming_event.directive_captured" for s in signals)
+        # the raw attacker body stays inert on the IncomingEvent, never on a Directive
+        assert event.body.strip()
 
     @patch("teatree.loop.scanners.incoming_events.classify_event")
     def test_flag_off_drops_a_directive_event_without_capturing(self, mock_classify: object) -> None:

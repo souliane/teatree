@@ -55,6 +55,12 @@ class TestReaderChildEnvAllowlist:
             "T3_SECRET_RESOLVER": "resolver",
             "NOTION_API_KEY": "notion-secret",
             "SOME_OTHER_SECRET": "nope",
+            # unpatterned secrets a denylist would MISS — the allowlist drops them anyway
+            "DATABASE_URL": "postgres://user:pw@host/db",
+            "SENTRY_DSN": "https://key@sentry.io/1",
+            "AWS_ACCESS_KEY_ID": "AKIA...",
+            "REDIS_URL": "redis://host:6379",
+            "CELERY_BROKER_URL": "amqp://host",
         }
         child = reader_child_env(base)
         assert child == {}
@@ -89,6 +95,21 @@ class TestReaderEnvHermetic:
             assert os.environ["SLACK_BOT_TOKEN"] == "xoxb-sentinel"
         finally:
             os.environ.pop("SLACK_BOT_TOKEN", None)
+
+    def test_a_non_denylisted_secret_does_not_survive_the_allowlist_scrub(self) -> None:
+        # The allowlist (not a denylist of known shapes) drops an unanticipated secret —
+        # RED if reader_env_hermetic reverts to a denylist that only knows SLACK_/*_TOKEN.
+        os.environ["DATABASE_URL"] = "postgres://user:pw@host/db"
+        os.environ["SENTRY_DSN"] = "https://key@sentry.io/1"
+        try:
+            with reader_env_hermetic():
+                assert "DATABASE_URL" not in os.environ
+                assert "SENTRY_DSN" not in os.environ
+            assert os.environ["DATABASE_URL"] == "postgres://user:pw@host/db"
+            assert os.environ["SENTRY_DSN"] == "https://key@sentry.io/1"
+        finally:
+            os.environ.pop("DATABASE_URL", None)
+            os.environ.pop("SENTRY_DSN", None)
 
     def test_the_inference_credential_survives_inside_the_scrub(self) -> None:
         os.environ["ANTHROPIC_API_KEY"] = "sk-ant-inference"

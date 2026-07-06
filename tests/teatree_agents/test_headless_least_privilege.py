@@ -32,6 +32,13 @@ class TestDisallowedToolsForPhase(TestCase):
         assert list(result) == sorted(result)
         assert len(result) == len(set(result))
 
+    def test_reader_phase_denies_every_capability_and_the_extra_built_ins(self) -> None:
+        # #116 (C1): the reader denies the full capability complement PLUS the built-ins
+        # outside the capability vocabulary, so no tool of any kind remains.
+        disallowed = set(_disallowed_tools_for_phase("directive_reading"))
+        assert {"Read", "Bash", "WebFetch", "Agent", "Task", "Write", "Edit"} <= disallowed
+        assert {"SlashCommand", "TodoWrite", "ExitPlanMode"} <= disallowed
+
 
 class TestBuildOptionsHarnessPin(TestCase):
     @classmethod
@@ -57,3 +64,17 @@ class TestBuildOptionsHarnessPin(TestCase):
         assert "Bash" not in options.disallowed_tools
         assert "Write" not in options.disallowed_tools
         assert options.disallowed_tools == ["AskUserQuestion"]
+
+    def test_reader_dispatch_suppresses_all_tool_sources(self) -> None:
+        # #116 (C1): an empty allowed_tools is a no-op in the SDK transport, so the reader
+        # closes tool acquisition at the source — no settings, no MCP config — and denies
+        # the extra built-ins. A coding dispatch is unaffected (loads settings as before).
+        reader = self._options_for("directive_reading")
+        assert reader.setting_sources == []
+        assert reader.strict_mcp_config is True
+        assert reader.mcp_servers == {}
+        assert {"SlashCommand", "TodoWrite", "ExitPlanMode"} <= set(reader.disallowed_tools)
+
+        coding = self._options_for("coding")
+        assert coding.setting_sources is None
+        assert coding.strict_mcp_config is False

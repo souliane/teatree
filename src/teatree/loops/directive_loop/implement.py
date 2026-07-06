@@ -34,11 +34,13 @@ def implementation_brief(directive: Directive) -> str:
     """The implementer's brief — built ONLY from the ratified, sanitized fields (#116).
 
     The implementer-never-refetches guarantee: the brief is the ``constraint_statement``
-    (the ratified constraint) or, absent that, ``raw_text`` — which for an ambient
-    directive IS the schema-validated candidate, never the raw ``source_event.body``. So
-    the tooled implementer works from sanitized text by construction and the raw
-    attacker payload never reaches its context. Reading ``directive.source_event`` here
-    would reintroduce the trifecta; this function deliberately never does.
+    (the ratified constraint) or, absent that, ``raw_text``. For an ambient directive
+    ``raw_text`` is only ever the schema-validated candidate the ``directive_candidate_gate``
+    recorder minted (the ambient raw-mint path is disabled — the scanner never puts
+    ``source_event.body`` on a ``Directive``), never the raw attacker text. So the tooled
+    implementer works from sanitized text by construction. Reading
+    ``directive.source_event`` here would reintroduce the trifecta; this function
+    deliberately never does.
     """
     return (directive.constraint_statement or directive.raw_text).strip()[:_BRIEF_LEN]
 

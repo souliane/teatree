@@ -215,28 +215,31 @@ class IncomingEventsScanner:
                     payload={"event_id": event.pk, "target_ref": action.target_ref},
                 )
             case RoutedAction.Kind.CAPTURE_DIRECTIVE:
-                return self._capture_directive(event)
+                return self._signal_reader_dispatch_needed(event)
             case RoutedAction.Kind.DROP:
                 return None
 
     @staticmethod
-    def _capture_directive(event: "IncomingEvent") -> ScanSignal | None:
-        """Capture an inbound DIRECTIVE event as a ``CAPTURED`` ``Directive`` (#63 path).
+    def _signal_reader_dispatch_needed(event: "IncomingEvent") -> ScanSignal | None:
+        """Signal that an ambient DIRECTIVE event awaits a quarantined reader — mint NOTHING (#116).
 
-        Reached only when ``directive_loop_enabled`` gated ``route_event`` into a
-        ``CAPTURE_DIRECTIVE`` action, so intake stays inert at default config. The
-        directive is captured verbatim (the classifier only labels non-trivial text);
-        a blank body is dropped rather than raising into the queue's dead-letter path.
+        Reached only when ``ambient_directive_detection_enabled`` gated ``route_event``
+        into a ``CAPTURE_DIRECTIVE`` action, so intake stays inert at default config. The
+        ambient raw-mint is DISABLED: an untrusted ``event.body`` is NEVER minted into a
+        ``Directive`` here (that would put raw attacker text on ``Directive.raw_text``,
+        which a downstream tooled interpreter would then process). The ONLY sanctioned
+        ``IncomingEvent → Directive`` path is the no-tools/no-creds reader →
+        ``directive_candidate_gate`` recorder, whose dispatch arrives with #105. Until
+        then this emits a signal and leaves the raw body inert on the ``IncomingEvent``.
+        The explicit ``t3 <overlay> directive capture`` CLI path (trusted, ``source=CLI``)
+        is unaffected — it mints directly, never through this ambient path.
         """
-        from teatree.core.models import Directive  # noqa: PLC0415 — cross-layer import cycle
-
         if not (event.body or "").strip():
             return None
-        directive = Directive.objects.capture(event.body, source=Directive.Source.INCOMING_EVENT, source_event=event)
         return ScanSignal(
-            kind="incoming_event.directive_captured",
-            summary=f"directive captured from {event.source}: {directive.raw_text[:60]}",
-            payload={"event_id": event.pk, "directive_id": directive.pk},
+            kind="incoming_event.directive_reader_needed",
+            summary=f"ambient directive from {event.source} awaits a quarantined reader dispatch (#105)",
+            payload={"event_id": event.pk},
         )
 
     @staticmethod

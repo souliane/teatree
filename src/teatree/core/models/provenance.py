@@ -39,6 +39,12 @@ def classify_provenance(source: str, actor: str) -> Provenance:
     ``OWNER`` iff *actor* matches one of the operator's ``TrustedIdentity`` handles
     (case-insensitive, platform-tolerant); every other actor — a colleague, a public
     stranger, a blank actor — resolves to ``PUBLIC`` (fail-closed).
+
+    In #116 this emits only ``OWNER`` / ``PUBLIC``: there is no separate colleague
+    registry and no crawled-web ingestion path yet. ``TRUSTED_COLLEAGUE`` / ``WEB``
+    exist in the enum for the floor's UNTRUSTED_TAINTS semantics (all non-``OWNER``
+    taints are floored to ASK identically); a future colleague-registry / news-scanner
+    ingestion path wires them here without touching the floor.
     """
     if actor.strip() and TrustedIdentity.objects.is_trusted(actor, platform=source):
         return Provenance.OWNER

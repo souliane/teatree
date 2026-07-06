@@ -1163,14 +1163,17 @@ class UserSettings:
     # code-reviewed stage demotion.
     directive_loop_enabled: bool = False
     # #116 context firewall — the OFF switch for AMBIENT directive detection (routing an
-    # inbound untrusted DIRECTIVE-intent event to the reader→recorder firewall). A DARK
+    # inbound untrusted DIRECTIVE-intent event toward a directive). A DARK
     # ``FEATURE_FLAGS`` entry, decoupled from ``directive_loop_enabled`` ON PURPOSE:
     # arming the explicit directive loop must NEVER silently arm ambient detection of
     # untrusted inbound content (the lethal-trifecta precondition). Ships inert — no
-    # ``Intent.DIRECTIVE`` producer exists yet, and the ONLY IncomingEvent→Directive
-    # path is the fail-closed reader→recorder, so even flag-on cannot mint a routable
-    # directive from unvalidated content. DB-home (#1775), per-overlay overridable. The
-    # conformance suite pins stage=DARK => this default == its off_value (False).
+    # ``Intent.DIRECTIVE`` producer exists yet AND the ambient raw-mint is disabled (the
+    # scanner only signals that a quarantined reader dispatch is needed; #105 builds it).
+    # The single SANCTIONED ``IncomingEvent → Directive`` mint is the no-tools/no-creds
+    # reader → ``directive_candidate_gate`` recorder (sanitized candidate only); the
+    # ambient scanner mints NOTHING until that dispatch lands, so flag-on cannot promote
+    # raw attacker text. DB-home (#1775), per-overlay overridable. The conformance suite
+    # pins stage=DARK => this default == its off_value (False).
     ambient_directive_detection_enabled: bool = False
     # North-star PR-7 — the directive-loop VERIFYING horizon in days: after the ratified
     # activation is applied, the five evidence classes (activation live, acceptance green,
