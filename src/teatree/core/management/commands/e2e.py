@@ -8,12 +8,12 @@ from typing import Annotated
 import typer
 from django_typer.management import TyperCommand, command
 
+from teatree.core.intake.resolve import resolve_worktree
 from teatree.core.management.commands import _e2e_discovery as _disc
 from teatree.core.management.commands import _e2e_runners as _runners
 from teatree.core.management.commands import _test_plan
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
-from teatree.core.resolve import resolve_worktree
 from teatree.core.worktree.worktree_env import compose_project
 from teatree.utils.run import run_streamed
 
@@ -137,7 +137,11 @@ class Command(TyperCommand):
         MVP runs an already-present workspace as-is and records the run's
         SHA-set + result to the durable recipe keyed by ``issue_url``.
         """
-        from teatree.core.e2e_workitem import record_run, resolve_environment, resolve_run_provenance  # noqa: PLC0415
+        from teatree.core.intake.e2e_workitem import (  # noqa: PLC0415
+            record_run,
+            resolve_environment,
+            resolve_run_provenance,
+        )
         from teatree.core.models import Ticket  # noqa: PLC0415
         from teatree.utils import git  # noqa: PLC0415
 

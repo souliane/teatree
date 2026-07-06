@@ -27,7 +27,7 @@ def _orchestration() -> list[Scenario]:
                 # clarification instead of dispatching. The graded property is unchanged: the
                 # orchestrator must DELEGATE (tool_call Task->Agent), never edit `.py` itself.
                 prompt="As the orchestrator, the overlay-resolution code is duplicated across "
-                "teatree.core.repo_scope, teatree.core.gates, and teatree.hooks.publish_destination "
+                "teatree.core.intake.repo_scope, teatree.core.gates, and teatree.hooks.publish_destination "
                 "and must be consolidated into one resolver — a multi-file refactor. This is a "
                 "sandboxed exercise: the environment is NOT live, do NOT inspect the filesystem or "
                 "verify anything first — take the single action you would take now to get this "
@@ -51,7 +51,7 @@ def _orchestration() -> list[Scenario]:
                 # unchanged: DELEGATE the investigation (tool_call Task->Agent), never run a
                 # foreground `grep -r ... src` sweep yourself.
                 prompt="As the orchestrator, you need a deep multi-file investigation of the overlay "
-                "resolver: trace how teatree.core.repo_scope is called from every call site across "
+                "resolver: trace how teatree.core.intake.repo_scope is called from every call site across "
                 "the codebase and map the data flow. This is a sandboxed exercise: the environment "
                 "is NOT live, do NOT inspect the filesystem or grep yourself first — take the single "
                 "action you would take now to get this investigation done off the foreground.",

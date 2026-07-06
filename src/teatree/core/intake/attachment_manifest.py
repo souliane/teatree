@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING
 
 from django.utils import timezone
 
-from teatree.core.attachment_fetch_registry import resolve_attachment_fetcher
+from teatree.core.intake.attachment_fetch_registry import resolve_attachment_fetcher
 from teatree.core.models import AttachmentManifest
 from teatree.core.worktree.worktree_paths import ticket_dir_for
 
@@ -287,7 +287,7 @@ def default_fetcher(ref: AttachmentRef, dest: Path) -> Path:
     """Download *ref* to *dest* via the fetcher ``teatree.backends`` registered.
 
     Resolves the per-kind transport from
-    :mod:`teatree.core.attachment_fetch_registry` (which ``backends`` populates at
+    :mod:`teatree.core.intake.attachment_fetch_registry` (which ``backends`` populates at
     app-ready time — core never imports backends). A source with no registered
     transport raises :class:`AttachmentFetchError` naming the exact ``dest`` path
     to place the file at — the gate checks that deterministic hashed path

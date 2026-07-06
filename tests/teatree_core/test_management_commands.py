@@ -217,7 +217,7 @@ class TestProvisionTicketFlag(TestCase):
                 patch.dict("os.environ", {"T3_ORIG_CWD": str(manual_path)}),
                 patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
                 patch.object(utils_run_mod, "subprocess") as mock_sp,
-                patch("teatree.core.resolve.git.current_branch", return_value="no-number-branch"),
+                patch("teatree.core.intake.resolve.git.current_branch", return_value="no-number-branch"),
                 patch("teatree.config.load_config", return_value=mock_config),
             ):
                 mock_sp.run.return_value = MagicMock(returncode=0)

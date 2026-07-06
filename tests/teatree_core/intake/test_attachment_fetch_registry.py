@@ -6,7 +6,7 @@ resolves to ``None`` so the caller raises an actionable manual-download error.
 
 from pathlib import Path
 
-from teatree.core.attachment_fetch_registry import register_attachment_fetcher, resolve_attachment_fetcher
+from teatree.core.intake.attachment_fetch_registry import register_attachment_fetcher, resolve_attachment_fetcher
 
 
 def _noop(source_url: str, dest: Path) -> Path:

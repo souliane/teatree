@@ -2,8 +2,8 @@
 
 from django.test import TestCase
 
-from teatree.core.event_router import RoutedAction, route_event
-from teatree.core.intent_classifier import classify_event
+from teatree.core.intake.event_router import RoutedAction, route_event
+from teatree.core.intake.intent_classifier import classify_event
 from teatree.core.models import IncomingEvent, IntentClassification
 
 

@@ -22,6 +22,7 @@ from teatree.core import test_plan_validation as _tpv
 from teatree.core import video_evidence as _vev
 from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.backend_protocols import CodeHostBackend
+from teatree.core.intake.resolve import WorktreeNotFoundError, resolve_worktree
 from teatree.core.management.commands._test_plan_render import (
     SideManifest,
     TestPlanManifest,
@@ -46,7 +47,6 @@ from teatree.core.on_behalf_gate_recorded import (
     require_on_behalf_approval,
 )
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
-from teatree.core.resolve import WorktreeNotFoundError, resolve_worktree
 from teatree.core.test_plan_blocked_gate import BlockedTestPlanPostError, check_blocked_body_from_config
 from teatree.types import RawAPIDict
 

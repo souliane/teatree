@@ -5,7 +5,7 @@ split as ``TicketShowCommands``) so the cap-bound command god-module does not
 grow. ``ticket attachments <ref>`` prints the manifest with each entry marked
 fetched / MISSING; ``--fetch`` downloads the missing ones through the manifest's
 fetch seams and re-prints. The manifest and gate logic live in
-:mod:`teatree.core.attachment_manifest`; this command is the operator surface.
+:mod:`teatree.core.intake.attachment_manifest`; this command is the operator surface.
 """
 
 from typing import Annotated, TypedDict
@@ -14,14 +14,14 @@ import typer
 from django_typer.management import TyperCommand, command
 
 from teatree.config import worktree_root
-from teatree.core.attachment_manifest import (
+from teatree.core.backend_factory import code_host_from_overlay
+from teatree.core.intake.attachment_manifest import (
     attachments_dir_for,
     build_manifest,
     fetch_manifest,
     ticket_text_sources,
     unfetched_entries,
 )
-from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.management.commands._pr_ticket_resolve import resolve_ticket
 from teatree.core.models import Ticket
 

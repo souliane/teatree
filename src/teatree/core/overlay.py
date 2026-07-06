@@ -188,7 +188,7 @@ class OverlayConfig:
     # A ``[overlays.<name>.owned_repos]`` TOML table REPLACES the settings dict
     # (authoritative-and-complete, no deep-merge). When empty (default) the
     # overlay has not opted into scope gating. Consumed by
-    # ``teatree.core.repo_scope`` / ``teatree.core.gates.owned_repo_guard``.
+    # ``teatree.core.intake.repo_scope`` / ``teatree.core.gates.owned_repo_guard``.
     owned_repos: dict[str, list[str]]
     # Opt-in for the unknown-repo approval gate (``owned_repo_guard``). Default
     # False keeps every unmodified overlay inert. When True AND ``owned_repos``

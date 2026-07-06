@@ -141,7 +141,7 @@ def _isolate_scope_cache() -> Iterator[None]:
     non-``django_db`` unit test. A no-op notifier keeps pure transport tests pure;
     tests that assert on the banner inject their own recorder.
     """
-    import teatree.core.scope_cache as _scope_cache  # noqa: PLC0415 — deferred: fixture-local reset of a process singleton
+    import teatree.core.intake.scope_cache as _scope_cache  # noqa: PLC0415 — deferred: fixture-local reset of a process singleton
 
     _scope_cache._CACHE = _scope_cache.ScopeCache(notifier=lambda *_a, **_k: True)
     yield

@@ -10,7 +10,7 @@ This module is the single writer. Every site that creates a ticket routes its ki
 decision through :func:`classify_ticket_kind`, so the classification can never
 diverge across sites:
 
-* ``teatree.core.resolve`` — auto-registering a manually-added git worktree.
+* ``teatree.core.intake.resolve`` — auto-registering a manually-added git worktree.
 * ``teatree.core.management.commands._workspace_ticket_intake`` — ``workspace ticket``.
 * ``teatree.core.management.commands.tasks`` — ``tasks create --kind``.
 * ``teatree.loop.persistence`` — correction-zone handlers (red-card/red-MR-fix/e2e-fix/skill-drift) are FIX by origin.

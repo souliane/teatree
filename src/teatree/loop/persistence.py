@@ -18,9 +18,9 @@ from typing import TYPE_CHECKING
 
 from django.db import transaction
 
+from teatree.core.intake.ticket_kind_classification import TicketOrigin, classify_ticket_kind
 from teatree.core.models import Task, Ticket
 from teatree.core.models.ticket_external_review import schedule_external_review
-from teatree.core.ticket_kind_classification import TicketOrigin, classify_ticket_kind
 from teatree.loop.dispatch import DispatchAction
 from teatree.loop.dispatch_gates import claim_red_mr_fix
 from teatree.loop.dispatch_tables import PERSISTED_AT_SOURCE_ZONES

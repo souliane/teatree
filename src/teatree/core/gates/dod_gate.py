@@ -42,7 +42,7 @@ from typing import TYPE_CHECKING
 
 from django.core.exceptions import ImproperlyConfigured
 
-from teatree.core.e2e_workitem import load_recipe
+from teatree.core.intake.e2e_workitem import load_recipe
 from teatree.core.modelkit.gate_registry import register_gate
 from teatree.core.models.errors import InvalidTransitionError
 from teatree.core.overlay_loader import frontend_repos_for_overlay

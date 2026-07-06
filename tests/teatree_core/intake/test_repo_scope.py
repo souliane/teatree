@@ -11,7 +11,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from teatree.core.repo_scope import (
+from teatree.core.intake.repo_scope import (
     RepoIdentity,
     host_aware_owns,
     identity_from_host_and_slug,

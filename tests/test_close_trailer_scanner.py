@@ -17,7 +17,7 @@ from django.test import TestCase
 
 from teatree.config import get_effective_settings, load_config
 from teatree.core.backend_protocols import PullRequestSpec
-from teatree.core.close_trailer_scanner import apply_publish_gate, namespace_is_banned, strip_close_trailers
+from teatree.core.intake.close_trailer_scanner import apply_publish_gate, namespace_is_banned, strip_close_trailers
 from teatree.core.models import ConfigSetting, Ticket, Worktree
 from teatree.core.runners.ship import ShipExecutor
 

@@ -38,9 +38,9 @@ class GitHubSyncBackend(SyncBackend):
     @override
     def sync(self, overlay: object) -> SyncResult:
         from teatree.backends.github import fetch_project_items, issue_repo_short  # noqa: PLC0415
+        from teatree.core.intake.ticket_kind_classification import classify_ticket_kind  # noqa: PLC0415 — lazy: cycle
         from teatree.core.models import Ticket  # noqa: PLC0415
         from teatree.core.overlay import OverlayBase  # noqa: PLC0415
-        from teatree.core.ticket_kind_classification import classify_ticket_kind  # noqa: PLC0415 — lazy: backend cycle
 
         if not isinstance(overlay, OverlayBase):
             return SyncResult(errors=["Invalid overlay"])

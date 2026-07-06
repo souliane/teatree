@@ -12,8 +12,8 @@ from typing import TYPE_CHECKING
 from teatree.core.cleanup.clean_ignore import is_clean_ignored
 from teatree.core.cleanup.cleanup import _ref_captured_by_merge, _remote_tracking_ref_exists
 from teatree.core.cleanup.cleanup_busy_guards import WorktreeBusyError, guard_live_worktree
+from teatree.core.intake.resolve import match_worktree_by_path
 from teatree.core.models import Worktree
-from teatree.core.resolve import match_worktree_by_path
 from teatree.core.worktree.branch_classification import _branch_tree_matches_squash, is_squash_merged
 from teatree.core.worktree.worktree_env import CACHE_DIRNAME, CACHE_FILENAME, write_env_cache
 from teatree.utils import git

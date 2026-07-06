@@ -42,7 +42,7 @@ from typing import cast
 import httpx
 
 from teatree.backends.slack.scopes import SLACK_METHOD_SCOPES, slack_scope_failure
-from teatree.core.scope_cache import ScopeMissingError, guarded_scope_call, token_scope_id
+from teatree.core.intake.scope_cache import ScopeMissingError, guarded_scope_call, token_scope_id
 from teatree.types import RawAPIDict
 
 type SleepFn = Callable[[float], None]

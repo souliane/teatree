@@ -3,8 +3,8 @@
 Sits at the consumer end of the autonomous-events stack:
 
 1. Reads ``IncomingEvent.objects.unprocessed()`` (limited per tick).
-2. Classifies each via :func:`teatree.core.intent_classifier.classify_event`.
-3. Routes each via :func:`teatree.core.event_router.route_event`.
+2. Classifies each via :func:`teatree.core.intake.intent_classifier.classify_event`.
+3. Routes each via :func:`teatree.core.intake.event_router.route_event`.
 4. Executes the side effect for the routed action.
 5. Marks the event ``processed_at`` so it does not re-fire.
 
@@ -29,8 +29,8 @@ from django.db import OperationalError, ProgrammingError
 
 import teatree.core.overlay_loader as _overlay_loader
 from teatree.core.backend_protocols import MessagingBackend
-from teatree.core.event_router import RoutedAction, route_event
-from teatree.core.intent_classifier import classify_event
+from teatree.core.intake.event_router import RoutedAction, route_event
+from teatree.core.intake.intent_classifier import classify_event
 from teatree.core.reply_transport import NoopReplier, Replier
 from teatree.loop.scanners.base import ScanSignal
 

@@ -79,7 +79,7 @@ SIGNAL_LEDGER_PRODUCERS: tuple[SignalLedgerProducer, ...] = (
     ),
     SignalLedgerProducer(
         ledger="Ticket",
-        write_entry_point="teatree.core.ticket_kind_classification.classify_ticket_kind",
+        write_entry_point="teatree.core.intake.ticket_kind_classification.classify_ticket_kind",
         write_call="Ticket.Kind.FIX",
         integration_test="tests/teatree_core/test_ticket_kind_classification.py",
     ),

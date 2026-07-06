@@ -10,8 +10,8 @@ if TYPE_CHECKING:
 import typer
 from django_typer.management import TyperCommand, command
 
+from teatree.core.intake.resolve import resolve_worktree
 from teatree.core.overlay_loader import get_overlay
-from teatree.core.resolve import resolve_worktree
 from teatree.core.runners.service_launch import ServiceLauncher
 from teatree.core.worktree.worktree_env import compose_project
 from teatree.types import RunCommand, RunCommands

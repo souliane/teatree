@@ -170,7 +170,7 @@ post-account-switch, from `claudeAiMcpEverConnected`):
 
 A backend call that fails on a missing OAuth **scope** is a hard config failure,
 not transient — retrying it this loop process fails identically. The in-process
-`teatree.core.scope_cache` records each known-missing `(token_id, scope)` pair so
+`teatree.core.intake.scope_cache` records each known-missing `(token_id, scope)` pair so
 a guarded call short-circuits **pre-HTTP** on the second and later attempts
 (`ScopeMissingError(cached=True)`, zero network), and the first failure emits
 exactly ONE bot→user banner (idempotency key `scope_missing:<token_id>:<scope>`).
@@ -244,6 +244,6 @@ duplicates the other.
 | Per-server expected provider | overlay's `get_mcp_provider_expectations()` (real values in #251) | `teatree.core.overlay.OverlayBase` |
 | Per-overlay connector manifest | overlay overrides `get_connector_manifest()` (default `[]`) | `teatree.core.connector_manifest.check_connector_manifest` (PR-19) |
 | Connector reconnect | `t3 mcp reconnect [--open]` / `t3 setup recover-account-switch [--open]` | `teatree.cli.mcp.reconnect` (PR-19) |
-| Token-scope-failure cache | n/a — in-process, per loop tick; cleared by `t3 doctor authorizations` | `teatree.core.scope_cache` (PR-19) |
+| Token-scope-failure cache | n/a — in-process, per loop tick; cleared by `t3 doctor authorizations` | `teatree.core.intake.scope_cache` (PR-19) |
 | Teatree's own bundled MCP server | n/a — ships in `.mcp.json`, auto-starts with the plugin | `teatree.core.mcp_registration` (#2863) |
 | Recommended auto-mode set | suggested only — user pastes into `autoMode.allow` | `teatree.cli.recommended_authorizations` |

@@ -3,7 +3,7 @@
 The manifest's ``--fetch`` downloads a GitLab upload / Notion file / Slack file,
 but that transport lives in ``teatree.backends`` (the higher layer). Rather than
 ``core`` importing ``backends``, ``backends`` registers a fetcher per source kind
-here at app-ready time and :func:`teatree.core.attachment_manifest.default_fetcher`
+here at app-ready time and :func:`teatree.core.intake.attachment_manifest.default_fetcher`
 resolves it when a fetch runs — the same inversion
 :mod:`teatree.core.reaction_dispatch` uses for the Slack reaction publisher.
 
@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from teatree.core.attachment_manifest import AttachmentRef
+    from teatree.core.intake.attachment_manifest import AttachmentRef
 
 AttachmentFetcher = Callable[["AttachmentRef", Path], Path]
 """Download seam: fetch *ref* to the given path, return it, raise on failure."""

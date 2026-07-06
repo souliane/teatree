@@ -11,7 +11,7 @@ from collections.abc import Iterator
 import httpx
 import pytest
 
-import teatree.core.scope_cache as scope_cache_module
+import teatree.core.intake.scope_cache as scope_cache_module
 from teatree.backends.slack import http as slack_http
 from teatree.backends.slack.http import SlackHttpClient
 

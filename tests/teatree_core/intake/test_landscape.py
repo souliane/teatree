@@ -1,4 +1,4 @@
-"""Tests for the intake landscape survey (:mod:`teatree.core.landscape`, #2541).
+"""Tests for the intake landscape survey (:mod:`teatree.core.intake.landscape`, #2541).
 
 Worktree gather runs against a real git repo built with the shared
 ``make_git_repo`` fixture (default-branch-independent); forge gather and the
@@ -9,7 +9,7 @@ gather/classify behaviour regresses — no vacuous "object exists" checks.
 
 from pathlib import Path
 
-from teatree.core.landscape import (
+from teatree.core.intake.landscape import (
     IssueDisposition,
     LandscapeSurvey,
     OpenPullRequest,

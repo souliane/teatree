@@ -62,7 +62,7 @@ def _candidate_paths(path: str) -> list[str]:
 def paths_match(a: str | Path, b: str | Path) -> bool:
     """Whether *a* and *b* refer to the same location, symlink-tolerant.
 
-    The pairwise form of the matcher the DB-lookup sites in :mod:`teatree.core.resolve`
+    The pairwise form of the matcher the DB-lookup sites in :mod:`teatree.core.intake.resolve`
     already use via ``filter(extra__worktree_path__in=_candidate_paths(...))``. Two
     paths match when ANY of their :func:`_candidate_paths` variants coincide, so a
     ``/var`` path matches its ``/private/var`` twin (and a resolved symlink matches

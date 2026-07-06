@@ -200,7 +200,7 @@ def authorizations() -> bool:
     re-runs this after fixing a token's scopes, the next call re-tests the scope
     live instead of short-circuiting on a stale cached miss.
     """
-    from teatree.core.scope_cache import reset_scope_cache  # noqa: PLC0415 — deferred: keep this module import-light
+    from teatree.core.intake.scope_cache import reset_scope_cache  # noqa: PLC0415 — deferred: keep import-light
 
     reset_scope_cache()
     return report_missing_authorizations(typer.echo)

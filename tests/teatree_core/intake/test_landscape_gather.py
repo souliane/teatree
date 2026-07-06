@@ -1,4 +1,4 @@
-"""Integration for the intake landscape survey gather (:mod:`teatree.core.landscape_gather`, #2541).
+"""Integration for the intake landscape survey gather (:mod:`teatree.core.intake.landscape_gather`, #2541).
 
 Drives :func:`run_landscape` against a real ``git worktree`` under ``tmp_path``
 (so the local worktree gather is real, not mocked) with the code host patched to
@@ -13,12 +13,12 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
-from teatree.core.landscape_gather import _workspace_worktree_paths, run_landscape
+from teatree.core.intake.landscape_gather import _workspace_worktree_paths, run_landscape
 from teatree.types import RawAPIDict
 from tests._git_repo import make_git_repo, run_git
 
-_FACTORY = "teatree.core.landscape_gather.code_host_from_overlay"
-_OVERLAY = "teatree.core.landscape_gather.get_overlay"
+_FACTORY = "teatree.core.intake.landscape_gather.code_host_from_overlay"
+_OVERLAY = "teatree.core.intake.landscape_gather.get_overlay"
 
 
 class _FakeHost:

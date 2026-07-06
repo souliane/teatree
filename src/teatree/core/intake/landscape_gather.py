@@ -3,7 +3,7 @@
 The django-touching half of the intake landscape survey: it resolves the active
 overlay's code-host backend, enumerates the workspace worktrees and the in-scope
 open issues, then delegates classification to the django-free deterministic gather
-in :mod:`teatree.core.landscape`. The result is a JSON-serialisable
+in :mod:`teatree.core.intake.landscape`. The result is a JSON-serialisable
 :class:`LandscapeReport`.
 
 Lives in ``teatree.core`` (not ``teatree.core.management``) so BOTH the intake FSM
@@ -20,7 +20,7 @@ from typing import TypedDict
 
 from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.backend_protocols import CodeHostBackend
-from teatree.core.landscape import LandscapeSurvey, survey_landscape, survey_merged_pr_issue_numbers
+from teatree.core.intake.landscape import LandscapeSurvey, survey_landscape, survey_merged_pr_issue_numbers
 from teatree.core.overlay_loader import get_overlay
 from teatree.types import RawAPIDict
 from teatree.utils import git
@@ -60,7 +60,7 @@ class RecommendationReport(TypedDict):
 class LandscapeReport(TypedDict):
     """JSON-serialisable shape the ``landscape`` survey returns.
 
-    Mirrors :class:`~teatree.core.landscape.LandscapeSurvey` flattened for JSON:
+    Mirrors :class:`~teatree.core.intake.landscape.LandscapeSurvey` flattened for JSON:
     ``worktrees`` are the in-flight local checkouts, ``open_prs`` the operator's
     open PRs/MRs, ``recommendations`` the per-issue verdicts, and ``warnings`` any
     probe that could not complete.
@@ -174,7 +174,7 @@ def run_landscape(workspace: Path) -> LandscapeReport:
     Resolves the overlay code host (a missing host degrades to a warning-only
     report rather than failing — intake still benefits from the local git
     landscape), enumerates the workspace worktrees and in-scope open issues, then
-    delegates classification to :func:`teatree.core.landscape.survey_landscape`.
+    delegates classification to :func:`teatree.core.intake.landscape.survey_landscape`.
     """
     worktree_paths = _workspace_worktree_paths(workspace)
     host = code_host_from_overlay()
@@ -214,7 +214,7 @@ def run_landscape(workspace: Path) -> LandscapeReport:
 class _NullCodeHost:
     """No-op code host so the local-only survey path reuses one gather routine.
 
-    A structural :class:`~teatree.core.landscape.PrLister` stand-in (its methods
+    A structural :class:`~teatree.core.intake.landscape.PrLister` stand-in (its methods
     are ``staticmethod`` — the survey calls them through an instance, so no
     per-instance state is needed) used when no overlay code host is configured.
     """

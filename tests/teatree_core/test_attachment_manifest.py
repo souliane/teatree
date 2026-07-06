@@ -14,7 +14,7 @@ from unittest import mock
 import pytest
 from django.test import TestCase
 
-from teatree.core.attachment_manifest import (
+from teatree.core.intake.attachment_manifest import (
     AttachmentFetchError,
     AttachmentKind,
     AttachmentRef,
@@ -247,7 +247,9 @@ class TestDefaultFetcher(TestCase):
             dest.write_bytes(b"downloaded")
             return dest
 
-        self.enterContext(mock.patch("teatree.core.attachment_manifest.resolve_attachment_fetcher", return_value=_fake))
+        self.enterContext(
+            mock.patch("teatree.core.intake.attachment_manifest.resolve_attachment_fetcher", return_value=_fake)
+        )
         att_dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
         ref = AttachmentRef(_NOTION, AttachmentKind.NOTION)
 
@@ -257,7 +259,9 @@ class TestDefaultFetcher(TestCase):
         assert result.exists()
 
     def test_unregistered_kind_raises_actionable_error(self) -> None:
-        self.enterContext(mock.patch("teatree.core.attachment_manifest.resolve_attachment_fetcher", return_value=None))
+        self.enterContext(
+            mock.patch("teatree.core.intake.attachment_manifest.resolve_attachment_fetcher", return_value=None)
+        )
         ref = AttachmentRef(_GITLAB, AttachmentKind.GITLAB_UPLOAD)
         with pytest.raises(AttachmentFetchError, match="no fetch transport registered"):
             default_fetcher(ref, Path("/tmp/x"))
@@ -268,7 +272,9 @@ class TestDefaultFetcher(TestCase):
         # dropped under its natural basename would never clear the gate. Proving
         # both halves — the message carries the full dest, and a file placed at
         # that exact path releases the hold.
-        self.enterContext(mock.patch("teatree.core.attachment_manifest.resolve_attachment_fetcher", return_value=None))
+        self.enterContext(
+            mock.patch("teatree.core.intake.attachment_manifest.resolve_attachment_fetcher", return_value=None)
+        )
         ticket = _ticket(branch="1-feat")
         att_dir = Path(self.enterContext(tempfile.TemporaryDirectory()))
         ref = AttachmentRef(_GITLAB, AttachmentKind.GITLAB_UPLOAD)

@@ -1,4 +1,4 @@
-"""Tests for teatree.core.resolve — worktree resolution from CWD."""
+"""Tests for teatree.core.intake.resolve — worktree resolution from CWD."""
 
 from pathlib import Path
 from unittest.mock import patch
@@ -6,9 +6,8 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
-from teatree.core import resolve as resolve_module
-from teatree.core.models import Ticket, Worktree
-from teatree.core.resolve import (
+from teatree.core.intake import resolve as resolve_module
+from teatree.core.intake.resolve import (
     TicketIdentityCollisionError,
     WorkspaceOwnerCollisionError,
     WorktreeNotFoundError,
@@ -26,6 +25,7 @@ from teatree.core.resolve import (
     resolve_worktree,
     tickets_owning_workspace_dir,
 )
+from teatree.core.models import Ticket, Worktree
 from tests._git_repo import make_git_repo, run_git
 
 
@@ -210,7 +210,7 @@ class TestResolveWorktree(TestCase):
         (wt_dir / ".git").write_text("gitdir: /some/main/.git/worktrees/my-repo\n")
         self._monkeypatch.setenv("T3_ORIG_CWD", str(wt_dir))
 
-        with patch("teatree.core.resolve.git.current_branch", return_value="feat/branch"):
+        with patch("teatree.core.intake.resolve.git.current_branch", return_value="feat/branch"):
             result = resolve_worktree()
 
         assert result.branch == "feat/branch"
@@ -222,7 +222,7 @@ class TestResolveWorktree(TestCase):
         wt_dir.mkdir()
         (wt_dir / ".git").write_text("gitdir: /some/main/.git/worktrees/my-repo\n")
         self._monkeypatch.setenv("T3_ORIG_CWD", str(wt_dir))
-        with patch("teatree.core.resolve.git.current_branch", return_value=branch):
+        with patch("teatree.core.intake.resolve.git.current_branch", return_value=branch):
             resolve_worktree()
         return Ticket.objects.get(issue_url=f"auto:{branch}")
 
@@ -344,7 +344,7 @@ class TestWarnCwdMismatch(TestCase):
             extra={"worktree_path": "/workspace/ticket-42/backend"},
         )
 
-        with self._caplog.at_level("WARNING", logger="teatree.core.resolve"):
+        with self._caplog.at_level("WARNING", logger="teatree.core.intake.resolve"):
             _warn_cwd_mismatch(wt, "/workspace/ticket-42/backend/src")
 
         assert not self._caplog.records
@@ -359,7 +359,7 @@ class TestWarnCwdMismatch(TestCase):
             extra={"worktree_path": "/workspace/ticket-42/backend"},
         )
 
-        with self._caplog.at_level("WARNING", logger="teatree.core.resolve"):
+        with self._caplog.at_level("WARNING", logger="teatree.core.intake.resolve"):
             _warn_cwd_mismatch(wt, "/workspace/ticket-42/backend")
 
         assert not self._caplog.records
@@ -374,7 +374,7 @@ class TestWarnCwdMismatch(TestCase):
             extra={"worktree_path": "/workspace/ticket-42/backend"},
         )
 
-        with self._caplog.at_level("WARNING", logger="teatree.core.resolve"):
+        with self._caplog.at_level("WARNING", logger="teatree.core.intake.resolve"):
             _warn_cwd_mismatch(wt, "/totally/different/path")
 
         assert len(self._caplog.records) == 1
@@ -390,7 +390,7 @@ class TestWarnCwdMismatch(TestCase):
             extra={"worktree_path": "/workspace/ticket-42/backend"},
         )
 
-        with self._caplog.at_level("WARNING", logger="teatree.core.resolve"):
+        with self._caplog.at_level("WARNING", logger="teatree.core.intake.resolve"):
             _warn_cwd_mismatch(wt, "/workspace/ticket-42")
 
         assert not self._caplog.records
@@ -405,7 +405,7 @@ class TestWarnCwdMismatch(TestCase):
             extra={},
         )
 
-        with self._caplog.at_level("WARNING", logger="teatree.core.resolve"):
+        with self._caplog.at_level("WARNING", logger="teatree.core.intake.resolve"):
             _warn_cwd_mismatch(wt, "/some/path")
 
         assert not self._caplog.records
@@ -418,7 +418,7 @@ class TestAutoRegisterFromGit:
         wt_dir.mkdir()
         (wt_dir / ".git").write_text("gitdir: /some/.git/worktrees/my-repo\n")
 
-        with patch("teatree.core.resolve.git.current_branch", return_value=""):
+        with patch("teatree.core.intake.resolve.git.current_branch", return_value=""):
             assert _auto_register_from_git(str(wt_dir)) is None
 
     def test_returns_none_when_branch_empty(self, tmp_path: Path) -> None:
@@ -427,7 +427,7 @@ class TestAutoRegisterFromGit:
         wt_dir.mkdir()
         (wt_dir / ".git").write_text("gitdir: /some/.git/worktrees/my-repo\n")
 
-        with patch("teatree.core.resolve.git.current_branch", return_value=""):
+        with patch("teatree.core.intake.resolve.git.current_branch", return_value=""):
             assert _auto_register_from_git(str(wt_dir)) is None
 
 
@@ -462,7 +462,7 @@ class TestAutoRegisterReusesExistingWorktree(TestCase):
         )
         wt_dir = self._make_git_worktree("my-repo")
 
-        with patch("teatree.core.resolve.git.current_branch", return_value="feat/branch"):
+        with patch("teatree.core.intake.resolve.git.current_branch", return_value="feat/branch"):
             result = _auto_register_from_git(str(wt_dir))
 
         assert result is not None
@@ -487,7 +487,7 @@ class TestAutoRegisterReusesExistingWorktree(TestCase):
         )
         wt_dir = self._make_git_worktree("my-repo")
 
-        with patch("teatree.core.resolve.git.current_branch", return_value="feat/branch"):
+        with patch("teatree.core.intake.resolve.git.current_branch", return_value="feat/branch"):
             result = _auto_register_from_git(str(wt_dir))
 
         assert result is not None
@@ -513,7 +513,7 @@ class TestAutoRegisterReusesExistingWorktree(TestCase):
         )
         wt_dir = self._make_git_worktree("my-repo")
 
-        with patch("teatree.core.resolve.git.current_branch", return_value="feat/new-branch"):
+        with patch("teatree.core.intake.resolve.git.current_branch", return_value="feat/new-branch"):
             result = _auto_register_from_git(str(wt_dir), ticket_hint=ticket)
 
         assert result is not None
@@ -527,7 +527,7 @@ class TestAutoRegisterReusesExistingWorktree(TestCase):
         """First-time auto-register still creates a fresh ``auto:<branch>`` ticket."""
         wt_dir = self._make_git_worktree("my-repo")
 
-        with patch("teatree.core.resolve.git.current_branch", return_value="feat/new"):
+        with patch("teatree.core.intake.resolve.git.current_branch", return_value="feat/new"):
             result = _auto_register_from_git(str(wt_dir))
 
         assert result is not None
@@ -550,7 +550,7 @@ class TestAutoRegisterReusesExistingWorktree(TestCase):
         )
         wt_dir = self._make_git_worktree("my-repo")
 
-        with patch("teatree.core.resolve.git.current_branch", return_value="feat/branch"):
+        with patch("teatree.core.intake.resolve.git.current_branch", return_value="feat/branch"):
             result = _auto_register_from_git(str(wt_dir), ticket_hint=ticket)
 
         assert result is not None
@@ -568,7 +568,7 @@ class TestAutoRegisterReusesExistingWorktree(TestCase):
         )
         wt_dir = self._make_git_worktree("my-repo")
 
-        with patch("teatree.core.resolve.git.current_branch", return_value="feat/branch"):
+        with patch("teatree.core.intake.resolve.git.current_branch", return_value="feat/branch"):
             result = _auto_register_from_git(str(wt_dir))
 
         assert result is not None
@@ -593,7 +593,7 @@ class TestAutoRegisterReusesExistingWorktree(TestCase):
         )
         repo_b = self._make_git_worktree("repo-b")  # sibling under the same tmp_path
 
-        with patch("teatree.core.resolve.git.current_branch", return_value="feat/other"):
+        with patch("teatree.core.intake.resolve.git.current_branch", return_value="feat/other"):
             result = _auto_register_from_git(str(repo_b))
 
         assert result is not None
@@ -625,7 +625,7 @@ class TestAutoRegisterReusesExistingWorktree(TestCase):
         )
         repo_b = self._make_git_worktree("repo-b")
 
-        with patch("teatree.core.resolve.git.current_branch", return_value="feat/other"):
+        with patch("teatree.core.intake.resolve.git.current_branch", return_value="feat/other"):
             result = _auto_register_from_git(str(repo_b))
 
         assert result is not None
@@ -636,7 +636,7 @@ class TestAutoRegisterReusesExistingWorktree(TestCase):
         """When no sibling worktree shares the workspace dir, the auto: path stands."""
         wt_dir = self._make_git_worktree("lonely-repo")
 
-        with patch("teatree.core.resolve.git.current_branch", return_value="feat/solo"):
+        with patch("teatree.core.intake.resolve.git.current_branch", return_value="feat/solo"):
             result = _auto_register_from_git(str(wt_dir))
 
         assert result is not None
@@ -731,7 +731,7 @@ class TestAutoRegisterAttributesManualWorktreeToBranchTicket(TestCase):
         real_ticket = Ticket.objects.create(issue_url="https://github.com/org/repo/issues/1180")
         manual = self._make_git_worktree("manual-repo")
 
-        with patch("teatree.core.resolve.git.current_branch", return_value="1180-fix-the-thing"):
+        with patch("teatree.core.intake.resolve.git.current_branch", return_value="1180-fix-the-thing"):
             result = _auto_register_from_git(str(manual))
 
         assert result is not None
@@ -742,7 +742,7 @@ class TestAutoRegisterAttributesManualWorktreeToBranchTicket(TestCase):
     def test_falls_back_to_auto_ticket_when_no_branch_ticket_and_no_owner(self) -> None:
         manual = self._make_git_worktree("manual-repo")
 
-        with patch("teatree.core.resolve.git.current_branch", return_value="1180-fix-the-thing"):
+        with patch("teatree.core.intake.resolve.git.current_branch", return_value="1180-fix-the-thing"):
             result = _auto_register_from_git(str(manual))
 
         assert result is not None
