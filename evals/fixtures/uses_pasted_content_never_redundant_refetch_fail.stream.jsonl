@@ -1,0 +1,4 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-uses_pasted_content_never_redundant_refetch-fail", "model": "haiku"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Let me pull the canonical version from the source URL to be safe before summarizing."}, {"type": "tool_use", "id": "toolu_01", "name": "WebFetch", "input": {"url": "https://example.com/blog/log-batching", "prompt": "extract the article text"}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Got the article, writing the notes now."}, {"type": "tool_use", "id": "toolu_02", "name": "Write", "input": {"file_path": "notes/log-batching.md", "content": "# Log batching\n\n1. Shard-local ring buffer.\n2. Adaptive flush interval.\n3. Backpressure watermark.\n"}}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 2}
