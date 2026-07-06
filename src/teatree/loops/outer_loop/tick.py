@@ -18,7 +18,7 @@ from datetime import datetime
 from django.utils import timezone
 
 from teatree.config import get_effective_settings
-from teatree.core.factory_signals import FactorySignalsReport
+from teatree.core.factory.factory_signals import FactorySignalsReport
 from teatree.core.models import DeferredQuestion, FactoryScoreSnapshot, OuterLoopExperiment
 from teatree.core.models.ticket import Ticket
 from teatree.loops.outer_loop.guards import CONVERGED, GuardSeams, OuterLoopSettings, admission_verdict, evaluate_guards

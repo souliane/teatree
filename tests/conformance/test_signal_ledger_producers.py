@@ -8,7 +8,7 @@ because the queries have their own fixture-injected rows. SIG-2 populated
 two ledgers had no writer.
 
 This lane is the merge gate that certifies the WHOLE signal layer is alive end to
-end. It enumerates every ledger model :mod:`teatree.core.factory_signal_queries`
+end. It enumerates every ledger model :mod:`teatree.core.factory.factory_signal_queries`
 reads and asserts each maps to a LIVE producer in ``SIGNAL_LEDGER_PRODUCERS`` — a
 declared write entry point whose source actually performs the write, plus an
 exercised integration test. Two directions, both fail loud. First: a ledger read
@@ -32,7 +32,7 @@ from typing import ClassVar
 
 from django.db.models import Model
 
-from teatree.core import factory_signal_queries
+from teatree.core.factory import factory_signal_queries
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -79,7 +79,7 @@ SIGNAL_LEDGER_PRODUCERS: tuple[SignalLedgerProducer, ...] = (
     ),
     SignalLedgerProducer(
         ledger="Ticket",
-        write_entry_point="teatree.core.ticket_kind_classification.classify_ticket_kind",
+        write_entry_point="teatree.core.intake.ticket_kind_classification.classify_ticket_kind",
         write_call="Ticket.Kind.FIX",
         integration_test="tests/teatree_core/test_ticket_kind_classification.py",
     ),

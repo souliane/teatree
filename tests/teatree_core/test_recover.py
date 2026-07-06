@@ -18,17 +18,17 @@ from django.test import TestCase
 
 from teatree.core.gates.orphan_guard import BranchReport, BranchStatus
 from teatree.core.models import Session, Task, TaskAttempt, Ticket
-from teatree.core.recover import RecoverReport, gather_recover_report, requeue_failed_tasks
-from teatree.core.recovery_sweeps import BootSweepCounts
+from teatree.core.worktree.recover import RecoverReport, gather_recover_report, requeue_failed_tasks
+from teatree.core.worktree.recovery_sweeps import BootSweepCounts
 
 
 @contextmanager
 def _mocked_probes(*, orphans: list[BranchReport] | None = None) -> Iterator[None]:
     """Stub the git/network/temp-scan seams so gather() runs against DB rows only."""
     with (
-        patch("teatree.core.recover.run_boot_sweeps", return_value=BootSweepCounts()),
-        patch("teatree.core.recover.reconcile_all", return_value={}),
-        patch("teatree.core.recover.find_orphans_in_workspace", return_value=orphans or []),
+        patch("teatree.core.worktree.recover.run_boot_sweeps", return_value=BootSweepCounts()),
+        patch("teatree.core.worktree.recover.reconcile_all", return_value={}),
+        patch("teatree.core.worktree.recover.find_orphans_in_workspace", return_value=orphans or []),
     ):
         yield
 
@@ -106,7 +106,7 @@ class TestGatherRecoverReport(TestCase):
 
 class TestToTerse(TestCase):
     def test_renders_every_group_with_clickable_refs(self) -> None:
-        from teatree.core.recover import OrphanItem, RequeueCandidate  # noqa: PLC0415
+        from teatree.core.worktree.recover import OrphanItem, RequeueCandidate  # noqa: PLC0415
 
         report = RecoverReport(boot_sweeps=BootSweepCounts(replayed_transitions=1, reclaimed_claims=2, reaped_claims=3))
         report.data_loss_risk.append(OrphanItem(repo="/r", branch="b1", ahead_count=4, ticket_url="https://x/i/1"))
@@ -135,7 +135,7 @@ class TestToTerse(TestCase):
         assert "tickets: #11" not in out
 
     def test_orphan_with_no_url_renders_placeholder(self) -> None:
-        from teatree.core.recover import OrphanItem  # noqa: PLC0415
+        from teatree.core.worktree.recover import OrphanItem  # noqa: PLC0415
 
         report = RecoverReport()
         report.committed_unpushed.append(OrphanItem(repo="/r", branch="b", ahead_count=1))
@@ -147,7 +147,7 @@ class TestToTerse(TestCase):
 class TestBranchToTicketUrl(TestCase):
     def test_maps_resolvable_clones_and_skips_unresolvable(self) -> None:
         from teatree.core.models import Worktree  # noqa: PLC0415
-        from teatree.core.recover import _branch_to_ticket_url  # noqa: PLC0415
+        from teatree.core.worktree.recover import _branch_to_ticket_url  # noqa: PLC0415
 
         ticket = Ticket.objects.create(role=Ticket.Role.AUTHOR, state=Ticket.State.STARTED, issue_url="https://x/i/55")
         Worktree.objects.create(
@@ -159,8 +159,8 @@ class TestBranchToTicketUrl(TestCase):
             return Path("/c1") if wt.branch == "feat-a" else None
 
         with (
-            patch("teatree.core.recover.clone_root"),
-            patch("teatree.core.recover.resolve_clone_path", side_effect=_resolve),
+            patch("teatree.core.worktree.recover.clone_root"),
+            patch("teatree.core.worktree.recover.resolve_clone_path", side_effect=_resolve),
         ):
             mapping = _branch_to_ticket_url()
 

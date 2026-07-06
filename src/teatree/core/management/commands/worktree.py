@@ -18,14 +18,14 @@ from django_typer.management import TyperCommand, command
 
 from teatree.core.diagrams import render_fsm_mermaid
 from teatree.core.gates.local_stack_gate import acquire_or_enqueue
+from teatree.core.intake.resolve import _ticket_by_number, resolve_worktree
 from teatree.core.machine_output import emit
-from teatree.core.management.commands._workspace_docker import reap_stale_local_stacks
+from teatree.core.management.commands._workspace.docker import reap_stale_local_stacks
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import get_overlay, get_overlay_for_worktree
-from teatree.core.provision_postconditions import PostConditionOutcome, evaluate_post_conditions
-from teatree.core.readiness import run_and_report_probes
-from teatree.core.resolve import _ticket_by_number, resolve_worktree
+from teatree.core.provision.provision_postconditions import PostConditionOutcome, evaluate_post_conditions
+from teatree.core.provision.step_runner import ProvisionReport
 from teatree.core.runners import (
     WorktreeProvisionRunner,
     WorktreeStartRunner,
@@ -33,8 +33,8 @@ from teatree.core.runners import (
     WorktreeVerifyRunner,
     heal_missing_provisioned_db,
 )
-from teatree.core.step_runner import ProvisionReport
-from teatree.core.worktree_env import compose_project, env_cache_path
+from teatree.core.worktree.readiness import run_and_report_probes
+from teatree.core.worktree.worktree_env import compose_project, env_cache_path
 from teatree.docker.build import ensure_base_image
 from teatree.utils.ports import get_worktree_ports
 from teatree.utils.run import TimeoutExpired, run_allowed_to_fail

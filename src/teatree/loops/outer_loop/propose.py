@@ -10,7 +10,12 @@ and table-tested.
 
 from datetime import datetime
 
-from teatree.core.factory_signals import FactorySignalsReport, SignalStatus, SignalVerdict, compute_factory_signals
+from teatree.core.factory.factory_signals import (
+    FactorySignalsReport,
+    SignalStatus,
+    SignalVerdict,
+    compute_factory_signals,
+)
 from teatree.core.models import OuterLoopExperiment, ProposalSpec
 
 #: Minimum normalised (0..1) improvement that counts as a real target win — a

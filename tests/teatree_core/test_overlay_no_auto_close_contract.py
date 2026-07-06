@@ -40,7 +40,7 @@ from django.test import TestCase
 
 from teatree.config import get_effective_settings
 from teatree.core.backend_protocols import PullRequestSpec
-from teatree.core.close_trailer_scanner import apply_publish_gate
+from teatree.core.intake.close_trailer_scanner import apply_publish_gate
 from teatree.core.management.commands._close_keyword_gate import run_close_keyword_gate
 from teatree.core.models import ConfigSetting, Session, Ticket, Worktree
 from teatree.core.overlay import OverlayConfig

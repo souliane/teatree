@@ -12,7 +12,7 @@ from teatree.core.management.commands import worktree as worktree_cmd
 from teatree.core.management.commands.worktree import _provision_summary
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayBase
-from teatree.core.worktree_env import CACHE_DIRNAME, CACHE_FILENAME
+from teatree.core.worktree.worktree_env import CACHE_DIRNAME, CACHE_FILENAME
 
 
 class _NoDbOverlay(OverlayBase):

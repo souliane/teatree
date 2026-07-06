@@ -27,7 +27,7 @@ class OverlayMetadata:
         :meth:`get_required_description_sections`. A real gate, not a no-op.
         """
         from teatree.config import get_effective_settings  # noqa: PLC0415
-        from teatree.core.mr_metadata import validate_mr_metadata  # noqa: PLC0415
+        from teatree.core.review.mr_metadata import validate_mr_metadata  # noqa: PLC0415
 
         errors = validate_mr_metadata(
             title,

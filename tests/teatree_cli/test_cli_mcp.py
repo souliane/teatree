@@ -15,8 +15,8 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 from typer.testing import CliRunner
 
 from teatree.cli.mcp import browser_diagnosis, open_reconnect_targets, reconnect, serve
-from teatree.core.browser_diagnosis import BrowserDiagnosisRegistration
 from teatree.core.connector_manifest import ConnectorManifestOutcome, ConnectorRequirement, DownConnector
+from teatree.core.evidence.browser_diagnosis import BrowserDiagnosisRegistration
 
 runner = CliRunner()
 
@@ -62,7 +62,9 @@ class TestBrowserDiagnosisCommand:
         )
         with (
             patch("teatree.cli.mcp.ensure_django"),
-            patch("teatree.core.browser_diagnosis.resolve_browser_diagnosis", return_value=fake) as resolve_mock,
+            patch(
+                "teatree.core.evidence.browser_diagnosis.resolve_browser_diagnosis", return_value=fake
+            ) as resolve_mock,
         ):
             result = runner.invoke(_diag_app, [])
 

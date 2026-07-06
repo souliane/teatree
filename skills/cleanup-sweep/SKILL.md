@@ -60,7 +60,7 @@ t3 <overlay> workspace emit
 ```
 
 This prints a JSON **array** of the items the CLI did NOT auto-delete — one
-`EmitRecordDict` per item (schema in `teatree.core.cleanup_emit`, `schema_version: 1`):
+`EmitRecordDict` per item (schema in `teatree.core.cleanup.cleanup_emit`, `schema_version: 1`):
 
 | field | meaning you route on |
 |---|---|

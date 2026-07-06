@@ -12,8 +12,8 @@ from typing import TYPE_CHECKING
 from teatree.config import Autonomy, Mode, UserSettings, clone_root, get_effective_settings
 from teatree.core.backend_factory import OverlayBackends
 from teatree.core.backend_protocols import CodeHostBackend
-from teatree.core.clone_paths import find_clone_path
 from teatree.core.models import ImplementedIssueMarker
+from teatree.core.worktree.clone_paths import find_clone_path
 from teatree.loop.job_identity import _TUPLE_PAIR, _ScannerJob
 from teatree.loop.scanner_factory_config import _gitlab_approvals_enabled, _user_identity_aliases_for_overlay
 from teatree.loop.scanners import (
@@ -325,7 +325,7 @@ def _pull_main_clone_scanner_for(backend: OverlayBackends) -> PullMainCloneScann
     Repo list comes from ``overlay.get_workspace_repos()``; each name is
     resolved to its on-disk main clone under the CLONE root
     (``config.clone_root()``, ``~/workspace``) via
-    :func:`teatree.core.clone_paths.find_clone_path` (the same namespace-
+    :func:`teatree.core.worktree.clone_paths.find_clone_path` (the same namespace-
     aware resolver provisioning/cleanup use). A repo with no clone on disk
     is dropped — there is nothing to pull. The marker/signal label is
     namespaced ``"<overlay>:<repo>"`` so two overlays that share a repo

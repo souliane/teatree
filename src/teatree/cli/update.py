@@ -526,7 +526,7 @@ def _notify_if_stale(result: RepoUpdate, *, repo: Path) -> None:
         return
     try:
         ensure_django()
-        from teatree.core.stale_clone_notice import (  # noqa: PLC0415
+        from teatree.core.worktree.stale_clone_notice import (  # noqa: PLC0415
             StaleCloneReason,
             StaleCloneSkip,
             notify_stale_clone_skip,

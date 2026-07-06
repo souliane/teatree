@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
 from teatree.core.backend_protocols import CodeHostBackend, PrOpenState, ReviewState
-from teatree.core.review_candidate import should_review_candidate_reasons
+from teatree.core.review.review_candidate import should_review_candidate_reasons
 from teatree.loop.scanners.base import ScanSignal
 from teatree.loop.scanners.pr_payload import head_sha
 from teatree.loop.url_specificity import best_url_match_specificity

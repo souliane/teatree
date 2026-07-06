@@ -208,7 +208,7 @@ class TestWorktreeProvisioner(TestCase):
             self._patch_workspace_dir(),
             patch("teatree.core.runners.provision.git.worktree_add", side_effect=fake_worktree_add),
             patch("teatree.core.runners.provision.git.pull_ff_only", return_value=True),
-            self.assertLogs("teatree.core.clone_paths", level="WARNING") as cm,
+            self.assertLogs("teatree.core.worktree.clone_paths", level="WARNING") as cm,
         ):
             result = WorktreeProvisioner(ticket).run()
 

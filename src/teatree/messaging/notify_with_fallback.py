@@ -1,7 +1,7 @@
 """Verified-delivery notify wrapper with automatic fallback transport (#1181).
 
 The contract this module enforces is *delivery*, not "called send". The
-canonical bot→user DM egress is :func:`teatree.notify.notify_user`, but it
+canonical bot→user DM egress is :func:`teatree.core.notify.notify_user`, but it
 returned ``did not deliver`` (rc=1 at the CLI edge) silently this session —
 root cause under #1173. When that primary path fails, the agent has been
 manually falling back to a direct Slack send. This wrapper makes that
@@ -30,8 +30,7 @@ from django.db import DatabaseError, IntegrityError, transaction
 from teatree.core.backend_factory import messaging_from_overlay
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import BotPing
-from teatree.core.notify import NotifyKind, format_notification, maybe_linkify, resolve_user_id
-from teatree.notify import notify_user
+from teatree.core.notify import NotifyKind, format_notification, maybe_linkify, notify_user, resolve_user_id
 
 logger = logging.getLogger(__name__)
 

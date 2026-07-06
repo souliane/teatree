@@ -1,20 +1,27 @@
-"""Bot→user Slack notification helper — core implementation (#963).
+"""Bot→user Slack notification helper (#963).
 
-This module owns the actual implementation (BotPing audit + messaging
-backend lookup + Slack post). The top-level :mod:`teatree.notify` is a
-thin re-export of :func:`notify_user` / :class:`NotifyKind` kept as the
-public CLI-facing import; pre-existing callers that already
-``from teatree.notify import notify_user`` keep working without churn.
+The user does not read the Claude CLI: answers, questions, and important
+info the agent surfaces inside a CLI turn are invisible to them. This
+helper is the single, always-on egress for those directions — post as the
+**bot** to the user's DM (the same channel ``DailyDigest`` opens) so the
+message arrives in Slack outside the active session. It owns the whole
+path: BotPing audit + messaging backend lookup + Slack post.
 
-Reason for the split: ``teatree.core`` modules that need to fire a
-bot→user DM — :mod:`teatree.core.on_behalf_gate_recorded` under the
-AUTO_DRAFT verdict (#960) and :mod:`teatree.core.on_behalf_post_receipt`
-for the after-receipt visibility DM (the real default-ON
-``notify_on_post_on_behalf`` ``UserSettings`` field, #949) — cannot
-import a top-level ``teatree.notify`` because the tach module graph
-forbids a ``teatree.core → teatree.notify`` edge (notify itself depends
-on core, which would create a cycle). Moving the implementation into
-core keeps the dependency direction one-way.
+Living in ``teatree.core`` keeps the dependency direction one-way — the
+core modules that fire a bot→user DM (:mod:`teatree.core.on_behalf_gate_recorded`
+under the AUTO_DRAFT verdict #960, and :mod:`teatree.core.on_behalf_post_receipt`
+for the after-receipt visibility DM, the default-ON ``notify_on_post_on_behalf``
+``UserSettings`` field #949) import it as a core sibling with no cycle.
+
+Out of scope of the on-behalf concerns (#960 ``on_behalf_post_mode``,
+#949 ``notify_on_post_on_behalf``): those govern posts the agent makes
+*as the user* to a colleague/customer surface. ``notify_user`` itself is
+the **bot** talking to its own operator — a different concern with a
+different doctrine.
+
+Returns ``True`` when the bot posted (or detected an idempotent
+re-send), ``False`` when no bot is configured (no-op-safe; never raises
+into the CLI turn).
 """
 
 import enum
@@ -65,8 +72,7 @@ def notify_user(  # noqa: PLR0913 — single notification egress; each kwarg is 
 ) -> bool:
     """Send a bot→user Slack DM and record an audit row.
 
-    See :mod:`teatree.notify` for the full docstring — this is the
-    canonical implementation; the public module is a re-export.
+    See this module's docstring for the bot→user egress contract.
 
     ``blocks`` (#1777): opaque Block Kit blocks (e.g. a native ``table`` block
     from :mod:`teatree.backends.slack.table_format`) posted alongside ``text``.

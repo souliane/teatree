@@ -8,7 +8,7 @@ second branch's post-merge ``migrate --no-input`` failed with
 cannot see it — each branch's own graph is linear; the fork exists only
 in the *merged* graph.
 
-This is the CLEAR-side sibling of :mod:`teatree.core.branch_currency`:
+This is the CLEAR-side sibling of :mod:`teatree.core.worktree.branch_currency`:
 it predicts the merged tree of ``reviewed_sha`` + target via
 ``git merge-tree --write-tree`` (a pure object-DB merge that never
 touches the index or worktree), reads every migration file from that

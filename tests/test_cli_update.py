@@ -32,7 +32,7 @@ from teatree.cli.update import (
     _reinstall_and_resetup,
     update_repo,
 )
-from teatree.core.branch_classification import branch_content_upstream, content_equivalence_blockers
+from teatree.core.worktree.branch_classification import branch_content_upstream, content_equivalence_blockers
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -1063,7 +1063,7 @@ class TestStaleCloneNotice:
         (clone / "f.txt").write_text("local uncommitted work\n")
         self._stub_side_effects(monkeypatch, clone)
 
-        with patch("teatree.core.stale_clone_notice.notify_stale_clone_skip") as spy:
+        with patch("teatree.core.worktree.stale_clone_notice.notify_stale_clone_skip") as spy:
             update_mod._run_update()
 
         spy.assert_called_once()
@@ -1079,7 +1079,7 @@ class TestStaleCloneNotice:
         _advance_remote(tmp_path, bare)
         self._stub_side_effects(monkeypatch, clone)
 
-        with patch("teatree.core.stale_clone_notice.notify_stale_clone_skip") as spy:
+        with patch("teatree.core.worktree.stale_clone_notice.notify_stale_clone_skip") as spy:
             update_mod._run_update()
 
         spy.assert_not_called()
@@ -1158,7 +1158,7 @@ class TestStaleNoticeNeverCrashesUpdate:
         )
 
         with patch(
-            "teatree.core.stale_clone_notice.notify_stale_clone_skip",
+            "teatree.core.worktree.stale_clone_notice.notify_stale_clone_skip",
             side_effect=RuntimeError("notify backend down"),
         ):
             update_mod._notify_if_stale(result, repo=tmp_path)  # must NOT raise

@@ -3,7 +3,7 @@
 import pytest
 from django.test import TestCase
 
-from teatree.core.intent_classifier import classify_event
+from teatree.core.intake.intent_classifier import classify_event
 from teatree.core.models import IncomingEvent, IntentClassification
 
 

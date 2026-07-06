@@ -172,8 +172,8 @@ class TestRunnerDbImportNeverHangs(TestCase):
         with (
             patch("teatree.core.runners.worktree_provision._setup_worktree_dir", return_value=None),
             patch("teatree.utils.db.db_exists", return_value=False),
-            patch("teatree.core.provision_timebox.resolve_step_timeout_seconds", return_value=0.1),
-            patch("teatree.core.provision_timebox.notify_user") as mock_notify,
+            patch("teatree.core.provision.provision_timebox.resolve_step_timeout_seconds", return_value=0.1),
+            patch("teatree.core.provision.provision_timebox.notify_user") as mock_notify,
         ):
             result = WorktreeProvisionRunner(worktree, overlay=overlay).run()
             overlay.release.set()

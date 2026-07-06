@@ -18,34 +18,34 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 from django.utils.module_loading import import_string
 
-import teatree.core.branch_classification as bc_mod
-import teatree.core.clean_ignore as clean_ignore_mod
-import teatree.core.cleanup as cleanup_mod
-import teatree.core.management.commands._workspace_clean_all as ws_clean_all_mod
-import teatree.core.management.commands._workspace_cleanup as ws_cleanup_mod
-import teatree.core.management.commands._workspace_docker as ws_docker_mod
-import teatree.core.management.commands._workspace_salvage as ws_salvage_mod
-import teatree.core.management.commands._workspace_stash as ws_stash_mod
-import teatree.core.management.commands._workspace_ticket_intake as workspace_intake_mod
+import teatree.core.cleanup.clean_ignore as clean_ignore_mod
+import teatree.core.cleanup.cleanup as cleanup_mod
+import teatree.core.management.commands._workspace.clean_all as ws_clean_all_mod
+import teatree.core.management.commands._workspace.cleanup as ws_cleanup_mod
+import teatree.core.management.commands._workspace.docker as ws_docker_mod
+import teatree.core.management.commands._workspace.salvage as ws_salvage_mod
+import teatree.core.management.commands._workspace.stash as ws_stash_mod
+import teatree.core.management.commands._workspace.ticket_intake as workspace_intake_mod
 import teatree.core.management.commands.workspace as workspace_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.runners.provision as provision_mod
-import teatree.core.worktree_done as worktree_done_mod
+import teatree.core.worktree.branch_classification as bc_mod
+import teatree.core.worktree.worktree_done as worktree_done_mod
 import teatree.utils.db as db_mod
 import teatree.utils.git as git_mod
 import teatree.utils.git_commit as git_commit_mod
 import teatree.utils.run as utils_run_mod
 from teatree.backends.errors import IssueNotFoundError
 from teatree.config import load_config
-from teatree.core.cleanup_liveness import LivenessVerdict
+from teatree.core.cleanup.cleanup_liveness import LivenessVerdict
 from teatree.core.gates.provision_admission_gate import ProvisionAdmissionVerdict
-from teatree.core.management.commands._workspace_provision_parallel import WorktreeProvisionResult
-from teatree.core.management.commands._workspace_ticket_intake import build_branch_name
+from teatree.core.management.commands._workspace.provision_parallel import WorktreeProvisionResult
+from teatree.core.management.commands._workspace.ticket_intake import build_branch_name
 from teatree.core.management.commands.workspace import _branch_prefix, _worktree_root
 from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.overlay import OverlayBase, ProvisionStep
 from teatree.core.runners import RunnerResult
-from teatree.core.worktree_done import reap_done_worktrees
+from teatree.core.worktree.worktree_done import reap_done_worktrees
 from tests.teatree_core.management_commands._overlays import (
     FULL_OVERLAY,
     NESTED_OVERLAY,
@@ -67,7 +67,7 @@ def _fake_provision_ok(worktree: Worktree, **_kwargs: object) -> WorktreeProvisi
 def _allow_provision_admission() -> AbstractContextManager[MagicMock]:
     """Force the RAM-admission gate to always allow — never sample the real host's RAM in a test."""
     return patch(
-        "teatree.core.management.commands._workspace_provision_parallel.check_provision_admission",
+        "teatree.core.management.commands._workspace.provision_parallel.check_provision_admission",
         return_value=ProvisionAdmissionVerdict.allow(),
     )
 
@@ -706,7 +706,7 @@ class TestWorkspaceTicket(TestCase):
         assert ticket.extra["branches"] == {"backend": "fix/be-45", "frontend": "fix/fe-45"}
 
     def test_parse_repo_branch_map_unit(self) -> None:
-        from teatree.core.dev_repo import parse_repo_branch_map  # noqa: PLC0415
+        from teatree.core.worktree.dev_repo import parse_repo_branch_map  # noqa: PLC0415
 
         assert parse_repo_branch_map("") == {}
         assert parse_repo_branch_map("backend") == {}  # bare repo, no override
@@ -803,7 +803,7 @@ class TestWorkspaceTicket(TestCase):
         ]
         stderr_buf = StringIO()
         with patch(
-            "teatree.core.management.commands._workspace_helpers.find_orphans_in_workspace",
+            "teatree.core.management.commands._workspace.helpers.find_orphans_in_workspace",
             return_value=fake_orphans,
         ):
             call_command("workspace", "ticket", "https://example.com/issues/500", stderr=stderr_buf)
@@ -1128,8 +1128,8 @@ class TestWorkspaceTicket(TestCase):
                 patch.object(provision_mod, "clone_root", return_value=workspace),
                 patch.object(provision_mod, "worktree_root", return_value=workspace),
                 patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
-                patch("teatree.core.dev_repo.find_project_root", return_value=core),
-                patch("teatree.core.dev_repo.discover_active_overlay", return_value=None),
+                patch("teatree.core.worktree.dev_repo.find_project_root", return_value=core),
+                patch("teatree.core.worktree.dev_repo.discover_active_overlay", return_value=None),
                 patch.object(git_mod, "remote_slug", return_value="souliane/teatree"),
             ):
                 ticket_id = cast(
@@ -1157,8 +1157,8 @@ class TestWorkspaceTicket(TestCase):
                 patch.object(provision_mod, "clone_root", return_value=workspace),
                 patch.object(provision_mod, "worktree_root", return_value=workspace),
                 patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
-                patch("teatree.core.dev_repo.find_project_root", return_value=core),
-                patch("teatree.core.dev_repo.discover_active_overlay", return_value=None),
+                patch("teatree.core.worktree.dev_repo.find_project_root", return_value=core),
+                patch("teatree.core.worktree.dev_repo.discover_active_overlay", return_value=None),
                 patch.object(git_mod, "remote_slug", return_value="souliane/teatree"),
             ):
                 ticket_id = cast(
@@ -1519,7 +1519,7 @@ class TestWorkspaceMultiOverlayResolution(TestCase):
             patch.dict(os.environ, env_without_overlay, clear=True),
             patch.object(overlay_loader_mod, "_discover_overlays", new=_fake_discover),
         ):
-            from teatree.core.management.commands._workspace_helpers import (  # noqa: PLC0415
+            from teatree.core.management.commands._workspace.helpers import (  # noqa: PLC0415
                 resolve_overlay_name_for_url,
             )
 
@@ -1535,7 +1535,7 @@ class TestWorkspaceMultiOverlayResolution(TestCase):
             patch.dict(os.environ, {**env_without_overlay, "T3_OVERLAY_NAME": "beta"}, clear=True),
             patch.object(overlay_loader_mod, "_discover_overlays", new=_fake_discover),
         ):
-            from teatree.core.management.commands._workspace_helpers import (  # noqa: PLC0415
+            from teatree.core.management.commands._workspace.helpers import (  # noqa: PLC0415
                 resolve_overlay_name_for_url,
             )
 
@@ -1619,7 +1619,7 @@ class TestWorkspaceEmitAndSalvage(TestCase):
         assert json.loads(rendered) == [], "no NOT-auto-deleted items → empty JSON array"
 
     def test_emit_serialises_collected_records(self) -> None:
-        from teatree.core.cleanup_emit import CleanupEmitRecord  # noqa: PLC0415
+        from teatree.core.cleanup.cleanup_emit import CleanupEmitRecord  # noqa: PLC0415
 
         record = CleanupEmitRecord(path="/ws/feat", branch="feat", kind="worktree", unique_commit_shas=["abc"])
         with (
@@ -1632,7 +1632,7 @@ class TestWorkspaceEmitAndSalvage(TestCase):
         assert data[0]["schema_version"] == 1
 
     def test_salvage_builds_request_and_reports_outcome(self) -> None:
-        from teatree.core.cleanup_salvage import SalvageRequest, SalvageResult  # noqa: PLC0415
+        from teatree.core.cleanup.cleanup_salvage import SalvageRequest, SalvageResult  # noqa: PLC0415
 
         captured: dict[str, object] = {}
 
@@ -2256,7 +2256,7 @@ class TestReapHonorsPerOverlayCleanIgnore(TestCase):
     Pre-fix it read the raw global ``load_config().user.clean_ignore``, so a
     pattern set only under ``[overlays.<name>]`` was dead — the per-overlay
     override never reached the keep decision. The single ``is_clean_ignored``
-    predicate (in :mod:`teatree.core.clean_ignore`) resolves
+    predicate (in :mod:`teatree.core.cleanup.clean_ignore`) resolves
     ``get_effective_settings(worktree.overlay).clean_ignore`` per row, and
     ``reap_done_worktree`` checks it FIRST — before the done/analyze gates.
     """
@@ -3582,7 +3582,7 @@ class TestCleanAllKeepsBusyWorktree(TestCase):
 
     The reconciliation home for #2773's end-to-end busy-keep guards: ported off the
     ``@_no_liveness``-neutralised reap-fully class so the REAL
-    :func:`teatree.core.cleanup_liveness.worktree_liveness` predicate runs. The
+    :func:`teatree.core.cleanup.cleanup_liveness.worktree_liveness` predicate runs. The
     ad-hoc ``clean-all`` sweep funnels through :func:`reap_done_worktree` with
     ``fsm_terminal`` OFF, so a busy ticket (live session / claimed task) flips a
     squash-merged or CREATED row from would-reap to an ``ACTIVE … skipping`` KEEP —

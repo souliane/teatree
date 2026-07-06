@@ -17,8 +17,8 @@ from django.test import TestCase, override_settings
 import teatree.core.management.commands.workspace as workspace_mod
 import teatree.core.management.commands.worktree as worktree_mod
 from teatree.core.models import Ticket, Worktree
-from teatree.core.readiness import Probe, ProbeResult
 from teatree.core.runners.base import RunnerResult
+from teatree.core.worktree.readiness import Probe, ProbeResult
 
 SETTINGS = {
     "TEATREE_OVERLAY_NAMES": ["test"],

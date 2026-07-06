@@ -3,8 +3,8 @@
 from unittest.mock import MagicMock
 
 from teatree.core.overlay import MergeGuard, OverlayBase, ProvisionStep
+from teatree.core.provision.variant import Variant
 from teatree.core.runners.base import RunnerBase, RunnerResult
-from teatree.core.variant import Variant
 
 
 class _MinimalOverlay(OverlayBase):

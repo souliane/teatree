@@ -20,7 +20,7 @@ from django.db import DatabaseError
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.factory_signals import SignalStatus, first_try_green_rate
+from teatree.core.factory.factory_signals import SignalStatus, first_try_green_rate
 from teatree.core.models import RedMrFixAttempt
 from teatree.loop.dispatch import _dispatch_one
 from teatree.loop.dispatch_gates import claim_red_mr_fix

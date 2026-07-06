@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from teatree.core.review_findings import FilingContext, FindingsStore
+from teatree.core.review.review_findings import FilingContext, FindingsStore
 from teatree.eval.gate_failures import (
     GateFailure,
     GateVerdict,

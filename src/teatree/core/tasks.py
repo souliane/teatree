@@ -5,10 +5,10 @@ from django.db import transaction
 from django.tasks import task
 
 from teatree.config import get_effective_settings, worktree_root
-from teatree.core.attachment_manifest import attachment_gate_refusal, attachments_dir_for, ticket_text_sources
 from teatree.core.backend_factory import code_host_from_overlay
 from teatree.core.gates.critic_gate import record_critic_findings
-from teatree.core.landscape_gather import run_landscape
+from teatree.core.intake.attachment_manifest import attachment_gate_refusal, attachments_dir_for, ticket_text_sources
+from teatree.core.intake.landscape_gather import run_landscape
 from teatree.core.models import LandscapeArtifact, Task, Ticket
 from teatree.core.models.errors import CriticGateError
 from teatree.core.models.external_delivery import under_external_delivery

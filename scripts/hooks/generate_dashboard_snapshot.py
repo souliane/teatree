@@ -1,6 +1,6 @@
 """Pre-commit hook: regenerate the admin-dashboard HTML snapshot from the models.
 
-Renders ``teatree.core.dashboard_snapshot`` against an isolated test database and
+Renders ``teatree.core.factory.dashboard_snapshot`` against an isolated test database and
 writes the canonical ``docs/generated/dashboard/admin-index.html``. Auto-stages the
 result unless ``DASHBOARD_SNAPSHOT_NO_STAGE`` is set — CI sets it for the docs-drift
 step so the ``git diff --exit-code docs/generated`` gate (the same entrypoint the FSM
@@ -38,7 +38,7 @@ def render_in_test_db() -> str:
     from django.db import connection
     from django.test.utils import setup_test_environment, teardown_test_environment
 
-    from teatree.core.dashboard_snapshot import render_dashboard_snapshot
+    from teatree.core.factory.dashboard_snapshot import render_dashboard_snapshot
 
     setup_test_environment()
     config = connection.creation.create_test_db(verbosity=0, autoclobber=True)

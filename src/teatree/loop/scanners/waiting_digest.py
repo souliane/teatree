@@ -3,7 +3,7 @@
 Once per tick the global dispatch set gathers the durable waiting-on-you lane
 (:func:`teatree.core.waiting.gather_waiting`) and, when it is non-empty, posts a
 monospace table (PR-18's :func:`~teatree.backends.slack.table_format.render_table_message`)
-to the owner DM via :func:`~teatree.notify.notify_user`.
+to the owner DM via :func:`~teatree.core.notify.notify_user`.
 
 The digest is deduped on the entries' content hash: the ``BotPing`` idempotency
 key is ``waiting_digest:<hash>``, so an unchanged lane never re-DMs, and a fresh

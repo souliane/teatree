@@ -31,7 +31,12 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, TypedDict
 
-from teatree.core.repo_scope import host_aware_owns, identity_from_host_and_slug, repo_identity_for_cwd, repo_scope
+from teatree.core.intake.repo_scope import (
+    host_aware_owns,
+    identity_from_host_and_slug,
+    repo_identity_for_cwd,
+    repo_scope,
+)
 
 if TYPE_CHECKING:
     from teatree.core.overlay import OverlayBase

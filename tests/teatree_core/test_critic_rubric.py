@@ -13,8 +13,13 @@ key, so there is no vacuous predicate to test here.
 import pytest
 from django.test import TestCase
 
-from teatree.core import critic_rubric
-from teatree.core.critic_rubric import (
+from teatree.core.gates.critic_gate import build_critic_contract
+from teatree.core.gates.design_critic_gate import build_design_contract
+from teatree.core.gates.merge_quality_gate import build_merge_quality_contract
+from teatree.core.models import MergeAudit, MergeClear, PlanArtifact, Ticket
+from teatree.core.models.plan_adequacy import all_negated_adequacy
+from teatree.core.review import critic_rubric
+from teatree.core.review.critic_rubric import (
     CRITIC_RUBRIC,
     CriticRubricItem,
     CriticRubricResolutionError,
@@ -28,11 +33,6 @@ from teatree.core.critic_rubric import (
     rubric_items,
     spec_not_plan,
 )
-from teatree.core.gates.critic_gate import build_critic_contract
-from teatree.core.gates.design_critic_gate import build_design_contract
-from teatree.core.gates.merge_quality_gate import build_merge_quality_contract
-from teatree.core.models import MergeAudit, MergeClear, PlanArtifact, Ticket
-from teatree.core.models.plan_adequacy import all_negated_adequacy
 
 _FORTY_HEX = "a" * 40
 
@@ -111,7 +111,7 @@ class TestRegistryConformance(TestCase):
 
     def test_resolve_rejects_a_non_callable_attr(self) -> None:
         with pytest.raises(CriticRubricResolutionError):
-            _resolve_predicate("teatree.core.critic_rubric.CRITIC_RUBRIC")
+            _resolve_predicate("teatree.core.review.critic_rubric.CRITIC_RUBRIC")
 
 
 class TestSpecNotPlanPredicate(TestCase):
@@ -191,7 +191,7 @@ class TestTransitionSelection:
         adversarial_question="a plan-transition item that must not leak into mark_delivered",
         kind=RubricKind.DETERMINISTIC,
         origin="north-star plan critic",
-        predicate_path="teatree.core.critic_rubric.spec_not_plan",
+        predicate_path="teatree.core.review.critic_rubric.spec_not_plan",
         blocking=True,
         transition="plan",
     )

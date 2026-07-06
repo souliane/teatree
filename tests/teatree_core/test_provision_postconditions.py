@@ -5,8 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from teatree.core.overlay import OverlayBase
-from teatree.core.provision_postconditions import aggregate_provision_post_conditions
-from teatree.core.worktree_env import CACHE_DIRNAME, CACHE_FILENAME
+from teatree.core.provision.provision_postconditions import aggregate_provision_post_conditions
+from teatree.core.worktree.worktree_env import CACHE_DIRNAME, CACHE_FILENAME
 from teatree.types import ProvisionStep
 
 

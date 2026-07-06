@@ -21,7 +21,7 @@ from django.db import models
 from django.utils import timezone
 
 if TYPE_CHECKING:
-    from teatree.core.factory_score import FactoryScore
+    from teatree.core.factory.factory_score import FactoryScore
 
 
 class FactoryScoreSnapshotManager(models.Manager["FactoryScoreSnapshot"]):

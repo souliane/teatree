@@ -11,20 +11,21 @@ from django_typer.management import TyperCommand, command
 
 from teatree.config import worktree_root as _config_worktree_root
 from teatree.core.gates.local_stack_gate import acquire_or_enqueue
-from teatree.core.management.commands import _workspace_helpers as _wh
-from teatree.core.management.commands._workspace_clean_all import CleanAllIO, run_clean_all
-from teatree.core.management.commands._workspace_cleanup import _die, _fix_drift
-from teatree.core.management.commands._workspace_docker import reap_stale_local_stacks, reap_stale_report
-from teatree.core.management.commands._workspace_finalize import run_finalize
-from teatree.core.management.commands._workspace_landscape import LandscapeReport, run_landscape
-from teatree.core.management.commands._workspace_provision_parallel import (
+from teatree.core.intake.resolve import WorktreeNotFoundError, _get_user_cwd, resolve_worktree, workspace_owner_ticket
+from teatree.core.management.commands._workspace import helpers as _wh
+from teatree.core.management.commands._workspace.clean_all import CleanAllIO, run_clean_all
+from teatree.core.management.commands._workspace.cleanup import _die, _fix_drift
+from teatree.core.management.commands._workspace.docker import reap_stale_local_stacks, reap_stale_report
+from teatree.core.management.commands._workspace.finalize import run_finalize
+from teatree.core.management.commands._workspace.landscape import LandscapeReport, run_landscape
+from teatree.core.management.commands._workspace.provision_parallel import (
     provision_worktree_subprocess,
     render_worktree_report,
     run_worktree_provisions_in_parallel,
 )
-from teatree.core.management.commands._workspace_relocate import RelocateIO, active_overlay_name, run_relocate
-from teatree.core.management.commands._workspace_salvage import emit_records_json, run_salvage
-from teatree.core.management.commands._workspace_ticket_intake import (
+from teatree.core.management.commands._workspace.relocate import RelocateIO, active_overlay_name, run_relocate
+from teatree.core.management.commands._workspace.salvage import emit_records_json, run_salvage
+from teatree.core.management.commands._workspace.ticket_intake import (
     ForeignIssueWorktreeRefusedError,
     InvalidTicketKindError,
     RawTicketInputs,
@@ -37,10 +38,9 @@ from teatree.core.management.commands._workspace_ticket_intake import (
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.public_identity import StampResult, is_public_github_remote, set_local_noreply_identity
-from teatree.core.reconcile import reconcile_all, reconcile_ticket
-from teatree.core.resolve import WorktreeNotFoundError, _get_user_cwd, resolve_worktree, workspace_owner_ticket
 from teatree.core.runners import WorktreeStartRunner, WorktreeTeardownRunner
-from teatree.core.worktree_done import reap_done_worktrees
+from teatree.core.worktree.reconcile import reconcile_all, reconcile_ticket
+from teatree.core.worktree.worktree_done import reap_done_worktrees
 from teatree.docker.reclaim import reclaim_disk
 from teatree.utils import git
 
@@ -546,7 +546,7 @@ class Command(TyperCommand):
         The read-only structured EMIT the judgment skill consumes: a JSON array of
         records (path, branch, kind, unique_commit_shas, merged_with_post_merge_work,
         banned_terms_status, liveness, last_commit_date, owner — schema in
-        ``teatree.core.cleanup_emit``). Removes nothing — ``clean-all`` does the
+        ``teatree.core.cleanup.cleanup_emit``). Removes nothing — ``clean-all`` does the
         auto-deletion of provably-redundant items; this surfaces the rest for the
         skill to route (superseded / salvage-to-fresh-PR / defer-live).
         """

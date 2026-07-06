@@ -14,7 +14,7 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
-from teatree.core.cleanup import CleanupResult, cleanup_worktree
+from teatree.core.cleanup.cleanup import CleanupResult, cleanup_worktree
 from teatree.core.models import Ticket, Worktree
 from tests.teatree_core.cleanup._shared import _GIT, _RM, _clean_env, _run_git
 
@@ -58,8 +58,8 @@ class TestCleanupWorktreeRemovesOnDiskWorktree(TestCase):
 
     def _cleanup(self, worktree: Worktree) -> CleanupResult:
         with (
-            patch("teatree.core.cleanup.clone_root", return_value=self.workspace),
-            patch("teatree.core.cleanup.get_overlay_for_worktree") as mock_overlay,
+            patch("teatree.core.cleanup.cleanup.clone_root", return_value=self.workspace),
+            patch("teatree.core.cleanup.cleanup.get_overlay_for_worktree") as mock_overlay,
         ):
             mock_overlay.return_value.get_cleanup_steps.return_value = []
             return cleanup_worktree(worktree, force=True)
@@ -131,8 +131,8 @@ class TestCleanupWorktreeNamespacedClone(TestCase):
         )
 
         with (
-            patch("teatree.core.cleanup.clone_root", return_value=self.workspace),
-            patch("teatree.core.cleanup.get_overlay_for_worktree") as mock_overlay,
+            patch("teatree.core.cleanup.cleanup.clone_root", return_value=self.workspace),
+            patch("teatree.core.cleanup.cleanup.get_overlay_for_worktree") as mock_overlay,
         ):
             mock_overlay.return_value.get_cleanup_steps.return_value = []
             result = cleanup_worktree(wt, force=True)
@@ -187,8 +187,8 @@ class TestCleanupReapsStalePrekHook(TestCase):
 
     def _cleanup(self, worktree: Worktree) -> CleanupResult:
         with (
-            patch("teatree.core.cleanup.clone_root", return_value=self.workspace),
-            patch("teatree.core.cleanup.get_overlay_for_worktree") as mock_overlay,
+            patch("teatree.core.cleanup.cleanup.clone_root", return_value=self.workspace),
+            patch("teatree.core.cleanup.cleanup.get_overlay_for_worktree") as mock_overlay,
         ):
             mock_overlay.return_value.get_cleanup_steps.return_value = []
             return cleanup_worktree(worktree, force=True)

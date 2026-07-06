@@ -3,7 +3,7 @@ import logging
 from teatree.config import clone_root
 from teatree.core.models import Ticket
 from teatree.core.runners.base import RunnerBase, RunnerResult
-from teatree.core.worktree_done import reap_done_worktree
+from teatree.core.worktree.worktree_done import reap_done_worktree
 
 logger = logging.getLogger(__name__)
 

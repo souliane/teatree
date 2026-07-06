@@ -13,9 +13,9 @@ import typer
 from django.core.management import execute_from_command_line
 from django_typer.management import TyperCommand, command
 
+from teatree.core.intake.resolve import resolve_worktree
 from teatree.core.models import Worktree, WorktreeEnvOverride
-from teatree.core.resolve import resolve_worktree
-from teatree.core.worktree_env import (
+from teatree.core.worktree.worktree_env import (
     detect_drift,
     env_cache_path,
     load_overrides,

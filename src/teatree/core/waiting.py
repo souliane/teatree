@@ -112,7 +112,7 @@ def _merge_authorization_entries(now: datetime, overlay: str) -> list[WaitingEnt
         return []
     # One grouped supersede read for the whole set — global scope so a
     # ticket-less CLEAR's siblings are seen regardless of overlay (#21).
-    from teatree.core.factory_signal_queries import superseding_context  # noqa: PLC0415 — deferred intra-core edge
+    from teatree.core.factory.factory_signal_queries import superseding_context  # noqa: PLC0415 — deferred intra-core
 
     latest_issued, merged_keys = superseding_context("")
     entries: list[WaitingEntry] = []
@@ -143,7 +143,7 @@ def _has_covering_clear(
     ticket-linked one, and each candidate must resolve to *pr*'s own repo —
     ``pr_id`` alone collides across repos. A CLEAR the merge loop has moved
     past (a strictly-newer sibling, or a covering merge) is excluded via the
-    SAME :func:`~teatree.core.factory_signal_queries.clear_is_superseded`
+    SAME :func:`~teatree.core.factory.factory_signal_queries.clear_is_superseded`
     predicate S4 applies, so the waiting lane and the staleness trip never
     diverge on the SIG-1 supersede semantics.
     """
@@ -151,7 +151,7 @@ def _has_covering_clear(
         pr_id = int(pr.iid)
     except (TypeError, ValueError):
         return False
-    from teatree.core.factory_signal_queries import clear_is_superseded  # noqa: PLC0415 — deferred intra-core edge
+    from teatree.core.factory.factory_signal_queries import clear_is_superseded  # noqa: PLC0415 — deferred intra-core
     from teatree.core.merge import normalize_repo_slug, resolved_repo_slug  # noqa: PLC0415 — deferred merge edge
 
     pr_repo = normalize_repo_slug(pr.repo)

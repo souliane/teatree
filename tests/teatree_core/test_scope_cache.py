@@ -9,9 +9,8 @@ asserted at the seam that every backend transport consults.
 
 import pytest
 
-import teatree.core.scope_cache as scope_cache_module
-from teatree.core.notify import NotifyKind
-from teatree.core.scope_cache import (
+import teatree.core.intake.scope_cache as scope_cache_module
+from teatree.core.intake.scope_cache import (
     ScopeCache,
     ScopeMissingError,
     get_scope_cache,
@@ -19,6 +18,7 @@ from teatree.core.scope_cache import (
     reset_scope_cache,
     token_scope_id,
 )
+from teatree.core.notify import NotifyKind
 
 
 class _BannerRecorder:

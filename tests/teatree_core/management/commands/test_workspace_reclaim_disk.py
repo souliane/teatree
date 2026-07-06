@@ -13,7 +13,7 @@ from unittest.mock import patch
 from django.core.management import call_command
 from django.test import TestCase
 
-import teatree.core.management.commands._workspace_clean_all as ws_clean_all_mod
+import teatree.core.management.commands._workspace.clean_all as ws_clean_all_mod
 import teatree.core.management.commands.workspace as workspace_mod
 from teatree.docker.reclaim import PruneOutcome, ReclaimReport, ReclaimStep
 

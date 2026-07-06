@@ -21,8 +21,8 @@ from django.test import TestCase
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayBase, ProvisionStep
 from teatree.core.runners.worktree_provision import WorktreeProvisionRunner
-from teatree.core.worktree_env import detect_drift, render_env_cache, write_env_cache
-from teatree.core.worktree_tasks import execute_worktree_provision
+from teatree.core.worktree.worktree_env import detect_drift, render_env_cache, write_env_cache
+from teatree.core.worktree.worktree_tasks import execute_worktree_provision
 
 OVERLAY_A = "overlay-alpha"
 OVERLAY_B = "overlay-beta"

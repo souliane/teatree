@@ -5,8 +5,8 @@ pre-roll (out of ~70s) and an unclear final frame was posted to a customer
 ticket and neither the author nor the e2e-review gate caught it — the post path
 machine-enforces image quality (red-box / dedup) but had ZERO video check.
 
-:mod:`teatree.core.video_evidence` is the deterministic substitute, mirroring
-:mod:`teatree.core.test_plan_validation`: it shells ffprobe/ffmpeg to measure
+:mod:`teatree.core.evidence.video_evidence` is the deterministic substitute, mirroring
+:mod:`teatree.core.evidence.test_plan_validation`: it shells ffprobe/ffmpeg to measure
 the LEADING static/blank run from t=0 and refuses a video whose dead lead
 exceeds the configured budget. These tests generate real videos with ffmpeg —
 one with a long blank lead (must FAIL), one tight (must PASS) — and assert the
@@ -19,8 +19,8 @@ from pathlib import Path
 
 import pytest
 
-from teatree.core import video_evidence as _ve
-from teatree.core.video_evidence import (
+from teatree.core.evidence import video_evidence as _ve
+from teatree.core.evidence.video_evidence import (
     DEFAULT_MAX_DEAD_LEAD_SECONDS,
     VideoEvidenceError,
     VideoEvidenceReport,
@@ -130,7 +130,7 @@ class TestFfmpegMissingDegradesGracefully:
     def test_missing_ffmpeg_returns_a_skipped_report(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         video = tmp_path / "any.mp4"
         video.write_bytes(b"not really a video")
-        monkeypatch.setattr("teatree.core.video_evidence.shutil.which", lambda _name: None)
+        monkeypatch.setattr("teatree.core.evidence.video_evidence.shutil.which", lambda _name: None)
         report = check_video_evidence(video)
         assert isinstance(report, VideoEvidenceReport)
         assert report.skipped is True
@@ -143,7 +143,7 @@ class TestFfmpegMissingDegradesGracefully:
     ) -> None:
         video = tmp_path / "any.mp4"
         video.write_bytes(b"not really a video")
-        monkeypatch.setattr("teatree.core.video_evidence.shutil.which", lambda _name: None)
+        monkeypatch.setattr("teatree.core.evidence.video_evidence.shutil.which", lambda _name: None)
         # The raising form must still NOT raise when ffmpeg is missing — skip, not crash.
         report = check_video_evidence(video, raising=True)
         assert report.skipped is True

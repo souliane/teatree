@@ -565,7 +565,7 @@ class UserSettings:
     # Behalf".
     agent_signature: bool = False
     # Bot→user Slack notification channel (#963). When true, the helper
-    # `teatree.notify.notify_user(...)` posts agent answers / questions /
+    # `teatree.core.notify.notify_user(...)` posts agent answers / questions /
     # important-info to the user's configured Slack DM via the bot identity,
     # auditing each send in the `BotPing` ledger. Out of scope of the
     # on-behalf gates (#960/#949): those govern posts the agent makes *as*

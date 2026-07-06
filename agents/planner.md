@@ -36,7 +36,7 @@ SURVEY` block of its system context, and any planner can read the latest via
 `LandscapeArtifact.latest_for(ticket)`. You consume it; you do not re-run it. Only
 when no artifact was recorded (a forge outage during provision) do you fetch it
 once with `t3 <overlay> workspace landscape` (the structured gather in
-`teatree.core.landscape`) — but the picture belongs to intake, not planning.
+`teatree.core.intake.landscape`) — but the picture belongs to intake, not planning.
 
 Plan **against** the survey:
 

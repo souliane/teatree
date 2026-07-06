@@ -41,7 +41,6 @@ must not wedge coding. The teeth are on the deterministic stale-on-a-seam case.
 
 from typing import TYPE_CHECKING
 
-from teatree.core.branch_currency import commits_between_touching_paths, fetch_target_head
 from teatree.core.modelkit.gate_registry import get_gate, register_gate
 from teatree.core.models.directive import Directive
 from teatree.core.models.errors import NoCurrentPlanError
@@ -49,6 +48,7 @@ from teatree.core.models.plan_adequacy import declared_seam_paths, is_adequate, 
 from teatree.core.models.plan_artifact import PlanArtifact, plan_adequacy_required
 from teatree.core.models.ticket_worktree_checks import _resolve_base_branch, dispatch_worktree_path
 from teatree.core.models.trivial_plan_skip import is_trivial_plan_skip
+from teatree.core.worktree.branch_currency import commits_between_touching_paths, fetch_target_head
 
 if TYPE_CHECKING:
     from teatree.core.models.ticket import Ticket

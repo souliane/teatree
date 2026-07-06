@@ -4,7 +4,7 @@ A :class:`KnownIssue` row is the compaction-surviving record of one thing the
 global-health aggregator considers wrong right now — a stale loop tick, a
 scanner failing repeatedly, an overlay-declared problem. Rows are AUTO-derived
 each health computation from the deterministic signals
-(:mod:`teatree.core.operational_health`) and reconciled against the live signal
+(:mod:`teatree.core.factory.operational_health`) and reconciled against the live signal
 set: a signal that clears auto-resolves its row by construction, so an operator
 never chases a stale entry. Rows are also manually addable (an operator records
 something the deterministic signals cannot see) and manually dismissable (an
@@ -17,7 +17,7 @@ persistent-issue ticket-filing path would dedupe against.
 
 Severity is the input to the chip color: ``critical`` drives red on its own,
 ``warning`` drives yellow (and red only when three or more pile up) — the
-thresholds live in :mod:`teatree.core.operational_health`, this model only
+thresholds live in :mod:`teatree.core.factory.operational_health`, this model only
 carries the per-issue severity.
 """
 
@@ -27,7 +27,7 @@ from django.db import models
 from django.utils import timezone
 
 if TYPE_CHECKING:
-    from teatree.core.operational_health import HealthSignal
+    from teatree.core.factory.operational_health import HealthSignal
 
 
 class KnownIssueManager(models.Manager["KnownIssue"]):

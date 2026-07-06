@@ -36,7 +36,7 @@ from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import ConsolidatedMemory
 from teatree.core.models.task import Task
 from teatree.core.models.ticket import Ticket
-from teatree.core.review_findings import find_bare_references, neutralize_bare_references
+from teatree.core.review.review_findings import find_bare_references, neutralize_bare_references
 from teatree.hooks import banned_terms_scanner
 
 logger = logging.getLogger(__name__)

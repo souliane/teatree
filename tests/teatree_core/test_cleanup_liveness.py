@@ -13,7 +13,7 @@ import pytest
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.cleanup_liveness import worktree_liveness
+from teatree.core.cleanup.cleanup_liveness import worktree_liveness
 from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.models.external_delivery import mark_external_delivery
 from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git

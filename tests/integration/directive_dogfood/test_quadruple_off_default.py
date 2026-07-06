@@ -10,7 +10,7 @@ components, from a pristine test DB.
 
 from django.test import TestCase
 
-from teatree.core.event_router import RoutedAction, route_event
+from teatree.core.intake.event_router import RoutedAction, route_event
 from teatree.core.models import ConfigSetting, DirectiveDispatch, IncomingEvent, IntentClassification, Loop, Task
 from teatree.core.models.directive import Directive
 from teatree.loops.directive_loop.guards import FLAG_OFF

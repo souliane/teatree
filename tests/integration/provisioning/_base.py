@@ -6,7 +6,7 @@ probes* that prove the started runtime serves. The concrete machinery here
 provisions a real git worktree, runs the DB test as its own ``pytest``
 subprocess by node id (Django is **not** booted inside it), starts the
 server(s), and asserts reachability through
-:func:`teatree.core.readiness.run_probes`.
+:func:`teatree.core.worktree.readiness.run_probes`.
 
 Teardown finalizers are registered per worktree *at creation*, before the
 start attempt, so a half-started worktree is still torn down.
@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from teatree.core.overlay import OverlayBase
-from teatree.core.readiness import Probe, ProbeResult, run_probes
+from teatree.core.worktree.readiness import Probe, ProbeResult, run_probes
 from teatree.utils import git
 from teatree.utils.run import spawn
 

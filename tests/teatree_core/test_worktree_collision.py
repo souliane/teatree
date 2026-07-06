@@ -13,7 +13,7 @@ from pathlib import Path
 from django.test import TestCase
 
 from teatree.core.models import Session, Ticket, Worktree
-from teatree.core.worktree_collision import find_foreign_issue_worktrees
+from teatree.core.worktree.worktree_collision import find_foreign_issue_worktrees
 
 
 class TestFindForeignIssueWorktrees(TestCase):

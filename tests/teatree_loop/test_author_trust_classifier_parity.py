@@ -3,7 +3,7 @@
 The merge keystone and the four reviewing scanners (``pr_sweep``,
 ``codex_review``, ``slack_broadcasts``, the mechanical handlers) must reach the
 SAME trusted-vs-untrusted verdict for the same ``(slug, author)`` — they all
-read the one shared :func:`teatree.core.author_trust.classify_author`. These
+read the one shared :func:`teatree.core.review.author_trust.classify_author`. These
 tests pin that they cannot drift: an untrusted public author is flagged on
 every seam, a trusted one on none, and a private repo on none.
 """
@@ -13,8 +13,8 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
-from teatree.core import author_trust
 from teatree.core.models import ScannedBroadcast, TrustedIdentity
+from teatree.core.review import author_trust
 from teatree.loop.mechanical import payload_author_untrusted_public
 from teatree.loop.scanners import codex_review, pr_sweep, pr_sweep_decision, slack_broadcasts
 

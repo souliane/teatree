@@ -9,8 +9,8 @@ from unittest.mock import MagicMock, patch
 from django.test import TestCase
 
 from teatree.backends.gitlab.sync_terminal import apply_closed_status, apply_merged_status
-from teatree.core.e2e_workitem import record_run
 from teatree.core.gates import dod_gate
+from teatree.core.intake.e2e_workitem import record_run
 from teatree.core.models import Ticket, Worktree
 from teatree.types import SyncResult
 

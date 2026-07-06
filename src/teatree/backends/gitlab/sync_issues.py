@@ -12,8 +12,8 @@ from typing import TYPE_CHECKING
 import httpx
 
 from teatree.backends.gitlab import GitLabCodeHost
+from teatree.core.intake.ticket_kind_classification import classify_ticket_kind
 from teatree.core.models import Ticket
-from teatree.core.ticket_kind_classification import classify_ticket_kind
 from teatree.types import SyncResult
 
 if TYPE_CHECKING:

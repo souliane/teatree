@@ -28,8 +28,8 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
-from teatree.core.cleanup import CleanupResult, _EffectiveTarget, cleanup_worktree
-from teatree.core.cleanup_orphan_ref import classify_orphan_ref, raise_or_reap_orphan_ref
+from teatree.core.cleanup.cleanup import CleanupResult, _EffectiveTarget, cleanup_worktree
+from teatree.core.cleanup.cleanup_orphan_ref import classify_orphan_ref, raise_or_reap_orphan_ref
 from teatree.core.models import Ticket, Worktree
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
@@ -105,9 +105,9 @@ class _OrphanRefWorktreeFixture(TestCase):
 
     def _cleanup(self, worktree: Worktree, *, pr_merged: bool = False) -> CleanupResult:
         with (
-            patch("teatree.core.cleanup.clone_root", return_value=self.workspace),
-            patch("teatree.core.cleanup.get_overlay_for_worktree") as mock_overlay,
-            patch("teatree.core.cleanup._branch_pr_is_merged", return_value=pr_merged),
+            patch("teatree.core.cleanup.cleanup.clone_root", return_value=self.workspace),
+            patch("teatree.core.cleanup.cleanup.get_overlay_for_worktree") as mock_overlay,
+            patch("teatree.core.cleanup.cleanup._branch_pr_is_merged", return_value=pr_merged),
         ):
             mock_overlay.return_value.get_cleanup_steps.return_value = []
             return cleanup_worktree(worktree, force=False, strict_hygiene=False)
@@ -160,16 +160,18 @@ class TestClassifyOrphanRef:
         assert decision == decision.__class__(recovered_sha=None, in_remote=False, unsynced=[])
 
     def test_unrecoverable_head_yields_no_reap(self) -> None:
-        with patch("teatree.core.cleanup_orphan_ref.git.recovered_head_sha_after_ref_gone", return_value=None):
+        with patch("teatree.core.cleanup.cleanup_orphan_ref.git.recovered_head_sha_after_ref_gone", return_value=None):
             decision = classify_orphan_ref(_target(ref=git.DETACHED_HEAD))
         assert decision.recovered_sha is None
         assert decision.in_remote is False
 
     def test_containment_probe_error_fails_closed(self) -> None:
         with (
-            patch("teatree.core.cleanup_orphan_ref.git.recovered_head_sha_after_ref_gone", return_value="abc123"),
             patch(
-                "teatree.core.cleanup_orphan_ref.git.commits_absent_from_all_remotes",
+                "teatree.core.cleanup.cleanup_orphan_ref.git.recovered_head_sha_after_ref_gone", return_value="abc123"
+            ),
+            patch(
+                "teatree.core.cleanup.cleanup_orphan_ref.git.commits_absent_from_all_remotes",
                 side_effect=CommandFailedError(["git"], 128, "", "boom"),
             ),
         ):
@@ -191,7 +193,7 @@ class TestRaiseOrReapOrphanRef:
 
     def test_unrecoverable_head_keeps_cryptic_probe_refusal(self) -> None:
         with (
-            patch("teatree.core.cleanup_orphan_ref.git.recovered_head_sha_after_ref_gone", return_value=None),
+            patch("teatree.core.cleanup.cleanup_orphan_ref.git.recovered_head_sha_after_ref_gone", return_value=None),
             pytest.raises(RuntimeError) as excinfo,
         ):
             raise_or_reap_orphan_ref(self._worktree(), _target(ref=git.DETACHED_HEAD), self._exc())
@@ -200,8 +202,10 @@ class TestRaiseOrReapOrphanRef:
     def test_recovered_but_on_no_remote_raises_accurate_data_loss(self) -> None:
         unsynced = ["aaa1111 first", "bbb2222 second", "ccc3333 third", "ddd4444 fourth"]
         with (
-            patch("teatree.core.cleanup_orphan_ref.git.recovered_head_sha_after_ref_gone", return_value="aaa1111"),
-            patch("teatree.core.cleanup_orphan_ref.git.commits_absent_from_all_remotes", return_value=unsynced),
+            patch(
+                "teatree.core.cleanup.cleanup_orphan_ref.git.recovered_head_sha_after_ref_gone", return_value="aaa1111"
+            ),
+            patch("teatree.core.cleanup.cleanup_orphan_ref.git.commits_absent_from_all_remotes", return_value=unsynced),
             pytest.raises(RuntimeError) as excinfo,
         ):
             raise_or_reap_orphan_ref(self._worktree(), _target(ref=git.DETACHED_HEAD), self._exc())
@@ -211,8 +215,10 @@ class TestRaiseOrReapOrphanRef:
 
     def test_head_in_remote_reaps_silently(self) -> None:
         with (
-            patch("teatree.core.cleanup_orphan_ref.git.recovered_head_sha_after_ref_gone", return_value="aaa1111"),
-            patch("teatree.core.cleanup_orphan_ref.git.commits_absent_from_all_remotes", return_value=[]),
+            patch(
+                "teatree.core.cleanup.cleanup_orphan_ref.git.recovered_head_sha_after_ref_gone", return_value="aaa1111"
+            ),
+            patch("teatree.core.cleanup.cleanup_orphan_ref.git.commits_absent_from_all_remotes", return_value=[]),
         ):
             # Returns without raising — the reap verdict.
             raise_or_reap_orphan_ref(self._worktree(), _target(ref=git.DETACHED_HEAD), self._exc())

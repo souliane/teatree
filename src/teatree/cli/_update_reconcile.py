@@ -7,12 +7,12 @@ N, behind M]`` and ``--ff-only`` aborts. :func:`reconcile_squash_merged`
 self-heals it — but only when the unique commits are provably already upstream.
 
 The subject classifier
-(:func:`teatree.core.branch_classification.classify_branch_commits`) is only a
+(:func:`teatree.core.worktree.branch_classification.classify_branch_commits`) is only a
 cheap PRE-FILTER: it buckets ``squash_merged`` by canonicalized-subject
 membership alone, with no content/patch-id/tree check, so a genuine commit can
 slip past it (subject collision, amended content, evil-merge). The destructive
 ``git reset --hard`` is authorized by the AUTHORITATIVE *content* gate instead —
-:func:`teatree.core.branch_classification.content_equivalence_blockers`
+:func:`teatree.core.worktree.branch_classification.content_equivalence_blockers`
 (``git cherry`` patch-id plus a merge-commit check, failing CLOSED on any
 inconclusive git probe) — never by subject. That is the SAME shared helper the
 clean-all force-delete path consumes (#2609): one content-equivalence authorizer,
@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING
 
 import typer
 
-from teatree.core.branch_classification import classify_branch_commits, content_equivalence_blockers
+from teatree.core.worktree.branch_classification import classify_branch_commits, content_equivalence_blockers
 
 if TYPE_CHECKING:
     from teatree.cli.update import RepoUpdate

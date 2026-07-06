@@ -110,7 +110,7 @@ def browser_diagnosis() -> None:
     """
     ensure_django()
 
-    from teatree.core.browser_diagnosis import (  # noqa: PLC0415 — deferred post-bootstrap: reads a Django setting
+    from teatree.core.evidence.browser_diagnosis import (  # noqa: PLC0415 — deferred post-bootstrap: reads a Django setting
         resolve_browser_diagnosis,
     )
 

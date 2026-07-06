@@ -19,8 +19,8 @@ from django.test import TestCase
 
 from teatree.backends import loader as loader_mod
 from teatree.core import overlay_loader as overlay_loader_mod
-from teatree.core import review_findings as rf_mod
-from teatree.core.review_findings import ReviewFinding
+from teatree.core.review import review_findings as rf_mod
+from teatree.core.review.review_findings import ReviewFinding
 from tests.teatree_core.conftest import CommandOverlay
 
 _PR_URL = "https://github.com/souliane/teatree/pull/1573"

@@ -1,6 +1,6 @@
 """Author-trust classifier + DB model golden corpus (#1773).
 
-The shared :func:`teatree.core.author_trust.classify_author` is the single
+The shared :func:`teatree.core.review.author_trust.classify_author` is the single
 seam the merge keystone and the four reviewing scanners consume. These tests
 pin both directions of the trust decision (must-ALLOW / must-DENY), the DB
 model tolerance, the empty-table config fallback, and the pre-migration
@@ -14,8 +14,8 @@ import pytest
 from django.db import OperationalError, ProgrammingError
 from django.test import TestCase
 
-from teatree.core import author_trust
 from teatree.core.models import TrustedIdentity
+from teatree.core.review import author_trust
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db

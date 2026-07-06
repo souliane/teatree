@@ -43,7 +43,7 @@ def _repo_public_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     # PUBLIC so a colleague (non-trusted) author is correctly untrusted — no live
     # ``glab`` visibility probe in the test path. An own/trusted author is still
     # excluded via the trusted-set check.
-    monkeypatch.setattr("teatree.core.author_trust.repo_is_internal", lambda *a, **k: False)
+    monkeypatch.setattr("teatree.core.review.author_trust.repo_is_internal", lambda *a, **k: False)
 
 
 CHANNEL = "C0DEMOCHAN1"

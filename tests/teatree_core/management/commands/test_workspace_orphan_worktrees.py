@@ -17,7 +17,7 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
-from teatree.core.management.commands._workspace_orphan_worktrees import (
+from teatree.core.management.commands._workspace.orphan_worktrees import (
     _db_tracked_paths,
     _raw_worktree_paths,
     reap_orphan_raw_worktrees,
@@ -73,11 +73,11 @@ class _OrphanWorktreeFixture(TestCase):
         # Force cwd-based clone discovery onto the tmp main clone.
         with (
             patch(
-                "teatree.core.management.commands._workspace_orphan_worktrees.is_clean_ignored",
+                "teatree.core.management.commands._workspace.orphan_worktrees.is_clean_ignored",
                 return_value=False,
             ),
             patch(
-                "teatree.core.management.commands._workspace_orphan_worktrees.Path.cwd",
+                "teatree.core.management.commands._workspace.orphan_worktrees.Path.cwd",
                 return_value=self.repo_main,
             ),
         ):

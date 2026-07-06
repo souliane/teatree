@@ -67,7 +67,7 @@ def commits_absent_from_all_remotes(repo: str, ref: str) -> list[str]:
     a squash-merge: that rewrites the branch's commits into a NEW SHA on the
     default branch, so the original commit is absent-from-all-remotes by SHA even
     though its WORK is shipped — a patch-id comparison
-    (:func:`teatree.core.management.commands._workspace_cleanup.is_squash_merged`)
+    (:func:`teatree.core.management.commands._workspace.cleanup.is_squash_merged`)
     is what recognises that case. A non-empty result here means these commits
     exist on NO remote BY SHA: removing the worktree on this signal alone would
     destroy a genuinely-unmerged tip. Returns ``"<sha> <subject>"`` lines (newest

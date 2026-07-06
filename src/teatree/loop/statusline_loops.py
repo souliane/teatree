@@ -83,7 +83,7 @@ def health_chip(*, colorize: bool = False) -> list[str]:
     """Return the single global-health chip line, or ``[]`` (PR-17).
 
     Reads the persisted operational-health verdict (read-only —
-    :func:`teatree.core.operational_health.read_health`, never a reconcile at
+    :func:`teatree.core.factory.operational_health.read_health`, never a reconcile at
     render time) and renders a colored status dot plus the open-issue count:
     ``health: ●`` when green and clean, ``health: ● 3`` when three issues are
     open. The dot is green/yellow/red per the verdict; when *colorize* is set it
@@ -92,7 +92,7 @@ def health_chip(*, colorize: bool = False) -> list[str]:
     never blanks the statusline.
     """
     try:
-        from teatree.core.operational_health import HealthStatus, read_health  # noqa: PLC0415 — deferred read
+        from teatree.core.factory.operational_health import HealthStatus, read_health  # noqa: PLC0415 — deferred read
 
         report = read_health()
     except Exception:  # noqa: BLE001 — fail-open: a broken health read never blanks the statusline

@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 from django.test import TestCase
 
-from teatree.core.e2e_workitem import (
+from teatree.core.intake.e2e_workitem import (
     E2ERecipe,
     RepoEntry,
     RunProvenance,

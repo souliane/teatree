@@ -70,7 +70,7 @@ def _resolve_ticket() -> "Ticket | None":
     ``resolve_worktree``). ``None`` when no worktree row matches the cwd — the
     caller then fails open rather than blocking an un-attributable commit.
     """
-    from teatree.core.resolve import match_worktree_by_path
+    from teatree.core.intake.resolve import match_worktree_by_path
 
     cwd = os.environ.get("T3_ORIG_CWD", os.environ.get("PWD", str(Path.cwd())))
     worktree = match_worktree_by_path(cwd)

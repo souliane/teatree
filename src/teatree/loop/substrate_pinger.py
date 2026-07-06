@@ -3,13 +3,13 @@
 A held SUBSTRATE merge DMs the owner once (ping-and-hold) via the existing
 ``notify_with_fallback`` egress. Lives at the ``teatree.loop`` orchestration
 layer — NOT in ``teatree.loop.scanners`` (domain), where the tach boundary
-forbids importing ``teatree.messaging`` / ``teatree.notify`` (integration). The
+forbids importing ``teatree.messaging`` / ``teatree.core.notify`` (integration). The
 scanner depends only on the ``SubstratePinger`` Protocol; this concrete notify
 egress is injected at the loop edge, mirroring ``domain_jobs``'s use.
 """
 
+from teatree.core.notify import NotifyKind
 from teatree.messaging import notify_with_fallback
-from teatree.notify import NotifyKind
 
 
 class NotifyWithFallbackSubstratePinger:

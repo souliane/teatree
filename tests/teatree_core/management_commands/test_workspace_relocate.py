@@ -17,7 +17,7 @@ from django.core.management import call_command
 from django.db import OperationalError
 from django.test import TestCase
 
-from teatree.core.management.commands._workspace_relocate import RelocateIO, run_relocate
+from teatree.core.management.commands._workspace.relocate import RelocateIO, run_relocate
 from teatree.core.models import Session, Ticket, Worktree
 from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git
 
@@ -134,7 +134,7 @@ class TestSkips(_RelocateCase):
     def test_skips_when_cwd_inside_worktree(self) -> None:
         self._make_row()
         with patch(
-            "teatree.core.management.commands._workspace_relocate._active_cwd",
+            "teatree.core.management.commands._workspace.relocate._active_cwd",
             return_value=self.old_wt.resolve(),
         ):
             result = run_relocate("test", self.new_ws, _io(), dry_run=False)

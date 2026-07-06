@@ -6384,7 +6384,8 @@ Usage: t3 teatree workspace emit [OPTIONS]
  The read-only structured EMIT the judgment skill consumes: a JSON array of
  records (path, branch, kind, unique_commit_shas, merged_with_post_merge_work,
  banned_terms_status, liveness, last_commit_date, owner — schema in
- ``teatree.core.cleanup_emit``). Removes nothing — ``clean-all`` does the
+ ``teatree.core.cleanup.cleanup_emit``). Removes nothing — ``clean-all`` does
+ the
  auto-deletion of provably-redundant items; this surfaces the rest for the
  skill to route (superseded / salvage-to-fresh-PR / defer-live).
 
@@ -6750,7 +6751,7 @@ Usage: t3 teatree e2e post-test-plan [OPTIONS]
  ``--skip-validation`` bypasses the image preflight; ``--allow-no-video``
  permits a stills-only manifest (refused by default); ``--body-file``
  posts a pre-authored body verbatim (no upload; mutually exclusive with
- ``--manifest``). See :mod:`._test_plan`. ``post-evidence`` is a hidden,
+ ``--manifest``). See :mod:`._test_plan.post`. ``post-evidence`` is a hidden,
  deprecated alias.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮

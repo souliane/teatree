@@ -276,7 +276,7 @@ class TestE2eRunWorkItem(TestCase):
 
         assert "passed" in result.lower()
         run_existing.assert_called_once()
-        from teatree.core.e2e_workitem import load_recipe  # noqa: PLC0415
+        from teatree.core.intake.e2e_workitem import load_recipe  # noqa: PLC0415
 
         recipe = load_recipe(Ticket.objects.get(pk=ticket.pk))
         assert recipe.last_run is not None
@@ -326,7 +326,7 @@ class TestE2eRunWorkItem(TestCase):
             call_command("e2e", "run", "77")
 
         assert exc.value.code == 3
-        from teatree.core.e2e_workitem import load_recipe  # noqa: PLC0415
+        from teatree.core.intake.e2e_workitem import load_recipe  # noqa: PLC0415
 
         recipe = load_recipe(Ticket.objects.get(pk=ticket.pk))
         assert recipe.last_run is not None
@@ -354,7 +354,7 @@ class TestE2eRunWorkItem(TestCase):
         with patch.object(e2e_mod.Command, "_dispatch_runner", return_value="E2E passed."):
             call_command("e2e", "run", "88")
 
-        from teatree.core.e2e_workitem import load_recipe  # noqa: PLC0415
+        from teatree.core.intake.e2e_workitem import load_recipe  # noqa: PLC0415
 
         recipe = load_recipe(Ticket.objects.get(pk=ticket.pk))
         assert recipe.last_run is not None
@@ -384,7 +384,7 @@ class TestE2eRunWorkItem(TestCase):
         with patch.object(e2e_mod.Command, "_dispatch_runner", return_value="E2E passed."):
             call_command("e2e", "run", "272", test_path=spec)
 
-        from teatree.core.e2e_workitem import load_recipe  # noqa: PLC0415
+        from teatree.core.intake.e2e_workitem import load_recipe  # noqa: PLC0415
 
         recipe = load_recipe(Ticket.objects.get(pk=ticket.pk))
         assert recipe.last_run is not None
@@ -404,7 +404,7 @@ class TestE2eRunWorkItem(TestCase):
         ):
             call_command("e2e", "run", "273", test_path=spec)
 
-        from teatree.core.e2e_workitem import load_recipe  # noqa: PLC0415
+        from teatree.core.intake.e2e_workitem import load_recipe  # noqa: PLC0415
 
         recipe = load_recipe(Ticket.objects.get(pk=ticket.pk))
         assert recipe.last_run is not None
@@ -421,7 +421,7 @@ class TestE2eRunWorkItem(TestCase):
         with patch.object(e2e_mod.Command, "_dispatch_runner", return_value="E2E passed."):
             call_command("e2e", "run", "274", test_path=spec)
 
-        from teatree.core.e2e_workitem import load_recipe  # noqa: PLC0415
+        from teatree.core.intake.e2e_workitem import load_recipe  # noqa: PLC0415
 
         recipe = load_recipe(Ticket.objects.get(pk=ticket.pk))
         assert recipe.last_run is not None

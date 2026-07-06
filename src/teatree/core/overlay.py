@@ -10,10 +10,10 @@ from typing import TYPE_CHECKING
 import httpx
 
 from teatree.core.gates.merge_guard import MergeGuard
-from teatree.core.health import HealthCheck
-from teatree.core.health import default_health_checks as _default_health_checks
 from teatree.core.overlay_metadata import OverlayMetadata
-from teatree.core.variant import Variant
+from teatree.core.provision.variant import Variant
+from teatree.core.worktree.health import HealthCheck
+from teatree.core.worktree.health import default_health_checks as _default_health_checks
 from teatree.types import (
     BaseImageConfig,
     DbImportStrategy,
@@ -30,9 +30,9 @@ from teatree.utils.run import CommandFailedError, TimeoutExpired
 
 if TYPE_CHECKING:
     from teatree.core.connector_manifest import ConnectorRequirement
+    from teatree.core.factory.operational_health import HealthSignal
     from teatree.core.models import Worktree
-    from teatree.core.operational_health import HealthSignal
-    from teatree.core.readiness import Probe
+    from teatree.core.worktree.readiness import Probe
     from teatree.types import RawAPIDict
     from teatree.utils.django_db import DjangoDbImportConfig
 
@@ -171,7 +171,7 @@ class OverlayConfig:
     # overlay legitimately works on. ORTHOGONAL to VISIBILITY (``private_repos``,
     # public-vs-private leak-prevention read by the publish hooks) and to
     # COLLABORATION (solo-vs-shared, the author/review gate in
-    # ``teatree.core.review_candidate``). Owned means the agent may work and push
+    # ``teatree.core.review.review_candidate``). Owned means the agent may work and push
     # freely; it does NOT imply auto-merge — a shared repo is still in scope yet
     # still needs colleague review, so ``owned_repos`` gates ONLY the
     # unknown-repo approval decision, never merge-without-review.
@@ -188,7 +188,7 @@ class OverlayConfig:
     # A ``[overlays.<name>.owned_repos]`` TOML table REPLACES the settings dict
     # (authoritative-and-complete, no deep-merge). When empty (default) the
     # overlay has not opted into scope gating. Consumed by
-    # ``teatree.core.repo_scope`` / ``teatree.core.gates.owned_repo_guard``.
+    # ``teatree.core.intake.repo_scope`` / ``teatree.core.gates.owned_repo_guard``.
     owned_repos: dict[str, list[str]]
     # Opt-in for the unknown-repo approval gate (``owned_repo_guard``). Default
     # False keeps every unmodified overlay inert. When True AND ``owned_repos``
@@ -616,7 +616,7 @@ class OverlayBase(ABC):  # noqa: PLR0904 — overlay extension API; hook count r
 
         An overlay declares its non-impacting paths (tests, migrations,
         tooling) and returns
-        :func:`~teatree.core.customer_display_impact.classify_paths`; an overlay
+        :func:`~teatree.core.evidence.customer_display_impact.classify_paths`; an overlay
         with no customer surfaces at all (the dogfood overlay) returns
         ``False``.
         """

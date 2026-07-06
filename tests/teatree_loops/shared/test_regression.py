@@ -7,7 +7,7 @@ the outer loop's own target signal. This is the ONE implementation both the oute
 loop's ``decide_keep`` and the future directive loop's VERIFYING step read.
 """
 
-from teatree.core.factory_score import FactoryScore, ScoredSignal
+from teatree.core.factory.factory_score import FactoryScore, ScoredSignal
 from teatree.loops.shared.regression import no_collateral_regression
 
 

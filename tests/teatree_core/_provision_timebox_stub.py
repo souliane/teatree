@@ -7,7 +7,7 @@ worktree torn down from a STALE base created before ``provision_timebox`` was
 added in #2220. Teardown runs the worktree's OWN checkout (``uv --directory
 <worktree> run``), so its interpreter cannot import the module the orchestrating
 ``t3`` added later. The lazy import raises a ``ModuleNotFoundError`` whose
-``.name`` IS ``teatree.core.provision_timebox``, and ``run_step`` must degrade to
+``.name`` IS ``teatree.core.provision.provision_timebox``, and ``run_step`` must degrade to
 a plain subprocess run.
 
 ``provision_timebox_internally_broken`` models the module being PRESENT but its
@@ -22,7 +22,7 @@ import builtins
 from typing import Self
 from unittest.mock import patch
 
-_PROVISION_TIMEBOX = "teatree.core.provision_timebox"
+_PROVISION_TIMEBOX = "teatree.core.provision.provision_timebox"
 
 #: ``.name`` of the error a present-but-broken ``provision_timebox`` would raise
 #: from its own body (a missing transitive dependency, NOT this module).
@@ -30,7 +30,7 @@ BROKEN_DEPENDENCY_NAME = "some_missing_transitive_dep"
 
 
 class provision_timebox_unimportable:  # noqa: N801 — context-manager reads as a verb at the call site
-    """Context manager: ``import teatree.core.provision_timebox`` raises ModuleNotFoundError (module absent)."""
+    """Context manager: ``teatree.core.provision.provision_timebox`` is unimportable (ModuleNotFoundError)."""
 
     _real_import = builtins.__import__
 

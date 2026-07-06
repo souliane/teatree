@@ -4,11 +4,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from teatree.config import clone_root, worktree_root
-from teatree.core.clone_paths import find_clone_path
 from teatree.core.models import Ticket, Worktree
 from teatree.core.public_identity import is_public_github_remote, set_local_noreply_identity
 from teatree.core.runners.base import RunnerBase, RunnerResult
-from teatree.core.worktree_paths import ticket_dir_for
+from teatree.core.worktree.clone_paths import find_clone_path
+from teatree.core.worktree.worktree_paths import ticket_dir_for
 from teatree.utils import git
 from teatree.utils.git_guard import guard_repo_remote_slug, is_github_slug
 

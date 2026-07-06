@@ -16,7 +16,7 @@ database error (``no such table`` / ``relation does not exist``) also falls back
 to config — the sibling of :class:`SlackBroadcastsScanner`'s pre-migration
 tolerance.
 
-The config-fallback path lives in :mod:`teatree.core.author_trust`, which is
+The config-fallback path lives in :mod:`teatree.core.review.author_trust`, which is
 the shared classifier the four reviewing scanners and the merge keystone all
 consume so they cannot drift.
 """

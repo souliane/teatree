@@ -23,7 +23,7 @@ def _detect_agent_ticket_status(project_root: Path) -> str:
         return ""
     try:
         ensure_django()
-        from teatree.core.resolve import resolve_worktree  # noqa: PLC0415
+        from teatree.core.intake.resolve import resolve_worktree  # noqa: PLC0415
 
         return str(resolve_worktree().ticket.state)
     except Exception:

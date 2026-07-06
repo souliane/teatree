@@ -12,8 +12,8 @@ from collections.abc import Callable
 
 from django.core.management import call_command
 
-from teatree.core.factory_signal_queries import SignalReading, SignalStatus
-from teatree.core.factory_signals import Direction, FactorySignalsReport, SignalRow, SignalVerdict
+from teatree.core.factory.factory_signal_queries import SignalReading, SignalStatus
+from teatree.core.factory.factory_signals import Direction, FactorySignalsReport, SignalRow, SignalVerdict
 from teatree.core.gates.directive_interpret_gate import record_returned_directive_interpretation
 from teatree.core.models import ConfigSetting, CriticVerdict, DeferredQuestion, DirectiveDispatch, Ticket
 from teatree.core.models.directive import Directive

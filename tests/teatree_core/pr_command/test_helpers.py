@@ -4,7 +4,7 @@ from unittest.mock import patch
 from django.test import TestCase
 
 from teatree import visual_qa
-from teatree.core.management.commands._ship_gates import resolve_base_url as _resolve_base_url
+from teatree.core.management.commands._ship.gates import resolve_base_url as _resolve_base_url
 from teatree.core.management.commands.pr import _assert_commits_ahead_of_base, _check_shipping_gate, _run_visual_qa_gate
 from teatree.core.models import Session, Ticket, Worktree
 

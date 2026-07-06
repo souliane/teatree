@@ -1,6 +1,6 @@
 """``t3 <overlay> signals`` — read-only derived-on-read factory quality signals (SIG-PR-1).
 
-Thin wrapper over :func:`teatree.core.factory_signals.compute_factory_signals`,
+Thin wrapper over :func:`teatree.core.factory.factory_signals.compute_factory_signals`,
 mirroring ``standup``/``cost``: the structured report is the output channel
 (``django-typer`` serialises the return). Every query underneath is a select —
 no state mutation, no LLM calls, no network.
@@ -13,7 +13,7 @@ from typing import Annotated
 import typer
 from django_typer.management import TyperCommand
 
-from teatree.core.factory_signals import compute_factory_signals
+from teatree.core.factory.factory_signals import compute_factory_signals
 
 
 class Command(TyperCommand):

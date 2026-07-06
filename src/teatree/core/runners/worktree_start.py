@@ -8,7 +8,7 @@ from teatree.core.overlay import OverlayBase
 from teatree.core.overlay_loader import get_overlay_for_worktree
 from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.core.runners.service_launch import ServiceLauncher
-from teatree.core.worktree_env import compose_project, write_env_cache
+from teatree.core.worktree.worktree_env import compose_project, write_env_cache
 from teatree.timeouts import DOCKER_COMPOSE_BUILD, DOCKER_COMPOSE_DOWN, DOCKER_COMPOSE_UP, TimeoutConfig, load_timeouts
 from teatree.utils.ports import get_worktree_ports
 from teatree.utils.run import TimeoutExpired, run_allowed_to_fail

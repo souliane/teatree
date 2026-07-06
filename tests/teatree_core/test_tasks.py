@@ -8,7 +8,7 @@ import pytest
 from django.test import TestCase, override_settings
 
 import teatree.core.overlay_loader as overlay_loader_mod
-from teatree.core.attachment_manifest import AttachmentKind, AttachmentRef, local_path_for
+from teatree.core.intake.attachment_manifest import AttachmentKind, AttachmentRef, local_path_for
 from teatree.core.models import AttachmentManifest, Session, Task, TaskAttempt, Ticket
 from teatree.core.runners.base import RunnerResult
 from teatree.core.tasks import (

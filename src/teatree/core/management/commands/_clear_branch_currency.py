@@ -13,8 +13,8 @@ GitHub re-applies the branch's diff onto the live target at squash-merge
 time and the merge-time live-CI re-check still guards correctness.
 """
 
-from teatree.core.branch_currency import sha_conflicts_with_target
 from teatree.core.models import Ticket
+from teatree.core.worktree.branch_currency import sha_conflicts_with_target
 
 
 def check_clear_branch_currency(reviewed_sha: str, ticket: Ticket | None) -> str | None:
