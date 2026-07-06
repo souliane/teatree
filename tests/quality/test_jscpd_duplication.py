@@ -26,6 +26,10 @@ from pathlib import Path
 
 import pytest
 
+# The whole-tree jscpd scan is the ~63s cost that made every push time out; it is
+# deselected at push (`-m "not push_heavy"`) and runs in CI instead.
+pytestmark = pytest.mark.push_heavy
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CONFIG = _REPO_ROOT / ".jscpd.json"
 _SRC = _REPO_ROOT / "src" / "teatree"

@@ -26,6 +26,10 @@ import pytest
 from teatree.config import OnBehalfPostMode
 from teatree.on_behalf_gate import OnBehalfVerdict, resolve_on_behalf_verdict
 
+# The real mutmut run is a whole-module subprocess; deselected at push
+# (`-m "not push_heavy"`) and run in CI instead.
+pytestmark = pytest.mark.push_heavy
+
 
 def _mutant_resolve(mode: OnBehalfPostMode, action: str) -> OnBehalfVerdict:
     """The BLOCK→PROCEED mutant of the ASK branch (the regression we fear)."""
