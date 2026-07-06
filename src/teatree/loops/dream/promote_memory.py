@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING
 from teatree.core.backend_protocols import CodeHostBackend
 from teatree.core.models import ConsolidatedMemory
 from teatree.core.models.implemented_issue_marker import NEEDS_TRIAGE_LABEL
-from teatree.core.review_findings import find_bare_references, neutralize_bare_references
+from teatree.core.review.review_findings import find_bare_references, neutralize_bare_references
 from teatree.hooks import banned_terms_scanner
 from teatree.types import RawAPIDict
 

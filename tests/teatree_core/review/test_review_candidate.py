@@ -4,7 +4,7 @@ The auto-sweep / discover surfaces previously relied on agent-side BINDING
 memory to apply these rules; this module is the canonical structural fix.
 """
 
-from teatree.core.review_candidate import (
+from teatree.core.review.review_candidate import (
     author_is_self,
     eyes_reacted_by_other,
     should_review_candidate,

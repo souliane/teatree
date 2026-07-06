@@ -37,7 +37,6 @@ import logging
 from typing import TYPE_CHECKING, cast
 
 from teatree.config import get_effective_settings
-from teatree.core.critic_rubric import _MERGE_TRANSITION, item_for, llm_items
 from teatree.core.gates.plan_currency_gate import latest_plan_artifact
 from teatree.core.merge.errors import MergePreconditionError
 from teatree.core.models.critic_dispatch import CriticDispatch
@@ -45,6 +44,7 @@ from teatree.core.models.critic_finding import CriticFinding, CriticFindingSpec
 from teatree.core.models.critic_verdict import CriticVerdict
 from teatree.core.models.directive import Directive
 from teatree.core.models.pull_request import PullRequest
+from teatree.core.review.critic_rubric import _MERGE_TRANSITION, item_for, llm_items
 
 if TYPE_CHECKING:
     from collections.abc import Mapping

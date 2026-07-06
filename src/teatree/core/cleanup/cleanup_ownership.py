@@ -12,7 +12,7 @@ the guard is a no-op for the owner's solo repos — it stays in code for when a
 product overlay sets the pattern). Ownership is resolved against the owner's
 identity set: the configured ``user_identity_aliases`` plus the repo's local
 ``git config user.name`` / ``user.email`` — reusing
-:func:`teatree.core.review_candidate.author_is_self`. An item whose author is not
+:func:`teatree.core.review.review_candidate.author_is_self`. An item whose author is not
 in that set, on a colleague-facing repo, is excluded.
 """
 
@@ -20,7 +20,7 @@ import logging
 import re
 from dataclasses import dataclass
 
-from teatree.core.review_candidate import author_is_self
+from teatree.core.review.review_candidate import author_is_self
 from teatree.utils import git
 from teatree.utils.git_remote_ops import config_value, remote_slug
 from teatree.utils.run import CommandFailedError

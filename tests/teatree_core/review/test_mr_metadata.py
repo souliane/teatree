@@ -10,7 +10,7 @@ format in each error.
 
 import pytest
 
-from teatree.core.mr_metadata import (
+from teatree.core.review.mr_metadata import (
     DEFAULT_MR_TITLE_REGEX,
     ensure_standard_body,
     expected_title_format,

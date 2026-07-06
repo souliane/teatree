@@ -195,7 +195,7 @@ class Command(TyperCommand):
         from django.db import transaction  # noqa: PLC0415
         from django.utils import timezone  # noqa: PLC0415
 
-        from teatree.core.completion_evidence import (  # noqa: PLC0415
+        from teatree.core.review.completion_evidence import (  # noqa: PLC0415
             CompletionEvidenceError,
             check_completion_evidence,
             normalize_artifact_pointers,

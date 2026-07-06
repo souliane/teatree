@@ -240,7 +240,7 @@ class TestSoloOverlayPathHonoursNewestWins(TestCase):
 
     @pytest.fixture(autouse=True)
     def _internal_repo(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("teatree.core.author_trust.repo_is_internal", lambda *a, **k: True)
+        monkeypatch.setattr("teatree.core.review.author_trust.repo_is_internal", lambda *a, **k: True)
         monkeypatch.setattr(
             "teatree.loop.scanners.pr_sweep_substrate.fetch_pr_changed_paths",
             lambda *a, **k: ["src/teatree/loop/scanners/pr_sweep.py"],

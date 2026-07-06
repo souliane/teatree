@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from teatree.core.review_findings import (
+from teatree.core.review.review_findings import (
     ClassifiedFinding,
     FilingContext,
     FindingClass,

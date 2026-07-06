@@ -12,10 +12,10 @@ import logging
 from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING
 
-from teatree.core.author_trust import classify_author
 from teatree.core.merge import classify_required_rollup, failing_required_names
 from teatree.core.models.merge_clear import MergeClear
-from teatree.core.review_candidate import author_is_self
+from teatree.core.review.author_trust import classify_author
+from teatree.core.review.review_candidate import author_is_self
 from teatree.loop.pr_ticket_index import resolve_author_ticket
 from teatree.loop.scanners.pr_sweep_types import REPO_STATE_CHECK_NAMES, UV_AUDIT_CHECK_NAME, PrSummary
 
@@ -44,7 +44,7 @@ def pr_authored_by_self(*, author: str, self_identities: Iterable[str]) -> bool:
     should be auto-scheduled for a cold review; a colleague's PR is theirs to
     review (auto-scheduling it wastes a dispatch and risks an unattended
     review note on their work). Reuses the single self-author signal
-    :func:`teatree.core.review_candidate.author_is_self` — an empty *author*
+    :func:`teatree.core.review.review_candidate.author_is_self` — an empty *author*
     or an empty identity set never matches, so an unconfirmable author fails
     closed (no arm) rather than being treated as ours.
     """

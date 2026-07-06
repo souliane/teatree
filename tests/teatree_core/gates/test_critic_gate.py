@@ -22,9 +22,7 @@ from django.test import TestCase
 
 from teatree.agents.attempt_recorder import record_result_envelope
 from teatree.config import UserSettings
-from teatree.core import critic_rubric
 from teatree.core import tasks as core_tasks
-from teatree.core.critic_rubric import CRITIC_RUBRIC, CriticRubricItem, RubricKind
 from teatree.core.gates import critic_gate
 from teatree.core.gates.critic_gate import (
     check_critic,
@@ -46,6 +44,8 @@ from teatree.core.models import (
     Ticket,
 )
 from teatree.core.models.plan_adequacy import all_negated_adequacy
+from teatree.core.review import critic_rubric
+from teatree.core.review.critic_rubric import CRITIC_RUBRIC, CriticRubricItem, RubricKind
 from teatree.core.runners.base import RunnerResult
 
 _FORTY_HEX = "a" * 40
@@ -261,7 +261,7 @@ class TestReturnedVerdictRecording(TestCase):
 class TestInstrumentationGap(TestCase):
     def test_a_raising_deterministic_predicate_is_recorded_as_instrumentation_gap(self) -> None:
         ticket = _clean_delivered_ticket()
-        with patch("teatree.core.critic_rubric.spec_not_plan", side_effect=RuntimeError("boom")):
+        with patch("teatree.core.review.critic_rubric.spec_not_plan", side_effect=RuntimeError("boom")):
             _record_critic(ticket)
         finding = CriticFinding.objects.get(ticket=ticket, rubric_item="spec_not_plan")
         assert finding.status == CriticFinding.Status.INSTRUMENTATION_GAP
@@ -389,7 +389,7 @@ class TestTransitionScoping(TestCase):
             adversarial_question="a plan-transition item must not run at mark_delivered",
             kind=RubricKind.DETERMINISTIC,
             origin="north-star plan critic",
-            predicate_path="teatree.core.critic_rubric.spec_not_plan",
+            predicate_path="teatree.core.review.critic_rubric.spec_not_plan",
             blocking=True,
             transition="plan",
         )

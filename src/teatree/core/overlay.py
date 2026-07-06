@@ -171,7 +171,7 @@ class OverlayConfig:
     # overlay legitimately works on. ORTHOGONAL to VISIBILITY (``private_repos``,
     # public-vs-private leak-prevention read by the publish hooks) and to
     # COLLABORATION (solo-vs-shared, the author/review gate in
-    # ``teatree.core.review_candidate``). Owned means the agent may work and push
+    # ``teatree.core.review.review_candidate``). Owned means the agent may work and push
     # freely; it does NOT imply auto-merge — a shared repo is still in scope yet
     # still needs colleague review, so ``owned_repos`` gates ONLY the
     # unknown-repo approval decision, never merge-without-review.

@@ -6,7 +6,7 @@ assembles it and posts each channel's message through the overlay's
 messaging backend.
 
 The command is a thin wrapper: assembly + repo→channel routing live in
-:mod:`teatree.core.mr_reminder` (pure, deterministic). The only external
+:mod:`teatree.core.review.mr_reminder` (pure, deterministic). The only external
 boundary is the per-channel post, routed + gated through the on-behalf
 egress chokepoint (``OnBehalfSlackEgress.post``) like every colleague-
 surface egress — a reminder channel is a colleague surface, so it is
@@ -24,8 +24,8 @@ from django_typer.management import TyperCommand, command
 
 from teatree.config import get_effective_settings
 from teatree.core.backend_factory import code_host_from_overlay, messaging_from_overlay
-from teatree.core.mr_reminder import ChannelMessage, MrReminder, build_mr_reminder
 from teatree.core.on_behalf_egress import OnBehalfPostBlockedError, OnBehalfSlackEgress
+from teatree.core.review.mr_reminder import ChannelMessage, MrReminder, build_mr_reminder
 
 
 class ChannelPreview(TypedDict):

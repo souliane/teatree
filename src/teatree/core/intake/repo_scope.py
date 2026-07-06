@@ -14,7 +14,7 @@ SCOPE is one of three orthogonal axes the overlay model keeps separate:
     the publish hooks. This axis fails OPEN (unknown → not-private). SCOPE
     fails CLOSED (unknown → ask). Never reuse the visibility verdict here.
 *   **COLLABORATION** — solo vs shared, the author/review gate in
-    :mod:`teatree.core.review_candidate`. Untouched here.
+    :mod:`teatree.core.review.review_candidate`. Untouched here.
 
 Host-awareness is structural. ``owned.get(host)`` is an EXACT host-key
 lookup, so ``gitlab.com/souliane/x`` can never reach a ``github.com``

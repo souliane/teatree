@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from teatree.core.review_message_cache import persist_review_message
+from teatree.core.review.review_message_cache import persist_review_message
 
 _MR_385 = "https://gitlab.com/org/repo/-/merge_requests/385"
 _MR_386 = "https://gitlab.com/org/repo/-/merge_requests/386"

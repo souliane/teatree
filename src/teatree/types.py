@@ -287,7 +287,7 @@ class ValidationResult(TypedDict):
 
 # Default MR title pattern enforced at ``pr create`` (#1540). Lives here (no
 # deps) so both :mod:`teatree.config` (the ``mr_title_regex`` setting default)
-# and :mod:`teatree.core.mr_metadata` (the gate logic) reference one source
+# and :mod:`teatree.core.review.mr_metadata` (the gate logic) reference one source
 # without a layering violation. The type set is the union of Conventional
 # Commits (``feat|fix|chore|docs|refactor|test|perf|build|ci``) and the
 # release-notes types some overlays narrow to (``improvement|config|techdebt``),

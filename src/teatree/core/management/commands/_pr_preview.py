@@ -15,8 +15,8 @@ is exactly what blocks the release-notes pipeline.
 from typing import TypedDict
 
 from teatree.core.models import Ticket, Worktree
-from teatree.core.mr_metadata import ensure_standard_body
 from teatree.core.overlay_loader import get_overlay
+from teatree.core.review.mr_metadata import ensure_standard_body
 from teatree.core.runners.ship import (
     PrTitleInputs,
     overlay_pr_labels,

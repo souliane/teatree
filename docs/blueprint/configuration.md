@@ -92,7 +92,7 @@ the same host-stripped leading-segment-prefix grammar as `private_repos`
 (`teatree.hooks._repo_visibility.slug_namespace_matches`): the most-specific
 configured pattern wins, and an unmatched MR falls back to `default_channel`
 (empty `default_channel` keeps it out of every channel rather than guessing). The
-assembly + routing are pure (`teatree.core.mr_reminder`); the per-channel post routes
+assembly + routing are pure (`teatree.core.review.mr_reminder`); the per-channel post routes
 through the on-behalf egress chokepoint (`OnBehalfSlackEgress.post`), so a reminder
 channel (a colleague surface) is gated + audited like any on-behalf post.
 

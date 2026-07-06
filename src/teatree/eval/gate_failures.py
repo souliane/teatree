@@ -53,7 +53,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, cast
 
-from teatree.core.review_findings import (
+from teatree.core.review.review_findings import (
     ClassifiedFinding,
     FiledIssue,
     FilingContext,
@@ -163,7 +163,7 @@ class GateFailure:
     def fingerprint(self) -> str:
         """The dedup key: a stable hash of the gate-identity slug.
 
-        Delegates to the :class:`~teatree.core.review_findings.ReviewFinding`
+        Delegates to the :class:`~teatree.core.review.review_findings.ReviewFinding`
         adapter so the value recorded in the durable store and the value the
         escalation filer dedups on are ONE identical fingerprint — no second
         hashing scheme to drift.
@@ -295,7 +295,7 @@ def escalate_gate_failures(
 
     A failure is escalated only when it is both *preventable* (classifier) and
     *recurring* (its fingerprint recorded across >= 2 sessions). The filing
-    reuses :func:`~teatree.core.review_findings.file_class_c_issue`, so it is
+    reuses :func:`~teatree.core.review.review_findings.file_class_c_issue`, so it is
     deduped by fingerprint marker (a re-run never refiles), banned-terms-safe
     (a hit withholds rather than leaks), and clickable-link safe. Environmental
     or non-recurring failures file nothing.

@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Annotated, TypedDict, cast
 import typer
 from django_typer.management import TyperCommand, command, initialize
 
-from teatree.core.review_findings import (
+from teatree.core.review.review_findings import (
     ClassifiedFinding,
     FilingContext,
     FindingClass,

@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 from django_fsm import can_proceed
 
-from teatree.core.author_trust import classify_author
+from teatree.core.review.author_trust import classify_author
 from teatree.loop.dispatch import ActionPayload
 from teatree.loop.mechanical_local_stack import drain_stack_queue_item, reap_idle_stack
 from teatree.loop.mechanical_resources import free_resources

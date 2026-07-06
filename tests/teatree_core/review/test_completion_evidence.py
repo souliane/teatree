@@ -1,6 +1,6 @@
 import pytest
 
-from teatree.core.completion_evidence import (
+from teatree.core.review.completion_evidence import (
     OUTCOME_CLAIM_KINDS,
     CompletionEvidence,
     CompletionEvidenceError,
@@ -135,7 +135,7 @@ class TestHasResolvablePointer:
             "forge note_AbC123 recorded",
             "landed via src/teatree/core/task.py",
             "updated ./scripts/run.sh",
-            "see teatree.core.completion_evidence",
+            "see teatree.core.review.completion_evidence",
         ],
     )
     def test_resolvable_token_is_detected(self, note: str) -> None:
@@ -181,7 +181,7 @@ class TestHasResolvablePointer:
     @pytest.mark.parametrize(
         "note",
         [
-            "see teatree.core.completion_evidence",
+            "see teatree.core.review.completion_evidence",
             "in src.teatree.core.task",
             "see tests.teatree_core.test_task",
             "the module foo.bar.baz.py",

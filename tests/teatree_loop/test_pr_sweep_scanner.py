@@ -68,7 +68,7 @@ def _repo_internal_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     # TestUntrustedAuthorPublicRepo; the pre-#1773 decision-ladder tests treat
     # the repo as internal so the author gate is a no-op for them (no live
     # ``gh`` visibility probe in the test path).
-    monkeypatch.setattr("teatree.core.author_trust.repo_is_internal", lambda *a, **k: True)
+    monkeypatch.setattr("teatree.core.review.author_trust.repo_is_internal", lambda *a, **k: True)
 
 
 @pytest.fixture(autouse=True)
@@ -328,7 +328,7 @@ class TestUntrustedAuthorPublicRepo:
         keystone = FakeKeystone()
         scanner, notifier = _scanner(api=api, keystone=keystone)
 
-        with patch("teatree.core.author_trust.repo_is_internal", return_value=False):
+        with patch("teatree.core.review.author_trust.repo_is_internal", return_value=False):
             signals = scanner.scan()
 
         assert keystone.calls == []
@@ -342,7 +342,7 @@ class TestUntrustedAuthorPublicRepo:
         keystone = FakeKeystone()
         scanner, _ = _scanner(api=api, keystone=keystone)
 
-        with patch("teatree.core.author_trust.repo_is_internal", return_value=False):
+        with patch("teatree.core.review.author_trust.repo_is_internal", return_value=False):
             signals = scanner.scan()
 
         assert keystone.calls == []
@@ -358,7 +358,7 @@ class TestUntrustedAuthorPublicRepo:
         keystone = FakeKeystone()
         scanner, _ = _scanner(api=api, keystone=keystone, solo_overlay=True)
 
-        with patch("teatree.core.author_trust.repo_is_internal", return_value=False):
+        with patch("teatree.core.review.author_trust.repo_is_internal", return_value=False):
             signals = scanner.scan()
 
         assert api.merge_pr_calls == []
@@ -374,7 +374,7 @@ class TestUntrustedAuthorPublicRepo:
         keystone = FakeKeystone()
         scanner, _ = _scanner(api=api, keystone=keystone)
 
-        with patch("teatree.core.author_trust.repo_is_internal", return_value=False):
+        with patch("teatree.core.review.author_trust.repo_is_internal", return_value=False):
             signals = scanner.scan()
 
         assert keystone.calls == [int(clear.pk)]
