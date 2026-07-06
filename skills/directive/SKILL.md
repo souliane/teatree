@@ -1,10 +1,6 @@
 ---
 name: directive
-description: Submit a plain-English directive about how teatree itself should behave —
-  captured verbatim, interpreted into a typed mechanism sketch, human-ratified via
-  Slack/questions, then implemented through the gated pipeline. Use when the user says
-  "/t3:directive ...", "directive:", "from now on teatree should...", "teatree must
-  always/never...", or asks to change teatree's own behavior in natural language.
+description: Submit a plain-English directive about how teatree itself should behave — captured verbatim, interpreted into a typed mechanism sketch, human-ratified via Slack/questions, then implemented through the gated pipeline. Use when the user says "/t3:directive ...", "directive:", "from now on teatree should...", "teatree must always/never...", or asks to change teatree's own behavior in natural language.
 compatibility: any
 requires:
   - rules
