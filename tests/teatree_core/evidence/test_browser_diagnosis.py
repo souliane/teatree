@@ -7,6 +7,7 @@ registration line; an operator who opts out gets the re-enable hint instead.
 
 from django.test import TestCase
 
+from teatree.config import get_effective_settings
 from teatree.core.evidence.browser_diagnosis import CHROME_DEVTOOLS_SERVER_NAME, resolve_browser_diagnosis
 from teatree.core.models.config_setting import ConfigSetting
 
@@ -20,6 +21,9 @@ class TestResolveBrowserDiagnosis(TestCase):
             == f"claude mcp add {CHROME_DEVTOOLS_SERVER_NAME} -- npx -y chrome-devtools-mcp@latest"
         )
         assert registration.add_command in registration.message
+
+    def test_claude_chrome_disabled_by_default(self) -> None:
+        assert get_effective_settings(None).claude_chrome is False
 
     def test_disabled_when_opted_out(self) -> None:
         ConfigSetting.objects.set_value("chrome_devtools_mcp_enabled", value=False)
