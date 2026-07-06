@@ -449,14 +449,19 @@ repos:
   # The local-suite runners (dev/test-fast.sh, dev/test-matrix.sh) and the exact
   # full-CI predicate (dev/ci-parity.sh) stay as explicit opt-ins. The one push
   # pytest below is deliberately PATH-SCOPED (tests/quality + the never-lockout
-  # contract + doctest collection over src/teatree) so the no-full-suite invariant
-  # stays satisfied. Guarded by tests/test_no_full_suite_on_pre_push.py.
+  # contract + doctest collection over src/teatree) AND marker-scoped
+  # (-m "not push_heavy") so the no-full-suite invariant stays satisfied. The
+  # push_heavy marker excludes the two whole-tree subprocess checks (the ~63s
+  # jscpd scan and the mutmut kill-proof run) from the push gate; CI's test-shard
+  # lane runs the whole suite with no marker filter, so both still gate on every
+  # PR -- relocated to CI, not dropped. Guarded by
+  # tests/test_no_full_suite_on_pre_push.py.
   - repo: local
     hooks:
       - id: ci-critical-parity
-        name: CI-critical parity (scoped static/AST + doctest lane; path-scoped, ~1-3 min)
+        name: CI-critical parity (scoped static/AST + doctest lane; path-scoped, ~1 min)
         language: system
-        entry: uv run pytest tests/quality tests/test_gate_never_lockout_contract.py --doctest-modules src/teatree -q
+        entry: uv run pytest tests/quality tests/test_gate_never_lockout_contract.py --doctest-modules src/teatree -m "not push_heavy" -q
         pass_filenames: false
         always_run: true
         stages: [push]

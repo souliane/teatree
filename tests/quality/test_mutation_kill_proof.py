@@ -59,6 +59,9 @@ class TestManualMutantKilled:
             assert verdict is OnBehalfVerdict.BLOCK
 
 
+# The real mutmut run is an expensive whole-module subprocess; deselected at push
+# (`-m "not push_heavy"`) and run in CI instead.
+@pytest.mark.push_heavy
 @pytest.mark.integration
 class TestMutmutKillsTheMutant:
     # The real mutmut run is given an internal 420s subprocess budget below; the

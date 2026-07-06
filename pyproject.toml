@@ -297,6 +297,7 @@ filterwarnings = [
 xfail_strict = true
 markers = [
   "integration: tests that run real subprocesses (shell scripts, git, etc.)",
+  "push_heavy: whole-tree subprocess checks (jscpd scan, mutmut run) deselected at push, run in CI",
 ]
 
 # --- Coverage ---
