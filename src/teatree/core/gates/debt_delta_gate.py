@@ -11,7 +11,13 @@ never a silent bypass.
 
 The gate is delta-only (added lines) so legacy debt is exempt (a shrink-only
 ratchet) and ships DARK behind ``require_debt_delta``: inert until an overlay
-opts in.
+opts in. :func:`evaluate_debt_delta` is the shared flag+diff+policy orchestration
+wired at every core ``host.create_pr`` seam so no route bypasses it (mirroring the
+PR-2 budget gate): the ship pipeline chokepoint ``ShipExecutor._open_pr_and_record``
+(both the interactive ``pr create`` async worker AND the autonomous loop's
+task-driven ship converge there), the ``_run_ship_gates`` pre-push fail-fast (the
+interactive ``pr create`` path), and ``_ensure_pr.create_or_defer_pr`` (the
+orphan-branch path).
 """
 
 from teatree.config import get_effective_settings
@@ -34,8 +40,9 @@ def evaluate_debt_delta(ticket: Ticket, repo_path: str) -> str | None:
     delta source) and runs :func:`check_debt_delta`. Returns the refusal message on
     unwaived net-new debt, or ``None`` when clean, inert, or unverifiable (no real
     repo / git error) — mirroring the branch-currency / mandatory-E2E posture. The
-    two call sites (``_ship_gates.run_debt_delta_gate`` and
-    ``_ensure_pr.create_or_defer_pr``) wrap this into their own result shape.
+    three call sites (``ShipExecutor._open_pr_and_record``,
+    ``_ship_gates.run_debt_delta_gate``, and ``_ensure_pr.create_or_defer_pr``)
+    wrap this into their own result shape.
     """
     if not get_effective_settings(ticket.overlay or None).require_debt_delta:
         return None
