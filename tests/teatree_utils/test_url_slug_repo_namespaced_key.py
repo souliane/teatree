@@ -51,6 +51,33 @@ def test_different_repos_sharing_an_issue_number_never_collide() -> None:
     assert second == "acme-product/repo#2242"
 
 
+def test_a_url_fragment_disambiguates_synthetic_umbrella_tickets() -> None:
+    """A URL fragment keeps synthetic umbrella tickets from colliding (#102).
+
+    Synthetic loop tickets anchor on ONE umbrella issue and disambiguate solely
+    via a fragment (``#directive=`` vs ``#directive-impl=`` vs
+    ``#outer-loop-experiment=``). The key must honour it, or they collapse to the
+    umbrella key and collide on the ``Ticket`` unique constraint (#102).
+    """
+    umbrella = "https://github.com/souliane/teatree/issues/3009"
+    interpret = repo_namespaced_key(f"{umbrella}#directive=5")
+    implement = repo_namespaced_key(f"{umbrella}#directive-impl=5")
+    experiment = repo_namespaced_key(f"{umbrella}#outer-loop-experiment=7")
+    assert interpret == "souliane/teatree#3009#directive=5"
+    assert implement == "souliane/teatree#3009#directive-impl=5"
+    assert experiment == "souliane/teatree#3009#outer-loop-experiment=7"
+    assert len({interpret, implement, experiment}) == 3
+
+
+def test_a_bare_issue_url_without_a_fragment_is_unchanged() -> None:
+    """A real issue with no fragment is untouched by the fragment-awareness (#102).
+
+    The common case — a real issue with no fragment — is untouched by the
+    fragment-awareness added for the umbrella-ticket collision (#102).
+    """
+    assert repo_namespaced_key("https://github.com/acme-eng/widgets/issues/42") == "acme-eng/widgets#42"
+
+
 def test_from_path_parses_a_bare_url_path() -> None:
     """``repo_namespaced_key`` is a thin ``urlparse().path`` wrapper around this."""
     assert repo_namespaced_key_from_path("/acme-eng/widgets/issues/42") == "acme-eng/widgets#42"
