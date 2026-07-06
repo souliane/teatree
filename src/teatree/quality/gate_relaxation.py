@@ -79,11 +79,13 @@ class _FileDiff:
     added_in_omit: list[bool]
 
 
-def _blank_string_literals(line: str) -> str:
+def blank_string_literals(line: str) -> str:
     """Return ``line`` with single-line string-literal contents blanked to spaces.
 
     So a ``# noqa`` inside a string literal (this module's own matcher source,
     a test fixture) is not mistaken for a real trailing suppression comment.
+    Public so the sibling ship-chain ``debt_delta`` scanner reuses the same
+    real-trailing-comment primitive rather than duplicating the regex.
     """
     return _STRING_SPAN_RE.sub(lambda m: m.group(0)[0] + " " * (len(m.group(0)) - 2) + m.group(0)[-1], line)
 
@@ -186,7 +188,7 @@ def _noqa_findings(fd: _FileDiff) -> list[RelaxationFinding]:
         return []
     findings: list[RelaxationFinding] = []
     for line in fd.added:
-        blanked = _blank_string_literals(line)
+        blanked = blank_string_literals(line)
         hash_idx = blanked.find("#")
         if hash_idx < 0 or not blanked[:hash_idx].strip():
             continue  # no code before the comment (or no comment) — not a real suppression

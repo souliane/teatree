@@ -9,6 +9,7 @@ from teatree.core.backend_protocols import BackendResolutionError, PullRequestSp
 from teatree.core.branch_currency import sha_conflicts_with_target
 from teatree.core.close_trailer_scanner import apply_publish_gate
 from teatree.core.gates.architecture_precheck_gate import warn_if_precheck_incomplete
+from teatree.core.gates.debt_delta_gate import evaluate_debt_delta
 from teatree.core.gates.open_questions_gate import warn_if_open_questions_missing
 from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_budget
 from teatree.core.mr_metadata import ensure_standard_body
@@ -268,7 +269,7 @@ class ShipExecutor(RunnerBase):
 
         git.push(repo=repo_path, remote="origin", branch=branch)
         spec = self._build_pr_spec(ticket, host, repo_path, branch, extra)
-        return self._open_pr_and_record(ticket, extra, host, spec, branch)
+        return self._open_pr_and_record(ticket, extra, host, spec, repo_path)
 
     @staticmethod
     def _resolve_host(repo_path: str) -> "CodeHostBackend | RunnerResult":
@@ -294,7 +295,7 @@ class ShipExecutor(RunnerBase):
         extra: "TicketExtra",
         host: "CodeHostBackend",
         spec: PullRequestSpec,
-        branch: str,
+        repo_path: str,
     ) -> RunnerResult:
         """Open the PR, verify the URL is present, and record it on the ticket.
 
@@ -305,18 +306,22 @@ class ShipExecutor(RunnerBase):
         ``web_url`` is the cross-host canonical key; ``html_url`` is kept
         for raw GitHub API payloads piped through other producers.
         """
-        # North-star PR-2: THE chokepoint both the interactive `pr create` async
-        # worker and the autonomous loop's task-driven ship converge on (routes
-        # that reach here without `_run_ship_gates`). Refuse before opening when
-        # the ticket is at its per-repo open-PR budget; inert at the neutral
-        # default. `_run_ship_gates` additionally fail-fasts this before the push
-        # for the interactive path.
+        # North-star PR-2/PR-3: THE chokepoint both the interactive `pr create`
+        # async worker and the autonomous loop's task-driven ship converge on
+        # (routes that reach here without `_run_ship_gates`). Refuse before
+        # opening when the ticket is at its per-repo open-PR budget, or when the
+        # branch introduces unwaived net-new tech debt; both inert at their
+        # neutral/DARK defaults. `_run_ship_gates` additionally fail-fasts these
+        # before the push for the interactive path.
         expected_slug = git.remote_slug(repo=spec.repo)
         if expected_slug:
             try:
                 check_pr_budget(ticket, expected_slug)
             except PrBudgetExceededError as exc:
                 return RunnerResult(ok=False, detail=str(exc))
+        debt_error = evaluate_debt_delta(ticket, repo_path)
+        if debt_error is not None:
+            return RunnerResult(ok=False, detail=debt_error)
         pr = host.create_pr(spec)
         url = str(pr.get("web_url") or pr.get("html_url") or "")
         if not url.startswith(("http://", "https://")):
@@ -345,8 +350,8 @@ class ShipExecutor(RunnerBase):
                 ok=False,
                 detail=f"host.create_pr URL {url!r} failed verify-by-re-read: {verified.reason}",
             )
-        self._record_pr_url(ticket, extra, url, branch)
-        logger.info("Ship executor pushed %s and opened PR %s", branch, url)
+        self._record_pr_url(ticket, extra, url, spec.branch)
+        logger.info("Ship executor pushed %s and opened PR %s", spec.branch, url)
         return RunnerResult(ok=True, detail=url)
 
     @staticmethod

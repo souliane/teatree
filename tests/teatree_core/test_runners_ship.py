@@ -15,7 +15,7 @@ from django.test import TestCase
 
 from teatree.config import UserSettings
 from teatree.core.backend_protocols import BackendResolutionError, PrOpenState
-from teatree.core.gates import pr_budget_gate
+from teatree.core.gates import debt_delta_gate, pr_budget_gate
 from teatree.core.models import PullRequest, Ticket, Worktree
 from teatree.core.runners import ShipExecutor
 from teatree.core.runners.base import RunnerResult
@@ -126,6 +126,67 @@ class TestShipExecutor(TestCase):
                 "get_effective_settings",
                 return_value=UserSettings(max_open_prs_per_repo_per_ticket=1),
             ),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is True
+        host.create_pr.assert_called_once()
+
+    def test_loop_ship_path_refuses_net_new_debt(self) -> None:
+        # North-star PR-3: the autonomous loop's task-driven ship reaches
+        # host.create_pr through ShipExecutor.run WITHOUT _run_ship_gates — the
+        # same bypass class the budget gate closed. With require_debt_delta on and
+        # a net-new noqa in the branch diff, the ship is refused and NO PR is
+        # created. RED before the _open_pr_and_record debt guard: the pre-fix loop
+        # path calls host.create_pr with the debt un-gated.
+        slug = "souliane/teatree"
+        ticket = self._ticket_with_worktree()
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": f"https://github.com/{slug}/pull/1"}
+        host.current_user.return_value = "souliane"
+        new_noqa = (
+            "diff --git a/src/teatree/m.py b/src/teatree/m.py\n"
+            "--- a/src/teatree/m.py\n+++ b/src/teatree/m.py\n@@ -1,1 +1,2 @@\n"
+            " keep = 1\n+risky = frobnicate()  # noqa: F821\n"
+        )
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.git.push"),
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "body")),
+            patch("teatree.core.runners.ship.git.remote_slug", return_value=slug),
+            patch.object(debt_delta_gate, "get_effective_settings", return_value=UserSettings(require_debt_delta=True)),
+            patch.object(debt_delta_gate.git, "branch_diff", return_value=new_noqa),
+        ):
+            result = ShipExecutor(ticket).run()
+
+        assert result.ok is False
+        assert "debt_delta_gate" in result.detail
+        host.create_pr.assert_not_called()
+
+    def test_loop_ship_path_allows_pr_when_diff_is_clean(self) -> None:
+        # Inert companion: require_debt_delta on but the branch introduces no
+        # net-new debt, so the loop ship proceeds and opens the PR.
+        slug = "souliane/teatree"
+        ticket = self._ticket_with_worktree()
+        host = MagicMock()
+        host.create_pr.return_value = {"web_url": f"https://github.com/{slug}/pull/1"}
+        host.current_user.return_value = "souliane"
+        clean = (
+            "diff --git a/src/teatree/m.py b/src/teatree/m.py\n"
+            "--- a/src/teatree/m.py\n+++ b/src/teatree/m.py\n@@ -1,1 +1,2 @@\n"
+            " keep = 1\n+clean = compute()\n"
+        )
+
+        with (
+            patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
+            patch("teatree.core.runners.ship.code_host_for_repo_from_overlay", return_value=host),
+            patch("teatree.core.runners.ship.git.push"),
+            patch("teatree.core.runners.ship.git.last_commit_message", return_value=("feat: x", "body")),
+            patch("teatree.core.runners.ship.git.remote_slug", return_value=slug),
+            patch.object(debt_delta_gate, "get_effective_settings", return_value=UserSettings(require_debt_delta=True)),
+            patch.object(debt_delta_gate.git, "branch_diff", return_value=clean),
         ):
             result = ShipExecutor(ticket).run()
 
