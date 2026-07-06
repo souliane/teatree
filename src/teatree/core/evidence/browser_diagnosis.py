@@ -1,16 +1,18 @@
-"""Optional chrome-devtools MCP server for browser-visible breakage.
+"""chrome-devtools-mcp — teatree's default browser tool.
 
 Browser-visible breakage — a blank render, a failed XHR, a console error — is
 diagnosed *in the browser* (network / console / DOM), not guessed from the
-Python side. Google's ``chrome-devtools-mcp`` server exposes exactly that to an
-agent, but it is a heavy third-party dependency the operator opts into, so it is
-registered only behind the ``chrome_devtools_mcp_enabled`` flag (default off).
+Python side; and agentic browser work (navigate, click, fill, upload) drives the
+page the same way. Google's ``chrome-devtools-mcp`` server exposes both over CDP
+with no claude.ai account or extension pairing, so it is the default browser tool
+— registered whenever the ``chrome_devtools_mcp_enabled`` flag is set (default
+on).
 
 This module is the single source of truth for *what* that registration is — the
 server name and the ``claude mcp add`` command — consumed by the
 ``t3 mcp browser-diagnosis`` CLI. There is deliberately no gate code here: this
-server is a diagnostic aid, never an enforcement path. Perf/trace *enforcement*
-stays in the deterministic Playwright lane.
+server is a diagnostic and interaction aid, never an enforcement path. Perf/trace
+*enforcement* stays in the deterministic Playwright lane.
 """
 
 from dataclasses import dataclass
@@ -24,7 +26,7 @@ CHROME_DEVTOOLS_LAUNCH: tuple[str, ...] = ("npx", "-y", "chrome-devtools-mcp@lat
 
 @dataclass(frozen=True, slots=True)
 class BrowserDiagnosisRegistration:
-    """Whether the optional browser-diagnosis MCP is enabled, and how to add it."""
+    """Whether chrome-devtools-mcp (the default browser tool) is enabled, and how to add it."""
 
     enabled: bool
     server_name: str
@@ -60,10 +62,10 @@ def resolve_browser_diagnosis(overlay_name: str | None = None) -> BrowserDiagnos
         server_name=CHROME_DEVTOOLS_SERVER_NAME,
         add_command=_add_command(),
         message=(
-            f"Browser-diagnosis MCP ('{CHROME_DEVTOOLS_SERVER_NAME}') is enabled. Register it with:\n"
+            f"chrome-devtools-mcp ('{CHROME_DEVTOOLS_SERVER_NAME}') is the default browser tool. Register it with:\n"
             f"  {_add_command()}\n"
-            "Use it to inspect a deployed page's network/console/DOM before proposing a root cause; "
-            "perf/trace enforcement stays in the deterministic Playwright lane."
+            "Use it to drive and inspect a deployed page (navigate/click/fill, network/console/DOM) before "
+            "proposing a root cause; perf/trace enforcement stays in the deterministic Playwright lane."
         ),
     )
 

@@ -1,7 +1,7 @@
 """Per-overlay claude.ai connector manifest + reconnect guidance (PR-19).
 
-An overlay hard-depends on some claude.ai-hosted MCP connectors (Slack, Notion,
-claude-in-chrome) and merely benefits from others. Today a down connector is a
+An overlay hard-depends on some claude.ai-hosted MCP connectors (e.g. Slack,
+Notion) and merely benefits from others. Today a down connector is a
 silent mid-tick no-op with no single place that says "this connector is required
 and it is not connected". This module is that place: each overlay declares its
 required-vs-optional connectors by NAME (:class:`ConnectorRequirement` on
@@ -52,9 +52,9 @@ class ConnectorRequirement:
     ``name`` matches the MCP server name in ``~/.claude.json`` /
     ``claude mcp list`` (e.g. ``"claude.ai Slack"``). ``required`` gates the
     check verdict (a down required connector FAILs; an optional one WARNs).
-    ``instruction`` overrides the default reconnect line for connectors that are
-    not reconnected through the settings page — e.g. claude-in-chrome, which is
-    re-authed from the extension popup.
+    ``instruction`` overrides the default reconnect line for a connector that is
+    not reconnected through the settings page (a bespoke re-auth flow an overlay
+    declares for itself).
     """
 
     name: str
