@@ -22,7 +22,7 @@ from django.test import TestCase
 from teatree.core.cleanup.cleanup_liveness import LivenessVerdict
 from teatree.core.models import Ticket, Worktree
 from teatree.core.runners import worktree_start
-from teatree.core.worktree_done import (
+from teatree.core.worktree.worktree_done import (
     _effective_default_target,
     analyze_worktree_changes,
     reap_done_worktree,
@@ -80,7 +80,7 @@ class _ReaperFixture(TestCase):
         # No git worktree, DB, or docker is destroyed against a real overlay: route
         # cleanup through the overlay-free teardown and stub the docker side-effect.
         monkeypatch.setattr("teatree.core.cleanup.cleanup.clone_root", lambda: self.workspace)
-        monkeypatch.setattr("teatree.core.worktree_done.clone_root", lambda: self.workspace)
+        monkeypatch.setattr("teatree.core.worktree.worktree_done.clone_root", lambda: self.workspace)
         monkeypatch.setattr("teatree.core.cleanup.cleanup._resolve_overlay_or_none", lambda _wt: None)
         self.docker_calls: list[tuple[str, bool]] = []
         monkeypatch.setattr(
@@ -88,11 +88,11 @@ class _ReaperFixture(TestCase):
             lambda project, **kw: self.docker_calls.append((project, bool(kw.get("remove_volumes")))),
         )
         # Neutralise the forge so the patch-id / FSM signals are the only deciders.
-        monkeypatch.setattr("teatree.core.branch_classification.probe_host_cli", lambda *_a, **_k: "")
+        monkeypatch.setattr("teatree.core.worktree.branch_classification.probe_host_cli", lambda *_a, **_k: "")
         # These tests model SETTLED worktrees (cleanup's target), not live ones; the
         # liveness guard has its own dedicated tests, so neutralise it here.
         monkeypatch.setattr(
-            "teatree.core.worktree_done.worktree_liveness",
+            "teatree.core.worktree.worktree_done.worktree_liveness",
             lambda *_a, **_k: LivenessVerdict(active=False),
         )
 
@@ -233,7 +233,7 @@ class TestMergedPrDoesNotWipePostMergeWork(_ReaperFixture):
         # The forge genuinely reports the branch merged (probe_host_cli yields a PR id),
         # so the REAL _branch_pr_is_merged returns True however it is imported — proving
         # the keep is content-on-current-tip, not the absence of a merged signal.
-        with patch("teatree.core.branch_classification.probe_host_cli", return_value="42"):
+        with patch("teatree.core.worktree.branch_classification.probe_host_cli", return_value="42"):
             analysis = analyze_worktree_changes(worktree, workspace=self.workspace)
             outcome = self._reap(worktree)
 
@@ -292,7 +292,7 @@ class TestDryRunAndCleanIgnore(_ReaperFixture):
 
     def test_clean_ignored_branch_is_skipped(self) -> None:
         worktree = self._make_worktree(Ticket.State.MERGED)
-        with patch("teatree.core.worktree_done.is_clean_ignored", return_value=True):
+        with patch("teatree.core.worktree.worktree_done.is_clean_ignored", return_value=True):
             outcome = self._reap(worktree)
         assert outcome.action == "skipped"
         assert self.wt_path.exists()
@@ -330,7 +330,7 @@ class TestReaperGatesAndEmit(_ReaperFixture):
     def test_active_item_is_skipped_and_emitted(self) -> None:
         worktree = self._make_worktree(Ticket.State.MERGED)
         with patch(
-            "teatree.core.worktree_done.worktree_liveness",
+            "teatree.core.worktree.worktree_done.worktree_liveness",
             return_value=LivenessVerdict(active=True, reason="ticket has a live session or active/claimed task"),
         ):
             outcome = self._reap(worktree)
@@ -346,7 +346,7 @@ class TestReaperGatesAndEmit(_ReaperFixture):
 
         worktree = self._make_worktree(Ticket.State.MERGED)
         with patch(
-            "teatree.core.worktree_done.is_excluded_by_ownership",
+            "teatree.core.worktree.worktree_done.is_excluded_by_ownership",
             return_value=OwnershipVerdict(excluded=True, reason="colleague-authored (bob) on a product repo"),
         ):
             outcome = self._reap(worktree)
@@ -370,7 +370,7 @@ class TestPostMergeWorkEmitTag(_ReaperFixture):
         _run_git("commit", "-q", "-m", "feat: continued after the merge", cwd=self.wt_path)
         worktree = self._make_worktree(Ticket.State.MERGED)
 
-        with patch("teatree.core.branch_classification.probe_host_cli", return_value="42"):
+        with patch("teatree.core.worktree.branch_classification.probe_host_cli", return_value="42"):
             outcome = self._reap(worktree)
 
         assert outcome.action == "kept", outcome.label
@@ -432,8 +432,8 @@ class TestNonMainDefaultThreading(TestCase):
         _run_git("add", "-A", cwd=self.wt_path)
         _run_git("commit", "-q", "-m", "feat: unique unpushed work", cwd=self.wt_path)
 
-        monkeypatch.setattr("teatree.core.worktree_done.clone_root", lambda: self.workspace)
-        monkeypatch.setattr("teatree.core.branch_classification.probe_host_cli", lambda *_a, **_k: "")
+        monkeypatch.setattr("teatree.core.worktree.worktree_done.clone_root", lambda: self.workspace)
+        monkeypatch.setattr("teatree.core.worktree.branch_classification.probe_host_cli", lambda *_a, **_k: "")
 
     def _worktree(self) -> Worktree:
         ticket = Ticket.objects.create(issue_url="https://example.com/issues/n1", state=Ticket.State.MERGED)

@@ -1,6 +1,6 @@
 """``t3 recover`` — find and recover work stranded by a network-outage death (#1764).
 
-Thin wrapper over :mod:`teatree.core.recover`. Default is a DRY-RUN typed report
+Thin wrapper over :mod:`teatree.core.worktree.recover`. Default is a DRY-RUN typed report
 (groups: data-loss risk / committed-unpushed / open-PR pending / re-queue
 candidates), every ref a clickable URL. ``--requeue`` reopens the
 genuinely-incomplete FAILED tasks; ``--json`` emits the structured report. The
@@ -14,7 +14,7 @@ from typing import Annotated
 import typer
 from django_typer.management import TyperCommand, command
 
-from teatree.core.recover import gather_recover_report, requeue_failed_tasks
+from teatree.core.worktree.recover import gather_recover_report, requeue_failed_tasks
 
 
 class Command(TyperCommand):

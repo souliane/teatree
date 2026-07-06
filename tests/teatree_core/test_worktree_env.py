@@ -1,4 +1,4 @@
-"""Tests for teatree.core.worktree_env — env cache generation."""
+"""Tests for teatree.core.worktree.worktree_env — env cache generation."""
 
 import stat
 import tempfile
@@ -9,10 +9,10 @@ import pytest
 from django.test import TestCase
 
 import teatree.core.overlay_loader as overlay_loader_mod
-import teatree.core.worktree_env as worktree_env_mod
+import teatree.core.worktree.worktree_env as worktree_env_mod
 from teatree.core.models import Ticket, Worktree, WorktreeEnvOverride
 from teatree.core.overlay import OverlayBase, ProvisionStep
-from teatree.core.worktree_env import (
+from teatree.core.worktree.worktree_env import (
     CACHE_DIRNAME,
     CACHE_FILENAME,
     detect_drift,

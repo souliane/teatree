@@ -26,8 +26,8 @@ from pathlib import Path
 from django.db import DatabaseError
 
 from teatree.config import OverlayEntry
-from teatree.core.clone_paths import find_clone_path
 from teatree.core.models import Worktree
+from teatree.core.worktree.clone_paths import find_clone_path
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 

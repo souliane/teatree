@@ -76,7 +76,7 @@ def _check_branch_currency_conflict_only() -> bool:
     * return a finding when the reviewed SHA truly conflicts with the target, and
     * return ``None`` when the SHA is merely behind but conflict-free.
     """
-    from teatree.core.branch_currency import sha_conflicts_with_target  # noqa: PLC0415
+    from teatree.core.worktree.branch_currency import sha_conflicts_with_target  # noqa: PLC0415
 
     with tempfile.TemporaryDirectory() as raw:
         work = Path(raw)

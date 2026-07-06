@@ -18,10 +18,11 @@ from unittest.mock import patch
 from django.db.migrations.graph import MigrationGraph
 from django.test import TestCase
 
-from teatree.core import branch_currency, mr_metadata
 from teatree.core import merge as merge_execution
+from teatree.core import mr_metadata
 from teatree.core.models import LoopLease
 from teatree.core.runners import ship as ship_runner
+from teatree.core.worktree import branch_currency
 from teatree.eval import regression_corpus, regression_corpus_schema
 from teatree.eval.regression_corpus import RegressionCheck, _count_core_leaves, run_regression_corpus
 from teatree.hooks import _repo_visibility, banned_terms_scanner

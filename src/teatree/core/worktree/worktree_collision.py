@@ -23,7 +23,7 @@ ticket for a unit someone else is already provisioning.
 from pathlib import Path
 
 from teatree.core.models import Worktree
-from teatree.core.worktree_paths import paths_match
+from teatree.core.worktree.worktree_paths import paths_match
 
 
 def _issue_dir_glob(issue_number: str) -> str:

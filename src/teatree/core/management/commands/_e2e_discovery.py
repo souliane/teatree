@@ -11,7 +11,7 @@ import socket
 
 from teatree.core.models import Ticket, Worktree
 from teatree.core.resolve import _find_env_cache, _parse_env_file
-from teatree.core.worktree_env import compose_project
+from teatree.core.worktree.worktree_env import compose_project
 from teatree.utils.ports import get_service_port
 
 

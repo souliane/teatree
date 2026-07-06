@@ -37,7 +37,7 @@ from django_fsm import can_proceed
 
 from teatree.config import get_effective_settings
 from teatree.core.models import Worktree
-from teatree.core.worktree_env import compose_project
+from teatree.core.worktree.worktree_env import compose_project
 from teatree.utils.run import run_allowed_to_fail
 
 logger = logging.getLogger(__name__)

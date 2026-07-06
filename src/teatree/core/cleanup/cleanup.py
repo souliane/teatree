@@ -1,7 +1,7 @@
 """Shared worktree cleanup logic used by sync (auto-clean on merge) and workspace commands.
 
 The squash-merge-aware classification this module relies on lives in
-:mod:`teatree.core.branch_classification`; the data-loss guards and the
+:mod:`teatree.core.worktree.branch_classification`; the data-loss guards and the
 worktree-teardown orchestration live here. The names re-exported below keep the
 import surface (``from teatree.core.cleanup.cleanup import classify_branch_commits``,
 ``cleanup_mod._branch_pr_is_merged``) stable for the management commands and the
@@ -20,8 +20,12 @@ from django.core.exceptions import ImproperlyConfigured
 
 from teatree.config import clone_root
 from teatree.core import prek_hook
-from teatree.core._overlay_teardown import reap_external_resources, run_overlay_cleanup_steps
-from teatree.core.branch_classification import (
+from teatree.core.cleanup.cleanup_busy_guards import WorktreeBusyError, guard_live_worktree
+from teatree.core.cleanup.cleanup_orphan_ref import raise_or_reap_orphan_ref
+from teatree.core.models import Worktree
+from teatree.core.overlay_loader import get_overlay_for_worktree
+from teatree.core.worktree._overlay_teardown import reap_external_resources, run_overlay_cleanup_steps
+from teatree.core.worktree.branch_classification import (
     BranchClassification,
     BranchCommit,
     _branch_pr_is_merged,
@@ -31,13 +35,9 @@ from teatree.core.branch_classification import (
     content_equivalence_blockers,
     probe_host_cli,
 )
-from teatree.core.cleanup.cleanup_busy_guards import WorktreeBusyError, guard_live_worktree
-from teatree.core.cleanup.cleanup_orphan_ref import raise_or_reap_orphan_ref
-from teatree.core.clone_paths import resolve_clone_path
-from teatree.core.models import Worktree
-from teatree.core.overlay_loader import get_overlay_for_worktree
-from teatree.core.worktree_env import compose_project, worktree_pg_connection
-from teatree.core.worktree_paths import worktree_dir_for
+from teatree.core.worktree.clone_paths import resolve_clone_path
+from teatree.core.worktree.worktree_env import compose_project, worktree_pg_connection
+from teatree.core.worktree.worktree_paths import worktree_dir_for
 from teatree.utils import git
 from teatree.utils.db import drop_db
 from teatree.utils.postgres_secret import remove_postgres_pass_entry

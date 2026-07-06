@@ -6,7 +6,7 @@ overlay-declared problems — and persists each as a :class:`KnownIssue` row so
 the verdict survives compaction and an operator can see *which* things are
 wrong, not just the color.
 
-This is deliberately NOT :mod:`teatree.core.health` — that module is the
+This is deliberately NOT :mod:`teatree.core.worktree.health` — that module is the
 post-provision per-worktree readiness checks (symlinks, env cache). This one is
 the global factory-health chip surfaced in the statusline anchors zone, on
 ``t3 <overlay> health show``, and in the ``/t3:health`` detail skill.

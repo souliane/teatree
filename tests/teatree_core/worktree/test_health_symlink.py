@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from teatree.core.health import _symlink_source_healthy
+from teatree.core.worktree.health import _symlink_source_healthy
 
 
 class TestSymlinkSourceHealthy:

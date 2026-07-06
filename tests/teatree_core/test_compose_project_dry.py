@@ -14,11 +14,11 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
-from teatree.core import reconcile as reconcile_mod
-from teatree.core import worktree_env as worktree_env_mod
 from teatree.core.gates import local_stack_gate as gate_mod
 from teatree.core.models import Ticket, Worktree
-from teatree.core.worktree_env import compose_project
+from teatree.core.worktree import reconcile as reconcile_mod
+from teatree.core.worktree import worktree_env as worktree_env_mod
+from teatree.core.worktree.worktree_env import compose_project
 
 
 @dataclass
@@ -68,7 +68,7 @@ class TestComposeProjectSingleSource(TestCase):
         wt = _make_worktree(ticket_number="9030")
         wt.state = Worktree.State.CREATED
         wt.save(update_fields=["state"])
-        from teatree.core.reconcile import Drift  # noqa: PLC0415
+        from teatree.core.worktree.reconcile import Drift  # noqa: PLC0415
 
         drift = Drift(ticket_pk=wt.ticket.pk)
         with (

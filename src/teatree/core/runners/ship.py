@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING, NamedTuple, cast
 from teatree.config import get_effective_settings
 from teatree.core.backend_factory import code_host_for_repo_from_overlay
 from teatree.core.backend_protocols import BackendResolutionError, PullRequestSpec
-from teatree.core.branch_currency import sha_conflicts_with_target
 from teatree.core.close_trailer_scanner import apply_publish_gate
 from teatree.core.gates.architecture_precheck_gate import warn_if_precheck_incomplete
 from teatree.core.gates.debt_delta_gate import evaluate_debt_delta
@@ -16,6 +15,7 @@ from teatree.core.mr_metadata import ensure_standard_body
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.pr_create_verify import verify_pr_exists
 from teatree.core.runners.base import RunnerBase, RunnerResult
+from teatree.core.worktree.branch_currency import sha_conflicts_with_target
 from teatree.utils import git
 
 if TYPE_CHECKING:

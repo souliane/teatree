@@ -368,7 +368,7 @@ Two distinct gates run on a worktree, with two different overlay hooks:
 **Decision rule for overlay authors:**
 
 - If the check makes sense before any service starts (file present, symlink target reachable, env var set), implement it as a `HealthCheck`.
-- If the check requires a running process (HTTP probe, command exit code, service round-trip), implement it as a `Probe` via `http_probe()` / `command_probe()` — see `teatree.core.readiness`.
+- If the check requires a running process (HTTP probe, command exit code, service round-trip), implement it as a `Probe` via `http_probe()` / `command_probe()` — see `teatree.core.worktree.readiness`.
 
 **Agent rule when starting a worktree:**
 

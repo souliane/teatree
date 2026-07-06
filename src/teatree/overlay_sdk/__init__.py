@@ -23,12 +23,19 @@ snapshot. Removing or renaming an exported symbol is a breaking change that bump
 from teatree._overlay_api import __overlay_api_version__
 from teatree.config import clone_root, discover_overlays
 from teatree.core.gates.merge_guard import MergeGuard
-from teatree.core.health import HealthCheck
 from teatree.core.overlay import DEFAULT_TRANSITION_EMOJIS, FailedE2EWatcher, OverlayBase, OverlayConfig
 from teatree.core.overlay_metadata import OverlayMetadata
-from teatree.core.readiness import CommandProbeSpec, HTTPProbeSpec, Probe, ProbeResult, command_probe, http_probe
 from teatree.core.variant import Variant
-from teatree.core.worktree_env import compose_project, env_cache_path
+from teatree.core.worktree.health import HealthCheck
+from teatree.core.worktree.readiness import (
+    CommandProbeSpec,
+    HTTPProbeSpec,
+    Probe,
+    ProbeResult,
+    command_probe,
+    http_probe,
+)
+from teatree.core.worktree.worktree_env import compose_project, env_cache_path
 from teatree.docker.reap import reap_compose_project
 from teatree.types import (
     BaseImageConfig,

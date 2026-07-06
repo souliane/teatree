@@ -12,7 +12,7 @@ real Slack send.
 import pytest
 
 from teatree.core.models import BotPing
-from teatree.core.stale_clone_notice import (
+from teatree.core.worktree.stale_clone_notice import (
     StaleCloneReason,
     StaleCloneSkip,
     notify_stale_clone_skip,

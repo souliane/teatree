@@ -7,7 +7,7 @@ from django_typer.management import TyperCommand, command
 
 from teatree.core.overlay import OverlayConfig
 from teatree.core.overlay_loader import get_overlay
-from teatree.core.worktree_env import _declared_core_keys
+from teatree.core.worktree.worktree_env import _declared_core_keys
 from teatree.utils.compose_contract import check_contract
 
 

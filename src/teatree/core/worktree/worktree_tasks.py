@@ -26,7 +26,7 @@ from teatree.core.runners import (
     WorktreeVerifyRunner,
 )
 from teatree.core.runners.worktree_start import docker_compose_down
-from teatree.core.worktree_env import compose_project
+from teatree.core.worktree.worktree_env import compose_project
 
 logger = logging.getLogger(__name__)
 

@@ -47,8 +47,8 @@ from teatree.config import get_effective_settings
 from teatree.core.models import Ticket, Worktree
 from teatree.core.models.external_delivery import under_external_delivery
 from teatree.core.models.types import validated_worktree_extra
-from teatree.core.worktree_env import compose_project
-from teatree.core.worktree_paths import paths_match
+from teatree.core.worktree.worktree_env import compose_project
+from teatree.core.worktree.worktree_paths import paths_match
 from teatree.utils.run import run_allowed_to_fail
 
 logger = logging.getLogger(__name__)
@@ -173,7 +173,7 @@ def worktree_protects_against_reap(worktree: Worktree, *, now: datetime | None =
 
     The shared liveness predicate every OPPORTUNISTIC destructive reaper/teardown
     path consults before deleting filesystem or DB state — the FSM-done worktree
-    reaper (:func:`teatree.core.worktree_done.reap_done_worktree`, via
+    reaper (:func:`teatree.core.worktree.worktree_done.reap_done_worktree`, via
     :func:`teatree.core.cleanup.cleanup_liveness.worktree_liveness`), the clean-merged
     sweep, the merge-sync cleanup, and the orphan-isolated-root reaper all route
     through it (or through :func:`teatree.core.cleanup.cleanup.cleanup_worktree`). It

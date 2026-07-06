@@ -1,6 +1,6 @@
 """The global operational-health aggregator (PR-17, M6).
 
-Distinct from ``teatree.core.health`` (per-worktree readiness). This module
+Distinct from ``teatree.core.worktree.health`` (per-worktree readiness). This module
 computes the green/yellow/red factory-health verdict from deterministic durable
 signals and persists them as ``KnownIssue`` rows.
 """

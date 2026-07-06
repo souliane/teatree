@@ -18,7 +18,7 @@ from contextlib import AbstractContextManager
 from pathlib import Path
 from unittest.mock import patch
 
-from teatree.core import branch_classification as bc
+from teatree.core.worktree import branch_classification as bc
 from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git
 
 

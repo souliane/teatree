@@ -16,7 +16,7 @@ from django.test import TestCase
 
 from teatree.core.models import Ticket, Worktree
 from teatree.core.runners import WorktreeTeardown
-from teatree.core.worktree_done import ReapOutcome
+from teatree.core.worktree.worktree_done import ReapOutcome
 from tests.teatree_core.conftest import CommandOverlay
 
 _GIT = shutil.which("git") or "git"

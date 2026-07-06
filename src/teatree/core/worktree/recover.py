@@ -5,7 +5,7 @@ several stores: uncommitted/unpushed branches (data loss), branches with an open
 PR, and tickets whose tasks landed FAILED (classified as outage deaths) and
 stopped advancing the FSM. ``t3 recover`` gathers all of these into ONE typed
 report by composing the primitives that already exist — the boot sweeps,
-:mod:`teatree.core.gates.orphan_guard`, :mod:`teatree.core.reconcile` — plus a
+:mod:`teatree.core.gates.orphan_guard`, :mod:`teatree.core.worktree.reconcile` — plus a
 branch -> Worktree -> ticket -> task map. Stranded work is surfaced for SALVAGE
 (push the branch to a PR), never auto-captured: there is no recovery snapshot.
 
@@ -18,11 +18,11 @@ from dataclasses import dataclass, field
 from typing import TypedDict
 
 from teatree.config import clone_root
-from teatree.core.clone_paths import resolve_clone_path
 from teatree.core.gates.orphan_guard import BranchStatus, find_orphans_in_workspace
 from teatree.core.models import Task, Worktree
-from teatree.core.reconcile import reconcile_all
-from teatree.core.recovery_sweeps import BootSweepCounts, run_boot_sweeps
+from teatree.core.worktree.clone_paths import resolve_clone_path
+from teatree.core.worktree.reconcile import reconcile_all
+from teatree.core.worktree.recovery_sweeps import BootSweepCounts, run_boot_sweeps
 
 _OUTAGE_ERROR_PREFIX = "outage_death:"
 

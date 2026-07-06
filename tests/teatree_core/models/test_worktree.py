@@ -9,7 +9,7 @@ from django.test import TestCase
 
 from teatree.core.models import Ticket, Worktree
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
-from teatree.core.worktree_env import compose_project
+from teatree.core.worktree.worktree_env import compose_project
 
 
 class TestTicketDispatchWorktreePath(TestCase):
@@ -51,7 +51,7 @@ class TestWorktreeTransitionSignals(TestCase):
     """The worktree FSM bodies enqueue their workers via post_transition (#2385)."""
 
     def test_provision_enqueues_worker_after_commit(self) -> None:
-        from teatree.core import worktree_tasks as worktree_tasks_mod  # noqa: PLC0415
+        from teatree.core.worktree import worktree_tasks as worktree_tasks_mod  # noqa: PLC0415
 
         ticket = Ticket.objects.create(issue_url="https://example.com/issues/77", variant="acme")
         worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/be", branch="b")
@@ -65,7 +65,7 @@ class TestWorktreeTransitionSignals(TestCase):
         fake.enqueue.assert_called_once_with(worktree.pk)
 
     def test_start_services_enqueues_worker_after_commit(self) -> None:
-        from teatree.core import worktree_tasks as worktree_tasks_mod  # noqa: PLC0415
+        from teatree.core.worktree import worktree_tasks as worktree_tasks_mod  # noqa: PLC0415
 
         ticket = Ticket.objects.create(issue_url="https://example.com/issues/78")
         worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/be", branch="b")
@@ -89,7 +89,7 @@ class TestWorktreeTransitionSignals(TestCase):
         drop the database and remove the worktree — a regression that read the
         live (blanked) row would enqueue ``snapshot_db_name=""``.
         """
-        from teatree.core import worktree_tasks as worktree_tasks_mod  # noqa: PLC0415
+        from teatree.core.worktree import worktree_tasks as worktree_tasks_mod  # noqa: PLC0415
 
         ticket = Ticket.objects.create(issue_url="https://example.com/issues/79", variant="acme")
         worktree = Worktree.objects.create(ticket=ticket, repo_path="/tmp/be", branch="b")

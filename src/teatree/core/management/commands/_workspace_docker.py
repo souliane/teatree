@@ -21,7 +21,7 @@ from pathlib import Path
 
 from teatree.config import get_effective_settings
 from teatree.core.models import Worktree
-from teatree.core.worktree_env import compose_project
+from teatree.core.worktree.worktree_env import compose_project
 from teatree.docker.reap import reap_orphan_compose_projects, reap_stale_compose_projects
 
 

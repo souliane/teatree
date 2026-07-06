@@ -13,7 +13,6 @@ seams keep resolving against ``pr``'s namespace).
 from typing import TypedDict, cast
 
 from teatree import visual_qa
-from teatree.core.branch_currency import require_current_branch
 from teatree.core.gates.debt_delta_gate import evaluate_debt_delta
 from teatree.core.gates.e2e_mandatory_gate import E2EMandatoryGateError, check_e2e_mandatory, resolve_gate_inputs
 from teatree.core.gates.pr_budget_gate import PrBudgetExceededError, check_pr_budget
@@ -24,6 +23,7 @@ from teatree.core.models import Session, Ticket, Worktree
 from teatree.core.models.types import TicketExtra, VisualQASummary
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.runners.ship import resolve_ship_worktree
+from teatree.core.worktree.branch_currency import require_current_branch
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 

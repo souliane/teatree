@@ -12,7 +12,7 @@ Read-only: it SURFACES drift (emits signals into the action-needed statusline
 zone); it never auto-pushes or auto-deletes — destructive remediation stays gated.
 
 Fail-closed on two levels: the per-probe fail-closed semantics live in
-:mod:`teatree.core.reconcile` (an inconclusive probe is a finding, never a silent
+:mod:`teatree.core.worktree.reconcile` (an inconclusive probe is a finding, never a silent
 pass), and the scanner fails closed at its own boundary too — a
 :func:`reconcile_work_state_all` that raises emits a ``workstate.probe_error``
 finding rather than a silent green tick.
@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING
 from teatree.loop.scanners.base import ScanSignal
 
 if TYPE_CHECKING:
-    from teatree.core.reconcile import DoneButUnmerged, Drift, DuplicateScope, UnpushedWork
+    from teatree.core.worktree.reconcile import DoneButUnmerged, Drift, DuplicateScope, UnpushedWork
 
 
 @dataclass(slots=True)
@@ -43,7 +43,7 @@ class WorkStateScanner:
     limit: int = 200
 
     def scan(self) -> list[ScanSignal]:
-        from teatree.core.reconcile import reconcile_work_state_all  # noqa: PLC0415 — Django models
+        from teatree.core.worktree.reconcile import reconcile_work_state_all  # noqa: PLC0415 — Django models
 
         try:
             drifts = reconcile_work_state_all()

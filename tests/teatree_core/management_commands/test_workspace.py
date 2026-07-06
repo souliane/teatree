@@ -18,7 +18,6 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 from django.utils.module_loading import import_string
 
-import teatree.core.branch_classification as bc_mod
 import teatree.core.cleanup.clean_ignore as clean_ignore_mod
 import teatree.core.cleanup.cleanup as cleanup_mod
 import teatree.core.management.commands._workspace_clean_all as ws_clean_all_mod
@@ -30,7 +29,8 @@ import teatree.core.management.commands._workspace_ticket_intake as workspace_in
 import teatree.core.management.commands.workspace as workspace_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.runners.provision as provision_mod
-import teatree.core.worktree_done as worktree_done_mod
+import teatree.core.worktree.branch_classification as bc_mod
+import teatree.core.worktree.worktree_done as worktree_done_mod
 import teatree.utils.db as db_mod
 import teatree.utils.git as git_mod
 import teatree.utils.git_commit as git_commit_mod
@@ -45,7 +45,7 @@ from teatree.core.management.commands.workspace import _branch_prefix, _worktree
 from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.overlay import OverlayBase, ProvisionStep
 from teatree.core.runners import RunnerResult
-from teatree.core.worktree_done import reap_done_worktrees
+from teatree.core.worktree.worktree_done import reap_done_worktrees
 from tests.teatree_core.management_commands._overlays import (
     FULL_OVERLAY,
     NESTED_OVERLAY,
@@ -706,7 +706,7 @@ class TestWorkspaceTicket(TestCase):
         assert ticket.extra["branches"] == {"backend": "fix/be-45", "frontend": "fix/fe-45"}
 
     def test_parse_repo_branch_map_unit(self) -> None:
-        from teatree.core.dev_repo import parse_repo_branch_map  # noqa: PLC0415
+        from teatree.core.worktree.dev_repo import parse_repo_branch_map  # noqa: PLC0415
 
         assert parse_repo_branch_map("") == {}
         assert parse_repo_branch_map("backend") == {}  # bare repo, no override
@@ -1128,8 +1128,8 @@ class TestWorkspaceTicket(TestCase):
                 patch.object(provision_mod, "clone_root", return_value=workspace),
                 patch.object(provision_mod, "worktree_root", return_value=workspace),
                 patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
-                patch("teatree.core.dev_repo.find_project_root", return_value=core),
-                patch("teatree.core.dev_repo.discover_active_overlay", return_value=None),
+                patch("teatree.core.worktree.dev_repo.find_project_root", return_value=core),
+                patch("teatree.core.worktree.dev_repo.discover_active_overlay", return_value=None),
                 patch.object(git_mod, "remote_slug", return_value="souliane/teatree"),
             ):
                 ticket_id = cast(
@@ -1157,8 +1157,8 @@ class TestWorkspaceTicket(TestCase):
                 patch.object(provision_mod, "clone_root", return_value=workspace),
                 patch.object(provision_mod, "worktree_root", return_value=workspace),
                 patch.object(utils_run_mod.subprocess, "run", return_value=mock_result),
-                patch("teatree.core.dev_repo.find_project_root", return_value=core),
-                patch("teatree.core.dev_repo.discover_active_overlay", return_value=None),
+                patch("teatree.core.worktree.dev_repo.find_project_root", return_value=core),
+                patch("teatree.core.worktree.dev_repo.discover_active_overlay", return_value=None),
                 patch.object(git_mod, "remote_slug", return_value="souliane/teatree"),
             ):
                 ticket_id = cast(

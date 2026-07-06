@@ -256,7 +256,7 @@ def _enqueue_worktree_transition_task(
     executor_name = _WORKTREE_TRANSITION_TASKS.get(name)
     if executor_name is None:
         return
-    from teatree.core import worktree_tasks as worktree_tasks_mod  # noqa: PLC0415
+    from teatree.core.worktree import worktree_tasks as worktree_tasks_mod  # noqa: PLC0415
 
     executor = getattr(worktree_tasks_mod, executor_name)
     worktree_pk = int(instance.pk)
@@ -279,7 +279,7 @@ def _enqueue_worktree_teardown_task(
     """
     if name != "teardown":
         return
-    from teatree.core import worktree_tasks as worktree_tasks_mod  # noqa: PLC0415
+    from teatree.core.worktree import worktree_tasks as worktree_tasks_mod  # noqa: PLC0415
 
     worktree_pk = int(instance.pk)
     snapshot_db_name, snapshot_extra = instance.teardown_snapshot

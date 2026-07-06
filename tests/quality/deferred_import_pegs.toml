@@ -87,7 +87,7 @@
 # repo resolver — deferred for import-weight (merge/__init__ pulls the whole merge
 # subtree, factory_signal_queries the signal stack) to keep waiting.py light.
 "src/teatree/core/waiting.py" = 3
-"src/teatree/core/worktree_tasks.py" = 1
+"src/teatree/core/worktree/worktree_tasks.py" = 1
 
 [intra_loop]
 "src/teatree/loop/domain_jobs.py" = 2

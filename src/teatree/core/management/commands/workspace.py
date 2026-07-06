@@ -37,10 +37,10 @@ from teatree.core.management.commands._workspace_ticket_intake import (
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.public_identity import StampResult, is_public_github_remote, set_local_noreply_identity
-from teatree.core.reconcile import reconcile_all, reconcile_ticket
 from teatree.core.resolve import WorktreeNotFoundError, _get_user_cwd, resolve_worktree, workspace_owner_ticket
 from teatree.core.runners import WorktreeStartRunner, WorktreeTeardownRunner
-from teatree.core.worktree_done import reap_done_worktrees
+from teatree.core.worktree.reconcile import reconcile_all, reconcile_ticket
+from teatree.core.worktree.worktree_done import reap_done_worktrees
 from teatree.docker.reclaim import reclaim_disk
 from teatree.utils import git
 

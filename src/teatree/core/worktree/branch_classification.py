@@ -22,7 +22,7 @@ merge commit whose tip is an ancestor of the target.
 The forge (``gh pr list --state merged`` / ``glab mr list --merged``) is
 CORROBORATING ONLY — :func:`_branch_pr_is_merged` reports it for the emit/route
 decision, but it NEVER alone authorises a delete (the same invariant the
-worktree reaper enforces in :mod:`teatree.core.worktree_done`). A forge-merged
+worktree reaper enforces in :mod:`teatree.core.worktree.worktree_done`). A forge-merged
 branch whose current tip still carries content not on the target is classified
 NOT-redundant and tagged ``merged_with_post_merge_work`` so the salvage skill
 routes that delta to a FRESH PR rather than the CLI silently destroying it.

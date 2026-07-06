@@ -8,17 +8,17 @@ is *really* provisioned only if every one of these post-conditions still holds.
 Deleting ``.t3-cache/.t3-env.cache`` or the worktree DB flips one to FAIL, so
 ``worktree status`` refuses green with a non-zero exit.
 
-The probes reuse :class:`teatree.core.readiness.Probe` — a check_fn returning a
-:class:`~teatree.core.readiness.ProbeResult` — so they run and report through
-the same :func:`~teatree.core.readiness.run_and_report_probes` seam the runtime
+The probes reuse :class:`teatree.core.worktree.readiness.Probe` — a check_fn returning a
+:class:`~teatree.core.worktree.readiness.ProbeResult` — so they run and report through
+the same :func:`~teatree.core.worktree.readiness.run_and_report_probes` seam the runtime
 readiness probes use.
 """
 
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
-from teatree.core.readiness import Probe, ProbeResult
-from teatree.core.worktree_env import env_cache_path
+from teatree.core.worktree.readiness import Probe, ProbeResult
+from teatree.core.worktree.worktree_env import env_cache_path
 
 if TYPE_CHECKING:
     from collections.abc import Callable

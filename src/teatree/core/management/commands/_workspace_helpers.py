@@ -15,8 +15,8 @@ from typing import TYPE_CHECKING, TypedDict
 from teatree.core.gates.orphan_guard import find_orphans_in_workspace
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay_loader import get_overlay, infer_overlay_for_url
-from teatree.core.readiness import run_and_report_probes
 from teatree.core.runners import heal_missing_provisioned_db
+from teatree.core.worktree.readiness import run_and_report_probes
 
 if TYPE_CHECKING:
     from teatree.core.overlay import OverlayBase

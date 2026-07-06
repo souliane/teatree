@@ -9,13 +9,13 @@ from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from teatree.core.branch_classification import _branch_tree_matches_squash, is_squash_merged
 from teatree.core.cleanup.clean_ignore import is_clean_ignored
 from teatree.core.cleanup.cleanup import _ref_captured_by_merge, _remote_tracking_ref_exists
 from teatree.core.cleanup.cleanup_busy_guards import WorktreeBusyError, guard_live_worktree
 from teatree.core.models import Worktree
 from teatree.core.resolve import match_worktree_by_path
-from teatree.core.worktree_env import CACHE_DIRNAME, CACHE_FILENAME, write_env_cache
+from teatree.core.worktree.branch_classification import _branch_tree_matches_squash, is_squash_merged
+from teatree.core.worktree.worktree_env import CACHE_DIRNAME, CACHE_FILENAME, write_env_cache
 from teatree.utils import git
 from teatree.utils.db import drop_db
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail, run_checked
@@ -23,7 +23,7 @@ from teatree.utils.run import CommandFailedError, run_allowed_to_fail, run_check
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from teatree.core.reconcile import Drift
+    from teatree.core.worktree.reconcile import Drift
 
 
 # Regenerable artifacts a clean-working-tree probe must ignore: provisioning
@@ -134,7 +134,7 @@ class WorktreeReaper:
     """Workspace-scoped clean-all empty-ticket-dir pruning.
 
     Prunes the now-empty ticket dirs the done-worktree reaper leaves behind. The
-    Worktree-row teardown itself is :func:`teatree.core.worktree_done.reap_done_worktrees`
+    Worktree-row teardown itself is :func:`teatree.core.worktree.worktree_done.reap_done_worktrees`
     — the one consolidated done+redundant pass.
     """
 

@@ -13,7 +13,7 @@ from django_typer.management import TyperCommand, command
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.resolve import resolve_worktree
 from teatree.core.runners.service_launch import ServiceLauncher
-from teatree.core.worktree_env import compose_project
+from teatree.core.worktree.worktree_env import compose_project
 from teatree.types import RunCommand, RunCommands
 from teatree.utils.ports import get_worktree_ports
 from teatree.utils.run import run_streamed

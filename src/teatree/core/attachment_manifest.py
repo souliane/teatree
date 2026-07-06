@@ -35,7 +35,7 @@ from django.utils import timezone
 
 from teatree.core.attachment_fetch_registry import resolve_attachment_fetcher
 from teatree.core.models import AttachmentManifest
-from teatree.core.worktree_paths import ticket_dir_for
+from teatree.core.worktree.worktree_paths import ticket_dir_for
 
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import CodeHostBackend

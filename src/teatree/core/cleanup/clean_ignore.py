@@ -4,7 +4,7 @@ A branch matching a ``clean_ignore`` glob (the DB-home ``clean_ignore`` setting,
 per-overlay overridable) must NEVER be reaped on any deletion path — the
 done-worktree reaper, the branch-prune passes, and the orphan-raw-worktree pass.
 Living in :mod:`teatree.core` (not a management command) keeps the dependency
-direction clean: :mod:`teatree.core.worktree_done` and ``core/runners`` reach the
+direction clean: :mod:`teatree.core.worktree.worktree_done` and ``core/runners`` reach the
 predicate without importing a management-command sibling.
 """
 

@@ -12,7 +12,7 @@ from teatree.core.overlay_loader import get_overlay_for_worktree
 from teatree.core.provision_timebox import alert_provision_user, run_timeboxed_db_import
 from teatree.core.runners.base import RunnerBase, RunnerResult
 from teatree.core.step_runner import ProvisionReport, StepResult, run_provision_steps, run_step
-from teatree.core.worktree_env import CACHE_FILENAME, worktree_pg_connection, write_env_cache
+from teatree.core.worktree.worktree_env import CACHE_FILENAME, worktree_pg_connection, write_env_cache
 
 logger = logging.getLogger(__name__)
 

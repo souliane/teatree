@@ -460,7 +460,7 @@ class TestReapWorktreeExternalResources(TestCase):
         return Worktree.objects.create(ticket=ticket, overlay="t3-teatree", repo_path="teatree", branch="1523-x")
 
     def test_reaps_the_worktree_compose_project(self) -> None:
-        from teatree.core.worktree_env import compose_project  # noqa: PLC0415
+        from teatree.core.worktree.worktree_env import compose_project  # noqa: PLC0415
         from teatree.docker.reap import ReapResult  # noqa: PLC0415
 
         worktree = self._worktree()

@@ -1,4 +1,4 @@
-"""Tests for ``teatree.core.readiness`` — runtime readiness probes."""
+"""Tests for ``teatree.core.worktree.readiness`` — runtime readiness probes."""
 
 import http.server
 import socket
@@ -10,7 +10,7 @@ from typing import ClassVar
 
 import pytest
 
-from teatree.core.readiness import (
+from teatree.core.worktree.readiness import (
     CommandProbeSpec,
     HTTPProbeSpec,
     Probe,

@@ -5,7 +5,7 @@ from pathlib import Path
 
 from django.test import TestCase
 
-from teatree.core.worktree_paths import _candidate_paths, paths_match, ticket_dir_for, worktree_dir_for
+from teatree.core.worktree.worktree_paths import _candidate_paths, paths_match, ticket_dir_for, worktree_dir_for
 
 
 class TestCanonicalLayout(TestCase):

@@ -121,7 +121,7 @@ class TestProbeHostCliEmptyResults:
     """``probe_host_cli`` short-circuits on empty / ``[]`` stdout — line 166."""
 
     def test_returns_empty_string_when_stdout_is_empty(self) -> None:
-        from teatree.core import branch_classification  # noqa: PLC0415
+        from teatree.core.worktree import branch_classification  # noqa: PLC0415
 
         with patch.object(
             branch_classification,
@@ -131,7 +131,7 @@ class TestProbeHostCliEmptyResults:
             assert branch_classification.probe_host_cli(["gh", "pr"], "/tmp", itemgetter("sha")) == ""
 
     def test_returns_empty_string_when_stdout_is_bracket_pair(self) -> None:
-        from teatree.core import branch_classification  # noqa: PLC0415
+        from teatree.core.worktree import branch_classification  # noqa: PLC0415
 
         with patch.object(
             branch_classification,
@@ -152,7 +152,7 @@ class TestProbeHostCliTimeout:
     """
 
     def test_returns_empty_string_when_subprocess_times_out(self) -> None:
-        from teatree.core import branch_classification  # noqa: PLC0415
+        from teatree.core.worktree import branch_classification  # noqa: PLC0415
 
         with patch.object(
             branch_classification,
@@ -162,7 +162,7 @@ class TestProbeHostCliTimeout:
             assert branch_classification.probe_host_cli(["gh", "pr"], "/tmp", itemgetter("oid")) == ""
 
     def test_returns_empty_string_when_real_subprocess_run_times_out(self) -> None:
-        from teatree.core import branch_classification  # noqa: PLC0415
+        from teatree.core.worktree import branch_classification  # noqa: PLC0415
 
         # Patch the actual subprocess.run reached through run_allowed_to_fail so
         # the fail-safe is exercised against the real probe + wrapper, not a
@@ -174,7 +174,7 @@ class TestProbeHostCliTimeout:
             assert branch_classification.probe_host_cli(["gh", "pr"], "/tmp", itemgetter("oid"), timeout=5.0) == ""
 
     def test_forwards_timeout_to_run_allowed_to_fail(self) -> None:
-        from teatree.core import branch_classification  # noqa: PLC0415
+        from teatree.core.worktree import branch_classification  # noqa: PLC0415
 
         with patch.object(
             branch_classification,
@@ -186,7 +186,7 @@ class TestProbeHostCliTimeout:
         assert run_mock.call_args.kwargs["timeout"] == pytest.approx(12.5)
 
     def test_defaults_timeout_to_thirty_seconds(self) -> None:
-        from teatree.core import branch_classification  # noqa: PLC0415
+        from teatree.core.worktree import branch_classification  # noqa: PLC0415
 
         with patch.object(
             branch_classification,
@@ -202,13 +202,13 @@ class TestProbeHostCliFailSafePaths:
     """The non-timeout failure/success paths still resolve correctly — #1580 regression guard."""
 
     def test_returns_empty_string_when_binary_is_missing(self) -> None:
-        from teatree.core import branch_classification  # noqa: PLC0415
+        from teatree.core.worktree import branch_classification  # noqa: PLC0415
 
         with patch.object(branch_classification, "run_allowed_to_fail", side_effect=OSError("no gh")):
             assert branch_classification.probe_host_cli(["gh", "pr"], "/tmp", itemgetter("oid")) == ""
 
     def test_returns_empty_string_on_malformed_json(self) -> None:
-        from teatree.core import branch_classification  # noqa: PLC0415
+        from teatree.core.worktree import branch_classification  # noqa: PLC0415
 
         with patch.object(
             branch_classification,
@@ -218,7 +218,7 @@ class TestProbeHostCliFailSafePaths:
             assert branch_classification.probe_host_cli(["gh", "pr"], "/tmp", itemgetter("oid")) == ""
 
     def test_extracts_value_on_happy_path(self) -> None:
-        from teatree.core import branch_classification  # noqa: PLC0415
+        from teatree.core.worktree import branch_classification  # noqa: PLC0415
 
         with patch.object(
             branch_classification,
@@ -233,15 +233,15 @@ class TestCandidatePathsMacosSymlinks:
 
     On Linux CI ``/var`` is a directory; on macOS it symlinks to ``/private/var``.
     The ``Path.resolve`` / ``Path.exists`` branches only execute when those
-    symlink relationships hold — patched here on ``teatree.core.worktree_paths``
+    symlink relationships hold — patched here on ``teatree.core.worktree.worktree_paths``
     (the module that now owns ``_candidate_paths``) so the branches are reached
     on every platform, not only on a developer's macOS box.
     """
 
     def test_appends_resolved_path_when_different_from_input(self) -> None:
-        from teatree.core import worktree_paths  # noqa: PLC0415
+        from teatree.core.worktree import worktree_paths  # noqa: PLC0415
 
-        with patch("teatree.core.worktree_paths.Path") as mock_path:
+        with patch("teatree.core.worktree.worktree_paths.Path") as mock_path:
             mock_path.return_value.resolve.return_value = Path("/private/var/folders/x")
             mock_path.return_value.exists.return_value = False
             out = worktree_paths._candidate_paths("/var/folders/x")
@@ -250,9 +250,9 @@ class TestCandidatePathsMacosSymlinks:
         assert "/private/var/folders/x" in out
 
     def test_strips_private_prefix_when_path_starts_with_private(self) -> None:
-        from teatree.core import worktree_paths  # noqa: PLC0415
+        from teatree.core.worktree import worktree_paths  # noqa: PLC0415
 
-        with patch("teatree.core.worktree_paths.Path") as mock_path:
+        with patch("teatree.core.worktree.worktree_paths.Path") as mock_path:
             mock_path.return_value.resolve.return_value = Path("/private/var/folders/y")
             mock_path.return_value.exists.return_value = False
             out = worktree_paths._candidate_paths("/private/var/folders/y")
@@ -261,9 +261,9 @@ class TestCandidatePathsMacosSymlinks:
         assert "/var/folders/y" in out
 
     def test_appends_private_prefixed_path_when_it_exists_on_disk(self) -> None:
-        from teatree.core import worktree_paths  # noqa: PLC0415
+        from teatree.core.worktree import worktree_paths  # noqa: PLC0415
 
-        with patch("teatree.core.worktree_paths.Path") as mock_path:
+        with patch("teatree.core.worktree.worktree_paths.Path") as mock_path:
             instance = mock_path.return_value
             instance.resolve.return_value = Path("/var/folders/z")
             instance.exists.return_value = True

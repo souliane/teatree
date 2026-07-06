@@ -17,13 +17,13 @@ from pathlib import Path
 from django.core.exceptions import ImproperlyConfigured
 
 from teatree.config import clone_root, worktree_root
-from teatree.core.branch_classification import RedundancyVerdict, branch_redundancy
-from teatree.core.clone_paths import resolve_clone_path
 from teatree.core.models import Ticket, Worktree
 from teatree.core.models.merge_clear import MergeAudit
-from teatree.core.worktree_collision import find_foreign_issue_worktrees
-from teatree.core.worktree_env import compose_project, detect_drift, render_env_cache, worktree_pg_connection
-from teatree.core.worktree_paths import paths_match, ticket_dir_for
+from teatree.core.worktree.branch_classification import RedundancyVerdict, branch_redundancy
+from teatree.core.worktree.clone_paths import resolve_clone_path
+from teatree.core.worktree.worktree_collision import find_foreign_issue_worktrees
+from teatree.core.worktree.worktree_env import compose_project, detect_drift, render_env_cache, worktree_pg_connection
+from teatree.core.worktree.worktree_paths import paths_match, ticket_dir_for
 from teatree.utils import git
 from teatree.utils.db import db_exists
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail

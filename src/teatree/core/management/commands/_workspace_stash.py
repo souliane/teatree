@@ -3,12 +3,12 @@
 Split out of :mod:`teatree.core.management.commands._workspace_cleanup` so that
 module stays under the module-health LOC cap. The forge-CLI-free squash-merge
 signal it relies on (:func:`_branch_captured_upstream`) lives in
-:mod:`teatree.core.branch_classification` — the branch/worktree reapers share it.
+:mod:`teatree.core.worktree.branch_classification` — the branch/worktree reapers share it.
 """
 
 import re
 
-from teatree.core.branch_classification import _branch_captured_upstream
+from teatree.core.worktree.branch_classification import _branch_captured_upstream
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 

@@ -100,17 +100,17 @@ class TestNoStrayContainerAfterReap(TestCase):
     """
 
     def test_stop_path_downs_whole_project(self) -> None:
-        from teatree.core.worktree_env import compose_project  # noqa: PLC0415
+        from teatree.core.worktree.worktree_env import compose_project  # noqa: PLC0415
 
         wt = _worktree(ticket_number="810", state=Worktree.State.SERVICES_UP)
         expected_project = compose_project(wt)
         with (
             patch("teatree.loop.mechanical_local_stack.reapable_worktrees", return_value=[wt]),
-            patch("teatree.core.worktree_tasks.docker_compose_down") as down,
+            patch("teatree.core.worktree.worktree_tasks.docker_compose_down") as down,
         ):
             reap_idle_stack({"worktree_id": wt.pk, "overlay": "t3-heavy"})
             # Run the enqueued on_commit worker synchronously to exercise the down.
-            from teatree.core.worktree_tasks import execute_worktree_stop  # noqa: PLC0415
+            from teatree.core.worktree.worktree_tasks import execute_worktree_stop  # noqa: PLC0415
 
             execute_worktree_stop.call(wt.pk)
         down.assert_called_once()

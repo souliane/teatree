@@ -26,9 +26,9 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
-from teatree.core.branch_classification import branch_content_upstream, content_equivalence_blockers
 from teatree.core.cleanup.cleanup import CleanupResult, cleanup_worktree
 from teatree.core.models import Ticket, Worktree
+from teatree.core.worktree.branch_classification import branch_content_upstream, content_equivalence_blockers
 from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git
 
 

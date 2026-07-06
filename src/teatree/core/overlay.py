@@ -10,10 +10,10 @@ from typing import TYPE_CHECKING
 import httpx
 
 from teatree.core.gates.merge_guard import MergeGuard
-from teatree.core.health import HealthCheck
-from teatree.core.health import default_health_checks as _default_health_checks
 from teatree.core.overlay_metadata import OverlayMetadata
 from teatree.core.variant import Variant
+from teatree.core.worktree.health import HealthCheck
+from teatree.core.worktree.health import default_health_checks as _default_health_checks
 from teatree.types import (
     BaseImageConfig,
     DbImportStrategy,
@@ -32,7 +32,7 @@ if TYPE_CHECKING:
     from teatree.core.connector_manifest import ConnectorRequirement
     from teatree.core.models import Worktree
     from teatree.core.operational_health import HealthSignal
-    from teatree.core.readiness import Probe
+    from teatree.core.worktree.readiness import Probe
     from teatree.types import RawAPIDict
     from teatree.utils.django_db import DjangoDbImportConfig
 
