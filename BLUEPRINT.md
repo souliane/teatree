@@ -57,7 +57,7 @@ Top-level layout under `src/teatree/`:
 
 ```
 cli/         # Typer CLI — bootstrap commands (no Django needed); cohesive groups are subpackages (cli/eval/ cli/review/)
-core/        # Django app — models, FSM, managers, sync, runners, management commands; backend_protocols + merge/ + gates/ packages
+core/        # Django app — models, FSM, managers, sync, runners, management commands; backend_protocols hub at root + packages models/ gates/ merge/ runners/ selectors/ views/ modelkit/ and the clustered leaf packages cleanup/ worktree/ provision/ factory/ intake/ review/ evidence/
 agents/      # Headless executor (in-process claude-agent-sdk)
 loop/        # /loop topology — tick, scanners, dispatch, statusline
 mcp/         # Read-only structured-search MCP server (serializers + search + FastMCP wiring); `t3 mcp serve`
