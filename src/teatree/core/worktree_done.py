@@ -42,12 +42,12 @@ from teatree.core.branch_classification import (
     content_equivalence_blockers,
     is_squash_merged,
 )
-from teatree.core.clean_ignore import is_clean_ignored
-from teatree.core.cleanup import _effective_target, _EffectiveTarget, _resolve_worktree_path, cleanup_worktree
-from teatree.core.cleanup_emit import CleanupEmitRecord, banned_terms_status
-from teatree.core.cleanup_liveness import worktree_liveness
-from teatree.core.cleanup_orphan_ref import classify_orphan_ref
-from teatree.core.cleanup_ownership import is_excluded_by_ownership
+from teatree.core.cleanup.clean_ignore import is_clean_ignored
+from teatree.core.cleanup.cleanup import _effective_target, _EffectiveTarget, _resolve_worktree_path, cleanup_worktree
+from teatree.core.cleanup.cleanup_emit import CleanupEmitRecord, banned_terms_status
+from teatree.core.cleanup.cleanup_liveness import worktree_liveness
+from teatree.core.cleanup.cleanup_orphan_ref import classify_orphan_ref
+from teatree.core.cleanup.cleanup_ownership import is_excluded_by_ownership
 from teatree.core.clone_paths import resolve_clone_path
 from teatree.core.models import Ticket, Worktree
 from teatree.core.worktree_env import CACHE_DIRNAME, CACHE_FILENAME

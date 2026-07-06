@@ -1,6 +1,6 @@
 """Branch-ref-gone reap/keep decision for worktree teardown (the disk lever).
 
-Split out of :mod:`teatree.core.cleanup` to keep that module under the
+Split out of :mod:`teatree.core.cleanup.cleanup` to keep that module under the
 module-health LOC cap. Owns the post-merge-delete signal: when a forge deletes
 a worktree's branch after merge, ``refs/heads/<branch>`` vanishes and the
 data-loss probe ``git log <ref> --not --remotes`` exits 128 ("unknown
@@ -14,7 +14,7 @@ survives the ref deletion) and its containment in a remote — reaping only work
 that is POSITIVELY confirmed on a remote, keeping everything else.
 
 Imports ``_EffectiveTarget`` only under :data:`TYPE_CHECKING` so there is no
-runtime import cycle with :mod:`teatree.core.cleanup` (which calls these).
+runtime import cycle with :mod:`teatree.core.cleanup.cleanup` (which calls these).
 """
 
 from dataclasses import dataclass
@@ -25,7 +25,7 @@ from teatree.utils import git
 from teatree.utils.run import CommandFailedError
 
 if TYPE_CHECKING:
-    from teatree.core.cleanup import _EffectiveTarget
+    from teatree.core.cleanup.cleanup import _EffectiveTarget
 
 # A full git sha is 40 hex chars; the refusal lists at most this many.
 _SUBJECT_PREVIEW_LIMIT = 3

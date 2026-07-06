@@ -10,9 +10,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from teatree.core.branch_classification import _branch_tree_matches_squash, is_squash_merged
-from teatree.core.clean_ignore import is_clean_ignored
-from teatree.core.cleanup import _ref_captured_by_merge, _remote_tracking_ref_exists
-from teatree.core.cleanup_busy_guards import WorktreeBusyError, guard_live_worktree
+from teatree.core.cleanup.clean_ignore import is_clean_ignored
+from teatree.core.cleanup.cleanup import _ref_captured_by_merge, _remote_tracking_ref_exists
+from teatree.core.cleanup.cleanup_busy_guards import WorktreeBusyError, guard_live_worktree
 from teatree.core.models import Worktree
 from teatree.core.resolve import match_worktree_by_path
 from teatree.core.worktree_env import CACHE_DIRNAME, CACHE_FILENAME, write_env_cache
@@ -219,7 +219,7 @@ def _prune_gone_worktree(repo: str, name: str, wt_path: str) -> str:
     Liveness funnel (#291/#2243 rider): an OPPORTUNISTIC reaper must KEEP a
     worktree under live work, so this routes the row through
     :func:`guard_live_worktree` — the same liveness guard
-    :func:`teatree.core.cleanup.cleanup_worktree` fronts — before the removal. It
+    :func:`teatree.core.cleanup.cleanup.cleanup_worktree` fronts — before the removal. It
     deliberately does NOT call the full ``cleanup_worktree`` teardown, which would
     delete the branch ref this pass keeps for recoverability (and trip the #706
     data-loss refusal for a gone-remote squash branch with no forge CLI). A raw

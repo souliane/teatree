@@ -4,7 +4,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from django.test import TestCase
 
-from teatree.core.cleanup import BranchClassification, BranchCommit
+from teatree.core.cleanup.cleanup import BranchClassification, BranchCommit
 from teatree.core.gates.orphan_guard import BranchReport, BranchStatus, classify_branch, find_orphans_in_workspace
 from teatree.core.models import Ticket, Worktree
 from teatree.utils.run import CommandFailedError

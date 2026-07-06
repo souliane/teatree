@@ -3,7 +3,7 @@
 The squash-merge-aware classification this module relies on lives in
 :mod:`teatree.core.branch_classification`; the data-loss guards and the
 worktree-teardown orchestration live here. The names re-exported below keep the
-import surface (``from teatree.core.cleanup import classify_branch_commits``,
+import surface (``from teatree.core.cleanup.cleanup import classify_branch_commits``,
 ``cleanup_mod._branch_pr_is_merged``) stable for the management commands and the
 sync backends that funnel through this seam.
 """
@@ -31,8 +31,8 @@ from teatree.core.branch_classification import (
     content_equivalence_blockers,
     probe_host_cli,
 )
-from teatree.core.cleanup_busy_guards import WorktreeBusyError, guard_live_worktree
-from teatree.core.cleanup_orphan_ref import raise_or_reap_orphan_ref
+from teatree.core.cleanup.cleanup_busy_guards import WorktreeBusyError, guard_live_worktree
+from teatree.core.cleanup.cleanup_orphan_ref import raise_or_reap_orphan_ref
 from teatree.core.clone_paths import resolve_clone_path
 from teatree.core.models import Worktree
 from teatree.core.overlay_loader import get_overlay_for_worktree

@@ -2,7 +2,7 @@
 
 Split verbatim from the former monolithic ``tests/teatree_core/test_cleanup.py``
 (souliane/teatree#443). The classifier-driven safety gates and overlay-step
-wiring all exercise the wholesale ``teatree.core.cleanup.git``
+wiring all exercise the wholesale ``teatree.core.cleanup.cleanup.git``
 mock; the shared module-level ``_patch_*`` decorators and the
 ``_no_unpushed``/``_mock_workspace`` helpers are lifted unchanged.
 """
@@ -14,25 +14,25 @@ import pytest
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.cleanup import WorktreeBusyError, cleanup_worktree
+from teatree.core.cleanup.cleanup import WorktreeBusyError, cleanup_worktree
 from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.models.external_delivery import mark_external_delivery
 from teatree.core.overlay import OverlayBase, ProvisionStep, RunCommands
 from teatree.utils.run import CommandFailedError
 from tests.teatree_core._provision_timebox_stub import provision_timebox_unimportable
 
-_patch_config = patch("teatree.core.cleanup.clone_root")
-_patch_git = patch("teatree.core.cleanup.git")
-_patch_overlay = patch("teatree.core.cleanup.get_overlay_for_worktree")
+_patch_config = patch("teatree.core.cleanup.cleanup.clone_root")
+_patch_git = patch("teatree.core.cleanup.cleanup.git")
+_patch_overlay = patch("teatree.core.cleanup.cleanup.get_overlay_for_worktree")
 # The origin/main hygiene gate is now authorized by the CONTENT gate (#2609),
 # not subject-match — so a test that drives the gate patches
 # ``content_equivalence_blockers``, the helper every destructive caller funnels
 # through, rather than the cheap ``classify_branch_commits`` recognizer.
-_patch_content = patch("teatree.core.cleanup.content_equivalence_blockers")
+_patch_content = patch("teatree.core.cleanup.cleanup.content_equivalence_blockers")
 # Pin the #2205 merged-evidence override to False so tests that set
 # ``commits_absent_from_all_remotes`` to a non-empty list still hit the
 # data-loss guard rather than silently passing through the squash-merge override.
-_patch_ref_tree = patch("teatree.core.cleanup._ref_captured_by_merge", return_value=False)
+_patch_ref_tree = patch("teatree.core.cleanup.cleanup._ref_captured_by_merge", return_value=False)
 
 
 def _no_unpushed(mock_git: MagicMock) -> None:
@@ -195,7 +195,7 @@ class TestCleanupWorktree(TestCase):
 
         wt = self._make_worktree(db_name="wt_99")
 
-        with patch("teatree.core.cleanup.drop_db") as mock_drop:
+        with patch("teatree.core.cleanup.cleanup.drop_db") as mock_drop:
             cleanup_worktree(wt)
             mock_drop.assert_called_once_with("wt_99", user="", host="", env=None)
 
@@ -233,7 +233,7 @@ class TestCleanupWorktree(TestCase):
         mock_overlay.return_value.config.teardown_removes_pass_entries = False
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
-        with patch("teatree.core.cleanup.remove_postgres_pass_entry") as mock_remove:
+        with patch("teatree.core.cleanup.cleanup.remove_postgres_pass_entry") as mock_remove:
             cleanup_worktree(wt)
         mock_remove.assert_not_called()
 
@@ -252,7 +252,7 @@ class TestCleanupWorktree(TestCase):
         mock_overlay.return_value.config.teardown_removes_pass_entries = True
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
-        with patch("teatree.core.cleanup.remove_postgres_pass_entry") as mock_remove:
+        with patch("teatree.core.cleanup.cleanup.remove_postgres_pass_entry") as mock_remove:
             cleanup_worktree(wt)
         # Pass key is ticket-pk-scoped (canonical, unique), not ticket_number.
         mock_remove.assert_called_once_with(wt.ticket_id)
@@ -297,8 +297,8 @@ class TestCleanupWorktree(TestCase):
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
         with (
-            patch("teatree.core.cleanup._branch_tree_matches_squash", return_value=False),
-            patch("teatree.core.cleanup._branch_pr_is_merged", return_value=False),
+            patch("teatree.core.cleanup.cleanup._branch_tree_matches_squash", return_value=False),
+            patch("teatree.core.cleanup.cleanup._branch_pr_is_merged", return_value=False),
             pytest.raises(RuntimeError, match="content not upstream"),
         ):
             cleanup_worktree(wt)
@@ -334,7 +334,7 @@ class TestCleanupWorktree(TestCase):
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
         # The squash-tree match (PR merge commit tree == branch tip) is the
         # positive merged-evidence override — control it at cleanup's call site.
-        with patch("teatree.core.cleanup._branch_tree_matches_squash", return_value=True):
+        with patch("teatree.core.cleanup.cleanup._branch_tree_matches_squash", return_value=True):
             cleanup_worktree(wt)
 
         mock_git.worktree_remove.assert_called_once()
@@ -361,8 +361,8 @@ class TestCleanupWorktree(TestCase):
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
         with (
-            patch("teatree.core.cleanup._branch_tree_matches_squash", return_value=False),
-            patch("teatree.core.cleanup._branch_pr_is_merged", return_value=False),
+            patch("teatree.core.cleanup.cleanup._branch_tree_matches_squash", return_value=False),
+            patch("teatree.core.cleanup.cleanup._branch_pr_is_merged", return_value=False),
             pytest.raises(RuntimeError, match="content not upstream"),
         ):
             cleanup_worktree(wt)
@@ -424,8 +424,8 @@ class TestCleanupWorktree(TestCase):
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
         with (
-            patch("teatree.core.cleanup._branch_tree_matches_squash", return_value=False),
-            patch("teatree.core.cleanup._branch_pr_is_merged", return_value=True),
+            patch("teatree.core.cleanup.cleanup._branch_tree_matches_squash", return_value=False),
+            patch("teatree.core.cleanup.cleanup._branch_pr_is_merged", return_value=True),
         ):
             cleanup_worktree(wt)
 
@@ -458,8 +458,8 @@ class TestCleanupWorktree(TestCase):
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
         with (
-            patch("teatree.core.cleanup._branch_tree_matches_squash", return_value=False),
-            patch("teatree.core.cleanup._branch_pr_is_merged", return_value=False),
+            patch("teatree.core.cleanup.cleanup._branch_tree_matches_squash", return_value=False),
+            patch("teatree.core.cleanup.cleanup._branch_pr_is_merged", return_value=False),
             pytest.raises(RuntimeError, match="content not upstream"),
         ):
             cleanup_worktree(wt)
@@ -491,7 +491,7 @@ class TestCleanupWorktree(TestCase):
         mock_git.commits_absent_from_all_remotes.return_value = ["abc1234 feat: squashed onto main"]
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
-        with patch("teatree.core.cleanup._ref_captured_by_merge", return_value=True):
+        with patch("teatree.core.cleanup.cleanup._ref_captured_by_merge", return_value=True):
             cleanup_worktree(wt)
 
         mock_git.worktree_remove.assert_called_once()
@@ -650,8 +650,8 @@ class TestCleanupWorktree(TestCase):
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
         with (
-            patch("teatree.core.cleanup._branch_tree_matches_squash", return_value=False),
-            patch("teatree.core.cleanup._branch_pr_is_merged", return_value=False),
+            patch("teatree.core.cleanup.cleanup._branch_tree_matches_squash", return_value=False),
+            patch("teatree.core.cleanup.cleanup._branch_pr_is_merged", return_value=False),
             pytest.raises(RuntimeError, match="content not upstream"),
         ):
             cleanup_worktree(wt, strict_hygiene=True)
@@ -760,8 +760,8 @@ class TestCleanupWorktreeSurvivesMissingProvisionTimebox(TestCase):
         wt_id = wt.pk
 
         with (
-            patch("teatree.core.cleanup.git") as mock_git,
-            patch("teatree.core.cleanup.drop_db") as mock_drop,
+            patch("teatree.core.cleanup.cleanup.git") as mock_git,
+            patch("teatree.core.cleanup.cleanup.drop_db") as mock_drop,
             patch("teatree.core.runners.worktree_start.docker_compose_down"),
             provision_timebox_unimportable(),
         ):
@@ -823,11 +823,11 @@ class TestCleanupWorktreeSurvivesVanishedHookPath(TestCase):
         wt_id = wt.pk
 
         with (
-            patch("teatree.core.cleanup.git") as mock_git,
-            patch("teatree.core.cleanup.drop_db") as mock_drop,
+            patch("teatree.core.cleanup.cleanup.git") as mock_git,
+            patch("teatree.core.cleanup.cleanup.drop_db") as mock_drop,
             patch("teatree.core.runners.worktree_start.docker_compose_down"),
             patch(
-                "teatree.core.cleanup.prek_hook.remove_stale_hooks",
+                "teatree.core.cleanup.cleanup.prek_hook.remove_stale_hooks",
                 side_effect=FileNotFoundError(2, "No such file or directory"),
             ),
         ):
@@ -896,10 +896,10 @@ class TestCleanupWorktreeLoudTeardown(TestCase):
 
         with (
             patch(
-                "teatree.core.cleanup.drop_db",
+                "teatree.core.cleanup.cleanup.drop_db",
                 side_effect=CommandFailedError(["dropdb", "wt_99"], 1, "", "connection refused"),
             ),
-            patch("teatree.core.cleanup.remove_postgres_pass_entry") as mock_remove,
+            patch("teatree.core.cleanup.cleanup.remove_postgres_pass_entry") as mock_remove,
         ):
             result = cleanup_worktree(wt)
 
@@ -934,9 +934,9 @@ class TestCleanupWorktreeLoudTeardown(TestCase):
         wt_id = wt.pk
 
         with (
-            patch("teatree.core.cleanup.drop_db"),
+            patch("teatree.core.cleanup.cleanup.drop_db"),
             patch(
-                "teatree.core.cleanup.remove_postgres_pass_entry",
+                "teatree.core.cleanup.cleanup.remove_postgres_pass_entry",
                 side_effect=RuntimeError("pass: gpg failed"),
             ),
         ):
@@ -992,7 +992,7 @@ class TestCleanupWorktreeLoudTeardown(TestCase):
         mock_git.unsynced_commits.return_value = []
 
         wt = self._make_worktree(db_name="")
-        with patch("teatree.core.cleanup.drop_db"):
+        with patch("teatree.core.cleanup.cleanup.drop_db"):
             result = cleanup_worktree(wt)
 
         assert result.clean is True
@@ -1057,8 +1057,8 @@ class TestCleanupWorktreeMultiOverlay(TestCase):
             extra={"worktree_path": "/tmp/wt/org/repo"},
         )
 
-    @patch("teatree.core.cleanup.clone_root")
-    @patch("teatree.core.cleanup.git")
+    @patch("teatree.core.cleanup.cleanup.clone_root")
+    @patch("teatree.core.cleanup.cleanup.git")
     def test_cleanup_worktree_resolves_overlay_from_worktree_field(
         self,
         mock_git: MagicMock,
@@ -1089,8 +1089,8 @@ class TestCleanupWorktreeMultiOverlay(TestCase):
         result = cleanup_worktree(wt)
         assert result.clean is True
 
-    @patch("teatree.core.cleanup.clone_root")
-    @patch("teatree.core.cleanup.git")
+    @patch("teatree.core.cleanup.cleanup.clone_root")
+    @patch("teatree.core.cleanup.cleanup.git")
     def test_cleanup_worktree_selects_correct_overlay(
         self,
         mock_git: MagicMock,

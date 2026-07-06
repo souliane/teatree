@@ -19,7 +19,7 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
-from teatree.core.cleanup_liveness import LivenessVerdict
+from teatree.core.cleanup.cleanup_liveness import LivenessVerdict
 from teatree.core.models import Ticket, Worktree
 from teatree.core.runners import worktree_start
 from teatree.core.worktree_done import (
@@ -79,9 +79,9 @@ class _ReaperFixture(TestCase):
 
         # No git worktree, DB, or docker is destroyed against a real overlay: route
         # cleanup through the overlay-free teardown and stub the docker side-effect.
-        monkeypatch.setattr("teatree.core.cleanup.clone_root", lambda: self.workspace)
+        monkeypatch.setattr("teatree.core.cleanup.cleanup.clone_root", lambda: self.workspace)
         monkeypatch.setattr("teatree.core.worktree_done.clone_root", lambda: self.workspace)
-        monkeypatch.setattr("teatree.core.cleanup._resolve_overlay_or_none", lambda _wt: None)
+        monkeypatch.setattr("teatree.core.cleanup.cleanup._resolve_overlay_or_none", lambda _wt: None)
         self.docker_calls: list[tuple[str, bool]] = []
         monkeypatch.setattr(
             "teatree.core.runners.worktree_start.docker_compose_down",
@@ -342,7 +342,7 @@ class TestReaperGatesAndEmit(_ReaperFixture):
         assert outcome.emit.liveness
 
     def test_colleague_authored_item_is_excluded(self) -> None:
-        from teatree.core.cleanup_ownership import OwnershipVerdict  # noqa: PLC0415
+        from teatree.core.cleanup.cleanup_ownership import OwnershipVerdict  # noqa: PLC0415
 
         worktree = self._make_worktree(Ticket.State.MERGED)
         with patch(

@@ -1,6 +1,11 @@
 """Structured EMIT records + banned-terms scan (#2763) — pure-logic units."""
 
-from teatree.core.cleanup_emit import EMIT_SCHEMA_VERSION, CleanupEmitRecord, banned_terms_status, scan_banned_terms
+from teatree.core.cleanup.cleanup_emit import (
+    EMIT_SCHEMA_VERSION,
+    CleanupEmitRecord,
+    banned_terms_status,
+    scan_banned_terms,
+)
 
 
 class TestScanBannedTerms:

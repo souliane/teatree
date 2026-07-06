@@ -36,7 +36,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from teatree.core.cleanup_emit import banned_terms_status
+from teatree.core.cleanup.cleanup_emit import banned_terms_status
 from teatree.utils import git
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail
 

@@ -8,7 +8,7 @@ colleague-authored branch is excluded up front.
 import subprocess
 from pathlib import Path
 
-from teatree.core.cleanup_ownership import is_excluded_by_ownership
+from teatree.core.cleanup.cleanup_ownership import is_excluded_by_ownership
 from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git
 
 

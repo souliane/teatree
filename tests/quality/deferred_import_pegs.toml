@@ -11,7 +11,7 @@
 "src/teatree/core/_checking_gather.py" = 5
 "src/teatree/core/apps.py" = 2
 "src/teatree/core/checking.py" = 2
-"src/teatree/core/cleanup.py" = 1
+"src/teatree/core/cleanup/cleanup.py" = 1
 "src/teatree/core/cost.py" = 1
 "src/teatree/core/gates/dod_gate.py" = 3
 "src/teatree/core/gates/e2e_mandatory_gate.py" = 3

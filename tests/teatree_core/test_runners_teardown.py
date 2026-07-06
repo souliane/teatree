@@ -184,8 +184,8 @@ class TestWorktreeTeardownUnpushedGuard(TestCase):
     def _teardown(self, ticket: Ticket) -> object:
         with (
             patch("teatree.core.overlay_loader._discover_overlays", return_value=_MOCK_OVERLAY),
-            patch("teatree.core.cleanup.clone_root", return_value=self.workspace),
-            patch("teatree.core.cleanup.get_overlay_for_worktree") as mock_overlay,
+            patch("teatree.core.cleanup.cleanup.clone_root", return_value=self.workspace),
+            patch("teatree.core.cleanup.cleanup.get_overlay_for_worktree") as mock_overlay,
         ):
             mock_overlay.return_value.get_cleanup_steps.return_value = []
             return WorktreeTeardown(ticket).run()

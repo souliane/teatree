@@ -9,7 +9,7 @@ failure.
 import subprocess
 from pathlib import Path
 
-from teatree.core.cleanup_salvage import SalvageHooks, SalvageRequest, salvage_item
+from teatree.core.cleanup.cleanup_salvage import SalvageHooks, SalvageRequest, salvage_item
 from tests.teatree_core.cleanup._shared import _GIT, _clean_env, _run_git
 
 

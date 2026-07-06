@@ -8,7 +8,7 @@ orchestration live here.
 import json
 from pathlib import Path
 
-from teatree.core.cleanup_salvage import SalvageRequest, default_salvage_hooks, salvage_item
+from teatree.core.cleanup.cleanup_salvage import SalvageRequest, default_salvage_hooks, salvage_item
 from teatree.core.worktree_done import collect_emit_records
 from teatree.utils import git
 

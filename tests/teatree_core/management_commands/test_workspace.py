@@ -19,8 +19,8 @@ from django.utils import timezone
 from django.utils.module_loading import import_string
 
 import teatree.core.branch_classification as bc_mod
-import teatree.core.clean_ignore as clean_ignore_mod
-import teatree.core.cleanup as cleanup_mod
+import teatree.core.cleanup.clean_ignore as clean_ignore_mod
+import teatree.core.cleanup.cleanup as cleanup_mod
 import teatree.core.management.commands._workspace_clean_all as ws_clean_all_mod
 import teatree.core.management.commands._workspace_cleanup as ws_cleanup_mod
 import teatree.core.management.commands._workspace_docker as ws_docker_mod
@@ -37,7 +37,7 @@ import teatree.utils.git_commit as git_commit_mod
 import teatree.utils.run as utils_run_mod
 from teatree.backends.errors import IssueNotFoundError
 from teatree.config import load_config
-from teatree.core.cleanup_liveness import LivenessVerdict
+from teatree.core.cleanup.cleanup_liveness import LivenessVerdict
 from teatree.core.gates.provision_admission_gate import ProvisionAdmissionVerdict
 from teatree.core.management.commands._workspace_provision_parallel import WorktreeProvisionResult
 from teatree.core.management.commands._workspace_ticket_intake import build_branch_name
@@ -1619,7 +1619,7 @@ class TestWorkspaceEmitAndSalvage(TestCase):
         assert json.loads(rendered) == [], "no NOT-auto-deleted items → empty JSON array"
 
     def test_emit_serialises_collected_records(self) -> None:
-        from teatree.core.cleanup_emit import CleanupEmitRecord  # noqa: PLC0415
+        from teatree.core.cleanup.cleanup_emit import CleanupEmitRecord  # noqa: PLC0415
 
         record = CleanupEmitRecord(path="/ws/feat", branch="feat", kind="worktree", unique_commit_shas=["abc"])
         with (
@@ -1632,7 +1632,7 @@ class TestWorkspaceEmitAndSalvage(TestCase):
         assert data[0]["schema_version"] == 1
 
     def test_salvage_builds_request_and_reports_outcome(self) -> None:
-        from teatree.core.cleanup_salvage import SalvageRequest, SalvageResult  # noqa: PLC0415
+        from teatree.core.cleanup.cleanup_salvage import SalvageRequest, SalvageResult  # noqa: PLC0415
 
         captured: dict[str, object] = {}
 
@@ -2256,7 +2256,7 @@ class TestReapHonorsPerOverlayCleanIgnore(TestCase):
     Pre-fix it read the raw global ``load_config().user.clean_ignore``, so a
     pattern set only under ``[overlays.<name>]`` was dead — the per-overlay
     override never reached the keep decision. The single ``is_clean_ignored``
-    predicate (in :mod:`teatree.core.clean_ignore`) resolves
+    predicate (in :mod:`teatree.core.cleanup.clean_ignore`) resolves
     ``get_effective_settings(worktree.overlay).clean_ignore`` per row, and
     ``reap_done_worktree`` checks it FIRST — before the done/analyze gates.
     """
@@ -3582,7 +3582,7 @@ class TestCleanAllKeepsBusyWorktree(TestCase):
 
     The reconciliation home for #2773's end-to-end busy-keep guards: ported off the
     ``@_no_liveness``-neutralised reap-fully class so the REAL
-    :func:`teatree.core.cleanup_liveness.worktree_liveness` predicate runs. The
+    :func:`teatree.core.cleanup.cleanup_liveness.worktree_liveness` predicate runs. The
     ad-hoc ``clean-all`` sweep funnels through :func:`reap_done_worktree` with
     ``fsm_terminal`` OFF, so a busy ticket (live session / claimed task) flips a
     squash-merged or CREATED row from would-reap to an ``ACTIVE … skipping`` KEEP —

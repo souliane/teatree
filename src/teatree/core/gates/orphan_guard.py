@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from teatree.config import clone_root
-from teatree.core.cleanup import _branch_tree_matches_squash, classify_branch_commits, probe_host_cli
+from teatree.core.cleanup.cleanup import _branch_tree_matches_squash, classify_branch_commits, probe_host_cli
 from teatree.core.clone_paths import resolve_clone_path
 from teatree.core.models import Worktree
 from teatree.utils import git

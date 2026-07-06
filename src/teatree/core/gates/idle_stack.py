@@ -157,7 +157,7 @@ def active_delivery_keep_reason(worktree: Worktree, *, now: datetime | None = No
     :func:`_active_delivery_keep_reason` (it resolves the e2e recency cutoff from
     settings). Reusable on its own: :func:`worktree_protects_against_reap` combines
     it with :func:`ticket_is_busy`, and the FSM-done worktree reaper
-    (:func:`teatree.core.cleanup_liveness.worktree_liveness`) folds it in
+    (:func:`teatree.core.cleanup.cleanup_liveness.worktree_liveness`) folds it in
     UNCONDITIONALLY — unlike busy-ticket / recent-commit it is NOT an FSM-ceremony
     false positive (the merge mints neither a delivery lease, an e2e run, nor a
     pin), so a worktree delivering externally / freshly e2e-tested / pinned is KEPT
@@ -174,9 +174,9 @@ def worktree_protects_against_reap(worktree: Worktree, *, now: datetime | None =
     The shared liveness predicate every OPPORTUNISTIC destructive reaper/teardown
     path consults before deleting filesystem or DB state — the FSM-done worktree
     reaper (:func:`teatree.core.worktree_done.reap_done_worktree`, via
-    :func:`teatree.core.cleanup_liveness.worktree_liveness`), the clean-merged
+    :func:`teatree.core.cleanup.cleanup_liveness.worktree_liveness`), the clean-merged
     sweep, the merge-sync cleanup, and the orphan-isolated-root reaper all route
-    through it (or through :func:`teatree.core.cleanup.cleanup_worktree`). It
+    through it (or through :func:`teatree.core.cleanup.cleanup.cleanup_worktree`). It
     combines the ticket-level :func:`ticket_is_busy` (live session /
     active-or-claimed task) with the worktree-level #2227 active-delivery guards
     (:func:`active_delivery_keep_reason` — external-delivery lease, recent E2E,

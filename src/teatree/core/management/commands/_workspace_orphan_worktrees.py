@@ -22,7 +22,7 @@ import logging
 from pathlib import Path
 
 from teatree.core.branch_classification import is_squash_merged
-from teatree.core.clean_ignore import is_clean_ignored
+from teatree.core.cleanup.clean_ignore import is_clean_ignored
 from teatree.core.clone_paths import resolve_clone_path
 from teatree.core.models import Worktree
 from teatree.core.worktree_paths import paths_match

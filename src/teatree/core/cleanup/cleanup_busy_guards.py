@@ -1,16 +1,16 @@
-"""The worktree-liveness KEEP guard, split out of :mod:`teatree.core.cleanup`.
+"""The worktree-liveness KEEP guard, split out of :mod:`teatree.core.cleanup.cleanup`.
 
 Lives in its own module so the teardown orchestrator stays under the
 module-health LOC cap (mirrors ``cleanup_orphan_ref``). :func:`guard_live_worktree`
 is the LIVENESS funnel every OPPORTUNISTIC reaper routes through: it
-short-circuits :func:`teatree.core.cleanup.cleanup_worktree` with
+short-circuits :func:`teatree.core.cleanup.cleanup.cleanup_worktree` with
 :class:`WorktreeBusyError` BEFORE any destructive step when the ticket has a live
 session, an active/claimed task, an external-delivery lease, a recent E2E run, or
 an explicit ``reaper_pinned`` pin.
 
 The dirty-worktree guard and the committed-but-unpushed DATA-LOSS guards are a
 different concern — they gate the git-removal step on on-disk / remote *git*
-state — and stay in :mod:`teatree.core.cleanup` next to the removal they protect.
+state — and stay in :mod:`teatree.core.cleanup.cleanup` next to the removal they protect.
 """
 
 from teatree.core.gates.idle_stack import worktree_protects_against_reap

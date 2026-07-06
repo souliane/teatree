@@ -1,4 +1,4 @@
-"""Overlay-specific worktree-teardown steps, split out of :mod:`teatree.core.cleanup`.
+"""Overlay-specific worktree-teardown steps, split out of :mod:`teatree.core.cleanup.cleanup`.
 
 These run an overlay's own teardown hooks (custom cleanup steps, the
 external-resource reaper). They operate purely through the overlay object's
