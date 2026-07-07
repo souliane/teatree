@@ -26,8 +26,17 @@ INSTALLED_APPS, but settings are not configured``. The bug was originally
 masked by typer's rich-traceback handler exiting 0 — see souliane/teatree#932
 for the management-command equivalent.
 
-These tests pin both invariants via subprocesses (a clean child interpreter
-state) so future code additions cannot silently re-break either one.
+The same failure class re-surfaced from a different chokepoint: #117's
+:mod:`teatree.core.send_proxy` is imported at module scope by
+:mod:`teatree.cli.review.service`, which ``teatree.cli.__init__`` imports
+eagerly — so a top-level ``teatree.core.models.*`` import in ``send_proxy``
+drags the whole ORM model registry in pre-app-registry and breaks a bare
+``import teatree.cli`` / ``t3 --help``. ``TestCliImportSafePreBootstrap`` and
+``TestSendProxyIsImportSafePreBootstrap`` pin that ``send_proxy`` stays
+import-safe (its model imports deferred into the functions that use them).
+
+These tests pin every invariant via subprocesses (a clean child interpreter
+state) so future code additions cannot silently re-break any one.
 """
 
 import os
@@ -64,6 +73,71 @@ class TestOnBehalfGateRecordedIsImportSafePreBootstrap:
             "    'on_behalf_gate_recorded must not eagerly import the ORM models — '\n"
             "    'the import must be lazy inside require_on_behalf_approval so the '\n"
             "    'CLI can be loaded before django.setup() (souliane/teatree#1003)'\n"
+            ")\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", probe],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=_clean_env(),
+        )
+        assert result.returncode == 0, f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
+
+
+class TestCliImportSafePreBootstrap:
+    """A bare ``import teatree.cli`` must not require Django to be configured.
+
+    ``teatree.cli.__init__`` eagerly imports :mod:`teatree.cli.review`, whose
+    :mod:`teatree.cli.review.service` imports :mod:`teatree.core.send_proxy` at
+    module scope. If ``send_proxy`` imports ``teatree.core.models.*`` at the top
+    level, that pulls in the whole ORM model registry before ``django.setup()``
+    and every ``t3`` invocation (including ``t3 --help``) crashes with
+    ``ImproperlyConfigured`` at bootstrap. This drives the raw import in a clean
+    child interpreter, the way the ``t3`` console script reaches it.
+    """
+
+    def test_import_teatree_cli_does_not_raise_improperly_configured(self) -> None:
+        probe = "import teatree.cli  # noqa: F401\nprint('cli-import-ok')\n"
+        result = subprocess.run(
+            [sys.executable, "-c", probe],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=_clean_env(),
+        )
+        assert result.returncode == 0, f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
+        assert "ImproperlyConfigured" not in result.stderr
+        assert "cli-import-ok" in result.stdout
+
+
+class TestSendProxyIsImportSafePreBootstrap:
+    """:mod:`teatree.core.send_proxy` is on the CLI bootstrap path — keep it ORM-free at import.
+
+    ``send_proxy`` uses the ``SendAudit`` and ``Provenance`` models, but only
+    inside the functions that touch them (the audit writer / the ``SendRequest``
+    provenance default-factory). A child interpreter imports the module with
+    ``DJANGO_SETTINGS_MODULE`` unset and asserts the ``teatree.core.models``
+    package — whose ``__init__`` eager-loads every ORM model and is what raises
+    ``ImproperlyConfigured`` pre-app-registry — was never pulled into
+    ``sys.modules`` as an import side effect.
+    """
+
+    def test_module_import_does_not_eager_load_orm_models(self) -> None:
+        probe = (
+            "import sys\n"
+            "import teatree.core.send_proxy  # noqa: F401\n"
+            "leaked = [m for m in (\n"
+            "    'teatree.core.models',\n"
+            "    'teatree.core.models.send_audit',\n"
+            "    'teatree.core.models.provenance',\n"
+            "    'teatree.core.models.anthropic_active_pick',\n"
+            ") if m in sys.modules]\n"
+            "assert not leaked, (\n"
+            "    'send_proxy must not eagerly import teatree.core.models.* — the '\n"
+            "    'SendAudit / Provenance imports must be deferred into the functions '\n"
+            "    'that use them so the CLI bootstrap path stays Django-free '\n"
+            "    f'(souliane/teatree#117); leaked: {leaked}'\n"
             ")\n"
         )
         result = subprocess.run(
