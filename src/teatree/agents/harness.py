@@ -91,8 +91,9 @@ class OrcaLaneConfig:
     *   ``lane`` — the ``x-lane`` header (``factory`` | ``eval`` | ``bulk``, plan §3.4).
     *   ``request_limit`` — the per-run sequential-request cap (plan §4 #1);
         ``None``/``<= 0`` leaves the run uncapped.
-    *   ``pass_path`` — the ``orca_router_pass_path`` override (plan §3.6);
-        ``None`` keeps the credential's built-in ``orca-router/api-key`` path.
+    *   ``pass_path`` — the ``orca_router_pass_path`` override (plan §3.6). The
+        credential has NO built-in default, so ``None`` means it resolves only from
+        ``ORCA_ROUTER_API_KEY`` (or fails loud naming ``orca_router_pass_path``).
     *   ``router_name`` — the per-overlay OrcaRouter router handle
         (``orca_router_name``, e.g. ``orcarouter/secondary-factory``) the ``teatree-native``
         model id normalises UP to; ``None`` keeps the ``PYDANTIC_AI_TIER_MODELS``
@@ -399,8 +400,9 @@ def _build_orca_provider(*, lane: str, pass_path: str | None = None) -> OpenAIPr
     *pass_path* is the DB-home ``orca_router_pass_path`` override (resolved
     SYNCHRONOUSLY by :func:`resolve_harness`, never here — this runs in the async
     event loop), so an operator can point teatree at an existing per-account
-    ``pass`` entry with no copy (``None``/empty → the credential's built-in
-    ``orca-router/api-key`` path; ``ORCA_ROUTER_API_KEY`` env still wins). The
+    ``pass`` entry with no copy. The credential has NO built-in default, so
+    ``None``/empty means it resolves only from the ``ORCA_ROUTER_API_KEY`` env var
+    (which still wins over ``pass``) and otherwise fails loud. The
     provider is built from an :class:`~openai.AsyncOpenAI` client carrying a
     default ``x-lane: <lane>`` header on every request — the only way to inject a
     default header, since :class:`OpenAIProvider` sets none itself.

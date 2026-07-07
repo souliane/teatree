@@ -12,7 +12,10 @@ The two concrete rules are mirror images. :class:`AnthropicApiKeyCredential` set
 ``ANTHROPIC_API_KEY`` and strips the subscription ``CLAUDE_CODE_OAUTH_TOKEN``;
 :class:`AnthropicSubscriptionCredential` sets ``CLAUDE_CODE_OAUTH_TOKEN`` and strips
 ``ANTHROPIC_API_KEY`` (the bundled CLI prefers a credential only when the others are
-absent). Which one the automated eval lane rides is the ``eval_credential`` knob's
+absent). NO credential carries a built-in default ``pass`` path — each resolves only
+from its env var or an explicitly configured per-account entry, and fails loud (naming
+the setting to configure) when neither is present rather than reading a dead default.
+Which one the automated eval lane rides is the ``eval_credential`` knob's
 call, resolved through ``teatree.credential_config.resolve_eval_credential``: the
 default is the subscription credential, reversing [#2707](https://github.com/souliane/teatree/issues/2707)'s
 metered-exclusive lock (the metered key is still selectable via the knob). The
@@ -68,11 +71,19 @@ class CredentialSpec:
     when this one is applied — the bundled CLI prefers one credential only when
     the others are absent, so stripping the conflicts is what makes "use THIS
     credential, exclusively" actually hold.
+
+    *pass_path* is ``None`` for a credential that has NO built-in default entry:
+    it then resolves only from *env_var* or an INJECTED per-account
+    ``pass_path_override``, and :meth:`Credential.resolve` fails loud when neither
+    is present rather than reading a dead default. *routing_setting* names the
+    config setting an operator populates to supply that override (e.g.
+    ``anthropic_oauth_pass_paths``), so the loud error is actionable.
     """
 
     env_var: str
-    pass_path: str
     conflicting_vars: tuple[str, ...]
+    pass_path: str | None = None
+    routing_setting: str | None = None
 
 
 @runtime_checkable
@@ -99,13 +110,16 @@ class EnvSource:
 class PassSource:
     """Reads a credential from the ``pass`` password store under ``spec.pass_path``.
 
-    A missing entry (or ``pass`` not installed) resolves to ``None`` — handled as
-    absent, never a crash. :func:`~teatree.utils.secrets.read_pass` already
-    swallows the non-zero ``pass show`` exit and returns ``""`` for an absent
-    entry, which this normalizes to ``None``.
+    A ``None`` ``pass_path`` (a credential with no built-in default entry and no
+    injected override) is skipped entirely — nothing to read. A missing entry (or
+    ``pass`` not installed) resolves to ``None`` — handled as absent, never a crash.
+    :func:`~teatree.utils.secrets.read_pass` already swallows the non-zero ``pass
+    show`` exit and returns ``""`` for an absent entry, which this normalizes to ``None``.
     """
 
     def lookup(self, spec: "CredentialSpec") -> str | None:  # noqa: PLR6301 — instance method to satisfy the CredentialSource Protocol.
+        if spec.pass_path is None:
+            return None
         return read_pass(spec.pass_path) or None
 
 
@@ -122,6 +136,9 @@ class Credential:
     at RESOLVE time; it is a plain string injected by the domain-layer factory
     (``teatree.credential_config``), so this foundation module never reads the
     config store itself. ``None`` (the default) leaves the built-in ``pass_path``.
+    *missing_context*, when given, is an opaque note the domain layer appends to the
+    loud :class:`CredentialError` (e.g. which config scope had no configured account) —
+    rendered only on failure, so a caller that never resolves is never affected.
     """
 
     spec: CredentialSpec
@@ -131,9 +148,11 @@ class Credential:
         *,
         sources: Sequence[CredentialSource] = _DEFAULT_SOURCES,
         pass_path_override: str | None = None,
+        missing_context: str | None = None,
     ) -> None:
         self._sources = tuple(sources)
         self._pass_path_override = pass_path_override
+        self._missing_context = missing_context
 
     @property
     def sources(self) -> tuple[CredentialSource, ...]:
@@ -155,7 +174,7 @@ class Credential:
             value = source.lookup(spec)
             if value:
                 return value
-        raise CredentialError(self._missing_message(spec))
+        raise CredentialError(self._missing_message(spec, self._missing_context))
 
     def _effective_spec(self) -> CredentialSpec:
         """:attr:`spec` with any injected ``pass_path`` override applied.
@@ -200,9 +219,20 @@ class Credential:
         return child
 
     @staticmethod
-    def _missing_message(spec: CredentialSpec) -> str:
+    def _missing_message(spec: CredentialSpec, context: str | None = None) -> str:
+        note = f" {context}" if context else ""
+        if spec.pass_path is None:
+            setting = spec.routing_setting or "the per-account routing list"
+            return (
+                f"no {spec.env_var} credential available{note} and no OAuth `pass` path is configured. "
+                f"Set {spec.env_var} in the environment, or configure a per-account `pass` "
+                f"entry via the `{setting}` setting so the routing selector resolves one. "
+                "This credential has no default `pass` path — it never falls back to a dead "
+                f"entry, and its conflicting vars {spec.conflicting_vars} are stripped from the "
+                "child env, so a misconfigured run fails loud here rather than authenticating as the wrong one."
+            )
         return (
-            f"no {spec.env_var} credential available. Set {spec.env_var} in the "
+            f"no {spec.env_var} credential available{note}. Set {spec.env_var} in the "
             f"environment, or store it locally with `pass insert {spec.pass_path}`. "
             "This credential never falls back to a conflicting one (the conflicting "
             f"vars {spec.conflicting_vars} are stripped from the child env), so a "
@@ -216,16 +246,19 @@ class AnthropicApiKeyCredential(Credential):
     The metered credential the eval lane rides when ``eval_credential`` is set to
     ``metered_api_key`` (per-token cost, no usage window). Its child env sets
     ``ANTHROPIC_API_KEY`` and removes ``CLAUDE_CODE_OAUTH_TOKEN`` so the SDK /
-    bundled CLI authenticates with exactly this key. The ``pass_path`` default
-    (``anthropic/api-key``) is overridable per account via an injected
-    ``pass_path_override`` — selected from the ``anthropic_api_key_pass_paths``
-    routing list by ``teatree.credential_config.resolve_api_key_credential``.
+    bundled CLI authenticates with exactly this key. It has NO built-in default
+    ``pass`` path: it resolves only from its env var or an injected per-account
+    ``pass_path_override`` — selected from the ``anthropic_api_key_pass_paths`` routing
+    list by ``teatree.credential_config.resolve_api_key_credential`` — and
+    :meth:`resolve` fails loud (naming ``anthropic_api_key_pass_paths``) when neither
+    is present rather than reading a dead built-in entry.
     """
 
     spec = CredentialSpec(
         env_var="ANTHROPIC_API_KEY",
-        pass_path="anthropic/api-key",  # noqa: S106 — pass key, not a secret
         conflicting_vars=("CLAUDE_CODE_OAUTH_TOKEN",),
+        pass_path=None,
+        routing_setting="anthropic_api_key_pass_paths",
     )
 
 
@@ -237,17 +270,21 @@ class AnthropicSubscriptionCredential(Credential):
     env sets ``CLAUDE_CODE_OAUTH_TOKEN`` and removes ``ANTHROPIC_API_KEY``. It draws
     no per-token bill but shares the plan's depleting 5h/7d usage window with the
     main loop — so a right-sized eval lane + per-account routing (below) keep it from
-    throttling that window / starving the loop. The ``pass_path`` default
-    (``anthropic/oauth-token``) is overridable per account via an injected
-    ``pass_path_override`` — selected from the ``anthropic_oauth_pass_paths`` routing
-    list by ``teatree.credential_config.resolve_subscription_credential``, so eval
-    load can spread across multiple subscription accounts.
+    throttling that window / starving the loop.
+
+    It has NO default ``pass`` path: it resolves ONLY from the env var or an injected
+    per-account ``pass_path_override`` — selected from the ``anthropic_oauth_pass_paths``
+    routing list by ``teatree.credential_config.resolve_subscription_credential`` — so
+    eval load spreads across multiple subscription accounts. With neither an env value
+    nor a configured account, :meth:`resolve` fails loud (naming ``anthropic_oauth_pass_paths``)
+    rather than reading a dead built-in entry.
     """
 
     spec = CredentialSpec(
         env_var="CLAUDE_CODE_OAUTH_TOKEN",
-        pass_path="anthropic/oauth-token",  # noqa: S106 — pass key, not a secret
         conflicting_vars=("ANTHROPIC_API_KEY",),
+        pass_path=None,
+        routing_setting="anthropic_oauth_pass_paths",
     )
 
 
@@ -278,15 +315,19 @@ class OrcaRouterCredential(Credential):
 
     OrcaRouter is a separate, orthogonal provider (not an Anthropic account), so
     unlike the two credentials above it declares no ``conflicting_vars`` — nothing
-    to strip when it is applied. There is deliberately no per-account routing list
-    (unlike ``anthropic_oauth_pass_paths`` / ``anthropic_api_key_pass_paths``): BYOK
-    means the operator supplies exactly one key.
+    to strip when it is applied. It has NO built-in default ``pass`` path and no
+    per-account routing LIST (unlike ``anthropic_oauth_pass_paths`` /
+    ``anthropic_api_key_pass_paths``): BYOK means the operator supplies exactly one key,
+    via the ``ORCA_ROUTER_API_KEY`` env var or the single ``orca_router_pass_path``
+    setting (injected as ``pass_path_override``). With neither, :meth:`resolve` fails
+    loud naming ``orca_router_pass_path`` rather than reading a dead built-in entry.
     """
 
     spec = CredentialSpec(
         env_var="ORCA_ROUTER_API_KEY",
-        pass_path="orca-router/api-key",  # noqa: S106 — pass key, not a secret
         conflicting_vars=(),
+        pass_path=None,
+        routing_setting="orca_router_pass_path",
     )
 
 

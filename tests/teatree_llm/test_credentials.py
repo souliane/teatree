@@ -37,10 +37,12 @@ from teatree.llm.credentials import (
 
 _API_KEY_ENV = "ANTHROPIC_API_KEY"
 _API_KEY_PASS = "anthropic/api-key"
+_API_KEY_SETTING = "anthropic_api_key_pass_paths"
 _OAUTH_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
-_OAUTH_PASS = "anthropic/oauth-token"
+_OAUTH_SETTING = "anthropic_oauth_pass_paths"
 _ORCA_ENV = "ORCA_ROUTER_API_KEY"
-_ORCA_PASS = "orca-router/api-key"
+_ORCA_PASS = "orcarouter/routed-account/api-key"
+_ORCA_SETTING = "orca_router_pass_path"
 _ORCA_BASE_URL_ENV = "ORCA_ROUTER_BASE_URL"
 
 
@@ -64,8 +66,10 @@ class _FakePassSource:
         return self._values.get(spec.pass_path)
 
 
-def _api_key_credential(sources: Sequence[CredentialSource]) -> AnthropicApiKeyCredential:
-    return AnthropicApiKeyCredential(sources=sources)
+def _api_key_credential(
+    sources: Sequence[CredentialSource], *, pass_path_override: str | None = None
+) -> AnthropicApiKeyCredential:
+    return AnthropicApiKeyCredential(sources=sources, pass_path_override=pass_path_override)
 
 
 class TestResolve:
@@ -83,15 +87,17 @@ class TestResolve:
         assert consulted == [], "the pass source must not be consulted once env resolves the key"
 
     def test_falls_through_to_the_pass_source_when_env_is_absent(self) -> None:
+        # The API-key credential has no built-in default, so pass resolution needs a
+        # configured (injected) per-account path.
         env = _FakeEnvSource({_API_KEY_ENV: None})
         store = _FakePassSource({_API_KEY_PASS: "sk-pass"})
-        credential = _api_key_credential([env, store])
+        credential = _api_key_credential([env, store], pass_path_override=_API_KEY_PASS)
         assert credential.resolve() == "sk-pass"
 
     def test_empty_value_is_treated_as_absent(self) -> None:
         env = _FakeEnvSource({_API_KEY_ENV: ""})
         store = _FakePassSource({_API_KEY_PASS: "sk-pass"})
-        credential = _api_key_credential([env, store])
+        credential = _api_key_credential([env, store], pass_path_override=_API_KEY_PASS)
         assert credential.resolve() == "sk-pass", "an empty env value is not a real credential — fall through"
 
     def test_raises_loud_credential_error_with_fix_instructions_when_absent(self) -> None:
@@ -100,8 +106,7 @@ class TestResolve:
             credential.resolve()
         message = str(excinfo.value)
         assert _API_KEY_ENV in message, "the error must name the env var the user can set"
-        assert _API_KEY_PASS in message, "the error must name the pass entry the user can insert"
-        assert "pass insert" in message, "the error must give the exact `pass insert` fix"
+        assert _API_KEY_SETTING in message, "the error must name the routing setting to configure"
         assert _OAUTH_ENV in message, "the error must name the conflicting credential this one never falls back to"
 
 
@@ -136,16 +141,20 @@ class TestChildEnv:
 
 
 class TestConcreteSpecs:
-    def test_api_key_spec_is_provider_explicit(self) -> None:
+    def test_api_key_spec_has_no_default_pass_path(self) -> None:
         spec = AnthropicApiKeyCredential().spec
         assert spec.env_var == _API_KEY_ENV
-        assert spec.pass_path == _API_KEY_PASS
+        assert spec.pass_path is None
+        assert spec.routing_setting == _API_KEY_SETTING
         assert spec.conflicting_vars == (_OAUTH_ENV,)
 
-    def test_subscription_spec_is_the_inverse(self) -> None:
+    def test_subscription_spec_has_no_default_pass_path(self) -> None:
+        # The subscription credential is the near-inverse of the API key, but with NO
+        # built-in default `pass` path: it resolves only from env or configured routing.
         spec = AnthropicSubscriptionCredential().spec
         assert spec.env_var == _OAUTH_ENV
-        assert spec.pass_path == _OAUTH_PASS
+        assert spec.pass_path is None
+        assert spec.routing_setting == _OAUTH_SETTING
         assert spec.conflicting_vars == (_API_KEY_ENV,)
 
     def test_credential_spec_is_frozen(self) -> None:
@@ -169,14 +178,13 @@ class TestDefaultSources:
         assert EnvSource().lookup(spec) is None
 
     def test_pass_source_returns_none_for_a_missing_entry(self) -> None:
-        # A missing `pass` entry must read as absent (None), never crash — the
-        # anthropic/api-key entry does not exist yet.
-        spec = AnthropicApiKeyCredential().spec
+        # A missing `pass` entry must read as absent (None), never crash.
+        spec = CredentialSpec(env_var=_API_KEY_ENV, conflicting_vars=(), pass_path=_API_KEY_PASS)
         with patch("teatree.llm.credentials.read_pass", return_value=""):
             assert PassSource().lookup(spec) is None
 
     def test_pass_source_returns_the_value_for_a_present_entry(self) -> None:
-        spec = AnthropicApiKeyCredential().spec
+        spec = CredentialSpec(env_var=_API_KEY_ENV, conflicting_vars=(), pass_path=_API_KEY_PASS)
         with patch("teatree.llm.credentials.read_pass", return_value="sk-stored"):
             assert PassSource().lookup(spec) == "sk-stored"
 
@@ -186,7 +194,8 @@ class TestExport:
         # export() is the in-process side effect a docker `-e VARNAME` pass-through
         # relies on: the key must land in os.environ so the passthrough forwards it.
         monkeypatch.delenv(_API_KEY_ENV, raising=False)
-        credential = _api_key_credential([_FakePassSource({_API_KEY_PASS: "sk-pass"})])
+        store = _FakePassSource({_API_KEY_PASS: "sk-pass"})
+        credential = _api_key_credential([store], pass_path_override=_API_KEY_PASS)
         returned = credential.export()
         assert returned == "sk-pass"
         assert os.environ.get(_API_KEY_ENV) == "sk-pass", "export() must set the value in os.environ"
@@ -204,52 +213,40 @@ class TestBaseCredentialContract:
         assert issubclass(AnthropicSubscriptionCredential, Credential)
 
 
-# (credential class, env var, built-in default pass path) — the two Anthropic
-# credentials differ only by these, so the injected-override behaviour is
-# parametrized over both.
+# (credential class, env var) — no credential carries a built-in default `pass` path,
+# so the injected-override behaviour below is parametrized over both Anthropic rules.
 _ROUTED_PASS = "anthropic/routed-account/entry"
 _OVERRIDE_CREDENTIALS = [
-    pytest.param(AnthropicSubscriptionCredential, _OAUTH_ENV, _OAUTH_PASS, id="subscription"),
-    pytest.param(AnthropicApiKeyCredential, _API_KEY_ENV, _API_KEY_PASS, id="metered"),
+    pytest.param(AnthropicSubscriptionCredential, _OAUTH_ENV, id="subscription"),
+    pytest.param(AnthropicApiKeyCredential, _API_KEY_ENV, id="metered"),
 ]
-_credential_case = pytest.mark.parametrize(("credential_cls", "env_var", "default_pass"), _OVERRIDE_CREDENTIALS)
+_credential_case = pytest.mark.parametrize(("credential_cls", "env_var"), _OVERRIDE_CREDENTIALS)
 
 
 class TestPassPathOverride:
-    """The ``pass_path`` a credential resolves against is overridable via an injected string."""
+    """The ``pass_path`` a credential resolves against is set via an injected override string."""
 
     @_credential_case
-    def test_no_override_resolves_the_builtin_pass_path(
-        self, credential_cls: type[Credential], env_var: str, default_pass: str
-    ) -> None:
-        # No injected override: the credential reads its built-in pass path.
-        credential = credential_cls(sources=[_FakePassSource({default_pass: "stored"})])
-        assert credential.resolve() == "stored"
-
-    @_credential_case
-    def test_injected_override_redirects_the_pass_path(
-        self, credential_cls: type[Credential], env_var: str, default_pass: str
-    ) -> None:
-        store = _FakePassSource({_ROUTED_PASS: "routed", default_pass: "builtin"})
+    def test_injected_override_redirects_the_pass_path(self, credential_cls: type[Credential], env_var: str) -> None:
+        store = _FakePassSource({_ROUTED_PASS: "routed"})
         assert credential_cls(sources=[store], pass_path_override=_ROUTED_PASS).resolve() == "routed"
 
     @_credential_case
-    def test_env_still_wins_over_the_pass_override(
-        self, credential_cls: type[Credential], env_var: str, default_pass: str
-    ) -> None:
+    def test_env_still_wins_over_the_pass_override(self, credential_cls: type[Credential], env_var: str) -> None:
         # The override only moves where PassSource reads; EnvSource precedence is unchanged.
         sources = [_FakeEnvSource({env_var: "from-env"}), _FakePassSource({_ROUTED_PASS: "routed"})]
         assert credential_cls(sources=sources, pass_path_override=_ROUTED_PASS).resolve() == "from-env"
 
     @_credential_case
     def test_override_leaves_static_spec_env_var_and_conflicts_unchanged(
-        self, credential_cls: type[Credential], env_var: str, default_pass: str
+        self, credential_cls: type[Credential], env_var: str
     ) -> None:
         # The static-spec consumers (docker.py .spec.env_var, isolation.py
-        # .spec.conflicting_vars) must keep working: only pass_path is overridable.
+        # .spec.conflicting_vars) must keep working: only pass_path is overridable, and
+        # the static spec's pass_path stays None (no built-in default) under an override.
         spec = credential_cls(pass_path_override=_ROUTED_PASS).spec
         assert spec.env_var == env_var
-        assert spec.pass_path == default_pass, "the static spec's pass_path default is untouched by an override"
+        assert spec.pass_path is None, "the static spec has no built-in default and an override never mutates it"
         assert env_var not in spec.conflicting_vars
 
     def test_missing_message_names_the_overridden_pass_path(self) -> None:
@@ -263,16 +260,61 @@ class TestPassPathOverride:
         assert _ROUTED_PASS in str(excinfo.value)
 
 
+# (credential class, env var, routing setting, conflicting env var | None) — every
+# Anthropic/Orca credential is default-less: it resolves from env or a configured
+# per-account `pass` entry, and fails loud (naming the setting) when neither exists.
+_NO_DEFAULT_CREDENTIALS = [
+    pytest.param(AnthropicSubscriptionCredential, _OAUTH_ENV, _OAUTH_SETTING, _API_KEY_ENV, id="subscription"),
+    pytest.param(AnthropicApiKeyCredential, _API_KEY_ENV, _API_KEY_SETTING, _OAUTH_ENV, id="metered"),
+    pytest.param(OrcaRouterCredential, _ORCA_ENV, _ORCA_SETTING, None, id="orca"),
+]
+_no_default_case = pytest.mark.parametrize(
+    ("credential_cls", "env_var", "setting", "conflicting"), _NO_DEFAULT_CREDENTIALS
+)
+
+
+class TestNoDefaultPassPath:
+    """No credential has a built-in default ``pass`` path: env or configured routing, else loud."""
+
+    @_no_default_case
+    def test_no_override_no_env_fails_loud_naming_the_routing_setting(
+        self, credential_cls: type[Credential], env_var: str, setting: str, conflicting: str | None
+    ) -> None:
+        credential = credential_cls(sources=[_FakeEnvSource({}), _FakePassSource({})])
+        with pytest.raises(CredentialError) as excinfo:
+            credential.resolve()
+        message = str(excinfo.value)
+        assert env_var in message, "names the env var the user can set"
+        assert setting in message, "names the routing setting to configure instead of a dead default"
+        if conflicting is not None:
+            assert conflicting in message, "names the conflicting credential it never falls back to"
+
+    @_no_default_case
+    def test_no_override_resolves_from_env_when_present(
+        self, credential_cls: type[Credential], env_var: str, setting: str, conflicting: str | None
+    ) -> None:
+        assert credential_cls(sources=[_FakeEnvSource({env_var: "from-env"})]).resolve() == "from-env"
+
+    @_no_default_case
+    def test_pass_source_skips_the_none_pass_path_without_reading_pass(
+        self, credential_cls: type[Credential], env_var: str, setting: str, conflicting: str | None
+    ) -> None:
+        with patch("teatree.llm.credentials.read_pass") as read_pass:
+            assert PassSource().lookup(credential_cls().spec) is None
+        read_pass.assert_not_called()
+
+
 class TestOrcaRouterCredential:
     """The ``pydantic_ai`` harness's BYOK provider — orthogonal to the Anthropic credentials."""
 
     def test_is_a_credential(self) -> None:
         assert issubclass(OrcaRouterCredential, Credential)
 
-    def test_spec_is_provider_explicit(self) -> None:
+    def test_spec_has_no_default_pass_path(self) -> None:
         spec = OrcaRouterCredential().spec
         assert spec.env_var == _ORCA_ENV
-        assert spec.pass_path == _ORCA_PASS
+        assert spec.pass_path is None
+        assert spec.routing_setting == _ORCA_SETTING
 
     def test_declares_no_conflicting_vars(self) -> None:
         # OrcaRouter is an orthogonal provider — applying it strips nothing.
@@ -282,18 +324,21 @@ class TestOrcaRouterCredential:
         credential = OrcaRouterCredential(sources=[_FakeEnvSource({_ORCA_ENV: "orca-key-env"})])
         assert credential.resolve() == "orca-key-env"
 
-    def test_falls_through_to_pass(self) -> None:
+    def test_falls_through_to_the_configured_pass_path(self) -> None:
+        # No built-in default: pass resolution needs the configured `orca_router_pass_path`
+        # (injected as an override).
         credential = OrcaRouterCredential(
-            sources=[_FakeEnvSource({_ORCA_ENV: None}), _FakePassSource({_ORCA_PASS: "orca-key-pass"})]
+            sources=[_FakeEnvSource({_ORCA_ENV: None}), _FakePassSource({_ORCA_PASS: "orca-key-pass"})],
+            pass_path_override=_ORCA_PASS,
         )
         assert credential.resolve() == "orca-key-pass"
 
-    def test_raises_loud_when_absent(self) -> None:
+    def test_raises_loud_when_absent_naming_the_setting(self) -> None:
         credential = OrcaRouterCredential(sources=[_FakeEnvSource({}), _FakePassSource({})])
         with pytest.raises(CredentialError) as excinfo:
             credential.resolve()
         assert _ORCA_ENV in str(excinfo.value)
-        assert _ORCA_PASS in str(excinfo.value)
+        assert _ORCA_SETTING in str(excinfo.value)
 
     def test_child_env_does_not_strip_anthropic_credentials(self) -> None:
         credential = OrcaRouterCredential(sources=[_FakeEnvSource({_ORCA_ENV: "orca-key"})])
@@ -322,10 +367,12 @@ class TestResolveOrcaRouterProviderConfig:
         assert _ORCA_BASE_URL_ENV in str(excinfo.value)
 
     def test_missing_api_key_raises_loud_even_with_base_url_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # No default `pass` path: an unconfigured key fails loud naming orca_router_pass_path.
         monkeypatch.setenv(_ORCA_BASE_URL_ENV, "https://orca.example/v1")
         credential = OrcaRouterCredential(sources=[_FakeEnvSource({}), _FakePassSource({})])
-        with pytest.raises(CredentialError):
+        with pytest.raises(CredentialError) as excinfo:
             resolve_orca_router_provider_config(credential=credential)
+        assert _ORCA_SETTING in str(excinfo.value)
 
     def test_default_credential_is_a_fresh_orca_router_credential(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # No injected credential: resolves via the real env-then-pass chain.

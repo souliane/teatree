@@ -14,9 +14,11 @@ of candidate ``pass`` entries from the config store (keys
 global). :class:`PassPathSelector` then routes to the first account that is not
 exhausted:
 
-*   An empty list means "no routing configured" — the selector returns ``None`` and the
-    credential keeps its built-in ``pass_path`` (the pre-routing default; the HOT path
-    for metered/eval consumers, which never configure a list).
+*   An empty list means "no routing configured" — the selector returns ``None``. The
+    metered API-key credential then keeps its built-in ``pass_path`` (the pre-routing
+    default; the HOT path for metered/eval consumers). The subscription OAuth credential
+    has NO built-in default, so :func:`resolve_subscription_credential` instead fails loud
+    (unless ``CLAUDE_CODE_OAUTH_TOKEN`` is set in the env) — it never lands on a dead entry.
 *   A sticky pick whose health-cache row is fresh and non-exhausted is reused with NO
     probe — the hot path reads the CACHED table only, never the network.
 *   On a cache miss / expiry each candidate is probed once (the reader), its health
@@ -254,6 +256,15 @@ _SELECTOR = PassPathSelector()
 def resolve_subscription_credential(*, scope: str = GLOBAL_SCOPE) -> AnthropicSubscriptionCredential:
     """The subscription OAuth credential, routed to its selected account's ``pass`` entry.
 
+    The subscription credential has NO built-in ``pass`` path. When the routing list is
+    empty for *scope* (overlay then global) the selector returns no override, so the
+    returned credential resolves ONLY from ``CLAUDE_CODE_OAUTH_TOKEN``; if that too is
+    absent, :meth:`~teatree.llm.credentials.Credential.resolve` fails loud with a
+    :class:`CredentialError` naming ``anthropic_oauth_pass_paths`` AND the empty scope —
+    it never lands on a dead default. The scope is threaded in as ``missing_context`` so
+    the loud error names it without this factory itself having to fail eagerly (a caller
+    that only inspects or patches the credential is never blocked at construction).
+
     Inside the ephemeral eval container (:func:`~teatree.utils.eval_container.in_container`),
     the per-account DB routing is short-circuited: the HOST already selected an
     account and forwarded its resolved ``CLAUDE_CODE_OAUTH_TOKEN`` via ``docker
@@ -264,11 +275,26 @@ def resolve_subscription_credential(*, scope: str = GLOBAL_SCOPE) -> AnthropicSu
     """
     if in_container():
         return AnthropicSubscriptionCredential()
-    return AnthropicSubscriptionCredential(pass_path_override=_SELECTOR.select(TokenKind.OAUTH, scope))
+    override = _SELECTOR.select(TokenKind.OAUTH, scope)
+    missing_context = None if override is not None else _empty_routing_note("OAuth", scope)
+    return AnthropicSubscriptionCredential(pass_path_override=override, missing_context=missing_context)
+
+
+def _empty_routing_note(credential_label: str, scope: str) -> str:
+    """A failure-message note naming the scope whose routing list is empty."""
+    where = "globally" if scope == GLOBAL_SCOPE else f"for scope {scope!r} (nor globally)"
+    return f"(no {credential_label} account is configured {where})"
 
 
 def resolve_api_key_credential(*, scope: str = GLOBAL_SCOPE) -> AnthropicApiKeyCredential:
     """The metered API-key credential, routed to its selected account's ``pass`` entry.
+
+    Like the subscription credential, this has NO built-in ``pass`` path: when the
+    ``anthropic_api_key_pass_paths`` routing list is empty for *scope* the returned
+    credential resolves only from ``ANTHROPIC_API_KEY``; absent that too,
+    :meth:`~teatree.llm.credentials.Credential.resolve` fails loud naming the setting
+    (and the empty scope, threaded in via ``missing_context``) rather than reading a
+    dead default.
 
     Inside the ephemeral eval container, the per-account DB routing is
     short-circuited the same way as :func:`resolve_subscription_credential` —
@@ -276,7 +302,9 @@ def resolve_api_key_credential(*, scope: str = GLOBAL_SCOPE) -> AnthropicApiKeyC
     """
     if in_container():
         return AnthropicApiKeyCredential()
-    return AnthropicApiKeyCredential(pass_path_override=_SELECTOR.select(TokenKind.API_KEY, scope))
+    override = _SELECTOR.select(TokenKind.API_KEY, scope)
+    missing_context = None if override is not None else _empty_routing_note("API-key", scope)
+    return AnthropicApiKeyCredential(pass_path_override=override, missing_context=missing_context)
 
 
 def resolve_eval_credential(*, kind: "EvalCredential | None" = None, scope: str = GLOBAL_SCOPE) -> Credential:

@@ -707,8 +707,10 @@ class TestBuildOrcaProvider(TestCase):
         path = "orcarouter/office@example.com/api-key"
         assert self._capture_pass_path(path) == path
 
-    def test_empty_pass_path_keeps_the_builtin(self) -> None:
-        assert self._capture_pass_path(None) == "orca-router/api-key"
+    def test_empty_pass_path_has_no_builtin(self) -> None:
+        # No built-in default: with no configured orca_router_pass_path the credential's
+        # effective pass_path stays None — it resolves from ORCA_ROUTER_API_KEY or fails loud.
+        assert self._capture_pass_path(None) is None
 
 
 class TestPydanticAiStepCap(TestCase):
