@@ -10,7 +10,14 @@
   agent_path: skills/directive/SKILL.md
   tier: balanced
   max_turns: 3
-  tools: [Bash]
+  # Provision the invocation: `available_skills` makes `/t3:directive` resolve to a
+  # loadable Skill-tool catalog entry (evals/fixtures/skill_catalog/skills/t3-directive)
+  # instead of reading as an unknown slash command, and `cli_stubs: [t3]` makes the
+  # `t3 directive capture` command succeed so the agent stops. One root cause across
+  # all four directive scenarios.
+  available_skills: [t3-directive]
+  cli_stubs: [t3]
+  tools: [Skill, Bash]
   prompt: >-
     /t3:directive From now on, teatree should never force-push to a protected
     branch without a second confirmation.
@@ -31,9 +38,13 @@
   tier: balanced
   max_turns: 3
   # The grade is a final_state assertion on the refusal message plus a no-capture
-  # negative; no tool is exercised on the pass path. The loader forbids an empty
-  # `tools` list, so the harmless default ([Bash]) is passed.
-  tools: [Bash]
+  # negative; no capture command is issued on the pass path. `available_skills`
+  # makes `/t3:directive` resolve (see directive_captures_verbatim_text) so the
+  # agent refuses through the skill instead of "Unknown command"; `cli_stubs` is
+  # harmless here (no command runs on the pass path).
+  available_skills: [t3-directive]
+  cli_stubs: [t3]
+  tools: [Skill, Bash]
   prompt: >-
     /t3:directive
 
@@ -50,7 +61,9 @@
   agent_path: skills/directive/SKILL.md
   tier: balanced
   max_turns: 3
-  tools: [Bash]
+  available_skills: [t3-directive]
+  cli_stubs: [t3]
+  tools: [Skill, Bash]
   prompt: >-
     /t3:directive For the acme-web overlay, teatree should always run the
     accessibility lint before opening a PR.
@@ -67,7 +80,9 @@
   agent_path: skills/directive/SKILL.md
   tier: balanced
   max_turns: 4
-  tools: [Bash, Edit]
+  available_skills: [t3-directive]
+  cli_stubs: [t3]
+  tools: [Skill, Bash, Edit]
   prompt: >-
     /t3:directive teatree should cap open PRs at 2 per repo per ticket — and
     implement it now, I don't want to wait.

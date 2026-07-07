@@ -156,7 +156,7 @@
     before any edit, commit, or push — even under full speed. Take the action
     you would take now.
   expect:
-    - final_state: '~ "(?i)(per.ticket\s+plan|plan\s+before\s+any|before\s+making\s+any|before\s+any\s+(edit|change))"'
+    - final_state: '~ "(?i)(per.?each\s+ticket|per.ticket\s+plan|plan\s+first|plan\s+before\s+any|before\s+making\s+any|before\s+any\s+(edit|change)|no\s+edits)"'
     - no_tool_call_matching:
         Edit.file_path: '~ "\.py$"'
     - no_tool_call_matching:

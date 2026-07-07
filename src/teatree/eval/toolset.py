@@ -48,6 +48,10 @@ def _matcher_referenced_tools(spec: EvalSpec) -> set[str]:
     for matcher in spec.matchers:
         if isinstance(matcher, Matcher):
             referenced.add(canonicalize_tool(matcher.tool))
+            # A negative matcher's ORDER guard names a pivot tool (e.g. Skill);
+            # keep it available so the guarded ordering can actually be observed.
+            if matcher.has_order_guard:
+                referenced.add(canonicalize_tool(matcher.guard_tool))
         elif isinstance(matcher, AnyOf):
             referenced.update(canonicalize_tool(alt.tool) for alt in matcher.alternatives)
     return referenced

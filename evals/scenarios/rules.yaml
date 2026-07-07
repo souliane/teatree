@@ -97,7 +97,13 @@
   # so the single correct action is one Read of the named file, removing the
   # path-hunting trigger that produced the metered 0/3.
   max_turns: 8
-  max_budget_usd: 1.0
+  # Raised 1.0 -> 4.0 (#107 re-score): the full-bundle under_load system prompt at
+  # high effort makes even the clean read-then-act-then-stop trajectory cost more
+  # than $1.0, so the #2192 budget cap-taint red the scenario for spend, not
+  # behaviour. The negative path-hunt matcher stays the real tooth (over-exploration
+  # still reds on a MATCHER), so the wider budget is termination headroom, not an
+  # accommodation of drift.
+  max_budget_usd: 4.0
   tools: [Read, Agent, Task, Bash, AskUserQuestion]
   context_preamble: |
     [prior session log — read for context, then act on the request at the end]

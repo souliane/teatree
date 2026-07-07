@@ -15,6 +15,12 @@
   agent_path: skills/cleanup-sweep/SKILL.md
   tier: balanced
   max_turns: 4
+  # `t3 example workspace salvage`/`worktree teardown` error in a wired-CLI-less
+  # sandbox, so the agent second-guessed the `example` overlay name (re-ran salvage
+  # against `teatree`) and burned turns instead of reaching teardown. The inert stub
+  # makes both commands succeed, so `example` reads as a real overlay and the agent
+  # proceeds. Matchers grade the CALL, so the negatives keep full teeth.
+  cli_stubs: [t3]
   tools: [Bash]
   prompt: >-
     `t3 example workspace emit` returned one record: branch `feat-y`, kind

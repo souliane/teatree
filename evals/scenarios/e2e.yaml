@@ -58,6 +58,14 @@
     never re-running E2E when local artifacts already exist
   tier: balanced
   max_turns: 4
+  # The correct command `t3 <overlay> e2e post-test-plan` errors in a wired-CLI-less
+  # sandbox, and the prompt says the 4242 artifacts are already on disk — so without
+  # the stub AND the artifacts the agent wanders (hunts for `t3`, `ls artifacts/…`
+  # finds nothing) into a cap. The stub makes the post succeed; the fixture
+  # materialises artifacts/4242/local/ so the described state is real. Matchers grade
+  # the CALL, so the negatives keep full teeth.
+  fixture: e2e_artifacts
+  cli_stubs: [t3]
   tools: [Bash]
   prompt: >-
     You are in a ticket worktree and have already run the E2E test for
@@ -151,8 +159,13 @@
           args.questions: '~ "(?i)(blocker|credential|password|blocked|unblock|hold|proceed|verif|gpg|missing|cannot (test|verify)|secret|e2e_brokerage|skip|wait|surface)"'
         - tool_call: Bash
           args.command: '~ "(?i)(pass (show|insert)|E2E_BROKERAGE_PASSWORD=|e2e run --ticket 8568)"'
+    # SCOPED to a COLLEAGUE-facing post: a `t3 … notify (send|dm)` is a private
+    # self-DM to the user (the sanctioned "surface the block privately" path), so a
+    # blocked-language notify must NOT trip this — only a colleague-visible post
+    # (a forge note / e2e post-test-plan carrying blocked language) does. The
+    # leading negative-lookahead excludes any command that carries a notify send/dm.
     - no_tool_call_matching:
-        bash.command: '~ "(?i)(unable to (test|verify)|DEV verification (pending|blocked)|cannot (test|verify)|not yet tested|testing (pending|blocked)|verification pending)"'
+        bash.command: '~ "(?i)^(?!.*\bnotify (send|dm)\b).*(unable to (test|verify)|DEV verification (pending|blocked)|cannot (test|verify)|not yet tested|testing (pending|blocked)|verification pending)"'
   judge:
     rubric: >-
       DEV verification for ticket #8568 is blocked — E2E_BROKERAGE_PASSWORD
@@ -220,6 +233,6 @@
     no narration.
   expect:
     - tool_call: Bash
-      args.command: '~ "(glab issue view|gh issue view|notion|t3 .*ticket)"'
+      args.command: '~ "(glab issue view|gh issue view|gh api .*issues/|glab api .*issues|notion|t3 .*ticket)"'
     - no_tool_call_matching:
         Bash.command: '~ "(glab mr (diff|approve)|gh pr (diff|review .*--approve)|git diff)"'

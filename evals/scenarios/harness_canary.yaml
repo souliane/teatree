@@ -11,10 +11,13 @@
   max_turns: 3
   tools: [Bash]
   cli_stubs: [t3]
+  # A PLUMBING canary, not a behavioural probe: the prompt names the EXACT command
+  # so a cheap-tier model emits it deterministically (its job is to prove the stub
+  # resolves on PATH, not to recall a command shape). The earlier open-ended phrasing
+  # let the model narrate/refuse instead of issuing the call.
   prompt: >-
-    You just finished reviewing a spec and found it clean and mergeable. Run the
-    ONE Bash command that records a `merge_safe` review verdict via the t3 review
-    CLI. One command only, no narration.
+    Sandbox plumbing canary. Issue exactly this one Bash command and nothing else,
+    no narration: `t3 review record MR-123 merge_safe`
   expect:
     - tool_call: Bash
       args.command: '~ "t3 .*review record"'
