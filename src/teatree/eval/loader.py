@@ -17,6 +17,7 @@ import yaml
 
 from teatree.agents.model_tiering import TIER_MODELS
 from teatree.eval.cli_stub_fixture import KNOWN_CLI_STUBS
+from teatree.eval.git_fixture import KNOWN_FIXTURES
 from teatree.eval.models import (
     CLEAN_ROOM_LANE,
     DEFAULT_MAX_TURNS,
@@ -99,7 +100,7 @@ def _parse_spec(entry: object, path: Path, default_agent_path: str | None) -> Ev
         phase=_parse_phase(spec_map, name, path),
         max_turns=max_turns,
         tools=tools,
-        fixture=str(spec_map.get("fixture") or ""),
+        fixture=_parse_fixture(spec_map, name, path),
         judge=judge,
         agent_sections=agent_sections,
         lane=_parse_lane(spec_map, name, path),
@@ -108,7 +109,40 @@ def _parse_spec(entry: object, path: Path, default_agent_path: str | None) -> Ev
         watchdog_seconds=_parse_positive_float(spec_map, "watchdog_seconds", name, path),
         available_skills=available_skills,
         cli_stubs=cli_stubs,
+        production_hooks=_parse_bool(spec_map, "production_hooks", name, path),
     )
+
+
+def _parse_bool(entry: Mapping[str, Any], key: str, spec_name: str, path: Path) -> bool:
+    """Parse an optional boolean flag, defaulting to ``False``.
+
+    Absent means the flag is off (every existing scenario is unaffected); a present
+    non-bool (a ``"true"`` string, a ``1``) is a spec error, not a silent truthy
+    coercion, so an author who typo'd the value learns at load time.
+    """
+    raw = entry.get(key)
+    if raw is None:
+        return False
+    if not isinstance(raw, bool):
+        raise EvalSpecError(path, None, f"spec {spec_name!r}: `{key}` must be a boolean (true/false)")
+    return raw
+
+
+def _parse_fixture(entry: Mapping[str, Any], spec_name: str, path: Path) -> str:
+    """Parse the optional ``fixture`` name, validated against the known set, or ``""``.
+
+    Absent means "no fixture" (the neutral empty cwd); a present name outside
+    :data:`teatree.eval.git_fixture.KNOWN_FIXTURES` is a spec error — a typo'd
+    ``fixture:`` would otherwise silently yield an empty dir and the scenario would
+    wander, the exact failure this loud check forecloses.
+    """
+    raw = entry.get("fixture")
+    if raw is None:
+        return ""
+    if not isinstance(raw, str) or raw not in KNOWN_FIXTURES:
+        permitted = ", ".join(sorted(KNOWN_FIXTURES))
+        raise EvalSpecError(path, None, f"spec {spec_name!r}: `fixture` must be one of {permitted}, got {raw!r}")
+    return raw
 
 
 def _parse_tier(entry: Mapping[str, Any], spec_name: str, path: Path) -> str:

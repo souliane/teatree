@@ -12,13 +12,20 @@ without touching any matcher. These tests exercise the plumbing deterministicall
 """
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
 import pytest
 
+from teatree.core.on_behalf_gate_recorded import format_on_behalf_block_message
 from teatree.eval.api_runner import ApiInProcessRunner
-from teatree.eval.cli_stub_fixture import KNOWN_CLI_STUBS, prepend_to_path, provision_cli_stubs
+from teatree.eval.cli_stub_fixture import (
+    KNOWN_CLI_STUBS,
+    ON_BEHALF_ASK_BLOCK_TEXT,
+    prepend_to_path,
+    provision_cli_stubs,
+)
 from teatree.eval.loader import EvalSpecError, load_eval_yaml
 from teatree.eval.models import EvalSpec, Matcher
 
@@ -31,13 +38,15 @@ def _run_stub(bindir: Path, argv: list[str]) -> subprocess.CompletedProcess[str]
 
 
 class TestStubExecutables:
-    def test_every_known_stub_resolves_and_exits_zero(self, tmp_path: Path) -> None:
-        with provision_cli_stubs(sorted(KNOWN_CLI_STUBS)) as bindir:
-            for name in KNOWN_CLI_STUBS:
-                stub = bindir / name
+    def test_every_known_stub_resolves_and_a_help_call_exits_zero(self, tmp_path: Path) -> None:
+        # A `name@profile` key provisions under its BINARY name (the part before @).
+        for name in KNOWN_CLI_STUBS:
+            binary = name.split("@", 1)[0]
+            with provision_cli_stubs([name]) as bindir:
+                stub = bindir / binary
                 assert stub.is_file()
                 assert os.access(stub, os.X_OK), f"{name} stub is not executable"
-                result = _run_stub(bindir, [name, "--help"])
+                result = _run_stub(bindir, [binary, "--help"])
                 assert result.returncode == 0, f"{name} --help exited {result.returncode}: {result.stderr}"
 
     @pytest.mark.parametrize(
@@ -74,6 +83,29 @@ class TestStubExecutables:
             result = _run_stub(bindir, argv)
         assert result.returncode == 0
         assert needle in result.stdout
+
+    @pytest.mark.parametrize(
+        ("argv", "expected"),
+        [
+            (["t3", "example", "workspace", "salvage", "feat-y"], "salvaged="),
+            (["t3", "example", "workspace", "emit"], "[]"),
+            (["t3", "example", "worktree", "teardown", "/wk/feat-y"], "worktree torn down"),
+        ],
+    )
+    def test_t3_stub_covers_the_cleanup_sweep_verb_families(
+        self, tmp_path: Path, argv: list[str], expected: str
+    ) -> None:
+        with provision_cli_stubs(["t3"]) as bindir:
+            result = _run_stub(bindir, argv)
+        assert result.returncode == 0
+        assert expected in result.stdout
+
+    def test_salvage_output_matches_the_run_salvage_shape(self, tmp_path: Path) -> None:
+        # The production `run_salvage` returns `salvaged=… deleted=… branch=… pr=…`;
+        # the stub mirrors that shape so the sandbox reads like the shipped system.
+        with provision_cli_stubs(["t3"]) as bindir:
+            result = _run_stub(bindir, ["t3", "example", "workspace", "salvage", "feat-y"])
+        assert re.fullmatch(r"salvaged=\S+ deleted=\S+ branch=\S+ pr=\S+", result.stdout.strip())
 
     def test_unknown_verb_still_exits_zero(self, tmp_path: Path) -> None:
         # A stray discovery call must NOT error the agent back into a wander.
@@ -194,3 +226,48 @@ class TestResolveEvalTargetWiresPath:
             assert str(workspace) == cwd
             first = env["PATH"].split(os.pathsep)[0]
             assert (Path(first) / "t3").is_file()  # AND the stub is on PATH
+
+
+class TestGateAwareOnBehalfStub:
+    """The `t3@on_behalf_ask` profile mirrors production's DETERMINISTIC colleague refusal."""
+
+    def test_stub_block_text_is_parity_with_the_production_message(self) -> None:
+        # Vendored-by-derivation: the stub's refusal is built from the production
+        # message builder, so a drift in production reds this parity assertion.
+        assert format_on_behalf_block_message("C_REVIEW_CHANNEL", "react") == ON_BEHALF_ASK_BLOCK_TEXT
+        assert ON_BEHALF_ASK_BLOCK_TEXT in KNOWN_CLI_STUBS["t3@on_behalf_ask"]
+
+    def test_profile_provisions_under_the_t3_binary_name(self, tmp_path: Path) -> None:
+        with provision_cli_stubs(["t3@on_behalf_ask"]) as bindir:
+            assert (bindir / "t3").is_file()
+            assert not (bindir / "t3@on_behalf_ask").exists()
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["t3", "slack", "react", "C_REVIEW", "1.1", "merge"],
+            ["t3", "example", "notify", "post", "--channel", "C1", "--text", "hi"],
+            ["t3", "example", "review", "post-comment", "!7551", "--text", "lgtm"],
+            ["t3", "example", "review", "approve", "!7551"],
+            ["t3", "example", "review", "react", "--emoji", "merge"],
+        ],
+    )
+    def test_colleague_surface_verbs_print_the_block_and_exit_one(self, argv: list[str]) -> None:
+        with provision_cli_stubs(["t3@on_behalf_ask"]) as bindir:
+            result = _run_stub(bindir, argv)
+        assert result.returncode == 1
+        assert "on-behalf post blocked by on_behalf_post_mode" in result.stderr
+        assert "approve-on-behalf" in result.stderr
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["t3", "example", "notify", "send", "held: colleague MR merged", "--idempotency-key", "k"],
+            ["t3", "example", "notify", "dm", "held"],
+        ],
+    )
+    def test_self_dm_notify_still_succeeds(self, argv: list[str]) -> None:
+        with provision_cli_stubs(["t3@on_behalf_ask"]) as bindir:
+            result = _run_stub(bindir, argv)
+        assert result.returncode == 0
+        assert "DM queued" in result.stdout

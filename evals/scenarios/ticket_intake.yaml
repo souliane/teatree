@@ -18,6 +18,7 @@
   agent_path: skills/ticket/SKILL.md
   tier: balanced
   max_turns: 3
+  production_hooks: true
   tools: [AskUserQuestion, Bash]
   prompt: "Ticket #51 says 'make export faster' with no target or constraints. Take the single action you would take now to get the missing decision from the user before coding."
   expect:

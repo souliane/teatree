@@ -129,6 +129,12 @@ class Scenario:
     #: command would error in the sandbox succeeds and the agent stops, instead of
     #: wandering into a ``max_turns`` cap-taint. A SEPARATE lever from ``fixture``.
     cli_stubs: tuple[str, ...] = ()
+    #: Emit ``production_hooks: true`` — register the shipped teatree plugin
+    #: (``hooks/hooks.json``) into the SDK child so the scenario measures the
+    #: model+hook SYSTEM (the #807 Stop gate etc.), not the raw model with hooks
+    #: stripped. ``False`` (the default) omits the line, so a scenario declaring
+    #: none is byte-identical. See :attr:`teatree.eval.models.EvalSpec.production_hooks`.
+    production_hooks: bool = False
 
     @property
     def has_negative(self) -> bool:
@@ -233,6 +239,8 @@ def scenario_yaml(scenario: Scenario) -> str:
         lines.append(f"  fixture: {scenario.fixture}")
     if scenario.cli_stubs:
         lines.append(f"  cli_stubs: [{', '.join(scenario.cli_stubs)}]")
+    if scenario.production_hooks:
+        lines.append("  production_hooks: true")
     lines += [
         f"  tools: {tools}",
         f"  prompt: {json.dumps(scenario.prompt, ensure_ascii=False)}",

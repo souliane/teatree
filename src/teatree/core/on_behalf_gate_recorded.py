@@ -84,6 +84,24 @@ from collections.abc import Callable
 from teatree.on_behalf_gate import OnBehalfVerdict, resolve_on_behalf_verdict
 
 
+def format_on_behalf_block_message(target: str, action: str) -> str:
+    """The exact on-behalf BLOCK message (``target``/``action`` interpolated).
+
+    Pure, ORM-free, side-effect-free — the SINGLE SOURCE OF TRUTH for both
+    :class:`OnBehalfPostBlockedError`'s message and the eval harness's gate-aware
+    ``t3@on_behalf_ask`` CLI stub, so the stub's refusal text can never drift from
+    the production block message (vendored-by-derivation + a parity test, per
+    ``/t3:rules`` § "Read the Canonical Source Before Fixing a Conformance Bug").
+    """
+    return (
+        f"on-behalf post blocked by on_behalf_post_mode (#960): "
+        f"{action} on {target!r} needs explicit user approval first. "
+        f"The user records it (no terminal required) with:\n"
+        f"    t3 review approve-on-behalf {target!r} {action} --approver <user-id>\n"
+        f"then the agent re-runs this post. Never publish unattended."
+    )
+
+
 class OnBehalfPostBlockedError(RuntimeError):
     """BLOCK verdict and no recorded approval — the on-behalf post must NOT publish.
 
@@ -95,13 +113,7 @@ class OnBehalfPostBlockedError(RuntimeError):
     def __init__(self, target: str, action: str) -> None:
         self.target = target
         self.action = action
-        super().__init__(
-            f"on-behalf post blocked by on_behalf_post_mode (#960): "
-            f"{action} on {target!r} needs explicit user approval first. "
-            f"The user records it (no terminal required) with:\n"
-            f"    t3 review approve-on-behalf {target!r} {action} --approver <user-id>\n"
-            f"then the agent re-runs this post. Never publish unattended."
-        )
+        super().__init__(format_on_behalf_block_message(target, action))
 
 
 def require_on_behalf_approval[PublishResult](

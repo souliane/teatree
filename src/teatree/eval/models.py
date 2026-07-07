@@ -200,6 +200,36 @@ class JudgeSpec:
 
 
 @dataclasses.dataclass(frozen=True)
+class GateEvent:
+    """One production-hook lifecycle event captured from a ``production_hooks`` run.
+
+    Synthesized from the SDK ``HookEventMessage`` (only ``hook_response`` — a hook
+    that COMPLETED; ``hook_started`` is lifecycle noise the mapper drops).
+    ``outcome``/``output_snippet`` come from the CLI's ``hook_response`` ``data``.
+
+    It is a REPORT-ANNOTATION + fail-loud channel, never a per-scenario pass
+    condition: :attr:`is_stop_block` tells the report whether a #807-class Stop
+    *block* carried a pass (rendered ``pass (gate-assisted)``), and the runner's
+    zero-hook-events fail-loud uses the PRESENCE of any hook event to prove the
+    shipped hook chain registered under the eval wiring.
+    """
+
+    hook_event_name: str
+    outcome: str
+    output_snippet: str
+
+    @property
+    def is_block(self) -> bool:
+        """Whether this event's outcome/output signals a hook BLOCK decision."""
+        return "block" in f"{self.outcome}\n{self.output_snippet}".lower()
+
+    @property
+    def is_stop_block(self) -> bool:
+        """A #807-class Stop-gate block — the gate that carries a gate-assisted pass."""
+        return self.hook_event_name == "Stop" and self.is_block
+
+
+@dataclasses.dataclass(frozen=True)
 class EvalSpec:
     """A single eval scenario loaded from YAML.
 
@@ -279,6 +309,17 @@ class EvalSpec:
     #: untouched, so every existing scenario is byte-identical. See
     #: :mod:`teatree.eval.cli_stub_fixture`.
     cli_stubs: tuple[str, ...] = ()
+    #: Register the shipped teatree plugin (``hooks/hooks.json``) into the SDK
+    #: child so the scenario measures the model+hook SYSTEM that ships, not the raw
+    #: model with hooks stripped. The clean-room personal-context isolation
+    #: (``setting_sources=[]``, redirected HOME, empty user-level ``settings``
+    #: hooks) is unchanged — only the shipped PLUGIN hook chain is added, plus the
+    #: sandbox-local redirection of the loop/hook state roots so the #807 Stop gate
+    #: sees a fresh owner-less registry and fires. Empty (the default) leaves the
+    #: SDK ``plugins``/``include_hook_events`` untouched, so every existing scenario
+    #: is byte-identical to before this field existed. See
+    #: :func:`teatree.eval.api_runner.build_sdk_options`.
+    production_hooks: bool = False
     judge: JudgeSpec | None = None
     agent_sections: tuple[str, ...] = ()
     lane: str = CLEAN_ROOM_LANE
@@ -386,3 +427,8 @@ class EvalRun:
     #: per-model ``model_usage`` token counts (all-zero when unobservable).
     main_usage: TokenUsage = dataclasses.field(default_factory=TokenUsage)
     aux_usage: TokenUsage = dataclasses.field(default_factory=TokenUsage)
+    #: Production-hook lifecycle events captured on a ``production_hooks`` run
+    #: (empty on every other run, incl. every recorded-transcript replay — those
+    #: carry no hook stream). Additive: the report reads it to annotate a
+    #: gate-assisted pass; grading never consults it.
+    gate_events: tuple[GateEvent, ...] = ()

@@ -87,6 +87,18 @@ t3 eval
 
 A skill's behavioral evals live in the central catalog at `evals/scenarios/<skill>.yaml` (one file per skill, the **same `EvalSpec` schema** as any other scenario). Each spec carries an explicit `agent_path: skills/<name>/SKILL.md` that attributes it back to the skill it grades — coverage keys on that path, not on where the YAML sits. Scenario bodies never live inside the `skills/` tree (`tests/eval_replay/test_no_inline_skill_evals.py` keeps it prose-only). Each scenario still ships its three anti-vacuous fixtures (`evals/fixtures/<name>_{pass,fail,noop}.stream.jsonl`). A skill with no eval must instead declare a non-empty `eval_exempt: <reason>` in its frontmatter, or `t3 eval coverage` reports it as a gap.
 
+## Measuring the shipped hook system (`production_hooks`)
+
+Most scenarios grade the RAW model (hooks stripped) against skill prose. When the behaviour a scenario pins is enforced by a shipped **Claude-Code hook** — the #807 structured-question Stop gate, the #2665 completion-claim Stop gate — grading the raw model understates the shipped system. Set `production_hooks: true` on such a scenario: the runner registers the shipped teatree plugin (`hooks/hooks.json`) into the SDK child and pins the loop/hook state roots inside the sandbox home so the gate fires. The scenario then passes first-try OR via the deterministic gate bounce.
+
+Honesty is load-bearing here — a hooked lane must never spuriously pass:
+
+- **Gate-firing is a REPORT ANNOTATION, never a per-scenario pass condition.** A pass a Stop block carried renders `pass (gate-assisted)`; a required "gate fired" matcher would wrongly RED a first-try-compliant model (the gate only fires on non-compliance).
+- **A hooked run with ZERO hook events fails loud** (`hooks_not_registered`) — the plugin silently failed to register, so the lane would degrade back to raw-model measurement.
+- **One canary proves the wiring end-to-end** (`harness_canary_stop_gate_fires`): a prose-only decision that can pass ONLY through the #807 bounce, so it reds the moment the Stop gate stops firing under the eval wiring.
+
+Where production enforcement is the **`t3` CLI** (not a Claude hook), fidelity comes from the stub instead: `cli_stubs: [t3@on_behalf_ask]` provisions a gate-aware `t3` that refuses colleague-surface posts (exit 1, parity-tested against the production block message) exactly as the shipped CLI does under ask-mode.
+
 ## Related
 
 - BLUEPRINT.md — Behavioral eval harness (`src/teatree/eval/`), transcript-default backend, all-skipped guard.

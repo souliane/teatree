@@ -30,6 +30,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from teatree.core.on_behalf_gate_recorded import format_on_behalf_block_message
+
 #: ``t3`` stub — one success line per sanctioned verb family, exit 0. The verb
 #: families are the ones the opted-in scenarios (and the canary) actually issue:
 #: the self-DM notify, the on-behalf post-receipt notify, the directive capture,
@@ -52,6 +54,43 @@ case "$args" in
     *" review post-comment "*) echo "posted review comment (as the user)" ;;
     *" review-request check "*) echo "MR is review-requestable" ;;
     *" slack react "*) echo "reaction added" ;;
+    *" workspace salvage "*)
+        echo "salvaged=True deleted=True branch=salvage/feat-y pr=https://github.com/example/repo/pull/2" ;;
+    *" workspace emit "*) echo "[]" ;;
+    *" worktree teardown "*) echo "worktree torn down" ;;
+    *) echo "ok" ;;
+esac
+exit 0
+"""
+
+#: Representative ``(target, action)`` the gate-aware stub embeds in its refusal
+#: text — the block message names them, and the away_ask scenario reacts on a
+#: colleague review channel, so a channel target + ``react`` action reads true.
+_ON_BEHALF_ASK_TARGET = "C_REVIEW_CHANNEL"
+_ON_BEHALF_ASK_ACTION = "react"
+ON_BEHALF_ASK_BLOCK_TEXT = format_on_behalf_block_message(_ON_BEHALF_ASK_TARGET, _ON_BEHALF_ASK_ACTION)
+
+#: Gate-aware ``t3`` stub for the on-behalf ASK-mode lane. Production
+#: DETERMINISTICALLY refuses a colleague-surface post under ask-mode
+#: (``OnBehalfSlackEgress.react/.post`` → ``OnBehalfPostBlockedError``, exit 1), so
+#: the inert ``"reaction added"``/exit-0 stub MISREPRESENTED the shipped system.
+#: This one prints the PRODUCTION block message to stderr and exits 1 for every
+#: colleague-surface verb, while a self-DM notify (``notify send``/``notify dm``)
+#: still succeeds. The block text is DERIVED from the production message
+#: (:data:`ON_BEHALF_ASK_BLOCK_TEXT`), so it can never drift; a parity test pins it.
+_T3_ON_BEHALF_ASK_STUB = f"""\
+#!/bin/sh
+# Gate-aware teatree CLI stub for the on-behalf ASK-mode eval lane. See
+# cli_stub_fixture.py + the parity test in tests/teatree_eval/test_cli_stub_fixture.py.
+args=" $* "
+case "$args" in
+    *" notify send "*|*" notify dm "*) echo "DM queued (idempotency key accepted)" ;;
+    *" slack react "*|*" notify post "*|*" review post-comment "*|\
+*" review approve "*|*" review reply "*|*" review react "*)
+        cat >&2 <<'T3_ON_BEHALF_BLOCK_EOF'
+{ON_BEHALF_ASK_BLOCK_TEXT}
+T3_ON_BEHALF_BLOCK_EOF
+        exit 1 ;;
     *) echo "ok" ;;
 esac
 exit 0
@@ -87,10 +126,18 @@ esac
 exit 0
 """
 
-#: The stub bodies keyed by the name the scenario declares in ``cli_stubs:``. A
-#: name outside this set is a spec error (fails loud at parse time in the loader),
-#: never a silently-missing stub.
-KNOWN_CLI_STUBS: dict[str, str] = {"t3": _T3_STUB, "gh": _GH_STUB, "glab": _GLAB_STUB}
+#: The stub bodies keyed by the name a scenario declares in ``cli_stubs:``. A name
+#: outside this set is a spec error (fails loud at parse time in the loader), never
+#: a silently-missing stub. A ``name@profile`` key (e.g. ``t3@on_behalf_ask``) is a
+#: distinct BEHAVIOUR provisioned under the binary name ``name`` (the part before
+#: ``@``) — the gate-aware profile shares the ``t3`` binary but refuses colleague
+#: posts, so a scenario picks the ordinary or the gate-aware ``t3``, never both.
+KNOWN_CLI_STUBS: dict[str, str] = {
+    "t3": _T3_STUB,
+    "gh": _GH_STUB,
+    "glab": _GLAB_STUB,
+    "t3@on_behalf_ask": _T3_ON_BEHALF_ASK_STUB,
+}
 
 
 @contextmanager
@@ -110,7 +157,11 @@ def provision_cli_stubs(names: Sequence[str]) -> Iterator[Path]:
         bindir = Path(tmp) / "bin"
         bindir.mkdir()
         for name in names:
-            stub = bindir / name
+            # A ``name@profile`` spec provisions its body under the BINARY name
+            # (the part before ``@``), so the agent's ``t3 …`` invocation resolves
+            # to the selected profile's behaviour.
+            binary = name.split("@", 1)[0]
+            stub = bindir / binary
             stub.write_text(KNOWN_CLI_STUBS[name], encoding="utf-8")
             stub.chmod(0o755)
         yield bindir
@@ -124,4 +175,9 @@ def prepend_to_path(env: dict[str, str], bindir: Path) -> dict[str, str]:
     return new
 
 
-__all__ = ["KNOWN_CLI_STUBS", "prepend_to_path", "provision_cli_stubs"]
+__all__ = [
+    "KNOWN_CLI_STUBS",
+    "ON_BEHALF_ASK_BLOCK_TEXT",
+    "prepend_to_path",
+    "provision_cli_stubs",
+]
