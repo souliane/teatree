@@ -134,7 +134,7 @@ def _declared_core_keys() -> set[str]:
 
 
 def _check_overlay_does_not_collide_with_core(overlay: "OverlayBase") -> None:
-    declared_overlay = overlay.declared_env_keys()
+    declared_overlay = overlay.provisioning.declared_env_keys()
     duplicates = _declared_core_keys() & declared_overlay
     if duplicates:
         msg = (
@@ -167,22 +167,22 @@ def render_env_cache(worktree: Worktree, *, overlay: "OverlayBase | None" = None
         overlay = get_overlay_for_worktree(worktree)
     pairs = dict(_core_env_pairs(worktree))
 
-    db_strategy = overlay.get_db_import_strategy(worktree)
+    db_strategy = overlay.provisioning.db_import_strategy(worktree)
     if db_strategy and db_strategy.get("shared_postgres"):
         pairs["POSTGRES_HOST"] = _docker_host_address()
 
     _check_overlay_does_not_collide_with_core(overlay)
-    pairs.update(overlay.get_env_extra(worktree))
+    pairs.update(overlay.provisioning.env_extra(worktree))
 
-    for cfg in overlay.get_base_images(worktree):
+    for cfg in overlay.provisioning.base_images(worktree):
         pairs[cfg.env_var] = cfg.image_tag()
 
     pairs.update(load_overrides(worktree))
 
-    # Drop secret keys from the on-disk cache — they remain in ``get_env_extra``
+    # Drop secret keys from the on-disk cache — they remain in ``provisioning.env_extra``
     # so subprocess callers (run backend, worktree_start) still receive them
     # via ``env=``, but the file at chmod 444 must not contain credentials.
-    secret_keys = overlay.declared_secret_env_keys()
+    secret_keys = overlay.provisioning.declared_secret_env_keys()
     ordered_keys = tuple(k for k in pairs if k not in secret_keys)
     body = "\n".join(f"{k}={pairs[k]}" for k in ordered_keys) + "\n"
 
@@ -232,7 +232,7 @@ def worktree_pg_connection(
     """Resolve ``(user, host, env)`` for connecting to *worktree*'s postgres.
 
     The worktree's overlay decides the connecting role, host and port
-    via ``get_env_extra`` (an overlay may connect as a non-default
+    via ``provisioning.env_extra`` (an overlay may connect as a non-default
     superuser role on ``localhost``). The bare process-env defaults in
     ``utils.db`` fall back to ``postgres`` / ``localhost`` — a role that
     need not exist on the host — so a per-worktree existence check must
@@ -249,7 +249,7 @@ def worktree_pg_connection(
 
     if overlay is None:
         overlay = get_overlay_for_worktree(worktree)
-    resolved = dict(overlay.get_env_extra(worktree))
+    resolved = dict(overlay.provisioning.env_extra(worktree))
 
     env = {**os.environ, **resolved}
     env.pop("VIRTUAL_ENV", None)

@@ -31,7 +31,7 @@ def _step_fields() -> set[str]:
 def _collect_steps(overlay: OverlayBase) -> list[tuple[str, ProvisionStep]]:
     """Return ``(source_hook, step)`` pairs from every step-emitting hook."""
     collected: list[tuple[str, ProvisionStep]] = []
-    for hook_name in ("get_provision_steps", "get_post_db_steps", "get_cleanup_steps"):
+    for hook_name in ("get_provision_steps", "provisioning.post_db_steps", "provisioning.cleanup_steps"):
         hook = getattr(overlay, hook_name, None)
         if hook is None:
             continue
@@ -42,15 +42,15 @@ def _collect_steps(overlay: OverlayBase) -> list[tuple[str, ProvisionStep]]:
             continue
         collected.extend((hook_name, step) for step in steps or [] if isinstance(step, ProvisionStep))
 
-    reset_hook = getattr(overlay, "get_reset_passwords_command", None)
+    reset_hook = getattr(overlay, "provisioning.reset_passwords_command", None)
     if reset_hook is not None:
         try:
             step = reset_hook(None)
         except Exception:
-            logger.debug("get_reset_passwords_command raised during step collection", exc_info=True)
+            logger.debug("provisioning.reset_passwords_command raised during step collection", exc_info=True)
             step = None
         if isinstance(step, ProvisionStep):
-            collected.append(("get_reset_passwords_command", step))
+            collected.append(("provisioning.reset_passwords_command", step))
 
     return collected
 

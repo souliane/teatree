@@ -11,7 +11,7 @@ from django.test import TestCase
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.worktree.worktree_env as worktree_env_mod
 from teatree.core.models import Ticket, Worktree, WorktreeEnvOverride
-from teatree.core.overlay import OverlayBase, ProvisionStep
+from teatree.core.overlay import OverlayBase, OverlayProvisioning, ProvisionStep
 from teatree.core.worktree.worktree_env import (
     CACHE_DIRNAME,
     CACHE_FILENAME,
@@ -40,34 +40,52 @@ class TestDockerHostAddress(TestCase):
             assert worktree_env_mod._docker_host_address() == "172.17.0.1"
 
 
-class SharedPostgresOverlay(OverlayBase):
-    def get_repos(self) -> list[str]:
-        return ["backend"]
-
-    def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
-        return []
-
-    def get_db_import_strategy(self, worktree: Worktree) -> DbImportStrategy:
+class _SharedPostgresOverlay_Provisioning(OverlayProvisioning):
+    def db_import_strategy(self, worktree: Worktree) -> DbImportStrategy:
         return DbImportStrategy(shared_postgres=True)
 
 
-class EnvExtraOverrideOverlay(OverlayBase):
-    """Overlay whose get_env_extra collides with a core key."""
-
+class SharedPostgresOverlay(OverlayBase):
+    provisioning = _SharedPostgresOverlay_Provisioning()
     def get_repos(self) -> list[str]:
         return ["backend"]
 
     def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
         return []
 
-    def get_env_extra(self, worktree: Worktree) -> dict[str, str]:
+
+
+class _EnvExtraOverrideOverlay_Provisioning(OverlayProvisioning):
+    def env_extra(self, worktree: Worktree) -> dict[str, str]:
         return {"WT_DB_NAME": "custom_db", "EXTRA_KEY": "extra_value"}
 
     def declared_env_keys(self) -> set[str]:
         return {"WT_DB_NAME", "EXTRA_KEY"}
 
 
+class EnvExtraOverrideOverlay(OverlayBase):
+    provisioning = _EnvExtraOverrideOverlay_Provisioning()
+    """Overlay whose provisioning.env_extra collides with a core key."""
+
+    def get_repos(self) -> list[str]:
+        return ["backend"]
+
+    def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
+        return []
+
+
+
+
+class _ExtraOnlyOverlay_Provisioning(OverlayProvisioning):
+    def env_extra(self, worktree: Worktree) -> dict[str, str]:
+        return {"EXTRA_KEY": "extra_value"}
+
+    def declared_env_keys(self) -> set[str]:
+        return {"EXTRA_KEY"}
+
+
 class ExtraOnlyOverlay(OverlayBase):
+    provisioning = _ExtraOnlyOverlay_Provisioning()
     """Overlay that declares a non-colliding extra key."""
 
     def get_repos(self) -> list[str]:
@@ -76,14 +94,19 @@ class ExtraOnlyOverlay(OverlayBase):
     def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
         return []
 
-    def get_env_extra(self, worktree: Worktree) -> dict[str, str]:
-        return {"EXTRA_KEY": "extra_value"}
+
+
+
+class _PostgresPasswordOverlay_Provisioning(OverlayProvisioning):
+    def env_extra(self, worktree: Worktree) -> dict[str, str]:
+        return {"POSTGRES_PASSWORD": "s3cr3t-pw", "EXTRA_KEY": "extra_value"}
 
     def declared_env_keys(self) -> set[str]:
-        return {"EXTRA_KEY"}
+        return {"POSTGRES_PASSWORD", "EXTRA_KEY"}
 
 
 class PostgresPasswordOverlay(OverlayBase):
+    provisioning = _PostgresPasswordOverlay_Provisioning()
     """Overlay that returns POSTGRES_PASSWORD without declaring it secret."""
 
     def get_repos(self) -> list[str]:
@@ -92,23 +115,11 @@ class PostgresPasswordOverlay(OverlayBase):
     def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
         return []
 
-    def get_env_extra(self, worktree: Worktree) -> dict[str, str]:
-        return {"POSTGRES_PASSWORD": "s3cr3t-pw", "EXTRA_KEY": "extra_value"}
-
-    def declared_env_keys(self) -> set[str]:
-        return {"POSTGRES_PASSWORD", "EXTRA_KEY"}
 
 
-class SecretOverlay(OverlayBase):
-    """Overlay whose get_env_extra includes both public and secret keys."""
 
-    def get_repos(self) -> list[str]:
-        return ["backend"]
-
-    def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
-        return []
-
-    def get_env_extra(self, worktree: Worktree) -> dict[str, str]:
+class _SecretOverlay_Provisioning(OverlayProvisioning):
+    def env_extra(self, worktree: Worktree) -> dict[str, str]:
         return {
             "PUBLIC_KEY": "public_value",
             "SECRET_PASSWORD": "s3cr3t",
@@ -122,12 +133,9 @@ class SecretOverlay(OverlayBase):
         return {"SECRET_PASSWORD", "DATABASE_URL"}
 
 
-class BaseImageOverlay(OverlayBase):
-    """Overlay that declares a base image — tag should land in env cache."""
-
-    def __init__(self, context: Path) -> None:
-        super().__init__()
-        self._context = context
+class SecretOverlay(OverlayBase):
+    provisioning = _SecretOverlay_Provisioning()
+    """Overlay whose provisioning.env_extra includes both public and secret keys."""
 
     def get_repos(self) -> list[str]:
         return ["backend"]
@@ -135,16 +143,40 @@ class BaseImageOverlay(OverlayBase):
     def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
         return []
 
-    def get_base_images(self, worktree: Worktree) -> list[BaseImageConfig]:
+
+
+
+
+class _BaseImageOverlay_Provisioning(OverlayProvisioning):
+    def __init__(self, overlay: "BaseImageOverlay") -> None:
+        self._overlay = overlay
+
+    def base_images(self, worktree: Worktree) -> list[BaseImageConfig]:
         return [
             BaseImageConfig(
                 image_name="myapp-local",
                 dockerfile="Dockerfile-local",
                 lockfile="Pipfile.lock",
-                build_context=self._context,
+                build_context=self._overlay._context,
                 env_var="MYAPP_BASE_IMAGE",
             )
         ]
+
+
+class BaseImageOverlay(OverlayBase):
+    """Overlay that declares a base image — tag should land in env cache."""
+
+    def __init__(self, context: Path) -> None:
+        super().__init__()
+        self._context = context
+        self.provisioning = _BaseImageOverlay_Provisioning(self)
+
+    def get_repos(self) -> list[str]:
+        return ["backend"]
+
+    def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
+        return []
+
 
 
 _SHARED_PG = {"test": SharedPostgresOverlay()}
@@ -429,7 +461,13 @@ class TestOverrides(TestCase):
             assert "leak" not in spec.content
 
 
+class _PgUserOverlay_Provisioning(OverlayProvisioning):
+    def env_extra(self, worktree: Worktree) -> dict[str, str]:
+        return {"POSTGRES_USER": "db_superuser", "POSTGRES_HOST": "db.internal", "POSTGRES_PORT": "5544"}
+
+
 class _PgUserOverlay(OverlayBase):
+    provisioning = _PgUserOverlay_Provisioning()
     """Overlay that connects to postgres as a non-default role + custom port."""
 
     def get_repos(self) -> list[str]:
@@ -438,8 +476,6 @@ class _PgUserOverlay(OverlayBase):
     def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
         return []
 
-    def get_env_extra(self, worktree: Worktree) -> dict[str, str]:
-        return {"POSTGRES_USER": "db_superuser", "POSTGRES_HOST": "db.internal", "POSTGRES_PORT": "5544"}
 
 
 _PG_USER = {"test": _PgUserOverlay()}

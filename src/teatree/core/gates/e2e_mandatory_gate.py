@@ -95,7 +95,7 @@ def resolve_gate_inputs(ticket: Ticket, *, changed_files: list[str], head_sha: s
 
     try:
         overlay = get_overlay(ticket.overlay or None)
-        display_impacting = overlay.classify_customer_display_impact(changed_files)
+        display_impacting = overlay.review.classify_customer_display_impact(changed_files)
     except ImproperlyConfigured:
         display_impacting = True
     return GateInputs(

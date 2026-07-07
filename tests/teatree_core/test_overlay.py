@@ -122,12 +122,12 @@ class TestOverlayBase(TestCase):
         ):
             overlay = get_overlay()
 
-            assert overlay.get_env_extra(worktree) == {}
-            assert overlay.get_run_commands(worktree) == {}
-            assert overlay.get_db_import_strategy(worktree) is None
-            assert overlay.get_post_db_steps(worktree) == []
-            assert overlay.get_symlinks(worktree) == []
-            assert overlay.get_services_config(worktree) == {}
+            assert overlay.provisioning.env_extra(worktree) == {}
+            assert overlay.runtime.run_commands(worktree) == {}
+            assert overlay.provisioning.db_import_strategy(worktree) is None
+            assert overlay.provisioning.post_db_steps(worktree) == []
+            assert overlay.provisioning.symlinks(worktree) == []
+            assert overlay.provisioning.services_config(worktree) == {}
             # #1540/#1367: default gate accepts a conforming title, a
             # conventional-commit description first line, and a What/Why body.
             assert overlay.metadata.validate_pr(
@@ -406,13 +406,13 @@ class TestDefaultHealthChecks(TestCase):
 
             overlay = DummyOverlay()
             with patch.object(
-                overlay,
-                "get_symlinks",
+                overlay.provisioning,
+                "symlinks",
                 return_value=[
                     {"path": "link", "source": str(source), "mode": "symlink"},
                 ],
             ):
-                checks = overlay.get_health_checks(worktree)
+                checks = overlay.provisioning.health_checks(worktree)
             names = [c.name for c in checks]
             assert "worktree-exists" in names
             assert "symlink-link" in names
@@ -420,7 +420,7 @@ class TestDefaultHealthChecks(TestCase):
     def test_omits_db_name_check_even_when_db_name_is_set(self) -> None:
         """``db-name-set`` is not a generic invariant — overlays that need a DB opt in.
 
-        Overlays that need a DB declare the check via ``get_health_checks``.
+        Overlays that need a DB declare the check via ``provisioning.health_checks``.
         Single-service overlays (CLI tools, doc generators) without a
         database must not see this check.
         """
@@ -438,7 +438,7 @@ class TestDefaultHealthChecks(TestCase):
                 extra={"worktree_path": str(wt_path)},
             )
 
-            checks = DummyOverlay().get_health_checks(worktree)
+            checks = DummyOverlay().provisioning.health_checks(worktree)
             assert "db-name-set" not in [c.name for c in checks]
 
     def test_symlink_check_fails_when_source_directory_is_empty(self) -> None:
@@ -470,13 +470,13 @@ class TestDefaultHealthChecks(TestCase):
 
             overlay = DummyOverlay()
             with patch.object(
-                overlay,
-                "get_symlinks",
+                overlay.provisioning,
+                "symlinks",
                 return_value=[
                     {"path": "node_modules", "source": str(empty_source), "mode": "symlink"},
                 ],
             ):
-                checks = overlay.get_health_checks(worktree)
+                checks = overlay.provisioning.health_checks(worktree)
             symlink_check = next(c for c in checks if c.name == "symlink-node_modules")
             assert symlink_check.check() is False
 
@@ -503,13 +503,13 @@ class TestDefaultHealthChecks(TestCase):
 
             overlay = DummyOverlay()
             with patch.object(
-                overlay,
-                "get_symlinks",
+                overlay.provisioning,
+                "symlinks",
                 return_value=[
                     {"path": "node_modules", "source": str(populated_source), "mode": "symlink"},
                 ],
             ):
-                checks = overlay.get_health_checks(worktree)
+                checks = overlay.provisioning.health_checks(worktree)
             symlink_check = next(c for c in checks if c.name == "symlink-node_modules")
             assert symlink_check.check() is True
 
@@ -543,13 +543,13 @@ class TestDefaultHealthChecks(TestCase):
 
             overlay = DummyOverlay()
             with patch.object(
-                overlay,
-                "get_symlinks",
+                overlay.provisioning,
+                "symlinks",
                 return_value=[
                     {"path": "node_modules", "source": str(empty_source), "mode": "symlink"},
                 ],
             ):
-                checks = overlay.get_health_checks(worktree)
+                checks = overlay.provisioning.health_checks(worktree)
             symlink_check = next(c for c in checks if c.name == "symlink-node_modules")
             assert symlink_check.check() is True
 
@@ -577,13 +577,13 @@ class TestDefaultHealthChecks(TestCase):
 
             overlay = DummyOverlay()
             with patch.object(
-                overlay,
-                "get_symlinks",
+                overlay.provisioning,
+                "symlinks",
                 return_value=[
                     {"path": "node_modules", "source": str(populated_source), "mode": "symlink"},
                 ],
             ):
-                checks = overlay.get_health_checks(worktree)
+                checks = overlay.provisioning.health_checks(worktree)
             symlink_check = next(c for c in checks if c.name == "symlink-node_modules")
             assert symlink_check.check() is False
 
@@ -599,7 +599,7 @@ class TestReadinessProbes(TestCase):
             branch="feature",
             db_name="test_db",
         )
-        assert DummyOverlay().get_readiness_probes(worktree) == []
+        assert DummyOverlay().runtime.readiness_probes(worktree) == []
 
 
 class TestGetIssueTitle:

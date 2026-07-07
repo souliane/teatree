@@ -5,22 +5,26 @@ from inspect import signature
 from pathlib import Path
 from typing import TypedDict
 
-from teatree.core.overlay import OverlayBase, OverlayMetadata
+from teatree.core.overlay import OverlayBase, OverlayMetadata, OverlayProvisioning, OverlayRuntime
 from teatree.skill_support.map import load_skill_delegation
 
-_OVERLAY_HOOK_ORDER = (
-    "get_repos",
-    "get_provision_steps",
-    "get_env_extra",
-    "get_run_commands",
-    "get_db_import_strategy",
-    "get_post_db_steps",
-    "get_symlinks",
-    "get_services_config",
-    "get_base_images",
-    "get_docker_services",
-    "reap_worktree_external_resources",
-    "get_checking_sources",
+# PR-27b: the flat provisioning/runtime hooks moved onto composed facets. Each
+# entry is ``(owner_class, method_name, display_name)`` — the display name
+# carries the facet prefix (``provisioning.env_extra``) exactly as the metadata
+# hooks carry ``metadata.``, so the generated doc points authors at the seam.
+_OVERLAY_HOOK_ORDER: tuple[tuple[type, str, str], ...] = (
+    (OverlayBase, "get_repos", "get_repos"),
+    (OverlayBase, "get_provision_steps", "get_provision_steps"),
+    (OverlayProvisioning, "env_extra", "provisioning.env_extra"),
+    (OverlayRuntime, "run_commands", "runtime.run_commands"),
+    (OverlayProvisioning, "db_import_strategy", "provisioning.db_import_strategy"),
+    (OverlayProvisioning, "post_db_steps", "provisioning.post_db_steps"),
+    (OverlayProvisioning, "symlinks", "provisioning.symlinks"),
+    (OverlayProvisioning, "services_config", "provisioning.services_config"),
+    (OverlayProvisioning, "base_images", "provisioning.base_images"),
+    (OverlayProvisioning, "docker_services", "provisioning.docker_services"),
+    (OverlayProvisioning, "reap_external_resources", "provisioning.reap_external_resources"),
+    (OverlayBase, "get_checking_sources", "get_checking_sources"),
 )
 
 _METADATA_HOOK_ORDER = (
@@ -39,15 +43,15 @@ _METADATA_HOOK_ORDER = (
 _OVERLAY_HOOK_DESCRIPTIONS = {
     "get_repos": "Declare the repositories that TeaTree should provision for this overlay.",
     "get_provision_steps": "Return the ordered setup steps for a newly created worktree.",
-    "get_env_extra": "Add overlay-specific environment variables to the generated worktree env file.",
-    "get_run_commands": "Expose named service commands for `worktree start` and operator discovery.",
-    "get_db_import_strategy": "Describe how a worktree database should be provisioned or restored.",
-    "get_post_db_steps": "Return callbacks to run after database setup completes.",
-    "get_symlinks": "Declare extra symlinks that should exist inside the worktree.",
-    "get_services_config": "Return additional service metadata for worktree-lifecycle orchestration.",
-    "get_base_images": "Declare Docker base images teatree builds once and shares across worktrees.",
-    "get_docker_services": "Declare service names that MUST run in Docker — enforced at `worktree provision`.",
-    "reap_worktree_external_resources": (
+    "provisioning.env_extra": "Add overlay-specific environment variables to the generated worktree env file.",
+    "runtime.run_commands": "Expose named service commands for `worktree start` and operator discovery.",
+    "provisioning.db_import_strategy": "Describe how a worktree database should be provisioned or restored.",
+    "provisioning.post_db_steps": "Return callbacks to run after database setup completes.",
+    "provisioning.symlinks": "Declare extra symlinks that should exist inside the worktree.",
+    "provisioning.services_config": "Return additional service metadata for worktree-lifecycle orchestration.",
+    "provisioning.base_images": "Declare Docker base images teatree builds once and shares across worktrees.",
+    "provisioning.docker_services": "Declare service names that MUST run in Docker — enforced at `worktree provision`.",
+    "provisioning.reap_external_resources": (
         "Reap a reaped worktree's out-of-band resources (e.g. its docker compose containers + images)."
     ),
     "get_checking_sources": "Return extra 'needs you' source identifiers for the `t3 <overlay> checking show` report.",
@@ -157,14 +161,14 @@ _TRIGGER_SPLIT_RE = re.compile(r"\.\s+Use (?:when|this|in)\b")
 
 def build_overlay_doc_payload() -> OverlayDocPayload:
     hooks: list[HookRecord] = []
-    for name in _OVERLAY_HOOK_ORDER:
-        method = getattr(OverlayBase, name)
+    for owner, method_name, display_name in _OVERLAY_HOOK_ORDER:
+        method = getattr(owner, method_name)
         hooks.append(
             {
-                "name": name,
+                "name": display_name,
                 "required": bool(getattr(method, "__isabstractmethod__", False)),
                 "signature": _signature_without_self(method),
-                "description": _OVERLAY_HOOK_DESCRIPTIONS[name],
+                "description": _OVERLAY_HOOK_DESCRIPTIONS[display_name],
             },
         )
     for name in _METADATA_HOOK_ORDER:

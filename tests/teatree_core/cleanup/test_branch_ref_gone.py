@@ -109,7 +109,7 @@ class _OrphanRefWorktreeFixture(TestCase):
             patch("teatree.core.cleanup.cleanup.get_overlay_for_worktree") as mock_overlay,
             patch("teatree.core.cleanup.cleanup._branch_pr_is_merged", return_value=pr_merged),
         ):
-            mock_overlay.return_value.get_cleanup_steps.return_value = []
+            mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
             return cleanup_worktree(worktree, force=False, strict_hygiene=False)
 
 

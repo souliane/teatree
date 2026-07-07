@@ -36,6 +36,7 @@ class SyncConfig(OverlayConfig):
         notion_status_property: str = "Status",
         notion_write_back: bool = False,
     ) -> None:
+        super().__init__()
         self._gitlab_token = gitlab_token
         self._gitlab_username = gitlab_username
         self._github_token = github_token

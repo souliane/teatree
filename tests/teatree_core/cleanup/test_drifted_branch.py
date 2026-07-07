@@ -94,7 +94,7 @@ class _DriftedWorktreeFixture(TestCase):
             patch("teatree.core.cleanup.cleanup.get_overlay_for_worktree") as mock_overlay,
             patch("teatree.core.cleanup.cleanup._branch_pr_is_merged", return_value=pr_merged),
         ):
-            mock_overlay.return_value.get_cleanup_steps.return_value = []
+            mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
             return cleanup_worktree(worktree, force=force, strict_hygiene=False)
 
     def _branches(self) -> list[str]:
@@ -204,7 +204,7 @@ class TestDetachedHeadUnpushedRefuses(_DriftedWorktreeFixture):
             patch("teatree.core.cleanup.cleanup.get_overlay_for_worktree") as mock_overlay,
             patch("teatree.core.cleanup.cleanup._branch_pr_is_merged", return_value=False),
         ):
-            mock_overlay.return_value.get_cleanup_steps.return_value = []
+            mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
             result = cleanup_worktree(self._make_worktree(), force=False, strict_hygiene=True)
 
         assert result.clean is True
@@ -307,7 +307,7 @@ class TestPhantomSlugBranchNotAGitRef(TestCase):
             patch("teatree.core.cleanup.cleanup.get_overlay_for_worktree") as mock_overlay,
             patch("teatree.core.cleanup.cleanup._branch_pr_is_merged", return_value=False),
         ):
-            mock_overlay.return_value.get_cleanup_steps.return_value = []
+            mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
             return cleanup_worktree(worktree, force=False, strict_hygiene=False)
 
     def test_phantom_slug_refuses_with_accurate_message(self) -> None:
@@ -414,7 +414,7 @@ class TestSquashMergedBranchNoRemoteRefPruned(TestCase):
             patch("teatree.core.cleanup.cleanup.get_overlay_for_worktree") as mock_overlay,
             patch("teatree.core.cleanup.cleanup._branch_pr_is_merged", return_value=pr_merged),
         ):
-            mock_overlay.return_value.get_cleanup_steps.return_value = []
+            mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
             return cleanup_worktree(worktree, force=False, strict_hygiene=False)
 
     def test_squash_merged_remote_deleted_branch_is_pruned(self) -> None:
@@ -505,7 +505,7 @@ class TestLocalOnlyMatchingTreeNotPruned(TestCase):
             patch("teatree.core.cleanup.cleanup.get_overlay_for_worktree") as mock_overlay,
             patch("teatree.core.cleanup.cleanup._branch_pr_is_merged", return_value=pr_merged),
         ):
-            mock_overlay.return_value.get_cleanup_steps.return_value = []
+            mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
             return cleanup_worktree(worktree, force=False, strict_hygiene=False)
 
     def test_local_only_matching_tree_branch_is_kept(self) -> None:

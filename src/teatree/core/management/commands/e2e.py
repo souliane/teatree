@@ -103,7 +103,7 @@ class Command(TyperCommand):
         DB-linked to the backend worktree (a frequent shape for
         out-of-tree test repos), name the backend ticket explicitly so
         frontend discovery, ``COMPOSE_PROJECT_NAME``, and the env cache
-        feeding ``get_e2e_env_extras`` all route at the linked stack.
+        feeding ``e2e.env_extras`` all route at the linked stack.
         ``0`` means "no link" (default — back-compat).
 
         Runner-specific flags (``--repo``, ``--playwright-args``) stay on the
@@ -239,7 +239,7 @@ class Command(TyperCommand):
     def _run_preflight(self, env: dict[str, str]) -> None:
         """Run overlay-declared preflight checks. Exit non-zero on first failure."""
         overlay = get_overlay()
-        checks = overlay.get_e2e_preflight(customer=env.get("CUSTOMER") or None, base_url=env.get("BASE_URL") or None)
+        checks = overlay.e2e.preflight(customer=env.get("CUSTOMER") or None, base_url=env.get("BASE_URL") or None)
         for check in checks:
             try:
                 check()
@@ -356,13 +356,13 @@ class Command(TyperCommand):
         (``auto:<branch>`` ticket, different ticket, or no worktree row at
         all), name the backend ticket explicitly. Discovery,
         ``COMPOSE_PROJECT_NAME``, and the env cache feeding
-        ``get_e2e_env_extras`` all route at the linked stack. ``0`` means
+        ``e2e.env_extras`` all route at the linked stack. ``0`` means
         "no link" (default — back-compat with the resolved-worktree path).
 
         Extra Playwright flags (--config, --timeout, --grep, etc.) can be
         passed via --playwright-args: ``--playwright-args="--config x.ts --timeout 120000"``.
         The overlay also contributes per-spec args via
-        ``get_e2e_playwright_args(test_path)`` (e.g. ``-c <config>`` chosen by
+        ``e2e.playwright_args(test_path)`` (e.g. ``-c <config>`` chosen by
         the spec's lane); overlay args go first, an explicit ``--playwright-args``
         follows so a caller can override.
         """
@@ -380,7 +380,7 @@ class Command(TyperCommand):
             linked_ticket,
         )
 
-        overlay_args = get_overlay().get_e2e_playwright_args(test_path)
+        overlay_args = get_overlay().e2e.playwright_args(test_path)
         caller_args = playwright_args.split() if playwright_args else []
         opts = PlaywrightOptions(
             test_path=test_path,

@@ -2,7 +2,7 @@
 
 import inspect
 
-from teatree.core.overlay import OverlayBase, OverlayConfig
+from teatree.core.overlay import OverlayBase, OverlayConfig, OverlayProvisioning
 from teatree.core.provision.variant import Variant
 
 
@@ -14,9 +14,7 @@ class _StubOverlay(OverlayBase):
         return []
 
 
-class _TenantPrefixOverlay(_StubOverlay):
-    """An overlay that prefixes the tenant and aliases a child variant."""
-
+class _TenantPrefixOverlay_Provisioning(OverlayProvisioning):
     def resolve_variant(self, name: str) -> Variant:
         parent = "client-a" if name == "client-a-regional" else name
         tenant = f"development-{parent}"
@@ -26,6 +24,12 @@ class _TenantPrefixOverlay(_StubOverlay):
             dslr_snapshot_name=f"{tenant}.dump",
             e2e_credentials_key=f"e2e/{tenant}",
         )
+
+
+class _TenantPrefixOverlay(_StubOverlay):
+    provisioning = _TenantPrefixOverlay_Provisioning()
+    """An overlay that prefixes the tenant and aliases a child variant."""
+
 
 
 def test_bare_variant_is_pass_through():
@@ -42,15 +46,15 @@ def test_bare_variant_of_empty_name_is_empty_tenant():
 
 def test_default_resolve_variant_returns_bare_variant():
     overlay = _StubOverlay()
-    resolved = overlay.resolve_variant("client-a")
+    resolved = overlay.provisioning.resolve_variant("client-a")
     assert resolved == Variant.bare("client-a")
 
 
 def test_override_prefixes_tenant_and_aliases_child_variant():
     overlay = _TenantPrefixOverlay()
-    assert overlay.resolve_variant("client-a").canonical_tenant == "development-client-a"
-    assert overlay.resolve_variant("client-a-regional").canonical_tenant == "development-client-a"
-    assert overlay.resolve_variant("client-b").canonical_tenant == "development-client-b"
+    assert overlay.provisioning.resolve_variant("client-a").canonical_tenant == "development-client-a"
+    assert overlay.provisioning.resolve_variant("client-a-regional").canonical_tenant == "development-client-a"
+    assert overlay.provisioning.resolve_variant("client-b").canonical_tenant == "development-client-b"
 
 
 def test_no_overlay_hook_takes_a_raw_variant_string():

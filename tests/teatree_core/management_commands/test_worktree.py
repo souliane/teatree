@@ -11,11 +11,17 @@ from django.test import TestCase
 from teatree.core.management.commands import worktree as worktree_cmd
 from teatree.core.management.commands.worktree import _provision_summary
 from teatree.core.models import Ticket, Worktree
-from teatree.core.overlay import OverlayBase
+from teatree.core.overlay import OverlayBase, OverlayProvisioning
 from teatree.core.worktree.worktree_env import CACHE_DIRNAME, CACHE_FILENAME
 
 
+class _NoDbOverlay_Provisioning(OverlayProvisioning):
+    def db_import_strategy(self, worktree):
+        return None
+
+
 class _NoDbOverlay(OverlayBase):
+    provisioning = _NoDbOverlay_Provisioning()
     """An overlay with no db strategy and no provision-step post-conditions.
 
     The aggregate provision post-conditions then reduce to the two core
@@ -29,8 +35,6 @@ class _NoDbOverlay(OverlayBase):
     def get_provision_steps(self, worktree):
         return []
 
-    def get_db_import_strategy(self, worktree):
-        return None
 
 
 def _step(name: str, *, success: bool = True, duration: float = 0.0, error: str = "") -> dict[str, object]:

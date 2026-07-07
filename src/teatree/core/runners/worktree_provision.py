@@ -54,7 +54,7 @@ def heal_missing_provisioned_db(worktree: Worktree, overlay: OverlayBase) -> boo
     """
     from teatree.utils.db import db_exists  # noqa: PLC0415
 
-    if not worktree.db_name or overlay.get_db_import_strategy(worktree) is None:
+    if not worktree.db_name or overlay.provisioning.db_import_strategy(worktree) is None:
         return False
     try:
         user, host, env = worktree_pg_connection(worktree, overlay=overlay)
@@ -98,7 +98,7 @@ def _setup_worktree_dir(wt_path: str, worktree: Worktree, overlay: OverlayBase) 
     if not wt_path or not Path(wt_path).is_dir():
         return None
     core_lines = [f"dotenv {CACHE_FILENAME}"]
-    _append_envrc_lines(wt_path, core_lines + overlay.get_envrc_lines(worktree))
+    _append_envrc_lines(wt_path, core_lines + overlay.provisioning.envrc_lines(worktree))
     result = run_step("direnv-allow", ["direnv", "allow", wt_path], check=False)
     if not result.success:
         logger.warning("direnv allow failed: %s", result.error)
@@ -157,7 +157,7 @@ class WorktreeProvisionRunner(RunnerBase):
             return RunnerResult(ok=False, detail=setup_failure)
 
         report = ProvisionReport()
-        db_import_needed = worktree.db_name and overlay.get_db_import_strategy(worktree) is not None
+        db_import_needed = worktree.db_name and overlay.provisioning.db_import_strategy(worktree) is not None
         if db_import_needed:
             db_step = self._run_db_import_timed()
             report.steps.append(db_step)
@@ -233,12 +233,12 @@ class WorktreeProvisionRunner(RunnerBase):
             except FileNotFoundError:
                 pass
 
-        env = {**os.environ, **overlay.get_env_extra(worktree)}
+        env = {**os.environ, **overlay.provisioning.env_extra(worktree)}
         env.pop("VIRTUAL_ENV", None)
         os.environ.update(env)
         # #2244: a child blocked on its PIPE (no DSLR snapshot) must abort loud, never hang the provision.
         imported = run_timeboxed_db_import(
-            lambda: overlay.db_import(worktree, slow_import=self.slow_import),
+            lambda: overlay.provisioning.db_import(worktree, slow_import=self.slow_import),
             repo=worktree.repo_path,
         )
         if imported:
@@ -251,20 +251,20 @@ class WorktreeProvisionRunner(RunnerBase):
         return False
 
     def _run_post_db_steps(self) -> ProvisionReport:
-        steps = list(self.overlay.get_post_db_steps(self.worktree))
-        reset_step = self.overlay.get_reset_passwords_command(self.worktree)
+        steps = list(self.overlay.provisioning.post_db_steps(self.worktree))
+        reset_step = self.overlay.provisioning.reset_passwords_command(self.worktree)
         if reset_step:
             steps.append(reset_step)
         return run_provision_steps(steps, stop_on_required_failure=False)
 
     def _run_pre_run_steps(self) -> ProvisionReport:
         steps = []
-        for service_name in self.overlay.get_run_commands(self.worktree):
-            steps.extend(self.overlay.get_pre_run_steps(self.worktree, service_name))
+        for service_name in self.overlay.runtime.run_commands(self.worktree):
+            steps.extend(self.overlay.runtime.pre_run_steps(self.worktree, service_name))
         return run_provision_steps(steps, stop_on_required_failure=False)
 
     def _run_health_checks(self) -> list[str]:
-        checks = self.overlay.get_health_checks(self.worktree)
+        checks = self.overlay.provisioning.health_checks(self.worktree)
         failures: list[str] = []
         for check in checks:
             try:

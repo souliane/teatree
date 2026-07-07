@@ -113,7 +113,7 @@ class TestDbRefresh(TestCase):
     @_patch_overlays(POST_DB_OVERLAY)
     @override_settings(**SETTINGS)
     def test_runs_post_db_steps_loop(self) -> None:
-        """Db refresh iterates over overlay.get_post_db_steps and calls each callable."""
+        """Db refresh iterates over overlay.provisioning.post_db_steps and calls each callable."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
 
@@ -175,7 +175,7 @@ class TestDbRefresh(TestCase):
         """`db refresh --fresh-dump` must reach the remote-dump branch.
 
         Regression for #955. `refresh` never passed `slow_import` into
-        `overlay.db_import(...)`, so `DjangoDbImporter.run()` returned at
+        `overlay.provisioning.db_import(...)`, so `DjangoDbImporter.run()` returned at
         the `not slow_import` guard (after the early DSLR return) BEFORE
         the `if allow_remote_dump:` remote `pg_dump` block. `--fresh-dump`
         silently degraded to "restore stale local DSLR snapshot".

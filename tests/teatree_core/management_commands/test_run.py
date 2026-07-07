@@ -178,7 +178,7 @@ class TestRunTests(TestCase):
     @_patch_overlays(PRE_RUN_OVERLAY)
     @override_settings(**SETTINGS)
     def test_runs_overlay_pre_test_steps_before_dispatch(self) -> None:
-        """``run tests`` executes ``get_pre_run_steps(worktree, "tests")`` first.
+        """``run tests`` executes ``runtime.pre_run_steps(worktree, "tests")`` first.
 
         The same prerequisite seam every service launch uses (ServiceLauncher),
         so an overlay can keep its test environment fast and correct — e.g.

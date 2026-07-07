@@ -21,7 +21,7 @@ import teatree.core.management.commands.worktree as worktree_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.utils.run as utils_run_mod
 from teatree.core.models import Session, Task, Ticket, Worktree
-from teatree.core.overlay import OverlayBase, OverlayMetadata, ProvisionStep, RunCommands, ServiceSpec, ToolCommand
+from teatree.core.overlay import OverlayBase, OverlayMetadata, OverlayProvisioning, OverlayRuntime, ProvisionStep, RunCommands, ServiceSpec, ToolCommand
 from teatree.core.overlay_loader import reset_overlay_cache
 
 pytestmark = [
@@ -54,7 +54,50 @@ class _WorkflowMetadata(OverlayMetadata):
         ]
 
 
+class _WorkflowOverlay_Provisioning(OverlayProvisioning):
+    def post_db_steps(self, worktree: Worktree) -> list[ProvisionStep]:
+        return [ProvisionStep(name="seed-data", callable=lambda: None, description="Seed test data")]
+
+    def env_extra(self, worktree: Worktree) -> dict[str, str]:
+        return {
+            "DJANGO_SETTINGS_MODULE": "project.settings",
+            "POSTGRES_DB": worktree.db_name or "test_db",
+        }
+
+    def compose_file(self, worktree: "Worktree") -> str:
+        return "/fake/docker-compose.yml"
+
+    def services_config(self, worktree: Worktree) -> dict[str, ServiceSpec]:
+        return {
+            "postgres": {
+                "shared": True,
+                "start_command": ["docker", "compose", "up", "-d", "db"],
+            },
+            "redis": {
+                "shared": True,
+                "start_command": ["docker", "compose", "up", "-d", "redis"],
+            },
+        }
+
+    def reset_passwords_command(self, worktree: Worktree) -> ProvisionStep | None:
+        return ProvisionStep(name="reset-passwords", callable=lambda: None)
+
+
+class _WorkflowOverlay_Runtime(OverlayRuntime):
+    def run_commands(self, worktree: Worktree) -> RunCommands:
+        return {
+            "backend": ["python", "manage.py", "runserver"],
+            "frontend": ["npm", "run", "start"],
+            "build-frontend": ["npm", "run", "build"],
+        }
+
+    def test_command(self, worktree: Worktree) -> list[str]:
+        return ["pytest", "--rootdir", worktree.repo_path]
+
+
 class WorkflowOverlay(OverlayBase):
+    provisioning = _WorkflowOverlay_Provisioning()
+    runtime = _WorkflowOverlay_Runtime()
     """Rich overlay that supports the full lifecycle for workflow tests."""
 
     metadata = _WorkflowMetadata()
@@ -74,42 +117,12 @@ class WorkflowOverlay(OverlayBase):
             ProvisionStep(name="migrations", callable=_record_provision, description="Run migrations"),
         ]
 
-    def get_post_db_steps(self, worktree: Worktree) -> list[ProvisionStep]:
-        return [ProvisionStep(name="seed-data", callable=lambda: None, description="Seed test data")]
 
-    def get_run_commands(self, worktree: Worktree) -> RunCommands:
-        return {
-            "backend": ["python", "manage.py", "runserver"],
-            "frontend": ["npm", "run", "start"],
-            "build-frontend": ["npm", "run", "build"],
-        }
 
-    def get_env_extra(self, worktree: Worktree) -> dict[str, str]:
-        return {
-            "DJANGO_SETTINGS_MODULE": "project.settings",
-            "POSTGRES_DB": worktree.db_name or "test_db",
-        }
 
-    def get_compose_file(self, worktree: "Worktree") -> str:
-        return "/fake/docker-compose.yml"
 
-    def get_services_config(self, worktree: Worktree) -> dict[str, ServiceSpec]:
-        return {
-            "postgres": {
-                "shared": True,
-                "start_command": ["docker", "compose", "up", "-d", "db"],
-            },
-            "redis": {
-                "shared": True,
-                "start_command": ["docker", "compose", "up", "-d", "redis"],
-            },
-        }
 
-    def get_test_command(self, worktree: Worktree) -> list[str]:
-        return ["pytest", "--rootdir", worktree.repo_path]
 
-    def get_reset_passwords_command(self, worktree: Worktree) -> ProvisionStep | None:
-        return ProvisionStep(name="reset-passwords", callable=lambda: None)
 
     def get_workspace_repos(self) -> list[str]:
         return ["backend", "frontend"]
@@ -337,7 +350,7 @@ class TestLifecycleProvision(TestCase):
 
     @override_settings(**WORKFLOW_SETTINGS)
     def test_password_reset_runs_automatically(self) -> None:
-        """Verify worktree provision calls get_reset_passwords_command and runs it."""
+        """Verify worktree provision calls provisioning.reset_passwords_command and runs it."""
         wt_dir = self._tmp_path / "backend"
         wt_dir.mkdir()
 
@@ -357,7 +370,8 @@ class TestLifecycleProvision(TestCase):
             nonlocal reset_called
             reset_called = True
 
-        original_overlay.get_reset_passwords_command = lambda wt: ProvisionStep(  # type: ignore[assignment]
+        original_overlay.provisioning = type(original_overlay.provisioning)()
+        original_overlay.provisioning.reset_passwords_command = lambda wt: ProvisionStep(  # type: ignore[assignment]
             name="reset-passwords",
             callable=_track_reset,
         )

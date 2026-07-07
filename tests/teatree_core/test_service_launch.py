@@ -7,11 +7,29 @@ from django.test import TestCase
 
 import teatree.utils.singleton as singleton_mod
 from teatree.core.models import Ticket, Worktree
-from teatree.core.overlay import ProvisionStep, RunCommands
+from teatree.core.overlay import OverlayRuntime, ProvisionStep, RunCommands
 from teatree.core.runners.service_launch import ServiceLauncher
 from teatree.types import RunCommand
 from teatree.utils.singleton import singleton
 from tests.teatree_core.conftest import CommandOverlay
+
+
+class _OrderRecordingOverlay_Runtime(OverlayRuntime):
+    def __init__(self, overlay: "OrderRecordingOverlay") -> None:
+        self._overlay = overlay
+
+    def run_commands(self, worktree: Worktree) -> RunCommands:
+        return {
+            "frontend": RunCommand(args=["sh", "-lc", f"echo cmd >> {self._overlay.order_file}"]),
+            "backend": ["true"],
+        }
+
+    def pre_run_steps(self, worktree: Worktree, service: str) -> list[ProvisionStep]:
+        def record() -> None:
+            with self._overlay.order_file.open("a") as fh:
+                fh.write(f"pre-{service}\n")
+
+        return [ProvisionStep(name=f"pre-run-{service}", callable=record)]
 
 
 class OrderRecordingOverlay(CommandOverlay):
@@ -19,19 +37,9 @@ class OrderRecordingOverlay(CommandOverlay):
 
     def __init__(self, order_file: Path) -> None:
         self.order_file = order_file
+        self.runtime = _OrderRecordingOverlay_Runtime(self)
 
-    def get_run_commands(self, worktree: Worktree) -> RunCommands:
-        return {
-            "frontend": RunCommand(args=["sh", "-lc", f"echo cmd >> {self.order_file}"]),
-            "backend": ["true"],
-        }
 
-    def get_pre_run_steps(self, worktree: Worktree, service: str) -> list[ProvisionStep]:
-        def record() -> None:
-            with self.order_file.open("a") as fh:
-                fh.write(f"pre-{service}\n")
-
-        return [ProvisionStep(name=f"pre-run-{service}", callable=record)]
 
 
 class ServiceLauncherTests(TestCase):
@@ -86,6 +94,27 @@ class ServiceLauncherTests(TestCase):
         assert result.ok
 
 
+class _RealisticStackOverlay_Runtime(OverlayRuntime):
+    def __init__(self, overlay: "RealisticStackOverlay") -> None:
+        self._overlay = overlay
+
+    def run_commands(self, worktree: Worktree) -> RunCommands:
+        overlay = self._overlay
+        return {
+            svc: RunCommand(args=["sh", "-lc", f"echo run-{svc} >> {overlay.order_file}"]) for svc in overlay.PREREQS
+        }
+
+    def pre_run_steps(self, worktree: Worktree, service: str) -> list[ProvisionStep]:
+        def make(step_name: str) -> ProvisionStep:
+            def record() -> None:
+                with self._overlay.order_file.open("a") as fh:
+                    fh.write(f"{step_name}\n")
+
+            return ProvisionStep(name=f"{service}-{step_name}", callable=record)
+
+        return [make(name) for name in self._overlay.PREREQS.get(service, [])]
+
+
 class RealisticStackOverlay(CommandOverlay):
     """Generic realistic stack: a django backend, a fastapi microservice, a frontend."""
 
@@ -97,19 +126,9 @@ class RealisticStackOverlay(CommandOverlay):
 
     def __init__(self, order_file: Path) -> None:
         self.order_file = order_file
+        self.runtime = _RealisticStackOverlay_Runtime(self)
 
-    def get_run_commands(self, worktree: Worktree) -> RunCommands:
-        return {svc: RunCommand(args=["sh", "-lc", f"echo run-{svc} >> {self.order_file}"]) for svc in self.PREREQS}
 
-    def get_pre_run_steps(self, worktree: Worktree, service: str) -> list[ProvisionStep]:
-        def make(step_name: str) -> ProvisionStep:
-            def record() -> None:
-                with self.order_file.open("a") as fh:
-                    fh.write(f"{step_name}\n")
-
-            return ProvisionStep(name=f"{service}-{step_name}", callable=record)
-
-        return [make(name) for name in self.PREREQS.get(service, [])]
 
 
 class RealisticStackWorkflowTests(TestCase):

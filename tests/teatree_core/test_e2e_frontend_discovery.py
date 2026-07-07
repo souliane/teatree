@@ -100,13 +100,13 @@ class ResolveLinkedWorktreeTests(TestCase):
         )
 
     def _overlay_with_backend(self, backend_repo_path: str):
-        def get_compose_file(worktree: Worktree) -> str:
+        def _compose_file(worktree: Worktree) -> str:
             return "/ws/1322/backend-repo/docker-compose.yml" if worktree.repo_path == backend_repo_path else ""
 
         from unittest.mock import MagicMock  # noqa: PLC0415
 
         overlay = MagicMock()
-        overlay.get_compose_file.side_effect = get_compose_file
+        overlay.provisioning.compose_file.side_effect = _compose_file
         return overlay
 
     def test_prefers_backend_stack_owner_over_first_pk(self) -> None:
@@ -144,12 +144,12 @@ class ResolveLinkedWorktreeTests(TestCase):
 
     def test_falls_back_when_overlay_hook_raises(self) -> None:
         # A misbehaving overlay hook must not break routing — the resolver
-        # treats a raising ``get_compose_file`` as "not the backend" and falls
+        # treats a raising ``provisioning.compose_file`` as "not the backend" and falls
         # back to the first stored-path sibling.
         from unittest.mock import MagicMock  # noqa: PLC0415
 
         overlay = MagicMock()
-        overlay.get_compose_file.side_effect = RuntimeError("overlay boom")
+        overlay.provisioning.compose_file.side_effect = RuntimeError("overlay boom")
         with patch("teatree.core.overlay_loader.get_overlay", return_value=overlay):
             resolved = resolve_linked_worktree(self.ticket)
 

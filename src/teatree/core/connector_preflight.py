@@ -7,7 +7,7 @@ silently no-ops: scanners find nothing, ``notify_user`` records a phantom
 *refuse to continue* when a hard-dependency connector is unreachable.
 
 This module runs every registered overlay's
-:meth:`OverlayBase.get_connector_preflight` callables before any
+:meth:`OverlayConnectors.preflight` callables before any
 connector-dependent loop work. The first ``RuntimeError`` is fatal —
 ``run_connector_preflight`` ``raise SystemExit(1)`` with a message naming
 which connector is down, following teatree's management-command exit
@@ -72,8 +72,8 @@ def run_connector_preflight(overlay_name: str = "") -> None:
     """Run connector probes for every registered overlay (or one named).
 
     Each overlay contributes zero or more zero-arg callables via
-    :meth:`OverlayBase.get_connector_preflight`, plus its declared connector
-    manifest (:meth:`OverlayBase.get_connector_manifest`). A callable that raises
+    :meth:`OverlayConnectors.preflight`, plus its declared connector
+    manifest (:meth:`OverlayConnectors.manifest`). A callable that raises
     ``RuntimeError`` — or a required declared connector that is down — means a
     hard-dependency connector is unreachable; this function then
     ``raise SystemExit(1)`` so the loop/lifecycle entrypoint refuses to continue
@@ -87,7 +87,7 @@ def run_connector_preflight(overlay_name: str = "") -> None:
 
     manifests: list[OverlayManifest] = []
     for name, overlay in selected.items():
-        for check in overlay.get_connector_preflight():
+        for check in overlay.connectors.preflight():
             try:
                 check()
             except RuntimeError as exc:
@@ -101,7 +101,7 @@ def run_connector_preflight(overlay_name: str = "") -> None:
                 # non-zero exit). Follows teatree's mgmt-command exit
                 # convention (raise SystemExit, never typer.Exit).
                 raise SystemExit(msg) from exc
-        manifests.append(OverlayManifest(overlay=name, requirements=list(overlay.get_connector_manifest())))
+        manifests.append(OverlayManifest(overlay=name, requirements=list(overlay.connectors.manifest())))
 
     try:
         assert_required_connectors(manifests)

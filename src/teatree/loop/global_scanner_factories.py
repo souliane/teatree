@@ -208,7 +208,7 @@ def _snapshot_warmer_scanner() -> SnapshotWarmerScanner | None:
 
     Returns ``None`` when ``snapshot_warmer_disabled = true`` (the durable
     kill-switch) OR when the active overlay declares no DSLR-backed configs
-    (:meth:`OverlayBase.get_snapshot_warmer_configs` default empty — nothing
+    (:meth:`OverlayProvisioning.snapshot_warmer_configs` default empty — nothing
     to warm). Per-overlay scoped like the reaper: the overlay anchor is
     resolved via :func:`discover_active_overlay`, falling back to the
     canonical core overlay when none is registered.
@@ -224,7 +224,7 @@ def _snapshot_warmer_scanner() -> SnapshotWarmerScanner | None:
         overlay = get_overlay(overlay_name)
     except Exception:  # noqa: BLE001 — an unresolvable overlay means nothing to warm, not a tick crash
         return None
-    configs = overlay.get_snapshot_warmer_configs()
+    configs = overlay.provisioning.snapshot_warmer_configs()
     if not configs:
         return None
     return SnapshotWarmerScanner(configs=configs, max_age_days=settings.snapshot_warmer_max_age_days)

@@ -83,16 +83,16 @@ class WorktreeStartRunner(RunnerBase):
 
         docker_compose_down(project, timeout=self.timeouts.get(DOCKER_COMPOSE_DOWN))
 
-        commands = overlay.get_run_commands(worktree)
+        commands = overlay.runtime.run_commands(worktree)
         ServiceLauncher.prepare_all(worktree, list(commands), overlay=overlay)
 
         write_env_cache(worktree, overlay=overlay)
 
-        compose_file = overlay.get_compose_file(worktree)
+        compose_file = overlay.provisioning.compose_file(worktree)
         if not compose_file:
             return RunnerResult(ok=True, detail=f"no compose file for {worktree.repo_path}")
 
-        env = {**os.environ, **overlay.get_env_extra(worktree)}
+        env = {**os.environ, **overlay.provisioning.env_extra(worktree)}
         env.pop("VIRTUAL_ENV", None)
         ok, reason = self._docker_compose_up(project, compose_file, env)
         if not ok:

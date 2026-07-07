@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from teatree.core.models import Worktree
-    from teatree.core.overlay import OverlayBase
+    from teatree.core.overlay import OverlayProvisioning
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,7 +31,7 @@ def _symlink_source_healthy(dest: Path, source: Path) -> bool:
     return True
 
 
-def default_health_checks(overlay: "OverlayBase", worktree: "Worktree") -> list[HealthCheck]:
+def default_health_checks(provisioning: "OverlayProvisioning", worktree: "Worktree") -> list[HealthCheck]:
     checks: list[HealthCheck] = []
     extra = worktree.extra or {}
     wt_path = extra.get("worktree_path", "")
@@ -45,7 +45,7 @@ def default_health_checks(overlay: "OverlayBase", worktree: "Worktree") -> list[
             ),
         )
 
-        for spec in overlay.get_symlinks(worktree):
+        for spec in provisioning.symlinks(worktree):
             dest = Path(wt_path) / spec.get("path", "")
             source = Path(spec.get("source", ""))
             if spec.get("mode", "symlink") == "symlink" and source.exists():

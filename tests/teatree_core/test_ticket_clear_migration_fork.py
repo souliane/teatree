@@ -103,12 +103,16 @@ def _clone_with_feature_migration(tmp_path: Path, bare: Path, *, name: str, pare
     return clone, feature_sha
 
 
-class _SafeOverlay:
-    """Non-impacting overlay double — keeps the orthogonal #1967 E2E gate inert."""
-
+class _SafeReview:
     def classify_customer_display_impact(self, changed_files: list[str]) -> bool:
         _ = changed_files
         return False
+
+
+class _SafeOverlay:
+    """Non-impacting overlay double — keeps the orthogonal #1967 E2E gate inert."""
+
+    review = _SafeReview()
 
 
 class TestTicketClearMigrationFork(TestCase):

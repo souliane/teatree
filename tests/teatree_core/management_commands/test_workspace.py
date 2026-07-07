@@ -1707,16 +1707,19 @@ class TestWorkspaceCleanAll(TestCase):
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
     def test_runs_overlay_cleanup_steps_on_a_reaped_worktree(self) -> None:
-        """clean-all invokes overlay.get_cleanup_steps() while wiping a done worktree."""
+        """clean-all invokes overlay.provisioning.cleanup_steps() while wiping a done worktree."""
         with tempfile.TemporaryDirectory() as tmp_s:
             tmp = Path(tmp_s)
             _make_squash_merged_worktree(tmp, ticket_number="86")
 
             cleanup_called: list[bool] = []
 
-            class CleanupOverlay(FullOverlay):
-                def get_cleanup_steps(self, worktree: Worktree) -> list[ProvisionStep]:
+            class _CleanupProvisioning(type(FullOverlay.provisioning)):
+                def cleanup_steps(self, worktree: Worktree) -> list[ProvisionStep]:
                     return [ProvisionStep(name="docker-down", callable=lambda: cleanup_called.append(True))]
+
+            class CleanupOverlay(FullOverlay):
+                provisioning = _CleanupProvisioning()
 
             result: dict[str, OverlayBase] = {"test": CleanupOverlay()}
 

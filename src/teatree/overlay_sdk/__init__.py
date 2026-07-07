@@ -23,7 +23,17 @@ snapshot. Removing or renaming an exported symbol is a breaking change that bump
 from teatree._overlay_api import __overlay_api_version__
 from teatree.config import clone_root, discover_overlays
 from teatree.core.gates.merge_guard import MergeGuard
-from teatree.core.overlay import DEFAULT_TRANSITION_EMOJIS, FailedE2EWatcher, OverlayBase, OverlayConfig
+from teatree.core.overlay import (
+    DEFAULT_TRANSITION_EMOJIS,
+    FailedE2EWatcher,
+    OverlayBase,
+    OverlayConfig,
+    OverlayConnectors,
+    OverlayE2E,
+    OverlayProvisioning,
+    OverlayReview,
+    OverlayRuntime,
+)
 from teatree.core.overlay_metadata import OverlayMetadata
 from teatree.core.provision.variant import Variant
 from teatree.core.worktree.health import HealthCheck
@@ -66,7 +76,12 @@ __all__ = [
     "MergeGuard",
     "OverlayBase",
     "OverlayConfig",
+    "OverlayConnectors",
+    "OverlayE2E",
     "OverlayMetadata",
+    "OverlayProvisioning",
+    "OverlayReview",
+    "OverlayRuntime",
     "Probe",
     "ProbeResult",
     "ProvisionStep",

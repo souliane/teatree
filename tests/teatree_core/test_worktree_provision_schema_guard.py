@@ -28,7 +28,7 @@ from django.test import TestCase, TransactionTestCase
 from teatree.config import get_effective_settings
 from teatree.core.gates.schema_guard import SelfDbMigrationError, pending_migrations
 from teatree.core.models import ConfigSetting, Ticket, Worktree
-from teatree.core.overlay import DbImportStrategy, OverlayBase, ProvisionStep
+from teatree.core.overlay import DbImportStrategy, OverlayBase, OverlayProvisioning, ProvisionStep
 from teatree.core.runners import WorktreeProvisionRunner
 
 
@@ -40,16 +40,8 @@ def _migrate_core_forward() -> None:
     call_command("migrate", "core", "--no-input", verbosity=0)
 
 
-class _DbImportOverlay(OverlayBase):
-    """Overlay whose DB-import strategy routes through ``run_timeboxed_db_import``."""
-
-    def get_repos(self) -> list[str]:
-        return ["backend"]
-
-    def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
-        return []
-
-    def get_db_import_strategy(self, worktree: Worktree) -> DbImportStrategy | None:
+class _DbImportOverlay_Provisioning(OverlayProvisioning):
+    def db_import_strategy(self, worktree: Worktree) -> DbImportStrategy | None:
         return {
             "kind": "fallback-chain",
             "source_database": "dev",
@@ -62,6 +54,19 @@ class _DbImportOverlay(OverlayBase):
 
     def db_import(self, worktree: Worktree, **kwargs: Any) -> bool:
         return True
+
+
+class _DbImportOverlay(OverlayBase):
+    provisioning = _DbImportOverlay_Provisioning()
+    """Overlay whose DB-import strategy routes through ``run_timeboxed_db_import``."""
+
+    def get_repos(self) -> list[str]:
+        return ["backend"]
+
+    def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
+        return []
+
+
 
 
 # ``setUp`` reverse-migrates ``core`` to a mid-graph target and the cleanup runs

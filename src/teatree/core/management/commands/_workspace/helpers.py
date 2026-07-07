@@ -38,7 +38,7 @@ def report_worktree_probes(
     total = 0
     total_failures = 0
     for wt in worktrees:
-        probes = overlay.get_readiness_probes(wt)
+        probes = overlay.runtime.readiness_probes(wt)
         if not probes:
             if note_empty:
                 write(f"  {wt.repo_path}: no probes")
@@ -107,7 +107,7 @@ def dslr_tenants_in_use() -> set[str]:
         for wt in Worktree.objects.filter(state=Worktree.State.CREATED).select_related("ticket")
         if wt.ticket is not None
     }
-    return {overlay.resolve_variant(v).canonical_tenant for v in variants if v}
+    return {overlay.provisioning.resolve_variant(v).canonical_tenant for v in variants if v}
 
 
 def prune_dslr_snapshots_skipping(*, keep: int, in_use_tenants: set[str]) -> list[str]:

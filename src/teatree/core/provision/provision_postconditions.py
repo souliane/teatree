@@ -90,7 +90,7 @@ def aggregate_provision_post_conditions(overlay: "OverlayBase", worktree: "Workt
         cache = env_cache_path(worktree)
         if cache is not None:
             probes.append(_env_cache_probe(cache))
-    if worktree.db_name and overlay.get_db_import_strategy(worktree) is not None:
+    if worktree.db_name and overlay.provisioning.db_import_strategy(worktree) is not None:
         probes.append(_app_db_probe(worktree.db_name))
     probes.extend(
         _step_post_condition_probe(step.name, condition)

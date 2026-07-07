@@ -5,7 +5,7 @@ registered on the test host (here only the bundled ``t3_teatree``); they enforce
 from teatree, the encapsulation invariants a downstream private overlay's PR 8
 fixed source-side:
 
-E5 — an overlay that overrides ``get_visual_qa_targets`` MUST also override
+E5 — an overlay that overrides ``review.visual_qa_targets`` MUST also override
 ``classify_customer_display_impact`` (a VQA target with no display-impact
 classifier is an incoherent half-declaration).
 
@@ -22,53 +22,68 @@ assertion is the anti-vacuity proof.
 
 from importlib.metadata import entry_points
 
-from teatree.core.overlay import OverlayBase
+from teatree.core.overlay import OverlayBase, OverlayReview
 from teatree.core.overlay_loader import get_all_overlays
 
 
-def _is_overridden(cls: type, hook_name: str) -> bool:
-    base_method = getattr(OverlayBase, hook_name, None)
-    cls_method = getattr(cls, hook_name, None)
-    if base_method is None or cls_method is None:
+def _review_is_overridden(review: object, hook_name: str) -> bool:
+    base_method = getattr(OverlayReview, hook_name, None)
+    inst_method = getattr(type(review), hook_name, None)
+    if base_method is None or inst_method is None:
         return False
-    return cls_method is not base_method
+    return inst_method is not base_method
 
 
-def _overrides_visual_qa_without_display_impact(cls: type) -> bool:
-    """The E5 violation predicate: VQA override without the display-impact override."""
-    return _is_overridden(cls, "get_visual_qa_targets") and not _is_overridden(
-        cls,
+def _overrides_visual_qa_without_display_impact(overlay: object) -> bool:
+    """The E5 violation predicate: VQA override without the display-impact override.
+
+    PR-27b: both hooks live on the composed ``review`` facet, so the check
+    inspects ``overlay.review`` against the ``OverlayReview`` defaults.
+    """
+    review = getattr(overlay, "review", None)
+    if review is None:
+        return False
+    return _review_is_overridden(review, "visual_qa_targets") and not _review_is_overridden(
+        review,
         "classify_customer_display_impact",
     )
 
 
-# --- E5: get_visual_qa_targets ⇒ classify_customer_display_impact -------------
+# --- E5: visual_qa_targets ⇒ classify_customer_display_impact -----------------
 
 
 def test_every_registered_overlay_pairs_visual_qa_with_display_impact() -> None:
     offenders = [
-        name
-        for name, overlay in get_all_overlays().items()
-        if _overrides_visual_qa_without_display_impact(type(overlay))
+        name for name, overlay in get_all_overlays().items() if _overrides_visual_qa_without_display_impact(overlay)
     ]
     assert not offenders, (
-        "overlay overrides get_visual_qa_targets but NOT classify_customer_display_impact "
+        "overlay overrides review.visual_qa_targets but NOT review.classify_customer_display_impact "
         f"(E5 — a VQA target needs a display-impact classifier): {offenders}"
     )
 
 
 def test_e5_predicate_bites_on_a_half_declared_overlay() -> None:
-    # Anti-vacuity: a throwaway overlay class that overrides only
-    # get_visual_qa_targets MUST be flagged; one that overrides both MUST NOT.
-    class _OnlyVisualQA(OverlayBase):
-        def get_visual_qa_targets(self, changed_files: list[str]) -> list[str]:
+    # Anti-vacuity: a throwaway overlay whose review facet overrides only
+    # visual_qa_targets MUST be flagged; one that overrides both MUST NOT.
+    class _OnlyVisualQAReview(OverlayReview):
+        def visual_qa_targets(self, changed_files: list[str]) -> list[str]:
             _ = changed_files
             return ["/"]
 
-    assert _overrides_visual_qa_without_display_impact(_OnlyVisualQA)
+    class _OnlyVisualQA(OverlayBase):
+        review = _OnlyVisualQAReview()
 
-    class _BothOverridden(OverlayBase):
-        def get_visual_qa_targets(self, changed_files: list[str]) -> list[str]:
+        def get_repos(self) -> list[str]:
+            return []
+
+        def get_provision_steps(self, worktree: object) -> list:
+            _ = worktree
+            return []
+
+    assert _overrides_visual_qa_without_display_impact(_OnlyVisualQA())
+
+    class _BothReview(OverlayReview):
+        def visual_qa_targets(self, changed_files: list[str]) -> list[str]:
             _ = changed_files
             return ["/"]
 
@@ -76,7 +91,10 @@ def test_e5_predicate_bites_on_a_half_declared_overlay() -> None:
             _ = changed_files
             return True
 
-    assert not _overrides_visual_qa_without_display_impact(_BothOverridden)
+    class _BothOverridden(_OnlyVisualQA):
+        review = _BothReview()
+
+    assert not _overrides_visual_qa_without_display_impact(_BothOverridden())
 
 
 # --- E7: entry-point overlays inherit ONLY from OverlayBase -------------------

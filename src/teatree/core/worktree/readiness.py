@@ -1,7 +1,7 @@
 """Runtime readiness probes — verify a started worktree is actually serving.
 
 A ``Probe`` wraps a ``check_fn`` that returns a ``ProbeResult``. Overlays
-return a list of probes from ``OverlayBase.get_readiness_probes()``; the
+return a list of probes from ``OverlayBase.runtime.readiness_probes()``; the
 ``worktree ready`` and ``workspace ready`` CLI commands run them and exit
 nonzero if any fails.
 

@@ -21,7 +21,7 @@ production probe is :func:`probe_mcp_servers`, and the unit test injects a stub
 so the check runs with no subprocess and no network.
 
 The overlay declares the EXPECTED provider per server name via
-``OverlayBase.get_mcp_provider_expectations()`` (default ``{}``). Teatree's own
+``OverlayBase.connectors.mcp_provider_expectations()`` (default ``{}``). Teatree's own
 default is empty; the real per-server values live in the overlay repo
 (souliane/teatree#251) — this module supplies only the validation logic and the
 extension point.
@@ -268,7 +268,7 @@ def overlay_provider_expectations() -> dict[str, str]:
     """The merged ``{server_name: expected_provider}`` map from every overlay.
 
     Each registered overlay declares its expectations via
-    ``OverlayBase.get_mcp_provider_expectations()``. Teatree's own default is
+    ``OverlayBase.connectors.mcp_provider_expectations()``. Teatree's own default is
     empty; the real values live in the overlay repo (souliane/teatree#251).
     """
     from teatree.core.backend_factory import iter_overlay_backends  # noqa: PLC0415
@@ -279,9 +279,9 @@ def overlay_provider_expectations() -> dict[str, str]:
         if overlay is None:
             continue
         try:
-            expectations = overlay.get_mcp_provider_expectations()
+            expectations = overlay.connectors.mcp_provider_expectations()
         except Exception:
-            logger.debug("overlay %s raised in get_mcp_provider_expectations", overlay, exc_info=True)
+            logger.debug("overlay %s raised in connectors.mcp_provider_expectations", overlay, exc_info=True)
             continue
         if isinstance(expectations, dict):
             merged.update(expectations)

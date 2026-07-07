@@ -69,7 +69,7 @@ class Command(TyperCommand):
             raise typer.BadParameter(msg)
 
         overlay = get_overlay()
-        produced = _declared_core_keys() | overlay.declared_env_keys()
+        produced = _declared_core_keys() | overlay.provisioning.declared_env_keys()
         allowed = {k.strip() for k in allow.split(",") if k.strip()}
 
         violations = check_contract(paths, produced=produced, allowed=allowed)

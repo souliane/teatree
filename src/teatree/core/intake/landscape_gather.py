@@ -189,7 +189,7 @@ def run_landscape(workspace: Path) -> LandscapeReport:
         report["warnings"].append("no code host configured; surveyed local git landscape only")
         return report
 
-    repo_slugs = get_overlay().get_merge_candidate_repo_slugs()
+    repo_slugs = get_overlay().review.merge_candidate_repo_slugs()
     open_issues, issue_warnings = _open_issues_in_scope(host, repo_slugs)
     try:
         author = host.current_user()

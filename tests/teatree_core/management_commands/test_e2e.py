@@ -34,6 +34,7 @@ from tests.teatree_core.management_commands._overlays import (
     MINIMAL_OVERLAY,
     PROVENANCE_OVERLAY,
     SETTINGS,
+    FullE2E,
     _patch_overlays,
 )
 
@@ -555,7 +556,7 @@ class TestE2eExternal(TestCase):
 
         A multi-config Playwright suite needs the right ``-c`` per lane; the
         overlay knows the lane->config mapping. The external runner must thread
-        ``get_e2e_playwright_args(spec)`` into the ``npx playwright test``
+        ``e2e.playwright_args(spec)`` into the ``npx playwright test``
         command — without it, an api-flow spec runs under the wrong default
         config (the UI-login one) and fails.
         """
@@ -670,7 +671,7 @@ class TestE2eExternal(TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             captured_env_caches: list[dict[str, str]] = []
 
-            def get_e2e_env_extras(self: object, env_cache: dict[str, str]) -> dict[str, str]:
+            def _e2e_env_extras(self: object, env_cache: dict[str, str]) -> dict[str, str]:
                 _ = self
                 captured_env_caches.append(dict(env_cache))
                 return {
@@ -729,7 +730,7 @@ class TestE2eExternal(TestCase):
                     clear=False,
                 ),
                 patch.object(e2e_disc_mod, "get_service_port", return_value=62674),
-                patch.object(import_string(FULL_OVERLAY), "get_e2e_env_extras", get_e2e_env_extras),
+                patch.object(FullE2E, "env_extras", _e2e_env_extras),
                 patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
             ):
                 os.environ.pop("BASE_URL", None)
@@ -758,7 +759,7 @@ class TestE2eExternal(TestCase):
             # COMPOSE_PROJECT_NAME points at the backend worktree's project,
             # not the e2e cache worktree's.
             assert env["COMPOSE_PROJECT_NAME"] == f"backend-repo-wt{backend_ticket.pk}"
-            # Defect 2: the env-cache that feeds get_e2e_env_extras must be
+            # Defect 2: the env-cache that feeds e2e.env_extras must be
             # the linked backend worktree's, so overlay-derived extras (e.g.
             # CUSTOMER=<variant>) reach the spec.
             assert env["CUSTOMER"] == "tenant-child"
@@ -1024,7 +1025,7 @@ class TestE2eExternal(TestCase):
 
 
 class TestE2eExternalPreflight(TestCase):
-    """``e2e external`` invokes ``overlay.get_e2e_preflight()`` before launching Playwright."""
+    """``e2e external`` invokes ``overlay.e2e.preflight()`` before launching Playwright."""
 
     @_patch_overlays(FULL_OVERLAY)
     @override_settings(**SETTINGS)
@@ -1050,7 +1051,7 @@ class TestE2eExternalPreflight(TestCase):
                     },
                     clear=False,
                 ),
-                patch.object(import_string(FULL_OVERLAY), "get_e2e_preflight", new=_record),
+                patch.object(FullE2E, "preflight", new=_record),
                 patch.object(e2e_mod, "_discover_frontend_port"),
                 patch.object(utils_run_mod, "Popen", _popen_for(mock_result)),
             ):
@@ -1084,7 +1085,7 @@ class TestE2eExternalPreflight(TestCase):
                     },
                     clear=False,
                 ),
-                patch.object(import_string(FULL_OVERLAY), "get_e2e_preflight", new=_failing),
+                patch.object(FullE2E, "preflight", new=_failing),
                 patch.object(utils_run_mod, "Popen", _popen_for(mock_result)) as mock_run,
                 patch.object(e2e_mod, "_discover_frontend_port"),
                 pytest.raises(SystemExit) as exc_info,
@@ -1703,7 +1704,7 @@ class TestE2EResolveTarget(TestCase):
             patch.object(e2e_runners_mod, "get_overlay") as get_overlay,
             patch.object(e2e_runners_mod, "_find_env_cache", return_value=None),
         ):
-            get_overlay.return_value.get_e2e_env_extras.return_value = {}
+            get_overlay.return_value.e2e.env_extras.return_value = {}
             env = e2e_mod._build_e2e_env("https://tenant-qa.example.com", headed=False, target="qa")
         assert env["T3_E2E_TARGET"] == "qa"
         assert env["BASE_URL"] == "https://tenant-qa.example.com"

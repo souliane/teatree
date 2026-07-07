@@ -105,8 +105,8 @@ class TestClassifyCustomerDisplayImpact:
         # Teatree is a developer harness — no change is customer-display-impacting,
         # so the mandatory-E2E gate (#1967) is inert for this overlay.
         overlay = TeatreeOverlay()
-        assert overlay.classify_customer_display_impact(["src/teatree/core/views/x.py"]) is False
-        assert overlay.classify_customer_display_impact(["anything.py"]) is False
+        assert overlay.review.classify_customer_display_impact(["src/teatree/core/views/x.py"]) is False
+        assert overlay.review.classify_customer_display_impact(["anything.py"]) is False
 
 
 class TestGetWorkspaceRepos:
@@ -441,7 +441,7 @@ class TestGetTestCommand(TestCase):
         ticket = Ticket.objects.create(overlay="t3-teatree")
         worktree = Worktree.objects.create(ticket=ticket, overlay="t3-teatree", repo_path="/tmp/teatree", branch="main")
         overlay = TeatreeOverlay()
-        assert overlay.get_test_command(worktree) == ["uv", "run", "pytest"]
+        assert overlay.runtime.test_command(worktree) == ["uv", "run", "pytest"]
 
 
 class TestGetLintCommand(TestCase):
@@ -449,7 +449,7 @@ class TestGetLintCommand(TestCase):
         ticket = Ticket.objects.create(overlay="t3-teatree")
         worktree = Worktree.objects.create(ticket=ticket, overlay="t3-teatree", repo_path="/tmp/teatree", branch="main")
         overlay = TeatreeOverlay()
-        assert overlay.get_lint_command(worktree) == ["prek", "run", "--all-files"]
+        assert overlay.runtime.lint_command(worktree) == ["prek", "run", "--all-files"]
 
 
 class TestReapWorktreeExternalResources(TestCase):
@@ -470,7 +470,7 @@ class TestReapWorktreeExternalResources(TestCase):
             "reap_compose_project",
             return_value=ReapResult(project=project, containers_removed=2, images_removed=1),
         ) as mock_reap:
-            outcomes = TeatreeOverlay().reap_worktree_external_resources(worktree)
+            outcomes = TeatreeOverlay().provisioning.reap_external_resources(worktree)
 
         mock_reap.assert_called_once_with(project)
         assert len(outcomes) == 1
@@ -485,7 +485,7 @@ class TestReapWorktreeExternalResources(TestCase):
             "reap_compose_project",
             return_value=ReapResult(project="teatree-wt1523"),
         ):
-            assert TeatreeOverlay().reap_worktree_external_resources(worktree) == []
+            assert TeatreeOverlay().provisioning.reap_external_resources(worktree) == []
 
 
 class TestRepoRoot:
@@ -540,7 +540,7 @@ class TestMaxConcurrentAutoStarts:
 
     def test_base_default_stays_one(self) -> None:
         """Guard: external/multi-repo overlays must keep the conservative default of 1."""
-        assert OverlayConfig.max_concurrent_auto_starts == 1
+        assert OverlayConfig.model_fields["max_concurrent_auto_starts"].default == 1
         assert OverlayConfig().max_concurrent_auto_starts == 1
 
 
@@ -557,11 +557,11 @@ class TestOverlayDefaults(TestCase):
         worktree = Worktree.objects.create(ticket=ticket, overlay="t3-teatree", repo_path="/tmp/teatree", branch="main")
         overlay = TeatreeOverlay()
 
-        assert overlay.get_env_extra(worktree) == {}
-        assert overlay.get_db_import_strategy(worktree) is None
-        assert overlay.get_post_db_steps(worktree) == []
-        assert overlay.get_symlinks(worktree) == []
-        assert overlay.get_services_config(worktree) == {}
+        assert overlay.provisioning.env_extra(worktree) == {}
+        assert overlay.provisioning.db_import_strategy(worktree) is None
+        assert overlay.provisioning.post_db_steps(worktree) == []
+        assert overlay.provisioning.symlinks(worktree) == []
+        assert overlay.provisioning.services_config(worktree) == {}
         # #1540/#1367: the default gate is inherited by the teatree overlay —
         # a conforming title, a conventional-commit description first line, and
         # a What/Why body passes with no errors.

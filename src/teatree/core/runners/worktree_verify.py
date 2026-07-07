@@ -21,7 +21,7 @@ class WorktreeVerifyRunner(RunnerBase):
         self.overlay = overlay or get_overlay_for_worktree(worktree)
 
     def run(self) -> RunnerResult:
-        checks = self.overlay.get_health_checks(self.worktree)
+        checks = self.overlay.provisioning.health_checks(self.worktree)
         failures: list[str] = []
         for check in checks:
             try:

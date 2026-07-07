@@ -26,10 +26,14 @@ pytestmark = pytest.mark.filterwarnings(
 _SHA = "7" * 40
 
 
-class _ImpactingOverlay:
+class _ImpactingReview:
     def classify_customer_display_impact(self, changed_files: list[str]) -> bool:
         _ = changed_files
         return True
+
+
+class _ImpactingOverlay:
+    review = _ImpactingReview()
 
 
 class TestPrCreateE2EMandatory(TestCase):

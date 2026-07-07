@@ -125,7 +125,7 @@ def _run_commands(worktree: Worktree) -> list[str] | None:
 
     try:
         overlay = get_overlay_for_worktree(worktree)
-        return list(overlay.get_run_commands(worktree))
+        return list(overlay.runtime.run_commands(worktree))
     except Exception:
         logger.exception("drain_stack_queue_item: could not resolve run commands for worktree %s", worktree.pk)
         return None

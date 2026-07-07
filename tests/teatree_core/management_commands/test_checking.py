@@ -24,7 +24,7 @@ import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.core.checkpoint import advance_checkpoint, load_checkpoint
 from teatree.core.models.merge_clear import ClearRequest, MergeAudit, MergeClear
 from teatree.core.models.ticket import Ticket
-from teatree.core.overlay import OverlayBase, OverlayMetadata
+from teatree.core.overlay import OverlayBase, OverlayMetadata, OverlayRuntime
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -54,7 +54,16 @@ class _MinimalMeta(OverlayMetadata):
         return []
 
 
+class _AcmeOverlay_Runtime(OverlayRuntime):
+    def run_commands(self, worktree):
+        return {}
+
+    def test_command(self, worktree):
+        return []
+
+
 class _AcmeOverlay(OverlayBase):
+    runtime = _AcmeOverlay_Runtime()
     metadata = _MinimalMeta()
 
     def get_repos(self) -> list[str]:
@@ -63,14 +72,19 @@ class _AcmeOverlay(OverlayBase):
     def get_provision_steps(self, worktree):
         return []
 
-    def get_run_commands(self, worktree):
+
+
+
+class _BetaOverlay_Runtime(OverlayRuntime):
+    def run_commands(self, worktree):
         return {}
 
-    def get_test_command(self, worktree):
+    def test_command(self, worktree):
         return []
 
 
 class _BetaOverlay(OverlayBase):
+    runtime = _BetaOverlay_Runtime()
     metadata = _MinimalMeta()
 
     def get_repos(self) -> list[str]:
@@ -79,11 +93,7 @@ class _BetaOverlay(OverlayBase):
     def get_provision_steps(self, worktree):
         return []
 
-    def get_run_commands(self, worktree):
-        return {}
 
-    def get_test_command(self, worktree):
-        return []
 
 
 def _two_overlay_patch() -> AbstractContextManager[Any]:

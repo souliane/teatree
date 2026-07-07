@@ -19,7 +19,7 @@ from django.core.management import call_command
 
 from teatree.core.availability import Resolution
 from teatree.core.models import Loop, LoopLease, Worktree
-from teatree.core.overlay import OverlayBase, ProvisionStep
+from teatree.core.overlay import OverlayBase, OverlayConnectors, ProvisionStep
 from teatree.loop.tick import TickReport
 
 
@@ -38,7 +38,17 @@ class _CleanOverlay(OverlayBase):
         return []
 
 
+class _SlackDownOverlay_Connectors(OverlayConnectors):
+    def preflight(self) -> list:
+        def _probe() -> None:
+            msg = "Slack auth.test failed: missing_scope"
+            raise RuntimeError(msg)
+
+        return [_probe]
+
+
 class _SlackDownOverlay(OverlayBase):
+    connectors = _SlackDownOverlay_Connectors()
     def get_repos(self) -> list[str]:
         return ["backend"]
 
@@ -46,12 +56,6 @@ class _SlackDownOverlay(OverlayBase):
         _ = worktree
         return []
 
-    def get_connector_preflight(self) -> list:
-        def _probe() -> None:
-            msg = "Slack auth.test failed: missing_scope"
-            raise RuntimeError(msg)
-
-        return [_probe]
 
 
 class TestBareTickRefused(django.test.TestCase):

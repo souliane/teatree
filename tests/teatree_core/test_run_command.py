@@ -188,8 +188,8 @@ class TestRunCommand(TestCase):
             mock_config = MagicMock()
             mock_config.user.workspace_dir = tmp_path
             mock_overlay = MagicMock()
-            mock_overlay.get_compose_file.return_value = "/fake/docker-compose.yml"
-            mock_overlay.get_env_extra.return_value = {"DJANGO_SETTINGS_MODULE": "project.settings"}
+            mock_overlay.provisioning.compose_file.return_value = "/fake/docker-compose.yml"
+            mock_overlay.provisioning.env_extra.return_value = {"DJANGO_SETTINGS_MODULE": "project.settings"}
 
             commands: list[tuple[object, dict[str, object]]] = []
 

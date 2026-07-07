@@ -1461,7 +1461,7 @@ class TestMergeKeystoneTearsDownWorktree(TestCase):
             patch("teatree.backends.forge_merge_rpc.gh_runner", return_value=_GhStub()),
             self.captureOnCommitCallbacks(execute=True),
         ):
-            cleanup_overlay.return_value.get_cleanup_steps.return_value = []
+            cleanup_overlay.return_value.provisioning.cleanup_steps.return_value = []
             cleanup_overlay.return_value.config.teardown_removes_pass_entries = False
             return merge_ticket_pr(clear=clear, executing_loop_identity="merge-loop")
 

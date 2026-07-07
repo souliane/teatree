@@ -29,7 +29,7 @@ pytestmark = pytest.mark.filterwarnings(
     "ignore:In Typer, only the parameter 'autocompletion' is supported.*:DeprecationWarning",
 )
 
-# FullOverlay.get_db_import_strategy → source_database == "test_db";
+# FullProvisioning.db_import_strategy → source_database == "test_db";
 # the db refresh fresh-dump op is scoped to op="fresh-dump", tenant="test_db".
 _OP = "fresh-dump"
 _TENANT = "test_db"

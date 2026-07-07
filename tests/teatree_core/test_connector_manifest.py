@@ -19,7 +19,7 @@ from teatree.core.connector_manifest import (
 )
 from teatree.core.mcp_connectivity import McpServerStatus
 from teatree.core.models import Worktree
-from teatree.core.overlay import OverlayBase, ProvisionStep
+from teatree.core.overlay import OverlayBase, OverlayConnectors, ProvisionStep
 
 
 def _boom() -> list[McpServerStatus]:
@@ -148,12 +148,15 @@ class TestOverlayHook:
                 _ = worktree
                 return []
 
-        class _DeclaringOverlay(_DefaultOverlay):
-            def get_connector_manifest(self) -> list[ConnectorRequirement]:
+        class _DeclaringConnectors(OverlayConnectors):
+            def manifest(self) -> list[ConnectorRequirement]:
                 return [ConnectorRequirement("claude.ai Slack")]
 
-        assert _DefaultOverlay().get_connector_manifest() == []  # default is empty
-        assert _DeclaringOverlay().get_connector_manifest() == [ConnectorRequirement("claude.ai Slack")]
+        class _DeclaringOverlay(_DefaultOverlay):
+            connectors = _DeclaringConnectors()
+
+        assert _DefaultOverlay().connectors.manifest() == []  # default is empty
+        assert _DeclaringOverlay().connectors.manifest() == [ConnectorRequirement("claude.ai Slack")]
 
 
 class TestOutcomeShape:

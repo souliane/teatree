@@ -204,7 +204,7 @@ class TestRunCommandsHelper(TestCase):
 
         wt = _worktree(ticket_number="859", state=Worktree.State.PROVISIONED)
         overlay = MagicMock()
-        overlay.get_run_commands.return_value = ["backend", "frontend"]
+        overlay.runtime.run_commands.return_value = ["backend", "frontend"]
         with patch("teatree.core.overlay_loader.get_overlay_for_worktree", return_value=overlay):
             assert _run_commands(wt) == ["backend", "frontend"]
 

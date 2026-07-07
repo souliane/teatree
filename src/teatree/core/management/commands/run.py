@@ -36,7 +36,7 @@ class Command(TyperCommand):
         results: dict[str, dict[str, object]] = {}
 
         overlay = get_overlay()
-        health_paths = dict(overlay.get_verify_endpoints(worktree))
+        health_paths = dict(overlay.runtime.verify_endpoints(worktree))
         # Merge T3_HEALTH_ENDPOINTS env var (format: "service:path,service:path")
         for entry in os.environ.get("T3_HEALTH_ENDPOINTS", "").split(","):
             if ":" in entry:
@@ -79,7 +79,7 @@ class Command(TyperCommand):
         path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty)."),
     ) -> RunCommands:
         worktree = resolve_worktree(path)
-        return get_overlay().get_run_commands(worktree)
+        return get_overlay().runtime.run_commands(worktree)
 
     @command()
     def backend(self, path: str = typer.Option("", help="Worktree path (auto-detects from PWD if empty).")) -> str:
@@ -87,11 +87,11 @@ class Command(TyperCommand):
         worktree = resolve_worktree(path)
         project = compose_project(worktree)
         overlay = get_overlay()
-        compose_file = overlay.get_compose_file(worktree)
+        compose_file = overlay.provisioning.compose_file(worktree)
         if not compose_file:
             return "No docker-compose file found."
 
-        env = {**os.environ, **overlay.get_env_extra(worktree)}
+        env = {**os.environ, **overlay.provisioning.env_extra(worktree)}
         env.pop("VIRTUAL_ENV", None)
 
         cmd = ["docker", "compose", "-p", project, "-f", compose_file, "up", "-d", "web"]
@@ -117,7 +117,7 @@ class Command(TyperCommand):
         Extra arguments after ``--`` are appended to the test command
         (e.g. ``t3 <overlay> run tests -- path/to/test.py -k name``).
 
-        The overlay's ``get_pre_run_steps(worktree, "tests")`` run first —
+        The overlay's ``runtime.pre_run_steps(worktree, "tests")`` run first —
         the same prerequisite seam every service launch uses — so an overlay
         can keep its test environment fast and correct (e.g. clone/refresh a
         reusable test DB) without every caller re-deciding the prerequisites.
@@ -127,7 +127,7 @@ class Command(TyperCommand):
         ServiceLauncher(worktree, "tests", overlay=overlay).prepare()
         return self._dispatch_task(
             worktree,
-            overlay.get_test_command(worktree),
+            overlay.runtime.test_command(worktree),
             extra_args=ctx.args,
             label="Tests",
             missing_message="No test command configured in the overlay.",
@@ -148,7 +148,7 @@ class Command(TyperCommand):
         overlay = get_overlay()
         return self._dispatch_task(
             worktree,
-            overlay.get_lint_command(worktree),
+            overlay.runtime.lint_command(worktree),
             extra_args=ctx.args,
             label="Lint",
             missing_message="No lint command configured in the overlay.",
@@ -183,7 +183,7 @@ class Command(TyperCommand):
             cwd = None
 
         args.extend(extra_args)
-        env = {**os.environ, **get_overlay().get_env_extra(worktree)}
+        env = {**os.environ, **get_overlay().provisioning.env_extra(worktree)}
         env.pop("VIRTUAL_ENV", None)
 
         rc = run_streamed(args, cwd=cwd, env=env, check=False)

@@ -188,7 +188,7 @@ class ScannerError(RuntimeError):
 class RunCommand:
     """Structured run command with explicit working directory.
 
-    Used by ``OverlayBase.get_run_commands()`` to describe how each service
+    Used by ``OverlayBase.runtime.run_commands()`` to describe how each service
     is launched. Every service comes up via ``docker compose up`` — the
     overlay supplies argv + cwd metadata that other CLI verbs reuse
     (``t3 <overlay> run tests``, ``run backend``, ``run build-frontend``).

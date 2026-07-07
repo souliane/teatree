@@ -104,7 +104,7 @@ def _runs_backend_stack(worktree: Worktree) -> bool:
     from teatree.core.overlay_loader import get_overlay  # noqa: PLC0415
 
     try:
-        return bool(get_overlay().get_compose_file(worktree))
+        return bool(get_overlay().provisioning.compose_file(worktree))
     except Exception:  # noqa: BLE001 — a misbehaving overlay hook must not break routing
         return False
 
@@ -112,7 +112,7 @@ def _runs_backend_stack(worktree: Worktree) -> bool:
 def resolve_linked_worktree(linked_ticket: Ticket) -> Worktree | None:
     """Pick the worktree that owns the backend stack for ``linked_ticket``.
 
-    The env cache that feeds ``get_e2e_env_extras`` and the
+    The env cache that feeds ``e2e.env_extras`` and the
     ``COMPOSE_PROJECT_NAME`` exported for ``docker compose`` calls both live
     on this worktree. A multi-repo ticket has several siblings, and the first
     by pk is often the *frontend* worktree — exporting its compose project as
