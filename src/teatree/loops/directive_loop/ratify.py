@@ -16,14 +16,15 @@ mechanism changes, never a lossy summary. The trusted CLI path is byte-identical
 """
 
 from teatree.core.models import DeferredQuestion, Directive
-from teatree.core.models.approval_policy import approval_policy
+from teatree.core.models.approval_dial import auto_answer_by_policy, policy_dial
+from teatree.core.models.approval_policy import DIRECTIVE_ADMIT, Decision, approval_policy
 from teatree.core.models.mechanism_sketch import MechanismSketch
 
 _APPROVE_TOKENS = frozenset({"approve", "approved", "yes", "y", "1", "ratify", "admit", "ok"})
 
-#: The action class the admit-gate floors on. Owner taint reaches the (#116 empty) dial;
-#: any untrusted taint short-circuits to ASK regardless of a future permissive dial.
-_ADMIT_ACTION_CLASS = "directive_admit"
+#: The action class the admit-gate floors on. Owner taint reaches the #119 dial; any
+#: untrusted taint short-circuits to ASK BEFORE the dial (the taint floor).
+_ADMIT_ACTION_CLASS = DIRECTIVE_ADMIT
 
 #: How much of the inert attacker payload to quote in the ratify question — enough for
 #: the human to judge intent, bounded so a huge body cannot bloat the DM.
@@ -66,6 +67,13 @@ def ask_ratification(directive: Directive) -> DeferredQuestion:
         options_hash=f"directive_ratify:{directive.pk}:{directive.generation}",
     )
     directive.attach_ratification(question)
+    # #119 graduation: an owner-taint directive whose ``directive_admit`` class the
+    # operator graduated auto-answers the ratify question by policy (audited), so
+    # ``try_admit`` admits it next tick WITHOUT bypassing ``admit``'s consumed-question
+    # guard. Ships inert — the dial ASKs for every class by default. An untrusted taint
+    # is floored to ASK above the dial, so an ambient directive is never auto-answered.
+    if approval_policy(_ADMIT_ACTION_CLASS, directive.taint, dial=policy_dial) is Decision.AUTO_APPROVE:
+        auto_answer_by_policy(question, "approve")
     return question
 
 
@@ -79,7 +87,7 @@ def _payload_visible_question(directive: Directive, sketch: MechanismSketch, con
     ASK by the hard floor (in #116 an owner taint is ASK too, via the empty dial), so
     the human is always in the loop for ambient intake.
     """
-    decision = approval_policy(_ADMIT_ACTION_CLASS, directive.taint)
+    decision = approval_policy(_ADMIT_ACTION_CLASS, directive.taint, dial=policy_dial)
     event = directive.source_event
     source_ref = event.channel_ref if event is not None else ""
     source_name = event.source if event is not None else ""

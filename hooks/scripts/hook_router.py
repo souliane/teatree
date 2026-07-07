@@ -1891,6 +1891,24 @@ def _ai_sig_scan_argv() -> list[str] | None:
 _AI_SIG_FINDING_RE = re.compile(r"^AI-signature scan:\s+\d+\s+banned trailer", re.MULTILINE)
 
 
+#: Bootstrap-crash markers in the scanner subprocess's stderr — a `t3` binary whose
+#: CLI import chain loads Django models before setup (no DJANGO_SETTINGS_MODULE in the
+#: hook env) crashes with one of these BEFORE the scanner runs, so the gate cannot
+#: confirm the body and must fail OPEN (the documented broken-environment posture),
+#: never fail closed on an unrelated import bug.
+_AI_SIG_BOOTSTRAP_CRASH_MARKERS = (
+    "AppRegistryNotReady",
+    "ImproperlyConfigured",
+    "ModuleNotFoundError",
+    "Apps aren't loaded yet",
+)
+
+
+def _ai_sig_scanner_could_not_run(stderr: str) -> bool:
+    """True iff *stderr* shows the scanner subprocess crashed at import/bootstrap."""
+    return any(marker in stderr for marker in _AI_SIG_BOOTSTRAP_CRASH_MARKERS)
+
+
 def _ai_sig_finding(stdout: str) -> str | None:
     """Return the finding summary iff *stdout* is a real banned-trailer finding.
 
@@ -1983,6 +2001,17 @@ def _run_block_ai_signature(data: dict) -> bool:
             "Remove it before creating the PR/commit (BLUEPRINT §17.6 gate 15).\n" + finding
         )
     if result.returncode != 0:
+        if _ai_sig_scanner_could_not_run(result.stderr or ""):
+            # The scanner subprocess never RAN — its bootstrap crashed (a Django
+            # AppRegistryNotReady / ImproperlyConfigured / ModuleNotFoundError
+            # import traceback, e.g. a `t3` binary whose CLI eagerly loads Django
+            # before setup in a hook env with no DJANGO_SETTINGS_MODULE). This is
+            # the "broken environment" case the docstring promises to FAIL OPEN on
+            # (no t3 / import error / timeout) — a gate that cannot run AT ALL must
+            # not lock out every commit. It is distinct from outcome (c) below: a
+            # scanner that RAN and errored (usage error, malformed input) with no
+            # bootstrap crash still fails closed.
+            return False
         # Scanner ran but exited nonzero WITHOUT a well-formed finding summary —
         # a crash/error (traceback, usage error), not a finding. This is a
         # SECURITY gate (it prevents publishing AI signatures under the user's

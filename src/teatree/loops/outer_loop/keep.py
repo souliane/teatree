@@ -20,17 +20,20 @@ human.
 """
 
 from teatree.core.models import DeferredQuestion, OuterLoopExperiment
-from teatree.core.models.approval_policy import Decision, Dial, approval_policy
+from teatree.core.models.approval_dial import auto_answer_by_policy, policy_dial
+from teatree.core.models.approval_policy import OUTER_LOOP_KEEP, Decision, Dial, approval_policy
 from teatree.core.models.provenance import Provenance
 
-KEEP_ACTION_CLASS = "outer_loop_keep"
+KEEP_ACTION_CLASS = OUTER_LOOP_KEEP
 
 
 def ask_keep(experiment: OuterLoopExperiment, *, dial: Dial | None = None) -> DeferredQuestion:
     """Record the keep question and bind it (the experiment must be ``KEEP_PENDING``).
 
-    Auto-answers the recorded question only when the ``approval_policy`` dial returns
-    ``AUTO_APPROVE`` for an owner-taint ``outer_loop_keep`` — the #119 relaxation seam.
+    Consults the #119 per-action-class :func:`policy_dial` (unless a *dial* is injected
+    for a test) for an owner-taint ``outer_loop_keep``. When it returns ``AUTO_APPROVE``
+    the recorded question is auto-answered by policy (``resolved_via='policy'`` + audit) —
+    a graduation that still leaves ``record_kept``'s consumed-question guard intact.
     """
     question = DeferredQuestion.record(
         f"Outer-loop experiment #{experiment.pk} improved {experiment.target_provider_id}: "
@@ -38,8 +41,8 @@ def ask_keep(experiment: OuterLoopExperiment, *, dial: Dial | None = None) -> De
         options_hash=f"outer_loop_keep:{experiment.pk}",
     )
     experiment.attach_keep_question(question)
-    if approval_policy(KEEP_ACTION_CLASS, Provenance.OWNER, dial=dial) is Decision.AUTO_APPROVE:
-        DeferredQuestion.consume(question.pk, answer="kept")
+    if approval_policy(KEEP_ACTION_CLASS, Provenance.OWNER, dial=dial or policy_dial) is Decision.AUTO_APPROVE:
+        auto_answer_by_policy(question, "kept")
         experiment.keep_question = DeferredQuestion.objects.get(pk=question.pk)
     return question
 
