@@ -25,7 +25,7 @@ Non-zero exits use ``raise SystemExit(N)`` — this runs under Django's
 
 import json
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 from django_typer.management import TyperCommand, command
@@ -107,6 +107,45 @@ class Command(TyperCommand):
         # Verify-by-re-read: report the stored value the resolver will now see.
         stored = ConfigSetting.objects.get_effective(key, scope=overlay)
         self.stdout.write(f"  set {key} = {stored!r}  [{_scope_label(overlay)}]{_flag_suffix(key)}")
+
+    @command(name="set-overlay")
+    def set_overlay(
+        self,
+        name: Annotated[str, typer.Argument(help="Overlay name whose registry definition to update, e.g. my-overlay.")],
+        key: Annotated[str, typer.Argument(help="Definition field to set, e.g. path or class.")],
+        value: Annotated[str, typer.Argument(help="JSON value, e.g. '\"~/workspace/canonical\"'.")],
+    ) -> None:
+        """Surgically set ONE field of ONE overlay in the DB-home ``overlays`` registry.
+
+        A read-modify-write on the single JSON ``overlays`` ``ConfigSetting`` row (always
+        the GLOBAL scope — the one ``loader._inject_db_registries`` reads): it updates
+        ``overlays[<name>][<key>]`` and leaves every OTHER overlay and every OTHER field
+        of ``<name>`` untouched. This is the NO-CLOBBER way to fix a stale overlay clone
+        ``path`` — never hand-write the whole registry dict with ``set overlays '<json>'``.
+        The DB registry row is authoritative over the ``[overlays.<name>]`` TOML table
+        (#1775), so this is the sanctioned way to change a value that editing the file can
+        no longer affect (souliane/teatree#128). ``value`` is parsed as JSON, so a path is
+        a QUOTED string, e.g. ``'"~/workspace/canonical"'``.
+        """
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError as exc:
+            self.stderr.write(f"  invalid JSON value for overlays.{name}.{key}: {exc}")
+            raise SystemExit(2) from exc
+        current = ConfigSetting.objects.get_effective("overlays")
+        registry: dict[str, Any] = dict(current) if isinstance(current, dict) else {}
+        entry = registry.get(name)
+        updated_entry: dict[str, Any] = dict(entry) if isinstance(entry, dict) else {}
+        updated_entry[key] = parsed
+        registry[name] = updated_entry
+        # Validate through the SAME registry parser the resolver applies on read (mirrors
+        # ``set`` above), so a malformed registry dict can never be stored.
+        canonical = REGISTRY_SETTINGS["overlays"](registry)
+        ConfigSetting.objects.set_value("overlays", canonical)
+        # Verify-by-re-read: report the value the resolver will now see for this leaf.
+        stored = ConfigSetting.objects.get_effective("overlays")
+        effective = stored[name][key] if isinstance(stored, dict) and isinstance(stored.get(name), dict) else parsed
+        self.stdout.write(f"  set overlays.{name}.{key} = {effective!r}  [{_scope_label('')}]")
 
     @command()
     def clear(

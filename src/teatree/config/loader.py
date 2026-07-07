@@ -26,7 +26,7 @@ import os
 import tomllib
 from contextlib import suppress
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import teatree.config as _facade
 from teatree.config.settings import E2ERepo, TeaTreeConfig, UserSettings
@@ -302,6 +302,81 @@ def _warn_db_home_keys_in_toml(raw: dict, path: Path) -> None:
 # table is the migration fallback.
 
 
+def _registry_conflicts(toml_table: dict[str, Any], db_registry: dict[str, Any], key: str) -> list[str]:
+    """The ``[<key>.<entry>] <field>`` leaves where the TOML value is silently ignored.
+
+    ``_inject_db_registries`` REPLACES ``raw[key]`` wholesale with the DB registry row,
+    so any TOML entry/field that DIFFERS from — or is ABSENT in — that row is silently
+    dropped on read (the file value never reaches a reader). This enumerates each such
+    leaf so the operator sees exactly which edit had no effect. A whole TOML entry the
+    DB row does not define reports as ``[<key>.<entry>]`` (the entry is dropped); a field
+    present in the TOML entry but absent from the DB entry, or set to a DIFFERENT value,
+    reports as ``[<key>.<entry>] <field>`` (the reported ``path`` case).
+
+    A TOML entry/field that AGREES with the DB row is silent — it resolves to the same
+    effective value, so warning about it would be the noise this stays clear of.
+    """
+    conflicts: list[str] = []
+    for entry_name, toml_entry in toml_table.items():
+        if not isinstance(toml_entry, dict):
+            continue
+        db_entry = db_registry.get(entry_name)
+        if not isinstance(db_entry, dict):
+            conflicts.append(f"[{key}.{entry_name}]")
+            continue
+        conflicts.extend(
+            f"[{key}.{entry_name}] {field}"
+            for field, toml_val in toml_entry.items()
+            if field not in db_entry or db_entry[field] != toml_val
+        )
+    return conflicts
+
+
+def _warn_registry_conflicts_in_toml(raw: dict, path: Path) -> None:
+    """Emit ONE aggregated WARN when a TOML registry value is silently ignored (#1775).
+
+    The ``overlays`` / ``e2e_repos`` registries are DB-home: ``_inject_db_registries``
+    REPLACES the whole TOML ``[overlays]`` / ``[e2e_repos]`` table with its
+    ``ConfigSetting`` row when one exists, so editing an overlay ``path`` in the file
+    has NO effect — and, unlike a DB-home ``UserSettings`` key
+    (:func:`_warn_db_home_keys_in_toml`), it produced ZERO signal, silently returning
+    the stale DB value (souliane/teatree#128). This is the registry twin of that
+    warning: on a genuine divergence between the file table and the authoritative DB
+    row it names each silently-ignored leaf and the surgical reconcile command, so a
+    stale overlay path can never be returned without surfacing it.
+
+    Must run BEFORE :func:`_inject_db_registries` (while ``raw[key]`` still holds the
+    TOML table); the DB row is read independently via the Django-free ``cold_reader``
+    (the same store the injection reads), so a not-yet-migrated install with no DB row
+    is silent — the file table is then the authoritative fallback, not a conflict.
+    """
+    from teatree.config import cold_reader  # noqa: PLC0415 — Django-free DB read on the pre-Django discovery path
+    from teatree.config.registries import REGISTRY_KEYS  # noqa: PLC0415 — deferred to avoid the config import cycle
+
+    offenders: list[str] = []
+    for key in REGISTRY_KEYS:
+        toml_table = raw.get(key)
+        if not isinstance(toml_table, dict) or not toml_table:
+            continue
+        db_registry = cold_reader.read_setting(key)
+        if not isinstance(db_registry, dict):
+            continue  # no DB row → the TOML table IS the authoritative fallback, no conflict
+        offenders.extend(_registry_conflicts(toml_table, cast("dict[str, Any]", db_registry), key))
+
+    if offenders:
+        _logger.warning(
+            "Registry values in %s are DB-home (#1775) and IGNORED on read — the "
+            "ConfigSetting `overlays`/`e2e_repos` row replaces the whole file table, so these "
+            "edits have NO effect: %s. The DB row is authoritative; reconcile a single field "
+            "surgically (no clobber) with "
+            "`t3 <overlay> config_setting set-overlay <name> <field> '<json-value>'` "
+            "(e.g. point an overlay at its canonical clone path), or re-seed every registry "
+            "field from this file with `t3 <overlay> config_setting import`.",
+            path,
+            ", ".join(offenders),
+        )
+
+
 def _inject_db_registries(raw: dict) -> None:
     """Override ``raw['overlays']`` / ``raw['e2e_repos']`` with their DB rows when present.
 
@@ -336,6 +411,10 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         _warn_db_home_keys_in_toml(raw, path)
         _warn_retired_keys_in_toml(raw, path)
         _warn_migrated_keys_in_toml(raw, path)
+        # BEFORE the injection below overwrites the TOML registry tables — while
+        # ``raw['overlays']`` / ``raw['e2e_repos']`` still hold the FILE values — so a
+        # divergence with the authoritative DB row is surfaced, never silently dropped.
+        _warn_registry_conflicts_in_toml(raw, path)
     _inject_db_registries(raw)
     return TeaTreeConfig(user=UserSettings(), raw=raw)
 

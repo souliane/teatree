@@ -61,6 +61,10 @@
           "name": "export"
         },
         {
+          "help": "Surgically set ONE field of ONE overlay in the DB-home ``overlays`` registry",
+          "name": "set-overlay"
+        },
+        {
           "help": "List every DB config override row, naming each row's scope (read-only)",
           "name": "list"
         },

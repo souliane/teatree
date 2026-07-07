@@ -140,6 +140,55 @@ class TestConfigSettingSet(TestCase):
         assert get_effective_settings().mode is Mode.AUTO
 
 
+class TestConfigSettingSetOverlay(TestCase):
+    """``set-overlay`` — surgical no-clobber update of one overlay's registry field (#128).
+
+    The sanctioned way to fix a stale overlay clone ``path`` in the DB-home ``overlays``
+    registry without hand-rewriting (clobbering) the whole JSON dict: a read-modify-write
+    that touches exactly ``overlays[<name>][<field>]``.
+    """
+
+    def test_set_overlay_path_updates_only_that_field(self) -> None:
+        # The reported bug's remedy (souliane/teatree#128): repoint one overlay's path
+        # and leave every sibling field AND every other overlay untouched.
+        ConfigSetting.objects.set_value(
+            "overlays",
+            {
+                "my-overlay": {"path": "~/workspace/stale-worktree", "workspace_repos": ["a/b"]},
+                "other": {"path": "~/other"},
+            },
+        )
+        call_command("config_setting", "set-overlay", "my-overlay", "path", '"~/workspace/canonical"')
+        registry = ConfigSetting.objects.get_effective("overlays")
+        assert registry["my-overlay"]["path"] == "~/workspace/canonical"
+        # No clobber: the same overlay's other fields and every other overlay survive.
+        assert registry["my-overlay"]["workspace_repos"] == ["a/b"]
+        assert registry["other"] == {"path": "~/other"}
+
+    def test_set_overlay_creates_registry_row_when_absent(self) -> None:
+        assert ConfigSetting.objects.filter(key="overlays").exists() is False
+        call_command("config_setting", "set-overlay", "newov", "path", '"~/p"')
+        assert ConfigSetting.objects.get_effective("overlays") == {"newov": {"path": "~/p"}}
+
+    def test_set_overlay_adds_field_to_existing_overlay(self) -> None:
+        ConfigSetting.objects.set_value("overlays", {"ov": {"path": "~/p"}})
+        call_command("config_setting", "set-overlay", "ov", "class", '"pkg.settings"')
+        assert ConfigSetting.objects.get_effective("overlays")["ov"] == {"path": "~/p", "class": "pkg.settings"}
+
+    def test_set_overlay_rejects_invalid_json_and_leaves_store_untouched(self) -> None:
+        ConfigSetting.objects.set_value("overlays", {"ov": {"path": "~/p"}})
+        with pytest.raises(SystemExit):
+            call_command("config_setting", "set-overlay", "ov", "path", "not-json", stderr=StringIO())
+        assert ConfigSetting.objects.get_effective("overlays") == {"ov": {"path": "~/p"}}
+
+    def test_set_overlay_reports_the_new_value(self) -> None:
+        out = StringIO()
+        call_command("config_setting", "set-overlay", "ov", "path", '"~/canonical"', stdout=out)
+        rendered = out.getvalue()
+        assert "overlays.ov.path" in rendered
+        assert "~/canonical" in rendered
+
+
 class TestConfigSettingClear(TestCase):
     def test_clear_removes_row(self) -> None:
         ConfigSetting.objects.set_value("issue_implementer_enabled", value=True)

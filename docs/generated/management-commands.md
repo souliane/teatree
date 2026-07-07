@@ -32,6 +32,7 @@ Edit the source command, not this file.
 | `flags` | The read-only dead-toggle audit report over the ``FEATURE_FLAGS`` registry |
 | `get` | Print the resolved value for *key* and name its source (DB vs file/env) |
 | `export` | Dump the ``ConfigSetting`` store to TOML — the inverse of ``import`` |
+| `set-overlay` | Surgically set ONE field of ONE overlay in the DB-home ``overlays`` registry |
 | `list` | List every DB config override row, naming each row's scope (read-only) |
 | `import` | Seed the DB store from the operational toml keys (one-time migration) |
 

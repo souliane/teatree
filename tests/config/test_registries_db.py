@@ -118,3 +118,86 @@ def test_load_config_no_toml_no_db_is_empty(tmp_path: Path, monkeypatch: pytest.
 
     assert "overlays" not in config.raw
     assert "e2e_repos" not in config.raw
+
+
+def _load_and_collect_ignored(config_path: Path, caplog: pytest.LogCaptureFixture) -> tuple[object, list[str]]:
+    """Run ``load_config`` and return the config plus every 'ignored on read' WARN line."""
+    with caplog.at_level("WARNING", logger="teatree.config"):
+        config = load_config(config_path)
+    warnings = [r.getMessage() for r in caplog.records if "ignored on read" in r.getMessage().lower()]
+    return config, warnings
+
+
+def test_toml_overlay_path_conflicting_with_db_registry_warns_loud(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # souliane/teatree#128 (the reported bug, anti-vacuous repro): the DB-home
+    # ``overlays`` registry row silently REPLACES the whole ``[overlays]`` TOML table, so
+    # a ``path`` edit in the file has NO effect. Before the fix this returned the stale DB
+    # path with ZERO signal — the exact silent-stale-return that blocked provisioning.
+    # After the fix the divergence is surfaced LOUD, naming the ignored field and the
+    # surgical reconcile command; the DB stays authoritative but is never returned silently.
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(config_path, '[overlays.myoverlay]\npath = "~/workspace/canonical"\n')
+    db = tmp_path / "db.sqlite3"
+    _seed_registry_db(db, overlays={"myoverlay": {"path": "~/workspace/stale-worktree"}})
+    monkeypatch.setenv("T3_CONFIG_DB", str(db))
+
+    config, warnings = _load_and_collect_ignored(config_path, caplog)
+
+    # The DB row is still authoritative — but no longer SILENTLY: the divergence is loud.
+    assert config.raw["overlays"]["myoverlay"]["path"] == "~/workspace/stale-worktree"
+    assert len(warnings) == 1
+    assert "myoverlay" in warnings[0]
+    assert "path" in warnings[0]
+    assert "config_setting set-overlay" in warnings[0]
+
+
+def test_toml_overlay_agreeing_with_db_registry_is_silent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # No divergence: the file value equals the effective DB value, so it resolves to the
+    # same thing — warning would be pure noise. Stays silent.
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(config_path, '[overlays.myoverlay]\npath = "~/workspace/same"\n')
+    db = tmp_path / "db.sqlite3"
+    _seed_registry_db(db, overlays={"myoverlay": {"path": "~/workspace/same"}})
+    monkeypatch.setenv("T3_CONFIG_DB", str(db))
+
+    _config, warnings = _load_and_collect_ignored(config_path, caplog)
+
+    assert warnings == []
+
+
+def test_toml_overlay_without_db_registry_row_is_silent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # The pre-migration fallback: with NO DB registry row the TOML table IS the
+    # authoritative source (``_inject_db_registries`` leaves it in place), so there is no
+    # conflict and nothing to warn about.
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(config_path, '[overlays.myoverlay]\npath = "~/workspace/from-file"\n')
+    monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "absent.sqlite3"))
+
+    config, warnings = _load_and_collect_ignored(config_path, caplog)
+
+    assert config.raw["overlays"]["myoverlay"]["path"] == "~/workspace/from-file"
+    assert warnings == []
+
+
+def test_toml_overlay_entry_absent_from_db_registry_warns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # A whole ``[overlays.<name>]`` table the DB row does not define is dropped on read
+    # (the DB row replaces the file table wholesale) — surfaced so a would-be-registered
+    # overlay is never silently invisible.
+    config_path = tmp_path / ".teatree.toml"
+    _write_toml(config_path, '[overlays.only-in-file]\npath = "~/p"\n')
+    db = tmp_path / "db.sqlite3"
+    _seed_registry_db(db, overlays={"other": {"path": "~/other"}})
+    monkeypatch.setenv("T3_CONFIG_DB", str(db))
+
+    _config, warnings = _load_and_collect_ignored(config_path, caplog)
+
+    assert len(warnings) == 1
+    assert "only-in-file" in warnings[0]
