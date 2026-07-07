@@ -4715,6 +4715,8 @@ Usage: t3 outer [OPTIONS] COMMAND [ARGS]...
 │                 (refused while off).                                         │
 │ resolve-revert  Close a REVERT_PENDING experiment to terminal REVERTED,      │
 │                 freeing the slot.                                            │
+│ resolve-keep    Close a KEEP_PENDING experiment to terminal KEPT, freeing    │
+│                 the slot.                                                    │
 │ history         Print the recent experiment ledger (read-only).              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -4770,6 +4772,21 @@ Usage: t3 outer resolve-revert [OPTIONS] EXPERIMENT_ID
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --revert-sha        TEXT  The git revert commit sha (provenance).            │
 │ --help                    Show this message and exit.                        │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 outer resolve-keep`
+
+```
+Usage: t3 outer resolve-keep [OPTIONS] EXPERIMENT_ID
+
+ Close a KEEP_PENDING experiment to terminal KEPT, freeing the slot.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    experiment_id      INTEGER  [required]                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4956,6 +4973,8 @@ Usage: t3 teatree [OPTIONS] COMMAND [ARGS]...
 │ availability    24/7 dual question-mode (#58, BLUEPRINT §17.1 invariant 9).  │
 │ config_setting  DB-home settings store — the sole tier for a DB-home setting │
 │                 below env (#1775).                                           │
+│ approval_dial   Per-action-class approval dial — graduate a class from ask   │
+│                 to auto (#119).                                              │
 │ questions       Manage the away-mode deferred-question backlog (#58).        │
 │ pending_chat    Manage the inbound Slack-DM queue (#1063).                   │
 │ notify          Slack egress from the shell (#1030, #1750).                  │
@@ -9088,10 +9107,95 @@ Usage: t3 teatree config_setting import [OPTIONS]
  value the user changed via ``config_setting set`` survives. Without it
  (the default), a re-import refreshes every operational key from the file.
 
+ Reads the RAW file (``load_raw_toml``), NOT ``load_config().raw`` — the latter
+ has already had its ``overlays`` / ``e2e_repos`` registry tables REPLACED by
+ the
+ DB rows (``_inject_db_registries``), so importing it would re-write the stale
+ DB
+ value and silently never migrate an edited ``.path`` — the exact
+ mask this remediation exists to clear (souliane/teatree#128).
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --no-clobber          Seed only keys absent from the store; never overwrite  │
 │                       an existing DB row.                                    │
 │ --help                Show this message and exit.                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 teatree approval_dial`
+
+```
+Usage: t3 teatree approval_dial [OPTIONS] COMMAND [ARGS]...
+
+ Per-action-class approval dial — graduate a class from ask to auto (#119).
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --help          Show this message and exit.                                  │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Commands ───────────────────────────────────────────────────────────────────╮
+│ set    Set an action class's trust (ask|auto) in the dial table.             │
+│ clear  Remove an action class from the dial table (falls back to ask).       │
+│ show   Render each class's trust, never-fades floor, breach, and verdict.    │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree approval_dial set`
+
+```
+Usage: t3 teatree approval_dial set [OPTIONS] ACTION_CLASS TRUST
+
+ Set *action_class*'s trust to *trust* in *overlay*'s dial table (merging).
+
+ Refuses an unknown class, an invalid trust word, and ``auto`` on a never-fades
+ class (which the dial floors to ASK regardless).
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    action_class      TEXT  Action class to flip. [required]                │
+│ *    trust             TEXT  Trust level: ask or auto. [required]            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --overlay        TEXT  Overlay scope for the row; omit for the global scope  │
+│                        (every overlay).                                      │
+│ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree approval_dial clear`
+
+```
+Usage: t3 teatree approval_dial clear [OPTIONS] ACTION_CLASS
+
+ Remove *action_class* from *overlay*'s dial table (it falls back to ASK).
+
+ Deletes the whole ``approval_dial`` row once its last class is removed. Exits
+ non-zero when the class is not set in that scope, so a typo is loud.
+
+╭─ Arguments ──────────────────────────────────────────────────────────────────╮
+│ *    action_class      TEXT  Action class to remove from the dial table.     │
+│                              [required]                                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --overlay        TEXT  Overlay scope for the row; omit for the global scope  │
+│                        (every overlay).                                      │
+│ --help                 Show this message and exit.                           │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+##### `t3 teatree approval_dial show`
+
+```
+Usage: t3 teatree approval_dial show [OPTIONS]
+
+ Render every class's configured trust, never-fades floor, breach, and verdict.
+
+ Reads the RESOLVED table (global then *overlay* on top) so it shows what the
+ dial
+ actually decides for that scope right now, not just the raw stored row.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --overlay        TEXT  Overlay scope for the row; omit for the global scope  │
+│                        (every overlay).                                      │
+│ --help                 Show this message and exit.                           │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

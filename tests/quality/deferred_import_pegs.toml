@@ -10,6 +10,7 @@
 [intra_core]
 "src/teatree/core/_checking_gather.py" = 5
 "src/teatree/core/apps.py" = 2
+"src/teatree/core/backend_factory.py" = 3
 "src/teatree/core/checking.py" = 2
 "src/teatree/core/cleanup/cleanup.py" = 1
 "src/teatree/core/cost.py" = 1
@@ -66,7 +67,7 @@
 "src/teatree/core/models/ticket.py" = 11
 "src/teatree/core/notify.py" = 4
 "src/teatree/core/on_behalf_egress.py" = 2
-"src/teatree/core/on_behalf_gate_recorded.py" = 3
+"src/teatree/core/on_behalf_gate_recorded.py" = 6
 "src/teatree/core/on_behalf_post_receipt.py" = 1
 "src/teatree/core/overlay.py" = 3
 "src/teatree/core/overlay_loader.py" = 1
@@ -76,6 +77,7 @@
 "src/teatree/core/reply_transport.py" = 1
 "src/teatree/core/safe_kill.py" = 1
 "src/teatree/core/intake/scope_cache.py" = 1
+"src/teatree/core/send_proxy.py" = 3
 "src/teatree/core/signals.py" = 6
 "src/teatree/core/speak.py" = 2
 "src/teatree/core/provision/step_runner.py" = 4

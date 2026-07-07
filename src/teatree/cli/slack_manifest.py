@@ -83,7 +83,7 @@ _USER_SCOPES = [
     "users:read",
     "users:read.email",
 ]
-_BOT_EVENTS = ["app_mention", "message.im"]
+_BOT_EVENTS = ["app_mention", "message.im", "reaction_added"]
 
 
 def _user_scopes_carry_no_bot_only_scope() -> None:
@@ -151,6 +151,16 @@ def app_manifest_editor_url(app_id: str) -> str:
 def app_install_url(app_id: str) -> str:
     """Deep link to the app's install page (the one manual OAuth-consent step)."""
     return f"https://api.slack.com/apps/{app_id}/install-on-team"
+
+
+def app_level_token_url(app_id: str) -> str:
+    """Deep link to Basic Information, where App-Level (``xapp-``) Tokens are minted.
+
+    Slack has no API to create an app-level token; it is generated once in this
+    UI under "App-Level Tokens". This is the single Socket Mode step ``t3``
+    cannot automate.
+    """
+    return f"https://api.slack.com/apps/{app_id}"
 
 
 def _slack_app_api(method: str, payload: dict[str, Any], *, token: str) -> dict[str, Any]:
@@ -226,6 +236,7 @@ __all__ = [
     "_slack_app_api",
     "_user_scopes_carry_no_bot_only_scope",
     "app_install_url",
+    "app_level_token_url",
     "app_manifest_editor_url",
     "build_manifest",
     "export_manifest",

@@ -27,6 +27,22 @@ class Decision(StrEnum):
     AUTO_APPROVE = "auto_approve"
 
 
+# The closed vocabulary of action classes the dial governs (#119). The first
+# argument to :func:`approval_policy` is always one of these — the shared seam
+# constant so the dial (:mod:`teatree.core.models.approval_dial`), its metrics
+# (:mod:`teatree.core.models.approval_metrics`), and every ask-time caller name
+# the same class rather than a drifting literal.
+DIRECTIVE_ADMIT = "directive_admit"
+OUTER_LOOP_KEEP = "outer_loop_keep"
+ON_BEHALF_POST = "on_behalf_post"
+PUBLIC_ISSUE_CREATE = "public_issue_create"
+GATE_OR_POLICY_CHANGE = "gate_or_policy_change"
+
+ACTION_CLASSES: frozenset[str] = frozenset(
+    {DIRECTIVE_ADMIT, OUTER_LOOP_KEEP, ON_BEHALF_POST, PUBLIC_ISSUE_CREATE, GATE_OR_POLICY_CHANGE}
+)
+
+
 def _ask_everything(_action_class: str) -> Decision:
     """The #116 dial: every action class asks a human (the empty, always-ASK dial)."""
     return Decision.ASK

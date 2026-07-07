@@ -46,7 +46,7 @@ def _request(**overrides: object) -> SendRequest:
         "action": "post",
     }
     base.update(overrides)
-    return SendRequest(**base)  # type: ignore[arg-type]
+    return SendRequest(**base)
 
 
 class TestWarnModeIsAuditOnly:

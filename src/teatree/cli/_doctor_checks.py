@@ -555,6 +555,32 @@ def _check_statusline(settings_path: Path | None = None) -> bool:
     return True
 
 
+def _check_slack_socket_mode() -> bool:
+    """Report + auto-fix Slack Socket Mode readiness per overlay (#106 / BLUEPRINT § B5).
+
+    Extends the existing Slack scope auto-management to Socket Mode: for every
+    Slack-backed overlay it validates the app-level ``xapp-`` token (present,
+    prefixed, carrying ``connections:write``) and auto-fixes the manifest's
+    socket-mode flag / events / bot scopes via ``apps.manifest.update`` where the
+    app-config token allows. Slack has no API to mint an app-level token, so an
+    absent one is surfaced as a single ACTION with its exact URL + ``pass`` slot.
+
+    Surfacing-only: always returns ``True`` so it never gates the overall doctor
+    exit code (Slack is optional — it must never become mandatory). Crash-proof:
+    any error degrades to a WARN so a doctor run never aborts on this check.
+    """
+    try:
+        from teatree.cli.slack_socket_doctor import check_slack_socket_mode  # noqa: PLC0415
+
+        outcome = check_slack_socket_mode()
+    except Exception as exc:  # noqa: BLE001 — doctor check must never crash the run
+        typer.echo(f"WARN  Slack Socket Mode check crashed: {exc.__class__.__name__}: {exc}")
+        return True
+    for finding in outcome.findings:
+        typer.echo(f"{finding.level.value:<5} [{finding.overlay}] {finding.message}")
+    return True
+
+
 def _check_dream_staleness() -> bool:
     """Warn when the idle-time dream consolidation cron is stale (#1933).
 

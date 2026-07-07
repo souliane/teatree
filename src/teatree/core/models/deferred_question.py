@@ -60,6 +60,7 @@ class DeferredQuestion(models.Model):
         SLACK = "slack", "Slack reply"
         LOCAL = "local", "Local CLI"
         STALE = "stale", "Stale"
+        POLICY = "policy", "Policy auto-answer"  # #119 graduation: the dial answered, not a human
 
     question = models.TextField()
     options_json = models.TextField(blank=True, default="")

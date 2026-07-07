@@ -161,7 +161,11 @@ def _dispatch_negative(matcher: Matcher, run: EvalRun, tool: str) -> None:
     if matcher.operator == "~":
         assert_no_tool_call_matching(run, tool, matcher.arg_path, matcher.value)
         return
-    assert_no_tool_call_contains(run, tool, matcher.arg_path, matcher.value)
+    if matcher.operator == "contains":
+        assert_no_tool_call_contains(run, tool, matcher.arg_path, matcher.value)
+        return
+    msg = f"unsupported matcher operator: kind={matcher.kind!r}, operator={matcher.operator!r}"
+    raise NotImplementedError(msg)
 
 
 def _dispatch_any_of(matcher: AnyOf, run: EvalRun) -> None:
