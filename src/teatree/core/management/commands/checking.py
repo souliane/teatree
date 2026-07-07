@@ -18,9 +18,11 @@ output channel (``django-typer`` serialises it) — JSON when ``--json``, else
 the terse human view.
 """
 
+import hashlib
 import io
 import json
 import os
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated
 
@@ -28,10 +30,23 @@ import typer
 from django.utils import timezone
 from django_typer.management import TyperCommand, command, initialize
 
+from teatree.backends.slack.table_format import render_table_message
 from teatree.core.checking import DEFAULT_CAP, CheckGroup, gather_all_overlays_report, gather_checking_report
 from teatree.core.checkpoint import advance_checkpoint_monotonic, checkpoint_path, resolve_window_start
+from teatree.core.notify import NotifyKind, notify_user
 from teatree.core.ref_render import render_ref
 from teatree.core.table_output import print_table
+from teatree.types import RawAPIDict
+
+
+@dataclass(frozen=True, slots=True)
+class _ShowFlags:
+    """The ``checking show`` window/output/side-effect flags, bundled to keep the dispatch narrow."""
+
+    since: str
+    json_output: bool
+    no_advance: bool
+    notify: bool
 
 
 def _stamp(when: datetime) -> str:
@@ -63,6 +78,45 @@ def _render_groups_tables(groups: list[CheckGroup], *, header: str, stamp: str, 
     return buffer.getvalue()
 
 
+def _recap_table_dm(groups: list[CheckGroup], *, header: str, cap: int = DEFAULT_CAP) -> tuple[list[RawAPIDict], str]:
+    """Render the non-empty recap groups as native ``table`` blocks + a fence.
+
+    Each group becomes a titled :func:`render_table_message` — the native
+    Block Kit ``table`` block for a rich rendering plus the monospace fence for
+    the ``text`` degradation path. Returns ``([], "")`` when every group is
+    empty so the caller skips the DM (an empty recap never pings).
+    """
+    blocks: list[RawAPIDict] = []
+    fences: list[str] = []
+    for group in groups:
+        if group.total == 0:
+            continue
+        rows = [[item.label, item.title, item.detail] for item in group.items[:cap]]
+        message = render_table_message(["Ref", "Title", "Detail"], rows, title=f"{group.title} ({group.total})")
+        blocks.extend(message.blocks)
+        fences.append(message.fence)
+    if not blocks:
+        return [], ""
+    return blocks, f"{header}\n" + "\n".join(fences)
+
+
+def _recap_key(groups: list[CheckGroup], *, scope: str) -> str:
+    """Content-hashed idempotency key so an unchanged recap never re-DMs."""
+    payload = "\n".join(f"{group.title}|{item.label}|{item.detail}" for group in groups for item in group.items)
+    digest = hashlib.sha256(payload.encode()).hexdigest()[:16]
+    return f"checking_recap:{scope}:{digest}"
+
+
+def _maybe_notify_recap(groups: list[CheckGroup], *, header: str, scope: str, notify: bool) -> None:
+    """DM the recap through the real bot→user egress when ``--notify`` is set (#2966)."""
+    if not notify:
+        return
+    blocks, fence = _recap_table_dm(groups, header=header)
+    if not blocks:
+        return
+    notify_user(fence, kind=NotifyKind.INFO, idempotency_key=_recap_key(groups, scope=scope), blocks=blocks)
+
+
 class Command(TyperCommand):
     @initialize()
     def init(self) -> None:
@@ -91,6 +145,13 @@ class Command(TyperCommand):
                 help="Scope to the current overlay only (default: aggregate all configured overlays).",
             ),
         ] = False,
+        notify: Annotated[
+            bool,
+            typer.Option(
+                "--notify",
+                help="Also DM the recap to you as a Slack table (native Block Kit + monospace fence fallback).",
+            ),
+        ] = False,
     ) -> str:
         """Print a terse, grouped, clickable report of changes since the last check."""
         overlay_name = os.environ.get("T3_OVERLAY_NAME", "")
@@ -98,32 +159,14 @@ class Command(TyperCommand):
 
         _validate_since(since)
 
+        flags = _ShowFlags(since=since, json_output=json_output, no_advance=no_advance, notify=notify)
         if this_overlay:
-            return self._show_single_overlay(
-                overlay_name=overlay_name,
-                now=now,
-                since=since,
-                json_output=json_output,
-                no_advance=no_advance,
-            )
-        return self._show_all_overlays(
-            now=now,
-            since=since,
-            json_output=json_output,
-            no_advance=no_advance,
-        )
+            return self._show_single_overlay(overlay_name=overlay_name, now=now, flags=flags)
+        return self._show_all_overlays(now=now, flags=flags)
 
-    def _show_single_overlay(
-        self,
-        *,
-        overlay_name: str,
-        now: datetime,
-        since: str,
-        json_output: bool,
-        no_advance: bool,
-    ) -> str:
+    def _show_single_overlay(self, *, overlay_name: str, now: datetime, flags: _ShowFlags) -> str:
         """Single-overlay path (``--this-overlay`` or backward-compat)."""
-        window_start = resolve_window_start(since=since, now=now)
+        window_start = resolve_window_start(since=flags.since, now=now)
         report = gather_checking_report(
             since=window_start,
             now=now,
@@ -131,26 +174,17 @@ class Command(TyperCommand):
             code_host=self._resolve_code_host(),
             overlay_repos=self._resolve_overlay_repos(),
         )
-        if not since and not no_advance:
+        if not flags.since and not flags.no_advance:
             advance_checkpoint_monotonic(now)
-        if json_output:
-            return json.dumps(report.to_dict())
         stamp = _stamp(report.since)
         header = f"Since {stamp} · {overlay_name}" if overlay_name else f"Since {stamp}"
-        return _render_groups_tables(
-            [report.merged, report.in_flight, report.needs_you],
-            header=header,
-            stamp=stamp,
-        )
+        groups = [report.merged, report.in_flight, report.needs_you]
+        _maybe_notify_recap(groups, header=header, scope=overlay_name or "global", notify=flags.notify)
+        if flags.json_output:
+            return json.dumps(report.to_dict())
+        return _render_groups_tables(groups, header=header, stamp=stamp)
 
-    def _show_all_overlays(
-        self,
-        *,
-        now: datetime,
-        since: str,
-        json_output: bool,
-        no_advance: bool,
-    ) -> str:
+    def _show_all_overlays(self, *, now: datetime, flags: _ShowFlags) -> str:
         """All-overlays path (default): aggregate every configured overlay."""
         from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415
 
@@ -161,7 +195,7 @@ class Command(TyperCommand):
 
         for name, overlay in overlays.items():
             path = checkpoint_path(overlay=name)
-            window_start = resolve_window_start(since=since, now=now, path=path)
+            window_start = resolve_window_start(since=flags.since, now=now, path=path)
             overlay_windows[name] = (window_start, now)
             code_host = _overlay_code_host(overlay)
             repos = _overlay_repos(overlay)
@@ -172,19 +206,18 @@ class Command(TyperCommand):
             overlay_configs=overlay_configs,
         )
 
-        if not since and not no_advance:
+        if not flags.since and not flags.no_advance:
             for name in overlays:
                 path = checkpoint_path(overlay=name)
                 advance_checkpoint_monotonic(now, path)
 
-        if json_output:
-            return json.dumps(report.to_dict())
         stamp = _stamp(report.earliest_since)
-        return _render_groups_tables(
-            [report.merged, report.in_flight, report.needs_you],
-            header=f"Since {stamp} · all overlays",
-            stamp=stamp,
-        )
+        header = f"Since {stamp} · all overlays"
+        groups = [report.merged, report.in_flight, report.needs_you]
+        _maybe_notify_recap(groups, header=header, scope="all", notify=flags.notify)
+        if flags.json_output:
+            return json.dumps(report.to_dict())
+        return _render_groups_tables(groups, header=header, stamp=stamp)
 
     @staticmethod
     def _resolve_code_host() -> str:
