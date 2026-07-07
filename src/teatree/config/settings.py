@@ -181,6 +181,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "issue_implementer_max_concurrent": _parse_strict_int,
     "issue_implementer_cadence_hours": _parse_strict_int,
     "auto_disposition_enabled": _parse_strict_bool,
+    "limit_autorecovery_enabled": _parse_strict_bool,
     "outer_loop_enabled": _parse_strict_bool,
     "directive_loop_enabled": _parse_strict_bool,
     # #116 context firewall — the DARK ambient-directive-detection routing flag.
@@ -318,6 +319,7 @@ ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_ORCHESTRATE_CLAIM_ENABLED": ("orchestrate_claim_enabled", _parse_env_bool),
     "T3_FACTORY_SCORE_ENABLED": ("factory_score_enabled", _parse_env_bool),
     "T3_OUTER_LOOP_ENABLED": ("outer_loop_enabled", _parse_env_bool),
+    "T3_LIMIT_AUTORECOVERY_ENABLED": ("limit_autorecovery_enabled", _parse_env_bool),
     "T3_BOOST_CONCURRENCY": ("boost_concurrency", _parse_strict_int),
     "T3_LOOP_RUNNER_ENABLED": ("loop_runner_enabled", _parse_env_bool),
     "T3_TEAMS_ENABLED": ("teams_enabled", _parse_env_bool),
@@ -1236,6 +1238,19 @@ class UserSettings:
     # Upper bound on close-candidate signals emitted per tick — keeps an
     # auto-close pass bounded and reviewable.
     auto_disposition_max_closes_per_tick: int = 5
+    # Directive #3 — the OFF switch for idle usage-window auto-recovery, and a DARK
+    # ``FEATURE_FLAGS`` entry. When OFF (the default) a Claude usage-window limit
+    # (~5h session / 7-day weekly) is recorded as a terminal FAILED attempt EXACTLY as
+    # today — no park, no admission guard, no recovery chain (behaviorally inert). When
+    # ON, a limit hit PARKS the task (returns it to the queue with a ``not_before`` at
+    # the window's re-arm instant) instead of failing, an admission guard quietly parks
+    # further LLM dispatches on the exhausted lane, and the self-rescheduling
+    # ``usage_window_recovery`` loop-timer chain clears the window + releases the parked
+    # tasks + pumps the loop at reset — unattended, no OS cron. DB-home (#1775),
+    # per-overlay overridable. The conformance suite pins stage=DARK => this default ==
+    # its off_value (False), so it can never ship default-ON without a code-reviewed
+    # stage demotion.
+    limit_autorecovery_enabled: bool = False
     # Human-readable mirror of the latest session hand-off. The
     # ``SessionHandover`` DB row is the source of truth; this file mirrors
     # the payload for human-readability and for bootstrapping a brand-new

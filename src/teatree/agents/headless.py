@@ -47,6 +47,7 @@ from teatree.agents.pydantic_ai_resume import maybe_persist_on_park, persist_par
 from teatree.agents.reader_profile import is_reader_phase, reader_child_env, reader_env_hermetic
 from teatree.agents.result_schema import RESULT_JSON_SCHEMA
 from teatree.agents.skill_bundle import resolve_skill_bundle
+from teatree.agents.usage_window import maybe_park_for_active_window, park_task_on_limit
 from teatree.config import AgentHarnessProvider, get_effective_settings
 from teatree.core.models import Task, TaskAttempt
 from teatree.core.models.ticket_worktree_checks import dispatch_worktree_path
@@ -243,7 +244,9 @@ def run_headless(
     )
 
     provider = get_effective_settings().agent_harness_provider
-    child_env_result = _resolve_child_env_or_failure(task, harness, provider, phase=phase)
+    lane = _resolve_dispatch_lane(harness, provider)
+
+    child_env_result = _admission_park_or_child_env(task, harness, provider, lane=lane, phase=phase)
     if isinstance(child_env_result, TaskAttempt):
         return child_env_result
     child_env = child_env_result
@@ -273,10 +276,10 @@ def run_headless(
         logger.warning("Refusing dispatch for task %s: %s", task.pk, exc)
         return _record_failure(task, error=str(exc))
 
-    failure = _outcome_failure(task, outcome)
+    failure = _outcome_failure(task, outcome, lane=lane)
     if failure is not None:
         return failure
-    return _record_success(task, outcome, phase=phase, lane=_resolve_dispatch_lane(harness, provider))
+    return _record_success(task, outcome, phase=phase, lane=lane)
 
 
 def _restore_unconsumed_resume_thread(harness: Harness) -> None:
@@ -311,6 +314,25 @@ def _resolve_backend_or_failure(task: Task, *, phase: str = "") -> Harness | Tas
         return resolve_harness(task, phase=phase or None)
     except NotImplementedError as exc:
         return _record_failure(task, error=str(exc))
+
+
+def _admission_park_or_child_env(
+    task: Task, harness: Harness, provider: AgentHarnessProvider | None, *, lane: str, phase: str = ""
+) -> dict[str, str] | TaskAttempt | None:
+    """Directive #3 admission guard, then the child-env resolution — one early-return seam.
+
+    While an uncleared usage window covers this dispatch's *lane*, park the task rather than
+    burn an attempt that will 429 (a no-op when the flag is off or no window covers the
+    lane). A park restores any resume thread ``resolve_harness`` popped, since the run never
+    opened (mirrors the ``CredentialError`` path). Otherwise defers to
+    :func:`_resolve_child_env_or_failure`. Returns a ``TaskAttempt`` (parked or failed) for
+    an early return, or the child env (``dict``/``None``) to proceed.
+    """
+    admission_park = maybe_park_for_active_window(task, lane=lane)
+    if admission_park is not None:
+        _restore_unconsumed_resume_thread(harness)
+        return admission_park
+    return _resolve_child_env_or_failure(task, harness, provider, phase=phase)
 
 
 def _resolve_child_env_or_failure(
@@ -353,16 +375,22 @@ def _resolve_child_env_or_failure(
     return base_env
 
 
-def _outcome_failure(task: Task, outcome: HarnessOutcome) -> TaskAttempt | None:
-    """Fold a non-success drive outcome into a recorded failure, or ``None``.
+def _outcome_failure(task: Task, outcome: HarnessOutcome, *, lane: str = "") -> TaskAttempt | None:
+    """Fold a non-success drive outcome into a recorded failure (or park), or ``None``.
 
     Collapses the stuck-loop / usage-limit / error-result terminal cases into a
-    single return so ``run_headless`` stays within its early-return budget.
+    single return so ``run_headless`` stays within its early-return budget. A usage-limit
+    hit is PARKED not FAILED when Directive #3 auto-recovery is enabled (the flag-off
+    default records the terminal FAILED exactly as before).
     """
     if outcome.stuck_reason is not None:
         return _record_failure(task, error=f"{_STUCK_LOOP_PREFIX}{outcome.stuck_reason}")
     limit = _limit_match(outcome.result_message, outcome.rate_limit_info)
     if limit is not None:
+        sdk_resets_at = outcome.rate_limit_info.resets_at if outcome.rate_limit_info is not None else None
+        parked = park_task_on_limit(task, limit, sdk_resets_at=sdk_resets_at, lane=lane)
+        if parked is not None:
+            return parked
         reason = limit.as_reason()
         logger.warning("Task %s hit a model-access limit (%s): %s", task.pk, limit.cause.value, reason)
         return _record_failure(task, error=reason)

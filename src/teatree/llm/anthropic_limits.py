@@ -43,6 +43,7 @@ credit-empty condition is never laundered into a subscription-quota report.
 """
 
 import dataclasses
+from datetime import timedelta
 from enum import Enum
 
 from claude_agent_sdk.types import RateLimitType
@@ -106,6 +107,30 @@ _RATE_LIMIT_TYPE_CAUSES: dict[RateLimitType, LimitCause] = {
     "seven_day_sonnet": LimitCause.SUBSCRIPTION_WEEKLY,
     "overage": LimitCause.API_CREDIT,
 }
+
+#: The known length of each subscription window, used as the re-arm horizon when a
+#: limit signal carries no structured ``resets_at`` (Directive #3 idle auto-recovery).
+#: A ``five_hour`` session window recovers ~5h after it was hit, the seven-day windows
+#: ~7 days; a transient rate limit clears within minutes. API-credit exhaustion has NO
+#: time-based recovery (``None``) — nothing re-arms until the operator adds credits, so a
+#: metered credit-empty lane is never auto-cleared on a timer.
+WINDOW_HORIZON: dict[LimitCause, timedelta | None] = {
+    LimitCause.SUBSCRIPTION_SESSION: timedelta(hours=5),
+    LimitCause.SUBSCRIPTION_WEEKLY: timedelta(days=7),
+    LimitCause.RATE_LIMIT: timedelta(minutes=5),
+    LimitCause.API_CREDIT: None,
+}
+
+
+def window_horizon(cause: LimitCause) -> timedelta | None:
+    """The re-arm horizon for *cause* — how long after detection its window resets.
+
+    ``None`` for :data:`LimitCause.API_CREDIT`: credit exhaustion has no time-based
+    recovery, so the caller stores no ``resets_at`` and the recovery chain never
+    auto-clears it (the operator must add credits).
+    """
+    return WINDOW_HORIZON[cause]
+
 
 #: Operator-facing remediation per cause. The API-credit message names the
 #: console explicitly and never says "subscription"; the two subscription

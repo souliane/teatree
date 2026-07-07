@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, cast
 
 from django.apps import apps
@@ -63,6 +63,12 @@ class Task(models.Model):
     claimed_by_session = models.CharField(max_length=255, blank=True, default="")
     lease_expires_at = models.DateTimeField(null=True, blank=True)
     heartbeat_at = models.DateTimeField(null=True, blank=True)
+    # Directive #3 usage-window park gate. When a dispatch hits an exhausted usage
+    # window (and ``limit_autorecovery_enabled`` is on) the task is returned to the
+    # queue PENDING with ``not_before`` = the window's re-arm instant; the claim path
+    # skips it until then, so a parked task never re-dispatches into the same 429. Null
+    # (every task that was never limit-parked) leaves the claim path byte-identical.
+    not_before = models.DateTimeField(null=True, blank=True)
     result_artifact_path = models.CharField(max_length=500, blank=True)
     # #129 TODO-sweep idempotency stamp. The sweep scanner marks a task
     # checked via an atomic conditional UPDATE before verifying its artifact,
@@ -471,6 +477,30 @@ class Task(models.Model):
             raise InvalidTransitionError(msg)
         self.status = self.Status.PENDING
         self.save(update_fields=["status"])
+
+    def park(self, *, not_before: datetime) -> None:
+        """Return this task to the queue PENDING, gated until *not_before* (Directive #3).
+
+        The park-not-fail alternative to :meth:`fail`: a usage-window limit is NOT a task
+        failure, so the task stays in flight (PENDING) rather than terminal FAILED. The
+        claim path skips it while ``not_before`` is in the future, so it does not
+        re-dispatch into the same exhausted window; ``usage_window_recovery`` releases it
+        once the window re-arms. The park reason is recorded by the caller on the parked
+        ``TaskAttempt`` (the ``limit_parked:`` marker), not stored on the task.
+        """
+        self.status = self.Status.PENDING
+        self.not_before = not_before
+        self._clear_claim()
+        self.save(
+            update_fields=[
+                "status",
+                "not_before",
+                "claimed_at",
+                "claimed_by",
+                "lease_expires_at",
+                "heartbeat_at",
+            ],
+        )
 
     def complete_with_attempt(
         self,

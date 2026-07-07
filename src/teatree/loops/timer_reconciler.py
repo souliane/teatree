@@ -202,7 +202,9 @@ def expire_stale_jobs() -> dict[str, int]:
 
 
 def ensure_maintenance_chains() -> None:
-    """Seed the reconcile + prune + stale-job-expiry chain heads if absent — self-perpetuating after that."""
+    """Seed the reconcile + prune + stale-job-expiry + usage-window-recovery chain heads if absent."""
+    from teatree.loops.usage_window_recovery import ensure_usage_window_recovery_chain  # noqa: PLC0415 — cycle-safe
+
     now = timezone.now()
     if not _pending_for_path(reconcile_timers.module_path):
         reconcile_timers.using(run_after=now + dt.timedelta(seconds=RECONCILE_INTERVAL_SECONDS)).enqueue()
@@ -210,3 +212,6 @@ def ensure_maintenance_chains() -> None:
         prune_task_results.using(run_after=now + dt.timedelta(seconds=PRUNE_INTERVAL_SECONDS)).enqueue()
     if not _pending_for_path(expire_stale_jobs.module_path):
         expire_stale_jobs.using(run_after=now + dt.timedelta(seconds=EXPIRE_INTERVAL_SECONDS)).enqueue()
+    # Directive #3: the self-rescheduling usage-window re-arm chain. Its body is inert while
+    # ``limit_autorecovery_enabled`` is OFF, so seeding it unconditionally is dark-safe.
+    ensure_usage_window_recovery_chain()
