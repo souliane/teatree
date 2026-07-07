@@ -52,6 +52,51 @@ class TestAgentHarnessProviderResolution(TestCase):
             get_effective_settings()
 
 
+class TestOrcaRouterLaneAndNameResolution(TestCase):
+    """The two DB-home OrcaRouter call-site knobs — ``orca_router_lane`` / ``orca_router_name``.
+
+    ``orca_router_lane`` is the ``x-lane`` header value (``factory`` default, ``eval``
+    for the eval CI job, ``bulk`` for a secondary overlay's cheap legs); ``orca_router_name`` is the
+    per-overlay OrcaRouter router handle (empty → the ``teatree-factory`` default). Both
+    are DB-home: env → ConfigSetting (overlay → global) → default.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("teatree.config.CONFIG_PATH", tmp_path / ".teatree.toml")
+        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
+        monkeypatch.delenv("T3_ORCA_ROUTER_LANE", raising=False)
+        monkeypatch.delenv("T3_ORCA_ROUTER_NAME", raising=False)
+
+    def test_defaults_are_factory_lane_and_empty_name(self) -> None:
+        settings = get_effective_settings()
+        assert settings.orca_router_lane == "factory"
+        assert settings.orca_router_name == ""
+
+    def test_stored_lane_and_name(self) -> None:
+        ConfigSetting.objects.set_value("orca_router_lane", "bulk")
+        ConfigSetting.objects.set_value("orca_router_name", "orcarouter/secondary-factory")
+        settings = get_effective_settings()
+        assert settings.orca_router_lane == "bulk"
+        assert settings.orca_router_name == "orcarouter/secondary-factory"
+
+    def test_env_lane_wins_over_store(self) -> None:
+        ConfigSetting.objects.set_value("orca_router_lane", "factory")
+        with patch.dict(os.environ, {"T3_ORCA_ROUTER_LANE": "eval"}):
+            assert get_effective_settings().orca_router_lane == "eval"
+
+    def test_env_name_wins_over_store(self) -> None:
+        ConfigSetting.objects.set_value("orca_router_name", "orcarouter/teatree-factory")
+        with patch.dict(os.environ, {"T3_ORCA_ROUTER_NAME": "orcarouter/secondary-factory"}):
+            assert get_effective_settings().orca_router_name == "orcarouter/secondary-factory"
+
+    def test_overlay_scoped_row_beats_global(self) -> None:
+        ConfigSetting.objects.set_value("orca_router_name", "orcarouter/teatree-factory")
+        ConfigSetting.objects.set_value("orca_router_name", "orcarouter/secondary-factory", scope="secondary-overlay")
+        with patch.dict(os.environ, {"T3_OVERLAY_NAME": "secondary-overlay"}):
+            assert get_effective_settings().orca_router_name == "orcarouter/secondary-factory"
+
+
 class TestAgentHarnessProviderParse:
     def test_parses_canonical_and_normalises(self) -> None:
         assert AgentHarnessProvider.parse("api_key") is AgentHarnessProvider.API_KEY
