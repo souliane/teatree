@@ -23,16 +23,24 @@ pytestmark = pytest.mark.filterwarnings(
 )
 
 
-class _ImpactingOverlay:
+class _ImpactingReview:
     def classify_customer_display_impact(self, changed_files: list[str]) -> bool:
         _ = changed_files
         return True
 
 
-class _SafeOverlay:
+class _ImpactingOverlay:
+    review = _ImpactingReview()
+
+
+class _SafeReview:
     def classify_customer_display_impact(self, changed_files: list[str]) -> bool:
         _ = changed_files
         return False
+
+
+class _SafeOverlay:
+    review = _SafeReview()
 
 
 def _clear(ticket: Ticket) -> dict[str, object]:

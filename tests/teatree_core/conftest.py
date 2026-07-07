@@ -15,7 +15,7 @@ from django.test import override_settings
 
 from teatree.core.models import Worktree
 from teatree.core.models.review_verdict import ReviewVerdict
-from teatree.core.overlay import OverlayBase, ProvisionStep, RunCommands
+from teatree.core.overlay import OverlayBase, OverlayE2E, OverlayReview, OverlayRuntime, ProvisionStep, RunCommands
 from teatree.core.overlay_loader import reset_overlay_cache
 
 
@@ -50,17 +50,46 @@ pytestmark = pytest.mark.filterwarnings(
 )
 
 
-class CommandOverlay(OverlayBase):
-    """Minimal overlay for management command tests."""
-
-    def get_repos(self) -> list[str]:
-        return ["backend"]
-
+class _CommandReview(OverlayReview):
     def classify_customer_display_impact(self, changed_files: list[str]) -> bool:
         # Test double with no customer surface — the mandatory-E2E gate (#1967)
         # is inert here (matches the dogfood overlay's posture).
         _ = changed_files
         return False
+
+
+class _CommandRuntime(OverlayRuntime):
+    def run_commands(self, worktree: Worktree) -> RunCommands:
+        return {
+            "backend": ["run-backend", worktree.repo_path],
+            "frontend": ["run-frontend", worktree.repo_path],
+        }
+
+    def pre_run_steps(self, worktree: Worktree, service: str) -> list[ProvisionStep]:
+        def remember_pre_run() -> None:
+            extra = cast("dict[str, str]", worktree.extra or {})
+            extra[f"pre_run_{service}"] = "ran"
+            worktree.extra = extra
+            worktree.save(update_fields=["extra"])
+
+        return [ProvisionStep(name=f"pre-run-{service}", callable=remember_pre_run)]
+
+
+class _CommandE2E(OverlayE2E):
+    def env_extras(self, env_cache: dict[str, str]) -> dict[str, str]:
+        variant = env_cache.get("WT_VARIANT", "")
+        return {"CUSTOMER": variant} if variant else {}
+
+
+class CommandOverlay(OverlayBase):
+    """Minimal overlay for management command tests."""
+
+    review = _CommandReview()
+    runtime = _CommandRuntime()
+    e2e = _CommandE2E()
+
+    def get_repos(self) -> list[str]:
+        return ["backend"]
 
     def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
         def remember_setup() -> None:
@@ -70,25 +99,6 @@ class CommandOverlay(OverlayBase):
             worktree.save(update_fields=["extra"])
 
         return [ProvisionStep(name="remember-setup", callable=remember_setup)]
-
-    def get_run_commands(self, worktree: Worktree) -> RunCommands:
-        return {
-            "backend": ["run-backend", worktree.repo_path],
-            "frontend": ["run-frontend", worktree.repo_path],
-        }
-
-    def get_pre_run_steps(self, worktree: Worktree, service: str) -> list[ProvisionStep]:
-        def remember_pre_run() -> None:
-            extra = cast("dict[str, str]", worktree.extra or {})
-            extra[f"pre_run_{service}"] = "ran"
-            worktree.extra = extra
-            worktree.save(update_fields=["extra"])
-
-        return [ProvisionStep(name=f"pre-run-{service}", callable=remember_pre_run)]
-
-    def get_e2e_env_extras(self, env_cache: dict[str, str]) -> dict[str, str]:
-        variant = env_cache.get("WT_VARIANT", "")
-        return {"CUSTOMER": variant} if variant else {}
 
 
 COMMAND_OVERLAY = "tests.teatree_core.conftest.CommandOverlay"

@@ -39,7 +39,7 @@ else:
     PlaywrightError = _PlaywrightError
 
 # Default file patterns that warrant a browser sanity check.
-# Overlays can override via ``OverlayBase.get_visual_qa_targets()``.
+# Overlays can override via ``OverlayBase.review.visual_qa_targets()``.
 DEFAULT_TRIGGER_GLOBS: tuple[str, ...] = (
     "*.html",
     "*.scss",
@@ -135,12 +135,12 @@ def matches_triggers(paths: list[str], globs: tuple[str, ...] = DEFAULT_TRIGGER_
 def detect_targets(diff: list[str], overlay: OverlayBase | None = None) -> list[str]:
     """Return URL paths to load given the changed files.
 
-    When *overlay* exposes ``get_visual_qa_targets``, defer to it so each
+    When *overlay* exposes ``review.visual_qa_targets``, defer to it so each
     project can map diff paths to the URLs it cares about.  Otherwise fall
     back to the default trigger globs and return ``["/"]`` if any matched.
     """
     if overlay is not None:
-        targets = overlay.get_visual_qa_targets(diff)
+        targets = overlay.review.visual_qa_targets(diff)
         return list(targets[:MAX_PAGES]) if targets else []
     return ["/"] if matches_triggers(diff) else []
 

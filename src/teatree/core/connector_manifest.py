@@ -5,7 +5,7 @@ Notion) and merely benefits from others. Today a down connector is a
 silent mid-tick no-op with no single place that says "this connector is required
 and it is not connected". This module is that place: each overlay declares its
 required-vs-optional connectors by NAME (:class:`ConnectorRequirement` on
-``OverlayBase.get_connector_manifest``), and :func:`check_connector_manifest`
+``OverlayConnectors.manifest``), and :func:`check_connector_manifest`
 reads the same enabled/connected ground truth the #2282 connectivity probe uses
 (``~/.claude.json`` + ``claude mcp list``) to produce mode-correct findings and
 ``RECONNECT`` lines.
@@ -122,9 +122,9 @@ def overlay_connector_manifests() -> list[OverlayManifest]:
     manifests: list[OverlayManifest] = []
     for name, overlay in get_all_overlays().items():
         try:
-            requirements = overlay.get_connector_manifest()
+            requirements = overlay.connectors.manifest()
         except Exception:
-            logger.debug("overlay %s raised in get_connector_manifest", name, exc_info=True)
+            logger.debug("overlay %s raised in connectors.manifest", name, exc_info=True)
             requirements = []
         manifests.append(OverlayManifest(overlay=name, requirements=list(requirements)))
     return manifests

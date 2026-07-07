@@ -205,11 +205,11 @@ def resolve_run_provenance(overlay: "OverlayBase", spec_path: str) -> RunProvena
 
     Empty ``spec_path`` (no per-spec run) yields the no-op provenance; otherwise
     the overlay maps the spec to its manifest entry id via
-    :meth:`OverlayBase.get_e2e_run_provenance`.
+    :meth:`OverlayE2E.run_provenance`.
     """
     if not spec_path:
         return _NO_PROVENANCE
-    return RunProvenance(spec_path=spec_path, manifest_entry=overlay.get_e2e_run_provenance(spec_path))
+    return RunProvenance(spec_path=spec_path, manifest_entry=overlay.e2e.run_provenance(spec_path))
 
 
 def record_run(

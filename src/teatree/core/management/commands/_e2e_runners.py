@@ -252,7 +252,7 @@ def build_e2e_env(
     directory basename and missing it. ``None`` (dev target) leaves it unset.
 
     Overlay-specific env vars (e.g. ``CUSTOMER``) come from
-    :meth:`OverlayBase.get_e2e_env_extras` — core only knows about ``BASE_URL``,
+    :meth:`OverlayE2E.env_extras` — core only knows about ``BASE_URL``,
     ``T3_E2E_TARGET``, ``COMPOSE_PROJECT_NAME``, ``T3_E2E_TEST_PATH`` and ``CI``.
     """
     env = {**os.environ}
@@ -270,7 +270,7 @@ def build_e2e_env(
         env_cache = _parse_env_file(envfile) if envfile is not None else {}
     if context.test_path:
         env_cache = {**env_cache, "T3_E2E_TEST_PATH": context.test_path}
-    for key, value in get_overlay().get_e2e_env_extras(env_cache).items():
+    for key, value in get_overlay().e2e.env_extras(env_cache).items():
         env.setdefault(key, value)
 
     if headed:

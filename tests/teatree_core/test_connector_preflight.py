@@ -18,7 +18,7 @@ from teatree.core.connector_manifest import ConnectorRequirement, OverlayManifes
 from teatree.core.connector_preflight import assert_required_connectors, assert_slack_scope, run_connector_preflight
 from teatree.core.mcp_connectivity import McpServerStatus
 from teatree.core.models import Worktree
-from teatree.core.overlay import OverlayBase, ProvisionStep
+from teatree.core.overlay import OverlayBase, OverlayConnectors, ProvisionStep
 
 
 def _fake_auth_test_post(header_value: str | None):
@@ -72,15 +72,8 @@ class _NoOpOverlay(OverlayBase):
         return []
 
 
-class _SlackDownOverlay(OverlayBase):
-    def get_repos(self) -> list[str]:
-        return ["backend"]
-
-    def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
-        _ = worktree
-        return []
-
-    def get_connector_preflight(self) -> list:
+class _SlackDownOverlay_Connectors(OverlayConnectors):
+    def preflight(self) -> list:
         def _probe() -> None:
             msg = "Slack auth.test failed: missing_scope"
             raise RuntimeError(msg)
@@ -88,9 +81,20 @@ class _SlackDownOverlay(OverlayBase):
         return [_probe]
 
 
+class _SlackDownOverlay(OverlayBase):
+    connectors = _SlackDownOverlay_Connectors()
+    def get_repos(self) -> list[str]:
+        return ["backend"]
+
+    def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
+        _ = worktree
+        return []
+
+
+
 class TestOverlayBaseConnectorPreflightDefault(TestCase):
     def test_default_is_empty(self) -> None:
-        assert _NoOpOverlay().get_connector_preflight() == []
+        assert _NoOpOverlay().connectors.preflight() == []
 
 
 class TestRunConnectorPreflight(TestCase):
@@ -145,7 +149,13 @@ class TestRunConnectorPreflight(TestCase):
             assert run_connector_preflight("does-not-exist") is None
 
 
+class _ManifestOverlay_Connectors(OverlayConnectors):
+    def manifest(self) -> list[ConnectorRequirement]:
+        return [ConnectorRequirement("claude.ai Slack", required=True)]
+
+
 class _ManifestOverlay(OverlayBase):
+    connectors = _ManifestOverlay_Connectors()
     def get_repos(self) -> list[str]:
         return ["backend"]
 
@@ -153,8 +163,6 @@ class _ManifestOverlay(OverlayBase):
         _ = worktree
         return []
 
-    def get_connector_manifest(self) -> list[ConnectorRequirement]:
-        return [ConnectorRequirement("claude.ai Slack", required=True)]
 
 
 class TestManifestRequiredConnectorGate(TestCase):

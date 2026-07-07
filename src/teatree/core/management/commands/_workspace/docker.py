@@ -2,7 +2,7 @@
 
 Its own module so :mod:`teatree.core.management.commands._workspace.cleanup`
 stays under the module-health function cap. The per-worktree (on-teardown)
-half lives on the overlay hook ``reap_worktree_external_resources``; this is
+half lives on the overlay hook ``provisioning.reap_external_resources``; this is
 the orphan half — compose projects whose worktree directory is already gone.
 
 Two reaping flavours share the same keep set (:func:`_live_compose_projects`):

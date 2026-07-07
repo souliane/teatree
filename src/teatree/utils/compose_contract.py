@@ -5,7 +5,7 @@ Every ``${VAR}`` reference in a ``docker-compose*.yml`` file must either:
 1. have a default (``${VAR:-fallback}``) — the compose file handles its own
     absence, so we ignore it, **or**
 2. be produced by core (``_declared_core_keys()`` in ``worktree_env``) or by
-    an overlay (``OverlayBase.declared_env_keys()``).
+    an overlay (``OverlayBase.provisioning.declared_env_keys()``).
 
 Anything else is a silent-failure bug: the key is missing at runtime, compose
 substitutes empty string, and something downstream misbehaves quietly. This

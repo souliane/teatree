@@ -70,7 +70,8 @@ class TestLifecycleSetup(TestCase):
                 reset_called = True
 
             overlay = import_string(FULL_OVERLAY)()
-            overlay.get_reset_passwords_command = lambda wt: ProvisionStep(name="reset", callable=_track_reset)
+            overlay.provisioning = type(overlay.provisioning)()
+            overlay.provisioning.reset_passwords_command = lambda wt: ProvisionStep(name="reset", callable=_track_reset)
 
             with (
                 patch.object(overlay_loader_mod, "_discover_overlays", return_value={"test": overlay}),
@@ -217,7 +218,7 @@ class TestLifecycleSetup(TestCase):
                 extra={"worktree_path": str(wt_dir)},
             )
 
-            # FullOverlay.get_reset_passwords_command returns a step with callable=lambda: None.
+            # FullProvisioning.reset_passwords_command returns a step with callable=lambda: None.
             # The step runner invokes callables directly (no subprocess).
             # Verify setup completes without error — the step runner handles execution.
             call_command("worktree", "provision", path=str(wt_dir))
@@ -247,7 +248,7 @@ class TestLifecycleSetup(TestCase):
     @_patch_overlays(PRE_RUN_OVERLAY)
     @override_settings(**SETTINGS)
     def test_runs_pre_run_steps_for_all_services(self) -> None:
-        """Setup calls get_pre_run_steps for every service from get_run_commands."""
+        """Setup calls runtime.pre_run_steps for every service from runtime.run_commands."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
 
@@ -264,7 +265,7 @@ class TestLifecycleSetup(TestCase):
 
             call_command("worktree", "provision", path=str(wt_dir))
 
-            # PreRunOverlay.get_run_commands returns backend, frontend, build-frontend
+            # PreRunOverlay.runtime.run_commands returns backend, frontend, build-frontend
             wt.refresh_from_db()
             assert sorted((wt.extra or {}).get("pre_run_log", [])) == ["backend", "build-frontend", "frontend"]
 
@@ -351,10 +352,10 @@ class TestLifecycleSetup(TestCase):
             )
 
             mock_overlay = env_safe_mock_overlay()
-            mock_overlay.get_envrc_lines.return_value = ["export USE_UV=1"]
+            mock_overlay.provisioning.envrc_lines.return_value = ["export USE_UV=1"]
             mock_overlay.get_provision_steps.return_value = []
-            mock_overlay.get_post_db_steps.return_value = []
-            mock_overlay.get_reset_passwords_command.return_value = ""
+            mock_overlay.provisioning.post_db_steps.return_value = []
+            mock_overlay.provisioning.reset_passwords_command.return_value = ""
             mock_overlay.metadata.get_skill_metadata.return_value = {}
 
             with (
@@ -397,10 +398,10 @@ class TestLifecycleSetup(TestCase):
             )
 
             mock_overlay = env_safe_mock_overlay()
-            mock_overlay.get_envrc_lines.return_value = []
+            mock_overlay.provisioning.envrc_lines.return_value = []
             mock_overlay.get_provision_steps.return_value = []
-            mock_overlay.get_post_db_steps.return_value = []
-            mock_overlay.get_reset_passwords_command.return_value = ""
+            mock_overlay.provisioning.post_db_steps.return_value = []
+            mock_overlay.provisioning.reset_passwords_command.return_value = ""
             mock_overlay.metadata.get_skill_metadata.return_value = {}
 
             with (
@@ -434,9 +435,9 @@ class TestLifecycleSetup(TestCase):
 
             mock_overlay = env_safe_mock_overlay()
             mock_overlay.get_provision_steps.return_value = []
-            mock_overlay.get_post_db_steps.return_value = []
-            mock_overlay.get_reset_passwords_command.return_value = ""
-            mock_overlay.get_envrc_lines.return_value = []
+            mock_overlay.provisioning.post_db_steps.return_value = []
+            mock_overlay.provisioning.reset_passwords_command.return_value = ""
+            mock_overlay.provisioning.envrc_lines.return_value = []
             mock_overlay.metadata.get_skill_metadata.return_value = {}
 
             with (
@@ -506,10 +507,10 @@ class TestLifecycleSetupHelpers(TestCase):
         mock_overlay = MagicMock()
         # Empty path — should return early without calling anything
         _setup_worktree_dir("", MagicMock(), mock_overlay)
-        mock_overlay.get_envrc_lines.assert_not_called()
+        mock_overlay.provisioning.envrc_lines.assert_not_called()
         # Non-existent path
         _setup_worktree_dir("/tmp/does-not-exist-xyz", MagicMock(), mock_overlay)
-        mock_overlay.get_envrc_lines.assert_not_called()
+        mock_overlay.provisioning.envrc_lines.assert_not_called()
 
     def test_write_env_cache_returns_none_without_path(self) -> None:
         """write_env_cache returns None when worktree has no worktree_path."""
@@ -549,14 +550,14 @@ class TestLifecycleStart(TestCase):
             )
 
             mock_overlay = env_safe_mock_overlay()
-            mock_overlay.get_run_commands.return_value = {"backend": "run-backend", "frontend": "run-frontend"}
-            mock_overlay.get_pre_run_steps.return_value = []
-            mock_overlay.get_envrc_lines.return_value = []
+            mock_overlay.runtime.run_commands.return_value = {"backend": "run-backend", "frontend": "run-frontend"}
+            mock_overlay.runtime.pre_run_steps.return_value = []
+            mock_overlay.provisioning.envrc_lines.return_value = []
             mock_overlay.get_provision_steps.return_value = []
-            mock_overlay.get_post_db_steps.return_value = []
-            mock_overlay.get_health_checks.return_value = []
-            mock_overlay.get_reset_passwords_command.return_value = None
-            mock_overlay.get_compose_file.return_value = "/fake/docker-compose.yml"
+            mock_overlay.provisioning.post_db_steps.return_value = []
+            mock_overlay.provisioning.health_checks.return_value = []
+            mock_overlay.provisioning.reset_passwords_command.return_value = None
+            mock_overlay.provisioning.compose_file.return_value = "/fake/docker-compose.yml"
 
             mock_config = MagicMock()
             mock_config.user.workspace_dir = tmp_path
@@ -597,14 +598,14 @@ class TestLifecycleStart(TestCase):
             )
 
             mock_overlay = env_safe_mock_overlay()
-            mock_overlay.get_run_commands.return_value = {}
-            mock_overlay.get_pre_run_steps.return_value = []
-            mock_overlay.get_envrc_lines.return_value = []
+            mock_overlay.runtime.run_commands.return_value = {}
+            mock_overlay.runtime.pre_run_steps.return_value = []
+            mock_overlay.provisioning.envrc_lines.return_value = []
             mock_overlay.get_provision_steps.return_value = []
-            mock_overlay.get_post_db_steps.return_value = []
-            mock_overlay.get_health_checks.return_value = []
-            mock_overlay.get_reset_passwords_command.return_value = None
-            mock_overlay.get_compose_file.return_value = ""
+            mock_overlay.provisioning.post_db_steps.return_value = []
+            mock_overlay.provisioning.health_checks.return_value = []
+            mock_overlay.provisioning.reset_passwords_command.return_value = None
+            mock_overlay.provisioning.compose_file.return_value = ""
 
             mock_config = MagicMock()
             mock_config.user.workspace_dir = tmp_path
@@ -641,14 +642,14 @@ class TestLifecycleStart(TestCase):
             )
 
             mock_overlay = env_safe_mock_overlay()
-            mock_overlay.get_run_commands.return_value = {"backend": "run-backend"}
-            mock_overlay.get_pre_run_steps.return_value = []
-            mock_overlay.get_envrc_lines.return_value = []
+            mock_overlay.runtime.run_commands.return_value = {"backend": "run-backend"}
+            mock_overlay.runtime.pre_run_steps.return_value = []
+            mock_overlay.provisioning.envrc_lines.return_value = []
             mock_overlay.get_provision_steps.return_value = []
-            mock_overlay.get_post_db_steps.return_value = []
-            mock_overlay.get_health_checks.return_value = []
-            mock_overlay.get_reset_passwords_command.return_value = None
-            mock_overlay.get_compose_file.return_value = "/fake/docker-compose.yml"
+            mock_overlay.provisioning.post_db_steps.return_value = []
+            mock_overlay.provisioning.health_checks.return_value = []
+            mock_overlay.provisioning.reset_passwords_command.return_value = None
+            mock_overlay.provisioning.compose_file.return_value = "/fake/docker-compose.yml"
 
             mock_config = MagicMock()
             mock_config.user.workspace_dir = tmp_path
@@ -707,14 +708,14 @@ class TestImagePreflight(TestCase):
         )
 
         mock_overlay = env_safe_mock_overlay()
-        mock_overlay.get_run_commands.return_value = {"backend": "run-backend"}
-        mock_overlay.get_pre_run_steps.return_value = []
-        mock_overlay.get_envrc_lines.return_value = []
+        mock_overlay.runtime.run_commands.return_value = {"backend": "run-backend"}
+        mock_overlay.runtime.pre_run_steps.return_value = []
+        mock_overlay.provisioning.envrc_lines.return_value = []
         mock_overlay.get_provision_steps.return_value = []
-        mock_overlay.get_post_db_steps.return_value = []
-        mock_overlay.get_health_checks.return_value = []
-        mock_overlay.get_reset_passwords_command.return_value = None
-        mock_overlay.get_compose_file.return_value = "/fake/docker-compose.yml"
+        mock_overlay.provisioning.post_db_steps.return_value = []
+        mock_overlay.provisioning.health_checks.return_value = []
+        mock_overlay.provisioning.reset_passwords_command.return_value = None
+        mock_overlay.provisioning.compose_file.return_value = "/fake/docker-compose.yml"
 
         mock_config = MagicMock()
         mock_config.user.workspace_dir = tmp_path

@@ -92,22 +92,22 @@ def validate_docker_service_contract(overlay: OverlayBase, worktree: Worktree) -
     Catches contract drift at provision time instead of at ``start`` when
     compose silently ignores the unknown service.
     """
-    declared = set(overlay.get_services_config(worktree))
-    docker = set(overlay.get_docker_services(worktree))
+    declared = set(overlay.provisioning.services_config(worktree))
+    docker = set(overlay.provisioning.docker_services(worktree))
     missing = docker - declared
     if missing:
         msg = (
             f"Overlay {overlay.__class__.__name__} declares docker services "
-            f"{sorted(missing)} not present in get_services_config "
+            f"{sorted(missing)} not present in provisioning.services_config "
             f"(declared: {sorted(declared)}). "
-            "Either add them to get_services_config or remove from get_docker_services."
+            "Either add them to provisioning.services_config or remove from provisioning.docker_services."
         )
         raise RuntimeError(msg)
 
 
 def _build_base_images(overlay: OverlayBase, worktree: Worktree, *, writer: Callable[[str], object]) -> None:
     seen: set[str] = set()
-    for cfg in overlay.get_base_images(worktree):
+    for cfg in overlay.provisioning.base_images(worktree):
         key = f"{cfg.image_name}|{cfg.build_context}"
         if key in seen:
             continue
@@ -275,7 +275,7 @@ class Command(TyperCommand):
         runtime health gate. Returns success when the overlay has no probes
         (the empty list is itself a valid contract).
         """
-        probes = overlay.get_readiness_probes(worktree)
+        probes = overlay.runtime.readiness_probes(worktree)
         if not probes:
             self.stdout.write("  No readiness probes defined for this overlay.")
             return
@@ -317,7 +317,7 @@ class Command(TyperCommand):
         if not acquire_or_enqueue(worktree, write_out=self.stdout.write):
             return worktree.state
 
-        commands = list(resolved_overlay.get_run_commands(worktree))
+        commands = list(resolved_overlay.runtime.run_commands(worktree))
         with transaction.atomic():
             worktree.start_services(services=commands)
             worktree.save()
@@ -360,7 +360,7 @@ class Command(TyperCommand):
     ) -> str:
         """Run runtime readiness probes for one worktree.
 
-        Strict: exits 0 iff every probe declared by ``OverlayBase.get_readiness_probes``
+        Strict: exits 0 iff every probe declared by ``OverlayRuntime.readiness_probes``
         passes. Does not mutate worktree state. Use after ``start`` to verify
         the env is actually serving — answers the question ``verify`` cannot
         (HTTP, CORS round-trip, end-to-end auth, fixture seed integrity).

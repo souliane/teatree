@@ -272,7 +272,7 @@ class Command(TyperCommand):
             if _wh.heal_db_or_record_failure(wt, overlay, failures, self.stdout.write):
                 continue
             self.stdout.write(f"  Starting {wt.repo_path}…")
-            commands = list(overlay.get_run_commands(wt))
+            commands = list(overlay.runtime.run_commands(wt))
             with transaction.atomic():
                 wt.start_services(services=commands)
                 wt.save()
@@ -298,7 +298,7 @@ class Command(TyperCommand):
 
         Strict: exits 0 iff every probe across every worktree passes. No
         per-worktree skip flag and no env-var escape — if a probe doesn't
-        apply to a variant, the overlay's ``get_readiness_probes`` returns
+        apply to a variant, the overlay's ``runtime.readiness_probes`` returns
         an empty list (or omits that probe) for that worktree.
         """
         ticket = _resolve_workspace_ticket(path)

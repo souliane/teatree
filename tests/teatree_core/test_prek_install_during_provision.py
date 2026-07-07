@@ -102,7 +102,7 @@ class TestPrekInstallProducesHookFile:
         _main, wt = real_worktree
         worktree = MagicMock()
         overlay = MagicMock()
-        overlay.get_envrc_lines.return_value = []
+        overlay.provisioning.envrc_lines.return_value = []
 
         _setup_worktree_dir(str(wt), worktree, overlay)
 
@@ -253,15 +253,15 @@ class TestPrekInstallFailureSurfaces(TestCase):
             worktree = self._worktree(Path(tmp))
 
             overlay = MagicMock()
-            overlay.get_envrc_lines.return_value = []
-            overlay.get_db_import_strategy.return_value = None
+            overlay.provisioning.envrc_lines.return_value = []
+            overlay.provisioning.db_import_strategy.return_value = None
             overlay.get_provision_steps.return_value = []
-            overlay.get_post_db_steps.return_value = []
-            overlay.get_pre_run_steps.return_value = []
-            overlay.get_run_commands.return_value = {}
-            overlay.get_reset_passwords_command.return_value = ""
-            overlay.get_env_extra.return_value = {}
-            overlay.get_health_checks.return_value = []
+            overlay.provisioning.post_db_steps.return_value = []
+            overlay.runtime.pre_run_steps.return_value = []
+            overlay.runtime.run_commands.return_value = {}
+            overlay.provisioning.reset_passwords_command.return_value = ""
+            overlay.provisioning.env_extra.return_value = {}
+            overlay.provisioning.health_checks.return_value = []
             overlay.metadata.get_skill_metadata.return_value = {}
 
             # Stub ``run_step`` so direnv passes and prek install fails — the

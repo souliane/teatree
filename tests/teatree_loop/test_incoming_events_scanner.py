@@ -9,7 +9,7 @@ import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.core.gates.merge_guard import MergeGuard
 from teatree.core.models import ConfigSetting, Directive, IncomingEvent, IntentClassification, ReplyDispatch
 from teatree.core.models.incoming_event import MAX_INGEST_ATTEMPTS
-from teatree.core.overlay import OverlayBase
+from teatree.core.overlay import OverlayBase, OverlayReview
 from teatree.loop.scanners.incoming_events import IncomingEventsScanner
 
 
@@ -401,14 +401,28 @@ class TestThreadReplyParentContext(TestCase):
         assert backend.fetched == []
 
 
-class _StubOverlay:
-    """Minimal overlay stub that returns a fixed MergeGuard from can_auto_merge."""
-
+class _StubReview:
     def __init__(self, guard: MergeGuard) -> None:
         self._guard = guard
 
     def can_auto_merge(self, *, target_ref: str, thread_ref: str) -> MergeGuard:
         return self._guard
+
+
+class _StubOverlay:
+    """Minimal overlay stub that returns a fixed MergeGuard from review.can_auto_merge."""
+
+    def __init__(self, guard: MergeGuard) -> None:
+        self.review = _StubReview(guard)
+
+
+class _MergeGuardOverlay_Review(OverlayReview):
+    def __init__(self, overlay: "_MergeGuardOverlay") -> None:
+        self._overlay = overlay
+
+    def can_auto_merge(self, *, target_ref: str, thread_ref: str) -> MergeGuard:
+        _ = (target_ref, thread_ref)
+        return self._overlay._guard
 
 
 class _MergeGuardOverlay(OverlayBase):
@@ -417,6 +431,7 @@ class _MergeGuardOverlay(OverlayBase):
     def __init__(self, *, repos: list[str], guard: MergeGuard) -> None:
         self._repos = repos
         self._guard = guard
+        self.review = _MergeGuardOverlay_Review(self)
 
     def get_repos(self) -> list[str]:
         return self._repos
@@ -428,9 +443,6 @@ class _MergeGuardOverlay(OverlayBase):
         _ = worktree
         return []
 
-    def can_auto_merge(self, *, target_ref: str, thread_ref: str) -> MergeGuard:
-        _ = (target_ref, thread_ref)
-        return self._guard
 
 
 class TestEventForgeUrl:

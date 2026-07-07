@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 class ServiceLauncher(RunnerBase):
     """Runs a worktree host service, always after its pre-run steps.
 
-    The only supported way to run a service. ``get_run_commands`` is reachable
+    The only supported way to run a service. ``runtime.run_commands`` is reachable
     only through here, so a caller cannot run a service without its
     prerequisites — the drift that let ``run build-frontend`` skip
     ``node_modules``/``customer.json`` is structurally impossible: the command
@@ -43,7 +43,7 @@ class ServiceLauncher(RunnerBase):
         seen: set[str] = set()
         steps: list[ProvisionStep] = []
         for service in services:
-            for step in overlay.get_pre_run_steps(worktree, service):
+            for step in overlay.runtime.pre_run_steps(worktree, service):
                 if step.name in seen:
                     continue
                 seen.add(step.name)
@@ -83,7 +83,7 @@ class ServiceLauncher(RunnerBase):
 
     def _run_locked(self) -> RunnerResult:
         self.prepare()
-        cmd = self.overlay.get_run_commands(self.worktree).get(self.service)
+        cmd = self.overlay.runtime.run_commands(self.worktree).get(self.service)
         if not cmd:
             return RunnerResult(ok=False, detail=f"no run command configured for {self.service!r}")
         args = cmd.args if isinstance(cmd, RunCommand) else list(cmd)

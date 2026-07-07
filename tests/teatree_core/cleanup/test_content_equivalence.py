@@ -216,7 +216,7 @@ class TestCleanAllRefusesSubjectCollision(TestCase):
             patch("teatree.core.cleanup.cleanup.clone_root", return_value=self.workspace),
             patch("teatree.core.cleanup.cleanup.get_overlay_for_worktree") as mock_overlay,
         ):
-            mock_overlay.return_value.get_cleanup_steps.return_value = []
+            mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
             return cleanup_worktree(worktree, strict_hygiene=True)
 
     def test_refuses_to_force_delete_subject_colliding_genuine_work(self) -> None:

@@ -11,7 +11,7 @@ label and are never enumerated under a removed worktree's project.
 
 This is a core utility — the generic engine (BLUEPRINT §6.0) — that the
 docker-using overlay reaches through
-``OverlayBase.reap_worktree_external_resources``. Tolerant of an unavailable
+``OverlayProvisioning.reap_external_resources``. Tolerant of an unavailable
 docker binary (CI sandboxes, hermetic tests) so cleanup paths funnelling
 through it never break when there is no daemon to talk to.
 """

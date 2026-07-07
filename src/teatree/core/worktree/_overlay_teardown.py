@@ -20,7 +20,7 @@ def run_overlay_cleanup_steps(overlay: "OverlayBase | None", worktree: "Worktree
     """Run the overlay's custom cleanup-step hooks; no-op for an unregistered overlay."""
     if overlay is None:
         return
-    for step in overlay.get_cleanup_steps(worktree):
+    for step in overlay.provisioning.cleanup_steps(worktree):
         try:
             step.callable()
         except Exception as exc:
@@ -36,7 +36,7 @@ def reap_external_resources(overlay: "OverlayBase", worktree: "Worktree", step_e
     suffix for the cleanup label, or ``""`` when nothing was removed or it failed.
     """
     try:
-        reaped = overlay.reap_worktree_external_resources(worktree)
+        reaped = overlay.provisioning.reap_external_resources(worktree)
     except Exception as exc:
         logger.exception("external-resource reap failed for %s (%s)", worktree.repo_path, worktree.branch)
         step_errors.append(f"external-resource reap failed for {worktree.branch}: {exc}")

@@ -4,16 +4,25 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
-from teatree.core.overlay import OverlayBase
+from teatree.core.overlay import OverlayBase, OverlayProvisioning
 from teatree.core.provision.provision_postconditions import aggregate_provision_post_conditions
 from teatree.core.worktree.worktree_env import CACHE_DIRNAME, CACHE_FILENAME
 from teatree.types import ProvisionStep
+
+
+class _StubOverlay_Provisioning(OverlayProvisioning):
+    def __init__(self, overlay: "_StubOverlay") -> None:
+        self._overlay = overlay
+
+    def db_import_strategy(self, worktree):
+        return self._overlay._db_strategy
 
 
 class _StubOverlay(OverlayBase):
     def __init__(self, *, steps: tuple = (), db_strategy: dict | None = None) -> None:
         self._steps = list(steps)
         self._db_strategy = db_strategy
+        self.provisioning = _StubOverlay_Provisioning(self)
 
     def get_repos(self) -> list[str]:
         return ["repo"]
@@ -21,8 +30,6 @@ class _StubOverlay(OverlayBase):
     def get_provision_steps(self, worktree):
         return self._steps
 
-    def get_db_import_strategy(self, worktree):
-        return self._db_strategy
 
 
 def _worktree(wt_dir: Path, *, db_name: str = "") -> SimpleNamespace:

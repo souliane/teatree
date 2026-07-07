@@ -19,13 +19,19 @@ from django.test import TestCase
 from teatree.core.management.commands import worktree as worktree_cmd
 from teatree.core.management.commands.worktree import Command, WorktreeStatus
 from teatree.core.models import Ticket, Worktree
-from teatree.core.overlay import OverlayBase, ProvisionStep, RunCommands
+from teatree.core.overlay import OverlayBase, OverlayRuntime, ProvisionStep, RunCommands
 
 OVERLAY_A = "overlay-alpha"
 OVERLAY_B = "overlay-beta"
 
 
+class _NamedOverlay_Runtime(OverlayRuntime):
+    def run_commands(self, worktree: Worktree) -> RunCommands:
+        return {}
+
+
 class _NamedOverlay(OverlayBase):
+    runtime = _NamedOverlay_Runtime()
     def __init__(self, marker: str) -> None:
         super().__init__()
         self.marker = marker
@@ -36,8 +42,6 @@ class _NamedOverlay(OverlayBase):
     def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
         return []
 
-    def get_run_commands(self, worktree: Worktree) -> RunCommands:
-        return {}
 
 
 class _MultiOverlayStatusTest(TestCase):

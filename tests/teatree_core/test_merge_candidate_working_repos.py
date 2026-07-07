@@ -8,7 +8,7 @@ could not be bound by ``t3 <overlay> ticket merge``: the candidate set never
 contained that repo, so the probe found no candidate carrying the reviewed SHA
 and the merge escalated "PR head moved / no candidate carries that SHA".
 
-The fix adds an optional ``OverlayBase.get_merge_candidate_repo_slugs()`` hook
+The fix adds an optional ``OverlayBase.review.merge_candidate_repo_slugs()`` hook
 (default ``[]``) declaring an overlay's working-repos as ``owner/repo`` slugs;
 ``_iter_candidate_repo_slugs`` appends them to the candidate set (normalizing
 SSH / HTTPS / host-alias URL forms up to ``owner/repo``), preserving the
@@ -35,7 +35,7 @@ from django.test import TestCase
 from teatree.config import OverlayEntry
 from teatree.core.merge import MergePreconditionError, merge_ticket_pr, pr_slug_resolution
 from teatree.core.models import MergeClear
-from teatree.core.overlay import OverlayBase
+from teatree.core.overlay import OverlayBase, OverlayReview
 from tests.teatree_core.conftest import seed_merge_safe_verdict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -61,12 +61,19 @@ _WORKING_REPO_SLUG = "downstream-org/downstream-overlay-e2e"
 _WORKING_REPO_SSH = f"git@github.com-alias:{_WORKING_REPO_SLUG}.git"
 
 
+class _WorkingRepoOverlay_Review(OverlayReview):
+    @override
+    def merge_candidate_repo_slugs(self) -> list[str]:
+        return [_WORKING_REPO_SSH]
+
+
 class _WorkingRepoOverlay(OverlayBase):
+    review = _WorkingRepoOverlay_Review()
     """A minimal overlay declaring one working-repo via the new merge hook.
 
     ``get_repos`` / ``get_provision_steps`` satisfy the ABC but are irrelevant
     to candidate enumeration; the working-repo is declared ONLY through
-    :meth:`get_merge_candidate_repo_slugs`, in its host-alias SSH URL form, so
+    :meth:`review.merge_candidate_repo_slugs`, in its host-alias SSH URL form, so
     the test proves the enumeration normalizes it up to ``owner/repo``.
     """
 
@@ -78,12 +85,17 @@ class _WorkingRepoOverlay(OverlayBase):
     def get_provision_steps(self, worktree: object) -> list:
         return []
 
+
+
+class _ExplodingOverlay_Review(OverlayReview):
     @override
-    def get_merge_candidate_repo_slugs(self) -> list[str]:
-        return [_WORKING_REPO_SSH]
+    def merge_candidate_repo_slugs(self) -> list[str]:
+        msg = "overlay enumeration blew up"
+        raise RuntimeError(msg)
 
 
 class _ExplodingOverlay(OverlayBase):
+    review = _ExplodingOverlay_Review()
     """An overlay whose merge-candidate hook RAISES — must be swallowed."""
 
     @override
@@ -94,10 +106,6 @@ class _ExplodingOverlay(OverlayBase):
     def get_provision_steps(self, worktree: object) -> list:
         return []
 
-    @override
-    def get_merge_candidate_repo_slugs(self) -> list[str]:
-        msg = "overlay enumeration blew up"
-        raise RuntimeError(msg)
 
 
 def _working_repo_clear() -> MergeClear:
@@ -276,7 +284,7 @@ class TestWorkingRepoCandidateEnumeration(TestCase):
     def test_per_overlay_enumeration_failure_is_swallowed(self) -> None:
         """A hook that raises must not poison the candidate set (best-effort).
 
-        With one overlay's ``get_merge_candidate_repo_slugs`` raising and a
+        With one overlay's ``review.merge_candidate_repo_slugs`` raising and a
         second declaring a real working-repo, the enumeration swallows the
         failure and still yields the clone origin + the healthy overlay's slug.
         """

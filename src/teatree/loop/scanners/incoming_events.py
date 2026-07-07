@@ -215,7 +215,7 @@ class IncomingEventsScanner:
         falls through to ``get_overlay_for_url("")`` → ``get_overlay(None)``,
         which fails loud naming the installed overlays rather than picking one.
         """
-        guard = _overlay_loader.get_overlay_for_url(_event_forge_url(event)).can_auto_merge(
+        guard = _overlay_loader.get_overlay_for_url(_event_forge_url(event)).review.can_auto_merge(
             target_ref=action.target_ref,
             thread_ref=action.detail,
         )

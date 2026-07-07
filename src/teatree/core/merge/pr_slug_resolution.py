@@ -201,7 +201,7 @@ def normalize_repo_slug(value: str) -> str:
     """Canonicalize *value* UP to a GitHub ``owner/repo`` slug, or ``""``.
 
     The single normalization boundary for a declared working-repo (#2323):
-    :meth:`OverlayBase.get_merge_candidate_repo_slugs` may return a bare
+    :meth:`OverlayReview.merge_candidate_repo_slugs` may return a bare
     ``owner/repo``, an HTTPS URL, an SSH URL, or a ``host-alias`` SSH form
     (``git@github.com-myalias:owner/repo.git``). Each is canonicalized up to
     ``owner/repo`` here so the candidate set holds one consistent
@@ -247,7 +247,7 @@ def _overlay_working_repo_slugs() -> list[str]:
     """Every overlay's declared working-repos, normalized to ``owner/repo`` (#2323).
 
     Source (3) for :func:`_iter_candidate_repo_slugs`. Reads each registered
-    overlay's :meth:`OverlayBase.get_merge_candidate_repo_slugs` — repos the
+    overlay's :meth:`OverlayReview.merge_candidate_repo_slugs` — repos the
     overlay operates on but does not package (e.g. an ``e2e`` companion repo) —
     and normalizes each declaration up to ``owner/repo`` via
     :func:`normalize_repo_slug`. Best-effort per-overlay: a hook that raises is
@@ -260,9 +260,9 @@ def _overlay_working_repo_slugs() -> list[str]:
     slugs: list[str] = []
     for name, overlay in overlays.items():
         try:
-            declared = overlay.get_merge_candidate_repo_slugs()
+            declared = overlay.review.merge_candidate_repo_slugs()
         except Exception:
-            logger.warning("overlay %r get_merge_candidate_repo_slugs() failed during merge probe", name, exc_info=True)
+            logger.warning("overlay %r review.merge_candidate_repo_slugs() failed during merge probe", name, exc_info=True)
             continue
         slugs.extend(normalize_repo_slug(raw) for raw in declared)
     return slugs

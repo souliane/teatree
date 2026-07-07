@@ -49,9 +49,13 @@ class _FakeHost:
         return self._issues
 
 
-class _FakeOverlay:
-    def get_merge_candidate_repo_slugs(self) -> list[str]:
+class _FakeReview:
+    def merge_candidate_repo_slugs(self) -> list[str]:
         return ["owner/repo"]
+
+
+class _FakeOverlay:
+    review = _FakeReview()
 
 
 class TestWorkspaceWorktreePaths(TestCase):

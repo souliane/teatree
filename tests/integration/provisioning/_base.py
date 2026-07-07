@@ -55,7 +55,7 @@ class ProvisionedWorktree:
     """A real git worktree plus the runtime state a probe needs.
 
     ``extra['ports']`` mirrors what ``WorktreeStartRunner`` stores on a real
-    ``Worktree`` model, so an overlay's ``get_readiness_probes`` consumes it
+    ``Worktree`` model, so an overlay's ``runtime.readiness_probes`` consumes it
     unchanged. ``servers`` are the spawned processes the teardown reaps.
     """
 

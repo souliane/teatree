@@ -17,7 +17,7 @@ from django.utils import timezone
 from teatree.core.cleanup.cleanup import WorktreeBusyError, cleanup_worktree
 from teatree.core.models import Session, Task, Ticket, Worktree
 from teatree.core.models.external_delivery import mark_external_delivery
-from teatree.core.overlay import OverlayBase, ProvisionStep, RunCommands
+from teatree.core.overlay import OverlayBase, OverlayRuntime, ProvisionStep, RunCommands
 from teatree.utils.run import CommandFailedError
 from tests.teatree_core._provision_timebox_stub import provision_timebox_unimportable
 
@@ -81,7 +81,7 @@ class TestCleanupWorktree(TestCase):
     ) -> None:
         _mock_workspace(mock_config)
         _no_unpushed(mock_git)
-        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
         mock_git.unsynced_commits.return_value = []
 
@@ -118,7 +118,7 @@ class TestCleanupWorktree(TestCase):
         """
         _mock_workspace(mock_config)
         _no_unpushed(mock_git)
-        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
@@ -142,19 +142,19 @@ class TestCleanupWorktree(TestCase):
         ``docker_compose_down`` removes containers but never images, so the
         per-worktree application image (~9GB) lingered for every removed
         worktree. ``cleanup_worktree`` now calls
-        ``reap_worktree_external_resources`` for the docker-using overlay to
+        ``provisioning.reap_external_resources`` for the docker-using overlay to
         remove that worktree's compose images + containers in the same pass.
         """
         _mock_workspace(mock_config)
         _no_unpushed(mock_git)
-        mock_overlay.return_value.get_cleanup_steps.return_value = []
-        mock_overlay.return_value.reap_worktree_external_resources.return_value = ["reaped 1 image"]
+        mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
+        mock_overlay.return_value.provisioning.reap_external_resources.return_value = ["reaped 1 image"]
         mock_git.status_porcelain.return_value = ""
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
         result = cleanup_worktree(wt)
 
-        mock_overlay.return_value.reap_worktree_external_resources.assert_called_once_with(wt)
+        mock_overlay.return_value.provisioning.reap_external_resources.assert_called_once_with(wt)
         assert "reaped 1 image" in result.label
 
     @_patch_overlay
@@ -168,8 +168,8 @@ class TestCleanupWorktree(TestCase):
     ) -> None:
         _mock_workspace(mock_config)
         _no_unpushed(mock_git)
-        mock_overlay.return_value.get_cleanup_steps.return_value = []
-        mock_overlay.return_value.reap_worktree_external_resources.side_effect = RuntimeError("docker exploded")
+        mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
+        mock_overlay.return_value.provisioning.reap_external_resources.side_effect = RuntimeError("docker exploded")
         mock_git.status_porcelain.return_value = ""
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
@@ -191,7 +191,7 @@ class TestCleanupWorktree(TestCase):
     ) -> None:
         _mock_workspace(mock_config)
         _no_unpushed(mock_git)
-        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
 
         wt = self._make_worktree(db_name="wt_99")
 
@@ -211,7 +211,7 @@ class TestCleanupWorktree(TestCase):
         _mock_workspace(mock_config)
         _no_unpushed(mock_git)
         step_fn = MagicMock()
-        mock_overlay.return_value.get_cleanup_steps.return_value = [MagicMock(callable=step_fn)]
+        mock_overlay.return_value.provisioning.cleanup_steps.return_value = [MagicMock(callable=step_fn)]
 
         wt = self._make_worktree()
         cleanup_worktree(wt)
@@ -229,7 +229,7 @@ class TestCleanupWorktree(TestCase):
     ) -> None:
         _mock_workspace(mock_config)
         _no_unpushed(mock_git)
-        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
         mock_overlay.return_value.config.teardown_removes_pass_entries = False
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
@@ -248,7 +248,7 @@ class TestCleanupWorktree(TestCase):
     ) -> None:
         _mock_workspace(mock_config)
         _no_unpushed(mock_git)
-        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
         mock_overlay.return_value.config.teardown_removes_pass_entries = True
 
         wt = self._make_worktree(wt_path="/tmp/wt/org/repo")
@@ -268,7 +268,7 @@ class TestCleanupWorktree(TestCase):
     ) -> None:
         _mock_workspace(mock_config)
         _no_unpushed(mock_git)
-        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
 
         wt = self._make_worktree()
         wt_id = wt.pk
@@ -290,7 +290,7 @@ class TestCleanupWorktree(TestCase):
         """A commit the content gate cannot prove upstream blocks cleanup (#2609)."""
         _mock_workspace(mock_config)
         _no_unpushed(mock_git)
-        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
         mock_git.unsynced_commits.return_value = ["abc123 chore: cve fix"]
         mock_content.return_value = ["abc123"]  # patch NOT upstream → blocker
@@ -326,7 +326,7 @@ class TestCleanupWorktree(TestCase):
         """
         _mock_workspace(mock_config)
         _no_unpushed(mock_git)
-        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
         mock_git.unsynced_commits.return_value = ["abc123 retro: post-merge docs"]
         mock_content.return_value = ["abc123"]  # patch differs from squash → blocker
@@ -354,7 +354,7 @@ class TestCleanupWorktree(TestCase):
         """A content blocker whose tree differs from the squash carries real work."""
         _mock_workspace(mock_config)
         _no_unpushed(mock_git)
-        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
         mock_git.unsynced_commits.return_value = ["abc123 feat: new work"]
         mock_content.return_value = ["abc123"]
@@ -386,7 +386,7 @@ class TestCleanupWorktree(TestCase):
         """
         _mock_workspace(mock_config)
         _no_unpushed(mock_git)
-        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
         mock_git.unsynced_commits.return_value = ["abc123 feat: squashed on main"]
         mock_content.return_value = []  # content proven upstream
@@ -417,7 +417,7 @@ class TestCleanupWorktree(TestCase):
         """
         _mock_workspace(mock_config)
         _no_unpushed(mock_git)
-        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
         mock_git.unsynced_commits.return_value = ["abc123 feat: shipped via squash long ago"]
         mock_content.return_value = ["abc123"]
@@ -451,7 +451,7 @@ class TestCleanupWorktree(TestCase):
         """
         _mock_workspace(mock_config)
         _no_unpushed(mock_git)
-        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
         mock_git.unsynced_commits.return_value = ["abc123 feat: genuine unpushed work"]
         mock_content.return_value = ["abc123"]
@@ -485,7 +485,7 @@ class TestCleanupWorktree(TestCase):
         """
         _mock_workspace(mock_config)
         _no_unpushed(mock_git)
-        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
         mock_git.unsynced_commits.return_value = []
         mock_git.commits_absent_from_all_remotes.return_value = ["abc1234 feat: squashed onto main"]
@@ -516,7 +516,7 @@ class TestCleanupWorktree(TestCase):
         """
         _mock_workspace(mock_config)
         _no_unpushed(mock_git)
-        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
         mock_git.commits_absent_from_all_remotes.return_value = ["abc1234 feat: never pushed, no PR"]
 
@@ -538,7 +538,7 @@ class TestCleanupWorktree(TestCase):
     ) -> None:
         _mock_workspace(mock_config)
         _no_unpushed(mock_git)
-        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
         mock_git.unsynced_commits.return_value = ["abc123 chore: cve fix"]
 
@@ -562,7 +562,7 @@ class TestCleanupWorktree(TestCase):
         """#706 data-loss guard — branch with commits on no remote blocks teardown."""
         _mock_workspace(mock_config)
         _no_unpushed(mock_git)
-        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
         mock_git.commits_absent_from_all_remotes.return_value = [
             "abc1234 feat: never pushed",
@@ -590,7 +590,7 @@ class TestCleanupWorktree(TestCase):
         """More than the preview limit of unpushed commits is summarised with an ellipsis."""
         _mock_workspace(mock_config)
         _no_unpushed(mock_git)
-        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
         mock_git.commits_absent_from_all_remotes.return_value = [f"sha{i} commit {i}" for i in range(5)]
 
@@ -612,7 +612,7 @@ class TestCleanupWorktree(TestCase):
         """An explicit force override discards even commits on no remote."""
         _mock_workspace(mock_config)
         _no_unpushed(mock_git)
-        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
         mock_git.commits_absent_from_all_remotes.return_value = ["abc123 feat: unpushed"]
 
@@ -642,7 +642,7 @@ class TestCleanupWorktree(TestCase):
         """
         _mock_workspace(mock_config)
         _no_unpushed(mock_git)
-        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
         mock_git.commits_absent_from_all_remotes.return_value = []  # pushed → data-loss guard passes
         mock_git.unsynced_commits.return_value = ["abc123 feat: pushed not merged"]
@@ -676,7 +676,7 @@ class TestCleanupWorktree(TestCase):
         """
         _mock_workspace(mock_config)
         _no_unpushed(mock_git)
-        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
         mock_git.commits_absent_from_all_remotes.return_value = []  # pushed
         mock_git.unsynced_commits.return_value = ["abc123 feat: pushed not merged"]
@@ -698,7 +698,7 @@ class TestCleanupWorktree(TestCase):
     ) -> None:
         _mock_workspace(mock_config)
         _no_unpushed(mock_git)
-        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
         mock_git.unsynced_commits.return_value = []
 
@@ -753,8 +753,8 @@ class TestCleanupWorktreeSurvivesMissingProvisionTimebox(TestCase):
         that no exception escaped.
         """
         _mock_workspace(mock_config)
-        mock_overlay.return_value.get_cleanup_steps.return_value = []
-        mock_overlay.return_value.reap_worktree_external_resources.return_value = []
+        mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
+        mock_overlay.return_value.provisioning.reap_external_resources.return_value = []
 
         wt = self._make_worktree(db_name="wt_2664")
         wt_id = wt.pk
@@ -816,8 +816,8 @@ class TestCleanupWorktreeSurvivesVanishedHookPath(TestCase):
         the hook-cleanup failure is recorded in ``errors`` rather than swallowed.
         """
         _mock_workspace(mock_config)
-        mock_overlay.return_value.get_cleanup_steps.return_value = []
-        mock_overlay.return_value.reap_worktree_external_resources.return_value = []
+        mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
+        mock_overlay.return_value.provisioning.reap_external_resources.return_value = []
 
         wt = self._make_worktree(db_name="wt_2692")
         wt_id = wt.pk
@@ -885,7 +885,7 @@ class TestCleanupWorktreeLoudTeardown(TestCase):
         """
         _mock_workspace(mock_config)
         _no_unpushed(mock_git)
-        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
         mock_overlay.return_value.config.teardown_removes_pass_entries = True
         mock_git.status_porcelain.return_value = ""
         mock_git.unsynced_commits.return_value = []
@@ -925,7 +925,7 @@ class TestCleanupWorktreeLoudTeardown(TestCase):
         """A failing pass-entry removal is surfaced, the worktree row still deleted."""
         _mock_workspace(mock_config)
         _no_unpushed(mock_git)
-        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
         mock_overlay.return_value.config.teardown_removes_pass_entries = True
         mock_git.status_porcelain.return_value = ""
         mock_git.unsynced_commits.return_value = []
@@ -965,7 +965,7 @@ class TestCleanupWorktreeLoudTeardown(TestCase):
         _no_unpushed(mock_git)
         failing_step = MagicMock(callable=MagicMock(side_effect=RuntimeError("docker compose down failed")))
         failing_step.description = "stop docker stack"
-        mock_overlay.return_value.get_cleanup_steps.return_value = [failing_step]
+        mock_overlay.return_value.provisioning.cleanup_steps.return_value = [failing_step]
         mock_git.status_porcelain.return_value = ""
         mock_git.unsynced_commits.return_value = []
 
@@ -987,7 +987,7 @@ class TestCleanupWorktreeLoudTeardown(TestCase):
         """The happy path: no errors, ``clean`` is true, label still contains the worktree."""
         _mock_workspace(mock_config)
         _no_unpushed(mock_git)
-        mock_overlay.return_value.get_cleanup_steps.return_value = []
+        mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
         mock_git.status_porcelain.return_value = ""
         mock_git.unsynced_commits.return_value = []
 
@@ -1006,7 +1006,13 @@ class TestCleanupWorktreeLoudTeardown(TestCase):
 # ---------------------------------------------------------------------------
 
 
+class _NamedOverlay_Runtime(OverlayRuntime):
+    def run_commands(self, worktree: Worktree) -> RunCommands:
+        return {}
+
+
 class _NamedOverlay(OverlayBase):
+    runtime = _NamedOverlay_Runtime()
     """Minimal OverlayBase with a string marker so tests can distinguish instances."""
 
     def __init__(self, marker: str) -> None:
@@ -1019,8 +1025,6 @@ class _NamedOverlay(OverlayBase):
     def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
         return []
 
-    def get_run_commands(self, worktree: Worktree) -> RunCommands:
-        return {}
 
 
 _OVERLAY_A = "overlay-alpha"
@@ -1077,12 +1081,14 @@ class TestCleanupWorktreeMultiOverlay(TestCase):
         mock_git.status_porcelain.return_value = ""
         mock_git.unsynced_commits.return_value = []
 
-        # cleanup_worktree calls overlay.get_cleanup_steps — wire it on the real instance.
-        self.overlay_a.get_cleanup_steps = lambda wt: []  # type: ignore[method-assign]
-        self.overlay_b.get_cleanup_steps = lambda wt: []  # type: ignore[method-assign]
-        # Wire reap_worktree_external_resources too.
-        self.overlay_a.reap_worktree_external_resources = lambda wt: []  # type: ignore[method-assign]
-        self.overlay_b.reap_worktree_external_resources = lambda wt: []  # type: ignore[method-assign]
+        # cleanup_worktree calls overlay.provisioning.cleanup_steps — wire it on a
+        # per-instance facet so overlay_a/overlay_b don't share the class-level default.
+        self.overlay_a.provisioning = type(self.overlay_a.provisioning)()
+        self.overlay_b.provisioning = type(self.overlay_b.provisioning)()
+        self.overlay_a.provisioning.cleanup_steps = lambda wt: []  # type: ignore[method-assign]
+        self.overlay_b.provisioning.cleanup_steps = lambda wt: []  # type: ignore[method-assign]
+        self.overlay_a.provisioning.reap_external_resources = lambda wt: []  # type: ignore[method-assign]
+        self.overlay_b.provisioning.reap_external_resources = lambda wt: []  # type: ignore[method-assign]
 
         wt = self._worktree(overlay=_OVERLAY_A)
         # Must NOT raise ImproperlyConfigured — and must complete successfully.
@@ -1098,7 +1104,7 @@ class TestCleanupWorktreeMultiOverlay(TestCase):
     ) -> None:
         """The overlay that matches the worktree field is the one whose steps run.
 
-        Each overlay tracks whether its ``get_cleanup_steps`` was called, so the
+        Each overlay tracks whether its ``provisioning.cleanup_steps`` was called, so the
         test can assert that overlay-B's steps were invoked and overlay-A's were not.
         """
         _mock_workspace(mock_config)
@@ -1117,10 +1123,12 @@ class TestCleanupWorktreeMultiOverlay(TestCase):
             b_called.append(True)
             return []
 
-        self.overlay_a.get_cleanup_steps = steps_a  # type: ignore[method-assign]
-        self.overlay_b.get_cleanup_steps = steps_b  # type: ignore[method-assign]
-        self.overlay_a.reap_worktree_external_resources = lambda wt: []  # type: ignore[method-assign]
-        self.overlay_b.reap_worktree_external_resources = lambda wt: []  # type: ignore[method-assign]
+        self.overlay_a.provisioning = type(self.overlay_a.provisioning)()
+        self.overlay_b.provisioning = type(self.overlay_b.provisioning)()
+        self.overlay_a.provisioning.cleanup_steps = steps_a  # type: ignore[method-assign]
+        self.overlay_b.provisioning.cleanup_steps = steps_b  # type: ignore[method-assign]
+        self.overlay_a.provisioning.reap_external_resources = lambda wt: []  # type: ignore[method-assign]
+        self.overlay_b.provisioning.reap_external_resources = lambda wt: []  # type: ignore[method-assign]
 
         wt = self._worktree(overlay=_OVERLAY_B)
         cleanup_worktree(wt)
@@ -1161,8 +1169,8 @@ class TestCleanupWorktreeLivenessGuard(TestCase):
             _mock_workspace(mock_config)
             _no_unpushed(mock_git)
             mock_git.status_porcelain.return_value = ""
-            mock_overlay.return_value.get_cleanup_steps.return_value = []
-            mock_overlay.return_value.reap_worktree_external_resources.return_value = []
+            mock_overlay.return_value.provisioning.cleanup_steps.return_value = []
+            mock_overlay.return_value.provisioning.reap_external_resources.return_value = []
             cleanup_worktree(wt, **kwargs)
 
     def test_live_session_keeps_worktree_by_default(self) -> None:

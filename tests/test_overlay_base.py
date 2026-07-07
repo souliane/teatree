@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock
 
-from teatree.core.overlay import MergeGuard, OverlayBase, ProvisionStep
+from teatree.core.overlay import MergeGuard, OverlayBase, OverlayProvisioning, ProvisionStep
 from teatree.core.provision.variant import Variant
 from teatree.core.runners.base import RunnerBase, RunnerResult
 
@@ -32,15 +32,15 @@ def test_overlay_config_defaults():
 
 def test_get_env_extra_returns_empty_dict():
     overlay = _MinimalOverlay()
-    assert overlay.get_env_extra(_make_worktree()) == {}
+    assert overlay.provisioning.env_extra(_make_worktree()) == {}
 
 
 def test_resolve_variant_default_returns_bare_variant():
     """The default hook resolves to a bare variant (#1306, PR-27) — the tenant is the name."""
     overlay = _MinimalOverlay()
-    assert overlay.resolve_variant("client-a") == Variant.bare("client-a")
-    assert overlay.resolve_variant("client-a").canonical_tenant == "client-a"
-    assert overlay.resolve_variant("").canonical_tenant == ""
+    assert overlay.provisioning.resolve_variant("client-a") == Variant.bare("client-a")
+    assert overlay.provisioning.resolve_variant("client-a").canonical_tenant == "client-a"
+    assert overlay.provisioning.resolve_variant("").canonical_tenant == ""
 
 
 def test_classify_customer_display_impact_default_fails_closed():
@@ -50,9 +50,9 @@ def test_classify_customer_display_impact_default_fails_closed():
     display-impacting so the mandatory-E2E gate is never silently skipped.
     """
     overlay = _MinimalOverlay()
-    assert overlay.classify_customer_display_impact(["app/views.py"]) is True
-    assert overlay.classify_customer_display_impact(["README.md"]) is True
-    assert overlay.classify_customer_display_impact([]) is True
+    assert overlay.review.classify_customer_display_impact(["app/views.py"]) is True
+    assert overlay.review.classify_customer_display_impact(["README.md"]) is True
+    assert overlay.review.classify_customer_display_impact([]) is True
 
 
 def test_resolve_variant_supports_alias_mapping_in_override():
@@ -66,119 +66,122 @@ def test_resolve_variant_supports_alias_mapping_in_override():
     the lookup.
     """
 
-    class _AliasOverlay(_MinimalOverlay):
+    class _AliasProvisioning(OverlayProvisioning):
         def resolve_variant(self, name: str) -> Variant:
             aliases = {"client-a-regional": "client-a"}
             return Variant(name=name, canonical_tenant=f"development-{aliases.get(name, name)}")
 
+    class _AliasOverlay(_MinimalOverlay):
+        provisioning = _AliasProvisioning()
+
     overlay = _AliasOverlay()
-    assert overlay.resolve_variant("client-a").canonical_tenant == "development-client-a"
-    assert overlay.resolve_variant("client-a-regional").canonical_tenant == "development-client-a"
-    assert overlay.resolve_variant("client-b").canonical_tenant == "development-client-b"
+    assert overlay.provisioning.resolve_variant("client-a").canonical_tenant == "development-client-a"
+    assert overlay.provisioning.resolve_variant("client-a-regional").canonical_tenant == "development-client-a"
+    assert overlay.provisioning.resolve_variant("client-b").canonical_tenant == "development-client-b"
 
 
 def test_get_run_commands_returns_empty_dict():
     overlay = _MinimalOverlay()
-    assert overlay.get_run_commands(_make_worktree()) == {}
+    assert overlay.runtime.run_commands(_make_worktree()) == {}
 
 
 def test_get_test_command_returns_empty_list():
     overlay = _MinimalOverlay()
-    assert overlay.get_test_command(_make_worktree()) == []
+    assert overlay.runtime.test_command(_make_worktree()) == []
 
 
 def test_get_lint_command_returns_empty_list():
     overlay = _MinimalOverlay()
-    assert overlay.get_lint_command(_make_worktree()) == []
+    assert overlay.runtime.lint_command(_make_worktree()) == []
 
 
 def test_get_e2e_preflight_returns_empty_list_by_default():
     overlay = _MinimalOverlay()
-    assert overlay.get_e2e_preflight(customer="acme", base_url="https://dev.example.com") == []
-    assert overlay.get_e2e_preflight(customer=None, base_url=None) == []
+    assert overlay.e2e.preflight(customer="acme", base_url="https://dev.example.com") == []
+    assert overlay.e2e.preflight(customer=None, base_url=None) == []
 
 
 def test_get_mcp_provider_expectations_default_is_empty():
     """The #2282 hook defaults to ``{}`` — overlay values live in the overlay repo (#251)."""
     overlay = _MinimalOverlay()
-    assert overlay.get_mcp_provider_expectations() == {}
+    assert overlay.connectors.mcp_provider_expectations() == {}
 
 
 def test_get_e2e_scenarios_default_is_empty_tuple():
     """The scenario-manifest seam defaults to ``()`` — overlay scenarios live in the overlay.
 
     Core reads per-feature E2E scenarios through this overlay-agnostic hook
-    (mirroring ``get_e2e_run_provenance``); the default empty tuple keeps an
+    (mirroring ``e2e.run_provenance``); the default empty tuple keeps an
     overlay that ships no scenario manifest inert, so every registered overlay
     resolves without an override.
     """
     overlay = _MinimalOverlay()
-    assert overlay.get_e2e_scenarios("") == ()
-    assert overlay.get_e2e_scenarios("e2e/playwright/contrib/x/y.spec.ts") == ()
+    assert overlay.e2e.scenarios("") == ()
+    assert overlay.e2e.scenarios("e2e/playwright/contrib/x/y.spec.ts") == ()
 
 
 def test_get_e2e_env_extras_returns_empty_dict_by_default():
     overlay = _MinimalOverlay()
-    assert overlay.get_e2e_env_extras({}) == {}
-    assert overlay.get_e2e_env_extras({"WT_VARIANT": "acme"}) == {}
+    assert overlay.e2e.env_extras({}) == {}
+    assert overlay.e2e.env_extras({"WT_VARIANT": "acme"}) == {}
 
 
 def test_get_e2e_playwright_args_returns_empty_list_by_default():
     """No overlay adds Playwright args unless it opts in — keeps the prior command shape."""
     overlay = _MinimalOverlay()
-    assert overlay.get_e2e_playwright_args("") == []
-    assert overlay.get_e2e_playwright_args("playwright/api-flow/foo.spec.ts") == []
+    assert overlay.e2e.playwright_args("") == []
+    assert overlay.e2e.playwright_args("playwright/api-flow/foo.spec.ts") == []
 
 
 def test_get_db_import_strategy_returns_none():
     overlay = _MinimalOverlay()
-    assert overlay.get_db_import_strategy(_make_worktree()) is None
+    assert overlay.provisioning.db_import_strategy(_make_worktree()) is None
 
 
 def test_db_import_returns_false():
     overlay = _MinimalOverlay()
-    assert overlay.db_import(_make_worktree()) is False
+    assert overlay.provisioning.db_import(_make_worktree()) is False
 
 
 def test_db_import_with_force_returns_false():
     overlay = _MinimalOverlay()
-    assert overlay.db_import(_make_worktree(), force=True) is False
+    assert overlay.provisioning.db_import(_make_worktree(), force=True) is False
 
 
 def test_get_post_db_steps_returns_empty_list():
     overlay = _MinimalOverlay()
-    assert overlay.get_post_db_steps(_make_worktree()) == []
+    assert overlay.provisioning.post_db_steps(_make_worktree()) == []
 
 
 def test_get_reset_passwords_command_returns_none():
     overlay = _MinimalOverlay()
-    assert overlay.get_reset_passwords_command(_make_worktree()) is None
+    assert overlay.provisioning.reset_passwords_command(_make_worktree()) is None
 
 
 def test_get_symlinks_returns_empty_list():
     overlay = _MinimalOverlay()
-    assert overlay.get_symlinks(_make_worktree()) == []
+    assert overlay.provisioning.symlinks(_make_worktree()) == []
 
 
 def test_get_services_config_returns_empty_dict():
     overlay = _MinimalOverlay()
-    assert overlay.get_services_config(_make_worktree()) == {}
+    assert overlay.provisioning.services_config(_make_worktree()) == {}
 
 
 def test_get_base_images_returns_empty_list():
     overlay = _MinimalOverlay()
-    assert overlay.get_base_images(_make_worktree()) == []
+    assert overlay.provisioning.base_images(_make_worktree()) == []
 
 
 def test_get_docker_services_returns_empty_set():
     overlay = _MinimalOverlay()
-    assert overlay.get_docker_services(_make_worktree()) == set()
+    assert overlay.provisioning.docker_services(_make_worktree()) == set()
 
 
 def test_reap_worktree_external_resources_returns_empty_list_by_default():
     """#1523: an overlay with no out-of-band resources opts out via the default."""
     overlay = _MinimalOverlay()
-    assert overlay.reap_worktree_external_resources(_make_worktree()) == []
+    assert overlay.provisioning.reap_external_resources(_make_worktree()) == []
 
 
 def test_validate_pr_passes_conforming_title_and_what_why_description():
@@ -225,7 +228,7 @@ def test_detect_variant_returns_empty_string():
 def test_can_auto_merge_default_is_permissive():
     """Default can_auto_merge returns an allowing MergeGuard from the canonical surface."""
     overlay = _MinimalOverlay()
-    guard = overlay.can_auto_merge(target_ref="main", thread_ref="thread-1")
+    guard = overlay.review.can_auto_merge(target_ref="main", thread_ref="thread-1")
     assert isinstance(guard, MergeGuard)
     assert guard.allowed is True
     assert guard.reason == ""
@@ -239,7 +242,7 @@ def test_get_workspace_repos_delegates_to_get_repos():
 
 def test_get_pre_run_steps_returns_empty_list():
     overlay = _MinimalOverlay()
-    assert overlay.get_pre_run_steps(_make_worktree(), "frontend") == []
+    assert overlay.runtime.pre_run_steps(_make_worktree(), "frontend") == []
 
 
 def test_get_tool_commands_returns_empty_list():

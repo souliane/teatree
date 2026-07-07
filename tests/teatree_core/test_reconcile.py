@@ -14,7 +14,7 @@ import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.core.worktree.branch_classification as bc
 from teatree.core.models import Ticket, Worktree
 from teatree.core.models.merge_clear import MergeAudit, MergeClear
-from teatree.core.overlay import OverlayBase
+from teatree.core.overlay import OverlayBase, OverlayProvisioning
 from teatree.core.worktree.reconcile import (
     DoneButUnmerged,
     Drift,
@@ -63,11 +63,15 @@ def _make_ghost(tmp: str, *, dir_name: str = "ticket-ghost") -> tuple[Ticket, Wo
     return ticket, wt, wt_path
 
 
+class _PgUserOverlay_Provisioning(OverlayProvisioning):
+    def env_extra(self, worktree: Worktree) -> dict[str, str]:
+        return {"POSTGRES_USER": "db_superuser", "POSTGRES_HOST": "localhost"}
+
+
 class _PgUserOverlay(CommandOverlay):
+    provisioning = _PgUserOverlay_Provisioning()
     """Overlay that connects to postgres as a non-default superuser role."""
 
-    def get_env_extra(self, worktree: Worktree) -> dict[str, str]:
-        return {"POSTGRES_USER": "db_superuser", "POSTGRES_HOST": "localhost"}
 
 
 def _make(tmp: str, *, db_name: str = "wt_99") -> tuple[Ticket, Worktree, Path]:

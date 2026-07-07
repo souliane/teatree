@@ -16,7 +16,7 @@ from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
 
 from teatree.core.models import Ticket, Worktree
-from teatree.core.overlay import OverlayBase, ProvisionStep, RunCommands
+from teatree.core.overlay import OverlayBase, OverlayRuntime, ProvisionStep, RunCommands
 from teatree.core.overlay_loader import get_overlay, get_overlay_for_ticket, get_overlay_for_worktree
 from teatree.core.runners.service_launch import ServiceLauncher
 from teatree.core.runners.worktree_provision import WorktreeProvisionRunner
@@ -24,7 +24,13 @@ from teatree.core.runners.worktree_start import WorktreeStartRunner
 from teatree.core.runners.worktree_verify import WorktreeVerifyRunner
 
 
+class _NamedOverlay_Runtime(OverlayRuntime):
+    def run_commands(self, worktree: Worktree) -> RunCommands:
+        return {}
+
+
 class _NamedOverlay(OverlayBase):
+    runtime = _NamedOverlay_Runtime()
     def __init__(self, marker: str) -> None:
         super().__init__()
         self.marker = marker
@@ -35,8 +41,6 @@ class _NamedOverlay(OverlayBase):
     def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
         return []
 
-    def get_run_commands(self, worktree: Worktree) -> RunCommands:
-        return {}
 
 
 OVERLAY_A = "overlay-alpha"

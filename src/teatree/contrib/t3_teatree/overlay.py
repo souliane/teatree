@@ -11,7 +11,11 @@ from teatree.core.models import Worktree
 from teatree.overlay_sdk import (
     OverlayBase,
     OverlayConfig,
+    OverlayConnectors,
     OverlayMetadata,
+    OverlayProvisioning,
+    OverlayReview,
+    OverlayRuntime,
     ProvisionStep,
     SkillMetadata,
     clone_root,
@@ -86,12 +90,62 @@ class TeatreeMetadata(OverlayMetadata):
         }
 
 
+class TeatreeConnectors(OverlayConnectors):
+    @override
+    def mcp_provider_expectations(self) -> dict[str, str]:
+        # The teatree dogfood overlay declares no per-server provider — the
+        # connectivity check (#2282) enforces only connected-ness here. The real
+        # per-server values live in the overlay repo (souliane/teatree#251).
+        return {}
+
+
+class TeatreeProvisioning(OverlayProvisioning):
+    @override
+    def reap_external_resources(self, worktree: Worktree) -> list[str]:
+        result = reap_compose_project(compose_project(worktree))
+        return [] if result.is_noop else [str(result)]
+
+
+class TeatreeRuntime(OverlayRuntime):
+    @override
+    def test_command(self, worktree: Worktree) -> list[str]:
+        return ["uv", "run", "pytest"]
+
+    @override
+    def lint_command(self, worktree: Worktree) -> list[str]:
+        return ["prek", "run", "--all-files"]
+
+
+class TeatreeReview(OverlayReview):
+    @override
+    def visual_qa_targets(self, changed_files: list[str]) -> list[str]:
+        teatree_globs = (
+            "src/teatree/**/templates/**",
+            "src/teatree/**/static/**",
+            "src/teatree/core/views/**",
+            "src/teatree/core/urls.py",
+        )
+        return ["/"] if matches_triggers(changed_files, teatree_globs) else []
+
+    @override
+    def classify_customer_display_impact(self, changed_files: list[str]) -> bool:
+        # Teatree is a developer CLI / agent harness with no customer-facing
+        # product surface, so no change ships to a customer display. The
+        # mandatory-E2E gate (#1967) is a no-op for this overlay.
+        _ = changed_files
+        return False
+
+
 class TeatreeOverlay(OverlayBase):
     """Overlay for developing teatree itself."""
 
     django_app: str | None = "teatree.contrib.t3_teatree"
     config = OverlayConfig(settings_module=_SETTINGS_MODULE, overlay_name="t3-teatree")
     metadata = TeatreeMetadata(config)
+    provisioning = TeatreeProvisioning()
+    runtime = TeatreeRuntime()
+    review = TeatreeReview()
+    connectors = TeatreeConnectors()
 
     @override
     def get_repos(self) -> list[str]:
@@ -102,13 +156,6 @@ class TeatreeOverlay(OverlayBase):
         # The teatree overlay relies on the core needs-you sources (pending
         # questions + failed agent runs); it adds none of its own.
         return []
-
-    @override
-    def get_mcp_provider_expectations(self) -> dict[str, str]:
-        # The teatree dogfood overlay declares no per-server provider — the
-        # connectivity check (#2282) enforces only connected-ness here. The real
-        # per-server values live in the overlay repo (souliane/teatree#251).
-        return {}
 
     @override
     def get_workspace_repos(self) -> list[str]:
@@ -186,37 +233,6 @@ class TeatreeOverlay(OverlayBase):
                 requires=frozenset({"python-deps"}),
             ),
         ]
-
-    @override
-    def get_test_command(self, worktree: Worktree) -> list[str]:
-        return ["uv", "run", "pytest"]
-
-    @override
-    def get_lint_command(self, worktree: Worktree) -> list[str]:
-        return ["prek", "run", "--all-files"]
-
-    @override
-    def get_visual_qa_targets(self, changed_files: list[str]) -> list[str]:
-        teatree_globs = (
-            "src/teatree/**/templates/**",
-            "src/teatree/**/static/**",
-            "src/teatree/core/views/**",
-            "src/teatree/core/urls.py",
-        )
-        return ["/"] if matches_triggers(changed_files, teatree_globs) else []
-
-    @override
-    def classify_customer_display_impact(self, changed_files: list[str]) -> bool:
-        # Teatree is a developer CLI / agent harness with no customer-facing
-        # product surface, so no change ships to a customer display. The
-        # mandatory-E2E gate (#1967) is a no-op for this overlay.
-        _ = changed_files
-        return False
-
-    @override
-    def reap_worktree_external_resources(self, worktree: Worktree) -> list[str]:
-        result = reap_compose_project(compose_project(worktree))
-        return [] if result.is_noop else [str(result)]
 
     @override
     def get_eval_scenarios_dir(self) -> Path | None:

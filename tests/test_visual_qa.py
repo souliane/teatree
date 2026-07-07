@@ -32,18 +32,18 @@ class TestDetectTargets:
 
     def test_overlay_overrides_default(self) -> None:
         overlay = MagicMock()
-        overlay.get_visual_qa_targets.return_value = ["/dashboard/", "/admin/"]
+        overlay.review.visual_qa_targets.return_value = ["/dashboard/", "/admin/"]
         assert visual_qa.detect_targets(["a.html"], overlay) == ["/dashboard/", "/admin/"]
 
     def test_overlay_returns_empty_skips(self) -> None:
         overlay = MagicMock()
-        overlay.get_visual_qa_targets.return_value = []
+        overlay.review.visual_qa_targets.return_value = []
         # Even when default triggers would match, the overlay's empty list wins.
         assert visual_qa.detect_targets(["a.html"], overlay) == []
 
     def test_overlay_targets_capped_at_max_pages(self) -> None:
         overlay = MagicMock()
-        overlay.get_visual_qa_targets.return_value = [f"/page-{i}/" for i in range(10)]
+        overlay.review.visual_qa_targets.return_value = [f"/page-{i}/" for i in range(10)]
         result = visual_qa.detect_targets(["a.html"], overlay)
         assert len(result) == visual_qa.MAX_PAGES
 

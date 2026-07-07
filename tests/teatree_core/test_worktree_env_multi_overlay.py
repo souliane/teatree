@@ -19,7 +19,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.core.models import Ticket, Worktree
-from teatree.core.overlay import OverlayBase, ProvisionStep
+from teatree.core.overlay import OverlayBase, OverlayProvisioning, ProvisionStep
 from teatree.core.runners.worktree_provision import WorktreeProvisionRunner
 from teatree.core.worktree.worktree_env import detect_drift, render_env_cache, write_env_cache
 from teatree.core.worktree.worktree_tasks import execute_worktree_provision
@@ -28,10 +28,22 @@ OVERLAY_A = "overlay-alpha"
 OVERLAY_B = "overlay-beta"
 
 
+class _MarkedOverlay_Provisioning(OverlayProvisioning):
+    def __init__(self, overlay: "_MarkedOverlay") -> None:
+        self._overlay = overlay
+
+    def env_extra(self, worktree: Worktree) -> dict[str, str]:
+        return {"MARKER": self._overlay.marker}
+
+    def declared_env_keys(self) -> set[str]:
+        return {"MARKER"}
+
+
 class _MarkedOverlay(OverlayBase):
     def __init__(self, marker: str) -> None:
         super().__init__()
         self.marker = marker
+        self.provisioning = _MarkedOverlay_Provisioning(self)
 
     def get_repos(self) -> list[str]:
         return ["backend"]
@@ -39,11 +51,7 @@ class _MarkedOverlay(OverlayBase):
     def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
         return []
 
-    def get_env_extra(self, worktree: Worktree) -> dict[str, str]:
-        return {"MARKER": self.marker}
 
-    def declared_env_keys(self) -> set[str]:
-        return {"MARKER"}
 
 
 class _MultiOverlayEnvTest(TestCase):

@@ -11,7 +11,7 @@ provisioning and the public repo carries no overlay-specific identifiers
 
 Concurrency 1: one workspace, one fast DB-touching test, then every service
 the overlay declares is started and asserted reachable through
-``overlay.get_readiness_probes``.
+``overlay.runtime.readiness_probes``.
 
 Heavy and environment-bound, so it is skipped unless ALL hold: ``docker``
 is on ``PATH`` (an external full-stack overlay starts its services via
@@ -140,13 +140,13 @@ class TestExternalOverlayProvisioning(ProvisioningIntegrationBase):
         overlay = self.overlay()
         probes: list[Probe] = []
         for repo in _resolvable_repos(overlay):
-            probes.extend(overlay.get_readiness_probes(self._probe_worktree(repo, wt.ports)))
+            probes.extend(overlay.runtime.readiness_probes(self._probe_worktree(repo, wt.ports)))
         return probes
 
     def _start(self, wt: ProvisionedWorktree) -> None:
         overlay = self.overlay()
         workspace_dir = load_config().user.workspace_dir.expanduser()
-        commands = overlay.get_run_commands(self._probe_worktree(_resolvable_repos(overlay)[0], wt.ports))
+        commands = overlay.runtime.run_commands(self._probe_worktree(_resolvable_repos(overlay)[0], wt.ports))
         for command in commands.values():
             if isinstance(command, RunCommand):
                 args = [str(a) for a in command.args]
