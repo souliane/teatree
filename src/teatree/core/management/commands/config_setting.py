@@ -30,7 +30,7 @@ from typing import Annotated
 import typer
 from django_typer.management import TyperCommand, command
 
-from teatree.config import FEATURE_FLAGS, OVERLAY_OVERRIDABLE_SETTINGS, get_effective_settings, load_config
+from teatree.config import FEATURE_FLAGS, OVERLAY_OVERRIDABLE_SETTINGS, get_effective_settings, load_raw_toml
 from teatree.config.feature_flags import flag_trailer, render_flags_audit
 from teatree.config.registries import REGISTRY_SETTINGS
 from teatree.core.config_migration import export_db_to_toml, import_toml_into_db
@@ -203,8 +203,14 @@ class Command(TyperCommand):
         existing row untouched — the mode ``t3 setup`` runs on every update so a
         value the user changed via ``config_setting set`` survives. Without it
         (the default), a re-import refreshes every operational key from the file.
+
+        Reads the RAW file (``load_raw_toml``), NOT ``load_config().raw`` — the latter
+        has already had its ``overlays`` / ``e2e_repos`` registry tables REPLACED by the
+        DB rows (``_inject_db_registries``), so importing it would re-write the stale DB
+        value and silently never migrate an edited ``[overlays.<name>].path`` — the exact
+        mask this remediation exists to clear (souliane/teatree#128).
         """
-        result = import_toml_into_db(load_config().raw, clobber=not no_clobber)
+        result = import_toml_into_db(load_raw_toml(), clobber=not no_clobber)
         for reason in result.skipped_reasons:
             self.stderr.write(f"  {reason}")
         for scope, key in result.rows:

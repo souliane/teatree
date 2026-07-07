@@ -441,6 +441,30 @@ def _check_legacy_overlay_alias() -> None:
         return
 
 
+def _check_registry_toml_drift(config_path: Path | None = None) -> bool:
+    """Hard-FAIL on a DB-home registry table masked by a diverging DB row (#128).
+
+    The ``overlays`` / ``e2e_repos`` registries are DB-home (#1775); a lingering
+    ``[overlays]`` / ``[e2e_repos]`` table in ~/.teatree.toml whose value DIVERGES from
+    the authoritative ``ConfigSetting`` row is silently ignored on read — an overlay
+    ``path`` edit returned the stale worktree value with zero signal (the reported
+    provisioning failure). ``load_config(..., enforce_registry_partition=True)`` turns
+    that mask into a loud ``RegistryTomlMaskError``; the doctor reports it with the
+    exact reconcile command. A clean/absent file passes.
+    """
+    from teatree.config import CONFIG_PATH, RegistryTomlMaskError, load_config  # noqa: PLC0415
+
+    path = config_path if config_path is not None else CONFIG_PATH
+    try:
+        load_config(path, enforce_registry_partition=True)
+    except RegistryTomlMaskError as exc:
+        typer.echo(f"FAIL  {exc}")
+        return False
+    except Exception:  # noqa: BLE001 — a malformed file is a different check's concern; never crash doctor
+        return True
+    return True
+
+
 def _check_stale_path_t3(env: dict[str, str] | None = None) -> bool:
     import os  # noqa: PLC0415
 

@@ -29,6 +29,7 @@ from teatree.cli._doctor_checks import (
     _check_entrypoint_is_primary_clone,
     _check_legacy_overlay_alias,
     _check_mcp_connectivity,
+    _check_registry_toml_drift,
     _check_single_db,
     _check_singletons,
     _check_skills,
@@ -77,6 +78,7 @@ __all__ = (
     "_check_entrypoint_is_primary_clone",
     "_check_legacy_overlay_alias",
     "_check_mcp_connectivity",
+    "_check_registry_toml_drift",
     "_check_single_db",
     "_check_singletons",
     "_check_skills",
@@ -546,6 +548,10 @@ def check() -> bool:
     ok = _check_editable_sanity() and ok
     ok = _check_skills() and ok
     ok = _check_single_db() and ok
+    # DB-home registry drift (#128): a lingering [overlays]/[e2e_repos] TOML table masked
+    # by a diverging ConfigSetting row is silently ignored on read — hard-FAIL with the
+    # reconcile command so a stale overlay path can never be operated on unnoticed.
+    ok = _check_registry_toml_drift() and ok
     ok = _check_stale_uv_venv() and ok
     ok = _check_stale_path_t3() and ok
     ok = _check_agent_session_pins() and ok

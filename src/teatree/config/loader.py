@@ -302,6 +302,85 @@ def _warn_db_home_keys_in_toml(raw: dict, path: Path) -> None:
 # table is the migration fallback.
 
 
+class RegistryTomlMaskError(ValueError):
+    """A DB-home registry table in the TOML is masked by a diverging DB row (#128).
+
+    Raised by ``load_config(..., enforce_registry_partition=True)`` — the strict,
+    opt-in surface ``t3 doctor`` uses. The default ``load_config`` never raises (its
+    40+ hot callers must never brick); it emits the same message as a loud WARNING so
+    the mask is surfaced, never silent.
+    """
+
+
+def _registry_mask_conflicts(raw: dict) -> list[str]:
+    """Registry leaves in the TOML that a diverging DB row silently masks on read.
+
+    The ``overlays`` / ``e2e_repos`` registries are DB-home (#1775):
+    ``_inject_db_registries`` REPLACES the whole ``[overlays]`` / ``[e2e_repos]`` TOML
+    table with its ``ConfigSetting`` row, so a TOML entry/field the DB row DROPS or sets
+    DIFFERENTLY has NO effect on read — souliane/teatree#128, where an overlay ``path``
+    edit returned the stale DB value with zero signal (the reported provisioning failure).
+    Each masked leaf is reported as ``[<key>.<entry>]`` (whole entry dropped) or
+    ``[<key>.<entry>] <field>`` (field absent-from / differs-from the DB entry). A leaf
+    the DB row AGREES with resolves to the same value and is NOT reported. No DB row for
+    the key at all is not a conflict — the TOML table is then the pre-migration fallback.
+
+    The DB row is read Django-free via ``cold_reader`` (the same store the injection
+    reads), and only for a key whose TOML table is non-empty, so a clean file touches no
+    connection.
+    """
+    from teatree.config import cold_reader  # noqa: PLC0415 — Django-free DB read on the pre-Django discovery path
+    from teatree.config.registries import REGISTRY_KEYS  # noqa: PLC0415
+
+    conflicts: list[str] = []
+    for key in REGISTRY_KEYS:
+        toml_table = raw.get(key)
+        if not isinstance(toml_table, dict) or not toml_table:
+            continue
+        db_registry = cold_reader.read_setting(key)
+        if not isinstance(db_registry, dict):
+            continue
+        for entry_name, toml_entry in toml_table.items():
+            if not isinstance(toml_entry, dict):
+                continue
+            db_entry = db_registry.get(entry_name)
+            if not isinstance(db_entry, dict):
+                conflicts.append(f"[{key}.{entry_name}]")
+                continue
+            conflicts.extend(
+                f"[{key}.{entry_name}] {field}"
+                for field, toml_val in toml_entry.items()
+                if field not in db_entry or db_entry[field] != toml_val
+            )
+    return conflicts
+
+
+def _registry_mask_message(path: Path, conflicts: list[str]) -> str:
+    """The loud remediation string naming the masked leaves and BOTH reconcile commands."""
+    return (
+        f"Registry tables in {path} are DB-home (#1775) and IGNORED on read — the ConfigSetting "
+        f"`overlays`/`e2e_repos` row REPLACES the whole file table, so these edits have NO effect "
+        f"and mask a stale DB value with zero signal (souliane/teatree#128): "
+        f"{', '.join(conflicts)}. The DB row is authoritative; reconcile it by migrating the file "
+        f"into the store with `t3 <overlay> config_setting import` (then delete the table from the "
+        f"file), or set the registry row directly with "
+        f"`t3 <overlay> config_setting set overlays '<json>'`."
+    )
+
+
+def load_raw_toml(path: Path | None = None) -> dict:
+    """Parse the config file WITHOUT the DB-registry injection or the mask check.
+
+    The migration read: ``config_setting import`` seeds the DB store from the ACTUAL file
+    registry tables (an edited ``[overlays.<name>].path``), so it must see the file values,
+    not the DB-injected ones ``load_config`` returns — reading the injected value would
+    re-import the stale DB row and never migrate the edit (souliane/teatree#128).
+    """
+    if path is None:
+        path = _facade.CONFIG_PATH
+    return _load_toml(path) if path.is_file() else {}
+
+
 def _inject_db_registries(raw: dict) -> None:
     """Override ``raw['overlays']`` / ``raw['e2e_repos']`` with their DB rows when present.
 
@@ -319,7 +398,7 @@ def _inject_db_registries(raw: dict) -> None:
             raw[key] = stored
 
 
-def load_config(path: Path | None = None) -> TeaTreeConfig:
+def load_config(path: Path | None = None, *, enforce_registry_partition: bool = False) -> TeaTreeConfig:
     if path is None:
         path = _facade.CONFIG_PATH
     # The hard partition (#1775) is COMPLETE for settings (eliminate-~/.teatree.toml):
@@ -336,6 +415,17 @@ def load_config(path: Path | None = None) -> TeaTreeConfig:
         _warn_db_home_keys_in_toml(raw, path)
         _warn_retired_keys_in_toml(raw, path)
         _warn_migrated_keys_in_toml(raw, path)
+        # BEFORE ``_inject_db_registries`` overwrites the TOML registry tables — while
+        # ``raw['overlays']`` / ``raw['e2e_repos']`` still hold the FILE values — surface any
+        # divergence with the authoritative DB row (souliane/teatree#128). ``enforce`` (the
+        # strict ``t3 doctor`` surface) fails LOUD; the default hot path emits the same
+        # message as a WARN so the mask is never silent yet the 40+ callers never brick.
+        conflicts = _registry_mask_conflicts(raw)
+        if conflicts:
+            message = _registry_mask_message(path, conflicts)
+            if enforce_registry_partition:
+                raise RegistryTomlMaskError(message)
+            _logger.warning("%s", message)
     _inject_db_registries(raw)
     return TeaTreeConfig(user=UserSettings(), raw=raw)
 
