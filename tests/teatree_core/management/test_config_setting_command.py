@@ -233,6 +233,8 @@ class TestConfigSettingFlagsAudit(TestCase):
 class TestConfigSettingImport(TestCase):
     @pytest.fixture(autouse=True)
     def _config_path(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.tmp_path = tmp_path
+        self.monkeypatch = monkeypatch
         self.config_path = tmp_path / ".teatree.toml"
         monkeypatch.setattr(config_facade, "CONFIG_PATH", self.config_path)
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
@@ -311,6 +313,37 @@ class TestConfigSettingImport(TestCase):
         self.config_path.write_text('[teatree]\nmode = "interactive"\n', encoding="utf-8")
         call_command("config_setting", "import", stdout=StringIO())
         assert ConfigSetting.objects.get_effective("mode") == "interactive"
+
+    def test_import_migrates_an_edited_overlay_path_over_a_stale_registry_row(self) -> None:
+        # souliane/teatree#128: the remediation must actually WORK. A stale ``overlays``
+        # registry row masks the file table on read (``_inject_db_registries``), so an
+        # import that read ``load_config().raw`` would re-write the stale value and never
+        # migrate an edited ``[overlays.<name>].path``. Reading the RAW file migrates the
+        # edited path — clearing the mask. The stale row lives in the cold store the
+        # injection reads (``T3_CONFIG_DB``); the migrated row lands in the ORM store.
+        import json  # noqa: PLC0415
+        import sqlite3  # noqa: PLC0415
+
+        cold_db = self.tmp_path / "cold.sqlite3"
+        conn = sqlite3.connect(cold_db)
+        try:
+            conn.execute(
+                "CREATE TABLE teatree_config_setting ("
+                "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+            )
+            conn.execute(
+                "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'overlays', ?)",
+                (json.dumps({"myproj": {"path": "~/workspace/stale-worktree"}}),),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        self.monkeypatch.setenv("T3_CONFIG_DB", str(cold_db))
+        self.config_path.write_text('[overlays.myproj]\npath = "~/workspace/canonical"\n', encoding="utf-8")
+
+        call_command("config_setting", "import", stdout=StringIO())
+
+        assert ConfigSetting.objects.get_effective("overlays") == {"myproj": {"path": "~/workspace/canonical"}}
 
 
 class TestConfigSettingOverlayScope(TestCase):

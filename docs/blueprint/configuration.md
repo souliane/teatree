@@ -159,7 +159,16 @@ registry and the `[e2e_repos]` registry — is DB-home too: each is stored as on
 from the store via the Django-free `cold_reader`, so every existing reader
 (`discover_overlays`, `load_e2e_repos`) is untouched and an absent `~/.teatree.toml` boots a
 fully DB-configured teatree. The TOML tables are consulted ONLY as a pre-migration fallback,
-so the file can be deleted once `config_setting import` has run.)
+so the file can be deleted once `config_setting import` has run. Because the DB row REPLACES
+the whole file table, a lingering `[overlays.<name>]` / `[e2e_repos.<name>]` value that
+DIVERGES from the DB row would be silently masked on read — editing an overlay `path` in the
+file had NO effect and returned the stale DB value with zero signal
+([#128](https://github.com/souliane/teatree/issues/128)). `load_config` now surfaces that
+mask: it names each masked leaf and both reconcile commands as a loud WARN by default, RAISES
+`RegistryTomlMaskError` under `enforce_registry_partition=True`, and `t3 doctor`'s
+`_check_registry_toml_drift` hard-FAILs on it. The remediation actually works because
+`config_setting import` reads the RAW file (`load_raw_toml`), not the DB-injected `config.raw`
+— so an edited `path` is migrated instead of the stale DB row re-written.)
 `workspace_dir` is **DB-home** and
 per-overlay overridable (it is read only after Django is up): it names the
 per-overlay **WORKTREE root** where ticket worktrees are created — worktrees
