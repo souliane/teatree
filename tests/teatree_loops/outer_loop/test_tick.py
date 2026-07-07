@@ -115,7 +115,22 @@ class TestTickAdvanceBranches(TestCase):
         exp = self._implementing()
         exp.arm_measure(now=timezone.now() - dt.timedelta(days=30))
         result = run_tick(settings=_open_settings(measure_days=7), seams=_seams())
-        assert result.action in {"kept", "revert_pending"}
+        assert result.action in {"keep_pending", "revert_pending"}
+
+    def test_keep_pending_asks_then_awaits_a_human(self) -> None:
+        exp = self._implementing()
+        exp.arm_measure()
+        exp.request_keep(post_snapshot=_baseline(), merged_sha="feed", reason="improved")
+        # First tick asks the human to approve the keep (records the DeferredQuestion).
+        first = run_tick(settings=_open_settings(), seams=_seams())
+        assert first.action == "keep_asked"
+        exp.refresh_from_db()
+        assert exp.keep_question is not None
+        # Subsequent ticks wait for `t3 outer resolve-keep` (no auto-keep, no dead-end).
+        second = run_tick(settings=_open_settings(), seams=_seams())
+        assert second.action == "waiting"
+        assert second.reason == "awaiting_human_keep"
+        assert second.experiment_id == exp.pk
 
     def test_revert_pending_asks_then_awaits_a_human(self) -> None:
         exp = self._implementing()

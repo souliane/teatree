@@ -71,6 +71,16 @@ def resolve_revert_command(
     call_command("outer", "resolve-revert", experiment_id, revert_sha=revert_sha)
 
 
+@outer_app.command("resolve-keep")
+def resolve_keep_command(experiment_id: int) -> None:
+    """Close a KEEP_PENDING experiment to terminal KEPT, freeing the slot."""
+    ensure_django()
+
+    from django.core.management import call_command  # noqa: PLC0415 — deferred until ensure_django() bootstraps Django
+
+    call_command("outer", "resolve-keep", experiment_id)
+
+
 @outer_app.command("history")
 def history_command(
     *,

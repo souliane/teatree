@@ -115,6 +115,21 @@ class Command(TyperCommand):
         resolve_revert(experiment, revert_sha=revert_sha.strip())
         self.stdout.write(f"reverted experiment #{experiment.pk} (state={experiment.state}).")
 
+    @command(name="resolve-keep")
+    def resolve_keep(self, experiment_id: int) -> None:
+        """Close a KEEP_PENDING experiment to terminal KEPT, freeing the slot."""
+        from teatree.loops.outer_loop.keep import resolve_keep  # noqa: PLC0415 — cross-layer import cycle
+
+        experiment = OuterLoopExperiment.objects.filter(pk=experiment_id).first()
+        if experiment is None:
+            self.stderr.write(f"  no experiment #{experiment_id}.")
+            raise SystemExit(1)
+        if experiment.state != OuterLoopExperiment.State.KEEP_PENDING:
+            self.stderr.write(f"  experiment #{experiment_id} is {experiment.state}, not keep_pending.")
+            raise SystemExit(1)
+        resolve_keep(experiment)
+        self.stdout.write(f"kept experiment #{experiment.pk} (state={experiment.state}).")
+
     @command(name="history")
     def history(
         self,

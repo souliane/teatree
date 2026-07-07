@@ -2,9 +2,10 @@
 
 Integration-first against the real DB: every state helper is a guarded transition
 that raises on an illegal source state, and :meth:`OuterLoopExperiment.admit` /
-:meth:`record_reverted` additionally RAISE unless a consumed (answered)
-DeferredQuestion FK exists — the structural human-in-the-loop the outer loop
-relies on (there is no auto-admit / auto-revert writer to assert against).
+:meth:`record_kept` / :meth:`record_reverted` additionally RAISE unless a consumed
+(answered) DeferredQuestion FK exists — the structural human-in-the-loop the outer
+loop relies on (there is no auto-admit / auto-keep / auto-revert writer to assert
+against).
 """
 
 import datetime as dt
@@ -115,6 +116,39 @@ class TestRatifyGate(TestCase):
         assert reloaded.is_terminal
 
 
+class TestKeepGate(TestCase):
+    def _keep_pending(self) -> OuterLoopExperiment:
+        exp = _make_experiment(
+            hypothesis="H",
+            target_provider_id="review_catch",
+            source=OuterLoopExperiment.Source.SIGNAL_REGRESSION,
+            baseline_snapshot=_snapshot(),
+        )
+        exp.attach_ratification(_answered_question())
+        exp.admit()
+        exp.begin_implementation(_ticket())
+        exp.arm_measure()
+        exp.request_keep(post_snapshot=_snapshot(aggregate=0.85), merged_sha="feed", reason="improved")
+        return exp
+
+    def test_record_kept_requires_a_consumed_keep_question(self) -> None:
+        # The keep gate mirrors the admit gate: KEEP_PENDING cannot reach KEPT without
+        # a consumed (answered) DeferredQuestion — record_kept itself raises unmet.
+        exp = self._keep_pending()
+        exp.attach_keep_question(DeferredQuestion.record("Keep?", options_hash="h"))
+        assert exp.state == OuterLoopExperiment.State.KEEP_PENDING
+        with pytest.raises(OuterLoopExperimentError):
+            exp.record_kept()
+        assert OuterLoopExperiment.objects.get(pk=exp.pk).state == OuterLoopExperiment.State.KEEP_PENDING
+
+    def test_record_kept_succeeds_after_the_question_is_answered(self) -> None:
+        exp = self._keep_pending()
+        exp.keep_question = _answered_question()
+        exp.save(update_fields=["keep_question"])
+        exp.record_kept()
+        assert OuterLoopExperiment.objects.get(pk=exp.pk).state == OuterLoopExperiment.State.KEPT
+
+
 class TestFullPipeline(TestCase):
     def _admitted(self) -> OuterLoopExperiment:
         exp = _make_experiment(
@@ -127,12 +161,21 @@ class TestFullPipeline(TestCase):
         exp.admit()
         return exp
 
-    def test_kept_path_binds_the_merged_sha(self) -> None:
+    def test_kept_path_is_gated_on_a_consumed_keep_question(self) -> None:
         exp = self._admitted()
         exp.begin_implementation(_ticket())
         exp.arm_measure()
         assert exp.measure_started_at is not None
-        exp.record_kept(post_snapshot=_snapshot(aggregate=0.85), merged_sha="deadbeef", reason="improved")
+        exp.request_keep(post_snapshot=_snapshot(aggregate=0.85), merged_sha="deadbeef", reason="improved")
+        assert OuterLoopExperiment.objects.get(pk=exp.pk).state == OuterLoopExperiment.State.KEEP_PENDING
+        exp.attach_keep_question(DeferredQuestion.record("Keep?"))
+        with pytest.raises(OuterLoopExperimentError):
+            exp.record_kept()
+        # Once the keep question is answered, the keep lands and binds the merged sha.
+        answered = _answered_question()
+        exp.keep_question = answered
+        exp.save(update_fields=["keep_question"])
+        exp.record_kept()
         reloaded = OuterLoopExperiment.objects.get(pk=exp.pk)
         assert reloaded.state == OuterLoopExperiment.State.KEPT
         assert reloaded.merged_sha == "deadbeef"
@@ -172,7 +215,11 @@ class TestIllegalTransitions(TestCase):
         with pytest.raises(OuterLoopExperimentError):
             exp.arm_measure()
         with pytest.raises(OuterLoopExperimentError):
-            exp.record_kept(post_snapshot=_snapshot(), merged_sha="x", reason="r")
+            exp.request_keep(post_snapshot=_snapshot(), merged_sha="x", reason="r")
+        with pytest.raises(OuterLoopExperimentError):
+            exp.attach_keep_question(DeferredQuestion.record("Q"))
+        with pytest.raises(OuterLoopExperimentError):
+            exp.record_kept()
         with pytest.raises(OuterLoopExperimentError):
             exp.request_revert(post_snapshot=_snapshot(), reason="r")
         with pytest.raises(OuterLoopExperimentError):

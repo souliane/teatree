@@ -83,12 +83,14 @@ class TestMeasure(TestCase):
             decision = measure_and_decide(exp, post_score=_score([_sig("review_catch", 0.90)]))
         assert decision.keep is True
 
-    def test_improving_experiment_is_kept(self) -> None:
+    def test_improving_experiment_requests_keep(self) -> None:
+        # H1-KEEP: an improving experiment parks in KEEP_PENDING (awaiting a human's
+        # keep-ratification), never auto-KEPT.
         exp = self._measuring(_score([_sig("review_catch", 0.50), _sig("first_try_green", 0.80)]))
         post = _score([_sig("review_catch", 0.80), _sig("first_try_green", 0.80)])
         decision = measure_and_decide(exp, post_score=post)
         assert decision.keep is True
-        assert OuterLoopExperiment.objects.get(pk=exp.pk).state == OuterLoopExperiment.State.KEPT
+        assert OuterLoopExperiment.objects.get(pk=exp.pk).state == OuterLoopExperiment.State.KEEP_PENDING
 
     def test_non_improving_experiment_requests_revert(self) -> None:
         exp = self._measuring(_score([_sig("review_catch", 0.50)]))

@@ -23,6 +23,7 @@ from teatree.core.models import DeferredQuestion, FactoryScoreSnapshot, OuterLoo
 from teatree.core.models.ticket import Ticket
 from teatree.loops.outer_loop.guards import CONVERGED, GuardSeams, OuterLoopSettings, admission_verdict, evaluate_guards
 from teatree.loops.outer_loop.implement import schedule_experiment_fix
+from teatree.loops.outer_loop.keep import ask_keep
 from teatree.loops.outer_loop.measure import arm_measurement, horizon_elapsed, measure_and_decide
 from teatree.loops.outer_loop.propose import select_proposal
 from teatree.loops.outer_loop.ratify import ask_ratification, try_admit
@@ -122,7 +123,22 @@ def _advance(
         return _advance_implementing(experiment, merged_probe=merged_probe, now=now)
     if experiment.state == state.MEASURING:
         return _advance_measuring(experiment, settings, overlay=overlay, now=now)
+    return _advance_pending_decision(experiment)
+
+
+def _advance_pending_decision(experiment: OuterLoopExperiment) -> OuterLoopTickResult:
+    """A post-measure experiment awaiting the human's keep/revert decision."""
+    if experiment.state == OuterLoopExperiment.State.KEEP_PENDING:
+        return _advance_keep_pending(experiment)
     return _advance_revert_pending(experiment)
+
+
+def _advance_keep_pending(experiment: OuterLoopExperiment) -> OuterLoopTickResult:
+    """Ask the human to approve the keep (once), then wait for `t3 outer resolve-keep`."""
+    if experiment.keep_question is None:
+        ask_keep(experiment)
+        return OuterLoopTickResult(action="keep_asked", experiment_id=experiment.pk)
+    return OuterLoopTickResult(action="waiting", reason="awaiting_human_keep", experiment_id=experiment.pk)
 
 
 def _advance_revert_pending(experiment: OuterLoopExperiment) -> OuterLoopTickResult:
@@ -158,7 +174,9 @@ def _advance_measuring(
     if not horizon_elapsed(experiment, measure_days=settings.outer_loop_measure_days, now=moment):
         return OuterLoopTickResult(action="waiting", reason="horizon_not_elapsed", experiment_id=experiment.pk)
     decision = measure_and_decide(experiment, overlay=overlay, now=now)
-    return OuterLoopTickResult(action="kept" if decision.keep else "revert_pending", experiment_id=experiment.pk)
+    return OuterLoopTickResult(
+        action="keep_pending" if decision.keep else "revert_pending", experiment_id=experiment.pk
+    )
 
 
 def _park_converged(overlay: str) -> None:

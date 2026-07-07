@@ -60,3 +60,12 @@ class TestOuterCliDelegation:
             result = runner.invoke(outer_app, ["resolve-revert", "7", "--revert-sha", "cafe"])
         assert result.exit_code == 0
         call_mock.assert_called_once_with("outer", "resolve-revert", 7, revert_sha="cafe")
+
+    def test_resolve_keep_delegates(self) -> None:
+        with (
+            patch("teatree.cli.outer.ensure_django"),
+            patch("django.core.management.call_command") as call_mock,
+        ):
+            result = runner.invoke(outer_app, ["resolve-keep", "7"])
+        assert result.exit_code == 0
+        call_mock.assert_called_once_with("outer", "resolve-keep", 7)

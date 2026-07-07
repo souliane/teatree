@@ -44,9 +44,10 @@ def measure_and_decide(
 ) -> Decision:
     """Take the post score, apply the keep-rule, and resolve the experiment.
 
-    KEEP → ``KEPT`` bound to the current HEAD sha; otherwise → ``REVERT_PENDING``.
-    The baseline is the experiment's admission snapshot; a missing baseline is a
-    conservative REVERT (we cannot prove improvement without it).
+    KEEP → ``KEEP_PENDING`` bound to the current HEAD sha (a human ratifies the keep
+    via ``t3 outer resolve-keep``); otherwise → ``REVERT_PENDING``. The baseline is
+    the experiment's admission snapshot; a missing baseline is a conservative REVERT
+    (we cannot prove improvement without it).
     """
     resolved_post = post_score if post_score is not None else read_score(overlay=overlay, now=now)
     post_snapshot = FactoryScoreSnapshot.objects.record_snapshot(
@@ -65,7 +66,7 @@ def measure_and_decide(
         regress_band=experiment.regress_band,
     )
     if decision.keep:
-        experiment.record_kept(post_snapshot=post_snapshot, merged_sha=post_snapshot.tree_sha, reason=decision.reason)
+        experiment.request_keep(post_snapshot=post_snapshot, merged_sha=post_snapshot.tree_sha, reason=decision.reason)
     else:
         experiment.request_revert(post_snapshot=post_snapshot, reason=decision.reason)
     return decision
