@@ -48,20 +48,6 @@ def _default_messaging_resolver(overlay: str) -> MessagingBackend | None:
     return messaging_from_overlay(overlay or None)
 
 
-def _ambient_directive_detection_enabled() -> bool:
-    """Whether inbound DIRECTIVE events route to capture — the dark ``ambient_directive_detection_enabled`` (#116).
-
-    Its OWN flag, NOT derived from ``directive_loop_enabled``: arming the explicit
-    directive loop must never silently arm ambient detection of untrusted inbound
-    content (the lethal-trifecta precondition). Resolved globally — an inbound Slack
-    directive carries no forge URL to pick an overlay. Off (the default) keeps
-    ``route_event`` dropping DIRECTIVE events exactly as an unrouteable intent.
-    """
-    from teatree.config import get_effective_settings  # noqa: PLC0415 — cross-layer import cycle
-
-    return bool(get_effective_settings(None).ambient_directive_detection_enabled)
-
-
 def _event_forge_url(event: "IncomingEvent") -> str:
     """Best-effort forge URL/slug for *event*, for overlay resolution.
 
@@ -141,9 +127,7 @@ class IncomingEventsScanner:
     def _handle(self, event: "IncomingEvent") -> ScanSignal | None:
         self._resolve_parent_text(event)
         classification = classify_event(event)
-        action = route_event(
-            event, classification, ambient_directive_detection_enabled=_ambient_directive_detection_enabled()
-        )
+        action = route_event(event, classification)
         return self._execute(event, action)
 
     def _resolve_parent_text(self, event: "IncomingEvent") -> None:
@@ -214,33 +198,8 @@ class IncomingEventsScanner:
                     summary=f"status update from {event.source}",
                     payload={"event_id": event.pk, "target_ref": action.target_ref},
                 )
-            case RoutedAction.Kind.CAPTURE_DIRECTIVE:
-                return self._signal_reader_dispatch_needed(event)
             case RoutedAction.Kind.DROP:
                 return None
-
-    @staticmethod
-    def _signal_reader_dispatch_needed(event: "IncomingEvent") -> ScanSignal | None:
-        """Signal that an ambient DIRECTIVE event awaits a quarantined reader — mint NOTHING (#116).
-
-        Reached only when ``ambient_directive_detection_enabled`` gated ``route_event``
-        into a ``CAPTURE_DIRECTIVE`` action, so intake stays inert at default config. The
-        ambient raw-mint is DISABLED: an untrusted ``event.body`` is NEVER minted into a
-        ``Directive`` here (that would put raw attacker text on ``Directive.raw_text``,
-        which a downstream tooled interpreter would then process). The ONLY sanctioned
-        ``IncomingEvent → Directive`` path is the no-tools/no-creds reader →
-        ``directive_candidate_gate`` recorder, whose dispatch arrives with #105. Until
-        then this emits a signal and leaves the raw body inert on the ``IncomingEvent``.
-        The explicit ``t3 <overlay> directive capture`` CLI path (trusted, ``source=CLI``)
-        is unaffected — it mints directly, never through this ambient path.
-        """
-        if not (event.body or "").strip():
-            return None
-        return ScanSignal(
-            kind="incoming_event.directive_reader_needed",
-            summary=f"ambient directive from {event.source} awaits a quarantined reader dispatch (#105)",
-            payload={"event_id": event.pk},
-        )
 
     @staticmethod
     def _handle_schedule_merge(event: "IncomingEvent", action: RoutedAction) -> ScanSignal:

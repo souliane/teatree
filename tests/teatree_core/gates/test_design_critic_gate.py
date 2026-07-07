@@ -11,7 +11,8 @@ gate mirrors the FAIL items into ``CriticFinding(transition="plan")`` — it nev
 
 Transition scoping, dark-inert cost-parity, and the ``Ticket.plan()`` wiring are pinned
 alongside — the design critic never fires at mark_delivered/merge, and is a strict no-op
-(no dispatch) while ``design_critic_live`` is dark.
+(no dispatch) while its arming flag ``directive_loop_enabled`` is dark (#104: the
+advisory-only design critic folds into the directive-loop flag).
 """
 
 import contextlib
@@ -26,7 +27,7 @@ from teatree.core.gates.design_critic_gate import (
     build_design_contract,
     check_design_critic,
     covering_verdict,
-    design_critic_live,
+    design_critic_armed,
     plan_head_sha,
     record_design_findings,
 )
@@ -109,17 +110,21 @@ def _one_fail(slug: str, citation: str) -> list[dict]:
 
 @contextlib.contextmanager
 def _live() -> Iterator[None]:
-    with patch.object(design_critic_gate, "get_effective_settings", return_value=UserSettings(design_critic_live=True)):
+    # #104: the design critic is armed BY the directive-loop flag — it is advisory-only
+    # and fires only for directive-linked tickets, so it carries no independent switch.
+    with patch.object(
+        design_critic_gate, "get_effective_settings", return_value=UserSettings(directive_loop_enabled=True)
+    ):
         yield
 
 
-class TestLiveResolution(TestCase):
+class TestArmedResolution(TestCase):
     def test_dark_by_default(self) -> None:
-        assert design_critic_live("t3-teatree") is False
+        assert design_critic_armed("t3-teatree") is False
 
-    def test_live_when_flag_on(self) -> None:
+    def test_armed_when_directive_loop_enabled(self) -> None:
         with _live():
-            assert design_critic_live("t3-teatree") is True
+            assert design_critic_armed("t3-teatree") is True
 
 
 class TestPlanHeadSha(TestCase):

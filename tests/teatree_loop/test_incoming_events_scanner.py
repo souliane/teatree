@@ -564,8 +564,13 @@ class TestIncomingEventsScannerReliability(TestCase):
         handle.assert_not_called()
 
 
-class TestCaptureDirectiveWiring(TestCase):
-    """The inbound CAPTURE_DIRECTIVE path (north-star PR-7, #63) — gated by the flag."""
+class TestDirectiveEventIsUnrouteable(TestCase):
+    """#105: ambient directive detection is deleted — a DIRECTIVE event mints NOTHING.
+
+    The scanner drains a DIRECTIVE-classified event exactly as an unrouteable intent:
+    it is marked processed, no ``Directive`` is written, and no reader-dispatch signal is
+    emitted. The only ``Directive`` producer is the explicit ``Directive.objects.capture``.
+    """
 
     def _directive_event(self) -> IncomingEvent:
         return _event(
@@ -580,37 +585,21 @@ class TestCaptureDirectiveWiring(TestCase):
         return IntentClassification(event=event, intent=IntentClassification.Intent.DIRECTIVE, confidence=0.9)
 
     @patch("teatree.loop.scanners.incoming_events.classify_event")
-    def test_ambient_flag_on_signals_reader_needed_and_mints_no_raw_directive(self, mock_classify: object) -> None:
-        # #116 (RED scenario B1): even flag-on, the ambient path NEVER mints a Directive
-        # from the raw event.body — it only signals a quarantined reader dispatch is
-        # needed (#105). Restoring the raw mint turns this RED (a Directive appears).
-        ConfigSetting.objects.set_value("ambient_directive_detection_enabled", value=True)
+    def test_a_directive_event_is_dropped_and_mints_nothing(self, mock_classify: object) -> None:
         event = self._directive_event()
         mock_classify.return_value = self._directive_classification(event)
         signals = IncomingEventsScanner().scan()
         event.refresh_from_db()
         assert event.processed_at is not None
         assert Directive.objects.count() == 0
-        assert any(s.kind == "incoming_event.directive_reader_needed" for s in signals)
-        assert not any(s.kind == "incoming_event.directive_captured" for s in signals)
-        # the raw attacker body stays inert on the IncomingEvent, never on a Directive
+        assert not any(s.kind == "incoming_event.directive_reader_needed" for s in signals)
+        # the raw attacker body stays inert on the IncomingEvent, never promoted anywhere
         assert event.body.strip()
 
     @patch("teatree.loop.scanners.incoming_events.classify_event")
-    def test_flag_off_drops_a_directive_event_without_capturing(self, mock_classify: object) -> None:
-        # Flag-off parity at the scanner: a DIRECTIVE event with the flag off is DROPped
-        # exactly as an unrouteable intent — no Directive row is written.
-        event = self._directive_event()
-        mock_classify.return_value = self._directive_classification(event)
-        IncomingEventsScanner().scan()
-        event.refresh_from_db()
-        assert event.processed_at is not None
-        assert Directive.objects.count() == 0
-
-    @patch("teatree.loop.scanners.incoming_events.classify_event")
-    def test_directive_loop_flag_alone_does_not_arm_ambient_detection(self, mock_classify: object) -> None:
-        # #116 (RED scenario 6): the ambient flag is DECOUPLED from directive_loop_enabled —
-        # arming the explicit loop must NOT silently arm ambient capture of untrusted content.
+    def test_directive_loop_enabled_does_not_route_a_directive_event(self, mock_classify: object) -> None:
+        # Enabling the explicit directive loop must NOT route an untrusted inbound
+        # DIRECTIVE event anywhere — there is no ambient path to arm.
         ConfigSetting.objects.set_value("directive_loop_enabled", value=True)
         event = self._directive_event()
         mock_classify.return_value = self._directive_classification(event)

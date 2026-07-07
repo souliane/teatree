@@ -20,7 +20,6 @@ from teatree.core.models import IncomingEvent, IntentClassification
 class _Kind(StrEnum):
     SCHEDULE_TASK = "schedule_task"
     SCHEDULE_MERGE = "schedule_merge"
-    CAPTURE_DIRECTIVE = "capture_directive"
     ALERT_USER = "alert_user"
     RECORD_ONLY = "record_only"
     DROP = "drop"
@@ -42,29 +41,14 @@ _INTENT_TO_PHASE = {
 }
 
 
-def route_event(
-    event: IncomingEvent,
-    classification: IntentClassification,
-    *,
-    ambient_directive_detection_enabled: bool = False,
-) -> RoutedAction:
+def route_event(event: IncomingEvent, classification: IntentClassification) -> RoutedAction:
     """Route an event to a concrete action; a pure value, never a side effect.
 
-    ``ambient_directive_detection_enabled`` (#116) gates the ambient ``DIRECTIVE``
-    intent — its OWN dark flag, decoupled from ``directive_loop_enabled`` so enabling
-    the explicit directive loop can never silently arm ambient detection. While off
-    (the default) a ``DIRECTIVE`` event is DROPped exactly as an unrouteable intent —
-    flag-off parity, so intake is inert. When on, it yields a ``CAPTURE_DIRECTIVE``
-    action the caller routes through the fail-closed reader→recorder firewall (a
-    ``Directive`` is minted only from a schema-validated candidate).
+    A ``DIRECTIVE`` intent is unrouteable and DROPs (#105): ambient directive detection
+    is deleted, so the only ``Directive`` producer is the explicit
+    ``Directive.objects.capture`` (the CLI + ``/t3:directive`` path, ``source=CLI``).
     """
     intent = classification.intent
-    if intent == IntentClassification.Intent.DIRECTIVE and ambient_directive_detection_enabled:
-        return RoutedAction(
-            kind=RoutedAction.Kind.CAPTURE_DIRECTIVE,
-            target_ref=event.channel_ref,
-            detail=event.body[:255],
-        )
     if intent in _INTENT_TO_PHASE:
         return RoutedAction(
             kind=RoutedAction.Kind.SCHEDULE_TASK,

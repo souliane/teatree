@@ -261,8 +261,8 @@ CRITIC_RUBRIC: tuple[CriticRubricItem, ...] = (
     ),
     # The design critic (north-star PR-5): four LLM items judged at
     # ``transition="plan"`` for directive tickets — the generic-vs-hack judgment the
-    # deterministic ``mechanism_placement`` section can't make. Advisory-first behind
-    # the ``design_critic_live`` DARK flag; the deterministic ``mechanism_conforms``
+    # deterministic ``mechanism_placement`` section can't make. Advisory-first, armed by
+    # the ``directive_loop_enabled`` DARK flag; the deterministic ``mechanism_conforms``
     # section is the blocking teeth, these are the semantic net. The full judging
     # rubric (the ratified sketch, the N=2 litmus) lives in
     # ``design_critic_gate.build_design_contract``.

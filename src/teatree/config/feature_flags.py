@@ -13,7 +13,8 @@ the flag's VALUE lives in the ``ConfigSetting`` store. This is the
 typed-registry-plus-fitness-test idiom of ``SETTING_HOMES`` / ``COLD_HOOK_SETTINGS``
 / ``BOOTSTRAP_FILE_ONLY_SETTINGS``: the registry is pure data, and the conformance
 suite in ``tests/config/test_feature_flags.py`` keeps every entry honest — each
-must name a real ``bool`` ``UserSettings`` field registered in
+must name a real ``bool``-or-``StrEnum`` ``UserSettings`` field (most flags are
+on/off bools; ``critic_gate_mode`` is a tri-state ``StrEnum``) registered in
 ``OVERLAY_OVERRIDABLE_SETTINGS``, carry a non-empty ``tracking_issue`` and a valid
 ``stage``, and (for a ``DARK`` flag) default to its own ``off_value`` so a dark
 feature can never ship default-ON without a code-reviewed stage demotion.
@@ -21,6 +22,8 @@ feature can never ship default-ON without a code-reviewed stage demotion.
 
 from dataclasses import dataclass
 from enum import StrEnum
+
+from teatree.config.enums import CriticGateMode
 
 # The loud banner the audit view prints for a ``REMOVE``-stage flag: the gated
 # code is permanent, so the toggle is dead weight whose only job left is deletion.
@@ -50,15 +53,17 @@ class FeatureFlag:
     ``field`` is the ``UserSettings`` field name (equal to this entry's key in
     :data:`FEATURE_FLAGS`, pinned by the conformance suite). ``off_value`` is the
     value that means "gated code stays OFF" — ``False`` for a positive-sense
-    ``*_enabled`` flag, ``True`` for an inverted-sense ``*_disabled`` flag — so the
-    dark-defaults-off invariant reads correctly for both senses.
+    ``*_enabled`` flag, ``True`` for an inverted-sense ``*_disabled`` flag, or the
+    OFF member of a typed multi-state mode (``CriticGateMode.OFF`` for the tri-state
+    ``critic_gate_mode``) — so the dark-defaults-off invariant reads correctly for a
+    bool toggle and a typed mode alike.
     """
 
     field: str
     stage: FlagStage
     tracking_issue: str
     summary: str
-    off_value: bool = False
+    off_value: bool | str = False
 
 
 # ``outer_loop_enabled`` is the canonical DARK flag (the OFF switch the T4
@@ -93,26 +98,21 @@ FEATURE_FLAGS: dict[str, FeatureFlag] = {
         tracking_issue="souliane/teatree — SELFCATCH-3 plan_gate hardening",
         summary="Plan-adequacy + late-bound-plan gate; ships dark until the planner emits manifests.",
     ),
-    "critic_gate_live": FeatureFlag(
-        field="critic_gate_live",
+    "critic_gate_mode": FeatureFlag(
+        field="critic_gate_mode",
         stage=FlagStage.DARK,
-        tracking_issue="souliane/teatree — SELFCATCH-5 critic_gate v1",
-        summary="Autonomous user-proxy critic on mark_delivered; ships dark (advisory: records, never blocks).",
+        tracking_issue="souliane/teatree#104 — SELFCATCH-5 critic_gate",
+        summary=(
+            "Tri-state enforcement posture (off|advisory|blocking) for the autonomous user-proxy critic on "
+            "mark_delivered; ships off (records advisory findings, never arms the async critic, never blocks)."
+        ),
+        off_value=CriticGateMode.OFF,
     ),
     "directive_loop_enabled": FeatureFlag(
         field="directive_loop_enabled",
         stage=FlagStage.DARK,
         tracking_issue="souliane/teatree — north-star PR-6 directive intake",
         summary="The OFF switch the directive self-modification front-end (intake+interpret+ratify) ships behind.",
-    ),
-    "ambient_directive_detection_enabled": FeatureFlag(
-        field="ambient_directive_detection_enabled",
-        stage=FlagStage.DARK,
-        tracking_issue="souliane/teatree#116 — SEC-CONTEXT-FIREWALL",
-        summary=(
-            "The OFF switch for ambient detection of inbound untrusted DIRECTIVE-intent events; decoupled from "
-            "directive_loop_enabled so arming the explicit loop never silently arms ambient (trifecta precondition)."
-        ),
     ),
     "require_debt_delta": FeatureFlag(
         field="require_debt_delta",
@@ -133,15 +133,6 @@ FEATURE_FLAGS: dict[str, FeatureFlag] = {
         summary=(
             "Merge-quality (test_value + cleanliness) verdict gate on execute_bound_merge for ORDINARY tickets; "
             "directive tickets are gated unconditionally, so this flag ships dark until an overlay opts in."
-        ),
-    ),
-    "design_critic_live": FeatureFlag(
-        field="design_critic_live",
-        stage=FlagStage.DARK,
-        tracking_issue="souliane/teatree — north-star PR-5 design critic",
-        summary=(
-            "The design critic's transition=plan generic-vs-hack judgment for directive tickets; advisory "
-            "(records CriticFinding, never blocks — mechanism_conforms is the teeth), ships dark."
         ),
     ),
     "incremental_push_gate": FeatureFlag(

@@ -97,7 +97,7 @@ def check_plan_current(ticket: "Ticket") -> bool:
     Also arms the ADVISORY design critic here (north-star PR-5) — this is the plan
     seam every directive-implementation ticket flows through (``schedule_coding`` +
     ``code()``). Registry-dispatched so no import cycle with ``design_critic_gate``;
-    a strict NO-OP (one settings read) unless ``design_critic_live`` is on AND the
+    a strict NO-OP (one settings read) unless ``directive_loop_enabled`` is on AND the
     ticket implements a directive. It never blocks — ``mechanism_conforms`` is the
     deterministic block.
     """

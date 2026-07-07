@@ -5,8 +5,9 @@ completeness) REUSE the sibling gates, fire on absence, and are the ONLY items t
 block. LLM items are judged by a recorded CriticVerdict (real judgment), never a
 self-declared key — a verdict flagging one is mirrored to a CriticFinding but NEVER
 blocks. On mark_delivered the async LLM critic is ENQUEUED when no fresh verdict covers
-the head. ADVISORY (flag off) records and reaches DELIVERED; ENFORCING (flag on) blocks
-on a deterministic finding and stays RETROSPECTED. The enforcing block's findings
+the head. The tri-state ``critic_gate_mode`` (#104): OFF records advisory findings and
+reaches DELIVERED (no async dispatch); ADVISORY arms the async critic but never blocks;
+BLOCKING blocks on a deterministic finding and stays RETROSPECTED. The blocking mode's findings
 SURVIVE the delivery atomic's rollback (execute_retrospect's after-the-block re-record).
 Anti-vacuity: with the critic gate neutralised the flawed delivery advances even under
 enforcement. No fixture injects an ``extra['critic']`` key — every producer is real
@@ -21,7 +22,7 @@ import pytest
 from django.test import TestCase
 
 from teatree.agents.attempt_recorder import record_result_envelope
-from teatree.config import UserSettings
+from teatree.config import CriticGateMode, UserSettings
 from teatree.core import tasks as core_tasks
 from teatree.core.gates import critic_gate
 from teatree.core.gates.critic_gate import (
@@ -63,8 +64,8 @@ def _critic_envelope() -> dict:
 
 
 @contextlib.contextmanager
-def _enforcement(*, live: bool) -> Iterator[None]:
-    with patch.object(critic_gate, "get_effective_settings", return_value=UserSettings(critic_gate_live=live)):
+def _mode(mode: CriticGateMode) -> Iterator[None]:
+    with patch.object(critic_gate, "get_effective_settings", return_value=UserSettings(critic_gate_mode=mode)):
         yield
 
 
@@ -169,7 +170,7 @@ class TestLlmItemsCaught(TestCase):
 class TestEnqueue(TestCase):
     def test_mark_delivered_enqueues_the_async_critic_when_live_and_no_verdict(self) -> None:
         ticket = _clean_delivered_ticket()
-        with _enforcement(live=True):
+        with _mode(CriticGateMode.BLOCKING):
             check_critic(ticket)
         dispatch = CriticDispatch.objects.filter(ticket=ticket, transition="mark_delivered").first()
         assert dispatch is not None
@@ -177,12 +178,12 @@ class TestEnqueue(TestCase):
         assert dispatch.task.phase == "critic_reviewing"  # its OWN phase, not "reviewing"
 
     def test_dark_flag_off_is_cost_inert_no_dispatch_created(self) -> None:
-        # The MED cost-leak fix: while the flag is DARK, the EXPENSIVE async LLM critic
+        # The MED cost-leak fix: while the mode is OFF, the EXPENSIVE async LLM critic
         # must not be armed — no Session / Task / CriticDispatch created on mark_delivered.
         ticket = _clean_delivered_ticket()
         sessions_before = Session.objects.count()
         tasks_before = Task.objects.count()
-        with _enforcement(live=False):
+        with _mode(CriticGateMode.OFF):
             check_critic(ticket)
         assert not CriticDispatch.objects.filter(ticket=ticket).exists()
         assert Session.objects.count() == sessions_before
@@ -191,38 +192,51 @@ class TestEnqueue(TestCase):
     def test_no_re_enqueue_when_a_verdict_already_covers_the_head(self) -> None:
         ticket = _clean_delivered_ticket()
         _record_verdict(ticket, slug="coherence", status="pass", citation="clean")
-        with _enforcement(live=True):
+        with _mode(CriticGateMode.BLOCKING):
             check_critic(ticket)
         assert not CriticDispatch.objects.filter(ticket=ticket).exists()
 
 
-class TestEnforcementGating(TestCase):
-    def test_advisory_records_but_does_not_raise(self) -> None:
+class TestModeGating(TestCase):
+    """off / advisory / blocking — the #104 tri-state posture on mark_delivered."""
+
+    def test_off_mode_records_advisory_findings_but_does_not_raise(self) -> None:
         ticket = _clean_delivered_ticket()
         _strip_merge_evidence(ticket)
-        with _enforcement(live=False):
+        with _mode(CriticGateMode.OFF):
             check_critic(ticket)  # no raise
         assert CriticFinding.objects.filter(ticket=ticket, rubric_item="done_not_done").exists()
+
+    def test_advisory_mode_arms_the_async_critic_but_never_raises(self) -> None:
+        # ADVISORY is the middle rung: it ARMS the expensive async LLM dispatch (unlike
+        # OFF) and records findings, but a blocking deterministic finding never raises.
+        ticket = _clean_delivered_ticket()
+        _strip_merge_evidence(ticket)
+        with _mode(CriticGateMode.ADVISORY):
+            check_critic(ticket)  # no raise, even with a blocking finding present
+        assert CriticFinding.objects.filter(ticket=ticket, rubric_item="done_not_done").exists()
+        dispatch = CriticDispatch.objects.filter(ticket=ticket, transition="mark_delivered").first()
+        assert dispatch is not None  # advisory arms the async critic
 
     def test_enforcing_blocks_on_a_deterministic_finding(self) -> None:
         ticket = _clean_delivered_ticket()
         _strip_merge_evidence(ticket)
-        with _enforcement(live=True), pytest.raises(CriticGateError) as exc:
+        with _mode(CriticGateMode.BLOCKING), pytest.raises(CriticGateError) as exc:
             check_critic(ticket)
         assert "done_not_done" in str(exc.value)
-        assert "critic_gate_live false" in str(exc.value)
+        assert "critic_gate_mode advisory" in str(exc.value)
 
     def test_enforcing_never_blocks_on_an_llm_finding(self) -> None:
         # A flagged LLM item is advisory — it records a finding but must NOT block delivery.
         ticket = _clean_delivered_ticket()
         _record_verdict(ticket, slug="coherence", status="fail")
-        with _enforcement(live=True):
+        with _mode(CriticGateMode.BLOCKING):
             check_critic(ticket)  # no raise — LLM items never block
         assert CriticFinding.objects.filter(ticket=ticket, rubric_item="coherence").exists()
 
     def test_enforcing_passes_a_clean_delivery(self) -> None:
         ticket = _clean_delivered_ticket()
-        with _enforcement(live=True):
+        with _mode(CriticGateMode.BLOCKING):
             check_critic(ticket)  # no raise
 
 
@@ -282,7 +296,7 @@ class TestCriticFsmGate(TestCase):
     def test_advisory_delivery_records_a_finding_and_reaches_delivered(self) -> None:
         ticket = _clean_delivered_ticket()
         _strip_merge_evidence(ticket)
-        with _enforcement(live=False), self.captureOnCommitCallbacks(execute=False):
+        with _mode(CriticGateMode.OFF), self.captureOnCommitCallbacks(execute=False):
             ticket.mark_delivered()
             ticket.save()
         ticket.refresh_from_db()
@@ -292,7 +306,7 @@ class TestCriticFsmGate(TestCase):
     def test_enforcing_delivery_is_refused_and_stays_retrospected(self) -> None:
         ticket = _clean_delivered_ticket()
         _strip_merge_evidence(ticket)
-        with _enforcement(live=True), pytest.raises(CriticGateError):
+        with _mode(CriticGateMode.BLOCKING), pytest.raises(CriticGateError):
             ticket.mark_delivered()
         assert ticket.state == Ticket.State.RETROSPECTED
 
@@ -301,7 +315,7 @@ class TestCriticFsmGate(TestCase):
         _strip_merge_evidence(ticket)
         neutralised = {**gate_registry._REGISTRY, ("gate", "critic"): lambda _ticket: None}
         with (
-            _enforcement(live=True),
+            _mode(CriticGateMode.BLOCKING),
             patch.object(gate_registry, "_REGISTRY", neutralised),
             self.captureOnCommitCallbacks(execute=False),
         ):
@@ -323,7 +337,7 @@ class TestEnforcingBlockFindingsSurviveRollback(TestCase):
     def test_findings_persist_after_the_enforcing_block(self) -> None:
         ticket = _clean_delivered_ticket()
         _strip_merge_evidence(ticket)
-        with _enforcement(live=True), patch.object(core_tasks, "RetroExecutor") as retro:
+        with _mode(CriticGateMode.BLOCKING), patch.object(core_tasks, "RetroExecutor") as retro:
             retro.return_value.run.return_value = RunnerResult(ok=True, detail="retro ok")
             result = core_tasks.execute_retrospect.func(ticket.pk)
         ticket.refresh_from_db()

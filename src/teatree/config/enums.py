@@ -264,6 +264,45 @@ class OnBehalfPostMode(StrEnum):
             raise ValueError(msg) from exc
 
 
+class CriticGateMode(StrEnum):
+    """Tri-state enforcement posture for the user-proxy critic gate (SELFCATCH-5).
+
+    Re-typed from the former boolean enforcement flag (#104), which coupled
+    "arm the expensive async LLM critic" with "block on a finding", leaving no
+    way to accumulate ``CriticVerdict`` evidence without also blocking. The three
+    points on the ramp:
+
+    *   :attr:`OFF` (default) — dark: the cheap deterministic findings are still
+        recorded (advisory evidence), but the EXPENSIVE async LLM critic is never
+        armed and no finding blocks — a customer overlay that never opts in
+        creates no ``Session``/``Task``/``CriticDispatch``.
+    *   :attr:`ADVISORY` — armed: the async critic dispatches and records
+        ``CriticVerdict``/``CriticFinding`` rows, but a blocking finding never
+        raises. The mode that accumulates critic-liveness evidence pre-enablement.
+    *   :attr:`BLOCKING` — armed and enforcing: a blocking deterministic finding
+        refuses the delivery (``CriticGateError``), the ticket stays RETROSPECTED.
+    """
+
+    OFF = "off"
+    ADVISORY = "advisory"
+    BLOCKING = "blocking"
+
+    @classmethod
+    def parse(cls, value: str) -> "CriticGateMode":
+        """Parse a critic-gate-mode string; invalid values raise ``ValueError``.
+
+        The conservative default (:attr:`OFF`) is applied by the caller when the
+        setting is absent, so a typo never silently arms or un-blocks the critic.
+        """
+        normalised = value.strip().lower()
+        try:
+            return cls(normalised)
+        except ValueError as exc:
+            valid = ", ".join(m.value for m in cls)
+            msg = f"Invalid critic_gate_mode {value!r}; valid values: {valid}"
+            raise ValueError(msg) from exc
+
+
 class MissingIssuePolicy(StrEnum):
     """What to do when a commit/MR needs an issue reference and none is in hand.
 
