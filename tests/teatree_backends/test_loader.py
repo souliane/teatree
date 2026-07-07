@@ -176,7 +176,7 @@ def test_get_messaging_resolves_user_token_ref(monkeypatch: pytest.MonkeyPatch) 
     def fake_read_pass(key: str) -> str:
         return pass_lookups.get(key, "")
 
-    monkeypatch.setattr("teatree.backends.loader.read_pass", fake_read_pass)
+    monkeypatch.setattr("teatree.utils.secrets.read_pass", fake_read_pass)
 
     overlay = _build_overlay(
         messaging_backend="slack",
@@ -205,7 +205,7 @@ def test_get_messaging_degrades_malformed_user_token_to_bot_only(
         "ref/bot-app": "xapp-resolved",
         "slack/user-oauth": "xoxb-mistakenly-pasted-into-user-slot",
     }
-    monkeypatch.setattr("teatree.backends.loader.read_pass", lambda key: pass_lookups.get(key, ""))
+    monkeypatch.setattr("teatree.utils.secrets.read_pass", lambda key: pass_lookups.get(key, ""))
 
     overlay = _build_overlay(
         messaging_backend="slack",
@@ -227,7 +227,7 @@ def test_get_messaging_user_token_absent_when_ref_unset(monkeypatch: pytest.Monk
     def fake_read_pass(key: str) -> str:
         return {"ref/bot-bot": "xoxb-resolved", "ref/bot-app": "xapp-resolved"}.get(key, "")
 
-    monkeypatch.setattr("teatree.backends.loader.read_pass", fake_read_pass)
+    monkeypatch.setattr("teatree.utils.secrets.read_pass", fake_read_pass)
 
     overlay = _build_overlay(messaging_backend="slack", slack_token_ref="ref/bot")
     backend = get_messaging(overlay)

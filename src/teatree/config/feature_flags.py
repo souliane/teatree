@@ -23,7 +23,7 @@ feature can never ship default-ON without a code-reviewed stage demotion.
 from dataclasses import dataclass
 from enum import StrEnum
 
-from teatree.config.enums import CriticGateMode
+from teatree.config.enums import CriticGateMode, SendProxyMode
 
 # The loud banner the audit view prints for a ``REMOVE``-stage flag: the gated
 # code is permanent, so the toggle is dead weight whose only job left is deletion.
@@ -113,6 +113,17 @@ FEATURE_FLAGS: dict[str, FeatureFlag] = {
         stage=FlagStage.DARK,
         tracking_issue="souliane/teatree — north-star PR-6 directive intake",
         summary="The OFF switch the directive self-modification front-end (intake+interpret+ratify) ships behind.",
+    ),
+    "send_proxy_mode": FeatureFlag(
+        field="send_proxy_mode",
+        stage=FlagStage.DARK,
+        tracking_issue="souliane/teatree#117 — SEC-SEND-PROXY",
+        summary=(
+            "Tri-state posture (warn|enforce) for the outbound send-proxy destination allowlist; ships warn "
+            "(audit-only — records SendAudit rows, never blocks, never mutates the payload) until an overlay "
+            "seeds the allowlist from a soak and opts into enforce."
+        ),
+        off_value=SendProxyMode.WARN,
     ),
     "require_debt_delta": FeatureFlag(
         field="require_debt_delta",

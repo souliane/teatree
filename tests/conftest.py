@@ -95,14 +95,14 @@ def _clear_backend_caches() -> Iterator[None]:
     also clears ``backend_factory._messaging_cache`` — otherwise a test
     that builds a real messaging backend leaks it under the empty-overlay
     key and a later ``notify_user`` (no explicit backend) reuses it,
-    reaching a real ``pass`` subprocess. ``read_pass`` is patched on
-    BOTH ``teatree.utils.secrets`` and the name already bound into
-    ``teatree.backends.loader`` (``from … import read_pass``) — patching
-    only the source module misses loader's bound reference.
+    reaching a real ``pass`` subprocess. Patching the canonical
+    ``teatree.utils.secrets.read_pass`` neutralises the whole posting-credential
+    path: the #117 send-path reader ``send_proxy.read_posting_credential`` (every
+    backend constructor routes through it) reaches ``read_pass`` via the module,
+    not a bound import, so the single source-module patch is enough.
     """
     from unittest.mock import patch  # noqa: PLC0415
 
-    import teatree.backends.loader as _loader_mod  # noqa: PLC0415
     import teatree.utils.secrets as _secrets_mod  # noqa: PLC0415
     from teatree.core.backend_factory import reset_backend_caches  # noqa: PLC0415
     from teatree.core.overlay_loader import reset_overlay_cache  # noqa: PLC0415
@@ -112,10 +112,7 @@ def _clear_backend_caches() -> Iterator[None]:
 
     reset_backend_caches()
     reset_overlay_cache()
-    with (
-        patch.object(_secrets_mod, "read_pass", _no_pass),
-        patch.object(_loader_mod, "read_pass", _no_pass),
-    ):
+    with patch.object(_secrets_mod, "read_pass", _no_pass):
         yield
     reset_backend_caches()
     reset_overlay_cache()

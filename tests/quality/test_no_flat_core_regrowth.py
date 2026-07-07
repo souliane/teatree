@@ -29,7 +29,10 @@ _CORE_DIR = Path(__file__).resolve().parents[2] / "src" / "teatree" / "core"
 # The post-split flat-leaf count. Raise it ONLY for a genuine new root concern
 # (with justification); lower it whenever a leaf legitimately moves into a
 # subpackage. Never bump it to absorb a leaf that belongs in an existing package.
-PINNED_FLAT_CORE_MODULES = 65
+# 66: +send_proxy.py (#117) — the single outbound chokepoint, a flat sibling of the
+# other send leaves it routes (notify.py, reply_transport.py, on_behalf_egress.py,
+# backend_factory.py); a genuine new root concern, not a member of any subpackage.
+PINNED_FLAT_CORE_MODULES = 66
 
 
 def _flat_core_modules() -> list[str]:
