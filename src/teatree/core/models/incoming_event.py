@@ -5,6 +5,7 @@ from django.db import models
 from django.utils import timezone
 
 from teatree.core.managers import IncomingEventManager
+from teatree.core.models.provenance import Provenance
 
 #: Attempts a poisoned event gets before it is dead-lettered (#673). Each
 #: failed drain records the error and schedules an exponential-backoff retry;
@@ -43,6 +44,10 @@ class IncomingEvent(models.Model):
     parent_text = models.TextField(blank=True)
     body = models.TextField(blank=True)
     payload_json = models.JSONField(default=dict, blank=True)
+    # #116 context firewall: the trust origin of this inbound content, stamped once at
+    # the persist chokepoint (``classify_provenance``). Fail-closed default ``public``
+    # (most untrusted) so an unstamped row is never read as trusted.
+    provenance = models.CharField(max_length=32, default=Provenance.PUBLIC.value)
     received_at = models.DateTimeField(default=timezone.now)
     processed_at = models.DateTimeField(null=True, blank=True)
     idempotency_key = models.CharField(max_length=255, unique=True)
@@ -69,6 +74,15 @@ class IncomingEvent(models.Model):
     def is_thread_reply(self) -> bool:
         """True iff this event is a reply under a parent message (#2230)."""
         return bool(self.parent_ts)
+
+    @property
+    def is_untrusted(self) -> bool:
+        """True iff this content is NOT from an operator identity (#116).
+
+        Everything except :attr:`Provenance.OWNER` is untrusted — a colleague, a public
+        stranger, an unstamped row. The firewall's leg-B test.
+        """
+        return self.provenance != Provenance.OWNER
 
     @property
     def is_dead_lettered(self) -> bool:

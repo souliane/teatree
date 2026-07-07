@@ -107,7 +107,7 @@ class TestRouteEvent(TestCase):
 
 
 class TestDirectiveRouting(TestCase):
-    """North-star PR-6: a DIRECTIVE intent captures only when directive routing is on."""
+    """#116: a DIRECTIVE intent captures only when AMBIENT detection is armed."""
 
     def _directive_event(self) -> tuple[IncomingEvent, IntentClassification]:
         event = _event(
@@ -121,14 +121,14 @@ class TestDirectiveRouting(TestCase):
         )
         return event, classification
 
-    def test_directive_intent_is_dropped_while_routing_is_off_flag_off_parity(self) -> None:
+    def test_directive_intent_is_dropped_while_ambient_is_off_flag_off_parity(self) -> None:
         event, classification = self._directive_event()
-        action = route_event(event, classification)  # default: directive_routing_enabled=False
+        action = route_event(event, classification)  # default: ambient_directive_detection_enabled=False
         assert action.kind == RoutedAction.Kind.DROP
 
-    def test_directive_intent_captures_when_routing_is_enabled(self) -> None:
+    def test_directive_intent_captures_when_ambient_detection_is_enabled(self) -> None:
         event, classification = self._directive_event()
-        action = route_event(event, classification, directive_routing_enabled=True)
+        action = route_event(event, classification, ambient_directive_detection_enabled=True)
         assert action.kind == RoutedAction.Kind.CAPTURE_DIRECTIVE
         assert action.target_ref == event.channel_ref
         assert "drafts" in action.detail

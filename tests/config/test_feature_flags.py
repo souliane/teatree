@@ -123,6 +123,15 @@ class TestDarkDefaultsOff:
         assert flag.off_value is False
         assert UserSettings().outer_loop_enabled is False
 
+    def test_ambient_directive_detection_pinned_dark_and_off(self) -> None:
+        # #116 (RED scenario 8): the context firewall's ambient flag can NEVER ship
+        # default-ON — a default-ON slip fails this pin (and the generic dark-defaults-off
+        # invariant above).
+        flag = FEATURE_FLAGS["ambient_directive_detection_enabled"]
+        assert flag.stage is FlagStage.DARK
+        assert flag.off_value is False
+        assert UserSettings().ambient_directive_detection_enabled is False
+
     def test_off_value_is_load_bearing_for_the_invariant(self) -> None:
         # The dark-defaults-off invariant compares ``default == off_value`` — NOT a
         # hard-coded ``default is False``. An inverted-sense ``*_disabled`` flag ships

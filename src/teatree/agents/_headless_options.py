@@ -18,9 +18,11 @@ from claude_agent_sdk import ClaudeAgentOptions
 from claude_agent_sdk.types import EffortLevel, SystemPromptPreset, ThinkingConfig
 
 from teatree.agents.model_tiering import model_supports_thinking, resolve_spawn_effort, resolve_spawn_model
+from teatree.agents.reader_profile import is_reader_phase
 from teatree.agents.sdk_tool_map import sdk_disallowed_tools_for_phase
 from teatree.core.models import Task
 from teatree.core.models.worktree import Worktree
+from teatree.llm.builtin_tools import KNOWN_BUILTIN_TOOLS
 
 # Headless agent default permission mode: a detached run has no human to grant
 # tool permissions, so it bypasses the per-tool prompt and runs unattended.
@@ -59,9 +61,16 @@ def _disallowed_tools_for_phase(phase: str) -> list[str]:
     denies the shell (git-write), ``Write``/``Edit``, and the spawn tools — the
     cold-review least-privilege that keeps the transcript at its verdict. A write
     phase's complement is empty, so its list stays exactly ``[AskUserQuestion]``,
-    byte-identical to before the lever. Sorted & deduplicated for determinism.
+    byte-identical to before the lever. The #116 reader phase denies the EXHAUSTIVE
+    :data:`~teatree.llm.builtin_tools.KNOWN_BUILTIN_TOOLS` set (the binary-validated
+    registry — its available set is empty), so every known built-in including the
+    external-effect ones (``PushNotification`` / ``RemoteTrigger``) and ``ToolSearch``
+    is denied — no tool of ANY kind remains. Sorted & deduplicated for determinism.
     """
-    return sorted(set(_DISALLOWED_TOOLS) | set(sdk_disallowed_tools_for_phase(phase)))
+    denied = set(_DISALLOWED_TOOLS) | set(sdk_disallowed_tools_for_phase(phase))
+    if is_reader_phase(phase):
+        denied |= set(KNOWN_BUILTIN_TOOLS)
+    return sorted(denied)
 
 
 def _build_options(
@@ -129,7 +138,27 @@ def _build_options(
     )
     if env is not None:
         options.env = env
+    if is_reader_phase(phase):
+        _apply_reader_tool_lockdown(options)
     return options
+
+
+def _apply_reader_tool_lockdown(options: ClaudeAgentOptions) -> None:
+    """Close the #116 reader's tool-acquisition residual: load NO settings, NO MCP config.
+
+    The ``disallowed_tools`` denylist covers every capability tool + every named built-in
+    (:func:`_disallowed_tools_for_phase`), but under ``bypassPermissions`` a tool the
+    denylist does not name — an MCP-server tool, a custom slash command loaded from
+    ``~/.claude`` / project settings — would still be reachable. Loading NO setting
+    sources (``--setting-sources=`` empty) and NO MCP config (``strict_mcp_config`` +
+    empty ``mcp_servers``) removes every such source, so the reader has zero tools from
+    any origin. An empty ``allowed_tools`` is NOT the mechanism — the SDK omits the
+    ``--allowedTools`` flag when the list is empty, so it would be a silent no-op; the
+    closure is source-suppression, verified against the SDK transport.
+    """
+    options.setting_sources = []
+    options.mcp_servers = {}
+    options.strict_mcp_config = True
 
 
 def _resolve_task_cwd(task: Task) -> str | None:

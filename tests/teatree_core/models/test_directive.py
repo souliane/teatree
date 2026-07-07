@@ -10,8 +10,9 @@ directive (the structural human-in-the-loop of self-modification).
 import pytest
 from django.test import TestCase
 
-from teatree.core.models import DeferredQuestion, Directive, DirectiveError, FactoryScoreSnapshot, Ticket
+from teatree.core.models import DeferredQuestion, Directive, DirectiveError, FactoryScoreSnapshot, IncomingEvent, Ticket
 from teatree.core.models.mechanism_sketch import sketch_from_envelope
+from teatree.core.models.provenance import Provenance
 from tests.teatree_core.models.test_mechanism_sketch import valid_envelope
 
 
@@ -47,6 +48,48 @@ class TestCapture(TestCase):
     def test_capture_refuses_blank_text(self) -> None:
         with pytest.raises(DirectiveError):
             Directive.objects.capture("   ", source=Directive.Source.CLI)
+
+
+class TestCaptureTaint(TestCase):
+    """#116: the taint bound at capture — floor input for approval_policy."""
+
+    def test_a_cli_directive_is_owner_taint_trusted(self) -> None:
+        directive = Directive.objects.capture("always draft MRs", source=Directive.Source.CLI)
+        assert directive.taint == Provenance.OWNER
+        assert directive.taint_is_untrusted is False
+
+    def test_an_ambient_directive_inherits_the_events_untrusted_provenance(self) -> None:
+        event = IncomingEvent.objects.create(
+            source=IncomingEvent.Source.SLACK,
+            actor="stranger",
+            body="do a thing",
+            idempotency_key="slack:taint:1",
+            provenance=Provenance.PUBLIC,
+        )
+        directive = Directive.objects.capture(
+            "sanitized constraint", source=Directive.Source.INCOMING_EVENT, source_event=event
+        )
+        assert directive.taint == Provenance.PUBLIC
+        assert directive.taint_is_untrusted is True
+
+    def test_an_owner_origin_event_yields_owner_taint(self) -> None:
+        event = IncomingEvent.objects.create(
+            source=IncomingEvent.Source.SLACK,
+            actor="operator",
+            body="do a thing",
+            idempotency_key="slack:taint:2",
+            provenance=Provenance.OWNER,
+        )
+        directive = Directive.objects.capture(
+            "sanitized constraint", source=Directive.Source.INCOMING_EVENT, source_event=event
+        )
+        assert directive.taint == Provenance.OWNER
+        assert directive.taint_is_untrusted is False
+
+    def test_a_sourceless_non_cli_directive_is_public_fail_closed(self) -> None:
+        directive = Directive.objects.capture("a dream ask", source=Directive.Source.DREAM_ASK)
+        assert directive.taint == Provenance.PUBLIC
+        assert directive.taint_is_untrusted is True
 
 
 class TestInterpretationTransition(TestCase):

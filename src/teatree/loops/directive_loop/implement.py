@@ -26,6 +26,24 @@ DIRECTIVE_IMPL_UMBRELLA_URL = "https://github.com/souliane/teatree/issues/3009"
 
 _DIRECTIVE_KEY = "directive_id"
 
+#: The synthetic mechanism ticket's short-description cap.
+_BRIEF_LEN = 80
+
+
+def implementation_brief(directive: Directive) -> str:
+    """The implementer's brief — built ONLY from the ratified, sanitized fields (#116).
+
+    The implementer-never-refetches guarantee: the brief is the ``constraint_statement``
+    (the ratified constraint) or, absent that, ``raw_text``. For an ambient directive
+    ``raw_text`` is only ever the schema-validated candidate the ``directive_candidate_gate``
+    recorder minted (the ambient raw-mint path is disabled — the scanner never puts
+    ``source_event.body`` on a ``Directive``), never the raw attacker text. So the tooled
+    implementer works from sanitized text by construction. Reading
+    ``directive.source_event`` here would reintroduce the trifecta; this function
+    deliberately never does.
+    """
+    return (directive.constraint_statement or directive.raw_text).strip()[:_BRIEF_LEN]
+
 
 def _baseline_snapshot(directive: Directive) -> FactoryScoreSnapshot:
     """Record the admission-baseline factory score for the directive's scope."""
@@ -45,7 +63,7 @@ def schedule_directive_implementation(
     Returns the scheduled ``Task`` (``None`` when a coding task already exists).
     """
     issue_url = f"{umbrella_url}#directive-impl={directive.pk}"
-    short = (directive.constraint_statement or directive.raw_text).strip()[:80]
+    short = implementation_brief(directive)
     ticket, _ = Ticket.objects.get_or_create(
         issue_url=issue_url,
         defaults={"role": Ticket.Role.AUTHOR, "short_description": short},

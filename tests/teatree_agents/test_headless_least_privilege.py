@@ -10,6 +10,7 @@ from django.test import TestCase
 
 from teatree.agents._headless_options import _build_options, _disallowed_tools_for_phase
 from teatree.core.models import Session, Task, Ticket
+from teatree.llm.builtin_tools import KNOWN_BUILTIN_TOOLS
 
 
 class TestDisallowedToolsForPhase(TestCase):
@@ -31,6 +32,15 @@ class TestDisallowedToolsForPhase(TestCase):
         result = _disallowed_tools_for_phase("reviewing")
         assert list(result) == sorted(result)
         assert len(result) == len(set(result))
+
+    def test_reader_phase_denies_the_exhaustive_known_builtin_registry(self) -> None:
+        # #116 (C1): the reader denies EVERY known CLI built-in (the binary-validated
+        # registry), so no built-in of any kind — including the external-effect
+        # PushNotification/RemoteTrigger and tool-acquisition ToolSearch — remains
+        # reachable. Anti-vacuous: dropping any built-in from the derivation → RED.
+        disallowed = set(_disallowed_tools_for_phase("directive_reading"))
+        assert set(KNOWN_BUILTIN_TOOLS) <= disallowed, set(KNOWN_BUILTIN_TOOLS) - disallowed
+        assert {"PushNotification", "RemoteTrigger", "ToolSearch"} <= disallowed
 
 
 class TestBuildOptionsHarnessPin(TestCase):
@@ -57,3 +67,17 @@ class TestBuildOptionsHarnessPin(TestCase):
         assert "Bash" not in options.disallowed_tools
         assert "Write" not in options.disallowed_tools
         assert options.disallowed_tools == ["AskUserQuestion"]
+
+    def test_reader_dispatch_suppresses_all_tool_sources(self) -> None:
+        # #116 (C1): an empty allowed_tools is a no-op in the SDK transport, so the reader
+        # closes tool acquisition at the source — no settings, no MCP config — and denies
+        # the extra built-ins. A coding dispatch is unaffected (loads settings as before).
+        reader = self._options_for("directive_reading")
+        assert reader.setting_sources == []
+        assert reader.strict_mcp_config is True
+        assert reader.mcp_servers == {}
+        assert set(KNOWN_BUILTIN_TOOLS) <= set(reader.disallowed_tools)
+
+        coding = self._options_for("coding")
+        assert coding.setting_sources is None
+        assert coding.strict_mcp_config is False

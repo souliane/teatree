@@ -46,18 +46,20 @@ def route_event(
     event: IncomingEvent,
     classification: IntentClassification,
     *,
-    directive_routing_enabled: bool = False,
+    ambient_directive_detection_enabled: bool = False,
 ) -> RoutedAction:
     """Route an event to a concrete action; a pure value, never a side effect.
 
-    ``directive_routing_enabled`` gates the north-star PR-6 ``DIRECTIVE`` intent:
-    while off (the default) a ``DIRECTIVE`` event is DROPped exactly as an
-    unrouteable intent — flag-off parity, so intake is inert until the loop opts
-    in. When on, it yields a ``CAPTURE_DIRECTIVE`` action the caller turns into a
-    ``Directive`` row.
+    ``ambient_directive_detection_enabled`` (#116) gates the ambient ``DIRECTIVE``
+    intent — its OWN dark flag, decoupled from ``directive_loop_enabled`` so enabling
+    the explicit directive loop can never silently arm ambient detection. While off
+    (the default) a ``DIRECTIVE`` event is DROPped exactly as an unrouteable intent —
+    flag-off parity, so intake is inert. When on, it yields a ``CAPTURE_DIRECTIVE``
+    action the caller routes through the fail-closed reader→recorder firewall (a
+    ``Directive`` is minted only from a schema-validated candidate).
     """
     intent = classification.intent
-    if intent == IntentClassification.Intent.DIRECTIVE and directive_routing_enabled:
+    if intent == IntentClassification.Intent.DIRECTIVE and ambient_directive_detection_enabled:
         return RoutedAction(
             kind=RoutedAction.Kind.CAPTURE_DIRECTIVE,
             target_ref=event.channel_ref,

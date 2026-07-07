@@ -8,7 +8,13 @@ channels let it hand the work back through the result envelope, and
 
 from typing import Any, cast
 
-from teatree.agents.result_schema import RESULT_JSON_SCHEMA, check_evidence, required_evidence_for_phase
+from teatree.agents.result_schema import (
+    RESULT_JSON_SCHEMA,
+    DirectiveCandidateEnvelope,
+    candidate_carries_payload,
+    check_evidence,
+    required_evidence_for_phase,
+)
 
 _PROPERTIES = cast("dict[str, Any]", RESULT_JSON_SCHEMA["properties"])
 
@@ -86,3 +92,44 @@ class TestDirectiveInterpretationEvidenceGate:
     def test_clarifying_questions_satisfy_the_gate(self) -> None:
         result = {"directive_interpretation": {"clarifying_questions": ["open concurrently or ever?"]}}
         assert check_evidence(result, "directive_interpreting") == ""
+
+
+class TestCandidateCarriesPayload:
+    """#116: the gate/recorder no-drift predicate matches exactly what the recorder persists."""
+
+    def test_a_directive_with_a_constraint_carries_payload(self) -> None:
+        envelope: DirectiveCandidateEnvelope = {"is_directive": True, "normalized_constraint": "at most 1 open PR"}
+        assert candidate_carries_payload(envelope) is True
+
+    def test_a_non_directive_verdict_carries_nothing(self) -> None:
+        assert candidate_carries_payload({"is_directive": False, "normalized_constraint": "x"}) is False
+
+    def test_a_constraintless_directive_carries_nothing(self) -> None:
+        assert candidate_carries_payload({"is_directive": True, "normalized_constraint": "  "}) is False
+
+    def test_a_non_dict_carries_nothing(self) -> None:
+        assert candidate_carries_payload("not-a-dict") is False
+
+
+class TestDirectiveCandidateEvidenceGate:
+    """#116 context firewall: the reader phase must hand back a persistable candidate."""
+
+    def test_directive_reading_requires_the_candidate_envelope(self) -> None:
+        assert required_evidence_for_phase("directive_reading") == ("directive_candidate",)
+
+    def test_a_summary_only_reader_run_is_refused(self) -> None:
+        assert check_evidence({"summary": "read it"}, "directive_reading")
+
+    def test_a_non_directive_verdict_persists_nothing_and_is_refused(self) -> None:
+        # An is_directive=False verdict mints no row — the gate refuses it rather than
+        # completing over zero recorded work (#9 gate/recorder no-drift).
+        result = {"directive_candidate": {"is_directive": False, "normalized_constraint": "x"}}
+        assert check_evidence(result, "directive_reading")
+
+    def test_a_constraintless_directive_is_refused(self) -> None:
+        result = {"directive_candidate": {"is_directive": True, "normalized_constraint": "  "}}
+        assert check_evidence(result, "directive_reading")
+
+    def test_a_real_candidate_satisfies_the_gate(self) -> None:
+        result = {"directive_candidate": {"is_directive": True, "normalized_constraint": "at most 1 open PR"}}
+        assert check_evidence(result, "directive_reading") == ""

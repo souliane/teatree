@@ -126,6 +126,27 @@ class DirectiveInterpretationEnvelope(TypedDict, total=False):
     clarifying_questions: list[str]
 
 
+class DirectiveCandidateEnvelope(TypedDict, total=False):
+    """A quarantined reader's typed verdict, recorded server-side (#116 context firewall).
+
+    The no-tools/no-creds ``directive_reading`` reader (:mod:`teatree.agents.reader_profile`)
+    is denied every tool, so it RETURNS this instead of acting: the orchestrator
+    (``directive_candidate_gate.record_returned_directive_candidate``) validates it —
+    provenance cross-check + the Layer-2 schema — and mints the ``Directive`` from the
+    SANITIZED ``normalized_constraint``, so no downstream tooled stage ever touches raw
+    attacker text (maker≠checker). ``provenance`` is the reader's ECHOED trust tag; the
+    recorder cross-checks it against the true source event and never trusts it as the
+    taint source.
+    """
+
+    reader_identity: str
+    is_directive: bool
+    normalized_constraint: str
+    scope_overlay: str
+    cited_signal: str
+    provenance: str
+
+
 class AgentResult(TypedDict, total=False):
     """Structured result from an agent task execution.
 
@@ -145,6 +166,7 @@ class AgentResult(TypedDict, total=False):
     review_verdict: ReviewVerdictEnvelope
     critic_verdict: "CriticVerdictEnvelope"
     directive_interpretation: "DirectiveInterpretationEnvelope"
+    directive_candidate: "DirectiveCandidateEnvelope"
     article_suggestions: list[ArticleSuggestion]
     answer: AnswerEnvelope
     needs_user_input: bool
@@ -259,6 +281,18 @@ RESULT_JSON_SCHEMA: dict[str, object] = {
                 "clarifying_questions": {"type": "array", "items": {"type": "string"}},
             },
         },
+        "directive_candidate": {
+            "type": "object",
+            "description": "A quarantined reader's typed verdict, recorded server-side (#116 context firewall).",
+            "properties": {
+                "reader_identity": {"type": "string"},
+                "is_directive": {"type": "boolean"},
+                "normalized_constraint": {"type": "string"},
+                "scope_overlay": {"type": "string"},
+                "cited_signal": {"type": "string"},
+                "provenance": {"type": "string"},
+            },
+        },
         "article_suggestions": {
             "type": "array",
             "description": "Candidate news articles a shell-denied scanning_news agent hands back for queuing.",
@@ -329,6 +363,7 @@ PHASE_REQUIRED_EVIDENCE: dict[str, tuple[str, ...]] = {
     "reviewing": ("decisions", "review_verdict"),
     "critic_reviewing": ("critic_verdict",),
     "directive_interpreting": ("directive_interpretation",),
+    "directive_reading": ("directive_candidate",),
     "shipping": ("commands_executed",),
     "scanning_news": ("article_suggestions",),
     "answering": ("answer",),
@@ -362,6 +397,21 @@ def answer_text(answer: object) -> str:
     return str(cast("AnswerEnvelope", answer).get("text") or "").strip()
 
 
+def candidate_carries_payload(envelope: object) -> bool:
+    """Whether a directive-candidate envelope carries something the recorder persists (#116).
+
+    The recorder mints a ``Directive`` ONLY for a directive verdict with a non-empty
+    normalized constraint (an ``is_directive: False`` verdict, or a directive with no
+    constraint, persists nothing). This predicate matches that exactly, so "the gate
+    passed" and "the recorder wrote a row" cannot disagree — the #9 gate/recorder-drift
+    class, applied to the reader channel.
+    """
+    if not isinstance(envelope, dict):
+        return False
+    typed = cast("DirectiveCandidateEnvelope", envelope)
+    return typed.get("is_directive") is True and bool(str(typed.get("normalized_constraint") or "").strip())
+
+
 def interpretation_carries_payload(envelope: object) -> bool:
     """Whether a directive-interpretation envelope carries something the recorder persists.
 
@@ -390,6 +440,7 @@ _FIELD_PERSISTS: dict[str, Callable[[object], bool]] = {
     "article_suggestions": lambda v: isinstance(v, list) and any(suggestion_url(item) for item in v),
     "answer": lambda v: bool(answer_text(v)),
     "directive_interpretation": interpretation_carries_payload,
+    "directive_candidate": candidate_carries_payload,
 }
 
 
