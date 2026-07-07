@@ -12,21 +12,28 @@ from teatree.core.modelkit.phases import normalize_phase, phase_spellings
 from teatree.core.models.deferred_question import DeferredQuestion
 from teatree.core.models.task import Task
 from teatree.core.models.task_attempt import TaskAttempt
+from teatree.core.models.usage_window_state import LIMIT_PARKED_PREFIX
 from teatree.core.repair_loop import IterationStalled, requeue_verdict
 
 
 def phase_attempts(task: Task) -> list[TaskAttempt]:
-    """Every attempt of *task*'s ``(ticket, normalized-phase)``, oldest first.
+    """The WORK attempts of *task*'s ``(ticket, normalized-phase)``, oldest first.
 
     Spans the re-queued ``Task`` rows of the same ticket-phase — a re-queue
     creates a NEW ``Task`` row, so the iteration sequence is keyed on the ticket
     + canonical phase, not a single ``Task``.
+
+    A usage-window limit-park (Directive #3) is EXCLUDED: its ``TaskAttempt`` records a
+    scheduling event, not a work iteration, so it must not burn the per-phase iteration
+    budget nor trip the identical-failure stall detector during a multi-hour outage.
     """
     return list(
         TaskAttempt.objects.filter(
             task__ticket_id=task.ticket_id,  # ty: ignore[unresolved-attribute]
             task__phase__in=phase_spellings(normalize_phase(task.phase)),
-        ).order_by("pk"),
+        )
+        .exclude(error__startswith=LIMIT_PARKED_PREFIX)
+        .order_by("pk"),
     )
 
 

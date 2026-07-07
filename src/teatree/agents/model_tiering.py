@@ -289,7 +289,9 @@ def _resolve_pydantic_ai_tier(tier: str, *, config_path: Path | None = None) -> 
     return merged.get(tier) or merged.get(DEFAULT_TIER, PYDANTIC_AI_TIER_MODELS[DEFAULT_TIER])
 
 
-def resolve_pydantic_ai_model(model_name: str | None, *, config_path: Path | None = None) -> str:
+def resolve_pydantic_ai_model(
+    model_name: str | None, *, router_name: str | None = None, config_path: Path | None = None
+) -> str:
     """Normalise a resolved model id for the ``pydantic_ai`` (OrcaRouter) harness.
 
     THE dash-form id normalisation (OrcaRouter setup plan §3.2). teatree's abstract
@@ -303,9 +305,19 @@ def resolve_pydantic_ai_model(model_name: str | None, *, config_path: Path | Non
     provider-prefixed id, e.g. an operator ``phase_models`` override to
     ``deepseek/deepseek-v4-pro``) passes through UNCHANGED — the caller then still
     runs it past :func:`assert_model_allowed_on_regulated_path`.
+
+    *router_name* is the per-overlay OrcaRouter router handle (the DB-home
+    ``orca_router_name`` setting, e.g. ``orcarouter/secondary-factory``) that selects
+    the overlay's own named router — the ``teatree-factory`` vs secondary-router
+    two-router split, config/overlay-driven, not hardcoded. It applies ONLY to the
+    normalise-UP branch (a teatree-native id / ``None``), so an explicit Orca-native
+    pin still wins; ``None``/empty falls back to the :data:`PYDANTIC_AI_TIER_MODELS`
+    handle (``orcarouter/teatree-factory``).
     """
     if model_name and "/" in model_name:
         return model_name
+    if router_name:
+        return router_name
     return _resolve_pydantic_ai_tier(_abstract_tier_of(model_name), config_path=config_path)
 
 

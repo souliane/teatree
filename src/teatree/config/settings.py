@@ -81,6 +81,8 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "regulated_path_model_allowlist": _parse_str_list,
     "pydantic_ai_request_limit": _parse_strict_int,
     "orca_router_pass_path": _parse_strict_str,
+    "orca_router_lane": _parse_strict_str,
+    "orca_router_name": _parse_strict_str,
     "eval_credential": EvalCredential.parse,
     "contribute": _parse_strict_bool,
     "excluded_skills": _parse_str_list,
@@ -182,6 +184,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "issue_implementer_max_concurrent": _parse_strict_int,
     "issue_implementer_cadence_hours": _parse_strict_int,
     "auto_disposition_enabled": _parse_strict_bool,
+    "limit_autorecovery_enabled": _parse_strict_bool,
     "outer_loop_enabled": _parse_strict_bool,
     "directive_loop_enabled": _parse_strict_bool,
     # #116 context firewall — the DARK ambient-directive-detection routing flag.
@@ -309,6 +312,8 @@ ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_AGENT_HARNESS": ("agent_harness", AgentHarness.parse),
     "T3_AGENT_HARNESS_PROVIDER": ("agent_harness_provider", AgentHarnessProvider.parse),
     "T3_ENFORCE_REGULATED_PATH": ("enforce_regulated_path", _parse_env_bool),
+    "T3_ORCA_ROUTER_LANE": ("orca_router_lane", str),
+    "T3_ORCA_ROUTER_NAME": ("orca_router_name", str),
     "T3_EVAL_CREDENTIAL": ("eval_credential", EvalCredential.parse),
     "T3_ON_BEHALF_POST_MODE": ("on_behalf_post_mode", OnBehalfPostMode.parse),
     "T3_MISSING_ISSUE_POLICY": ("missing_issue_ref_policy", MissingIssuePolicy.parse),
@@ -319,6 +324,7 @@ ENV_SETTING_OVERRIDES: dict[str, tuple[str, Callable[[str], Any]]] = {
     "T3_ORCHESTRATE_CLAIM_ENABLED": ("orchestrate_claim_enabled", _parse_env_bool),
     "T3_FACTORY_SCORE_ENABLED": ("factory_score_enabled", _parse_env_bool),
     "T3_OUTER_LOOP_ENABLED": ("outer_loop_enabled", _parse_env_bool),
+    "T3_LIMIT_AUTORECOVERY_ENABLED": ("limit_autorecovery_enabled", _parse_env_bool),
     "T3_BOOST_CONCURRENCY": ("boost_concurrency", _parse_strict_int),
     "T3_LOOP_RUNNER_ENABLED": ("loop_runner_enabled", _parse_env_bool),
     "T3_TEAMS_ENABLED": ("teams_enabled", _parse_env_bool),
@@ -448,6 +454,27 @@ class UserSettings:
     # with no copy; the ``ORCA_ROUTER_API_KEY`` env still wins over the ``pass``
     # store either way. Per-overlay overridable.
     orca_router_pass_path: str = ""
+    # The ``x-lane`` header value every ``pydantic_ai``/OrcaRouter request rides
+    # (OrcaRouter setup plan §3.4), so the named router's analytics — and a future
+    # DSL rule that keys on it — can tell the three call-site lanes apart:
+    # ``factory`` (default — the headless factory dispatch), ``eval`` (the eval CI
+    # job, set via ``T3_ORCA_ROUTER_LANE=eval`` in that job's env), and ``bulk``
+    # (a secondary overlay's cheap bulk legs, set per-overlay). Informational under the shipped
+    # ``gated_adaptive`` router until a DSL rule matches it; resolved SYNCHRONOUSLY in
+    # ``resolve_harness`` and threaded through ``OrcaLaneConfig.lane``. Inert until an
+    # overlay opts into ``agent_harness=pydantic_ai``. Per-overlay overridable;
+    # ``T3_ORCA_ROUTER_LANE`` env wins.
+    orca_router_lane: str = "factory"
+    # The OrcaRouter router HANDLE (e.g. ``orcarouter/secondary-factory``) this overlay's
+    # ``pydantic_ai`` dispatches resolve to — the ``teatree-factory`` vs secondary-router
+    # two-router split, config/overlay-driven, not hardcoded. Empty (the default) falls
+    # back to the ``PYDANTIC_AI_TIER_MODELS`` handle (``orcarouter/teatree-factory``).
+    # Overrides ONLY the normalise-UP-to-handle branch of ``resolve_pydantic_ai_model``,
+    # so an explicit Orca-native model pin still wins. Resolved SYNCHRONOUSLY in
+    # ``resolve_harness`` and threaded through ``OrcaLaneConfig.router_name``. Inert
+    # until an overlay opts into ``agent_harness=pydantic_ai``. Per-overlay overridable;
+    # ``T3_ORCA_ROUTER_NAME`` env wins.
+    orca_router_name: str = ""
     # Which Anthropic credential the automated eval lane (the metered ``api``
     # backend + the LLM judge) authenticates with. ``subscription_oauth`` (default,
     # reverses #2707) rides the plan's OAuth token — no per-token bill, but a
@@ -1243,6 +1270,19 @@ class UserSettings:
     # Upper bound on close-candidate signals emitted per tick — keeps an
     # auto-close pass bounded and reviewable.
     auto_disposition_max_closes_per_tick: int = 5
+    # Directive #3 — the OFF switch for idle usage-window auto-recovery, and a DARK
+    # ``FEATURE_FLAGS`` entry. When OFF (the default) a Claude usage-window limit
+    # (~5h session / 7-day weekly) is recorded as a terminal FAILED attempt EXACTLY as
+    # today — no park, no admission guard, no recovery chain (behaviorally inert). When
+    # ON, a limit hit PARKS the task (returns it to the queue with a ``not_before`` at
+    # the window's re-arm instant) instead of failing, an admission guard quietly parks
+    # further LLM dispatches on the exhausted lane, and the self-rescheduling
+    # ``usage_window_recovery`` loop-timer chain clears the window + releases the parked
+    # tasks + pumps the loop at reset — unattended, no OS cron. DB-home (#1775),
+    # per-overlay overridable. The conformance suite pins stage=DARK => this default ==
+    # its off_value (False), so it can never ship default-ON without a code-reviewed
+    # stage demotion.
+    limit_autorecovery_enabled: bool = False
     # Human-readable mirror of the latest session hand-off. The
     # ``SessionHandover`` DB row is the source of truth; this file mirrors
     # the payload for human-readability and for bootstrapping a brand-new
