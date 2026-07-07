@@ -4,7 +4,7 @@
 Mirrors ``test_settings_home_partition.py`` / the ``cold_hook_settings``
 no-silent-drop fitness test: the registry is pure data and these fitness
 functions keep it honest. They go RED the moment an entry names a field that is
-not a real ``bool`` ``UserSettings`` field registered in
+not a real ``bool``-or-``StrEnum`` ``UserSettings`` field registered in
 ``OVERLAY_OVERRIDABLE_SETTINGS`` (the registration-drift class), lacks a
 ``tracking_issue`` or a valid ``stage``, or lets a ``DARK`` flag default to its
 ON value — the Goodhart guard that keeps the outer loop's OFF switch un-flippable
@@ -17,10 +17,12 @@ non-vacuously over a MIXED FIXTURE rather than the live set's accidental composi
 """
 
 import dataclasses
+from enum import StrEnum
 
 from teatree.config import (
     FEATURE_FLAGS,
     OVERLAY_OVERRIDABLE_SETTINGS,
+    CriticGateMode,
     FeatureFlag,
     FlagStage,
     UserSettings,
@@ -64,10 +66,10 @@ class TestRegistrySeededNonVacuously:
 
 
 class TestRegisteredHome:
-    """Every entry names a REAL bool ``UserSettings`` field in the overridable registry.
+    """Every entry names a REAL bool-or-StrEnum ``UserSettings`` field in the overridable registry.
 
     This is the ``cold_hook_settings`` registration-drift class: a flag registered
-    for a nonexistent, non-bool, or unregistered field turns the suite red.
+    for a nonexistent, wrong-typed, or unregistered field turns the suite red.
     """
 
     def test_every_key_equals_its_field(self) -> None:
@@ -80,10 +82,24 @@ class TestRegisteredHome:
         unknown = sorted(key for key in FEATURE_FLAGS if key not in fields)
         assert unknown == [], f"feature flags naming no UserSettings field: {unknown}"
 
-    def test_every_flag_field_is_bool(self) -> None:
+    def test_every_flag_field_is_bool_or_a_typed_mode(self) -> None:
+        # The #104 non-bool extension: a flag field is a bool on/off toggle OR a
+        # StrEnum multi-state mode (``critic_gate_mode`` is tri-state
+        # off|advisory|blocking). A flag naming a plain int/float/str field is
+        # still registration drift.
         defaults = UserSettings()
-        non_bool = sorted(key for key in FEATURE_FLAGS if not isinstance(getattr(defaults, key), bool))
-        assert non_bool == [], f"feature flags naming a non-bool field: {non_bool}"
+        unsupported = sorted(key for key in FEATURE_FLAGS if not isinstance(getattr(defaults, key), (bool, StrEnum)))
+        assert unsupported == [], f"feature flags naming a non-bool, non-StrEnum field: {unsupported}"
+
+    def test_every_flag_off_value_type_matches_its_field(self) -> None:
+        # off_value carries the "gated code stays OFF" value; its type must match
+        # the field default's type so a bool flag never gets a str off_value (or
+        # vice versa) by mistake.
+        defaults = UserSettings()
+        mismatched = sorted(
+            key for key, flag in FEATURE_FLAGS.items() if type(getattr(defaults, key)) is not type(flag.off_value)
+        )
+        assert mismatched == [], f"feature flags whose field type != off_value type: {mismatched}"
 
     def test_every_flag_field_is_overlay_overridable(self) -> None:
         unregistered = sorted(key for key in FEATURE_FLAGS if key not in OVERLAY_OVERRIDABLE_SETTINGS)
@@ -123,14 +139,14 @@ class TestDarkDefaultsOff:
         assert flag.off_value is False
         assert UserSettings().outer_loop_enabled is False
 
-    def test_ambient_directive_detection_pinned_dark_and_off(self) -> None:
-        # #116 (RED scenario 8): the context firewall's ambient flag can NEVER ship
-        # default-ON — a default-ON slip fails this pin (and the generic dark-defaults-off
-        # invariant above).
-        flag = FEATURE_FLAGS["ambient_directive_detection_enabled"]
+    def test_critic_gate_mode_pinned_dark_and_off(self) -> None:
+        # #104: the re-typed tri-state critic flag ships OFF by default — its
+        # off_value is the OFF member and the dataclass default matches it, so the
+        # critic gate can never ship armed/blocking without a deliberate config set.
+        flag = FEATURE_FLAGS["critic_gate_mode"]
         assert flag.stage is FlagStage.DARK
-        assert flag.off_value is False
-        assert UserSettings().ambient_directive_detection_enabled is False
+        assert flag.off_value is CriticGateMode.OFF
+        assert UserSettings().critic_gate_mode is CriticGateMode.OFF
 
     def test_off_value_is_load_bearing_for_the_invariant(self) -> None:
         # The dark-defaults-off invariant compares ``default == off_value`` — NOT a

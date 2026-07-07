@@ -20,7 +20,7 @@ The reader (advisory)
     naming the offending design decision — visible to the planner's repair loop and at
     the directive's verify horizon. It NEVER blocks: the deterministic
     ``mechanism_conforms`` gate is the teeth; the design critic surfaces what
-    determinism can't, advisory-first behind the ``design_critic_live`` DARK flag.
+    determinism can't, advisory-first — armed by the ``directive_loop_enabled`` DARK flag.
 
 Wired at :meth:`~teatree.core.models.ticket.Ticket.plan` (via the gate registry, no
 model→gate up-edge) for directive tickets only; a strict no-op — one settings read —
@@ -46,9 +46,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def design_critic_live(overlay_name: str | None) -> bool:
-    """Whether the design critic runs for *overlay_name* (overlay -> global). DARK by default."""
-    return bool(get_effective_settings(overlay_name).design_critic_live)
+def design_critic_armed(overlay_name: str | None) -> bool:
+    """Whether the design critic runs for *overlay_name* (overlay -> global). DARK by default.
+
+    #104: the advisory-only design critic carries no independent switch — it fires only
+    for directive-linked tickets, so it is armed BY ``directive_loop_enabled`` (arming the
+    directive loop is exactly the condition under which the plan-time critic has work).
+    """
+    return bool(get_effective_settings(overlay_name).directive_loop_enabled)
 
 
 def plan_head_sha(ticket: "Ticket") -> str:
@@ -181,13 +186,13 @@ def _run_design_critic(ticket: "Ticket") -> None:
 def check_design_critic(ticket: "Ticket") -> None:
     """Run the ADVISORY design critic at plan time — arm the async judge, record its findings, never block.
 
-    A strict no-op while ``design_critic_live`` is dark (one settings read, no DB query),
-    so ordinary planning is untouched. When live and the ticket implements a directive:
-    arm the headless critic if no verdict covers the plan head, else mirror its FAIL items
-    into ``CriticFinding(transition="plan")``. NEVER raises — the deterministic
+    A strict no-op while ``directive_loop_enabled`` is dark (one settings read, no DB
+    query), so ordinary planning is untouched. When armed and the ticket implements a
+    directive: arm the headless critic if no verdict covers the plan head, else mirror its
+    FAIL items into ``CriticFinding(transition="plan")``. NEVER raises — the deterministic
     ``mechanism_conforms`` gate holds the blocking teeth; this only surfaces findings.
     """
-    if not design_critic_live(ticket.overlay or None):
+    if not design_critic_armed(ticket.overlay or None):
         return
     try:
         _run_design_critic(ticket)

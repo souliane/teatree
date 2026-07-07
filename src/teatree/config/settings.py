@@ -17,6 +17,7 @@ from teatree.config.enums import (
     AgentHarnessProvider,
     AgentRuntime,
     Autonomy,
+    CriticGateMode,
     EvalCredential,
     MissingIssuePolicy,
     Mode,
@@ -124,8 +125,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "require_executed_repro": _parse_strict_bool,
     "require_debt_delta": _parse_strict_bool,
     "require_merge_quality_verdict": _parse_strict_bool,
-    "design_critic_live": _parse_strict_bool,
-    "critic_gate_live": _parse_strict_bool,
+    "critic_gate_mode": CriticGateMode.parse,
     "bulk_close_threshold": _parse_strict_int,
     "require_rubric_verification": _parse_strict_bool,
     "require_spec_coverage": _parse_strict_bool,
@@ -187,8 +187,6 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "limit_autorecovery_enabled": _parse_strict_bool,
     "outer_loop_enabled": _parse_strict_bool,
     "directive_loop_enabled": _parse_strict_bool,
-    # #116 context firewall — the DARK ambient-directive-detection routing flag.
-    "ambient_directive_detection_enabled": _parse_strict_bool,
     # North-star PR-7 — the directive VERIFYING horizon (days) after activation.
     "directive_verify_days": _parse_strict_int,
     # T4-PR-3 — the autoresearch outer-loop runtime bounds: the post-implement
@@ -787,31 +785,19 @@ class UserSettings:
     # never-lockout escape. A feature flag (governed in ``FEATURE_FLAGS``).
     # Per-overlay overridable.
     require_merge_quality_verdict: bool = False
-    # north-star PR-5 The design critic's OFF switch — the generic-vs-hack judgment
-    # at PLAN time. When on for a directive ticket's overlay, the four
-    # ``transition="plan"`` LLM rubric items (``generality`` / ``sketch_conformance`` /
-    # ``convention_fit`` / ``refactor_honesty``) are judged by the async critic and
-    # their FAIL items recorded as ``CriticFinding(transition="plan")``. ADVISORY-first:
-    # the deterministic ``mechanism_placement`` adequacy section (``mechanism_conforms``
-    # in ``plan_currency_gate``) is the blocking teeth; this surfaces what determinism
-    # can't and never blocks. Default false = fully inert (one settings read at plan
-    # time, no async dispatch). Its OWN kill-switch (setting it back false) is the
-    # never-lockout escape. A feature flag (governed in ``FEATURE_FLAGS``).
+    # SELFCATCH-5 / #104 The autonomous user-proxy critic's ENFORCEMENT posture on
+    # ``mark_delivered`` (``critic_gate``), re-typed from the former boolean
+    # enforcement flag. The critic ALWAYS records the cheap deterministic
+    # ``CriticFinding`` per failing rubric item; this tri-state decides whether the
+    # EXPENSIVE async LLM critic is armed and whether a blocking finding refuses the
+    # delivery. ``off`` (default) = dark: no async dispatch, no block. ``advisory`` =
+    # arm the async critic + record ``CriticVerdict`` rows, never raise (the mode that
+    # accumulates critic-liveness evidence pre-enablement). ``blocking`` = arm + refuse
+    # the delivery on a blocking deterministic finding (fail-closed, the ticket stays
+    # RETROSPECTED). Setting it back to ``advisory`` (recording continues) is the
+    # audited never-lockout escape. A feature flag (governed in ``FEATURE_FLAGS``).
     # Per-overlay overridable.
-    design_critic_live: bool = False
-    # SELFCATCH-5 The autonomous user-proxy critic's ENFORCEMENT switch on
-    # ``mark_delivered`` (``critic_gate``). The critic ALWAYS runs at the final
-    # done-claim and RECORDS a ``CriticFinding`` per failing rubric item (the 8
-    # seeded classes this session's human had to point out); this flag decides
-    # only whether a finding BLOCKS the delivery. Default false = ADVISORY: the
-    # rubric runs, findings are recorded, RETROSPECTED→DELIVERED still proceeds —
-    # so the critic ships DARK and gathers evidence without ever wedging a real
-    # ticket. Flip true per-overlay once the rubric has proven non-vacuous on real
-    # deliveries and a finding SHOULD hard-block (fail-closed, an
-    # ``InvalidTransitionError`` keeps the ticket RETROSPECTED). Its OWN
-    # kill-switch (setting it back false) is the audited never-lockout escape. A
-    # feature flag (governed in ``FEATURE_FLAGS``). Per-overlay overridable.
-    critic_gate_live: bool = False
+    critic_gate_mode: CriticGateMode = CriticGateMode.OFF
     # PR-08 No-bulk-close threshold: a single command/agent action closing more
     # than this many tickets/MRs is refused without an explicit per-item
     # confirmation token (``bulk_close_gate``). A close of ≤ threshold items is
@@ -1213,19 +1199,6 @@ class UserSettings:
     # default == its off_value (False), so it can never ship default-ON without a
     # code-reviewed stage demotion.
     directive_loop_enabled: bool = False
-    # #116 context firewall — the OFF switch for AMBIENT directive detection (routing an
-    # inbound untrusted DIRECTIVE-intent event toward a directive). A DARK
-    # ``FEATURE_FLAGS`` entry, decoupled from ``directive_loop_enabled`` ON PURPOSE:
-    # arming the explicit directive loop must NEVER silently arm ambient detection of
-    # untrusted inbound content (the lethal-trifecta precondition). Ships inert — no
-    # ``Intent.DIRECTIVE`` producer exists yet AND the ambient raw-mint is disabled (the
-    # scanner only signals that a quarantined reader dispatch is needed; #105 builds it).
-    # The single SANCTIONED ``IncomingEvent → Directive`` mint is the no-tools/no-creds
-    # reader → ``directive_candidate_gate`` recorder (sanitized candidate only); the
-    # ambient scanner mints NOTHING until that dispatch lands, so flag-on cannot promote
-    # raw attacker text. DB-home (#1775), per-overlay overridable. The conformance suite
-    # pins stage=DARK => this default == its off_value (False).
-    ambient_directive_detection_enabled: bool = False
     # North-star PR-7 — the directive-loop VERIFYING horizon in days: after the ratified
     # activation is applied, the five evidence classes (activation live, acceptance green,
     # behavior probe clean, no collateral regression, zero open critic findings) are

@@ -20,11 +20,11 @@ class NoCurrentPlanError(InvalidTransitionError):
 class CriticGateError(InvalidTransitionError):
     """mark_delivered() was refused: a BLOCKING deterministic rubric item failed and enforcement is live.
 
-    Raised by ``critic_gate.check_critic`` (SELFCATCH-5) ONLY when ``critic_gate_live``
-    is on for the ticket's overlay AND a deterministic BLOCKING item (done_not_done /
-    spec_not_plan / completeness) failed. The async LLM items are advisory and never
-    raise. In the default ADVISORY posture the critic records findings and this is never
-    raised — the delivery proceeds.
+    Raised by ``critic_gate.check_critic`` (SELFCATCH-5) ONLY when ``critic_gate_mode``
+    is ``blocking`` for the ticket's overlay AND a deterministic BLOCKING item
+    (done_not_done / spec_not_plan / completeness) failed. The async LLM items are
+    advisory and never raise. In the default ``off`` (and the ``advisory``) posture the
+    critic records findings and this is never raised — the delivery proceeds.
 
     Carries the computed ``specs`` so the caller can re-record them OUTSIDE the delivery
     ``transaction.atomic()`` after it rolls back — otherwise the block would erase the very

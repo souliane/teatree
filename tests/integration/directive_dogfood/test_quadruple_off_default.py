@@ -37,8 +37,8 @@ class TestQuadrupleOffDefault(TestCase):
         assert Loop.objects.get(name=DIRECTIVE_LOOP_NAME).enabled is False
 
     def test_directive_intent_drops_at_default_routing(self) -> None:
-        # Flag-off parity on the real router: a DIRECTIVE-classified event DROPs while
-        # ambient_directive_detection_enabled is off (its default), so intake is inert.
+        # #105: ambient directive detection is deleted — a DIRECTIVE-classified event is
+        # unrouteable and DROPs; the only Directive producer is the explicit capture CLI.
         event = IncomingEvent(source=IncomingEvent.Source.SLACK, channel_ref="C1", body=PROOF_CASE_TEXT)
         classification = IntentClassification(event=event, intent=IntentClassification.Intent.DIRECTIVE)
 
