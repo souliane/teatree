@@ -2481,6 +2481,8 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │                      ingestion.                                              │
 │ notion-download      Download a Notion file attachment using the Brave       │
 │                      browser session.                                        │
+│ affected-tests       Select the pytest tests a diff affects —                │
+│                      over-selecting, never under.                            │
 │ comment-density      Warn on added comments that merely restate the code     │
 │                      (comments-as-code rule).                                │
 │ ai-sig-scan          Refuse a PR body / commit message carrying an           │
@@ -2729,6 +2731,32 @@ Usage: t3 tool notion-download [OPTIONS] URL
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --dest  -d      PATH  Destination directory. [default: .]                    │
 │ --help                Show this message and exit.                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool affected-tests`
+
+```
+Usage: t3 tool affected-tests [OPTIONS]
+
+ Select the pytest tests a diff affects — over-selecting, never under.
+
+ Fast-feedback ONLY: the whole-tree sharded run stays the merge/coverage gate;
+ this
+ is opt-in local tooling, never wired into the pre-push gate. Any change the
+ classifier cannot prove local (conftest/settings/migrations/data
+ files/deletions/
+ files outside the modelled roots) degrades to a whole-tree FULL run.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --base               TEXT  Merge-base ref for the changed set.               │
+│                            [default: origin/main]                            │
+│ --json                     Emit the machine-readable selection.              │
+│ --pytest-args              Emit the pytest positional args (for `xargs uv    │
+│                            run pytest`).                                     │
+│ --explain            TEXT  Trace the selection chain for a test path, or     │
+│                            'all' for every selected test.                    │
+│ --help                     Show this message and exit.                       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

@@ -68,6 +68,26 @@ The repo's `AGENTS.md` § "Test-Writing Doctrine" carries the authoritative rule
 - To run only the tests for a specific file or directory, append the path after `--`: `t3 <overlay> run tests -- path/to/test_file.py` (extra args after `--` are forwarded to pytest). This scopes verification to the changed module instead of firing the whole suite locally.
 - **`t3 <overlay> run tests` and a raw `uv run pytest` can report different total counts** (the CLI wrapper may apply a narrower collection scope than a bare pytest invocation). A passed-count delta between the two runners is a collection difference, **not** a regression — confirm by checking the delta exists on the untouched base commit too, and don't burn a cycle hunting "missing" tests when your diff touches no test files. When a brief cites an expected count, match it with the **same runner** that produced it.
 
+### Fast Local Test Selection (opt-in, #113)
+
+`t3 tool affected-tests` selects only the pytest tests a diff affects, for a fast local inner loop on the teatree repo. It is **safety-biased**: it over-selects (never under-selects) and degrades to the whole-tree run on anything it cannot prove local. It is **opt-in local tooling** — the whole-tree 4-shard CI run stays the merge/coverage gate, and the selector is **never** wired into the pre-push gate.
+
+```bash
+t3 tool affected-tests                 # human report: SCOPED (N files + floor) or FULL + reason
+t3 tool affected-tests --pytest-args   # emit the pytest positional args (for xargs)
+t3 tool affected-tests --json          # machine-readable selection
+t3 tool affected-tests --explain all   # trace why each test was selected (the import chain)
+t3 tool affected-tests --explain tests/teatree_core/test_x.py   # trace one test
+
+bash dev/test-affected.sh              # select + run the fast lane (--full to force whole suite)
+```
+
+How it selects: a changed `src/teatree/**` module → its transitive dependents (the reverse-import closure from `tach map --direction dependents`) → every test whose first-party imports hit any module in the closure, unioned with the mirror-convention test path and an always-run floor (`tests/quality`, `tests/integration`, `tests/conformance`). A changed test file selects itself; the changed src modules run under `--doctest-modules` to match the CI shard flags.
+
+Degrades to a whole-tree FULL run (deterministically — over-run, never under-run) on any of: a changed `conftest.py` / `factories.py`; test settings (`tests/django_settings*`, `tests/config/**`); a migration (adds `--create-db`); a non-`.py` data file under `src/`/`tests/`; any file outside the modelled roots (`scripts/`, `hooks/`, `e2e/`, docs/skills `.md`); any deletion/rename; a dirty merge-base; or an unavailable `tach` map. When the report says FULL, run the whole suite.
+
+**Not a gate.** This is fast feedback only; a subset run cannot prove the 93% whole-tree coverage floor. Before pushing, the coverage gate is still `bash dev/ci-parity.sh` and CI's sharded `test (3.13)` lane.
+
 ### Frontend Lint
 
 - Run the project's frontend lint command (extension point: `wt_lint_frontend`).

@@ -99,7 +99,7 @@ def _is_conftest(path: str) -> bool:
     return Path(path).name == "conftest.py"
 
 
-def _is_migration(path: str) -> bool:
+def is_migration(path: str) -> bool:
     return "/migrations/" in path or Path(path).name == "max_migration.txt"
 
 
@@ -118,7 +118,7 @@ _FULL_PATH_TRIGGERS: tuple[tuple[Callable[[str], bool], str], ...] = (
     (_is_astgrep_rule, ".ast-grep rule/manifest changed — a stricter/new rule can flag an untouched file"),
     (_is_manifest, "regression manifest changed — a new blocking rule can newly-violate a clean file"),
     (_is_conftest, "conftest changes doctest/fixture semantics tree-wide"),
-    (_is_migration, "migration/schema change affects the whole DB-test surface"),
+    (is_migration, "migration/schema change affects the whole DB-test surface"),
     (_is_config, "toolchain/config is un-modellable"),
 )
 

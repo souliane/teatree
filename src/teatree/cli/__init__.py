@@ -30,6 +30,9 @@ import teatree.cli.speak_dm as _speak_dm
 import teatree.cli.tokens as _tokens
 import teatree.cli.ui as _ui
 from teatree.cli import (
+    affected_tests_tools as _affected_tests_tools,  # noqa: F401  (side-effect: registers affected-tests onto tool_app)
+)
+from teatree.cli import (
     comment_density_tools as _comment_density_tools,  # noqa: F401  (side-effect: registers comment-density onto tool_app)
 )
 from teatree.cli import (
