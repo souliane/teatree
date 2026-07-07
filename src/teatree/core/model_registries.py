@@ -43,6 +43,7 @@ def populate_model_registries() -> None:
         merge_evidence_gate,
         plan_currency_gate,
         plan_gate,
+        repro_gate,
         review_context_gate,
         spec_coverage_gate,
     )

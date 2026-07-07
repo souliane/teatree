@@ -113,13 +113,13 @@ class TestCheckConnectorManifest:
         ]
 
     def test_instruction_overrides_the_reconnect_target(self) -> None:
-        req = ConnectorRequirement("claude-in-chrome", instruction="reconnect from the extension popup")
+        req = ConnectorRequirement("acme portal", instruction="re-auth from the vendor console")
         out = check_connector_manifest(
             manifests=_manifest("ov", req),
-            probe=lambda: [_status("claude-in-chrome", connected=False)],
+            probe=lambda: [_status("acme portal", connected=False)],
             ever_connected=set(),
         )
-        assert out.reconnect_lines() == ["RECONNECT claude-in-chrome -> reconnect from the extension popup"]
+        assert out.reconnect_lines() == ["RECONNECT acme portal -> re-auth from the vendor console"]
 
 
 class TestRequireConnector:

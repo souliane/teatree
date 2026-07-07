@@ -4097,8 +4097,8 @@ Usage: t3 mcp [OPTIONS] COMMAND [ARGS]...
 │                    until stdin closes).                                      │
 │ reconnect          Reconnect (or print exact steps for) every                │
 │                    declared-but-down claude.ai connector.                    │
-│ browser-diagnosis  Report the optional chrome-devtools MCP registration      │
-│                    (default off).                                            │
+│ browser-diagnosis  Report the chrome-devtools-mcp registration (the default  │
+│                    browser tool, default on).                                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -4139,12 +4139,14 @@ Usage: t3 mcp reconnect [OPTIONS]
 ```
 Usage: t3 mcp browser-diagnosis [OPTIONS]
 
- Report the optional chrome-devtools MCP registration (default off).
+ Report the chrome-devtools-mcp registration (the default browser tool, default
+ on).
 
- Prints whether the browser-diagnosis MCP server is enabled and, when it is,
- the exact ``claude mcp add`` line that registers it — so an agent can inspect
- a deployed page's network/console/DOM before proposing a root cause for
- browser-visible breakage. No enforcement; a diagnostic aid only.
+ Prints whether the chrome-devtools-mcp server is enabled and, when it is, the
+ exact ``claude mcp add`` line that registers it — so an agent can drive and
+ inspect a deployed page (navigate/click/fill, network/console/DOM) before
+ proposing a root cause for browser-visible breakage. No enforcement; a
+ diagnostic and interaction aid only.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --help          Show this message and exit.                                  │

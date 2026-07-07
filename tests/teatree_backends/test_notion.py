@@ -1,5 +1,6 @@
 """Notion file download and API client — uses Brave cookies for the file CDN."""
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -126,6 +127,16 @@ class TestNotionDownloadCLI:
         assert "Cannot parse file URL" in result.output
 
 
+def _patch_notion_transport(monkeypatch: pytest.MonkeyPatch, handler: Any) -> None:
+    original_client_init = httpx.Client.__init__
+
+    def patched_init(self: httpx.Client, **kwargs: Any) -> None:
+        kwargs["transport"] = httpx.MockTransport(handler)
+        original_client_init(self, **kwargs)
+
+    monkeypatch.setattr(httpx.Client, "__init__", patched_init)
+
+
 class TestNotionClient:
     def test_get_page_returns_json_body(self, monkeypatch: pytest.MonkeyPatch) -> None:
         seen: dict[str, Any] = {}
@@ -136,13 +147,7 @@ class TestNotionClient:
             seen["version"] = request.headers.get("Notion-Version", "")
             return httpx.Response(200, json={"object": "page", "id": "page-1"})
 
-        original_client_init = httpx.Client.__init__
-
-        def patched_init(self: httpx.Client, **kwargs: Any) -> None:
-            kwargs["transport"] = httpx.MockTransport(handler)
-            original_client_init(self, **kwargs)
-
-        monkeypatch.setattr(httpx.Client, "__init__", patched_init)
+        _patch_notion_transport(monkeypatch, handler)
 
         client = NotionClient(token="secret", version="2026-01-01")
         body = client.get_page("page-1")
@@ -150,6 +155,100 @@ class TestNotionClient:
         assert seen["url"] == "https://api.notion.com/v1/pages/page-1"
         assert seen["auth"] == "Bearer secret"
         assert seen["version"] == "2026-01-01"
+
+    @pytest.mark.parametrize(
+        ("prop", "expected"),
+        [
+            ({"type": "status", "status": {"name": "In review"}}, "In review"),
+            ({"type": "select", "select": {"name": "Done"}}, "Done"),
+            ({"type": "status", "status": None}, None),
+            ({"type": "select", "select": None}, None),
+        ],
+    )
+    def test_get_page_status_parses_status_and_select(
+        self, monkeypatch: pytest.MonkeyPatch, prop: dict[str, Any], expected: str | None
+    ) -> None:
+        seen: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["url"] = str(request.url)
+            return httpx.Response(200, json={"object": "page", "properties": {"Status": prop}})
+
+        _patch_notion_transport(monkeypatch, handler)
+
+        status = NotionClient(token="secret").get_page_status("pg-9", property_name="Status")
+        assert status == expected
+        assert seen["url"] == "https://api.notion.com/v1/pages/pg-9"
+
+    @pytest.mark.parametrize(
+        "page",
+        [
+            {"properties": {}},  # property missing
+            {"object": "page"},  # no properties key at all
+            {"properties": {"Status": {"status": {"name": None}}}},  # option name not a string
+        ],
+    )
+    def test_get_page_status_returns_none_when_unreadable(
+        self, monkeypatch: pytest.MonkeyPatch, page: dict[str, Any]
+    ) -> None:
+        _patch_notion_transport(monkeypatch, lambda _: httpx.Response(200, json=page))
+        assert NotionClient(token="secret").get_page_status("pg-9", property_name="Status") is None
+
+    def test_query_database_stops_when_has_more_but_no_cursor(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(str(request.url))
+            return httpx.Response(200, json={"results": [{"id": "row-1"}], "has_more": True})
+
+        _patch_notion_transport(monkeypatch, handler)
+
+        rows = NotionClient(token="secret").query_database("db-1")
+
+        assert [r["id"] for r in rows] == ["row-1"]
+        assert len(calls) == 1
+
+    def test_query_database_posts_and_paginates(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: list[dict[str, Any]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content.decode())
+            calls.append({"url": str(request.url), "method": request.method, "body": body})
+            if body.get("start_cursor") == "cur-2":
+                return httpx.Response(200, json={"results": [{"id": "row-2"}], "has_more": False})
+            return httpx.Response(200, json={"results": [{"id": "row-1"}], "has_more": True, "next_cursor": "cur-2"})
+
+        _patch_notion_transport(monkeypatch, handler)
+
+        rows = NotionClient(token="secret").query_database("db-1", db_filter={"property": "Status"})
+
+        assert [r["id"] for r in rows] == ["row-1", "row-2"]
+        assert len(calls) == 2
+        assert calls[0]["method"] == "POST"
+        assert calls[0]["url"] == "https://api.notion.com/v1/databases/db-1/query"
+        assert calls[0]["body"]["filter"] == {"property": "Status"}
+        assert calls[1]["body"]["start_cursor"] == "cur-2"
+
+    def test_update_page_status_issues_patch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        seen: dict[str, Any] = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["url"] = str(request.url)
+            seen["method"] = request.method
+            seen["auth"] = request.headers.get("Authorization", "")
+            seen["version"] = request.headers.get("Notion-Version", "")
+            seen["body"] = json.loads(request.content.decode())
+            return httpx.Response(200, json={"object": "page", "id": "pg-9"})
+
+        _patch_notion_transport(monkeypatch, handler)
+
+        NotionClient(token="secret").update_page_status("pg-9", property_name="Status", value="Merged")
+
+        assert seen["method"] == "PATCH"
+        assert seen["url"] == "https://api.notion.com/v1/pages/pg-9"
+        assert seen["auth"] == "Bearer secret"
+        assert seen["version"]
+        assert seen["body"]["properties"]["Status"]["status"]["name"] == "Merged"
 
 
 class TestNotionFileRef:

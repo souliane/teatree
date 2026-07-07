@@ -5,7 +5,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("core", "0035_seed_directive_loop"),
+        ("core", "0036_reprowaiver_reproevidence"),
     ]
 
     operations = [

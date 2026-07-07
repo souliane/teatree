@@ -4211,8 +4211,7 @@ _ACCOUNT_SWITCH_DIRECTIVE = (
     "it invalidates the backend cache, re-probes each connector's live "
     "reachability, and records the new account so this notice clears. If a "
     "connector probes unreachable, re-auth that MCP connector in the Claude.ai "
-    "UI (and reconnect the Claude-in-Chrome extension per /t3:e2e) before "
-    "relying on any outbound message."
+    "UI before relying on any outbound message."
 )
 
 _MCP_CONNECTIVITY_DIRECTIVE = (

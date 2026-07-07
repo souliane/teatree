@@ -1,0 +1,5 @@
+{"type": "system", "subtype": "init", "session_id": "fixt-directive_scopes_to_named_overlay-pass-01", "model": "claude-sonnet-4-6"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Scoped to acme-web."}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01", "name": "Bash", "input": {"command": "t3 directive capture \"For the acme-web overlay, teatree should always run the accessibility lint before opening a PR.\" --scope acme-web", "description": "step"}}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Captured directive #14 (state=captured)."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 1}

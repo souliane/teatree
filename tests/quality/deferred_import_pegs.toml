@@ -79,7 +79,6 @@
 "src/teatree/core/signals.py" = 6
 "src/teatree/core/speak.py" = 2
 "src/teatree/core/provision/step_runner.py" = 4
-"src/teatree/core/sync.py" = 3
 "src/teatree/core/tasks.py" = 5
 "src/teatree/core/views/_rate_limit.py" = 1
 # #8 M7 revival: the waiting-lane covering-CLEAR match reads the shared SIG-1

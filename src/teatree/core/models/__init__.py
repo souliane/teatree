@@ -86,6 +86,8 @@ from teatree.core.models.pull_request import PullRequest
 from teatree.core.models.red_card_signal import RedCardIntent, RedCardSignal
 from teatree.core.models.red_mr_fix_attempt import RedMrFixAttempt
 from teatree.core.models.reply_dispatch import ReplyDispatch
+from teatree.core.models.repro_evidence import HarnessRun, ReproEvidence, ReproEvidenceError, ReproEvidenceManager
+from teatree.core.models.repro_waiver import ReproWaiver, ReproWaiverError
 from teatree.core.models.resource_pressure_marker import ResourcePressureMarker
 from teatree.core.models.review_assignment import ReviewAssignment, ReviewIntent
 from teatree.core.models.review_evidence import ReviewEvidence, ReviewEvidenceError
@@ -174,6 +176,7 @@ __all__ = [
     "FactoryScoreSnapshot",
     "FactoryScoreSnapshotManager",
     "Finding",
+    "HarnessRun",
     "HonestyEscalation",
     "ImplementedIssueMarker",
     "IncomingEvent",
@@ -234,6 +237,11 @@ __all__ = [
     "RedMrFixAttempt",
     "RemediationKind",
     "ReplyDispatch",
+    "ReproEvidence",
+    "ReproEvidenceError",
+    "ReproEvidenceManager",
+    "ReproWaiver",
+    "ReproWaiverError",
     "ResourcePressureMarker",
     "ReviewAssignment",
     "ReviewEvidence",

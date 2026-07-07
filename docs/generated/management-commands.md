@@ -371,6 +371,17 @@ Render a reusable prompt by name with its declared params (read-only; #2513).
 
 Report (and optionally recover) work stranded by an outage.
 
+## `repro`
+
+Group root — forces sub-commands to be addressed by name.
+
+| Subcommand | Description |
+| --- | --- |
+| `waive` | Record a HUMAN-authorized waiver of the forced-repro gate (#118) |
+| `status` | Show the recorded RED/GREEN/provenance/waiver state for a ticket (audit) |
+| `record-red` | Record the harness-run FAILING RED reproduction for a FIX ticket (#118) |
+| `record-green` | Record the harness-run PASSING GREEN and freeze the provenance verdict (#118) |
+
 ## `retro`
 
 ``t3 <overlay> retro`` group root.

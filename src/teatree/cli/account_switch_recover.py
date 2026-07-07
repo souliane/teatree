@@ -89,8 +89,7 @@ def recover_account_switch(
         return
 
     typer.echo(
-        "One or more connectors are unreachable. Re-auth the MCP connector(s) in the "
-        "Claude.ai UI (and reconnect the Claude-in-Chrome extension per /t3:e2e), then re-run.",
+        "One or more connectors are unreachable. Re-auth the MCP connector(s) in the Claude.ai UI, then re-run.",
     )
     _report_reconnect_lines(open_links=open_links)
     raise typer.Exit(code=1)

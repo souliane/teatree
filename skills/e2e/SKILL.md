@@ -28,46 +28,33 @@ Playwright-based end-to-end testing for overlay target applications. Covers writ
 
 Always start dev servers via `t3 <overlay> worktree start` before running tests. Never start services manually. Before running E2E tests, verify that **translations are loaded** — the frontend i18n directory is gitignored and only populated at startup. If the frontend was started manually, translations will be missing. Quick check: open any page and confirm labels show human-readable text, not raw keys like `app.feature.xxx.label`.
 
-## Claude in Chrome connectivity
+## Browser tool: chrome-devtools-mcp (default)
 
-**Automated account-switch recovery (#1916).** A `/login` switch is now detected without manual checks: the `SessionStart` hook compares the active `~/.claude.json` `oauthAccount.accountUuid` against the last-recovered one and, on a change, prepends a directive telling you to run `t3 doctor check` (or `t3 setup recover-account-switch`). That command invalidates the teatree backend token cache and live-re-probes each Slack/Notion connector's `auth.test`, recording the new account so the notice clears. It exits non-zero when a connector is still unreachable. The Slack/Notion legs are automatic; the Claude-in-Chrome extension re-pairing below is still manual (item (a)).
+Agentic browser work — driving a deployed page (navigate/click/fill/upload) and inspecting it (network / console / DOM / screenshots) — runs through **chrome-devtools-mcp**, teatree's default browser tool. It is Google's `chrome-devtools-mcp` server, driving its own Chrome over the DevTools Protocol. Crucially it needs **no claude.ai account and no browser-extension pairing** — the whole account-switch / extension-popup / "logged in ≠ connected" fragility of the old Claude-in-Chrome extension is gone. Deterministic E2E stays on **Playwright** (below); chrome-devtools-mcp is the agentic nav/interaction + diagnosis lane, never the perf/trace enforcement lane.
 
-Browser-driven E2E and visual checks run through the Claude-in-Chrome MCP server. Two failure modes are easy to misread as "the browser is broken" when the fix is mechanical.
+**Register it (default on):**
 
-**Diagnosis one-liner: MCP server connected ≠ extension connected.** `/mcp` showing the `claude-in-chrome` server green only proves the MCP server reachable — it does NOT prove the extension is paired with the active account.
+```bash
+t3 mcp browser-diagnosis   # prints the `claude mcp add` line; the flag ships ON by default
+# turn OFF only on a host that cannot run the server:
+# t3 <overlay> config_setting set chrome_devtools_mcp_enabled false
+```
 
-**(a) Logged into claude.ai ≠ extension connected.** Being signed into claude.ai in the browser does not connect the extension — the extension popup carries its **own** connection / sign-in state. After any account switch, every browser tool can return "extension not connected" while `/mcp` shows the server reconnected.
+The registration is `claude mcp add chrome-devtools -- npx -y chrome-devtools-mcp@latest`, so the tools surface as `mcp__chrome-devtools__*` — `navigate_page`, `click`, `fill` / `fill_form`, `type_text`, `upload_file`, `wait_for`, `take_snapshot`, `take_screenshot`, `list_console_messages`, `list_network_requests`, `evaluate_script`. Browser-visible breakage (a blank render, a failed XHR, a console error, a wrong DOM state) is diagnosed **in the browser** with these before any root-cause claim, not guessed from the server side.
 
-- **Verify:** call `list_connected_browsers`. An **empty array** (`[]`) means the extension is not paired with THIS account — zero instances are connected.
-- **Fix:** open the extension popup → sign out → sign in with the active account → Connect. Do a **full browser restart** if it still reports empty, then re-run `list_connected_browsers` to confirm a non-empty result before proceeding.
-
-This is the empirical fallout item (c) from the account-switch checklist in [souliane/teatree#1916](https://github.com/souliane/teatree/issues/1916).
-
-**(b) Navigation can silently block on per-origin permission prompts.** A `navigate` call can stall on a per-origin permission prompt the user has to grant. In an interactive session this surfaces as an `AskUserQuestion` fallback you answer once per origin. For an automated/unattended run, pre-authorize the browser MCP tools in `~/.claude/settings.json` so the tool itself never prompts:
+**Pre-authorize the tools for an unattended run.** So the tool never prompts mid-run, allow the server in `~/.claude/settings.json`:
 
 ```jsonc
 {
   "permissions": {
     "allow": [
-      "mcp__claude-in-chrome__navigate",
-      "mcp__claude-in-chrome__*"
+      "mcp__chrome-devtools__*"
     ]
   }
 }
 ```
 
-**Research finding — MCP allow-rules cannot constrain by domain, and wildcard subdomains are NOT supported.** Per the [Claude Code permission rule syntax](https://docs.claude.com/en/docs/claude-code/permissions#mcp), an MCP specifier matches only by server and tool name — `mcp__server`, `mcp__server__*`, or `mcp__server__tool_name`. There is **no** argument/domain form: you cannot write `mcp__claude-in-chrome__navigate(domain:*.example.com)` the way you can write `WebFetch(domain:example.com)`. So a browser-navigation allow-rule is all-or-nothing per tool — it auto-approves the `navigate` tool for **every** origin, not a wildcard-subdomain subset. (`WebFetch(domain:...)` and the bash sandbox's `allowedDomains` do support `*.example.com`, but those govern `WebFetch` and Bash, not the Claude-in-Chrome MCP tools.) The per-origin grant the browser itself enforces is upstream of permission rules; auto-approving the tool removes the Claude Code prompt, not the browser's own origin gate. Upstream feature gap: there is no per-origin allow-list for MCP browser tools today — track it against the account-switch automation in [souliane/teatree#1916](https://github.com/souliane/teatree/issues/1916).
-
-### Optional browser-diagnosis MCP (chrome-devtools)
-
-Browser-visible breakage — a blank render, a failed XHR, a console error, a wrong DOM state — is diagnosed **in the browser (network / console / DOM)** before any root-cause claim, not guessed from the server side. Google's `chrome-devtools-mcp` server exposes that inspection to an agent, but it is a heavy third-party dependency the operator opts into, so it ships **off by default**:
-
-```bash
-t3 <overlay> config_setting set chrome_devtools_mcp_enabled true   # opt in (default off)
-t3 mcp browser-diagnosis                                           # prints the `claude mcp add` line to register it
-```
-
-It is a **diagnostic aid only, not an enforcement path** — perf/trace enforcement stays in the deterministic Playwright lane covered below, never this server.
+**Research finding — MCP allow-rules match by server + tool name only, no domain form.** Per the [Claude Code permission rule syntax](https://docs.claude.com/en/docs/claude-code/permissions#mcp), an MCP specifier is `mcp__server`, `mcp__server__*`, or `mcp__server__tool_name` — there is **no** argument/domain form, so you cannot scope `mcp__chrome-devtools__navigate_page` to a domain the way `WebFetch(domain:example.com)` scopes `WebFetch`. The allow-rule is therefore all-or-nothing per tool. Since chrome-devtools-mcp drives its own launched Chrome (not a shared extension session), there is no per-origin browser gate to clear on top of the allow-rule — allowing the tool is sufficient for an unattended run.
 
 ## Running E2E Tests
 
@@ -502,7 +489,7 @@ A single E2E pass is not self-driving: it can go green vacuously, miss an accept
 
 ### The loop as FSM edges (max 5 iterations per ticket)
 
-1. **`test` / e2e phase — `/t3:e2e`.** Run the spec — against **DEV** if the feature is deployed there, else a **local stack** restored from the DEV dump (§ "Dual-Env Testing" and § "Replicating a DEV object to local"). On failure, **bug-hunt**: browser console first (§ "Browser Console First"), then screenshot sanity (§ "Screenshot Sanity Check"), driving the page with Claude in Chrome where it helps. **Codify every confirmed finding into a committed Playwright spec** — a browser observation that isn't captured as a durable assertion is lost; the bug-hunt's output is *new committed test code*, not a note. If a real **product bug** surfaces, fix it. Opportunistically **consolidate** duplicated/outside specs into the canonical suite via the `/t3:e2e-review` § "Adopting an outside Playwright suite" conversion method. Then `/next`.
+1. **`test` / e2e phase — `/t3:e2e`.** Run the spec — against **DEV** if the feature is deployed there, else a **local stack** restored from the DEV dump (§ "Dual-Env Testing" and § "Replicating a DEV object to local"). On failure, **bug-hunt**: browser console first (§ "Browser Console First"), then screenshot sanity (§ "Screenshot Sanity Check"), driving the page with chrome-devtools-mcp where it helps. **Codify every confirmed finding into a committed Playwright spec** — a browser observation that isn't captured as a durable assertion is lost; the bug-hunt's output is *new committed test code*, not a note. If a real **product bug** surfaces, fix it. Opportunistically **consolidate** duplicated/outside specs into the canonical suite via the `/t3:e2e-review` § "Adopting an outside Playwright suite" conversion method. Then `/next`.
 2. **→ `e2e_reviewing` phase — `/t3:e2e-review`.** Score the spec (and its run) with the **E2E Confidence Rubric** (`/t3:e2e-review` § "E2E Confidence Rubric"): all three hard gates, then the six weighted criteria, returning `{score, threshold, verdict, findings}`.
 3. **VERIFIED** — `score ≥ threshold` AND all hard gates pass. `/next` advances toward `ship`: commit the specs, open/merge the e2e PR, and **post the clean test plan** (§ "Post Testing Evidence on the Ticket"), recording the rubric score alongside the run. **If the ticket also changed product code**, the normal `review` phase (code review, maker ≠ checker) sits between `e2e_reviewing` and `ship`; for a **pure test-adding ticket**, `e2e_reviewing → ship` directly. An optional `review-request` follows. Exit the loop.
 4. **BLOCKED** — a **hard external gate** blocks (no broker account and local can't substitute; a broken login with no available fix; a result observable nowhere programmatically — the rubric's `BLOCKED(<named-gate>)`). Terminal: surface the **named gate** to the user, post **nothing caveated**, exit. Do not loop.

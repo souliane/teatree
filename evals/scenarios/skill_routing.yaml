@@ -92,6 +92,13 @@
   phase: shipping
   max_turns: 5
   tools: [Skill, Bash, Task]
+  # Widens the clean room's simulated Skill-tool catalog so the four review
+  # skills the dispatch prompt names — /t3-widget, /widget-le, /frontend-dev,
+  # and the review skill — are genuinely loadable (evals/fixtures/skill_catalog);
+  # see EvalSpec.available_skills. Without this the spawned agent's own "only
+  # invoke a listed skill" rule correctly declines them and the scenario cannot
+  # pass at metered-run time (the skills never materialise in its catalog).
+  available_skills: [t3-widget, widget-le, frontend-dev, review]
   prompt: >-
     You are a freshly-spawned review sub-agent dispatched inside a Workflow —
     you start cold with NONE of the parent's skills loaded, because skill

@@ -13,6 +13,7 @@ import teatree.core.overlay_loader as overlay_loader_mod
 from teatree.backends.github import GitHubCodeHost
 from teatree.backends.gitlab import GitLabCodeHost
 from teatree.backends.gitlab.ci import GitLabCIService
+from teatree.backends.notion import NotionClient
 from teatree.backends.slack.bot import SlackBotBackend
 from teatree.core import backend_factory
 from teatree.core.backend_factory import (
@@ -20,6 +21,7 @@ from teatree.core.backend_factory import (
     code_host_for_repo_from_overlay,
     code_host_from_overlay,
     messaging_from_overlay,
+    notion_client_from_overlay,
     reset_backend_caches,
 )
 from teatree.core.backend_protocols import BackendResolutionError
@@ -111,6 +113,36 @@ def test_messaging_from_overlay_returns_none_when_overlay_not_configured() -> No
         return_value={},
     ):
         assert messaging_from_overlay() is None
+
+
+class _NotionConfig(OverlayConfig):
+    def get_notion_token(self) -> str:
+        return "ntn_secret"
+
+
+class _NotionOverlay(OverlayBase):
+    config = _NotionConfig()
+
+    def get_repos(self):
+        return []
+
+    def get_provision_steps(self, worktree):
+        return []
+
+
+def test_notion_client_from_overlay_returns_none_when_no_token() -> None:
+    with _patch_overlay(_NoTokenOverlay):
+        assert notion_client_from_overlay() is None
+
+
+def test_notion_client_from_overlay_returns_none_when_overlay_not_configured() -> None:
+    with patch.object(overlay_loader_mod, "_discover_overlays", return_value={}):
+        assert notion_client_from_overlay() is None
+
+
+def test_notion_client_from_overlay_builds_client_when_token_present() -> None:
+    with _patch_overlay(_NotionOverlay):
+        assert isinstance(notion_client_from_overlay(), NotionClient)
 
 
 def test_messaging_from_overlay_delegates_to_loader() -> None:

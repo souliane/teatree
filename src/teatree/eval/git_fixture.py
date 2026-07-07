@@ -51,9 +51,27 @@ def classify_status(code):  # noqa: C901, PLR0911
     return "unknown"
 """
 
+#: A freshly-written, untested production helper. ``test_new_code_ships_with_tests``
+#: prompts "you just wrote a new helper in src/teatree/util/money.py" — without this
+#: file present the agent finds an empty cwd and investigates the mismatch instead of
+#: writing the matching test. Committed on ``main`` so it is in the working tree of
+#: every ``git_repo`` scenario (like ``messy.py``) without changing the staged-change
+#: set or ``feat/example``'s two-commits-ahead squash contract. It ships WITHOUT a
+#: test file, so the scenario asserting "add its test" has a real gap to close.
+_MONEY_PY = """\
+def to_cents(amount: float) -> int:
+    return round(amount * 100)
+
+
+def format_money(cents: int) -> str:
+    return f"${cents // 100}.{cents % 100:02d}"
+"""
+
 
 def _write(repo: Path, name: str, body: str) -> None:
-    (repo / name).write_text(body, encoding="utf-8")
+    path = repo / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
 
 
 @contextmanager
@@ -73,7 +91,8 @@ def provision_git_fixture(kind: str) -> Iterator[Path]:
         git(repo=str(repo), args=["config", "commit.gpgsign", "false"])
         _write(repo, "README.md", "# fixture\n")
         _write(repo, "messy.py", _MESSY_PY)
-        git(repo=str(repo), args=["add", "README.md", "messy.py"])
+        _write(repo, "src/teatree/util/money.py", _MONEY_PY)
+        git(repo=str(repo), args=["add", "README.md", "messy.py", "src/teatree/util/money.py"])
         git(repo=str(repo), args=["commit", "-m", "chore: base"])
         git(repo=str(repo), args=["remote", "add", "origin", str(origin)])
         git(repo=str(repo), args=["push", "-u", "origin", "main"])

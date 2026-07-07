@@ -27,8 +27,8 @@ def open_reconnect_targets(reconnect_urls: list[str], *, opener: Callable[[str],
     Fail-open by design (PR-19): a browser that will not launch (headless CI, no
     display) must never fail the recovery command — the printed ``RECONNECT``
     lines are the real deliverable, ``--open`` is a convenience. Only ``http(s)``
-    targets are opened; a non-URL instruction (claude-in-chrome's extension-popup
-    step) is left for the human to read.
+    targets are opened; a non-URL instruction (a connector's bespoke re-auth step)
+    is left for the human to read.
     """
     import webbrowser  # noqa: PLC0415 — deferred so importing the CLI never pulls a GUI lib.
 
@@ -101,12 +101,13 @@ def reconnect(
 
 @mcp_app.command(name="browser-diagnosis")
 def browser_diagnosis() -> None:
-    """Report the optional chrome-devtools MCP registration (default off).
+    """Report the chrome-devtools-mcp registration (the default browser tool, default on).
 
-    Prints whether the browser-diagnosis MCP server is enabled and, when it is,
-    the exact ``claude mcp add`` line that registers it — so an agent can inspect
-    a deployed page's network/console/DOM before proposing a root cause for
-    browser-visible breakage. No enforcement; a diagnostic aid only.
+    Prints whether the chrome-devtools-mcp server is enabled and, when it is, the
+    exact ``claude mcp add`` line that registers it — so an agent can drive and
+    inspect a deployed page (navigate/click/fill, network/console/DOM) before
+    proposing a root cause for browser-visible breakage. No enforcement; a
+    diagnostic and interaction aid only.
     """
     ensure_django()
 

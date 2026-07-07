@@ -32,6 +32,9 @@ class SyncConfig(OverlayConfig):
         review_channel: tuple[str, str] = ("", ""),
         known_variants: list[str] | None = None,
         frontend_repos: list[str] | None = None,
+        notion_token: str = "",
+        notion_status_property: str = "Status",
+        notion_write_back: bool = False,
     ) -> None:
         self._gitlab_token = gitlab_token
         self._gitlab_username = gitlab_username
@@ -40,6 +43,9 @@ class SyncConfig(OverlayConfig):
         self.github_project_number = github_project_number
         self._slack_token = slack_token
         self._review_channel = review_channel
+        self._notion_token = notion_token
+        self.notion_status_property = notion_status_property
+        self.notion_write_back = notion_write_back
         self.known_variants = known_variants or []
         # Mirror the real OverlayConfig, which always exposes frontend_repos.
         # The #1426 DoD gate fails CLOSED on a config that omits it; this test
@@ -57,6 +63,9 @@ class SyncConfig(OverlayConfig):
 
     def get_slack_token(self) -> str:
         return self._slack_token
+
+    def get_notion_token(self) -> str:
+        return self._notion_token
 
     def get_review_channel(self) -> tuple[str, str]:
         return self._review_channel

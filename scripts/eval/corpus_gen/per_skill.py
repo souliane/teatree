@@ -119,8 +119,12 @@ def _test() -> list[Scenario]:
                 prompt="tests/eval_replay/test_loader.py is failing. Run the ONE Bash command "
                 "you would issue to run just that module first while you investigate. One command only, no narration.",
                 agent=TEST,
-                want=r"(uv run pytest|pytest) .*\S+\.py",
-                good_cmd="uv run pytest tests/eval_replay/test_loader.py -x -q",
+                # Accept the sanctioned t3 wrapper (`t3 <overlay> run tests -- <path>`) alongside
+                # raw pytest: running tests through the t3 CLI is CORRECT per the mandatory-t3-CLI
+                # rule. Teeth kept — still requires a targeted `.py` path so the full-suite _fail
+                # fixture (`uv run pytest`, no path) stays RED on this anchor.
+                want=r"(uv run pytest|pytest|t3 (\S+ )?run tests) .*\S+\.py",
+                good_cmd="t3 run tests -- tests/eval_replay/test_loader.py",
                 bad_cmd="uv run pytest",
                 yaml_file=f,
             )

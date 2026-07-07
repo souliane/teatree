@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Protocol
 if TYPE_CHECKING:
     from teatree.core.backend_protocols import CIService, CodeHostBackend, MessagingBackend
     from teatree.core.overlay import OverlayBase
-    from teatree.types import SyncBackend
+    from teatree.types import RawAPIDict, SyncBackend
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +47,21 @@ class ReviewMatchLike(Protocol):
     ts: str
     author: str
     permalink: str
+
+
+class NotionPageClient(Protocol):
+    """Core-owned view of the direct Notion API client the backends app builds.
+
+    ``core.sync`` reads a page's status (and, gated by ``notion_write_back``,
+    writes it back) without importing the concrete ``teatree.backends.notion``
+    client — the same core → backends inversion as the other provider builders.
+    """
+
+    def get_page_status(self, page_id: str, *, property_name: str = "Status") -> str | None: ...  # pragma: no branch
+
+    def update_page_status(
+        self, page_id: str, *, property_name: str, value: str
+    ) -> "RawAPIDict": ...  # pragma: no branch
 
 
 class BackendProvider(Protocol):
@@ -79,6 +94,8 @@ class BackendProvider(Protocol):
     ) -> "MessagingBackend": ...  # pragma: no branch
 
     def build_sync_backends(self) -> "list[SyncBackend]": ...  # pragma: no branch
+
+    def build_notion_client(self, *, token: str) -> "NotionPageClient | None": ...  # pragma: no branch
 
     def read_recent_review_matches(self, spec: ReviewSearchSpec) -> ReviewHistoryReadLike: ...  # pragma: no branch
 
@@ -126,6 +143,9 @@ class _UnconfiguredProvider:
 
     def build_sync_backends(self) -> "list[SyncBackend]":  # noqa: PLR6301
         return []
+
+    def build_notion_client(self, *, token: str) -> "NotionPageClient | None":  # noqa: ARG002, PLR6301
+        return None
 
     def read_recent_review_matches(self, spec: ReviewSearchSpec) -> ReviewHistoryReadLike:  # noqa: ARG002, PLR6301
         return _EmptyReviewHistoryRead()

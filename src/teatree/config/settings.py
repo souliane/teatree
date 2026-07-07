@@ -118,6 +118,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "require_integration_review": _parse_strict_bool,
     "require_merge_evidence": _parse_strict_bool,
     "require_plan_adequacy": _parse_strict_bool,
+    "require_executed_repro": _parse_strict_bool,
     "require_debt_delta": _parse_strict_bool,
     "require_merge_quality_verdict": _parse_strict_bool,
     "design_critic_live": _parse_strict_bool,
@@ -581,11 +582,12 @@ class UserSettings:
     # (which gates merge, not the review-request post). Default off; per-overlay
     # overridable (DB-home).
     review_request_post_disabled: bool = False
-    # Pass --chrome to every spawned `claude` session so Claude in Chrome is
-    # available wherever it could be useful (browser inspection, UI debugging,
-    # E2E selector drafting, bug hunts). Costs ~300 lines of system prompt per
-    # session; turn off only on machines without the Chrome extension.
-    claude_chrome: bool = True
+    # Pass --chrome to every spawned `claude` session to attach the legacy
+    # Claude-in-Chrome extension. Default OFF — chrome-devtools-mcp
+    # (`chrome_devtools_mcp_enabled`) is the default browser tool now: it needs no
+    # claude.ai account or extension pairing and covers navigation, interaction,
+    # and inspection. Turn ON only to opt a host back into the Chrome extension.
+    claude_chrome: bool = False
     # Whether teatree should append an agent identity (`Co-Authored-By`,
     # "Sent using …", "Generated with …") to artifacts published on the
     # user's behalf — git commits, PR descriptions and comments, Slack
@@ -716,6 +718,20 @@ class UserSettings:
     # audited never-lockout escape alongside ``plan-reaffirm``. A feature flag
     # (governed in ``FEATURE_FLAGS``). Per-overlay overridable.
     require_plan_adequacy: bool = False
+    # #118 Opt-in forced-repro gate on ``ship()`` for FIX-kind tickets
+    # (``repro_gate``): a fix cannot ship without a harness-recorded, provenance-
+    # verified RED->GREEN reproduction — a failing command captured against the
+    # pre-fix tree (``merge-base --is-ancestor red green`` with ``red != green``),
+    # then the SAME command passing once the fix is applied. The harness runs both
+    # commands and stamps both SHAs, so exit codes and provenance cannot be forged
+    # in prose. A genuinely repro-less failure (race/heisenbug) is unblocked by a
+    # HUMAN-authorized ``ReproWaiver`` (maker != checker — the agent can never
+    # self-waive). Default false = NO-OP so the generic ship chain never blocks;
+    # the operator flips it ON per-overlay
+    # (``config_setting set require_executed_repro true --overlay <name>``). Its OWN
+    # kill-switch (setting it back false) is the audited never-lockout escape. A
+    # feature flag (governed in ``FEATURE_FLAGS``). Per-overlay overridable.
+    require_executed_repro: bool = False
     # North-star PR-3 The deterministic no-new-tech-debt MERGE gate on ``pr create``
     # (``debt_delta_gate`` in ``_run_ship_gates``): a ship diff that introduces
     # NET-NEW debt — a new ``noqa`` / ``type-ignore`` / ``pragma-no-cover`` comment,
@@ -1097,14 +1113,15 @@ class UserSettings:
     # the hook; the reader resolves it through `get_effective_settings`, so a DB
     # `config_setting set` actuates it exactly like the sibling gates.
     gate_relaxation_gate_enabled: bool = True
-    # Optional browser-diagnosis MCP server. When true, `t3 mcp
-    # browser-diagnosis` emits the `claude mcp add` command that registers
-    # Google's chrome-devtools-mcp so an agent can inspect a deployed page's
-    # network / console / DOM before proposing a root cause for browser-visible
-    # breakage. Default OFF — a heavy, optional third-party server the operator
-    # opts into; perf/trace *enforcement* stays in the deterministic Playwright
-    # lane, never this diagnostic server. Per-overlay overridable (DB-home).
-    chrome_devtools_mcp_enabled: bool = False
+    # chrome-devtools-mcp is teatree's DEFAULT browser tool (navigation,
+    # interaction, and network / console / DOM inspection over CDP — no claude.ai
+    # account or extension pairing). When true, `t3 mcp browser-diagnosis` emits
+    # the `claude mcp add` command that registers Google's chrome-devtools-mcp so
+    # an agent can drive and inspect a deployed page before proposing a root cause
+    # for browser-visible breakage. Default ON; perf/trace *enforcement* stays in
+    # the deterministic Playwright lane, never this server. Per-overlay
+    # overridable (DB-home) — turn OFF only on a host that cannot run the server.
+    chrome_devtools_mcp_enabled: bool = True
     colleague_repo_url_pattern: str = ""
     solo_repo_url_pattern: str = ""
     # Conventional-Commits title pattern enforced at ``pr create`` BEFORE the
