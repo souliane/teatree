@@ -57,7 +57,7 @@ def runs_in_session(*, role: str, phase: str) -> bool:
     ``headless`` lane the SAME phase work runs headless via ``agents/headless.py``
     behind the two-layer ``agent_harness`` / ``agent_harness_provider`` pair
     (#2887), so this returns ``False`` and the headless lane (auto-enqueue →
-    ``execute_headless_task`` / ``work-next-sdk``) takes it. Free-form work (no
+    ``execute_headless_task`` / ``work-next-headless``) takes it. Free-form work (no
     registered agent) is never in-session.
     """
     from teatree.config import AgentRuntime, get_effective_settings  # noqa: PLC0415
@@ -82,7 +82,7 @@ def loop_dispatch_refusal(task: "Task") -> str | None:
     returns ``None``.
 
     Both ``core.tasks.execute_headless_task`` (the django-tasks worker) and
-    ``core.management.commands.tasks.Command._execute_sdk`` (the ``work-next-sdk``
+    ``core.management.commands.tasks.Command._execute_headless`` (the ``work-next-headless``
     CLI path) call this so the guard cannot drift between the two seams.
     """
     if not runs_in_session(role=task.ticket.role, phase=task.phase):

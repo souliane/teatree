@@ -163,7 +163,7 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
             ("list", "List tasks with optional filters; --session scopes to the current harness session's todos."),
             ("start", "Claim and run the next interactive task in the current terminal."),
             (
-                "work-next-sdk",
+                "work-next-headless",
                 ("Claim and execute a headless task; refuses loop-dispatched phases while agent_runtime=interactive."),
             ),
         ],

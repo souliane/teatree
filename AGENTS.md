@@ -138,7 +138,7 @@ outage still surfaces via `_run_job`. Canonical exemplars:
 
 | Tier | Tool | Examples | Needs Django? |
 |------|------|----------|---------------|
-| Runtime commands | Django management commands (django-typer) | `worktree provision`, `tasks work-next-sdk`, `followup refresh`, `loop_tick` | Yes |
+| Runtime commands | Django management commands (django-typer) | `worktree provision`, `tasks work-next-headless`, `followup refresh`, `loop_tick` | Yes |
 | Bootstrap commands | `t3` Typer CLI | `t3 startoverlay`, `t3 agent`, `t3 info`, `t3 loop start/stop/status` | No |
 | Internal utilities | Python modules in `utils/` | Port allocation, git helpers, DB ops | Imported by commands |
 

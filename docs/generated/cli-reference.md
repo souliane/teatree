@@ -7341,16 +7341,17 @@ Usage: t3 teatree tasks [OPTIONS] COMMAND [ARGS]...
 │ --help          Show this message and exit.                                  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Commands ───────────────────────────────────────────────────────────────────╮
-│ cancel         Cancel a task by ID.                                          │
-│ claim          Claim the next available task.                                │
-│ complete       Mark a claimed task COMPLETED for work finished out-of-band.  │
-│ create         Enqueue the next-phase task for a ticket.                     │
-│ list           List tasks with optional filters; --session scopes to the     │
-│                current harness session's todos.                              │
-│ start          Claim and run the next interactive task in the current        │
-│                terminal.                                                     │
-│ work-next-sdk  Claim and execute a headless task; refuses loop-dispatched    │
-│                phases while agent_runtime=interactive.                       │
+│ cancel              Cancel a task by ID.                                     │
+│ claim               Claim the next available task.                           │
+│ complete            Mark a claimed task COMPLETED for work finished          │
+│                     out-of-band.                                             │
+│ create              Enqueue the next-phase task for a ticket.                │
+│ list                List tasks with optional filters; --session scopes to    │
+│                     the current harness session's todos.                     │
+│ start               Claim and run the next interactive task in the current   │
+│                     terminal.                                                │
+│ work-next-headless  Claim and execute a headless task; refuses               │
+│                     loop-dispatched phases while agent_runtime=interactive.  │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -7506,10 +7507,10 @@ Usage: t3 teatree tasks start [OPTIONS] [TASK_ID]
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
-##### `t3 teatree tasks work-next-sdk`
+##### `t3 teatree tasks work-next-headless`
 
 ```
-Usage: t3 teatree tasks work-next-sdk [OPTIONS]
+Usage: t3 teatree tasks work-next-headless [OPTIONS]
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --claimed-by        TEXT  [default: worker]                                  │

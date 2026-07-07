@@ -42,7 +42,7 @@ t3 <overlay> worktree provision          # Provision worktree (ports, DB, overla
 t3 <overlay> worktree start          # Start dev servers
 t3 <overlay> worktree status         # Show worktree state
 t3 <overlay> worktree teardown       # Stop services, clean up
-t3 <overlay> tasks work-next-sdk      # Claim/execute next headless task; refuses loop-dispatched phases while agent_runtime=interactive
+t3 <overlay> tasks work-next-headless      # Claim/execute next headless task; refuses loop-dispatched phases while agent_runtime=interactive
 t3 <overlay> tasks start              # Claim and launch next interactive task in the current terminal
 t3 <overlay> pr create <ticket-id>    # Open the PR: validate ship gates + trigger the ship transition (advance a TESTED ticket toward review)
 t3 <overlay> followup sync            # Daily ticket/PR sync

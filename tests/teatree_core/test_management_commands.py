@@ -263,7 +263,7 @@ class TestTaskCommands(TestCase):
             )
             sdk_result = cast(
                 "dict[str, str]",
-                call_command("tasks", "work-next-sdk", claimed_by="worker-1"),
+                call_command("tasks", "work-next-headless", claimed_by="worker-1"),
             )
             refresh_summary = cast("dict[str, int]", call_command("followup", "refresh"))
             reminders = cast("list[int]", call_command("followup", "remind"))
@@ -281,9 +281,9 @@ class TestTaskCommands(TestCase):
 
     @override_settings(**COMMAND_SETTINGS)
     def test_return_none_when_no_work_available(self) -> None:
-        assert call_command("tasks", "work-next-sdk", claimed_by="worker-1") is None
+        assert call_command("tasks", "work-next-headless", claimed_by="worker-1") is None
 
-    def test_work_next_sdk_refuses_loop_dispatched_phase(self) -> None:
+    def test_work_next_headless_refuses_loop_dispatched_phase(self) -> None:
         ConfigSetting.objects.set_value("agent_runtime", "interactive")
         ticket = Ticket.objects.create(overlay="test")
         session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent-1")
@@ -297,7 +297,7 @@ class TestTaskCommands(TestCase):
         with patch.object(headless_mod, "run_headless", MagicMock()) as run_headless_mock:
             sdk_result = cast(
                 "dict[str, str]",
-                call_command("tasks", "work-next-sdk", claimed_by="worker-1"),
+                call_command("tasks", "work-next-headless", claimed_by="worker-1"),
             )
 
         run_headless_mock.assert_not_called()
@@ -311,7 +311,7 @@ class TestTaskCommands(TestCase):
         assert attempt.exit_code == 1
         assert "routing_error" in attempt.result
 
-    def test_work_next_sdk_headless_runtime_allows_loop_dispatched_phase(self) -> None:
+    def test_work_next_headless_allows_loop_dispatched_phase_under_headless_runtime(self) -> None:
         ConfigSetting.objects.set_value("agent_runtime", "headless")
         ticket = Ticket.objects.create(overlay="test")
         session = Session.objects.create(ticket=ticket, overlay="test", agent_id="agent-1")
@@ -323,13 +323,13 @@ class TestTaskCommands(TestCase):
             patch.object(overlay_loader_mod, "_discover_overlays", return_value=_MOCK_OVERLAY),
             patch.object(headless_mod, "run_headless", MagicMock(return_value=attempt)) as run_headless_mock,
         ):
-            call_command("tasks", "work-next-sdk", claimed_by="worker-1")
+            call_command("tasks", "work-next-headless", claimed_by="worker-1")
 
         run_headless_mock.assert_called_once()
 
     @override_settings(**COMMAND_SETTINGS)
-    def test_work_next_sdk_records_durable_failure_when_runner_raises(self) -> None:
-        # Under the no-fallback SDK cutover, ``work_next_sdk`` calls ``run_headless``
+    def test_work_next_headless_records_durable_failure_when_runner_raises(self) -> None:
+        # Under the no-fallback SDK cutover, ``work_next_headless`` calls ``run_headless``
         # which may RAISE on an SDK client startup/query/response error. Without the
         # same failure-recording the Celery-style wrapper does, the task stays
         # silently CLAIMED until lease reap, then re-fires forever with NO durable
@@ -347,7 +347,7 @@ class TestTaskCommands(TestCase):
         ):
             sdk_result = cast(
                 "dict[str, str]",
-                call_command("tasks", "work-next-sdk", claimed_by="worker-1"),
+                call_command("tasks", "work-next-headless", claimed_by="worker-1"),
             )
 
         run_headless_mock.assert_called_once()

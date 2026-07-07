@@ -198,7 +198,7 @@ class TestRunHeadlessRoutingRefusal(TestCase):
     """The loop-dispatch billing guard refuses a registered phase before any SDK call.
 
     ``run_headless`` is reached only through ``core.tasks.execute_headless_task`` /
-    the ``work-next-sdk`` CLI, which both consult ``loop_dispatch_refusal`` and
+    the ``work-next-headless`` CLI, which both consult ``loop_dispatch_refusal`` and
     record a ``routing_error`` *before* invoking the runner. This pins that
     seam: a loop-dispatched phase never instantiates ``ClaudeSDKClient``.
     """
