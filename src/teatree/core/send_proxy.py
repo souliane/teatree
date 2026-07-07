@@ -26,9 +26,14 @@ carrying the delegation provenance (#119 reads it). The proxy is **fail-open in
 audit-write failure degrades to "allow, unredacted, unaudited" and is logged, so
 the proxy can sit on the hot outbound path without ever breaking a send.
 
-Home is :mod:`teatree.core`: it imports config, the ``SendAudit`` model, the
-overlay loader (for the allowlist + redact terms), and the shared
-:mod:`teatree.hooks.term_match` matcher — no edge into ``teatree.backends``.
+Home is :mod:`teatree.core`: it imports config, the overlay loader (for the
+allowlist + redact terms), and the shared :mod:`teatree.hooks.term_match`
+matcher — no edge into ``teatree.backends``. The ``SendAudit`` / ``Provenance``
+model imports are DEFERRED into the functions that use them: this module sits on
+the CLI bootstrap path (``teatree.cli.review.service`` imports it at module
+scope, reached from ``teatree.cli`` before ``django.setup()``), so a top-level
+``teatree.core.models.*`` import would drag the whole model registry in
+pre-app-registry and raise ``ImproperlyConfigured``.
 """
 
 import logging
@@ -37,16 +42,20 @@ import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 from fnmatch import fnmatch
+from typing import TYPE_CHECKING
 
 from django.db import DatabaseError, transaction
 
 from teatree.config import get_effective_settings
 from teatree.config.enums import SendProxyMode
-from teatree.core.models.provenance import Provenance
-from teatree.core.models.send_audit import SendAudit
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.session_identity import current_session_id
 from teatree.utils import secrets
+
+if TYPE_CHECKING:
+    # Annotation-only: keeps ``_audit_verdict``'s return type resolvable to the
+    # ORM model without a runtime import on the pre-app-registry bootstrap path.
+    from teatree.core.models.send_audit import SendAudit
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +97,19 @@ class SendChannel(StrEnum):
     OTHER = "other"
 
 
+def _default_provenance() -> str:
+    """The default ``SendRequest.provenance`` — ``Provenance.OWNER`` (the operator's own send).
+
+    A ``default_factory`` (not a class-body constant) so the ``Provenance``
+    import stays deferred: the enum lives in the ``teatree.core.models`` package,
+    whose ``__init__`` eagerly loads the ORM model registry, and evaluating it at
+    class-definition time would break the pre-app-registry CLI bootstrap path.
+    """
+    from teatree.core.models.provenance import Provenance  # noqa: PLC0415 — deferred: ORM model pkg, pre-app-registry
+
+    return Provenance.OWNER.value
+
+
 @dataclass(frozen=True, slots=True)
 class SendRequest:
     """One outbound artifact presented to the proxy for policy + audit.
@@ -107,7 +129,7 @@ class SendRequest:
     target: str = ""
     overlay: str = ""
     authorized_by: str = ""
-    provenance: str = Provenance.OWNER.value
+    provenance: str = field(default_factory=_default_provenance)
     is_self_dm: bool = False
 
 
@@ -281,6 +303,8 @@ def _record_audit(request: SendRequest, verdict: SendVerdict) -> None:
     ``max_length``, and a Postgres backend would otherwise raise on an overlong
     destination/target) so a pathological ref can never break the audit write.
     """
+    from teatree.core.models.send_audit import SendAudit  # noqa: PLC0415 — deferred: ORM model, pre-app-registry
+
     overlay = request.overlay or os.environ.get("T3_OVERLAY_NAME", "") or ""
     try:
         with transaction.atomic():
@@ -307,6 +331,8 @@ def _record_audit(request: SendRequest, verdict: SendVerdict) -> None:
 
 def _audit_verdict(verdict: SendVerdict) -> "SendAudit.Verdict":
     """Map a :class:`SendVerdict` onto the audit's tri-state verdict enum."""
+    from teatree.core.models.send_audit import SendAudit  # noqa: PLC0415 — deferred: ORM model, pre-app-registry
+
     if verdict.allowlist_ok:
         return SendAudit.Verdict.ALLOWED
     if verdict.mode is SendProxyMode.ENFORCE:
