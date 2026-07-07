@@ -3,7 +3,7 @@
 An :class:`OuterLoopExperiment` binds a hypothesis to the git artifacts and the
 human decisions that resolve it: the admission baseline + post-horizon
 :class:`~teatree.core.models.factory_score_snapshot.FactoryScoreSnapshot`, the
-ratify + revert :class:`~teatree.core.models.deferred_question.DeferredQuestion`
+ratify + keep + revert :class:`~teatree.core.models.deferred_question.DeferredQuestion`
 gates, the synthetic implement ``Ticket``, and the kept/reverted git shas. The
 row IS the audit history — every state change is a guarded helper that raises on
 an illegal transition, mirroring the ``MergeClear`` / ``DeferredQuestion``
@@ -12,9 +12,11 @@ durable-row family.
 The human is embedded structurally, not by convention: :meth:`admit` is the ONLY
 writer of the ``ADMITTED`` state and RAISES unless a consumed (answered) ratify
 question exists, so no code path can auto-admit an experiment; :meth:`record_reverted`
-is likewise gated on a consumed revert question. The keep/revert decision is taken
-by the pure rule in :mod:`teatree.loops.outer_loop.decide` — an experiment whose
-score does not improve is never KEPT.
+and :meth:`record_kept` are likewise gated on a consumed revert / keep question — an
+improving experiment parks in ``KEEP_PENDING`` and asks a human before it is KEPT
+(H1-KEEP), never auto-kept. The keep/revert decision is taken by the pure rule in
+:mod:`teatree.loops.outer_loop.decide` — an experiment whose score does not improve
+is never KEPT.
 
 Ships inert: the outer loop that writes these rows refuses every tick at default
 config (flag off, loop row disabled, critic not live, signals untrusted), so the
@@ -118,6 +120,7 @@ class OuterLoopExperiment(models.Model):
         ADMITTED = "admitted", "Admitted"
         IMPLEMENTING = "implementing", "Implementing"
         MEASURING = "measuring", "Measuring"
+        KEEP_PENDING = "keep_pending", "Keep pending"
         KEPT = "kept", "Kept"
         REVERT_PENDING = "revert_pending", "Revert pending"
         REVERTED = "reverted", "Reverted"
@@ -164,6 +167,13 @@ class OuterLoopExperiment(models.Model):
         null=True,
         blank=True,
         related_name="ratified_experiments",
+    )
+    keep_question = models.ForeignKey(
+        DeferredQuestion,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="kept_experiments",
     )
     revert_question = models.ForeignKey(
         DeferredQuestion,
@@ -253,15 +263,36 @@ class OuterLoopExperiment(models.Model):
         self.state = self.State.MEASURING
         self.save(update_fields=["measure_started_at", "state"])
 
-    def record_kept(self, *, post_snapshot: FactoryScoreSnapshot, merged_sha: str, reason: str) -> None:
-        """``MEASURING`` → ``KEPT``: bind the post score + the kept git sha."""
+    def request_keep(self, *, post_snapshot: FactoryScoreSnapshot, merged_sha: str, reason: str) -> None:
+        """``MEASURING`` → ``KEEP_PENDING``: an improving experiment awaits human keep."""
         self._require_state(self.State.MEASURING)
         self.post_snapshot = post_snapshot
         self.merged_sha = merged_sha
         self.decision = self.Decision.KEEP
         self.decision_reason = reason
-        self.state = self.State.KEPT
+        self.state = self.State.KEEP_PENDING
         self.save(update_fields=["post_snapshot", "merged_sha", "decision", "decision_reason", "state"])
+
+    def attach_keep_question(self, question: DeferredQuestion) -> None:
+        """Bind the human keep-approval question while in ``KEEP_PENDING``."""
+        self._require_state(self.State.KEEP_PENDING)
+        self.keep_question = question
+        self.save(update_fields=["keep_question"])
+
+    def record_kept(self) -> None:
+        """``KEEP_PENDING`` → ``KEPT`` — gated on a consumed keep question.
+
+        Keep is human-ratified, never automatic: RAISES unless :attr:`keep_question`
+        is a consumed (answered) row (the same idiom as :meth:`admit`). The post
+        score, merged sha, and decision were bound at :meth:`request_keep`.
+        """
+        self._require_state(self.State.KEEP_PENDING)
+        question = self.keep_question
+        if question is None or question.answered_at is None:
+            msg = "cannot keep without a consumed (answered) keep DeferredQuestion"
+            raise OuterLoopExperimentError(msg)
+        self.state = self.State.KEPT
+        self.save(update_fields=["state"])
 
     def request_revert(self, *, post_snapshot: FactoryScoreSnapshot, reason: str) -> None:
         """``MEASURING`` → ``REVERT_PENDING``: a non-improving experiment awaits human revert."""

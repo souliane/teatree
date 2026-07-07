@@ -53,6 +53,28 @@ def _revert_pending() -> OuterLoopExperiment:
     return exp
 
 
+def _keep_pending() -> OuterLoopExperiment:
+    exp = OuterLoopExperiment.objects.propose(
+        ProposalSpec(hypothesis="H", target_provider_id="review_catch", source=OuterLoopExperiment.Source.OPERATOR)
+    )
+    answered = DeferredQuestion.record("Ratify?")
+    DeferredQuestion.consume(answered.pk, answer="approve")
+    exp.attach_ratification(DeferredQuestion.objects.get(pk=answered.pk))
+    exp.admit()
+    exp.begin_implementation(
+        Ticket.objects.create(issue_url=f"https://e.com/{timezone.now().timestamp()}", role=Ticket.Role.AUTHOR)
+    )
+    exp.arm_measure()
+    exp.request_keep(
+        post_snapshot=FactoryScoreSnapshot.objects.create(
+            overlay="", window_days=7, recipe_sha="s", aggregate=0.85, verdict="ok", coverage=1.0, coverage_floor=0.6
+        ),
+        merged_sha="feed",
+        reason="improved",
+    )
+    return exp
+
+
 class TestOuterCommandInertAtDefaults(TestCase):
     def test_status_reports_the_guard_chain_refusing(self) -> None:
         output = _run("status")
@@ -128,6 +150,30 @@ class TestOuterResolveRevert(TestCase):
         reloaded = OuterLoopExperiment.objects.get(pk=exp.pk)
         assert reloaded.state == OuterLoopExperiment.State.REVERTED
         assert reloaded.revert_sha == "cafe"
+        assert OuterLoopExperiment.objects.active_count() == 0
+
+
+class TestOuterResolveKeep(TestCase):
+    def test_missing_experiment_errors(self) -> None:
+        with pytest.raises(SystemExit) as exc:
+            call_command("outer", "resolve-keep", 999)
+        assert exc.value.code == 1
+
+    def test_wrong_state_errors(self) -> None:
+        exp = OuterLoopExperiment.objects.propose(
+            ProposalSpec(hypothesis="H", target_provider_id="review_catch", source=OuterLoopExperiment.Source.OPERATOR)
+        )
+        with pytest.raises(SystemExit) as exc:
+            call_command("outer", "resolve-keep", exp.pk)
+        assert exc.value.code == 1
+
+    def test_keeps_a_pending_experiment_and_frees_the_slot(self) -> None:
+        exp = _keep_pending()
+        output = _run("resolve-keep", str(exp.pk))
+        assert "kept experiment" in output
+        reloaded = OuterLoopExperiment.objects.get(pk=exp.pk)
+        assert reloaded.state == OuterLoopExperiment.State.KEPT
+        assert reloaded.merged_sha == "feed"
         assert OuterLoopExperiment.objects.active_count() == 0
 
 
