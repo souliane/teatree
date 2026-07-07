@@ -447,12 +447,12 @@ class UserSettings:
     # into ``agent_harness=pydantic_ai``. ``0`` disables the cap (the escape
     # hatch). Per-overlay overridable.
     pydantic_ai_request_limit: int = 5
-    # The ``pass`` store path the OrcaRouter BYOK key is read from, overriding the
-    # ``OrcaRouterCredential`` built-in default ``orca-router/api-key``. Empty (the
-    # default) keeps the built-in path. Lets an operator point teatree at an
-    # existing per-account ``pass`` entry (e.g. ``orcarouter/<account>/api-key``)
-    # with no copy; the ``ORCA_ROUTER_API_KEY`` env still wins over the ``pass``
-    # store either way. Per-overlay overridable.
+    # The ``pass`` store path the OrcaRouter BYOK key is read from. The
+    # ``OrcaRouterCredential`` has NO built-in default, so this is the ONLY ``pass``
+    # source: an operator points teatree at an existing per-account ``pass`` entry
+    # (e.g. ``orcarouter/<account>/api-key``) with no copy. Empty (the default) means
+    # the credential resolves only from ``ORCA_ROUTER_API_KEY`` (which still wins over
+    # ``pass``) and otherwise fails loud naming this setting. Per-overlay overridable.
     orca_router_pass_path: str = ""
     # The ``x-lane`` header value every ``pydantic_ai``/OrcaRouter request rides
     # (OrcaRouter setup plan §3.4), so the named router's analytics — and a future
@@ -1326,13 +1326,13 @@ class UserSettings:
     # overlay — it picks the first non-exhausted account (sticky, with cross-account
     # fallback), so the subscription OAuth token / metered API key read from a
     # per-account entry (e.g. ``anthropic/<account>/oauth-token``) with no code edit.
-    # Empty (the default) means "no override — the credential reads its built-in
-    # path (``anthropic/oauth-token`` / ``anthropic/api-key``)". DB-home (#1775): the
+    # Empty (the default) means "no account configured". Neither credential has a
+    # built-in default ``pass`` path, so an empty list + no env var makes resolution
+    # fail loud (naming the setting), never a dead default. DB-home (#1775): the
     # selector reads the list off the ``ConfigSetting`` store at RESOLVE time via
     # ``ConfigSetting.objects.get_effective`` (overlay scope then global), so
-    # per-overlay routing works; the effective DEFAULT lives in the credential's
-    # ``CredentialSpec``, not this field, so ``get_effective_settings()`` reports
-    # ``[]`` when unset. Set via ``t3 <overlay> config_setting set
+    # per-overlay routing works, and ``get_effective_settings()`` reports ``[]`` when
+    # unset. Set via ``t3 <overlay> config_setting set
     # anthropic_oauth_pass_paths '["anthropic/<account>/oauth-token"]'``.
     anthropic_oauth_pass_paths: list[str] = field(default_factory=list)
     anthropic_api_key_pass_paths: list[str] = field(default_factory=list)

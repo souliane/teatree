@@ -41,9 +41,13 @@ class TestMakeRunner:
     def _bypass_credential_routing(self) -> Iterator[None]:
         # ``make_runner`` resolves its credential through ``resolve_eval_credential``,
         # which reads the ``eval_credential`` setting (DB) and the routing store.
-        # Bypass it to the DEFAULT (subscription OAuth) credential so this lane is
-        # exercised DB-free — the credential-KIND selection has its own tests.
-        with patch("teatree.credential_config.resolve_eval_credential", lambda **_: AnthropicSubscriptionCredential()):
+        # Bypass it to the DEFAULT (subscription OAuth) credential — pre-routed to a
+        # per-account `pass` entry, since the subscription credential has no built-in
+        # default — so this lane is exercised DB-free (KIND selection has its own tests).
+        with patch(
+            "teatree.credential_config.resolve_eval_credential",
+            lambda **_: AnthropicSubscriptionCredential(pass_path_override="anthropic/routed/oauth"),
+        ):
             yield
 
     def test_api_backend_builds_in_process_api_runner(self) -> None:
@@ -72,8 +76,8 @@ class TestMakeRunner:
 
     def test_api_backend_resolves_the_credential_from_pass_when_env_absent(self) -> None:
         # The host api runner authenticates from the SELECTED eval credential
-        # (default OAuth) via the isolated env copy; make_runner must export it from
-        # pass so the operator need not. (Local default: just works.)
+        # (default OAuth, routed to a configured per-account `pass` entry) via the
+        # isolated env copy; make_runner must export it from pass so the operator need not.
         with (
             patch.dict(os.environ, {}, clear=False),
             patch("teatree.llm.credentials.read_pass", return_value="oauth-pass-token"),

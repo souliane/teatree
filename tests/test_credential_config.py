@@ -33,12 +33,10 @@ from teatree.credential_config import (
     resolve_eval_credential,
     resolve_subscription_credential,
 )
-from teatree.llm.credentials import AnthropicApiKeyCredential, AnthropicSubscriptionCredential
+from teatree.llm.credentials import AnthropicApiKeyCredential, AnthropicSubscriptionCredential, CredentialError
 from teatree.llm.rate_limits import MeteredKeySnapshot, RateLimitProbeError, RateLimitSnapshot
 from teatree.utils.eval_container import IN_CONTAINER_ENV_VAR
 
-_OAUTH_BUILTIN = "anthropic/oauth-token"
-_API_KEY_BUILTIN = "anthropic/api-key"
 _OAUTH_SETTING = "anthropic_oauth_pass_paths"
 _API_KEY_SETTING = "anthropic_api_key_pass_paths"
 
@@ -318,10 +316,12 @@ class TestSelectorStickiness(TestCase):
 
 
 class TestFactoryWiring(TestCase):
-    def test_default_no_config_resolves_the_builtin_pass_path(self) -> None:
-        with _pass_echoes_path():
-            assert resolve_api_key_credential().resolve() == _API_KEY_BUILTIN
-            assert resolve_subscription_credential().resolve() == _OAUTH_BUILTIN
+    def test_default_no_config_fails_loud_for_the_api_key_credential(self) -> None:
+        # No credential has a built-in default: with no routing list and no env var, the
+        # metered API-key resolver fails loud naming its setting, never a dead default.
+        with _pass_echoes_path(), pytest.raises(CredentialError) as caught:
+            resolve_api_key_credential().resolve()
+        assert _API_KEY_SETTING in str(caught.value)
 
     def test_configured_list_routes_the_resolved_credential(self) -> None:
         ConfigSetting.objects.set_value(_API_KEY_SETTING, ["anthropic/metered/api"])
@@ -384,6 +384,53 @@ class TestInContainerNeverTouchesConfigSetting(TestCase):
             pytest.raises(OperationalError),
         ):
             resolve_subscription_credential()
+
+
+class TestSubscriptionRequiresConfiguredOAuthAccount(TestCase):
+    """The subscription OAuth credential has NO default ``pass`` path.
+
+    It resolves ONLY from the ``CLAUDE_CODE_OAUTH_TOKEN`` env var or a per-account
+    entry selected from the ``anthropic_oauth_pass_paths`` routing list. With neither,
+    resolution fails LOUD — it never silently reads the removed built-in
+    ``anthropic/oauth-token`` entry.
+    """
+
+    def test_empty_routing_and_no_env_fails_loud_naming_the_setting(self) -> None:
+        # Anti-vacuity: no routing list + no OAuth env → the loud error must point the
+        # operator at the setting to configure, not at a dead default `pass` path.
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("teatree.llm.credentials.read_pass", return_value=""),
+            pytest.raises(CredentialError) as caught,
+        ):
+            resolve_subscription_credential().resolve()
+        assert _OAUTH_SETTING in str(caught.value), "the loud error must name anthropic_oauth_pass_paths to configure"
+
+    def test_empty_routing_and_no_env_names_the_scope(self) -> None:
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("teatree.llm.credentials.read_pass", return_value=""),
+            pytest.raises(CredentialError) as caught,
+        ):
+            resolve_subscription_credential(scope="myoverlay").resolve()
+        assert "myoverlay" in str(caught.value), "the loud error names the scope whose routing list is empty"
+
+    def test_configured_routing_resolves_the_selected_accounts_token(self) -> None:
+        ConfigSetting.objects.set_value(_OAUTH_SETTING, ["anthropic/acct/oauth"])
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("teatree.llm.credentials.read_pass", side_effect=lambda path: f"oauth-token-for::{path}"),
+            patch("teatree.credential_config.read_rate_limits", return_value=_snapshot()),
+        ):
+            resolved = resolve_subscription_credential().resolve()
+        assert resolved == "oauth-token-for::anthropic/acct/oauth"
+
+    def test_env_token_resolves_without_reading_pass(self) -> None:
+        with patch.dict(os.environ, {"CLAUDE_CODE_OAUTH_TOKEN": "env-oauth-token"}, clear=True):
+            with patch("teatree.llm.credentials.read_pass") as read_pass_mock:
+                resolved = resolve_subscription_credential().resolve()
+            read_pass_mock.assert_not_called()
+        assert resolved == "env-oauth-token", "the env token wins and no `pass` entry is read"
 
 
 class TestResolveEvalCredential(TestCase):
