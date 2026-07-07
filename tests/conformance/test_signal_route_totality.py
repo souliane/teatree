@@ -44,6 +44,11 @@ INTENTIONAL_FALLBACK_KINDS: frozenset[str] = frozenset(
         "deferred_question.mirrored",
         "eval_local.queued",
         "incoming_event.dead_letter",
+        # #116 context firewall: an inert DARK marker the ambient scanner emits instead
+        # of raw-minting a Directive (the raw-mint bypass is disabled). Nothing consumes
+        # it yet — its real dispatch/statusline route lands with #105's ambient reader
+        # dispatch, so until then it deliberately falls through to the generic in_flight.
+        "incoming_event.directive_reader_needed",
         "notify.redelivered",
         "pr.approved",
         "team_pane.reaped",
