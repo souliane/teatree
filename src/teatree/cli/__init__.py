@@ -61,6 +61,7 @@ from teatree.cli.assess import assess_app
 from teatree.cli.banned_terms import banned_terms_app
 from teatree.cli.ci import ci_app
 from teatree.cli.codex import codex_app
+from teatree.cli.command_tree import command_catalogue
 from teatree.cli.config import config_app
 from teatree.cli.directive import directive_app
 from teatree.cli.doctor import DoctorService, IntrospectionHelpers, doctor_app
@@ -87,6 +88,7 @@ from teatree.cli.teams import teams_app
 from teatree.cli.tools import tool_app
 from teatree.cli.update import update_app
 from teatree.cli.worker import worker_app
+from teatree.mcp.command_catalogue import CommandRecord, register_command_catalogue_provider
 
 logger = logging.getLogger(__name__)
 
@@ -237,7 +239,11 @@ def register_overlay_commands(allowlist: set[str] | None = None) -> None:
     active = discover_active_overlay()
     installed = discover_overlays()
 
-    registered: set[str] = set()
+    # Idempotent across calls: an overlay group already on ``app`` (from an
+    # earlier call — the reference builder, the #550 registry, and the
+    # command-catalogue provider each register the ``teatree`` overlay lazily)
+    # must not be re-added, or Typer would carry a duplicate group.
+    registered: set[str] = {info.name for info in app.registered_groups if info.name}
     for entry in _collapse_to_canonical(installed):
         if allowlist is not None and entry.name not in allowlist:
             continue
@@ -271,7 +277,21 @@ def _build_skill_command_registry() -> tuple[set[str], set[str]]:
     return command_paths(app), command_groups(app)
 
 
+def _build_command_catalogue() -> list[CommandRecord]:
+    """The live command catalogue for the MCP ``command_search`` tool.
+
+    Registers the ``teatree`` overlay's command group (so ``t3 teatree …`` leaves
+    are discoverable), then projects the assembled root app to one record per
+    leaf. Inverted for the same reason as the #550 registry — ``teatree.mcp``
+    (integration) cannot import ``teatree.cli`` (interface), so the parent injects
+    this builder via ``register_command_catalogue_provider``.
+    """
+    register_overlay_commands(allowlist={"t3-teatree"})
+    return command_catalogue(app)
+
+
 register_command_registry_provider(_build_skill_command_registry)
+register_command_catalogue_provider(_build_command_catalogue)
 
 
 # ── Entry point ──────────────────────────────────────────────────────

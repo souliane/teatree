@@ -16,7 +16,7 @@ metadata:
 Two words, two stores. They are routinely conflated; keep them strictly apart in every identifier, docstring, log line, config key, and prose surface:
 
 - **TODO** = the **harness** ("Claude") task list — the `TaskCreate` / `TaskList` / `TaskUpdate` tools (formerly `TodoWrite`). Live, in-memory, harness-owned. Never persisted by teatree.
-- **task** = a teatree **`Task` DB row** — a claimable lifecycle work unit with a phase, lease, and ticket (`t3 <overlay> tasks list`). DB-backed, teatree-owned.
+- **task** = a teatree **`Task` DB row** — a claimable lifecycle work unit with a phase, lease, and ticket (read via the `mcp__teatree__task_list` MCP tool, or the `t3 <overlay> tasks list` CLI). DB-backed, teatree-owned.
 
 There is **no such thing** as a "teatree todo". A loop unit, setting, or signal that acts on `Task` rows is named `task_*` / `task.*`, never `todo_*` / `todo.*` — e.g. the `task_sweep` scanner (`TaskSweepScanner`, settings `task_sweep_*`, signals `task.completion_detected` / `task.orphaned`, handler `task_completion`) reconciles teatree `Task` rows, **not** the harness TODO list. Cross-ref: `BLUEPRINT.md` § "Loop scanners" (`TaskSweepScanner` row).
 
@@ -25,7 +25,7 @@ A SHORT, read-only view of everything on the current harness session's plate. `/
 There are **two distinct stores**, and they are built two different ways — never conflate them:
 
 - **harness TODO** — the agent harness's own working list (the `TaskCreate` / `TaskUpdate` items, formerly `TodoWrite`). This is the agent's **live, in-memory** session list. Build it **dynamically from the `TaskList` harness tool** — see below.
-- **teatree task** — a row in teatree's DB-backed `Task` model: a claimable lifecycle work unit with a phase, lease, and ticket. Read it with the `t3 <overlay> tasks list` CLI.
+- **teatree task** — a row in teatree's DB-backed `Task` model: a claimable lifecycle work unit with a phase, lease, and ticket. Read it with the `mcp__teatree__task_list` MCP tool (structured JSON — no text parsing), or the `t3 <overlay> tasks list` CLI.
 
 There is no such thing as a "teatree todo" — use **teatree task** for the DB model and **harness TODO** for the harness list.
 
@@ -89,20 +89,20 @@ It is a read-only emitter — it makes no reconciliation writes (it never create
 
 ## The teatree-tasks half (a separate, DB-backed concern)
 
-The teatree `Task` rows (the loop's claimable lifecycle work units) are a **separate** store — DB-backed, not your harness list — read with the CLI:
+The teatree `Task` rows (the loop's claimable lifecycle work units) are a **separate** store — DB-backed, not your harness list. Prefer the `mcp__teatree__task_list` MCP tool for the overlay-wide queue — it returns structured JSON (filter by `status` / `phase` / `ticket` / `overlay`); read its fields directly, no CLI text parsing (`mcp__teatree__loop_stats` gives the per-status counts). Fall back to the CLI when the MCP server isn't connected:
 
 ```bash
-t3 <overlay> tasks list                      # the teatree-tasks queue across every ticket
-t3 <overlay> tasks list --session            # teatree tasks scoped to THIS harness session
+t3 <overlay> tasks list                      # CLI fallback: the teatree-tasks queue across every ticket (MCP: mcp__teatree__task_list)
+t3 <overlay> tasks list --session            # CLI-only: teatree tasks scoped to THIS harness session
 ```
 
-`--session` scopes **only the teatree `Task` rows** to the current harness session (resolved via `current_session_id()` — `CLAUDE_SESSION_ID`, the loop-session override, then the loop registry). It renders a single `teatree tasks` section — it does **not** print a harness-TODO section, because the CLI cannot read your live harness list. Add `--status` / `--execution-target` to filter the teatree-tasks view.
+`--session` scopes **only the teatree `Task` rows** to the current harness session (resolved via `current_session_id()` — `CLAUDE_SESSION_ID`, the loop-session override, then the loop registry) and is CLI-only — the MCP tool serves the overlay-wide queue, not the per-harness-session view. It renders a single `teatree tasks` section — it does **not** print a harness-TODO section, because the CLI cannot read your live harness list. Add `--status` / `--execution-target` to filter the teatree-tasks view.
 
 When the user asks "show my task list", render both halves: the live harness TODOs (from `TaskList`) under a `harness TODOs` heading, then the teatree tasks (from `t3 ... tasks list --session`) under a `teatree tasks` heading.
 
 ## Resolving a single `TODO-<n>` id (not the same as listing)
 
-Looking up *what one task id is* is a different operation from listing the live list. A bare numeric id or a `TODO-<n>` id is a **harness task id**, not a forge issue — resolve it against the harness task store (`~/.claude/tasks/<session-id>/*.json`, override the root with `CLAUDE_TASKS_DIR`) or via `t3 <overlay> tasks list`, never by querying the issue tracker (`gh issue view <n>` / `glab issue view <n>`). That store is **not** `~/.claude/todos.json` (no such file exists). For the *live current list*, still use `TaskList` — the store read is only for resolving an individual id reference.
+Looking up *what one task id is* is a different operation from listing the live list. A bare numeric id or a `TODO-<n>` id is a **harness task id**, not a forge issue — resolve it against the harness task store (`~/.claude/tasks/<session-id>/*.json`, override the root with `CLAUDE_TASKS_DIR`) or via the `mcp__teatree__task_list` MCP tool (or the `t3 <overlay> tasks list` CLI), never by querying the issue tracker (`gh issue view <n>` / `glab issue view <n>`). That store is **not** `~/.claude/todos.json` (no such file exists). For the *live current list*, still use `TaskList` — the store read is only for resolving an individual id reference.
 
 ## Output contract
 

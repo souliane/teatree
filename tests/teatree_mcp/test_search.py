@@ -5,9 +5,12 @@ result of the query function — the manager reuse (overlay scoping, in-flight,
 resolve) is exercised end to end against the test DB, not mocked.
 """
 
+from pathlib import Path
+
+from django.core.management import call_command
 from django.test import TestCase
 
-from teatree.core.models import IncomingEvent, PullRequest, Task, Ticket
+from teatree.core.models import ConfigSetting, IncomingEvent, PullRequest, Task, Ticket
 from teatree.mcp import search
 from tests.factories import (
     IncomingEventFactory,
@@ -204,6 +207,179 @@ class TestFactoryScore(TestCase):
 
     def test_window_days_flows_through(self) -> None:
         assert search.factory_score(window_days=14)["window_days"] == 14
+
+
+class TestConfigSettingGet(TestCase):
+    def test_db_override_reports_db_source(self) -> None:
+        ConfigSetting.objects.set_value("factory_score_enabled", value=True)
+
+        row = search.config_setting_get(key="factory_score_enabled")
+
+        assert row["known"] is True
+        assert row["value"] is True
+        assert row["source"] == "db"
+        assert row["scope"] == "global"
+
+    def test_absent_row_falls_through_to_file_env(self) -> None:
+        row = search.config_setting_get(key="factory_score_enabled")
+
+        assert row["known"] is True
+        assert row["source"] == "file/env"
+        assert isinstance(row["value"], bool)
+
+    def test_overlay_scope_row_reports_overlay_scope(self) -> None:
+        ConfigSetting.objects.set_value("factory_score_enabled", value=True, scope="t3-teatree")
+
+        row = search.config_setting_get(key="factory_score_enabled", overlay="t3-teatree")
+
+        assert row["source"] == "db"
+        assert row["scope"] == "overlay:t3-teatree"
+        assert row["overlay"] == "t3-teatree"
+
+    def test_unknown_key_is_flagged_not_raised(self) -> None:
+        row = search.config_setting_get(key="not_a_real_setting")
+
+        assert row["known"] is False
+        assert row["value"] is None
+
+    def test_path_valued_setting_is_coerced_to_a_string(self) -> None:
+        # A Path fallback (workspace_dir) is not JSON-serializable — it must be
+        # stringified so the read-only tool never fails at the JSON boundary.
+        row = search.config_setting_get(key="workspace_dir")
+
+        assert isinstance(row["value"], str)
+
+    def test_list_valued_setting_round_trips_as_a_list(self) -> None:
+        row = search.config_setting_get(key="excluded_skills")
+
+        assert isinstance(row["value"], list)
+
+
+class TestJsonable:
+    def test_primitives_and_none_pass_through(self) -> None:
+        assert search._jsonable(None) is None
+        assert search._jsonable(value=True) is True
+        assert search._jsonable(3) == 3
+        assert search._jsonable("x") == "x"
+
+    def test_nested_containers_are_coerced_recursively(self) -> None:
+        coerced = search._jsonable({"p": Path("/tmp/x"), "nums": [1, 2]})
+
+        assert coerced == {"p": "/tmp/x", "nums": [1, 2]}
+
+    def test_a_non_json_scalar_is_stringified(self) -> None:
+        assert search._jsonable(object()).startswith("<object object")
+
+
+class TestTicketGet(TestCase):
+    def test_resolves_by_pk_and_returns_detail(self) -> None:
+        ticket = TicketFactory(issue_url="https://x/issues/500", short_description="detail me")
+
+        row = search.ticket_get(ticket=str(ticket.pk))
+
+        assert row["id"] == ticket.pk
+        assert row["short_description"] == "detail me"
+        assert row["visited_phases"] == []
+
+    def test_resolves_by_bare_issue_number(self) -> None:
+        ticket = TicketFactory(issue_url="https://github.com/souliane/teatree/issues/501")
+
+        row = search.ticket_get(ticket="501")
+
+        assert row["id"] == ticket.pk
+
+    def test_surfaces_visited_phases_from_the_session_ledger(self) -> None:
+        ticket = TicketFactory(issue_url="https://x/issues/502")
+        SessionFactory(ticket=ticket, visited_phases=["scoping", "planning"])
+
+        row = search.ticket_get(ticket=str(ticket.pk))
+
+        assert row["visited_phases"] == ["scoping", "planning"]
+
+    def test_unknown_ticket_returns_empty_dict(self) -> None:
+        assert search.ticket_get(ticket="999999") == {}
+
+
+class TestTicketList(TestCase):
+    def test_filters_by_state(self) -> None:
+        coded = TicketFactory(state=Ticket.State.CODED, issue_url="https://x/issues/510")
+        TicketFactory(state=Ticket.State.MERGED, issue_url="https://x/issues/511")
+
+        rows = search.ticket_list(state=Ticket.State.CODED)
+
+        assert [row["id"] for row in rows] == [coded.pk]
+
+    def test_in_flight_excludes_delivered(self) -> None:
+        live = TicketFactory(state=Ticket.State.STARTED, issue_url="https://x/issues/512")
+        TicketFactory(state=Ticket.State.DELIVERED, issue_url="https://x/issues/513")
+
+        ids = {row["id"] for row in search.ticket_list(in_flight=True)}
+
+        assert ids == {live.pk}
+
+    def test_overlay_scopes_the_list(self) -> None:
+        mine = TicketFactory(overlay="t3-teatree", issue_url="https://x/issues/514")
+        TicketFactory(overlay="other-overlay", issue_url="https://x/issues/515")
+
+        ids = {row["id"] for row in search.ticket_list(overlay="t3-teatree")}
+
+        assert mine.pk in ids
+
+
+class TestTaskList(TestCase):
+    def test_filters_by_status(self) -> None:
+        pending = TaskFactory(status=Task.Status.PENDING)
+        TaskFactory(status=Task.Status.COMPLETED)
+
+        rows = search.task_list(status=Task.Status.PENDING)
+
+        assert [row["id"] for row in rows] == [pending.pk]
+        assert rows[0]["status"] == Task.Status.PENDING
+
+    def test_phase_filter_accepts_any_spelling(self) -> None:
+        review = TaskFactory(phase="review")
+        TaskFactory(phase="coding")
+
+        ids = {row["id"] for row in search.task_list(phase="reviewing")}
+
+        assert ids == {review.pk}
+
+    def test_scopes_to_a_ticket_reference(self) -> None:
+        ticket = TicketFactory(issue_url="https://x/issues/520")
+        mine = TaskFactory(ticket=ticket)
+        TaskFactory()  # a task on a different ticket
+
+        rows = search.task_list(ticket=str(ticket.pk))
+
+        assert [row["id"] for row in rows] == [mine.pk]
+
+    def test_serializes_ticket_number_and_subject(self) -> None:
+        ticket = TicketFactory(issue_url="https://x/issues/521", short_description="do the thing")
+        TaskFactory(ticket=ticket, phase="coding")
+
+        row = search.task_list(ticket=str(ticket.pk))[0]
+
+        assert row["ticket_number"] == ticket.ticket_number
+        assert row["phase"] == "coding"
+        assert row["subject"]
+
+    def test_unknown_ticket_returns_empty(self) -> None:
+        assert search.task_list(ticket="999999") == []
+
+
+class TestGateStatus(TestCase):
+    def test_reports_review_and_raw_merge_gate_shape(self) -> None:
+        report = search.gate_status()
+
+        assert isinstance(report["review_gate"]["require_human_approval_to_merge"], bool)
+        assert isinstance(report["raw_merge_gate"]["out_of_band_merge_gate_enabled"], bool)
+
+    def test_review_gate_reflects_a_config_override(self) -> None:
+        call_command("config_setting", "set", "require_human_approval_to_merge", "false")
+
+        report = search.gate_status()
+
+        assert report["review_gate"]["require_human_approval_to_merge"] is False
 
 
 class TestIncomingEventRecent(TestCase):

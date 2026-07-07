@@ -60,7 +60,7 @@ cli/         # Typer CLI — bootstrap commands (no Django needed); cohesive gro
 core/        # Django app — models, FSM, managers, sync, runners, management commands; backend_protocols hub at root + packages models/ gates/ merge/ runners/ selectors/ views/ modelkit/ and the clustered leaf packages cleanup/ worktree/ provision/ factory/ intake/ review/ evidence/
 agents/      # Headless executor (in-process claude-agent-sdk)
 loop/        # /loop topology — tick, scanners, dispatch, statusline
-mcp/         # Read-only structured-search MCP server (serializers + search + FastMCP wiring); `t3 mcp serve`
+mcp/         # Read-only structured-search MCP server (serializers + search + command_catalogue + FastMCP wiring); `t3 mcp serve`. Tools: command_search (CLI discoverability) + ticket_get/ticket_list/ticket_search/worktree_status/pr_for_ticket/task_list/loop_stats/incoming_event_recent/config_setting_get/gate_status/factory_signals(+factory_score dark)
 backends/    # Pluggable external service integrations; per-forge subpackages github/ gitlab/ slack/ (+ flat notion, sentry, figma)
 config/      # Settings load + overlay discovery
 utils/       # Pure utilities (git, git_remote remote-URL parsing [#2404], ports, db, secrets, compose contract, ...)

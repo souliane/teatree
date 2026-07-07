@@ -28,6 +28,7 @@ import typer.rich_utils
 from typer.main import get_command
 
 from teatree.cli.overlay import OVERLAY_PROXY_COMMANDS
+from teatree.mcp.command_catalogue import CommandRecord
 
 # The render must be byte-identical regardless of the environment it runs in
 # (#2599): a fixed console width so the rich help boxes wrap identically on a
@@ -230,6 +231,56 @@ def command_paths(app: typer.Typer, *, base_name: str = "t3") -> set[str]:
 
     _collect(get_command(app), [base_name], parent_ctx=None)
     return paths
+
+
+def _emits_json(cmd: click.Command) -> bool:
+    """Whether *cmd* exposes a machine-readable ``--json`` / ``--format`` output.
+
+    Both output shapes in the tree signal parseable output: a boolean ``--json``
+    flag and a ``--format`` selector (text|json). The catalogue carries the flag
+    so ``command_search`` can tell an agent a command it can parse from one it
+    must scrape.
+    """
+    for param in getattr(cmd, "params", []):
+        opts = [*getattr(param, "opts", []), *getattr(param, "secondary_opts", [])]
+        if "--json" in opts or "--format" in opts:
+            return True
+    return False
+
+
+def command_catalogue(app: typer.Typer, *, base_name: str = "t3") -> list[CommandRecord]:
+    """Every LEAF command in *app* as a ``CommandRecord`` for ``command_search``.
+
+    Walks the tree exactly like :func:`command_paths` — resolving overlay proxies
+    to their real click leaf so the summary and ``--json`` detection see the true
+    command — but emits one record per leaf (not groups), carrying the full
+    ``path``, its short help ``summary``, and whether it ``emits_json``. This is
+    the CLI-side of the inverted ``command_search`` dependency: ``teatree.cli``
+    builds it from its own assembled app and registers it into the mcp seam.
+    """
+    records: list[CommandRecord] = []
+
+    def _collect(cmd: click.Command, parts: list[str], parent_ctx: click.Context | None) -> None:
+        real = _resolve_proxy_leaf(cmd)
+        if real is not None:
+            cmd = real
+        ctx = click.Context(cmd, info_name=parts[-1], parent=parent_ctx)
+        if isinstance(cmd, click.Group):
+            for sub_name in cmd.list_commands(ctx):
+                sub_cmd = cmd.get_command(ctx, sub_name)
+                if sub_cmd is not None:
+                    _collect(sub_cmd, [*parts, sub_name], parent_ctx=ctx)
+            return
+        records.append(
+            CommandRecord(
+                path=" ".join(parts),
+                summary=cmd.get_short_help_str(limit=200),
+                emits_json=_emits_json(cmd),
+            ),
+        )
+
+    _collect(get_command(app), [base_name], parent_ctx=None)
+    return records
 
 
 def command_groups(app: typer.Typer, *, base_name: str = "t3") -> set[str]:
