@@ -29,9 +29,11 @@ Teatree IS the Django project. Overlays are lightweight Python packages:
 ```bash
 uv run pytest                    # full suite, parallel (-n auto), no coverage — fast default
 bash dev/test-cov.sh             # coverage lane: --cov --doctest-modules, 93% floor (CI parity)
+bash dev/ci-parity-fast.sh       # inner-loop: scoped prek + makemigrations + push gate, NO floor
 bash dev/ci-parity.sh            # the EXACT full CI predicate in one command (see below)
 uv run ruff check                # lint
 uv run ruff format               # format
+t3 tool push-gate                # inspect the incremental push-gate plan for the current diff (#122)
 t3 --help                        # CLI (installed via `uv tool install --editable .`)
 ```
 
@@ -41,5 +43,9 @@ exact blocking CI predicate (prek all-files, `makemigrations --check`,
 failure is caught locally instead of on the first CI cycle. It is opt-in by
 workflow, never a push hook — the 93% whole-tree coverage floor is a whole-tree
 property no diff-scoped push subset can prove, and the full suite must never gate
-a push (`tests/test_no_full_suite_on_pre_push.py`). The push-stage
-`ci-critical-parity` hook covers only the fast doctest/never-lockout classes.
+a push (`tests/test_no_full_suite_on_pre_push.py`). Use `bash dev/ci-parity-fast.sh`
+for the fast inner loop while iterating. The push-stage `ci-critical-parity` hook
+runs `dev/push-gate.sh` — the scoped quality/never-lockout classes plus the
+incremental push gate (scoped doctest + ast-grep, FULL on any uncertainty, behind
+the default-FALSE `incremental_push_gate` flag; the CI whole-tree backstop is
+untouched).

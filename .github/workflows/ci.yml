@@ -882,6 +882,50 @@ jobs:
           TEATREE_OVERLAY_LEAK_TERMS: ${{ secrets.TEATREE_OVERLAY_LEAK_TERMS }}
         run: uv run python scripts/hooks/check_no_overlay_leak.py
 
+  # GATE (PR-only, NON-required): ground-truth anti-vacuity audit for the
+  # incremental push gate (souliane/teatree#122). Runs the WHOLE-TREE ast-grep scan
+  # + WHOLE-TREE doctest sweep, then asserts every finding/failure is INSIDE the
+  # SCOPED set the push gate would have run for this diff. A whole-tree
+  # finding/failure the scoped gate would have SKIPPED is a measured false negative
+  # -> the job fails LOUD and files a tracking issue. Scoping earns trust from
+  # evidence before `incremental_push_gate` is flipped on per-overlay. NOT a merge
+  # gate: the required `test (3.13)` whole-tree lane is the hard backstop; this is
+  # the rollout soak-window trust-builder.
+  selection-audit:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          # fetch-depth: 0 so `git merge-base origin/<base> HEAD` resolves.
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6
+        with:
+          python-version: "3.13"
+      - run: uv sync
+      - name: Audit the scoped push gate against whole-tree ground truth
+        id: audit
+        env:
+          BASE_REF_NAME: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags origin "$BASE_REF_NAME"
+          BASE_REF="origin/$BASE_REF_NAME" uv run python scripts/ci/push_gate_selection_audit.py
+      - name: File a tracking issue on a measured selection miss
+        if: failure() && steps.audit.outcome == 'failure'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          gh issue create \
+            --title "push-gate selection-audit: measured false negative (#122)" \
+            --body "The incremental push gate would have SKIPPED a whole-tree ast-grep finding or doctest failure on PR #${PR_NUMBER} (${PR_URL}). See the failed selection-audit job logs for the offending path(s). Do NOT enable \`incremental_push_gate\` until resolved." \
+            --label needs-triage || true
+
   # ── 7. Security & supply chain ─────────────────────────────────────────────
 
   # GATE: dependency vulnerability audit via pip-audit (OSV backend). Job key

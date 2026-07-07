@@ -2498,6 +2498,8 @@ Usage: t3 tool [OPTIONS] COMMAND [ARGS]...
 │                      styles (design tokens).                                 │
 │ figma-compare        Combine a Figma mockup and a Playwright screenshot side │
 │                      by side for MR evidence.                                │
+│ push-gate            Plan (or ``--run``) the incremental push gate: scoped   │
+│                      doctest + ast-grep, FULL-fallback.                      │
 │ validate-skill-refs  Assert every skill reference resolves to a real skill   │
 │                      in the canonical set.                                   │
 │ test-path-mirror     Forward-guard: test files mirror their                  │
@@ -2918,6 +2920,31 @@ Usage: t3 tool figma-compare [OPTIONS] DESIGN_IMAGE ACTUAL_SCREENSHOT
 │ --dest  -d      PATH  Output side-by-side PNG path.                          │
 │                       [default: figma-comparison.png]                        │
 │ --help                Show this message and exit.                            │
+╰──────────────────────────────────────────────────────────────────────────────╯
+```
+
+#### `t3 tool push-gate`
+
+```
+Usage: t3 tool push-gate [OPTIONS]
+
+ Plan (or ``--run``) the incremental push gate: scoped doctest + ast-grep,
+ FULL-fallback.
+
+ Default-safe: the ``incremental_push_gate`` flag is OFF ⇒ whole-tree both
+ sweeps
+ (== today). ON ⇒ scoped to the diff, with FULL as the classifier's default
+ branch (every uncertainty runs the whole sweep). The CI whole-tree backstop is
+ untouched regardless of the flag.
+
+╭─ Options ────────────────────────────────────────────────────────────────────╮
+│ --base            TEXT  Merge-base ref for the changed set.                  │
+│                         [default: origin/main]                               │
+│ --json                  Emit the machine-readable plan.                      │
+│ --emit-cmd              Print the scoped doctest command + ast-grep scope.   │
+│ --run                   Execute the two scoped sweeps and exit non-zero on   │
+│                         failure.                                             │
+│ --help                  Show this message and exit.                          │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
