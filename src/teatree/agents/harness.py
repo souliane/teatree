@@ -66,13 +66,16 @@ from teatree.config import AgentHarness, get_effective_settings
 from teatree.llm.credentials import OrcaRouterCredential, resolve_orca_router_provider_config
 
 # The OrcaRouter dispatch-lane header (OrcaRouter setup plan §3.4). Rides every
-# ``pydantic_ai`` request as ``x-lane: <factory|eval>`` so the router's analytics
-# — and a future DSL rule that keys on it — can tell the factory (headless
-# dispatch) lane from the eval lane. Informational under the shipped
-# ``gated_adaptive`` router strategy; cheap to wire now.
+# ``pydantic_ai`` request as ``x-lane: <factory|eval|bulk>`` so the named router's
+# analytics — and a DSL rule that keys on it (a secondary router's ``headers["x-lane"]
+# == "bulk"`` cheap-bulk rule) — can tell the three call-site lanes apart: the
+# headless factory dispatch (``factory``), the eval CI job (``eval``), and a
+# secondary overlay's cheap bulk legs (``bulk``). The value is the DB-home
+# ``orca_router_lane`` setting, resolved SYNCHRONOUSLY in :func:`resolve_harness`.
 _X_LANE_HEADER = "x-lane"
 LANE_FACTORY = "factory"
 LANE_EVAL = "eval"
+LANE_BULK = "bulk"
 
 
 @dataclass(frozen=True)
@@ -85,16 +88,22 @@ class OrcaLaneConfig:
     ``open`` runs (a ``get_effective_settings`` read from inside the ``asyncio.run``
     event loop fails safe to defaults under Django's async-unsafe guard).
 
-    *   ``lane`` — the ``x-lane`` header (``factory`` | ``eval``, plan §3.4).
+    *   ``lane`` — the ``x-lane`` header (``factory`` | ``eval`` | ``bulk``, plan §3.4).
     *   ``request_limit`` — the per-run sequential-request cap (plan §4 #1);
         ``None``/``<= 0`` leaves the run uncapped.
     *   ``pass_path`` — the ``orca_router_pass_path`` override (plan §3.6);
         ``None`` keeps the credential's built-in ``orca-router/api-key`` path.
+    *   ``router_name`` — the per-overlay OrcaRouter router handle
+        (``orca_router_name``, e.g. ``orcarouter/secondary-factory``) the ``teatree-native``
+        model id normalises UP to; ``None`` keeps the ``PYDANTIC_AI_TIER_MODELS``
+        default (``orcarouter/teatree-factory``). The config/overlay-driven
+        ``teatree-factory`` vs secondary-router selection.
     """
 
     lane: str = LANE_FACTORY
     request_limit: int | None = None
     pass_path: str | None = None
+    router_name: str | None = None
 
 
 if TYPE_CHECKING:
@@ -472,8 +481,9 @@ class PydanticAiHarness:
         # (OrcaRouter setup plan §3.2): ``options.model`` is a teatree-abstract-tier
         # default in Claude DASH-form (``claude-opus-4-8``), which Orca does NOT
         # carry — so it maps to the router handle; an explicit Orca-native pin
-        # passes through.
-        model_name = resolve_pydantic_ai_model(options.model)
+        # passes through. ``router_name`` selects the overlay's own named router
+        # (``teatree-factory`` vs secondary-router) for the normalise-UP branch.
+        model_name = resolve_pydantic_ai_model(options.model, router_name=self._orca.router_name)
         # Regulated-path allowlist gate on the ORIGINAL pin (before normalisation
         # laundered a bare ineligible id into the router handle) — a config-policy
         # refusal that must surface BEFORE the credential step, so it fires even when
@@ -557,16 +567,20 @@ def resolve_harness(task: "Task | None" = None, *, phase: str | None = None) -> 
     harness = resolve_phase_harness(settings.agent_harness, phase)
     if harness is AgentHarness.PYDANTIC_AI:
         resumed = rehydrate_thread_for_resume(task) if task is not None else None
-        # The cheap-model guardrails resolve HERE (sync), not inside the async
-        # ``open`` where a DB read fails safe to defaults: the per-run step cap
+        # The OrcaRouter call-site knobs resolve HERE (sync), not inside the async
+        # ``open`` where a DB read fails safe to defaults: the ``x-lane`` value and
+        # the per-overlay router handle (the config-driven ``factory``/``eval``/``bulk``
+        # + ``teatree-factory``/secondary-router selection), plus the per-run step cap
         # (§4 #1) and the OrcaRouter pass-path override (§3.6).
         return PydanticAiHarness(
             history=resumed.history if resumed else None,
             resume_source=resumed.ancestor if resumed else None,
             phase=phase,
             orca=OrcaLaneConfig(
+                lane=settings.orca_router_lane,
                 request_limit=settings.pydantic_ai_request_limit,
                 pass_path=settings.orca_router_pass_path or None,
+                router_name=settings.orca_router_name or None,
             ),
         )
     return ClaudeSdkHarness()

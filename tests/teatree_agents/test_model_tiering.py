@@ -632,6 +632,33 @@ class TestResolvePydanticAiModel:
         # namespace — never remapped to the router handle.
         assert resolve_pydantic_ai_model(orca_native_id, config_path=_ABSENT) == orca_native_id
 
+    def test_router_name_override_replaces_the_default_handle(self) -> None:
+        # The per-overlay router-name selection (secondary-router vs teatree-factory):
+        # when the id normalises UP to a handle, the config/overlay override wins.
+        assert (
+            resolve_pydantic_ai_model(None, router_name="orcarouter/secondary-factory", config_path=_ABSENT)
+            == "orcarouter/secondary-factory"
+        )
+        assert (
+            resolve_pydantic_ai_model(
+                "claude-opus-4-8", router_name="orcarouter/secondary-factory", config_path=_ABSENT
+            )
+            == "orcarouter/secondary-factory"
+        )
+
+    def test_router_name_override_does_not_touch_an_explicit_orca_native_pin(self) -> None:
+        # An explicit provider-prefixed pin is authoritative — the overlay handle
+        # override applies ONLY to the normalise-up branch.
+        assert (
+            resolve_pydantic_ai_model(
+                "deepseek/deepseek-v4-pro", router_name="orcarouter/secondary-factory", config_path=_ABSENT
+            )
+            == "deepseek/deepseek-v4-pro"
+        )
+
+    def test_no_router_name_override_keeps_the_default_handle(self) -> None:
+        assert resolve_pydantic_ai_model(None, router_name=None, config_path=_ABSENT) == "orcarouter/teatree-factory"
+
 
 class TestResolvePhaseHarness:
     """:func:`resolve_phase_harness` — the cheap-model verifier pin (plan §4 guardrail #2)."""
