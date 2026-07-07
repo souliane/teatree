@@ -28,6 +28,7 @@ from teatree.core.gates.privacy_gate import PrivacyGateResult, scan_outbound_tex
 from teatree.core.models import IncomingEvent, ReplyDispatch
 from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError, require_on_behalf_approval
 from teatree.core.on_behalf_post_receipt import notify_user_on_behalf_post
+from teatree.core.send_proxy import SendBlockedError, SendChannel, SendRequest, route_send
 from teatree.slack_mrkdwn import normalize_slack_message, slack_linkify
 
 if TYPE_CHECKING:
@@ -123,6 +124,38 @@ _FORGE_BY_SOURCE: dict[str, str] = {
     IncomingEvent.Source.GITHUB: "github",
     IncomingEvent.Source.GITLAB: "gitlab",
 }
+
+
+#: The outbound surface each reply source posts to — routes the #117 send-proxy audit.
+_SEND_CHANNEL_BY_SOURCE: dict[str, SendChannel] = {
+    IncomingEvent.Source.SLACK: SendChannel.SLACK,
+    IncomingEvent.Source.GITHUB: SendChannel.GITHUB,
+    IncomingEvent.Source.GITLAB: SendChannel.GITLAB,
+}
+
+
+def _route_reply(spec: ReplySpec) -> str:
+    """Route an on-behalf reply body through the #117 send-proxy.
+
+    Returns the body to deliver (redacted in ``enforce`` mode) and raises
+    :class:`SendBlockedError` when the proxy refuses the destination in
+    ``enforce`` mode. On the ``warn`` ship default the proxy always allows and
+    returns the body unchanged, so this is an audit-only pass that records one
+    :class:`~teatree.core.models.send_audit.SendAudit` row per reply.
+    """
+    channel = _SEND_CHANNEL_BY_SOURCE.get(spec.event.source, SendChannel.OTHER)
+    verdict = route_send(
+        SendRequest(
+            channel=channel,
+            destination=spec.event.channel_ref,
+            payload=spec.body,
+            action=spec.action_name,
+            target=spec.target_ref,
+        ),
+    )
+    if not verdict.allowed:
+        raise SendBlockedError(verdict)
+    return verdict.payload
 
 
 def _enforce_privacy(spec: ReplySpec) -> None:
@@ -244,6 +277,10 @@ class _BaseReplier:
         if spec.action_name in self._ON_BEHALF_ACTIONS:
             try:
                 _enforce_privacy(spec)
+                # #117: the send-proxy audits the reply and (in enforce mode)
+                # redacts the body / refuses a non-allowlisted destination before
+                # any wire call. On the warn ship default it is audit-only.
+                spec.body = _route_reply(spec)
                 # #1879: consume + deliver + audit run in one transaction.atomic
                 # inside the gate, so a delivery failure rolls back the consume
                 # (the approval is never burned) and no audit lies. A BLOCK with
@@ -253,12 +290,14 @@ class _BaseReplier:
                     action=spec.action_name,
                     publish=lambda: self._deliver(spec),
                 )
-            except OnBehalfPostBlockedError as blocked:
+            except (SendBlockedError, OnBehalfPostBlockedError) as blocked:
                 # Surface, never silently drop and never post unattended: the
-                # FAILED row + actionable message is the user-notify path —
-                # the retry sweep re-attempts once a user records the
-                # OnBehalfApproval (no TTY) and the gate then passes.
-                logger.warning("Reply %s gated by on_behalf_post_mode", spec.idempotency_key)
+                # FAILED row + actionable message is the user-notify path. For an
+                # on-behalf block the retry sweep re-attempts once a user records
+                # the OnBehalfApproval (no TTY) and the gate then passes; for a
+                # send-proxy allowlist block it stays FAILED until the operator
+                # seeds the destination or the mode returns to warn.
+                logger.warning("Reply %s blocked before the wire call: %s", spec.idempotency_key, blocked)
                 return self._finalize(
                     dispatch,
                     status=ReplyDispatch.Status.FAILED,
@@ -331,6 +370,9 @@ class _BaseReplier:
         if dispatch.action_name in self._ON_BEHALF_ACTIONS:
             # Re-scan on retry: a leaking (or newly-matched) body stays FAILED, never egresses.
             _enforce_privacy(spec)
+            # #117: re-route on retry too — an enforce-mode allowlist block or
+            # redaction is re-applied, never bypassed by the redeliver path.
+            spec.body = _route_reply(spec)
             posted_ref = require_on_behalf_approval(
                 target=dispatch.target_ref,
                 action=dispatch.action_name,

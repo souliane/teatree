@@ -35,6 +35,7 @@ from teatree.config import get_effective_settings, load_config
 from teatree.core.backend_factory import messaging_from_overlay
 from teatree.core.backend_protocols import MessagingBackend
 from teatree.core.models import BotPing, DeliveryClaim, OutboundClaim
+from teatree.core.send_proxy import SendChannel, SendRequest, route_send
 from teatree.core.session_identity import current_session_id
 from teatree.slack_mrkdwn import normalize_slack_message, slack_linkify
 from teatree.types import RawAPIDict
@@ -115,6 +116,8 @@ def notify_user(  # noqa: PLR0913 — single notification egress; each kwarg is 
     gate = _claim_delivery_slot(idempotency_key, kind=kind_value.value, text=text)
     if gate is not None:
         return gate
+
+    _route_through_send_proxy(text, destination=resolved_user_id)
 
     payload_text = maybe_linkify(text) if linkify else text
 
@@ -368,6 +371,29 @@ def _record_outbound_claim(
         logger.warning("notify_user outbound-claim DB failure for key=%s: %s", idempotency_key, exc)
     except Exception as exc:  # noqa: BLE001 — claim ledger is best-effort
         logger.debug("notify_user outbound-claim record failed for key=%s: %s", idempotency_key, exc)
+
+
+def _route_through_send_proxy(text: str, *, destination: str) -> None:
+    """Audit this bot→user DM through the #117 send-proxy (self-DM, never gated).
+
+    ``notify_user`` is the bot talking to its own operator, so the DM is a
+    self-destination (``is_self_dm=True``): the proxy records a ``SendAudit`` row
+    but never blocks it or redacts it (the never-lockout carve-out — the user
+    must see everything the bot sends them). Best-effort: the route is guarded so
+    a proxy failure can never break the notify path.
+    """
+    try:
+        route_send(
+            SendRequest(
+                channel=SendChannel.SLACK,
+                destination=destination,
+                payload=text,
+                action="notify_user",
+                is_self_dm=True,
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 — send-proxy audit is a side path; never break notify.
+        logger.debug("notify_user send-proxy audit failed: %s", exc)
 
 
 def _feature_enabled() -> bool:

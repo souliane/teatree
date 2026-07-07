@@ -22,6 +22,7 @@ from teatree.config.enums import (
     MissingIssuePolicy,
     Mode,
     OnBehalfPostMode,
+    SendProxyMode,
     TeamsDisplay,
     Wip,
 )
@@ -126,6 +127,8 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "require_debt_delta": _parse_strict_bool,
     "require_merge_quality_verdict": _parse_strict_bool,
     "critic_gate_mode": CriticGateMode.parse,
+    "send_proxy_mode": SendProxyMode.parse,
+    "send_proxy_allowlist": _parse_str_list,
     "bulk_close_threshold": _parse_strict_int,
     "require_rubric_verification": _parse_strict_bool,
     "require_spec_coverage": _parse_strict_bool,
@@ -798,6 +801,23 @@ class UserSettings:
     # audited never-lockout escape. A feature flag (governed in ``FEATURE_FLAGS``).
     # Per-overlay overridable.
     critic_gate_mode: CriticGateMode = CriticGateMode.OFF
+    # #117 send-proxy — every outbound artifact (Slack post/DM/react, forge
+    # PR/MR/issue comment) routes through ``teatree.core.send_proxy``, which
+    # redaction-scans the payload and checks the destination against
+    # ``send_proxy_allowlist``. ``send_proxy_mode`` is the enforcement posture:
+    # ``warn`` (default, audit-only — records a ``SendAudit`` row, never blocks,
+    # never mutates the live payload) accumulates the destination soak; ``enforce``
+    # deterministically refuses a non-allowlisted destination and redacts the
+    # payload. Flip to ``enforce`` only after seeding the allowlist from a WARN
+    # soak. A feature flag (governed in ``FEATURE_FLAGS``). Per-overlay overridable.
+    send_proxy_mode: SendProxyMode = SendProxyMode.WARN
+    # The per-overlay destination allowlist the send-proxy checks in ``enforce``
+    # mode: ``fnmatch`` globs over the raw destination (Slack channel id, ``org/repo``
+    # slug, forge host) and the channel-qualified ``<channel>:<destination>`` form.
+    # Empty by default; seeded from the WARN-soak's ``SendAudit`` destinations before
+    # any enforce flip. The user's own DM is always allowed (never-lockout carve-out),
+    # so an empty allowlist can never gate the bot→user notify path. Per-overlay overridable.
+    send_proxy_allowlist: list[str] = field(default_factory=list)
     # PR-08 No-bulk-close threshold: a single command/agent action closing more
     # than this many tickets/MRs is refused without an explicit per-item
     # confirmation token (``bulk_close_gate``). A close of ≤ threshold items is

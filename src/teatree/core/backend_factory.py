@@ -348,20 +348,20 @@ def _hosts_from_toml(cfg: dict) -> list[CodeHostBackend]:
     dropped one platform. Build both when both resolve so the loop can
     scan each forge independently.
     """
-    from teatree.utils.secrets import read_pass  # noqa: PLC0415
+    from teatree.core.send_proxy import read_posting_credential  # noqa: PLC0415 — deferred: ORM model, pre-app-registry
 
     provider = get_backend_provider()
     hosts: list[CodeHostBackend] = []
     github_token_ref = cfg.get("github_token_ref", "")
     if github_token_ref:
-        token = read_pass(github_token_ref)
+        token = read_posting_credential(github_token_ref)
         if token:
             hosts.append(provider.build_github_host(token=token))
 
     gitlab_token_ref = cfg.get("gitlab_token_ref", "")
     gitlab_url = cfg.get("gitlab_url", "https://gitlab.com")
     if gitlab_token_ref:
-        token = read_pass(gitlab_token_ref)
+        token = read_posting_credential(gitlab_token_ref)
         if token:
             hosts.append(provider.build_gitlab_host(token=token, base_url=gitlab_url))
     return hosts
@@ -388,7 +388,7 @@ def _host_from_toml_for_repo(cfg: dict, repo_path: str) -> CodeHostBackend | Non
     the overlay default only when the repo has no origin / an unrecognised
     host.
     """
-    from teatree.utils.secrets import read_pass  # noqa: PLC0415
+    from teatree.core.send_proxy import read_posting_credential  # noqa: PLC0415 — deferred: ORM model, pre-app-registry
 
     remote = git.remote_url(repo=repo_path)
     forge = forge_from_remote(remote) if remote else ""
@@ -398,12 +398,12 @@ def _host_from_toml_for_repo(cfg: dict, repo_path: str) -> CodeHostBackend | Non
     provider = get_backend_provider()
     if forge == "github":
         github_token_ref = cfg.get("github_token_ref", "")
-        token = read_pass(github_token_ref) if github_token_ref else ""
+        token = read_posting_credential(github_token_ref)
         if token:
             return provider.build_github_host(token=token)
     else:
         gitlab_token_ref = cfg.get("gitlab_token_ref", "")
-        token = read_pass(gitlab_token_ref) if gitlab_token_ref else ""
+        token = read_posting_credential(gitlab_token_ref)
         if token:
             return provider.build_gitlab_host(token=token, base_url=cfg.get("gitlab_url", "https://gitlab.com"))
 
@@ -418,15 +418,15 @@ def _host_from_toml_for_repo(cfg: dict, repo_path: str) -> CodeHostBackend | Non
 def _messaging_from_toml(cfg: dict) -> MessagingBackend | None:
     if cfg.get("messaging_backend") != "slack":
         return None
-    from teatree.utils.secrets import read_pass  # noqa: PLC0415
+    from teatree.core.send_proxy import read_posting_credential  # noqa: PLC0415 — deferred: ORM model, pre-app-registry
 
     token_ref = cfg.get("slack_token_ref", "")
     if not token_ref:
         return None
-    bot_token = read_pass(f"{token_ref}-bot")
-    app_token = read_pass(f"{token_ref}-app")
+    bot_token = read_posting_credential(f"{token_ref}-bot")
+    app_token = read_posting_credential(f"{token_ref}-app")
     user_token_ref = cfg.get("user_token_ref", "")
-    user_token = read_pass(user_token_ref) if user_token_ref else ""
+    user_token = read_posting_credential(user_token_ref)
     user_id = cfg.get("slack_user_id", "")
     # Setup-time provisioned IM channel id (#1342). When set, threads into
     # the Slack bot so its ``open_dm`` short-circuits the live

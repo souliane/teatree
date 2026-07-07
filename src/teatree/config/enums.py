@@ -303,6 +303,51 @@ class CriticGateMode(StrEnum):
             raise ValueError(msg) from exc
 
 
+class SendProxyMode(StrEnum):
+    """Enforcement posture for the outbound send-proxy destination allowlist (#117).
+
+    Every outbound artifact (Slack post/DM/react, forge PR/MR/issue comment)
+    routes through :mod:`teatree.core.send_proxy`, which redaction-scans the
+    payload and checks the destination against the per-overlay allowlist. This
+    mode decides what the proxy DOES with a non-allowlisted destination or a
+    redaction hit:
+
+    *   :attr:`WARN` (default) — audit-only: every send is recorded in a
+        :class:`~teatree.core.models.send_audit.SendAudit` row with the
+        would-be allowlist verdict and redaction matches, but the send is
+        NEVER blocked and the live payload is NEVER mutated. This is the safe
+        ship posture: it accumulates the destination soak an operator seeds the
+        allowlist from before ever flipping to :attr:`ENFORCE`.
+    *   :attr:`ENFORCE` — deterministic block: a destination absent from the
+        per-overlay allowlist is refused and the payload is redacted before the
+        wire call. Only turned on after the allowlist is seeded from a WARN-mode
+        soak (else it would over-block legitimate posts).
+
+    The user's own DM destination is always allowed under BOTH modes (the
+    never-lockout carve-out) so the bot→user notify path can never be gated by
+    a mis-seeded allowlist.
+    """
+
+    WARN = "warn"
+    ENFORCE = "enforce"
+
+    @classmethod
+    def parse(cls, value: str) -> "SendProxyMode":
+        """Parse a send-proxy-mode string; invalid values raise ``ValueError``.
+
+        The conservative default (:attr:`WARN`, audit-only) is applied by the
+        caller when the setting is absent, so a typo never silently arms
+        enforcement.
+        """
+        normalised = value.strip().lower()
+        try:
+            return cls(normalised)
+        except ValueError as exc:
+            valid = ", ".join(m.value for m in cls)
+            msg = f"Invalid send_proxy_mode {value!r}; valid values: {valid}"
+            raise ValueError(msg) from exc
+
+
 class MissingIssuePolicy(StrEnum):
     """What to do when a commit/MR needs an issue reference and none is in hand.
 

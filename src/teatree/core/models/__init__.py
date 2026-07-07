@@ -99,6 +99,7 @@ from teatree.core.models.scanned_broadcast import BroadcastObservation, ScannedB
 from teatree.core.models.scanned_failed_e2e import ScannedFailedE2E
 from teatree.core.models.self_improve_firing import SelfImproveFiring
 from teatree.core.models.self_update_marker import SelfUpdateMarker
+from teatree.core.models.send_audit import SendAudit
 from teatree.core.models.session import Session
 from teatree.core.models.session_handover import SessionHandover
 from teatree.core.models.standing_goal import StandingGoal, StandingGoalError, StandingGoalManager
@@ -264,6 +265,7 @@ __all__ = [
     "ScenarioRegression",
     "SelfImproveFiring",
     "SelfUpdateMarker",
+    "SendAudit",
     "Session",
     "SessionAuditRecord",
     "SessionHandover",

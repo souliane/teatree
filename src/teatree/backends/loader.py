@@ -24,9 +24,9 @@ from teatree.core.backend_protocols import (
     MessagingBackend,
     PrOpenState,
 )
+from teatree.core.send_proxy import read_posting_credential
 from teatree.utils import git
 from teatree.utils.forge import forge_from_remote
-from teatree.utils.secrets import read_pass
 
 if TYPE_CHECKING:
     from teatree.core.overlay import OverlayBase
@@ -212,9 +212,9 @@ def get_messaging(overlay: "OverlayBase") -> MessagingBackend:
         token_ref = overlay.config.slack_token_ref
         user_token_ref = getattr(overlay.config, "user_token_ref", "")
         return SlackBotBackend(
-            bot_token=read_pass(f"{token_ref}-bot") if token_ref else overlay.config.get_slack_token(),
-            app_token=read_pass(f"{token_ref}-app") if token_ref else "",
-            user_token=read_pass(user_token_ref) if user_token_ref else "",
+            bot_token=read_posting_credential(f"{token_ref}-bot") if token_ref else overlay.config.get_slack_token(),
+            app_token=read_posting_credential(f"{token_ref}-app") if token_ref else "",
+            user_token=read_posting_credential(user_token_ref),
             user_id=overlay.config.slack_user_id,
             # Setup-time provisioned IM channel id (#1342) — see
             # ``OverlayConfig.slack_dm_channel_id``. ``getattr`` keeps older

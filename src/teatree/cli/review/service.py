@@ -46,6 +46,7 @@ from teatree.cli.review.on_behalf import (
 )
 from teatree.cli.review.on_behalf import register as _register_on_behalf
 from teatree.cli.review.shape_gate import check_review_shape
+from teatree.core.send_proxy import SendChannel, SendRequest, route_send
 from teatree.utils.run import run_allowed_to_fail
 
 # Re-exports — keep monkeypatch targets under the ``review`` namespace
@@ -147,6 +148,32 @@ class ReviewService:
             return str(blocked), 1
         except ReviewArtifactNotVerifiedError as unverified:
             return str(unverified), 1
+
+    @staticmethod
+    def _route_forge_send(*, repo: str, mr: int, action: str, note: str) -> tuple[str, str]:
+        """Route a colleague-visible forge comment through the #117 send-proxy.
+
+        Returns ``(routed_note, refusal)``: ``refusal`` is ``""`` when the proxy
+        allows the send (the ship-default ``warn`` mode always allows and returns
+        ``note`` unchanged — audit-only), and a human-readable message when the
+        proxy refuses the destination in ``enforce`` mode. ``routed_note`` is the
+        body to post (redacted in ``enforce`` mode). One
+        :class:`~teatree.core.models.send_audit.SendAudit` row is written per
+        live comment, feeding the destination soak the operator seeds the
+        allowlist from.
+        """
+        verdict = route_send(
+            SendRequest(
+                channel=SendChannel.GITLAB,
+                destination=repo,
+                payload=note,
+                action=action,
+                target=f"{repo}!{mr}",
+            ),
+        )
+        if not verdict.allowed:
+            return note, verdict.reason or f"send-proxy refused posting to {repo}"
+        return verdict.payload, ""
 
     @staticmethod
     def _resolve_base_url() -> str:
@@ -350,6 +377,9 @@ class ReviewService:
         blocked_live = check_live_post(repo=repo, mr=mr)
         if blocked_live:
             return blocked_live, 1
+        note, send_refusal = self._route_forge_send(repo=repo, mr=mr, action="post_comment", note=note)
+        if send_refusal:
+            return send_refusal, 1
         return self._publish_or_blocked(
             repo, mr, "post_comment", lambda: self._post_comment_impl(repo, mr, note, file=file, line=line)
         )
