@@ -21,11 +21,17 @@ from tests.factories import TaskFactory, TicketFactory
 
 _EXPECTED_TOOLS = {
     "ticket_search",
+    "ticket_get",
+    "ticket_list",
     "worktree_status",
     "pr_for_ticket",
     "loop_stats",
+    "task_list",
     "factory_signals",
     "incoming_event_recent",
+    "config_setting_get",
+    "gate_status",
+    "command_search",
 }
 
 
@@ -89,6 +95,58 @@ class TestCallToolThroughServer(TestCase):
         result = async_to_sync(server.call_tool)("worktree_status", {"ticket": "999999"})
 
         assert _payloads(result) == []
+
+    def test_ticket_list_returns_real_rows(self) -> None:
+        ticket = TicketFactory(overlay="t3-teatree", state="coded", issue_url="https://x/issues/700")
+        server = build_server()
+
+        result = async_to_sync(server.call_tool)("ticket_list", {"state": "coded"})
+
+        assert ticket.pk in {payload["id"] for payload in _payloads(result)}
+
+    def test_ticket_get_returns_a_single_detail_object(self) -> None:
+        ticket = TicketFactory(issue_url="https://x/issues/701")
+        server = build_server()
+
+        result = async_to_sync(server.call_tool)("ticket_get", {"ticket": str(ticket.pk)})
+
+        payload = _payloads(result)[0]
+        assert payload["id"] == ticket.pk
+        assert "visited_phases" in payload
+
+    def test_config_setting_get_reports_the_source(self) -> None:
+        server = build_server()
+
+        result = async_to_sync(server.call_tool)("config_setting_get", {"key": "factory_score_enabled"})
+
+        payload = _payloads(result)[0]
+        assert payload["source"] in {"db", "file/env"}
+
+    def test_task_list_returns_real_rows(self) -> None:
+        task = TaskFactory(status=Task.Status.PENDING)
+        server = build_server()
+
+        result = async_to_sync(server.call_tool)("task_list", {"status": "pending"})
+
+        assert task.pk in {payload["id"] for payload in _payloads(result)}
+
+    def test_gate_status_reports_the_review_gate(self) -> None:
+        server = build_server()
+
+        result = async_to_sync(server.call_tool)("gate_status", {})
+
+        report = _payloads(result)[0]
+        assert "require_human_approval_to_merge" in report["review_gate"]
+        assert "out_of_band_merge_gate_enabled" in report["raw_merge_gate"]
+
+    def test_command_search_finds_a_real_command(self) -> None:
+        import teatree.cli  # noqa: F401, PLC0415 — registers the live command-catalogue provider
+
+        server = build_server()
+
+        result = async_to_sync(server.call_tool)("command_search", {"query": "mcp serve"})
+
+        assert any(payload["path"] == "t3 mcp serve" for payload in _payloads(result))
 
 
 class TestFactoryScoreFlagGating(TestCase):

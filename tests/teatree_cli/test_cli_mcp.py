@@ -200,10 +200,16 @@ class TestServeSubprocessSmoke:
         tool_names, payload = asyncio.run(_round_trip(env))
 
         assert tool_names == {
+            "command_search",
             "ticket_search",
+            "ticket_list",
+            "ticket_get",
             "worktree_status",
             "pr_for_ticket",
+            "task_list",
             "loop_stats",
+            "config_setting_get",
+            "gate_status",
             "factory_signals",
             "incoming_event_recent",
         }

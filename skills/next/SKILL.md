@@ -41,7 +41,7 @@ For short prompts, pass `--reason "<text>"` directly. For multiline prompts, wri
 
 **Phase transitions:** `scoping → coding`, `coding → testing`, `testing → reviewing`, `reviewing → shipping`.
 
-**Gotcha:** the `<TICKET_PK>` argument takes the teatree **ticket PK** (visible as `ticket_id` in `t3 <overlay> tasks list`), NOT the external issue number — they differ. Confirm via the CLI output, not by guessing.
+**Gotcha:** the `<TICKET_PK>` argument takes the teatree **ticket PK** (visible as `ticket_id` in the `mcp__teatree__task_list` MCP tool, or `t3 <overlay> tasks list`), NOT the external issue number — they differ. Confirm via the returned `ticket_id`, not by guessing.
 
 ### 3. Emit Structured Result
 
