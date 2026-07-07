@@ -33,6 +33,7 @@ parsed health are persisted.
 """
 
 import datetime as dt
+import os
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
@@ -307,7 +308,16 @@ def resolve_api_key_credential(*, scope: str = GLOBAL_SCOPE) -> AnthropicApiKeyC
     return AnthropicApiKeyCredential(pass_path_override=override, missing_context=missing_context)
 
 
-def resolve_eval_credential(*, kind: "EvalCredential | None" = None, scope: str = GLOBAL_SCOPE) -> Credential:
+def _active_overlay_scope() -> str:
+    """The active overlay's routing scope, read from ``T3_OVERLAY_NAME``.
+
+    Empty (the :data:`GLOBAL_SCOPE` sentinel) when no overlay is active, so the
+    selector's overlay→global fallback lands on the global routing list unchanged.
+    """
+    return os.environ.get("T3_OVERLAY_NAME", "") or GLOBAL_SCOPE
+
+
+def resolve_eval_credential(*, kind: "EvalCredential | None" = None, scope: str | None = None) -> Credential:
     """The credential the automated eval lane rides, selected by the ``eval_credential`` knob.
 
     THE single seam that reverses #2707's metered-exclusive lock: the eval backend,
@@ -318,6 +328,15 @@ def resolve_eval_credential(*, kind: "EvalCredential | None" = None, scope: str 
     :func:`~teatree.config.get_effective_settings` (``T3_EVAL_CREDENTIAL`` env → the
     ``ConfigSetting`` store → the default :attr:`EvalCredential.SUBSCRIPTION_OAUTH`).
 
+    ``scope`` (``None``, the default) resolves to the ACTIVE OVERLAY (``T3_OVERLAY_NAME``)
+    via :func:`_active_overlay_scope`, so the per-account routing reads the overlay-scoped
+    ``anthropic_oauth_pass_paths`` first and the selector's overlay→global fallback covers
+    the global list. The eval lane is a teatree-overlay eval, so its account routing is
+    configured at the overlay scope — defaulting to :data:`GLOBAL_SCOPE` here made a
+    bare eval abort with :class:`~teatree.llm.credentials.CredentialError` whenever the
+    routing lived only at the overlay scope. An explicit *scope* (including
+    :data:`GLOBAL_SCOPE`) overrides the active-overlay default.
+
     :attr:`EvalCredential.SUBSCRIPTION_OAUTH` → :func:`resolve_subscription_credential`
     (per-account OAuth routing via ``anthropic_oauth_pass_paths`` for the same
     *scope*, spreading a right-sized lane across accounts so its usage window is not
@@ -327,6 +346,8 @@ def resolve_eval_credential(*, kind: "EvalCredential | None" = None, scope: str 
     """
     from teatree.config import EvalCredential, get_effective_settings  # noqa: PLC0415
 
+    if scope is None:
+        scope = _active_overlay_scope()
     if kind is None:
         kind = get_effective_settings().eval_credential
     if kind is EvalCredential.METERED_API_KEY:
