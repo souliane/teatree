@@ -14,7 +14,7 @@ from datetime import timedelta
 from io import StringIO
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from django.core.management import call_command
@@ -246,6 +246,55 @@ class TestCheckingShow:
         assert "Merged" in out  # the recent merge is NOT skipped
         # The marker is not rewound to ``now`` (which would lose the bound).
         assert load_checkpoint(checkpoint_file) == future_marker
+
+
+def _notify_backend() -> MagicMock:
+    b = MagicMock()
+    b.open_dm.return_value = "D-USER"
+    b.post_message.return_value = {"ok": True, "ts": "1700000000.000000"}
+    b.get_permalink.return_value = "https://acme.slack.com/archives/D-USER/p1700000000000000"
+    return b
+
+
+class TestCheckingNotify:
+    """``--notify`` DMs the recap as a native Block Kit table + fence fallback (#2966)."""
+
+    def test_notify_emits_table_block_through_the_real_notify_path(self, checkpoint_file: Path) -> None:
+        # Anti-vacuity: the DM must be produced by the real ``notify_user`` egress
+        # (mocked Slack backend), not a direct formatter call — the ``table`` block
+        # and the monospace fence must both reach ``post_message``.
+        _merged_ticket()
+        backend = _notify_backend()
+        with (
+            patch("teatree.core.notify.messaging_from_overlay", return_value=backend),
+            patch("teatree.core.notify.resolve_user_id", return_value="U_ME"),
+        ):
+            _call("checking", "show", "--this-overlay", "--notify")
+        backend.post_message.assert_called_once()
+        call_kwargs = backend.post_message.call_args.kwargs
+        assert "table" in [block["type"] for block in call_kwargs["blocks"]]
+        assert "```" in call_kwargs["text"]
+        assert "acme/widgets#7" in call_kwargs["text"]
+
+    def test_notify_skipped_when_nothing_to_report(self, checkpoint_file: Path) -> None:
+        backend = _notify_backend()
+        with (
+            patch("teatree.core.notify.messaging_from_overlay", return_value=backend),
+            patch("teatree.core.notify.resolve_user_id", return_value="U_ME"),
+        ):
+            _call("checking", "show", "--this-overlay", "--notify")
+        backend.post_message.assert_not_called()
+
+    def test_unchanged_recap_deduped_to_one_dm(self, checkpoint_file: Path) -> None:
+        _merged_ticket()
+        backend = _notify_backend()
+        with (
+            patch("teatree.core.notify.messaging_from_overlay", return_value=backend),
+            patch("teatree.core.notify.resolve_user_id", return_value="U_ME"),
+        ):
+            _call("checking", "show", "--this-overlay", "--no-advance", "--notify")
+            _call("checking", "show", "--this-overlay", "--no-advance", "--notify")
+        backend.post_message.assert_called_once()
 
 
 class TestCheckingShowAllOverlays:

@@ -7721,6 +7721,8 @@ Usage: t3 teatree checking show [OPTIONS]
 │                             last-checked marker.                             │
 │ --this-overlay              Scope to the current overlay only (default:      │
 │                             aggregate all configured overlays).              │
+│ --notify                    Also DM the recap to you as a Slack table        │
+│                             (native Block Kit + monospace fence fallback).   │
 │ --help                      Show this message and exit.                      │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
