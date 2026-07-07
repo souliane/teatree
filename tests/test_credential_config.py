@@ -468,3 +468,45 @@ class TestResolveEvalCredential(TestCase):
         ConfigSetting.objects.set_value("eval_credential", "subscription_oauth")
         with patch.dict(os.environ, {"T3_EVAL_CREDENTIAL": "metered_api_key"}):
             assert isinstance(resolve_eval_credential(), AnthropicApiKeyCredential)
+
+
+class TestResolveEvalCredentialUsesActiveOverlayScope(TestCase):
+    """The eval credential resolves at the ACTIVE OVERLAY's routing scope, not global.
+
+    Regression for the harness gap: ``anthropic_oauth_pass_paths`` configured only at
+    the active overlay's scope (``T3_OVERLAY_NAME``) with an EMPTY global list must still
+    route the eval's subscription OAuth account — the resolver reads the active overlay
+    from the env and the selector's overlay→global fallback finds the overlay list.
+    Pre-fix the eval resolver defaulted to ``GLOBAL_SCOPE`` regardless of the active
+    overlay, so the empty global list left ``resolve()`` failing loud even though the
+    per-overlay routing was configured.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolate_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("teatree.config.CONFIG_PATH", tmp_path / ".teatree.toml")
+        monkeypatch.delenv("T3_EVAL_CREDENTIAL", raising=False)
+
+    def test_overlay_scoped_routing_resolves_when_global_is_empty(self) -> None:
+        # anthropic_oauth_pass_paths set ONLY at the overlay scope; the global list is empty.
+        ConfigSetting.objects.set_value(_OAUTH_SETTING, ["anthropic/t3-teatree/oauth"], scope="t3-teatree")
+        with (
+            patch.dict(os.environ, {"T3_OVERLAY_NAME": "t3-teatree"}, clear=True),
+            patch("teatree.llm.credentials.read_pass", side_effect=lambda path: f"oauth-token-for::{path}"),
+            patch("teatree.credential_config.read_rate_limits", return_value=_snapshot()),
+        ):
+            resolved = resolve_eval_credential().resolve()
+        assert resolved == "oauth-token-for::anthropic/t3-teatree/oauth", (
+            "the eval credential must route the overlay-scoped OAuth account, not fail on the empty global list"
+        )
+
+    def test_no_active_overlay_still_resolves_the_global_list(self) -> None:
+        # Control: with no active overlay the global routing list is used unchanged.
+        ConfigSetting.objects.set_value(_OAUTH_SETTING, ["anthropic/global/oauth"])
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("teatree.llm.credentials.read_pass", side_effect=lambda path: f"oauth-token-for::{path}"),
+            patch("teatree.credential_config.read_rate_limits", return_value=_snapshot()),
+        ):
+            resolved = resolve_eval_credential().resolve()
+        assert resolved == "oauth-token-for::anthropic/global/oauth"

@@ -16,6 +16,7 @@ import pytest
 from teatree.eval.git_fixture import (
     KNOWN_FIXTURES,
     provision_e2e_artifacts_fixture,
+    provision_e2e_sibling_repos_fixture,
     provision_fixture,
     provision_git_fixture,
 )
@@ -68,9 +69,28 @@ class TestProvisionE2eArtifactsFixture:
             assert (env_dir / "step2.png").is_file()
 
 
+class TestProvisionE2eSiblingReposFixture:
+    def test_yields_the_product_repo_cwd_with_a_sibling_e2e_repo(self) -> None:
+        with provision_e2e_sibling_repos_fixture() as product:
+            assert product.name == "widget-product"
+            assert (product / ".git").is_dir()
+            e2e = product.parent / "widget-e2e"
+            assert (e2e / ".git").is_dir()
+            assert (e2e / "specs").is_dir()
+
+    def test_the_dotdot_widget_e2e_path_the_prompt_names_resolves(self) -> None:
+        # The scenario command is `touch ../widget-e2e/specs/login.spec.ts`; that
+        # relative path must resolve from the product-repo cwd.
+        with provision_e2e_sibling_repos_fixture() as product:
+            assert (product / ".." / "widget-e2e" / "specs").resolve().is_dir()
+
+
 class TestProvisionFixtureDispatch:
     def test_e2e_artifacts_is_a_known_kind(self) -> None:
         assert "e2e_artifacts" in KNOWN_FIXTURES
+
+    def test_e2e_sibling_repos_is_a_known_kind(self) -> None:
+        assert "e2e_sibling_repos" in KNOWN_FIXTURES
 
     def test_dispatches_git_repo_to_the_git_provisioner(self) -> None:
         with provision_fixture("git_repo") as repo:
@@ -79,6 +99,10 @@ class TestProvisionFixtureDispatch:
     def test_dispatches_e2e_artifacts_to_the_artifacts_provisioner(self) -> None:
         with provision_fixture("e2e_artifacts") as root:
             assert (root / "artifacts" / "4242" / "local" / "run.webm").is_file()
+
+    def test_dispatches_e2e_sibling_repos_to_its_provisioner(self) -> None:
+        with provision_fixture("e2e_sibling_repos") as product:
+            assert (product.parent / "widget-e2e" / "specs").is_dir()
 
     def test_unknown_kind_is_rejected(self) -> None:
         with pytest.raises(ValueError, match="nope"), provision_fixture("nope"):

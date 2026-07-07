@@ -10,7 +10,16 @@ WITHOUT relaxing the ``record_kept`` consumed-question guard.
 from django.test import TestCase
 from django.utils import timezone
 
-from teatree.core.models import DeferredQuestion, FactoryScoreSnapshot, OuterLoopExperiment, ProposalSpec, Ticket
+from teatree.core.models import (
+    ConfigSetting,
+    DeferredQuestion,
+    DeferredQuestionAudit,
+    FactoryScoreSnapshot,
+    OuterLoopExperiment,
+    ProposalSpec,
+    Ticket,
+)
+from teatree.core.models.approval_dial import DIAL_CONFIG_KEY
 from teatree.core.models.approval_policy import Decision
 from teatree.loops.outer_loop.keep import ask_keep, resolve_keep
 
@@ -81,6 +90,18 @@ class TestKeepFlow(TestCase):
         # the guard still sees a consumed answer, only recorded by policy.
         exp = _keep_pending()
         question = ask_keep(exp, dial=lambda _action_class: Decision.AUTO_APPROVE)
-        assert DeferredQuestion.objects.get(pk=question.pk).answered_at is not None
+        answered = DeferredQuestion.objects.get(pk=question.pk)
+        assert answered.answered_at is not None
+        # Graduation is AUDITED: resolved_via=policy + a DeferredQuestionAudit receipt.
+        assert answered.resolved_via == DeferredQuestion.ResolvedVia.POLICY
+        assert DeferredQuestionAudit.objects.filter(question=question, resolver_id="policy").exists()
         resolve_keep(exp)
         assert OuterLoopExperiment.objects.get(pk=exp.pk).state == OuterLoopExperiment.State.KEPT
+
+    def test_graduated_dial_via_config_auto_answers_the_keep(self) -> None:
+        # The production path: the operator graduated outer_loop_keep to auto in the
+        # dial table (no injected dial), so ask_keep auto-answers by policy.
+        ConfigSetting.objects.set_value(DIAL_CONFIG_KEY, {"outer_loop_keep": "auto"}, scope="")
+        exp = _keep_pending()
+        question = ask_keep(exp)
+        assert DeferredQuestion.objects.get(pk=question.pk).resolved_via == DeferredQuestion.ResolvedVia.POLICY

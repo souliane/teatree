@@ -1276,6 +1276,25 @@ Fields:
   explicitly typed" refusal rule stays intact — this widens what is listed,
   it never bypasses the rule. See `teatree.eval.api_runner.build_sdk_options`
   and `teatree.eval.models.EvalSpec.available_skills`.
+- `production_hooks` — optional bool (default `false`). When `true`, the runner
+  registers the SHIPPED teatree plugin (`hooks/hooks.json`, repo root = plugin
+  root) into the SDK child and sets `include_hook_events=True`, so the scenario
+  measures the model+hook SYSTEM that ships — the ~6 #807-Stop-gate / #2665
+  completion-claim scenarios pass either first-try OR via the deterministic gate
+  bounce. The clean-room personal-context isolation is unchanged; on top of it the
+  runner redirects the loop/hook state roots (`XDG_DATA_HOME`, `T3_HOOK_STATE_DIR`,
+  `T3_LOOP_REGISTRY_DIR`, `TEATREE_CLAUDE_STATUSLINE_STATE_DIR`) into the sandbox
+  home so the Stop gate sees a fresh owner-less registry and actually fires.
+  **Honesty design (never a spurious green):** gate-firing is a REPORT ANNOTATION,
+  not a pass condition — a pass a Stop block carried renders `pass (gate-assisted)`
+  in `render_text` (and `gate_assisted`/`gate_events` in the JSON report), so a
+  model-alone regression can never hide behind the gate. A hooked run that captures
+  ZERO hook events is a FAIL-LOUD `hooks_not_registered` error (the plugin silently
+  failed to register → the lane would degrade to raw-model measurement). The
+  end-to-end wiring is pinned empirically by the `harness_canary_stop_gate_fires`
+  canary (a prose-only decision that can pass ONLY via the #807 bounce). See
+  `teatree.eval.api_runner` (`_t3_plugin`, `hooked_env`, the fail-loud) and
+  `teatree.eval.models.EvalSpec.production_hooks` / `EvalRun.gate_events`.
 - `expect` — list of matchers (see below); required unless a `judge` block is
   present (a judge-only scenario may omit it).
 - `judge` — optional LLM-judge block (`rubric`, optional `model`, optional

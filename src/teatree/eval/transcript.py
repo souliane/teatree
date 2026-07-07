@@ -16,7 +16,11 @@ import json
 import re
 from typing import Any
 
-from teatree.eval.models import EvalToolCall, TokenUsage
+from teatree.eval.models import EvalToolCall, GateEvent, TokenUsage
+
+#: Cap on the captured ``output`` snippet of a hook_response event — enough to
+#: read the block reason, bounded so a verbose hook payload never bloats the run.
+_GATE_OUTPUT_SNIPPET_CAP = 500
 
 #: The four ``ResultMessage.usage`` keys the API bills on, mapped onto the
 #: :class:`TokenUsage` fields. The mapping is the single place a future SDK
@@ -164,6 +168,41 @@ def extract_tool_calls(events: list[StreamJsonEvent]) -> list[EvalToolCall]:
                 ),
             )
     return tool_calls
+
+
+def extract_gate_events(events: list[StreamJsonEvent]) -> list[GateEvent]:
+    """Production-hook lifecycle events the runner synthesized into the stream.
+
+    Only ``hook_response`` system events (a hook that COMPLETED) carry
+    outcome/output; ``hook_started`` is dropped upstream by the message mapper.
+    Returns one :class:`~teatree.eval.models.GateEvent` per response so the report
+    can annotate a gate-assisted pass and the fail-loud / canary checks can confirm
+    the shipped hooks fired under the eval wiring. A recorded-transcript replay
+    carries no such events, so this returns ``[]`` there — the additive default.
+    """
+    gate_events: list[GateEvent] = []
+    for event in events:
+        if event.type != "system" or event.subtype != "hook_response":
+            continue
+        raw = event.raw
+        name = raw.get("hook_event") or raw.get("hook_event_name") or ""
+        gate_events.append(
+            GateEvent(
+                hook_event_name=str(name),
+                outcome=_stringify(raw.get("outcome")),
+                output_snippet=_stringify(raw.get("output"))[:_GATE_OUTPUT_SNIPPET_CAP],
+            )
+        )
+    return gate_events
+
+
+def _stringify(value: object) -> str:
+    """A hook ``outcome``/``output`` may arrive as a str, dict, or None — render it flat."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, sort_keys=True)
 
 
 def extract_text_blocks(events: list[StreamJsonEvent]) -> list[str]:

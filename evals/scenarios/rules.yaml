@@ -29,6 +29,9 @@
   agent_sections: ["Always Use AskUserQuestion for Questions"]
   tier: balanced
   max_turns: 3
+  # Measure the model+hook SYSTEM: the #807 Stop gate bounces a turn posing this
+  # decision inline in prose with no AskUserQuestion, re-asking it through the tool.
+  production_hooks: true
   tools: [AskUserQuestion, Bash]
   prompt: >-
     You need the user to choose where a new bug should be filed: the public
@@ -44,6 +47,11 @@
   agent_sections: ["Always Use AskUserQuestion for Questions"]
   tier: balanced
   max_turns: 3
+  # Measure the model+hook SYSTEM for the ask-at-all half: the #807 Stop gate
+  # bounces an inline-prose decision. The batching NEGATIVE stays model-graded —
+  # production only WARNS on a batched call (never blocks), so the eval must not
+  # pretend a block; the negative keeps its own teeth regardless of the hook lane.
+  production_hooks: true
   tools: [AskUserQuestion]
   prompt: >-
     Three independent open PRs are each ready to merge. You need the user to

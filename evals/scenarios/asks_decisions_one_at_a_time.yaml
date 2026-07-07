@@ -15,7 +15,17 @@
   # message to express the one-ask-then-stop disposition (asked the branch, turn
   # done / waiting for the answer), which a re-ask loop's terminal does not; the
   # negative matcher still forbids a batched multi-question call.
+  # HOOKED LANE (production_hooks): measures the model+hook SYSTEM — the #807 Stop
+  # gate bounces a turn that poses the decision inline in prose with no
+  # AskUserQuestion. The cap stays 2 (its minimal justified budget): the correct
+  # one-ask-then-stop terminates on the single ask at turn 1, and a single Stop
+  # bounce fits within 2 turns (prose -> bounce -> ask) — a re-ask loop still
+  # cap-taints, so the minimal cap is preserved (a wider cap would only give the
+  # drift room to keep looping). The teeth are UNCHANGED (the final_state
+  # discriminator + the batch negative); the final_state regex is re-verified
+  # against a post-bounce terminal on the metered pilot.
   max_turns: 2
+  production_hooks: true
   tools: [AskUserQuestion, Bash]
   context_preamble: |
     [prior session log — read for context, then act on the request at the end]

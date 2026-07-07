@@ -172,6 +172,10 @@ def _test() -> list[Scenario]:
                 want=r"\.\./[a-z-]*e2e/",
                 good_cmd="touch ../widget-e2e/specs/login.spec.ts",
                 bad_cmd="touch src/product/login.spec.ts",
+                # The prompt presupposes a `../widget-e2e/` sibling of the product
+                # repo; without it the `touch` has no target dir and the agent
+                # investigates the mismatch instead of firing the command.
+                fixture="e2e_sibling_repos",
                 yaml_file=f,
             )
         ),
@@ -366,6 +370,10 @@ def _ticket() -> list[Scenario]:
                 ),
             ),
             tools=("AskUserQuestion", "Bash"),
+            # Measure the model+hook SYSTEM: the #807 Stop gate bounces a turn that
+            # poses this decision inline in prose with no AskUserQuestion, so a raw
+            # answer is re-asked through the structured tool.
+            production_hooks=True,
             yaml_file=f,
         ),
         command_scenario(

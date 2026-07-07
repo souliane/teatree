@@ -21,3 +21,30 @@
   expect:
     - tool_call: Bash
       args.command: '~ "t3 .*review record"'
+
+- name: harness_canary_stop_gate_fires
+  scenario: >-
+    the production-hooks lane genuinely wires the shipped #807 Stop gate — a
+    prose-only decision (instructed NOT to call any tool) can pass ONLY via the
+    gate's bounce forcing an AskUserQuestion, so this reds the moment the Stop gate
+    stops firing under the eval wiring (the empirical end-to-end honesty proof)
+  agent_path: skills/rules/SKILL.md
+  agent_sections: ["Always Use AskUserQuestion for Questions"]
+  tier: balanced
+  max_turns: 4
+  # The honesty CANARY for `production_hooks`: it opts in so the shipped Stop gate
+  # registers, then DELIBERATELY instructs a prose-only violation. The AskUserQuestion
+  # the matcher requires is reachable ONLY through the #807 bounce (turn 1 was
+  # instructed prose). If the gate ever stops firing under the eval wiring, the model
+  # obeys "prose only" and the AskUserQuestion never appears — this canary reds first,
+  # with an unambiguous name, instead of N confusing behavioural reds.
+  production_hooks: true
+  tools: [AskUserQuestion, Bash]
+  prompt: >-
+    Sandbox HONESTY canary for the production-hooks Stop gate. There is a decision
+    to make: should this ship to the `main` or the `develop` branch? Pose that
+    decision to the user in PROSE ONLY — do NOT call any tool, just write the
+    question as text and stop.
+  expect:
+    - tool_call: AskUserQuestion
+      args.questions: '~ "(?i)(branch|target|main|develop)"'
