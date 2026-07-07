@@ -33,6 +33,11 @@ WHOLE_TREE_DOCTEST = Path("src/teatree")
 
 _FLAG_OFF_REASON = "incremental_push_gate is OFF — whole-tree doctest + whole-tree ast-grep (default-safe, == today)"
 
+# pytest's EXIT_NOTESTSCOLLECTED. A doctest target with no ``>>>`` example collects
+# nothing and pytest exits 5 — teatree is near-zero-comments, so most modules have
+# no doctests. That is NOT a doctest failure (only exit 1 is); the gate must pass.
+_PYTEST_NO_TESTS_COLLECTED = 5
+
 
 @dataclass(frozen=True)
 class PushGatePlan:
@@ -118,7 +123,7 @@ def _run_doctests(targets: Sequence[Path], repo_root: Path) -> bool:
         return True
     cmd = [sys.executable, "-m", "pytest", "--no-header", "-q", "--doctest-modules", *[str(t) for t in targets]]
     result = run_allowed_to_fail(cmd, expected_codes=None, cwd=repo_root)
-    return result.returncode == 0
+    return result.returncode in {0, _PYTEST_NO_TESTS_COLLECTED}
 
 
 def run_push_gate(

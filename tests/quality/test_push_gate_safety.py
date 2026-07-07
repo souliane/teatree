@@ -228,9 +228,15 @@ class TestResolvePlanAndDoctestRunner:
         assert "--doctest-modules" in cmd
         assert "src/teatree/x.py" in cmd
 
-    def test_run_doctests_reports_failure_on_nonzero(self) -> None:
+    def test_run_doctests_reports_failure_on_real_doctest_failure(self) -> None:
         with patch.object(push_gate_mod, "run_allowed_to_fail", return_value=SimpleNamespace(returncode=1)):
             assert _run_doctests((Path("src/teatree/x.py"),), Path.cwd()) is False
+
+    def test_run_doctests_no_doctests_collected_is_ok(self) -> None:
+        # pytest exit 5 = "no tests collected": a module with no `>>>` example is
+        # not a doctest failure (teatree is near-zero-comments), so the gate passes.
+        with patch.object(push_gate_mod, "run_allowed_to_fail", return_value=SimpleNamespace(returncode=5)):
+            assert _run_doctests((Path("src/teatree/x.py"),), Path.cwd()) is True
 
 
 class TestReportShape:
