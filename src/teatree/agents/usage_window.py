@@ -49,12 +49,16 @@ def effective_resets_at(cause: LimitCause, sdk_resets_at: datetime | None, now: 
 
     ``None`` when the cause has no time-based recovery (API-credit exhaustion): there is
     nothing to re-arm to, so the caller does NOT park (it records a terminal FAILED as
-    today — the operator must add credits).
+    today — the operator must add credits). The cause is checked FIRST: an ``overage``
+    rejection maps to :class:`LimitCause.API_CREDIT` yet can still carry a top-level
+    ``resets_at`` on the SDK event, so trusting that value before the cause would park a
+    credit-exhausted lane and spin it (park → recover → re-dispatch → re-park). A
+    horizonless cause is terminal even when the SDK reports a reset.
     """
-    if sdk_resets_at is not None:
-        return sdk_resets_at
     horizon = window_horizon(cause)
-    return now + horizon if horizon is not None else None
+    if horizon is None:
+        return None
+    return sdk_resets_at if sdk_resets_at is not None else now + horizon
 
 
 def _epoch_to_datetime(epoch: int | None) -> datetime | None:

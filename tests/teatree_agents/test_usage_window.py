@@ -62,6 +62,12 @@ class TestEffectiveResetsAt(django.test.SimpleTestCase):
         now = timezone.now()
         assert effective_resets_at(LimitCause.API_CREDIT, None, now) is None
 
+    def test_credit_ignores_an_sdk_reset(self) -> None:
+        # An `overage` rejection maps to API_CREDIT yet can carry a top-level resets_at;
+        # the cause has no time-based recovery, so the SDK value must NOT re-arm it.
+        now = timezone.now()
+        assert effective_resets_at(LimitCause.API_CREDIT, now + timedelta(hours=1), now) is None
+
 
 class TestParkTaskOnLimitFlagOff(django.test.TestCase):
     def test_inert_when_flag_off(self) -> None:
@@ -119,6 +125,20 @@ class TestParkTaskOnLimitFlagOn(django.test.TestCase):
         parked = park_task_on_limit(task, _CREDIT_MATCH, sdk_resets_at=None, lane=TaskAttempt.Lane.METERED)
         assert parked is None
         assert not UsageWindowState.objects.exists()
+
+    def test_credit_with_an_sdk_overage_reset_is_still_not_parked(self) -> None:
+        # An `overage` rejection maps to API_CREDIT but carries a top-level resets_at. Parking
+        # it would spin the credit-exhausted lane (recover → re-dispatch → re-park) and never
+        # tell the operator to add credits — so it stays a terminal FAILED, not a park.
+        now = timezone.now()
+        sdk_epoch = int((now + timedelta(hours=1)).timestamp())
+        task = _claimed_task()
+        parked = park_task_on_limit(task, _CREDIT_MATCH, sdk_resets_at=sdk_epoch, lane=TaskAttempt.Lane.METERED)
+        assert parked is None
+        assert not UsageWindowState.objects.exists()
+        task.refresh_from_db()
+        assert task.status == Task.Status.CLAIMED  # untouched — caller records the terminal FAILED
+        assert task.not_before is None
 
     def test_parked_attempt_excluded_from_repair_budget(self) -> None:
         from teatree.core.models.task_repair import phase_attempts  # noqa: PLC0415 — deferred (test-local)
