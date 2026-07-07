@@ -369,6 +369,109 @@ class TestLoadEvalYaml:
         absent = _run(EvalToolCall(name="Bash", input={"command": "git commit -m x"}, turn=1))
         assert evaluate(spec, absent).passed is True
 
+    def test_parses_order_guard_before_first(self, tmp_path: Path) -> None:
+        body = (
+            "- name: order_neg\n"
+            "  scenario: order-aware negative\n"
+            "  prompt: do the thing\n"
+            "  expect:\n"
+            "    - tool_call: Bash\n"
+            '      args.command: ~ "echo ready"\n'
+            "    - no_tool_call_matching:\n"
+            '        Bash.command: ~ "glab mr (diff|view)"\n'
+            "      before_first: 'Skill.skill ~ \"t3-widget\"'\n"
+        )
+        matcher = load_eval_yaml(_write(tmp_path, body))[0].matchers[1]
+        assert matcher.kind == "negative"
+        assert matcher.has_order_guard is True
+        assert matcher.guard_tool == "Skill"
+        assert matcher.guard_arg_path == "skill"
+        assert matcher.guard_operator == "~"
+        assert matcher.guard_value == "t3-widget"
+
+    def test_before_first_malformed_fails_loud(self, tmp_path: Path) -> None:
+        body = (
+            "- name: order_neg\n"
+            "  scenario: order-aware negative\n"
+            "  prompt: do the thing\n"
+            "  expect:\n"
+            "    - tool_call: Bash\n"
+            '      args.command: ~ "echo ready"\n'
+            "    - no_tool_call_matching:\n"
+            '        Bash.command: ~ "glab mr (diff|view)"\n'
+            "      before_first: 'Skill.skill'\n"
+        )
+        with pytest.raises(EvalSpecError, match="before_first"):
+            load_eval_yaml(_write(tmp_path, body))
+
+    def _order_spec(self, tmp_path: Path):
+        body = (
+            "- name: order_neg\n"
+            "  scenario: order-aware negative\n"
+            "  prompt: do the thing\n"
+            "  expect:\n"
+            "    - tool_call: Bash\n"
+            '      args.command: ~ "echo ready"\n'
+            "    - no_tool_call_matching:\n"
+            '        Bash.command: ~ "glab mr (diff|view)"\n'
+            "      before_first: 'Skill.skill ~ \"t3-widget\"'\n"
+        )
+        return load_eval_yaml(_write(tmp_path, body))[0]
+
+    def test_order_aware_negative_passes_when_forbidden_after_guard(self, tmp_path: Path) -> None:
+        spec = self._order_spec(tmp_path)
+        run = _run(
+            EvalToolCall(name="Bash", input={"command": "echo ready"}, turn=0),
+            EvalToolCall(name="Skill", input={"skill": "t3-widget"}, turn=1),
+            EvalToolCall(name="Bash", input={"command": "glab mr view 4120"}, turn=2),
+        )
+        assert evaluate(spec, run).passed is True
+
+    def test_order_aware_negative_fails_when_forbidden_before_guard(self, tmp_path: Path) -> None:
+        spec = self._order_spec(tmp_path)
+        run = _run(
+            EvalToolCall(name="Bash", input={"command": "echo ready"}, turn=0),
+            EvalToolCall(name="Bash", input={"command": "glab mr view 4120"}, turn=1),
+            EvalToolCall(name="Skill", input={"skill": "t3-widget"}, turn=2),
+        )
+        assert evaluate(spec, run).passed is False
+
+    def test_order_aware_negative_fails_when_guard_absent(self, tmp_path: Path) -> None:
+        spec = self._order_spec(tmp_path)
+        run = _run(
+            EvalToolCall(name="Bash", input={"command": "echo ready"}, turn=0),
+            EvalToolCall(name="Bash", input={"command": "glab mr view 4120"}, turn=1),
+        )
+        assert evaluate(spec, run).passed is False
+
+    def test_order_aware_negative_supports_contains_operator(self, tmp_path: Path) -> None:
+        # `contains` on both the forbidden line and the before_first guard is escaped
+        # to a literal regex, so a substring match still orders correctly.
+        body = (
+            "- name: order_neg_contains\n"
+            "  scenario: order-aware negative (contains)\n"
+            "  prompt: do the thing\n"
+            "  expect:\n"
+            "    - tool_call: Bash\n"
+            '      args.command: ~ "echo ready"\n'
+            "    - no_tool_call_matching:\n"
+            '        Bash.command: contains "mr view"\n'
+            "      before_first: 'Skill.skill contains \"t3-widget\"'\n"
+        )
+        spec = load_eval_yaml(_write(tmp_path, body))[0]
+        after = _run(
+            EvalToolCall(name="Bash", input={"command": "echo ready"}, turn=0),
+            EvalToolCall(name="Skill", input={"skill": "t3-widget"}, turn=1),
+            EvalToolCall(name="Bash", input={"command": "glab mr view 4120"}, turn=2),
+        )
+        assert evaluate(spec, after).passed is True
+        before = _run(
+            EvalToolCall(name="Bash", input={"command": "echo ready"}, turn=0),
+            EvalToolCall(name="Bash", input={"command": "glab mr view 4120"}, turn=1),
+            EvalToolCall(name="Skill", input={"skill": "t3-widget"}, turn=2),
+        )
+        assert evaluate(spec, before).passed is False
+
     def test_rejects_empty_expect(self, tmp_path: Path) -> None:
         body = "- name: bad\n  scenario: bad\n  prompt: do the thing\n  expect: []\n"
         with pytest.raises(EvalSpecError):

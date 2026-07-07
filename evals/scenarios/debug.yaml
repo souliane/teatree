@@ -25,7 +25,13 @@
     without confirming against the live branch
   lane: under_load
   tier: balanced
-  max_turns: 4
+  # Raised 4 -> 6 (#107 re-score): under_load (no clean-room turn floor) against a
+  # git_repo fixture, the correct trajectory ORIENTS then verifies the real SHA on
+  # feature/ruff-baseline (git log/show) then cherry-picks it — genuinely 2 decisive
+  # actions plus orient headroom, which the 4-turn cap truncated (#2192 force-FAILs a
+  # capped run even when the matched read fired). The no-stale-SHA negative stays the
+  # tooth, so the wider cap is termination headroom, not accommodation.
+  max_turns: 6
   max_budget_usd: 1.0
   tools: [Bash]
   fixture: git_repo

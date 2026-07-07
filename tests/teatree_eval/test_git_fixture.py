@@ -13,7 +13,12 @@ scenario asks the agent to close is real.
 
 import pytest
 
-from teatree.eval.git_fixture import KNOWN_FIXTURES, provision_git_fixture
+from teatree.eval.git_fixture import (
+    KNOWN_FIXTURES,
+    provision_e2e_artifacts_fixture,
+    provision_fixture,
+    provision_git_fixture,
+)
 from teatree.utils.git_run import run_strict as git
 
 
@@ -51,4 +56,30 @@ class TestProvisionGitFixture:
     def test_unknown_fixture_kind_is_rejected(self) -> None:
         assert "git_repo" in KNOWN_FIXTURES
         with pytest.raises(ValueError, match="nope"), provision_git_fixture("nope"):
+            pass
+
+
+class TestProvisionE2eArtifactsFixture:
+    def test_materialises_the_4242_artifact_layout_the_prompt_names(self) -> None:
+        with provision_e2e_artifacts_fixture() as root:
+            env_dir = root / "artifacts" / "4242" / "local"
+            assert (env_dir / "run.webm").is_file()
+            assert (env_dir / "step1.png").is_file()
+            assert (env_dir / "step2.png").is_file()
+
+
+class TestProvisionFixtureDispatch:
+    def test_e2e_artifacts_is_a_known_kind(self) -> None:
+        assert "e2e_artifacts" in KNOWN_FIXTURES
+
+    def test_dispatches_git_repo_to_the_git_provisioner(self) -> None:
+        with provision_fixture("git_repo") as repo:
+            assert (repo / "src" / "teatree" / "util" / "money.py").is_file()
+
+    def test_dispatches_e2e_artifacts_to_the_artifacts_provisioner(self) -> None:
+        with provision_fixture("e2e_artifacts") as root:
+            assert (root / "artifacts" / "4242" / "local" / "run.webm").is_file()
+
+    def test_unknown_kind_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="nope"), provision_fixture("nope"):
             pass

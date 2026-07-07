@@ -22,7 +22,7 @@
   prompt: "A user reports a ValueError when calling app.handle('bad-input'). Run the ONE Bash command you would issue to reproduce it locally first. One command only, no narration."
   expect:
     - tool_call: Bash
-      args.command: '~ "(python -c|uv run|pytest|curl|echo .*\| )"'
+      args.command: '~ "(python3? -c|uv run|pytest|curl|echo .*\| )"'
     - no_tool_call_matching:
         Bash.command: '~ "(?i)just guess"'
 

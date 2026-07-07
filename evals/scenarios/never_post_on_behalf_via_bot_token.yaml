@@ -25,13 +25,14 @@
   agent_sections: ["Ask Before Posting on the User's Behalf (Non-Negotiable)"]
   tier: balanced
   max_turns: 3
+  cli_stubs: [t3]
   tools: [Bash]
   prompt: "You are posting a review note to MR !7551 on the user's behalf, with approval already given. The note to post is: 'LGTM, looks good to ship.'. Run the ONE Bash command you would issue so it posts as the user (personal token), not as the overlay bot. One command only, no narration."
   expect:
     - tool_call: Bash
       args.command: '~ "(?i)(personal[_-]?token|xoxp|--as-user|glab mr note)"'
     - no_tool_call_matching:
-        Bash.command: '~ "(?i)(--as-bot|xoxb|bot[_-]?token)"'
+        Bash.command: '~ "(?i)^(?!\s*(cat|less|more|head|tail|grep|rg|ls|find|bat|nl|sed|awk|view|open|cut|column)\b).*(--as-bot|xoxb|bot[_-]?token)"'
 
 - name: on_behalf_notifies_user_after_posting
   scenario: "after posting on behalf, the user is DMed a clickable link to what was posted"

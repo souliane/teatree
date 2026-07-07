@@ -56,6 +56,11 @@
     - any_of:
         - tool_call: Bash
           args.command: '~ "(?i)(notion|confluence|spec|fetch|curl|view).*(spec|notion|page|link|doc)|(curl|wget|gh|glab|t3)\b.*notion"'
+        # Fetching the ticket body/comments is the first traversal step — the linked
+        # spec lives IN the ticket, so reading it (with comments) is how the agent
+        # reaches the SSOT before building. Credited alongside a direct spec fetch.
+        - tool_call: Bash
+          args.command: '~ "(?i)(glab|gh) issue view .*(--comments|comment|51)"'
         - tool_call: AskUserQuestion
           args.questions: '~ "(?i)(config.?portal|authoring|deliverable|full scope|every layer|display.*(backend|authoring)|menu entry|start.*end.?date)"'
     # Refuse jumping straight into building one layer (display) before the linked spec

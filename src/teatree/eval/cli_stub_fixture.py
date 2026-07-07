@@ -32,10 +32,11 @@ from tempfile import TemporaryDirectory
 
 #: ``t3`` stub — one success line per sanctioned verb family, exit 0. The verb
 #: families are the ones the opted-in scenarios (and the canary) actually issue:
-#: the self-DM notify, the on-behalf post-receipt notify, the e2e attestation and
-#: test-plan post, and the review/reaction verbs the (currently green) review
-#: probes would use. An unrecognised verb still exits 0 with a neutral line so a
-#: stray discovery call (``t3 --help``) never errors the agent back into a wander.
+#: the self-DM notify, the on-behalf post-receipt notify, the directive capture,
+#: the e2e attestation and test-plan post, the on-behalf review post-comment, and
+#: the review/reaction verbs the (currently green) review probes would use. An
+#: unrecognised verb still exits 0 with a neutral line so a stray discovery call
+#: (``t3 --help``) never errors the agent back into a wander.
 _T3_STUB = """\
 #!/bin/sh
 # Inert teatree CLI stub for clean-room evals — prints a plausible success line
@@ -44,9 +45,11 @@ args=" $* "
 case "$args" in
     *" notify send "*|*" notify dm "*) echo "DM queued (idempotency key accepted)" ;;
     *" notify post "*) echo "posted to channel" ;;
+    *" directive capture "*) echo "captured directive #1 (state=captured)." ;;
     *" lifecycle record-e2e-run "*) echo "recorded e2e run (attestation stored)" ;;
     *" e2e post-test-plan "*) echo "test plan posted to the ticket" ;;
     *" review record "*) echo "recorded verdict (bound to the reviewed head sha)" ;;
+    *" review post-comment "*) echo "posted review comment (as the user)" ;;
     *" review-request check "*) echo "MR is review-requestable" ;;
     *" slack react "*) echo "reaction added" ;;
     *) echo "ok" ;;

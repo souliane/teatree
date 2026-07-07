@@ -28,6 +28,7 @@ from teatree.eval.api_runner import (
     ClaudeCliMissingError,
     CleanRoomConfig,
     CreditExhaustedError,
+    _teatree_root,
     build_sdk_options,
     classify_terminal_error,
     is_success_result_error,
@@ -133,6 +134,38 @@ def _result(  # noqa: PLR0913 — test-data builder: each kwarg maps 1:1 to a Re
         model_usage=model_usage,
         result="ok",
     )
+
+
+class TestNonSpawningWorkspaceGrantsIsolatedDirNotRepo:
+    """A clean-room scenario with no explicit workspace grants ONLY the neutral temp dir.
+
+    The CI/production path constructs ``ApiInProcessRunner()`` with no workspace and
+    the eval CLI's cwd is the teatree repo root. Granting that root via ``add_dirs``
+    would expose ``evals/scenarios/*.yaml`` (the matcher/answer text) to the agent
+    under test. The default now grants the isolated ``isolated_claude_env`` temp dir
+    instead, so the repo — and its scenario answers — stays unreachable.
+    """
+
+    def _add_dirs(self, spec: EvalSpec) -> tuple[list[str], str]:
+        query, captured = _fake_query([_result()])
+        with (
+            patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.api_runner.query", query),
+        ):
+            ApiInProcessRunner().run(spec)
+        options = captured["options"]
+        return options.add_dirs, options.cwd
+
+    def test_grants_the_isolated_cwd_not_the_repo_root(self, tmp_path: Path) -> None:
+        add_dirs, cwd = self._add_dirs(_spec(tmp_path))
+        assert add_dirs == [cwd]
+
+    def test_scenario_answers_are_unreachable_from_the_grant(self, tmp_path: Path) -> None:
+        add_dirs, _cwd = self._add_dirs(_spec(tmp_path))
+        # The teatree repo root (which holds evals/scenarios) is NOT granted, and the
+        # single granted dir is a neutral throwaway with no scenario catalog in it.
+        assert str(_teatree_root()) not in add_dirs
+        assert not (Path(add_dirs[0]) / "evals" / "scenarios").exists()
 
 
 class TestApiInProcessRunnerSkip:

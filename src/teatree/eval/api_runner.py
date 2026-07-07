@@ -59,7 +59,7 @@ from teatree.eval.api_errors import (
 from teatree.eval.cli_stub_fixture import prepend_to_path, provision_cli_stubs
 from teatree.eval.context_budget import extract_sections
 from teatree.eval.ephemeral_checkout import ephemeral_checkout_env, provision_ephemeral_checkout
-from teatree.eval.git_fixture import provision_git_fixture
+from teatree.eval.git_fixture import provision_fixture
 from teatree.eval.isolation import isolated_claude_env
 from teatree.eval.message_mapping import eval_run_from_messages
 from teatree.eval.model_resolution import resolve_eval_model
@@ -418,7 +418,12 @@ class ApiInProcessRunner:
         effort: EffortLevel | None = None,
         conflicting_vars: tuple[str, ...] = _DEFAULT_CONFLICTING_VARS,
     ) -> None:
-        self._workspace = workspace or Path.cwd()
+        # ``None`` (the CI/production path, where make_runner passes no workspace and
+        # the eval CLI's cwd is the teatree repo root) means "grant only the neutral
+        # isolated temp dir" — NEVER the repo root, which would expose
+        # evals/scenarios/*.yaml (the matcher/answer text) to the agent under test.
+        # A test passes an explicit throwaway workspace to grant.
+        self._workspace = workspace
         self._max_turns_override = max_turns_override
         self._require_executed = require_executed
         self._max_budget_usd = max_budget_usd
@@ -584,11 +589,15 @@ class ApiInProcessRunner:
                 bindir = stack.enter_context(provision_cli_stubs(spec.cli_stubs))
                 env = prepend_to_path(env, bindir)
             if spec.fixture:
-                repo = stack.enter_context(provision_git_fixture(spec.fixture))
+                repo = stack.enter_context(provision_fixture(spec.fixture))
                 yield repo, str(repo), env
                 return
             if not scenario_exposes_subagent_spawn(spec):
-                yield self._workspace, cwd, env
+                # SECURITY: grant the neutral isolated temp dir (never the repo
+                # root) unless a workspace was EXPLICITLY configured — a clean-room
+                # scenario needs no repo access, and granting the eval CLI's cwd
+                # (the teatree repo root in CI) leaks evals/scenarios/*.yaml.
+                yield (self._workspace or Path(cwd)), cwd, env
                 return
             checkout = stack.enter_context(provision_ephemeral_checkout())
             isolated_env = ephemeral_checkout_env(env, checkout)

@@ -2,14 +2,17 @@
 
 import dataclasses
 import json
+import re
 from collections.abc import Callable, Sequence
 from html import escape
 from typing import TYPE_CHECKING
 
 from teatree.eval.discovery import find_spec
 from teatree.eval.matchers import (
+    CallPattern,
     assert_final_state_contains,
     assert_final_state_matching,
+    assert_no_tool_call_before,
     assert_no_tool_call_contains,
     assert_no_tool_call_matching,
     assert_tool_call_contains,
@@ -126,14 +129,27 @@ def _dispatch(matcher: ExpectItem, run: EvalRun) -> None:
     if matcher.kind == "positive" and matcher.operator == "~":
         assert_tool_call_matching(run, tool, matcher.arg_path, matcher.value)
         return
-    if matcher.kind == "negative" and matcher.operator == "~":
-        assert_no_tool_call_matching(run, tool, matcher.arg_path, matcher.value)
-        return
-    if matcher.kind == "negative" and matcher.operator == "contains":
-        assert_no_tool_call_contains(run, tool, matcher.arg_path, matcher.value)
+    if matcher.kind == "negative":
+        _dispatch_negative(matcher, run, tool)
         return
     msg = f"unsupported matcher operator: kind={matcher.kind!r}, operator={matcher.operator!r}"
     raise NotImplementedError(msg)
+
+
+def _dispatch_negative(matcher: Matcher, run: EvalRun, tool: str) -> None:
+    if matcher.has_order_guard:
+        forbidden = CallPattern(tool, matcher.arg_path, _as_regex(matcher.operator, matcher.value))
+        guard = CallPattern(
+            _canonicalize_tool(matcher.guard_tool),
+            matcher.guard_arg_path,
+            _as_regex(matcher.guard_operator, matcher.guard_value),
+        )
+        assert_no_tool_call_before(run, forbidden, guard)
+        return
+    if matcher.operator == "~":
+        assert_no_tool_call_matching(run, tool, matcher.arg_path, matcher.value)
+        return
+    assert_no_tool_call_contains(run, tool, matcher.arg_path, matcher.value)
 
 
 def _dispatch_any_of(matcher: AnyOf, run: EvalRun) -> None:
@@ -164,6 +180,11 @@ def _dispatch_final_state(matcher: FinalStateMatcher, run: EvalRun) -> None:
 
 def _canonicalize_tool(name: str) -> str:
     return canonicalize_tool(name)
+
+
+def _as_regex(operator: str, value: str) -> str:
+    """A regex form of an ``op "value"`` matcher — a ``contains`` value is escaped."""
+    return value if operator == "~" else re.escape(value)
 
 
 def render_text(results: list[ScenarioResult]) -> str:

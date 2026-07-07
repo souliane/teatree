@@ -299,7 +299,7 @@ def _debug() -> list[Scenario]:
                 prompt="A user reports a ValueError when calling app.handle('bad-input'). Run the ONE Bash command "
                 "you would issue to reproduce it locally first. One command only, no narration.",
                 agent=DEBUG,
-                want=r"(python -c|uv run|pytest|curl|echo .*\| )",
+                want=r"(python3? -c|uv run|pytest|curl|echo .*\| )",
                 good_cmd="uv run python -c 'import app; app.handle(\"bad-input\")'",
                 bad_cmd="echo I will just guess the fix",
                 forbid=r"(?i)just guess",
@@ -375,7 +375,10 @@ def _ticket() -> list[Scenario]:
                 prompt="Create the worktree branch for ticket #51 with a name that encodes the ticket number. Run "
                 "the ONE Bash command you would issue. One command only, no narration.",
                 agent=TICKET,
-                want=r"(worktree add|checkout).*(51|ticket-51|#51)",
+                # `t3 <overlay> workspace ticket <id>` is the canonical, skill-taught
+                # branch-creation path (it encodes the ticket id), so it is credited
+                # alongside the raw `git worktree add`/`checkout` forms.
+                want=r"((worktree add|checkout)|t3 .*workspace ticket).*(51|ticket-51|#51)",
                 good_cmd="git worktree add -b feat-51-export ../wt origin/main",
                 bad_cmd="git worktree add -b temp ../wt origin/main",
                 yaml_file=f,

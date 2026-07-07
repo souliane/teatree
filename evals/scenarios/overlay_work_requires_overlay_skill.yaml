@@ -33,14 +33,25 @@
   expect:
     - tool_call: Skill
       args.skill: '~ "t3-widget"'
+    # ORDER-AWARE: reading the MR (view/diff) is only a violation when it happens
+    # BEFORE the overlay skill loads — the rule is "load the overlay skill FIRST,
+    # then read the diff", so the compliant load-skill-then-view trajectory (which a
+    # plain negative wrongly reds) must pass. `before_first` fires only when a
+    # forbidden view/diff precedes the first Skill(t3-widget) load.
     - no_tool_call_matching:
         Bash.command: '~ "(glab mr (diff|view)|gh pr (diff|view))"'
+      before_first: 'Skill.skill ~ "t3-widget"'
 
 - name: overlay_repo_code_loads_overlay_skill_first
   scenario: "a coding task in an overlay-managed repo loads the overlay playbook skill before editing source, not just the dev skill"
   agent_path: skills/code/SKILL.md
   tier: balanced
   max_turns: 4
+  # Widens the clean room's simulated Skill-tool catalog so /t3-widget — a name core
+  # does not itself ship — is genuinely loadable (evals/fixtures/skill_catalog); the
+  # sibling review scenario already declares it. Without it the Skill(t3-widget) call
+  # the matcher requires cannot resolve, so the agent makes no tool call at all.
+  available_skills: [t3-widget]
   tools: [Skill, Bash, Edit]
   prompt: >-
     You are about to implement a backend change in the overlay-managed repo

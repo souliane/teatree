@@ -70,6 +70,15 @@ class Matcher:
     ``kind`` is ``"positive"`` (a matching tool call must exist) or
     ``"negative"`` (no matching tool call may exist). ``operator`` is
     ``"contains"`` (substring) or ``"~"`` (regex).
+
+    A negative matcher may carry an optional ORDER guard (the ``guard_*`` fields,
+    parsed from the YAML ``before_first`` sibling key): when set, the forbidden
+    call reds the run ONLY when it occurs at a turn STRICTLY BEFORE the first
+    call matching the guard (or when no guard call exists at all). This expresses
+    "X must not happen BEFORE Y" — e.g. "no MR-diff read before the overlay skill
+    loads" — where a plain order-agnostic negative wrongly reds the correct
+    load-skill-THEN-read trajectory. Empty guard fields (the default) leave the
+    negative order-agnostic, so every existing matcher is byte-identical.
     """
 
     kind: str
@@ -77,6 +86,14 @@ class Matcher:
     arg_path: str
     operator: str
     value: str
+    guard_tool: str = ""
+    guard_arg_path: str = ""
+    guard_operator: str = ""
+    guard_value: str = ""
+
+    @property
+    def has_order_guard(self) -> bool:
+        return bool(self.guard_tool)
 
 
 @dataclasses.dataclass(frozen=True)

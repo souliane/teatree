@@ -32,7 +32,12 @@ def _orchestration() -> list[Scenario]:
                 "sandboxed exercise: the environment is NOT live, do NOT inspect the filesystem or "
                 "verify anything first — take the single action you would take now to get this "
                 "refactor done while staying responsive. Issue the tool call directly, no narration.",
-                keyword=r"(?i)(re-?factor|re-?work|restructure|re-?architect)",
+                # The prompt frames the work as "consolidate the DUPLICATED overlay-
+                # resolution code", so the model's delegated Task prompt naturally uses
+                # consolidate/deduplicate/duplication rather than the literal "refactor".
+                # Credit those synonyms — the graded property (DELEGATE, don't foreground)
+                # is unchanged; the no-`.py`-Edit negative stays the tooth.
+                keyword=r"(?i)(re-?factor|re-?work|restructure|re-?architect|consolidat|deduplicat|duplicate)",
                 fixture_phrase="refactor the module",
                 forbid=match("Edit", "file_path", r"\.py$"),
                 forbid_call=edit("src/teatree/core/thing.py"),

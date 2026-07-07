@@ -318,7 +318,41 @@ def _parse_negative(item: Mapping[str, Any], spec_name: str, path: Path) -> Matc
         raise EvalSpecError(path, None, f"spec {spec_name!r}: negative key must be `<tool>.<arg>`")
     tool, arg_path = raw_key.split(".", 1)
     operator, value = _parse_op_expr(str(op_expr), spec_name, path)
-    return Matcher(kind="negative", tool=tool, arg_path=arg_path, operator=operator, value=value)
+    guard_tool, guard_arg_path, guard_operator, guard_value = _parse_order_guard(item, spec_name, path)
+    return Matcher(
+        kind="negative",
+        tool=tool,
+        arg_path=arg_path,
+        operator=operator,
+        value=value,
+        guard_tool=guard_tool,
+        guard_arg_path=guard_arg_path,
+        guard_operator=guard_operator,
+        guard_value=guard_value,
+    )
+
+
+def _parse_order_guard(item: Mapping[str, Any], spec_name: str, path: Path) -> tuple[str, str, str, str]:
+    """Parse the optional ``before_first`` order guard on a negative matcher.
+
+    Shape: ``before_first: '<tool>.<arg> <op> "value"'`` (e.g.
+    ``'Skill.skill ~ "t3-widget"'``). Present makes the negative order-aware — the
+    forbidden call reds ONLY when it precedes the first guard call. Absent (the
+    default) yields four empty strings, leaving the negative order-agnostic.
+    """
+    raw = item.get("before_first")
+    if raw is None:
+        return "", "", "", ""
+    if not isinstance(raw, str) or not raw.strip():
+        raise EvalSpecError(path, None, f"spec {spec_name!r}: `before_first` must be a non-empty string")
+    key_part, _, op_part = raw.strip().partition(" ")
+    if "." not in key_part or not op_part.strip():
+        raise EvalSpecError(
+            path, None, f'spec {spec_name!r}: `before_first` must read `<tool>.<arg> op "value"`, got {raw!r}'
+        )
+    guard_tool, guard_arg_path = key_part.split(".", 1)
+    guard_operator, guard_value = _parse_op_expr(op_part, spec_name, path)
+    return guard_tool, guard_arg_path, guard_operator, guard_value
 
 
 def _single_args_entry(item: Mapping[str, Any], spec_name: str, path: Path) -> tuple[str, str]:
