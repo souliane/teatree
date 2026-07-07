@@ -317,6 +317,15 @@ DJANGO_GROUPS: dict[str, DjangoGroup] = {
         ],
         core_dispatch=True,
     ),
+    "approval_dial": DjangoGroup(
+        "Per-action-class approval dial — graduate a class from ask to auto (#119).",
+        [
+            ("set", "Set an action class's trust (ask|auto) in the dial table."),
+            ("clear", "Remove an action class from the dial table (falls back to ask)."),
+            ("show", "Render each class's trust, never-fades floor, breach, and verdict."),
+        ],
+        core_dispatch=True,
+    ),
     "questions": DjangoGroup(
         "Manage the away-mode deferred-question backlog (#58).",
         [
