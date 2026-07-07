@@ -480,7 +480,7 @@ Register, clear, or list standing verified-green goals (PR-25).
 | `record-attempt` | Record an in-session sub-agent's result back onto a Task (#loop INTERACTIVE path) |
 | `list` | List the teatree tasks queue (not your harness TODO list) |
 | `reconcile-checklist` | Emit the in-session harness-TODO reconciliation checklist (read-only) |
-| `work-next-sdk` |  |
+| `work-next-headless` |  |
 
 ## `ticket`
 

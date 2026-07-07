@@ -363,7 +363,7 @@ Request parameters are grouped into frozen `slots=True` dataclasses (`PullReques
 
 | Tier | Tool | Needs Django? | Examples |
 |---|---|---|---|
-| Runtime | django-typer management commands | Yes | `worktree provision`, `tasks work-next-sdk`, `followup sync` |
+| Runtime | django-typer management commands | Yes | `worktree provision`, `tasks work-next-headless`, `followup sync` |
 | Bootstrap | Typer CLI (`t3`) | No | `t3 startoverlay`, `t3 info`, `t3 ci cancel` |
 | Overlay | Typer CLI delegating to `manage.py` via subprocess | Indirectly | `t3 <overlay> start-ticket`, `t3 <overlay> worktree start` |
 

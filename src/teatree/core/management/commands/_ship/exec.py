@@ -134,7 +134,7 @@ def _enqueue_ship(ticket: Ticket, title: str) -> ShipEnqueued | ShippingGateFail
         warning=(
             "Ship was QUEUED, not performed. The branch push and PR creation "
             "run in the `execute_ship` task and will NOT complete until a "
-            "worker drains the queue (`t3 <overlay> tasks work-next-sdk`). "
+            "worker drains the queue (`t3 <overlay> tasks work-next-headless`). "
             "Re-run with `--sync` to push and open the PR inline now."
         ),
     )

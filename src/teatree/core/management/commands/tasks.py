@@ -434,11 +434,11 @@ class Command(TyperCommand):
         return int(task.pk) if task else None
 
     @command()
-    def work_next_sdk(self, claimed_by: str = "worker") -> dict[str, str] | None:
+    def work_next_headless(self, claimed_by: str = "worker") -> dict[str, str] | None:
         task = self._claim_next_task(execution_target=Task.ExecutionTarget.HEADLESS, claimed_by=claimed_by)
         if task is None:
             return None
-        return self._execute_sdk(task)
+        return self._execute_headless(task)
 
     @command()
     def start(
@@ -493,7 +493,7 @@ class Command(TyperCommand):
         return task
 
     @staticmethod
-    def _execute_sdk(task: Task) -> dict[str, str]:
+    def _execute_headless(task: Task) -> dict[str, str]:
         import traceback  # noqa: PLC0415
 
         from teatree.agents.headless import run_headless  # noqa: PLC0415

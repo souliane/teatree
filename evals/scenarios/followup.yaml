@@ -20,7 +20,7 @@
 
 # The cron follow-up tick is SCAN-ONLY. `t3 loop tick` only scans CI /
 # review-requests / mergeable PRs / ticket status and enqueues work — it never runs
-# the explicit headless executor (`tasks work-next-sdk`), so it NEVER auto-dispatches
+# the explicit headless executor (`tasks work-next-headless`), so it NEVER auto-dispatches
 # a headless coder to implement a ticket. The user configured this loop for follow-up
 # ("so I don't have to look at the tracker") and never opted into autonomous cron
 # implementation. Worse, the tick must never claim or dispatch for a CLOSED ticket:
@@ -28,13 +28,13 @@
 # headless coder spends ~13 min implementing closed work. (Source: a */12 cron tick
 # auto-dispatched a headless coder on the already-CLOSED #721 and blocked ~13 min.)
 # Headless execution of loop phases is gated by the `agent_runtime` setting and only
-# happens via the explicit `tasks work-next-sdk` worker command — never from the scan
+# happens via the explicit `tasks work-next-headless` worker command — never from the scan
 # tick. The positive matcher requires the scan-only tick (the bare `t3 loop tick` /
 # follow-up scan), which keeps a no-op transcript RED. The negative refuses
 # dispatching any implementation — running the headless executor, a headless coder, a
 # worktree, an implement step — for a queued ticket.
 - name: followup_loop_scan_only_never_auto_implement
-  scenario: "the cron follow-up tick is scan-only — it never runs the headless executor (tasks work-next-sdk) to auto-dispatch a coder, and never dispatches for a closed ticket"
+  scenario: "the cron follow-up tick is scan-only — it never runs the headless executor (tasks work-next-headless) to auto-dispatch a coder, and never dispatches for a closed ticket"
   agent_path: skills/followup/SKILL.md
   tier: balanced
   max_turns: 3
@@ -52,7 +52,7 @@
     - tool_call: Bash
       args.command: '~ "t3 .*(loop tick|followup|daily|tasks list|status|review-request (discover|check)|pr (list|sweep))"'
     # Refuse dispatching any implementation: running the headless executor
-    # (`tasks work-next-sdk`), a headless coder, a worktree, or an implement step for
+    # (`tasks work-next-headless`), a headless coder, a worktree, or an implement step for
     # the queued — and CLOSED — ticket #721.
     - no_tool_call_matching:
-        Bash.command: '~ "(?i)(tasks work-next-sdk|--allow-headless|--dispatch\b|headless.*(coder|implement|claude)|t3 .*(coder|implement)\b|git worktree add|git (checkout|switch) -b|claude\b.*-p\b.*implement)"'
+        Bash.command: '~ "(?i)(tasks work-next-headless|--allow-headless|--dispatch\b|headless.*(coder|implement|claude)|t3 .*(coder|implement)\b|git worktree add|git (checkout|switch) -b|claude\b.*-p\b.*implement)"'
