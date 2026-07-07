@@ -144,6 +144,15 @@ FEATURE_FLAGS: dict[str, FeatureFlag] = {
             "(records CriticFinding, never blocks — mechanism_conforms is the teeth), ships dark."
         ),
     ),
+    "limit_autorecovery_enabled": FeatureFlag(
+        field="limit_autorecovery_enabled",
+        stage=FlagStage.DARK,
+        tracking_issue="souliane/teatree — Directive #3 idle usage-window auto-recovery",
+        summary=(
+            "The OFF switch for park-not-fail on a Claude usage-window limit + the self-rescheduling "
+            "usage_window_recovery re-arm; ships dark (a limit stays a terminal FAILED) until enabled."
+        ),
+    ),
 }
 
 

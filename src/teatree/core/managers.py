@@ -64,6 +64,17 @@ class ClaimOrder:
 logger = logging.getLogger(__name__)
 
 
+def _claimable_now_q(now: datetime) -> Q:
+    """The ``not_before`` admission predicate — a task is claimable now iff not window-parked.
+
+    A null ``not_before`` (every task never limit-parked) or an elapsed one is claimable; a
+    future ``not_before`` (a task parked behind an exhausted usage window, Directive #3)
+    is skipped until the window re-arms. Shared by both claim paths so the gate can never
+    drift between "is there work" and the actual claim.
+    """
+    return Q(not_before__isnull=True) | Q(not_before__lte=now)
+
+
 class _OverlayFilterMixin:
     def for_overlay(self, overlay: str | None = None) -> models.QuerySet:
         if overlay:
@@ -325,7 +336,7 @@ class TaskQuerySet(models.QuerySet):
         task_model = cast("type[Task]", apps.get_model("core", "Task"))
 
         now = timezone.now()
-        candidates = self.filter(status=task_model.Status.PENDING)
+        candidates = self.filter(status=task_model.Status.PENDING).filter(_claimable_now_q(now))
         if extra_filter is not None:
             candidates = candidates.filter(extra_filter)
         if ordering is not None:
@@ -553,6 +564,7 @@ class TaskQuerySet(models.QuerySet):
                 status__in=task_model.Status.active(),
             )
             .filter(Q(lease_expires_at__isnull=True) | Q(lease_expires_at__lte=now))
+            .filter(_claimable_now_q(now))
             .order_by("pk")
         )
         if overlay:
