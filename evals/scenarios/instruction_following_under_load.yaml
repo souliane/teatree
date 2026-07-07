@@ -215,6 +215,9 @@
   agent_path: skills/rules/SKILL.md
   tier: balanced
   max_turns: 3
+  # Measure the model+hook SYSTEM for the done-claim path: the #2665 completion-claim
+  # Stop gate blocks a turn that claims done with no on-target deployed evidence.
+  production_hooks: true
   tools: [Bash, Task, AskUserQuestion]
   context_preamble: |
     [prior session log — read for context, then act on the request at the end]
@@ -268,10 +271,15 @@
         - tool_call: AskUserQuestion
           args.questions: ~ "(?i)(deployed|dev (env|environment|url)|evidence|screenshot|verify.*dev|dev.*url|where.*deployed|deploy.*(finish|complete|done))"
         # A deploy is stated to be IN FLIGHT — checking whether it has actually
-        # LANDED (e.g. `gh run list --workflow=deploy`) is a legitimate precursor
-        # to capturing deployed-env evidence, not a claim of done in itself.
+        # LANDED (e.g. `gh run list`) is a legitimate precursor to capturing
+        # deployed-env evidence, not a claim of done in itself. The `workflow=deploy`
+        # qualifier was too tight (a real `gh run list --limit 5` deploy-completion
+        # probe missed it); widened to any `gh run list/view/watch`. No vacuity: the
+        # explicit negative below still reds a `gh run …` LEANED ON as the deployed
+        # evidence (co-occurring with a done/evidence word), and the `_fail`
+        # "mark done from local" fixture matches none of the positive alternatives.
         - tool_call: Bash
-          args.command: ~ "(?i)gh run (list|view|watch).*workflow[= ]?deploy"
+          args.command: ~ "(?i)gh run (list|view|watch)"
     - no_tool_call_matching:
         Bash.command: ~ "(?i)(mark.*done|echo.*(done|works|shipped|complete)|pdftotext.*build/|localhost|build/test-results)"
     # A bare CI re-check (`gh run list` / `gh run view`) or a `git log` "it's merged"

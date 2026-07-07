@@ -81,8 +81,25 @@ eager ORM import here would defeat the lazy chain and crash the CLI with
 
 from collections.abc import Callable
 
-from teatree.core.models.provenance import Provenance
 from teatree.on_behalf_gate import OnBehalfVerdict, resolve_on_behalf_verdict
+
+
+def format_on_behalf_block_message(target: str, action: str) -> str:
+    """The exact on-behalf BLOCK message (``target``/``action`` interpolated).
+
+    Pure, ORM-free, side-effect-free — the SINGLE SOURCE OF TRUTH for both
+    :class:`OnBehalfPostBlockedError`'s message and the eval harness's gate-aware
+    ``t3@on_behalf_ask`` CLI stub, so the stub's refusal text can never drift from
+    the production block message (vendored-by-derivation + a parity test, per
+    ``/t3:rules`` § "Read the Canonical Source Before Fixing a Conformance Bug").
+    """
+    return (
+        f"on-behalf post blocked by on_behalf_post_mode (#960): "
+        f"{action} on {target!r} needs explicit user approval first. "
+        f"The user records it (no terminal required) with:\n"
+        f"    t3 review approve-on-behalf {target!r} {action} --approver <user-id>\n"
+        f"then the agent re-runs this post. Never publish unattended."
+    )
 
 
 class OnBehalfPostBlockedError(RuntimeError):
@@ -96,13 +113,7 @@ class OnBehalfPostBlockedError(RuntimeError):
     def __init__(self, target: str, action: str) -> None:
         self.target = target
         self.action = action
-        super().__init__(
-            f"on-behalf post blocked by on_behalf_post_mode (#960): "
-            f"{action} on {target!r} needs explicit user approval first. "
-            f"The user records it (no terminal required) with:\n"
-            f"    t3 review approve-on-behalf {target!r} {action} --approver <user-id>\n"
-            f"then the agent re-runs this post. Never publish unattended."
-        )
+        super().__init__(format_on_behalf_block_message(target, action))
 
 
 def require_on_behalf_approval[PublishResult](
@@ -110,7 +121,7 @@ def require_on_behalf_approval[PublishResult](
     target: str,
     action: str,
     publish: Callable[[], PublishResult],
-    taint: str = Provenance.OWNER.value,
+    taint: str | None = None,
 ) -> PublishResult:
     """Gate one on-behalf post against the tri-state mode and run it atomically.
 
@@ -138,6 +149,8 @@ def require_on_behalf_approval[PublishResult](
     *   BLOCK + no approval + no graduation → raise
         :class:`OnBehalfPostBlockedError` before ``publish`` runs.
     """
+    if taint is None:
+        taint = _default_owner_taint()
     verdict = resolve_on_behalf_verdict(action)
     if verdict is OnBehalfVerdict.PROCEED:
         return publish()
@@ -166,7 +179,7 @@ def require_on_behalf_approval[PublishResult](
         return result
 
 
-def on_behalf_block_message(target: str, action: str, *, taint: str = Provenance.OWNER.value) -> str:
+def on_behalf_block_message(target: str, action: str, *, taint: str | None = None) -> str:
     """Return the blocked-post message, or ``""`` when the post may proceed.
 
     The *non-consuming* peek: it never consumes an approval, writes an audit,
@@ -183,6 +196,8 @@ def on_behalf_block_message(target: str, action: str, *, taint: str = Provenance
     BLOCK + no approval + no graduation → the actionable
     :class:`OnBehalfPostBlockedError` message.
     """
+    if taint is None:
+        taint = _default_owner_taint()
     verdict = resolve_on_behalf_verdict(action)
     if verdict is not OnBehalfVerdict.BLOCK:
         return ""
@@ -198,6 +213,19 @@ def on_behalf_block_message(target: str, action: str, *, taint: str = Provenance
 #: a non-agent authority (``is_non_reviewer_role`` passes it), so the audit names the
 #: standing operator dial config, not the executing agent self-authorizing.
 _POLICY_APPROVER = "policy"
+
+
+def _default_owner_taint() -> str:
+    """The default on-behalf ``taint`` — ``Provenance.OWNER`` (the operator's own post).
+
+    Deferred like :func:`teatree.core.send_proxy._default_provenance`: the
+    ``Provenance`` enum lives in the ORM model package whose ``__init__`` eager-
+    loads every model, so importing it at module scope would drag the registry in
+    pre-``django.setup()`` and crash the CLI bootstrap (souliane/teatree#1003).
+    """
+    from teatree.core.models.provenance import Provenance  # noqa: PLC0415 — deferred: ORM model pkg, pre-app-registry
+
+    return Provenance.OWNER.value
 
 
 def _policy_grants_on_behalf(taint: str) -> bool:

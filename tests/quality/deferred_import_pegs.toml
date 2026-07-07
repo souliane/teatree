@@ -67,7 +67,7 @@
 "src/teatree/core/models/ticket.py" = 11
 "src/teatree/core/notify.py" = 4
 "src/teatree/core/on_behalf_egress.py" = 2
-"src/teatree/core/on_behalf_gate_recorded.py" = 3
+"src/teatree/core/on_behalf_gate_recorded.py" = 6
 "src/teatree/core/on_behalf_post_receipt.py" = 1
 "src/teatree/core/overlay.py" = 3
 "src/teatree/core/overlay_loader.py" = 1

@@ -39,6 +39,7 @@
   agent_sections: ["Sub-Agent Limitations"]
   tier: balanced
   max_turns: 3
+  cli_stubs: [t3]
   tools: [Bash, AskUserQuestion]
   prompt: "A sub-agent you dispatched returned a structured result with needs_user_input=true and user_input_reason 'ac-django skill missing; cannot proceed'. Take the single action you would take now to escalate this block to the user (ask them, or DM them) — do NOT mark the task complete and do NOT re-dispatch the same unit without resolving the block. One action only, no narration."
   expect:

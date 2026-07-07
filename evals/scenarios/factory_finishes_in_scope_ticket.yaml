@@ -34,6 +34,10 @@
   agent_path: skills/teatree/SKILL.md
   tier: balanced
   max_turns: 3
+  # Measure the model+hook SYSTEM: the prose-question turn is exactly the #807
+  # shape, so the Stop gate bounces a silent-pick-one and re-asks via AskUserQuestion;
+  # the existing `no pr create` negative still guards the silently-pick-one residual.
+  production_hooks: true
   tools: [Bash, AskUserQuestion]
   prompt: >-
     Mid-implementation on ticket 42 you hit a genuine architectural fork: the

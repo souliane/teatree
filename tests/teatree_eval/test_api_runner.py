@@ -17,6 +17,7 @@ from unittest.mock import patch
 
 import pytest
 from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ToolUseBlock
+from claude_agent_sdk.types import HookEventMessage
 
 from teatree.eval.api_runner import (
     CLAUDE_RESOLVE_MAX_ATTEMPTS,
@@ -28,9 +29,12 @@ from teatree.eval.api_runner import (
     ClaudeCliMissingError,
     CleanRoomConfig,
     CreditExhaustedError,
+    _has_hook_events,
+    _t3_plugin,
     _teatree_root,
     build_sdk_options,
     classify_terminal_error,
+    hooked_env,
     is_success_result_error,
     resolve_claude_path,
 )
@@ -2213,3 +2217,125 @@ class TestRunnerRetriesTransientMissingClaude:
             pytest.raises(ClaudeCliMissingError),
         ):
             ApiInProcessRunner(require_executed=True).run(spec)
+
+
+def _clean_room_config(
+    tmp_path: Path, *, production_hooks: bool = False, skills: tuple[str, ...] = ()
+) -> CleanRoomConfig:
+    return CleanRoomConfig(
+        system_prompt="you are a test agent",
+        workspace=tmp_path,
+        cwd=str(tmp_path),
+        env={"PATH": "/usr/bin"},
+        allowed_tools=("Bash",),
+        model="claude-haiku-4-5",
+        max_turns=3,
+        skills=skills,
+        production_hooks=production_hooks,
+    )
+
+
+def _hook_response(hook_event: str, *, outcome: str = "", output: str = "") -> HookEventMessage:
+    return HookEventMessage(
+        subtype="hook_response",
+        hook_event_name=hook_event,
+        data={"hook_event": hook_event, "outcome": outcome, "output": output, "exit_code": 0},
+    )
+
+
+class TestProductionHooksSdkOptions:
+    """`production_hooks` composes the shipped t3 plugin and turns on hook events."""
+
+    def test_hooked_options_register_t3_plugin_and_include_hook_events(self, tmp_path: Path) -> None:
+        options = build_sdk_options(_clean_room_config(tmp_path, production_hooks=True))
+        assert _t3_plugin() in options.plugins
+        assert options.plugins[0] == {"type": "local", "path": str(_teatree_root())}
+        assert options.include_hook_events is True
+        # The isolation levers are untouched — only the plugin chain + hook events change.
+        assert options.settings == '{"hooks":{}}'
+        assert options.setting_sources == []
+
+    def test_non_hooked_options_are_byte_identical_regression_pin(self, tmp_path: Path) -> None:
+        options = build_sdk_options(_clean_room_config(tmp_path, production_hooks=False))
+        assert options.plugins == []
+        assert options.include_hook_events is False
+
+    def test_hooked_plus_skills_composes_both_plugins(self, tmp_path: Path) -> None:
+        options = build_sdk_options(_clean_room_config(tmp_path, production_hooks=True, skills=("t3-widget",)))
+        paths = [p["path"] for p in options.plugins]
+        assert str(_teatree_root()) in paths
+        assert any(path.endswith("skill_catalog") for path in paths)
+        assert len(options.plugins) == 2
+
+
+class TestHookedEnv:
+    """`hooked_env` pins the loop/hook state roots inside the sandbox home."""
+
+    def test_redirects_all_state_roots_into_the_sandbox_home(self) -> None:
+        env = hooked_env({"PATH": "/usr/bin", "XDG_DATA_HOME": "/real/user/data"}, "/sandbox/home")
+        assert env["XDG_DATA_HOME"] == "/sandbox/home/.local/share"
+        assert env["T3_LOOP_REGISTRY_DIR"] == "/sandbox/home/loop-registry"
+        assert env["T3_HOOK_STATE_DIR"] == "/sandbox/home/hook-state"
+        assert env["TEATREE_CLAUDE_STATUSLINE_STATE_DIR"] == "/sandbox/home/statusline-state"
+        # A developer's real XDG_DATA_HOME never survives into a hooked child.
+        assert env["XDG_DATA_HOME"] != "/real/user/data"
+
+    def test_does_not_mutate_the_input_env(self) -> None:
+        original = {"PATH": "/usr/bin"}
+        hooked_env(original, "/sandbox/home")
+        assert "XDG_DATA_HOME" not in original
+
+
+class TestHasHookEvents:
+    def test_true_when_any_hook_event_present(self) -> None:
+        assert _has_hook_events([_result(), _hook_response("PreToolUse")]) is True
+
+    def test_false_when_no_hook_event(self) -> None:
+        assert _has_hook_events([_result()]) is False
+
+
+class TestProductionHooksRun:
+    """The runner's fail-loud + gate-event capture on a `production_hooks` scenario."""
+
+    def _run(self, spec: EvalSpec, messages: list[Any]):
+        query, captured = _fake_query(messages)
+        with (
+            patch("teatree.eval.api_runner.shutil.which", return_value="/usr/local/bin/claude"),
+            patch("teatree.eval.api_runner.query", query),
+        ):
+            run = ApiInProcessRunner().run(spec)
+        return run, captured
+
+    def test_zero_hook_events_on_a_hooked_run_fails_loud(self, tmp_path: Path) -> None:
+        spec = dataclasses.replace(_spec(tmp_path), production_hooks=True)
+        run, _ = self._run(spec, [_result()])
+        assert run.terminal_reason == "hooks_not_registered"
+        assert run.is_error is True
+
+    def test_hook_events_present_yields_a_normal_run_with_gate_events(self, tmp_path: Path) -> None:
+        spec = dataclasses.replace(_spec(tmp_path), production_hooks=True)
+        messages = [
+            _hook_response("Stop", outcome="block", output="decision: block — re-ask via AskUserQuestion"),
+            _result(),
+        ]
+        run, _ = self._run(spec, messages)
+        assert run.terminal_reason == "success"
+        assert run.is_error is False
+        assert any(event.is_stop_block for event in run.gate_events)
+
+    def test_a_non_hooked_run_never_captures_gate_events_even_if_hook_leaks_in(self, tmp_path: Path) -> None:
+        # A scenario that did NOT opt in must stay byte-identical: no fail-loud, no
+        # gate events surfaced (the mapper still drops hook_started, and a
+        # non-hooked run never has the include_hook_events wiring to emit them).
+        spec = _spec(tmp_path)
+        run, captured = self._run(spec, [_result()])
+        assert run.terminal_reason == "success"
+        assert run.gate_events == ()
+        assert captured["options"].include_hook_events is False
+
+    def test_hooked_run_env_pins_state_roots_inside_the_sandbox_cwd(self, tmp_path: Path) -> None:
+        spec = dataclasses.replace(_spec(tmp_path), production_hooks=True)
+        _run, captured = self._run(spec, [_hook_response("PreToolUse"), _result()])
+        options = captured["options"]
+        assert options.env["XDG_DATA_HOME"].startswith(options.cwd)
+        assert options.env["T3_LOOP_REGISTRY_DIR"].startswith(options.cwd)

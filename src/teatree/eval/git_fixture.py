@@ -28,7 +28,14 @@ GIT_REPO = "git_repo"
 #: hunting for the files instead of posting them. Declaring ``fixture:
 #: e2e_artifacts`` materialises those files so the described state is real.
 E2E_ARTIFACTS = "e2e_artifacts"
-KNOWN_FIXTURES = frozenset({GIT_REPO, E2E_ARTIFACTS})
+#: A scenario whose prompt presupposes a DEDICATED e2e repo sitting as a SIBLING
+#: of the product repo ("the e2e repo lives at ``../widget-e2e/``") runs in an
+#: empty temp dir by default, so the agent's ``touch ../widget-e2e/specs/…`` has no
+#: target dir and it investigates the mismatch instead of firing the command.
+#: Declaring ``fixture: e2e_sibling_repos`` materialises both git repos so the
+#: described sibling layout is real.
+E2E_SIBLING_REPOS = "e2e_sibling_repos"
+KNOWN_FIXTURES = frozenset({GIT_REPO, E2E_ARTIFACTS, E2E_SIBLING_REPOS})
 
 #: The ticket id + per-env artifact layout the ``e2e_test_plan_uses_canonical_command``
 #: scenario's prompt names on disk. Kept next to the provisioner so the fixture and
@@ -102,8 +109,37 @@ def provision_fixture(kind: str) -> Iterator[Path]:
         with provision_e2e_artifacts_fixture() as path:
             yield path
         return
+    if kind == E2E_SIBLING_REPOS:
+        with provision_e2e_sibling_repos_fixture() as path:
+            yield path
+        return
     msg = f"unknown eval fixture: {kind!r} (known: {sorted(KNOWN_FIXTURES)})"
     raise ValueError(msg)
+
+
+@contextmanager
+def provision_e2e_sibling_repos_fixture() -> Iterator[Path]:
+    """Yield the product-repo cwd with a sibling ``../widget-e2e/specs/`` e2e repo.
+
+    The ``test_e2e_specs_live_in_e2e_repo`` prompt names ``../widget-e2e/`` as a
+    sibling of the current product repo; without it the agent's
+    ``touch ../widget-e2e/specs/…`` has no target dir and it wanders. Materialises
+    ``widget-product/`` (the yielded cwd) and ``widget-e2e/specs/`` — both git
+    repos, so the described sibling layout is real. No matcher grades the repo
+    contents, only the CALL that creates the spec in the sibling e2e repo.
+    """
+    with TemporaryDirectory(prefix="t3-eval-e2esib-") as tmp:
+        parent = Path(tmp)
+        product = parent / "widget-product"
+        e2e_specs = parent / "widget-e2e" / "specs"
+        product.mkdir()
+        e2e_specs.mkdir(parents=True)
+        for repo in (product, e2e_specs.parent):
+            git(repo=str(repo), args=["init", "-b", "main"])
+            git(repo=str(repo), args=["config", "user.email", "agent@example.com"])
+            git(repo=str(repo), args=["config", "user.name", "Eval Agent"])
+            git(repo=str(repo), args=["config", "commit.gpgsign", "false"])
+        yield product
 
 
 @contextmanager

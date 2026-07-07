@@ -85,6 +85,18 @@ class ScenarioResult:
             return "skip"
         return "pass" if self.passed else "fail"
 
+    @property
+    def gate_assisted(self) -> bool:
+        """A PASS that a #807-class production-hook Stop block carried over the line.
+
+        The honesty annotation: gate-firing is NEVER a pass condition (that would
+        force-FAIL a first-try-compliant model — the gate only fires on
+        non-compliance), so a gate-carried pass is surfaced here (rendered
+        ``pass (gate-assisted)``) rather than hidden, keeping model-alone
+        regressions from masquerading as clean passes.
+        """
+        return self.passed and any(event.is_stop_block for event in self.run.gate_events)
+
 
 def evaluate(spec: EvalSpec, run: EvalRun, *, judge: "JudgeGrader | None" = None) -> ScenarioResult:
     """Apply the matchers (and, when configured, the LLM judge) to a run.
@@ -149,7 +161,11 @@ def _dispatch_negative(matcher: Matcher, run: EvalRun, tool: str) -> None:
     if matcher.operator == "~":
         assert_no_tool_call_matching(run, tool, matcher.arg_path, matcher.value)
         return
-    assert_no_tool_call_contains(run, tool, matcher.arg_path, matcher.value)
+    if matcher.operator == "contains":
+        assert_no_tool_call_contains(run, tool, matcher.arg_path, matcher.value)
+        return
+    msg = f"unsupported matcher operator: kind={matcher.kind!r}, operator={matcher.operator!r}"
+    raise NotImplementedError(msg)
 
 
 def _dispatch_any_of(matcher: AnyOf, run: EvalRun) -> None:
@@ -195,7 +211,8 @@ def render_text(results: list[ScenarioResult]) -> str:
             continue
         status = "PASS" if result.passed else "FAIL"
         judge_tag = " [judge]" if result.judge is not None and not result.judge.skipped else ""
-        lines.append(f"{status} {result.spec.name} ({result.run.terminal_reason}){judge_tag}")
+        gate_tag = " (gate-assisted)" if result.gate_assisted else ""
+        lines.append(f"{status}{gate_tag} {result.spec.name} ({result.run.terminal_reason}){judge_tag}")
         if not result.passed:
             for matcher_result in result.matcher_results:
                 if matcher_result.passed:
@@ -223,6 +240,11 @@ def render_json(results: list[ScenarioResult]) -> str:
                 "is_error": r.run.is_error,
                 "skipped": r.skipped,
                 "passed": r.passed,
+                "gate_assisted": r.gate_assisted,
+                "gate_events": [
+                    {"hook_event": e.hook_event_name, "outcome": e.outcome, "is_stop_block": e.is_stop_block}
+                    for e in r.run.gate_events
+                ],
                 "judge": (
                     None
                     if r.judge is None

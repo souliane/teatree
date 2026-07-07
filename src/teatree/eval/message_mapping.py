@@ -18,11 +18,13 @@ import json
 from typing import Any
 
 from claude_agent_sdk import AssistantMessage, ContentBlock, Message, ResultMessage, TextBlock, ToolUseBlock
+from claude_agent_sdk.types import HookEventMessage
 
 from teatree.eval.models import EvalRun, EvalSpec
 from teatree.eval.transcript import (
     extract_billed_model,
     extract_cost_usd,
+    extract_gate_events,
     extract_model_cost_split,
     extract_terminal_reason,
     extract_text_blocks,
@@ -61,6 +63,7 @@ def eval_run_from_messages(spec: EvalSpec, messages: list[Message]) -> EvalRun:
         aux_cost_usd=split.aux_cost_usd,
         main_usage=split.main_usage,
         aux_usage=split.aux_usage,
+        gate_events=tuple(extract_gate_events(events)),
     )
 
 
@@ -74,6 +77,22 @@ def _synthesize_stream_json(messages: list[Message]) -> str:
 
 
 def _message_to_event(message: Message) -> dict[str, Any] | None:
+    if isinstance(message, HookEventMessage):
+        # ``hook_started`` is lifecycle noise (no outcome yet); only the
+        # ``hook_response`` (a hook that finished) carries the block decision the
+        # gate-event extractor reads. Render it to the ``system``/``hook_response``
+        # event shape :func:`~teatree.eval.transcript.extract_gate_events` parses.
+        if message.subtype != "hook_response":
+            return None
+        data = message.data or {}
+        return {
+            "type": "system",
+            "subtype": "hook_response",
+            "hook_event": message.hook_event_name,
+            "outcome": data.get("outcome"),
+            "output": data.get("output"),
+            "exit_code": data.get("exit_code"),
+        }
     if isinstance(message, AssistantMessage):
         # ``parent_tool_use_id`` distinguishes a TOP-LEVEL (main-agent) turn —
         # ``None`` per the SDK contract — from a sub-agent SIDECHAIN turn, which

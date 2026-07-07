@@ -45,7 +45,7 @@ from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions, Message, query
-from claude_agent_sdk.types import EffortLevel, SdkPluginConfig
+from claude_agent_sdk.types import EffortLevel, HookEventMessage, SdkPluginConfig
 
 from teatree.eval.api_errors import (
     BUDGET_EXCEEDED_REASON,
@@ -310,6 +310,48 @@ class CleanRoomConfig:
     #: (:data:`_SKILL_CATALOG_FIXTURE_RELATIVE_PATH`) so the named skills are
     #: genuinely discoverable, then filters the listing to exactly this set.
     skills: tuple[str, ...] = ()
+    #: Register the shipped teatree plugin (``hooks/hooks.json``) into the SDK
+    #: child (``plugins=[_t3_plugin(), …]`` + ``include_hook_events=True``) so the
+    #: scenario measures the model+hook SYSTEM that ships. Empty (the default)
+    #: leaves ``plugins``/``include_hook_events`` at their untouched defaults, so a
+    #: scenario declaring no ``production_hooks`` is byte-identical to before.
+    production_hooks: bool = False
+
+
+def _t3_plugin() -> SdkPluginConfig:
+    """The local-plugin config for the shipped teatree hook chain (repo root = plugin root).
+
+    ``.claude-plugin/plugin.json`` sits at the teatree repo root and
+    ``hooks/hooks.json`` fires the byte-identical shipped hook chain from the
+    plugin manifest, so registering ``{"type":"local","path":<repo root>}`` makes a
+    ``production_hooks`` scenario measure the model+hook SYSTEM. This is the same
+    plugin lever :func:`_skill_catalog_fixture_plugin` uses; a plugin-carried
+    ``hooks.json`` fires despite ``settings='{"hooks":{}}'`` (which only empties
+    USER-level hooks). Resolved against :func:`_teatree_root`, not the process cwd.
+    """
+    return {"type": "local", "path": str(_teatree_root())}
+
+
+def hooked_env(env: dict[str, str], home: str) -> dict[str, str]:
+    """Return *env* with the hook/loop state roots redirected into the sandbox *home*.
+
+    :func:`~teatree.eval.isolation.isolated_claude_env` redirects
+    HOME/XDG_CONFIG_HOME/CLAUDE_CONFIG_DIR, but the loop-owner registry the #807
+    Stop gate consults resolves via ``XDG_DATA_HOME`` (else ``$HOME/.local/share``)
+    and the hook state dir via ``T3_HOOK_STATE_DIR`` /
+    ``TEATREE_CLAUDE_STATUSLINE_STATE_DIR`` — an INHERITED real value would let the
+    developer's LIVE loop-owner registry make ``_session_drives_loop(eval-session)``
+    False, silently SKIPPING the Stop gate (a spurious raw-model measurement) and
+    polluting host hook state. Pinning all four at the sandbox home gives the gate a
+    fresh, owner-less registry so it fires, and keeps eval hook state off the host.
+    """
+    hooked = dict(env)
+    base = Path(home)
+    hooked["XDG_DATA_HOME"] = str(base / ".local" / "share")
+    hooked["T3_LOOP_REGISTRY_DIR"] = str(base / "loop-registry")
+    hooked["T3_HOOK_STATE_DIR"] = str(base / "hook-state")
+    hooked["TEATREE_CLAUDE_STATUSLINE_STATE_DIR"] = str(base / "statusline-state")
+    return hooked
 
 
 def _skill_catalog_fixture_plugin() -> SdkPluginConfig:
@@ -356,11 +398,19 @@ def build_sdk_options(config: CleanRoomConfig) -> ClaudeAgentOptions:
     ``skills``/``plugins`` widen the simulated Skill-tool catalog for a scenario
     that declares ``config.skills`` (threaded from ``EvalSpec.available_skills``):
     the eval-only fixture plugin is registered and the listing filtered to
-    exactly the declared names. Empty ``config.skills`` (the default) renders
-    ``skills=None`` and ``plugins=[]`` — the SDK's own untouched defaults, so a
-    scenario declaring none is byte-identical to before this lever existed.
+    exactly the declared names. ``config.production_hooks`` composes the shipped
+    teatree plugin (:func:`_t3_plugin`) into the same ``plugins`` list and sets
+    ``include_hook_events=True`` so the run measures the model+hook SYSTEM. Both
+    levers default off: with neither, ``skills=None``, ``plugins=[]``, and
+    ``include_hook_events=False`` — the SDK's own untouched defaults, so a scenario
+    declaring neither is byte-identical to before these levers existed.
     """
     available = list(config.available_tools) if config.available_tools else None
+    plugins: list[SdkPluginConfig] = []
+    if config.production_hooks:
+        plugins.append(_t3_plugin())
+    if config.skills:
+        plugins.append(_skill_catalog_fixture_plugin())
     return ClaudeAgentOptions(
         setting_sources=[],
         system_prompt=spill_system_prompt(config.system_prompt, config.cwd),
@@ -380,7 +430,8 @@ def build_sdk_options(config: CleanRoomConfig) -> ClaudeAgentOptions:
         fallback_model=FALLBACK_MODEL,
         effort=config.effort,
         skills=list(config.skills) if config.skills else None,
-        plugins=[_skill_catalog_fixture_plugin()] if config.skills else [],
+        plugins=plugins,
+        include_hook_events=config.production_hooks,
     )
 
 
@@ -474,6 +525,12 @@ class ApiInProcessRunner:
             return self._terminal_capped_run(spec, terminal)
         except SuccessMislabelResultError as mislabel:
             return self._success_mislabel_run(spec, mislabel)
+        if spec.production_hooks and not _has_hook_events(messages):
+            # A hooked run that captured ZERO hook events means the shipped plugin
+            # did NOT register — the lane silently degraded back to raw-model
+            # measurement. Fail loud (is_error) rather than report a spurious pass,
+            # mirroring the all-skipped gate's philosophy.
+            return self._terminal_run(spec, terminal_reason="hooks_not_registered")
         return eval_run_from_messages(spec, messages)
 
     def _terminal_capped_run(self, spec: EvalSpec, terminal: TerminalResultError) -> EvalRun:
@@ -555,6 +612,7 @@ class ApiInProcessRunner:
                     effort=effort,
                     max_budget_usd=max_budget_usd,
                     skills=spec.available_skills,
+                    production_hooks=spec.production_hooks,
                 )
             )
             return await asyncio.wait_for(_collect(build_user_prompt(spec), options), timeout=watchdog)
@@ -585,6 +643,11 @@ class ApiInProcessRunner:
         """
         with ExitStack() as stack:
             env, cwd = stack.enter_context(isolated_claude_env(self._conflicting_vars))
+            if spec.production_hooks:
+                # Pin the loop/hook state roots inside the sandbox home BEFORE any
+                # further env overlay, so the #807 Stop gate sees a fresh owner-less
+                # registry (fires) and eval hook state never pollutes the host.
+                env = hooked_env(env, cwd)
             if spec.cli_stubs:
                 bindir = stack.enter_context(provision_cli_stubs(spec.cli_stubs))
                 env = prepend_to_path(env, bindir)
@@ -673,6 +736,17 @@ async def _collect(prompt: str, options: ClaudeAgentOptions) -> list[Message]:
             raise
         raise TerminalResultError(terminal_reason=reason, messages=messages, cause=exc) from exc
     return messages
+
+
+def _has_hook_events(messages: list[Message]) -> bool:
+    """Whether the captured stream carries ANY production-hook lifecycle event.
+
+    The presence of even one ``HookEventMessage`` (started OR response) proves the
+    shipped plugin's ``hooks.json`` registered and fired under the eval wiring; its
+    total absence on a ``production_hooks`` run is the silent-degradation signal the
+    fail-loud ``hooks_not_registered`` guard catches.
+    """
+    return any(isinstance(message, HookEventMessage) for message in messages)
 
 
 def _teatree_root() -> Path:
