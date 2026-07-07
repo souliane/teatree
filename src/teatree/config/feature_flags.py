@@ -144,6 +144,16 @@ FEATURE_FLAGS: dict[str, FeatureFlag] = {
             "(records CriticFinding, never blocks — mechanism_conforms is the teeth), ships dark."
         ),
     ),
+    "incremental_push_gate": FeatureFlag(
+        field="incremental_push_gate",
+        stage=FlagStage.DARK,
+        tracking_issue="souliane/teatree#122",
+        summary=(
+            "Safety-biased incremental push gate: scopes the push doctest + ast-grep sweeps to the diff "
+            "(FULL on any uncertainty). Ships dark — OFF is whole-tree (== today); the CI whole-tree "
+            "backstop is untouched regardless."
+        ),
+    ),
 }
 
 

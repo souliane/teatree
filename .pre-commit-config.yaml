@@ -447,21 +447,23 @@ repos:
   # the local push path. A host under load times out unrelated wall-clock and
   # concurrency tests and blocks the push (#112/#21/#38). push -> CI is the gate.
   # The local-suite runners (dev/test-fast.sh, dev/test-matrix.sh) and the exact
-  # full-CI predicate (dev/ci-parity.sh) stay as explicit opt-ins. The one push
-  # pytest below is deliberately PATH-SCOPED (tests/quality + the never-lockout
-  # contract + doctest collection over src/teatree) AND marker-scoped
-  # (-m "not push_heavy") so the no-full-suite invariant stays satisfied. The
-  # push_heavy marker excludes the two whole-tree subprocess checks (the ~63s
-  # jscpd scan and the mutmut kill-proof run) from the push gate; CI's test-shard
-  # lane runs the whole suite with no marker filter, so both still gate on every
-  # PR -- relocated to CI, not dropped. Guarded by
+  # full-CI predicate (dev/ci-parity.sh) stay as explicit opt-ins. The push gate
+  # below (dev/push-gate.sh, #122) runs the PATH-SCOPED tests/quality + never-lockout
+  # classes (marker-scoped -m "not push_heavy") plus the incremental push gate --
+  # the scoped doctest (Engine A) + scoped ast-grep regression scan (Engine B),
+  # FULL on any uncertainty, behind the DB-home `incremental_push_gate` flag (OFF
+  # by default => whole-tree both, == today). The push_heavy marker excludes the
+  # three whole-tree subprocess checks (the ~63s jscpd scan, the mutmut kill-proof
+  # run, and the >300s ast-grep TestBlockingSetIsGreen scan) from the push gate;
+  # CI's test-shard lane runs the whole suite with no marker filter, so all still
+  # gate on every PR -- relocated to CI, not dropped. Guarded by
   # tests/test_no_full_suite_on_pre_push.py.
   - repo: local
     hooks:
       - id: ci-critical-parity
-        name: CI-critical parity (scoped static/AST + doctest lane; path-scoped, ~1 min)
+        name: CI-critical parity (scoped quality/never-lockout + incremental push gate; path-scoped)
         language: system
-        entry: uv run pytest tests/quality tests/test_gate_never_lockout_contract.py --doctest-modules src/teatree -m "not push_heavy" -q
+        entry: dev/push-gate.sh
         pass_filenames: false
         always_run: true
         stages: [push]

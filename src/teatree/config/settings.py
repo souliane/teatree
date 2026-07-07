@@ -110,6 +110,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     "attachment_gate_enabled": _parse_strict_bool,
     "snapshot_baseline_gate_enabled": _parse_strict_bool,
     "gate_relaxation_gate_enabled": _parse_strict_bool,
+    "incremental_push_gate": _parse_strict_bool,
     "chrome_devtools_mcp_enabled": _parse_strict_bool,
     "colleague_repo_url_pattern": _parse_strict_str,
     "solo_repo_url_pattern": _parse_strict_str,
@@ -1113,6 +1114,12 @@ class UserSettings:
     # the hook; the reader resolves it through `get_effective_settings`, so a DB
     # `config_setting set` actuates it exactly like the sibling gates.
     gate_relaxation_gate_enabled: bool = True
+    # #122 Safety-biased incremental push gate. DARK feature flag: OFF (default) =>
+    # `dev/push-gate.sh` runs whole-tree both sweeps (== today, zero push change);
+    # ON => scoped to the diff with FULL on every uncertainty. The CI whole-tree
+    # backstop is never removed regardless. Per-overlay overridable; flipped true
+    # only after the CI `selection-audit` shows a clean soak window.
+    incremental_push_gate: bool = False
     # chrome-devtools-mcp is teatree's DEFAULT browser tool (navigation,
     # interaction, and network / console / DOM inspection over CDP — no claude.ai
     # account or extension pairing). When true, `t3 mcp browser-diagnosis` emits

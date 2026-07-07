@@ -39,6 +39,9 @@ from teatree.cli import (
     figma_tools as _figma_tools,  # noqa: F401  (side-effect: registers figma-* commands onto tool_app)
 )
 from teatree.cli import (
+    push_gate_tools as _push_gate_tools,  # noqa: F401  (side-effect: registers push-gate onto tool_app)
+)
+from teatree.cli import (
     skill_ref_tools as _skill_ref_tools,  # noqa: F401  (side-effect: registers validate-skill-refs onto tool_app)
 )
 from teatree.cli import (

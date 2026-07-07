@@ -6,22 +6,31 @@ test_two_worktrees_provision_serve_concurrently, test_cli_dogfood) and blocks
 the push. These tests pin that no push-stage hook in .pre-commit-config.yaml
 invokes an UNSCOPED pytest run -- neither directly nor via a referenced script.
 
-A PATH-SCOPED push pytest is allowed and pinned as such: the ``ci-critical-parity``
-hook runs ``tests/quality`` + the never-lockout contract + ``--doctest-modules
-src/teatree`` (fast static/AST + doctest collection), which cannot drag in the
+A PATH-SCOPED push gate is allowed and pinned as such: the ``ci-critical-parity``
+hook runs ``dev/push-gate.sh`` (#122), which runs ``tests/quality`` + the
+never-lockout contract (marker-scoped ``-m "not push_heavy"``) and the incremental
+push gate (``t3 tool push-gate --run`` -- the scoped doctest + scoped ast-grep
+regression scan, FULL on any uncertainty). None of these can drag in the
 wall-clock/concurrency suites the invariant forbids. ``TestCiCriticalParityHook``
-guards that it stays scoped and cannot silently widen to the full suite.
+guards that the gate stays scoped and cannot silently widen to the full suite.
 
-The two whole-tree subprocess CLASSES that dominated the push wall-clock -- the
-~63s jscpd scan (``TestScanCoverage``) and the mutmut kill-proof run
-(``TestMutmutKillsTheMutant``) -- carry a ``push_heavy`` marker and are DESELECTED
-at push (``-m "not push_heavy"``). The marker is CLASS-scoped, not module-scoped,
-so the fast/deterministic siblings (``TestConfigPin``, ``TestManualMutantKilled``)
-stay SELECTED at push for quick feedback on a config / manual-mutant regression.
-The heavy checks are RELOCATED to CI, not dropped: CI's ``test-shard`` lane runs
-the whole suite with NO marker filter, so both still gate on every PR.
-``TestPushHeavyRelocatedToCI`` pins that relocation -- heavy excluded at push,
-cheap still selected, everything present in CI.
+The three whole-tree subprocess CLASSES that dominated the push wall-clock -- the
+~63s jscpd scan (``TestScanCoverage``), the mutmut kill-proof run
+(``TestMutmutKillsTheMutant``), and the >300s ast-grep whole-tree scan
+(``TestBlockingSetIsGreen``, relocated by #122) -- carry a ``push_heavy`` marker and
+are DESELECTED at push (``-m "not push_heavy"``). The marker is CLASS-scoped, not
+module-scoped, so the fast/deterministic siblings (``TestConfigPin``,
+``TestManualMutantKilled``, ``TestManifestSchema``) stay SELECTED at push for quick
+feedback on a config / manual-mutant / manifest regression. The heavy checks are
+RELOCATED to CI, not dropped: CI's ``test-shard`` lane runs the whole suite with NO
+marker filter, so all still gate on every PR. ``TestPushHeavyRelocatedToCI`` pins
+that relocation -- heavy excluded at push, cheap still selected, everything present
+in CI.
+
+The "no full suite on push" invariant is STRICTLY MORE satisfied by #122 (the push
+runs fewer whole-tree checks), never weakened: no must-block test is inverted, and
+the safety net moves from "whole-tree at push" to "scoped-at-push + whole-tree-at-CI
++ the CI selection-audit".
 """
 
 import ast
@@ -47,6 +56,12 @@ _HEAVY_CHECKS = {
     _REPO_ROOT / "tests" / "quality" / "test_mutation_kill_proof.py": {
         "heavy": ("TestMutmutKillsTheMutant",),
         "cheap": ("TestManualMutantKilled",),
+    },
+    # #122: the >300s whole-tree ast-grep scan moves off the push gate; the fast
+    # manifest-schema class stays SELECTED at push for quick config-regression feedback.
+    _REPO_ROOT / "tests" / "quality" / "test_regression_rules.py": {
+        "heavy": ("TestBlockingSetIsGreen",),
+        "cheap": ("TestManifestSchema",),
     },
 }
 
@@ -104,14 +119,20 @@ class TestNoFullSuiteOnPrePush:
 
 
 class TestCiCriticalParityHook:
-    """Pin the ``ci-critical-parity`` push hook stays PATH-SCOPED and complete.
+    """Pin the ``ci-critical-parity`` push hook stays PATH-SCOPED and complete (#122).
 
-    It closes the local/CI divergence (doctest + never-lockout classes) at push
-    time WITHOUT running the full suite -- so it must (a) exist on the push stage,
-    (b) be path-scoped (its pytest is not bare), (c) still carry its three
-    load-bearing targets, and (d) DESELECT the ``push_heavy`` whole-tree checks so
-    the push gate stays light. A future edit can neither widen it to the full
-    suite nor silently drop the doctest / never-lockout coverage.
+    The hook now runs ``dev/push-gate.sh``, which closes the local/CI divergence
+    (scoped quality + never-lockout classes + the incremental doctest/ast-grep push
+    gate) at push time WITHOUT the full suite -- so it must (a) exist on the push
+    stage pointing at the script, (b) keep the script path-scoped (no bare pytest),
+    (c) keep the load-bearing targets in the SCRIPT (``tests/quality``, the
+    never-lockout contract, and the doctest+ast-grep engine via ``t3 tool
+    push-gate``), and (d) DESELECT the ``push_heavy`` whole-tree checks. A future
+    edit can neither widen it to the full suite nor silently drop the coverage.
+
+    This is a documented RE-SPEC of the old inline-entry contract, not a weakening:
+    the "no full suite on push" invariant (``TestNoFullSuiteOnPrePush``) is strictly
+    MORE satisfied, and no must-block assertion is inverted.
     """
 
     def _hook(self) -> dict:
@@ -119,23 +140,34 @@ class TestCiCriticalParityHook:
         assert matches, "ci-critical-parity push hook is missing"
         return matches[0]
 
-    def test_entry_is_not_a_bare_full_suite(self) -> None:
-        assert not _BARE_PYTEST.search(self._hook()["entry"]), (
-            "ci-critical-parity widened to an unscoped pytest -- it must stay path-scoped so the "
+    def _script_body(self) -> str:
+        entry = self._hook()["entry"].split()
+        script = _REPO_ROOT / entry[0]
+        assert script.is_file(), f"ci-critical-parity entry {entry[0]!r} must resolve to a repo script"
+        return script.read_text()
+
+    def test_entry_points_at_the_push_gate_script(self) -> None:
+        assert "dev/push-gate.sh" in self._hook()["entry"], (
+            "ci-critical-parity must run dev/push-gate.sh (the #122 scoped push gate)."
+        )
+
+    def test_script_is_not_a_bare_full_suite(self) -> None:
+        assert not _BARE_PYTEST.search(self._script_body()), (
+            "dev/push-gate.sh widened to an unscoped pytest -- it must stay path-scoped so the "
             "no-full-suite-on-push invariant holds."
         )
 
-    def test_entry_keeps_its_three_load_bearing_targets(self) -> None:
-        entry = self._hook()["entry"]
-        for token in ("tests/quality", "tests/test_gate_never_lockout_contract.py", "--doctest-modules src/teatree"):
-            assert token in entry, f"ci-critical-parity dropped `{token}` -- it must not narrow its coverage."
+    def test_script_keeps_its_load_bearing_targets(self) -> None:
+        body = self._script_body()
+        for token in ("tests/quality", "tests/test_gate_never_lockout_contract.py", "t3 tool push-gate"):
+            assert token in body, f"dev/push-gate.sh dropped `{token}` -- it must not narrow its coverage."
 
-    def test_entry_deselects_push_heavy(self) -> None:
-        # The whole-tree jscpd + mutmut checks must be OFF the push gate; the
-        # marker deselection is what keeps the ~63s scan out of every push.
-        assert "not push_heavy" in self._hook()["entry"], (
-            "ci-critical-parity must deselect the `push_heavy` whole-tree checks "
-            '(`-m "not push_heavy"`) so the jscpd/mutmut scans do not gate a push.'
+    def test_script_deselects_push_heavy(self) -> None:
+        # The whole-tree jscpd + mutmut + ast-grep checks must be OFF the push gate;
+        # the marker deselection keeps those scans out of every push.
+        assert "not push_heavy" in self._script_body(), (
+            "dev/push-gate.sh must deselect the `push_heavy` whole-tree checks "
+            '(`-m "not push_heavy"`) so the jscpd/mutmut/ast-grep scans do not gate a push.'
         )
 
 

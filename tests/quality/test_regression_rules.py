@@ -108,7 +108,12 @@ class TestManifestMatchesTree:
         )
 
 
+@pytest.mark.push_heavy
 class TestBlockingSetIsGreen:
+    # The whole-tree ast-grep scan (>300s tail) is RELOCATED off the push gate to
+    # CI's test-shard lane (#122, mirroring #3032's jscpd/mutmut relocation). At
+    # push the scoped Engine B in `dev/push-gate.sh` covers the changed files; CI's
+    # shard lane runs this whole-tree scan on every PR (no marker filter).
     @pytest.mark.timeout(300)
     @requires_astgrep
     def test_blocking_rules_have_zero_findings_on_the_current_tree(self, blocking_dir: Path) -> None:
@@ -341,6 +346,49 @@ class TestAstGrepEngineBranches:
         (tmp_path / "blocking").mkdir()
         with _patch_which("ast-grep"), pytest.raises(AstGrepUnavailableError, match="no ast-grep rules"):
             scan_findings(tmp_path / "blocking")
+
+
+class TestScanFindingsPathScoping:
+    """``paths=`` scopes Engine B to the changed files; ``None`` stays whole-tree (#122)."""
+
+    def _rules_dir(self, tmp_path: Path) -> Path:
+        (tmp_path / "blocking").mkdir()
+        (tmp_path / "blocking" / "x.yml").write_text("id: x\nlanguage: python\nrule:\n  pattern: y\n", encoding="utf-8")
+        (tmp_path / "sgconfig.yml").write_text("ruleDirs:\n  - blocking\n", encoding="utf-8")
+        return tmp_path / "blocking"
+
+    def test_none_paths_scans_whole_tree_no_positional_files(self, tmp_path: Path) -> None:
+        rules = self._rules_dir(tmp_path)
+        with (
+            _patch_which("ast-grep"),
+            patch.object(regression_scan, "run_allowed_to_fail", return_value=_fake_completed(0, stdout="[]")) as run,
+        ):
+            scan_findings(rules)
+        cmd = run.call_args.args[0]
+        assert cmd[-1] == "--json", "whole-tree scan must not append positional file args"
+
+    def test_scoped_paths_are_appended_as_positional_args(self, tmp_path: Path) -> None:
+        rules = self._rules_dir(tmp_path)
+        scope = [Path("src/teatree/core/session.py"), Path("tests/teatree_core/test_session.py")]
+        with (
+            _patch_which("ast-grep"),
+            patch.object(regression_scan, "run_allowed_to_fail", return_value=_fake_completed(0, stdout="[]")) as run,
+        ):
+            scan_findings(rules, paths=scope)
+        cmd = run.call_args.args[0]
+        assert cmd[-2:] == [str(p) for p in scope], "scoped scan must append exactly the changed files"
+
+    def test_empty_paths_returns_no_findings_without_invoking_astgrep(self, tmp_path: Path) -> None:
+        # An empty positional list would make ast-grep scan the WHOLE tree — the
+        # opposite of "no files in scope" — so an empty scope must short-circuit.
+        rules = self._rules_dir(tmp_path)
+        with (
+            _patch_which("ast-grep"),
+            patch.object(regression_scan, "run_allowed_to_fail") as run,
+        ):
+            findings = scan_findings(rules, paths=[])
+        assert findings == []
+        run.assert_not_called()
 
 
 class TestLoaderValidation:
