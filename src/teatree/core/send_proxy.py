@@ -37,16 +37,18 @@ import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 from fnmatch import fnmatch
+from typing import TYPE_CHECKING
 
 from django.db import DatabaseError, transaction
 
 from teatree.config import get_effective_settings
 from teatree.config.enums import SendProxyMode
-from teatree.core.models.provenance import Provenance
-from teatree.core.models.send_audit import SendAudit
 from teatree.core.overlay_loader import get_overlay
 from teatree.core.session_identity import current_session_id
 from teatree.utils import secrets
+
+if TYPE_CHECKING:
+    from teatree.core.models.send_audit import SendAudit
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +57,15 @@ REDACTION_PLACEHOLDER = "[redacted]"
 
 #: How much of the payload is kept in the audit row's non-sensitive preview.
 _PAYLOAD_SUMMARY_CHARS = 200
+
+
+def _default_owner_provenance() -> str:
+    # Deferred so importing send_proxy never triggers teatree.core.models at load —
+    # a module-top core.models import here breaks the `t3` CLI bootstrap
+    # (cli/__init__ imports send_proxy consumers before django.setup()).
+    from teatree.core.models.provenance import Provenance  # noqa: PLC0415
+
+    return Provenance.OWNER.value
 
 
 def read_posting_credential(ref: str) -> str:
@@ -107,7 +118,7 @@ class SendRequest:
     target: str = ""
     overlay: str = ""
     authorized_by: str = ""
-    provenance: str = Provenance.OWNER.value
+    provenance: str = field(default_factory=_default_owner_provenance)
     is_self_dm: bool = False
 
 
@@ -281,6 +292,8 @@ def _record_audit(request: SendRequest, verdict: SendVerdict) -> None:
     ``max_length``, and a Postgres backend would otherwise raise on an overlong
     destination/target) so a pathological ref can never break the audit write.
     """
+    from teatree.core.models.send_audit import SendAudit  # noqa: PLC0415
+
     overlay = request.overlay or os.environ.get("T3_OVERLAY_NAME", "") or ""
     try:
         with transaction.atomic():
@@ -307,6 +320,8 @@ def _record_audit(request: SendRequest, verdict: SendVerdict) -> None:
 
 def _audit_verdict(verdict: SendVerdict) -> "SendAudit.Verdict":
     """Map a :class:`SendVerdict` onto the audit's tri-state verdict enum."""
+    from teatree.core.models.send_audit import SendAudit  # noqa: PLC0415
+
     if verdict.allowlist_ok:
         return SendAudit.Verdict.ALLOWED
     if verdict.mode is SendProxyMode.ENFORCE:

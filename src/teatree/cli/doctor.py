@@ -33,6 +33,7 @@ from teatree.cli._doctor_checks import (
     _check_single_db,
     _check_singletons,
     _check_skills,
+    _check_slack_socket_mode,
     _check_stale_path_t3,
     _check_stale_uv_venv,
     _check_statusline,
@@ -82,6 +83,7 @@ __all__ = (
     "_check_single_db",
     "_check_singletons",
     "_check_skills",
+    "_check_slack_socket_mode",
     "_check_stale_path_t3",
     "_check_stale_uv_venv",
     "_check_statusline",
@@ -593,6 +595,14 @@ def check() -> bool:
     # (not a hard FAIL): a stale dream cron means memories pile up unpromoted,
     # which the operator should fix, but it must not red the whole doctor run.
     _check_dream_staleness()
+
+    # Slack Socket Mode readiness (#106 / BLUEPRINT § B5). Extends the Slack scope
+    # auto-management to the app-level (xapp-) token + socket-mode manifest: it
+    # reports and auto-fixes (via apps.manifest.update) where the Slack API allows,
+    # and surfaces a single actionable message for the one thing Slack cannot
+    # self-provision — minting the app-level token. Surfacing-only (never gates the
+    # exit code): Slack is optional and must never become mandatory.
+    _check_slack_socket_mode()
 
     # In-session `/login` account-switch recovery (#1916). Runs after
     # ``ensure_django`` because it builds messaging backends via the overlay
