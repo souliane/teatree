@@ -63,6 +63,10 @@ class TestSerialLock:
             patch.object(speak_mod.shutil, "which", return_value=str(say)),
             patch.object(speak_mod, "_speaker_lock_path", return_value=lock),
             patch.object(speak_mod, "_is_away", return_value=False),
+            # A budget far above the fake play (0.25s) so the second thread always
+            # WAITS for the lock rather than falling through under CI load — the
+            # serialization path is what this test verifies, not the fall-through.
+            patch.object(speak_mod, "_SPEAKER_LOCK_WAIT_BUDGET_S", 30.0),
         ):
             threads = [threading.Thread(target=speak_mod._speak_local, args=(str(log),)) for _ in range(2)]
             for t in threads:
@@ -107,6 +111,7 @@ class TestSerialLockCrossProcess:
                     patch.object(speak_mod.shutil, "which", return_value={str(say)!r}),
                     patch.object(speak_mod, "_speaker_lock_path", return_value=lock),
                     patch.object(speak_mod, "_is_away", return_value=False),
+                    patch.object(speak_mod, "_SPEAKER_LOCK_WAIT_BUDGET_S", 30.0),
                 ):
                     speak_mod._speak_local({str(log)!r})
                 """
