@@ -64,7 +64,11 @@ class LoopSeedSpec:
     (and the prompt-backed loop's ``Prompt.description``) and rendered by
     ``t3 loops list``. ``colleague_facing`` (#2904) marks a loop that reaches or
     reads from a colleague — the #2904 admission gate skips it whenever
-    availability defers questions (away / autonomous_away).
+    availability defers questions (away / autonomous_away). ``default_enabled``
+    ships the local/read-only operational core ON out of the box (the sound
+    default; migration ``0043`` flips the same set on existing rows); every
+    colleague-facing, externally-visible, destructive-capable, or token-costly
+    loop stays ``False`` (opt-in).
     """
 
     name: str
@@ -73,6 +77,7 @@ class LoopSeedSpec:
     daily_at: dt.time | None = None
     prompt_body: str | None = None
     colleague_facing: bool = False
+    default_enabled: bool = False
 
     @property
     def is_prompt_backed(self) -> bool:
@@ -92,23 +97,27 @@ DEFAULT_LOOPS: tuple[LoopSeedSpec, ...] = (
         60,
         "Drains inbound Slack mentions, DMs, review-intent and RED-CARD reactions "
         "(plus the Notion view) into the DB every 1m and routes them.",
+        default_enabled=True,
     ),
     LoopSeedSpec(
         "idle_stack_reaper",
         60,
         "Stops local dev stacks left idle past their threshold to free a concurrency slot; checks every 1m.",
+        default_enabled=True,
     ),
     LoopSeedSpec(
         "local_stack_queue",
         60,
         "Drains the local-stack acquisition queue, starting the next queued worktree "
         "stack whose backoff retry is due; checks every 1m.",
+        default_enabled=True,
     ),
     LoopSeedSpec(
         "resource_pressure",
         60,
         "Auto-frees host disk and RAM when they cross the pressure threshold; "
         "checks every 1m on its own ~5m internal cadence.",
+        default_enabled=True,
     ),
     LoopSeedSpec(
         "snapshot_warmer",
@@ -126,12 +135,14 @@ DEFAULT_LOOPS: tuple[LoopSeedSpec, ...] = (
         "Runs the always-on global scanners every 5m: dispatches pending headless Tasks "
         "to phase sub-agents, ingests incoming events, redelivers undelivered notifies, "
         "and posts deferred questions.",
+        default_enabled=True,
     ),
     LoopSeedSpec(
         "tickets",
         300,
         "Scans the local Ticket DB and each code host every 5m — surfacing active and "
         "stale tickets, dispositioning issues, and marking completed ones.",
+        default_enabled=True,
     ),
     LoopSeedSpec(
         "review",
@@ -150,6 +161,7 @@ DEFAULT_LOOPS: tuple[LoopSeedSpec, ...] = (
         "pane_reaper",
         300,
         "Demotes idle Agent-Teams maker panes past the idle threshold every 5m; inert unless team mode is enabled.",
+        default_enabled=True,
     ),
     LoopSeedSpec(
         "issue_disposition",
@@ -179,6 +191,7 @@ DEFAULT_LOOPS: tuple[LoopSeedSpec, ...] = (
         3600,
         "Fast-forwards the editable teatree and overlay installs (self-update) and pulls "
         "each overlay's main clone hourly.",
+        default_enabled=True,
     ),
     LoopSeedSpec(
         "arch_review",
@@ -248,10 +261,13 @@ def seed_default_loops_and_prompts() -> SeedResult:
     exactly as-is — the seed only fills in rows that are absent. A prompt-backed
     loop's :class:`Prompt` is seeded first so the FK resolves.
 
-    **Seeded paused (#2513 cutover).** Every default loop lands ``enabled=False``.
-    The cutover is plumbing only — no loop ticks until an operator deliberately
-    enables it. ``get_or_create`` never reaches the ``defaults`` for a row that
-    already exists, so an operator who has since ENABLED a loop keeps that choice.
+    **Sound operational defaults (reversing the #2513 all-paused cutover).** The
+    local/read-only operational core (``spec.default_enabled``) lands
+    ``enabled=True`` so a fresh install works out of the box; every
+    colleague-facing, externally-visible, destructive-capable, or token-costly
+    loop stays ``enabled=False`` (opt-in). ``get_or_create`` never reaches the
+    ``defaults`` for a row that already exists, so an operator who ENABLED a
+    paused loop — or DISABLED a default-on one — keeps that choice.
 
     **Descriptions backfill onto existing rows.** ``get_or_create`` populates
     ``description`` on a fresh row; an earlier install's row predates the field and
@@ -276,7 +292,7 @@ def seed_default_loops_and_prompts() -> SeedResult:
             "delay_seconds": spec.delay_seconds,
             "daily_at": spec.daily_at,
             "description": spec.description,
-            "enabled": False,
+            "enabled": spec.default_enabled,
             "colleague_facing": spec.colleague_facing,
         }
         if prompt is not None:
