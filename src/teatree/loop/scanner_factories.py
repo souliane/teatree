@@ -417,8 +417,8 @@ def _architectural_review_scanner_for(backend: OverlayBackends) -> Architectural
     #1136 / #1152 re-architecture: the architectural-review cadence is a
     teatree-core platform behaviour that applies uniformly to every
     overlay's worktrees, NOT a per-overlay opt-in. The settings live on
-    :class:`teatree.config.UserSettings` (the ``[teatree]`` table in
-    ``~/.teatree.toml``, with optional per-overlay overrides via the
+    :class:`teatree.config.UserSettings` (DB-home in the ``ConfigSetting``
+    store, with optional per-overlay overrides via the
     standard ``[overlays.<name>]`` shape — see
     ``OVERLAY_OVERRIDABLE_SETTINGS``). The scanner is instantiated once
     per registered overlay so each overlay's task queue gets its own

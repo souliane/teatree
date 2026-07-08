@@ -23,7 +23,6 @@ xoxp token capture and scope verification step.
 
 import webbrowser
 from collections.abc import Callable
-from pathlib import Path
 
 import httpx
 import typer
@@ -35,10 +34,10 @@ import typer
 # the exact regex — drift between the two would let a token shape pass
 # capture but fail at construction, or vice versa.
 from teatree.backends.slack.token_validation import USER_TOKEN_RE as _USER_TOKEN_RE
-from teatree.cli.slack_app_resolve import derive_app_id_from_token
+from teatree.cli.slack_app_resolve import derive_app_id_from_token, read_overlay_registry
 from teatree.cli.slack_setup import _USER_SCOPES
 from teatree.cli.slack_token_store import BOT_TOKEN_SLOT, USER_TOKEN_SLOT, SlackTokenWriteError, store_slack_token
-from teatree.config import CONFIG_PATH
+from teatree.utils.django_bootstrap import ensure_django
 from teatree.utils.secrets import read_pass
 
 USER_TOKEN_PASS_KEY = "slack/user-oauth-token"  # noqa: S105 — pass key name, not a secret
@@ -164,21 +163,15 @@ def _store_and_verify(
     return granted, added
 
 
-def _resolve_overlay_app_id(config_path: Path) -> str:
-    """Return the first ``slack_app_id`` recorded on any overlay block, else ``""``.
+def _resolve_overlay_app_id() -> str:
+    """Return the first ``slack_app_id`` recorded on any overlay in the DB registry, else ``""``.
 
     The shared xoxp token is overlay-agnostic, so any overlay's app id is a
     valid OAuth-page target. Per-overlay derivation lives in
     :func:`teatree.cli.slack_app_resolve.resolve_overlay_app_id`.
     """
-    if not config_path.is_file():
-        return ""
-    import tomlkit  # noqa: PLC0415
-
-    document = tomlkit.parse(config_path.read_text(encoding="utf-8"))
-    overlays = document.get("overlays") or {}
-    for block in overlays.values():
-        app_id = block.get("slack_app_id") if hasattr(block, "get") else None
+    for block in read_overlay_registry().values():
+        app_id = block.get("slack_app_id") if isinstance(block, dict) else None
         if app_id:
             return str(app_id)
     return ""
@@ -217,16 +210,12 @@ _derive_app_id_from_bot = derive_app_id_from_token
 def slack_user_token_setup(
     *,
     reset: bool = typer.Option(False, "--reset", help="Overwrite the existing token without prompting."),
-    config_path: Path = typer.Option(
-        CONFIG_PATH,
-        "--config",
-        help="Path to teatree config (default: ~/.teatree.toml).",
-    ),
 ) -> None:
     """Re-authorize the personal Slack xoxp token and store it via ``pass``."""
+    ensure_django()
     _detect_and_backup_xoxb_mis_install(echo=typer.echo)
     previous_scopes = _read_existing_scopes()
-    overlay_app_id = _resolve_overlay_app_id(config_path)
+    overlay_app_id = _resolve_overlay_app_id()
     if not overlay_app_id:
         overlay_app_id = _derive_app_id_from_bot(read_pass(USER_TOKEN_PASS_KEY) or read_pass(BOT_TOKEN_PASS_KEY))
     _print_reauthorize_instructions(overlay_app_id)

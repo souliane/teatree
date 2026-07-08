@@ -1,17 +1,17 @@
 """``t3 <overlay> gate status|disable|enable`` — the self-rescue command (#1474).
 
 The gate subgroup is the orchestrator's guaranteed escape from a heavy-Bash
-lockout: it flips the durable ``[teatree] orchestrator_bash_gate_enabled``
-kill-switch in ``~/.teatree.toml``. These tests drive the command through the
-real overlay Typer app (the same surface ``t3 <overlay> gate …`` hits) against
-a tmp ``~/.teatree.toml`` and assert the on-disk effect — no mocking of the
-config layer, because the on-disk write IS the behaviour under test.
+lockout: it flips the durable DB-home ``orchestrator_bash_gate_enabled``
+kill-switch. These tests drive the command through the real overlay Typer app
+(the same surface ``t3 <overlay> gate …`` hits) against a real-schema canonical
+config DB and assert the DB effect — the Django-free cold read/write IS the
+behaviour under test.
 """
 
+import sqlite3
 from pathlib import Path
 
 import pytest
-import tomlkit
 import typer
 from typer.testing import CliRunner
 
@@ -29,12 +29,34 @@ from teatree.cli.teatree_gate import (
     gate_is_enabled,
     memory_recall_gate_is_enabled,
 )
+from teatree.config import cold_reader
+
+# The exact ``teatree_config_setting`` shape Django's migration emits — the
+# NOT-NULL timestamp columns and the (scope, key) unique constraint the cold
+# writer's ON CONFLICT targets.
+_REAL_SCHEMA = (
+    'CREATE TABLE "teatree_config_setting" ('
+    '"id" integer NOT NULL PRIMARY KEY AUTOINCREMENT, '
+    '"scope" varchar(255) NOT NULL, '
+    '"key" varchar(255) NOT NULL, '
+    '"value" text NOT NULL CHECK ((JSON_VALID("value") OR "value" IS NULL)), '
+    '"created_at" datetime NOT NULL, '
+    '"updated_at" datetime NOT NULL, '
+    'CONSTRAINT "uniq_config_setting_scope_key" UNIQUE ("scope", "key"))'
+)
 
 
 @pytest.fixture
-def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
-    return tmp_path
+def canonical_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    db = tmp_path / "db.sqlite3"
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(_REAL_SCHEMA)
+        conn.commit()
+    finally:
+        conn.close()
+    monkeypatch.setenv("T3_CONFIG_DB", str(db))
+    return db
 
 
 @pytest.fixture
@@ -42,37 +64,37 @@ def app() -> typer.Typer:
     return OverlayAppBuilder(overlay_name="acme", project_path=None).build()
 
 
-def _gate_value(home: Path) -> object:
-    return tomlkit.parse((home / ".teatree.toml").read_text(encoding="utf-8"))["teatree"][GATE_KEY]
+def _gate_value(db: Path, key: str) -> object:
+    return cold_reader.read_setting(key, scope="", db_path=db)
 
 
 class TestGateStatus:
-    def test_status_reports_enabled_when_config_missing(self, app: typer.Typer, home: Path) -> None:
+    def test_status_reports_enabled_when_no_db(self, app: typer.Typer) -> None:
         result = CliRunner().invoke(app, ["gate", "status"])
         assert result.exit_code == 0, result.output
         assert "ENABLED" in result.output
 
-    def test_status_reports_disabled_after_disable(self, app: typer.Typer, home: Path) -> None:
-        (home / ".teatree.toml").write_text(f"[teatree]\n{GATE_KEY} = false\n", encoding="utf-8")
+    def test_status_reports_disabled_after_disable(self, app: typer.Typer, canonical_db: Path) -> None:
+        assert CliRunner().invoke(app, ["gate", "disable"]).exit_code == 0
         result = CliRunner().invoke(app, ["gate", "status"])
         assert result.exit_code == 0, result.output
         assert "DISABLED" in result.output
 
 
 class TestGateDisableEnable:
-    def test_disable_writes_false(self, app: typer.Typer, home: Path) -> None:
+    def test_disable_writes_false(self, app: typer.Typer, canonical_db: Path) -> None:
         result = CliRunner().invoke(app, ["gate", "disable"])
         assert result.exit_code == 0, result.output
-        assert _gate_value(home) is False
+        assert _gate_value(canonical_db, GATE_KEY) is False
         assert gate_is_enabled() is False
 
-    def test_enable_writes_true(self, app: typer.Typer, home: Path) -> None:
+    def test_enable_writes_true(self, app: typer.Typer, canonical_db: Path) -> None:
         result = CliRunner().invoke(app, ["gate", "enable"])
         assert result.exit_code == 0, result.output
-        assert _gate_value(home) is True
+        assert _gate_value(canonical_db, GATE_KEY) is True
         assert gate_is_enabled() is True
 
-    def test_disable_then_enable_round_trips(self, app: typer.Typer, home: Path) -> None:
+    def test_disable_then_enable_round_trips(self, app: typer.Typer, canonical_db: Path) -> None:
         runner = CliRunner()
         assert runner.invoke(app, ["gate", "disable"]).exit_code == 0
         assert gate_is_enabled() is False
@@ -83,29 +105,34 @@ class TestGateDisableEnable:
 class TestGateIsEnabledFailsOpen:
     """``gate_is_enabled`` fails OPEN so the reported status matches the gate."""
 
-    def test_enabled_on_broken_toml(self, home: Path) -> None:
-        (home / ".teatree.toml").write_text("this is not = valid = toml [[[", encoding="utf-8")
+    def test_enabled_with_no_db(self) -> None:
         assert gate_is_enabled() is True
 
-    def test_enabled_when_teatree_not_a_table(self, home: Path) -> None:
-        (home / ".teatree.toml").write_text('teatree = "oops"\n', encoding="utf-8")
+    def test_enabled_on_non_bool_value(self, canonical_db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        conn = sqlite3.connect(canonical_db)
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value, created_at, updated_at) "
+            "VALUES ('', ?, '\"oops\"', '2026-01-01 00:00:00.0', '2026-01-01 00:00:00.0')",
+            (GATE_KEY,),
+        )
+        conn.commit()
+        conn.close()
         assert gate_is_enabled() is True
 
 
 class TestConfigOverwriteGate:
     """``t3 <overlay> gate config-overwrite disable|enable`` — the PR #2661 self-rescue."""
 
-    def test_disable_writes_false_and_is_reflected(self, app: typer.Typer, home: Path) -> None:
+    def test_disable_writes_false_and_is_reflected(self, app: typer.Typer, canonical_db: Path) -> None:
         result = CliRunner().invoke(app, ["gate", "config-overwrite", "disable"])
         assert result.exit_code == 0, result.output
-        document = tomlkit.parse((home / ".teatree.toml").read_text(encoding="utf-8"))
-        assert document["teatree"][CONFIG_OVERWRITE_GATE_KEY] is False
+        assert _gate_value(canonical_db, CONFIG_OVERWRITE_GATE_KEY) is False
         assert config_overwrite_gate_is_enabled() is False
 
-    def test_enabled_by_default_when_config_missing(self, home: Path) -> None:
+    def test_enabled_by_default_when_no_db(self) -> None:
         assert config_overwrite_gate_is_enabled() is True
 
-    def test_round_trips(self, app: typer.Typer, home: Path) -> None:
+    def test_round_trips(self, app: typer.Typer, canonical_db: Path) -> None:
         runner = CliRunner()
         assert runner.invoke(app, ["gate", "config-overwrite", "disable"]).exit_code == 0
         assert config_overwrite_gate_is_enabled() is False
@@ -116,17 +143,16 @@ class TestConfigOverwriteGate:
 class TestCompletionClaimGate:
     """``t3 <overlay> gate completion-claim disable|enable`` — the #2665 self-rescue."""
 
-    def test_disable_writes_false_and_is_reflected(self, app: typer.Typer, home: Path) -> None:
+    def test_disable_writes_false_and_is_reflected(self, app: typer.Typer, canonical_db: Path) -> None:
         result = CliRunner().invoke(app, ["gate", "completion-claim", "disable"])
         assert result.exit_code == 0, result.output
-        document = tomlkit.parse((home / ".teatree.toml").read_text(encoding="utf-8"))
-        assert document["teatree"][COMPLETION_CLAIM_GATE_KEY] is False
+        assert _gate_value(canonical_db, COMPLETION_CLAIM_GATE_KEY) is False
         assert completion_claim_gate_is_enabled() is False
 
-    def test_enabled_by_default_when_config_missing(self, home: Path) -> None:
+    def test_enabled_by_default_when_no_db(self) -> None:
         assert completion_claim_gate_is_enabled() is True
 
-    def test_round_trips(self, app: typer.Typer, home: Path) -> None:
+    def test_round_trips(self, app: typer.Typer, canonical_db: Path) -> None:
         runner = CliRunner()
         assert runner.invoke(app, ["gate", "completion-claim", "disable"]).exit_code == 0
         assert completion_claim_gate_is_enabled() is False
@@ -137,17 +163,16 @@ class TestCompletionClaimGate:
 class TestMemoryRecallGate:
     """``t3 <overlay> gate memory-recall disable|enable`` — the #2746 self-rescue."""
 
-    def test_disable_writes_false_and_is_reflected(self, app: typer.Typer, home: Path) -> None:
+    def test_disable_writes_false_and_is_reflected(self, app: typer.Typer, canonical_db: Path) -> None:
         result = CliRunner().invoke(app, ["gate", "memory-recall", "disable"])
         assert result.exit_code == 0, result.output
-        document = tomlkit.parse((home / ".teatree.toml").read_text(encoding="utf-8"))
-        assert document["teatree"][MEMORY_RECALL_GATE_KEY] is False
+        assert _gate_value(canonical_db, MEMORY_RECALL_GATE_KEY) is False
         assert memory_recall_gate_is_enabled() is False
 
-    def test_enabled_by_default_when_config_missing(self, home: Path) -> None:
+    def test_enabled_by_default_when_no_db(self) -> None:
         assert memory_recall_gate_is_enabled() is True
 
-    def test_round_trips(self, app: typer.Typer, home: Path) -> None:
+    def test_round_trips(self, app: typer.Typer, canonical_db: Path) -> None:
         runner = CliRunner()
         assert runner.invoke(app, ["gate", "memory-recall", "disable"]).exit_code == 0
         assert memory_recall_gate_is_enabled() is False
@@ -158,23 +183,22 @@ class TestMemoryRecallGate:
 class TestMainCloneGate:
     """``t3 <overlay> gate main-clone disable|enable`` — the #2836 self-rescue (#2844 #3)."""
 
-    def test_disable_writes_false_and_is_reflected(self, app: typer.Typer, home: Path) -> None:
+    def test_disable_writes_false_and_is_reflected(self, app: typer.Typer, canonical_db: Path) -> None:
         result = CliRunner().invoke(app, ["gate", "main-clone", "disable"])
         assert result.exit_code == 0, result.output
-        document = tomlkit.parse((home / ".teatree.toml").read_text(encoding="utf-8"))
-        assert document["teatree"][MAIN_CLONE_GATE_KEY] is False
+        assert _gate_value(canonical_db, MAIN_CLONE_GATE_KEY) is False
         assert _gate_key_is_enabled(MAIN_CLONE_GATE_KEY) is False
 
-    def test_enabled_by_default_when_config_missing(self, home: Path) -> None:
+    def test_enabled_by_default_when_no_db(self) -> None:
         assert _gate_key_is_enabled(MAIN_CLONE_GATE_KEY) is True
 
-    def test_status_reports_state(self, app: typer.Typer, home: Path) -> None:
+    def test_status_reports_state(self, app: typer.Typer, canonical_db: Path) -> None:
         runner = CliRunner()
         assert "ENABLED" in runner.invoke(app, ["gate", "main-clone", "status"]).output
         runner.invoke(app, ["gate", "main-clone", "disable"])
         assert "DISABLED" in runner.invoke(app, ["gate", "main-clone", "status"]).output
 
-    def test_round_trips(self, app: typer.Typer, home: Path) -> None:
+    def test_round_trips(self, app: typer.Typer, canonical_db: Path) -> None:
         runner = CliRunner()
         assert runner.invoke(app, ["gate", "main-clone", "disable"]).exit_code == 0
         assert _gate_key_is_enabled(MAIN_CLONE_GATE_KEY) is False
@@ -185,23 +209,22 @@ class TestMainCloneGate:
 class TestGateRelaxationGate:
     """``t3 <overlay> gate gate-relaxation disable|enable`` — the anti-relaxation self-rescue (#850)."""
 
-    def test_disable_writes_false_and_is_reflected(self, app: typer.Typer, home: Path) -> None:
+    def test_disable_writes_false_and_is_reflected(self, app: typer.Typer, canonical_db: Path) -> None:
         result = CliRunner().invoke(app, ["gate", "gate-relaxation", "disable"])
         assert result.exit_code == 0, result.output
-        document = tomlkit.parse((home / ".teatree.toml").read_text(encoding="utf-8"))
-        assert document["teatree"][GATE_RELAXATION_GATE_KEY] is False
+        assert _gate_value(canonical_db, GATE_RELAXATION_GATE_KEY) is False
         assert _gate_key_is_enabled(GATE_RELAXATION_GATE_KEY) is False
 
-    def test_enabled_by_default_when_config_missing(self, home: Path) -> None:
+    def test_enabled_by_default_when_no_db(self) -> None:
         assert _gate_key_is_enabled(GATE_RELAXATION_GATE_KEY) is True
 
-    def test_status_reports_state(self, app: typer.Typer, home: Path) -> None:
+    def test_status_reports_state(self, app: typer.Typer, canonical_db: Path) -> None:
         runner = CliRunner()
         assert "ENABLED" in runner.invoke(app, ["gate", "gate-relaxation", "status"]).output
         runner.invoke(app, ["gate", "gate-relaxation", "disable"])
         assert "DISABLED" in runner.invoke(app, ["gate", "gate-relaxation", "status"]).output
 
-    def test_round_trips(self, app: typer.Typer, home: Path) -> None:
+    def test_round_trips(self, app: typer.Typer, canonical_db: Path) -> None:
         runner = CliRunner()
         assert runner.invoke(app, ["gate", "gate-relaxation", "disable"]).exit_code == 0
         assert _gate_key_is_enabled(GATE_RELAXATION_GATE_KEY) is False
@@ -209,16 +232,16 @@ class TestGateRelaxationGate:
         assert _gate_key_is_enabled(GATE_RELAXATION_GATE_KEY) is True
 
 
-class TestTomlPreservation:
-    def test_disable_preserves_other_content(self, app: typer.Typer, home: Path) -> None:
-        (home / ".teatree.toml").write_text(
-            '# keep me\n[teatree]\nmode = "auto"\n\n[overlays.acme]\nmessaging_backend = "slack"\n',
-            encoding="utf-8",
+class TestDbRowIsolation:
+    def test_disable_preserves_other_db_rows(self, app: typer.Typer, canonical_db: Path) -> None:
+        conn = sqlite3.connect(canonical_db)
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value, created_at, updated_at) "
+            "VALUES ('', 'mode', '\"auto\"', '2026-01-01 00:00:00.0', '2026-01-01 00:00:00.0')"
         )
+        conn.commit()
+        conn.close()
         result = CliRunner().invoke(app, ["gate", "disable"])
         assert result.exit_code == 0, result.output
-        document = tomlkit.parse((home / ".teatree.toml").read_text(encoding="utf-8"))
-        assert document["teatree"]["mode"] == "auto"
-        assert document["teatree"][GATE_KEY] is False
-        assert document["overlays"]["acme"]["messaging_backend"] == "slack"
-        assert "# keep me" in (home / ".teatree.toml").read_text(encoding="utf-8")
+        assert _gate_value(canonical_db, GATE_KEY) is False
+        assert _gate_value(canonical_db, "mode") == "auto"

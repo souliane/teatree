@@ -11,27 +11,21 @@ pinned an explicit per-gate override (explicit always wins — autonomy never
 silently overrides an opinion). ``notify`` additionally derives
 ``notify_on_behalf = True``; ``full`` and ``babysit`` keep it ``False``.
 
-Under the #1775 DB/TOML partition, ``autonomy`` / ``mode`` / the three gates are
-all DB-home, so this exercises the collapse via ``ConfigSetting`` rows: an
+Under the #1775 DB partition, ``autonomy`` / ``mode`` / the three gates are all
+DB-home, so this exercises the collapse via ``ConfigSetting`` rows: an
 overlay-scoped row is the per-overlay opinion (``hard_pinned``); a global-scope
 row is the global opinion (still wins for a gate, harmless for ``mode``).
 
-The safety/quality floor is out of scope by construction. ``autoload`` (DB-home
-since eliminate-~/.teatree.toml) is untouched by the collapse;
-``orchestrator_bash_gate_enabled`` (DB-home too) keeps its never-lockout default
+The safety/quality floor is out of scope by construction. ``autoload`` is untouched
+by the collapse; ``orchestrator_bash_gate_enabled`` keeps its never-lockout default
 and is never relaxed.
 """
-
-from pathlib import Path
 
 import pytest
 from django.test import TestCase
 
-import teatree.config as config_facade
-from teatree.config import Autonomy, Mode, OnBehalfPostMode, get_effective_settings, load_config
+from teatree.config import Autonomy, Mode, OnBehalfPostMode, get_effective_settings
 from teatree.core.models import ConfigSetting
-
-from ._shared import _write_toml
 
 
 class TestAutonomyParse:
@@ -57,38 +51,27 @@ class TestAutonomyParse:
         assert members == [Autonomy.BABYSIT, Autonomy.NOTIFY, Autonomy.FULL]
 
 
-class TestAutonomyDefault:
-    def test_defaults_to_babysit(self, tmp_path: Path) -> None:
-        config_path = tmp_path / ".teatree.toml"
-        _write_toml(config_path, "[teatree]\n")
-        assert load_config(config_path).user.autonomy is Autonomy.BABYSIT
+class TestAutonomyDefault(TestCase):
+    @pytest.fixture(autouse=True)
+    def _clear_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        for env in ("T3_OVERLAY_NAME", "T3_MODE", "T3_ON_BEHALF_POST_MODE"):
+            monkeypatch.delenv(env, raising=False)
 
-    def test_babysit_keeps_conservative_gate_values(self, tmp_path: Path) -> None:
-        """Default (babysit) leaves every gate at its conservative default."""
-        config_path = tmp_path / ".teatree.toml"
-        _write_toml(config_path, "[teatree]\n")
-        user = load_config(config_path).user
-        assert user.on_behalf_post_mode is OnBehalfPostMode.DRAFT_OR_ASK
-        assert user.require_human_approval_to_merge is True
-        assert user.require_human_approval_to_answer is True
+    def test_defaults_to_babysit(self) -> None:
+        assert get_effective_settings().autonomy is Autonomy.BABYSIT
+
+    def test_babysit_keeps_conservative_gate_values(self) -> None:
+        settings = get_effective_settings()
+        assert settings.on_behalf_post_mode is OnBehalfPostMode.DRAFT_OR_ASK
+        assert settings.require_human_approval_to_merge is True
+        assert settings.require_human_approval_to_answer is True
 
 
 class _AutonomyDbBase(TestCase):
     @pytest.fixture(autouse=True)
-    def _config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        self.config_path = tmp_path / ".teatree.toml"
-        monkeypatch.setattr(config_facade, "CONFIG_PATH", self.config_path)
+    def _config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         for env in ("T3_OVERLAY_NAME", "T3_MODE", "T3_ON_BEHALF_POST_MODE"):
             monkeypatch.delenv(env, raising=False)
-        _write_toml(
-            self.config_path,
-            "[teatree]\n\n"
-            '[overlays.trusted]\nclass = "x:Y"\n\n'
-            '[overlays.client]\nclass = "x:Y"\n\n'
-            '[overlays.careful]\nclass = "x:Y"\n\n'
-            '[overlays.t3-teatree]\nclass = "x:Y"\n\n'
-            '[overlays.t3-client]\nclass = "x:Y"\n',
-        )
         self.monkeypatch = monkeypatch
 
 
@@ -103,14 +86,8 @@ class TestAutonomyFullResolution(_AutonomyDbBase):
         assert settings.require_human_approval_to_answer is False
 
     def test_full_leaves_safety_floor_untouched(self) -> None:
-        # ``autoload`` is DB-home now (eliminate-~/.teatree.toml) — seed it via a
-        # global ConfigSetting row; it is untouched by the autonomy collapse.
-        # orchestrator_bash_gate_enabled is DB-home too and keeps its default — also
-        # untouched by the collapse.
-        _write_toml(
-            self.config_path,
-            '[teatree]\n\n[overlays.trusted]\nclass = "x:Y"\n',
-        )
+        # ``autoload`` / ``orchestrator_bash_gate_enabled`` are untouched by the
+        # autonomy collapse — the safety floor is never relaxed.
         ConfigSetting.objects.set_value("autoload", value=True, scope="")
         ConfigSetting.objects.set_value("autonomy", "full", scope="trusted")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "trusted")
@@ -181,12 +158,7 @@ class TestAutonomyNotifyTier(_AutonomyDbBase):
         assert get_effective_settings().notify_on_behalf is True
 
     def test_notify_leaves_safety_floor_untouched(self) -> None:
-        # ``autoload`` is DB-home now (eliminate-~/.teatree.toml) — seed it via a
-        # global ConfigSetting row; it survives the notify collapse.
-        _write_toml(
-            self.config_path,
-            '[teatree]\n\n[overlays.client]\nclass = "x:Y"\n',
-        )
+        # ``autoload`` / ``orchestrator_bash_gate_enabled`` survive the notify collapse.
         ConfigSetting.objects.set_value("autoload", value=True, scope="")
         ConfigSetting.objects.set_value("autonomy", "notify", scope="client")
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "client")

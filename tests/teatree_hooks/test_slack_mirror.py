@@ -11,6 +11,7 @@ imports ``teatree.backends.slack`` / ``teatree.core`` (a backwards layer edge).
 """
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -253,22 +254,23 @@ class TestQuestionFormatting:
 
 
 class TestConfigFromToml:
-    def test_returns_ref_and_uid_for_slack_overlay(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        (tmp_path / ".teatree.toml").write_text(
-            '[overlays.acme]\nmessaging_backend = "slack"\nslack_token_ref = "secret/acme"\nslack_user_id = "U9"\n',
-            encoding="utf-8",
-        )
-        assert slack_mirror.slack_config_from_toml() == ("secret/acme", "U9")
+    def test_returns_ref_and_uid_for_slack_overlay(self) -> None:
+        overlays = {
+            "acme": {"messaging_backend": "slack", "slack_token_ref": "secret/acme", "slack_user_id": "U9"},
+        }
+        fake_cfg = SimpleNamespace(raw={"overlays": overlays})
+        with patch("teatree.config.load_config", return_value=fake_cfg):
+            assert slack_mirror.slack_config_from_toml() == ("secret/acme", "U9")
 
-    def test_none_when_no_config_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        assert slack_mirror.slack_config_from_toml() is None
+    def test_none_when_no_overlays(self) -> None:
+        fake_cfg = SimpleNamespace(raw={})
+        with patch("teatree.config.load_config", return_value=fake_cfg):
+            assert slack_mirror.slack_config_from_toml() is None
 
-    def test_none_when_no_slack_overlay(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
-        (tmp_path / ".teatree.toml").write_text('[overlays.acme]\nmessaging_backend = "console"\n', encoding="utf-8")
-        assert slack_mirror.slack_config_from_toml() is None
+    def test_none_when_no_slack_overlay(self) -> None:
+        fake_cfg = SimpleNamespace(raw={"overlays": {"acme": {"messaging_backend": "console"}}})
+        with patch("teatree.config.load_config", return_value=fake_cfg):
+            assert slack_mirror.slack_config_from_toml() is None
 
 
 class TestPerformSlackPostInjectsDependencies:

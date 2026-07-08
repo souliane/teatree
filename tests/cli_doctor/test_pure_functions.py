@@ -5,12 +5,31 @@ Lifted verbatim from the former monolithic ``tests/test_cli_doctor.py``
 only relocated under a focused package by concern.
 """
 
+import json
+import sqlite3
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
 import teatree.cli.doctor as teatree_cli_doctor
 from teatree.cli.doctor import DoctorService
+
+
+def _seed_cold_registry(db: Path, overlays: dict[str, dict]) -> None:
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting ("
+            "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', "
+            "key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'overlays', ?)",
+            (json.dumps(overlays),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 class TestFindHostProjectRoot:
@@ -93,21 +112,23 @@ class TestResolveMainClone:
 
 
 class TestCheckLegacyOverlayAlias:
-    """``t3 doctor`` warns (never rewrites) on a stale legacy alias table.
+    """``t3 doctor`` warns (never rewrites) on a stale legacy alias entry.
 
-    souliane/teatree#1108: a bare ``[overlays.teatree]`` table written by
-    older ``slack-bot`` runs maps to the canonical ``t3-teatree`` overlay.
-    The doctor surfaces it as a WARN with the rename; it must not mutate
-    the user's ``~/.teatree.toml``.
+    souliane/teatree#1108: a bare ``teatree`` entry written by older
+    ``slack-bot`` runs maps to the canonical ``t3-teatree`` overlay. The
+    doctor surfaces it as a WARN with the rename; it must not mutate the
+    user's DB overlays registry. The registry is read via the pre-Django
+    ``cold_reader``, so the seed goes in a cold-readable DB.
     """
 
-    def _run(self, tmp_path, monkeypatch, toml_body: str) -> str:
+    def _run(self, tmp_path, monkeypatch, overlays: dict[str, dict]) -> str:
         import io  # noqa: PLC0415
         from contextlib import redirect_stdout  # noqa: PLC0415
         from unittest.mock import MagicMock  # noqa: PLC0415
 
-        config_path = tmp_path / ".teatree.toml"
-        config_path.write_text(toml_body, encoding="utf-8")
+        db = tmp_path / "config.sqlite3"
+        _seed_cold_registry(db, overlays)
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
 
         real_ep = MagicMock()
         real_ep.name = "t3-teatree"
@@ -115,37 +136,24 @@ class TestCheckLegacyOverlayAlias:
 
         out = io.StringIO()
         with (
-            patch("teatree.config.CONFIG_PATH", config_path),
             patch("importlib.metadata.entry_points", return_value=[real_ep]),
             redirect_stdout(out),
         ):
             teatree_cli_doctor._check_legacy_overlay_alias()
         return out.getvalue()
 
-    def test_warns_on_stale_bare_alias_table(self, tmp_path, monkeypatch):
-        message = self._run(
-            tmp_path,
-            monkeypatch,
-            '[teatree]\nworkspace_dir = "~/workspace"\n\n[overlays.teatree]\nmode = "auto"\n',
-        )
+    def test_warns_on_stale_bare_alias_entry(self, tmp_path, monkeypatch):
+        message = self._run(tmp_path, monkeypatch, {"teatree": {"mode": "auto"}})
         assert "WARN" in message
-        assert "[overlays.teatree]" in message
+        assert "'teatree'" in message
         assert "t3-teatree" in message
 
-    def test_silent_when_canonical_table_used(self, tmp_path, monkeypatch):
-        message = self._run(
-            tmp_path,
-            monkeypatch,
-            '[teatree]\nworkspace_dir = "~/workspace"\n\n[overlays.t3-teatree]\nmode = "auto"\n',
-        )
+    def test_silent_when_canonical_entry_used(self, tmp_path, monkeypatch):
+        message = self._run(tmp_path, monkeypatch, {"t3-teatree": {"mode": "auto"}})
         assert message == ""
 
-    def test_silent_when_alias_table_has_path(self, tmp_path, monkeypatch):
+    def test_silent_when_alias_entry_has_path(self, tmp_path, monkeypatch):
         # A real path-backed overlay that merely happens to share a short
         # name is a deliberate distinct overlay, not a stale alias.
-        message = self._run(
-            tmp_path,
-            monkeypatch,
-            '[teatree]\nworkspace_dir = "~/workspace"\n\n[overlays.teatree]\npath = "/tmp/x"\n',
-        )
+        message = self._run(tmp_path, monkeypatch, {"teatree": {"path": "/tmp/x"}})
         assert message == ""

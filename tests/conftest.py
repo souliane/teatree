@@ -237,47 +237,30 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Isolate process env so tests cannot touch host workspace/config.
 
-    ``$HOME`` alone is not enough: ``teatree.config.CONFIG_PATH`` is bound to
-    ``Path.home() / ".teatree.toml"`` ONCE at import (before any fixture runs),
-    so a later ``$HOME`` redirect leaves the suite reading the developer's real
-    ``~/.teatree.toml``. A real ``check_updates`` flag in that host config let
-    the ``[update] …`` banner prepend non-JSON to a CLI's stdout under the
-    previously default ``--exitfirst`` masked by ``-n auto``. That host-config
-    leak is closed two ways: the facade ``CONFIG_PATH`` is redirected at a hermetic
-    per-test file (no keys → all TOML-home settings default), and the update-check
+    There is no config file — every setting is DB-home, read from the canonical
+    ``ConfigSetting`` store (Django-side) or via the Django-free ``cold_reader``
+    (pre-Django hooks). Config isolation is therefore purely about the DB the cold
+    reader resolves: clearing ``T3_CONFIG_DB`` and ``XDG_DATA_HOME`` (and redirecting
+    ``$HOME``) leaves the cold reader with no config DB, so every setting fails OPEN
+    to its dataclass default. A test that needs a cold-read value sets ``T3_CONFIG_DB``
+    at a temp sqlite it seeds with a ``teatree_config_setting`` row. The update-check
     cache is redirected (below) at a hermetic per-test "up to date" verdict so the
-    banner can never fire. The cache redirect — not a ``check_updates=false`` config
-    seed — is the lever because ``check_updates`` is DB-home (eliminate-~/.teatree.toml:
-    ``check_for_updates`` reads it via the Django-free ``cold_reader``) and fails OPEN to
-    its dataclass default ``True`` under an isolated ``$HOME`` with no config DB, and the
-    only locations the cold reader resolves a DB are under ``tmp_path`` (caught by
-    ``test_paths``' stale-``db.sqlite3`` scan) or ``T3_CONFIG_DB`` (which outranks the
-    ``XDG_DATA_HOME`` DBs other tests seed) — so a config seed cannot be placed without
-    breaking those tests. (The former host ``[loops.review]
-    enabled = false`` leak is moot since #2702 removed the ``[loops]`` toml
-    read; the ``T3_LOOPS_DISABLED`` env leak below is still cleared per test.)
+    ``[update] …`` banner (``check_updates`` fails OPEN to ``True`` with no config DB)
+    can never prepend non-JSON to a CLI's captured output.
     """
     home = tmp_path / "home"
     workspace = home / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
 
-    # Keep the hermetic config OUT of ``home`` — several tests rebuild
-    # ``tmp_path / "home"`` themselves and assert on the presence/absence of
-    # their OWN ``home/.teatree.toml``, so a file planted there would collide.
     config_dir = tmp_path / "t3-hermetic-config"
     config_dir.mkdir(parents=True, exist_ok=True)
-    hermetic_config = config_dir / ".teatree.toml"
-    hermetic_config.write_text("[teatree]\n", encoding="utf-8")
-    import teatree.config as _config  # noqa: PLC0415 — patched per-test, import lazily
-
-    monkeypatch.setattr(_config, "CONFIG_PATH", hermetic_config)
 
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / ".cache"))
-    # The cold-hook readers now resolve the canonical ConfigSetting DB from these
-    # (config-unify PR3): clear both so the flipped ``teatree_settings`` / statusline
-    # readers resolve under the isolated ``$HOME`` and never read a host DB.
+    # The cold readers resolve the canonical ConfigSetting DB from these: clear both
+    # so a cold reader resolves under the isolated ``$HOME`` (no DB → defaults) and
+    # never reads a host DB.
     monkeypatch.delenv("T3_CONFIG_DB", raising=False)
     monkeypatch.delenv("XDG_DATA_HOME", raising=False)
     # Redirect the update-check cache at a hermetic per-test dir holding a fresh

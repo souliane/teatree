@@ -300,7 +300,7 @@ register_command_catalogue_provider(_build_command_catalogue)
 def _ensure_editable_if_contributing() -> None:
     """Auto-fix teatree and overlay to editable when contribute=true.
 
-    When the user has ``contribute = true`` in ``~/.teatree.toml``, both
+    When ``contribute`` is set to true in the DB config store, both
     teatree and the active overlay should be editable so local changes take
     effect immediately.  ``uv sync`` reinstalls from git, undoing this.
     This check runs on every CLI invocation and re-installs if needed.

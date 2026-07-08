@@ -25,8 +25,9 @@ report by design — see ``TaskAttempt.objects.usages()`` for the full,
 lane-unfiltered picture across both execution targets.
 
 Read-only: every query underneath is a select. The billing-cycle anchor day and
-the credit are configurable in ``~/.teatree.toml`` (``billing_cycle_anchor_day``
-/ ``sdk_monthly_credit_usd``); with no anchor the cycle is the calendar month.
+the credit are configurable via ``t3 <overlay> config_setting set
+billing_cycle_anchor_day <value>`` / ``sdk_monthly_credit_usd``; with no anchor
+the cycle is the calendar month.
 The structured value is the return (django-typer serialises it) — JSON when
 ``--json``, else the human report.
 """

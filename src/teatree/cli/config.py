@@ -23,7 +23,7 @@ def show(
 ) -> None:
     """Read-only view of config: text-file intent vs DB regenerable cache (#628).
 
-    The intent section is ``~/.teatree.toml`` resolved — the user-authored
+    The intent section is the DB config store resolved — the user-authored
     source of truth. The derived section is DB / data-dir state that can be
     deleted and rebuilt from the text files; every entry is flagged
     regenerable so the cache-vs-intent invariant is visible. Reads only.

@@ -53,7 +53,7 @@ def _configured_overlay_names() -> list[str]:
 
     Thin discovery seam so :func:`overlays_anchor` stays a pure formatter —
     tests stub this rather than registering real overlays. Production reads
-    the unified entry-point + ``~/.teatree.toml`` discovery in
+    the unified entry-point + DB overlays-registry discovery in
     :meth:`teatree.core.overlay_loader.OverlayConfigResolver.all_names`.
     """
     from teatree.core.overlay_loader import OverlayConfigResolver  # noqa: PLC0415 — deferred read

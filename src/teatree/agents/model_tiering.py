@@ -7,12 +7,12 @@ catalog — see the harness-scoped note below). Everything else — production p
 dispatch, eval scenarios, the benchmark, and the tests — references an abstract
 TIER (``frontier`` / ``balanced`` / ``cheap``), never a concrete model id.
 Adopting a new model is one edit to :data:`TIER_MODELS` (or one
-``[agent.tier_models]`` TOML line), with zero scenario, test, or dispatch edits.
+``agent_tier_models`` DB row), with zero scenario, test, or dispatch edits.
 
 The three tiers map to the price points #562 reasons about: ``frontier`` is the
 full-reasoning tier (genuine design work), ``balanced`` the mid tier, ``cheap``
 the mechanical tier. :func:`resolve_tier` reads :data:`TIER_MODELS` (overridable
-via ``[agent.tier_models]``); :data:`DEFAULT_PHASE_MODELS` maps each FSM phase to
+via ``agent_tier_models``); :data:`DEFAULT_PHASE_MODELS` maps each FSM phase to
 a tier, and :func:`resolve_phase_model` / :func:`resolve_spawn_model` resolve
 phase → tier → concrete model id.
 
@@ -43,41 +43,34 @@ harness's :data:`HARNESS_EFFORT_SCALE` entry and drop an out-of-range value (fal
 back to the shipped default) rather than ever handing a harness an effort string it
 does not understand. The shipped :data:`TIER_EFFORT` values (``xhigh`` / ``high``)
 are valid on both scales today, so this is a no-op for the shipped defaults; it only
-narrows an operator's ``[agent.tier_effort]`` override.
+narrows an operator's ``agent_tier_effort`` override.
 
-The mapping is config-driven via ``~/.teatree.toml``::
+The mapping is config-driven from the DB ``ConfigSetting`` store, read via
+:mod:`teatree.config.cold_reader`. Set the per-phase → tier map and the tier
+overrides with ``t3 <overlay> config_setting set``::
 
-    [agent]
-    phase_models.reviewing = "frontier"  # pin a phase to a tier (or a model id)
-    phase_models.coding = "balanced"     # opt a phase into a cheaper tier
-    phase_models.testing = ""            # opt out — inherit the user's default
+    t3 <overlay> config_setting set agent_phase_models '{"reviewing": "frontier", "testing": ""}'
+    t3 <overlay> config_setting set agent_tier_models '{"frontier": "claude-opus-4-9"}'
+    t3 <overlay> config_setting set agent_tier_effort '{"balanced": "xhigh"}'
 
-    [agent.tier_models]
-    frontier = "claude-opus-4-9"         # adopt a new frontier model, one line
-
-    [agent.tier_effort]
-    balanced = "xhigh"                   # raise the balanced-tier effort, one line
-
-A ``phase_models`` override may name a TIER (resolved through
+An ``agent_phase_models`` entry may name a TIER (resolved through
 :func:`resolve_tier`) or a concrete model id (passed through unchanged), so a
 power user can still pin a specific model. A sentinel value (empty / ``default``
 / ``inherit``) returns ``None`` so no ``--model`` flag is added and the user's
 configured default applies unchanged.
 """
 
-import tomllib
 from collections.abc import Iterable, Sequence
-from pathlib import Path
 
-from teatree.config import CONFIG_PATH, AgentHarness, get_effective_settings
+from teatree.config import AgentHarness, cold_reader, get_effective_settings
 from teatree.config_agent import _INHERIT_SENTINELS, EFFORT_SCALE, resolve_agent_config
 from teatree.core.cost import tier_of_model, tier_rank
 
 # THE SINGLE SOURCE OF TRUTH for concrete model ids. This is the ONLY place a
 # concrete Claude model id appears in teatree's model-resolution code: abstract
-# tier name -> concrete model id. Overridable per tier via ``[agent.tier_models]``
+# tier name -> concrete model id. Overridable per tier via ``agent_tier_models``
 # (merged OVER this default), so adopting a new model is one edit here or one
-# config line — no scenario, test, or dispatch edit.
+# DB row — no scenario, test, or dispatch edit.
 TIER_MODELS: dict[str, str] = {
     "frontier": "claude-opus-4-8",
     "balanced": "claude-sonnet-5",
@@ -94,7 +87,7 @@ TIER_MODELS: dict[str, str] = {
 # All three abstract tiers collapse to ONE router handle by design: the router's
 # own adaptive/gated bandit does the mundane-vs-hard tiering, so teatree's
 # abstract tiers need not fan out on this harness. Overridable per tier via
-# ``[agent.pydantic_ai_tier_models]`` (merged OVER this default) — if the
+# ``agent_pydantic_ai_tier_models`` (merged OVER this default) — if the
 # dashboard keeps a different router name, that is the one string to change.
 PYDANTIC_AI_TIER_MODELS: dict[str, str] = {
     "frontier": "orcarouter/teatree-factory",
@@ -112,7 +105,7 @@ _CLAUDE_FAMILY_TO_TIER: dict[str, str] = {"opus": "frontier", "sonnet": "balance
 # THE SINGLE SOURCE OF TRUTH for per-tier reasoning EFFORT — the parallel of
 # :data:`TIER_MODELS` for the effort axis. Abstract tier name -> CLI effort level
 # (a member of :data:`teatree.config_agent.EFFORT_SCALE`). Overridable per tier
-# via ``[agent.tier_effort]`` (merged OVER this default). Only the reasoning tiers
+# via ``agent_tier_effort`` (merged OVER this default). Only the reasoning tiers
 # carry an effort: ``cheap`` (Haiku, which rejects the effort/thinking levers) is
 # deliberately ABSENT, so :func:`resolve_tier_effort` returns ``None`` for it and
 # its spawns inherit the SDK default effort (emit no ``--effort``).
@@ -130,7 +123,7 @@ TIER_EFFORT: dict[str, str] = {
 #
 # ``claude_sdk`` -> :data:`teatree.config_agent.EFFORT_SCALE` (the
 # ``claude-agent-sdk`` CLI's own scale, unchanged — the config-time validator in
-# ``config_agent.py`` already gates ``[agent.tier_effort]`` overrides against this
+# ``config_agent.py`` already gates ``agent_tier_effort`` overrides against this
 # same set). ``pydantic_ai`` -> the OpenAI-compatible ``ReasoningEffort`` /
 # ``ThinkingLevel`` vocabulary pydantic_ai exposes (``minimal`` instead of
 # ``claude_sdk``'s absent floor rung, no ``max`` ceiling rung).
@@ -257,41 +250,39 @@ def assert_model_allowed_on_regulated_path(
         raise ValueError(msg)
 
 
-def resolve_tier(tier: str, *, config_path: Path | None = None) -> str:
+def resolve_tier(tier: str) -> str:
     """Resolve an abstract *tier* name to its concrete model id.
 
     Reads :data:`TIER_MODELS`, with each entry OVERRIDABLE via the
-    ``[agent.tier_models]`` config table (merged OVER the shipped default), so a
-    new model is adopted in one place — this constant or one config line. An
+    ``agent_tier_models`` DB setting (merged OVER the shipped default), so a
+    new model is adopted in one place — this constant or one DB row. An
     unknown *tier* (not a :data:`TIER_MODELS` key, not overridden) is passed
     through unchanged: the caller may legitimately pass a concrete model id where
     a tier is expected, and a genuine typo surfaces downstream rather than being
     silently swallowed here.
     """
-    config = resolve_agent_config(config_path=config_path)
+    config = resolve_agent_config()
     merged = {**TIER_MODELS, **config.tier_models}
     return merged.get(tier, tier)
 
 
-def _resolve_pydantic_ai_tier(tier: str, *, config_path: Path | None = None) -> str:
+def _resolve_pydantic_ai_tier(tier: str) -> str:
     """Resolve an abstract *tier* to its OrcaRouter router handle for the pydantic_ai harness.
 
     The :func:`resolve_tier` sibling for the ``pydantic_ai`` harness: reads
     :data:`PYDANTIC_AI_TIER_MODELS`, each entry OVERRIDABLE via
-    ``[agent.pydantic_ai_tier_models]`` (merged OVER the shipped default). Unlike
+    ``agent_pydantic_ai_tier_models`` (merged OVER the shipped default). Unlike
     :func:`resolve_tier` — which passes an unknown *tier* through unchanged so a
     caller may hand it a concrete id — an unknown tier here falls back to the
     :data:`DEFAULT_TIER` handle: the ``pydantic_ai`` harness MUST resolve to a
     handle OrcaRouter's catalog carries, never a bare tier name it would reject.
     """
-    config = resolve_agent_config(config_path=config_path)
+    config = resolve_agent_config()
     merged = {**PYDANTIC_AI_TIER_MODELS, **config.pydantic_ai_tier_models}
     return merged.get(tier) or merged.get(DEFAULT_TIER, PYDANTIC_AI_TIER_MODELS[DEFAULT_TIER])
 
 
-def resolve_pydantic_ai_model(
-    model_name: str | None, *, router_name: str | None = None, config_path: Path | None = None
-) -> str:
+def resolve_pydantic_ai_model(model_name: str | None, *, router_name: str | None = None) -> str:
     """Normalise a resolved model id for the ``pydantic_ai`` (OrcaRouter) harness.
 
     THE dash-form id normalisation (OrcaRouter setup plan §3.2). teatree's abstract
@@ -318,7 +309,7 @@ def resolve_pydantic_ai_model(
         return model_name
     if router_name:
         return router_name
-    return _resolve_pydantic_ai_tier(_abstract_tier_of(model_name), config_path=config_path)
+    return _resolve_pydantic_ai_tier(_abstract_tier_of(model_name))
 
 
 def _abstract_tier_of(model_name: str | None) -> str:
@@ -330,13 +321,11 @@ def _abstract_tier_of(model_name: str | None) -> str:
     return DEFAULT_TIER
 
 
-def resolve_tier_effort(
-    tier: str, *, harness: AgentHarness | None = None, config_path: Path | None = None
-) -> str | None:
+def resolve_tier_effort(tier: str, *, harness: AgentHarness | None = None) -> str | None:
     """Resolve an abstract *tier* name to its reasoning EFFORT — the effort parallel of :func:`resolve_tier`.
 
     Reads :data:`TIER_EFFORT`, with each entry OVERRIDABLE via the
-    ``[agent.tier_effort]`` config table (merged OVER the shipped default). Unlike
+    ``agent_tier_effort`` DB setting (merged OVER the shipped default). Unlike
     :func:`resolve_tier` — which passes an unknown *tier* through unchanged so a
     caller may hand it a concrete model id — an unknown tier here returns ``None``:
     a tier with no effort entry (the ``cheap``/Haiku tier, or a ``phase_models``
@@ -348,12 +337,12 @@ def resolve_tier_effort(
     (default: the resolved ``agent_harness`` DB-home setting) and dropped — falling
     back to the merged default — when it is outside that harness's vocabulary. The
     shipped defaults (``xhigh`` / ``high``) are valid on every harness's scale today,
-    so this only narrows an off-harness ``[agent.tier_effort]`` override (e.g. a
+    so this only narrows an off-harness ``agent_tier_effort`` override (e.g. a
     ``claude_sdk``-only ``"max"`` reaching a ``pydantic_ai`` spawn).
     """
     harness = harness if harness is not None else get_effective_settings().agent_harness
     allowed = HARNESS_EFFORT_SCALE[harness]
-    config = resolve_agent_config(config_path=config_path)
+    config = resolve_agent_config()
     merged = {**TIER_EFFORT, **config.tier_effort}
     resolved = merged.get(tier)
     if resolved is not None and resolved not in allowed:
@@ -366,16 +355,16 @@ def resolve_tier_effort(
     return resolved
 
 
-def resolve_phase_model(phase: str, *, config_path: Path | None = None) -> str | None:
+def resolve_phase_model(phase: str) -> str | None:
     """Resolve the concrete Claude model id for *phase* — phase → tier → model.
 
     Resolution order, first match wins:
 
-    1.  A config override in ``[agent] phase_models.<phase>`` of
-        ``~/.teatree.toml``. A sentinel value (empty / ``"default"`` /
-        ``"inherit"``) disables tiering for that phase (returns ``None``); any
-        other override value is resolved through :func:`resolve_tier` — so it may
-        name a TIER (``"frontier"``) or a concrete model id (passed through).
+    1.  A config override for *phase* in the ``agent_phase_models`` DB setting. A
+        sentinel value (empty / ``"default"`` / ``"inherit"``) disables tiering
+        for that phase (returns ``None``); any other override value is resolved
+        through :func:`resolve_tier` — so it may name a TIER (``"frontier"``) or a
+        concrete model id (passed through).
     2.  The phase's tier in :data:`DEFAULT_PHASE_MODELS`, resolved through
         :func:`resolve_tier`.
     3.  A phase NOT in :data:`DEFAULT_PHASE_MODELS` falls back to
@@ -384,14 +373,14 @@ def resolve_phase_model(phase: str, *, config_path: Path | None = None) -> str |
     ``None`` is returned ONLY for a sentinel override — meaning the caller must
     not pass ``--model`` and the user's default model applies.
     """
-    overrides = _load_phase_model_overrides(config_path)
+    overrides = _load_phase_model_overrides()
     if phase in overrides:
         value = overrides[phase].strip()
         if value.lower() in _INHERIT_SENTINELS:
             return None
-        return resolve_tier(value, config_path=config_path)
+        return resolve_tier(value)
     tier = DEFAULT_PHASE_MODELS.get(phase, DEFAULT_TIER)
-    return resolve_tier(tier, config_path=config_path)
+    return resolve_tier(tier)
 
 
 def resolve_spawn_model(
@@ -400,12 +389,11 @@ def resolve_spawn_model(
     skills: Iterable[str],
     session_id: str | None = None,
     task_id: int | None = None,
-    config_path: Path | None = None,
 ) -> str | None:
     """Resolve the spawn model: the phase model raised by the per-skill floors.
 
     Starts from :func:`resolve_phase_model` (the per-phase tier resolved to a
-    concrete model id) and merges in the ``[agent.skill_models]`` MODEL floor of
+    concrete model id) and merges in the ``agent_skill_models`` MODEL floor of
     every loaded skill in *skills*. The merge is *most-capable-wins*: a floor can
     only RAISE the resulting model's capability (via
     :func:`teatree.core.cost.tier_rank`, which ranks an abstract tier, an old
@@ -414,7 +402,7 @@ def resolve_spawn_model(
     is an inherit sentinel (``None`` after normalisation), contributes nothing.
 
     After the floor merge, a SITUATIONAL honesty-critical escalation
-    (teatree#2263) can RAISE the winner to ``[agent] honesty_model`` (default
+    (teatree#2263) can RAISE the winner to ``agent_honesty_model`` (default
     ``"opus"``): when *phase* is a :data:`VERIFICATION_PHASES` phase AND an
     active :class:`~teatree.core.models.honesty_escalation.HonestyEscalation`
     row exists for *session_id*. It is most-capable-wins (only raises, never
@@ -433,28 +421,26 @@ def resolve_spawn_model(
     downgrades the winner afterward, so the escalated model is exactly what the
     spawn receives.
     """
-    config = resolve_agent_config(config_path=config_path)
-    winner = resolve_phase_model(phase, config_path=config_path)
+    config = resolve_agent_config()
+    winner = resolve_phase_model(phase)
     for skill in skills:
         floor = config.skill_models.get(skill)
         if floor is not None and tier_rank(floor) > tier_rank(winner):
-            winner = resolve_tier(floor, config_path=config_path)
+            winner = resolve_tier(floor)
     if (
         _is_verification_phase(phase)
         and _honesty_escalation_active(session_id, task_id)
         and tier_rank(config.honesty_model) > tier_rank(winner)
     ):
-        winner = resolve_tier(config.honesty_model, config_path=config_path)
+        winner = resolve_tier(config.honesty_model)
     return winner
 
 
-def resolve_spawn_effort(
-    phase: str, *, harness: AgentHarness | None = None, config_path: Path | None = None
-) -> str | None:
+def resolve_spawn_effort(phase: str, *, harness: AgentHarness | None = None) -> str | None:
     """Resolve the spawn EFFORT for *phase* — phase → tier → effort, the effort parallel of :func:`resolve_spawn_model`.
 
     Mirrors :func:`resolve_phase_model`'s resolution, swapping the model constant
-    for the effort constant: the same ``[agent] phase_models`` override mechanism
+    for the effort constant: the same ``agent_phase_models`` override mechanism
     picks the abstract tier, then :func:`resolve_tier_effort` maps that tier to its
     reasoning effort. So a ``phase_models`` override to a cheaper tier lowers BOTH
     the model and the effort in lock-step, and a sentinel override (empty /
@@ -472,14 +458,14 @@ def resolve_spawn_effort(
     :func:`teatree.agents.harness.resolve_harness` will hand those options to —
     always gets a value that harness understands.
     """
-    overrides = _load_phase_model_overrides(config_path)
+    overrides = _load_phase_model_overrides()
     if phase in overrides:
         value = overrides[phase].strip()
         if value.lower() in _INHERIT_SENTINELS:
             return None
-        return resolve_tier_effort(value, harness=harness, config_path=config_path)
+        return resolve_tier_effort(value, harness=harness)
     tier = DEFAULT_PHASE_MODELS.get(phase, DEFAULT_TIER)
-    return resolve_tier_effort(tier, harness=harness, config_path=config_path)
+    return resolve_tier_effort(tier, harness=harness)
 
 
 def model_supports_thinking(model: str | None) -> bool:
@@ -526,22 +512,14 @@ def _honesty_escalation_active(session_id: str | None, task_id: int | None) -> b
         return False
 
 
-def _load_phase_model_overrides(config_path: Path | None) -> dict[str, str]:
-    """Read the ``[agent] phase_models`` table from the toml config.
+def _load_phase_model_overrides() -> dict[str, str]:
+    """Read the ``agent_phase_models`` phase → tier map from the DB ``ConfigSetting`` store.
 
-    Returns an empty mapping when the file or section is absent or malformed
-    so the shipped defaults always apply.
+    Read via :mod:`teatree.config.cold_reader`; returns an empty mapping when the
+    key is absent or not a table so the shipped defaults always apply. Set with
+    ``t3 <overlay> config_setting set agent_phase_models '{"reviewing": "frontier"}'``.
     """
-    path = config_path if config_path is not None else CONFIG_PATH
-    if not path.is_file():
+    raw = cold_reader.read_setting("agent_phase_models")
+    if not isinstance(raw, dict):
         return {}
-    try:
-        with path.open("rb") as fh:
-            raw = tomllib.load(fh)
-    except (tomllib.TOMLDecodeError, OSError):
-        return {}
-    agent_section = raw.get("agent", {})
-    phase_models = agent_section.get("phase_models", {})
-    if not isinstance(phase_models, dict):
-        return {}
-    return {str(phase): str(model) for phase, model in phase_models.items()}
+    return {str(phase): str(model) for phase, model in raw.items()}

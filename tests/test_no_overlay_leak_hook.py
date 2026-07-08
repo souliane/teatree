@@ -1,8 +1,9 @@
 """Tests for the no-overlay-leak gate (BLUEPRINT § 1).
 
 The hook loads forbidden tokens at runtime from
-``$TEATREE_OVERLAY_LEAK_TERMS`` (comma-separated). These tests inject a
-small set of placeholder tokens via that env var and assert the hook
+``$TEATREE_OVERLAY_LEAK_TERMS`` (comma-separated), else the DB-home
+``overlay_leak_terms`` ``ConfigSetting`` row. These tests inject a small set of
+placeholder tokens via that env var (and a seeded DB) and assert the hook
 catches them and ignores false positives.
 
 The gate uses the SAME whole-token matcher as the ``banned_terms`` posting
@@ -16,7 +17,9 @@ multi-token glued fallback. A clean identifier with no embedded term
 (``getUserName``) is unaffected.
 """
 
+import json
 import os
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -24,6 +27,24 @@ from pathlib import Path
 import pytest
 
 HOOK = Path(__file__).resolve().parent.parent / "scripts" / "hooks" / "check_no_overlay_leak.py"
+
+
+def _seed_overlay_leak_db(tmp_path: Path, terms: list[str]) -> Path:
+    """Build a ``teatree_config_setting`` DB carrying the ``overlay_leak_terms`` row."""
+    db = tmp_path / "config.sqlite3"
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS teatree_config_setting ("
+        "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+    )
+    conn.execute(
+        "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'overlay_leak_terms', ?)",
+        (json.dumps(terms),),
+    )
+    conn.commit()
+    conn.close()
+    return db
+
 
 # Placeholder tokens used only for testing the matching mechanism.
 # The real forbidden list is loaded from the operator's local config
@@ -240,8 +261,8 @@ class TestNoOverlayLeakHook:
 
 def _run_no_terms(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     """Invoke the hook with NO terms configured (env unset, HOME isolated)."""
-    env = {k: v for k, v in os.environ.items() if k != "TEATREE_OVERLAY_LEAK_TERMS"}
-    env["HOME"] = str(cwd)  # avoid reading the operator's real ~/.teatree.toml
+    env = {k: v for k, v in os.environ.items() if k not in {"TEATREE_OVERLAY_LEAK_TERMS", "T3_CONFIG_DB"}}
+    env["HOME"] = str(cwd)  # isolate HOME so no host config DB is resolved
     return subprocess.run(
         [sys.executable, str(HOOK), *args],
         cwd=cwd,
@@ -256,9 +277,9 @@ class TestRequireTermsFlag:
     """Fix #2: ``--require-terms`` makes an UNSET term list a LOUD failure.
 
     The gate is silently inert when neither ``TEATREE_OVERLAY_LEAK_TERMS``
-    nor ``[overlay_leak].terms`` is populated — a real leak sits unguarded
-    and the job stays green. ``--require-terms`` (the form CI passes) turns
-    that misconfiguration into exit 2; local dev omits the flag and stays
+    nor the ``overlay_leak_terms`` DB row is populated — a real leak sits
+    unguarded and the job stays green. ``--require-terms`` (the form CI passes)
+    turns that misconfiguration into exit 2; local dev omits the flag and stays
     green, mirroring the brand backstop's ``--require-brands``.
     """
 
@@ -356,6 +377,59 @@ class TestOpaqueIdDetection:
         result = _run(tmp_path)
         assert result.returncode == 1, result.stdout
         assert "C0ZX91QWERT" in result.stdout
+
+
+class TestDbSourcedTerms:
+    """The term list is DB-home: an ``overlay_leak_terms`` row drives the gate.
+
+    The env override still WINS, but with no env the reader falls back to the
+    canonical ``overlay_leak_terms`` ``ConfigSetting`` row (via
+    ``teatree.config.cold_reader``). Tests seed a DB and point the subprocess at
+    it with ``T3_CONFIG_DB``.
+    """
+
+    def _run_with_db(self, cwd: Path, db: Path, *args: str) -> subprocess.CompletedProcess[str]:
+        env = {k: v for k, v in os.environ.items() if k != "TEATREE_OVERLAY_LEAK_TERMS"}
+        env["HOME"] = str(cwd)
+        env["T3_CONFIG_DB"] = str(db)
+        return subprocess.run(
+            [sys.executable, str(HOOK), *args],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+
+    def test_db_term_is_caught(self, tmp_path: Path) -> None:
+        db = _seed_overlay_leak_db(tmp_path, ["alpha-tenant"])
+        _seed(tmp_path, "src/teatree/foo.py", "# Reference to alpha-tenant\n")
+        result = self._run_with_db(tmp_path, db, "--require-terms")
+        assert result.returncode == 1, result.stdout + result.stderr
+        assert "alpha-tenant" in result.stdout.lower()
+
+    def test_db_terms_populated_satisfies_require_terms(self, tmp_path: Path) -> None:
+        db = _seed_overlay_leak_db(tmp_path, ["alpha-tenant"])
+        _seed(tmp_path, "src/teatree/foo.py", "clean = True\n")
+        result = self._run_with_db(tmp_path, db, "--require-terms")
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "MISCONFIGURED" not in result.stdout
+
+    def test_env_wins_over_db(self, tmp_path: Path) -> None:
+        # When the env override is set, the DB list is NOT consulted: a file that
+        # names ONLY a DB-only term (absent from the env list) is not flagged.
+        db = _seed_overlay_leak_db(tmp_path, ["from-db-only"])
+        _seed(tmp_path, "src/teatree/foo.py", "# only names from-db-only here\n")
+        env = {**os.environ, "TEATREE_OVERLAY_LEAK_TERMS": "beta-tenant", "T3_CONFIG_DB": str(db)}
+        result = subprocess.run(
+            [sys.executable, str(HOOK)],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+        assert result.returncode == 0, result.stdout  # env list has no match; the DB list is ignored
 
 
 class TestOverlayLeakCiPassesRequireTerms:

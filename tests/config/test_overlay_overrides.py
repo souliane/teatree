@@ -1,15 +1,15 @@
 # test-path: cross-cutting
-"""Per-overlay override machinery under the #1775 DB/TOML hard partition.
+"""Per-overlay override machinery under the #1775 DB partition.
 
-A DB-home setting is per-overlay overridable via a ``ConfigSetting`` row scoped
-to the overlay (``scope=<overlay name>``); a TOML-home setting via
-``[overlays.<name>]``. The resolution chain (later wins): env →
-overlay-scoped DB / per-overlay TOML → global DB / global TOML → dataclass
-default. A ``[overlays.<name>]`` value for a DB-home key is ignored on read.
+A DB-home setting is per-overlay overridable via a ``ConfigSetting`` row scoped to
+the overlay (``scope=<overlay name>``). The resolution chain (later wins): env ->
+overlay-scoped DB row -> global DB row -> dataclass default. A DB-home key placed
+inside an ``overlays`` registry entry is parsed by discovery but dropped on read
+(its sole home is a scoped ``ConfigSetting`` row).
 
-Integration-first per the Test-Writing Doctrine: real TOML under ``tmp_path``
-with ``teatree.config.CONFIG_PATH`` monkeypatched, DB-home overrides via the real
-``ConfigSetting`` store, asserted through the real ``get_effective_settings``.
+Integration-first per the Test-Writing Doctrine: DB-home overrides via the real
+``ConfigSetting`` store asserted through ``get_effective_settings``; the overlays
+registry seeded into the cold-path sqlite (``config_db``).
 """
 
 from pathlib import Path
@@ -17,86 +17,61 @@ from pathlib import Path
 import pytest
 from django.test import TestCase
 
-import teatree.config as config_facade
 from teatree.config import Mode, discover_overlays, get_effective_settings
 from teatree.core.models import ConfigSetting
 
-from ._shared import _write_toml
+from ._shared import _seed_config_db
 
 
-class TestOverlayTomlOverrides:
-    """TOML-home per-overlay overrides via ``[overlays.<name>]``."""
+class TestOverlayRegistryParsing:
+    """An ``overlays`` registry entry's per-overlay override is parsed by discovery."""
 
-    def test_overlay_toml_mode_parsed_into_entry(self, tmp_path: Path) -> None:
-        # ``mode`` is DB-home, so discovery parses it from [overlays.<name>] into
-        # the entry overrides dict (the union parse), but the resolver drops it on
-        # read — discovery itself still coerces the value.
-        config_path = tmp_path / ".teatree.toml"
-        _write_toml(
-            config_path,
-            '[overlays.my-overlay]\nclass = "x.y:Z"\nmode = "auto"\n',
-        )
-        entries = discover_overlays(config_path=config_path)
-        by_name = {e.name: e for e in entries}
+    @pytest.mark.usefixtures("no_installed_overlays")
+    def test_overlay_mode_parsed_into_entry(self, config_db: Path) -> None:
+        # ``mode`` is DB-home, so discovery parses it from the registry entry into
+        # the overrides dict (the resolver drops it on read — see below); discovery
+        # itself still coerces the value.
+        _seed_config_db(config_db, overlays={"my-overlay": {"class": "x.y:Z", "mode": "auto"}})
+        by_name = {e.name: e for e in discover_overlays()}
         assert by_name["my-overlay"].overrides["mode"] is Mode.AUTO
 
-    def test_overlay_invalid_mode_raises(self, tmp_path: Path) -> None:
-        config_path = tmp_path / ".teatree.toml"
-        _write_toml(config_path, '[overlays.my-overlay]\nclass = "x.y:Z"\nmode = "nope"\n')
+    @pytest.mark.usefixtures("no_installed_overlays")
+    def test_overlay_invalid_mode_raises(self, config_db: Path) -> None:
+        _seed_config_db(config_db, overlays={"my-overlay": {"class": "x.y:Z", "mode": "nope"}})
         with pytest.raises(ValueError, match="Invalid t3 mode"):
-            discover_overlays(config_path=config_path)
+            discover_overlays()
 
-    def test_orchestrator_bash_gate_overlay_toml_is_ignored(
-        self,
-        config_file: Path,
-        elsewhere: Path,
-        no_installed_overlays: None,
-        monkeypatch: pytest.MonkeyPatch,
+    @pytest.mark.usefixtures("no_installed_overlays")
+    def test_db_home_key_in_registry_entry_is_dropped_on_read(
+        self, config_db: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # eliminate-~/.teatree.toml: orchestrator_bash_gate_enabled is DB-home now, so
-        # a [overlays.<name>] (and a global [teatree]) TOML value is IGNORED on read;
-        # with no DB row the dataclass default (True) stands. The per-overlay override
-        # lives in a ConfigSetting overlay row (see TestOverlayDbHomeOverrides); the
-        # gate's own reader is DB-first via cold_reader (test_teatree_gate covers it).
-        del elsewhere, no_installed_overlays
+        # A DB-home key inside the overlays registry entry is IGNORED on read (its
+        # home is a scoped ConfigSetting row); with none the dataclass default stands.
         monkeypatch.setenv("T3_OVERLAY_NAME", "looseshell")
-        _write_toml(
-            config_file,
-            "[teatree]\norchestrator_bash_gate_enabled = true\n\n"
-            '[overlays.looseshell]\nclass = "x.y:Z"\norchestrator_bash_gate_enabled = false\n',
+        _seed_config_db(
+            config_db,
+            overlays={"looseshell": {"class": "x.y:Z", "orchestrator_bash_gate_enabled": False}},
         )
         assert get_effective_settings().orchestrator_bash_gate_enabled is True
 
-    def test_privacy_overlay_toml_is_ignored(
-        self,
-        config_file: Path,
-        elsewhere: Path,
-        no_installed_overlays: None,
-        monkeypatch: pytest.MonkeyPatch,
+    @pytest.mark.usefixtures("no_installed_overlays")
+    def test_privacy_registry_entry_value_is_dropped_on_read(
+        self, config_db: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # privacy is DB-home now: its [overlays.<name>] / [teatree] TOML value is
-        # ignored on read, so the default ("") stands without a DB row.
-        del elsewhere, no_installed_overlays
         monkeypatch.setenv("T3_OVERLAY_NAME", "client")
-        _write_toml(
-            config_file,
-            '[teatree]\nprivacy = "loose"\n\n[overlays.client]\nclass = "x.y:Z"\nprivacy = "strict"\n',
-        )
+        _seed_config_db(config_db, overlays={"client": {"class": "x.y:Z", "privacy": "strict"}})
         assert get_effective_settings().privacy == ""
 
 
 class TestOverlayDbHomeOverrides(TestCase):
     """DB-home per-overlay overrides via an overlay-scoped ``ConfigSetting`` row.
 
-    The DB twin of the old ``[overlays.<name>]`` TOML override: a row scoped to
-    the active overlay beats the global DB row, and a ``[overlays.<name>]`` TOML
-    value for the same DB-home key is ignored on read.
+    A row scoped to the active overlay beats the global DB row; the active overlay
+    is resolved from ``T3_OVERLAY_NAME``.
     """
 
     @pytest.fixture(autouse=True)
-    def _config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        self.config_path = tmp_path / ".teatree.toml"
-        monkeypatch.setattr(config_facade, "CONFIG_PATH", self.config_path)
+    def _config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         for env in (
             "T3_MODE",
             "T3_OVERLAY_NAME",
@@ -107,7 +82,6 @@ class TestOverlayDbHomeOverrides(TestCase):
             "T3_TEAMS_IDLE_MINUTES",
         ):
             monkeypatch.delenv(env, raising=False)
-        _write_toml(self.config_path, '[teatree]\n\n[overlays.my-overlay]\nclass = "x.y:Z"\n')
         self.monkeypatch = monkeypatch
 
     def _activate(self) -> None:
@@ -192,8 +166,6 @@ class TestOverlayDbHomeOverrides(TestCase):
         assert get_effective_settings().orchestrate_claim_enabled is True
 
     def test_overlay_can_override_orchestrator_bash_gate_enabled(self) -> None:
-        # eliminate-~/.teatree.toml: the former per-overlay-TOML override is now a DB
-        # overlay-scope row.
         ConfigSetting.objects.set_value("orchestrator_bash_gate_enabled", value=False, scope="my-overlay")
         self._activate()
         assert get_effective_settings().orchestrator_bash_gate_enabled is False
@@ -254,21 +226,10 @@ class TestOverlayDbHomeOverrides(TestCase):
         assert get_effective_settings().mr_title_regex == r"^JIRA-\d+: .+"
 
     def test_e2e_mandatory_gate_default_on_and_overlay_can_disable(self) -> None:
-        # Default ON with no rows.
         assert get_effective_settings().e2e_mandatory_gate_enabled is True
         ConfigSetting.objects.set_value("e2e_mandatory_gate_enabled", value=False, scope="my-overlay")
         self._activate()
         assert get_effective_settings().e2e_mandatory_gate_enabled is False
-
-    def test_db_home_overlay_toml_value_is_ignored(self) -> None:
-        # A [overlays.<name>] DB-home value is parsed by discovery but ignored on
-        # read — the dataclass default stands without a DB row.
-        _write_toml(
-            self.config_path,
-            '[teatree]\n\n[overlays.my-overlay]\nclass = "x.y:Z"\nissue_implementer_enabled = true\n',
-        )
-        self._activate()
-        assert get_effective_settings().issue_implementer_enabled is False
 
     def test_pane_budget_env_non_positive_fails_safe(self) -> None:
         self.monkeypatch.setenv("T3_TEAMS_MAX_PANES", "0")

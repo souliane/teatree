@@ -1,12 +1,11 @@
-"""Read-only ``t3 config show`` view: text-file intent vs DB-cached state.
+"""Read-only ``t3 config show`` view: user-intent config vs DB-cached state.
 
 Encodes the #628 cache-vs-intent invariant in the output itself. The
-**intent** section is the resolved user-authored config — under the #1775
-partition that spans BOTH homes: the ``~/.teatree.toml`` carve-out and the
-DB-home ``ConfigSetting`` store (rows are user intent, not regenerable cache).
-Deleting either loses user intent. The **derived** section is DB / data-dir
-state that can be deleted and deterministically rebuilt from the config plus
-repo state (tickets, sessions, update/skill caches); every entry is flagged
+**intent** section is the resolved user-authored config — the DB-home
+``ConfigSetting`` store (rows are user intent, not regenerable cache), listable
+with ``t3 <overlay> config_setting list``. The **derived** section is DB /
+data-dir state that can be deleted and deterministically rebuilt from the config
+plus repo state (tickets, sessions, update/skill caches); every entry is flagged
 ``regenerable`` so the invariant is visible, not just documented.
 
 Building the view never imports the ORM eagerly and never writes anything
@@ -20,7 +19,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import teatree.config as config_mod
 from teatree.config import FEATURE_FLAGS, get_effective_settings
 from teatree.config_mr_reminder import MrReminderConfig
 from teatree.paths import CANONICAL_DB, DATA_DIR, DATA_DIR_AUTO_ISOLATED
@@ -36,16 +34,12 @@ _REGENERABLE_CACHE_FILES: tuple[str, ...] = (
 
 @dataclass
 class ConfigView:
-    config_path: str
-    config_exists: bool
     intent: dict[str, Any]
     derived: list[dict[str, Any]] = field(default_factory=list)
     flags: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "config_path": self.config_path,
-            "config_exists": self.config_exists,
             "intent": self.intent,
             "derived": self.derived,
             "flags": self.flags,
@@ -129,10 +123,7 @@ def _derived() -> list[dict[str, Any]]:
 
 
 def build_config_view() -> ConfigView:
-    config_path = config_mod.CONFIG_PATH
     return ConfigView(
-        config_path=str(config_path),
-        config_exists=config_path.is_file(),
         intent=_intent(),
         derived=_derived(),
         flags=_flags(),
@@ -156,9 +147,8 @@ def _render_flag_entry(entry: dict[str, Any]) -> str:
 
 
 def render_config_view(view: ConfigView) -> str:
-    status = "present" if view.config_exists else "absent (defaults shown)"
     lines = [
-        f"Intent — user-authored source of truth (TOML {view.config_path}, {status}; + DB ConfigSetting store):",
+        "Intent — user-authored source of truth (DB ConfigSetting store; `t3 <overlay> config_setting list`):",
         *(f"  {key} = {view.intent[key]}" for key in sorted(view.intent)),
         "",
         "Flags — governed feature toggles (stage-labelled lifecycle; born and removed with the code they gate):",

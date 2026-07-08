@@ -110,7 +110,7 @@ class OverlayConfig(BaseModel):
     """Typed, fail-closed overlay configuration (PR-27b).
 
     A Pydantic model: every declared field is type-validated on assignment
-    (``validate_assignment=True``), so a settings module or ``~/.teatree.toml``
+    (``validate_assignment=True``), so a settings module or DB overlays-registry
     override that supplies the wrong type for a known field fails LOUD instead
     of silently corrupting the config. ``extra="allow"`` keeps the overlay
     extension seam — a downstream overlay's settings module may introduce
@@ -228,7 +228,7 @@ class OverlayConfig(BaseModel):
                 setattr(self, name.lower(), value)
 
     def apply_toml_overrides(self, overlay_name: str) -> None:
-        """Apply ``[overlays.<overlay_name>]`` overrides from ``~/.teatree.toml``.
+        """Apply ``[overlays.<overlay_name>]`` overrides from the DB overlays registry.
 
         Called automatically by ``__init__`` when an ``overlay_name`` is
         supplied, and by ``overlay_loader._discover_overlays`` for every
@@ -285,7 +285,7 @@ class OverlayConfig(BaseModel):
         return self._read_secret("slack_token")
 
     def get_notion_token(self) -> str:
-        # Wired via ``notion_token_pass_key`` in ~/.teatree.toml; default empty
+        # Wired via the ``notion_token_pass_key`` overlay config; default empty
         # means the runtime Notion status-sync is a clean no-op.
         return self._read_secret("notion_token")
 

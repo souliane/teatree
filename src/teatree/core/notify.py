@@ -405,11 +405,12 @@ def _feature_enabled() -> bool:
 def resolve_user_id() -> str:
     """Resolve the Slack user id to DM (overlay override → global → empty).
 
-    Mirrors ``backend_factory._messaging_from_toml`` (which reads the
-    same ``slack_user_id`` key off the overlay table) so a single global
-    fallback isn't required — every routing path agrees on the same
-    resolution order.
+    The per-overlay id comes from the DB overlays registry (still injected into
+    ``load_config().raw["overlays"]``); the GLOBAL fallback reads the DB-home
+    ``slack_user_id`` setting so every routing path agrees on the same order.
     """
+    from teatree.config import cold_reader  # noqa: PLC0415
+
     cfg = load_config().raw
     overlay_name = os.environ.get("T3_OVERLAY_NAME", "")
     overlays = cfg.get("overlays") or {}
@@ -417,8 +418,7 @@ def resolve_user_id() -> str:
         user_id = overlays[overlay_name].get("slack_user_id", "")
         if user_id:
             return str(user_id)
-    teatree_cfg = cfg.get("teatree") or {}
-    return str(teatree_cfg.get("slack_user_id", ""))
+    return cold_reader.str_setting("slack_user_id", default="")
 
 
 def resolve_user_channel() -> str:

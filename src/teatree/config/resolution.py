@@ -38,7 +38,7 @@ from teatree.types import SpeakConfig
 
 _logger = logging.getLogger("teatree.config")
 
-# The structured nested settings (#1775 eliminate-~/.teatree.toml): stored as a JSON
+# The structured nested settings: stored as a JSON
 # dict ConfigSetting, NOT a scalar. ``_coerce_db_rows`` SKIPS them — a bare dict
 # cannot flat-replace the dataclass field — and ``get_effective_settings`` resolves
 # them bespoke from the raw rows (``_apply_structured_db_settings``): ``mr_reminder``
@@ -430,10 +430,9 @@ def _drop_db_home_overlay_keys(overrides: dict[str, Any], overlay_name: str) -> 
     if dropped:
         scope = overlay_name or "(active overlay)"
         _logger.warning(
-            "Config keys in [overlays.%s] are DB-home settings (#1775), so their TOML value is "
+            "Config override keys for overlay %s are DB-home settings, so a stray non-DB value is "
             "IGNORED on read and had NO effect: %s. Their authoritative home is the ConfigSetting "
-            "store — set them with `t3 <overlay> config_setting set <key> <value> --overlay %s` or "
-            "migrate the file once with `t3 <overlay> config_setting import`.",
+            "store — set them with `t3 <overlay> config_setting set <key> <value> --overlay %s`.",
             scope,
             ", ".join(sorted(dropped)),
             scope,
@@ -532,9 +531,8 @@ def cadence_seconds() -> int:
     the generic effective-settings env layer. Layers, first match wins:
     first the ``T3_LOOP_CADENCE`` env var (the bespoke direct read), then
     ``get_effective_settings().loop_cadence_seconds`` which covers the
-    per-overlay ``[overlays.<name>]`` override, then the global
-    ``[teatree]`` value in ``~/.teatree.toml``, then the ``UserSettings``
-    default of 720.
+    per-overlay ``ConfigSetting`` overlay-scope row, then the global-scope
+    row, then the ``UserSettings`` default of 720.
 
     Any ``T3_LOOP_CADENCE`` parse failure falls back to 720. The result is
     clamped to a 60s minimum so a misconfigured tiny value cannot busy-loop

@@ -11,7 +11,7 @@ lifecycle stage, and AUDITS dead toggles.
 The registry lives in CODE (a flag is born and dies with the code it gates); only
 the flag's VALUE lives in the ``ConfigSetting`` store. This is the
 typed-registry-plus-fitness-test idiom of ``SETTING_HOMES`` / ``COLD_HOOK_SETTINGS``
-/ ``BOOTSTRAP_FILE_ONLY_SETTINGS``: the registry is pure data, and the conformance
+/ ``BOOTSTRAP_ENV_ONLY_SETTINGS``: the registry is pure data, and the conformance
 suite in ``tests/config/test_feature_flags.py`` keeps every entry honest — each
 must name a real ``bool``-or-``StrEnum`` ``UserSettings`` field (most flags are
 on/off bools; ``critic_gate_mode`` is a tri-state ``StrEnum``) registered in

@@ -66,7 +66,11 @@ class E2eSpecsResolutionError(RuntimeError):
 
     @classmethod
     def repo_not_in_config(cls, repo: str) -> "E2eSpecsResolutionError":
-        return cls(f"E2E repo '{repo}' not found in ~/.teatree.toml [e2e_repos].", exit_code=1)
+        return cls(
+            f"E2E repo '{repo}' not found in the e2e_repos config — "
+            f"set it with `t3 <overlay> config_setting set e2e_repos <value>`.",
+            exit_code=1,
+        )
 
     @classmethod
     def branch_needs_repo(cls) -> "E2eSpecsResolutionError":
@@ -75,7 +79,11 @@ class E2eSpecsResolutionError(RuntimeError):
 
     @classmethod
     def no_private_tests(cls) -> "E2eSpecsResolutionError":
-        msg = "private_tests not configured in ~/.teatree.toml / T3_PRIVATE_TESTS, or directory missing."
+        msg = (
+            "private_tests not configured (set it with "
+            "`t3 <overlay> config_setting set private_tests <path>` or the T3_PRIVATE_TESTS env var), "
+            "or the directory is missing."
+        )
         return cls(msg, exit_code=1)
 
 
@@ -145,12 +153,10 @@ def ensure_external_e2e_dependencies(playwright_root: Path) -> None:
 
 
 def resolve_private_tests_path() -> Path | None:
-    """Resolve the private tests directory from env or config."""
-    from teatree.config import load_config  # noqa: PLC0415
+    """Resolve the private tests directory from the ``T3_PRIVATE_TESTS`` env or the DB config."""
+    from teatree.config import cold_reader  # noqa: PLC0415
 
-    private_tests = os.environ.get("T3_PRIVATE_TESTS", "")
-    if not private_tests:
-        private_tests = load_config().raw.get("teatree", {}).get("private_tests", "")
+    private_tests = os.environ.get("T3_PRIVATE_TESTS", "") or cold_reader.str_setting("private_tests", default="")
     if not private_tests:
         return None
     path = Path(private_tests).expanduser()

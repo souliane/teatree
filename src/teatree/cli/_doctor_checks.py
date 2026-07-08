@@ -388,7 +388,7 @@ def _check_agent_session_pins() -> bool:
     try:
         cfg = resolve_agent_config()
     except ValueError as exc:
-        typer.echo(f"FAIL  Invalid [agent] session_effort in ~/.teatree.toml: {exc}")
+        typer.echo(f"FAIL  Invalid agent_session_effort setting: {exc}")
         return False
 
     def _unrecognised(model: str) -> bool:
@@ -410,22 +410,21 @@ def _check_agent_session_pins() -> bool:
 
 
 def _check_legacy_overlay_alias() -> None:
-    """Warn (never rewrite) on a stale legacy ``[overlays.<alias>]`` table.
+    """Warn (never rewrite) on a stale legacy alias entry in the DB overlays registry.
 
-    souliane/teatree#1108: older ``slack-bot`` runs wrote a short
-    ``[overlays.<alias>]`` table (e.g. ``[overlays.teatree]``) for an
-    overlay whose canonical entry-point name is ``t3-<alias>``. Discovery
-    now folds such a bare config-only alias table into its canonical
-    overlay so it is no longer listed twice — but the stale table is
-    confusing to read. Surface it as a WARN with the corrective rename;
-    the agent/user does the edit (no auto-rewrite of the user's config).
+    souliane/teatree#1108: older ``slack-bot`` runs recorded a short overlay entry
+    (e.g. ``teatree``) for an overlay whose canonical entry-point name is
+    ``t3-<alias>``. Discovery now folds such a bare config-only alias entry into
+    its canonical overlay so it is no longer listed twice — but the stale entry is
+    confusing to read. Surface it as a WARN with the corrective rename; the
+    agent/user does the edit (no auto-rewrite of the user's registry).
     """
     try:
         from importlib.metadata import entry_points  # noqa: PLC0415
 
-        from teatree.config import CONFIG_PATH, _match_canonical_ep, load_config  # noqa: PLC0415
+        from teatree.config import _match_canonical_ep, load_config  # noqa: PLC0415
 
-        config = load_config(CONFIG_PATH)
+        config = load_config()
         ep_names = {ep.name for ep in entry_points(group="teatree.overlays")}
         for name, overlay_cfg in config.raw.get("overlays", {}).items():
             if name in ep_names or overlay_cfg.get("class") or overlay_cfg.get("path"):
@@ -433,36 +432,12 @@ def _check_legacy_overlay_alias() -> None:
             canonical = _match_canonical_ep(name, ep_names)
             if canonical is not None:
                 typer.echo(
-                    f"WARN  Stale '[overlays.{name}]' table in ~/.teatree.toml — "
+                    f"WARN  Stale overlay entry '{name}' in the DB overlays registry — "
                     f"the canonical overlay is '{canonical}'. Rename it to "
-                    f"'[overlays.{canonical}]' (discovery folds it for now)."
+                    f"'{canonical}' (discovery folds it for now)."
                 )
     except Exception:  # noqa: BLE001 — doctor warnings must never crash the run
         return
-
-
-def _check_registry_toml_drift(config_path: Path | None = None) -> bool:
-    """Hard-FAIL on a DB-home registry table masked by a diverging DB row (#128).
-
-    The ``overlays`` / ``e2e_repos`` registries are DB-home (#1775); a lingering
-    ``[overlays]`` / ``[e2e_repos]`` table in ~/.teatree.toml whose value DIVERGES from
-    the authoritative ``ConfigSetting`` row is silently ignored on read — an overlay
-    ``path`` edit returned the stale worktree value with zero signal (the reported
-    provisioning failure). ``load_config(..., enforce_registry_partition=True)`` turns
-    that mask into a loud ``RegistryTomlMaskError``; the doctor reports it with the
-    exact reconcile command. A clean/absent file passes.
-    """
-    from teatree.config import CONFIG_PATH, RegistryTomlMaskError, load_config  # noqa: PLC0415
-
-    path = config_path if config_path is not None else CONFIG_PATH
-    try:
-        load_config(path, enforce_registry_partition=True)
-    except RegistryTomlMaskError as exc:
-        typer.echo(f"FAIL  {exc}")
-        return False
-    except Exception:  # noqa: BLE001 — a malformed file is a different check's concern; never crash doctor
-        return True
-    return True
 
 
 def _check_stale_path_t3(env: dict[str, str] | None = None) -> bool:

@@ -21,7 +21,7 @@ Handles the **push and PR workflow** for skill improvements created by `t3:retro
 
 ## Configuration
 
-Uses these `~/.teatree` variables (set by `/t3:setup`):
+Uses these environment variables (set in your shell profile or via `/t3:setup`):
 
 - **`T3_CONTRIBUTE`** — must be `true` for this skill to do anything.
 - **`T3_PUSH`** — `false` (default) or `true`. When `false`, this skill refuses to push and tells the user to push manually. Exists as a safety stop for privacy/secret review.
@@ -87,7 +87,7 @@ If the (possibly-bundled) branch has **more than one** commit, offer to squash f
 
 ### 2. Pre-Flight Checks (all must pass)
 
-1. **`T3_CONTRIBUTE=true`** — if not, stop: "Self-improvement is disabled. Set `T3_CONTRIBUTE=true` in `~/.teatree`."
+1. **`T3_CONTRIBUTE=true`** — if not, stop: "Self-improvement is disabled. Set `T3_CONTRIBUTE=true` in your environment (or `t3 <overlay> config_setting set contribute true`)."
 2. **`T3_PUSH` is `true`** — if not, stop: "Pushing is disabled (`T3_PUSH=false`). Push manually with `git push` if you're sure."
 3. **Has a push remote:** `git -C "$T3_REPO" remote -v` → shows a push URL for `origin`.
 4. **Full gate set passes:** `cd "$T3_REPO" && t3 tool verify-gates` — runs BOTH commit- and push-stage hooks (a bare `prek run --all-files` skips the push-stage gates CI re-runs); fix first if it fails.

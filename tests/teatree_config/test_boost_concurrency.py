@@ -6,39 +6,23 @@
 (T3_BOOST_CONCURRENCY) > per-overlay > global > default``.
 """
 
-from pathlib import Path
-
 import pytest
 from django.test import TestCase
 
-import teatree.config as config_facade
 from teatree.config import get_effective_settings, load_config
 from teatree.core.models import ConfigSetting
 
 
-def _write_toml(config_path: Path, content: str) -> None:
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(content, encoding="utf-8")
-
-
 class TestBoostConcurrencyDefault:
-    def test_defaults_to_zero(self, tmp_path: Path) -> None:
-        config_path = tmp_path / ".teatree.toml"
-        _write_toml(config_path, "[teatree]\n")
-        assert load_config(config_path).user.boost_concurrency == 0
+    def test_defaults_to_zero(self) -> None:
+        assert load_config().user.boost_concurrency == 0
 
 
 class TestBoostConcurrencyDbResolution(TestCase):
     @pytest.fixture(autouse=True)
-    def _config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        self.config_path = tmp_path / ".teatree.toml"
-        monkeypatch.setattr(config_facade, "CONFIG_PATH", self.config_path)
+    def _config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("T3_BOOST_CONCURRENCY", raising=False)
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
-        _write_toml(
-            self.config_path,
-            '[teatree]\n\n[overlays.fast]\nclass = "x:Y"\n',
-        )
         self.monkeypatch = monkeypatch
 
     def test_global_db_row(self) -> None:
@@ -57,8 +41,3 @@ class TestBoostConcurrencyDbResolution(TestCase):
         self.monkeypatch.setenv("T3_OVERLAY_NAME", "fast")
         self.monkeypatch.setenv("T3_BOOST_CONCURRENCY", "9")
         assert get_effective_settings().boost_concurrency == 9
-
-    def test_ignores_a_teatree_toml_value(self) -> None:
-        # DB-home: a ``[teatree]`` TOML value is ignored on read (only the DB row governs).
-        _write_toml(self.config_path, "[teatree]\nboost_concurrency = 7\n")
-        assert get_effective_settings().boost_concurrency == 0

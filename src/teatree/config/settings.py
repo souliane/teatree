@@ -221,11 +221,11 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     # overlay (empty list = no override, credential keeps its built-in path).
     "anthropic_oauth_pass_paths": _parse_str_list,
     "anthropic_api_key_pass_paths": _parse_str_list,
-    # eliminate-~/.teatree.toml: ``check_updates``'s sole reader ``check_for_updates``
+    # DB-home cutover: ``check_updates``'s sole reader ``check_for_updates``
     # runs pre-Django but now reads the DB via ``cold_reader`` (Django-free), so a
     # stored ``check_updates=false`` IS honoured. DB-home, seeded by ``t3 setup``.
     "check_updates": _parse_strict_bool,
-    # eliminate-~/.teatree.toml: ``worktrees_dir`` / ``timezone`` were tagged
+    # DB-home cutover: ``worktrees_dir`` / ``timezone`` were tagged
     # "needed to open the DB", but Django ``settings.py`` hardcodes ``TIME_ZONE =
     # "UTC"`` and configures ``DATABASES`` without reading either — so neither is a
     # bootstrap dep. ``worktrees_dir`` resolves via ``loader.worktrees_dir()`` off
@@ -234,24 +234,24 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     # partition consistency).
     "worktrees_dir": _parse_strict_str,
     "timezone": _parse_strict_str,
-    # eliminate-~/.teatree.toml: the last two per-overlay-TOML-overridable carve-out
+    # DB-home cutover: the last two per-overlay-TOML-overridable carve-out
     # fields move to DB-home (per-overlay via a ``ConfigSetting`` overlay-scope row).
     # ``orchestrator_bash_gate_enabled``'s reader (``teatree_gate._gate_key_is_enabled``)
     # is already DB-first via ``cold_reader`` (toml fallback for the cold self-rescue);
     # ``privacy`` has no live production reader.
     "orchestrator_bash_gate_enabled": _parse_strict_bool,
     "privacy": _parse_strict_str,
-    # eliminate-~/.teatree.toml: ``handover_mirror_path``. The pre-Django reader
+    # DB-home cutover: ``handover_mirror_path``. The pre-Django reader
     # (``hook_router`` SessionStart bootstrap) now reads the canonical sqlite via
     # ``cold_reader`` — which fails open to ``_default_handover_mirror_path()``, the
     # exact path ``write_mirror`` uses when unset — so the "read when the DB is
     # unreachable" carve-out is satisfied without TOML. Stored as a path STRING.
     "handover_mirror_path": _parse_handover_mirror_path,
-    # eliminate-~/.teatree.toml: ``statusline_chain``. The bash statusline hook now
+    # DB-home cutover: ``statusline_chain``. The bash statusline hook now
     # reads it from the canonical sqlite via the ``sqlite3`` CLI + ``json_each``
     # (``_statusline_chain_db``) — no importable teatree python, no TOML parse.
     "statusline_chain": _parse_str_list,
-    # eliminate-~/.teatree.toml: ``autoload`` (#256 engagement flag). Read DB-only via
+    # DB-home cutover: ``autoload`` (#256 engagement flag). Read DB-only via
     # ``cold_reader`` (Python hook ``teatree_settings.autoload_enabled``) and the
     # ``sqlite3`` CLI (bash ``statusline.sh._autoload_db_value``); a ``[teatree]
     # autoload`` TOML value is ignored on read. Strict bool, default OFF.
@@ -282,7 +282,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
     # Per-overlay overridable.
     "snapshot_warmer_max_age_days": _parse_strict_int,
     "snapshot_warmer_disabled": _parse_strict_bool,
-    # eliminate-~/.teatree.toml: the last two carve-out fields — the nested
+    # DB-home cutover: the last two carve-out fields — the nested
     # structured tables ``speak`` / ``mr_reminder``. Each parser validates + stores
     # the CANONICAL ``to_dict()`` JSON object; the resolver rebuilds the dataclass
     # bespoke (``resolution._BESPOKE_STRUCTURED_FIELDS``) since a dict cannot
@@ -293,7 +293,7 @@ OVERLAY_OVERRIDABLE_SETTINGS: dict[str, Callable[[Any], Any]] = {
 }
 
 # TOML-home keys that ALSO support a per-overlay ``[overlays.<name>]`` override.
-# eliminate-~/.teatree.toml emptied this: the per-overlay override of a setting now
+# DB-home cutover emptied this: the per-overlay override of a setting now
 # lives entirely in the DB (an overlay-scoped ``ConfigSetting`` row). ``speak`` was
 # never here — its per-overlay override merges bespoke (now off the DB overlay-scope
 # row, ``resolution._resolve_speak_db``); every other field is DB-home. Discovery
@@ -368,7 +368,7 @@ class UserSettings:
     # Claude session does NOT auto-engage teatree — no skill auto-suggest, no
     # PreToolUse load-block, no loop scheduling — and SessionStart shows a
     # one-line how-to-start advisory instead. The owner flips it true to
-    # auto-activate every session. DB-home (eliminate-~/.teatree.toml): the cold
+    # auto-activate every session. DB-home (DB-home cutover): the cold
     # SessionStart / UserPromptSubmit hooks read it DB-ONLY pre-Django via the
     # Django-free ``cold_reader`` (``teatree_settings._cold_db_bool``) and the bash
     # ``statusline.sh._autoload_db_value`` (sqlite3 CLI); ``T3_AUTOLOAD`` env wins, a
@@ -1066,7 +1066,7 @@ class UserSettings:
     # ``off`` disables the classifier entirely.
     slack_voice_classifier_mode: SlackVoiceClassifierMode = SlackVoiceClassifierMode.WARN
     # #2060 The resolved speak config — a local playback enum (off/dm/all) + a
-    # slack bool. DB-home (#1775, eliminate-~/.teatree.toml): stored as a JSON dict
+    # slack bool. DB-home (#1775, DB-home cutover): stored as a JSON dict
     # ConfigSetting (``parse_speak_setting``), rebuilt bespoke by the resolver; the
     # cold Stop hook reads it via ``cold_reader``. See :class:`SpeakConfig`.
     speak: SpeakConfig = field(default_factory=SpeakConfig)

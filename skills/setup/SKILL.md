@@ -28,7 +28,7 @@ Do not scaffold `scripts/lib/bootstrap.sh`, `project_hooks.py`, or shell overlay
 ## What This Skill Does
 
 1. Check prerequisites.
-2. Create or validate `~/.teatree`.
+2. Set the bootstrap environment variables and seed config settings.
 3. Install teatree skill symlinks for the current agent runtime.
 4. Optionally wire Claude Code hooks and statusline.
 5. Generate an overlay package with `t3 startoverlay`.
@@ -61,11 +61,13 @@ Rules:
 - Prefer `uv` for all project commands.
 - Treat missing optional tools as warnings, not blockers, unless the user explicitly needs that integration.
 
-## Step 2: Create `~/.teatree`
+## Step 2: Set environment variables and seed config
 
-Create or update `~/.teatree` as a simple `KEY=VALUE` shell file.
+Export the bootstrap variables below in your shell profile (or the agent's
+environment). Operational settings live in the teatree DB — seed them with
+`t3 <overlay> config_setting set`.
 
-Required values:
+Required (bootstrap environment):
 
 | Variable | Purpose |
 | --- | --- |
@@ -88,26 +90,30 @@ Useful optional values:
 
 Do not require `T3_OVERLAY`. The active overlay is discovered via entry points.
 
-Example:
+Example (bootstrap environment):
 
 ```bash
-cat > ~/.teatree <<'EOF'
-T3_REPO="$HOME/workspace/teatree"
-T3_WORKSPACE_DIR="$HOME/workspace"
-T3_ISSUE_TRACKER="gitlab"
-T3_CONTRIBUTE=false
-T3_PUSH=false
-T3_AUTO_PUSH_FORK=false
-T3_UPSTREAM=""
-T3_PRIVATE_TESTS=""
-T3_BRANCH_PREFIX="ac"
-T3_SKILL_OWNERSHIP_FILE="$HOME/.ac-reviewing-codebase"
-EOF
+export T3_REPO="$HOME/workspace/teatree"
+export T3_WORKSPACE_DIR="$HOME/workspace"
+export T3_ISSUE_TRACKER="gitlab"
+export T3_PUSH=false
+export T3_AUTO_PUSH_FORK=false
+export T3_UPSTREAM=""
+export T3_PRIVATE_TESTS=""
+export T3_BRANCH_PREFIX="ac"
+export T3_SKILL_OWNERSHIP_FILE="$HOME/.ac-reviewing-codebase"
+```
+
+Operational settings go in the DB store, e.g.:
+
+```bash
+t3 <overlay> config_setting set contribute false
+t3 <overlay> config_setting set mode interactive
 ```
 
 ### Slack integration (per-overlay)
 
-Messaging is configured per overlay in `~/.teatree.toml`, not via `T3_CHAT_PLATFORM`.
+Messaging is configured per overlay in the DB `overlays` registry row, not via `T3_CHAT_PLATFORM`.
 Three commands cover distinct phases of the Slack lifecycle — they are not
 interchangeable:
 

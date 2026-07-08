@@ -1,28 +1,32 @@
 """Self-DM destination-id resolution for the MCP self-DM gate.
 
-The PURE assembly behind ``hook_router.handle_block_self_dm_via_mcp``: given the
-two raw config sources (the DB-home ``overlays`` registry and the parsed
-``~/.teatree.toml``), compute the operator's own bot<->user DM destination ids.
-Extracted from ``hook_router`` (the shrink-only god-module) so the router keeps
-only the IO (the toml read, which a test patches via ``router.Path``) and this
-sibling keeps the testable logic — the same bare-sibling pattern
-``managed_repo`` / ``deny_circuit_breaker`` use. Cold-import safe: stdlib only.
+The DB-only assembly behind ``hook_router.handle_block_self_dm_via_mcp``: read the
+DB-home ``overlays`` registry and the global ``slack_user_id`` setting via the
+Django-free ``teatree.config.cold_reader``, then compute the operator's own
+bot<->user DM destination ids. Extracted from ``hook_router`` (the shrink-only
+god-module) so the router keeps only the thin call site and this sibling owns the
+testable logic — the same bare-sibling pattern ``managed_repo`` /
+``deny_circuit_breaker`` use.
 
-DB-first (eliminate-~/.teatree.toml): the overlay registry resolves from the
-DB-home ``overlays`` row when present, so a DELETED toml still self-identifies the
-operator; the global ``[teatree] slack_user_id`` stays toml-home (mirrors
-``notify.resolve_user_id``).
+The overlay ids come from the DB-home ``overlays`` row; the global ``slack_user_id``
+mirrors ``notify.resolve_user_id``'s global fallback (also DB-home). ``resolved``
+distinguishes a READABLE config store with no ids (allow silently) from an
+UNREACHABLE one (fail-closed deny) via a config-store reachability probe.
 """
 
 import dataclasses
 import sys
 from typing import Any
 
+from managed_repo import teatree_src_on_path
+
 # Alias both identities so a bare ``from self_dm_destinations import ...`` (the
 # live hook, whose dir is on sys.path) and ``hooks.scripts.self_dm_destinations``
 # (a test import) resolve the SAME module object — the pattern every sibling uses.
 sys.modules.setdefault("self_dm_destinations", sys.modules[__name__])
 sys.modules.setdefault("hooks.scripts.self_dm_destinations", sys.modules[__name__])
+
+_CONFIG_STORE_PROBE = "SELECT count(*) FROM teatree_config_setting"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -59,21 +63,30 @@ def overlay_slack_ids(overlays: dict[str, Any] | None) -> set[str]:
     return ids
 
 
-def resolve_self_dm_destinations(
-    db_overlays: dict[str, Any] | None, toml_config: dict[str, Any] | None
-) -> SelfDmDestinations:
-    """Assemble the self-DM ids from the DB overlay registry + the parsed toml.
+def read_self_dm_destinations() -> SelfDmDestinations:
+    """Assemble the self-DM ids from the DB-home ``overlays`` registry + global ``slack_user_id``.
 
-    DB-first: the overlay ids come from *db_overlays* when present (a DELETED toml
-    still self-identifies the operator), else the toml ``[overlays.*]`` tables. The
-    global ``[teatree] slack_user_id`` stays toml-home. ``resolved`` is ``False``
-    only when NEITHER source was readable (fail-closed deny); a readable source
-    with no ids is ``resolved`` + empty (allow silently).
+    DB-only. ``resolved`` is ``False`` (fail-closed deny) only when the config store
+    is UNREACHABLE — a missing/locked/corrupt DB, an absent config table, or a
+    ``teatree`` that won't import; a reachable store with no ids is ``resolved`` +
+    empty (allow silently). The reachability probe (``SELECT count(*)`` against
+    ``teatree_config_setting``) always yields a row when the table exists — even
+    empty — so it separates "readable, nothing declared" from "unreadable" cleanly,
+    where the fail-open ``read_setting`` reads alone cannot. The overlay ids come
+    from the ``overlays`` row (``slack_dm_channel_id`` / ``slack_user_id`` per
+    overlay); the global ``slack_user_id`` mirrors ``notify.resolve_user_id``.
     """
-    if not db_overlays and toml_config is None:
+    try:
+        with teatree_src_on_path():
+            from teatree.config import cold_reader  # noqa: PLC0415
+
+            if not cold_reader.row_exists(_CONFIG_STORE_PROBE, on_error=False):
+                return SelfDmDestinations(frozenset(), resolved=False)
+            overlays = cold_reader.read_setting("overlays")
+            global_user_id = cold_reader.str_setting("slack_user_id", default="")
+    except Exception:  # noqa: BLE001
         return SelfDmDestinations(frozenset(), resolved=False)
-    ids = overlay_slack_ids(db_overlays or (toml_config.get("overlays") if toml_config else None))
-    teatree = toml_config.get("teatree") if isinstance(toml_config, dict) else None
-    if isinstance(teatree, dict) and isinstance(teatree.get("slack_user_id"), str) and teatree["slack_user_id"]:
-        ids.add(teatree["slack_user_id"])
+    ids = overlay_slack_ids(overlays if isinstance(overlays, dict) else None)
+    if global_user_id:
+        ids.add(global_user_id)
     return SelfDmDestinations(frozenset(ids), resolved=True)

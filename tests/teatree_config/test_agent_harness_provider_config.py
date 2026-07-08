@@ -8,12 +8,10 @@ provider, lets the env win over the store, and raises LOUD on a corrupt stored
 value so a silent credential switch never lands. :meth:`AgentHarnessProvider.valid_for`
 is the Layer-1-constrained-Layer-2 contract: ``claude_sdk`` accepts
 ``subscription_oauth`` / ``api_key``; ``pydantic_ai`` accepts only
-``orca_router_byok``. ``CONFIG_PATH`` is isolated so the real ``~/.teatree.toml``
-never leaks in.
+``orca_router_byok``.
 """
 
 import os
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -25,8 +23,7 @@ from teatree.core.models import ConfigSetting
 
 class TestAgentHarnessProviderResolution(TestCase):
     @pytest.fixture(autouse=True)
-    def _config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("teatree.config.CONFIG_PATH", tmp_path / ".teatree.toml")
+    def _config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
         monkeypatch.delenv("T3_AGENT_HARNESS_PROVIDER", raising=False)
 
@@ -62,8 +59,7 @@ class TestOrcaRouterLaneAndNameResolution(TestCase):
     """
 
     @pytest.fixture(autouse=True)
-    def _config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("teatree.config.CONFIG_PATH", tmp_path / ".teatree.toml")
+    def _config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
         monkeypatch.delenv("T3_ORCA_ROUTER_LANE", raising=False)
         monkeypatch.delenv("T3_ORCA_ROUTER_NAME", raising=False)

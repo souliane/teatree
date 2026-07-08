@@ -6,12 +6,10 @@ their sole authoritative tier is the ``ConfigSetting`` store (+ the
 (the teatree factory lane carries no regulated data and runs unrestricted) and the
 allowlist is empty. A regulated overlay (a future regulated lane carrying client/
 bank data under EU data-residency & regulatory compliance) sets the gate ``True`` and
-enumerates the compliant models in the allowlist. ``CONFIG_PATH`` is isolated so
-the real ``~/.teatree.toml`` never leaks in.
+enumerates the compliant models in the allowlist.
 """
 
 import os
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -23,8 +21,7 @@ from teatree.core.models import ConfigSetting
 
 class TestRegulatedPathConfigResolution(TestCase):
     @pytest.fixture(autouse=True)
-    def _config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("teatree.config.CONFIG_PATH", tmp_path / ".teatree.toml")
+    def _config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
         monkeypatch.delenv("T3_ENFORCE_REGULATED_PATH", raising=False)
 

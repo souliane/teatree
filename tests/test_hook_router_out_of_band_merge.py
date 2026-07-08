@@ -13,10 +13,9 @@ plus a tmp ``~/.teatree.toml`` so the managed-repo signals resolve offline.
 
 import json
 import os
+import sqlite3
 import subprocess
-import tomllib
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 import typer
@@ -24,6 +23,18 @@ from typer.testing import CliRunner
 
 import hooks.scripts.hook_router as router
 from teatree.cli.teatree_gate import OUT_OF_BAND_MERGE_GATE_KEY, register_gate_commands
+from teatree.config import cold_reader
+
+_CONFIG_SETTING_SCHEMA = (
+    'CREATE TABLE "teatree_config_setting" ('
+    '"id" integer NOT NULL PRIMARY KEY AUTOINCREMENT, '
+    '"scope" varchar(255) NOT NULL, '
+    '"key" varchar(255) NOT NULL, '
+    '"value" text NOT NULL CHECK ((JSON_VALID("value") OR "value" IS NULL)), '
+    '"created_at" datetime NOT NULL, '
+    '"updated_at" datetime NOT NULL, '
+    'CONSTRAINT "uniq_config_setting_scope_key" UNIQUE ("scope", "key"))'
+)
 
 
 class _FakeHomePath:
@@ -436,17 +447,21 @@ class TestRawMergeGateCLI:
         assert result.exit_code == 0
         assert "gate" in result.output.lower()
 
-    def test_gate_raw_merge_disable_then_enable_round_trip(self, tmp_path: Path) -> None:
+    def test_gate_raw_merge_disable_then_enable_round_trip(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         overlay_app = typer.Typer()
         register_gate_commands(overlay_app)
         runner = CliRunner()
-        config = tmp_path / ".teatree.toml"
-        with patch("teatree.cli.teatree_gate._config_path", return_value=config):
-            disabled = runner.invoke(overlay_app, ["gate", "raw-merge", "disable"])
-            assert disabled.exit_code == 0, disabled.output
-            with config.open("rb") as f:
-                assert tomllib.load(f)["teatree"][OUT_OF_BAND_MERGE_GATE_KEY] is False
-            enabled = runner.invoke(overlay_app, ["gate", "raw-merge", "enable"])
-            assert enabled.exit_code == 0, enabled.output
-            with config.open("rb") as f:
-                assert tomllib.load(f)["teatree"][OUT_OF_BAND_MERGE_GATE_KEY] is True
+        db = tmp_path / "db.sqlite3"
+        conn = sqlite3.connect(db)
+        conn.execute(_CONFIG_SETTING_SCHEMA)
+        conn.commit()
+        conn.close()
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
+        disabled = runner.invoke(overlay_app, ["gate", "raw-merge", "disable"])
+        assert disabled.exit_code == 0, disabled.output
+        assert cold_reader.read_setting(OUT_OF_BAND_MERGE_GATE_KEY, scope="", db_path=db) is False
+        enabled = runner.invoke(overlay_app, ["gate", "raw-merge", "enable"])
+        assert enabled.exit_code == 0, enabled.output
+        assert cold_reader.read_setting(OUT_OF_BAND_MERGE_GATE_KEY, scope="", db_path=db) is True

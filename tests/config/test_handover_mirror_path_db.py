@@ -1,8 +1,8 @@
 # test-path: cross-cutting
 """DB-home ``handover_mirror_path`` resolution off the ``ConfigSetting`` store.
 
-eliminate-~/.teatree.toml: ``handover_mirror_path`` was tagged "read when the DB
-is unreachable", but its pre-Django SessionStart reader now reads the canonical
+``handover_mirror_path`` was tagged "read when the DB is unreachable", but its
+pre-Django SessionStart reader now reads the canonical
 sqlite via ``cold_reader`` (Django-free) — which fails open to
 ``_default_handover_mirror_path()``, the exact path ``write_mirror`` uses when
 unset — so it is DB-home. The Django-side reader ``core.handover.mirror_path()``

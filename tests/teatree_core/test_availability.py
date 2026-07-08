@@ -8,6 +8,7 @@ layer fails its own assertion rather than corrupting the others.
 
 import json
 import logging
+import sqlite3
 import warnings
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -47,18 +48,18 @@ def presence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> PresenceHeartbe
     return heartbeat
 
 
-class TestScheduleFromToml:
+class TestScheduleFromTable:
     def test_empty_section_yields_empty_windows(self) -> None:
-        s = Schedule.from_toml({})
+        s = Schedule.from_table({})
         assert s.timezone == ""
         assert s.windows == ()
 
     def test_none_yields_empty_schedule(self) -> None:
-        s = Schedule.from_toml(None)
+        s = Schedule.from_table(None)
         assert s.windows == ()
 
     def test_invalid_cron_is_dropped_silently(self) -> None:
-        s = Schedule.from_toml(
+        s = Schedule.from_table(
             {
                 "timezone": "Europe/Paris",
                 "windows": ["0 9-16 * * 1-5", "not a cron", 42, ""],
@@ -68,7 +69,7 @@ class TestScheduleFromToml:
         assert s.windows == ("0 9-16 * * 1-5",)
 
     def test_multiple_valid_windows_are_kept(self) -> None:
-        s = Schedule.from_toml({"windows": ["0 9-12 * * 1-5", "0 14-17 * * 1-5"]})
+        s = Schedule.from_table({"windows": ["0 9-12 * * 1-5", "0 14-17 * * 1-5"]})
         assert len(s.windows) == 2
 
 
@@ -162,29 +163,29 @@ class TestScheduleSparseWindow:
         assert s.is_present_at(datetime(2026, 5, 18, 13, 0, tzinfo=UTC)) is False
         assert s.is_present_at(datetime(2026, 5, 18, 18, 0, tzinfo=UTC)) is False
 
-    def test_sparse_window_emits_from_toml_warning(self) -> None:
+    def test_sparse_window_emits_from_table_warning(self) -> None:
         with pytest.warns(UserWarning, match="fires sparsely"):
-            Schedule.from_toml({"windows": ["0 9 * * 1-5"]})
+            Schedule.from_table({"windows": ["0 9 * * 1-5"]})
 
     def test_span_window_emits_no_warning(self) -> None:
         with warnings.catch_warnings():
             warnings.simplefilter("error")
-            Schedule.from_toml({"windows": ["* 9-16 * * 1-5", "0 9-16 * * 1-5"]})
+            Schedule.from_table({"windows": ["* 9-16 * * 1-5", "0 9-16 * * 1-5"]})
 
 
 # Bug B regression: malformed timezone must not raise — fail open to present.
 class TestScheduleMalformedTimezone:
-    def test_malformed_timezone_from_toml_is_dropped_silently(self) -> None:
-        s = Schedule.from_toml({"timezone": "foo/../bar", "windows": ["* * * * *"]})
+    def test_malformed_timezone_from_table_is_dropped_silently(self) -> None:
+        s = Schedule.from_table({"timezone": "foo/../bar", "windows": ["* * * * *"]})
         assert s.timezone == ""
 
     def test_malformed_timezone_resolve_mode_does_not_raise(self) -> None:
-        s = Schedule.from_toml({"timezone": "foo/../bar", "windows": ["* * * * *"]})
+        s = Schedule.from_table({"timezone": "foo/../bar", "windows": ["* * * * *"]})
         result = resolve_mode(schedule=s, override=None)
         assert result.mode == MODE_PRESENT
 
     def test_null_byte_timezone_does_not_raise(self) -> None:
-        s = Schedule.from_toml({"timezone": "Eur\x00ope/Paris", "windows": ["* * * * *"]})
+        s = Schedule.from_table({"timezone": "Eur\x00ope/Paris", "windows": ["* * * * *"]})
         result = resolve_mode(schedule=s, override=None)
         assert result.mode == MODE_PRESENT
 
@@ -525,52 +526,53 @@ class TestDurableFilePaths:
         assert availability.presence_path() == DATA_DIR / "availability_presence"
 
 
-class TestLoadSchedule:
-    """``load_schedule`` reads ``[teatree.availability]`` from the resolved TOML."""
-
-    def _write(self, path: Path, body: str) -> Path:
-        path.write_text(body, encoding="utf-8")
-        return path
-
-    def test_reads_timezone_and_windows_from_file(self, tmp_path: Path) -> None:
-        # One real file kills the bulk: the ``not is_file`` guard flip, the
-        # ``open("rb")`` mode mutations, the ``tomllib.load`` drops, the
-        # section/key name corruptions, the ``isinstance`` guard flip, and
-        # ``from_toml(None)`` — each yields empty windows or raises.
-        cfg = self._write(
-            tmp_path / "cfg.toml",
-            f'[teatree.availability]\ntimezone = "Europe/Paris"\nwindows = ["{WINDOW}"]\n',
+def _seed_schedule(db: Path, value: object) -> None:
+    """Seed the DB-home ``availability_schedule`` setting the cold reader resolves."""
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
         )
-        schedule = availability.load_schedule(path=cfg)
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES (?, ?, ?)",
+            ("", "availability_schedule", json.dumps(value)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+class TestLoadSchedule:
+    """``load_schedule`` reads the DB-home ``availability_schedule`` setting."""
+
+    def test_reads_timezone_and_windows_from_db(self, tmp_path: Path) -> None:
+        db = tmp_path / "db.sqlite3"
+        _seed_schedule(db, {"timezone": "Europe/Paris", "windows": [WINDOW]})
+        schedule = availability.load_schedule(db_path=db)
         assert schedule.timezone == "Europe/Paris"
         assert schedule.windows == (WINDOW,)
 
-    def test_missing_file_returns_empty_schedule(self, tmp_path: Path) -> None:
-        schedule = availability.load_schedule(path=tmp_path / "absent.toml")
+    def test_absent_db_returns_empty_schedule(self, tmp_path: Path) -> None:
+        schedule = availability.load_schedule(db_path=tmp_path / "absent.sqlite3")
         assert schedule.windows == ()
 
-    def test_valid_toml_without_teatree_section_is_empty(self, tmp_path: Path) -> None:
-        # Kills ``data.get("teatree", None)`` / dropped-default: a missing
-        # ``[teatree]`` yields an empty schedule, never an AttributeError.
-        cfg = self._write(tmp_path / "cfg.toml", '[other]\nkey = "value"\n')
-        schedule = availability.load_schedule(path=cfg)
+    def test_db_without_schedule_row_is_empty(self, tmp_path: Path) -> None:
+        # A DB with no ``availability_schedule`` row yields an empty schedule.
+        db = tmp_path / "db.sqlite3"
+        _seed_schedule(db, {"windows": [WINDOW]})
+        conn = sqlite3.connect(str(db))
+        conn.execute("DELETE FROM teatree_config_setting WHERE key='availability_schedule'")
+        conn.commit()
+        conn.close()
+        schedule = availability.load_schedule(db_path=db)
         assert schedule.windows == ()
 
-    def test_env_var_names_the_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Kills the ``"TEATREE_TOML"`` env-var-name corruptions.
-        cfg = self._write(tmp_path / "env.toml", f'[teatree.availability]\nwindows = ["{WINDOW}"]\n')
-        monkeypatch.setenv("TEATREE_TOML", str(cfg))
-        schedule = availability.load_schedule()
-        assert schedule.windows == (WINDOW,)
-
-    def test_default_path_is_home_dot_teatree_toml(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Kills the ``str(None)`` default and the ".teatree.toml" filename
-        # corruptions: with no env override the home dotfile must be read.
-        home = tmp_path / "home"
-        home.mkdir(exist_ok=True)
-        (home / ".teatree.toml").write_text(f'[teatree.availability]\nwindows = ["{WINDOW}"]\n', encoding="utf-8")
-        monkeypatch.delenv("TEATREE_TOML", raising=False)
-        monkeypatch.setenv("HOME", str(home))
+    def test_default_reads_canonical_db_via_env(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # With no db_path, load_schedule resolves the canonical DB via T3_CONFIG_DB.
+        db = tmp_path / "db.sqlite3"
+        _seed_schedule(db, {"windows": [WINDOW]})
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
         schedule = availability.load_schedule()
         assert schedule.windows == (WINDOW,)
 

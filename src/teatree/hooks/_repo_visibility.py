@@ -4,8 +4,9 @@ Split out of :mod:`teatree.hooks.publish_surface` to keep that module under
 the project's per-file LOC ceiling. This module owns the "is this repo
 private?" question and nothing about command classification:
 
-- the offline ``[teatree] private_repos`` slug-namespace allowlist (the
-    reliable, network-free, recommended mechanism),
+- the DB-home ``private_repos`` slug-namespace allowlist (the reliable,
+    network-free, recommended mechanism), read from the canonical
+    ``ConfigSetting`` store via the Django-free :mod:`teatree.config.cold_reader`,
 - the day-cached ``gh``/``glab`` live-visibility probe (best-effort
     fallback; the binary is resolved against an augmented PATH so it works
     inside the restricted PreToolUse subprocess), and
@@ -22,6 +23,7 @@ import time
 from pathlib import Path
 from typing import Final, TypedDict
 
+from teatree.config import cold_reader
 from teatree.hooks import git_config_offline
 from teatree.utils.run import CommandFailedError, run_allowed_to_fail
 
@@ -58,15 +60,8 @@ _PROBE_PATH_EXTRA: Final[tuple[str, ...]] = (
 )
 
 
-def _config_path() -> Path:
-    override = os.environ.get("T3_BANNED_TERMS_CONFIG")
-    if override:
-        return Path(override)
-    return Path.home() / ".teatree.toml"
-
-
 def _private_repo_allowlist(config_path: Path | None = None) -> list[str]:
-    """Return the ``[teatree] private_repos`` slug-namespace allowlist.
+    """Return the DB-home ``private_repos`` slug-namespace allowlist.
 
     Each entry is matched as a case-insensitive path-segment prefix against the
     repo's host-stripped ``owner/repo`` slug (see
@@ -75,25 +70,14 @@ def _private_repo_allowlist(config_path: Path | None = None) -> list[str]:
     (``owner/repo``) or host-qualified (``host/owner/repo`` -- the form a repo
     URL carries); the match is host-qualification-symmetric, so either form
     covers the commit surface (host-qualified cwd slug) and the pr-create
-    surface (bare ``--repo`` slug) alike. Reads the TOML directly (no
-    Django/config import) to stay importable from the hook process.
+    surface (bare ``--repo`` slug) alike. Reads the canonical ``ConfigSetting``
+    store via the Django-free :mod:`teatree.config.cold_reader`; *config_path*
+    overrides the DB path (else the canonical DB / ``T3_CONFIG_DB``), which is
+    how a test points it at a seeded temp DB. Set the list with
+    ``t3 <overlay> config_setting set private_repos '["owner/repo"]'``.
     """
-    import tomllib  # noqa: PLC0415
-
-    target = config_path if config_path is not None else _config_path()
-    if not target.is_file():
-        return []
-    try:
-        raw = tomllib.loads(target.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return []
-    teatree = raw.get("teatree", {})
-    if not isinstance(teatree, dict):
-        return []
-    entries = teatree.get("private_repos", [])
-    if not isinstance(entries, list):
-        return []
-    return [str(e).strip().lower() for e in entries if str(e).strip()]
+    raw = cold_reader.list_setting("private_repos", default=[], db_path=config_path)
+    return [str(e).strip().lower() for e in raw if str(e).strip()]
 
 
 def slug_for_cwd(cwd: Path) -> str:
@@ -206,13 +190,11 @@ def _is_canonical_host(host: str) -> bool:
 
 
 def _cache_root() -> Path:
-    """Resolve a writable cache dir that never collides with the config file.
+    """Resolve a writable cache dir for the visibility verdict cache.
 
-    The historical default ``~/.teatree`` is the shell-sourceable config FILE
-    in this environment, so a cache write under it raised "Not a directory"
-    and the verdict could never persist. Honour ``T3_DATA_DIR`` when set, else
-    use the XDG cache dir. If the chosen root already exists as a
-    non-directory, fall back to a sibling so the write still succeeds.
+    Honour ``T3_DATA_DIR`` when set, else use the XDG cache dir. If the chosen
+    root already exists as a non-directory, fall back to a sibling so the write
+    still succeeds.
     """
     base = os.environ.get("T3_DATA_DIR")
     if base:
@@ -459,7 +441,7 @@ def slug_namespace_matches(entry: str, slug: str) -> bool:
 
 
 def slug_is_allowlisted_private(slug: str, config_path: Path | None) -> bool:
-    """Return True iff ``slug`` matches the offline ``[teatree] private_repos`` allowlist.
+    """Return True iff ``slug`` matches the DB-home ``private_repos`` allowlist.
 
     Each entry is matched against the slug's host-stripped ``owner/repo`` path
     segments via :func:`slug_namespace_matches` -- a leading-segment-prefix
@@ -477,7 +459,7 @@ def slug_is_allowlisted_private(slug: str, config_path: Path | None) -> bool:
 
 
 def term_is_own_repo_slug(term: str, config_path: Path | None = None) -> bool:
-    """Return True iff ``term`` is (a token-run of) a ``[teatree] private_repos`` entry.
+    """Return True iff ``term`` is (a token-run of) a ``private_repos`` entry.
 
     A configured ``private_repos`` entry is, by definition, a private repo's
     OWN org/repo slug substring (a neutral example: ``acme-engineering``). When

@@ -1,13 +1,11 @@
 # test-path: cross-cutting
 """DB-home ``autoload`` resolution off the ``ConfigSetting`` store + the cold reader.
 
-eliminate-~/.teatree.toml: the #256 engagement flag ``autoload`` moved from
-TOML-home to DB-home. Its Django-side reader resolves it via
-``get_effective_settings`` (env -> DB overlay -> DB global -> default); a
-``[teatree] autoload`` TOML value is ignored on read. Its cold pre-Django readers
--- ``hooks.scripts.teatree_settings.autoload_enabled`` (Python, via the Django-free
-``_cold_db_bool``) and the bash ``statusline.sh`` gate -- read the canonical sqlite
-directly, so it needs no TOML.
+The #256 engagement flag ``autoload`` is DB-home. Its Django-side reader resolves
+it via ``get_effective_settings`` (env -> DB overlay -> DB global -> default). Its
+cold pre-Django readers -- ``hooks.scripts.teatree_settings.autoload_enabled``
+(Python, via the Django-free ``_cold_db_bool``) and the bash ``statusline.sh`` gate
+-- read the canonical sqlite directly.
 
 Integration-first: real ``ConfigSetting`` rows + real env for the Django path, a
 real sqlite file for the cold path; no mocks. HOME / ``Path.home`` are sandboxed so
@@ -25,7 +23,6 @@ from unittest.mock import patch
 import pytest
 from django.test import TestCase
 
-import teatree.config as config_facade
 from hooks.scripts.teatree_settings import autoload_enabled
 from teatree.config import get_effective_settings
 from teatree.core.models import ConfigSetting
@@ -40,9 +37,6 @@ class _AutoloadCase(TestCase):
         self.addCleanup(lambda: shutil.rmtree(sandbox, ignore_errors=True))
         self.enterContext(patch.dict(os.environ))
         self.enterContext(patch.object(Path, "home", return_value=self.home))
-        # No real ~/.teatree.toml leaks into the resolver — point CONFIG_PATH at a
-        # non-existent sandbox file so ``load_config`` returns dataclass defaults.
-        self.enterContext(patch.object(config_facade, "CONFIG_PATH", self.home / ".teatree.toml"))
         os.environ["HOME"] = str(self.home)
         os.environ.pop("T3_AUTOLOAD", None)
         os.environ.pop("T3_OVERLAY_NAME", None)
@@ -101,7 +95,7 @@ class TestColdAutoloadEnabled:
 
     The SessionStart / UserPromptSubmit hooks consult this pre-Django to decide
     default-off engagement: ``T3_AUTOLOAD`` env first, else the canonical sqlite
-    (via ``cold_reader``), else OFF. No TOML fallback (autoload is DB-home).
+    (via ``cold_reader``), else OFF.
     """
 
     @pytest.fixture(autouse=True)
@@ -129,12 +123,3 @@ class TestColdAutoloadEnabled:
     def test_env_truthy_wins_over_absent_db(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("T3_AUTOLOAD", "1")
         assert autoload_enabled() is True
-
-    def test_teatree_toml_autoload_is_ignored(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # autoload is DB-home: a ``[teatree] autoload`` value is NOT read (no TOML
-        # fallback). With no DB row the cold reader fails closed to OFF.
-        home = tmp_path / "toml-home"
-        home.mkdir()
-        (home / ".teatree.toml").write_text("[teatree]\nautoload = true\n", encoding="utf-8")
-        monkeypatch.setenv("HOME", str(home))
-        assert autoload_enabled() is False

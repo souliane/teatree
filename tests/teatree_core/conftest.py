@@ -111,24 +111,6 @@ def _clear_overlay_cache() -> Iterator[None]:
     reset_overlay_cache()
 
 
-@pytest.fixture(autouse=True)
-def _isolate_teatree_config(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
-    """Pin ``CONFIG_PATH`` to an empty config so autonomy defaults to ``babysit``.
-
-    ``teatree.config.CONFIG_PATH`` freezes ``Path.home() / ".teatree.toml"`` at
-    import time, so without this the merge-precondition tests would resolve the
-    developer's real ``~/.teatree.toml`` (where ``t3-teatree`` may stand at
-    ``autonomy = full``) and the substrate sign-off carve-out would change the
-    held-vs-merged outcome under their feet. An empty config makes every overlay
-    resolve to the conservative ``babysit`` default; a test that needs a
-    specific tier opts in by patching ``CONFIG_PATH`` within its own scope.
-    """
-    empty = tmp_path_factory.mktemp("teatree-config") / ".teatree.toml"
-    empty.write_text("[teatree]\n", encoding="utf-8")
-    with patch("teatree.config.CONFIG_PATH", empty):
-        yield
-
-
 @pytest.fixture
 def mock_command_overlay() -> Iterator[None]:
     """Patch _discover_overlays to return a CommandOverlay instance."""

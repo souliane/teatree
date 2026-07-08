@@ -13,7 +13,7 @@ lightweight entry-point packages. The Python source lives under
 
 | Directory | Purpose | BLUEPRINT |
 |---|---|---|
-| `src/teatree/` | Package root: `__main__.py` entry point, `config.py` (`~/.teatree.toml` + `UserSettings`), `identity.py`, `paths.py` (XDG + worktree-aware DB isolation), `project.py`, `notify.py`, `on_behalf_gate.py`, `outbound_claim.py` | [§3](../BLUEPRINT.md#3-package-structure) |
+| `src/teatree/` | Package root: `__main__.py` entry point, `config.py` (`UserSettings` + the DB `ConfigSetting` store), `identity.py`, `paths.py` (XDG + worktree-aware DB isolation), `project.py`, `notify.py`, `on_behalf_gate.py`, `outbound_claim.py` | [§3](../BLUEPRINT.md#3-package-structure) |
 | `src/teatree/cli/` | The `t3` CLI command tree — Typer apps for the Django-free bootstrap commands plus per-overlay subapp registration | [§8](../BLUEPRINT.md#8-command-tiers) |
 | `src/teatree/core/` | The heart of teatree: the Django app with the FSM models, scanners, sync, cleanup, reconcile, signals, and provisioning | [§4](../BLUEPRINT.md#4-domain-models) |
 | `src/teatree/core/models/` | FSM and supporting models (`Ticket`, `Worktree`, `Session`, `Task`, `TaskAttempt`) split into domain modules, plus shared errors/types | [§4](../BLUEPRINT.md#4-domain-models) |

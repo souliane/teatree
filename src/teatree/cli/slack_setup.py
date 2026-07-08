@@ -1,9 +1,9 @@
 """``t3 setup slack-bot`` — interactive walkthrough for per-overlay Slack apps.
 
 Implements BLUEPRINT § 3.6: scaffold a Slack app from a teatree-owned manifest,
-capture bot + app-level tokens into ``pass``, write the user's Slack id into
-``~/.teatree.toml``, and smoke-test the bot with a round-trip DM that the user
-acknowledges with a ``:white_check_mark:`` reaction.
+capture bot + app-level tokens into ``pass``, write the user's Slack id into the
+DB ``overlays`` registry, and smoke-test the bot with a round-trip DM that the
+user acknowledges with a ``:white_check_mark:`` reaction.
 
 The walkthrough never writes a token to disk in plaintext; tokens always go
 through ``pass``. There are three modes.
@@ -31,12 +31,12 @@ import json
 import re
 import time
 import webbrowser
-from pathlib import Path
 from typing import NoReturn
 
 import typer
 
 from teatree.backends.slack.bot import SlackBotBackend
+from teatree.cli.slack_app_resolve import read_overlay_field, write_overlay_fields
 from teatree.cli.slack_manifest import (
     _BOT_ONLY_SCOPES,
     _CONFIG_REFRESH_REF,
@@ -56,7 +56,8 @@ from teatree.cli.slack_manifest import (
     update_manifest,
 )
 from teatree.cli.slack_token_store import SlackTokenWriteError, app_token_slot, bot_token_slot, store_slack_token
-from teatree.config import CONFIG_PATH, discover_overlays
+from teatree.config import discover_overlays
+from teatree.utils.django_bootstrap import ensure_django
 from teatree.utils.secrets import read_pass, write_pass
 
 # Re-exported so existing ``from teatree.cli.slack_setup import …`` callers
@@ -94,43 +95,21 @@ _SMOKE_TEST_REACTION = "white_check_mark"
 
 
 def write_overlay_settings(
-    config_path: Path,
     overlay_name: str,
     *,
     slack_user_id: str,
     slack_token_ref: str,
     slack_app_id: str = "",
 ) -> None:
-    """Persist Slack settings on the per-overlay block of *config_path*.
-
-    Uses :mod:`tomlkit` so the rest of the file (other overlays, global
-    ``[teatree]`` settings, comments, ordering) is preserved. ``tomlkit`` is
-    imported inline so that a stale teatree install that pre-dates the dep
-    being added doesn't crash the rest of the CLI on bootstrap — the failure
-    surfaces only to callers of the ``t3 setup slack-bot`` final step.
-    """
-    import tomlkit  # noqa: PLC0415
-    from tomlkit import items as tomlkit_items  # noqa: PLC0415
-
-    document = tomlkit.parse(config_path.read_text(encoding="utf-8")) if config_path.is_file() else tomlkit.document()
-
-    overlays = document.get("overlays")
-    if not isinstance(overlays, tomlkit_items.Table):
-        overlays = tomlkit.table()
-        document["overlays"] = overlays
-
-    overlay_block = overlays.get(overlay_name)
-    if not isinstance(overlay_block, tomlkit_items.Table):
-        overlay_block = tomlkit.table()
-        overlays[overlay_name] = overlay_block
-
-    overlay_block["messaging_backend"] = "slack"
-    overlay_block["slack_user_id"] = slack_user_id
-    overlay_block["slack_token_ref"] = slack_token_ref
+    """Persist Slack settings on *overlay_name*'s entry of the DB ``overlays`` registry."""
+    fields = {
+        "messaging_backend": "slack",
+        "slack_user_id": slack_user_id,
+        "slack_token_ref": slack_token_ref,
+    }
     if slack_app_id:
-        overlay_block["slack_app_id"] = slack_app_id
-
-    config_path.write_text(tomlkit.dumps(document), encoding="utf-8")
+        fields["slack_app_id"] = slack_app_id
+    write_overlay_fields(overlay_name, fields)
 
 
 def _validate_overlay(name: str) -> None:
@@ -193,17 +172,6 @@ def _smoke_test(*, bot_token: str, user_id: str) -> bool:
     return False
 
 
-def _read_overlay_field(config_path: Path, overlay: str, field: str) -> str:
-    """Return ``[overlays.<overlay>].<field>`` or ``""`` when unset."""
-    if not config_path.is_file():
-        return ""
-    import tomlkit  # noqa: PLC0415
-
-    document = tomlkit.parse(config_path.read_text(encoding="utf-8"))
-    block = document.get("overlays", {}).get(overlay) or {}
-    return str(block.get(field, ""))
-
-
 def _prompt_app_id() -> str:
     while True:
         value = typer.prompt("Slack app id (e.g. A01ABCD1234)").strip()
@@ -212,7 +180,7 @@ def _prompt_app_id() -> str:
         typer.echo("      Slack app ids start with 'A' followed by uppercase alphanumerics.")
 
 
-def _run_degraded_path(*, overlay: str, app_id: str, token_ref: str, config_path: Path, skip_smoke_test: bool) -> None:
+def _run_degraded_path(*, overlay: str, app_id: str, token_ref: str, skip_smoke_test: bool) -> None:
     """No config token stored — print the manifest + editor deep link, then smoke-test."""
     manifest = build_manifest(overlay_name=overlay)
     editor_url = app_manifest_editor_url(app_id)
@@ -227,17 +195,12 @@ def _run_degraded_path(*, overlay: str, app_id: str, token_ref: str, config_path
     typer.echo("      https://api.slack.com/reference/manifests#config_tokens and run:")
     typer.echo(f"        pass insert {_CONFIG_TOKEN_REF}")
     typer.echo(f"        pass insert {_CONFIG_REFRESH_REF}")
-    _finish_with_smoke_test(
-        overlay=overlay, app_id=app_id, token_ref=token_ref, config_path=config_path, skip_smoke_test=skip_smoke_test
-    )
+    _finish_with_smoke_test(overlay=overlay, app_id=app_id, token_ref=token_ref, skip_smoke_test=skip_smoke_test)
 
 
-def _finish_with_smoke_test(
-    *, overlay: str, app_id: str, token_ref: str, config_path: Path, skip_smoke_test: bool
-) -> None:
-    user_id = _read_overlay_field(config_path, overlay, "slack_user_id")
+def _finish_with_smoke_test(*, overlay: str, app_id: str, token_ref: str, skip_smoke_test: bool) -> None:
+    user_id = read_overlay_field(overlay, "slack_user_id")
     write_overlay_settings(
-        config_path,
         overlay,
         slack_user_id=user_id,
         slack_token_ref=token_ref,
@@ -272,16 +235,10 @@ def _export_with_rotation(*, app_id: str) -> SlackManifest:
         return export_manifest(app_id=app_id, config_token=access)
 
 
-def _run_update_path(*, overlay: str, app_id: str, token_ref: str, config_path: Path, skip_smoke_test: bool) -> None:
+def _run_update_path(*, overlay: str, app_id: str, token_ref: str, skip_smoke_test: bool) -> None:
     """Update an existing app's manifest in place via Slack's manifest API."""
     if not read_pass(_CONFIG_TOKEN_REF):
-        _run_degraded_path(
-            overlay=overlay,
-            app_id=app_id,
-            token_ref=token_ref,
-            config_path=config_path,
-            skip_smoke_test=skip_smoke_test,
-        )
+        _run_degraded_path(overlay=overlay, app_id=app_id, token_ref=token_ref, skip_smoke_test=skip_smoke_test)
         return
 
     desired = build_manifest(overlay_name=overlay)
@@ -296,9 +253,7 @@ def _run_update_path(*, overlay: str, app_id: str, token_ref: str, config_path: 
         typer.echo(f"        {install_url}")
         typer.echo(f"        new user scopes: {', '.join(_USER_SCOPES)}")
         webbrowser.open(install_url)
-    _finish_with_smoke_test(
-        overlay=overlay, app_id=app_id, token_ref=token_ref, config_path=config_path, skip_smoke_test=skip_smoke_test
-    )
+    _finish_with_smoke_test(overlay=overlay, app_id=app_id, token_ref=token_ref, skip_smoke_test=skip_smoke_test)
 
 
 def _print_create_instructions(overlay: str) -> None:
@@ -330,9 +285,7 @@ def _print_reset_instructions() -> None:
     typer.echo("      manifest in the browser so Slack re-prompts OAuth consent.")
 
 
-def _run_token_walkthrough(
-    *, overlay: str, token_ref: str, config_path: Path, reset: bool, skip_smoke_test: bool
-) -> None:
+def _run_token_walkthrough(*, overlay: str, token_ref: str, reset: bool, skip_smoke_test: bool) -> None:
     """Create-or-reset path: capture tokens, record settings, smoke-test."""
     if reset:
         _print_reset_instructions()
@@ -348,13 +301,12 @@ def _run_token_walkthrough(
     user_id = _prompt_user_id()
     new_app_id = "" if reset else _prompt_app_id()
     write_overlay_settings(
-        config_path,
         overlay,
         slack_user_id=user_id,
         slack_token_ref=token_ref,
         slack_app_id=new_app_id,
     )
-    typer.echo(f"OK    Wrote `[overlays.{overlay}]` slack_user_id and slack_token_ref to {config_path}.")
+    typer.echo(f"OK    Recorded slack_user_id and slack_token_ref for overlay `{overlay}` in the DB overlays registry.")
 
     typer.echo("Step 4/4 — Smoke test.")
     if skip_smoke_test:
@@ -365,20 +317,19 @@ def _run_token_walkthrough(
 
 
 def _migrate_token_ref(
-    config_path: Path,
     overlay: str,
     old_ref: str,
     new_ref: str,
     *,
     skip_smoke_test: bool,
 ) -> NoReturn:
-    """Copy tokens from *old_ref* slots to *new_ref* slots, rewrite the TOML, and smoke-test.
+    """Copy tokens from *old_ref* slots to *new_ref* slots, update the registry, and smoke-test.
 
     Raises :class:`typer.Exit` (code 1) when either old-slot value is absent
     (nothing to migrate — the user must store tokens first).  The copy uses
     :func:`store_slack_token` so validation and backup-before-overwrite
-    invariants are preserved.  After the copy the TOML ``slack_token_ref`` is
-    updated to *new_ref* and an optional smoke test is run, then the function
+    invariants are preserved.  After the copy the registry ``slack_token_ref``
+    is updated to *new_ref* and an optional smoke test is run, then the function
     raises :class:`typer.Exit` (code 0) so the caller can return immediately.
     """
     old_bot = read_pass(f"{old_ref}-bot")
@@ -400,16 +351,15 @@ def _migrate_token_ref(
         raise typer.Exit(code=1) from exc
     typer.echo(f"OK    Tokens migrated to `{new_ref}-bot` and `{new_ref}-app`.")
 
-    user_id = _read_overlay_field(config_path, overlay, "slack_user_id")
-    app_id = _read_overlay_field(config_path, overlay, "slack_app_id")
+    user_id = read_overlay_field(overlay, "slack_user_id")
+    app_id = read_overlay_field(overlay, "slack_app_id")
     write_overlay_settings(
-        config_path,
         overlay,
         slack_user_id=user_id,
         slack_token_ref=new_ref,
         slack_app_id=app_id,
     )
-    typer.echo(f"OK    Rewrote `[overlays.{overlay}].slack_token_ref` to `{new_ref}` in {config_path}.")
+    typer.echo(f"OK    Rewrote overlay `{overlay}` slack_token_ref to `{new_ref}` in the DB overlays registry.")
 
     typer.echo("Step — Smoke test.")
     if skip_smoke_test:
@@ -423,7 +373,7 @@ def _migrate_token_ref(
 
 def slack_bot_setup(
     *,
-    overlay: str = typer.Option(..., "--overlay", help="Overlay name as registered in `~/.teatree.toml`."),
+    overlay: str = typer.Option(..., "--overlay", help="Overlay name as registered in the DB overlays registry."),
     reset: bool = typer.Option(False, "--reset", help="Rotate the existing bot + app tokens; skip the manifest URL."),
     update: bool = typer.Option(
         False,
@@ -431,32 +381,27 @@ def slack_bot_setup(
         help="Force the in-place manifest update path (prompts for the app id if none recorded).",
     ),
     skip_smoke_test: bool = typer.Option(False, "--skip-smoke-test", help="Skip the round-trip DM verification."),
-    config_path: Path = typer.Option(
-        CONFIG_PATH,
-        "--config",
-        help="Path to teatree config (default: ~/.teatree.toml).",
-    ),
 ) -> None:
     """Register or update a per-overlay Slack bot and store its tokens via ``pass``."""
+    ensure_django()
     _validate_overlay(overlay)
     token_ref = f"teatree/{overlay}/slack"
 
-    existing_ref = _read_overlay_field(config_path, overlay, "slack_token_ref")
+    existing_ref = read_overlay_field(overlay, "slack_token_ref")
     if existing_ref and existing_ref != token_ref:
-        _migrate_token_ref(config_path, overlay, existing_ref, token_ref, skip_smoke_test=skip_smoke_test)
+        _migrate_token_ref(overlay, existing_ref, token_ref, skip_smoke_test=skip_smoke_test)
 
     if not reset:
-        recorded_app_id = _read_overlay_field(config_path, overlay, "slack_app_id")
+        recorded_app_id = read_overlay_field(overlay, "slack_app_id")
         if recorded_app_id or update:
             from teatree.cli.slack_app_resolve import resolve_overlay_app_id  # noqa: PLC0415
 
-            app_id = resolve_overlay_app_id(config_path, overlay, token_ref=token_ref) or _prompt_app_id()
+            app_id = resolve_overlay_app_id(overlay, token_ref=token_ref) or _prompt_app_id()
             try:
                 _run_update_path(
                     overlay=overlay,
                     app_id=app_id,
                     token_ref=token_ref,
-                    config_path=config_path,
                     skip_smoke_test=skip_smoke_test,
                 )
             except SlackManifestError as exc:
@@ -467,7 +412,6 @@ def slack_bot_setup(
     _run_token_walkthrough(
         overlay=overlay,
         token_ref=token_ref,
-        config_path=config_path,
         reset=reset,
         skip_smoke_test=skip_smoke_test,
     )

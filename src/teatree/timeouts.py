@@ -1,7 +1,7 @@
 """Multi-tier timeout configuration for lifecycle operations.
 
 Resolution order (first non-None wins):
-1. User settings — ``[teatree.timeouts]`` in ``~/.teatree.toml``
+1. User settings — the DB-home ``timeouts`` setting
 2. Overlay settings — ``OverlayBase.get_timeouts()``
 3. Core defaults — ``TEATREE_TIMEOUTS`` in Django settings.py
 
@@ -68,10 +68,10 @@ def load_timeouts(overlay: "OverlayBase | None" = None) -> TimeoutConfig:
         if overlay_timeouts:
             merged.update(overlay_timeouts)
 
-    # Tier 1: User settings (~/.teatree.toml [teatree.timeouts])
-    from teatree.config import load_config  # noqa: PLC0415
+    # Tier 1: User settings (the DB-home ``timeouts`` setting)
+    from teatree.config import cold_reader  # noqa: PLC0415
 
-    user_timeouts = load_config().raw.get("teatree", {}).get("timeouts", {})
+    user_timeouts = cold_reader.read_setting("timeouts")
     if isinstance(user_timeouts, dict):
         merged.update({k: int(v) for k, v in user_timeouts.items()})
 

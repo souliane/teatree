@@ -260,7 +260,7 @@ Do NOT skip these steps to "save time" when reviewing multiple PRs. Each step ex
 
 #### Colleague-MR Autonomy — Act on the Verdict, Don't Ask (config-driven)
 
-What the agent does *after* an independent cold-review verdict exists on a **colleague-authored** MR (the MR's author is not your identity) is governed by **one config knob**, the per-overlay `autonomy` switch (`src/teatree/config.py`; tiers `full > notify > babysit`, see [`docs/blueprint/configuration.md`](../../docs/blueprint/configuration.md) § 10.1). Read the resolved tier with `t3 <overlay> autonomy show` and set it with `t3 <overlay> autonomy set <level>` (`--global` for the workspace default) — never hand-edit `~/.teatree.toml`. It is *not* a per-MR judgement call and *not* a personal memory rule — read the resolved tier and follow it.
+What the agent does *after* an independent cold-review verdict exists on a **colleague-authored** MR (the MR's author is not your identity) is governed by **one config knob**, the per-overlay `autonomy` switch (`src/teatree/config.py`; tiers `full > notify > babysit`, see [`docs/blueprint/configuration.md`](../../docs/blueprint/configuration.md) § 10.1). Read the resolved tier with `t3 <overlay> autonomy show` and set it with `t3 <overlay> autonomy set <level>` (`--global` for the workspace default) — never hand-edit config. It is *not* a per-MR judgement call and *not* a personal memory rule — read the resolved tier and follow it.
 
 **Autonomous tiers (`autonomy = "full"` or `"notify"`, which collapse `on_behalf_post_mode → immediate`):** once an independent cold-review verdict exists, act directly — no draft-default, no "say the word", no per-MR ask:
 

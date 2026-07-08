@@ -1,15 +1,13 @@
-"""Overlay discovery from ~/.teatree.toml and installed entry points.
+"""Overlay discovery from the DB ``overlays`` registry and installed entry points.
 
-Split verbatim from the former monolithic ``tests/test_config.py``
-(souliane/teatree#443). Covers ``discover_overlays`` (TOML config, explicit
-class, tilde expansion, entry-point fallback, TOML-wins precedence),
-``discover_active_overlay`` (cwd manage.py, single/multiple declared
-overlays) and ``_resolve_ep_project_path``.
+Covers ``discover_overlays`` (DB registry path/class, tilde expansion, entry-point
+fallback, registry-wins precedence), ``discover_active_overlay`` (cwd manage.py,
+single/multiple declared overlays) and ``_resolve_ep_project_path``.
 
-Integration-first per the Test-Writing Doctrine: real TOML fixtures under
-``tmp_path``. Mocks are reserved for ``importlib.metadata.entry_points``
-(represents installed overlay packages — otherwise we'd have to install
-fixture packages per test).
+Integration-first per the Test-Writing Doctrine: the ``overlays`` registry is
+seeded into a real cold-path sqlite (``config_db`` + ``_seed_config_db``) with a
+real on-disk ``manage.py`` under ``tmp_path``. ``importlib.metadata.entry_points``
+is mocked (represents installed overlay packages).
 """
 
 import sys
@@ -26,128 +24,74 @@ from teatree.config import (
     discover_overlays,
 )
 
-from ._shared import _write_manage_py, _write_toml
+from ._shared import _seed_config_db, _write_manage_py
 
 
-def test_discover_overlays_from_toml(tmp_path: Path) -> None:
+@pytest.mark.usefixtures("no_installed_overlays")
+def test_discover_overlays_from_db_path(tmp_path: Path, config_db: Path) -> None:
     project = tmp_path / "my-overlay"
     _write_manage_py(project, "myoverlay.settings")
+    _seed_config_db(config_db, overlays={"my-overlay": {"path": str(project)}})
 
-    config_path = tmp_path / ".teatree.toml"
-    _write_toml(
-        config_path,
-        f"""
-[overlays.my-overlay]
-path = "{project}"
-""",
-    )
-
-    result = discover_overlays(config_path=config_path)
-    by_name = {e.name: e for e in result}
-    assert "my-overlay" in by_name
+    by_name = {e.name: e for e in discover_overlays()}
     assert by_name["my-overlay"].overlay_class == "myoverlay.settings"
     assert by_name["my-overlay"].project_path == project
 
 
-def test_discover_overlays_with_explicit_class(tmp_path: Path) -> None:
-    config_path = tmp_path / ".teatree.toml"
-    _write_toml(
-        config_path,
-        """
-[overlays.my-overlay]
-class = "my_overlay.overlay:MyOverlay"
-""",
-    )
+@pytest.mark.usefixtures("no_installed_overlays")
+def test_discover_overlays_with_explicit_class(config_db: Path) -> None:
+    _seed_config_db(config_db, overlays={"my-overlay": {"class": "my_overlay.overlay:MyOverlay"}})
 
-    result = discover_overlays(config_path=config_path)
-    by_name = {e.name: e for e in result}
-    assert "my-overlay" in by_name
+    by_name = {e.name: e for e in discover_overlays()}
     assert by_name["my-overlay"].overlay_class == "my_overlay.overlay:MyOverlay"
     assert by_name["my-overlay"].project_path is None
 
 
-def test_discover_overlays_empty_toml(tmp_path: Path) -> None:
-    config_path = tmp_path / ".teatree.toml"
-    _write_toml(config_path, "[teatree]\n")
-
-    result = discover_overlays(config_path=config_path)
-    # No TOML-configured overlays; entry-point overlays (like t3-teatree) may
-    # appear with a resolved project_path if a manage.py exists in the repo.
-    toml_names = {e.name for e in result if e.project_path is not None}
-    assert "my-overlay" not in toml_names  # no TOML overlay was configured
+@pytest.mark.usefixtures("no_installed_overlays")
+def test_discover_overlays_empty_registry(config_db: Path) -> None:
+    del config_db  # no rows seeded and no entry points -> nothing discovered
+    assert discover_overlays() == []
 
 
-def test_discover_overlays_missing_toml(tmp_path: Path) -> None:
-    config_path = tmp_path / "nonexistent.toml"
-    result = discover_overlays(config_path=config_path)
-    # No TOML file at all — only entry-point overlays may appear.
-    toml_names = {e.name for e in result}
-    assert "my-overlay" not in toml_names
-
-
-def test_discover_overlays_path_without_manage_py(tmp_path: Path) -> None:
+@pytest.mark.usefixtures("no_installed_overlays")
+def test_discover_overlays_path_without_manage_py(tmp_path: Path, config_db: Path) -> None:
     project = tmp_path / "empty-overlay"
     project.mkdir()
+    _seed_config_db(config_db, overlays={"empty-overlay": {"path": str(project)}})
 
-    config_path = tmp_path / ".teatree.toml"
-    _write_toml(
-        config_path,
-        f"""
-[overlays.empty-overlay]
-path = "{project}"
-""",
-    )
-
-    result = discover_overlays(config_path=config_path)
-    by_name = {e.name: e for e in result}
-    assert "empty-overlay" in by_name
+    by_name = {e.name: e for e in discover_overlays()}
     assert by_name["empty-overlay"].overlay_class == ""
 
 
-def test_discover_overlays_multiple(tmp_path: Path) -> None:
+@pytest.mark.usefixtures("no_installed_overlays")
+def test_discover_overlays_multiple(tmp_path: Path, config_db: Path) -> None:
     for name, settings in [("proj-a", "a.settings"), ("proj-b", "b.settings")]:
         _write_manage_py(tmp_path / name, settings)
-
-    config_path = tmp_path / ".teatree.toml"
-    _write_toml(
-        config_path,
-        f"""
-[overlays.proj-a]
-path = "{tmp_path / "proj-a"}"
-
-[overlays.proj-b]
-path = "{tmp_path / "proj-b"}"
-""",
+    _seed_config_db(
+        config_db,
+        overlays={
+            "proj-a": {"path": str(tmp_path / "proj-a")},
+            "proj-b": {"path": str(tmp_path / "proj-b")},
+        },
     )
 
-    result = discover_overlays(config_path=config_path)
-    names = {e.name for e in result}
-    assert {"proj-a", "proj-b"} <= names
+    names = {e.name for e in discover_overlays()}
+    assert names == {"proj-a", "proj-b"}
 
 
-def test_discover_overlays_tilde_expansion(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.usefixtures("no_installed_overlays")
+def test_discover_overlays_tilde_expansion(tmp_path: Path, config_db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     project = tmp_path / "home" / "workspace" / "my-project"
     _write_manage_py(project, "myproj.settings")
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    _seed_config_db(config_db, overlays={"my-project": {"path": "~/workspace/my-project"}})
 
-    config_path = tmp_path / ".teatree.toml"
-    _write_toml(
-        config_path,
-        """
-[overlays.my-project]
-path = "~/workspace/my-project"
-""",
-    )
-
-    result = discover_overlays(config_path=config_path)
-    by_name = {e.name: e for e in result}
-    assert "my-project" in by_name
+    by_name = {e.name: e for e in discover_overlays()}
     assert by_name["my-project"].project_path == project
     assert by_name["my-project"].overlay_class == "myproj.settings"
 
 
 def test_discover_active_overlay_from_manage_py(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """discover_active_overlay finds overlay from manage.py in cwd ancestors."""
     _write_manage_py(tmp_path, "active.settings")
     monkeypatch.chdir(tmp_path)
     result = discover_active_overlay()
@@ -173,14 +117,14 @@ def test_discover_active_overlay_canonicalizes_clone_dir_name(tmp_path: Path, mo
     assert result.project_path == project
 
 
-def test_discover_active_overlay_single_installed(
-    config_file: Path,
+def test_discover_active_overlay_single_declared(
+    config_db: Path,
     elsewhere: Path,
     no_installed_overlays: None,
 ) -> None:
-    """Single TOML-declared overlay (no manage.py in cwd ancestors) is picked as active."""
+    """A single registry-declared overlay (no manage.py in cwd ancestors) is picked as active."""
     del elsewhere, no_installed_overlays
-    _write_toml(config_file, '[overlays.acme]\nclass = "acme.settings"\n')
+    _seed_config_db(config_db, overlays={"acme": {"class": "acme.settings"}})
 
     result = discover_active_overlay()
 
@@ -189,41 +133,31 @@ def test_discover_active_overlay_single_installed(
 
 
 def test_discover_active_overlay_none_when_multiple(
-    config_file: Path,
+    config_db: Path,
     elsewhere: Path,
     no_installed_overlays: None,
 ) -> None:
-    """Multiple declared overlays + no cwd hint → cannot pick an active one."""
+    """Multiple declared overlays + no cwd hint -> cannot pick an active one."""
     del elsewhere, no_installed_overlays
-    _write_toml(
-        config_file,
-        """
-[overlays.a]
-class = "a.settings"
-
-[overlays.b]
-class = "b.settings"
-""",
-    )
+    _seed_config_db(config_db, overlays={"a": {"class": "a.settings"}, "b": {"class": "b.settings"}})
 
     assert discover_active_overlay() is None
 
 
 def test_discover_active_overlay_none_when_no_overlays(
-    config_file: Path,
+    config_db: Path,
     elsewhere: Path,
     no_installed_overlays: None,
 ) -> None:
-    """No TOML overlays + no entry points + no manage.py → None."""
-    del config_file, elsewhere, no_installed_overlays
+    """No declared overlays + no entry points + no manage.py -> None."""
+    del config_db, elsewhere, no_installed_overlays
 
     assert discover_active_overlay() is None
 
 
-def test_discover_overlays_entry_points(tmp_path: Path) -> None:
+def test_discover_overlays_entry_points(config_db: Path) -> None:
     """Overlays can be discovered from installed entry points."""
-    config_path = tmp_path / ".teatree.toml"
-    _write_toml(config_path, "[teatree]\n")
+    del config_db
 
     mock_ep = MagicMock()
     mock_ep.name = "ep-overlay"
@@ -233,26 +167,24 @@ def test_discover_overlays_entry_points(tmp_path: Path) -> None:
         patch("importlib.metadata.entry_points", return_value=[mock_ep]),
         patch("teatree.config.discovery._resolve_ep_project_path", return_value=None),
     ):
-        result = discover_overlays(config_path=config_path)
+        result = discover_overlays()
         assert len(result) == 1
         assert result[0].name == "ep-overlay"
         assert result[0].overlay_class == "ep_overlay.settings"
 
 
-def test_discover_overlays_toml_wins_over_entry_point(tmp_path: Path) -> None:
-    """Toml config takes precedence over entry points with same name."""
+def test_db_registry_wins_over_entry_point(tmp_path: Path, config_db: Path) -> None:
+    """The DB registry takes precedence over an entry point with the same name."""
     project = tmp_path / "my-overlay"
     _write_manage_py(project, "myoverlay.settings")
-
-    config_path = tmp_path / ".teatree.toml"
-    _write_toml(config_path, f'[overlays.my-overlay]\npath = "{project}"\n')
+    _seed_config_db(config_db, overlays={"my-overlay": {"path": str(project)}})
 
     mock_ep = MagicMock()
     mock_ep.name = "my-overlay"
     mock_ep.value = "other.settings"
 
     with patch("importlib.metadata.entry_points", return_value=[mock_ep]):
-        result = discover_overlays(config_path=config_path)
+        result = discover_overlays()
         assert len(result) == 1
         assert result[0].overlay_class == "myoverlay.settings"
 
@@ -282,7 +214,6 @@ def test_resolve_ep_project_path_finds_manage_py(tmp_path: Path, monkeypatch: py
     _write_manage_py(project_root, "mypkg_resolve_finds.settings")
 
     monkeypatch.syspath_prepend(str(project_root / "src"))
-    # Ensure a fresh import so the spec points at our tmp pkg.
     monkeypatch.delitem(sys.modules, "mypkg_resolve_finds", raising=False)
 
     result = _resolve_ep_project_path("mypkg_resolve_finds.settings")
@@ -307,10 +238,9 @@ def test_resolve_ep_project_path_unknown_package() -> None:
     assert _resolve_ep_project_path("nonexistent_pkg_xyz.settings") is None
 
 
-def test_discover_overlays_entry_point_with_project_path(tmp_path: Path) -> None:
+def test_discover_overlays_entry_point_with_project_path(tmp_path: Path, config_db: Path) -> None:
     """Entry-point overlay gets project_path resolved from package location."""
-    config_path = tmp_path / ".teatree.toml"
-    _write_toml(config_path, "[teatree]\n")
+    del config_db
 
     project_root = tmp_path / "myproject"
     _write_manage_py(project_root, "mypkg.contrib.settings")
@@ -323,31 +253,21 @@ def test_discover_overlays_entry_point_with_project_path(tmp_path: Path) -> None
         patch("importlib.metadata.entry_points", return_value=[mock_ep]),
         patch("teatree.config.discovery._resolve_ep_project_path", return_value=project_root),
     ):
-        result = discover_overlays(config_path=config_path)
+        result = discover_overlays()
         assert len(result) == 1
         assert result[0].project_path == project_root
 
 
-def test_bundled_overlay_not_duplicated_as_teatree_and_t3_teatree(tmp_path: Path) -> None:
-    """A legacy ``[overlays.teatree]`` table must not become a stray overlay.
+def test_bundled_overlay_not_duplicated_as_teatree_and_t3_teatree(config_db: Path) -> None:
+    """A legacy bare ``teatree`` registry entry must not become a stray overlay.
 
-    The bundled overlay is registered under the entry-point name
-    ``t3-teatree`` (souliane/teatree#1108). Before the fix, a user's
-    ``~/.teatree.toml`` carrying the legacy ``[overlays.teatree]`` table —
-    written by older ``slack-bot`` setup runs — made ``discover_overlays``
-    emit BOTH ``teatree`` (from the TOML table) and ``t3-teatree`` (from
-    the entry point) as if they were distinct overlays, which is exactly
-    the ``Known overlays: ..., t3-teatree, teatree`` symptom. The legacy
-    alias table must fold into its canonical entry-point name instead.
+    The bundled overlay is registered under the entry-point name ``t3-teatree``
+    (souliane/teatree#1108). A legacy bare ``teatree`` registry entry — written by
+    older setup runs — must fold into its canonical entry-point name instead of
+    emitting a stray duplicate.
     """
-    config_path = tmp_path / ".teatree.toml"
-    _write_toml(
-        config_path,
-        '[teatree]\nworkspace_dir = "~/workspace"\n\n[overlays.teatree]\nmode = "auto"\n',
-    )
+    _seed_config_db(config_db, overlays={"teatree": {"mode": "auto"}})
 
-    # A second, non-matching entry point is registered too: the alias
-    # resolver must skip it (loop-continue) before matching ``t3-teatree``.
     other_ep = MagicMock()
     other_ep.name = "t3-acme"
     other_ep.value = "acme_pkg.overlay:AcmeOverlay"
@@ -359,7 +279,7 @@ def test_bundled_overlay_not_duplicated_as_teatree_and_t3_teatree(tmp_path: Path
         patch("importlib.metadata.entry_points", return_value=[other_ep, real_ep]),
         patch("teatree.config.discovery._resolve_ep_project_path", return_value=None),
     ):
-        result = discover_overlays(config_path=config_path)
+        result = discover_overlays()
 
     names = {entry.name for entry in result}
     assert "t3-teatree" in names
@@ -371,8 +291,6 @@ def test_canonical_ep_name_exact_match() -> None:
 
 
 def test_canonical_ep_name_suffix_match_skipping_nonmatch() -> None:
-    # Only the suffix-matching ep qualifies; the other is skipped
-    # (covers the loop-continue branch and the suffix rule).
     assert _match_canonical_ep("teatree", {"unrelated-ep", "t3-teatree"}) == "t3-teatree"
 
 
@@ -396,15 +314,9 @@ def test_canonical_overlay_name_strips_t3_prefix(name: str, expected: str) -> No
     assert OverlayEntry.canonical_overlay_name(name) == expected
 
 
-def test_bare_alias_table_still_folds_into_t3_prefixed_entry_point(tmp_path: Path) -> None:
-    """A bare ``[overlays.beta]`` table folds into ``t3-beta`` (the #1108 guard).
-
-    ``canonical_overlay_name`` is the CLI route key only — it must NOT widen the
-    legacy-alias fold. Discovery still emits ONE entry (``t3-beta``) for a bare
-    alias table, exactly as before.
-    """
-    config_path = tmp_path / ".teatree.toml"
-    _write_toml(config_path, '[overlays.beta]\nmode = "auto"\n')
+def test_bare_alias_entry_still_folds_into_t3_prefixed_entry_point(config_db: Path) -> None:
+    """A bare ``beta`` registry entry folds into ``t3-beta`` (the #1108 guard)."""
+    _seed_config_db(config_db, overlays={"beta": {"mode": "auto"}})
 
     entry_point = MagicMock()
     entry_point.name = "t3-beta"
@@ -414,7 +326,7 @@ def test_bare_alias_table_still_folds_into_t3_prefixed_entry_point(tmp_path: Pat
         patch("importlib.metadata.entry_points", return_value=[entry_point]),
         patch("teatree.config.discovery._resolve_ep_project_path", return_value=None),
     ):
-        result = discover_overlays(config_path=config_path)
+        result = discover_overlays()
 
     names = {entry.name for entry in result}
     assert names == {"t3-beta"}

@@ -27,7 +27,7 @@ Optional: If `T3_REVIEW_SKILL` is configured (e.g., `ac-reviewing-codebase`), re
 
 ## Configuration
 
-Retro's behavior depends on these `~/.teatree` variables and on whether the current repo contains an overlay package:
+Retro's behavior depends on these environment variables and on whether the current repo contains an overlay package:
 
 - **Active overlay / overlay app** — when the current repo contains an overlay package, retro writes project-specific improvements there. If no overlay is detectable, retro writes to the nearest repo-level agent instructions or user memory/config fallback.
 - **`T3_CONTRIBUTE`** — `false` (default) or `true`:
@@ -43,7 +43,7 @@ Retro's behavior depends on these `~/.teatree` variables and on whether the curr
 
 ### Agent Compatibility
 
-Retro is agent-platform neutral. The workflow, `~/.teatree` variables, and teatree slash commands stay the same across platforms.
+Retro is agent-platform neutral. The workflow, environment variables, and teatree slash commands stay the same across platforms.
 
 - Platform-specific files and commands remain valid where documented.
 - Prefer the closest equivalent repo-level instructions file plus any user-level agent config or memory file available in the environment.
