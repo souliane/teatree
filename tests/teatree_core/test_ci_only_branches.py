@@ -37,6 +37,9 @@ class TestRegisterOverlayCommandsAllowlistFilter:
             patch("teatree.config.discover_active_overlay", return_value=None),
             patch("teatree.cli.OverlayAppBuilder") as mock_builder,
             patch("teatree.cli.app.add_typer") as mock_add,
+            # Isolate from earlier tests that registered the ``teatree`` group on
+            # the module-level ``app`` — the idempotence guard would skip it.
+            patch("teatree.cli.app.registered_groups", []),
         ):
             register_overlay_commands(allowlist={"t3-teatree"})
             registered_names = [call.kwargs.get("name") or call.args[1] for call in mock_add.call_args_list]
