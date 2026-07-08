@@ -210,6 +210,44 @@ class TestBlocksAnnouncedButUnissuedAsk:
         assert _decision(capsys) == {}
         assert result is not True
 
+    @pytest.mark.parametrize(
+        "narration",
+        [
+            "No need to ask the user - I resolved the target branch from the repo config and merged.",
+            "I did not need to ask; the value was in the project config.",
+            "Per the rules, a blocked sub-agent must ask via AskUserQuestion rather than working around the gate.",
+            "The reviewer should ask for a deployed URL before accepting evidence.",
+            "## Ask About Auth Before External Service Integrations",
+            "Added the `AskUserQuestion(` printed-call detector to question_gates.py; suite green.",
+        ],
+    )
+    def test_non_first_person_or_negated_or_cited_ask_does_not_block(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], narration: str
+    ) -> None:
+        transcript = _write_transcript(tmp_path, [_user("run the loop"), _assistant(narration)])
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript)})
+
+        assert _decision(capsys) == {}
+        assert result is not True
+
+    @pytest.mark.parametrize(
+        "lost_decision",
+        [
+            "I'll ask the user which target branch to use; once you answer, I'll proceed with the merge.",
+            'AskUserQuestion(questions=[{"question": "Which branch?"}]) - waiting for your response.',
+        ],
+    )
+    def test_disposition_without_a_real_prior_ask_still_blocks(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], lost_decision: str
+    ) -> None:
+        transcript = _write_transcript(tmp_path, [_user("ship it"), _assistant(lost_decision)])
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript)})
+
+        assert _decision(capsys).get("decision") == "block"
+        assert result is True
+
 
 class TestPassesWhenCompliantOrNoQuestion:
     def test_question_with_askuserquestion_tool_call_passes(
