@@ -5956,7 +5956,7 @@ Usage: t3 teatree worktree ready [OPTIONS]
  Run runtime readiness probes for one worktree.
 
  Strict: exits 0 iff every probe declared by
- ``OverlayBase.get_readiness_probes``
+ ``OverlayRuntime.readiness_probes``
  passes. Does not mutate worktree state. Use after ``start`` to verify
  the env is actually serving — answers the question ``verify`` cannot
  (HTTP, CORS round-trip, end-to-end auth, fixture seed integrity).
@@ -6204,7 +6204,7 @@ Usage: t3 teatree workspace ready [OPTIONS]
 
  Strict: exits 0 iff every probe across every worktree passes. No
  per-worktree skip flag and no env-var escape — if a probe doesn't
- apply to a variant, the overlay's ``get_readiness_probes`` returns
+ apply to a variant, the overlay's ``runtime.readiness_probes`` returns
  an empty list (or omits that probe) for that worktree.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
@@ -6593,7 +6593,7 @@ Usage: t3 teatree run tests [OPTIONS]
  Extra arguments after ``--`` are appended to the test command
  (e.g. ``t3 <overlay> run tests -- path/to/test.py -k name``).
 
- The overlay's ``get_pre_run_steps(worktree, "tests")`` run first —
+ The overlay's ``runtime.pre_run_steps(worktree, "tests")`` run first —
  the same prerequisite seam every service launch uses — so an overlay
  can keep its test environment fast and correct (e.g. clone/refresh a
  reusable test DB) without every caller re-deciding the prerequisites.
@@ -6676,7 +6676,7 @@ Usage: t3 teatree e2e run [OPTIONS] [WORK_ITEM]
  DB-linked to the backend worktree (a frequent shape for
  out-of-tree test repos), name the backend ticket explicitly so
  frontend discovery, ``COMPOSE_PROJECT_NAME``, and the env cache
- feeding ``get_e2e_env_extras`` all route at the linked stack.
+ feeding ``e2e.env_extras`` all route at the linked stack.
  ``0`` means "no link" (default — back-compat).
 
  Runner-specific flags (``--repo``, ``--playwright-args``) stay on the
@@ -6754,14 +6754,14 @@ Usage: t3 teatree e2e external [OPTIONS]
  (``auto:<branch>`` ticket, different ticket, or no worktree row at
  all), name the backend ticket explicitly. Discovery,
  ``COMPOSE_PROJECT_NAME``, and the env cache feeding
- ``get_e2e_env_extras`` all route at the linked stack. ``0`` means
+ ``e2e.env_extras`` all route at the linked stack. ``0`` means
  "no link" (default — back-compat with the resolved-worktree path).
 
  Extra Playwright flags (--config, --timeout, --grep, etc.) can be
  passed via --playwright-args: ``--playwright-args="--config x.ts --timeout
  120000"``.
  The overlay also contributes per-spec args via
- ``get_e2e_playwright_args(test_path)`` (e.g. ``-c <config>`` chosen by
+ ``e2e.playwright_args(test_path)`` (e.g. ``-c <config>`` chosen by
  the spec's lane); overlay args go first, an explicit ``--playwright-args``
  follows so a caller can override.
 
