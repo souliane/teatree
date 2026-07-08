@@ -38,7 +38,7 @@ class _CleanOverlay(OverlayBase):
         return []
 
 
-class _SlackDownOverlay_Connectors(OverlayConnectors):
+class _SlackDownOverlayConnectors(OverlayConnectors):
     def preflight(self) -> list:
         def _probe() -> None:
             msg = "Slack auth.test failed: missing_scope"
@@ -48,14 +48,14 @@ class _SlackDownOverlay_Connectors(OverlayConnectors):
 
 
 class _SlackDownOverlay(OverlayBase):
-    connectors = _SlackDownOverlay_Connectors()
+    connectors = _SlackDownOverlayConnectors()
+
     def get_repos(self) -> list[str]:
         return ["backend"]
 
     def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
         _ = worktree
         return []
-
 
 
 class TestBareTickRefused(django.test.TestCase):

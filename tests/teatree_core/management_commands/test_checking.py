@@ -54,7 +54,7 @@ class _MinimalMeta(OverlayMetadata):
         return []
 
 
-class _AcmeOverlay_Runtime(OverlayRuntime):
+class _AcmeOverlayRuntime(OverlayRuntime):
     def run_commands(self, worktree):
         return {}
 
@@ -63,7 +63,7 @@ class _AcmeOverlay_Runtime(OverlayRuntime):
 
 
 class _AcmeOverlay(OverlayBase):
-    runtime = _AcmeOverlay_Runtime()
+    runtime = _AcmeOverlayRuntime()
     metadata = _MinimalMeta()
 
     def get_repos(self) -> list[str]:
@@ -73,9 +73,7 @@ class _AcmeOverlay(OverlayBase):
         return []
 
 
-
-
-class _BetaOverlay_Runtime(OverlayRuntime):
+class _BetaOverlayRuntime(OverlayRuntime):
     def run_commands(self, worktree):
         return {}
 
@@ -84,7 +82,7 @@ class _BetaOverlay_Runtime(OverlayRuntime):
 
 
 class _BetaOverlay(OverlayBase):
-    runtime = _BetaOverlay_Runtime()
+    runtime = _BetaOverlayRuntime()
     metadata = _MinimalMeta()
 
     def get_repos(self) -> list[str]:
@@ -92,8 +90,6 @@ class _BetaOverlay(OverlayBase):
 
     def get_provision_steps(self, worktree):
         return []
-
-
 
 
 def _two_overlay_patch() -> AbstractContextManager[Any]:

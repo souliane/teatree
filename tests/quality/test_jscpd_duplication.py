@@ -72,6 +72,9 @@ class TestScanCoverage:
     @pytest.fixture(scope="class")
     def analyzed(self, tmp_path_factory: pytest.TempPathFactory) -> set[Path]:
         out = tmp_path_factory.mktemp("jscpd")
+        # jscpd's ``gitignore`` filter silently scans zero files when the source
+        # is an ABSOLUTE path; a path relative to ``cwd`` is required. Report
+        # ``sources`` then come back relative to ``cwd`` too, so resolve against it.
         subprocess.run(
             [
                 _NPX,
@@ -84,7 +87,7 @@ class TestScanCoverage:
                 "--output",
                 str(out),
                 "--silent",
-                str(_SRC),
+                str(_SRC.relative_to(_REPO_ROOT)),
             ],
             cwd=_REPO_ROOT,
             check=False,
@@ -93,7 +96,7 @@ class TestScanCoverage:
             timeout=300,
         )
         report = json.loads((out / "jscpd-report.json").read_text(encoding="utf-8"))
-        return {Path(p).resolve() for p in report["statistics"]["formats"]["python"]["sources"]}
+        return {(_REPO_ROOT / p).resolve() for p in report["statistics"]["formats"]["python"]["sources"]}
 
     def test_no_clone_capable_file_escapes(self, analyzed: set[Path], config: dict) -> None:
         expected = _expected_clone_capable_files(int(config["minLines"]))

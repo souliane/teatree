@@ -15,13 +15,13 @@ from teatree.core.overlay import OverlayBase, OverlayProvisioning
 from teatree.core.worktree.worktree_env import CACHE_DIRNAME, CACHE_FILENAME
 
 
-class _NoDbOverlay_Provisioning(OverlayProvisioning):
+class _NoDbOverlayProvisioning(OverlayProvisioning):
     def db_import_strategy(self, worktree):
         return None
 
 
 class _NoDbOverlay(OverlayBase):
-    provisioning = _NoDbOverlay_Provisioning()
+    provisioning = _NoDbOverlayProvisioning()
     """An overlay with no db strategy and no provision-step post-conditions.
 
     The aggregate provision post-conditions then reduce to the two core
@@ -34,7 +34,6 @@ class _NoDbOverlay(OverlayBase):
 
     def get_provision_steps(self, worktree):
         return []
-
 
 
 def _step(name: str, *, success: bool = True, duration: float = 0.0, error: str = "") -> dict[str, object]:

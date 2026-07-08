@@ -13,9 +13,9 @@ Two categories are deliberately OUT of scope of a *send* proxy, and named in
 :data:`_CREDENTIAL_MANAGEMENT_ALLOWLIST`:
 
 * the ``t3 slack …`` credential-management CLI (setup / rotation / provisioning /
-  socket-listener bootstrap) — it reads the bot/app/user token to VALIDATE,
-  DERIVE, ROTATE, or CONNECT a listener, never to send. Folding that lifecycle
-  into a send chokepoint would be the wrong component boundary.
+    socket-listener bootstrap) — it reads the bot/app/user token to VALIDATE,
+    DERIVE, ROTATE, or CONNECT a listener, never to send. Folding that lifecycle
+    into a send chokepoint would be the wrong component boundary.
 
 Non-posting secrets (the Postgres password, the Figma token, a Slack user *id*,
 the Slack app *config* token) are out of scope everywhere — they authorise no

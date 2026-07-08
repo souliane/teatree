@@ -38,7 +38,7 @@ from teatree.types import RunCommand
 from tests.teatree_core.conftest import CommandOverlay
 
 
-class _FullStackOverlay_Runtime(OverlayRuntime):
+class _FullStackOverlayRuntime(OverlayRuntime):
     def __init__(self, overlay: "FullStackOverlay") -> None:
         self._overlay = overlay
 
@@ -73,7 +73,7 @@ class FullStackOverlay(CommandOverlay):
 
     SERVICES: ClassVar[tuple[str, ...]] = ("backend", "microservice", "frontend")
     PROVISION_STEPS: ClassVar[tuple[str, ...]] = ("schema", "seed")
-    _runtime_cls: ClassVar[type[_FullStackOverlay_Runtime]] = _FullStackOverlay_Runtime
+    _runtime_cls: ClassVar[type[_FullStackOverlayRuntime]] = _FullStackOverlayRuntime
 
     def __init__(self, order_file: Path, *, fail_provision_step: str | None = None) -> None:
         self.order_file = order_file
@@ -102,8 +102,6 @@ class FullStackOverlay(CommandOverlay):
 
             steps.append(make(name))
         return steps
-
-
 
 
 def _provisioned_worktree(tmp: str, ticket: Ticket) -> Worktree:
@@ -173,7 +171,7 @@ class ProvisioningContractTests(TestCase):
         assert self.order_file.read_text().splitlines() == ["prereq-nope"]
 
 
-class _SharedPrereqOverlay_Runtime(_FullStackOverlay_Runtime):
+class _SharedPrereqOverlayRuntime(_FullStackOverlayRuntime):
     def pre_run_steps(self, worktree: Worktree, service: str) -> list[ProvisionStep]:
         def shared() -> None:
             self._overlay._record("prereq-shared")
@@ -190,10 +188,10 @@ class _SharedPrereqOverlay_Runtime(_FullStackOverlay_Runtime):
 class _SharedPrereqOverlay(FullStackOverlay):
     """Two services share a prereq step name — dedup must collapse it."""
 
-    _runtime_cls: ClassVar[type[_FullStackOverlay_Runtime]] = _SharedPrereqOverlay_Runtime
+    _runtime_cls: ClassVar[type[_FullStackOverlayRuntime]] = _SharedPrereqOverlayRuntime
 
 
-class _FailingPrereqOverlay_Runtime(_FullStackOverlay_Runtime):
+class _FailingPrereqOverlayRuntime(_FullStackOverlayRuntime):
     def pre_run_steps(self, worktree: Worktree, service: str) -> list[ProvisionStep]:
         def record() -> None:
             self._overlay._record(f"prereq-{service}")
@@ -207,8 +205,7 @@ class _FailingPrereqOverlay_Runtime(_FullStackOverlay_Runtime):
 class _FailingPrereqOverlay(FullStackOverlay):
     """The backend prereq raises — later services must still be prepared."""
 
-    _runtime_cls: ClassVar[type[_FullStackOverlay_Runtime]] = _FailingPrereqOverlay_Runtime
-
+    _runtime_cls: ClassVar[type[_FullStackOverlayRuntime]] = _FailingPrereqOverlayRuntime
 
 
 class ServiceLauncherContractTests(TestCase):
@@ -415,13 +412,13 @@ class WorktreeFsmTransitionTests(TestCase):
             self.worktree.verify()
 
 
-class _FixedExtrasOverlay_E2e(OverlayE2E):
+class _FixedExtrasOverlayE2e(OverlayE2E):
     def env_extras(self, env_cache: dict[str, str]) -> dict[str, str]:
         return {"E2E_CONTRACT_KEY": "from-overlay", "E2E_ONLY_OVERLAY": "filled"}
 
 
 class _FixedExtrasOverlay(CommandOverlay):
-    e2e = _FixedExtrasOverlay_E2e()
+    e2e = _FixedExtrasOverlayE2e()
 
 
 class E2eEnvMergeContractTests(TestCase):

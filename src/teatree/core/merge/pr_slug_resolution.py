@@ -262,7 +262,9 @@ def _overlay_working_repo_slugs() -> list[str]:
         try:
             declared = overlay.review.merge_candidate_repo_slugs()
         except Exception:
-            logger.warning("overlay %r review.merge_candidate_repo_slugs() failed during merge probe", name, exc_info=True)
+            logger.warning(
+                "overlay %r review.merge_candidate_repo_slugs() failed during merge probe", name, exc_info=True
+            )
             continue
         slugs.extend(normalize_repo_slug(raw) for raw in declared)
     return slugs

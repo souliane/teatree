@@ -6,14 +6,14 @@ threshold breach auto-re-tightens the class back to ASK. The metrics are derived
 from the two ledgers a graduated class actually touches:
 
 * the :class:`~teatree.core.models.deferred_question.DeferredQuestion` ledger — the
-  human touchpoints for the ratify/keep classes. A question answered by a human
-  with a non-approval word is a *decline* (distrust of the auto-graduation); a
-  policy auto-answer (``resolved_via='policy'``) is never a decline.
+    human touchpoints for the ratify/keep classes. A question answered by a human
+    with a non-approval word is a *decline* (distrust of the auto-graduation); a
+    policy auto-answer (``resolved_via='policy'``) is never a decline.
 * the :class:`~teatree.core.models.send_audit.SendAudit` ledger (#117) — the
-  outbound posts for the on-behalf / public-issue classes. An ``enforce``-mode
-  ``DENIED`` verdict is a *defect escape* (the class authorized a send the
-  allowlist then blocked); a redacted payload is *rework* (content the leak matcher
-  had to scrub).
+    outbound posts for the on-behalf / public-issue classes. An ``enforce``-mode
+    ``DENIED`` verdict is a *defect escape* (the class authorized a send the
+    allowlist then blocked); a redacted payload is *rework* (content the leak matcher
+    had to scrub).
 
 The breach predicate is safety-biased: ANY of a high human-decline rate, a defect
 escape, or rework re-tightens. The never-fades classes (``public_issue_create`` /

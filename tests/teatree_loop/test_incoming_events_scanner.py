@@ -416,7 +416,7 @@ class _StubOverlay:
         self.review = _StubReview(guard)
 
 
-class _MergeGuardOverlay_Review(OverlayReview):
+class _MergeGuardOverlayReview(OverlayReview):
     def __init__(self, overlay: "_MergeGuardOverlay") -> None:
         self._overlay = overlay
 
@@ -431,7 +431,7 @@ class _MergeGuardOverlay(OverlayBase):
     def __init__(self, *, repos: list[str], guard: MergeGuard) -> None:
         self._repos = repos
         self._guard = guard
-        self.review = _MergeGuardOverlay_Review(self)
+        self.review = _MergeGuardOverlayReview(self)
 
     def get_repos(self) -> list[str]:
         return self._repos
@@ -442,7 +442,6 @@ class _MergeGuardOverlay(OverlayBase):
     def get_provision_steps(self, worktree: object) -> list:
         _ = worktree
         return []
-
 
 
 class TestEventForgeUrl:

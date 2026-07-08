@@ -3,6 +3,14 @@
 Auto-generated from the live Django management command tree.
 Edit the source command, not this file.
 
+## `approval_dial`
+
+| Subcommand | Description |
+| --- | --- |
+| `set` | Set *action_class*'s trust to *trust* in *overlay*'s dial table (merging) |
+| `clear` | Remove *action_class* from *overlay*'s dial table (it falls back to ASK) |
+| `show` | Render every class's configured trust, never-fades floor, breach, and verdict |
+
 ## `availability`
 
 ``t3 teatree availability`` group root.
@@ -301,6 +309,7 @@ Drive the T4 autoresearch outer loop (propose→ratify→implement→measure→k
 | `propose` | Record an operator hypothesis as a PROPOSED experiment (refused while off) |
 | `history` | Print the recent experiment ledger (read-only) |
 | `resolve-revert` | Close a REVERT_PENDING experiment to terminal REVERTED, freeing the slot |
+| `resolve-keep` | Close a KEEP_PENDING experiment to terminal KEPT, freeing the slot |
 
 ## `overlay`
 

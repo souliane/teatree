@@ -12,6 +12,7 @@ from django.core.management import call_command
 from teatree.core.models import ConfigSetting
 from teatree.core.models.approval_dial import DIAL_CONFIG_KEY
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

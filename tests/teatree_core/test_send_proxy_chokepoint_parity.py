@@ -25,12 +25,13 @@ from teatree.types import RawAPIDict
 SRC = pathlib.Path(__file__).resolve().parents[2] / "src" / "teatree"
 
 #: The chokepoints B4 enumerates — Slack (notify / on-behalf egress / reply
-#: transport) and forge comments (the review service).
+#: transport) and forge comments (the review send-routing helper the service
+#: delegates its live posts to).
 _CHOKEPOINTS = (
     "core/notify.py",
     "core/on_behalf_egress.py",
     "core/reply_transport.py",
-    "cli/review/service.py",
+    "cli/review/send_routing.py",
 )
 
 

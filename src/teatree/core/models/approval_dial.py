@@ -10,14 +10,14 @@ the floor already cleared.
 when THREE independent gates all pass:
 
 1. the class is not a **never-fades** class (:data:`NEVER_FADES`) — a non-templated
-   public issue/PR body or any change to a gate/permission/credential/detector never
-   graduates, whatever the config says. (The other never-fades case — free-text external
-   posts from untrusted input — is already handled by the taint floor ABOVE the dial.)
+    public issue/PR body or any change to a gate/permission/credential/detector never
+    graduates, whatever the config says. (The other never-fades case — free-text external
+    posts from untrusted input — is already handled by the taint floor ABOVE the dial.)
 2. the operator has **graduated** the class to ``auto`` in the ``approval_dial`` table
-   (ships empty → every class ASK → the dial is inert at ship);
+    (ships empty → every class ASK → the dial is inert at ship);
 3. the class's trailing-window **metrics** have not breached
-   (:func:`~teatree.core.models.approval_metrics.metrics_breached`) — a decline / defect
-   escape / rework auto-re-tightens a graduated class back to ASK.
+    (:func:`~teatree.core.models.approval_metrics.metrics_breached`) — a decline / defect
+    escape / rework auto-re-tightens a graduated class back to ASK.
 
 Any failure, or any error reading the table/metrics, fails **closed** to ASK — the dial
 can only ever WIDEN the owner-taint branch, never bypass the floor, and never guess AUTO.

@@ -61,14 +61,14 @@ _WORKING_REPO_SLUG = "downstream-org/downstream-overlay-e2e"
 _WORKING_REPO_SSH = f"git@github.com-alias:{_WORKING_REPO_SLUG}.git"
 
 
-class _WorkingRepoOverlay_Review(OverlayReview):
+class _WorkingRepoOverlayReview(OverlayReview):
     @override
     def merge_candidate_repo_slugs(self) -> list[str]:
         return [_WORKING_REPO_SSH]
 
 
 class _WorkingRepoOverlay(OverlayBase):
-    review = _WorkingRepoOverlay_Review()
+    review = _WorkingRepoOverlayReview()
     """A minimal overlay declaring one working-repo via the new merge hook.
 
     ``get_repos`` / ``get_provision_steps`` satisfy the ABC but are irrelevant
@@ -86,8 +86,7 @@ class _WorkingRepoOverlay(OverlayBase):
         return []
 
 
-
-class _ExplodingOverlay_Review(OverlayReview):
+class _ExplodingOverlayReview(OverlayReview):
     @override
     def merge_candidate_repo_slugs(self) -> list[str]:
         msg = "overlay enumeration blew up"
@@ -95,7 +94,7 @@ class _ExplodingOverlay_Review(OverlayReview):
 
 
 class _ExplodingOverlay(OverlayBase):
-    review = _ExplodingOverlay_Review()
+    review = _ExplodingOverlayReview()
     """An overlay whose merge-candidate hook RAISES — must be swallowed."""
 
     @override
@@ -105,7 +104,6 @@ class _ExplodingOverlay(OverlayBase):
     @override
     def get_provision_steps(self, worktree: object) -> list:
         return []
-
 
 
 def _working_repo_clear() -> MergeClear:

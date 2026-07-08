@@ -45,7 +45,7 @@ from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 from claude_agent_sdk import AgentDefinition, ClaudeAgentOptions, Message, query
-from claude_agent_sdk.types import EffortLevel, HookEventMessage, SdkPluginConfig
+from claude_agent_sdk.types import EffortLevel, SdkPluginConfig
 
 from teatree.eval.api_errors import (
     BUDGET_EXCEEDED_REASON,
@@ -65,6 +65,7 @@ from teatree.eval.message_mapping import eval_run_from_messages
 from teatree.eval.model_resolution import resolve_eval_model
 from teatree.eval.model_variant import parse_model_variant
 from teatree.eval.models import CLEAN_ROOM_LANE, CLEAN_ROOM_MIN_TURNS, EvalRun, EvalSpec
+from teatree.eval.production_hooks import has_hook_events, hooked_env, t3_plugin, teatree_root
 from teatree.eval.prompt_framing import LIVE_ENV_FRAMING
 from teatree.eval.system_prompt_file import spill_system_prompt
 from teatree.eval.toolset import (
@@ -311,59 +312,23 @@ class CleanRoomConfig:
     #: genuinely discoverable, then filters the listing to exactly this set.
     skills: tuple[str, ...] = ()
     #: Register the shipped teatree plugin (``hooks/hooks.json``) into the SDK
-    #: child (``plugins=[_t3_plugin(), …]`` + ``include_hook_events=True``) so the
+    #: child (``plugins=[t3_plugin(), …]`` + ``include_hook_events=True``) so the
     #: scenario measures the model+hook SYSTEM that ships. Empty (the default)
     #: leaves ``plugins``/``include_hook_events`` at their untouched defaults, so a
     #: scenario declaring no ``production_hooks`` is byte-identical to before.
     production_hooks: bool = False
 
 
-def _t3_plugin() -> SdkPluginConfig:
-    """The local-plugin config for the shipped teatree hook chain (repo root = plugin root).
-
-    ``.claude-plugin/plugin.json`` sits at the teatree repo root and
-    ``hooks/hooks.json`` fires the byte-identical shipped hook chain from the
-    plugin manifest, so registering ``{"type":"local","path":<repo root>}`` makes a
-    ``production_hooks`` scenario measure the model+hook SYSTEM. This is the same
-    plugin lever :func:`_skill_catalog_fixture_plugin` uses; a plugin-carried
-    ``hooks.json`` fires despite ``settings='{"hooks":{}}'`` (which only empties
-    USER-level hooks). Resolved against :func:`_teatree_root`, not the process cwd.
-    """
-    return {"type": "local", "path": str(_teatree_root())}
-
-
-def hooked_env(env: dict[str, str], home: str) -> dict[str, str]:
-    """Return *env* with the hook/loop state roots redirected into the sandbox *home*.
-
-    :func:`~teatree.eval.isolation.isolated_claude_env` redirects
-    HOME/XDG_CONFIG_HOME/CLAUDE_CONFIG_DIR, but the loop-owner registry the #807
-    Stop gate consults resolves via ``XDG_DATA_HOME`` (else ``$HOME/.local/share``)
-    and the hook state dir via ``T3_HOOK_STATE_DIR`` /
-    ``TEATREE_CLAUDE_STATUSLINE_STATE_DIR`` — an INHERITED real value would let the
-    developer's LIVE loop-owner registry make ``_session_drives_loop(eval-session)``
-    False, silently SKIPPING the Stop gate (a spurious raw-model measurement) and
-    polluting host hook state. Pinning all four at the sandbox home gives the gate a
-    fresh, owner-less registry so it fires, and keeps eval hook state off the host.
-    """
-    hooked = dict(env)
-    base = Path(home)
-    hooked["XDG_DATA_HOME"] = str(base / ".local" / "share")
-    hooked["T3_LOOP_REGISTRY_DIR"] = str(base / "loop-registry")
-    hooked["T3_HOOK_STATE_DIR"] = str(base / "hook-state")
-    hooked["TEATREE_CLAUDE_STATUSLINE_STATE_DIR"] = str(base / "statusline-state")
-    return hooked
-
-
 def _skill_catalog_fixture_plugin() -> SdkPluginConfig:
     """The local-plugin config for the eval-only skill-catalog fixture.
 
-    Resolved against :func:`_teatree_root`, not the process cwd, so it resolves
+    Resolved against :func:`teatree_root`, not the process cwd, so it resolves
     correctly whether the eval CLI runs from teatree's own root or a scenario's
     isolated temp dir (the sub-agent-spawning lane's ephemeral checkout never
     reaches this — none of the ``available_skills``-declaring scenarios expose
     the ``Agent`` spawn tool).
     """
-    path = _teatree_root().joinpath(*_SKILL_CATALOG_FIXTURE_RELATIVE_PATH)
+    path = teatree_root().joinpath(*_SKILL_CATALOG_FIXTURE_RELATIVE_PATH)
     return {"type": "local", "path": str(path)}
 
 
@@ -399,7 +364,7 @@ def build_sdk_options(config: CleanRoomConfig) -> ClaudeAgentOptions:
     that declares ``config.skills`` (threaded from ``EvalSpec.available_skills``):
     the eval-only fixture plugin is registered and the listing filtered to
     exactly the declared names. ``config.production_hooks`` composes the shipped
-    teatree plugin (:func:`_t3_plugin`) into the same ``plugins`` list and sets
+    teatree plugin (:func:`t3_plugin`) into the same ``plugins`` list and sets
     ``include_hook_events=True`` so the run measures the model+hook SYSTEM. Both
     levers default off: with neither, ``skills=None``, ``plugins=[]``, and
     ``include_hook_events=False`` — the SDK's own untouched defaults, so a scenario
@@ -408,7 +373,7 @@ def build_sdk_options(config: CleanRoomConfig) -> ClaudeAgentOptions:
     available = list(config.available_tools) if config.available_tools else None
     plugins: list[SdkPluginConfig] = []
     if config.production_hooks:
-        plugins.append(_t3_plugin())
+        plugins.append(t3_plugin())
     if config.skills:
         plugins.append(_skill_catalog_fixture_plugin())
     return ClaudeAgentOptions(
@@ -439,7 +404,7 @@ def load_agent_definition(agent_path: str, agent_sections: tuple[str, ...] = ())
     """Read the agent definition (whole file, or only the named ``## `` sections)."""
     resolved = Path(agent_path).expanduser()
     if not resolved.is_absolute():
-        for candidate in (Path.cwd() / resolved, _teatree_root() / resolved):
+        for candidate in (Path.cwd() / resolved, teatree_root() / resolved):
             if candidate.is_file():
                 resolved = candidate
                 break
@@ -525,7 +490,7 @@ class ApiInProcessRunner:
             return self._terminal_capped_run(spec, terminal)
         except SuccessMislabelResultError as mislabel:
             return self._success_mislabel_run(spec, mislabel)
-        if spec.production_hooks and not _has_hook_events(messages):
+        if spec.production_hooks and not has_hook_events(messages):
             # A hooked run that captured ZERO hook events means the shipped plugin
             # did NOT register — the lane silently degraded back to raw-model
             # measurement. Fail loud (is_error) rather than report a spurious pass,
@@ -736,19 +701,3 @@ async def _collect(prompt: str, options: ClaudeAgentOptions) -> list[Message]:
             raise
         raise TerminalResultError(terminal_reason=reason, messages=messages, cause=exc) from exc
     return messages
-
-
-def _has_hook_events(messages: list[Message]) -> bool:
-    """Whether the captured stream carries ANY production-hook lifecycle event.
-
-    The presence of even one ``HookEventMessage`` (started OR response) proves the
-    shipped plugin's ``hooks.json`` registered and fired under the eval wiring; its
-    total absence on a ``production_hooks`` run is the silent-degradation signal the
-    fail-loud ``hooks_not_registered`` guard catches.
-    """
-    return any(isinstance(message, HookEventMessage) for message in messages)
-
-
-def _teatree_root() -> Path:
-    """Return the teatree repo root (parent of ``src/teatree``)."""
-    return Path(__file__).resolve().parents[3]

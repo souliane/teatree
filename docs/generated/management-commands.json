@@ -1,6 +1,24 @@
 {
   "commands": [
     {
+      "help": "",
+      "name": "approval_dial",
+      "subcommands": [
+        {
+          "help": "Set *action_class*'s trust to *trust* in *overlay*'s dial table (merging)",
+          "name": "set"
+        },
+        {
+          "help": "Remove *action_class* from *overlay*'s dial table (it falls back to ASK)",
+          "name": "clear"
+        },
+        {
+          "help": "Render every class's configured trust, never-fades floor, breach, and verdict",
+          "name": "show"
+        }
+      ]
+    },
+    {
       "help": "``t3 teatree availability`` group root.",
       "name": "availability",
       "subcommands": [
@@ -575,6 +593,10 @@
         {
           "help": "Close a REVERT_PENDING experiment to terminal REVERTED, freeing the slot",
           "name": "resolve-revert"
+        },
+        {
+          "help": "Close a KEEP_PENDING experiment to terminal KEPT, freeing the slot",
+          "name": "resolve-keep"
         }
       ]
     },

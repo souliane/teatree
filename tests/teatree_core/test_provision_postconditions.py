@@ -10,7 +10,7 @@ from teatree.core.worktree.worktree_env import CACHE_DIRNAME, CACHE_FILENAME
 from teatree.types import ProvisionStep
 
 
-class _StubOverlay_Provisioning(OverlayProvisioning):
+class _StubOverlayProvisioning(OverlayProvisioning):
     def __init__(self, overlay: "_StubOverlay") -> None:
         self._overlay = overlay
 
@@ -22,14 +22,13 @@ class _StubOverlay(OverlayBase):
     def __init__(self, *, steps: tuple = (), db_strategy: dict | None = None) -> None:
         self._steps = list(steps)
         self._db_strategy = db_strategy
-        self.provisioning = _StubOverlay_Provisioning(self)
+        self.provisioning = _StubOverlayProvisioning(self)
 
     def get_repos(self) -> list[str]:
         return ["repo"]
 
     def get_provision_steps(self, worktree):
         return self._steps
-
 
 
 def _worktree(wt_dir: Path, *, db_name: str = "") -> SimpleNamespace:

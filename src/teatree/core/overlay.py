@@ -248,12 +248,22 @@ class OverlayConfig(BaseModel):
             else:
                 setattr(self, key, value)
 
+    def _secret_registry(self) -> dict[str, str]:
+        """The ``*_PASS_KEY`` lookup dict ``__init__`` installs in the instance ``__dict__``.
+
+        Read through ``__dict__`` (with a lazy default for a not-yet-initialised
+        model) so the plain-instance-dict storage stays invisible to Pydantic's
+        field machinery AND statically typed — a bare ``self._secret_pass_keys``
+        access has no declared home a type checker can resolve.
+        """
+        return self.__dict__.setdefault("_secret_pass_keys", {})
+
     def _register_secret(self, attr_name: str, pass_key: str) -> None:
-        self._secret_pass_keys[attr_name] = pass_key
+        self._secret_registry()[attr_name] = pass_key
 
     def _read_secret(self, name: str) -> str:
         """Read the ``pass`` value registered for *name* at point of use; ``""`` if unregistered."""
-        pass_key = self._secret_pass_keys.get(name)
+        pass_key = self._secret_registry().get(name)
         if not pass_key:
             return ""
         from teatree.utils.secrets import read_pass  # noqa: PLC0415
@@ -340,10 +350,10 @@ class OverlayConfig(BaseModel):
 class OverlayProvisioning:
     """Worktree setup + environment concern — ``overlay.provisioning``."""
 
-    def env_extra(self, worktree: "Worktree") -> dict[str, str]:  # noqa: PLR6301, ARG002
+    def env_extra(self, worktree: "Worktree") -> dict[str, str]:
         return {}
 
-    def declared_env_keys(self) -> set[str]:  # noqa: PLR6301
+    def declared_env_keys(self) -> set[str]:
         return set()
 
     _CORE_SECRET_KEYS: frozenset[str] = frozenset({"POSTGRES_PASSWORD"})
@@ -351,11 +361,11 @@ class OverlayProvisioning:
     def declared_secret_env_keys(self) -> set[str]:
         return set(self._CORE_SECRET_KEYS)
 
-    def db_import_strategy(self, worktree: "Worktree") -> DbImportStrategy | None:  # noqa: PLR6301, ARG002
+    def db_import_strategy(self, worktree: "Worktree") -> DbImportStrategy | None:
         return None
 
     # ast-grep-ignore: ac-django-no-complexity-suppressions
-    def db_import(  # noqa: PLR0913, PLR6301, ARG002 — overlay extension-point contract; each kwarg is a documented hook input.
+    def db_import(  # noqa: PLR0913 — overlay extension-point contract; each kwarg is a documented hook input.
         self,
         worktree: "Worktree",
         *,
@@ -367,37 +377,37 @@ class OverlayProvisioning:
     ) -> bool:
         return False
 
-    def post_db_steps(self, worktree: "Worktree") -> list[ProvisionStep]:  # noqa: PLR6301, ARG002
+    def post_db_steps(self, worktree: "Worktree") -> list[ProvisionStep]:
         return []
 
-    def reset_passwords_command(self, worktree: "Worktree") -> ProvisionStep | None:  # noqa: PLR6301, ARG002
+    def reset_passwords_command(self, worktree: "Worktree") -> ProvisionStep | None:
         return None
 
-    def envrc_lines(self, worktree: "Worktree") -> list[str]:  # noqa: PLR6301, ARG002
+    def envrc_lines(self, worktree: "Worktree") -> list[str]:
         return []
 
-    def symlinks(self, worktree: "Worktree") -> list[SymlinkSpec]:  # noqa: PLR6301, ARG002
+    def symlinks(self, worktree: "Worktree") -> list[SymlinkSpec]:
         return []
 
-    def services_config(self, worktree: "Worktree") -> dict[str, ServiceSpec]:  # noqa: PLR6301, ARG002
+    def services_config(self, worktree: "Worktree") -> dict[str, ServiceSpec]:
         return {}
 
-    def compose_file(self, worktree: "Worktree") -> str:  # noqa: PLR6301, ARG002
+    def compose_file(self, worktree: "Worktree") -> str:
         return ""
 
-    def base_images(self, worktree: "Worktree") -> list[BaseImageConfig]:  # noqa: PLR6301, ARG002
+    def base_images(self, worktree: "Worktree") -> list[BaseImageConfig]:
         return []
 
-    def docker_services(self, worktree: "Worktree") -> set[str]:  # noqa: PLR6301, ARG002
+    def docker_services(self, worktree: "Worktree") -> set[str]:
         return set()
 
-    def cleanup_steps(self, worktree: "Worktree") -> list[ProvisionStep]:  # noqa: PLR6301, ARG002
+    def cleanup_steps(self, worktree: "Worktree") -> list[ProvisionStep]:
         return []
 
     def health_checks(self, worktree: "Worktree") -> list["HealthCheck"]:
         return _default_health_checks(self, worktree)
 
-    def snapshot_warmer_configs(self) -> list["DjangoDbImportConfig"]:  # noqa: PLR6301
+    def snapshot_warmer_configs(self) -> list["DjangoDbImportConfig"]:
         """Reference-DB configs the snapshot-warmer loop keeps current, one per variant.
 
         Default empty — an overlay with no DSLR-backed :meth:`db_import`
@@ -407,7 +417,7 @@ class OverlayProvisioning:
         """
         return []
 
-    def reap_external_resources(self, worktree: "Worktree") -> list[str]:  # noqa: PLR6301, ARG002
+    def reap_external_resources(self, worktree: "Worktree") -> list[str]:
         """Remove out-of-band resources a reaped worktree leaves behind (default none).
 
         Called by ``cleanup_worktree`` per torn-down worktree. The docker case: a
@@ -416,7 +426,7 @@ class OverlayProvisioning:
         """
         return []
 
-    def resolve_variant(self, name: str) -> Variant:  # noqa: PLR6301
+    def resolve_variant(self, name: str) -> Variant:
         """Resolve a variant *name* into a first-class :class:`Variant` (PR-27, #787).
 
         The single seam turning a bare variant name into its resolved tenant /
@@ -431,16 +441,16 @@ class OverlayProvisioning:
 class OverlayRuntime:
     """Run-time concern (running services, tests, probes) — ``overlay.runtime``."""
 
-    def run_commands(self, worktree: "Worktree") -> RunCommands:  # noqa: PLR6301, ARG002
+    def run_commands(self, worktree: "Worktree") -> RunCommands:
         return {}
 
-    def pre_run_steps(self, worktree: "Worktree", service: str) -> list[ProvisionStep]:  # noqa: PLR6301, ARG002
+    def pre_run_steps(self, worktree: "Worktree", service: str) -> list[ProvisionStep]:
         return []
 
-    def test_command(self, worktree: "Worktree") -> list[str] | RunCommand:  # noqa: PLR6301, ARG002
+    def test_command(self, worktree: "Worktree") -> list[str] | RunCommand:
         return []
 
-    def lint_command(self, worktree: "Worktree") -> list[str] | RunCommand:  # noqa: PLR6301, ARG002
+    def lint_command(self, worktree: "Worktree") -> list[str] | RunCommand:
         """Return the argv (or ``RunCommand``) that lints this worktree.
 
         Backs ``t3 <overlay> run lint``. The default is empty; an overlay with a
@@ -449,24 +459,24 @@ class OverlayRuntime:
         """
         return []
 
-    def verify_endpoints(self, worktree: "Worktree") -> dict[str, str]:  # noqa: PLR6301, ARG002
+    def verify_endpoints(self, worktree: "Worktree") -> dict[str, str]:
         return {}
 
-    def readiness_probes(self, worktree: "Worktree") -> list["Probe"]:  # noqa: PLR6301, ARG002
+    def readiness_probes(self, worktree: "Worktree") -> list["Probe"]:
         return []
 
 
 class OverlayE2E:
     """End-to-end test concern — ``overlay.e2e``."""
 
-    def env_extras(self, env_cache: dict[str, str]) -> dict[str, str]:  # noqa: PLR6301, ARG002
+    def env_extras(self, env_cache: dict[str, str]) -> dict[str, str]:
         return {}
 
-    def run_provenance(self, spec_path: str) -> str:  # noqa: PLR6301, ARG002
+    def run_provenance(self, spec_path: str) -> str:
         """Manifest entry id (e.g. CI lane) for *spec_path*, recorded on the run (#272); ``""`` default."""
         return ""
 
-    def playwright_args(self, spec_path: str) -> list[str]:  # noqa: PLR6301, ARG002
+    def playwright_args(self, spec_path: str) -> list[str]:
         """Extra ``npx playwright test`` CLI args for *spec_path* (e.g. ``-c <config>``).
 
         The args-sibling of :meth:`env_extras`: a multi-config Playwright suite
@@ -475,7 +485,7 @@ class OverlayE2E:
         """
         return []
 
-    def scenarios(self, spec_path: str) -> tuple:  # noqa: PLR6301, ARG002
+    def scenarios(self, spec_path: str) -> tuple:
         """Return the per-feature acceptance scenarios for *spec_path*; ``()`` default.
 
         The overlay-agnostic seam the templated-test-plan renderer reads
@@ -484,18 +494,18 @@ class OverlayE2E:
         """
         return ()
 
-    def preflight(self, *, customer: str | None, base_url: str | None) -> list[Callable[[], None]]:  # noqa: PLR6301, ARG002
+    def preflight(self, *, customer: str | None, base_url: str | None) -> list[Callable[[], None]]:
         return []
 
 
 class OverlayReview:
     """Review / merge / customer-display concern — ``overlay.review``."""
 
-    def merge_candidate_repo_slugs(self) -> list[str]:  # noqa: PLR6301
+    def merge_candidate_repo_slugs(self) -> list[str]:
         """STATIC working-repo slugs the §17.4/#2323 cross-repo merge probe binds against."""
         return []
 
-    def can_auto_merge(self, *, target_ref: str, thread_ref: str) -> MergeGuard:  # noqa: PLR6301
+    def can_auto_merge(self, *, target_ref: str, thread_ref: str) -> MergeGuard:
         """Return a merge-guard verdict for an approved merge request.
 
         The default is permissive. Overlays that need human-approval gates,
@@ -505,10 +515,10 @@ class OverlayReview:
         _ = target_ref, thread_ref
         return MergeGuard(allowed=True)
 
-    def visual_qa_targets(self, changed_files: list[str]) -> list[str]:  # noqa: PLR6301, ARG002
+    def visual_qa_targets(self, changed_files: list[str]) -> list[str]:
         return []
 
-    def classify_customer_display_impact(self, changed_files: list[str]) -> bool:  # noqa: PLR6301, ARG002
+    def classify_customer_display_impact(self, changed_files: list[str]) -> bool:
         """True iff *changed_files* could impact what is displayed to the customer (#1967).
 
         The mandatory-E2E gate calls this to decide whether a change requires
@@ -523,7 +533,7 @@ class OverlayReview:
 class OverlayConnectors:
     """External-connector concern (claude.ai, MCP, Slack/Notion) — ``overlay.connectors``."""
 
-    def preflight(self) -> list[Callable[[], None]]:  # noqa: PLR6301
+    def preflight(self) -> list[Callable[[], None]]:
         """Return zero-arg probes run before any connector-dependent loop work.
 
         Each callable raises ``RuntimeError`` when a connector the overlay
@@ -532,11 +542,11 @@ class OverlayConnectors:
         """
         return []
 
-    def mcp_provider_expectations(self) -> dict[str, str]:  # noqa: PLR6301
+    def mcp_provider_expectations(self) -> dict[str, str]:
         """``{mcp_server_name: provider}`` for the #2282 connectivity check; default empty."""
         return {}
 
-    def manifest(self) -> list["ConnectorRequirement"]:  # noqa: PLR6301
+    def manifest(self) -> list["ConnectorRequirement"]:
         """Overlay's required-vs-optional claude.ai connectors by NAME; default none (PR-19)."""
         return []
 

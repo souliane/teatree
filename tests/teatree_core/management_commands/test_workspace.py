@@ -51,6 +51,7 @@ from tests.teatree_core.management_commands._overlays import (
     NESTED_OVERLAY,
     SETTINGS,
     FullOverlay,
+    FullProvisioning,
     _patch_overlays,
 )
 
@@ -1714,7 +1715,7 @@ class TestWorkspaceCleanAll(TestCase):
 
             cleanup_called: list[bool] = []
 
-            class _CleanupProvisioning(type(FullOverlay.provisioning)):
+            class _CleanupProvisioning(FullProvisioning):
                 def cleanup_steps(self, worktree: Worktree) -> list[ProvisionStep]:
                     return [ProvisionStep(name="docker-down", callable=lambda: cleanup_called.append(True))]
 

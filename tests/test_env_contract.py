@@ -145,15 +145,14 @@ class _ProducerOverlay(OverlayBase):
         return []
 
 
-class _SharedPostgresProducerOverlay_Provisioning(OverlayProvisioning):
+class _SharedPostgresProducerOverlayProvisioning(OverlayProvisioning):
     def db_import_strategy(self, worktree: Worktree) -> DbImportStrategy:
         return DbImportStrategy(shared_postgres=True)
 
 
 class _SharedPostgresProducerOverlay(_ProducerOverlay):
-    provisioning = _SharedPostgresProducerOverlay_Provisioning()
+    provisioning = _SharedPostgresProducerOverlayProvisioning()
     """Same, but requests the shared-postgres branch (produces POSTGRES_HOST)."""
-
 
 
 _DEDICATED_PG = {"test": _ProducerOverlay()}

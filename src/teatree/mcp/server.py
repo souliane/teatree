@@ -18,7 +18,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
 from teatree.config import get_effective_settings
-from teatree.mcp import search
+from teatree.mcp import introspection, search
 
 _READ_ONLY = ToolAnnotations(readOnlyHint=True)
 
@@ -232,7 +232,7 @@ async def _config_setting_get(key: str, *, overlay: str | None = None) -> dict[s
     ``overlay`` reads that overlay's scope; omitted reads the global scope. An
     unknown key is reported ``known=false`` rather than raising.
     """
-    return await sync_to_async(search.config_setting_get, thread_sensitive=True)(key=key, overlay=overlay)
+    return await sync_to_async(introspection.config_setting_get, thread_sensitive=True)(key=key, overlay=overlay)
 
 
 async def _gate_status(*, overlay: str | None = None) -> dict[str, Any]:
@@ -242,7 +242,7 @@ async def _gate_status(*, overlay: str | None = None) -> dict[str, Any]:
     review-phase evidence gates; ``raw_merge_gate`` reports whether raw
     ``gh``/``glab`` merges are blocked. Scope to an overlay with ``overlay``.
     """
-    return await sync_to_async(search.gate_status, thread_sensitive=True)(overlay=overlay)
+    return await sync_to_async(introspection.gate_status, thread_sensitive=True)(overlay=overlay)
 
 
 async def _command_search(query: str, *, limit: int = 20) -> list[dict[str, Any]]:
@@ -253,7 +253,7 @@ async def _command_search(query: str, *, limit: int = 20) -> list[dict[str, Any]
     (whether it exposes a ``--json`` / ``--format`` output to parse). Use this
     when unsure which command exists instead of guessing a subcommand.
     """
-    return await sync_to_async(search.command_search, thread_sensitive=True)(query=query, limit=limit)
+    return await sync_to_async(introspection.command_search, thread_sensitive=True)(query=query, limit=limit)
 
 
 def build_server() -> FastMCP:

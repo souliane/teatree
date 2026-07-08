@@ -63,15 +63,14 @@ def _make_ghost(tmp: str, *, dir_name: str = "ticket-ghost") -> tuple[Ticket, Wo
     return ticket, wt, wt_path
 
 
-class _PgUserOverlay_Provisioning(OverlayProvisioning):
+class _PgUserOverlayProvisioning(OverlayProvisioning):
     def env_extra(self, worktree: Worktree) -> dict[str, str]:
         return {"POSTGRES_USER": "db_superuser", "POSTGRES_HOST": "localhost"}
 
 
 class _PgUserOverlay(CommandOverlay):
-    provisioning = _PgUserOverlay_Provisioning()
+    provisioning = _PgUserOverlayProvisioning()
     """Overlay that connects to postgres as a non-default superuser role."""
-
 
 
 def _make(tmp: str, *, db_name: str = "wt_99") -> tuple[Ticket, Worktree, Path]:

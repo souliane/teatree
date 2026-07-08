@@ -5,20 +5,40 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('core', '0039_consolidate_critic_flags_delete_ambient'),
+        ("core", "0039_consolidate_critic_flags_delete_ambient"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='outerloopexperiment',
-            name='keep_question',
-            field=models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='kept_experiments', to='core.deferredquestion'),
+            model_name="outerloopexperiment",
+            name="keep_question",
+            field=models.ForeignKey(
+                blank=True,
+                null=True,
+                on_delete=django.db.models.deletion.SET_NULL,
+                related_name="kept_experiments",
+                to="core.deferredquestion",
+            ),
         ),
         migrations.AlterField(
-            model_name='outerloopexperiment',
-            name='state',
-            field=models.CharField(choices=[('proposed', 'Proposed'), ('ratify_pending', 'Ratify pending'), ('admitted', 'Admitted'), ('implementing', 'Implementing'), ('measuring', 'Measuring'), ('keep_pending', 'Keep pending'), ('kept', 'Kept'), ('revert_pending', 'Revert pending'), ('reverted', 'Reverted'), ('rejected', 'Rejected')], default='proposed', max_length=16),
+            model_name="outerloopexperiment",
+            name="state",
+            field=models.CharField(
+                choices=[
+                    ("proposed", "Proposed"),
+                    ("ratify_pending", "Ratify pending"),
+                    ("admitted", "Admitted"),
+                    ("implementing", "Implementing"),
+                    ("measuring", "Measuring"),
+                    ("keep_pending", "Keep pending"),
+                    ("kept", "Kept"),
+                    ("revert_pending", "Revert pending"),
+                    ("reverted", "Reverted"),
+                    ("rejected", "Rejected"),
+                ],
+                default="proposed",
+                max_length=16,
+            ),
         ),
     ]

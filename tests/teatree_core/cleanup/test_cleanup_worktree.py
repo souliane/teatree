@@ -1006,13 +1006,13 @@ class TestCleanupWorktreeLoudTeardown(TestCase):
 # ---------------------------------------------------------------------------
 
 
-class _NamedOverlay_Runtime(OverlayRuntime):
+class _NamedOverlayRuntime(OverlayRuntime):
     def run_commands(self, worktree: Worktree) -> RunCommands:
         return {}
 
 
 class _NamedOverlay(OverlayBase):
-    runtime = _NamedOverlay_Runtime()
+    runtime = _NamedOverlayRuntime()
     """Minimal OverlayBase with a string marker so tests can distinguish instances."""
 
     def __init__(self, marker: str) -> None:
@@ -1024,7 +1024,6 @@ class _NamedOverlay(OverlayBase):
 
     def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
         return []
-
 
 
 _OVERLAY_A = "overlay-alpha"

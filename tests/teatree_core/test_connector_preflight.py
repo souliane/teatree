@@ -72,7 +72,7 @@ class _NoOpOverlay(OverlayBase):
         return []
 
 
-class _SlackDownOverlay_Connectors(OverlayConnectors):
+class _SlackDownOverlayConnectors(OverlayConnectors):
     def preflight(self) -> list:
         def _probe() -> None:
             msg = "Slack auth.test failed: missing_scope"
@@ -82,14 +82,14 @@ class _SlackDownOverlay_Connectors(OverlayConnectors):
 
 
 class _SlackDownOverlay(OverlayBase):
-    connectors = _SlackDownOverlay_Connectors()
+    connectors = _SlackDownOverlayConnectors()
+
     def get_repos(self) -> list[str]:
         return ["backend"]
 
     def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
         _ = worktree
         return []
-
 
 
 class TestOverlayBaseConnectorPreflightDefault(TestCase):
@@ -149,20 +149,20 @@ class TestRunConnectorPreflight(TestCase):
             assert run_connector_preflight("does-not-exist") is None
 
 
-class _ManifestOverlay_Connectors(OverlayConnectors):
+class _ManifestOverlayConnectors(OverlayConnectors):
     def manifest(self) -> list[ConnectorRequirement]:
         return [ConnectorRequirement("claude.ai Slack", required=True)]
 
 
 class _ManifestOverlay(OverlayBase):
-    connectors = _ManifestOverlay_Connectors()
+    connectors = _ManifestOverlayConnectors()
+
     def get_repos(self) -> list[str]:
         return ["backend"]
 
     def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
         _ = worktree
         return []
-
 
 
 class TestManifestRequiredConnectorGate(TestCase):

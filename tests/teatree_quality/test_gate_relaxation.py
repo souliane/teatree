@@ -51,6 +51,75 @@ class TestNoqaSuppression:
         findings = scan_relaxation(_diff("src/teatree/m.py", ["def f(a, b, c):  # noqa: PLR0913"]))
         assert _kinds(findings) == {"complexity_suppression"}
 
+    def test_preexisting_complexity_code_with_sibling_stripped_does_not_block(self) -> None:
+        # RUF100 strips redundant sibling codes (PLR6301/ARG002 covered by a
+        # per-file-ignore), leaving a lone PLR0913 that was ALREADY on the same
+        # line at base. The noqa line "changed", but no complexity code is new,
+        # so the diff-aware matcher must not flag it.
+        findings = scan_relaxation(
+            _diff(
+                "src/teatree/core/overlay.py",
+                ["    def db_import(  # noqa: PLR0913 — overlay extension-point contract; documented hook inputs."],
+                removed=["    def db_import(  # noqa: PLR0913, PLR6301, ARG002 — overlay extension-point contract."],
+            )
+        )
+        assert findings == []
+
+    def test_complexity_code_newly_added_to_existing_line_still_blocks(self) -> None:
+        # A complexity code (C901) added to a line that already suppressed a
+        # DIFFERENT complexity code (PLR0913) is a genuinely new relaxation.
+        findings = scan_relaxation(
+            _diff(
+                "src/teatree/m.py",
+                ["def f(a, b, c):  # noqa: PLR0913, C901"],
+                removed=["def f(a, b, c):  # noqa: PLR0913"],
+            )
+        )
+        assert _kinds(findings) == {"complexity_suppression"}
+
+    def test_preexisting_unjustified_code_with_sibling_stripped_does_not_block(self) -> None:
+        # Same sibling-strip class on an unjustified non-complexity noqa: E501 was
+        # already suppressed on this line at base; dropping the redundant sibling
+        # is not a new relaxation.
+        findings = scan_relaxation(
+            _diff(
+                "src/teatree/m.py",
+                ["    x = bad()  # noqa: E501"],
+                removed=["    x = bad()  # noqa: E501, PLR6301"],
+            )
+        )
+        assert findings == []
+
+    def test_new_unjustified_code_added_to_existing_line_still_blocks(self) -> None:
+        # E501 added (unjustified) to a line that previously only suppressed F401
+        # is a genuinely new suppression — the pre-existing F401 does not excuse it.
+        findings = scan_relaxation(
+            _diff(
+                "src/teatree/m.py",
+                ["    x = bad()  # noqa: F401, E501"],
+                removed=["    x = bad()  # noqa: F401"],
+            )
+        )
+        assert _kinds(findings) == {"noqa_without_justification"}
+
+    def test_bare_colon_noqa_without_codes_or_reason_blocks(self) -> None:
+        # A `# noqa:` with no codes and no justification is an unjustified blanket
+        # suppression — the code-list parse finds no token and it still blocks.
+        findings = scan_relaxation(_diff("src/teatree/m.py", ["    x = bad()  # noqa:"]))
+        assert _kinds(findings) == {"noqa_without_justification"}
+
+    def test_new_suppression_over_plain_removed_line_still_blocks(self) -> None:
+        # The removed base line carried no noqa, so the added suppression is new
+        # even though the same code stem changed in this hunk.
+        findings = scan_relaxation(
+            _diff(
+                "src/teatree/m.py",
+                ["def f(a, b, c):  # noqa: PLR0913"],
+                removed=["def f(a):"],
+            )
+        )
+        assert _kinds(findings) == {"complexity_suppression"}
+
     def test_noqa_inside_string_literal_does_not_block(self) -> None:
         # This gate's OWN detector source: a suppression marker inside a raw
         # string is not a suppression — string literals are blanked before the scan.
