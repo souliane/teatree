@@ -29,6 +29,7 @@ from teatree.core.models.approval_policy import (
 from teatree.core.models.provenance import Provenance
 from teatree.core.models.trust_level import TrustLevel
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 

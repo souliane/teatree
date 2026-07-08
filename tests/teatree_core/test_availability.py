@@ -866,6 +866,7 @@ class TestCronAnchorDeterminism:
 class TestPendingQuestions:
     """``pending_questions_count`` / ``iter_pending_questions`` honour ``using``."""
 
+    # ast-grep-ignore: ac-django-no-pytest-django-db
     @pytest.mark.django_db
     def test_count_reflects_pending_rows(self) -> None:
         assert availability.pending_questions_count() == 0
@@ -873,6 +874,7 @@ class TestPendingQuestions:
         availability.DeferredQuestion.record("q2")
         assert availability.pending_questions_count() == 2
 
+    # ast-grep-ignore: ac-django-no-pytest-django-db
     @pytest.mark.django_db
     def test_count_forwards_using(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Kills ``pending(using=using)`` -> ``using=None``: the caller's DB alias
@@ -889,6 +891,7 @@ class TestPendingQuestions:
         assert availability.pending_questions_count(using="default") == 1
         assert seen == ["default"]
 
+    # ast-grep-ignore: ac-django-no-pytest-django-db
     @pytest.mark.django_db
     def test_iter_forwards_using(self, monkeypatch: pytest.MonkeyPatch) -> None:
         seen: list[str | None] = []

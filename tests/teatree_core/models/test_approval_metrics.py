@@ -15,6 +15,7 @@ from teatree.core.models import DeferredQuestion, SendAudit
 from teatree.core.models.approval_metrics import DECLINE_RATE_THRESHOLD, WINDOW_DAYS, compute_metrics, metrics_breached
 from teatree.core.models.approval_policy import DIRECTIVE_ADMIT, ON_BEHALF_POST, OUTER_LOOP_KEEP, PUBLIC_ISSUE_CREATE
 
+# ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
 
