@@ -66,9 +66,9 @@ class LoopSeedSpec:
     reads from a colleague — the #2904 admission gate skips it whenever
     availability defers questions (away / autonomous_away). ``default_enabled``
     ships the local/read-only operational core ON out of the box (the sound
-    default; migration ``0043`` flips the same set on existing rows); every
-    colleague-facing, externally-visible, destructive-capable, or token-costly
-    loop stays ``False`` (opt-in).
+    default the squashed ``0001_initial`` seeds ``enabled=True`` on a fresh DB);
+    every colleague-facing, externally-visible, destructive-capable, or
+    token-costly loop stays ``False`` (opt-in).
     """
 
     name: str

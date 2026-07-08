@@ -46,12 +46,11 @@ class TestAgentRuntimeResolution(TestCase):
         with pytest.raises(ValueError, match="agent_runtime"):
             get_effective_settings()
 
-    def test_pre_2887_sdk_oauth_value_raises_before_migration(self) -> None:
+    def test_pre_2887_sdk_oauth_value_raises(self) -> None:
         # #2887 retired the credential-conflated values (sdk_oauth / sdk_apikey /
-        # api). A row stored before the change is collapsed by migration
-        # 0015_agent_harness_two_layer_config — this pins that an UN-migrated row
-        # is a corrupt value, never a silent misread, so the migration is load-
-        # bearing rather than cosmetic.
+        # api). Such a value is no longer a member of the enum — this pins that
+        # the resolver rejects it loudly as a corrupt value, never a silent
+        # misread.
         ConfigSetting.objects.set_value("agent_runtime", "sdk_oauth")
         with pytest.raises(ValueError, match="agent_runtime"):
             get_effective_settings()

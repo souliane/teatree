@@ -2,19 +2,22 @@
 
 ``worktree provision`` crashed on an unmigrated auto-isolated per-worktree
 self-DB: the DB is seeded once from a canonical snapshot
-(``teatree.paths._seed_isolated_db``) and never re-migrated on its own. A
-provisioning step reads ``get_effective_settings()`` (e.g.
-``provision_timebox.resolve_step_timeout_seconds``), and a stored
-``ConfigSetting`` row that predates a since-added migration crashes that read
-with a raw ``ValueError`` instead of provisioning. Migration
-``0015_agent_harness_two_layer_config`` is the concrete reproduction: a
-pre-#2887 ``agent_runtime`` row (``sdk_oauth`` / ``sdk_apikey`` / ``api``) is
-unparsable by the current :class:`~teatree.config.enums.AgentRuntime` enum
-until that migration's ``RunPython`` rewrites it.
+(``teatree.paths._seed_isolated_db``) and never re-migrated on its own. When the
+live editable install advances over a new migration the self-DB falls behind, and
+a provisioning step that reads the ORM (e.g. ``get_effective_settings`` /
+``resolve_step_timeout_seconds``) then crashed against the stale schema instead
+of provisioning.
 
 ``WorktreeProvisionRunner.run()`` now self-heals the self-DB schema first
-(mirroring the sanctioned merge path's ``require_current_schema``, #2006),
-so an unmigrated self-DB provisions cleanly instead of crashing.
+(mirroring the sanctioned merge path's ``require_current_schema``, #2006). These
+tests pin that the runner (a) runs the self-heal pre-flight before provisioning,
+and (b) fails loud, never a raw traceback, when the heal itself fails. That the
+pre-flight actually brings a genuinely behind self-DB current is proven directly
+against ``require_current_schema`` in ``test_schema_guard.py`` /
+``test_schema_guard_migrate.py``; post the #2652/#3071 squash a single
+``0001_initial`` means "one migration behind with the row still present" is no
+longer a reachable mid-state, so the runner-level guard is that the pre-flight
+runs and its failure is surfaced.
 """
 
 from pathlib import Path
@@ -22,22 +25,12 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
-from django.core.management import call_command
-from django.test import TestCase, TransactionTestCase
+from django.test import TestCase
 
-from teatree.config import get_effective_settings
-from teatree.core.gates.schema_guard import SelfDbMigrationError, pending_migrations
-from teatree.core.models import ConfigSetting, Ticket, Worktree
+from teatree.core.gates.schema_guard import SelfDbMigrationError
+from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import DbImportStrategy, OverlayBase, OverlayProvisioning, ProvisionStep
 from teatree.core.runners import WorktreeProvisionRunner
-
-
-def _migrate_core_to(target: str) -> None:
-    call_command("migrate", "core", target, "--no-input", verbosity=0)
-
-
-def _migrate_core_forward() -> None:
-    call_command("migrate", "core", "--no-input", verbosity=0)
 
 
 class _DbImportOverlayProvisioning(OverlayProvisioning):
@@ -67,30 +60,13 @@ class _DbImportOverlay(OverlayBase):
         return []
 
 
-# ``setUp`` reverse-migrates ``core`` to a mid-graph target and the cleanup runs
-# a full forward heal on the shared ``default`` connection — several seconds
-# single-core that exceeds the global 60s ``pytest-timeout`` under maximum
-# ``-n auto --cov --doctest-modules`` parallel contention. Scoped 240s bump for
-# the genuinely-slow migrations; the global 60s stays the hang-detector (#1189).
-@pytest.mark.timeout(240)
-class WorktreeProvisionSelfHealsStaleAgentRuntimeTest(TransactionTestCase):
-    """Self-DB left one migration behind, carrying a pre-#2887 ``agent_runtime`` row."""
+class WorktreeProvisionRunsSchemaSelfHealTest(TestCase):
+    """The runner runs the schema self-heal pre-flight before provisioning (#2919)."""
 
     @pytest.fixture(autouse=True)
     def _tmp_workspace(self, tmp_path: Path) -> None:
         self.wt_path = tmp_path / "worktree"
         self.wt_path.mkdir()
-
-    def setUp(self) -> None:
-        # Create the ticket + worktree fixture at HEAD first, so the ORM insert
-        # sees every current Ticket column; only THEN roll the self-DB back to the
-        # stale pre-#2887 state (the post-0014 columns are dropped and re-added
-        # when the provision runner self-heals). Creating it at 0014 would break
-        # the moment any new Ticket column lands after 0014 (e.g. `expedited`).
-        self.worktree = self._make_worktree()
-        _migrate_core_to("0014_ticket_repo_namespaced_key")
-        ConfigSetting.objects.create(scope="", key="agent_runtime", value="sdk_oauth")
-        self.addCleanup(_migrate_core_forward)
 
     def _make_worktree(self) -> Worktree:
         ticket = Ticket.objects.create(overlay="test", issue_url="https://example.com/i/2919")
@@ -103,28 +79,22 @@ class WorktreeProvisionSelfHealsStaleAgentRuntimeTest(TransactionTestCase):
             extra={"worktree_path": str(self.wt_path)},
         )
 
-    def test_stale_row_crashes_settings_resolution_while_unmigrated(self) -> None:
-        assert pending_migrations(), "guard precondition: migration 0015 must still be pending"
-        with pytest.raises(ValueError, match="agent_runtime"):
-            get_effective_settings()
-
-    def test_provision_runner_self_heals_before_reading_settings(self) -> None:
-        worktree = self.worktree
-        overlay = _DbImportOverlay()
+    def test_run_invokes_the_schema_pre_flight(self) -> None:
+        # The #2919 fix is the require_current_schema() pre-flight in run(); removing
+        # it turns this assertion RED. The heal is stubbed to a no-op here (its own
+        # behaviour is proven in test_schema_guard*.py) so the guard is that run()
+        # calls it at all.
+        worktree = self._make_worktree()
 
         with (
-            patch(
-                "teatree.core.runners.worktree_provision._setup_worktree_dir",
-                return_value=None,
-            ),
+            patch("teatree.core.runners.worktree_provision.require_current_schema") as heal,
+            patch("teatree.core.runners.worktree_provision._setup_worktree_dir", return_value=None),
             patch("teatree.utils.db.db_exists", return_value=False),
         ):
-            result = WorktreeProvisionRunner(worktree, overlay=overlay).run()
+            result = WorktreeProvisionRunner(worktree, overlay=_DbImportOverlay()).run()
 
+        assert heal.called, "run() must run the self-DB schema self-heal pre-flight"
         assert result.ok is True, result.detail
-        assert pending_migrations() == []
-        # 0015's RunPython collapsed the stale value in place.
-        assert get_effective_settings().agent_runtime.value == "headless"
 
 
 class WorktreeProvisionFailsLoudOnSelfHealFailureTest(TestCase):
