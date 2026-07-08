@@ -1,0 +1,69 @@
+# teatree headless deployment — one image, three services (init/worker/admin)
+# sharing named volumes so init installs teatree once and worker/admin run it.
+#
+# The box-side secrets file `teatree.env` (next to this file, gitignored, written
+# by the deploy workflow) supplies every credential. Non-secret runtime config
+# (clone/repo paths, uv dirs) is baked into the image.
+name: teatree
+
+x-teatree-common: &teatree-common
+  image: teatree-headless:latest
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile
+  env_file:
+    - teatree.env
+  # All services mount all volumes so admin and worker share ONE db.sqlite3
+  # (WAL — safe concurrent reads) and one editable install.
+  volumes:
+    - teatree_src:/home/teatree/teatree
+    - teatree_data:/home/teatree/.local/share/teatree
+    - teatree_worktrees:/home/teatree/.local/share/teatree-worktrees
+    - teatree_workspaces:/home/teatree/workspace/t3-workspaces
+    - teatree_uv:/opt/teatree/uv
+  init: true
+
+services:
+  # One-shot prep. worker/admin wait for this to exit 0, so the editable install
+  # on the shared clone never races.
+  teatree-init:
+    <<: *teatree-common
+    environment:
+      TEATREE_ROLE: init
+    restart: "no"
+
+  # The loop cadence owner. DEBUG off — a long-running DEBUG Django process grows
+  # connection.queries unboundedly.
+  teatree-worker:
+    <<: *teatree-common
+    environment:
+      TEATREE_ROLE: worker
+      T3_DEBUG: "0"
+    depends_on:
+      teatree-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    mem_limit: 5g
+    cpus: "3.0"
+
+  # Django admin dev server, published on the BOX loopback only (reach it via an
+  # SSH tunnel). DEBUG on (default) — required to mount /admin/.
+  teatree-admin:
+    <<: *teatree-common
+    environment:
+      TEATREE_ROLE: admin
+    depends_on:
+      teatree-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    mem_limit: 512m
+    cpus: "0.5"
+
+volumes:
+  teatree_src:
+  teatree_data:
+  teatree_worktrees:
+  teatree_workspaces:
+  teatree_uv:
