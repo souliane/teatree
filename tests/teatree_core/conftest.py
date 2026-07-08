@@ -124,8 +124,7 @@ def mock_command_overlay() -> Iterator[None]:
 class _RouteAllToAlias:
     """Force every unscoped ORM query onto ``alias`` for one migrate call (#2915).
 
-    Several ``core`` migrations (e.g. ``0001_initial``'s loop/prompt seed,
-    ``0016_loop_colleague_facing``'s backfill) run a ``RunPython`` that reads
+    The ``core`` ``0001_initial`` loop/prompt seed runs a ``RunPython`` that reads
     historical models via ``apps.get_model(...).objects`` with no
     ``.using(...)`` — Django resolves that to ``DEFAULT_DB_ALIAS`` regardless
     of which connection the surrounding ``migrate --database`` targets.

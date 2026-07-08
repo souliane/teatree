@@ -49,6 +49,76 @@ _SOFT_ASK_CUE_RE = re.compile(r"\blet me know (?:if|whether|which|what)\b", re.I
 # classifier-relax check (`_is_classifier_relax_explanation`) reuses it.
 FENCED_CODE_RE = re.compile(r"```.*?```", re.DOTALL)
 
+# An ANNOUNCED ask — the turn narrates an imminent user ask ("**Action:** Ask
+# about the first PR", "I'll ask the user which branch") without issuing it.
+# There is no '?' and no soft-ask cue, so the two trip-wires above miss it, yet
+# on a loop turn the narration reads as a log line and the decision is silently
+# lost — the exact metered red `structured_question_one_decision_per_question`
+# pinned. Every shape requires an ask-object ("the user"/"about"/"whether"/…)
+# AND a first-person / action-line anchor, so a negated resolution ("No need to
+# ask the user — I resolved it"), a rule citation ("a blocked sub-agent must ask
+# via AskUserQuestion"), a third-party subject ("the reviewer should ask for a
+# URL"), a quoted heading ("## Ask About Auth …"), and a past-tense report
+# ("the ticket asked for a doc update") never fire.
+_ASK_OBJECT = r"(?:about|the user|you|for|whether|which)"
+_ANNOUNCED_ASK_RE = re.compile(
+    rf"\bi(?:(?:'|\u2019)?ll| will| am going to|(?:'|\u2019)?m going to| am about to| need to| must"
+    rf"| should| have to| want to)? ask {_ASK_OBJECT}\b"
+    rf"|\b(?:let me|time to) ask {_ASK_OBJECT}\b"
+    rf"|\b(?:action|next(?: step)?|now|plan|step \d+)\b\W{{0,4}}ask {_ASK_OBJECT}\b"
+    rf"|^(?:[-*>\u2022]\s{{0,2}}|\*\*)?ask {_ASK_OBJECT}\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+# The legitimate one-ask-then-wait disposition suppresses the announced-ask wire
+# — forcing a re-ask there would create the exact re-ask loop
+# `asks_decisions_one_at_a_time` forbids. Two shapes: an explicit waiting
+# posture ("pausing for your answer"), or an answer-gated next step ("once you
+# answer, I'll ask the second decision") — the latter only with evidence a
+# question was actually put to the user (a past-ask verb), so "I'll ask which
+# branch; once you answer, I'll merge" (nothing ever asked) still blocks. (A
+# same-turn real ask short-circuits earlier via `used_question_tool`.)
+_WAITING_DISPOSITION_RE = re.compile(
+    r"\b(?:await(?:ing)?|waiting|paus\w+|hold(?:ing)?)\b[^.!\n]{0,60}\b(?:answer|reply|response|input|decision)\b",
+    re.IGNORECASE,
+)
+_ANSWER_GATED_NEXT_RE = re.compile(
+    r"\b(?:once|after|when)\b[^.!\n]{0,40}\b(?:answer|respond|reply|response|input)\b",
+    re.IGNORECASE,
+)
+_PAST_ASK_SIGNAL_RE = re.compile(r"\b(?:asked|surfaced|posed|raised|posted)\b", re.IGNORECASE)
+
+
+def _pending_answer_disposition(prose: str) -> bool:
+    if _WAITING_DISPOSITION_RE.search(prose):
+        return True
+    return bool(_ANSWER_GATED_NEXT_RE.search(prose) and _PAST_ASK_SIGNAL_RE.search(prose))
+
+
+# A PRINTED tool call — the model emits `AskUserQuestion(...)` call SYNTAX as
+# text (fenced or inline) instead of issuing the tool_use block, believing the
+# printed call is the ask. Scanned on the RAW text (before the fence strip —
+# a fenced printed call is exactly the give-away), and NEVER suppressed by the
+# pending-answer disposition (printed call syntax is wrong in every posture).
+# Call SHAPE required — the paren must open a questions payload — so a prose
+# MENTION of the tool or a backticked symbol reference ("the `AskUserQuestion(`
+# printed-call detector") never fires.
+_PRINTED_TOOL_CALL_RE = re.compile(r"AskUserQuestion\s*\(\s*(?:questions|\[|\{|[\"'])")
+
+# The #807 Stop-gate block reason — owned here beside the detection heuristic it
+# explains (the shrink-only router imports it back).
+STRUCTURED_QUESTION_BLOCK = (
+    "TEATREE GATE — a user-directed question was posed inline in prose (or "
+    "announced/printed — 'I'll ask…' / a literal AskUserQuestion(...) line — "
+    "without being issued) with no AskUserQuestion tool call in this turn. "
+    "Inline/narrated questions are invisible in autonomous/loop runs (they read "
+    "as log lines) so the decision is lost. Issue a REAL AskUserQuestion tool "
+    "call NOW — an actual tool invocation, never call syntax printed as text — "
+    "one question at a time, with concrete options — then continue. This is a "
+    "non-bypassable gate (no `relax:` escape): the question must go through the "
+    "structured tool."
+)
+
 # A SEQUENCING offer about the agent's OWN next action — "want me to write X now
 # or react first?" — where BOTH branches are the agent's own work and the question
 # is only the ORDER (a "now …" against a "… first/next/then" ordering word). The
@@ -82,9 +152,22 @@ def is_user_directed_question(text: str) -> bool:
     write X now or react first?") does NOT fire — it asks only the order of the
     agent's own work, which it resolves autonomously. A genuine go/no-go or a
     real choice between substantive options still fires.
+
+    An ANNOUNCED ask ("**Action:** Ask about the first PR", "I'll ask the user
+    which branch") and a PRINTED tool call (`AskUserQuestion(...)` emitted as
+    text, fenced or inline) trip independently of the ``?`` requirement too —
+    narrating or printing the ask is not asking, and on a loop turn the decision
+    is silently lost. The one-ask-then-wait disposition ("once you answer, I'll
+    ask the second decision", with evidence something was asked) suppresses only
+    the announced-ask wire so a compliant walk-through is never re-ask-looped;
+    printed call syntax is wrong in every posture and is never suppressed.
     """
     prose = FENCED_CODE_RE.sub(" ", text)
     if _SOFT_ASK_CUE_RE.search(prose):
+        return True
+    if _PRINTED_TOOL_CALL_RE.search(text):
+        return True
+    if _ANNOUNCED_ASK_RE.search(prose) and not _pending_answer_disposition(prose):
         return True
     if "?" not in prose:
         return False

@@ -17,8 +17,9 @@ class AgentRuntime(StrEnum):
     ``sdk_oauth`` / ``sdk_apikey`` / ``api`` members): conflating "which lane"
     with "which credential" in one enum meant the two could never be set
     independently, and the not-yet-implemented ``api`` member had no home once
-    the credential axis moved to Layer 2. A stored pre-#2887 value is collapsed
-    onto this shape by migration ``0015_agent_harness_two_layer_config``.
+    the credential axis moved to Layer 2. A stored pre-#2887 value is no longer a
+    member of this enum; the resolver rejects it loudly rather than silently
+    misreading it.
 
     Tiers (default :attr:`INTERACTIVE`, today's behaviour):
 

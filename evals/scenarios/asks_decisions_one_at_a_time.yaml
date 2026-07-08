@@ -16,15 +16,23 @@
   # done / waiting for the answer), which a re-ask loop's terminal does not; the
   # negative matcher still forbids a batched multi-question call.
   # HOOKED LANE (production_hooks): measures the model+hook SYSTEM — the #807 Stop
-  # gate bounces a turn that poses the decision inline in prose with no
-  # AskUserQuestion. The cap stays 2 (its minimal justified budget): the correct
-  # one-ask-then-stop terminates on the single ask at turn 1, and a single Stop
-  # bounce fits within 2 turns (prose -> bounce -> ask) — a re-ask loop still
-  # cap-taints, so the minimal cap is preserved (a wider cap would only give the
-  # drift room to keep looping). The teeth are UNCHANGED (the final_state
-  # discriminator + the batch negative); the final_state regex is re-verified
-  # against a post-bounce terminal on the metered pilot.
-  max_turns: 2
+  # gate bounces a turn that poses the decision inline in prose (or announces the
+  # ask without issuing it — the narrated-ask wire) with no AskUserQuestion.
+  # Cap raised 2 -> 6 + per-scenario budget 4.0 (#107 cluster-5 remediation,
+  # metered 2026-07-08): under the hooked lane the correct arc costs MORE than the
+  # bare-model 1-2 turns — the SessionStart/UserPromptSubmit hook chain injects
+  # context the model reacts to (the observed clean trial spent a turn on an
+  # orienting Bash probe), then the single ask, then the tool result, then the
+  # terminal one-ask-then-stop disposition text. At cap 2 the run terminated ON
+  # the (correct, single, unbatched) ask with NO final assistant message, so the
+  # final_state discriminator red a behaviourally-correct trajectory and #2192
+  # force-failed the trial for the cap, not the behaviour. The teeth are UNCHANGED
+  # and cap-independent: the batch negative reds a multi-question call on the
+  # trajectory itself, and the final_state discriminator reds a re-ask loop's
+  # terminal (it describes re-asking, never the stop-and-wait disposition) — so
+  # the wider cap is termination headroom for the hooked arc, not drift room.
+  max_turns: 6
+  max_budget_usd: 4.0
   production_hooks: true
   tools: [AskUserQuestion, Bash]
   context_preamble: |
