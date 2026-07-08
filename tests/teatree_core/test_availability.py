@@ -6,9 +6,12 @@ is asserted at each layer independently so a regression on any one
 layer fails its own assertion rather than corrupting the others.
 """
 
+import json
+import logging
 import warnings
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -26,6 +29,7 @@ from teatree.core.availability import (
     resolve_mode,
     write_override,
 )
+from teatree.paths import DATA_DIR
 
 
 @pytest.fixture
@@ -495,3 +499,406 @@ class TestLivePresenceOverridesScheduleAway:
         resolution = resolve_mode(now=self.EVENING, schedule=Schedule(), override=None)
         assert resolution.mode == MODE_PRESENT
         assert resolution.source == "default"
+
+
+# ---------------------------------------------------------------------------
+# Mutation kill-proofs (#44). ``availability.py`` is a high-value safety module
+# whose diff-scoped mutmut run mutates ONLY this file. Each assertion below pins
+# one mutable point so a specific mutant (guard flip, comparison swap, wrong
+# section/env/key name, dropped or non-forwarded argument, naive-datetime
+# normalisation, atomic-write contract) is caught here rather than surviving.
+# Verified against a Linux-container mutmut run (mutmut fork-segfaults on macOS).
+# ---------------------------------------------------------------------------
+
+WINDOW = "* 9-16 * * 1-5"  # per-minute business-hours window: valid, non-sparse.
+
+
+class TestDurableFilePaths:
+    """``override_path`` / ``presence_path`` resolve to their exact DATA_DIR files."""
+
+    def test_override_path_is_data_dir_json(self) -> None:
+        # Kills the ``/`` -> ``*`` operator swap (raises TypeError when called)
+        # and the filename XX-wrap / upper-case mutations.
+        assert availability.override_path() == DATA_DIR / "availability_override.json"
+
+    def test_presence_path_is_data_dir_presence(self) -> None:
+        assert availability.presence_path() == DATA_DIR / "availability_presence"
+
+
+class TestLoadSchedule:
+    """``load_schedule`` reads ``[teatree.availability]`` from the resolved TOML."""
+
+    def _write(self, path: Path, body: str) -> Path:
+        path.write_text(body, encoding="utf-8")
+        return path
+
+    def test_reads_timezone_and_windows_from_file(self, tmp_path: Path) -> None:
+        # One real file kills the bulk: the ``not is_file`` guard flip, the
+        # ``open("rb")`` mode mutations, the ``tomllib.load`` drops, the
+        # section/key name corruptions, the ``isinstance`` guard flip, and
+        # ``from_toml(None)`` — each yields empty windows or raises.
+        cfg = self._write(
+            tmp_path / "cfg.toml",
+            f'[teatree.availability]\ntimezone = "Europe/Paris"\nwindows = ["{WINDOW}"]\n',
+        )
+        schedule = availability.load_schedule(path=cfg)
+        assert schedule.timezone == "Europe/Paris"
+        assert schedule.windows == (WINDOW,)
+
+    def test_missing_file_returns_empty_schedule(self, tmp_path: Path) -> None:
+        schedule = availability.load_schedule(path=tmp_path / "absent.toml")
+        assert schedule.windows == ()
+
+    def test_valid_toml_without_teatree_section_is_empty(self, tmp_path: Path) -> None:
+        # Kills ``data.get("teatree", None)`` / dropped-default: a missing
+        # ``[teatree]`` yields an empty schedule, never an AttributeError.
+        cfg = self._write(tmp_path / "cfg.toml", '[other]\nkey = "value"\n')
+        schedule = availability.load_schedule(path=cfg)
+        assert schedule.windows == ()
+
+    def test_env_var_names_the_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Kills the ``"TEATREE_TOML"`` env-var-name corruptions.
+        cfg = self._write(tmp_path / "env.toml", f'[teatree.availability]\nwindows = ["{WINDOW}"]\n')
+        monkeypatch.setenv("TEATREE_TOML", str(cfg))
+        schedule = availability.load_schedule()
+        assert schedule.windows == (WINDOW,)
+
+    def test_default_path_is_home_dot_teatree_toml(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Kills the ``str(None)`` default and the ".teatree.toml" filename
+        # corruptions: with no env override the home dotfile must be read.
+        home = tmp_path / "home"
+        home.mkdir(exist_ok=True)
+        (home / ".teatree.toml").write_text(f'[teatree.availability]\nwindows = ["{WINDOW}"]\n', encoding="utf-8")
+        monkeypatch.delenv("TEATREE_TOML", raising=False)
+        monkeypatch.setenv("HOME", str(home))
+        schedule = availability.load_schedule()
+        assert schedule.windows == (WINDOW,)
+
+
+class TestLoadOverrideUntilNormalization:
+    """A naive ``until`` on disk is normalised to a UTC-aware datetime on load."""
+
+    def test_naive_until_is_made_utc_aware(self, override_file: Path) -> None:
+        # Kills the ``tzinfo is None`` guard flip, the ``until = None`` drop, and
+        # ``replace(tzinfo=None)``: a naive ISO ``until`` must load as UTC-aware.
+        override_file.parent.mkdir(parents=True, exist_ok=True)
+        override_file.write_text('{"mode": "away", "until": "2030-01-01T00:00:00"}', encoding="utf-8")
+        loaded = load_override()
+        assert loaded is not None
+        assert loaded.until == datetime(2030, 1, 1, tzinfo=UTC)
+        assert loaded.until.tzinfo is not None
+
+    def test_reads_the_override_as_utf8(self, override_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Kills the ``read_text(encoding="utf-8")`` mutants (None / "UTF-8"): the
+        # override file is read under an explicit utf-8 codec.
+        override_file.parent.mkdir(parents=True, exist_ok=True)
+        override_file.write_text('{"mode": "away"}', encoding="utf-8")
+        real_read = Path.read_text
+        seen: list[dict[str, object]] = []
+
+        def spy_read(self: Path, **kwargs: object) -> str:
+            seen.append(kwargs)
+            return real_read(self, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", spy_read)
+        load_override()
+        assert seen == [{"encoding": "utf-8"}]
+
+
+class TestResolveModePresenceBoundary:
+    """Live presence exactly at the freshness boundary upgrades away -> present."""
+
+    def test_presence_exactly_at_freshness_is_live(self) -> None:
+        # Kills the final ``<=`` -> ``<`` swap in the live-presence branch: a
+        # prompt exactly PRESENCE_FRESHNESS old is still live.
+        schedule = Schedule(timezone="UTC", windows=("* 9-16 * * 1-5",))
+        evening = datetime(2026, 6, 2, 22, 0, tzinfo=UTC)  # outside the window
+        resolution = resolve_mode(
+            now=evening,
+            schedule=schedule,
+            override=None,
+            presence=evening - PRESENCE_FRESHNESS,
+        )
+        assert resolution.mode == MODE_PRESENT
+        assert resolution.source == "live"
+
+
+class TestWriteOverrideDrainOnReturn:
+    """Setting present from a deferring mode fires the deferred-question drain."""
+
+    @pytest.fixture
+    def capture_drain(self, monkeypatch: pytest.MonkeyPatch) -> list[dict[str, str]]:
+        calls: list[dict[str, str]] = []
+
+        def fake_drain(**kwargs: str) -> tuple[int, int]:
+            calls.append(kwargs)
+            return (0, 0)
+
+        monkeypatch.setattr(availability, "drain_deferred_questions", fake_drain)
+        return calls
+
+    def test_away_to_present_forwards_user_id_and_overlay(
+        self, override_file: Path, capture_drain: list[dict[str, str]]
+    ) -> None:
+        # Kills prior_mode=None, the ``mode == PRESENT`` / ``prior in DEFERRING``
+        # flips, and the ``user_id=None`` / ``overlay=None`` / dropped-kwarg
+        # mutants in both write_override and _drain_on_return.
+        write_override(MODE_AWAY)
+        write_override(MODE_PRESENT, user_id="u1", overlay="ov1")
+        assert capture_drain == [{"user_id": "u1", "overlay": "ov1"}]
+
+    def test_away_to_present_defaults_are_empty_strings(
+        self, override_file: Path, capture_drain: list[dict[str, str]]
+    ) -> None:
+        # Kills the ``user_id: str = ""`` / ``overlay: str = ""`` default-value
+        # mutations (-> "XXXX").
+        write_override(MODE_AWAY)
+        write_override(MODE_PRESENT)
+        assert capture_drain == [{"user_id": "", "overlay": ""}]
+
+    def test_present_to_present_does_not_drain(
+        self, override_file: Path, monkeypatch: pytest.MonkeyPatch, capture_drain: list[dict[str, str]]
+    ) -> None:
+        # Kills the ``prior in DEFERRING`` -> ``not in`` flip: a present->present
+        # transition must not drain.
+        monkeypatch.setenv("TEATREE_TOML", str(override_file.parent / "no-such.toml"))
+        write_override(MODE_PRESENT)
+        write_override(MODE_PRESENT)
+        assert capture_drain == []
+
+    def test_drain_failure_is_swallowed_and_logged(
+        self, override_file: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # Kills the ``logger.warning`` message/arg mutations and proves the flip
+        # is fail-open (write_override still returns).
+        monkeypatch.setattr(
+            availability,
+            "drain_deferred_questions",
+            mock.MagicMock(side_effect=RuntimeError("slack down")),
+        )
+        write_override(MODE_AWAY)
+        with caplog.at_level(logging.WARNING, logger="teatree.core.availability"):
+            write_override(MODE_PRESENT, user_id="u1")
+        messages = [record.getMessage() for record in caplog.records if record.levelno == logging.WARNING]
+        assert messages == ["away→present auto-drain failed: slack down"]
+
+
+class TestWriteOverrideDurability:
+    """``write_override`` normalises ``until``, creates parents, writes atomically."""
+
+    def test_naive_until_written_as_utc_aware(self, override_file: Path) -> None:
+        # Kills the write-path ``tzinfo is None`` flip, the ``until = None`` drop,
+        # and ``replace(tzinfo=None)``: the on-disk ``until`` carries a UTC offset.
+        write_override(MODE_AWAY, until=datetime(2030, 1, 1, 0, 0))  # noqa: DTZ001 — deliberately naive until
+        doc = json.loads(override_file.read_text(encoding="utf-8"))
+        assert doc["until"] == "2030-01-01T00:00:00+00:00"
+
+    def test_creates_missing_parent_directories(self, tmp_path: Path) -> None:
+        # Kills the ``mkdir(parents=...)`` -> False/None/dropped mutants.
+        target = tmp_path / "deep" / "nested" / "override.json"
+        write_override(MODE_AWAY, path=target)
+        assert target.is_file()
+
+    def test_atomic_write_uses_named_temp_utf8_sorted(
+        self, override_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Kills the mkstemp prefix/suffix/dir mutants, the fdopen ``encoding``
+        # mutants, and the json.dump ``sort_keys`` mutants — one atomic-write
+        # contract (crash-safe temp in the target dir, utf-8, deterministic).
+        mkstemp = mock.MagicMock(wraps=availability.tempfile.mkstemp)
+        fdopen = mock.MagicMock(wraps=availability.os.fdopen)
+        dump = mock.MagicMock(wraps=availability.json.dump)
+        monkeypatch.setattr(availability.tempfile, "mkstemp", mkstemp)
+        monkeypatch.setattr(availability.os, "fdopen", fdopen)
+        monkeypatch.setattr(availability.json, "dump", dump)
+        write_override(MODE_AWAY, path=override_file)
+        mkstemp.assert_called_once_with(prefix=".override-", suffix=".tmp", dir=str(override_file.parent))
+        assert fdopen.call_args.kwargs.get("encoding") == "utf-8"
+        assert dump.call_args.kwargs.get("sort_keys") is True
+
+    def test_temp_is_unlinked_when_write_fails(self, override_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Kills the cleanup-path ``unlink(missing_ok=True)`` -> False/None mutants:
+        # a failed write cleans its temp with a fail-open unlink.
+        monkeypatch.setattr(availability.json, "dump", mock.MagicMock(side_effect=RuntimeError("boom")))
+        real_unlink = Path.unlink
+        seen: list[dict[str, object]] = []
+
+        def spy_unlink(self: Path, **kwargs: object) -> None:
+            seen.append(kwargs)
+            return real_unlink(self, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", spy_unlink)
+        with pytest.raises(RuntimeError):
+            write_override(MODE_AWAY, path=override_file)
+        assert {"missing_ok": True} in seen
+
+
+class TestPresenceRecordDurability:
+    """``PresenceHeartbeat.record`` writes a UTC-aware, atomic, utf-8 heartbeat."""
+
+    AT = datetime(2026, 6, 2, 22, 0, tzinfo=UTC)
+
+    def test_naive_now_written_as_utc_aware(self, presence: PresenceHeartbeat) -> None:
+        # Kills the ``moment.tzinfo is None`` flip and ``replace(tzinfo=None)``:
+        # a naive ``now`` is stamped with a UTC offset on disk. (The read path
+        # re-normalises, so this must be observed on the raw file.)
+        target = presence.record(now=datetime(2026, 6, 2, 22, 0))  # noqa: DTZ001 — deliberately naive now
+        doc = json.loads(target.read_text(encoding="utf-8"))
+        assert doc["at"] == "2026-06-02T22:00:00+00:00"
+
+    def test_default_session_id_is_empty(self, presence: PresenceHeartbeat) -> None:
+        # Kills the ``session_id: str = ""`` default mutation (-> "XXXX").
+        target = presence.record(now=self.AT)
+        doc = json.loads(target.read_text(encoding="utf-8"))
+        assert doc["session"] == ""
+
+    def test_creates_missing_parent_directories(self, tmp_path: Path) -> None:
+        # Kills the record ``mkdir(parents=...)`` mutants.
+        target = tmp_path / "deep" / "nested" / "presence"
+        PresenceHeartbeat(locate=lambda: target).record(now=self.AT)
+        assert target.is_file()
+
+    def test_atomic_write_uses_named_temp_utf8_sorted(
+        self, presence: PresenceHeartbeat, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Kills the record mkstemp prefix/suffix/dir, fdopen encoding, and
+        # json.dump sort_keys mutants.
+        mkstemp = mock.MagicMock(wraps=availability.tempfile.mkstemp)
+        fdopen = mock.MagicMock(wraps=availability.os.fdopen)
+        dump = mock.MagicMock(wraps=availability.json.dump)
+        monkeypatch.setattr(availability.tempfile, "mkstemp", mkstemp)
+        monkeypatch.setattr(availability.os, "fdopen", fdopen)
+        monkeypatch.setattr(availability.json, "dump", dump)
+        target = presence.record(now=self.AT)
+        mkstemp.assert_called_once_with(prefix=".presence-", suffix=".tmp", dir=str(target.parent))
+        assert fdopen.call_args.kwargs.get("encoding") == "utf-8"
+        assert dump.call_args.kwargs.get("sort_keys") is True
+
+    def test_temp_is_unlinked_when_write_fails(
+        self, presence: PresenceHeartbeat, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Kills the record cleanup-path ``unlink(missing_ok=True)`` mutants.
+        monkeypatch.setattr(availability.json, "dump", mock.MagicMock(side_effect=RuntimeError("boom")))
+        real_unlink = Path.unlink
+        seen: list[dict[str, object]] = []
+
+        def spy_unlink(self: Path, **kwargs: object) -> None:
+            seen.append(kwargs)
+            return real_unlink(self, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", spy_unlink)
+        with pytest.raises(RuntimeError):
+            presence.record(now=self.AT)
+        assert {"missing_ok": True} in seen
+
+
+class TestLastUserTurnNormalization:
+    """A legacy naive plain-ISO heartbeat is read back as a UTC-aware turn."""
+
+    def test_legacy_naive_timestamp_is_made_utc_aware(self, presence: PresenceHeartbeat) -> None:
+        # Kills the read-path ``at.tzinfo is None`` flip, the ``at = None`` drop,
+        # and ``replace(tzinfo=None)``.
+        target = presence.locate()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("2026-06-02T22:00:00", encoding="utf-8")  # legacy naive ISO
+        turn = presence.last_user_turn()
+        assert turn is not None
+        assert turn.at == datetime(2026, 6, 2, 22, 0, tzinfo=UTC)
+        assert turn.at.tzinfo is not None
+
+    def test_reads_the_heartbeat_as_utf8(self, presence: PresenceHeartbeat, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Kills the ``read_text(encoding="utf-8")`` mutants: a non-ASCII session
+        # id round-trips only under an explicit utf-8 read.
+        target = presence.locate()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        real_read = Path.read_text
+        seen: list[dict[str, object]] = []
+
+        def spy_read(self: Path, **kwargs: object) -> str:
+            seen.append(kwargs)
+            return real_read(self, **kwargs)
+
+        target.write_text('{"at": "2026-06-02T22:00:00+00:00", "session": "s-a"}', encoding="utf-8")
+        monkeypatch.setattr(Path, "read_text", spy_read)
+        presence.last_user_turn()
+        assert seen == [{"encoding": "utf-8"}]
+
+
+class TestLiveTurnWallClockDefault:
+    """``is_live_user_turn`` / ``refresh_live_turn`` default ``now`` to a UTC clock."""
+
+    def test_is_live_user_turn_defaults_now_to_utc(self, presence: PresenceHeartbeat) -> None:
+        # Kills ``datetime.now(tz=UTC)`` -> ``tz=None``: a naive wall clock would
+        # raise on ``naive - aware`` when comparing against the aware stamp.
+        presence.record(session_id="s-a", now=datetime.now(tz=UTC))
+        assert presence.is_live_user_turn(session_id="s-a") is True
+
+    def test_refresh_live_turn_defaults_now_to_utc(self, presence: PresenceHeartbeat) -> None:
+        presence.record(session_id="s-a", now=datetime.now(tz=UTC))
+        assert presence.refresh_live_turn(session_id="s-a") is True
+
+
+class TestCronAnchorDeterminism:
+    """The sparse-window probe anchors cadence at the fixed deterministic epoch."""
+
+    def test_cron_cadence_forwards_its_anchor(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Kills the ``croniter(expr, anchor)`` -> ``None`` / dropped-arg mutants.
+        anchor = datetime(2011, 3, 7, 9, 30, tzinfo=UTC)
+        spy = mock.MagicMock(wraps=availability.croniter)
+        monkeypatch.setattr(availability, "croniter", spy)
+        availability._cron_cadence("*/5 * * * *", anchor)
+        assert spy.call_args_list[0] == mock.call("*/5 * * * *", anchor)
+
+    def test_is_sparse_window_anchors_at_fixed_epoch(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Kills the ``datetime(2000, 1, 1, tzinfo=UTC)`` anchor mutations (year,
+        # month, day, tzinfo, None) that would make sparseness non-deterministic.
+        captured: list[object] = []
+
+        def fake_cadence(expr: str, anchor: object) -> timedelta:
+            captured.append(anchor)
+            return timedelta(hours=2)
+
+        monkeypatch.setattr(availability, "_cron_cadence", fake_cadence)
+        assert availability._is_sparse_window("0 9 * * 1-5") is True
+        assert captured == [datetime(2000, 1, 1, tzinfo=UTC)]
+
+
+class TestPendingQuestions:
+    """``pending_questions_count`` / ``iter_pending_questions`` honour ``using``."""
+
+    @pytest.mark.django_db
+    def test_count_reflects_pending_rows(self) -> None:
+        assert availability.pending_questions_count() == 0
+        availability.DeferredQuestion.record("q1")
+        availability.DeferredQuestion.record("q2")
+        assert availability.pending_questions_count() == 2
+
+    @pytest.mark.django_db
+    def test_count_forwards_using(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Kills ``pending(using=using)`` -> ``using=None``: the caller's DB alias
+        # must be forwarded, not silently replaced.
+        seen: list[str | None] = []
+        real_pending = availability.DeferredQuestion.pending.__func__
+
+        def spy(cls: type, *, using: str | None = None) -> object:
+            seen.append(using)
+            return real_pending(cls, using=using)
+
+        monkeypatch.setattr(availability.DeferredQuestion, "pending", classmethod(spy))
+        availability.DeferredQuestion.record("q1")
+        assert availability.pending_questions_count(using="default") == 1
+        assert seen == ["default"]
+
+    @pytest.mark.django_db
+    def test_iter_forwards_using(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        seen: list[str | None] = []
+        real_pending = availability.DeferredQuestion.pending.__func__
+
+        def spy(cls: type, *, using: str | None = None) -> object:
+            seen.append(using)
+            return real_pending(cls, using=using)
+
+        monkeypatch.setattr(availability.DeferredQuestion, "pending", classmethod(spy))
+        availability.DeferredQuestion.record("q1")
+        assert len(list(availability.iter_pending_questions(using="default"))) == 1
+        assert seen == ["default"]
