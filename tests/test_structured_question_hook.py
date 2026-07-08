@@ -101,6 +101,116 @@ class TestBlocksInlineUserDirectedQuestion:
         assert result is True
 
 
+class TestBlocksAnnouncedButUnissuedAsk:
+    """The narrated-ask recall hole.
+
+    A final turn that ANNOUNCES an imminent user ask ("Action: Ask about X",
+    "I'll ask the user which ...") or PRINTS `AskUserQuestion(...)` as text,
+    with no real tool call, has no '?' and no soft-ask cue, so the pre-fix
+    heuristic let the turn end and the decision was silently lost (the exact
+    metered reds of `structured_question_one_decision_per_question`).
+    """
+
+    @pytest.mark.parametrize(
+        "announcement",
+        [
+            "**Action:** Ask about the first PR's merge decision now, before touching the other two.",
+            "I'll ask the user which target branch to use.",
+            "Next step: ask whether the commits should be squashed.",
+            "I need to ask the user for the deployed dev URL before any done claim.",
+            "Let me ask about the merge decision for PR #1.",
+        ],
+    )
+    def test_announced_ask_without_tool_call_blocks(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], announcement: str
+    ) -> None:
+        transcript = _write_transcript(tmp_path, [_user("ship it"), _assistant(announcement)])
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript)})
+
+        assert _decision(capsys).get("decision") == "block"
+        assert result is True
+
+    def test_announced_ask_with_tool_call_passes(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        transcript = _write_transcript(
+            tmp_path,
+            [
+                _user("ship it"),
+                _assistant("Asking about the first PR now.", tool_uses=["AskUserQuestion"]),
+            ],
+        )
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript)})
+
+        assert _decision(capsys) == {}
+        assert result is not True
+
+    @pytest.mark.parametrize(
+        "disposition",
+        [
+            "I asked about the target branch; once you answer, I'll ask the second decision.",
+            "Waiting for your answer on the branch decision before surfacing the next one.",
+            "The first decision is posed - pausing for your response; then I'll ask about squashing.",
+        ],
+    )
+    def test_pending_answer_disposition_does_not_block(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], disposition: str
+    ) -> None:
+        transcript = _write_transcript(tmp_path, [_user("ship it"), _assistant(disposition)])
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript)})
+
+        assert _decision(capsys) == {}
+        assert result is not True
+
+    def test_past_tense_report_does_not_block(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        transcript = _write_transcript(
+            tmp_path,
+            [_user("status"), _assistant("The ticket asked for a doc update; I shipped it and CI is green.")],
+        )
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript)})
+
+        assert _decision(capsys) == {}
+        assert result is not True
+
+    @pytest.mark.parametrize(
+        "printed_call",
+        [
+            'AskUserQuestion(questions=[{"question": "Merge PR #1 now?", "options": []}])',
+            '```python\nAskUserQuestion(questions=[{"question": "Merge PR #1 now?", "options": []}])\n```',
+        ],
+    )
+    def test_printed_call_syntax_without_tool_call_blocks(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], printed_call: str
+    ) -> None:
+        transcript = _write_transcript(tmp_path, [_user("ship it"), _assistant(printed_call)])
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript)})
+
+        assert _decision(capsys).get("decision") == "block"
+        assert result is True
+
+    def test_deferral_narration_mentioning_the_tool_does_not_block(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        transcript = _write_transcript(
+            tmp_path,
+            [
+                _user("ship it"),
+                _assistant(
+                    "The AskUserQuestion for the branch decision was captured as DeferredQuestion #4 - "
+                    "waiting for the user's answer via Slack."
+                ),
+            ],
+        )
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript)})
+
+        assert _decision(capsys) == {}
+        assert result is not True
+
+
 class TestPassesWhenCompliantOrNoQuestion:
     def test_question_with_askuserquestion_tool_call_passes(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]

@@ -49,6 +49,54 @@ _SOFT_ASK_CUE_RE = re.compile(r"\blet me know (?:if|whether|which|what)\b", re.I
 # classifier-relax check (`_is_classifier_relax_explanation`) reuses it.
 FENCED_CODE_RE = re.compile(r"```.*?```", re.DOTALL)
 
+# An ANNOUNCED ask — the turn narrates an imminent user ask ("**Action:** Ask
+# about the first PR", "I'll ask the user which branch") without issuing it.
+# There is no '?' and no soft-ask cue, so the two trip-wires above miss it, yet
+# on a loop turn the narration reads as a log line and the decision is silently
+# lost — the exact metered red `structured_question_one_decision_per_question`
+# pinned. Three forward-intent shapes, each requiring an ask-object ("the
+# user"/"about"/"whether"/…) so a past-tense report ("the ticket asked for a
+# doc update") or an unrelated "ask" token never fires.
+_ANNOUNCED_ASK_RE = re.compile(
+    r"\b(?:i(?:'|\u2019)?ll|i will|going to|about to|need to|needs to|let me|time to|must|should) ask\b"
+    r"|\b(?:action|next(?: step)?|now|plan|step \d+)\b\W{0,4}ask (?:about|the user|you|for|whether|which)\b"
+    r"|^\W{0,6}ask (?:about|the user|you|for|whether|which)\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+# The legitimate one-ask-then-wait disposition ("once you answer, I'll ask the
+# second decision", "waiting for your response") announces the NEXT ask gated on
+# a pending answer — forcing a re-ask there would create the exact re-ask loop
+# `asks_decisions_one_at_a_time` forbids, so it never trips the announced-ask
+# wire. (A same-turn real ask short-circuits earlier via `used_question_tool`.)
+_PENDING_ANSWER_GUARD_RE = re.compile(
+    r"\b(?:await(?:ing)?|waiting|paus\w+|hold(?:ing)?)\b[^.!\n]{0,60}\b(?:answer|reply|response|input|decision)\b"
+    r"|\b(?:once|after|when)\b[^.!\n]{0,40}\b(?:answer|respond|reply|response|input)\b",
+    re.IGNORECASE,
+)
+
+# A PRINTED tool call — the model emits `AskUserQuestion(...)` call SYNTAX as
+# text (fenced or inline) instead of issuing the tool_use block, believing the
+# printed call is the ask. Scanned on the RAW text (before the fence strip —
+# a fenced printed call is exactly the give-away). Call syntax only: a prose
+# MENTION of the tool ("the AskUserQuestion was captured as DeferredQuestion
+# #4") has no `(` and never fires.
+_PRINTED_TOOL_CALL_RE = re.compile(r"AskUserQuestion\s*\(")
+
+# The #807 Stop-gate block reason — owned here beside the detection heuristic it
+# explains (the shrink-only router imports it back).
+STRUCTURED_QUESTION_BLOCK = (
+    "TEATREE GATE — a user-directed question was posed inline in prose (or "
+    "announced/printed — 'I'll ask…' / a literal AskUserQuestion(...) line — "
+    "without being issued) with no AskUserQuestion tool call in this turn. "
+    "Inline/narrated questions are invisible in autonomous/loop runs (they read "
+    "as log lines) so the decision is lost. Issue a REAL AskUserQuestion tool "
+    "call NOW — an actual tool invocation, never call syntax printed as text — "
+    "one question at a time, with concrete options — then continue. This is a "
+    "non-bypassable gate (no `relax:` escape): the question must go through the "
+    "structured tool."
+)
+
 # A SEQUENCING offer about the agent's OWN next action — "want me to write X now
 # or react first?" — where BOTH branches are the agent's own work and the question
 # is only the ORDER (a "now …" against a "… first/next/then" ordering word). The
@@ -82,9 +130,21 @@ def is_user_directed_question(text: str) -> bool:
     write X now or react first?") does NOT fire — it asks only the order of the
     agent's own work, which it resolves autonomously. A genuine go/no-go or a
     real choice between substantive options still fires.
+
+    An ANNOUNCED ask ("**Action:** Ask about the first PR", "I'll ask the user
+    which branch") and a PRINTED tool call (`AskUserQuestion(...)` emitted as
+    text, fenced or inline) trip independently of the ``?`` requirement too —
+    narrating or printing the ask is not asking, and on a loop turn the decision
+    is silently lost. The one-ask-then-wait disposition ("once you answer, I'll
+    ask the second decision") is guarded so a compliant walk-through is never
+    re-ask-looped.
     """
     prose = FENCED_CODE_RE.sub(" ", text)
     if _SOFT_ASK_CUE_RE.search(prose):
+        return True
+    if not _PENDING_ANSWER_GUARD_RE.search(prose) and (
+        _ANNOUNCED_ASK_RE.search(prose) or _PRINTED_TOOL_CALL_RE.search(text)
+    ):
         return True
     if "?" not in prose:
         return False
