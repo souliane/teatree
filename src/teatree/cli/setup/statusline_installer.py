@@ -8,7 +8,7 @@ would try to distribute one statusline command to every user of the plugin.
 
 Never clobbers: an existing ``statusLine`` block (the user may have pointed it
 somewhere deliberate) is left untouched. The companion doctor check
-(:func:`teatree.cli._doctor_checks._check_statusline`) verifies presence,
+(:func:`teatree.cli.doctor_statusline.check_statusline`) verifies presence,
 absolute path, and executability with exact remediation.
 """
 

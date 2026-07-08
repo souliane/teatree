@@ -132,6 +132,58 @@ def publish_on_behalf_issue[T](repo: str, issue_iid: int, action: str, publish: 
     return require_on_behalf_approval(target=issue_gate_target(repo, issue_iid), action=action, publish=publish)
 
 
+def publish_or_blocked(
+    repo: str,
+    mr: int,
+    action: str,
+    body: Callable[[], tuple[str, int]],
+) -> tuple[str, int]:
+    """Run *body* (the GitLab post) atomically with the on-behalf consume + audit (#1879).
+
+    ``check_on_behalf`` already peeked non-consuming; here the approval is
+    consumed in the same ``transaction.atomic`` as the post, so a failed
+    post rolls back the consume (no burn) and writes no lying audit. A
+    BLOCK racing in after the peek is surfaced as ``(message, 1)``.
+
+    A verify-after-post failure (#2081) raises
+    :class:`~teatree.cli.review.audit.ReviewArtifactNotVerifiedError` from
+    *inside* ``body``, so it propagates through the same ``transaction.atomic``
+    and rolls back the consume + audit exactly like a post failure — then it is
+    surfaced here as ``(message, 1)`` instead of the phantom "posted" claim. A
+    non-404 transport error on the read-back is NOT caught here: it propagates
+    so a flaky GET surfaces as ``api_unavailable``, never a false post-failure.
+    """
+    return _surface(lambda: publish_on_behalf(repo, mr, action, body))
+
+
+def publish_or_blocked_issue(
+    repo: str,
+    issue_iid: int,
+    action: str,
+    body: Callable[[], tuple[str, int]],
+) -> tuple[str, int]:
+    """Issue/work-item twin of :func:`publish_or_blocked` — same atomic consume + audit, issue-scoped gate.
+
+    Routes *body* through :func:`publish_on_behalf_issue` so the recorded
+    approval the gate consumes is scoped to ``(<repo>#<issue>, <action>)``,
+    never an MR. Surfaces a BLOCK / verify-after-delete failure identically.
+    """
+    return _surface(lambda: publish_on_behalf_issue(repo, issue_iid, action, body))
+
+
+def _surface(run: Callable[[], tuple[str, int]]) -> tuple[str, int]:
+    """Run an on-behalf publish, mapping a BLOCK or verify-after-post failure to ``(message, 1)``."""
+    from teatree.cli.review.audit import ReviewArtifactNotVerifiedError  # noqa: PLC0415 — lazy pre-django.setup import
+    from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError  # noqa: PLC0415 — lazy pre-setup import
+
+    try:
+        return run()
+    except OnBehalfPostBlockedError as blocked:
+        return str(blocked), 1
+    except ReviewArtifactNotVerifiedError as unverified:
+        return str(unverified), 1
+
+
 def register(review_app: typer.Typer) -> None:
     """Register the ``approve-on-behalf`` command on the review typer app.
 

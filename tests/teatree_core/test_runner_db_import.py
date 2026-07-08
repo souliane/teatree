@@ -24,7 +24,7 @@ from teatree.core.overlay import DbImportStrategy, OverlayBase, OverlayProvision
 from teatree.core.runners import WorktreeProvisionRunner
 
 
-class _RecordingOverlay_Provisioning(OverlayProvisioning):
+class _RecordingOverlayProvisioning(OverlayProvisioning):
     def __init__(self, overlay: "_RecordingOverlay") -> None:
         self._overlay = overlay
 
@@ -57,7 +57,7 @@ class _RecordingOverlay(OverlayBase):
         self.provision_steps_calls: int = 0
         self.post_db_steps_calls: int = 0
         self._db_import_result = db_import_result
-        self.provisioning = _RecordingOverlay_Provisioning(self)
+        self.provisioning = _RecordingOverlayProvisioning(self)
 
     def get_repos(self) -> list[str]:
         return ["backend"]
@@ -65,9 +65,6 @@ class _RecordingOverlay(OverlayBase):
     def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
         self.provision_steps_calls += 1
         return []
-
-
-
 
 
 class TestRunnerSkipsDbImportWhenNoDbName(TestCase):
@@ -140,7 +137,7 @@ class TestRunnerSkipsDbImportWhenNoDbName(TestCase):
         assert overlay.post_db_steps_calls == 0
 
 
-class _BlockingDbImportOverlay_Provisioning(_RecordingOverlay_Provisioning):
+class _BlockingDbImportOverlayProvisioning(_RecordingOverlayProvisioning):
     def db_import(self, worktree: Worktree, **kwargs: Any) -> bool:
         self._overlay.db_import_calls += 1
         self._overlay.release.wait(timeout=3)
@@ -153,8 +150,7 @@ class _BlockingDbImportOverlay(_RecordingOverlay):
     def __init__(self) -> None:
         super().__init__()
         self.release = threading.Event()
-        self.provisioning = _BlockingDbImportOverlay_Provisioning(self)
-
+        self.provisioning = _BlockingDbImportOverlayProvisioning(self)
 
 
 class TestRunnerDbImportNeverHangs(TestCase):

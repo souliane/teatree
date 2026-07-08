@@ -60,7 +60,7 @@ from teatree.llm.rate_limits import (
 from teatree.utils.eval_container import in_container
 
 if TYPE_CHECKING:
-    from teatree.config.enums import EvalCredential
+    from teatree.config.agent_enums import EvalCredential
 
 
 class TokenKind(StrEnum):

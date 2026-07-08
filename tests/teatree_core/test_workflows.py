@@ -21,7 +21,16 @@ import teatree.core.management.commands.worktree as worktree_mod
 import teatree.core.overlay_loader as overlay_loader_mod
 import teatree.utils.run as utils_run_mod
 from teatree.core.models import Session, Task, Ticket, Worktree
-from teatree.core.overlay import OverlayBase, OverlayMetadata, OverlayProvisioning, OverlayRuntime, ProvisionStep, RunCommands, ServiceSpec, ToolCommand
+from teatree.core.overlay import (
+    OverlayBase,
+    OverlayMetadata,
+    OverlayProvisioning,
+    OverlayRuntime,
+    ProvisionStep,
+    RunCommands,
+    ServiceSpec,
+    ToolCommand,
+)
 from teatree.core.overlay_loader import reset_overlay_cache
 
 pytestmark = [
@@ -54,7 +63,7 @@ class _WorkflowMetadata(OverlayMetadata):
         ]
 
 
-class _WorkflowOverlay_Provisioning(OverlayProvisioning):
+class _WorkflowOverlayProvisioning(OverlayProvisioning):
     def post_db_steps(self, worktree: Worktree) -> list[ProvisionStep]:
         return [ProvisionStep(name="seed-data", callable=lambda: None, description="Seed test data")]
 
@@ -83,7 +92,7 @@ class _WorkflowOverlay_Provisioning(OverlayProvisioning):
         return ProvisionStep(name="reset-passwords", callable=lambda: None)
 
 
-class _WorkflowOverlay_Runtime(OverlayRuntime):
+class _WorkflowOverlayRuntime(OverlayRuntime):
     def run_commands(self, worktree: Worktree) -> RunCommands:
         return {
             "backend": ["python", "manage.py", "runserver"],
@@ -96,8 +105,8 @@ class _WorkflowOverlay_Runtime(OverlayRuntime):
 
 
 class WorkflowOverlay(OverlayBase):
-    provisioning = _WorkflowOverlay_Provisioning()
-    runtime = _WorkflowOverlay_Runtime()
+    provisioning = _WorkflowOverlayProvisioning()
+    runtime = _WorkflowOverlayRuntime()
     """Rich overlay that supports the full lifecycle for workflow tests."""
 
     metadata = _WorkflowMetadata()
@@ -116,13 +125,6 @@ class WorkflowOverlay(OverlayBase):
             ProvisionStep(name="symlinks", callable=lambda: None, description="Link .venv"),
             ProvisionStep(name="migrations", callable=_record_provision, description="Run migrations"),
         ]
-
-
-
-
-
-
-
 
     def get_workspace_repos(self) -> list[str]:
         return ["backend", "frontend"]

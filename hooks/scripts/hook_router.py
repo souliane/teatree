@@ -1876,9 +1876,7 @@ def _extract_ai_sig_payload(data: dict) -> str | None:
 
 def _ai_sig_scan_argv() -> list[str] | None:
     t3_bin = shutil.which("t3")
-    if t3_bin:
-        return [t3_bin, "tool", "ai-sig-scan", "-"]
-    return None
+    return [t3_bin, "tool", "ai-sig-scan", "-"] if t3_bin else None
 
 
 # A genuine finding is recognisable by the scanner's well-formed summary
@@ -1904,11 +1902,6 @@ _AI_SIG_BOOTSTRAP_CRASH_MARKERS = (
 )
 
 
-def _ai_sig_scanner_could_not_run(stderr: str) -> bool:
-    """True iff *stderr* shows the scanner subprocess crashed at import/bootstrap."""
-    return any(marker in stderr for marker in _AI_SIG_BOOTSTRAP_CRASH_MARKERS)
-
-
 def _ai_sig_finding(stdout: str) -> str | None:
     """Return the finding summary iff *stdout* is a real banned-trailer finding.
 
@@ -1916,9 +1909,7 @@ def _ai_sig_finding(stdout: str) -> str | None:
     scan: clean``) or a crash/error with no well-formed summary at all. The
     caller maps the three outcomes to DENY-finding / ALLOW / fail-closed-error.
     """
-    if _AI_SIG_FINDING_RE.search(stdout):
-        return stdout.strip()
-    return None
+    return stdout.strip() if _AI_SIG_FINDING_RE.search(stdout) else None
 
 
 def handle_block_ai_signature(data: dict) -> bool:
@@ -1975,11 +1966,8 @@ def handle_block_ai_signature(data: dict) -> bool:
 def _run_block_ai_signature(data: dict) -> bool:
     """Block-ai-signature inner body — assumes ``teatree`` is already importable."""
     payload = _extract_ai_sig_payload(data)
-    if payload is None:
-        return False
-
     argv = _ai_sig_scan_argv()
-    if argv is None:
+    if payload is None or argv is None:
         return False
 
     try:
@@ -2000,33 +1988,31 @@ def _run_block_ai_signature(data: dict) -> bool:
             "BLOCKED: AI-signature / banned trailer in the PR body or commit message. "
             "Remove it before creating the PR/commit (BLUEPRINT §17.6 gate 15).\n" + finding
         )
-    if result.returncode != 0:
-        if _ai_sig_scanner_could_not_run(result.stderr or ""):
-            # The scanner subprocess never RAN — its bootstrap crashed (a Django
-            # AppRegistryNotReady / ImproperlyConfigured / ModuleNotFoundError
-            # import traceback, e.g. a `t3` binary whose CLI eagerly loads Django
-            # before setup in a hook env with no DJANGO_SETTINGS_MODULE). This is
-            # the "broken environment" case the docstring promises to FAIL OPEN on
-            # (no t3 / import error / timeout) — a gate that cannot run AT ALL must
-            # not lock out every commit. It is distinct from outcome (c) below: a
-            # scanner that RAN and errored (usage error, malformed input) with no
-            # bootstrap crash still fails closed.
-            return False
-        # Scanner ran but exited nonzero WITHOUT a well-formed finding summary —
-        # a crash/error (traceback, usage error), not a finding. This is a
-        # SECURITY gate (it prevents publishing AI signatures under the user's
-        # identity), so the safe posture is FAIL CLOSED with a clear
-        # "scanner error" message — block, but never report a finding that did
-        # not happen, and never silently let an unscanned publish through.
-        # (The sibling COVERAGE gate fails OPEN here, correctly for ITS
-        # purpose; a leak-prevention gate must not.)
-        return emit_pretooluse_deny(
-            "BLOCKED: AI-signature scanner error — it exited nonzero without a clean result, so the "
-            "PR body / commit message could NOT be confirmed signature-free. This is a scanner error, "
-            "not a detected trailer. Fix the scanner / environment and retry (BLUEPRINT §17.6 gate 15).\n"
-            + (result.stderr or result.stdout or "").strip()
-        )
-    return False
+    # A clean exit is ALLOW. A nonzero exit whose stderr shows a bootstrap-crash
+    # marker means the scanner subprocess never RAN — a Django AppRegistryNotReady /
+    # ImproperlyConfigured / ModuleNotFoundError import traceback, e.g. a `t3`
+    # binary whose CLI eagerly loads Django before setup in a hook env with no
+    # DJANGO_SETTINGS_MODULE. That is the "broken environment" case the docstring
+    # promises to FAIL OPEN on (no t3 / import error / timeout) — a gate that
+    # cannot run AT ALL must not lock out every commit. It is distinct from the
+    # fail-closed case below: a scanner that RAN and errored (usage error,
+    # malformed input) with no bootstrap crash still fails closed.
+    if result.returncode == 0 or any(m in (result.stderr or "") for m in _AI_SIG_BOOTSTRAP_CRASH_MARKERS):
+        return False
+    # Scanner ran but exited nonzero WITHOUT a well-formed finding summary —
+    # a crash/error (traceback, usage error), not a finding. This is a
+    # SECURITY gate (it prevents publishing AI signatures under the user's
+    # identity), so the safe posture is FAIL CLOSED with a clear
+    # "scanner error" message — block, but never report a finding that did
+    # not happen, and never silently let an unscanned publish through.
+    # (The sibling COVERAGE gate fails OPEN here, correctly for ITS
+    # purpose; a leak-prevention gate must not.)
+    return emit_pretooluse_deny(
+        "BLOCKED: AI-signature scanner error — it exited nonzero without a clean result, so the "
+        "PR body / commit message could NOT be confirmed signature-free. This is a scanner error, "
+        "not a detected trailer. Fix the scanner / environment and retry (BLUEPRINT §17.6 gate 15).\n"
+        + (result.stderr or result.stdout or "").strip()
+    )
 
 
 # ── PreToolUse: pre-publish quote-scanner gate (#1213) ──────────────

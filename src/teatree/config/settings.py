@@ -12,13 +12,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from teatree.config.agent_enums import AgentHarness, AgentHarnessProvider, AgentRuntime, EvalCredential
 from teatree.config.enums import (
-    AgentHarness,
-    AgentHarnessProvider,
-    AgentRuntime,
     Autonomy,
     CriticGateMode,
-    EvalCredential,
     MissingIssuePolicy,
     Mode,
     OnBehalfPostMode,

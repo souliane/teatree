@@ -27,7 +27,6 @@ scoped to ``(<repo>!<mr>, <method_name>)`` — the next matching
 invocation publishes and consumes the row.
 """
 
-from collections.abc import Callable
 from http import HTTPStatus
 
 import typer
@@ -41,12 +40,12 @@ from teatree.cli.review.on_behalf import (
     check_on_behalf,
     check_on_behalf_issue,
     on_behalf_gate_active,
-    publish_on_behalf,
-    publish_on_behalf_issue,
+    publish_or_blocked,
+    publish_or_blocked_issue,
 )
 from teatree.cli.review.on_behalf import register as _register_on_behalf
+from teatree.cli.review.send_routing import route_forge_send
 from teatree.cli.review.shape_gate import check_review_shape
-from teatree.core.send_proxy import SendChannel, SendRequest, route_send
 from teatree.utils.run import run_allowed_to_fail
 
 # Re-exports — keep monkeypatch targets under the ``review`` namespace
@@ -96,84 +95,6 @@ class ReviewService:
         from teatree.backends.gitlab.api import GitLabAPI  # noqa: PLC0415
 
         return GitLabAPI(token=self.token, base_url=self._resolve_base_url())
-
-    @staticmethod
-    def _publish_or_blocked(
-        repo: str,
-        mr: int,
-        action: str,
-        body: Callable[[], tuple[str, int]],
-    ) -> tuple[str, int]:
-        """Run *body* (the GitLab post) atomically with the on-behalf consume + audit (#1879).
-
-        ``check_on_behalf`` already peeked non-consuming; here the approval is
-        consumed in the same ``transaction.atomic`` as the post, so a failed
-        post rolls back the consume (no burn) and writes no lying audit. A
-        BLOCK racing in after the peek is surfaced as ``(message, 1)``.
-
-        A verify-after-post failure (#2081) raises
-        :class:`ReviewArtifactNotVerifiedError` from *inside* ``body``, so it
-        propagates through the same ``transaction.atomic`` and rolls back the
-        consume + audit exactly like a post failure — then it is surfaced here
-        as ``(message, 1)`` instead of the phantom "posted" claim. A non-404
-        transport error on the read-back is NOT caught here: it propagates so a
-        flaky GET surfaces as ``api_unavailable``, never a false post-failure.
-        """
-        return ReviewService._surface(lambda: publish_on_behalf(repo, mr, action, body))
-
-    @staticmethod
-    def _publish_or_blocked_issue(
-        repo: str,
-        issue_iid: int,
-        action: str,
-        body: Callable[[], tuple[str, int]],
-    ) -> tuple[str, int]:
-        """Issue/work-item twin of :meth:`_publish_or_blocked` — same atomic consume + audit, issue-scoped gate.
-
-        Routes *body* through :func:`publish_on_behalf_issue` so the recorded
-        approval the gate consumes is scoped to ``(<repo>#<issue>, <action>)``,
-        never an MR. Surfaces a BLOCK / verify-after-delete failure identically.
-        """
-        return ReviewService._surface(lambda: publish_on_behalf_issue(repo, issue_iid, action, body))
-
-    @staticmethod
-    def _surface(run: Callable[[], tuple[str, int]]) -> tuple[str, int]:
-        """Run an on-behalf publish, mapping a BLOCK or verify-after-post failure to ``(message, 1)``."""
-        from teatree.cli.review.audit import ReviewArtifactNotVerifiedError  # noqa: PLC0415
-        from teatree.core.on_behalf_gate_recorded import OnBehalfPostBlockedError  # noqa: PLC0415
-
-        try:
-            return run()
-        except OnBehalfPostBlockedError as blocked:
-            return str(blocked), 1
-        except ReviewArtifactNotVerifiedError as unverified:
-            return str(unverified), 1
-
-    @staticmethod
-    def _route_forge_send(*, repo: str, mr: int, action: str, note: str) -> tuple[str, str]:
-        """Route a colleague-visible forge comment through the #117 send-proxy.
-
-        Returns ``(routed_note, refusal)``: ``refusal`` is ``""`` when the proxy
-        allows the send (the ship-default ``warn`` mode always allows and returns
-        ``note`` unchanged — audit-only), and a human-readable message when the
-        proxy refuses the destination in ``enforce`` mode. ``routed_note`` is the
-        body to post (redacted in ``enforce`` mode). One
-        :class:`~teatree.core.models.send_audit.SendAudit` row is written per
-        live comment, feeding the destination soak the operator seeds the
-        allowlist from.
-        """
-        verdict = route_send(
-            SendRequest(
-                channel=SendChannel.GITLAB,
-                destination=repo,
-                payload=note,
-                action=action,
-                target=f"{repo}!{mr}",
-            ),
-        )
-        if not verdict.allowed:
-            return note, verdict.reason or f"send-proxy refused posting to {repo}"
-        return verdict.payload, ""
 
     @staticmethod
     def _resolve_base_url() -> str:
@@ -240,7 +161,7 @@ class ReviewService:
         )
         if refusal:
             return refusal, 1
-        return self._publish_or_blocked(
+        return publish_or_blocked(
             repo, mr, "post_draft_note", lambda: self._post_draft_note_impl(repo, mr, note, file=file, line=line)
         )
 
@@ -377,10 +298,10 @@ class ReviewService:
         blocked_live = check_live_post(repo=repo, mr=mr)
         if blocked_live:
             return blocked_live, 1
-        note, send_refusal = self._route_forge_send(repo=repo, mr=mr, action="post_comment", note=note)
+        note, send_refusal = route_forge_send(repo=repo, mr=mr, action="post_comment", note=note)
         if send_refusal:
             return send_refusal, 1
-        return self._publish_or_blocked(
+        return publish_or_blocked(
             repo, mr, "post_comment", lambda: self._post_comment_impl(repo, mr, note, file=file, line=line)
         )
 
@@ -407,7 +328,7 @@ class ReviewService:
         from teatree.cli.review.post_impl import publish_draft_notes_impl  # noqa: PLC0415
 
         encoded = repo.replace("/", "%2F")
-        return self._publish_or_blocked(
+        return publish_or_blocked(
             repo, mr, "publish_draft_notes", lambda: publish_draft_notes_impl(self, repo, mr, encoded=encoded)
         )
 
@@ -430,7 +351,7 @@ class ReviewService:
         shape_error = check_review_shape(api=api, encoded_repo=encoded, mr=mr, body=body, inline=True)
         if shape_error:
             return shape_error, 1
-        return self._publish_or_blocked(
+        return publish_or_blocked(
             repo,
             mr,
             "reply_to_discussion",
@@ -450,7 +371,7 @@ class ReviewService:
         from teatree.cli.review.post_impl import resolve_discussion_impl  # noqa: PLC0415
 
         encoded = repo.replace("/", "%2F")
-        return self._publish_or_blocked(
+        return publish_or_blocked(
             repo,
             mr,
             "resolve_discussion",
@@ -480,7 +401,7 @@ class ReviewService:
         shape_error = check_review_shape(api=api, encoded_repo=encoded, mr=mr, body=body, inline=False)
         if shape_error:
             return shape_error, 1
-        return self._publish_or_blocked(
+        return publish_or_blocked(
             repo, mr, "update_note", lambda: update_note_impl(self, repo, mr, note_id, body, encoded=encoded)
         )
 
@@ -503,7 +424,7 @@ class ReviewService:
         from teatree.cli.review.post_impl import delete_discussion_impl  # noqa: PLC0415
 
         encoded = repo.replace("/", "%2F")
-        return self._publish_or_blocked(
+        return publish_or_blocked(
             repo, mr, "delete_discussion", lambda: delete_discussion_impl(self, repo, mr, note_id, encoded=encoded)
         )
 
@@ -529,7 +450,7 @@ class ReviewService:
         from teatree.cli.review.post_impl import delete_issue_note_impl  # noqa: PLC0415
 
         encoded = repo.replace("/", "%2F")
-        return self._publish_or_blocked_issue(
+        return publish_or_blocked_issue(
             repo,
             issue_iid,
             "delete_issue_note",
@@ -588,7 +509,7 @@ class ReviewService:
             return msg, 1
         from teatree.cli.review.post_impl import approve_impl  # noqa: PLC0415
 
-        return self._publish_or_blocked(repo, mr, "approve", lambda: approve_impl(self, repo, mr, encoded=encoded))
+        return publish_or_blocked(repo, mr, "approve", lambda: approve_impl(self, repo, mr, encoded=encoded))
 
     def unapprove(self, repo: str, mr: int) -> tuple[str, int]:
         """Revoke this identity's approval on an MR. Returns (message, exit_code).
@@ -608,7 +529,7 @@ class ReviewService:
         from teatree.cli.review.post_impl import unapprove_impl  # noqa: PLC0415
 
         encoded = repo.replace("/", "%2F")
-        return self._publish_or_blocked(repo, mr, "unapprove", lambda: unapprove_impl(self, repo, mr, encoded=encoded))
+        return publish_or_blocked(repo, mr, "unapprove", lambda: unapprove_impl(self, repo, mr, encoded=encoded))
 
 
 # Register sibling-module typer commands. Kept out of this file so the

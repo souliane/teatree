@@ -3,16 +3,16 @@
 Three stale-``ConfigSetting`` clean-ups, one migration:
 
 * ``design_critic_live`` — the field folded into ``directive_loop_enabled`` (the
-  advisory-only design critic is armed by the directive loop), so its stored rows
-  are dead and deleted.
+    advisory-only design critic is armed by the directive loop), so its stored rows
+    are dead and deleted.
 * ``ambient_directive_detection_enabled`` — ambient directive detection is deleted
-  wholesale (#105); the only ``Directive`` producer is the explicit
-  ``Directive.objects.capture``. Its stored rows are dead and deleted.
+    wholesale (#105); the only ``Directive`` producer is the explicit
+    ``Directive.objects.capture``. Its stored rows are dead and deleted.
 * ``critic_gate_live`` (bool) -> ``critic_gate_mode`` (``off|advisory|blocking``): a
-  truthy row carried today's ENFORCING posture, so it becomes ``blocking``; a falsy
-  row was the dark default, so it simply falls through to the ``off`` default (no
-  ``critic_gate_mode`` row written). The old ``critic_gate_live`` row is removed
-  either way. Migrated per-scope (global + each overlay) independently.
+    truthy row carried today's ENFORCING posture, so it becomes ``blocking``; a falsy
+    row was the dark default, so it simply falls through to the ``off`` default (no
+    ``critic_gate_mode`` row written). The old ``critic_gate_live`` row is removed
+    either way. Migrated per-scope (global + each overlay) independently.
 
 Idempotent — re-running finds no legacy rows and is a no-op.
 """

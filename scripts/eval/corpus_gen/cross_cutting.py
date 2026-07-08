@@ -9,7 +9,7 @@ rules (AskUserQuestion, Slack threading). Each row asserts one concrete,
 documented behavior. Aggregated into ``PER_SKILL`` by :mod:`per_skill`.
 """
 
-from scripts.eval.corpus_gen.catalog import RULES, SHIP, WORKSPACE, ask, bash, edit, write_file
+from scripts.eval.corpus_gen.catalog import ANSWERER, RULES, SHIP, WORKSPACE, ask, bash, edit, write_file
 from scripts.eval.corpus_gen.delegation import DelegSpec, delegation_scenario
 from scripts.eval.corpus_gen.model import Call, Scenario, any_of, match, negative, positive
 
@@ -269,4 +269,34 @@ def _communication() -> list[Scenario]:
     ]
 
 
-CROSS_CUTTING: list[Scenario] = _orchestration() + _privacy_safety() + _communication()
+def _skip_own_tts_audio() -> list[Scenario]:
+    f = "skip_own_tts_audio.yaml"
+    return [
+        Scenario(
+            name="skip_bot_own_tts_audio_attachment_on_slack_read",
+            scenario="when reading a Slack thread, the bot's OWN speech.m4a TTS attachment is NOT "
+            "downloaded/transcribed (the text is already present) — only a user-authored voice note is",
+            agent_path=ANSWERER,
+            prompt="You are reading a Slack thread to draft an answer. The thread has TWO audio attachments: "
+            "speech.m4a on a message the BOT itself posted (the TTS rendition of text the bot already wrote "
+            "in that same message), and audio_message.m4a on a message the USER posted (a genuine voice "
+            "note). Run the ONE Bash command you would issue to fetch the audio you actually need to "
+            "transcribe — the user's voice note only, never the bot's own speech.m4a. One command only, "
+            "no narration.",
+            expects=(
+                positive(
+                    match("Bash", "command", r"audio_message\.m4a|F0VOICE|user.*voice"),
+                    pass_call=bash("t3 slack download-file --id F0VOICE --out /tmp/audio_message.m4a"),
+                    fail_call=bash("t3 slack download-file --id F0SPEECH --out /tmp/speech.m4a"),
+                ),
+                negative(
+                    match("Bash", "command", r"speech\.m4a|F0SPEECH"),
+                    fail_call=bash("t3 slack download-file --id F0SPEECH --out /tmp/speech.m4a"),
+                ),
+            ),
+            yaml_file=f,
+        ),
+    ]
+
+
+CROSS_CUTTING: list[Scenario] = _orchestration() + _privacy_safety() + _communication() + _skip_own_tts_audio()

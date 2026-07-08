@@ -5,35 +5,53 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('core', '0040_keep_pending_state'),
+        ("core", "0040_keep_pending_state"),
     ]
 
     operations = [
         migrations.CreateModel(
-            name='SendAudit',
+            name="SendAudit",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('channel', models.CharField(choices=[('slack', 'Slack'), ('github', 'GitHub'), ('gitlab', 'GitLab'), ('other', 'Other')], max_length=16)),
-                ('destination', models.CharField(blank=True, max_length=512)),
-                ('action', models.CharField(blank=True, max_length=64)),
-                ('target', models.CharField(blank=True, max_length=512)),
-                ('overlay', models.CharField(blank=True, max_length=255)),
-                ('mode', models.CharField(max_length=16)),
-                ('allowlist_verdict', models.CharField(choices=[('allowed', 'Allowed'), ('warned', 'Warned (audit-only, not blocked)'), ('denied', 'Denied (enforce-mode block)')], max_length=16)),
-                ('redaction_applied', models.BooleanField(default=False)),
-                ('redaction_matches', models.JSONField(blank=True, default=list)),
-                ('provenance', models.CharField(blank=True, max_length=32)),
-                ('authorized_by', models.CharField(blank=True, max_length=255)),
-                ('agent_session_id', models.CharField(blank=True, max_length=255)),
-                ('payload_summary', models.TextField(blank=True)),
-                ('created_at', models.DateTimeField(default=django.utils.timezone.now)),
+                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                (
+                    "channel",
+                    models.CharField(
+                        choices=[("slack", "Slack"), ("github", "GitHub"), ("gitlab", "GitLab"), ("other", "Other")],
+                        max_length=16,
+                    ),
+                ),
+                ("destination", models.CharField(blank=True, max_length=512)),
+                ("action", models.CharField(blank=True, max_length=64)),
+                ("target", models.CharField(blank=True, max_length=512)),
+                ("overlay", models.CharField(blank=True, max_length=255)),
+                ("mode", models.CharField(max_length=16)),
+                (
+                    "allowlist_verdict",
+                    models.CharField(
+                        choices=[
+                            ("allowed", "Allowed"),
+                            ("warned", "Warned (audit-only, not blocked)"),
+                            ("denied", "Denied (enforce-mode block)"),
+                        ],
+                        max_length=16,
+                    ),
+                ),
+                ("redaction_applied", models.BooleanField(default=False)),
+                ("redaction_matches", models.JSONField(blank=True, default=list)),
+                ("provenance", models.CharField(blank=True, max_length=32)),
+                ("authorized_by", models.CharField(blank=True, max_length=255)),
+                ("agent_session_id", models.CharField(blank=True, max_length=255)),
+                ("payload_summary", models.TextField(blank=True)),
+                ("created_at", models.DateTimeField(default=django.utils.timezone.now)),
             ],
             options={
-                'db_table': 'teatree_send_audit',
-                'ordering': ['-created_at'],
-                'indexes': [models.Index(fields=['channel', 'destination'], name='teatree_sen_channel_3db874_idx'), models.Index(fields=['overlay', 'created_at'], name='teatree_sen_overlay_4b1a2d_idx')],
+                "db_table": "teatree_send_audit",
+                "ordering": ["-created_at"],
+                "indexes": [
+                    models.Index(fields=["channel", "destination"], name="teatree_sen_channel_3db874_idx"),
+                    models.Index(fields=["overlay", "created_at"], name="teatree_sen_overlay_4b1a2d_idx"),
+                ],
             },
         ),
     ]

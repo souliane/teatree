@@ -125,9 +125,7 @@ EXPECTED_RUNTIME_SIGNATURES: dict[str, str] = {
 EXPECTED_E2E_SIGNATURES: dict[str, str] = {
     "env_extras": "(self, env_cache: dict[str, str]) -> dict[str, str]",
     "playwright_args": "(self, spec_path: str) -> list[str]",
-    "preflight": (
-        "(self, *, customer: str | None, base_url: str | None) -> list[collections.abc.Callable[[], None]]"
-    ),
+    "preflight": ("(self, *, customer: str | None, base_url: str | None) -> list[collections.abc.Callable[[], None]]"),
     "run_provenance": "(self, spec_path: str) -> str",
     "scenarios": "(self, spec_path: str) -> tuple",
 }

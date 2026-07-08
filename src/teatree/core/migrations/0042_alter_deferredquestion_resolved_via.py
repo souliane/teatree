@@ -4,15 +4,25 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('core', '0041_send_audit'),
+        ("core", "0041_send_audit"),
     ]
 
     operations = [
         migrations.AlterField(
-            model_name='deferredquestion',
-            name='resolved_via',
-            field=models.CharField(blank=True, choices=[('', 'Unresolved'), ('slack', 'Slack reply'), ('local', 'Local CLI'), ('stale', 'Stale'), ('policy', 'Policy auto-answer')], default='', max_length=8),
+            model_name="deferredquestion",
+            name="resolved_via",
+            field=models.CharField(
+                blank=True,
+                choices=[
+                    ("", "Unresolved"),
+                    ("slack", "Slack reply"),
+                    ("local", "Local CLI"),
+                    ("stale", "Stale"),
+                    ("policy", "Policy auto-answer"),
+                ],
+                default="",
+                max_length=8,
+            ),
         ),
     ]

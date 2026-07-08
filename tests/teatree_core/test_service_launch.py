@@ -14,7 +14,7 @@ from teatree.utils.singleton import singleton
 from tests.teatree_core.conftest import CommandOverlay
 
 
-class _OrderRecordingOverlay_Runtime(OverlayRuntime):
+class _OrderRecordingOverlayRuntime(OverlayRuntime):
     def __init__(self, overlay: "OrderRecordingOverlay") -> None:
         self._overlay = overlay
 
@@ -37,9 +37,7 @@ class OrderRecordingOverlay(CommandOverlay):
 
     def __init__(self, order_file: Path) -> None:
         self.order_file = order_file
-        self.runtime = _OrderRecordingOverlay_Runtime(self)
-
-
+        self.runtime = _OrderRecordingOverlayRuntime(self)
 
 
 class ServiceLauncherTests(TestCase):
@@ -94,7 +92,7 @@ class ServiceLauncherTests(TestCase):
         assert result.ok
 
 
-class _RealisticStackOverlay_Runtime(OverlayRuntime):
+class _RealisticStackOverlayRuntime(OverlayRuntime):
     def __init__(self, overlay: "RealisticStackOverlay") -> None:
         self._overlay = overlay
 
@@ -126,9 +124,7 @@ class RealisticStackOverlay(CommandOverlay):
 
     def __init__(self, order_file: Path) -> None:
         self.order_file = order_file
-        self.runtime = _RealisticStackOverlay_Runtime(self)
-
-
+        self.runtime = _RealisticStackOverlayRuntime(self)
 
 
 class RealisticStackWorkflowTests(TestCase):

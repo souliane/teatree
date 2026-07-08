@@ -14,7 +14,7 @@ class _StubOverlay(OverlayBase):
         return []
 
 
-class _TenantPrefixOverlay_Provisioning(OverlayProvisioning):
+class _TenantPrefixOverlayProvisioning(OverlayProvisioning):
     def resolve_variant(self, name: str) -> Variant:
         parent = "client-a" if name == "client-a-regional" else name
         tenant = f"development-{parent}"
@@ -27,9 +27,8 @@ class _TenantPrefixOverlay_Provisioning(OverlayProvisioning):
 
 
 class _TenantPrefixOverlay(_StubOverlay):
-    provisioning = _TenantPrefixOverlay_Provisioning()
+    provisioning = _TenantPrefixOverlayProvisioning()
     """An overlay that prefixes the tenant and aliases a child variant."""
-
 
 
 def test_bare_variant_is_pass_through():

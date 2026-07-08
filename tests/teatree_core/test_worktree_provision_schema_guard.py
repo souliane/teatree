@@ -40,7 +40,7 @@ def _migrate_core_forward() -> None:
     call_command("migrate", "core", "--no-input", verbosity=0)
 
 
-class _DbImportOverlay_Provisioning(OverlayProvisioning):
+class _DbImportOverlayProvisioning(OverlayProvisioning):
     def db_import_strategy(self, worktree: Worktree) -> DbImportStrategy | None:
         return {
             "kind": "fallback-chain",
@@ -57,7 +57,7 @@ class _DbImportOverlay_Provisioning(OverlayProvisioning):
 
 
 class _DbImportOverlay(OverlayBase):
-    provisioning = _DbImportOverlay_Provisioning()
+    provisioning = _DbImportOverlayProvisioning()
     """Overlay whose DB-import strategy routes through ``run_timeboxed_db_import``."""
 
     def get_repos(self) -> list[str]:
@@ -65,8 +65,6 @@ class _DbImportOverlay(OverlayBase):
 
     def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
         return []
-
-
 
 
 # ``setUp`` reverse-migrates ``core`` to a mid-graph target and the cleanup runs

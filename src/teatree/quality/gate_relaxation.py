@@ -2,10 +2,13 @@
 
 Scans a unified diff for the two failure modes §17.6 protects against:
 incremental relaxation of lint/coverage constraints, and tach configurations
-that pass their own check while enforcing no real module boundary. The engine
-inspects only the diff's ADDED lines, so the "boilerplate baseline" (entries
-present before the gate was deployed) is exempt for free — a pre-existing
-suppression is never in the added set, only a NEW one is a finding.
+that pass their own check while enforcing no real module boundary. Findings key
+off the diff's ADDED lines, so the "boilerplate baseline" (entries present
+before the gate was deployed) is exempt for free. For ``# noqa`` suppressions
+the scan is diff-aware (§17.6.2): an added suppression is paired with its
+base-ref version by code stem, so a code already suppressed on that line is not
+a NEW relaxation when it reappears because sibling codes were stripped (ruff
+RUF100) — only a genuinely-newly-introduced suppression code is a finding.
 
 Two severities feed the §17.6.5 WARN-not-hardfail doctrine: a :data:`BLOCK`
 finding comes from a clean-separating deterministic matcher (a new unjustified
@@ -29,16 +32,21 @@ WARN: Final = "warn"
 _DIFF_NEW_FILE_RE: Final[re.Pattern[str]] = re.compile(r"^\+\+\+ b/(.+)$")
 _DIFF_OLD_FILE_RE: Final[re.Pattern[str]] = re.compile(r"^--- a/(.+)$")
 
-# A real ``noqa`` trailing suppression: ``noqa`` or ``noqa: <codes>`` with an
-# optional trailing justification. Group ``codes`` is the comma/space code list
-# (empty for a bare marker); group ``rest`` is the free text after the codes
-# (the justification, when non-empty).
-_NOQA_RE: Final[re.Pattern[str]] = re.compile(r"#\s*noqa(?::\s*(?P<codes>[A-Z0-9, ]*?))?(?:\s+(?P<rest>\S.*))?$")
+# The start of a real ``noqa`` trailing suppression marker. The code list and
+# any justification after it are parsed token-by-token in
+# :func:`_parse_noqa_line`, so a multi-code marker (``noqa: F401, E501``) is not
+# mis-split into one code plus a spurious "justification".
+_NOQA_MARKER_RE: Final[re.Pattern[str]] = re.compile(r"#\s*noqa\b")
+
+# One ruff/flake8 suppression code token: uppercase-letter prefix + digits
+# (E501, F401, PLR0913, C901, ARG002, PLR6301). The code list after ``noqa:`` is
+# these tokens comma-separated; the first non-code text is the justification.
+_NOQA_CODE_TOKEN_RE: Final[re.Pattern[str]] = re.compile(r"[A-Z]+[0-9]+")
 
 # A complexity-suppression code: McCabe C901 or the too-many-* Pylint refactor
 # family PLR09xx (PLR0911 return-count, PLR0912 branch-count, PLR0913 arg-count,
 # PLR0915 statement-count, PLR0916 boolean-expr-count, PLR0917 positional-count).
-_COMPLEXITY_CODE_RE: Final[re.Pattern[str]] = re.compile(r"\b(?:C901|PLR09\d\d)\b")
+_COMPLEXITY_CODE_RE: Final[re.Pattern[str]] = re.compile(r"^(?:C901|PLR09\d\d)$")
 
 # Single-line string-literal spans (optional r/b/f/u prefix). Blanked before the
 # suppression scan so the gate never matches a ``noqa`` marker that lives INSIDE
@@ -175,39 +183,99 @@ def _basename(path: str) -> str:
     return path.rsplit("/", 1)[-1]
 
 
-def _noqa_findings(fd: _FileDiff) -> list[RelaxationFinding]:
-    """Flag new ``# noqa`` suppressions in an added ``.py`` line.
+@dataclass(frozen=True)
+class _NoqaOnLine:
+    """One parsed ``# noqa`` suppression on a source line.
 
-    A ``# noqa`` is a finding when it is a REAL trailing comment (code precedes
-    the ``#`` on the line, after blanking string literals) AND either it carries
-    no justification text (:data:`BLOCK`) or it suppresses a complexity code
-    C901 / PLR09xx (:data:`BLOCK` regardless of justification — the fix is to
-    split the function, not to silence the check).
+    ``stem`` is the code text preceding the ``#`` (stripped) — the line's symbol
+    identity, used to pair an added suppression with its base-ref version across
+    a diff. ``codes`` is the parsed suppression-code set; ``justified`` is whether
+    non-code justification text follows the codes.
+    """
+
+    stem: str
+    codes: frozenset[str]
+    justified: bool
+
+
+def _parse_noqa_line(line: str) -> _NoqaOnLine | None:
+    """Parse a REAL trailing ``# noqa`` suppression out of one source line.
+
+    Returns ``None`` when the line has no real trailing suppression — no code
+    before the ``#`` (a pure comment line), or no ``noqa`` marker. String
+    literals are blanked first so a ``noqa`` inside a string is never read as a
+    suppression. The comma-separated code list is parsed token-by-token, so a
+    multi-code marker (``# noqa: F401, E501``) yields the full code set and an
+    empty justification — not one code plus a spurious "justification".
+    """
+    blanked = blank_string_literals(line)
+    hash_idx = blanked.find("#")
+    if hash_idx < 0:
+        return None
+    stem = blanked[:hash_idx].strip()
+    if not stem:
+        return None  # pure comment line — no code before the marker
+    marker = _NOQA_MARKER_RE.match(blanked[hash_idx:])
+    if not marker:
+        return None
+    rest = blanked[hash_idx + marker.end() :]
+    codes: set[str] = set()
+    if rest.startswith(":"):
+        rest = rest[1:]
+        while (token := _NOQA_CODE_TOKEN_RE.match(rest.lstrip())) is not None:
+            codes.add(token.group(0))
+            rest = rest.lstrip()[token.end() :]
+            if rest.lstrip().startswith(","):
+                rest = rest.lstrip()[1:]
+            else:
+                break
+    return _NoqaOnLine(stem=stem, codes=frozenset(codes), justified=bool(rest.strip()))
+
+
+def _base_noqa_by_stem(removed: list[str]) -> dict[str, _NoqaOnLine]:
+    """Map each removed line's code-stem to its parsed base-ref ``# noqa``.
+
+    The base-ref suppression for a symbol: a code already present here is not a
+    NEW relaxation when it reappears on the added version of the same line — the
+    noqa merely changed because sibling codes were stripped (ruff RUF100).
+    """
+    parsed = (_parse_noqa_line(line) for line in removed)
+    return {p.stem: p for p in parsed if p is not None}
+
+
+def _noqa_findings(fd: _FileDiff) -> list[RelaxationFinding]:
+    """Flag NEW ``# noqa`` suppressions in an added ``.py`` line, diff-aware.
+
+    A ``# noqa`` on an added line is a finding only when it introduces a NEW
+    relaxation relative to the base-ref version of the same line (paired by code
+    stem across the diff, §17.6.2): a complexity code C901 / PLR09xx not already
+    suppressed on that line (:data:`BLOCK` regardless of justification — the fix
+    is to split the function), or a newly-suppressed or newly-unjustified code
+    with no justification (:data:`BLOCK`). A pre-existing code that reappears
+    because sibling codes were stripped is not a new relaxation.
     """
     if not fd.path.endswith(".py"):
         return []
+    base_by_stem = _base_noqa_by_stem(fd.removed)
     findings: list[RelaxationFinding] = []
     for line in fd.added:
-        blanked = blank_string_literals(line)
-        hash_idx = blanked.find("#")
-        if hash_idx < 0 or not blanked[:hash_idx].strip():
-            continue  # no code before the comment (or no comment) — not a real suppression
-        match = _NOQA_RE.search(blanked[hash_idx:])
-        if not match:
+        added = _parse_noqa_line(line)
+        if added is None:
             continue
-        codes = (match.group("codes") or "").strip()
-        justification = (match.group("rest") or "").strip()
-        if _COMPLEXITY_CODE_RE.search(codes):
+        base = base_by_stem.get(added.stem)
+        base_codes = base.codes if base is not None else frozenset()
+        new_codes = added.codes - base_codes
+        if any(_COMPLEXITY_CODE_RE.match(code) for code in new_codes):
             findings.append(
                 RelaxationFinding(
                     kind="complexity_suppression",
                     path=fd.path,
                     severity=BLOCK,
-                    message=f"new complexity suppression `noqa: {codes}` — refactor instead of silencing",
+                    message="new complexity suppression `noqa` — refactor instead of silencing",
                     line=line.strip(),
                 )
             )
-        elif not justification:
+        elif not added.justified and (base is None or new_codes or base.justified):
             findings.append(
                 RelaxationFinding(
                     kind="noqa_without_justification",

@@ -4,9 +4,11 @@ Refuses a commit whose STAGED diff relaxes a lint/coverage constraint or a tach
 module boundary without the sanctioned relax marker — a new unjustified
 ``# noqa``, a new ``per-file-ignores`` / coverage ``omit`` entry, a lowered
 ``fail_under``, a committed ``--no-verify``, a new empty ``interfaces = []``, or
-a new ``ignore_type_checking_imports`` with no justifying comment. The gate
-inspects only the diff's ADDED lines, so the boilerplate baseline present before
-the gate was deployed is exempt for free.
+a new ``ignore_type_checking_imports`` with no justifying comment. Findings key off
+the diff's ADDED lines, so the boilerplate baseline present before the gate was
+deployed is exempt for free; ``# noqa`` findings are additionally diff-aware — a
+code already suppressed on a line at base is not flagged when it reappears
+because sibling codes were stripped, only a genuinely-new suppression is.
 
 Enforcement (§17.6.5 WARN-not-hardfail): a BLOCK finding refuses the commit; a
 WARN finding (possible test vacuity — a fuzzy heuristic) prints advisory-only

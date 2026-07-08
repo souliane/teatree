@@ -5,14 +5,14 @@ already pushes bot/user scopes via the app-config token) to cover Socket Mode
 (BLUEPRINT § B5 / issue #106). For every Slack-backed overlay in the config this:
 
 1. Validates the app-level ``xapp-`` token in the ``<token_ref>-app`` slot —
-   present, correctly prefixed, and carrying ``connections:write`` (probed via
-   ``apps.connections.open``). Slack has no API to mint an app-level token, so an
-   absent one is the single actionable human step, surfaced with its exact
-   Basic-Information URL and ``pass`` slot.
+    present, correctly prefixed, and carrying ``connections:write`` (probed via
+    ``apps.connections.open``). Slack has no API to mint an app-level token, so an
+    absent one is the single actionable human step, surfaced with its exact
+    Basic-Information URL and ``pass`` slot.
 2. Auto-fixes the manifest where the Slack API allows — enables Socket Mode and
-   adds the inbound events / bot scopes via ``apps.manifest.update`` using the
-   app-config token. With no app-config token it degrades to an actionable
-   message naming the manifest editor and the precise gaps.
+    adds the inbound events / bot scopes via ``apps.manifest.update`` using the
+    app-config token. With no app-config token it degrades to an actionable
+    message naming the manifest editor and the precise gaps.
 
 The doctor renderer (``_doctor_checks._check_slack_socket_mode``) consumes the
 structured :class:`SocketModeOutcome` this returns. Every live Slack call is

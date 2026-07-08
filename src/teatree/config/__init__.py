@@ -11,6 +11,7 @@ through this facade at call-time, which both breaks the import cycle and keeps a
 single ``patch("teatree.config.<name>")`` honoured by every internal caller.
 """
 
+from teatree.config.agent_enums import AgentHarness, AgentHarnessProvider, AgentRuntime, EvalCredential
 from teatree.config.cold_hook_settings import COLD_HOOK_SETTINGS, ColdHookSetting
 from teatree.config.discovery import (
     _active_overlay_entry,
@@ -22,19 +23,7 @@ from teatree.config.discovery import (
     discover_active_overlay,
     discover_overlays,
 )
-from teatree.config.enums import (
-    AgentHarness,
-    AgentHarnessProvider,
-    AgentRuntime,
-    Autonomy,
-    CriticGateMode,
-    EvalCredential,
-    MissingIssuePolicy,
-    Mode,
-    OnBehalfPostMode,
-    TeamsDisplay,
-    Wip,
-)
+from teatree.config.enums import Autonomy, CriticGateMode, MissingIssuePolicy, Mode, OnBehalfPostMode, TeamsDisplay, Wip
 from teatree.config.feature_flags import FEATURE_FLAGS, FeatureFlag, FlagStage, dark_flags, is_feature_flag
 from teatree.config.homes import BOOTSTRAP_FILE_ONLY_SETTINGS, DERIVED_FIELDS, SETTING_HOMES, SettingHome
 from teatree.config.loader import (

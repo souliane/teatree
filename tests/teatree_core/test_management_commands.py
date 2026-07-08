@@ -20,7 +20,14 @@ import teatree.utils.run as utils_run_mod
 from teatree.core.management.commands._transition_names import ALLOWED_TRANSITIONS
 from teatree.core.models import ConfigSetting, Session, Task, TaskAttempt, Ticket, Worktree
 from teatree.core.models.ticket_external_review import schedule_external_review
-from teatree.core.overlay import DbImportStrategy, OverlayBase, OverlayProvisioning, OverlayRuntime, ProvisionStep, RunCommands
+from teatree.core.overlay import (
+    DbImportStrategy,
+    OverlayBase,
+    OverlayProvisioning,
+    OverlayRuntime,
+    ProvisionStep,
+    RunCommands,
+)
 from teatree.core.signals import _TICKET_TRANSITION_TASKS
 from tests._ansi import strip_ansi as _strip_ansi
 from tests.teatree_agents._sdk_fake import fake_sdk, success_stream
@@ -30,7 +37,7 @@ pytestmark = pytest.mark.filterwarnings(
 )
 
 
-class _CommandOverlay_Runtime(OverlayRuntime):
+class _CommandOverlayRuntime(OverlayRuntime):
     def run_commands(self, worktree: Worktree) -> RunCommands:
         return {
             "backend": ["run-backend", worktree.repo_path],
@@ -39,7 +46,8 @@ class _CommandOverlay_Runtime(OverlayRuntime):
 
 
 class CommandOverlay(OverlayBase):
-    runtime = _CommandOverlay_Runtime()
+    runtime = _CommandOverlayRuntime()
+
     def get_repos(self) -> list[str]:
         return ["backend"]
 
@@ -51,7 +59,6 @@ class CommandOverlay(OverlayBase):
             worktree.save(update_fields=["extra"])
 
         return [ProvisionStep(name="remember-setup", callable=remember_setup)]
-
 
 
 _MOCK_OVERLAY = {"test": CommandOverlay()}
@@ -103,15 +110,14 @@ class TestLifecycleCommands(TestCase):
             assert not Worktree.objects.filter(pk=worktree_id).exists()
 
 
-class _DbStrategyOverlay_Provisioning(OverlayProvisioning):
+class _DbStrategyOverlayProvisioning(OverlayProvisioning):
     def db_import_strategy(self, worktree: Worktree) -> DbImportStrategy | None:
         return {"kind": "shared", "shared_postgres": True}
 
 
 class DbStrategyOverlay(CommandOverlay):
-    provisioning = _DbStrategyOverlay_Provisioning()
+    provisioning = _DbStrategyOverlayProvisioning()
     """A CommandOverlay variant that declares a DB import strategy."""
-
 
 
 class TestHealMissingProvisionedDb(TestCase):
@@ -660,7 +666,7 @@ class TestReconcileChecklist(TestCase):
         assert "TaskList" in printed
 
 
-class _DbOverlay_Provisioning(OverlayProvisioning):
+class _DbOverlayProvisioning(OverlayProvisioning):
     def db_import_strategy(self, worktree: Worktree) -> DbImportStrategy | None:
         return DbImportStrategy(kind="dslr", source_database="development-acme")
 
@@ -680,10 +686,8 @@ class _DbOverlay_Provisioning(OverlayProvisioning):
 
 
 class DbOverlay(CommandOverlay):
-    provisioning = _DbOverlay_Provisioning()
+    provisioning = _DbOverlayProvisioning()
     """CommandOverlay with a DB import strategy that always fails."""
-
-
 
 
 _DB_MOCK_OVERLAY = {"test": DbOverlay()}

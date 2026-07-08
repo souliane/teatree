@@ -4,14 +4,14 @@ The pure ranking (`search_commands`) is exercised against an explicit catalogue
 so it needs no CLI. The provider-inversion round-trip is exercised on the seam's
 own register/build pair. The real end-to-end path is exercised by importing
 `teatree.cli` (which registers the live catalogue provider at import time) and
-searching the actual `t3` command tree through `search.command_search`.
+searching the actual `t3` command tree through `introspection.command_search`.
 """
 
 import pytest
 from django.test import TestCase
 
 import teatree.cli  # noqa: F401 — import registers the live command-catalogue provider
-from teatree.mcp import command_catalogue, search
+from teatree.mcp import command_catalogue, introspection
 from teatree.mcp.command_catalogue import CommandRecord, search_commands
 
 
@@ -74,12 +74,12 @@ class TestProviderInversion:
 
 class TestRealCliProvider(TestCase):
     def test_a_known_leaf_resolves_through_command_search(self) -> None:
-        rows = search.command_search(query="mcp serve", limit=50)
+        rows = introspection.command_search(query="mcp serve", limit=50)
 
         assert any(row["path"] == "t3 mcp serve" for row in rows)
 
     def test_a_json_emitting_command_is_flagged(self) -> None:
-        rows = search.command_search(query="cost", limit=50)
+        rows = introspection.command_search(query="cost", limit=50)
 
         cost = next((row for row in rows if row["path"] == "t3 cost"), None)
         assert cost is not None

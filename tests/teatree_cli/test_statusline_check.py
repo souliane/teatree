@@ -5,13 +5,13 @@ import json
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from teatree.cli._doctor_checks import _check_statusline
+from teatree.cli.doctor_statusline import check_statusline
 
 
 def _run(settings: Path) -> tuple[bool, str]:
     out = io.StringIO()
     with redirect_stdout(out):
-        ok = _check_statusline(settings_path=settings)
+        ok = check_statusline(settings_path=settings)
     return ok, out.getvalue()
 
 

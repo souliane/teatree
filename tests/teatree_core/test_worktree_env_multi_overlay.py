@@ -28,7 +28,7 @@ OVERLAY_A = "overlay-alpha"
 OVERLAY_B = "overlay-beta"
 
 
-class _MarkedOverlay_Provisioning(OverlayProvisioning):
+class _MarkedOverlayProvisioning(OverlayProvisioning):
     def __init__(self, overlay: "_MarkedOverlay") -> None:
         self._overlay = overlay
 
@@ -43,15 +43,13 @@ class _MarkedOverlay(OverlayBase):
     def __init__(self, marker: str) -> None:
         super().__init__()
         self.marker = marker
-        self.provisioning = _MarkedOverlay_Provisioning(self)
+        self.provisioning = _MarkedOverlayProvisioning(self)
 
     def get_repos(self) -> list[str]:
         return ["backend"]
 
     def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
         return []
-
-
 
 
 class _MultiOverlayEnvTest(TestCase):

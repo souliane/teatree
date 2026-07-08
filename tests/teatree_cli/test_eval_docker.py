@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from django.test import TestCase
+from django.utils import timezone
 
 from teatree.cli.eval.docker import (
     ARTIFACTS_MOUNT,
@@ -16,6 +17,8 @@ from teatree.cli.eval.docker import (
     _repo_root,
     run_eval_in_docker,
 )
+from teatree.core.models import AnthropicTokenUsage, ConfigSetting
+from teatree.core.models.anthropic_token_usage import TokenHealthReading
 from teatree.llm.credentials import AnthropicApiKeyCredential, AnthropicSubscriptionCredential
 
 _MODULE = "teatree.cli.eval.docker"
@@ -28,6 +31,28 @@ def _completed(returncode: int) -> MagicMock:
     proc = MagicMock()
     proc.returncode = returncode
     return proc
+
+
+def _seed_oauth_routing() -> None:
+    """Route the subscription credential to a configured account with a fresh healthy cache row.
+
+    The subscription credential has NO built-in ``pass`` path (#124): the docker
+    pre-export only reads the store when the ``anthropic_oauth_pass_paths`` routing
+    selects an account. The fresh non-exhausted health row makes the selector reuse
+    the cache — no rate-limit probe fires in the test.
+    """
+    route = "anthropic/test/oauth"
+    ConfigSetting.objects.set_value("anthropic_oauth_pass_paths", [route])
+    reading = TokenHealthReading(
+        organization_id="org-1",
+        utilization_5h=0.1,
+        utilization_7d=0.1,
+        status_5h="allowed",
+        status_7d="allowed",
+        reset_5h=None,
+        reset_7d=None,
+    )
+    AnthropicTokenUsage.objects.record(route, reading, now=timezone.now())
 
 
 class TestRunEvalInDocker(TestCase):
@@ -286,6 +311,7 @@ class TestBenchmarkLaneFailsLoudBeforeDocker(TestCase):
         streamed.assert_not_called()
 
     def test_benchmark_forwards_the_resolved_oauth_token_into_the_container(self) -> None:
+        _seed_oauth_routing()
         with (
             patch(f"{_MODULE}.shutil.which", return_value="/usr/bin/docker"),
             patch(f"{_MODULE}._image_present", return_value=True),
@@ -323,6 +349,7 @@ class TestDockerResolvesCredentialFromPassForSdkLane(TestCase):
         return streamed.call_args.args[0]
 
     def test_api_lane_exports_pass_oauth_token_so_it_is_forwarded(self) -> None:
+        _seed_oauth_routing()
         command = self._run(["run", "--backend", "api", "--require-executed"], env={}, pass_value="oauth-pass-token")
         index = command.index(_OAUTH_ENV)
         assert command[index - 1 : index + 1] == ["-e", _OAUTH_ENV]

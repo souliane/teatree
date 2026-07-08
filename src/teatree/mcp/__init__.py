@@ -8,7 +8,7 @@ shelling out to ``t3 ... list`` and parsing text. Wired into the CLI as
 - :mod:`teatree.mcp.serializers` — pure model -> JSON-dict projections
 - :mod:`teatree.mcp.search` — sync ORM queries reusing the model managers
 - :mod:`teatree.mcp.command_catalogue` — the `command_search` catalogue seam
-  (CLI-provided, for discovering which `t3` command to run)
+    (CLI-provided, for discovering which `t3` command to run)
 - :mod:`teatree.mcp.server` — FastMCP wiring (``build_server``)
 
 ``build_server`` is exported LAZILY (PEP 562 ``__getattr__``): importing the

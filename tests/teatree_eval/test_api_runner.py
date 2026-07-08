@@ -29,12 +29,8 @@ from teatree.eval.api_runner import (
     ClaudeCliMissingError,
     CleanRoomConfig,
     CreditExhaustedError,
-    _has_hook_events,
-    _t3_plugin,
-    _teatree_root,
     build_sdk_options,
     classify_terminal_error,
-    hooked_env,
     is_success_result_error,
     resolve_claude_path,
 )
@@ -48,6 +44,7 @@ from teatree.eval.models import (
     TokenUsage,
     canonicalize_tool,
 )
+from teatree.eval.production_hooks import t3_plugin, teatree_root
 from teatree.eval.system_prompt_file import resolve_system_prompt, spill_system_prompt
 from teatree.eval.toolset import (
     DELEGATION_SUBAGENT_NAME,
@@ -168,7 +165,7 @@ class TestNonSpawningWorkspaceGrantsIsolatedDirNotRepo:
         add_dirs, _cwd = self._add_dirs(_spec(tmp_path))
         # The teatree repo root (which holds evals/scenarios) is NOT granted, and the
         # single granted dir is a neutral throwaway with no scenario catalog in it.
-        assert str(_teatree_root()) not in add_dirs
+        assert str(teatree_root()) not in add_dirs
         assert not (Path(add_dirs[0]) / "evals" / "scenarios").exists()
 
 
@@ -632,11 +629,11 @@ class TestApiInProcessRunnerMessageMapping:
     def test_relative_agent_path_resolves_against_teatree_root(self, tmp_path: Path, monkeypatch) -> None:
         # cwd is a temp dir (first candidate misses), so resolution falls through
         # to the teatree-root candidate (exercises the continue + found branch).
-        from teatree.eval.api_runner import _teatree_root  # noqa: PLC0415
+        from teatree.eval.production_hooks import teatree_root  # noqa: PLC0415 — local to this one resolution test.
 
         monkeypatch.chdir(tmp_path)
         rel = "skills/code/SKILL.md"
-        assert (_teatree_root() / rel).is_file(), "test assumes the SKILL.md exists at the teatree root"
+        assert (teatree_root() / rel).is_file(), "test assumes the SKILL.md exists at the teatree root"
         spec = EvalSpec(
             name="rel",
             scenario="x",
@@ -2248,8 +2245,8 @@ class TestProductionHooksSdkOptions:
 
     def test_hooked_options_register_t3_plugin_and_include_hook_events(self, tmp_path: Path) -> None:
         options = build_sdk_options(_clean_room_config(tmp_path, production_hooks=True))
-        assert _t3_plugin() in options.plugins
-        assert options.plugins[0] == {"type": "local", "path": str(_teatree_root())}
+        assert t3_plugin() in options.plugins
+        assert options.plugins[0] == {"type": "local", "path": str(teatree_root())}
         assert options.include_hook_events is True
         # The isolation levers are untouched — only the plugin chain + hook events change.
         assert options.settings == '{"hooks":{}}'
@@ -2263,35 +2260,9 @@ class TestProductionHooksSdkOptions:
     def test_hooked_plus_skills_composes_both_plugins(self, tmp_path: Path) -> None:
         options = build_sdk_options(_clean_room_config(tmp_path, production_hooks=True, skills=("t3-widget",)))
         paths = [p["path"] for p in options.plugins]
-        assert str(_teatree_root()) in paths
+        assert str(teatree_root()) in paths
         assert any(path.endswith("skill_catalog") for path in paths)
         assert len(options.plugins) == 2
-
-
-class TestHookedEnv:
-    """`hooked_env` pins the loop/hook state roots inside the sandbox home."""
-
-    def test_redirects_all_state_roots_into_the_sandbox_home(self) -> None:
-        env = hooked_env({"PATH": "/usr/bin", "XDG_DATA_HOME": "/real/user/data"}, "/sandbox/home")
-        assert env["XDG_DATA_HOME"] == "/sandbox/home/.local/share"
-        assert env["T3_LOOP_REGISTRY_DIR"] == "/sandbox/home/loop-registry"
-        assert env["T3_HOOK_STATE_DIR"] == "/sandbox/home/hook-state"
-        assert env["TEATREE_CLAUDE_STATUSLINE_STATE_DIR"] == "/sandbox/home/statusline-state"
-        # A developer's real XDG_DATA_HOME never survives into a hooked child.
-        assert env["XDG_DATA_HOME"] != "/real/user/data"
-
-    def test_does_not_mutate_the_input_env(self) -> None:
-        original = {"PATH": "/usr/bin"}
-        hooked_env(original, "/sandbox/home")
-        assert "XDG_DATA_HOME" not in original
-
-
-class TestHasHookEvents:
-    def test_true_when_any_hook_event_present(self) -> None:
-        assert _has_hook_events([_result(), _hook_response("PreToolUse")]) is True
-
-    def test_false_when_no_hook_event(self) -> None:
-        assert _has_hook_events([_result()]) is False
 
 
 class TestProductionHooksRun:

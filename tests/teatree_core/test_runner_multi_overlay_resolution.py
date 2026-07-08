@@ -24,13 +24,14 @@ from teatree.core.runners.worktree_start import WorktreeStartRunner
 from teatree.core.runners.worktree_verify import WorktreeVerifyRunner
 
 
-class _NamedOverlay_Runtime(OverlayRuntime):
+class _NamedOverlayRuntime(OverlayRuntime):
     def run_commands(self, worktree: Worktree) -> RunCommands:
         return {}
 
 
 class _NamedOverlay(OverlayBase):
-    runtime = _NamedOverlay_Runtime()
+    runtime = _NamedOverlayRuntime()
+
     def __init__(self, marker: str) -> None:
         super().__init__()
         self.marker = marker
@@ -40,7 +41,6 @@ class _NamedOverlay(OverlayBase):
 
     def get_provision_steps(self, worktree: Worktree) -> list[ProvisionStep]:
         return []
-
 
 
 OVERLAY_A = "overlay-alpha"
