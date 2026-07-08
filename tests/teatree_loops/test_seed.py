@@ -65,22 +65,33 @@ class TestSeedDefaultLoops(django.test.TestCase):
         seed_default_loops_and_prompts()
         assert Loop.objects.count() == first
 
-    def test_seed_creates_every_loop_paused(self) -> None:
-        # The #2513 cutover is plumbing only — a fresh seed must land EVERY
-        # default loop disabled (enabled=False). Turning a loop on is a
-        # deliberate operator action, never a side effect of install/seed.
+    def test_seed_enables_the_operational_core_and_pauses_the_rest(self) -> None:
+        # The sound-defaults reversal of the #2513 all-paused cutover: a fresh
+        # seed lands the local/read-only operational core enabled and every
+        # colleague-facing / heavy loop paused — the enabled set equals the
+        # canonical ``default_enabled`` specs.
         seed_default_loops_and_prompts()
         seeded = Loop.objects.filter(name__in=[s.name for s in DEFAULT_LOOPS])
         assert seeded.count() == len(DEFAULT_LOOPS)
-        assert not seeded.filter(enabled=True).exists()
+        enabled = set(seeded.filter(enabled=True).values_list("name", flat=True))
+        assert enabled == {s.name for s in DEFAULT_LOOPS if s.default_enabled}
 
     def test_seed_preserves_operator_edited_enabled_flag(self) -> None:
         seed_default_loops_and_prompts()
-        # Operator ENABLES a loop, then setup runs the seed again — the seed
-        # must not clobber the operator's choice back to paused.
-        Loop.objects.filter(name="inbox").update(enabled=True)
+        # Operator ENABLES a paused loop, then setup runs the seed again — the
+        # seed must not clobber the operator's choice back to paused.
+        Loop.objects.filter(name="arch_review").update(enabled=True)
         seed_default_loops_and_prompts()
-        assert Loop.objects.get(name="inbox").enabled is True
+        assert Loop.objects.get(name="arch_review").enabled is True
+
+    def test_seed_preserves_an_operator_disabled_default_on_loop(self) -> None:
+        seed_default_loops_and_prompts()
+        # The mirror never-clobber: an operator DISABLES a default-on loop; a
+        # re-seed must not re-enable it (``get_or_create`` never re-applies
+        # ``defaults`` to an existing row).
+        Loop.objects.filter(name="inbox").update(enabled=False)
+        seed_default_loops_and_prompts()
+        assert Loop.objects.get(name="inbox").enabled is False
 
     def test_default_loops_satisfy_the_prompt_xor_script_constraint(self) -> None:
         # Every seeded row must hold exactly one of prompt-FK / script (the DB

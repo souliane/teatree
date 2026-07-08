@@ -31,9 +31,10 @@ def _run(*args: str) -> str:
 @django.test.override_settings(USE_TZ=True)
 class TestLoopsListText(django.test.TestCase):
     def test_lists_seeded_interval_loop_with_cadence(self) -> None:
-        # Post-#2513 cutover every seeded loop ships PAUSED (plumbing only), so a
-        # seeded interval loop renders ``disabled`` with its cadence column.
-        line = next(ln for ln in _run().splitlines() if ln.strip().startswith("tickets"))
+        # An opt-in loop (``ship`` is externally-visible ⇒ seeded paused) renders
+        # ``disabled`` with its cadence column. The sound operational core (e.g.
+        # ``tickets``) now seeds ENABLED, so it is not the disabled-render case.
+        line = next(ln for ln in _run().splitlines() if ln.strip().startswith("ship"))
         assert "disabled" in line
         assert "every 300s" in line
 

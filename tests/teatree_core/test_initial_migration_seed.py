@@ -10,7 +10,8 @@ A migration is frozen history and must not import the evolving
 migration. :class:`InlinedSeedMatchesCanonicalSeed` pins those inlined constants
 against the canonical seed so the migrate-path and the install-seed cannot
 drift, and :class:`FreshMigrateSeedsDefaultLoops` proves a real migrate from
-``zero`` lands every default loop PAUSED in its final shape.
+``zero`` lands every default loop in its final shape — with ``0043`` flipping the
+sound operational-default set ON on top of 0001's all-paused seed.
 """
 
 import importlib
@@ -57,12 +58,14 @@ class FreshMigrateSeedsDefaultLoops(TransactionTestCase):
         self.addCleanup(call_command, "migrate", "core", "--no-input", verbosity=0)
         call_command("migrate", "core", "--no-input", verbosity=0)
 
-    def test_seeds_exactly_the_default_loops_all_paused(self) -> None:
+    def test_seeds_the_default_loops_with_the_sound_on_set_enabled(self) -> None:
         loops = Loop.objects.all()
         assert loops.count() == len(DEFAULT_LOOPS)
-        # Every default loop lands PAUSED — turning one on is a deliberate
-        # operator action, never a side effect of a fresh install.
-        assert not loops.filter(enabled=True).exists()
+        # 0001 seeds every row paused; 0043 flips the local/read-only operational
+        # core ON. The migrate-path enabled set must equal the canonical seed's
+        # ``default_enabled`` specs — colleague-facing / heavy loops stay opt-in.
+        enabled = set(loops.filter(enabled=True).values_list("name", flat=True))
+        assert enabled == {spec.name for spec in DEFAULT_LOOPS if spec.default_enabled}
 
     def test_slack_answer_is_not_seeded(self) -> None:
         # ``slack_answer`` has no registry MiniLoop (it runs only via its
