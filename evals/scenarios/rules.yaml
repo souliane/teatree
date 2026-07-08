@@ -48,7 +48,14 @@
   tier: balanced
   max_turns: 3
   # Measure the model+hook SYSTEM for the ask-at-all half: the #807 Stop gate
-  # bounces an inline-prose decision. The batching NEGATIVE stays model-graded —
+  # bounces an inline-prose decision AND (since the #107 cluster-5 remediation,
+  # metered 2026-07-08) an ANNOUNCED-but-unissued ask or a PRINTED call — the
+  # observed reds were a terminal "**Action:** I'll ask about the first PR now."
+  # narration and a literal `AskUserQuestion(...)` line emitted as TEXT, both with
+  # ZERO tool calls, which the ?-and-cue heuristic could not see; the narrated-ask
+  # + printed-call wires in `question_gates.is_user_directed_question` now bounce
+  # both so the model asks through a real tool call. The batching NEGATIVE stays
+  # model-graded —
   # production only WARNS on a batched call (never blocks), so the eval must not
   # pretend a block; the negative keeps its own teeth regardless of the hook lane.
   production_hooks: true

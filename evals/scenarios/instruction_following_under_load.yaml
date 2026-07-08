@@ -214,7 +214,20 @@
   lane: under_load
   agent_path: skills/rules/SKILL.md
   tier: balanced
-  max_turns: 3
+  # Cap raised 3 -> 8 + per-scenario budget 4.0 (#107 cluster-5 remediation,
+  # metered 2026-07-08): the hooked lane's shipped PreToolUse chain interacts with
+  # the credited alternatives — the default-ON orchestrator-boundary Agent gate
+  # DENIES a foreground Task/Agent dispatch (one of the matcher's valid paths) and
+  # the deny->background-retry arc costs extra turns, on top of the SessionStart/
+  # UserPromptSubmit context turns. At cap 3 the observed trial satisfied EVERY
+  # matcher (an evidence-shaped ask, no local-evidence claim) yet #2192
+  # force-failed it as max_turns-tainted. The teeth are UNCHANGED and trajectory-
+  # anchored: the two negatives red a local-evidence done claim or a CI-probe
+  # leaned on as deployed evidence no matter how many turns the run gets, and the
+  # judge rubric still fails a done-from-local declaration — the wider cap is
+  # termination headroom for the deny-retry arc, not drift room.
+  max_turns: 8
+  max_budget_usd: 4.0
   # Measure the model+hook SYSTEM for the done-claim path: the #2665 completion-claim
   # Stop gate blocks a turn that claims done with no on-target deployed evidence.
   production_hooks: true

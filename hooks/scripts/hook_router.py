@@ -96,6 +96,7 @@ from orchestrator_investigation_gate import handle_enforce_orchestrator_investig
 from plan_edit_gate import skip_plan_gate_token
 from question_gates import (
     FENCED_CODE_RE,
+    STRUCTURED_QUESTION_BLOCK,
     handle_warn_batched_questions,
     is_user_directed_question,
     preceding_user_rejected_question_and_asked_clarify,
@@ -5108,14 +5109,9 @@ def _entry_content(entry: dict) -> list:
 # ``completion_claim_gate`` re-export are unchanged.
 
 
-_STRUCTURED_QUESTION_BLOCK = (
-    "TEATREE GATE — a user-directed question was asked inline in prose with no "
-    "AskUserQuestion tool call in this turn. Inline questions are invisible in "
-    "autonomous/loop runs (they read as log lines) so the decision is lost. "
-    "Re-ask the SAME question through the AskUserQuestion tool now — one question "
-    "at a time, with concrete options — then continue. This is a non-bypassable "
-    "gate (no `relax:` escape): the question must go through the structured tool."
-)
+# The block reason moved to the ``question_gates`` sibling (the detection home)
+# so this shrink-only god-module nets smaller; imported above as
+# ``STRUCTURED_QUESTION_BLOCK``.
 
 
 _CLASSIFIER_RELAX_MARKERS = re.compile(
@@ -5212,7 +5208,7 @@ def handle_enforce_structured_question(data: dict) -> bool | None:
         _read_transcript_entries(data.get("transcript_path", ""))
     ):
         return None
-    json.dump({"decision": "block", "reason": _STRUCTURED_QUESTION_BLOCK}, sys.stdout)
+    json.dump({"decision": "block", "reason": STRUCTURED_QUESTION_BLOCK}, sys.stdout)
     return True
 
 
