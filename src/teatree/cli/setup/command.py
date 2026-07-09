@@ -27,6 +27,7 @@ from teatree.cli.slack_provision import slack_provision
 from teatree.cli.slack_setup import slack_bot_setup
 from teatree.cli.slack_user_token_setup import slack_user_token_setup
 from teatree.self_update import ensure_self_db_migrated, seed_default_loops
+from teatree.utils.django_bootstrap import ensure_django
 
 setup_app = typer.Typer(
     help="First-time setup and global skill management.",
@@ -124,13 +125,17 @@ def run(
     # has no IM with the user, ``messaging_from_overlay`` returns a backend that hits
     # ``channel_not_found`` on first DM, and the post silently falls back through
     # whichever bot already had an IM open — conflating per-overlay attribution. Runs
-    # after the self-DB migrate so the ``ConfigSetting`` table exists.
+    # after the self-DB migrate so the ``ConfigSetting`` table exists, and behind
+    # ``ensure_django()`` — since #3074 the registry read is an in-process
+    # ``ConfigSetting`` ORM read, while the migrate/seed steps are subprocesses that
+    # never configure Django in this interpreter.
     # #2513: also seed the default loops + prompts so a fresh (or squashed-migration)
     # install has them present. Idempotent (``get_or_create`` by name) and
     # best-effort — it never clobbers an operator-edited row and never aborts setup.
     # The cron is NOT registered here and no tick is started: the seeded rows are
     # config only until the operator opts in.
     if not self_db_unmigrated:
+        ensure_django()
         provision_all_overlay_dm_channels(echo=typer.echo)
         seed_default_loops()
 
