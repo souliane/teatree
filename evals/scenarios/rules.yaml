@@ -54,8 +54,15 @@
   # narration and a literal `AskUserQuestion(...)` line emitted as TEXT, both with
   # ZERO tool calls, which the ?-and-cue heuristic could not see; the narrated-ask
   # + printed-call wires in `question_gates.is_user_directed_question` now bounce
-  # both so the model asks through a real tool call. The batching NEGATIVE stays
-  # model-graded —
+  # both so the model asks through a real tool call. The post-remediation metered
+  # reds (2026-07-08 PM, 0/4 OAuth-lane trials) were a THIRD evasion shape: the
+  # model DRAWS the chat-UI rendering of the call as text — "**AskUserQuestion**"
+  # alone or with an em-dash title, footnoted "*View tool call*" / "*(1 more tool
+  # call)*" — again with ZERO tool calls; the rendered-chip wire
+  # (`question_gates._rendered_tool_chip`) now bounces that too. (The single-tool `tools:` exposure
+  # was verified NOT the cause: the SDK lane's init toolset carries exactly
+  # AskUserQuestion and the model can call it — the red was pure mimicry.) The
+  # batching NEGATIVE stays model-graded —
   # production only WARNS on a batched call (never blocks), so the eval must not
   # pretend a block; the negative keeps its own teeth regardless of the hook lane.
   production_hooks: true

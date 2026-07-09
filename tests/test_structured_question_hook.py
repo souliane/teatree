@@ -21,12 +21,14 @@ handler.
 
 import json
 import os
+import time
 from pathlib import Path
 
 import pytest
 
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import handle_enforce_structured_question, handle_warn_batched_questions
+from hooks.scripts.question_gates import is_user_directed_question
 
 
 def _assistant(text: str, tool_uses: list[str] | None = None) -> dict:
@@ -131,6 +133,33 @@ class TestBlocksAnnouncedButUnissuedAsk:
         assert _decision(capsys).get("decision") == "block"
         assert result is True
 
+    @pytest.mark.parametrize(
+        "announcement",
+        [
+            "I'll go ahead and ask about the first PR using the structured question tool.",
+            "I won't batch all three decisions - I'll just ask about the first PR now.",
+            "Let me quickly ask the user which PR to merge first.",
+            "I'm going to go ahead and ask whether PR #1 should merge now.",
+            "I'm just going to ask the user which branch to target.",
+        ],
+    )
+    def test_bounded_filler_announced_ask_blocks(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], announcement: str
+    ) -> None:
+        transcript = _write_transcript(tmp_path, [_user("ship it"), _assistant(announcement)])
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript)})
+
+        assert _decision(capsys).get("decision") == "block"
+        assert result is True
+
+    def test_pathological_filler_repetition_completes_fast(self) -> None:
+        degenerate = "i " + "just " * 10_000
+        start = time.perf_counter()
+        is_user_directed_question(degenerate)
+
+        assert time.perf_counter() - start < 1.0
+
     def test_announced_ask_with_tool_call_passes(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         transcript = _write_transcript(
             tmp_path,
@@ -215,6 +244,11 @@ class TestBlocksAnnouncedButUnissuedAsk:
         [
             "No need to ask the user - I resolved the target branch from the repo config and merged.",
             "I did not need to ask; the value was in the project config.",
+            "I will not ask the user - the repo config already pins the target branch, so I proceeded.",
+            "I'm not going to ask the user for approval - the default read is safe.",
+            "I did not just ask about each PR; the merge order was determinable from the dependency graph.",
+            "Then ask the user for the deployed URL before accepting evidence.",
+            "First ask the user which tenant, and only then run the fixture.",
             "Per the rules, a blocked sub-agent must ask via AskUserQuestion rather than working around the gate.",
             "The reviewer should ask for a deployed URL before accepting evidence.",
             "## Ask About Auth Before External Service Integrations",
@@ -247,6 +281,75 @@ class TestBlocksAnnouncedButUnissuedAsk:
 
         assert _decision(capsys).get("decision") == "block"
         assert result is True
+
+
+class TestBlocksRenderedToolCallChip:
+    """The rendered-chip recall hole (the 2026-07-08 OAuth-lane metered reds).
+
+    The model mimics the chat-UI RENDERING of an AskUserQuestion call as text —
+    a standalone emphasized tool-name line, optionally footnoted "*View tool
+    call*" / "*(1 more tool call)*" — with ZERO real tool calls. No ``?``, no
+    soft-ask cue, no call parenthesis: every pre-fix wire missed it and the
+    decision was silently lost. The parametrized chips are the four observed
+    red terminals, verbatim.
+    """
+
+    @pytest.mark.parametrize(
+        "chip",
+        [
+            "**AskUserQuestion**\n\n*View tool call*",
+            "**AskUserQuestion — PR #1 merge decision**",
+            "**AskUserQuestion**\n*(1 more tool call)*",
+            "**AskUserQuestion:**",
+            "**AskUserQuestion**.",
+            "AskUserQuestion\n*View tool call*",
+            "> **AskUserQuestion — PR #1 merge decision**\n\nQuoting the red terminal verbatim above.",
+        ],
+    )
+    def test_rendered_chip_without_tool_call_blocks(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], chip: str
+    ) -> None:
+        transcript = _write_transcript(tmp_path, [_user("ship it"), _assistant(chip)])
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript)})
+
+        assert _decision(capsys).get("decision") == "block"
+        assert result is True
+
+    def test_rendered_chip_with_real_tool_call_passes(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        transcript = _write_transcript(
+            tmp_path,
+            [
+                _user("ship it"),
+                _assistant("**AskUserQuestion — PR #1 merge decision**", tool_uses=["AskUserQuestion"]),
+            ],
+        )
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript)})
+
+        assert _decision(capsys) == {}
+        assert result is not True
+
+    @pytest.mark.parametrize(
+        "mention",
+        [
+            "**AskUserQuestion for every decision** is the rule; this run needed no user input.",
+            "**AskUserQuestion-based routing** now dispatches decisions.",
+            "Wired the **AskUserQuestion** chip detector into question_gates.py; suite green.",
+            "## AskUserQuestion\n\nThe section documents when a decision goes through the tool; none was pending.",
+            "View tool call",
+            "3 more tool calls",
+        ],
+    )
+    def test_prose_mention_or_heading_does_not_block(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], mention: str
+    ) -> None:
+        transcript = _write_transcript(tmp_path, [_user("run the loop"), _assistant(mention)])
+
+        result = handle_enforce_structured_question({"transcript_path": str(transcript)})
+
+        assert _decision(capsys) == {}
+        assert result is not True
 
 
 class TestPassesWhenCompliantOrNoQuestion:

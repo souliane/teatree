@@ -862,14 +862,15 @@ AskUserQuestion(questions=[{"question": "Which target branch — main or develop
 
 A live session has a hook backstop (the PreToolUse `handle_warn_batched_questions` advisory nudges when a call carries >1 question), but the backstop is a WARN, not a block — splitting the ask one-at-a-time is your behaviour to get right, not the gate's to fix.
 
-**Narrating the ask is not asking (do X, never Y).** When the next action is a user decision, the `AskUserQuestion` tool call IS the action — issue it as a real tool invocation. Never end the turn with a plan-line that merely _announces_ the ask ("**Action:** Ask about the first PR's merge decision", "I'll ask the user which branch"), and never _print_ `AskUserQuestion(...)` call syntax as text (fenced or inline) in place of invoking the tool: on a loop turn that narration reads as a log line, no question ever reaches the user, and the decision is silently lost.
+**Narrating the ask is not asking (do X, never Y).** When the next action is a user decision, the `AskUserQuestion` tool call IS the action — issue it as a real tool invocation. Never end the turn with a plan-line that merely _announces_ the ask ("**Action:** Ask about the first PR's merge decision", "I'll ask the user which branch", "I'll go ahead and ask about the first PR"), never _print_ `AskUserQuestion(...)` call syntax as text (fenced or inline), and never _draw_ the chat-UI rendering of the call — a standalone `**AskUserQuestion**` line with a "_View tool call_" footnote — in place of invoking the tool: on a loop turn that narration reads as a log line, no question ever reaches the user, and the decision is silently lost.
 
 ```python
 # do X — the ask IS the single action; issue the tool call now:
 AskUserQuestion(questions=[{"question": "Merge PR #1 — approve?", "options": [...]}])
-# never Y — do NOT end the turn narrating or printing the ask you never issued:
+# never Y — do NOT end the turn narrating, printing, or drawing the ask you never issued:
 # "**Action:** Ask about the first PR's merge decision now."   # FORBIDDEN — nothing was asked
 # 'AskUserQuestion(questions=[...])' written out as message text  # FORBIDDEN — printed, not invoked
+# "**AskUserQuestion**" + "*View tool call*" drawn as message text  # FORBIDDEN — a rendered chip, not a call
 ```
 
 **Each question carries plain-language detail.** The question text must state, in the user's own vocabulary: what the change or decision is, the specific risk or trade-off that matters, and an honest read of it. The options must be the real decision paths for that one item (e.g. "build the safety test first" / "merge now" / "hold"), not a bare yes/no.
