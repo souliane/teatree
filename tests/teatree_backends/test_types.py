@@ -1,7 +1,19 @@
 import pytest
 
 import teatree.backends.types as _types
-from teatree.backends.types import dig
+from teatree.backends.types import Service, dig
+
+
+class TestService:
+    def test_members_cover_the_wrappable_services(self) -> None:
+        assert {s.value for s in Service} == {"github", "gitlab", "slack", "notion", "sentry"}
+
+    def test_round_trips_from_string(self) -> None:
+        assert Service("sentry") is Service.SENTRY
+
+    def test_unknown_service_raises(self) -> None:
+        with pytest.raises(ValueError, match="figma"):
+            Service("figma")
 
 
 def test_typed_responses_importable() -> None:

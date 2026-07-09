@@ -64,6 +64,14 @@ MR_CLOSE_TICKET: bool = True
 # conservative base default of 1 (external/multi-repo overlays keep 1).
 MAX_CONCURRENT_AUTO_STARTS: int = 3
 
+# ── Third-party services wrapped as MCP tool groups ────────────────
+
+# The services this overlay's work actually touches: the GitHub forge
+# (souliane/* repos) and Slack (notify DMs, review broadcasts). The MCP
+# server registers a service's tool group only when a registered overlay
+# declares it here (or via the ``overlays`` DB registry row override).
+REQUIRED_THIRD_PARTY_SERVICES: list[str] = ["github", "slack"]
+
 # ── Companion skills ────────────────────────────────────────────────
 
 # Skills loaded alongside the active lifecycle skill for every task in this
