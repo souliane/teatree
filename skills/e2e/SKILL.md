@@ -237,7 +237,23 @@ Sometimes a **separate test repo** reduces friction — no conflicts with the QA
 
 - Set the `T3_PRIVATE_TESTS` environment variable to the path of your private test repo.
 - Structure tests by app and feature: `tests/<app>/<feature-area>/<test-file>`
-- Store artifacts (screenshots, recordings) in a git-tracked `artifacts/<TICKET>/` directory.
+- Artifacts land in `artifacts/<TICKET>/<env>/` here too. Tracking them in git is a choice only a **private** test repo may make (there, the artifacts are the deliverable). It is never permitted in a product/customer repo — see the rule below.
+
+### Artifacts Are Never Committed to a Product Repo (Non-Negotiable)
+
+An artifact is a **recording of a run** — screenshots, videos, traces. It is reproducible from the spec plus a provisioned stack, and once `post-test-plan` uploads it, the ticket note holds the durable copy. Committing artifacts to a product/customer repo puts binaries in a source tree, bloats every clone, and makes reviewers page through a video diff. **Gitignore `artifacts/*/local/` and `artifacts/*/dev/` in every product repo.** The evidence lives on the ticket, not in the branch.
+
+Three kinds of file get confused for one another — classify before deciding where each belongs:
+
+| Kind | Example | Home |
+|---|---|---|
+| **Artifact** — *records* a run | `step1.png`, `run.webm` | Never committed to a product repo; uploaded to the ticket note by `post-test-plan`. |
+| **Fixture** — *produces* state | flag/message seed, API seed | The spec's own `beforeAll` / fixture, in the specs tree. Never a loose script under `artifacts/`. |
+| **Manifest** — *authored intent* | `manifest.json` (workflow names, human `steps`, claim→capture mapping) | Source, not output: hand-written, not deterministically regenerable. It stays git-tracked at `artifacts/<TICKET>/manifest.json` (the gitignore covers only the per-env subdirs, not the ticket root). |
+
+The **run provenance** is DB-home, not in the tree — never re-derive it from files. `Ticket.extra['e2e_recipe']` records the run's sha and env; the rubric score lives on the `Rubric` model and the posted-note URL on `E2eMandatoryRun.posted_url`.
+
+A loose `seed-*.py` under `artifacts/` is a smell: fixture logic escaped the spec. Fold it into the spec's fixture and delete the script, or the next run silently depends on a human having executed it by hand.
 
 ## Test-Plan Authoring
 
