@@ -61,12 +61,31 @@ FENCED_CODE_RE = re.compile(r"```.*?```", re.DOTALL)
 # URL"), a quoted heading ("## Ask About Auth …"), and a past-tense report
 # ("the ticket asked for a doc update") never fire.
 _ASK_OBJECT = r"(?:about|the user|you|for|whether|which)"
+
+# Between the announce head and "ask", a BOUNDED filler run is tolerated ("I'll
+# GO AHEAD AND ask ...", "let me QUICKLY ask ..." -- the metered evasion shape).
+# A closed WHITELIST, never a \w+ run: an open run would carry "I will NOT
+# ask ..." (a negated resolution) and "I did NOT just ask ..." (a past-tense
+# report) into the wire -- the negation-guarded false positives this design
+# promises never fire. "going to" rides the SAME single run ("I'm JUST GOING TO
+# ask ..."): a second starred run around an optional segment backtracks O(n^2)
+# on a degenerate token repetition and blows the 30s Stop-hook budget, so there
+# is exactly one run, hard-bounded at 4 repetitions.
+_FILLER_WORD = r"(?:go ahead and|proceed to|just|now|simply|quickly|briefly|first|then|directly|going to)"
+_ASK_FILLER = rf"(?:\s+{_FILLER_WORD}){{0,4}}"
+
+# The line-start lead drops "first"/"then": with no first-person or action-word
+# anchor, a standalone instructional line ("Then ask the user for the deployed
+# URL ...") is third-party guidance, not an announced ask. Post-anchor runs keep
+# the full vocabulary.
+_LEAD_FILLER_WORD = r"(?:go ahead and|proceed to|just|now|simply|quickly|briefly|directly|going to)"
+_ASK_FILLER_LEAD = rf"(?:{_LEAD_FILLER_WORD}\s+){{0,4}}"
 _ANNOUNCED_ASK_RE = re.compile(
-    rf"\bi(?:(?:'|\u2019)?ll| will| am going to|(?:'|\u2019)?m going to| am about to| need to| must"
-    rf"| should| have to| want to)? ask {_ASK_OBJECT}\b"
-    rf"|\b(?:let me|time to) ask {_ASK_OBJECT}\b"
-    rf"|\b(?:action|next(?: step)?|now|plan|step \d+)\b\W{{0,4}}ask {_ASK_OBJECT}\b"
-    rf"|^(?:[-*>\u2022]\s{{0,2}}|\*\*)?ask {_ASK_OBJECT}\b",
+    rf"\bi(?:(?:'|\u2019)?ll| will|(?:'|\u2019)?m| am(?: about to)?| need to| must"
+    rf"| should| have to| want to)?{_ASK_FILLER} ask {_ASK_OBJECT}\b"
+    rf"|\b(?:let me|time to){_ASK_FILLER} ask {_ASK_OBJECT}\b"
+    rf"|\b(?:action|next(?: step)?|now|plan|step \d+)\b\W{{0,4}}{_ASK_FILLER_LEAD}ask {_ASK_OBJECT}\b"
+    rf"|^(?:[-*>\u2022]\s{{0,2}}|\*\*)?{_ASK_FILLER_LEAD}ask {_ASK_OBJECT}\b",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -105,18 +124,56 @@ def _pending_answer_disposition(prose: str) -> bool:
 # printed-call detector") never fires.
 _PRINTED_TOOL_CALL_RE = re.compile(r"AskUserQuestion\s*\(\s*(?:questions|\[|\{|[\"'])")
 
+# A RENDERED tool-call chip — the model mimics the chat-UI RENDERING of an
+# AskUserQuestion call as text: a standalone emphasized tool-name line
+# ("**AskUserQuestion**", "**AskUserQuestion:**", "**AskUserQuestion — PR #1
+# merge decision**"), optionally footnoted with a UI marker line ("*View tool
+# call*", "*(1 more tool call)*"), with ZERO real tool calls in the turn — the
+# four observed 2026-07-08 metered reds of
+# `structured_question_one_decision_per_question`, verbatim. Scanned RAW (a
+# fenced fake chip is still a fake chip) and never suppressed by the
+# pending-answer disposition, like printed call syntax. The chip line must be
+# ONLY the emphasis-wrapped tool name — bare, or delimiter-titled with ":",
+# an em/en dash, or a whitespace-set ASCII dash — so an inline prose mention
+# ("the AskUserQuestion for the branch decision was captured as
+# DeferredQuestion #4"), a bold rule statement ("**AskUserQuestion for every
+# decision** is the rule" — no delimiter), a compound coinage
+# ("**AskUserQuestion-based routing**" — no whitespace around the dash), and
+# a markdown heading ("## AskUserQuestion" — no emphasis wrap) never fire.
+# The footnote marker is corroboration, not an independent trigger: with the
+# tool name anywhere in the turn it also catches an UNemphasized name line,
+# but a bare "View tool call" line with no tool name never fires. Scoped out
+# (no observed terminal): a lone bare unemphasized "AskUserQuestion" line
+# with no footnote, and a single-line chip+footnote combination.
+_RENDERED_CHIP_NAME_RE = re.compile(
+    r"^[ \t>]*[*_`]{1,3}AskUserQuestion(?:(?:\s*[:\u2014\u2013]|\s--?\s)[^\n]*)?[*_`]{1,3}[.:]?[ \t]*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_RENDERED_CHIP_FOOTNOTE_RE = re.compile(
+    r"^[ \t>]*[*_`]{0,3}\(?\s*(?:view tool call|\d+ more tool calls?)\s*\)?[*_`]{0,3}[ \t]*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _rendered_tool_chip(text: str) -> bool:
+    if _RENDERED_CHIP_NAME_RE.search(text):
+        return True
+    return bool(_RENDERED_CHIP_FOOTNOTE_RE.search(text) and "AskUserQuestion" in text)
+
+
 # The #807 Stop-gate block reason — owned here beside the detection heuristic it
 # explains (the shrink-only router imports it back).
 STRUCTURED_QUESTION_BLOCK = (
     "TEATREE GATE — a user-directed question was posed inline in prose (or "
-    "announced/printed — 'I'll ask…' / a literal AskUserQuestion(...) line — "
-    "without being issued) with no AskUserQuestion tool call in this turn. "
+    "announced/printed/rendered — 'I'll ask…' / a literal AskUserQuestion(...) "
+    "line / a '**AskUserQuestion**' tool-call chip drawn as text — without "
+    "being issued) with no AskUserQuestion tool call in this turn. "
     "Inline/narrated questions are invisible in autonomous/loop runs (they read "
     "as log lines) so the decision is lost. Issue a REAL AskUserQuestion tool "
-    "call NOW — an actual tool invocation, never call syntax printed as text — "
-    "one question at a time, with concrete options — then continue. This is a "
-    "non-bypassable gate (no `relax:` escape): the question must go through the "
-    "structured tool."
+    "call NOW — an actual tool invocation, never call syntax or a rendered "
+    "chip printed as text — one question at a time, with concrete options — "
+    "then continue. This is a non-bypassable gate (no `relax:` escape): the "
+    "question must go through the structured tool."
 )
 
 # A SEQUENCING offer about the agent's OWN next action — "want me to write X now
@@ -154,18 +211,22 @@ def is_user_directed_question(text: str) -> bool:
     real choice between substantive options still fires.
 
     An ANNOUNCED ask ("**Action:** Ask about the first PR", "I'll ask the user
-    which branch") and a PRINTED tool call (`AskUserQuestion(...)` emitted as
-    text, fenced or inline) trip independently of the ``?`` requirement too —
-    narrating or printing the ask is not asking, and on a loop turn the decision
-    is silently lost. The one-ask-then-wait disposition ("once you answer, I'll
-    ask the second decision", with evidence something was asked) suppresses only
-    the announced-ask wire so a compliant walk-through is never re-ask-looped;
-    printed call syntax is wrong in every posture and is never suppressed.
+    which branch" — a bounded filler run between the head and "ask" included:
+    "I'll go ahead and ask …"), a PRINTED tool call (`AskUserQuestion(...)`
+    emitted as text, fenced or inline), and a RENDERED tool-call chip
+    ("**AskUserQuestion**" drawn as a standalone text line, optionally with a
+    "*View tool call*" footnote) trip independently of the ``?`` requirement
+    too — narrating, printing, or drawing the ask is not asking, and on a loop
+    turn the decision is silently lost. The one-ask-then-wait disposition
+    ("once you answer, I'll ask the second decision", with evidence something
+    was asked) suppresses only the announced-ask wire so a compliant
+    walk-through is never re-ask-looped; printed call syntax and a rendered
+    chip are wrong in every posture and are never suppressed.
     """
     prose = FENCED_CODE_RE.sub(" ", text)
     if _SOFT_ASK_CUE_RE.search(prose):
         return True
-    if _PRINTED_TOOL_CALL_RE.search(text):
+    if _PRINTED_TOOL_CALL_RE.search(text) or _rendered_tool_chip(text):
         return True
     if _ANNOUNCED_ASK_RE.search(prose) and not _pending_answer_disposition(prose):
         return True

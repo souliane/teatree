@@ -5,6 +5,8 @@ from unittest.mock import patch
 
 from django.test import override_settings
 
+from teatree.settings import _debug_enabled
+
 
 def test_settings_importable():
     """Importing the module should execute it without errors."""
@@ -55,6 +57,24 @@ def test_discover_overlay_apps_skips_entry_points_without_django_app():
         result = mod._discover_overlay_apps()
 
     assert result == []
+
+
+def test_debug_defaults_on_and_env_disables_it(monkeypatch):
+    """DEBUG is on by default (admin needs it) but T3_DEBUG=0 turns it off (worker)."""
+    monkeypatch.delenv("T3_DEBUG", raising=False)
+    assert _debug_enabled() is True
+
+    monkeypatch.setenv("T3_DEBUG", "0")
+    assert _debug_enabled() is False
+    monkeypatch.setenv("T3_DEBUG", "false")
+    assert _debug_enabled() is False
+    monkeypatch.setenv("T3_DEBUG", "off")
+    assert _debug_enabled() is False
+
+    monkeypatch.setenv("T3_DEBUG", "1")
+    assert _debug_enabled() is True
+    monkeypatch.setenv("T3_DEBUG", "")
+    assert _debug_enabled() is True
 
 
 def test_urls_module_loads_with_admin_disabled():

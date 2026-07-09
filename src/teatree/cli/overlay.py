@@ -286,6 +286,11 @@ class OverlayAppBuilder:
         register_wip_commands(self.overlay_app)
         register_autonomy_commands(self.overlay_app)
 
+        # An overlay ships its own Django app in its own settings module's
+        # INSTALLED_APPS; the base ``teatree.settings`` (or the empty default)
+        # means there is nothing extra to load, so overlay-settings subcommands
+        # (``db migrate``) stay on the in-process core path there (#126).
+        ships_own_overlay_settings = bool(self.settings_module) and self.settings_module != "teatree.settings"
         for group_name, dj_group in DJANGO_GROUPS.items():
             group = typer.Typer(no_args_is_help=True, help=dj_group.help_text)
             for sub_name, sub_help in dj_group.subcommands:
@@ -294,7 +299,9 @@ class OverlayAppBuilder:
                     group_name,
                     sub_name,
                     sub_help,
-                    core_dispatch=dj_group.dispatches_to_core(sub_name),
+                    core_dispatch=dj_group.resolve_core_dispatch(
+                        sub_name, ships_own_overlay_settings=ships_own_overlay_settings
+                    ),
                 )
             self.overlay_app.add_typer(group, name=group_name)
 
@@ -491,7 +498,8 @@ class OverlayAppBuilder:
         :func:`managepy_core` (teatree-native ``python -m teatree``) instead
         of :func:`managepy` — required for groups whose commands live in
         teatree core only and would crash if routed through an overlay's
-        own ``manage.py`` (#1312, #1318).
+        own ``manage.py`` (#1312, #1318). The per-subcommand ``db migrate``
+        overlay-settings routing is resolved by :meth:`_dispatches_to_core`.
         """
         project_path = self.project_path
         overlay_name = self.overlay_name

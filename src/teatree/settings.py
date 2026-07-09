@@ -4,7 +4,10 @@ Used when teatree is the Django project (the standard case).
 Auto-discovers overlay Django apps via entry points and adds them to INSTALLED_APPS.
 """
 
+import os
+
 from teatree.config import default_logging
+from teatree.config.setting_parsers import _parse_env_bool_default_on
 from teatree.paths import CANONICAL_DB, DATA_DIR, DATA_DIR_AUTO_ISOLATED, seed_isolated_db
 from teatree.timeouts import CORE_DEFAULTS
 
@@ -36,7 +39,21 @@ def _discover_overlay_apps() -> list[str]:
 
 
 SECRET_KEY = "teatree-dev-insecure"  # noqa: S105 — local-dev CLI, never deployed
-DEBUG = True
+
+
+def _debug_enabled() -> bool:
+    """Whether ``DEBUG`` is on — env-gated so it can differ per service.
+
+    Default on preserves local-dev behaviour (the admin needs DEBUG to mount
+    ``/admin/`` and auto-login the superuser). A long-running Django process
+    with DEBUG on grows ``connection.queries`` unboundedly, so the headless
+    worker sets ``T3_DEBUG=0`` to run with DEBUG off while the admin service
+    leaves it on.
+    """
+    return _parse_env_bool_default_on(os.environ.get("T3_DEBUG", ""))
+
+
+DEBUG = _debug_enabled()
 ALLOWED_HOSTS = ["localhost", "127.0.0.1", "[::1]"]
 INTERNAL_IPS = ["127.0.0.1"]
 
