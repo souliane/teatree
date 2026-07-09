@@ -221,36 +221,77 @@ class TestLifecycleGroupCoreDispatch:
         assert "visit-phase" in cmd
 
 
-class TestDbMigrateCoreDispatch:
-    """``db migrate`` routes through ``python -m teatree`` (core); siblings do not.
+class TestDbMigrateDispatch:
+    """``db migrate`` runs where the active overlay's Django app is installed.
 
-    ``db migrate`` migrates the teatree-core control DB the merge gate reads,
-    so it must run in the runtime process (``python -m teatree``). The sibling
-    ``db`` subcommands (``refresh``/``restore-ci``/``reset-passwords``) drive
-    the overlay's own ``db_import`` strategy and must keep routing through the
-    overlay's ``manage.py``. So ``db`` is a *per-subcommand* core-dispatch
-    group, not a wholesale one (#126).
+    ``db migrate`` must apply BOTH the teatree-core migrations AND the active
+    overlay's own app migrations against the same gate-resolved control DB.
+    An overlay that ships its own Django app lists it in that overlay's own
+    settings module (``INSTALLED_APPS``); the teatree-core settings cannot see
+    it, because ``teatree.settings._discover_overlay_apps`` imports the overlay
+    class at settings-bootstrap time and that import raises before the app
+    registry is ready (or on a missing overlay dependency), so the overlay app
+    is silently dropped and its migrations are structurally invisible on the
+    ``python -m teatree`` path.
+
+    So when the overlay ships its own settings module, ``db migrate`` routes
+    through the overlay's ``manage.py`` (its settings list the overlay app
+    explicitly and resolve the same canonical control DB). When the overlay
+    runs on the base ``teatree.settings`` (or ships no project dir), there is
+    nothing extra to load, so it stays on the in-process core path (#126). The
+    sibling ``db`` subcommands (``refresh``/``restore-ci``/``reset-passwords``)
+    always route through the overlay ``manage.py`` for the ``db_import``
+    strategy; ``db approve`` always core-dispatches (it records a ``DbApproval``
+    in the core control DB and needs no overlay app).
     """
 
-    def test_db_migrate_is_marked_core_dispatch_per_subcommand(self) -> None:
+    def test_db_migrate_marked_overlay_settings_not_core(self) -> None:
         entry = DJANGO_GROUPS["db"]
-        assert "migrate" in getattr(entry, "core_subcommands", frozenset()), (
-            f"db.migrate must opt into per-subcommand core dispatch (#126), got {entry!r}"
+        assert "migrate" in getattr(entry, "overlay_settings_subcommands", frozenset()), (
+            f"db.migrate must opt into overlay-settings dispatch so an overlay-shipped app "
+            f"migration is applied, got {entry!r}"
         )
+        # migrate must NOT be core-only — that path omits the overlay app.
+        assert "migrate" not in getattr(entry, "core_subcommands", frozenset())
         # The group itself must NOT be wholesale core_dispatch — refresh et al.
         # still need the overlay manage.py.
         assert getattr(entry, "core_dispatch", False) is False
 
-    def test_db_migrate_uses_core_dispatch(self, overlay_clone_path: Path) -> None:
+    def test_db_migrate_routes_to_overlay_settings_when_overlay_ships_own(self, overlay_clone_path: Path) -> None:
+        # An overlay with its own settings module (its INSTALLED_APPS list the
+        # overlay app) must run migrate through the overlay manage.py, so the
+        # overlay-shipped migration is applied. On the pre-fix core path this
+        # ran ``python -m teatree`` against teatree.settings, where the overlay
+        # app is structurally invisible and its migration silently skipped.
         runner = CliRunner()
-        app = _build_overlay_app(overlay_clone_path)
+        app = OverlayAppBuilder("acme", overlay_clone_path, settings_module="acme.settings").build()
         with patch("teatree.cli.overlay.run_streamed") as run_streamed:
             result = runner.invoke(app, ["db", "migrate"])
         assert result.exit_code == 0, result.output
         cmd = run_streamed.call_args.args[0]
-        assert "-m" in cmd, f"db migrate must dispatch via python -m teatree, got {cmd!r}"
-        assert "teatree" in cmd, f"db migrate must dispatch via python -m teatree, got {cmd!r}"
-        assert "manage.py" not in " ".join(cmd), f"db migrate must NOT route through manage.py, got {cmd!r}"
+        assert "manage.py" in " ".join(cmd), (
+            f"db migrate must route through the overlay manage.py when the overlay ships its "
+            f"own settings module, so the overlay app's migration is applied, got {cmd!r}"
+        )
+        assert "db" in cmd
+        assert "migrate" in cmd
+
+    def test_db_migrate_stays_core_on_base_teatree_settings(self, overlay_clone_path: Path) -> None:
+        # An overlay on the base teatree.settings gains nothing from the overlay
+        # manage.py context (its INSTALLED_APPS are the core ones), so migrate
+        # keeps the in-process core path (#126) — no regression to a
+        # ``uv --directory`` subprocess.
+        runner = CliRunner()
+        app = OverlayAppBuilder("acme", overlay_clone_path, settings_module="teatree.settings").build()
+        with patch("teatree.cli.overlay.run_streamed") as run_streamed:
+            result = runner.invoke(app, ["db", "migrate"])
+        assert result.exit_code == 0, result.output
+        cmd = run_streamed.call_args.args[0]
+        assert "-m" in cmd, f"db migrate on base settings must dispatch via python -m teatree, got {cmd!r}"
+        assert "teatree" in cmd, f"db migrate on base settings must dispatch via python -m teatree, got {cmd!r}"
+        assert "manage.py" not in " ".join(cmd), (
+            f"db migrate on base teatree.settings must NOT route through manage.py, got {cmd!r}"
+        )
         assert "db" in cmd
         assert "migrate" in cmd
 
