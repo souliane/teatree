@@ -161,10 +161,7 @@ jobs:
       - run: uv sync
       - uses: j178/prek-action@e98a699c41eb69ab013a45817a0406469a748f8d  # v2
         env:
-          # banned-terms is skipped here (diff-only, DB-home term list): the
-          # secret-backed full-tree `banned-terms-tree` job runs on every PR +
-          # push and covers brands comprehensively, so the lint hook is strictly
-          # redundant — same "dedicated job, skip in lint" pattern as the rest.
+          # banned-terms skipped: the secret-backed full-tree banned-terms-tree job covers brands on every PR+push.
           SKIP: pytest,uv-audit,cyclonedx-sbom,banned-terms
       # Migration-graph linearity gate. Two PRs branching a migration off
       # the same parent each pass locally and pass their own CI, then merge
