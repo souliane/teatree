@@ -479,6 +479,16 @@ class AdHocTokenRowsTest(TestCase):
         assert "tok 990000" in out
         assert "prepaid" in out  # the api_key caption (its only occurrence of the word)
 
+    def test_api_key_token_probe_failure_is_unreachable(self) -> None:
+        report, _, reader, api_key_reader = self._report([_API_KEY_TOKEN], metered_unreachable={_API_KEY_TOKEN})
+        row = report.rows()[0]
+        assert row.account == "token[1]"
+        assert row.source is TokenSource.AD_HOC
+        assert row.kind is TokenKind.API_KEY
+        assert row.status is TokenStatus.UNREACHABLE
+        assert reader.calls == []
+        assert api_key_reader.calls == [_API_KEY_TOKEN]
+
     def test_unrecognised_prefix_is_unreachable_and_never_transmitted(self) -> None:
         token = "not-an-anthropic-token-SUPER-SECRET"
         report, _, reader, api_key_reader = self._report([token])
