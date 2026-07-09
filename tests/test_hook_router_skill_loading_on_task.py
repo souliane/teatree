@@ -22,17 +22,60 @@ fixture skills seeded under a temp ``T3_SKILL_SEARCH_DIRS``.
 
 import io
 import json
+import sqlite3
 from collections.abc import Iterator
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-import tomlkit
 from typer.testing import CliRunner
 
 import hooks.scripts.hook_router as router
 from hooks.scripts.hook_router import handle_enforce_skill_loading_on_task_create
+
+
+def _seed_config_db(path: Path, rows: dict[str, object]) -> None:
+    """Seed the DB-home ``teatree_config_setting`` store the skill-loading gate resolves."""
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        for key, value in rows.items():
+            conn.execute(
+                "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
+                (key, json.dumps(value)),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# The exact ``teatree_config_setting`` shape Django's migration emits — the unique
+# (scope, key) constraint the cold writer's UPSERT ``ON CONFLICT`` targets, plus the
+# NOT-NULL timestamp columns it populates. Required by the self-rescue CLI write path.
+_WRITABLE_CONFIG_SCHEMA = (
+    'CREATE TABLE "teatree_config_setting" ('
+    '"id" integer NOT NULL PRIMARY KEY AUTOINCREMENT, '
+    '"scope" varchar(255) NOT NULL, '
+    '"key" varchar(255) NOT NULL, '
+    '"value" text NOT NULL CHECK ((JSON_VALID("value") OR "value" IS NULL)), '
+    '"created_at" datetime NOT NULL, '
+    '"updated_at" datetime NOT NULL, '
+    'CONSTRAINT "uniq_config_setting_scope_key" UNIQUE ("scope", "key"))'
+)
+
+
+def _make_writable_config_db(path: Path) -> None:
+    """Create an empty canonical config DB the Django-free cold writer can UPSERT into."""
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.execute(_WRITABLE_CONFIG_SCHEMA)
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _seed_skill(skills_dir: Path, name: str, *, requires: list[str] | None = None) -> None:
@@ -203,11 +246,13 @@ class TestPromptReferencingSkillsPasses:
 
 
 class TestKillSwitch:
-    """``[teatree] skill_loading_gate_enabled = false`` disables the gate."""
+    """``skill_loading_gate_enabled = false`` in the DB store disables the gate."""
 
-    def test_explicit_false_disables(self, gate: Path) -> None:
+    def test_explicit_false_disables(self, gate: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _write_pending("sess-task", ["review"])
-        (Path.home() / ".teatree.toml").write_text("[teatree]\nskill_loading_gate_enabled = false\n", encoding="utf-8")
+        db = tmp_path / "db.sqlite3"
+        _seed_config_db(db, {"skill_loading_gate_enabled": False})
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
         blocked, payload = _run(_task(description="review the open PR"))
         assert blocked is False
         assert payload is None
@@ -217,9 +262,13 @@ class TestKillSwitch:
         blocked, _ = _run(_task(description="review the open PR"))
         assert blocked is True
 
-    def test_broken_config_fails_open_to_enabled(self, gate: Path) -> None:
+    def test_non_bool_config_fails_open_to_enabled(
+        self, gate: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         _write_pending("sess-task", ["review"])
-        (Path.home() / ".teatree.toml").write_text("not = valid = toml [[[", encoding="utf-8")
+        db = tmp_path / "db.sqlite3"
+        _seed_config_db(db, {"skill_loading_gate_enabled": "false"})
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
         blocked, _ = _run(_task(description="review the open PR"))
         assert blocked is True
 
@@ -370,7 +419,9 @@ class TestCliSelfRescue:
     """``t3 <overlay> gate skill-loading disable`` writes ``= false`` (self-rescue)."""
 
     def test_disable_writes_false(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        db = tmp_path / "db.sqlite3"
+        _make_writable_config_db(db)
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
         from teatree.cli.overlay import OverlayAppBuilder  # noqa: PLC0415
         from teatree.cli.teatree_gate import SKILL_GATE_KEY, skill_loading_gate_is_enabled  # noqa: PLC0415
 
@@ -378,6 +429,7 @@ class TestCliSelfRescue:
         result = CliRunner().invoke(app, ["gate", "skill-loading", "disable"])
         assert result.exit_code == 0, result.output
 
-        document = tomlkit.parse((tmp_path / ".teatree.toml").read_text(encoding="utf-8"))
-        assert document["teatree"][SKILL_GATE_KEY] is False
+        from teatree.config import cold_reader  # noqa: PLC0415
+
+        assert cold_reader.read_setting(SKILL_GATE_KEY) is False
         assert skill_loading_gate_is_enabled() is False

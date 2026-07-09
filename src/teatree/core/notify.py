@@ -435,6 +435,8 @@ def resolve_user_channel() -> str:
     as "open a DM to the resolved user_id" rather than pinning to a
     specific ``D...`` channel.
     """
+    from teatree.config import cold_reader  # noqa: PLC0415
+
     cfg = load_config().raw
     overlay_name = os.environ.get("T3_OVERLAY_NAME", "")
     overlays = cfg.get("overlays") or {}
@@ -442,8 +444,7 @@ def resolve_user_channel() -> str:
         channel = overlays[overlay_name].get("slack_user_channel", "")
         if channel:
             return str(channel)
-    teatree_cfg = cfg.get("teatree") or {}
-    return str(teatree_cfg.get("slack_user_channel", ""))
+    return cold_reader.str_setting("slack_user_channel", default="")
 
 
 def maybe_linkify(text: str) -> str:

@@ -7,7 +7,6 @@ only relocated under a focused package by concern. The module-level
 this is now its only consumer.
 """
 
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -20,7 +19,7 @@ import teatree.paths as teatree_paths
 from teatree.cli import app
 from teatree.cli.doctor import IntrospectionHelpers
 
-from ._shared import _stage_home, _write_teatree_toml
+from ._shared import _stage_home
 
 runner = CliRunner()
 
@@ -47,13 +46,10 @@ def _isolate_environment_dependent_gates(monkeypatch):
 class TestDoctorCheckCommand:
     """End-to-end ``t3 doctor check`` dispatch via ``CliRunner``.
 
-    The command's sanity check runs live against the staged
-    ``~/.teatree.toml``; ``editable_info`` + ``shutil.which`` stay mocked
-    because they touch the real site-packages and PATH.
+    The command's sanity check runs live against the DB-home config store
+    (``contribute`` defaults to false with no row); ``editable_info`` +
+    ``shutil.which`` stay mocked because they touch the real site-packages and PATH.
     """
-
-    def _write_noop_toml(self, home: Path) -> None:
-        _write_teatree_toml(home / ".teatree.toml", "[teatree]\ncontribute = false\n")
 
     def test_entrypoint_guard_runs_before_editable_autorepair(self, tmp_path, monkeypatch):
         """The entrypoint guard must fire before editable auto-repair (#1507).
@@ -63,7 +59,6 @@ class TestDoctorCheckCommand:
         ran first it would create the bad install before the guard fails.
         """
         _stage_home(tmp_path, monkeypatch)
-        self._write_noop_toml(tmp_path)
 
         order: list[str] = []
 
@@ -87,7 +82,6 @@ class TestDoctorCheckCommand:
 
     def test_reports_all_checks_passed(self, tmp_path, monkeypatch):
         _stage_home(tmp_path, monkeypatch)
-        self._write_noop_toml(tmp_path)
 
         with (
             patch.object(teatree_cli_doctor.shutil, "which", side_effect=lambda t: f"/usr/bin/{t}"),
@@ -103,7 +97,6 @@ class TestDoctorCheckCommand:
     def test_reports_warning_when_editable_state_mismatches(self, tmp_path, monkeypatch):
         _stage_home(tmp_path, monkeypatch)
         # contribute=false but teatree is editable → WARN
-        self._write_noop_toml(tmp_path)
 
         with (
             patch.object(teatree_cli_doctor.shutil, "which", side_effect=lambda t: f"/usr/bin/{t}"),
@@ -117,7 +110,6 @@ class TestDoctorCheckCommand:
 
     def test_fails_when_required_tool_missing(self, tmp_path, monkeypatch):
         _stage_home(tmp_path, monkeypatch)
-        self._write_noop_toml(tmp_path)
 
         with (
             patch.object(
@@ -134,7 +126,6 @@ class TestDoctorCheckCommand:
 
     def test_validates_skills_in_claude_dir(self, tmp_path, monkeypatch):
         _stage_home(tmp_path, monkeypatch)
-        self._write_noop_toml(tmp_path)
         claude_skills = tmp_path / ".claude" / "skills"
         (claude_skills / "ok-skill").mkdir(parents=True)
         (claude_skills / "ok-skill" / "SKILL.md").write_text("---\nname: ok-skill\ndescription: d\n---\n")
@@ -151,7 +142,6 @@ class TestDoctorCheckCommand:
 
     def test_reports_skill_validation_errors(self, tmp_path, monkeypatch):
         _stage_home(tmp_path, monkeypatch)
-        self._write_noop_toml(tmp_path)
         bad = tmp_path / ".claude" / "skills" / "bad-skill"
         bad.mkdir(parents=True)
         (bad / "SKILL.md").write_text("no frontmatter here")
@@ -167,7 +157,6 @@ class TestDoctorCheckCommand:
 
     def test_reports_skill_validation_warnings(self, tmp_path, monkeypatch):
         _stage_home(tmp_path, monkeypatch)
-        self._write_noop_toml(tmp_path)
         skill = tmp_path / ".claude" / "skills" / "warn-skill"
         skill.mkdir(parents=True)
         (skill / "SKILL.md").write_text("---\nname: warn-skill\ndescription: d\nunknown-field: x\n---\n")
@@ -194,7 +183,6 @@ class TestDoctorCheckCommand:
         reports the REAL pending-migration state.
         """
         _stage_home(tmp_path, monkeypatch)
-        self._write_noop_toml(tmp_path)
 
         order: list[str] = []
 
@@ -248,12 +236,8 @@ class TestBareDoctorRunsChecks:
     the ``check`` and ``authorizations`` subcommands intact.
     """
 
-    def _write_noop_toml(self, home: Path) -> None:
-        _write_teatree_toml(home / ".teatree.toml", "[teatree]\ncontribute = false\n")
-
     def test_bare_doctor_runs_checks_not_help(self, tmp_path, monkeypatch):
         _stage_home(tmp_path, monkeypatch)
-        self._write_noop_toml(tmp_path)
 
         with (
             patch.object(teatree_cli_doctor.shutil, "which", side_effect=lambda t: f"/usr/bin/{t}"),
@@ -269,7 +253,6 @@ class TestBareDoctorRunsChecks:
 
     def test_bare_doctor_propagates_failure_exit_code(self, tmp_path, monkeypatch):
         _stage_home(tmp_path, monkeypatch)
-        self._write_noop_toml(tmp_path)
 
         with (
             patch.object(
@@ -287,7 +270,6 @@ class TestBareDoctorRunsChecks:
 
     def test_check_subcommand_still_dispatches(self, tmp_path, monkeypatch):
         _stage_home(tmp_path, monkeypatch)
-        self._write_noop_toml(tmp_path)
 
         with (
             patch.object(teatree_cli_doctor.shutil, "which", side_effect=lambda t: f"/usr/bin/{t}"),
@@ -302,7 +284,6 @@ class TestBareDoctorRunsChecks:
 
     def test_authorizations_subcommand_still_dispatches(self, tmp_path, monkeypatch):
         _stage_home(tmp_path, monkeypatch)
-        self._write_noop_toml(tmp_path)
 
         result = runner.invoke(app, ["doctor", "authorizations", "--help"])
 

@@ -219,7 +219,7 @@ Run gates → Any failure? → Fix → Re-run gates → Repeat until clean
 3. **Tests:** full suite green (use `t3 <overlay> run tests` or project equivalent)
 4. **No uncommitted changes:** all fixes staged and committed
 5. **No regressions:** diff review confirms no unintended changes
-6. **Skill references resolve:** run `t3 tool validate-skill-refs`. Every skill *name* referenced — the `~/.teatree-skills.yml` keyword→skill routing config and the `agents/*.md` frontmatter `skills:` / `companion_skills:` lists — must resolve to a real skill in the canonical (installed/remote) skill set. A dangling name (the real `ac-reviewing-skills` → `ac-reviewing-codebase` case) exits non-zero with file:line, the bad name, and the nearest valid matches. The repo's own agent refs are also gated in pre-commit (`validate-skill-refs`); this command additionally covers the personal `~/.teatree-skills.yml`, which lives outside the repo.
+6. **Skill references resolve:** run `t3 tool validate-skill-refs`. Every skill *name* referenced — the `$HOME/.teatree-skills.yml` keyword→skill routing config and the `agents/*.md` frontmatter `skills:` / `companion_skills:` lists — must resolve to a real skill in the canonical (installed/remote) skill set. A dangling name (the real `ac-reviewing-skills` → `ac-reviewing-codebase` case) exits non-zero with file:line, the bad name, and the nearest valid matches. The repo's own agent refs are also gated in pre-commit (`validate-skill-refs`); this command additionally covers the personal `$HOME/.teatree-skills.yml`, which lives outside the repo.
 
 **Iteration limit:** After 3 fix-verify cycles without convergence, **stop and ask the user** — the issue may be systemic rather than incremental.
 

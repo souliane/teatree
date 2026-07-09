@@ -6,7 +6,7 @@
   tools: [Bash]
   prompt: >-
     You are doing a self-review of a branch that edited
-    `~/.teatree-skills.yml` routing and an `agents/*.md` frontmatter
+    `$HOME/.teatree-skills.yml` routing and an `agents/*.md` frontmatter
     `companion_skills:` list. Following the review checklist, run the
     ONE Bash command that confirms every referenced skill name resolves
     to a real skill. One command only, no narration.

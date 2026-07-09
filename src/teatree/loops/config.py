@@ -96,10 +96,7 @@ class LoopsConfig:
         """
         from teatree.config import cold_reader  # noqa: PLC0415
 
-        loops_table = cold_reader.read_setting("loops", db_path=db_path)
-        if not isinstance(loops_table, dict):
-            return cls()
-        return cls._from_table(loops_table)
+        return cls._from_table(cold_reader.mapping_setting("loops", db_path=db_path))
 
     @classmethod
     def _from_table(cls, table: dict[str, Any]) -> "LoopsConfig":

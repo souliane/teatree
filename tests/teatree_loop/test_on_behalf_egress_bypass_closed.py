@@ -20,7 +20,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from teatree.core.backend_protocols import PrOpenState
-from teatree.core.models import BotPing, OnBehalfApproval, OutboundClaim, ReviewRequestPost
+from teatree.core.models import BotPing, ConfigSetting, OnBehalfApproval, OutboundClaim, ReviewRequestPost
 from teatree.loop.review_claim import emit_review_done_reactions
 from teatree.loop.scanners.review_nag import _post_thread_nag
 from teatree.loop.scanners.review_request_merge_react import react_merge_on_post
@@ -98,12 +98,9 @@ class _Host:
 
 
 def _gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
-    cfg = tmp_path / ".teatree.toml"
-    cfg.write_text(
-        f'[teatree]\nslack_user_id = "{_USER_ID}"\non_behalf_post_mode = "{mode}"\nreview_nag_enabled = true\n',
-        encoding="utf-8",
-    )
-    monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+    ConfigSetting.objects.set_value("slack_user_id", _USER_ID)
+    ConfigSetting.objects.set_value("on_behalf_post_mode", mode)
+    ConfigSetting.objects.set_value("review_nag_enabled", value=True)
     monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", lambda _o=None: _RouteAwareFake())
 
 

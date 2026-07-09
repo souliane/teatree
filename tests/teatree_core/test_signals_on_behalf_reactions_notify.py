@@ -17,6 +17,8 @@ the BotPing ledger run for real. The on-behalf pre-gate is set to
 *after*-receipt behaviour.
 """
 
+import json
+import sqlite3
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from pathlib import Path
@@ -27,6 +29,25 @@ from django.test import TestCase
 
 import teatree.core.signals as signals_mod
 from teatree.core.models import BotPing, PullRequest, Ticket
+
+
+def _seed_cold_slack_user(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, user_id: str) -> None:
+    """Seed the global ``slack_user_id`` in a config-store sqlite the cold reader resolves."""
+    db = tmp_path / "config.sqlite3"
+    monkeypatch.setenv("T3_CONFIG_DB", str(db))
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'slack_user_id', ?)",
+            (json.dumps(user_id),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 class _FakeReactionPublisher:
@@ -65,16 +86,12 @@ def _notify_backend() -> MagicMock:
 class TestSignalsAfterReceiptDm(TestCase):
     @pytest.fixture(autouse=True)
     def _ctx(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        # ``slack_user_id`` is a RAW key (TOML-home) — notify_user resolves the
-        # user id from it. ``on_behalf_post_mode`` is DB-home (#1775) so a TOML
-        # value for it is ignored on read; stage the immediate (gate-off) mode
-        # via the ``T3_*`` env tier instead.
-        cfg = tmp_path / ".teatree.toml"
-        cfg.write_text(
-            '[teatree]\nslack_user_id = "U-OPERATOR"\n',
-            encoding="utf-8",
-        )
-        monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+        # ``slack_user_id`` (global) resolves via the Django-free cold reader —
+        # notify_user resolves the user id from it; seed it in a config-store
+        # sqlite the reader resolves via ``T3_CONFIG_DB``. ``on_behalf_post_mode``
+        # is DB-home (#1775) — stage the immediate (gate-off) mode via the ``T3_*``
+        # env tier instead.
+        _seed_cold_slack_user(tmp_path, monkeypatch, "U-OPERATOR")
         monkeypatch.setenv("T3_ON_BEHALF_POST_MODE", "immediate")
         monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", _notify_backend)
         self.monkeypatch = monkeypatch

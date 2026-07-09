@@ -2,6 +2,7 @@
 
 import logging
 from pathlib import Path
+from typing import cast
 
 import typer
 
@@ -18,16 +19,17 @@ slack_app = typer.Typer(name="slack", help="Slack integration commands.", no_arg
 def _resolve_overlays(restrict: str) -> list[tuple[str, str, str]]:
     from teatree.config import cold_reader  # noqa: PLC0415
 
-    registry = cold_reader.read_setting("overlays")
-    if not isinstance(registry, dict):
-        return []
+    registry = cold_reader.mapping_setting("overlays")
     result: list[tuple[str, str, str]] = []
     for name, overlay_cfg in registry.items():
         if restrict and name != restrict:
             continue
-        if not isinstance(overlay_cfg, dict) or overlay_cfg.get("messaging_backend") != "slack":
+        if not isinstance(overlay_cfg, dict):
             continue
-        token_ref = overlay_cfg.get("slack_token_ref", "")
+        cfg = cast("dict[str, object]", overlay_cfg)
+        if cfg.get("messaging_backend") != "slack":
+            continue
+        token_ref = cfg.get("slack_token_ref", "")
         if not token_ref:
             continue
         bot_token = read_pass(f"{token_ref}-bot")

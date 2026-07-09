@@ -5,7 +5,7 @@
 behind two ambient gates inside ``dispatch`` — ``review_loop_enabled()`` (#79)
 and ``review_target_is_dead()`` (#2081, a live ``get_pr_open_state`` lookup
 through the per-URL code host). Both are read from process-global state (the
-real ``~/.teatree.toml`` loop config and the cached/credentialed code-host
+DB-home loop config and the cached/credentialed code-host
 backend), so a sibling test that leaves a code host resolving the test URL to
 MERGED/CLOSED — or that disables the review loop — would make this module's
 routing tests silently drop the reviewer dispatch and raise ``StopIteration``

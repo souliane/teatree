@@ -75,6 +75,7 @@ COLD_SETTINGS: dict[str, Callable[[Any], Any]] = {
     # and the master fail-open gate switch (the always-available Bash/gate self-rescue).
     "private_tests": _parse_strict_str,
     "slack_user_id": _parse_strict_str,
+    "slack_user_channel": _parse_strict_str,
     "availability_schedule": _parse_registry_dict,
     "timeouts": _parse_registry_dict,
     "loops": _parse_registry_dict,

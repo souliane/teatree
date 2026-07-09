@@ -62,7 +62,7 @@ def handle_banned_terms_pretool(data: dict) -> bool:
     overlay/customer terms have leaked on this PUBLIC repo. This gate
     reuses the #1213 ``_command_parser`` publish-surface detection + body
     extraction, then delegates the matching to the SAME
-    ``check-banned-terms.sh`` against the ``~/.teatree.toml`` term list
+    ``check-banned-terms.sh`` against the DB ``banned_terms`` list
     (no new term config, no reimplemented matching).
 
     A banned-term match ⇒ refuse via ``permissionDecision: deny`` + a

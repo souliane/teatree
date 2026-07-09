@@ -2987,7 +2987,7 @@ Usage: t3 tool validate-skill-refs [OPTIONS]
  Enumerates the canonical skill set from the actual installed/remote skills
  (the same search dirs the skill-loading hook reads — ``~/.claude/skills/*``
  symlinks plus this plugin's ``skills/`` tree), then checks every reference
- site: the ``~/.teatree-skills.yml`` keyword->skill routing config and the
+ site: the ``$HOME/.teatree-skills.yml`` keyword->skill routing config and the
  ``agents/*.md`` frontmatter ``skills:`` / ``companion_skills:`` lists. A
  dangling name (e.g. the real ``ac-reviewing-skills`` ->
  ``ac-reviewing-codebase``
@@ -2997,7 +2997,7 @@ Usage: t3 tool validate-skill-refs [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --config            PATH  Path to the keyword->skill routing config          │
 │                           (default: $T3_SUPPLEMENTARY_SKILLS or              │
-│                           ~/.teatree-skills.yml).                            │
+│                           $HOME/.teatree-skills.yml).                        │
 │ --agents-dir        PATH  Directory of agent *.md files to scan (default:    │
 │                           this plugin's agents/).                            │
 │ --json                    Emit machine-readable JSON.                        │

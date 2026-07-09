@@ -9,7 +9,7 @@ import-light for the fast-hook budget.
 
 The readers are DB-only: a gate flag resolves from the canonical ``ConfigSetting``
 store via the Django-free ``teatree.config.cold_reader``, else the per-setting
-default. There is no config file — ``~/.teatree.toml`` is gone, so a WRITE that
+default. There is no config file, so a WRITE that
 steers a cold-hook gate targets the DB tier: ``config_setting set`` for the
 overridable keys, and ``t3 <overlay> gate <name> disable/enable`` for the cold-hook
 gate keys (it writes the canonical DB via

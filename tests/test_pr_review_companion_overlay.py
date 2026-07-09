@@ -3,8 +3,8 @@
 When a reviewer sub-agent is dispatched (``phase == "reviewing"``), the
 overlay's ``pr_review_companion`` skill is injected alongside ``/t3:review``.
 The global default is ``"code-review"``; the teatree overlay overrides it to
-``"receiving-code-review"`` via ``[overlays.t3-teatree] pr_review_companion = …``
-in ``~/.teatree.toml``.
+``"receiving-code-review"`` via the ``[overlays.t3-teatree] pr_review_companion``
+entry in the DB-home overlays config.
 
 The injection threads through:
 

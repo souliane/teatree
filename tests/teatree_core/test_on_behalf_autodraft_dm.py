@@ -18,6 +18,8 @@ Asserts:
     ``BotPing`` row).
 """
 
+import json
+import sqlite3
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -28,6 +30,26 @@ from teatree.config import OnBehalfPostMode
 from teatree.core.models import BotPing
 from teatree.core.on_behalf_gate_recorded import require_on_behalf_approval
 
+
+def _seed_cold_slack_user(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, user_id: str) -> None:
+    """Seed the global ``slack_user_id`` in a config-store sqlite the cold reader resolves."""
+    db = tmp_path / "config.sqlite3"
+    monkeypatch.setenv("T3_CONFIG_DB", str(db))
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'slack_user_id', ?)",
+            (json.dumps(user_id),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
 
@@ -37,15 +59,10 @@ def _noop() -> None:
 
 
 def _gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, mode: OnBehalfPostMode) -> None:
-    # ``slack_user_id`` is a RAW key (TOML-home); ``on_behalf_post_mode`` is
-    # DB-home (#1775) so a TOML value for it is ignored on read — stage it via
-    # the ``T3_*`` env tier, which wins for a DB-home key and needs no DB.
-    cfg = tmp_path / ".teatree.toml"
-    cfg.write_text(
-        '[teatree]\nslack_user_id = "U-OPERATOR"\n',
-        encoding="utf-8",
-    )
-    monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+    # ``slack_user_id`` (global) resolves via the Django-free cold reader — seed it
+    # in a config-store sqlite the reader resolves via ``T3_CONFIG_DB``.
+    # ``on_behalf_post_mode`` is DB-home (#1775) — stage it via the ``T3_*`` env tier.
+    _seed_cold_slack_user(tmp_path, monkeypatch, "U-OPERATOR")
     monkeypatch.setenv("T3_ON_BEHALF_POST_MODE", mode.value)
 
 

@@ -9,7 +9,6 @@ strips exactly the selected credential's conflicting vars.
 """
 
 import os
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -26,8 +25,7 @@ _API_KEY_ENV = "ANTHROPIC_API_KEY"
 
 class TestMakeRunnerSelectsEvalCredential(TestCase):
     @pytest.fixture(autouse=True)
-    def _isolate_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("teatree.config.CONFIG_PATH", tmp_path / ".teatree.toml")
+    def _isolate_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
         monkeypatch.delenv("T3_EVAL_CREDENTIAL", raising=False)
 

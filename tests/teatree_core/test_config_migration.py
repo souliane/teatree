@@ -1,235 +1,21 @@
-"""TOML -> ``ConfigSetting`` import service (#938 dual-read migration, TODO-75).
+"""``ConfigSetting`` store -> TOML export service + its leak/secret guards.
 
-The reusable seam both the ``config_setting import`` management command and the
-``t3 setup`` auto-migration call. Integration-first against the real DB: a raw
-config dict is walked, coerced through the ``OVERLAY_OVERRIDABLE_SETTINGS``
-registry, and upserted into the store — global ``[teatree]`` keys into the
-global scope, ``[overlays.<name>]`` operational keys into that overlay's scope.
-
-The new capability over the original in-command logic is the NON-CLOBBER mode:
-``t3 setup`` runs on every update, so the auto-migration must never overwrite a
-value the user has since changed via ``config_setting set`` — it seeds only keys
-absent from the store and leaves present rows untouched.
+The DB-home store is the single source of truth; ``export_db_to_toml`` serialises
+it to TOML for a personal, never-shared backup. Integration-first against the real
+DB: global rows render under ``[teatree]``, each overlay scope under
+``[overlays.<name>]``, and the export guard withholds secret/tainted rows so a
+shared export never leaks a codename.
 """
 
 import os
-import tempfile
 import tomllib
-from pathlib import Path
 from unittest import mock
 
 from django.test import TestCase
 
 from teatree.config import COLD_HOOK_SETTINGS, OVERLAY_OVERRIDABLE_SETTINGS
-from teatree.core.config_migration import export_db_to_toml, import_toml_into_db
+from teatree.core.config_migration import export_db_to_toml
 from teatree.core.models import ConfigSetting
-
-
-class TestImportTomlIntoDb(TestCase):
-    def test_seeds_global_operational_keys(self) -> None:
-        raw = {"teatree": {"issue_implementer_enabled": True, "issue_implementer_max_concurrent": 4}}
-        result = import_toml_into_db(raw)
-        assert ConfigSetting.objects.get_effective("issue_implementer_enabled") is True
-        assert ConfigSetting.objects.get_effective("issue_implementer_max_concurrent") == 4
-        assert result.imported == 2
-
-    def test_skips_bootstrap_and_unknown_keys(self) -> None:
-        raw = {"teatree": {"private_repos": ["acme/secret"], "not_a_real_setting": "x", "mode": "auto"}}
-        result = import_toml_into_db(raw)
-        assert ConfigSetting.objects.filter(key="private_repos").exists() is False
-        assert ConfigSetting.objects.filter(key="not_a_real_setting").exists() is False
-        assert ConfigSetting.objects.get_effective("mode") == "auto"
-        assert result.imported == 1
-        assert result.skipped >= 2
-
-    def test_walks_per_overlay_table_into_overlay_scope(self) -> None:
-        raw = {
-            "teatree": {"mode": "interactive"},
-            "overlays": {"myproj": {"path": "~/p", "mode": "auto"}},
-        }
-        import_toml_into_db(raw)
-        assert ConfigSetting.objects.get_effective("mode") == "interactive"
-        assert ConfigSetting.objects.get_effective("mode", scope="myproj") == "auto"
-
-    def test_skips_non_setting_overlay_keys(self) -> None:
-        raw = {"overlays": {"myproj": {"path": "~/p", "url": "git@x"}}}
-        import_toml_into_db(raw)
-        # No per-overlay SETTING rows (path/url are definition keys), but the whole
-        # ``[overlays]`` table is still seeded as the global ``overlays`` registry row.
-        assert ConfigSetting.objects.filter(scope="myproj").exists() is False
-        assert ConfigSetting.objects.get_effective("overlays") == {"myproj": {"path": "~/p", "url": "git@x"}}
-
-    def test_seeds_overlays_registry_as_global_row(self) -> None:
-        # The ``[overlays]`` table (overlay DEFINITIONS) is stored whole as one
-        # global ``overlays`` registry row — the source ``discover_overlays`` reads
-        # once ``_inject_db_registries`` overrides ``raw["overlays"]`` from the DB.
-        raw = {"overlays": {"db-overlay": {"class": "x.settings", "path": "~/p"}}}
-        result = import_toml_into_db(raw)
-        assert ConfigSetting.objects.get_effective("overlays") == {"db-overlay": {"class": "x.settings", "path": "~/p"}}
-        assert ("", "overlays") in result.rows
-
-    def test_seeds_e2e_repos_registry_as_global_row(self) -> None:
-        raw = {"e2e_repos": {"myrepo": {"url": "git@x", "branch": "dev", "e2e_dir": "tests"}}}
-        result = import_toml_into_db(raw)
-        assert ConfigSetting.objects.get_effective("e2e_repos") == {
-            "myrepo": {"url": "git@x", "branch": "dev", "e2e_dir": "tests"}
-        }
-        assert ("", "e2e_repos") in result.rows
-
-    def test_overlays_registry_and_per_overlay_settings_coexist(self) -> None:
-        # The registry row (DEFINITIONS only) and the per-overlay setting rows are
-        # orthogonal: a ``[overlays.myproj]`` table seeds the overlay-scoped ``mode``
-        # setting row AND a definitions-only ``overlays`` registry row (``mode`` stripped).
-        raw = {"overlays": {"myproj": {"path": "~/p", "mode": "auto"}}}
-        import_toml_into_db(raw)
-        assert ConfigSetting.objects.get_effective("overlays") == {"myproj": {"path": "~/p"}}
-        assert ConfigSetting.objects.get_effective("mode", scope="myproj") == "auto"
-
-    def test_pure_setting_overlay_table_creates_no_registry_row(self) -> None:
-        # An ``[overlays.<name>]`` table with only SETTING keys (no path/class) is a
-        # pure override — its overlay is defined by an entry point, so it contributes
-        # NO registry row (only the scope setting row).
-        import_toml_into_db({"overlays": {"myproj": {"mode": "auto"}}})
-        assert ConfigSetting.objects.filter(key="overlays").exists() is False
-        assert ConfigSetting.objects.get_effective("mode", scope="myproj") == "auto"
-
-    def test_no_clobber_preserves_existing_registry_row(self) -> None:
-        ConfigSetting.objects.set_value("overlays", {"kept": {"class": "kept.settings"}})
-        result = import_toml_into_db({"overlays": {"new": {"class": "new.settings"}}}, clobber=False)
-        assert ConfigSetting.objects.get_effective("overlays") == {"kept": {"class": "kept.settings"}}
-        assert result.preserved >= 1
-
-    def test_clobber_default_overwrites_existing_row(self) -> None:
-        ConfigSetting.objects.set_value("mode", "interactive")
-        result = import_toml_into_db({"teatree": {"mode": "auto"}})
-        assert ConfigSetting.objects.get_effective("mode") == "auto"
-        assert result.overwritten == 1
-
-    def test_clobber_is_idempotent(self) -> None:
-        raw = {"teatree": {"issue_implementer_max_concurrent": 4}}
-        import_toml_into_db(raw)
-        import_toml_into_db(raw)
-        assert ConfigSetting.objects.filter(key="issue_implementer_max_concurrent").count() == 1
-
-    def test_no_clobber_leaves_existing_row_untouched(self) -> None:
-        # A value the user set via ``config_setting set`` must survive a re-run of
-        # the auto-migration: no-clobber seeds only absent keys.
-        ConfigSetting.objects.set_value("mode", "auto")
-        result = import_toml_into_db({"teatree": {"mode": "interactive"}}, clobber=False)
-        assert ConfigSetting.objects.get_effective("mode") == "auto"
-        assert result.imported == 0
-        assert result.preserved == 1
-
-    def test_no_clobber_still_seeds_absent_keys(self) -> None:
-        # No-clobber is seed-if-absent, not a global skip: a key with no DB row yet
-        # is still imported.
-        ConfigSetting.objects.set_value("mode", "auto")
-        raw = {"teatree": {"mode": "interactive", "issue_implementer_enabled": True}}
-        result = import_toml_into_db(raw, clobber=False)
-        assert ConfigSetting.objects.get_effective("mode") == "auto"
-        assert ConfigSetting.objects.get_effective("issue_implementer_enabled") is True
-        assert result.imported == 1
-        assert result.preserved == 1
-
-    def test_no_clobber_per_overlay_seed_if_absent(self) -> None:
-        ConfigSetting.objects.set_value("mode", "auto", scope="myproj")
-        raw = {"overlays": {"myproj": {"mode": "interactive", "issue_implementer_enabled": True}}}
-        result = import_toml_into_db(raw, clobber=False)
-        assert ConfigSetting.objects.get_effective("mode", scope="myproj") == "auto"
-        assert ConfigSetting.objects.get_effective("issue_implementer_enabled", scope="myproj") is True
-        assert result.imported == 1
-        assert result.preserved == 1
-
-    def test_invalid_value_is_skipped_not_fatal(self) -> None:
-        # A TOML value that JSON-shapes but is invalid for the setting's type is
-        # skipped with a recorded reason — never an exception aborting the import.
-        raw = {"teatree": {"mode": "not_a_mode", "issue_implementer_enabled": True}}
-        result = import_toml_into_db(raw)
-        assert ConfigSetting.objects.filter(key="mode").exists() is False
-        assert ConfigSetting.objects.get_effective("issue_implementer_enabled") is True
-        assert result.imported == 1
-        assert any("mode" in line for line in result.skipped_reasons)
-
-    def test_result_rows_describe_each_imported_setting(self) -> None:
-        raw = {"teatree": {"mode": "auto"}, "overlays": {"myproj": {"mode": "interactive"}}}
-        result = import_toml_into_db(raw)
-        rendered = result.summary()
-        assert "global" in rendered
-        assert "myproj" in rendered
-        assert "2" in rendered
-
-
-class TestColdHookSettingsImport(TestCase):
-    """Lossless TOML->DB import of the pre-Django cold-hook settings (config-unify PR2).
-
-    The hook-only gate flags + integer budgets the cold layer reads from
-    ``~/.teatree.toml`` used to be dropped on import. The import now unions
-    ``OVERLAY_OVERRIDABLE_SETTINGS`` with ``COLD_HOOK_SETTINGS`` for the global
-    ``[teatree]`` table, so a non-default value survives the cutover to the DB
-    store. Readers still hit TOML this PR — the import is purely additive.
-    """
-
-    def test_lossless_round_trip_for_a_spread_of_cold_hook_settings(self) -> None:
-        raw = {
-            "teatree": {
-                "self_dm_gate_enabled": False,  # default True, flipped off
-                "dispatch_quote_gate_on_task_create_enabled": True,  # default False, flipped on
-                "deny_circuit_breaker_threshold": 7,  # raised threshold
-                "orchestrator_turn_budget": 40,  # raised budget
-                "issue_implementer_enabled": True,  # an OVERLAY_OVERRIDABLE key — union still works
-            },
-        }
-        result = import_toml_into_db(raw)
-        assert ConfigSetting.objects.get_effective("self_dm_gate_enabled") is False
-        assert ConfigSetting.objects.get_effective("dispatch_quote_gate_on_task_create_enabled") is True
-        assert ConfigSetting.objects.get_effective("deny_circuit_breaker_threshold") == 7
-        assert ConfigSetting.objects.get_effective("orchestrator_turn_budget") == 40
-        assert ConfigSetting.objects.get_effective("issue_implementer_enabled") is True
-        for key in ("self_dm_gate_enabled", "deny_circuit_breaker_threshold", "orchestrator_turn_budget"):
-            assert ConfigSetting.objects.get_effective(key, scope="") is not None
-        assert result.imported == 5
-
-    def test_json_typed_values_land_with_correct_python_type(self) -> None:
-        raw = {"teatree": {"deny_circuit_breaker_threshold": 9, "banned_terms_gate_enabled": False}}
-        import_toml_into_db(raw)
-        threshold = ConfigSetting.objects.get_effective("deny_circuit_breaker_threshold")
-        gate = ConfigSetting.objects.get_effective("banned_terms_gate_enabled")
-        assert threshold == 9
-        assert isinstance(threshold, int)
-        assert not isinstance(threshold, bool)
-        assert gate is False
-
-    def test_reimport_no_clobber_preserves_db_value(self) -> None:
-        ConfigSetting.objects.set_value("self_dm_gate_enabled", value=False)
-        result = import_toml_into_db({"teatree": {"self_dm_gate_enabled": True}}, clobber=False)
-        assert ConfigSetting.objects.get_effective("self_dm_gate_enabled") is False
-        assert result.preserved == 1
-        assert result.imported == 0
-
-    def test_reimport_is_idempotent(self) -> None:
-        raw = {"teatree": {"orchestrator_turn_wall_clock_seconds": 240}}
-        import_toml_into_db(raw)
-        import_toml_into_db(raw)
-        assert ConfigSetting.objects.filter(key="orchestrator_turn_wall_clock_seconds").count() == 1
-        assert ConfigSetting.objects.get_effective("orchestrator_turn_wall_clock_seconds") == 240
-
-    def test_cold_hook_keys_are_global_only_never_overlay_scoped(self) -> None:
-        # The cold reader consults only the global [teatree] table for these, so an
-        # [overlays.<name>] gate flag must never be mis-scoped to an overlay row.
-        raw = {"overlays": {"myproj": {"deny_circuit_breaker_threshold": 9, "mode": "auto"}}}
-        result = import_toml_into_db(raw)
-        assert ConfigSetting.objects.filter(key="deny_circuit_breaker_threshold", scope="myproj").exists() is False
-        assert ConfigSetting.objects.get_effective("mode", scope="myproj") == "auto"
-        assert result.imported == 1
-
-    def test_invalid_cold_hook_value_is_skipped_not_fatal(self) -> None:
-        # A quoted "false" for a bool gate (a str, not a bool) is rejected loud and
-        # skipped — never silently truthy-coerced, never aborting the rest.
-        raw = {"teatree": {"self_dm_gate_enabled": "false", "banned_terms_gate_enabled": False}}
-        result = import_toml_into_db(raw)
-        assert ConfigSetting.objects.filter(key="self_dm_gate_enabled").exists() is False
-        assert ConfigSetting.objects.get_effective("banned_terms_gate_enabled") is False
-        assert any("self_dm_gate_enabled" in line for line in result.skipped_reasons)
 
 
 class TestExportDbToToml(TestCase):
@@ -279,79 +65,31 @@ class TestExportDbToToml(TestCase):
     def test_empty_store_exports_empty_document(self) -> None:
         assert export_db_to_toml(scan_terms=()).toml.strip() == ""
 
-    def test_export_import_export_is_a_fixed_point(self) -> None:
-        # Operational + cold-hook keys across global and overlay scopes survive an
-        # export -> import (into a cleared store) -> export with no drift.
-        ConfigSetting.objects.set_value("mode", "auto")
-        ConfigSetting.objects.set_value("issue_implementer_max_concurrent", 3)
-        ConfigSetting.objects.set_value("excluded_skills", ["foo", "bar"])
-        ConfigSetting.objects.set_value("orchestrator_turn_budget", 40)  # cold-hook, global-only
-        ConfigSetting.objects.set_value("self_dm_gate_enabled", value=False)  # cold-hook
-        ConfigSetting.objects.set_value("mode", "interactive", scope="myproj")
-        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True, scope="myproj")
 
-        first = export_db_to_toml(scan_terms=()).toml
-        # Anti-vacuity: the fixed point is meaningless unless the first export
-        # actually carried the seeded scopes.
-        assert "[teatree]" in first
-        assert "[overlays.myproj]" in first
-        ConfigSetting.objects.all().delete()
-        import_toml_into_db(tomllib.loads(first))
-        second = export_db_to_toml(scan_terms=()).toml
-        assert second == first
+class TestBannedTermsNeverLeaveTheStoreViaExport(TestCase):
+    """The secret banned-terms/brands list is DB-home but never reaches a SHARED export.
 
-    def test_registry_rows_round_trip_through_export_import(self) -> None:
-        # The DB-home ``overlays`` (definitions) + ``e2e_repos`` registries survive an
-        # export -> import -> export with no drift: the registry renders into top-level
-        # ``[overlays.<name>]`` / ``[e2e_repos.<name>]`` tables, and re-import re-seeds the
-        # same rows — overlay definitions merged with the overlay's own setting scope.
-        ConfigSetting.objects.set_value("overlays", {"db-overlay": {"path": "~/p", "class": "x.settings"}})
-        ConfigSetting.objects.set_value("mode", "auto", scope="db-overlay")
-        ConfigSetting.objects.set_value("e2e_repos", {"r1": {"url": "git@x:r.git", "branch": "dev"}})
-
-        first = export_db_to_toml(scan_terms=()).toml
-        assert "[overlays.db-overlay]" in first
-        assert "[e2e_repos.r1]" in first
-        assert "[teatree]" not in first  # registries never leak into the global settings table
-
-        ConfigSetting.objects.all().delete()
-        import_toml_into_db(tomllib.loads(first))
-        assert ConfigSetting.objects.get_effective("overlays") == {"db-overlay": {"path": "~/p", "class": "x.settings"}}
-        assert ConfigSetting.objects.get_effective("mode", scope="db-overlay") == "auto"
-        assert ConfigSetting.objects.get_effective("e2e_repos") == {"r1": {"url": "git@x:r.git", "branch": "dev"}}
-        assert export_db_to_toml(scan_terms=()).toml == first
-
-
-class TestBannedTermsNeverEnterExportableStore(TestCase):
-    """The secret banned-terms/brands list can never reach the exportable DB store.
-
-    The list carries customer/brand terms, so it stays env/TOML-sourced exactly
-    like ``private_repos`` — never a ``ConfigSetting`` row. ``import_toml_into_db``
-    only writes keys in the overridable + cold-hook registries, and ``banned_terms``
-    / ``banned_brands`` are in NEITHER, so a planted ``[teatree].banned_terms`` is
-    skipped on import and can therefore never be dumped by ``config_setting export``.
-    All terms here are SYNTHETIC, so this public test leaks nothing.
+    Codename lists moved into the ``ConfigSetting`` store (the DB is personal); the
+    leak surface is the export path, guarded by ``SECRET_SETTINGS`` — a shared
+    ``config_setting export`` withholds the row so no codename is dumped. All terms
+    here are SYNTHETIC, so this public test leaks nothing.
     """
 
-    def test_banned_terms_keys_are_not_in_any_db_writable_registry(self) -> None:
+    def test_banned_terms_keys_are_not_in_the_overridable_or_cold_hook_registries(self) -> None:
+        # They are DB-home via the COLD_SETTINGS registry, not the overridable /
+        # cold-hook settings partitions.
         for key in ("banned_terms", "banned_brands", "banned_terms_allowlist"):
             assert key not in OVERLAY_OVERRIDABLE_SETTINGS
             assert key not in COLD_HOOK_SETTINGS
 
-    def test_import_skips_planted_banned_terms_so_no_row_exists(self) -> None:
-        raw = {"teatree": {"banned_terms": ["acmebrand"], "banned_brands": ["acmebrand"], "mode": "auto"}}
-        result = import_toml_into_db(raw)
-        assert ConfigSetting.objects.filter(key="banned_terms").exists() is False
-        assert ConfigSetting.objects.filter(key="banned_brands").exists() is False
-        # Only the legitimate operational key landed.
-        assert ConfigSetting.objects.get_effective("mode") == "auto"
-        assert result.skipped >= 2
-
-    def test_export_after_importing_a_planted_brand_never_dumps_it(self) -> None:
-        import_toml_into_db({"teatree": {"banned_terms": ["acmebrand"], "mode": "auto"}})
+    def test_export_withholds_a_stored_brand_row(self) -> None:
+        ConfigSetting.objects.set_value("banned_terms", ["acmebrand"])
+        ConfigSetting.objects.set_value("mode", "auto")
         dump = export_db_to_toml(scan_terms=()).toml
         assert "acmebrand" not in dump
         assert "banned_terms" not in dump
+        # The legitimate operational key still exports.
+        assert tomllib.loads(dump)["teatree"]["mode"] == "auto"
 
 
 class TestExportSecretGuard(TestCase):
@@ -404,28 +142,22 @@ class TestExportSecretGuard(TestCase):
 class TestExportScanTermsResolveFailsSafe(TestCase):
     """``export_db_to_toml(scan_terms=None)`` fails SAFE when the live config has no terms.
 
-    The DEFAULT machine state — a ``~/.teatree.toml`` present but with
-    ``banned_terms`` unset and no ``T3_BANNED_TERMS`` env — makes
-    ``resolve_banned_terms`` raise ``BannedTermsUnsetError``. The export's
-    live-resolve path (``scan_terms=None``, the production ``config_setting
-    export`` caller) must degrade to an EMPTY scan-term list rather than
-    propagate the raise. Every other export test passes ``scan_terms``
-    explicitly, so this live-resolve path is otherwise uncovered.
+    The DEFAULT machine state — no ``banned_terms`` configured and no
+    ``T3_BANNED_TERMS`` env — makes ``resolve_banned_terms`` raise
+    ``BannedTermsUnsetError``. The export's live-resolve path (``scan_terms=None``,
+    the production ``config_setting export`` caller) must degrade to an EMPTY
+    scan-term list rather than propagate the raise. Every other export test passes
+    ``scan_terms`` explicitly, so this live-resolve path is otherwise uncovered.
     """
 
     def test_export_does_not_crash_when_config_lacks_banned_terms(self) -> None:
         ConfigSetting.objects.set_value("mode", "auto")
-        with tempfile.TemporaryDirectory() as tmp:
-            config_path = Path(tmp) / "teatree.toml"
-            # A config that EXISTS but carries neither banned_terms nor
-            # banned_brands — the default state both resolvers raise on.
-            config_path.write_text('[teatree]\nmode = "auto"\n', encoding="utf-8")
-            # Full env minus the two override vars so neither resolver short-
-            # circuits on an env value; point the scanner at our config file.
-            env = {k: v for k, v in os.environ.items() if k not in {"T3_BANNED_TERMS", "TEATREE_BANNED_BRANDS"}}
-            env["T3_BANNED_TERMS_CONFIG"] = str(config_path)
-            with mock.patch.dict(os.environ, env, clear=True):
-                export = export_db_to_toml()  # scan_terms=None -> live resolve
+        # Full env minus the two override vars so neither resolver short-circuits
+        # on an env value; with no banned_terms configured the live resolve must
+        # degrade to an empty scan-term list rather than raise.
+        env = {k: v for k, v in os.environ.items() if k not in {"T3_BANNED_TERMS", "TEATREE_BANNED_BRANDS"}}
+        with mock.patch.dict(os.environ, env, clear=True):
+            export = export_db_to_toml()  # scan_terms=None -> live resolve
         doc = tomllib.loads(export.toml)
         assert doc["teatree"]["mode"] == "auto"
         # No terms resolved => nothing to redact; the export is valid and complete.

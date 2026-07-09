@@ -149,7 +149,7 @@ def _isolate_scope_cache() -> Iterator[None]:
 def _unset_review_skill_by_default() -> Iterator[None]:
     """Pin the #1539 reviewing-phase gate to its NO-OP unless a test opts in.
 
-    The effective ``review_skill`` resolves through the host ``~/.teatree.toml``
+    The effective ``review_skill`` resolves through the DB-home config store
     (not Django settings), so a developer who configures one would otherwise see
     every reviewing-phase test refuse. Tests that exercise the gate re-patch
     ``configured_review_skill`` with a non-empty value inside their own scope.

@@ -11,12 +11,9 @@ TestResolvePerOverlay: the limit flows through the real ``get_effective_settings
 per overlay (overlay A limited, overlay B unlimited).
 """
 
-from pathlib import Path
-
 import pytest
 from django.test import TestCase
 
-import teatree.config as config_facade
 from teatree.core.gates.pr_budget_gate import (
     PrBudgetExceededError,
     check_pr_budget,
@@ -158,10 +155,7 @@ class TestOpenPrUrlsForRepo(TestCase):
 
 class TestResolvePerOverlay(TestCase):
     @pytest.fixture(autouse=True)
-    def _config_path(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        config_path = tmp_path / ".teatree.toml"
-        config_path.write_text("[teatree]\n", encoding="utf-8")
-        monkeypatch.setattr(config_facade, "CONFIG_PATH", config_path)
+    def _config_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
 
     def test_limit_flows_through_get_effective_settings_per_overlay(self) -> None:

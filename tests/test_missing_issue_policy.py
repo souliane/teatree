@@ -1,8 +1,9 @@
 """Tests for the missing-issue-reference policy resolver.
 
-Integration-first per the Test-Writing Doctrine: real TOML fixtures under
-``tmp_path`` with ``teatree.config.CONFIG_PATH`` monkeypatched to them.
-No mocks — ``load_config`` / ``get_effective_settings`` exercised end-to-end.
+Integration-first per the Test-Writing Doctrine: ``missing_issue_ref_policy`` is
+DB-home (#1775), so the default resolves from the dataclass default and an opt-in
+is a ``ConfigSetting`` row. No mocks — ``load_config`` / ``get_effective_settings``
+exercised end-to-end.
 
 The policy decides what teatree does when a commit/MR needs an issue
 reference and the agent has none in hand: it always tries to recover the
@@ -11,55 +12,47 @@ auto-creates or uses a dummy ref (it asks the user) unless the operator
 opted into ``create`` / ``dummy``.
 """
 
-from pathlib import Path
-
 import pytest
 from django.test import TestCase
 
-from teatree.config import ENV_SETTING_OVERRIDES, OVERLAY_OVERRIDABLE_SETTINGS, MissingIssuePolicy, load_config
+from teatree.config import (
+    ENV_SETTING_OVERRIDES,
+    OVERLAY_OVERRIDABLE_SETTINGS,
+    MissingIssuePolicy,
+    get_effective_settings,
+    load_config,
+)
 from teatree.core.models import ConfigSetting
 from teatree.missing_issue_policy import MissingIssueVerdict, resolve_missing_issue_verdict
-
-
-@pytest.fixture
-def config_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    cfg = tmp_path / ".teatree.toml"
-    monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
-    return cfg
-
-
-def _write(cfg: Path, body: str) -> None:
-    cfg.write_text(body, encoding="utf-8")
 
 
 class TestDefaultPolicy:
     """The default is find-existing-then-ask — never auto-create, never dummy."""
 
-    def test_default_when_no_config_is_find_existing_then_ask(self, config_file: Path) -> None:
+    def test_default_when_no_config_is_find_existing_then_ask(self) -> None:
         assert load_config().user.missing_issue_ref_policy is MissingIssuePolicy.FIND_EXISTING_THEN_ASK
 
-    def test_default_when_section_present_but_unset(self, config_file: Path) -> None:
-        _write(config_file, "[teatree]\n")
-        assert load_config().user.missing_issue_ref_policy is MissingIssuePolicy.FIND_EXISTING_THEN_ASK
+    def test_default_from_effective_resolver_when_unset(self) -> None:
+        assert get_effective_settings().missing_issue_ref_policy is MissingIssuePolicy.FIND_EXISTING_THEN_ASK
 
-    def test_default_on_colleague_repo_asks_after_search(self, config_file: Path) -> None:
+    def test_default_on_colleague_repo_asks_after_search(self) -> None:
         # Colleague-facing repo, no existing issue found → must ASK, never create/dummy.
         assert (
             resolve_missing_issue_verdict(colleague_facing=True, existing_found=False) is MissingIssueVerdict.ASK_USER
         )
 
-    def test_default_on_colleague_repo_uses_found_existing(self, config_file: Path) -> None:
+    def test_default_on_colleague_repo_uses_found_existing(self) -> None:
         # The original existing issue was found → always use it, on any repo.
         assert (
             resolve_missing_issue_verdict(colleague_facing=True, existing_found=True)
             is MissingIssueVerdict.USE_EXISTING
         )
 
-    def test_default_on_own_repo_allows_create_after_search(self, config_file: Path) -> None:
+    def test_default_on_own_repo_allows_create_after_search(self) -> None:
         # On the user's OWN repo, creating is allowed even under the default policy.
         assert resolve_missing_issue_verdict(colleague_facing=False, existing_found=False) is MissingIssueVerdict.CREATE
 
-    def test_default_on_own_repo_uses_found_existing(self, config_file: Path) -> None:
+    def test_default_on_own_repo_uses_found_existing(self) -> None:
         assert (
             resolve_missing_issue_verdict(colleague_facing=False, existing_found=True)
             is MissingIssueVerdict.USE_EXISTING
@@ -122,10 +115,15 @@ class TestPerOverlayOverride(TestCase):
         assert resolve_missing_issue_verdict(colleague_facing=True, existing_found=False) is MissingIssueVerdict.CREATE
 
 
-class TestEnvOverride:
-    def test_env_var_wins_over_global(self, config_file: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _write(config_file, '[teatree]\nmissing_issue_ref_policy = "find_existing_then_ask"\n')
-        monkeypatch.setenv("T3_MISSING_ISSUE_POLICY", "dummy")
+class TestEnvOverride(TestCase):
+    @pytest.fixture(autouse=True)
+    def _fixtures(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.monkeypatch = monkeypatch
+
+    def test_env_var_wins_over_global(self) -> None:
+        # A configured GLOBAL row is overridden by the env var (env beats DB store).
+        ConfigSetting.objects.set_value("missing_issue_ref_policy", MissingIssuePolicy.FIND_EXISTING_THEN_ASK.value)
+        self.monkeypatch.setenv("T3_MISSING_ISSUE_POLICY", "dummy")
         assert resolve_missing_issue_verdict(colleague_facing=True, existing_found=False) is MissingIssueVerdict.DUMMY
 
 

@@ -16,7 +16,7 @@ UNREACHABLE one (fail-closed deny) via a config-store reachability probe.
 
 import dataclasses
 import sys
-from typing import Any
+from typing import Any, cast
 
 from managed_repo import teatree_src_on_path
 
@@ -57,7 +57,7 @@ def overlay_slack_ids(overlays: dict[str, Any] | None) -> set[str]:
         if not isinstance(cfg, dict):
             continue
         for key in ("slack_dm_channel_id", "slack_user_id"):
-            value = cfg.get(key)
+            value = cast("dict[str, object]", cfg).get(key)
             if isinstance(value, str) and value:
                 ids.add(value)
     return ids
@@ -82,11 +82,11 @@ def read_self_dm_destinations() -> SelfDmDestinations:
 
             if not cold_reader.row_exists(_CONFIG_STORE_PROBE, on_error=False):
                 return SelfDmDestinations(frozenset(), resolved=False)
-            overlays = cold_reader.read_setting("overlays")
+            overlays = cold_reader.mapping_setting("overlays")
             global_user_id = cold_reader.str_setting("slack_user_id", default="")
     except Exception:  # noqa: BLE001
         return SelfDmDestinations(frozenset(), resolved=False)
-    ids = overlay_slack_ids(overlays if isinstance(overlays, dict) else None)
+    ids = overlay_slack_ids(overlays)
     if global_user_id:
         ids.add(global_user_id)
     return SelfDmDestinations(frozenset(ids), resolved=True)

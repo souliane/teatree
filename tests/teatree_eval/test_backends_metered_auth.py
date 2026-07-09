@@ -12,7 +12,6 @@ authenticated as nothing rather than silently falling back.
 """
 
 import os
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -29,8 +28,7 @@ _OAUTH_ENV = AnthropicSubscriptionCredential().spec.env_var
 
 class TestMakeRunnerEvalAuth(TestCase):
     @pytest.fixture(autouse=True)
-    def _isolate_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("teatree.config.CONFIG_PATH", tmp_path / ".teatree.toml")
+    def _isolate_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
         monkeypatch.delenv("T3_EVAL_CREDENTIAL", raising=False)
 

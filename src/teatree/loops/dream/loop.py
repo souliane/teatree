@@ -64,8 +64,7 @@ def _dream_table() -> dict:
     """The ``dream`` sub-table of the DB ``loops`` setting; ``{}`` on absence/failure."""
     from teatree.config import cold_reader  # noqa: PLC0415
 
-    loops = cold_reader.read_setting("loops")
-    dream = loops.get("dream") if isinstance(loops, dict) else None
+    dream = cold_reader.mapping_setting("loops").get("dream")
     return dream if isinstance(dream, dict) else {}
 
 

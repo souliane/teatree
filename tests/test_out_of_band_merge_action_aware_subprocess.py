@@ -9,12 +9,13 @@ action-aware: it fires only on an actual invocation at a command position.
 These tests drive the real ``hook_router.main()`` in a subprocess (the exact
 ``--event PreToolUse`` harness the live hook runs) against a real ``git init``
 repo whose remote is teatree-managed, so the managed-repo classifier resolves
-offline from a tmp ``~/.teatree.toml``. A deny is ``exit 2``; an allow is
+offline from a seeded DB-home config store. A deny is ``exit 2``; an allow is
 ``exit 0``.
 """
 
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -26,15 +27,28 @@ import pytest
 HOOK_ROUTER = Path(__file__).resolve().parent.parent / "hooks" / "scripts" / "hook_router.py"
 _REPO_ROOT = HOOK_ROUTER.parent.parent.parent
 
-# Mark teatree core's own slug managed AND disable the heavy orchestrator-bash
-# command gate so it cannot deny `cat`/`echo` first and mask the gate under test.
-_MANAGED_TOML = """\
-[teatree]
-orchestrator_bash_gate_enabled = false
+# Disable the heavy orchestrator-bash command gate so it cannot deny `cat`/`echo`
+# first and mask the gate under test; the overlays row keeps core's own slug managed.
+_MANAGED_ROWS: dict[str, object] = {
+    "orchestrator_bash_gate_enabled": False,
+    "overlays": {"example": {"workspace_repos": ["souliane/teatree"]}},
+}
 
-[overlays.example]
-workspace_repos = ["souliane/teatree"]
-"""
+
+def _seed_config_db(path: Path, rows: dict[str, object], scope: str = "") -> None:
+    conn = sqlite3.connect(str(path))
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+        "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+    )
+    for key, value in rows.items():
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES (?, ?, ?)",
+            (scope, key, json.dumps(value)),
+        )
+    conn.commit()
+    conn.close()
+
 
 _DRIVER = """
 import io, sys, json
@@ -66,7 +80,7 @@ def _managed_repo(path: Path) -> Path:
 def home_managed() -> Iterator[Path]:
     with tempfile.TemporaryDirectory() as tmp:
         home = Path(tmp)
-        (home / ".teatree.toml").write_text(_MANAGED_TOML, encoding="utf-8")
+        _seed_config_db(home / "config.sqlite3", _MANAGED_ROWS)
         yield home
 
 
@@ -84,7 +98,13 @@ def _drive(command: str, repo: Path, home: Path) -> subprocess.CompletedProcess[
         text=True,
         check=False,
         timeout=60,
-        env={**os.environ, "HOME": str(home), "USERPROFILE": str(home), "PYTHONPATH": str(_REPO_ROOT)},
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "USERPROFILE": str(home),
+            "PYTHONPATH": str(_REPO_ROOT),
+            "T3_CONFIG_DB": str(home / "config.sqlite3"),
+        },
     )
 
 

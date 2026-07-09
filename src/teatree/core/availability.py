@@ -53,6 +53,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from itertools import pairwise
 from pathlib import Path
+from typing import cast
 
 from croniter import croniter
 
@@ -185,9 +186,10 @@ class Schedule:
         """
         if not isinstance(raw, dict):
             return cls()
-        tz_raw = str(raw.get("timezone", "")).strip()
+        table = cast("dict[str, object]", raw)
+        tz_raw = str(table.get("timezone", "")).strip()
         tz = _validated_timezone(tz_raw)
-        raw_windows = raw.get("windows", [])
+        raw_windows = table.get("windows", [])
         if not isinstance(raw_windows, list):
             raw_windows = []
         validated: list[str] = []

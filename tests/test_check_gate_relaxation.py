@@ -87,7 +87,7 @@ class TestDbKillSwitch:
     def test_db_kill_switch_disables_gate(self, repo: Path) -> None:
         # `t3 config_setting set gate_relaxation_gate_enabled false` is a DB write; the
         # hook must honour it via the canonical DB-first resolver. RED before the fix:
-        # the old hook read the kill-switch from ~/.teatree.toml RAW, so the DB row was
+        # the old hook read the kill-switch from the legacy file tier RAW, so the DB row was
         # ignored and the un-justified `# noqa` still blocked (main() stayed 1).
         _stage(repo, "m.py", "x = 1\ny = bad()  # noqa\n")
         assert main() == 1  # enabled by default -> the relaxation blocks

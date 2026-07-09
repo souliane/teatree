@@ -14,7 +14,6 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
-import teatree.config as config_facade
 from teatree.config import get_effective_settings
 from teatree.config.enums import Mode
 from teatree.core.models import ConfigSetting
@@ -175,14 +174,15 @@ class TestConfigSettingGet(TestCase):
         # the file/env fallback.
         assert "db" in rendered.lower()
 
-    def test_get_reports_file_fallback_when_no_db_row(self) -> None:
-        # No DB row -> get reports the resolved file/env value and names the
-        # fallback source, so an absent override is visible (dual-read read-side).
+    def test_get_reports_env_default_source_when_no_db_row(self) -> None:
+        # No DB row -> get reports the resolved code-default value and names the
+        # env/default source (DB-home: no file fallback), so an absent override
+        # is visible.
         assert ConfigSetting.objects.filter(key="issue_implementer_max_concurrent").exists() is False
         out = StringIO()
         call_command("config_setting", "get", "issue_implementer_max_concurrent", stdout=out)
         rendered = out.getvalue().lower()
-        assert "file" in rendered or "fallback" in rendered
+        assert "env/default" in rendered
 
     def test_get_rejects_non_overridable_key(self) -> None:
         with pytest.raises(SystemExit):
@@ -228,122 +228,6 @@ class TestConfigSettingFlagsAudit(TestCase):
     def test_flags_is_read_only_creates_no_rows(self) -> None:
         call_command("config_setting", "flags", stdout=StringIO())
         assert ConfigSetting.objects.count() == 0
-
-
-class TestConfigSettingImport(TestCase):
-    @pytest.fixture(autouse=True)
-    def _config_path(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        self.tmp_path = tmp_path
-        self.monkeypatch = monkeypatch
-        self.config_path = tmp_path / ".teatree.toml"
-        monkeypatch.setattr(config_facade, "CONFIG_PATH", self.config_path)
-        monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
-
-    def test_import_seeds_operational_keys_from_toml(self) -> None:
-        self.config_path.write_text(
-            "[teatree]\nissue_implementer_enabled = true\nissue_implementer_max_concurrent = 4\n",
-            encoding="utf-8",
-        )
-        call_command("config_setting", "import", stdout=StringIO())
-        assert ConfigSetting.objects.get_effective("issue_implementer_enabled") is True
-        assert ConfigSetting.objects.get_effective("issue_implementer_max_concurrent") == 4
-
-    def test_import_skips_bootstrap_and_unknown_keys(self) -> None:
-        # A bootstrap-file-only key (private_repos) and an unknown key must NOT be
-        # imported into the DB store — only operational overridable keys move.
-        self.config_path.write_text(
-            '[teatree]\nprivate_repos = ["acme/secret"]\nnot_a_real_setting = "x"\nmode = "auto"\n',
-            encoding="utf-8",
-        )
-        call_command("config_setting", "import", stdout=StringIO())
-        assert ConfigSetting.objects.filter(key="private_repos").exists() is False
-        assert ConfigSetting.objects.filter(key="not_a_real_setting").exists() is False
-        # The one operational key did move.
-        assert ConfigSetting.objects.get_effective("mode") == "auto"
-
-    def test_import_is_idempotent(self) -> None:
-        self.config_path.write_text("[teatree]\nissue_implementer_max_concurrent = 4\n", encoding="utf-8")
-        call_command("config_setting", "import", stdout=StringIO())
-        call_command("config_setting", "import", stdout=StringIO())
-        assert ConfigSetting.objects.filter(key="issue_implementer_max_concurrent").count() == 1
-
-    def test_import_walks_per_overlay_tables_into_overlay_scope(self) -> None:
-        # An operational DB-home key under [overlays.<name>] migrates into that
-        # overlay's DB scope, not the global scope (#1775 in-PR add).
-        self.config_path.write_text(
-            '[teatree]\nmode = "interactive"\n\n[overlays.myproj]\npath = "~/p"\nmode = "auto"\n',
-            encoding="utf-8",
-        )
-        call_command("config_setting", "import", stdout=StringIO())
-        # The global row carries the [teatree] value; the overlay scope carries
-        # the [overlays.myproj] override.
-        assert ConfigSetting.objects.get_effective("mode") == "interactive"
-        assert ConfigSetting.objects.get_effective("mode", scope="myproj") == "auto"
-
-    def test_import_skips_non_setting_overlay_keys(self) -> None:
-        # Overlay-table bootstrap keys (path/url/…) are not settings and must NOT
-        # become ConfigSetting rows.
-        self.config_path.write_text(
-            '[teatree]\n\n[overlays.myproj]\npath = "~/p"\nurl = "git@x"\n',
-            encoding="utf-8",
-        )
-        call_command("config_setting", "import", stdout=StringIO())
-        assert ConfigSetting.objects.filter(scope="myproj").exists() is False
-
-    def test_import_per_overlay_is_idempotent(self) -> None:
-        self.config_path.write_text(
-            '[teatree]\n\n[overlays.myproj]\npath = "~/p"\nmode = "auto"\n',
-            encoding="utf-8",
-        )
-        call_command("config_setting", "import", stdout=StringIO())
-        call_command("config_setting", "import", stdout=StringIO())
-        assert ConfigSetting.objects.filter(key="mode", scope="myproj").count() == 1
-
-    def test_import_no_clobber_preserves_a_db_set_value(self) -> None:
-        # The ``t3 setup`` auto-migration mode: a value the user changed via
-        # ``config_setting set`` must survive a later import of a stale TOML value.
-        ConfigSetting.objects.set_value("mode", "auto")
-        self.config_path.write_text('[teatree]\nmode = "interactive"\n', encoding="utf-8")
-        call_command("config_setting", "import", "--no-clobber", stdout=StringIO())
-        assert ConfigSetting.objects.get_effective("mode") == "auto"
-
-    def test_import_default_clobbers_a_db_set_value(self) -> None:
-        # Without --no-clobber the manual import refreshes from the file.
-        ConfigSetting.objects.set_value("mode", "auto")
-        self.config_path.write_text('[teatree]\nmode = "interactive"\n', encoding="utf-8")
-        call_command("config_setting", "import", stdout=StringIO())
-        assert ConfigSetting.objects.get_effective("mode") == "interactive"
-
-    def test_import_migrates_an_edited_overlay_path_over_a_stale_registry_row(self) -> None:
-        # souliane/teatree#128: the remediation must actually WORK. A stale ``overlays``
-        # registry row masks the file table on read (``_inject_db_registries``), so an
-        # import that read ``load_config().raw`` would re-write the stale value and never
-        # migrate an edited ``[overlays.<name>].path``. Reading the RAW file migrates the
-        # edited path — clearing the mask. The stale row lives in the cold store the
-        # injection reads (``T3_CONFIG_DB``); the migrated row lands in the ORM store.
-        import json  # noqa: PLC0415
-        import sqlite3  # noqa: PLC0415
-
-        cold_db = self.tmp_path / "cold.sqlite3"
-        conn = sqlite3.connect(cold_db)
-        try:
-            conn.execute(
-                "CREATE TABLE teatree_config_setting ("
-                "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
-            )
-            conn.execute(
-                "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'overlays', ?)",
-                (json.dumps({"myproj": {"path": "~/workspace/stale-worktree"}}),),
-            )
-            conn.commit()
-        finally:
-            conn.close()
-        self.monkeypatch.setenv("T3_CONFIG_DB", str(cold_db))
-        self.config_path.write_text('[overlays.myproj]\npath = "~/workspace/canonical"\n', encoding="utf-8")
-
-        call_command("config_setting", "import", stdout=StringIO())
-
-        assert ConfigSetting.objects.get_effective("overlays") == {"myproj": {"path": "~/workspace/canonical"}}
 
 
 class TestConfigSettingOverlayScope(TestCase):
@@ -398,10 +282,8 @@ class TestConfigSettingExport(TestCase):
     """``config_setting export`` — the inverse of import (TOML round-trip, PR6)."""
 
     @pytest.fixture(autouse=True)
-    def _config_path(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _isolate(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         self.tmp_path = tmp_path
-        self.config_path = tmp_path / ".teatree.toml"
-        monkeypatch.setattr(config_facade, "CONFIG_PATH", self.config_path)
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
 
     def test_export_to_stdout_dumps_teatree_and_overlay_tables(self) -> None:
@@ -432,29 +314,3 @@ class TestConfigSettingExport(TestCase):
         assert doc["overlays"]["myproj"]["mode"] == "interactive"
         # The global scope is excluded when a single overlay is requested.
         assert "teatree" not in doc
-
-    def test_export_import_export_is_a_fixed_point(self) -> None:
-        # Round-trip idempotence through the real import command: export -> clear ->
-        # import the exported file -> export yields byte-identical TOML, for
-        # operational + cold-hook keys across global and overlay scopes. The first
-        # export lands on the monkeypatched CONFIG_PATH so the import re-reads it.
-        ConfigSetting.objects.set_value("mode", "auto")
-        ConfigSetting.objects.set_value("issue_implementer_max_concurrent", 3)
-        ConfigSetting.objects.set_value("excluded_skills", ["foo", "bar"])
-        ConfigSetting.objects.set_value("orchestrator_turn_budget", 40)  # cold-hook, global-only
-        ConfigSetting.objects.set_value("self_dm_gate_enabled", value=False)  # cold-hook
-        ConfigSetting.objects.set_value("mode", "interactive", scope="myproj")
-        ConfigSetting.objects.set_value("issue_implementer_enabled", value=True, scope="myproj")
-
-        call_command("config_setting", "export", "--output", str(self.config_path))
-        first_text = self.config_path.read_text(encoding="utf-8")
-        # Anti-vacuity: an empty dump would round-trip trivially.
-        assert "[teatree]" in first_text
-        assert "[overlays.myproj]" in first_text
-
-        ConfigSetting.objects.all().delete()
-        call_command("config_setting", "import", stdout=StringIO())
-
-        second = self.tmp_path / "export2.toml"
-        call_command("config_setting", "export", "--output", str(second))
-        assert second.read_text(encoding="utf-8") == first_text

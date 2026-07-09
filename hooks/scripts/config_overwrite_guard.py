@@ -3,7 +3,7 @@
 Refuses a blind destructive write to a tracked user config / dotfile. Two
 surfaces fire when the agent has NOT read the file's current content this
 session: (1) a ``Write`` or ``Edit`` that OVERWRITES an existing config/dotfile
-(``~/.teatree.toml``, a ``dotfiles`` repo file, an XDG ``.config`` file) from
+(a ``dotfiles`` repo file, an XDG ``.config`` file) from
 content the agent may have assumed rather than read; and (2) a
 ``git checkout`` / ``git restore`` that would restore a tracked config from a
 committed version, discarding any uncommitted on-disk edits.
@@ -87,7 +87,7 @@ def _read_paths_this_session(session_id: str) -> set[str]:
 
     Sourced from the existing ``<session>.reads`` capture
     (``handle_read_dedup`` writes one ``mtime\tpath`` line per Read). Each path
-    is normalised through :func:`_normalise_path` so a Read of ``~/.teatree.toml``
+    is normalised through :func:`_normalise_path` so a Read of a home-dir dotfile
     matches a Write/restore of the same file expressed as a symlink, a
     relative path, or the symlink's resolved target.
     """
@@ -107,7 +107,7 @@ def _normalise_path(path: str) -> set[str]:
     """Every identity a path can present as, for read↔write matching.
 
     Returns the absolute path AND its symlink-resolved target (and the literal
-    input). A config read as ``~/.teatree.toml`` (a symlink) must satisfy a
+    input). A config read via a home-dir symlink must satisfy a
     restore expressed as the dotfiles-repo target, and vice-versa, so both ends
     normalise to the same closure and the membership test is symmetric.
     """

@@ -5,6 +5,8 @@ Pure logic: fingerprint stability, the durable store, the issue-body builder
 forge host is a stand-in object recording the calls it received.
 """
 
+import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -219,11 +221,23 @@ class TestProcessReviewFindings:
 
 @pytest.fixture
 def banned_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A ``~/.teatree.toml``-shaped config banning a sample tenant name."""
-    cfg = tmp_path / ".teatree.toml"
-    cfg.write_text('[teatree]\nbanned_terms = ["acmecorp"]\n', encoding="utf-8")
-    monkeypatch.setenv("T3_BANNED_TERMS_CONFIG", str(cfg))
-    return cfg
+    """A DB-home config banning a sample tenant name (legacy file tier removed)."""
+    db = tmp_path / "config.sqlite3"
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_terms', ?)",
+            (json.dumps(["acmecorp"]),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    monkeypatch.setenv("T3_CONFIG_DB", str(db))
+    return db
 
 
 class TestNeutralizeBareReferences:

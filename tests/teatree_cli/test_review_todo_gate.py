@@ -22,6 +22,7 @@ import pytest
 
 from teatree.cli.review import ReviewService
 from teatree.config import OnBehalfPostMode
+from teatree.core.models import ConfigSetting
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
 pytestmark = pytest.mark.django_db
@@ -29,12 +30,7 @@ pytestmark = pytest.mark.django_db
 
 def _gate_immediate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Pin on-behalf gate to IMMEDIATE so it does not also block the call."""
-    cfg = tmp_path / ".teatree.toml"
-    cfg.write_text(
-        f'[teatree]\non_behalf_post_mode = "{OnBehalfPostMode.IMMEDIATE.value}"\n',
-        encoding="utf-8",
-    )
-    monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+    ConfigSetting.objects.set_value("on_behalf_post_mode", OnBehalfPostMode.IMMEDIATE.value)
 
 
 def _disable_shape_gate(monkeypatch: pytest.MonkeyPatch) -> None:

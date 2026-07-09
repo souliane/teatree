@@ -71,8 +71,7 @@ def load_timeouts(overlay: "OverlayBase | None" = None) -> TimeoutConfig:
     # Tier 1: User settings (the DB-home ``timeouts`` setting)
     from teatree.config import cold_reader  # noqa: PLC0415
 
-    user_timeouts = cold_reader.read_setting("timeouts")
-    if isinstance(user_timeouts, dict):
-        merged.update({k: int(v) for k, v in user_timeouts.items()})
+    user_timeouts = cold_reader.mapping_setting("timeouts")
+    merged.update({k: int(v) for k, v in user_timeouts.items() if isinstance(v, int | float | str)})
 
     return TimeoutConfig(values=merged)

@@ -23,10 +23,8 @@ Only the unstoppable external — the ``gh`` subprocess — is stubbed; every
 teatree model / FSM / DB write is real.
 """
 
-import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
-from pathlib import Path
 from typing import cast
 from unittest.mock import patch
 
@@ -58,20 +56,14 @@ _GREEN = '[{"status": "COMPLETED", "conclusion": "SUCCESS"}]'
 def _overlay_autonomy(overlay: str, autonomy: str) -> Iterator[None]:
     """Stage ``overlay``'s ``autonomy`` and wire it in.
 
-    ``autonomy`` is DB-home (#1775, no ``T3_*`` env var) so a ``[overlays.<n>]``
-    TOML value for it is ignored on read — stage it in the ``ConfigSetting``
-    store scoped to the overlay. ``CONFIG_PATH`` is still pinned at an empty
-    TOML so the developer's real config is never read.
+    ``autonomy`` is DB-home (#1775, no ``T3_*`` env var), staged in the
+    ``ConfigSetting`` store scoped to the overlay.
     """
-    with tempfile.TemporaryDirectory() as tmp:
-        cfg = Path(tmp) / ".teatree.toml"
-        cfg.write_text("[teatree]\n", encoding="utf-8")
-        row = ConfigSetting.objects.set_value("autonomy", autonomy, scope=overlay)
-        try:
-            with patch("teatree.config.CONFIG_PATH", cfg):
-                yield
-        finally:
-            row.delete()
+    row = ConfigSetting.objects.set_value("autonomy", autonomy, scope=overlay)
+    try:
+        yield
+    finally:
+        row.delete()
 
 
 @contextmanager
@@ -85,19 +77,15 @@ def _overlay_standing_signoff(overlay: str, *, autonomy: str, require_human_appr
     flipped) + ``require_human_approval_to_merge = false`` (the owner's explicit
     "no per-PR human merge approval" grant).
     """
-    with tempfile.TemporaryDirectory() as tmp:
-        cfg = Path(tmp) / ".teatree.toml"
-        cfg.write_text("[teatree]\n", encoding="utf-8")
-        autonomy_row = ConfigSetting.objects.set_value("autonomy", autonomy, scope=overlay)
-        approval_row = ConfigSetting.objects.set_value(
-            "require_human_approval_to_merge", require_human_approval_to_merge, scope=overlay
-        )
-        try:
-            with patch("teatree.config.CONFIG_PATH", cfg):
-                yield
-        finally:
-            approval_row.delete()
-            autonomy_row.delete()
+    autonomy_row = ConfigSetting.objects.set_value("autonomy", autonomy, scope=overlay)
+    approval_row = ConfigSetting.objects.set_value(
+        "require_human_approval_to_merge", require_human_approval_to_merge, scope=overlay
+    )
+    try:
+        yield
+    finally:
+        approval_row.delete()
+        autonomy_row.delete()
 
 
 def _gh_stub(argv: list[str]) -> tuple[int, str, str]:

@@ -312,7 +312,7 @@
               one logical stack. On a memory-constrained host two stacks can OOM both.
     12:17:22  orchestrator: a long aside on the share-db-server setting. One Postgres
               server across worktrees, each worktree its own DB name; when false each
-              worktree starts its own container. The data dir is XDG, never ~/.teatree.
+              worktree starts its own container. The data dir is XDG, never a home-dir dotfile.
     12:19:00  $ uv run python -c "from importlib.metadata import entry_points; [print(e.value) for e in entry_points(group='teatree.overlays')]"
               teatree.contrib.t3_teatree.overlay:TeatreeOverlay
     12:20:45  orchestrator: an extension-point note — when a hook on the overlay base

@@ -2,18 +2,15 @@
 
 The schema: an ordered ``channels`` slug→channel map and an optional
 ``default_channel`` fallback. Covers defaults when absent, a full parse with order
-preserved, partial keys, and malformed-input degradation. eliminate-~/.teatree.toml
-made ``mr_reminder`` DB-home — it resolves from a JSON-dict ``ConfigSetting`` row
-(rebuilt bespoke via ``mr_reminder_from_table``), so the resolver wiring is
+preserved, partial keys, and malformed-input degradation. ``mr_reminder`` is
+DB-home (legacy file tier removed) — it resolves from a JSON-dict ``ConfigSetting``
+row (rebuilt bespoke via ``mr_reminder_from_table``), so the resolver wiring is
 exercised end-to-end, not just the parser.
 """
-
-from pathlib import Path
 
 import pytest
 from django.test import TestCase
 
-import teatree.config as config_facade
 from teatree.config import get_effective_settings
 from teatree.config_mr_reminder import MrReminderConfig, mr_reminder_from_table, resolve_mr_reminder
 from teatree.core.models import ConfigSetting
@@ -65,8 +62,7 @@ class TestResolveMrReminder:
 
 class TestMrReminderDbResolution(TestCase):
     @pytest.fixture(autouse=True)
-    def _sandbox(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(config_facade, "CONFIG_PATH", tmp_path / ".teatree.toml")
+    def _sandbox(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
 
     def test_resolves_from_db_row(self) -> None:

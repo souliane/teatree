@@ -27,6 +27,8 @@ This suite exercises every leg of the acceptance criteria:
     full whole-word/negation matrix.
 """
 
+import json
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -49,19 +51,33 @@ pytestmark = pytest.mark.django_db
 _runner = CliRunner()
 
 
-def _write_cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, user_id: str = "U-OPERATOR") -> None:
-    """Pin the active config to a known ``slack_user_id`` + IMMEDIATE on-behalf gate.
+def _seed_cold_slack_user(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, user_id: str) -> None:
+    """Seed the global ``slack_user_id`` in a config-store sqlite the cold reader resolves."""
+    db = tmp_path / "config.sqlite3"
+    monkeypatch.setenv("T3_CONFIG_DB", str(db))
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'slack_user_id', ?)",
+            (json.dumps(user_id),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
-    ``slack_user_id`` is raw non-UserSettings config and keeps its TOML home;
-    ``on_behalf_post_mode`` is DB-home (#1775) so it resolves only from the
-    ``ConfigSetting`` store — staging it via TOML would be a no-op on read.
+
+def _write_cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, user_id: str = "U-OPERATOR") -> None:
+    """Seed the DB-home Slack routing + IMMEDIATE on-behalf gate.
+
+    ``slack_user_id`` (global) resolves via the Django-free cold reader — seed it in a
+    config-store sqlite the reader resolves via ``T3_CONFIG_DB``. ``on_behalf_post_mode``
+    is ORM-resolved, staged in the ``ConfigSetting`` store.
     """
-    cfg = tmp_path / ".teatree.toml"
-    cfg.write_text(
-        f'[teatree]\nslack_user_id = "{user_id}"\n',
-        encoding="utf-8",
-    )
-    monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+    _seed_cold_slack_user(tmp_path, monkeypatch, user_id)
     ConfigSetting.objects.set_value("on_behalf_post_mode", OnBehalfPostMode.IMMEDIATE.value)
 
 

@@ -43,7 +43,7 @@ class TestPerOverlayBotRouting:
         # deliberately patch ``teatree.config.load_config`` /
         # ``backend_factory.get_overlay`` (and stub ``read_pass``) to inject
         # multiple synthetic overlay configs that a single real
-        # ``~/.teatree.toml`` cannot express. ``httpx`` (network) and the
+        # config store cannot express. ``httpx`` (network) and the
         # password store are the only true externals and stay real. See the
         # conftest module docstring; do not "fix" this back to real-TOML.
         with (

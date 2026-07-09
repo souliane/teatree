@@ -237,3 +237,37 @@ class TestOverlayDbHomeOverrides(TestCase):
         settings = get_effective_settings()
         assert settings.teams_max_panes == 1
         assert settings.teams_idle_minutes == 30
+
+
+class TestAliasScopeGroupsMerge(TestCase):
+    """Canonically-equivalent scope groups MERGE for the active overlay.
+
+    Rows may be scoped under the short alias (``my``) or the ``t3-``-prefixed
+    entry-point name (``t3-my``). Both address the same overlay, so the resolver
+    unions them; on a key collision the exact-name row wins over an alias row.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _config(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        for env in ("T3_MODE", "T3_OVERLAY_NAME"):
+            monkeypatch.delenv(env, raising=False)
+        monkeypatch.setenv("T3_OVERLAY_NAME", "t3-my")
+
+    def test_alias_scoped_rows_merge_with_exact_scoped_rows(self) -> None:
+        ConfigSetting.objects.set_value("review_skill", "xp", scope="t3-my")
+        ConfigSetting.objects.set_value("ban_close_trailers_on_namespaces", ["grp/*"], scope="my")
+        settings = get_effective_settings()
+        assert settings.review_skill == "xp"
+        assert settings.ban_close_trailers_on_namespaces == ["grp/*"]
+
+    def test_exact_scope_wins_over_alias_scope_on_collision(self) -> None:
+        ConfigSetting.objects.set_value("mode", "auto", scope="t3-my")
+        ConfigSetting.objects.set_value("mode", "interactive", scope="my")
+        assert get_effective_settings().mode is Mode.AUTO
+
+    def test_alias_only_rows_resolve_when_exact_group_also_exists(self) -> None:
+        ConfigSetting.objects.set_value("review_skill", "xp", scope="my")
+        ConfigSetting.objects.set_value("mode", "auto", scope="t3-my")
+        settings = get_effective_settings()
+        assert settings.review_skill == "xp"
+        assert settings.mode is Mode.AUTO

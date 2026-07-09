@@ -9,22 +9,16 @@ the publish; this scanner cleans the body and lets the publish proceed.
 Default config (absent setting / empty list) is a no-op — body unchanged.
 """
 
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from django.test import TestCase
 
-from teatree.config import get_effective_settings, load_config
+from teatree.config import get_effective_settings
 from teatree.core.backend_protocols import PullRequestSpec
 from teatree.core.intake.close_trailer_scanner import apply_publish_gate, namespace_is_banned, strip_close_trailers
 from teatree.core.models import ConfigSetting, Ticket, Worktree
 from teatree.core.runners.ship import ShipExecutor
-
-
-def _write_toml(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
 
 
 class TestStripCloseTrailers:
@@ -155,33 +149,22 @@ class TestApplyPublishGate:
         assert cleaned == "Subject"
 
 
-class TestConfigLoader:
-    """``load_config`` parses ``[teatree.publish_gates]`` into ``UserSettings``."""
+class TestConfigLoaderDefaults(TestCase):
+    """``ban_close_trailers_on_namespaces`` is DB-home (#1775): absent -> empty, malformed -> loud."""
 
-    def test_default_empty_list(self, tmp_path: Path) -> None:
-        path = tmp_path / ".teatree.toml"
-        _write_toml(path, "[teatree]\n")
-        config = load_config(path)
-        assert config.user.ban_close_trailers_on_namespaces == []
+    def test_default_empty_list(self) -> None:
+        assert get_effective_settings().ban_close_trailers_on_namespaces == []
 
-    def test_missing_section_defaults_to_empty(self, tmp_path: Path) -> None:
-        path = tmp_path / ".teatree.toml"
-        _write_toml(path, '[teatree]\nbranch_prefix = "ac"\n')
-        config = load_config(path)
-        assert config.user.ban_close_trailers_on_namespaces == []
+    def test_unrelated_setting_leaves_it_empty(self) -> None:
+        ConfigSetting.objects.set_value("branch_prefix", "ac")
+        assert get_effective_settings().ban_close_trailers_on_namespaces == []
 
-    def test_non_list_value_degrades_to_empty(self, tmp_path: Path) -> None:
-        # A malformed scalar must not raise — the gate stays off.
-        path = tmp_path / ".teatree.toml"
-        _write_toml(
-            path,
-            """
-[teatree.publish_gates]
-ban_close_trailers_on_namespaces = "not-a-list"
-""",
-        )
-        config = load_config(path)
-        assert config.user.ban_close_trailers_on_namespaces == []
+    def test_non_list_value_raises_loud(self) -> None:
+        # A stored scalar for a list-typed setting is surfaced LOUD with the key
+        # named (the strict parser), never silently degraded to an empty list.
+        ConfigSetting.objects.set_value("ban_close_trailers_on_namespaces", "not-a-list")
+        with pytest.raises(ValueError, match="ban_close_trailers_on_namespaces"):
+            get_effective_settings()
 
 
 class TestConfigLoaderDbHome(TestCase):

@@ -12,7 +12,6 @@ import datetime as dt
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -442,8 +441,7 @@ class TestResolveEvalCredential(TestCase):
     """
 
     @pytest.fixture(autouse=True)
-    def _isolate_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("teatree.config.CONFIG_PATH", tmp_path / ".teatree.toml")
+    def _isolate_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
         monkeypatch.delenv("T3_EVAL_CREDENTIAL", raising=False)
 
@@ -483,8 +481,7 @@ class TestResolveEvalCredentialUsesActiveOverlayScope(TestCase):
     """
 
     @pytest.fixture(autouse=True)
-    def _isolate_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("teatree.config.CONFIG_PATH", tmp_path / ".teatree.toml")
+    def _isolate_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("T3_EVAL_CREDENTIAL", raising=False)
 
     def test_overlay_scoped_routing_resolves_when_global_is_empty(self) -> None:

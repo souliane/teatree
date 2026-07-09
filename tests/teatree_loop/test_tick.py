@@ -393,24 +393,18 @@ def test_identity_alias_groups_reads_overlay_config_first(
     )
 
 
-def test_identity_alias_groups_falls_through_to_toml_override(
-    tmp_path: Path,
+def test_identity_alias_groups_falls_through_to_registry_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """No live config → reads ``[overlays.<name>] identity_aliases`` from TOML.
+    """No live config → reads ``identity_aliases`` from the overlays registry override.
 
-    TOML-only overlays (registered via ``[overlays.<name>]`` without a
-    Python class) never populate ``OverlayConfig``; the helper falls back
-    to ``discover_overlays`` overrides so the grouping still resolves.
+    A registry overlay entry without a Python class never populates
+    ``OverlayConfig``; the helper falls back to ``discover_overlays``
+    overrides so the grouping still resolves.
     """
     from teatree.config import OverlayEntry  # noqa: PLC0415
     from teatree.loop.tick import _identity_alias_groups_for_overlay  # noqa: PLC0415
 
-    config_path = tmp_path / "config.toml"
-    config_path.write_text("[teatree]\n", encoding="utf-8")
-    import teatree.config as _config  # noqa: PLC0415
-
-    monkeypatch.setattr("teatree.loop.tick.load_config", lambda: _config.load_config(config_path))
     monkeypatch.setattr(
         "teatree.loop.tick_resolvers.discover_overlays",
         lambda: [

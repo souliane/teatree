@@ -838,7 +838,7 @@ def handle_todo_freshness_nudge(data: dict) -> None:
 #
 # The gate blocks Bash/Edit/Write until every suggested-but-unloaded
 # skill is loaded. A suggestion lands in ``<session>.pending`` from the
-# supplementary keyword config (``~/.teatree-skills.yml``) or from
+# supplementary keyword config (``$HOME/.teatree-skills.yml``) or from
 # lifecycle/intent detection.
 #
 # Fail-open contract (the lockout class this closes): a config entry can
@@ -4517,8 +4517,7 @@ def _merge_session_start_context(context: str, session_id: str, source: str) -> 
 
 
 # #256 one-line how-to-start advisory for a default-off, not-yet-engaged session.
-# eliminate-~/.teatree.toml: autoload is DB-home, so the auto-start opt-in is set via
-# the ConfigSetting store, not a [teatree] TOML value (which is ignored on read).
+# autoload is DB-home: the auto-start opt-in is set via the ConfigSetting store.
 _TEATREE_NOT_ACTIVE_ADVISORY = (
     "teatree is installed but not active in this session — run /teatree to start it "
     "(or run `t3 <overlay> config_setting set autoload true` to start it automatically)."
@@ -4832,12 +4831,12 @@ _DISOWN_FALSEY: frozenset[str] = frozenset({"", "0", "false", "False"})
 
 
 def _bash_env_file() -> Path:
-    """Path to the shell-sourceable teatree env file (``~/.teatree``).
+    """Path to the shell-sourceable teatree env file (``$HOME/.teatree``).
 
     The harness spawns the Stop hook as a bare ``python3`` that does NOT
     source the user's shell profile, so ``export VAR=value`` lines in this
     file never reach ``os.environ`` (hooks don't source
-    ``.zshrc``/``.teatree``).
+    ``.zshrc`` or the env file).
     ``TEATREE_BASH_ENV_FILE`` overrides the location (tests / non-default
     HOME).
     """
@@ -6136,7 +6135,7 @@ def _current_turn_assistant_text(transcript_path: str) -> str:
 
 
 def _speak_settings() -> tuple[str, bool]:
-    """Read the global ``speak`` DB row → ``(local, slack)`` (#2060, eliminate-~/.teatree.toml).
+    """Read the global ``speak`` DB row → ``(local, slack)`` (#2060, DB-home).
 
     The hook-side mirror of :func:`teatree.config_speak.resolve_speak`. ``speak`` is
     DB-home (#1775): the Stop hook cannot cheaply boot the Django config, so it reads

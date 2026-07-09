@@ -561,7 +561,7 @@
     # Behavioural tooth (the rework): no post-Read path-hunting. "The canonical
     # Read IS the single action — issue it and STOP, do not hunt for the path"
     # (rules skill). A Bash call that searches for / locates the canonical file —
-    # find / grep / git rev-parse / ls / echo "$T3_REPO" / cat ~/.teatree — is the
+    # find / grep / git rev-parse / ls / echo "$T3_REPO" / cat $HOME/.teatree — is the
     # over-exploration drift the metered ground truth showed (read FIRST, then
     # path-hunt). Forbidding it makes that drift FAIL on a matcher, not on the cap.
     - no_tool_call_matching:
