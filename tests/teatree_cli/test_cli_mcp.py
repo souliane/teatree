@@ -17,6 +17,7 @@ from typer.testing import CliRunner
 from teatree.cli.mcp import browser_diagnosis, open_reconnect_targets, reconnect, serve
 from teatree.core.connector_manifest import ConnectorManifestOutcome, ConnectorRequirement, DownConnector
 from teatree.core.evidence.browser_diagnosis import BrowserDiagnosisRegistration
+from teatree.mcp import build_server
 
 runner = CliRunner()
 
@@ -199,20 +200,12 @@ class TestServeSubprocessSmoke:
 
         tool_names, payload = asyncio.run(_round_trip(env))
 
-        assert tool_names == {
-            "command_search",
-            "ticket_search",
-            "ticket_list",
-            "ticket_get",
-            "worktree_status",
-            "pr_for_ticket",
-            "task_list",
-            "loop_stats",
-            "config_setting_get",
-            "gate_status",
-            "factory_signals",
-            "incoming_event_recent",
-        }
+        # Transport parity: the surface an external stdio client sees is exactly
+        # the surface build_server() registers in-process (registration content
+        # itself is pinned in tests/teatree_mcp/test_server.py).
+        in_process = {tool.name for tool in asyncio.run(build_server().list_tools())}
+        assert tool_names == in_process
+        assert {"command_search", "loop_stats", "pr_create", "review_post_comment"} <= tool_names
         assert payload == {
             "overlay": "",
             "tasks": {"pending": 0, "claimed": 0, "completed": 0, "failed": 0},
