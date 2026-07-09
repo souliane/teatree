@@ -48,7 +48,7 @@ class TestRouterReExportReachable:
     def test_patching_sibling_helper_is_seen_through_the_router(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Patching a sibling internal affects the handler the router drives — one module object."""
         monkeypatch.setattr(sfp, "_is_secret_print", lambda _command: False)
-        event = {"session_id": "sib", "tool_name": "Bash", "tool_input": {"command": "cat ~/.teatree.toml"}}
+        event = {"session_id": "sib", "tool_name": "Bash", "tool_input": {"command": "cat ~/.netrc"}}
         # With _is_secret_print patched to False, the router-driven handler allows the
         # command it would otherwise deny — proving it reads the sibling's globals.
         assert router.handle_block_secret_file_print(event) is False
@@ -67,7 +67,7 @@ class TestColdImport:
                     "assert 'django' not in sys.modules, 'django imported at module top'; "
                     "assert not any(m == 'teatree' or m.startswith('teatree.') for m in sys.modules), "
                     "'teatree imported at module top'; "
-                    "print(s._is_secret_print('cat ~/.teatree.toml'))"
+                    "print(s._is_secret_print('cat ~/.netrc'))"
                 ),
                 str(_SCRIPTS_DIR),
             ],

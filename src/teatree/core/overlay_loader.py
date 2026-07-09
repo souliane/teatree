@@ -1,8 +1,8 @@
-"""Discover and cache overlay instances from entry points and TOML config.
+"""Discover and cache overlay instances from entry points and the DB overlays registry.
 
 Unifies both discovery mechanisms so that ``get_overlay()`` works regardless
-of whether the overlay was registered via ``pip install`` (entry point) or
-``~/.teatree.toml`` (TOML config).
+of whether the overlay was registered via ``pip install`` (entry point) or the
+DB-home ``overlays`` registry (injected into ``load_config().raw``).
 """
 
 import importlib
@@ -47,7 +47,8 @@ def get_overlay(name: str | None = None) -> "OverlayBase":
     if not overlays:
         msg = (
             "No teatree overlays found. Install a package that provides a"
-            " 'teatree.overlays' entry point, or add one to ~/.teatree.toml."
+            " 'teatree.overlays' entry point, or add one to the DB overlays registry"
+            " with `t3 <overlay> config_setting set overlays <value>`."
         )
         raise ImproperlyConfigured(msg)
 
@@ -538,14 +539,14 @@ def _discover_overlays() -> "dict[str, OverlayBase]":
             msg = f"Entry point {ep.name!r} ({ep.value}) does not subclass OverlayBase"
             raise ImproperlyConfigured(msg)
         overlay = cls()
-        # Apply [overlays.<name>] TOML overrides so entry-point overlays
-        # are configurable from ~/.teatree.toml on the same footing as
-        # TOML-only overlays. Without this, OverlayConfig subclasses
+        # Apply [overlays.<name>] overrides so entry-point overlays are
+        # configurable from the DB overlays registry on the same footing as
+        # registry-only overlays. Without this, OverlayConfig subclasses
         # would have to opt in by passing overlay_name to super().__init__.
         overlay.config.apply_toml_overrides(ep.name)
         result[ep.name] = overlay
 
-    # 2. TOML-configured overlays (not already found via entry points)
+    # 2. Registry-configured overlays (not already found via entry points)
     result.update(_discover_toml_overlays(OverlayBase, set(result)))
 
     return result
@@ -555,7 +556,7 @@ def _discover_toml_overlays(
     base_class: type["OverlayBase"],
     already_found: set[str],
 ) -> "dict[str, OverlayBase]":
-    """Discover overlays from ``~/.teatree.toml`` that aren't already entry-point-registered."""
+    """Discover overlays from the DB overlays registry that aren't already entry-point-registered."""
     from teatree.config import load_config  # noqa: PLC0415
 
     result: dict[str, OverlayBase] = {}

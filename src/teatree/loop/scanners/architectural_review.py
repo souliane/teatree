@@ -5,11 +5,10 @@ codebase" cadence that fires on either a time-based interval (default 7
 days) or a merge-count interval (default 25 merges since last review).
 The architectural review is a teatree-CORE platform behaviour — it
 applies uniformly to every overlay's worktrees, not as a per-overlay
-opt-in. The cadence + skill name live in teatree-core config (the
-``[teatree]`` table in ``~/.teatree.toml`` via
-:class:`teatree.config.UserSettings`), with optional per-overlay
-overrides in ``[overlays.<name>]`` for environments that need to tune
-one overlay differently from the rest:
+opt-in. The cadence + skill name live in teatree-core config (DB-home
+:class:`teatree.config.UserSettings` in the ``ConfigSetting`` store),
+with optional per-overlay overrides in ``[overlays.<name>]`` for
+environments that need to tune one overlay differently from the rest:
 
 * ``architectural_review_skill: str`` — which review skill to dispatch
     (default ``"ac-reviewing-codebase"``).

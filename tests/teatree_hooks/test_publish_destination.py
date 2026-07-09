@@ -14,13 +14,32 @@ genuinely-public ``souliane/teatree``); the allowlist lives in the user's
 private config, never in the source or tests.
 """
 
+import json
 import os
+import sqlite3
 import subprocess
 from pathlib import Path
 
 import pytest
 
 from teatree.hooks import _repo_visibility, public_visibility, publish_destination
+
+
+def _seed_setting(tmp_path: Path, key: str, values: list[str]) -> Path:
+    """Seed a ``teatree_config_setting`` DB with ``key`` = ``values`` at global scope."""
+    db = tmp_path / "config.sqlite3"
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS teatree_config_setting ("
+        "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+    )
+    conn.execute(
+        "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
+        (key, json.dumps(values)),
+    )
+    conn.commit()
+    conn.close()
+    return db
 
 
 @pytest.fixture(autouse=True)
@@ -65,10 +84,7 @@ def _repo_with_remote(path: Path, remote_url: str) -> Path:
 
 
 def _config(tmp_path: Path, namespaces: list[str]) -> Path:
-    cfg = tmp_path / ".teatree.toml"
-    entries = ", ".join(f'"{n}"' for n in namespaces)
-    cfg.write_text(f"[teatree]\ninternal_publish_namespaces = [{entries}]\n", encoding="utf-8")
-    return cfg
+    return _seed_setting(tmp_path, "internal_publish_namespaces", namespaces)
 
 
 class TestResolvePublishDestination:
@@ -203,7 +219,7 @@ class TestIsPublicDestination:
 
     def test_missing_config_treats_everything_as_public(self, tmp_path: Path) -> None:
         dest = publish_destination.Destination(slug="internalcorp/private-svc", via="flag")
-        assert publish_destination.is_public_destination(dest, config_path=tmp_path / "absent.toml") is True
+        assert publish_destination.is_public_destination(dest, config_path=tmp_path / "absent.sqlite3") is True
 
     def test_allowlisted_namespace_is_internal(self, tmp_path: Path) -> None:
         cfg = _config(tmp_path, ["internalcorp"])
@@ -262,10 +278,19 @@ class TestIsPublicDestination:
         assert publish_destination.is_public_destination(dest, config_path=cfg) is False
 
     def test_malformed_config_treats_everything_as_public(self, tmp_path: Path) -> None:
-        cfg = tmp_path / ".teatree.toml"
-        cfg.write_text("this is = not [valid toml", encoding="utf-8")
+        # A corrupt (non-JSON) stored value fails open to an empty allowlist in
+        # the cold reader, so the internal-looking slug stays PUBLIC.
+        db = tmp_path / "config.sqlite3"
+        conn = sqlite3.connect(str(db))
+        conn.execute("CREATE TABLE teatree_config_setting (id INTEGER PRIMARY KEY, scope TEXT, key TEXT, value TEXT)")
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'internal_publish_namespaces', ?)",
+            ("{ not json",),
+        )
+        conn.commit()
+        conn.close()
         dest = publish_destination.Destination(slug="internalcorp/private-svc", via="flag")
-        assert publish_destination.is_public_destination(dest, config_path=cfg) is True
+        assert publish_destination.is_public_destination(dest, config_path=db) is True
 
 
 class TestGateSkipsDestination:
@@ -712,10 +737,7 @@ class TestApiEndpointNormalization:
 
 
 def _private_repos_config(tmp_path: Path, namespaces: list[str]) -> Path:
-    cfg = tmp_path / ".teatree.toml"
-    entries = ", ".join(f'"{n}"' for n in namespaces)
-    cfg.write_text(f"[teatree]\nprivate_repos = [{entries}]\n", encoding="utf-8")
-    return cfg
+    return _seed_setting(tmp_path, "private_repos", namespaces)
 
 
 class TestRestrictedPathCwdResolution:

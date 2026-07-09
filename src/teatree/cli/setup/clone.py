@@ -12,7 +12,7 @@ from teatree.cli.doctor import DoctorService
 def find_main_clone() -> Path | None:
     """Find the teatree main clone, resolving worktrees to their main clone.
 
-    The ``T3_REPO`` env var (set in the user's ``~/.teatree`` shell config)
+    The ``T3_REPO`` env var (exported in the user's shell profile)
     wins over cwd heuristics so that ``t3 setup`` run from a worktree still
     targets the configured main clone.  When unset, fall back to
     ``DoctorService.find_teatree_repo`` (cwd → ``find_project_root``); if

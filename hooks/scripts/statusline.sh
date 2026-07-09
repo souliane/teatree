@@ -100,9 +100,8 @@ _statusline_chain_db() {
 # colleague who merely clones the repo never sees the loop statusline. ``autoload``
 # is the ONE owner flag (it engages the session AND arms its loops). Mirrors
 # hook_router._autoload_enabled — env T3_AUTOLOAD first, then the canonical
-# ConfigSetting DB read via the sqlite3 CLI (_autoload_db_value). eliminate-~/.teatree.toml:
-# autoload is DB-home, so a [teatree] autoload TOML value is ignored on read (no TOML
-# fallback); fails closed (silent OFF) on absence.
+# ConfigSetting DB read via the sqlite3 CLI (_autoload_db_value). autoload is
+# DB-home only (no file fallback); fails closed (silent OFF) on absence.
 autoload_enabled() {
     local env_val="${T3_AUTOLOAD:-}"
     if [ -n "$env_val" ]; then

@@ -40,20 +40,18 @@ _UPSERT = (
 
 
 class WriteResult(Enum):
-    """Outcome of a Django-free cold write — tells ``t3 teatree gate`` whether to fall back to TOML.
+    """Outcome of a Django-free cold write to the canonical config DB.
 
-    The caller must distinguish three states, because the right fallback differs:
+    The caller (``t3 teatree gate``) must distinguish three states:
 
     - ``WROTE`` — the value committed to the canonical DB; the DB tier is authoritative.
     - ``NO_DB_TIER`` — no usable canonical DB: an absent file (a fresh, pre-``t3 setup``
         install), a present-but-unmigrated DB (no ``teatree_config_setting`` table), or a
-        corrupt/unopenable file. The cold READER degrades to ``None`` in every one of these
-        cases too, so a ``~/.teatree.toml`` write IS what gets read — the caller SHOULD fall
-        back to the TOML write.
+        corrupt/unopenable file. There is no config file to fall back to, so the write could
+        not land anywhere; the caller surfaces this (run ``t3 setup`` to create the DB).
     - ``WRITE_FAILED`` — the DB file AND the table are present, but the write itself failed
-        (a locked DB — ``SQLITE_BUSY`` after the busy-timeout). The DB row is still authoritative
-        and the reader still returns it, so a TOML write would be a dead, shadowed row. The
-        caller must NOT fall back; it surfaces the failure (read-back-verify) instead.
+        (a locked DB — ``SQLITE_BUSY`` after the busy-timeout). The DB is the only tier, so the
+        caller surfaces the failure (read-back-verify) rather than silently losing the write.
 
     The discriminator between ``NO_DB_TIER`` and ``WRITE_FAILED`` is an explicit
     table-existence probe, NOT a sqlite error-code classification — so a locked write is never

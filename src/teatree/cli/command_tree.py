@@ -91,7 +91,7 @@ def _tilde_display(value: object) -> str | None:
     """Return the ``~/<name>`` display for a home-rooted dotfile default, else ``None``.
 
     Only a path of the shape ``<abs-home-dir>/.<name>`` qualifies — e.g.
-    ``Path.home() / ".teatree.toml"``. Folding it to a short ``~/<name>`` string
+    ``Path.home() / ".gitconfig"``. Folding it to a short ``~/<name>`` string
     BEFORE rich renders it keeps the help box from wrapping/truncating on the
     absolute path's length (which varies by host), so the bytes are stable.
     """

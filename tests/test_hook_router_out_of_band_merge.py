@@ -8,15 +8,14 @@ static-regex block hard-denied every repo, a permanent lockout. The gate is
 fail-safe: a cwd or slug it cannot resolve is treated as managed and BLOCKED.
 
 Tests use a real ``git init`` repo under ``tmp_path`` with a rewritten remote
-plus a tmp ``~/.teatree.toml`` so the managed-repo signals resolve offline.
+plus a seeded DB-home ``overlays`` registry so the managed-repo signals resolve offline.
 """
 
 import json
 import os
+import sqlite3
 import subprocess
-import tomllib
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 import typer
@@ -24,29 +23,35 @@ from typer.testing import CliRunner
 
 import hooks.scripts.hook_router as router
 from teatree.cli.teatree_gate import OUT_OF_BAND_MERGE_GATE_KEY, register_gate_commands
+from teatree.config import cold_reader
+
+_CONFIG_SETTING_SCHEMA = (
+    'CREATE TABLE "teatree_config_setting" ('
+    '"id" integer NOT NULL PRIMARY KEY AUTOINCREMENT, '
+    '"scope" varchar(255) NOT NULL, '
+    '"key" varchar(255) NOT NULL, '
+    '"value" text NOT NULL CHECK ((JSON_VALID("value") OR "value" IS NULL)), '
+    '"created_at" datetime NOT NULL, '
+    '"updated_at" datetime NOT NULL, '
+    'CONSTRAINT "uniq_config_setting_scope_key" UNIQUE ("scope", "key"))'
+)
 
 
-class _FakeHomePath:
-    """Drop-in for ``router.Path`` pinning ``home()`` to a tmp dir.
-
-    Patches only the router module's ``Path`` reference, not
-    ``pathlib.Path.home`` globally (which would break pytest's tmp machinery).
-    """
-
-    def __init__(self, home: Path) -> None:
-        self._home = home
-
-    def __call__(self, *args: object, **kwargs: object) -> Path:
-        return Path(*args, **kwargs)
-
-    def home(self) -> Path:
-        return self._home
-
-
-def _patch_home(home: Path, body: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    home.mkdir(exist_ok=True)
-    (home / ".teatree.toml").write_text(body, encoding="utf-8")
-    monkeypatch.setattr(router, "Path", _FakeHomePath(home))
+def _seed_overlays(tmp_path: Path, overlays: dict[str, dict[str, object]], monkeypatch: pytest.MonkeyPatch) -> None:
+    """Seed the DB-home ``overlays`` registry the managed-repo signals read cold."""
+    config_db = tmp_path / "config.sqlite3"
+    conn = sqlite3.connect(str(config_db))
+    try:
+        conn.execute(_CONFIG_SETTING_SCHEMA)
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value, created_at, updated_at) "
+            "VALUES ('', 'overlays', ?, datetime('now'), datetime('now'))",
+            (json.dumps(overlays),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    monkeypatch.setenv("T3_CONFIG_DB", str(config_db))
 
 
 def _git(cwd: Path, *args: str) -> None:
@@ -80,16 +85,13 @@ def _parse_deny(capsys: pytest.CaptureFixture[str]) -> dict | None:
     return json.loads(output) if output else None
 
 
-_MANAGED_CONFIG = """
-[overlays.example]
-workspace_repos = ["example-org/private-repo"]
-"""
+_MANAGED_OVERLAYS: dict[str, dict[str, object]] = {"example": {"workspace_repos": ["example-org/private-repo"]}}
 
 
 class TestBlocksManagedRepoMerge:
     @pytest.fixture(autouse=True)
     def _home(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _patch_home(tmp_path / "home", _MANAGED_CONFIG, monkeypatch)
+        _seed_overlays(tmp_path, _MANAGED_OVERLAYS, monkeypatch)
 
     @pytest.mark.parametrize(
         "command",
@@ -116,7 +118,7 @@ class TestBlocksManagedRepoMerge:
 class TestAllowsUnmanagedRepoMerge:
     @pytest.fixture(autouse=True)
     def _home(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _patch_home(tmp_path / "home", _MANAGED_CONFIG, monkeypatch)
+        _seed_overlays(tmp_path, _MANAGED_OVERLAYS, monkeypatch)
 
     @pytest.mark.parametrize(
         "command",
@@ -137,7 +139,7 @@ class TestAllowsUnmanagedRepoMerge:
 class TestFailsSafeOnUncertainty:
     @pytest.fixture(autouse=True)
     def _home(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _patch_home(tmp_path / "home", _MANAGED_CONFIG, monkeypatch)
+        _seed_overlays(tmp_path, _MANAGED_OVERLAYS, monkeypatch)
 
     def test_missing_cwd_is_blocked(self, capsys: pytest.CaptureFixture[str]) -> None:
         assert router.handle_block_out_of_band_merge(_merge_event("gh pr merge 1", None)) is True
@@ -170,7 +172,7 @@ class TestBlocksApiMergeEndpointOnManagedRepo:
 
     @pytest.fixture(autouse=True)
     def _home(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _patch_home(tmp_path / "home", _MANAGED_CONFIG, monkeypatch)
+        _seed_overlays(tmp_path, _MANAGED_OVERLAYS, monkeypatch)
 
     @pytest.mark.parametrize(
         "command",
@@ -213,7 +215,7 @@ class TestAllowsApiMergeEndpointReadsAndUnrelated:
 
     @pytest.fixture(autouse=True)
     def _home(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _patch_home(tmp_path / "home", _MANAGED_CONFIG, monkeypatch)
+        _seed_overlays(tmp_path, _MANAGED_OVERLAYS, monkeypatch)
 
     @pytest.mark.parametrize(
         "command",
@@ -264,7 +266,7 @@ class TestClassifiesMergeTargetNotCwd:
 
     @pytest.fixture(autouse=True)
     def _home(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _patch_home(tmp_path / "home", _MANAGED_CONFIG, monkeypatch)
+        _seed_overlays(tmp_path, _MANAGED_OVERLAYS, monkeypatch)
 
     @pytest.mark.parametrize(
         "command",
@@ -349,8 +351,8 @@ class TestClassifiesMergeTargetNotCwd:
 # `relative_to` for the non-raising `is_relative_to`.
 
 
-def _overlay_path_config(overlay_root: Path) -> str:
-    return f'[overlays.example]\nworkspace_repos = ["example-org/private-repo"]\npath = "{overlay_root}"\n'
+def _overlay_path_overlays(overlay_root: Path) -> dict[str, dict[str, object]]:
+    return {"example": {"workspace_repos": ["example-org/private-repo"], "path": str(overlay_root)}}
 
 
 class TestCwdClassifyDoesNotCrashWithOverlayPath:
@@ -360,7 +362,7 @@ class TestCwdClassifyDoesNotCrashWithOverlayPath:
     def _home(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         overlay_root = tmp_path / "overlay-root"
         overlay_root.mkdir()
-        _patch_home(tmp_path / "home", _overlay_path_config(overlay_root), monkeypatch)
+        _seed_overlays(tmp_path, _overlay_path_overlays(overlay_root), monkeypatch)
 
     @pytest.mark.parametrize("command", ["gh pr merge 5", "glab mr merge !9"])
     def test_bare_merge_from_managed_slug_cwd_outside_overlay_path_blocks(
@@ -397,7 +399,7 @@ class TestRawMergeKillSwitch:
 
     @pytest.fixture(autouse=True)
     def _home(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _patch_home(tmp_path / "home", _MANAGED_CONFIG, monkeypatch)
+        _seed_overlays(tmp_path, _MANAGED_OVERLAYS, monkeypatch)
 
     def test_default_on_still_denies_managed_repo_merge(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -436,17 +438,21 @@ class TestRawMergeGateCLI:
         assert result.exit_code == 0
         assert "gate" in result.output.lower()
 
-    def test_gate_raw_merge_disable_then_enable_round_trip(self, tmp_path: Path) -> None:
+    def test_gate_raw_merge_disable_then_enable_round_trip(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         overlay_app = typer.Typer()
         register_gate_commands(overlay_app)
         runner = CliRunner()
-        config = tmp_path / ".teatree.toml"
-        with patch("teatree.cli.teatree_gate._config_path", return_value=config):
-            disabled = runner.invoke(overlay_app, ["gate", "raw-merge", "disable"])
-            assert disabled.exit_code == 0, disabled.output
-            with config.open("rb") as f:
-                assert tomllib.load(f)["teatree"][OUT_OF_BAND_MERGE_GATE_KEY] is False
-            enabled = runner.invoke(overlay_app, ["gate", "raw-merge", "enable"])
-            assert enabled.exit_code == 0, enabled.output
-            with config.open("rb") as f:
-                assert tomllib.load(f)["teatree"][OUT_OF_BAND_MERGE_GATE_KEY] is True
+        db = tmp_path / "db.sqlite3"
+        conn = sqlite3.connect(db)
+        conn.execute(_CONFIG_SETTING_SCHEMA)
+        conn.commit()
+        conn.close()
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
+        disabled = runner.invoke(overlay_app, ["gate", "raw-merge", "disable"])
+        assert disabled.exit_code == 0, disabled.output
+        assert cold_reader.read_setting(OUT_OF_BAND_MERGE_GATE_KEY, scope="", db_path=db) is False
+        enabled = runner.invoke(overlay_app, ["gate", "raw-merge", "enable"])
+        assert enabled.exit_code == 0, enabled.output
+        assert cold_reader.read_setting(OUT_OF_BAND_MERGE_GATE_KEY, scope="", db_path=db) is True

@@ -27,8 +27,10 @@ Tests use a real ``git init`` repo under ``tmp_path`` with a rewritten
 remote URL, plus a fake ``gh`` on PATH for the probe dimension.
 """
 
+import json
 import os
 import shutil
+import sqlite3
 import stat
 import subprocess
 from pathlib import Path
@@ -77,10 +79,21 @@ def _repo_with_remote(path: Path, remote_url: str) -> Path:
 
 
 def _config(tmp_path: Path, private_repos: list[str]) -> Path:
-    cfg = tmp_path / ".teatree.toml"
-    entries = ", ".join(f'"{e}"' for e in private_repos)
-    cfg.write_text(f"[teatree]\nprivate_repos = [{entries}]\n", encoding="utf-8")
-    return cfg
+    db = tmp_path / "config.sqlite3"
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'private_repos', ?)",
+            (json.dumps(private_repos),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return db
 
 
 def _make_gh_shim(bin_dir: Path, visibility: str) -> None:
@@ -646,9 +659,9 @@ class TestVisibilityProbeFallback:
 
 
 class TestVisibilityCachePathCollision:
-    """Bug 2: the cache must persist even when ``~/.teatree`` is a FILE.
+    """Bug 2: the cache must persist even when ``$HOME/.teatree`` is a FILE.
 
-    The historical default rooted the cache at ``~/.teatree`` -- but that
+    The historical default rooted the cache at ``$HOME/.teatree`` -- but that
     path is the shell-sourceable config FILE, not a directory, so every
     cache write raised "Not a directory" (swallowed as OSError) and the
     verdict could never persist. The default now lives under the XDG cache

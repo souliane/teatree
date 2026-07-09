@@ -48,7 +48,7 @@ def _isolation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(tmp_path / "data"))
     (tmp_path / "data").mkdir(parents=True, exist_ok=True)
     # Point the bash-env-file fallback at a path that does not exist so a
-    # developer's real ``~/.teatree`` (which may set ``T3_LOOP_DISOWN``) never
+    # developer's real ``$HOME/.teatree`` (which may set ``T3_LOOP_DISOWN``) never
     # leaks into a test that does not opt in. Cases that exercise the file
     # override it explicitly.
     monkeypatch.setenv("TEATREE_BASH_ENV_FILE", str(tmp_path / "no-bash-env"))
@@ -291,7 +291,7 @@ class TestLoopSelfPump:
 class TestBashEnvFileResolver:
     """Pure-stdlib parse of the ``export VAR=value`` bash env file (#810).
 
-    The Stop hook process never sources ``~/.teatree``, so the ``T3_LOOP_DISOWN``
+    The Stop hook process never sources ``$HOME/.teatree``, so the ``T3_LOOP_DISOWN``
     knob set there must be recovered by parsing the file directly — crash-proof,
     with the process env taking precedence. ``T3_LOOP_DISOWN`` is the live
     consumer of ``_resolve_loop_env`` (loop pause/disable lives in the DB

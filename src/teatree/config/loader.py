@@ -1,39 +1,33 @@
-"""TeaTree config loading — ``load_config`` + the toml/logging/dir entry points.
+"""TeaTree config loading — ``load_config`` + the logging/dir entry points.
 
-``CONFIG_PATH``, ``load_config`` (builds ``UserSettings`` from ``~/.teatree.toml``),
-the toml loader, the default Django LOGGING dict, ``load_e2e_repos``, and the
-``workspace_dir`` / ``worktrees_dir`` / ``check_for_updates`` resolvers. Split out
-of the package facade for the RUF067 init-is-re-exports-only rule; re-exported
-from ``teatree.config`` so every ``teatree.config.<name>`` path stays valid. The
+``load_config`` (builds ``TeaTreeConfig`` from the DB), the default Django LOGGING
+dict, ``load_e2e_repos``, and the ``clone_root`` / ``worktree_root`` /
+``worktrees_dir`` / ``check_for_updates`` resolvers. Split out of the package
+facade for the RUF067 init-is-re-exports-only rule; re-exported from
+``teatree.config`` so every ``teatree.config.<name>`` path stays valid. The
 per-setting resolvers live in ``resolution`` and are reached through the package
 facade at call-time (the partition's loader -> resolution edge, deferred to avoid
 the loader/resolution/discovery import cycle).
 
-``load_config`` builds only the **TOML file tier**, and under the #1775 hard
-partition only the TOML-home carve-out reads off it — the global ``[teatree]``
-table merged onto the dataclass defaults. Every DB-home field keeps its dataclass
-default here; its authoritative value comes from the ``ConfigSetting`` store. The
-remaining tiers — env, the DB store (``ConfigSetting`` rows, for DB-home fields),
-and the per-overlay ``[overlays.<name>]`` table (for TOML-home fields) — are
-layered on top per-field by ``resolution.get_effective_settings`` according to
-each field's home; consult its docstring for the per-home precedence. Callers that
-need effective values must use ``get_effective_settings``, not the bare
-``load_config().user`` (which sees neither env, the DB store, nor per-overlay).
+Every ``UserSettings`` field is DB-home: its authoritative value comes from the
+``ConfigSetting`` store (global + per-overlay rows) + the ``T3_*`` env layer,
+resolved per-field by ``resolution.get_effective_settings``. ``load_config`` builds
+only the NON-settings registry tables (``overlays`` / ``e2e_repos``) into
+``config.raw`` — themselves DB-home, read from the ``ConfigSetting`` store by
+``_inject_db_registries``. There is no config file: an install is fully configured
+from the DB. Callers that need effective settings must use ``get_effective_settings``,
+not the bare ``load_config().user`` (which is always the dataclass defaults).
 """
 
 import logging
 import os
-import tomllib
 from contextlib import suppress
 from pathlib import Path
-from typing import Any
 
 import teatree.config as _facade
 from teatree.config.settings import E2ERepo, TeaTreeConfig, UserSettings
 from teatree.paths import DATA_DIR, get_data_dir
 from teatree.update_check import run_update_check
-
-CONFIG_PATH = Path.home() / ".teatree.toml"
 
 _logger = logging.getLogger("teatree.config")
 
@@ -81,313 +75,21 @@ def default_logging(namespace: str) -> dict:
     }
 
 
-def _load_toml(path: Path) -> dict:
-    """Parse ``path`` as TOML, re-raising a syntax error as a named config error.
-
-    A raw ``tomllib.TOMLDecodeError`` would propagate a parser traceback
-    through ``main()`` on every ``t3`` command (even ``--help``); instead it
-    becomes a typed, message-bearing ``ValueError`` naming the file and the
-    parser's position — the same error shape the intentional invalid-``mode``
-    path raises.
-    """
-    with path.open("rb") as f:
-        try:
-            return tomllib.load(f)
-        except tomllib.TOMLDecodeError as exc:
-            msg = f"Malformed TOML in config file {path}: {exc}"
-            raise ValueError(msg) from exc
-
-
-# Sentinel for a TOML value that cannot be coerced to its setting's type. It never
-# equals a parsed DB value, so a malformed TOML value still counts as a conflict.
-_UNPARSEABLE_TOML_VALUE = object()
-
-
-def _parse_toml_value(key: str, value: object) -> object:
-    """Coerce a raw TOML scalar through the same parser the DB store uses for *key*.
-
-    Both sides of a conflict comparison must be normalized the same way (a TOML
-    ``"auto"`` and a stored ``"auto"`` both become ``Mode.AUTO``) so the check
-    compares semantic values, not representations. A parse failure means the TOML
-    value is malformed for the setting's type — treated as "not equal" so the
-    conflict still surfaces rather than being swallowed.
-    """
-    from teatree.config.settings import OVERLAY_OVERRIDABLE_SETTINGS  # noqa: PLC0415
-
-    parser = OVERLAY_OVERRIDABLE_SETTINGS.get(key)
-    if parser is None:
-        return value
-    try:
-        return parser(value)
-    except (ValueError, TypeError, AttributeError):
-        return _UNPARSEABLE_TOML_VALUE
-
-
-def _db_home_keys_in(toml_table: dict[str, Any]) -> list[str]:
-    """The DB-home keys present in *toml_table* (a cheap, static, no-DB check).
-
-    ``_MIGRATED_SETTING_KEYS`` are excluded — they are warned about unconditionally
-    by :func:`_warn_migrated_keys_in_toml`, so routing them through the quiet
-    conflict-only path here would double-warn.
-    """
-    from teatree.config.homes import SETTING_HOMES, SettingHome  # noqa: PLC0415
-
-    return [key for key in toml_table if SETTING_HOMES.get(key) is SettingHome.DB and key not in _MIGRATED_SETTING_KEYS]
-
-
-# Settings whose ``UserSettings`` field was removed (souliane/teatree#2731). A
-# stored ``[teatree]`` / ``[overlays.<name>]`` value for one of these resolves to
-# nothing — the key no longer maps to any field — so a leftover entry is warned
-# about (never silently no-opped) so the operator knows it has no effect.
-_RETIRED_SETTING_KEYS: frozenset[str] = frozenset({"branch_prefix", "ask_before_post_on_behalf"})
-
-# DB-home keys whose SILENT TOML drop changes high-impact behaviour — ``workspace_dir``
-# (historically the CLONE root ``~/workspace``) now names the per-overlay WORKTREE
-# root, so a leftover ``[teatree] workspace_dir`` silently RELOCATES where worktrees
-# are created. Unlike the quiet DB-home conflict path (which warns only when the
-# TOML value DISAGREES with a stored row), these warn whenever PRESENT — a silent
-# relocation with zero signal is unacceptable. The operator migrates the value into
-# the ``ConfigSetting`` store with ``config_setting import`` (or sets it explicitly).
-_MIGRATED_SETTING_KEYS: frozenset[str] = frozenset({"workspace_dir"})
-
-
-def _warn_migrated_keys_in_toml(raw: dict, path: Path) -> None:
-    """Emit ONE aggregated WARN for a high-impact migrated DB-home key still in TOML.
-
-    ``workspace_dir`` moved to the DB store and now drives the per-overlay WORKTREE
-    root (``config.worktree_root()``); a value left in ``[teatree]`` /
-    ``[overlays.<name>]`` is IGNORED on read and would silently change where
-    worktrees are created. This warns on PRESENCE (not just on a value conflict)
-    so the operator is told to migrate it. Clones are still discovered under the
-    CLONE root ``~/workspace`` (``config.clone_root()``, ``T3_WORKSPACE_DIR`` env).
-    """
-    offenders: list[str] = []
-    teatree = raw.get("teatree")
-    if isinstance(teatree, dict):
-        offenders.extend(f"[teatree] {key}" for key in _MIGRATED_SETTING_KEYS if key in teatree)
-    overlays = raw.get("overlays")
-    if isinstance(overlays, dict):
-        for overlay_name, overlay_cfg in overlays.items():
-            if not isinstance(overlay_cfg, dict):
-                continue
-            offenders.extend(f"[overlays.{overlay_name}] {key}" for key in _MIGRATED_SETTING_KEYS if key in overlay_cfg)
-    if offenders:
-        _logger.warning(
-            "Config keys in %s are DB-home now and IGNORED on read — leaving a stored value would "
-            "silently change where worktrees are created (workspace_dir is the per-overlay WORKTREE "
-            "root, not the clone root): %s. Migrate them into the ConfigSetting store with "
-            "`t3 <overlay> config_setting import`, or set explicitly with "
-            "`t3 <overlay> config_setting set workspace_dir <path> [--overlay <name>]`. Clones are "
-            "still discovered under ~/workspace (override with the T3_WORKSPACE_DIR env var).",
-            path,
-            ", ".join(offenders),
-        )
-
-
-def _warn_retired_keys_in_toml(raw: dict, path: Path) -> None:
-    """Emit ONE aggregated WARN for retired setting keys still present in TOML.
-
-    A retired key (its ``UserSettings`` field is gone, souliane/teatree#2731) maps
-    to no field, so a stored value resolves to nothing. Unlike a migrated DB-home
-    key — which the operator moves into the ``ConfigSetting`` store — a retired key
-    has no successor and should simply be deleted from the file.
-    """
-    offenders: list[str] = []
-    teatree = raw.get("teatree")
-    if isinstance(teatree, dict):
-        offenders.extend(f"[teatree] {key}" for key in _RETIRED_SETTING_KEYS if key in teatree)
-    overlays = raw.get("overlays")
-    if isinstance(overlays, dict):
-        for overlay_name, overlay_cfg in overlays.items():
-            if not isinstance(overlay_cfg, dict):
-                continue
-            offenders.extend(f"[overlays.{overlay_name}] {key}" for key in _RETIRED_SETTING_KEYS if key in overlay_cfg)
-    if offenders:
-        _logger.warning(
-            "Retired setting keys in %s have no effect (souliane/teatree#2731 removed the field) "
-            "and are IGNORED on read: %s. Delete them from the file.",
-            path,
-            ", ".join(offenders),
-        )
-
-
-def _conflicting_db_home_keys(
-    toml_table: dict[str, Any], db_home_keys: list[str], db_overrides: dict[str, Any]
-) -> list[str]:
-    """Return the *db_home_keys* whose TOML value CONFLICTS with the DB.
-
-    A conflict is a key present in BOTH the TOML table and the ``ConfigSetting``
-    store with DIFFERING (parser-normalized) values — the only case where the
-    TOML value is silently ignored *and* disagrees with the setting's real home,
-    so the operator is genuinely surprised. A DB-home key absent from the DB store
-    (being migrated away), or present but AGREEING, is silent: it resolves to the
-    same effective value, so warning about it is the noise this path removes.
-    """
-    conflicts: list[str] = []
-    for key in db_home_keys:
-        if key not in db_overrides:
-            continue
-        if _parse_toml_value(key, toml_table[key]) != db_overrides[key]:
-            conflicts.append(key)
-    return conflicts
-
-
-def _warn_db_home_keys_in_toml(raw: dict, path: Path) -> None:
-    """Emit ONE aggregated WARN for DB-home keys whose TOML value CONFLICTS with the DB.
-
-    Under the #1775 hard partition a DB-home key in the TOML file is IGNORED on
-    read (its home is the ``ConfigSetting`` store). After an install migrates such
-    keys into the store the TOML is clean, so warning on every DB-home key that
-    *appears* in the file produced ~100 lines of noise per command. The signal that
-    actually matters is a CONFLICT: the key is set to a different value in BOTH the
-    TOML and the DB, so the silently-ignored TOML value disagrees with what is in
-    effect. Those are aggregated into a SINGLE warning naming every offending key
-    and the one-time ``config_setting import`` migration path. A DB-home key that is
-    absent from the DB, or agrees with it, is silent.
-
-    The home registry and DB readers are imported lazily (the loader -> resolution
-    edge the module docstring describes) to avoid the loader/resolution/discovery
-    import cycle at module load and to keep the DB read off the hot import path.
-
-    The DB is read ONLY when a table actually carries a DB-home key. The common
-    post-migration file (every DB-home key already moved into the store) has none,
-    so ``load_config`` touches no connection — keeping it leak-free off the hot path
-    rather than opening a stray default-alias connection on every call.
-    """
-    offenders: list[str] = []
-
-    teatree = raw.get("teatree")
-    if isinstance(teatree, dict):
-        db_home_keys = _db_home_keys_in(teatree)
-        if db_home_keys:
-            from teatree.config.resolution import _db_global_overrides  # noqa: PLC0415
-
-            global_db = _db_global_overrides()
-            offenders.extend(f"[teatree] {key}" for key in _conflicting_db_home_keys(teatree, db_home_keys, global_db))
-
-    overlays = raw.get("overlays")
-    if isinstance(overlays, dict):
-        for overlay_name, overlay_cfg in overlays.items():
-            if not isinstance(overlay_cfg, dict):
-                continue
-            db_home_keys = _db_home_keys_in(overlay_cfg)
-            if not db_home_keys:
-                continue
-            from teatree.config.resolution import _db_overlay_overrides  # noqa: PLC0415
-
-            overlay_db = _db_overlay_overrides(overlay_name)
-            offenders.extend(
-                f"[overlays.{overlay_name}] {key}"
-                for key in _conflicting_db_home_keys(overlay_cfg, db_home_keys, overlay_db)
-            )
-
-    if offenders:
-        _logger.warning(
-            "Config keys in %s are DB-home settings (#1775) set to a DIFFERENT value than the "
-            "ConfigSetting store, and are IGNORED on read: %s. Resolve the conflict by removing them "
-            "from the file (the DB value is authoritative) or migrate once with "
-            "`t3 <overlay> config_setting import`.",
-            path,
-            ", ".join(offenders),
-        )
-
-
-# The registry tables (#1775 eliminate-~/.teatree.toml): NON-``UserSettings`` config
-# read directly off ``config.raw`` at many call sites — the ``overlays`` definition
-# registry (``discover_overlays`` + every ``raw["overlays"]`` reader) and the
-# ``e2e_repos`` registry (``load_e2e_repos``). They are DB-home: stored as a single
-# JSON-dict ``ConfigSetting`` row each (``REGISTRY_SETTINGS``), injected into ``raw``
-# here so every existing reader is untouched. The DB row WINS over a ``[overlays]`` /
-# ``[e2e_repos]`` TOML table (which is then ignored on read); with no DB row the TOML
-# table is the migration fallback.
-
-
-class RegistryTomlMaskError(ValueError):
-    """A DB-home registry table in the TOML is masked by a diverging DB row (#128).
-
-    Raised by ``load_config(..., enforce_registry_partition=True)`` — the strict,
-    opt-in surface ``t3 doctor`` uses. The default ``load_config`` never raises (its
-    40+ hot callers must never brick); it emits the same message as a loud WARNING so
-    the mask is surfaced, never silent.
-    """
-
-
-def _registry_mask_conflicts(raw: dict) -> list[str]:
-    """Registry leaves in the TOML that a diverging DB row silently masks on read.
-
-    The ``overlays`` / ``e2e_repos`` registries are DB-home (#1775):
-    ``_inject_db_registries`` REPLACES the whole ``[overlays]`` / ``[e2e_repos]`` TOML
-    table with its ``ConfigSetting`` row, so a TOML entry/field the DB row DROPS or sets
-    DIFFERENTLY has NO effect on read — souliane/teatree#128, where an overlay ``path``
-    edit returned the stale DB value with zero signal (the reported provisioning failure).
-    Each masked leaf is reported as ``[<key>.<entry>]`` (whole entry dropped) or
-    ``[<key>.<entry>] <field>`` (field absent-from / differs-from the DB entry). A leaf
-    the DB row AGREES with resolves to the same value and is NOT reported. No DB row for
-    the key at all is not a conflict — the TOML table is then the pre-migration fallback.
-
-    The DB row is read Django-free via ``cold_reader`` (the same store the injection
-    reads), and only for a key whose TOML table is non-empty, so a clean file touches no
-    connection.
-    """
-    from teatree.config import cold_reader  # noqa: PLC0415 — Django-free DB read on the pre-Django discovery path
-    from teatree.config.registries import REGISTRY_KEYS  # noqa: PLC0415
-
-    conflicts: list[str] = []
-    for key in REGISTRY_KEYS:
-        toml_table = raw.get(key)
-        if not isinstance(toml_table, dict) or not toml_table:
-            continue
-        db_registry = cold_reader.read_setting(key)
-        if not isinstance(db_registry, dict):
-            continue
-        for entry_name, toml_entry in toml_table.items():
-            if not isinstance(toml_entry, dict):
-                continue
-            db_entry = db_registry.get(entry_name)
-            if not isinstance(db_entry, dict):
-                conflicts.append(f"[{key}.{entry_name}]")
-                continue
-            conflicts.extend(
-                f"[{key}.{entry_name}] {field}"
-                for field, toml_val in toml_entry.items()
-                if field not in db_entry or db_entry[field] != toml_val
-            )
-    return conflicts
-
-
-def _registry_mask_message(path: Path, conflicts: list[str]) -> str:
-    """The loud remediation string naming the masked leaves and BOTH reconcile commands."""
-    return (
-        f"Registry tables in {path} are DB-home (#1775) and IGNORED on read — the ConfigSetting "
-        f"`overlays`/`e2e_repos` row REPLACES the whole file table, so these edits have NO effect "
-        f"and mask a stale DB value with zero signal (souliane/teatree#128): "
-        f"{', '.join(conflicts)}. The DB row is authoritative; reconcile it by migrating the file "
-        f"into the store with `t3 <overlay> config_setting import` (then delete the table from the "
-        f"file), or set the registry row directly with "
-        f"`t3 <overlay> config_setting set overlays '<json>'`."
-    )
-
-
-def load_raw_toml(path: Path | None = None) -> dict:
-    """Parse the config file WITHOUT the DB-registry injection or the mask check.
-
-    The migration read: ``config_setting import`` seeds the DB store from the ACTUAL file
-    registry tables (an edited ``[overlays.<name>].path``), so it must see the file values,
-    not the DB-injected ones ``load_config`` returns — reading the injected value would
-    re-import the stale DB row and never migrate the edit (souliane/teatree#128).
-    """
-    if path is None:
-        path = _facade.CONFIG_PATH
-    return _load_toml(path) if path.is_file() else {}
+# The registry tables: NON-``UserSettings`` config read directly off ``config.raw``
+# at many call sites — the ``overlays`` definition registry (``discover_overlays`` +
+# every ``raw["overlays"]`` reader) and the ``e2e_repos`` registry (``load_e2e_repos``).
+# Both are DB-home: stored as a single JSON-dict ``ConfigSetting`` row each
+# (``REGISTRY_SETTINGS``), injected into ``raw`` here so every existing reader is
+# untouched. With no row the table is simply absent (empty).
 
 
 def _inject_db_registries(raw: dict) -> None:
-    """Override ``raw['overlays']`` / ``raw['e2e_repos']`` with their DB rows when present.
+    """Populate ``raw['overlays']`` / ``raw['e2e_repos']`` from their DB rows.
 
     Read via the Django-free ``cold_reader`` (the same store ``config_setting`` writes)
     because ``load_config`` runs pre-Django on the overlay-discovery path. Fail-open: a
-    missing DB / row leaves the TOML value (or absence) in place, so a not-yet-migrated
-    install still boots off its file.
+    missing DB / row leaves the key absent, so a not-yet-configured install still boots
+    (with no overlays / e2e repos) rather than raising.
     """
     from teatree.config import cold_reader  # noqa: PLC0415 — Django-free DB read on the pre-Django discovery path
     from teatree.config.registries import REGISTRY_KEYS  # noqa: PLC0415
@@ -398,48 +100,30 @@ def _inject_db_registries(raw: dict) -> None:
             raw[key] = stored
 
 
-def load_config(path: Path | None = None, *, enforce_registry_partition: bool = False) -> TeaTreeConfig:
-    if path is None:
-        path = _facade.CONFIG_PATH
-    # The hard partition (#1775) is COMPLETE for settings (eliminate-~/.teatree.toml):
-    # the TOML-home carve-out is empty, so ``load_config`` reads NO ``UserSettings``
-    # field off the file — every field keeps its dataclass default here and resolves
-    # from the ``ConfigSetting`` store via ``get_effective_settings`` (the last two,
-    # ``speak`` / ``mr_reminder``, are rebuilt bespoke by the resolver). The ``raw``
-    # dict carries only the NON-settings registry tables (``overlays`` / ``e2e_repos``),
-    # which are DB-home too: ``_inject_db_registries`` overrides them from the store, so
-    # the file is consulted ONLY as a pre-migration fallback. With every value migrated,
-    # an ABSENT ``~/.teatree.toml`` boots a fully DB-configured teatree.
-    raw: dict = _load_toml(path) if path.is_file() else {}
-    if raw:
-        _warn_db_home_keys_in_toml(raw, path)
-        _warn_retired_keys_in_toml(raw, path)
-        _warn_migrated_keys_in_toml(raw, path)
-        # BEFORE ``_inject_db_registries`` overwrites the TOML registry tables — while
-        # ``raw['overlays']`` / ``raw['e2e_repos']`` still hold the FILE values — surface any
-        # divergence with the authoritative DB row (souliane/teatree#128). ``enforce`` (the
-        # strict ``t3 doctor`` surface) fails LOUD; the default hot path emits the same
-        # message as a WARN so the mask is never silent yet the 40+ callers never brick.
-        conflicts = _registry_mask_conflicts(raw)
-        if conflicts:
-            message = _registry_mask_message(path, conflicts)
-            if enforce_registry_partition:
-                raise RegistryTomlMaskError(message)
-            _logger.warning("%s", message)
+def load_config() -> TeaTreeConfig:
+    """Build the config from the DB — ``user`` is the dataclass defaults, ``raw`` the registries.
+
+    Every ``UserSettings`` field is DB-home, so ``user`` here is always the plain
+    dataclass defaults; a caller that needs effective values uses
+    ``get_effective_settings`` (which layers the ``ConfigSetting`` store + env). The
+    ``raw`` dict carries only the NON-settings registry tables (``overlays`` /
+    ``e2e_repos``), injected from the store by :func:`_inject_db_registries`, so an
+    install with no config file boots a fully DB-configured teatree.
+    """
+    raw: dict = {}
     _inject_db_registries(raw)
     return TeaTreeConfig(user=UserSettings(), raw=raw)
 
 
-def load_e2e_repos(path: Path | None = None) -> list[E2ERepo]:
-    """Load named E2E repos from the ``e2e_repos`` registry (DB-home #1775).
+def load_e2e_repos() -> list[E2ERepo]:
+    """Load named E2E repos from the ``e2e_repos`` registry (DB-home).
 
     Reads ``config.raw["e2e_repos"]`` — which ``load_config`` populates from the
-    DB-home ``e2e_repos`` ``ConfigSetting`` row (``_inject_db_registries``), falling
-    back to an ``[e2e_repos.<name>]`` TOML table only for a not-yet-migrated install.
-    Each entry may specify ``url``, ``branch``, and optionally ``e2e_dir`` (the
+    DB-home ``e2e_repos`` ``ConfigSetting`` row (``_inject_db_registries``). Each
+    entry may specify ``url``, ``branch``, and optionally ``e2e_dir`` (the
     subdirectory containing ``playwright.config.ts``, default ``"e2e"``).
     """
-    config = _facade.load_config(path)
+    config = _facade.load_config()
     repos = []
     for name, entry in config.raw.get("e2e_repos", {}).items():
         repos.append(
@@ -470,8 +154,8 @@ def clone_root() -> Path:
     2.  the default ``~/workspace``.
 
     Pre-Django safe: the env tier short-circuits before any Django access, and the
-    Django-settings probe is guarded so a caller with Django unconfigured (a cold
-    TOML reader) still resolves the default rather than raising.
+    Django-settings probe is guarded so a caller with Django unconfigured still
+    resolves the default rather than raising.
     """
     env_override = os.environ.get("T3_WORKSPACE_DIR")
     if env_override:
@@ -553,8 +237,8 @@ def worktree_root() -> Path:
 def worktrees_dir() -> Path:
     """Canonical worktrees directory (where ticket worktrees are created).
 
-    DB-home (#1775): resolves env/Django override first, then the ``ConfigSetting``
-    store (overlay scope then global, stored as a path string), then the dataclass
+    DB-home: resolves env/Django override first, then the ``ConfigSetting`` store
+    (overlay scope then global, stored as a path string), then the dataclass
     default — the path-string accessor pattern ``workspace_dir`` /
     ``worktree_root()`` use. Django-side (it reads ``django.conf.settings``), so it
     reads the store directly, no ``cold_reader`` needed.
@@ -580,11 +264,11 @@ def worktrees_dir() -> Path:
 def check_for_updates(*, force: bool = False) -> str | None:
     """Resolve a "new release available" notice from config + update_check.
 
-    Reads ``check_updates`` (DB-home #1775) from the ``ConfigSetting`` store via
-    the Django-free ``cold_reader`` — so the opt-out is honoured on the pre-Django
-    CLI paths that are this function's only readers (the root callback, the
-    plain-Typer ``t3 config check-update``), with no Django bootstrap. A missing
-    row fails open to ``True`` (the dataclass default). Delegates to
+    Reads ``check_updates`` (DB-home) from the ``ConfigSetting`` store via the
+    Django-free ``cold_reader`` — so the opt-out is honoured on the pre-Django CLI
+    paths that are this function's only readers (the root callback, the plain-Typer
+    ``t3 config check-update``), with no Django bootstrap. A missing row fails open
+    to ``True`` (the dataclass default). Delegates to
     :func:`teatree.update_check.run_update_check` (split out for module-health LOC).
     """
     from teatree.config import cold_reader  # noqa: PLC0415 — Django-free DB read on the pre-Django path

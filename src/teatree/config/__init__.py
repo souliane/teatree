@@ -1,14 +1,14 @@
-"""TeaTree configuration — overlay discovery from ~/.teatree.toml.
+"""TeaTree configuration — the DB-home config facade + overlay discovery.
 
 The ``teatree.config`` package facade. Config concerns are split by cohesion —
 ``enums`` (the config enums), ``settings`` (dataclasses + override
-registries), ``loader`` (``load_config`` + the toml/dir entry points),
+registries), ``loader`` (``load_config`` + the logging/dir entry points),
 ``discovery`` (overlay discovery), and ``resolution`` (effective-settings +
 the per-setting resolvers) — and re-exported here so every ``teatree.config.<name>``
 import and ``patch`` target keeps resolving against this stable namespace. The
-submodules reach each other's ``load_config`` / ``discover_*`` / ``CONFIG_PATH``
-through this facade at call-time, which both breaks the import cycle and keeps a
-single ``patch("teatree.config.<name>")`` honoured by every internal caller.
+submodules reach each other's ``load_config`` / ``discover_*`` through this facade
+at call-time, which both breaks the import cycle and keeps a single
+``patch("teatree.config.<name>")`` honoured by every internal caller.
 """
 
 from teatree.config.agent_enums import AgentHarness, AgentHarnessProvider, AgentRuntime, EvalCredential
@@ -25,20 +25,17 @@ from teatree.config.discovery import (
 )
 from teatree.config.enums import Autonomy, CriticGateMode, MissingIssuePolicy, Mode, OnBehalfPostMode, TeamsDisplay, Wip
 from teatree.config.feature_flags import FEATURE_FLAGS, FeatureFlag, FlagStage, dark_flags, is_feature_flag
-from teatree.config.homes import BOOTSTRAP_FILE_ONLY_SETTINGS, DERIVED_FIELDS, SETTING_HOMES, SettingHome
+from teatree.config.homes import BOOTSTRAP_ENV_ONLY_SETTINGS, DERIVED_FIELDS, SETTING_HOMES, SettingHome
 from teatree.config.loader import (
-    CONFIG_PATH,
-    RegistryTomlMaskError,
-    _load_toml,
     check_for_updates,
     clone_root,
     default_logging,
     load_config,
     load_e2e_repos,
-    load_raw_toml,
     worktree_root,
     worktrees_dir,
 )
+from teatree.config.registries import COLD_SETTINGS, REGISTRY_SETTINGS
 from teatree.config.resolution import (
     _active_overlay_overrides,
     _apply_autonomy,
@@ -69,14 +66,15 @@ from teatree.config_speak import resolve_speak, speak_from_subtable
 from teatree.paths import DATA_DIR, get_data_dir
 
 __all__ = [
-    "BOOTSTRAP_FILE_ONLY_SETTINGS",
+    "BOOTSTRAP_ENV_ONLY_SETTINGS",
     "COLD_HOOK_SETTINGS",
-    "CONFIG_PATH",
+    "COLD_SETTINGS",
     "DATA_DIR",
     "DERIVED_FIELDS",
     "ENV_SETTING_OVERRIDES",
     "FEATURE_FLAGS",
     "OVERLAY_OVERRIDABLE_SETTINGS",
+    "REGISTRY_SETTINGS",
     "SETTING_HOMES",
     "TOML_OVERLAY_OVERRIDABLE_SETTINGS",
     "AgentHarness",
@@ -94,7 +92,6 @@ __all__ = [
     "MrReminderConfig",
     "OnBehalfPostMode",
     "OverlayEntry",
-    "RegistryTomlMaskError",
     "SettingHome",
     "TeaTreeConfig",
     "TeamsDisplay",
@@ -108,7 +105,6 @@ __all__ = [
     "_discover_from_manage_py",
     "_extract_settings_module",
     "_global_pinned_fields",
-    "_load_toml",
     "_match_canonical_ep",
     "_overlay_overrides_by_name",
     "_parse_disk_cache_allowlist",
@@ -129,7 +125,6 @@ __all__ = [
     "is_feature_flag",
     "load_config",
     "load_e2e_repos",
-    "load_raw_toml",
     "mr_reminder_from_table",
     "resolve_mr_reminder",
     "resolve_speak",

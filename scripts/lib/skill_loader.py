@@ -207,7 +207,7 @@ def suggest_skills(data: dict) -> dict:
     Returns:
         Dict with keys: suggestions, advisory, companions. ``advisory`` is the
         subset of ``suggestions`` sourced ONLY from the supplementary keyword
-        config (``~/.teatree-skills.yml``). Those loose user-authored keyword
+        config (``$HOME/.teatree-skills.yml``). Those loose user-authored keyword
         regexes (e.g. ``\bruff\b``) over-fire on incidental mentions, so the
         caller suggests them but never adds them to the hard-block demand set.
         ``companions`` are the SOFT companion suggestions of the resolved skills

@@ -17,8 +17,9 @@ high-confidence ``settings``/``cfg``/``config`` receiver), a ``getattr(settings,
 "<field>")`` / cold-reader key read, a ``<NAME>_KEY = "<field>"`` config-key
 constant, a field-name string literal inside a settings-RESOLUTION module (where
 such a string IS a config key — ``getattr(settings, key)`` over a dict/tuple of
-key names), or the field on a non-comment line of a ``hooks/*.sh`` cold-read
-script. A field read by none is dead config, unless named in
+key names, but NOT a name used only as a bare-dict ``.get("<key>")`` sub-key of
+a bespoke structured table, a coincidental collision), or the field on a
+non-comment line of a ``hooks/*.sh`` cold-read script. A field read by none is dead config, unless named in
 ``FIELDS_WITHOUT_SRC_READER`` — the reviewable allowlist of fields consumed by
 agent-prose / documentation rather than ``src`` code, or documented reader-less.
 """
@@ -153,10 +154,34 @@ def _settings_vars_in(tree: ast.Module) -> tuple[set[str], set[str]]:
     return settings_vars, config_vars
 
 
+def _bespoke_dict_get_keys(tree: ast.Module, settings_vars: set[str]) -> set[str]:
+    """String keys read via ``<bare-var>.get("<key>")`` off a plain dict.
+
+    A field name that appears ONLY as a sub-key of a bespoke structured table
+    (e.g. the ``availability_schedule`` dict's ``"timezone"``) collides with a
+    UserSettings field name but is NOT a settings-key read. The receiver is a
+    bare local (a table var like ``raw``), never a settings-store accessor
+    call (``_db_overlay_overrides(...).get("worktrees_dir")`` keeps its Call
+    receiver and stays counted), so the resolution-module string rule must not
+    count it as a reader.
+    """
+    keys: set[str] = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "get"):
+            continue
+        receiver = node.func.value
+        if not isinstance(receiver, ast.Name) or receiver.id in settings_vars or receiver.id in _SETTINGS_RECEIVERS:
+            continue
+        if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+            keys.add(node.args[0].value)
+    return keys
+
+
 def _file_python_readers(tree: ast.Module, field_names: set[str]) -> set[str]:
     read: set[str] = set()
     settings_vars, config_vars = _settings_vars_in(tree)
     resolves = _module_resolves_settings(tree)
+    bespoke_get_keys = _bespoke_dict_get_keys(tree, settings_vars)
     for node in ast.walk(tree):
         if (
             isinstance(node, ast.Attribute)
@@ -177,7 +202,13 @@ def _file_python_readers(tree: ast.Module, field_names: set[str]) -> set[str]:
                     and node.value.value in field_names
                 ):
                     read.add(node.value.value)
-        elif resolves and isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value in field_names:
+        elif (
+            resolves
+            and isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and node.value in field_names
+            and node.value not in bespoke_get_keys
+        ):
             read.add(node.value)
     return read
 

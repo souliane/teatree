@@ -1,7 +1,7 @@
 """Tests for teatree.skill_support.ref_validator — dangling skill-reference detection.
 
 Mirrors the real ``ac-reviewing-skills`` → ``ac-reviewing-codebase`` incident:
-a ``~/.teatree-skills.yml`` keyword→skill routing entry named a skill that
+a ``$HOME/.teatree-skills.yml`` keyword→skill routing entry named a skill that
 does not exist in the canonical (installed/remote) skill set. The validator
 enumerates every reference site, resolves each name against the canonical
 set, and flags any name that does not resolve — naming file:line, the bad

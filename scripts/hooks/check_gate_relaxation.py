@@ -17,8 +17,8 @@ and never fails. Never-lockout: the ``ALLOW_GATE_RELAX=<reason>`` env marker
 relaxation and lets the commit through, and the ``gate_relaxation_gate_enabled``
 kill-switch disables the gate entirely — resolved DB-first through
 ``get_effective_settings`` (the canonical resolver every sibling gate uses), so a
-DB ``config_setting set gate_relaxation_gate_enabled false`` actuates the hook,
-not only a raw ``~/.teatree.toml`` edit. The diff scan is the fast Django-free
+DB ``config_setting set gate_relaxation_gate_enabled false`` actuates the hook.
+The diff scan is the fast Django-free
 pre-check: only a finding worth acting on pays the Django bootstrap for the
 kill-switch read. Any internal error FAILS OPEN — a gate bug must never wedge a
 commit.
@@ -41,8 +41,8 @@ def _gate_enabled() -> bool:
 
     Reads the kill-switch through ``get_effective_settings`` — the same DB-home
     resolver every sibling gate consults (see ``check_snapshot_baseline``) — so a
-    DB ``config_setting set gate_relaxation_gate_enabled false`` actuates the hook,
-    not only a raw ``~/.teatree.toml`` edit. Requires Django, so the caller reads
+    DB ``config_setting set gate_relaxation_gate_enabled false`` actuates the hook.
+    Requires Django, so the caller reads
     it only once the diff scan has surfaced a finding worth acting on; the DB read
     fails safe to the dataclass default (ENABLED) when Django/the DB is
     unavailable, so only an explicit ``false`` disables the gate.

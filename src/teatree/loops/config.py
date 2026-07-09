@@ -1,25 +1,23 @@
-"""Read ``[loops]`` + ``[loops.<name>]`` from ``~/.teatree.toml`` (#1432, #1434, #2702).
+"""Read the DB-home ``loops`` setting (its global + per-loop tables) (#1432, #1434, #2702).
 
-The orchestrator gates every tick through :class:`LoopsConfig`. The
-``[loops]`` global table carries ``default_cadence`` / ``parallel`` /
-``summary_dm``; the per-loop ``[loops.<name>]`` table carries a
-``cadence`` override. Cadence values accept the suffix shorthand
-(``"30s"``, ``"5m"``, ``"1h"``) or a bare int. Floor 60 seconds —
-sub-minute cadences turn the tick into a fetch storm. Bad values
-silently fall back to the default + one ERROR log; never raise (a
-broken cadence string must not take down the loop).
+The orchestrator gates every tick through :class:`LoopsConfig`. The ``loops``
+setting is a dict: its top-level keys carry ``default_cadence`` / ``parallel`` /
+``summary_dm``, and a nested ``<name>`` table carries a per-loop ``cadence``
+override. Cadence values accept the suffix shorthand (``"30s"``, ``"5m"``,
+``"1h"``) or a bare int. Floor 60 seconds — sub-minute cadences turn the tick
+into a fetch storm. Bad values silently fall back to the default + one ERROR
+log; never raise (a broken cadence string must not take down the loop).
 
 Loop-disabled state is DB-only: :meth:`LoopsConfig.is_enabled` resolves
 purely through the durable DB ``LoopState`` control tier (#1913) — a
 ``PAUSED`` / ``DISABLED`` row skips the loop, an absent / ``ENABLED`` row
-leaves it running. There is no env kill-switch and no ``[loops]`` toml
+leaves it running. There is no env kill-switch and no ``loops``-config
 disabled-state fallback: loop control is ``/loops``
 (``t3 loop enable``/``disable``/``pause``/``resume``) + the DB only.
 """
 
 import dataclasses
 import logging
-import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -67,10 +65,10 @@ def _parse_cadence_str(raw: str, *, default: int) -> int:
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class LoopOverride:
-    """Per-loop cadence override under ``[loops.<name>]``.
+    """Per-loop cadence override under the ``loops`` setting's ``<name>`` table.
 
     ``None`` means "no override; fall back to the loop's own default
-    cadence". The disabled decision is NOT a per-loop toml override: it
+    cadence". The disabled decision is NOT a per-loop config override: it
     resolves through the DB ``LoopState`` tier only (see
     :meth:`LoopsConfig.is_enabled`).
     """
@@ -88,28 +86,17 @@ class LoopsConfig:
     per_loop: dict[str, LoopOverride] = dataclasses.field(default_factory=dict)
 
     @classmethod
-    def load(cls, path: Path | None = None) -> "LoopsConfig":
-        """Read ``[loops]`` / ``[loops.<name>]`` from ``~/.teatree.toml``.
+    def load(cls, db_path: Path | None = None) -> "LoopsConfig":
+        """Read the DB-home ``loops`` setting into a :class:`LoopsConfig`.
 
-        *path* override is for tests. Missing file, missing tables, or
-        unreadable toml all degrade to defaults — never raise. Only
-        cadence/parallel/summary settings are read; loop-disabled state
-        is resolved by :meth:`is_enabled` (DB → default), not here.
+        *db_path* override is for tests. An absent ``loops`` row (or no DB)
+        degrades to defaults — never raise. Only cadence/parallel/summary
+        settings are read; loop-disabled state is resolved by
+        :meth:`is_enabled` (DB → default), not here.
         """
-        toml_path = path if path is not None else Path.home() / ".teatree.toml"
-        try:
-            if not toml_path.is_file():
-                return cls()
-            data = tomllib.loads(toml_path.read_text(encoding="utf-8"))
-        except (OSError, tomllib.TOMLDecodeError):
-            logger.exception("LoopsConfig.load failed reading %s", toml_path)
-            return cls()
+        from teatree.config import cold_reader  # noqa: PLC0415
 
-        loops_table = data.get("loops")
-        if not isinstance(loops_table, dict):
-            return cls()
-
-        return cls._from_table(loops_table)
+        return cls._from_table(cold_reader.mapping_setting("loops", db_path=db_path))
 
     @classmethod
     def _from_table(cls, table: dict[str, Any]) -> "LoopsConfig":
@@ -135,7 +122,7 @@ class LoopsConfig:
         The durable DB-backed ``LoopState`` control tier is the single disable
         authority: a ``PAUSED`` / ``DISABLED`` row forces a skip, while no row
         (or an ``ENABLED`` row) leaves the loop running, so an empty table is a
-        provable no-op. There is no env kill-switch and no ``[loops]`` toml
+        provable no-op. There is no env kill-switch and no ``loops``-config
         disabled-state fallback — loop control is ``t3 loop enable`` /
         ``disable`` / ``pause`` / ``resume`` + the DB only. The decision reads no
         config field, so it is a static method.

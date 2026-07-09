@@ -41,10 +41,8 @@ def _mutant_resolve(mode: OnBehalfPostMode, action: str) -> OnBehalfVerdict:
 class TestManualMutantKilled:
     """The existing assertion is RED on the mutant and GREEN on the real code."""
 
-    def test_real_code_blocks_under_ask(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
-        cfg = tmp_path / ".teatree.toml"
-        cfg.write_text('[teatree]\non_behalf_post_mode = "ask"\n', encoding="utf-8")
-        monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+    def test_real_code_blocks_under_ask(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("T3_ON_BEHALF_POST_MODE", "ask")
         # The assertion that pins the fail-closed gate for a colleague-VISIBLE
         # action (mirrors test_on_behalf_gate.py::TestExplicitModes::
         # test_explicit_ask_blocks_visible_posts_but_exempts_drafts).

@@ -13,10 +13,12 @@ when it cannot run it, exits with the dedicated FAIL-CLOSED code (2) and a
 loud error — distinct from 0 (clean) and 1 (banned term found). These tests
 drive the script under a deliberately-incapable interpreter and assert the
 fail-closed exit, and confirm the happy path (a capable interpreter) still
-returns 0/1.
+returns 0/1. The term list is DB-home, injected via ``T3_CONFIG_DB``.
 """
 
+import json
 import os
+import sqlite3
 import stat
 import subprocess
 from pathlib import Path
@@ -31,10 +33,20 @@ _SCRIPT = _REPO_ROOT / "scripts" / "hooks" / "check-banned-terms.sh"
 _SCANNER_UNAVAILABLE_EXIT = 2
 
 
-def _config(tmp_path: Path) -> Path:
-    config = tmp_path / "config.toml"
-    config.write_text('[teatree]\nbanned_terms = ["acmecorp"]\n', encoding="utf-8")
-    return config
+def _seed_db(tmp_path: Path, terms: tuple[str, ...] = ("acmecorp",)) -> Path:
+    db = tmp_path / "config.sqlite3"
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS teatree_config_setting ("
+        "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+    )
+    conn.execute(
+        "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_terms', ?)",
+        (json.dumps(list(terms)),),
+    )
+    conn.commit()
+    conn.close()
+    return db
 
 
 def _sample(tmp_path: Path, text: str) -> Path:
@@ -54,11 +66,12 @@ def _fake_python(tmp_path: Path, *, body: str) -> Path:
     return bindir
 
 
-def _run_without_uv(script_args: list[str], *, fake_bin: Path) -> subprocess.CompletedProcess[str]:
+def _run_without_uv(script_args: list[str], *, fake_bin: Path, db: Path) -> subprocess.CompletedProcess[str]:
     """Invoke the script with ``uv`` removed from PATH so the python3 fallback fires."""
     env = {
         "PATH": f"{fake_bin}:/usr/bin:/bin",
         "HOME": os.environ.get("HOME", "/tmp"),
+        "T3_CONFIG_DB": str(db),
     }
     return _invoke_script(script_args, env=env)
 
@@ -74,10 +87,11 @@ def _invoke_script(script_args: list[str], *, env: dict[str, str]) -> subprocess
     )
 
 
-def _real_python_env_without_uv() -> dict[str, str]:
+def _real_python_env_without_uv(db: Path) -> dict[str, str]:
     """Inherit the runner env but drop ``uv`` from PATH so the python3 fallback fires."""
     env = {k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"}
     env["PATH"] = ":".join(p for p in env.get("PATH", "").split(":") if "uv" not in p.lower())
+    env["T3_CONFIG_DB"] = str(db)
     return env
 
 
@@ -90,9 +104,9 @@ class TestFallbackFailsClosedOnIncapableInterpreter:
             tmp_path,
             body='echo "Traceback (most recent call last):" >&2\necho "ImportError: PEP 604" >&2\nexit 1\n',
         )
-        config = _config(tmp_path)
+        db = _seed_db(tmp_path)
         sample = _sample(tmp_path, "we ship to acmecorp")
-        result = _run_without_uv(["--config", str(config), str(sample)], fake_bin=fake_bin)
+        result = _run_without_uv([str(sample)], fake_bin=fake_bin, db=db)
         assert result.returncode == _SCANNER_UNAVAILABLE_EXIT, (
             f"crash must fail CLOSED (exit {_SCANNER_UNAVAILABLE_EXIT}), got {result.returncode}\n"
             f"stdout={result.stdout!r} stderr={result.stderr!r}"
@@ -110,18 +124,18 @@ class TestFallbackFailsClosedOnIncapableInterpreter:
                 "exit 1\n"
             ),
         )
-        config = _config(tmp_path)
+        db = _seed_db(tmp_path)
         sample = _sample(tmp_path, "we ship to acmecorp")
-        result = _run_without_uv(["--config", str(config), str(sample)], fake_bin=fake_bin)
+        result = _run_without_uv([str(sample)], fake_bin=fake_bin, db=db)
         assert result.returncode == _SCANNER_UNAVAILABLE_EXIT, (
             f"old interpreter must fail CLOSED, got {result.returncode}\nstderr={result.stderr!r}"
         )
 
     def test_fail_closed_prints_a_loud_error(self, tmp_path: Path) -> None:
         fake_bin = _fake_python(tmp_path, body="exit 1\n")
-        config = _config(tmp_path)
+        db = _seed_db(tmp_path)
         sample = _sample(tmp_path, "clean text")
-        result = _run_without_uv(["--config", str(config), str(sample)], fake_bin=fake_bin)
+        result = _run_without_uv([str(sample)], fake_bin=fake_bin, db=db)
         assert result.returncode == _SCANNER_UNAVAILABLE_EXIT
         loud = (result.stderr + result.stdout).lower()
         assert "scanner" in loud or "python" in loud or "interpreter" in loud, (
@@ -136,13 +150,13 @@ class TestFallbackHappyPathUnderCapableInterpreter:
     def test_clean_text_exits_zero(self, tmp_path: Path) -> None:
         # The real ``python3`` on the test runner IS >= 3.13, so the fallback
         # runs the scanner for real: clean text ⇒ exit 0.
-        config = _config(tmp_path)
+        db = _seed_db(tmp_path)
         sample = _sample(tmp_path, "ship the docs refresh next week")
-        result = _invoke_script(["--config", str(config), str(sample)], env=_real_python_env_without_uv())
+        result = _invoke_script([str(sample)], env=_real_python_env_without_uv(db))
         assert result.returncode == 0, f"clean text must pass, got {result.returncode}\nstderr={result.stderr!r}"
 
     def test_banned_term_exits_one(self, tmp_path: Path) -> None:
-        config = _config(tmp_path)
+        db = _seed_db(tmp_path)
         sample = _sample(tmp_path, "we ship to acmecorp next week")
-        result = _invoke_script(["--config", str(config), str(sample)], env=_real_python_env_without_uv())
+        result = _invoke_script([str(sample)], env=_real_python_env_without_uv(db))
         assert result.returncode == 1, f"banned term must flag (exit 1), got {result.returncode}\n{result.stderr!r}"

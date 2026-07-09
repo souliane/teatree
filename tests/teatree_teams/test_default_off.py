@@ -67,26 +67,20 @@ def _imports_any_pane_module(path: Path) -> bool:
 
 
 class TestPaneLayerDefaultsOff:
-    def test_teams_enabled_defaults_off(self, tmp_path: Path) -> None:
-        cfg = tmp_path / ".teatree.toml"
-        cfg.write_text("[teatree]\n", encoding="utf-8")
-        assert load_config(cfg).user.teams_enabled is False
+    def test_teams_enabled_defaults_off(self) -> None:
+        assert load_config().user.teams_enabled is False
 
-    def test_pane_budget_defaults_are_inert(self, tmp_path: Path) -> None:
-        cfg = tmp_path / ".teatree.toml"
-        cfg.write_text("[teatree]\n", encoding="utf-8")
-        settings = load_config(cfg).user
+    def test_pane_budget_defaults_are_inert(self) -> None:
+        settings = load_config().user
         # Conservative defaults: one pane, 30-minute idle threshold.
         assert settings.teams_max_panes == 1
         assert settings.teams_idle_minutes == 30
 
-    def test_display_defaults_off(self, tmp_path: Path) -> None:
+    def test_display_defaults_off(self) -> None:
         from teatree.config.enums import TeamsDisplay  # noqa: PLC0415
 
-        cfg = tmp_path / ".teatree.toml"
-        cfg.write_text("[teatree]\n", encoding="utf-8")
         # Default-OFF presentation: the in-process SDK path stands unchanged.
-        assert load_config(cfg).user.teams_display is TeamsDisplay.NONE
+        assert load_config().user.teams_display is TeamsDisplay.NONE
 
     def test_no_unsanctioned_live_path_module_imports_a_pane_module(self) -> None:
         offenders = [str(p.relative_to(_SRC_ROOT)) for p in _live_path_files() if _imports_any_pane_module(p)]

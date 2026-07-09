@@ -25,8 +25,6 @@ pipeline.
 """
 
 import os
-import tomllib
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from teatree.loops.base import MiniLoop
@@ -45,15 +43,16 @@ DREAM_LEASE_SECONDS = DREAM_PASS_BUDGET_SECONDS + 5 * 60
 #: match wins:
 #:
 #: 1. ``T3_DREAM_<PHASE>`` env — ``0``/``false``/``no``/``off`` disables, an
-#:    explicit truthy value enables, an absent/unknown value defers to the toml.
-#: 2. ``[loops.dream] <phase>`` in ``~/.teatree.toml`` — an explicit bool.
+#:    explicit truthy value enables, an absent/unknown value defers to the DB.
+#: 2. the ``dream`` sub-table of the DB ``loops`` setting, key ``<phase>`` — an
+#:    explicit bool.
 #:
-#: Default (no env, no toml key) is ON, so each phase is live out of the box while
-#: a single toml line (or a falsy env var) turns it off without a code change.
+#: Default (no env, no DB key) is ON, so each phase is live out of the box while
+#: a single ``config_setting set`` (or a falsy env var) turns it off.
 _FALSY = frozenset({"0", "false", "no", "off"})
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 
-#: One phase toggle: the ``[loops.dream]`` toml key and its ``T3_DREAM_*`` env var.
+#: One phase toggle: the DB ``loops.dream`` key and its ``T3_DREAM_*`` env var.
 _PROPOSE_EVALS = ("propose_evals", "T3_DREAM_PROPOSE_EVALS")
 _CROSS_LINK = ("cross_link", "T3_DREAM_CROSS_LINK")
 _MERGE = ("merge", "T3_DREAM_MERGE")
@@ -61,147 +60,131 @@ _REINDEX = ("reindex", "T3_DREAM_REINDEX")
 _DECAY = ("decay", "T3_DREAM_DECAY")
 
 
-def _phase_enabled(toml_key: str, env_var: str, *, config_path: Path | None) -> bool:
-    """Resolve a dream-phase toggle (default ON) across the env + toml kill-switch.
+def _dream_table() -> dict:
+    """The ``dream`` sub-table of the DB ``loops`` setting; ``{}`` on absence/failure."""
+    from teatree.config import cold_reader  # noqa: PLC0415
+
+    dream = cold_reader.mapping_setting("loops").get("dream")
+    return dream if isinstance(dream, dict) else {}
+
+
+def _phase_enabled(key: str, env_var: str) -> bool:
+    """Resolve a dream-phase toggle (default ON) across the env + DB kill-switch.
 
     The env layer wins when it carries an explicit truthy/falsy value; an absent
-    or unrecognised env value defers to the ``[loops.dream] <toml_key>`` key, which
-    itself defaults to ON. *config_path* overrides the toml location for tests.
+    or unrecognised env value defers to the DB ``loops.dream`` key, default ON.
     """
     raw_env = os.environ.get(env_var, "").strip().lower()
     if raw_env in _FALSY:
         return False
     if raw_env in _TRUTHY:
         return True
-    return _toml_phase_enabled(toml_key, config_path)
-
-
-def _toml_phase_enabled(toml_key: str, config_path: Path | None) -> bool:
-    """Read ``[loops.dream] <toml_key>`` from the toml; default ON, never raise."""
-    path = config_path if config_path is not None else Path.home() / ".teatree.toml"
-    try:
-        if not path.is_file():
-            return True
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError):
-        return True
-    loops = data.get("loops")
-    dream_table = loops.get("dream", {}) if isinstance(loops, dict) else {}
-    value = dream_table.get(toml_key) if isinstance(dream_table, dict) else None
+    value = _dream_table().get(key)
     return value if isinstance(value, bool) else True
 
 
-def propose_evals_enabled(*, config_path: Path | None = None) -> bool:
+def propose_evals_enabled() -> bool:
     """Whether the nightly ``tick`` should request eval proposals (default ON)."""
-    return _phase_enabled(*_PROPOSE_EVALS, config_path=config_path)
+    return _phase_enabled(*_PROPOSE_EVALS)
 
 
-def cross_link_enabled(*, config_path: Path | None = None) -> bool:
+def cross_link_enabled() -> bool:
     """Whether phase 4 (cross-link related memories) runs (default ON)."""
-    return _phase_enabled(*_CROSS_LINK, config_path=config_path)
+    return _phase_enabled(*_CROSS_LINK)
 
 
-def merge_enabled(*, config_path: Path | None = None) -> bool:
+def merge_enabled() -> bool:
     """Whether phase 4b (merge near-duplicate memories) runs (default ON, #2723)."""
-    return _phase_enabled(*_MERGE, config_path=config_path)
+    return _phase_enabled(*_MERGE)
 
 
-def reindex_enabled(*, config_path: Path | None = None) -> bool:
+def reindex_enabled() -> bool:
     """Whether phase 5 (regenerate ``MEMORY.md``) runs (default ON)."""
-    return _phase_enabled(*_REINDEX, config_path=config_path)
+    return _phase_enabled(*_REINDEX)
 
 
-def decay_enabled(*, config_path: Path | None = None) -> bool:
+def decay_enabled() -> bool:
     """Whether phase 6 (decay/archive stale memories) runs (default ON)."""
-    return _phase_enabled(*_DECAY, config_path=config_path)
+    return _phase_enabled(*_DECAY)
 
 
 #: Pass-2 memory promotion (#2426) FILES backlog tickets, so it is default OFF —
-#: opt in with ``T3_DREAM_MEMORY_PROMOTE=1`` / ``[loops.dream] memory_promote =
-#: true``. Absent, the dream pass never triages the ledger or files a ticket (no
+#: opt in with ``T3_DREAM_MEMORY_PROMOTE=1`` / the DB ``loops.dream memory_promote =
+#: true`` key. Absent, the dream pass never triages the ledger or files a ticket (no
 #: behaviour change).
 _MEMORY_PROMOTE = ("memory_promote", "T3_DREAM_MEMORY_PROMOTE")
 
 
-def memory_promote_enabled(*, config_path: Path | None = None) -> bool:
+def memory_promote_enabled() -> bool:
     """Whether Pass-2 memory→fix promotion runs (default OFF, #2426)."""
     raw_env = os.environ.get(_MEMORY_PROMOTE[1], "").strip().lower()
     if raw_env in _TRUTHY:
         return True
     if raw_env in _FALSY:
         return False
-    return _toml_phase_disabled_by_default(_MEMORY_PROMOTE[0], config_path)
+    return _dream_phase_default_off(_MEMORY_PROMOTE[0])
 
 
 #: The LLM-backed full-scenario derivation (#2447) is the one dream phase that is
 #: default OFF — it makes a metered SDK call per candidate and stages real eval
-#: files. Opt in with ``T3_DREAM_DERIVE_EVALS=1`` / ``[loops.dream] derive_evals =
-#: true``; absent, the dream pass never invokes the LLM synthesizer (no behaviour
+#: files. Opt in with ``T3_DREAM_DERIVE_EVALS=1`` / the DB ``loops.dream derive_evals =
+#: true`` key; absent, the dream pass never invokes the LLM synthesizer (no behaviour
 #: change). The deterministic ``promote`` path (default ON) is unaffected.
 _DERIVE_EVALS = ("derive_evals", "T3_DREAM_DERIVE_EVALS")
 
 
-def derive_evals_enabled(*, config_path: Path | None = None) -> bool:
+def derive_evals_enabled() -> bool:
     """Whether the LLM-backed full-scenario derivation runs (default OFF, #2447)."""
     raw_env = os.environ.get(_DERIVE_EVALS[1], "").strip().lower()
     if raw_env in _TRUTHY:
         return True
     if raw_env in _FALSY:
         return False
-    return _toml_phase_disabled_by_default(_DERIVE_EVALS[0], config_path)
+    return _dream_phase_default_off(_DERIVE_EVALS[0])
 
 
 #: Phase 3c — the instruction-compliance accountant (#2663) — FILES enforcement
 #: tickets for recurrences, so it is default OFF and ``--full``-gated, mirroring the
 #: Pass-2 memory-promotion posture. Opt in with ``T3_DREAM_COMPLIANCE=1`` /
-#: ``[loops.dream] compliance = true``; absent, the dream pass never escalates or
+#: the DB ``loops.dream compliance = true`` key; absent, the dream pass never escalates or
 #: persists a compliance snapshot (no behaviour change).
 _COMPLIANCE = ("compliance", "T3_DREAM_COMPLIANCE")
 
 
-def compliance_enabled(*, config_path: Path | None = None) -> bool:
+def compliance_enabled() -> bool:
     """Whether phase-3c instruction-compliance accounting runs (default OFF, #2663)."""
     raw_env = os.environ.get(_COMPLIANCE[1], "").strip().lower()
     if raw_env in _TRUTHY:
         return True
     if raw_env in _FALSY:
         return False
-    return _toml_phase_disabled_by_default(_COMPLIANCE[0], config_path)
+    return _dream_phase_default_off(_COMPLIANCE[0])
 
 
 #: Phase 3d — the automatable-ask promoter (#2663), the "improve-with-new-stuff"
 #: sibling of the compliance accountant. It PROMOTES recurring manual user asks to a
 #: fix-and-merge (a checkbox + scheduled coding task). Gated by an OR at the call site
 #: (``if not force_all_phases and not automation_asks_enabled()``): it runs on ``--full``
-#: OR when opted in with ``T3_DREAM_AUTOMATION_ASKS=1`` / ``[loops.dream] automation_asks
-#: = true`` — so ``--full`` alone triggers it, whereas the compliance phase's AND-gate
+#: OR when opted in with ``T3_DREAM_AUTOMATION_ASKS=1`` / the DB ``loops.dream automation_asks
+#: = true`` key — so ``--full`` alone triggers it, whereas the compliance phase's AND-gate
 #: additionally requires its own toggle even under ``--full``. Absent both, the dream
 #: pass never promotes an ask (no behaviour change).
 _AUTOMATION_ASKS = ("automation_asks", "T3_DREAM_AUTOMATION_ASKS")
 
 
-def automation_asks_enabled(*, config_path: Path | None = None) -> bool:
+def automation_asks_enabled() -> bool:
     """Whether phase-3d automatable-ask promotion runs (default OFF, #2663)."""
     raw_env = os.environ.get(_AUTOMATION_ASKS[1], "").strip().lower()
     if raw_env in _TRUTHY:
         return True
     if raw_env in _FALSY:
         return False
-    return _toml_phase_disabled_by_default(_AUTOMATION_ASKS[0], config_path)
+    return _dream_phase_default_off(_AUTOMATION_ASKS[0])
 
 
-def _toml_phase_disabled_by_default(toml_key: str, config_path: Path | None) -> bool:
-    """Read ``[loops.dream] <toml_key>`` from the toml; default OFF, never raise."""
-    path = config_path if config_path is not None else Path.home() / ".teatree.toml"
-    try:
-        if not path.is_file():
-            return False
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError):
-        return False
-    loops = data.get("loops")
-    dream_table = loops.get("dream", {}) if isinstance(loops, dict) else {}
-    value = dream_table.get(toml_key) if isinstance(dream_table, dict) else None
+def _dream_phase_default_off(key: str) -> bool:
+    """Read the DB ``loops.dream`` key; default OFF, never raise."""
+    value = _dream_table().get(key)
     return value if isinstance(value, bool) else False
 
 

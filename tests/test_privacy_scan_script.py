@@ -9,7 +9,9 @@ invoke the script the same way ``run_script`` does so the entrypoint is
 exercised, not mocked.
 """
 
+import json
 import os
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -32,13 +34,13 @@ def _run(stdin: str) -> subprocess.CompletedProcess[str]:
 
 
 def _run_env(stdin: str, env_overrides: dict[str, str]) -> subprocess.CompletedProcess[str]:
-    """Invoke the script with a hermetic env: real ``T3_BANNED_TERMS*`` cleared first.
+    """Invoke the script with a hermetic env: real banned-terms sources cleared first.
 
-    Clearing the inherited banned-terms env keeps a developer's real
-    ``~/.teatree.toml`` / ``T3_BANNED_TERMS`` out of the assertion, so the test
-    exercises only the planted config/env it sets.
+    Clearing the inherited ``T3_BANNED_TERMS`` env and ``T3_CONFIG_DB`` keeps a
+    developer's real DB / env out of the assertion, so the test exercises only
+    the seeded DB / env it sets.
     """
-    env = {k: v for k, v in os.environ.items() if k not in {"T3_BANNED_TERMS", "T3_BANNED_TERMS_CONFIG"}}
+    env = {k: v for k, v in os.environ.items() if k not in {"T3_BANNED_TERMS", "T3_CONFIG_DB"}}
     env.update(env_overrides)
     return subprocess.run(
         [sys.executable, str(SCRIPT), "-"],
@@ -317,65 +319,68 @@ class TestGitSshRemoteIsNotAnEmail:
 
 
 class TestPrivacyScanBannedTermsSource:
-    """The banned-terms source is unified onto the canonical ``[teatree].banned_terms``.
+    """The banned-terms source is DB-home ``banned_terms``.
 
-    Before config-unify task #36 the public-leak pre-push gate sourced banned
-    terms ONLY from the ``T3_BANNED_TERMS`` env var (never set in practice, so
-    the detector was silently inert), while every other banned-terms gate read
-    ``[teatree].banned_terms`` from ``~/.teatree.toml``. These tests pin the
-    unified resolution: env override → TOML home → fail-closed (never a SILENT
-    empty ban list). All terms are SYNTHETIC, so this public test leaks nothing.
+    The public-leak pre-push gate reads the SAME ``banned_terms`` list the
+    commit/posting gates do: ``T3_BANNED_TERMS`` env override → the
+    ``banned_terms`` ``ConfigSetting`` row → fail-closed (never a SILENT empty
+    ban list). All terms are SYNTHETIC, so this public test leaks nothing.
     """
 
-    def _config(self, tmp_path: Path, body: str) -> Path:
-        config = tmp_path / ".teatree.toml"
-        config.write_text(body, encoding="utf-8")
-        return config
+    def _seed(self, tmp_path: Path, terms: list[str]) -> Path:
+        db = tmp_path / "config.sqlite3"
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting ("
+            "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_terms', ?)",
+            (json.dumps(terms),),
+        )
+        conn.commit()
+        conn.close()
+        return db
 
-    def test_toml_configured_term_is_now_a_finding(self, tmp_path: Path) -> None:
-        # The gap this closes: a configured brand term in the diff now trips the
-        # pre-push leak gate, where the env-only source left it invisible.
-        config = self._config(tmp_path, '[teatree]\nbanned_terms = ["acmeterm"]\n')
-        result = _run_env("a line mentioning acmeterm here\n", {"T3_BANNED_TERMS_CONFIG": str(config)})
+    def test_db_configured_term_is_a_finding(self, tmp_path: Path) -> None:
+        # A configured brand term in the diff trips the pre-push leak gate.
+        db = self._seed(tmp_path, ["acmeterm"])
+        result = _run_env("a line mentioning acmeterm here\n", {"T3_CONFIG_DB": str(db)})
         assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
         assert "banned_term" in result.stdout
         assert "acmeterm" in result.stdout
 
-    def test_toml_configured_term_absent_from_input_is_clean(self, tmp_path: Path) -> None:
-        config = self._config(tmp_path, '[teatree]\nbanned_terms = ["acmeterm"]\n')
-        result = _run_env("a perfectly ordinary line of prose\n", {"T3_BANNED_TERMS_CONFIG": str(config)})
+    def test_db_configured_term_absent_from_input_is_clean(self, tmp_path: Path) -> None:
+        db = self._seed(tmp_path, ["acmeterm"])
+        result = _run_env("a perfectly ordinary line of prose\n", {"T3_CONFIG_DB": str(db)})
         assert result.returncode == 0, result.stdout + result.stderr
 
-    def test_env_var_overrides_the_toml_source(self, tmp_path: Path) -> None:
-        config = self._config(tmp_path, '[teatree]\nbanned_terms = ["fromtoml"]\n')
+    def test_env_var_overrides_the_db_source(self, tmp_path: Path) -> None:
+        db = self._seed(tmp_path, ["fromdb"])
         result = _run_env(
             "a line mentioning envterm here\n",
-            {"T3_BANNED_TERMS_CONFIG": str(config), "T3_BANNED_TERMS": "envterm"},
+            {"T3_CONFIG_DB": str(db), "T3_BANNED_TERMS": "envterm"},
         )
         assert result.returncode == PRIVACY_FINDINGS_EXIT_CODE, result.stdout + result.stderr
         assert "envterm" in result.stdout
 
-    def test_unreadable_config_warns_loudly_and_never_silently_inert(self, tmp_path: Path) -> None:
-        # Anti-vacuity: a present-but-unset config is a load-bug-shaped UNSET, so
-        # the banned-terms detector must SAY it is inert on stderr rather than
+    def test_unset_row_warns_loudly_and_never_silently_inert(self, tmp_path: Path) -> None:
+        # Anti-vacuity: a DB with no banned_terms row is a load-bug-shaped UNSET,
+        # so the banned-terms detector must SAY it is inert on stderr rather than
         # silently degrade to an empty ban list. (The other detectors still run,
         # so the pre-push gate is never wedged.)
-        config = self._config(tmp_path, '[teatree]\nprivate_repos = ["acme/widget"]\n')
-        result = _run_env("a perfectly ordinary line of prose\n", {"T3_BANNED_TERMS_CONFIG": str(config)})
+        empty_db = tmp_path / "empty.sqlite3"
+        conn = sqlite3.connect(str(empty_db))
+        conn.execute("CREATE TABLE teatree_config_setting (id INTEGER PRIMARY KEY, scope TEXT, key TEXT, value TEXT)")
+        conn.commit()
+        conn.close()
+        result = _run_env("a perfectly ordinary line of prose\n", {"T3_CONFIG_DB": str(empty_db)})
         assert result.returncode == 0, result.stdout + result.stderr
         assert "banned-terms" in result.stderr.lower()
         assert "inert" in result.stderr.lower()
 
-    def test_no_config_and_no_env_is_a_silent_clean_no_op(self, tmp_path: Path) -> None:
-        result = _run_env(
-            "a perfectly ordinary line of prose\n",
-            {"T3_BANNED_TERMS_CONFIG": str(tmp_path / "absent.toml")},
-        )
-        assert result.returncode == 0, result.stdout + result.stderr
-        assert "inert" not in result.stderr.lower()
-
     def test_explicit_empty_list_is_a_silent_deliberate_no_op(self, tmp_path: Path) -> None:
-        config = self._config(tmp_path, "[teatree]\nbanned_terms = []\n")
-        result = _run_env("a perfectly ordinary line of prose\n", {"T3_BANNED_TERMS_CONFIG": str(config)})
+        db = self._seed(tmp_path, [])
+        result = _run_env("a perfectly ordinary line of prose\n", {"T3_CONFIG_DB": str(db)})
         assert result.returncode == 0, result.stdout + result.stderr
         assert "inert" not in result.stderr.lower()

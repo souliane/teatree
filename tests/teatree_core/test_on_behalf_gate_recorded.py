@@ -38,15 +38,11 @@ pytestmark = pytest.mark.django_db
 def _set_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str | None) -> None:
     """Stage ``on_behalf_post_mode`` (DB-home, #1775) via the ``T3_*`` env tier.
 
-    A ``[teatree]`` TOML value for ``on_behalf_post_mode`` is ignored on read
-    under the hard partition, so the mode is set through the env layer (which
-    wins for a DB-home key and needs no DB). ``mode=None`` leaves it unset so
-    the field resolves to its ``DRAFT_OR_ASK`` default. ``CONFIG_PATH`` is
-    pinned at an empty TOML so the developer's real config is never read.
+    The mode is set through the env layer (which wins for a DB-home key and needs
+    no DB). ``mode=None`` leaves it unset so the field resolves to its
+    ``DRAFT_OR_ASK`` default. The global ``_isolate_env`` fixture already isolates
+    the config store so the developer's real config is never read.
     """
-    cfg = tmp_path / ".teatree.toml"
-    cfg.write_text("[teatree]\n", encoding="utf-8")
-    monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
     if mode is not None:
         monkeypatch.setenv("T3_ON_BEHALF_POST_MODE", mode)
 

@@ -367,7 +367,7 @@ Usage: t3 config show [OPTIONS]
 
  Read-only view of config: text-file intent vs DB regenerable cache (#628).
 
- The intent section is ``~/.teatree.toml`` resolved — the user-authored
+ The intent section is the DB config store resolved — the user-authored
  source of truth. The derived section is DB / data-dir state that can be
  deleted and rebuilt from the text files; every entry is flagged
  regenerable so the cache-vs-intent invariant is visible. Reads only.
@@ -452,11 +452,12 @@ Usage: t3 banned-terms scan-tree [OPTIONS]
 
  Scan every git-tracked file for committed banned terms.
 
+ The brand list is DB-home: ``$TEATREE_BANNED_BRANDS`` (a CI secret) or the
+ canonical ``banned_brands`` ``ConfigSetting`` row.
+
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --repo-root             PATH  Repository root to scan (defaults to the       │
 │                               current directory).                            │
-│ --config                PATH  Override the ~/.teatree.toml term-list config  │
-│                               (else resolved as the gate does).              │
 │ --require-brands              HARD-FAIL (exit 2) on an explicit-empty brand  │
 │                               list (`banned_brands = []`), instead of        │
 │                               warning and exiting 0. A genuinely-unset list  │
@@ -2986,7 +2987,7 @@ Usage: t3 tool validate-skill-refs [OPTIONS]
  Enumerates the canonical skill set from the actual installed/remote skills
  (the same search dirs the skill-loading hook reads — ``~/.claude/skills/*``
  symlinks plus this plugin's ``skills/`` tree), then checks every reference
- site: the ``~/.teatree-skills.yml`` keyword->skill routing config and the
+ site: the ``$HOME/.teatree-skills.yml`` keyword->skill routing config and the
  ``agents/*.md`` frontmatter ``skills:`` / ``companion_skills:`` lists. A
  dangling name (e.g. the real ``ac-reviewing-skills`` ->
  ``ac-reviewing-codebase``
@@ -2996,7 +2997,7 @@ Usage: t3 tool validate-skill-refs [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --config            PATH  Path to the keyword->skill routing config          │
 │                           (default: $T3_SUPPLEMENTARY_SKILLS or              │
-│                           ~/.teatree-skills.yml).                            │
+│                           $HOME/.teatree-skills.yml).                        │
 │ --agents-dir        PATH  Directory of agent *.md files to scan (default:    │
 │                           this plugin's agents/).                            │
 │ --json                    Emit machine-readable JSON.                        │
@@ -3163,17 +3164,14 @@ Usage: t3 setup slack-bot [OPTIONS]
  Register or update a per-overlay Slack bot and store its tokens via ``pass``.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ *  --overlay                TEXT  Overlay name as registered in              │
-│                                   `~/.teatree.toml`.                         │
+│ *  --overlay                TEXT  Overlay name as registered in the DB       │
+│                                   overlays registry.                         │
 │                                   [required]                                 │
 │    --reset                        Rotate the existing bot + app tokens; skip │
 │                                   the manifest URL.                          │
 │    --update                       Force the in-place manifest update path    │
 │                                   (prompts for the app id if none recorded). │
 │    --skip-smoke-test              Skip the round-trip DM verification.       │
-│    --config                 PATH  Path to teatree config (default:           │
-│                                   ~/.teatree.toml).                          │
-│                                   [default: ~/.teatree.toml]                 │
 │    --help                         Show this message and exit.                │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -3186,10 +3184,8 @@ Usage: t3 setup slack-user-token [OPTIONS]
  Re-authorize the personal Slack xoxp token and store it via ``pass``.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --reset               Overwrite the existing token without prompting.        │
-│ --config        PATH  Path to teatree config (default: ~/.teatree.toml).     │
-│                       [default: ~/.teatree.toml]                             │
-│ --help                Show this message and exit.                            │
+│ --reset          Overwrite the existing token without prompting.             │
+│ --help           Show this message and exit.                                 │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -3204,10 +3200,7 @@ Usage: t3 setup slack-provision [OPTIONS]
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
 │ --overlay                              TEXT  Overlay to provision (default:  │
 │                                              every Slack-backed overlay in   │
-│                                              config).                        │
-│ --config                               PATH  Path to teatree config          │
-│                                              (default: ~/.teatree.toml).     │
-│                                              [default: ~/.teatree.toml]      │
+│                                              the DB registry).               │
 │ --open-browser    --no-open-browser          Open the OAuth (re)install URL  │
 │                                              in the browser.                 │
 │                                              [default: open-browser]         │
@@ -3314,7 +3307,7 @@ Usage: t3 overlay install [OPTIONS] NAME
  Install an overlay editable into the current teatree worktree for dogfooding.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
-│ *    name      TEXT  Overlay name as configured in ~/.teatree.toml.          │
+│ *    name      TEXT  Overlay name as configured in the DB overlays registry. │
 │                      [required]                                              │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
@@ -6727,10 +6720,12 @@ Usage: t3 teatree e2e external [OPTIONS]
 
  Three sources for the Playwright working directory (first match wins):
 
- - ``--repo <name>``: clone ```` (``~/.teatree.toml``) and use its ``e2e_dir``.
+ - ``--repo <name>``: clone the named entry from the DB-home ``e2e_repos``
+ config and use its ``e2e_dir``.
  - else the overlay's ``get_e2e_config`` repo (its ``url`` cloned at ``ref``),
  when declared.
- - else the ``T3_PRIVATE_TESTS`` env var / ``.private_tests`` directory.
+ - else the ``T3_PRIVATE_TESTS`` env var / the DB-home ``private_tests``
+ directory.
 
  ``--branch``/``--ref`` overrides a clone's specs ref (the ``--repo`` default
  or the
@@ -9000,13 +8995,13 @@ Usage: t3 teatree config_setting set [OPTIONS] KEY VALUE
  Upsert the DB override row for *key* (in *overlay*'s scope or global) to
  *value*.
 
- Refuses a key in neither ``OVERLAY_OVERRIDABLE_SETTINGS`` nor
- ``REGISTRY_SETTINGS``, a *value* that is not valid JSON, and a *value* that
- JSON-parses but is invalid for the setting's type, leaving the store
- untouched on any error.
+ Refuses a key in none of ``OVERLAY_OVERRIDABLE_SETTINGS`` /
+ ``REGISTRY_SETTINGS`` / ``COLD_SETTINGS``, a *value* that is not valid JSON,
+ and a *value* that JSON-parses but is invalid for the setting's type,
+ leaving the store untouched on any error.
 
- ``--overlay <name>`` scopes the row to one overlay (the DB twin of a
- per-overlay TOML override); omitted, it writes the global scope.
+ ``--overlay <name>`` scopes the row to one overlay (the per-overlay
+ override); omitted, it writes the global scope.
 
  The type check runs the **same** registry parser the resolver applies on
  read (#258): an out-of-enum ``mode`` or a quoted ``"false"`` for a
@@ -9031,15 +9026,13 @@ Usage: t3 teatree config_setting set [OPTIONS] KEY VALUE
 ```
 Usage: t3 teatree config_setting get [OPTIONS] KEY
 
- Print the resolved value for *key* and name its source (DB vs file/env).
+ Print the resolved value for *key* and name its source (DB vs env/default).
 
- The read side of the dual-read store: when a ``ConfigSetting`` row exists
- in the requested scope it is reported as the ``db`` source; otherwise the
- value falls through to the file/env layer and is reported as the
- ``file/env`` source. ``--overlay <name>`` reads that overlay's scope.
- Refuses a key in neither ``OVERLAY_OVERRIDABLE_SETTINGS`` nor
- ``REGISTRY_SETTINGS`` so a typo is loud, not a silent ``file/env`` answer
- for a non-setting.
+ When a ``ConfigSetting`` row exists in the requested scope it is reported as
+ the ``db`` source; otherwise the value falls through to the env/default layer
+ and is reported as the ``env/default`` source. ``--overlay <name>`` reads that
+ overlay's scope. Refuses an unknown key so a typo is loud, not a silent
+ answer for a non-setting.
 
 ╭─ Arguments ──────────────────────────────────────────────────────────────────╮
 │ *    key      TEXT  UserSettings field name to read (must be overridable).   │
@@ -9092,37 +9085,7 @@ Usage: t3 teatree config_setting list [OPTIONS]
 ```
 Usage: t3 teatree config_setting import [OPTIONS]
 
- Seed the DB store from the operational toml keys (one-time migration).
-
- The dual-read migration step (#938): every ```` key that is a
- registered ``OVERLAY_OVERRIDABLE_SETTINGS`` field is coerced through that
- registry's parser and upserted into the GLOBAL store, and every operational
- key under an ```` table is upserted into THAT overlay's
- scope — the DB twin of the per-overlay TOML override (#1775). So an install
- with both a global ``mode`` and a per-overlay ``mode = "auto"`` migrates both
- tiers in one pass. Bootstrap-file-only keys (``private_repos`` /
- ``DATABASE_URL`` / …), the overlay's own ``path`` / ``url`` discovery keys,
- and unknown keys are skipped — only operational settings move. The upsert
- makes a re-run idempotent.
-
- ``--no-clobber`` seeds only keys ABSENT from the store and leaves an
- existing row untouched — the mode ``t3 setup`` runs on every update so a
- value the user changed via ``config_setting set`` survives. Without it
- (the default), a re-import refreshes every operational key from the file.
-
- Reads the RAW file (``load_raw_toml``), NOT ``load_config().raw`` — the latter
- has already had its ``overlays`` / ``e2e_repos`` registry tables REPLACED by
- the
- DB rows (``_inject_db_registries``), so importing it would re-write the stale
- DB
- value and silently never migrate an edited ``.path`` — the exact
- mask this remediation exists to clear (souliane/teatree#128).
-
-╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --no-clobber          Seed only keys absent from the store; never overwrite  │
-│                       an existing DB row.                                    │
-│ --help                Show this message and exit.                            │
-╰──────────────────────────────────────────────────────────────────────────────╯
+ Seed the DB store from operational  toml keys (one-time).
 ```
 
 #### `t3 teatree approval_dial`

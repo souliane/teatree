@@ -16,15 +16,46 @@ These tests pin the contract of the canonical
     duplicate), so both DM-channel call sites agree on one channel id.
 """
 
+import json
+import sqlite3
+
 from teatree.cli.review import live_approval
 from teatree.core import notify
 from teatree.core.notify import resolve_user_channel
 
 
-def _write_cfg(tmp_path, monkeypatch, body: str) -> None:
-    cfg = tmp_path / ".teatree.toml"
-    cfg.write_text(body, encoding="utf-8")
-    monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+def _write_cfg(
+    tmp_path,
+    monkeypatch,
+    *,
+    global_user_id: str = "",
+    global_channel: str = "",
+    overlays: dict | None = None,
+) -> None:
+    """Seed the DB-home slack routing config (global keys + ``overlays`` registry)."""
+    rows: dict[str, object] = {}
+    if global_user_id:
+        rows["slack_user_id"] = global_user_id
+    if global_channel:
+        rows["slack_user_channel"] = global_channel
+    if overlays:
+        rows["overlays"] = overlays
+    db = tmp_path / "config.sqlite3"
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        for key, value in rows.items():
+            conn.execute(
+                "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
+                (key, json.dumps(value)),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    monkeypatch.setenv("T3_CONFIG_DB", str(db))
 
 
 class TestResolveUserChannel:
@@ -32,7 +63,7 @@ class TestResolveUserChannel:
 
     def test_global_channel_is_read(self, tmp_path, monkeypatch) -> None:
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
-        _write_cfg(tmp_path, monkeypatch, '[teatree]\nslack_user_channel = "D-GLOBAL"\n')
+        _write_cfg(tmp_path, monkeypatch, global_channel="D-GLOBAL")
 
         assert notify.resolve_user_channel() == "D-GLOBAL"
 
@@ -41,7 +72,8 @@ class TestResolveUserChannel:
         _write_cfg(
             tmp_path,
             monkeypatch,
-            '[teatree]\nslack_user_channel = "D-GLOBAL"\n\n[overlays.acme]\nslack_user_channel = "D-OVERLAY"\n',
+            global_channel="D-GLOBAL",
+            overlays={"acme": {"slack_user_channel": "D-OVERLAY"}},
         )
 
         assert notify.resolve_user_channel() == "D-OVERLAY"
@@ -51,14 +83,15 @@ class TestResolveUserChannel:
         _write_cfg(
             tmp_path,
             monkeypatch,
-            '[teatree]\nslack_user_channel = "D-GLOBAL"\n\n[overlays.acme]\nslack_user_id = "U-X"\n',
+            global_channel="D-GLOBAL",
+            overlays={"acme": {"slack_user_id": "U-X"}},
         )
 
         assert notify.resolve_user_channel() == "D-GLOBAL"
 
     def test_no_channel_configured_is_empty(self, tmp_path, monkeypatch) -> None:
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
-        _write_cfg(tmp_path, monkeypatch, '[teatree]\nslack_user_id = "U-X"\n')
+        _write_cfg(tmp_path, monkeypatch, global_user_id="U-X")
 
         assert notify.resolve_user_channel() == ""
 
@@ -69,12 +102,9 @@ class TestResolveUserChannel:
         _write_cfg(
             tmp_path,
             monkeypatch,
-            "[teatree]\n"
-            'slack_user_id = "U-GLOBAL"\n'
-            'slack_user_channel = "D-GLOBAL"\n\n'
-            "[overlays.acme]\n"
-            'slack_user_id = "U-OVERLAY"\n'
-            'slack_user_channel = "D-OVERLAY"\n',
+            global_user_id="U-GLOBAL",
+            global_channel="D-GLOBAL",
+            overlays={"acme": {"slack_user_id": "U-OVERLAY", "slack_user_channel": "D-OVERLAY"}},
         )
 
         assert notify.resolve_user_id() == "U-OVERLAY"
@@ -94,7 +124,8 @@ class TestLiveApprovalCliUsesCanonicalResolver:
         _write_cfg(
             tmp_path,
             monkeypatch,
-            '[teatree]\nslack_user_channel = "D-GLOBAL"\n\n[overlays.acme]\nslack_user_channel = "D-OVERLAY"\n',
+            global_channel="D-GLOBAL",
+            overlays={"acme": {"slack_user_channel": "D-OVERLAY"}},
         )
 
         assert resolve_user_channel() == "D-OVERLAY"

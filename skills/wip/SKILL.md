@@ -26,7 +26,7 @@ The dial, lowest to highest throughput (default **`medium`**):
 ## Resolving the invocation
 
 - **No argument (`/t3:wip`)** → treat as **`full`**: arm the boost loop. A bare invocation is the deliberate "go fast now" override regardless of the persisted baseline.
-- **`/t3:wip <level>`** → run that level once and persist it as the resting dial: call `t3 <overlay> wip set <level>` (never hand-edit `~/.teatree.toml`). Then act on the level per the table below.
+- **`/t3:wip <level>`** → run that level once and persist it as the resting dial: call `t3 <overlay> wip set <level>` (never hand-edit config). Then act on the level per the table below.
 - **`/t3:wip show`** → report the effective dial via `t3 <overlay> wip show` and stop.
 - **`/t3:wip boost N`** → arm the pool-refill burst at a live-worker target of `N`: `t3 <overlay> wip boost N` (sets `wip = boost` and `boost_concurrency = N` in one write). Admission drains queued TODO/followup work before auto-starting new tickets.
 

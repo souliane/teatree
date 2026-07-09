@@ -1,13 +1,11 @@
-"""Cold-hook overlay-registry readers resolve the migrated DB row when the toml is gone.
+"""Cold-hook overlay-registry readers resolve the migrated DB row, DB-only.
 
-The eliminate-~/.teatree.toml cutover migrated the ``overlays`` registry into the
-DB-home ``ConfigSetting`` store, but three Django-free cold-hook readers still
-parsed ``~/.teatree.toml`` directly. On a DELETED toml they degraded silently and
-weakened the overlay safety gates. These tests build a REAL sqlite config DB (the
-same ``teatree_config_setting`` schema the Django migration creates) and prove
-each reader returns the overlay config from the DB with NO toml present, plus the
-``~/.teatree.toml`` fallback path stays intact (no regression for existing
-installs).
+The ``overlays`` registry lives in the DB-home ``ConfigSetting`` store (the legacy
+file tier is removed). Three Django-free cold-hook readers resolve it DB-only via
+``cold_reader``. These tests build a REAL sqlite config DB (the same
+``teatree_config_setting`` schema the Django migration creates) and prove each
+reader returns the overlay config from that DB, and that the readers resolve to an
+empty registry (never a weakened gate) when no config is present.
 
 The three readers under test:
 
@@ -45,31 +43,20 @@ def _make_config_db(path: Path, *, overlays: dict[str, object]) -> None:
 
 
 def _empty_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A HOME dir with NO ``~/.teatree.toml`` — the deleted-toml world."""
+    """A clean HOME dir with no legacy config state — isolates the reader from real config."""
     home = tmp_path / "home"
     home.mkdir(exist_ok=True)
-    monkeypatch.setenv("HOME", str(home))
-    assert not (home / ".teatree.toml").exists()
-    return home
-
-
-def _home_with_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: str) -> Path:
-    home = tmp_path / "home"
-    home.mkdir(exist_ok=True)
-    (home / ".teatree.toml").write_text(body, encoding="utf-8")
     monkeypatch.setenv("HOME", str(home))
     return home
 
 
 def _no_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Point the cold reader at a non-existent DB so it fails open to the toml fallback."""
+    """Point the cold reader at a non-existent DB so it resolves to an empty registry."""
     monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "absent.sqlite3"))
 
 
 class TestLoadProtectedBranchesDbFirst:
-    def test_overlay_development_branch_from_db_with_no_toml(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_overlay_development_branch_from_db(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         db = tmp_path / "config.sqlite3"
         _make_config_db(db, overlays={"t3-acme": {"protected_branches": ["development", "release"]}})
         monkeypatch.setenv("T3_CONFIG_DB", str(db))
@@ -81,18 +68,9 @@ class TestLoadProtectedBranchesDbFirst:
         assert "release" in branches
         assert {"main", "master"} <= branches
 
-    def test_toml_fallback_when_db_absent(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _home_with_toml(tmp_path, monkeypatch, '[overlays.t3-acme]\nprotected_branches = ["develop"]\n')
-        _no_db(tmp_path, monkeypatch)
-
-        branches = managed_repo.load_protected_branches()
-
-        assert "develop" in branches
-        assert {"main", "master"} <= branches
-
 
 class TestOverlayManagedRepoSignalsDbFirst:
-    def test_overlay_repo_and_path_from_db_with_no_toml(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_overlay_repo_and_path_from_db(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         overlay_path = tmp_path / "overlay-clone"
         overlay_path.mkdir()
         db = tmp_path / "config.sqlite3"
@@ -116,24 +94,9 @@ class TestOverlayManagedRepoSignalsDbFirst:
         assert "souliane/teatree" in slugs
         assert overlay_path.resolve() in paths
 
-    def test_toml_fallback_when_db_absent(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        overlay_path = tmp_path / "overlay-clone"
-        overlay_path.mkdir()
-        _home_with_toml(
-            tmp_path,
-            monkeypatch,
-            f'[overlays.t3-acme]\nworkspace_repos = ["acme-eng/widget-overlay"]\npath = "{overlay_path}"\n',
-        )
-        _no_db(tmp_path, monkeypatch)
-
-        slugs, paths = managed_repo.overlay_managed_repo_signals()
-
-        assert "acme-eng/widget-overlay" in slugs
-        assert overlay_path.resolve() in paths
-
 
 class TestSelfDmDestinationIdsDbFirst:
-    def test_overlay_slack_ids_from_db_with_no_toml(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_overlay_slack_ids_from_db(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         db = tmp_path / "config.sqlite3"
         _make_config_db(
             db,
@@ -152,21 +115,7 @@ class TestSelfDmDestinationIdsDbFirst:
         assert "D0DEMOCHAN1" in dest.ids
         assert "D0DEMOCHAN2" in dest.ids
 
-    def test_toml_fallback_when_db_absent(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        _home_with_toml(
-            tmp_path,
-            monkeypatch,
-            '[overlays.t3-acme]\nslack_user_id = "U0TOMLUSER0"\nslack_dm_channel_id = "D0DEMOCHAN3"\n',
-        )
-        _no_db(tmp_path, monkeypatch)
-
-        dest = router._self_dm_destination_ids()
-
-        assert dest.resolved is True
-        assert "U0TOMLUSER0" in dest.ids
-        assert "D0DEMOCHAN3" in dest.ids
-
-    def test_unresolved_when_neither_db_nor_toml(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_unresolved_when_no_db(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         _empty_home(tmp_path, monkeypatch)
         _no_db(tmp_path, monkeypatch)
 

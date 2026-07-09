@@ -17,6 +17,7 @@ Scenario matrix:
 """
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -26,13 +27,29 @@ from teatree.hooks import _repo_visibility
 from teatree.hooks.banned_terms_scanner import has_override, scan_text
 
 
+def _seed_banned_terms(db_path: Path, terms: list[str]) -> None:
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_terms', ?)",
+            (json.dumps(terms),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 @pytest.fixture
 def _term_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Pin a one-term banned-list config so the shell scanner has something to flag."""
-    cfg = tmp_path / ".teatree.toml"
-    cfg.write_text('[teatree]\nbanned_terms = ["acmecorp"]\n', encoding="utf-8")
-    monkeypatch.setenv("T3_BANNED_TERMS_CONFIG", str(cfg))
-    return cfg
+    """Seed a one-term banned-list config DB so the shell scanner has something to flag."""
+    db = tmp_path / "config.sqlite3"
+    _seed_banned_terms(db, ["acmecorp"])
+    monkeypatch.setenv("T3_CONFIG_DB", str(db))
+    return db
 
 
 def _bash(command: str) -> dict[str, object]:
@@ -137,6 +154,6 @@ class TestBannedTermFailsOpenOnBrokenEnv:
     """A missing config / unreadable scanner must fail OPEN (no block)."""
 
     def test_no_config_fails_open(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("T3_BANNED_TERMS_CONFIG", str(tmp_path / "does-not-exist.toml"))
+        monkeypatch.setenv("T3_CONFIG_DB", str(tmp_path / "does-not-exist.sqlite3"))
         # No config ⇒ scan_text returns None ⇒ the gate never blocks.
         assert scan_text("acmecorp leak") is None

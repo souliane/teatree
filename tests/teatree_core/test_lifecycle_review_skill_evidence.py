@@ -9,8 +9,7 @@ timestamp). With no review skill configured the gate is a NO-OP (opt-in
 default preserved).
 
 The configured skill is pinned per test via ``configured_review_skill`` rather
-than the host ``~/.teatree.toml``, so the suite is deterministic regardless of
-the running machine's config.
+than the host machine's config, so the suite is deterministic regardless of it.
 """
 
 from collections.abc import Iterator

@@ -280,7 +280,7 @@ class TestFacadeImportSmoke:
 
     def test_config_package_facade_re_exports(self) -> None:
         config = importlib.import_module("teatree.config")
-        for name in ("load_config", "UserSettings", "CONFIG_PATH", "discover_overlays"):
+        for name in ("load_config", "UserSettings", "discover_overlays"):
             assert hasattr(config, name), f"teatree.config missing {name}"
 
     def test_gates_package_modules_import(self) -> None:

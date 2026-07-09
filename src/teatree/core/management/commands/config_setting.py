@@ -24,17 +24,28 @@ Non-zero exits use ``raise SystemExit(N)`` — this runs under Django's
 """
 
 import json
+from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 from django_typer.management import TyperCommand, command
 
-from teatree.config import FEATURE_FLAGS, OVERLAY_OVERRIDABLE_SETTINGS, get_effective_settings, load_raw_toml
+from teatree.config import FEATURE_FLAGS, OVERLAY_OVERRIDABLE_SETTINGS, get_effective_settings
 from teatree.config.feature_flags import flag_trailer, render_flags_audit
-from teatree.config.registries import REGISTRY_SETTINGS
-from teatree.core.config_migration import export_db_to_toml, import_toml_into_db
+from teatree.config.registries import COLD_SETTINGS, REGISTRY_SETTINGS
+from teatree.core.config_migration import export_db_to_toml
 from teatree.core.models import ConfigSetting
+
+# Every key ``config_setting set/get`` accepts: the ``UserSettings`` DB partition,
+# the injected registries (``overlays`` / ``e2e_repos``), and the cold-read keys
+# (codename lists, ``[agent]`` spawn tables, tunables). Their union is the single
+# allowlist so an admin cannot stash a row no reader would consult.
+_ALLOWED_SETTINGS: dict[str, Callable[[Any], Any]] = {
+    **OVERLAY_OVERRIDABLE_SETTINGS,
+    **REGISTRY_SETTINGS,
+    **COLD_SETTINGS,
+}
 
 _OverlayOption = Annotated[
     str,
@@ -67,13 +78,13 @@ class Command(TyperCommand):
     ) -> None:
         """Upsert the DB override row for *key* (in *overlay*'s scope or global) to *value*.
 
-        Refuses a key in neither ``OVERLAY_OVERRIDABLE_SETTINGS`` nor
-        ``REGISTRY_SETTINGS``, a *value* that is not valid JSON, and a *value* that
-        JSON-parses but is invalid for the setting's type, leaving the store
-        untouched on any error.
+        Refuses a key in none of ``OVERLAY_OVERRIDABLE_SETTINGS`` /
+        ``REGISTRY_SETTINGS`` / ``COLD_SETTINGS``, a *value* that is not valid JSON,
+        and a *value* that JSON-parses but is invalid for the setting's type,
+        leaving the store untouched on any error.
 
-        ``--overlay <name>`` scopes the row to one overlay (the DB twin of a
-        per-overlay TOML override); omitted, it writes the global scope.
+        ``--overlay <name>`` scopes the row to one overlay (the per-overlay
+        override); omitted, it writes the global scope.
 
         The type check runs the **same** registry parser the resolver applies on
         read (#258): an out-of-enum ``mode`` or a quoted ``"false"`` for a
@@ -81,16 +92,15 @@ class Command(TyperCommand):
         raise on every later config resolution can never be stored. Validating
         on write is what keeps a bad row from bricking all reads.
         """
-        allowed = {**OVERLAY_OVERRIDABLE_SETTINGS, **REGISTRY_SETTINGS}
-        if key not in allowed:
-            self.stderr.write(f"  refusing: {key!r} is not an overridable setting (#1775 pilot scope)")
+        if key not in _ALLOWED_SETTINGS:
+            self.stderr.write(f"  refusing: {key!r} is not a known config setting")
             raise SystemExit(2)
         try:
             parsed = json.loads(value)
         except json.JSONDecodeError as exc:
             self.stderr.write(f"  invalid JSON value for {key!r}: {exc}")
             raise SystemExit(2) from exc
-        parser = allowed[key]
+        parser = _ALLOWED_SETTINGS[key]
         try:
             canonical = parser(parsed)
         except (ValueError, TypeError, AttributeError) as exc:
@@ -154,69 +164,23 @@ class Command(TyperCommand):
         key: Annotated[str, typer.Argument(help="UserSettings field name to read (must be overridable).")],
         overlay: _OverlayOption = "",
     ) -> None:
-        """Print the resolved value for *key* and name its source (DB vs file/env).
+        """Print the resolved value for *key* and name its source (DB vs env/default).
 
-        The read side of the dual-read store: when a ``ConfigSetting`` row exists
-        in the requested scope it is reported as the ``db`` source; otherwise the
-        value falls through to the file/env layer and is reported as the
-        ``file/env`` source. ``--overlay <name>`` reads that overlay's scope.
-        Refuses a key in neither ``OVERLAY_OVERRIDABLE_SETTINGS`` nor
-        ``REGISTRY_SETTINGS`` so a typo is loud, not a silent ``file/env`` answer
-        for a non-setting.
+        When a ``ConfigSetting`` row exists in the requested scope it is reported as
+        the ``db`` source; otherwise the value falls through to the env/default layer
+        and is reported as the ``env/default`` source. ``--overlay <name>`` reads that
+        overlay's scope. Refuses an unknown key so a typo is loud, not a silent
+        answer for a non-setting.
         """
-        if key not in OVERLAY_OVERRIDABLE_SETTINGS and key not in REGISTRY_SETTINGS:
-            self.stderr.write(f"  refusing: {key!r} is not an overridable setting (#1775 pilot scope)")
+        if key not in _ALLOWED_SETTINGS:
+            self.stderr.write(f"  refusing: {key!r} is not a known config setting")
             raise SystemExit(2)
         stored = ConfigSetting.objects.get_effective(key, scope=overlay)
         if stored is not None:
             self.stdout.write(f"  {key} = {stored!r}  [source: db, {_scope_label(overlay)}]{_flag_suffix(key)}")
             return
         fallback = getattr(get_effective_settings(overlay or None), key, None)
-        self.stdout.write(f"  {key} = {fallback!r}  [source: file/env]{_flag_suffix(key)}")
-
-    @command(name="import")
-    def import_toml(
-        self,
-        *,
-        no_clobber: Annotated[
-            bool,
-            typer.Option(
-                "--no-clobber",
-                help="Seed only keys absent from the store; never overwrite an existing DB row.",
-            ),
-        ] = False,
-    ) -> None:
-        """Seed the DB store from the operational toml keys (one-time migration).
-
-        The dual-read migration step (#938): every ``[teatree]`` key that is a
-        registered ``OVERLAY_OVERRIDABLE_SETTINGS`` field is coerced through that
-        registry's parser and upserted into the GLOBAL store, and every operational
-        key under an ``[overlays.<name>]`` table is upserted into THAT overlay's
-        scope — the DB twin of the per-overlay TOML override (#1775). So an install
-        with both a global ``mode`` and a per-overlay ``mode = "auto"`` migrates both
-        tiers in one pass. Bootstrap-file-only keys (``private_repos`` /
-        ``DATABASE_URL`` / …), the overlay's own ``path`` / ``url`` discovery keys,
-        and unknown keys are skipped — only operational settings move. The upsert
-        makes a re-run idempotent.
-
-        ``--no-clobber`` seeds only keys ABSENT from the store and leaves an
-        existing row untouched — the mode ``t3 setup`` runs on every update so a
-        value the user changed via ``config_setting set`` survives. Without it
-        (the default), a re-import refreshes every operational key from the file.
-
-        Reads the RAW file (``load_raw_toml``), NOT ``load_config().raw`` — the latter
-        has already had its ``overlays`` / ``e2e_repos`` registry tables REPLACED by the
-        DB rows (``_inject_db_registries``), so importing it would re-write the stale DB
-        value and silently never migrate an edited ``[overlays.<name>].path`` — the exact
-        mask this remediation exists to clear (souliane/teatree#128).
-        """
-        result = import_toml_into_db(load_raw_toml(), clobber=not no_clobber)
-        for reason in result.skipped_reasons:
-            self.stderr.write(f"  {reason}")
-        for scope, key in result.rows:
-            stored = ConfigSetting.objects.get_effective(key, scope=scope)
-            self.stdout.write(f"  imported {key} = {stored!r}  [{_scope_label(scope)}]")
-        self.stdout.write(f"  {result.summary()}")
+        self.stdout.write(f"  {key} = {fallback!r}  [source: env/default]{_flag_suffix(key)}")
 
     @command()
     def export(

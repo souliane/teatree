@@ -1,6 +1,8 @@
 """Tests for the ``loop_dispatch`` management command (pending-spawn / spawn-claim)."""
 
 import json
+import os
+import sqlite3
 import tempfile
 from datetime import timedelta
 from io import StringIO
@@ -17,6 +19,23 @@ from teatree.core.models import Session, Task, Ticket
 from teatree.core.models.external_delivery import mark_external_delivery
 from teatree.core.models.ticket_external_review import schedule_external_review
 from teatree.loop.admit_budget import write_admit_budget
+
+
+def _seed_cold_config(db: Path, key: str, value: object) -> None:
+    """Seed a single DB-home ``ConfigSetting`` row in a config-store sqlite the cold reader resolves."""
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
+            (key, json.dumps(value)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 class _LoopDispatchTest(TestCase):
@@ -120,8 +139,8 @@ class TestPendingSpawn(_LoopDispatchTest):
         # reviewer task's phase is already frontier-tier, so the floor value is
         # an unrecognised id — unrecognised ids rank ABOVE every known tier
         # (most-capable fallback), making the raise observable.
-        cfg = Path(tempfile.mkdtemp()) / ".teatree.toml"
-        cfg.write_text('[agent.skill_models]\ncode-review = "custom-strong-model"\n', encoding="utf-8")
+        db = Path(tempfile.mkdtemp()) / "config.sqlite3"
+        _seed_cold_config(db, "agent_skill_models", {"code-review": "custom-strong-model"})
 
         # Empty overlay so the ticket-scoped overlay resolver (PR-12) falls back
         # to the ambient (T3_OVERLAY_NAME) overlay; a synthetic unregistered
@@ -135,8 +154,7 @@ class TestPendingSpawn(_LoopDispatchTest):
         schedule_external_review(ticket)
         stdout = StringIO()
         with (
-            patch("teatree.agents.model_tiering.CONFIG_PATH", cfg),
-            patch("teatree.config_agent.CONFIG_PATH", cfg),
+            patch.dict(os.environ, {"T3_CONFIG_DB": str(db)}),
             patch("teatree.agents.skill_bundle.resolve_skill_bundle", return_value=["code-review"]),
         ):
             call_command("loop_dispatch", "pending-spawn", "--json", stdout=stdout)

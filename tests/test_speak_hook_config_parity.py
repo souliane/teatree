@@ -1,6 +1,6 @@
 """Hook-side ``_speak_settings`` and config-side ``speak_from_subtable`` agree (#2060).
 
-eliminate-~/.teatree.toml made ``speak`` DB-home: the Stop hook reads the stored
+``speak`` is DB-home (legacy file tier removed): the Stop hook reads the stored
 ``speak`` JSON dict from the canonical sqlite via the Django-free ``cold_reader``
 (it cannot cheaply import the Django config), so it carries a small pure-Python
 duplicate of the sub-table interpretation. This golden-corpus parity test pins the

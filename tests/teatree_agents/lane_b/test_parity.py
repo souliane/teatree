@@ -270,10 +270,9 @@ class TestPrivacyGateParity:
     @pytest.fixture(autouse=True)
     def _hermetic_visibility(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # Isolate the config home + the visibility cache so a monkeypatched probe
-        # verdict governs, never the developer's ~/.teatree.toml or a warm cache.
+        # verdict governs, never the developer's real config or a warm cache.
         home = tmp_path / "home"
         home.mkdir(parents=True, exist_ok=True)
-        (home / ".teatree.toml").write_text("[teatree]\n", encoding="utf-8")
         monkeypatch.setenv("HOME", str(home))
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
         monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "viscache"))

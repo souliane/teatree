@@ -17,6 +17,7 @@ the gate stopped detecting the leak. The unit block pins the polarity of the
 """
 
 import json
+import sqlite3
 from collections.abc import Callable
 from pathlib import Path
 
@@ -43,10 +44,9 @@ Handler = Callable[[dict], bool | None]
 def _isolate_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Isolate the probe cache (T3_DATA_DIR) and the config home so the unit block
     # (which does not request ``leak_home``) never reads the developer's real
-    # ``~/.teatree.toml`` or a warm visibility cache. ``leak_home`` re-points both.
+    # config or a warm visibility cache. ``leak_home`` re-points both.
     home = tmp_path / "autohome"
     home.mkdir(parents=True, exist_ok=True)
-    (home / ".teatree.toml").write_text("[teatree]\n", encoding="utf-8")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "viscache"))
@@ -54,17 +54,31 @@ def _isolate_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def leak_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Point ``~/.teatree.toml`` at a temp config with the banned term, isolate state.
+    """Seed the banned-terms list in a DB-home config and isolate state.
 
     Isolates the probe cache + quote ledger under ``tmp_path`` (``T3_DATA_DIR``)
     so no test touches real state, and pins the banned-terms list for #1415.
     """
     home = tmp_path / "home"
     home.mkdir(parents=True, exist_ok=True)
-    (home / ".teatree.toml").write_text(f'[teatree]\nbanned_terms = ["{_BANNED_TERM}"]\n', encoding="utf-8")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
+    db = tmp_path / "config.sqlite3"
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_terms', ?)",
+            (json.dumps([_BANNED_TERM]),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    monkeypatch.setenv("T3_CONFIG_DB", str(db))
     return home
 
 

@@ -1,24 +1,13 @@
 """Config knobs for the idle-stack reaper + acquisition queue (#2190)."""
 
-import tempfile
 from pathlib import Path
 
+import pytest
 from django.test import TestCase
 
-from teatree.config import (
-    OVERLAY_OVERRIDABLE_SETTINGS,
-    UserSettings,
-    discover_overlays,
-    get_effective_settings,
-    load_config,
-)
+from teatree.config import OVERLAY_OVERRIDABLE_SETTINGS, UserSettings, discover_overlays, get_effective_settings
 from teatree.core.models import ConfigSetting
-
-
-def _write(body: str) -> Path:
-    path = Path(tempfile.mkdtemp(prefix="idle_cfg_")) / ".teatree.toml"
-    path.write_text(body, encoding="utf-8")
-    return path
+from tests.config._shared import _seed_config_db
 
 
 class TestDefaults(TestCase):
@@ -76,15 +65,14 @@ class TestOverlayOverridable(TestCase):
         ):
             assert key in OVERLAY_OVERRIDABLE_SETTINGS
 
-    def test_per_overlay_override_wins(self) -> None:
-        path = _write(
-            "[teatree]\n"
-            "idle_stack_idle_minutes = 30\n\n"
-            "[overlays.heavy]\n"
-            'class = "x.y:Z"\n'
-            "idle_stack_idle_minutes = 60\n",
-        )
-        assert load_config(path).user.idle_stack_idle_minutes == 30
-        entries = {e.name: e for e in discover_overlays(config_path=path)}
-        # The overlay entry carries the override the effective-settings layer applies.
-        assert entries["heavy"].overrides["idle_stack_idle_minutes"] == 60
+
+def test_overlay_registry_entry_carries_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A per-overlay override in the ``overlays`` registry entry is parsed by
+    # discovery into the entry overrides (the effective-settings layer applies it).
+    monkeypatch.setattr("importlib.metadata.entry_points", lambda **_kw: [])
+    db = tmp_path / "config.sqlite3"
+    monkeypatch.setenv("T3_CONFIG_DB", str(db))
+    _seed_config_db(db, overlays={"heavy": {"class": "x.y:Z", "idle_stack_idle_minutes": 60}})
+
+    entries = {e.name: e for e in discover_overlays()}
+    assert entries["heavy"].overrides["idle_stack_idle_minutes"] == 60

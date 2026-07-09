@@ -74,9 +74,6 @@ class _SilentApproveStubAPI:
 
 def _immediate_gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Lift the on-behalf gate (mode=immediate) to isolate the review-first precondition."""
-    cfg = tmp_path / ".teatree.toml"
-    cfg.write_text("[teatree]\n", encoding="utf-8")
-    monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
     ConfigSetting.objects.set_value("on_behalf_post_mode", "immediate")
 
 

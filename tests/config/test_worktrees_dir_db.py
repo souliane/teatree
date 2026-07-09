@@ -1,9 +1,9 @@
 # test-path: cross-cutting
 """DB-home ``worktrees_dir`` resolution off the ``ConfigSetting`` store.
 
-eliminate-~/.teatree.toml: ``worktrees_dir`` was tagged "needed to open the DB",
-but Django ``settings.py`` hardcodes ``TIME_ZONE`` and configures ``DATABASES``
-without reading it — so it is DB-home, resolved Django-side by
+``worktrees_dir`` was tagged "needed to open the DB", but Django ``settings.py``
+hardcodes ``TIME_ZONE`` and configures ``DATABASES`` without reading it — so it is
+DB-home, resolved Django-side by
 ``config.worktrees_dir()`` exactly like ``workspace_dir`` / ``worktree_root()``:
 the ``T3_WORKTREES_DIR`` env/Django override first, then the ``ConfigSetting``
 row (overlay scope, then global), then the dataclass default.

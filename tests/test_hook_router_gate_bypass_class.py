@@ -64,7 +64,7 @@ def _isolate_state_dir(tmp_path: Path):
 
 @pytest.fixture(autouse=True)
 def _gate_enabled_home(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Isolate orchestrator gate from developer's real ~/.teatree.toml."""
+    """Isolate orchestrator gate from the developer's real DB-home config."""
     home = tmp_path_factory.mktemp("home")
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
 

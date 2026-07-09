@@ -79,13 +79,14 @@ t3 teatree questions dismiss 42 --reason "stale"
 t3 teatree questions resurface
 ```
 
-## Example `~/.teatree.toml`
+## Example availability config
 
-```toml
-[teatree.availability]
-timezone = "Europe/Paris"
+Availability is a DB-home setting (a JSON dict, like `speak` / `mr_reminder`):
+
+```bash
 # Work hours: 09:00–16:59 Mon-Fri. Outside this window → away-mode.
-windows = ["* 9-16 * * 1-5"]
+t3 <overlay> config_setting set availability \
+  '{"timezone": "Europe/Paris", "windows": ["* 9-16 * * 1-5"]}'
 ```
 
 Multiple expressions OR together — any active = present.

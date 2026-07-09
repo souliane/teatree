@@ -46,16 +46,16 @@ class TestRenderIsWidthIndependent:
 
 
 class TestRenderIsHomePathIndependent:
-    _ABS_CONFIG = re.compile(r"(?:/[^/\s│\]]+)+/\.teatree\.toml")
+    _ABS_HOME_DOTFILE = re.compile(r"(?:/[^/\s│\]]+)+/\.claude\b")
 
     def test_no_absolute_home_rooted_config_path_in_output(self, real_app: typer.Typer) -> None:
         markdown = render_cli_reference_deterministic(real_app)
-        hits = self._ABS_CONFIG.findall(markdown)
-        assert not hits, f"absolute home-rooted config path(s) leaked into the render: {hits}"
+        hits = self._ABS_HOME_DOTFILE.findall(markdown)
+        assert not hits, f"absolute home-rooted path(s) leaked into the render: {hits}"
 
     def test_home_path_normalized_to_tilde(self, real_app: typer.Typer) -> None:
         markdown = render_cli_reference_deterministic(real_app)
-        assert "~/.teatree.toml" in markdown
+        assert "~/.claude" in markdown
 
 
 class TestGeneratorRenderIsByteStableAcrossEnvironments:

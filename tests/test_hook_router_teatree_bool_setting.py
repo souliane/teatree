@@ -1,22 +1,25 @@
-"""Tests for the shared ``_teatree_bool_setting`` helper (#1694).
+"""Tests for the shared ``_teatree_bool_setting``-backed ``<flag>`` readers (#1694).
 
-``hook_router`` carried ~10 near-identical ``[teatree] <flag>_enabled``
-boolean toml readers (try / ``tomllib.load`` / ``except Exception`` ->
-default). They are extracted to one ``_teatree_bool_setting(name, *, default)``
-helper and every reader delegates to it.
+``hook_router`` carried ~10 near-identical ``[teatree] <flag>`` boolean readers.
+They are extracted to one ``_teatree_bool_setting(name, *, default)`` helper — the
+DB-home ``teatree_settings`` adapter, which resolves a gate flag from the canonical
+``ConfigSetting`` store via the Django-free ``cold_reader`` — and every reader
+delegates to it.
 
-Two behaviors the helper must preserve exactly. A fail-OPEN reader
-(``default=True``) returns ``True`` on a missing/empty/broken config and on
-any value except a bare boolean ``false`` (a quoted ``"false"`` does NOT
-disable). A fail-CLOSED reader (``default=False``) returns ``False`` on a
-missing/empty/broken config and on any value except a bare boolean ``true``
-(a quoted ``"true"`` does NOT enable).
+Two behaviors each reader must preserve. A fail-OPEN reader (``default=True``)
+returns ``True`` on a missing/unreadable store and on any value except a real DB
+boolean ``false`` (a JSON string ``"false"`` does NOT disable). A fail-CLOSED
+reader (``default=False``) returns ``False`` likewise unless a real DB boolean
+``true`` is stored. The generic helper semantics are pinned by the config twin
+``tests/config/test_teatree_settings_db_flip.py``; this file drives each router
+reader end-to-end and proves the delegation.
 
-The delegation assertions are anti-vacuous: monkeypatching the helper
-flips every reader's output, which can only happen if the reader routes
-through the helper.
+The delegation assertions are anti-vacuous: monkeypatching the helper flips every
+reader's output, which can only happen if the reader routes through it.
 """
 
+import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -41,86 +44,61 @@ _FAIL_CLOSED_READERS: tuple[tuple[str, str], ...] = (
 
 
 @pytest.fixture
-def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Route ``Path.home()`` (hence the toml read) at an empty tmp dir."""
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
-    return tmp_path
+def config_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Route the cold reader at an isolated per-test DB path (absent until seeded)."""
+    db = tmp_path / "db.sqlite3"
+    monkeypatch.setenv("T3_CONFIG_DB", str(db))
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
+    return db
 
 
-def _write_teatree(home_dir: Path, body: str) -> None:
-    (home_dir / ".teatree.toml").write_text(f"[teatree]\n{body}", encoding="utf-8")
-
-
-class TestTeatreeBoolSetting:
-    def test_missing_config_returns_default(self, home: Path) -> None:
-        assert router._teatree_bool_setting("any_flag", default=True) is True
-        assert router._teatree_bool_setting("any_flag", default=False) is False
-
-    def test_empty_teatree_table_returns_default(self, home: Path) -> None:
-        _write_teatree(home, "")
-        assert router._teatree_bool_setting("any_flag", default=True) is True
-        assert router._teatree_bool_setting("any_flag", default=False) is False
-
-    def test_broken_toml_returns_default(self, home: Path) -> None:
-        (home / ".teatree.toml").write_text("this is = not = valid [[[", encoding="utf-8")
-        assert router._teatree_bool_setting("any_flag", default=True) is True
-        assert router._teatree_bool_setting("any_flag", default=False) is False
-
-    def test_explicit_false_disables_a_default_true_flag(self, home: Path) -> None:
-        _write_teatree(home, "any_flag = false\n")
-        assert router._teatree_bool_setting("any_flag", default=True) is False
-
-    def test_explicit_true_enables_a_default_false_flag(self, home: Path) -> None:
-        _write_teatree(home, "any_flag = true\n")
-        assert router._teatree_bool_setting("any_flag", default=False) is True
-
-    def test_quoted_false_does_not_disable_a_default_true_flag(self, home: Path) -> None:
-        # Documented invariant: only a bare boolean ``false`` disables.
-        _write_teatree(home, 'any_flag = "false"\n')
-        assert router._teatree_bool_setting("any_flag", default=True) is True
-
-    def test_quoted_true_does_not_enable_a_default_false_flag(self, home: Path) -> None:
-        _write_teatree(home, 'any_flag = "true"\n')
-        assert router._teatree_bool_setting("any_flag", default=False) is False
-
-    def test_explicit_true_keeps_a_default_true_flag_enabled(self, home: Path) -> None:
-        _write_teatree(home, "any_flag = true\n")
-        assert router._teatree_bool_setting("any_flag", default=True) is True
-
-    def test_explicit_false_keeps_a_default_false_flag_disabled(self, home: Path) -> None:
-        _write_teatree(home, "any_flag = false\n")
-        assert router._teatree_bool_setting("any_flag", default=False) is False
+def _seed_config_db(path: Path, rows: dict[str, object]) -> None:
+    """Seed the DB-home ``teatree_config_setting`` store the flag readers resolve."""
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        for key, value in rows.items():
+            conn.execute(
+                "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
+                (key, json.dumps(value)),
+            )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 class TestFailOpenReadersBehavior:
     @pytest.mark.parametrize(("reader", "key"), _FAIL_OPEN_READERS)
-    def test_defaults_enabled_without_config(self, reader: str, key: str, home: Path) -> None:
+    def test_defaults_enabled_without_config(self, reader: str, key: str, config_db: Path) -> None:
         assert getattr(router, reader)() is True
 
     @pytest.mark.parametrize(("reader", "key"), _FAIL_OPEN_READERS)
-    def test_bare_false_disables(self, reader: str, key: str, home: Path) -> None:
-        _write_teatree(home, f"{key} = false\n")
+    def test_bare_false_disables(self, reader: str, key: str, config_db: Path) -> None:
+        _seed_config_db(config_db, {key: False})
         assert getattr(router, reader)() is False
 
     @pytest.mark.parametrize(("reader", "key"), _FAIL_OPEN_READERS)
-    def test_quoted_false_does_not_disable(self, reader: str, key: str, home: Path) -> None:
-        _write_teatree(home, f'{key} = "false"\n')
+    def test_quoted_false_does_not_disable(self, reader: str, key: str, config_db: Path) -> None:
+        _seed_config_db(config_db, {key: "false"})
         assert getattr(router, reader)() is True
 
 
 class TestFailClosedReadersBehavior:
     @pytest.mark.parametrize(("reader", "key"), _FAIL_CLOSED_READERS)
-    def test_defaults_disabled_without_config(self, reader: str, key: str, home: Path) -> None:
+    def test_defaults_disabled_without_config(self, reader: str, key: str, config_db: Path) -> None:
         assert getattr(router, reader)() is False
 
     @pytest.mark.parametrize(("reader", "key"), _FAIL_CLOSED_READERS)
-    def test_bare_true_enables(self, reader: str, key: str, home: Path) -> None:
-        _write_teatree(home, f"{key} = true\n")
+    def test_bare_true_enables(self, reader: str, key: str, config_db: Path) -> None:
+        _seed_config_db(config_db, {key: True})
         assert getattr(router, reader)() is True
 
     @pytest.mark.parametrize(("reader", "key"), _FAIL_CLOSED_READERS)
-    def test_quoted_true_does_not_enable(self, reader: str, key: str, home: Path) -> None:
-        _write_teatree(home, f'{key} = "true"\n')
+    def test_quoted_true_does_not_enable(self, reader: str, key: str, config_db: Path) -> None:
+        _seed_config_db(config_db, {key: "true"})
         assert getattr(router, reader)() is False
 
 

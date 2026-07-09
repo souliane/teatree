@@ -19,6 +19,7 @@ from their real per-session state files.
 
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -28,14 +29,33 @@ import pytest
 HOOK_ROUTER = Path(__file__).resolve().parent.parent / "hooks" / "scripts" / "hook_router.py"
 
 
+def _seed_config_db(path: Path, rows: dict[str, object]) -> None:
+    """Seed the DB-home ``teatree_config_setting`` store the breaker's kill-switch resolves."""
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        for key, value in rows.items():
+            conn.execute(
+                "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
+                (key, json.dumps(value)),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 @pytest.fixture
 def env(tmp_path: Path) -> dict[str, str]:
     """A subprocess env with STATE_DIR, skill search dirs, and HOME on tmp_path.
 
     Seeds one real, loadable skill (``ac-reviewing-codebase``) so the
     skill-loading gate has a genuine load-first demand to enforce, and points
-    ``HOME`` at a clean temp dir so the breaker's ``~/.teatree.toml`` read sees
-    its default (enabled) unless a test writes a config.
+    ``HOME`` at a clean temp dir (with no ``T3_CONFIG_DB``) so the breaker's
+    DB-home config read resolves to an absent store and sees its default
+    (enabled) unless a test seeds a config DB.
     """
     state = tmp_path / "state"
     state.mkdir(parents=True, exist_ok=True)
@@ -217,9 +237,9 @@ class TestKillSwitchIsPureNoOp:
     """``deny_circuit_breaker_enabled = false`` makes the breaker a pure pass-through."""
 
     def test_disabled_breaker_passes_denials_through_unchanged(self, env: dict[str, str]) -> None:
-        (Path(env["HOME"]) / ".teatree.toml").write_text(
-            "[teatree]\ndeny_circuit_breaker_enabled = false\n", encoding="utf-8"
-        )
+        db = Path(env["HOME"]) / "db.sqlite3"
+        _seed_config_db(db, {"deny_circuit_breaker_enabled": False})
+        env["T3_CONFIG_DB"] = str(db)
         for _ in range(5):
             rc, payload, _ = _run(env, _safety_deny("off"))
             _assert_denied(rc, payload)

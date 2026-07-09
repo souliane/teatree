@@ -13,6 +13,7 @@ are asserted as a unit.
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -1205,9 +1206,21 @@ def _git_init_remote(repo: Path, remote_url: str) -> None:
 
 @pytest.fixture
 def _private_repo_cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    cfg = tmp_path / ".teatree.toml"
-    cfg.write_text('[teatree]\nprivate_repos = ["acmecorp-engineering"]\n', encoding="utf-8")
-    monkeypatch.setenv("T3_BANNED_TERMS_CONFIG", str(cfg))
+    db = tmp_path / "config.sqlite3"
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'private_repos', ?)",
+            (json.dumps(["acmecorp-engineering"]),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    monkeypatch.setenv("T3_CONFIG_DB", str(db))
 
 
 @pytest.mark.integration

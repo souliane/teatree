@@ -271,8 +271,8 @@ def _scanning_news_scanner() -> ScanningNewsScanner | None:
 
     #1191: the news-scan cadence is a teatree-core platform behaviour
     that runs once per day regardless of which overlays are registered.
-    The settings live on :class:`teatree.config.UserSettings` (the
-    ``[teatree]`` table in ``~/.teatree.toml``, with optional per-overlay
+    The settings live on :class:`teatree.config.UserSettings` (DB-home in
+    the ``ConfigSetting`` store, with optional per-overlay
     overrides). Returns ``None`` when ``scanning_news_disabled = true``
     (the escape hatch).
 

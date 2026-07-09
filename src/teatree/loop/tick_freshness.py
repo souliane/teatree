@@ -11,7 +11,6 @@ import datetime as dt
 import json
 import logging
 import os
-import tomllib
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -45,23 +44,17 @@ def _repo_freshness(repo_path: Path) -> dict[str, int | str] | None:
 
 
 def _repos_from_toml() -> dict[str, Path]:
-    """Extract repo paths from ~/.teatree.toml overlays."""
-    from teatree.config import clone_root  # noqa: PLC0415
+    """Extract repo paths from the DB overlays registry."""
+    from teatree.config import clone_root, load_config  # noqa: PLC0415
 
-    toml_path = Path.home() / ".teatree.toml"
-    if not toml_path.is_file():
-        return {}
-    try:
-        data = tomllib.loads(toml_path.read_text(encoding="utf-8"))
-    except tomllib.TOMLDecodeError:
-        return {}
+    overlays_cfg = load_config().raw.get("overlays") or {}
     # ``workspace_repos`` resolve to CLONES, so join them under the CLONE root.
     # The legacy ``[teatree] workspace_dir`` key is retired (DB-home now); reading
     # it here would honour a value ignored everywhere else, so route through the
     # one clone-root accessor (env ``T3_WORKSPACE_DIR`` → default ``~/workspace``).
     workspace_dir = clone_root()
     repos: dict[str, Path] = {}
-    for name, overlay in (data.get("overlays") or {}).items():
+    for name, overlay in overlays_cfg.items():
         if not isinstance(overlay, dict):
             continue
         if "path" in overlay:
@@ -73,35 +66,29 @@ def _repos_from_toml() -> dict[str, Path]:
 
 
 def _canonical_overlay_names() -> dict[str, str]:
-    """Map raw ``~/.teatree.toml`` overlay keys to canonical overlay names.
+    """Map raw DB overlays-registry keys to canonical overlay names.
 
-    Generic legacy-alias protection: a user whose ``~/.teatree.toml`` still
-    carries a short ``[overlays.<alias>]`` table (e.g. ``[overlays.<short>]``
-    for a canonical ``t3-<short>`` entry-point overlay) would otherwise have
-    the freshness segment label as ``<short>=0`` even though the rest of the
-    statusline tags its rows as ``[t3-<short>]``. The bundled overlay no
-    longer needs this remap — it registers and reads its TOML under its
-    canonical entry-point name (souliane/teatree#1108) — but the generic
-    mapping stays for arbitrary operator aliases.
+    Generic legacy-alias protection: a registry whose keys still carry a short
+    ``[overlays.<alias>]`` entry (e.g. ``[overlays.<short>]`` for a canonical
+    ``t3-<short>`` entry-point overlay) would otherwise have the freshness
+    segment label as ``<short>=0`` even though the rest of the statusline tags
+    its rows as ``[t3-<short>]``. The bundled overlay no longer needs this
+    remap — it registers under its canonical entry-point name
+    (souliane/teatree#1108) — but the generic mapping stays for arbitrary
+    operator aliases.
 
     The matching rule lives in ``teatree.config._match_canonical_ep``
     (souliane/teatree#1138) — a single home shared with config-time discovery.
     """
     try:
-        from teatree.config import _match_canonical_ep  # noqa: PLC0415
+        from teatree.config import _match_canonical_ep, load_config  # noqa: PLC0415
         from teatree.core.overlay_loader import get_all_overlays  # noqa: PLC0415
     except Exception:  # noqa: BLE001
         return {}
     canonical = set(get_all_overlays().keys())
-    toml_path = Path.home() / ".teatree.toml"
-    if not toml_path.is_file():
-        return {}
-    try:
-        data = tomllib.loads(toml_path.read_text(encoding="utf-8"))
-    except tomllib.TOMLDecodeError:
-        return {}
+    overlays_cfg = load_config().raw.get("overlays") or {}
     mapping: dict[str, str] = {}
-    for raw_key in data.get("overlays") or {}:
+    for raw_key in overlays_cfg:
         if raw_key in canonical:
             continue
         cname = _match_canonical_ep(raw_key, canonical)

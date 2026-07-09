@@ -235,6 +235,19 @@ def list_setting(
     return default
 
 
+def mapping_setting(
+    name: str,
+    *,
+    scope_chain: Sequence[str] = (_GLOBAL_SCOPE,),
+    db_path: Path | None = None,
+) -> dict[str, object]:
+    """The stored value as a typed mapping when it is a real dict, else an empty dict."""
+    value = _read_chain(name, scope_chain, db_path=db_path)
+    if isinstance(value, dict):
+        return cast("dict[str, object]", value)
+    return {}
+
+
 def overlay_then_global(
     key: str,
     overlay: str,

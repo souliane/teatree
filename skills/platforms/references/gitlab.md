@@ -13,11 +13,10 @@ TeaTree supports self-hosted GitLab instances. Set the base URL via the overlay 
 GITLAB_URL = "https://gitlab.example.com/api/v4"
 ```
 
-Or in `~/.teatree.toml`:
+Or in the overlay's DB `overlays` registry row:
 
-```toml
-[overlays.my-overlay]
-gitlab_url = "https://gitlab.example.com/api/v4"
+```json
+{"my-overlay": {"gitlab_url": "https://gitlab.example.com/api/v4"}}
 ```
 
 The default is `https://gitlab.com/api/v4`. All URL parsing (MR links, issue links, Slack review matching) works with any GitLab hostname.

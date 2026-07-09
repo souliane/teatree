@@ -1,5 +1,10 @@
 """Behaviour tests for the bot→user notification helper (#963)."""
 
+import json
+import os
+import sqlite3
+import tempfile
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from django.db import OperationalError
@@ -10,6 +15,23 @@ from teatree.core.models import BotPing, IncomingEvent
 from teatree.core.notify import NotifyKind, notify_user
 
 _DB_LOCKED = OperationalError("database is locked")
+
+
+def _seed_config(db: Path, key: str, value: object, scope: str = "") -> None:
+    """Seed a ``teatree_config_setting`` row the cold reader (and load_config) resolve."""
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES (?, ?, ?)",
+            (scope, key, json.dumps(value)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _backend(*, permalink: str = "https://acme.slack.com/archives/D-USER/p1700000000000000") -> MagicMock:
@@ -606,3 +628,31 @@ class TestPublicHelperSurface:
         out = notify_module.format_notification("hello", NotifyKind.INFO)
         assert "hello" in out
         assert "info" in out.lower()
+
+
+class TestResolveUserId(TestCase):
+    """``resolve_user_id``: overlay registry → global DB ``slack_user_id`` → empty."""
+
+    def test_global_db_fallback_is_read(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "db.sqlite3"
+            _seed_config(db, "slack_user_id", "U-GLOBAL")
+            with patch.dict(os.environ, {"T3_CONFIG_DB": str(db)}):
+                os.environ.pop("T3_OVERLAY_NAME", None)
+                assert notify_module.resolve_user_id() == "U-GLOBAL"
+
+    def test_overlay_registry_beats_global_db(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "db.sqlite3"
+            _seed_config(db, "slack_user_id", "U-GLOBAL")
+            _seed_config(db, "overlays", {"acme": {"slack_user_id": "U-OVERLAY"}})
+            with patch.dict(os.environ, {"T3_CONFIG_DB": str(db), "T3_OVERLAY_NAME": "acme"}):
+                assert notify_module.resolve_user_id() == "U-OVERLAY"
+
+    def test_empty_when_nothing_configured(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "db.sqlite3"
+            _seed_config(db, "unrelated", "x")  # a DB with the table but no slack_user_id row
+            with patch.dict(os.environ, {"T3_CONFIG_DB": str(db)}):
+                os.environ.pop("T3_OVERLAY_NAME", None)
+                assert notify_module.resolve_user_id() == ""

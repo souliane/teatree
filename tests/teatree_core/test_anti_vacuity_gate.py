@@ -7,7 +7,7 @@ the current head is never wrongly blocked (must ALLOW).
 
 The gate reads durable ``ticket.extra['anti_vacuity_attestation']`` plus the
 live head SHA. ``require_anti_vacuity_attestation`` is pinned per test rather
-than the host ``~/.teatree.toml`` so the suite is deterministic.
+than the host machine's config so the suite is deterministic.
 """
 
 from collections.abc import Iterator

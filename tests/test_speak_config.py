@@ -1,18 +1,15 @@
 """``LocalPlayback`` / ``SpeakConfig`` parsing + DB-home ``speak`` resolution (#2060).
 
 The schema: a ``speak`` config with a ``local`` enum (``off`` / ``dm`` / ``all``)
-and a ``slack`` bool, fully independent. eliminate-~/.teatree.toml made ``speak``
-DB-home — it resolves from a JSON-dict ``ConfigSetting`` row (rebuilt bespoke via
+and a ``slack`` bool, fully independent. ``speak`` is DB-home (legacy file tier
+removed) — it resolves from a JSON-dict ``ConfigSetting`` row (rebuilt bespoke via
 ``speak_from_subtable``). Covers: defaults when absent, parse, partial keys, a clean
 ``ValueError`` on a typo, and the per-overlay row merge.
 """
 
-from pathlib import Path
-
 import pytest
 from django.test import TestCase
 
-import teatree.config as config_facade
 from teatree.config import get_effective_settings
 from teatree.config_speak import parse_speak_setting, resolve_speak
 from teatree.core.models import ConfigSetting
@@ -99,7 +96,7 @@ class TestPresenceFields:
 
 
 class TestSpeakDbResolution(TestCase):
-    """eliminate-~/.teatree.toml: ``speak`` resolves from a JSON-dict ``ConfigSetting`` row.
+    """``speak`` is DB-home: it resolves from a JSON-dict ``ConfigSetting`` row.
 
     The stored dict is rebuilt bespoke by the resolver via ``speak_from_subtable`` —
     the same builder the old ``[teatree.speak]`` reader used, so partial keys, unknown
@@ -107,8 +104,7 @@ class TestSpeakDbResolution(TestCase):
     """
 
     @pytest.fixture(autouse=True)
-    def _sandbox(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(config_facade, "CONFIG_PATH", tmp_path / ".teatree.toml")
+    def _sandbox(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
 
     def test_default_when_no_row(self) -> None:
@@ -152,7 +148,7 @@ class TestResolveSpeakDirect:
 
 
 class TestPerOverlaySpeakMerge(TestCase):
-    """eliminate-~/.teatree.toml: a per-overlay ``speak`` DB row MERGES onto the global base.
+    """A per-overlay ``speak`` DB row MERGES onto the global base.
 
     The one non-generic structured override (``resolution._resolve_speak_db``): the
     global ``speak`` row sets the base, the overlay-scope row overrides only the keys
@@ -160,8 +156,7 @@ class TestPerOverlaySpeakMerge(TestCase):
     """
 
     @pytest.fixture(autouse=True)
-    def _sandbox(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(config_facade, "CONFIG_PATH", tmp_path / ".teatree.toml")
+    def _sandbox(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
 
     def test_overlay_row_inherits_global_local(self) -> None:

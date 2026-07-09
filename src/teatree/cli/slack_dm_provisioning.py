@@ -6,43 +6,39 @@ Each overlay's bot only routes DMs through its own IM channel; without one,
 falls back to whichever bot already had an IM open with the user — the
 per-overlay attribution leak the issue reports.
 
-This module is invoked from the ``t3 setup`` callback for every overlay
-whose ``[overlays.<name>]`` block declares ``messaging_backend = "slack"``
-and has a token reference but no cached ``slack_dm_channel_id`` yet. It
-calls ``conversations.open`` once and persists the resulting channel id
-back to ``~/.teatree.toml`` under the same overlay block. The runtime
-``messaging_from_overlay`` chain (typed and TOML-only) threads the cached
-id into ``SlackBotBackend``, which short-circuits subsequent ``open_dm``
-calls for the configured user (no extra Slack round-trip).
+This module is invoked from the ``t3 setup`` callback for every overlay whose
+entry in the DB ``overlays`` registry declares ``messaging_backend = "slack"``
+and has a token reference but no cached ``slack_dm_channel_id`` yet. It calls
+``conversations.open`` once and persists the resulting channel id back into that
+overlay's entry in the ``overlays`` registry row. The runtime
+``messaging_from_overlay`` chain threads the cached id into ``SlackBotBackend``,
+which short-circuits subsequent ``open_dm`` calls for the configured user (no
+extra Slack round-trip).
 
-The user's Slack id is resolved in priority order: first ``pass
-slack/user-id`` (the canonical, overlay-agnostic single source of truth a
-wrapper script provisions once); then the per-overlay ``slack_user_id``
-already recorded by ``t3 setup slack-bot``; finally the bot's own
-``auth.test`` response (last-resort fallback returning whichever user
-the token was minted for — usually the bot user, rarely the human).
+The user's Slack id is resolved in priority order: first ``pass slack/user-id``
+(the canonical, overlay-agnostic single source of truth a wrapper script
+provisions once); then the per-overlay ``slack_user_id`` already recorded by
+``t3 setup slack-bot``; finally the bot's own ``auth.test`` response (last-resort
+fallback returning whichever user the token was minted for — usually the bot
+user, rarely the human).
 
-Failures are surfaced at setup time rather than mid-run at first DM
-attempt: a clean ``conversations.open ok:false`` produces a single
-``ProvisionResult.FAILED_OPEN_DM`` row the caller renders into a typer
-echo.
+Failures are surfaced at setup time rather than mid-run at first DM attempt: a
+clean ``conversations.open ok:false`` produces a single
+``ProvisionResult.FAILED_OPEN_DM`` row the caller renders into a typer echo.
 """
 
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar
+from typing import ClassVar
 
 from teatree.backends.slack.bot import SlackBotBackend
 from teatree.utils.secrets import read_pass
 
-if TYPE_CHECKING:
-    from tomlkit.items import Table
-    from tomlkit.toml_document import TOMLDocument
-
-SLACK_DM_CHANNEL_TOML_KEY = "slack_dm_channel_id"
+SLACK_DM_CHANNEL_KEY = "slack_dm_channel_id"
 SLACK_USER_ID_PASS_KEY = "slack/user-id"  # noqa: S105 — pass key name, not a secret
+
+_OVERLAYS_REGISTRY_KEY = "overlays"
 
 
 class _Status(Enum):
@@ -97,18 +93,36 @@ def resolve_user_slack_id(*, bot_token: str) -> str:
     return user_id if isinstance(user_id, str) else ""
 
 
-def provision_overlay_dm_channel(*, config_path: Path, overlay_name: str) -> ProvisionResult:
+def _load_overlays_registry() -> dict[str, dict]:
+    """Return the DB ``overlays`` registry dict (``{name: {fields}}``), or ``{}`` when unset."""
+    from teatree.core.models import ConfigSetting  # noqa: PLC0415
+
+    stored = ConfigSetting.objects.get_effective(_OVERLAYS_REGISTRY_KEY)
+    return stored if isinstance(stored, dict) else {}
+
+
+def _persist_dm_channel(overlay_name: str, channel_id: str) -> None:
+    """Write *channel_id* into the overlay's entry of the DB ``overlays`` registry row."""
+    from teatree.core.models import ConfigSetting  # noqa: PLC0415
+
+    registry = _load_overlays_registry()
+    block = registry.get(overlay_name)
+    if not isinstance(block, dict):
+        return
+    block[SLACK_DM_CHANNEL_KEY] = channel_id
+    ConfigSetting.objects.set_value(_OVERLAYS_REGISTRY_KEY, registry)
+
+
+def provision_overlay_dm_channel(*, overlay_name: str) -> ProvisionResult:
     """Open the per-overlay bot's IM with the user and persist the channel id.
 
-    Idempotent: when ``[overlays.<name>] slack_dm_channel_id`` is already
-    set, returns immediately with ``SKIPPED_ALREADY_PROVISIONED``.
-
-    The persistence target is exactly the same TOML block ``t3 setup
-    slack-bot`` writes to. The runtime ``messaging_from_overlay`` chain
-    reads it back without any further round-trip.
+    Idempotent: when the overlay's ``slack_dm_channel_id`` is already set in the
+    ``overlays`` registry, returns immediately with ``SKIPPED_ALREADY_PROVISIONED``.
+    The persistence target is the same registry entry ``t3 setup slack-bot`` writes;
+    the runtime ``messaging_from_overlay`` chain reads it back with no round-trip.
     """
-    overlay_block, document = _load_overlay_block(config_path, overlay_name)
-    if overlay_block is None or document is None:
+    overlay_block = _load_overlays_registry().get(overlay_name)
+    if not isinstance(overlay_block, dict):
         return ProvisionResult(status=ProvisionResult.SKIPPED_NO_BOT, overlay_name=overlay_name)
 
     precheck = _precheck_overlay_block(overlay_block, overlay_name)
@@ -141,11 +155,7 @@ def provision_overlay_dm_channel(*, config_path: Path, overlay_name: str) -> Pro
             detail="Slack `conversations.open` returned ok:false (missing scope or invalid user)",
         )
 
-    import tomlkit  # noqa: PLC0415
-
-    overlay_block[SLACK_DM_CHANNEL_TOML_KEY] = channel_id
-    config_path.write_text(tomlkit.dumps(document), encoding="utf-8")
-
+    _persist_dm_channel(overlay_name, channel_id)
     return ProvisionResult(
         status=ProvisionResult.PROVISIONED,
         overlay_name=overlay_name,
@@ -153,42 +163,17 @@ def provision_overlay_dm_channel(*, config_path: Path, overlay_name: str) -> Pro
     )
 
 
-def _load_overlay_block(
-    config_path: Path,
-    overlay_name: str,
-) -> "tuple[Table | None, TOMLDocument | None]":
-    """Return ``(overlay_block, document)`` from *config_path* or ``(None, None)`` on miss.
-
-    Both are returned together so the caller can persist a mutation back
-    to the same document without re-parsing.
-    """
-    import tomlkit  # noqa: PLC0415
-    from tomlkit import items as tomlkit_items  # noqa: PLC0415
-
-    if not config_path.is_file():
-        return None, None
-    document = tomlkit.parse(config_path.read_text(encoding="utf-8"))
-    overlays = document.get("overlays")
-    if not isinstance(overlays, tomlkit_items.Table):
-        return None, None
-    overlay_block = overlays.get(overlay_name)
-    if not isinstance(overlay_block, tomlkit_items.Table):
-        return None, None
-    return overlay_block, document
-
-
-def _precheck_overlay_block(overlay_block: "Table", overlay_name: str) -> ProvisionResult | None:
+def _precheck_overlay_block(overlay_block: dict, overlay_name: str) -> ProvisionResult | None:
     """Reject blocks that have no Slack bot configured or are already provisioned.
 
-    Returns the early-exit ``ProvisionResult`` when the block isn't a
-    candidate for provisioning, or ``None`` when the caller should proceed
-    to open ``conversations.open``.
+    Returns the early-exit ``ProvisionResult`` when the block isn't a candidate for
+    provisioning, or ``None`` when the caller should proceed to ``conversations.open``.
     """
     if str(overlay_block.get("messaging_backend", "")) != "slack":
         return ProvisionResult(status=ProvisionResult.SKIPPED_NO_BOT, overlay_name=overlay_name)
     if not str(overlay_block.get("slack_token_ref", "")):
         return ProvisionResult(status=ProvisionResult.SKIPPED_NO_BOT, overlay_name=overlay_name)
-    cached = str(overlay_block.get(SLACK_DM_CHANNEL_TOML_KEY, ""))
+    cached = str(overlay_block.get(SLACK_DM_CHANNEL_KEY, ""))
     if cached:
         return ProvisionResult(
             status=ProvisionResult.SKIPPED_ALREADY_PROVISIONED,
@@ -198,38 +183,21 @@ def _precheck_overlay_block(overlay_block: "Table", overlay_name: str) -> Provis
     return None
 
 
-def provision_all_overlay_dm_channels(
-    *,
-    config_path: Path,
-    echo: Callable[[str], None],
-) -> list[ProvisionResult]:
+def provision_all_overlay_dm_channels(*, echo: Callable[[str], None]) -> list[ProvisionResult]:
     """Provision every Slack-bot overlay's IM channel; called by ``t3 setup``.
 
-    Iterates ``[overlays.*]`` blocks in *config_path*. For every entry
-    declaring ``messaging_backend = "slack"``, calls
-    :func:`provision_overlay_dm_channel`. Renders one ``echo`` line per
-    actionable result so the user sees IM provisioning land alongside the
-    rest of the setup output.
+    Iterates the DB ``overlays`` registry. For every entry declaring
+    ``messaging_backend = "slack"``, calls :func:`provision_overlay_dm_channel`.
+    Renders one ``echo`` line per actionable result so the user sees IM
+    provisioning land alongside the rest of the setup output.
     """
-    import tomlkit  # noqa: PLC0415
-    from tomlkit import items as tomlkit_items  # noqa: PLC0415
-
-    if not config_path.is_file():
-        return []
-
-    document = tomlkit.parse(config_path.read_text(encoding="utf-8"))
-    overlays = document.get("overlays")
-    if not isinstance(overlays, tomlkit_items.Table):
-        return []
-
     results: list[ProvisionResult] = []
-    for name in list(overlays.keys()):
-        block = overlays.get(name)
-        if not isinstance(block, tomlkit_items.Table):
+    for name, block in _load_overlays_registry().items():
+        if not isinstance(block, dict):
             continue
         if str(block.get("messaging_backend", "")) != "slack":
             continue
-        result = provision_overlay_dm_channel(config_path=config_path, overlay_name=name)
+        result = provision_overlay_dm_channel(overlay_name=name)
         _render(result, echo)
         results.append(result)
     return results
@@ -253,7 +221,7 @@ def _render(result: ProvisionResult, echo: Callable[[str], None]) -> None:
 
 
 __all__ = [
-    "SLACK_DM_CHANNEL_TOML_KEY",
+    "SLACK_DM_CHANNEL_KEY",
     "SLACK_USER_ID_PASS_KEY",
     "ProvisionResult",
     "provision_all_overlay_dm_channels",

@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
 # Pre-commit hook: reject files containing banned terms.
 #
-# Reads banned_terms from a TOML config file (e.g., ~/.teatree.toml):
-#   --config <path>  TOML file with a banned_terms array in any section.
-#
-# Example .pre-commit-config.yaml entry:
-#   entry: scripts/hooks/check-banned-terms.sh --config ~/.teatree.toml
-#
-# Example TOML:
-#   [teatree]
-#   banned_terms = ["term1", "term2"]
+# The banned-terms list is DB-home: it is read from the canonical ConfigSetting
+# store (the DB is PRIVATE to the operator). Set it with:
+#   t3 <overlay> config_setting set banned_terms '["term1","term2"]'
 #   # Optional company-identifier carve-out (#1415 over-block): the org's OWN
 #   # compound identifiers / internal-URL namespaces — never customer PII. Each
 #   # entry's whole-token run is blanked BEFORE matching, so a shorter banned
 #   # term (a bare org slug) never surfaces inside a longer company identifier.
-#   banned_terms_allowlist = ["myorg-engineering", "myorg-product"]
+#   t3 <overlay> config_setting set banned_terms_allowlist '["myorg-engineering","myorg-product"]'
+# The T3_BANNED_TERMS env value (comma-separated) still WINS over the DB.
 #
-# If no config or no banned_terms key, exits 0 (no-op).
+# Example .pre-commit-config.yaml entry (the CLI reads the DB itself, so the
+# hook passes only the staged files and --diff-only):
+#   entry: scripts/hooks/check-banned-terms.sh
+#
+# An explicit empty list exits 0 (no-op); a genuinely UNSET list (no
+# banned_terms row and no env) exits 2 (fail loud) — never a silent scan.
 #
 # This is a THIN wrapper: all matching is delegated to
 # ``teatree.hooks.banned_terms_cli`` (which uses ``teatree.hooks.term_match``),
