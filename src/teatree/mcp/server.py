@@ -21,7 +21,15 @@ from mcp.types import ToolAnnotations
 from teatree.backends.types import Service
 from teatree.config import get_effective_settings
 from teatree.core.overlay_loader import get_all_overlays
-from teatree.mcp import introspection, search, services_sentry, write_tools
+from teatree.mcp import (
+    introspection,
+    search,
+    services_forge,
+    services_notion,
+    services_sentry,
+    services_slack,
+    write_tools,
+)
 
 _READ_ONLY = ToolAnnotations(readOnlyHint=True)
 
@@ -31,6 +39,10 @@ _READ_ONLY = ToolAnnotations(readOnlyHint=True)
 # server instructions only when the group registers, so the instructions never
 # advertise an unregistered tool.
 _SERVICE_GROUPS: dict[Service, tuple[Callable[[FastMCP], None], str]] = {
+    Service.GITHUB: (services_forge.register_github, services_forge.INSTRUCTIONS_GITHUB),
+    Service.GITLAB: (services_forge.register_gitlab, services_forge.INSTRUCTIONS_GITLAB),
+    Service.SLACK: (services_slack.register, services_slack.INSTRUCTIONS),
+    Service.NOTION: (services_notion.register, services_notion.INSTRUCTIONS),
     Service.SENTRY: (services_sentry.register, services_sentry.INSTRUCTIONS),
 }
 

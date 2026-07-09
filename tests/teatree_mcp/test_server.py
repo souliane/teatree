@@ -69,7 +69,9 @@ def _payloads(result: Any) -> list[Any]:
 
 class TestToolRegistration(TestCase):
     def test_registers_the_expected_tool_surface_with_correct_read_write_hints(self) -> None:
-        tools = asyncio.run(build_server().list_tools())
+        # No service declared ⇒ the base surface is exactly the read + write tools.
+        with patch("teatree.mcp.server.get_all_overlays", return_value={"a": _ServiceOverlay()}):
+            tools = asyncio.run(build_server().list_tools())
 
         by_name = {tool.name: tool for tool in tools}
         assert set(by_name) == _EXPECTED_TOOLS
