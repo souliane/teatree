@@ -53,6 +53,9 @@ class TestConfigSettingSetGateRefusal(TestCase):
             "require_human_approval_to_merge",  # require_* training wheel
             "e2e_mandatory_gate_enabled",  # *_gate_enabled kill-switch
             "overlays",  # registry row
+            "banned_terms",  # leak-scrub input list (cold-read)
+            "overlay_leak_terms",  # leak-scrub input list (cold-read)
+            "danger_gate_fail_open",  # master fail-open switch (cold-read)
         ):
             with pytest.raises(Exception, match="refused"):
                 _call("config_setting_set", {"key": key, "value": "false"})

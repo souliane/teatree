@@ -30,7 +30,7 @@ from mcp.types import ToolAnnotations
 
 from teatree.config.cold_hook_settings import COLD_HOOK_SETTINGS
 from teatree.config.feature_flags import is_feature_flag
-from teatree.config.registries import REGISTRY_KEYS
+from teatree.config.registries import COLD_SETTINGS, REGISTRY_KEYS
 from teatree.core.models import Task
 from teatree.mcp.review_seam import review_post_seam
 
@@ -58,12 +58,15 @@ def _run_command(command: str, *args: object, **kwargs: object) -> object:
         raise RuntimeError(message) from exc
 
 
-# Safety-gate keys an MCP caller may never flip: cold-hook gate wires,
-# feature flags (directive-/lifecycle-governed), the opt-in ``require_*``
-# training wheels, ``*_gate_enabled`` kill-switches, and the registry rows
-# (``overlays`` / ``e2e_repos`` redirect overlay code paths). Flipping these
-# stays a human/CLI act — this is a TIGHTENING over the Bash
-# ``t3 <overlay> config_setting set`` path, per the no-unilateral-gate-flip rule.
+# Safety-gate keys an MCP caller may never flip: cold-hook gate wires, feature
+# flags (directive-/lifecycle-governed), the opt-in ``require_*`` training
+# wheels, ``*_gate_enabled`` kill-switches, the registry rows (``overlays`` /
+# ``e2e_repos`` redirect overlay code paths), and the cold-read ``COLD_SETTINGS``
+# — the leak-scrub input lists (``banned_terms`` / ``banned_brands`` /
+# ``overlay_leak_terms`` …), the master ``danger_gate_fail_open`` switch, and the
+# agent-routing tables. Emptying a leak-scrub list or flipping fail-open over MCP
+# would neuter a live guard; those stay a human/CLI act — a TIGHTENING over the
+# Bash ``t3 <overlay> config_setting set`` path, per the no-unilateral-gate-flip rule.
 _REFUSED_KEY_GLOBS = ("*_gate_enabled", "require_*")
 
 TOOL_SEAMS: dict[str, str] = {
@@ -93,7 +96,8 @@ INSTRUCTIONS = (
     "mandatory-E2E attestation (posted evidence URL required to clear the gate).\n"
     "- config_setting_set(key, value, overlay): set a plain config setting; "
     "REFUSES safety-gate keys (*_gate_enabled, require_*, feature flags, "
-    "cold-hook wires, registry rows) — those stay human/CLI-only.\n"
+    "cold-hook wires, registry rows, and the cold-read leak-scrub lists / "
+    "fail-open switch / agent-routing tables) — those stay human/CLI-only.\n"
     "- task_complete(task_id, result_artifact_path) / task_fail(task_id): loop "
     "task bookkeeping (complete advances the ticket FSM).\n"
     "- question_answer(question_id, text, resolver): answer a pending "
@@ -116,6 +120,8 @@ def refuse_reason(key: str) -> str:
         return "feature flag — directive-/lifecycle-governed, human/CLI-only"
     if key in REGISTRY_KEYS:
         return "registry row — redirects overlay code paths, human/CLI-only"
+    if key in COLD_SETTINGS:
+        return "cold-read key — leak-scrub list / fail-open switch / agent routing, human/CLI-only"
     if any(fnmatch(key, glob) for glob in _REFUSED_KEY_GLOBS):
         return "safety-gate key — flip via the CLI, never via MCP"
     return ""
@@ -198,8 +204,9 @@ async def _config_setting_set(key: str, value: str, *, overlay: str = "") -> dic
 
     Wraps ``t3 <overlay> config_setting set`` (same registry validation, same
     canonical-value storage). Gate keys (``*_gate_enabled``, ``require_*``,
-    feature flags, cold-hook wires, registry rows) are refused: flipping a
-    safety gate stays a human/CLI act.
+    feature flags, cold-hook wires, registry rows, and the cold-read leak-scrub
+    lists / fail-open switch / agent-routing tables) are refused: flipping a
+    safety gate — or emptying a leak-scrub list — stays a human/CLI act.
     """
     if reason := refuse_reason(key):
         msg = f"refused: {key} is not MCP-settable ({reason})"
