@@ -51,6 +51,7 @@ _ALLOWED_ROOT_ENTRIES = frozenset(
         # Build / tool dirs and manifests required at root by external tooling
         "dist",
         "dev",
+        "deploy",  # headless-deploy tooling (deploy/README.md is the SOT)
         "agents",
         "apm.yml",
         "settings.json",
@@ -64,6 +65,7 @@ _ALLOWED_ROOT_ENTRIES = frozenset(
         # Dotfiles
         ".claudeignore",
         ".codespell-dictionary.txt",
+        ".dockerignore",  # headless-deploy build-context ignore (deploy/README.md is the SOT)
         ".editorconfig",
         ".gitignore",
         ".gitlab-ci.yml",

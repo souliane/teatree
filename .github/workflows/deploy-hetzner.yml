@@ -1,0 +1,80 @@
+# One-click teatree headless deploy to an existing Hetzner box.
+# Manual trigger only. No box-identifying info lives here — the server name, SSH
+# user/port, host key, and IP all come from secrets, and the resolved IP is
+# masked out of the logs. Uses no third-party actions (nothing to SHA-pin); the
+# hcloud CLI is installed from a checksum-pinned release.
+name: Deploy teatree to Hetzner
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Install hcloud CLI (checksum-pinned)
+        env:
+          HCLOUD_VERSION: v1.66.0
+          HCLOUD_SHA256: 8b1a8598858232c491f58cbf65ce1bd0ec6f725114bb62ec967a20ab03e29a86
+        run: |
+          curl -fsSL -o hcloud.tar.gz \
+            "https://github.com/hetznercloud/cli/releases/download/${HCLOUD_VERSION}/hcloud-linux-amd64.tar.gz"
+          echo "${HCLOUD_SHA256}  hcloud.tar.gz" | sha256sum -c -
+          tar -xzf hcloud.tar.gz hcloud
+          sudo install -m 0755 hcloud /usr/local/bin/hcloud
+          rm -f hcloud.tar.gz hcloud
+
+      - name: Resolve box IP (masked)
+        env:
+          HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+          HETZNER_SERVER_NAME: ${{ secrets.HETZNER_SERVER_NAME }}
+        run: |
+          IP="$(hcloud server ip "$HETZNER_SERVER_NAME")"
+          echo "::add-mask::$IP"
+          echo "SERVER_IP=$IP" >> "$GITHUB_ENV"
+
+      - name: Configure SSH
+        env:
+          HETZNER_SSH_KEY: ${{ secrets.HETZNER_SSH_KEY }}
+          HETZNER_SSH_KNOWN_HOSTS: ${{ secrets.HETZNER_SSH_KNOWN_HOSTS }}
+        run: |
+          mkdir -p "$HOME/.ssh"
+          umask 077
+          printf '%s\n' "$HETZNER_SSH_KEY" > "$HOME/.ssh/id_deploy"
+          chmod 600 "$HOME/.ssh/id_deploy"
+          printf '%s\n' "$HETZNER_SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+      - name: Write box secrets file and deploy
+        env:
+          SSH_USER: ${{ secrets.HETZNER_SSH_USER }}
+          SSH_PORT: ${{ secrets.HETZNER_SSH_PORT }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          TEATREE_GH_TOKEN: ${{ secrets.TEATREE_GH_TOKEN }}
+          T3_ADMIN_USER: ${{ secrets.T3_ADMIN_USER }}
+          T3_ADMIN_PASSWORD: ${{ secrets.T3_ADMIN_PASSWORD }}
+          GIT_AUTHOR_NAME: ${{ secrets.GIT_AUTHOR_NAME }}
+          GIT_AUTHOR_EMAIL: ${{ secrets.GIT_AUTHOR_EMAIL }}
+        run: |
+          SSH="ssh -p ${SSH_PORT} -i ${HOME}/.ssh/id_deploy -o UserKnownHostsFile=${HOME}/.ssh/known_hosts -o StrictHostKeyChecking=yes -o ConnectTimeout=20"
+          TARGET="${SSH_USER}@${SERVER_IP}"
+
+          # 1. Ensure the build-context checkout exists on the box.
+          $SSH "$TARGET" 'set -e; REMOTE_DIR="$HOME/teatree-deploy"; if [ ! -d "$REMOTE_DIR/.git" ]; then git clone https://github.com/souliane/teatree.git "$REMOTE_DIR"; fi; mkdir -p "$REMOTE_DIR/deploy"'
+
+          # 2. Write the secrets file (piped over stdin — never on argv or in logs; mode 600).
+          {
+            printf 'CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$CLAUDE_CODE_OAUTH_TOKEN"
+            printf 'TEATREE_GH_TOKEN=%s\n' "$TEATREE_GH_TOKEN"
+            printf 'T3_ADMIN_USER=%s\n' "$T3_ADMIN_USER"
+            printf 'T3_ADMIN_PASSWORD=%s\n' "$T3_ADMIN_PASSWORD"
+            printf 'GIT_AUTHOR_NAME=%s\n' "$GIT_AUTHOR_NAME"
+            printf 'GIT_AUTHOR_EMAIL=%s\n' "$GIT_AUTHOR_EMAIL"
+          } | $SSH "$TARGET" 'umask 077; cat > "$HOME/teatree-deploy/deploy/teatree.env"'
+
+          # 3. Converge the stack (deploy.sh reads no secrets — compose's env_file does).
+          $SSH "$TARGET" 'cd "$HOME/teatree-deploy" && bash deploy/deploy.sh'

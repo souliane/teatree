@@ -1,0 +1,20 @@
+# The deploy image bakes only the toolchain + entrypoint — the teatree source
+# is cloned onto a volume at runtime, never baked. Keep the build context
+# (the repo root) small and free of secrets.
+
+.git
+**/.venv
+**/node_modules
+**/__pycache__
+**/*.pyc
+.claude/worktrees
+.mypy_cache
+.ruff_cache
+.pytest_cache
+htmlcov
+build
+dist
+artifacts
+
+# The box-side secrets file (tokens) must never enter the build context.
+deploy/teatree.env

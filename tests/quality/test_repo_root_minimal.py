@@ -42,6 +42,7 @@ ALLOWED_ROOT = frozenset(
         "mkdocs.yml",
         ".pre-commit-config.yaml",
         ".gitignore",
+        ".dockerignore",  # headless-deploy build-context ignore (deploy/README.md is the SOT)
         ".gitlab-ci.yml",
         "requirements.audit.ignore",  # per-CVE pip-audit allowlist (CI security gate)
         ".github",
@@ -67,6 +68,7 @@ ALLOWED_ROOT = frozenset(
         "docs",
         "scripts",
         "dev",
+        "deploy",  # headless-deploy tooling (deploy/README.md is the SOT)
         "dist",
     }
 )
