@@ -18,6 +18,12 @@ from typing import Annotated
 import typer
 from django_typer.management import TyperCommand
 
+_ADHOC_HELP = (
+    "Ad-hoc Anthropic token to health-probe as an extra row (repeatable) — for checking a "
+    "freshly-minted token before saving it. Warning: a token on the command line is visible "
+    "in 'ps' output and your shell history."
+)
+
 
 class Command(TyperCommand):
     def handle(
@@ -27,11 +33,12 @@ class Command(TyperCommand):
             bool,
             typer.Option("--json", help="Emit the structured report as JSON instead of the human table."),
         ] = False,
+        tokens: Annotated[list[str] | None, typer.Option("--token", help=_ADHOC_HELP)] = None,
     ) -> str:
         """Show per-account Anthropic 5h / weekly token utilization + status."""
         from teatree.token_report import TokenReport, render_table  # noqa: PLC0415
 
-        rows = TokenReport().rows()
+        rows = TokenReport(ad_hoc_tokens=tokens).rows()
         if json_output:
             return json.dumps([row.as_dict() for row in rows])
         return render_table(rows)

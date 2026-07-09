@@ -11,7 +11,9 @@ import httpx
 import pytest
 from django.core.exceptions import ImproperlyConfigured
 from django.test import TestCase
+from pydantic import ValidationError
 
+from teatree.backends.types import Service
 from teatree.core.models import Ticket, Worktree
 from teatree.core.overlay import OverlayBase, OverlayConfig, ProvisionStep
 from teatree.core.overlay_loader import OverlayConfigResolver, get_overlay, reset_overlay_cache
@@ -215,6 +217,41 @@ class TestOverlayConfigResolverAllNames(TestCase):
         assert "ep-overlay" in names
         assert "toml-path-only" in names
         assert "toml-config-only" not in names
+
+
+class TestRequiredThirdPartyServices(TestCase):
+    def test_defaults_to_empty_frozenset(self) -> None:
+        assert OverlayConfig().required_third_party_services == frozenset()
+
+    def test_settings_module_list_coerces_to_service_frozenset(self) -> None:
+        config = OverlayConfig(settings_module="teatree.contrib.t3_teatree.overlay_settings")
+
+        assert config.required_third_party_services == frozenset({Service.GITHUB, Service.SLACK})
+
+    def test_overlays_row_override_coerces_json_list(self) -> None:
+        mock_config = MagicMock()
+        mock_config.raw = {
+            "overlays": {
+                "test-overlay": {"required_third_party_services": ["gitlab", "sentry"]},
+            },
+        }
+        with patch("teatree.config.load_config", return_value=mock_config):
+            config = OverlayConfig(overlay_name="test-overlay")
+
+        assert config.required_third_party_services == frozenset({Service.GITLAB, Service.SENTRY})
+
+    def test_unknown_service_name_fails_loud(self) -> None:
+        config = OverlayConfig()
+
+        with pytest.raises(ValidationError):
+            config.required_third_party_services = ["figma"]  # type: ignore[assignment]
+
+    def test_sentry_token_getter_always_defined(self) -> None:
+        config = OverlayConfig()
+
+        assert config.get_sentry_token() == ""
+        assert config.sentry_org == ""
+        assert config.sentry_url == "https://sentry.io"
 
 
 class TestOverlayConfig(TestCase):
