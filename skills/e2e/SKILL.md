@@ -377,7 +377,7 @@ Flags (all keyword-only):
 
 ### Artifact directory layout (Non-Negotiable)
 
-E2E artifacts live in a **dedicated directory per environment**: `artifacts/<TICKET>/<env>/<file>`, with `env ∈ {dev, local}`. Capture every screenshot and recording for a given env under that env's directory — never mix a dev and a local capture in one folder, and never dump artifacts at the ticket root. Examples:
+E2E artifacts live in a **dedicated directory per environment**, **outside every repo working tree**: `<ticket>/.t3-cache/artifacts/<TICKET>/<env>/<file>`, with `env ∈ {dev, local}`. An overlay exports the resolved root as `T3_E2E_ARTIFACTS_DIR`; honour it rather than hard-coding a path. Writing captures to a **worktree-root** `artifacts/` puts binaries inside a product repo — the exact mistake the rule above forbids. Capture every screenshot and recording for a given env under that env's directory — never mix a dev and a local capture in one folder, and never dump artifacts at the ticket root. Examples:
 
 ```
 artifacts/8521/local/run.webm
@@ -386,7 +386,7 @@ artifacts/8521/dev/run.webm
 artifacts/8521/dev/step1.png
 ```
 
-This makes wrap-up and manifest assembly trivial — a side's captures are exactly the files under `artifacts/<TICKET>/<env>/`, so building the manifest's `dev`/`local` blocks is a directory listing, and a re-run for the other env never collides with the first. `t3 <overlay> e2e post-test-plan` resolves manifest paths relative to the worktree root, so reference them as `artifacts/<TICKET>/<env>/<file>`.
+This makes wrap-up and manifest assembly trivial — a side's captures are exactly the files under `artifacts/<TICKET>/<env>/`, so building the manifest's `dev`/`local` blocks is a directory listing, and a re-run for the other env never collides with the first. `t3 <overlay> e2e post-test-plan` resolves relative artifact paths against the **manifest's own directory**, so keep the manifest beside its artifacts root and reference them as `artifacts/<TICKET>/<env>/<file>`.
 
 ### Rules
 
