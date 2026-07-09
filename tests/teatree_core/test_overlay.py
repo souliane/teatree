@@ -1,6 +1,8 @@
 import json
 import logging
+import sys
 import tempfile
+import types
 from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
@@ -290,6 +292,37 @@ class TestOverlayConfig(TestCase):
 
         assert "dummy-ep" in overlays
         assert overlays["dummy-ep"].config.exclude_labels == ["Process::DEV review"]
+
+    def test_secret_registry_survives_field_assignment(self) -> None:
+        # Pydantic's ``validate_assignment`` rebuilds ``__dict__`` on every plain
+        # field assignment, which used to drop the ``_secret_pass_keys`` registry
+        # (and any other plain instance state). ``_load_settings`` interleaves
+        # plain settings with ``*_PASS_KEY`` registrations, so every credential
+        # registered before the last plain setting silently resolved to ``""``
+        # (a real overlay lost its gitlab token this way).
+        config = OverlayConfig()
+        config._register_secret("gitlab_token", "forge/pat")
+        config.some_plain_setting = "value"  # the validate_assignment path
+
+        assert config._secret_registry() == {"gitlab_token": "forge/pat"}
+        with patch("teatree.utils.secrets.read_pass", return_value="secret-value"):
+            assert config.get_gitlab_token() == "secret-value"
+
+    def test_settings_module_registers_secrets_regardless_of_order(self) -> None:
+        # Regression shape of the real overlay settings module: a *_PASS_KEY
+        # sorts BEFORE plain UPPER settings, so the plain assignments that
+        # follow must not wipe the earlier registration.
+        mod = types.ModuleType("_t3_test_overlay_settings")
+        mod.AAA_TOKEN_PASS_KEY = "store/aaa"
+        mod.ZZZ_PLAIN_SETTING = "plain"
+        sys.modules["_t3_test_overlay_settings"] = mod
+        try:
+            config = OverlayConfig(settings_module="_t3_test_overlay_settings")
+        finally:
+            del sys.modules["_t3_test_overlay_settings"]
+
+        assert config._secret_registry() == {"aaa_token": "store/aaa"}
+        assert config.zzz_plain_setting == "plain"
 
     def test_apply_toml_overrides_after_init_overwrites_subclass_defaults(self) -> None:
         # Subclasses that pass only ``settings_module`` (like AcmeConfig) miss

@@ -212,7 +212,23 @@ class OverlayConfig(BaseModel):
         if (name.startswith("_") and not name.startswith("__")) or callable(value):
             object.__setattr__(self, name, value)
         else:
+            # Pydantic's ``validate_assignment`` path REBUILDS ``__dict__`` from
+            # the validated fields, silently dropping every plain instance entry
+            # the branch above stored (the ``_secret_pass_keys`` registry, secret
+            # holders, per-instance overrides). ``_load_settings`` interleaves
+            # plain-setting assignments with ``*_PASS_KEY`` registrations, so
+            # without restoring them only the secrets registered after the LAST
+            # plain assignment survived — every earlier credential (e.g. a
+            # ``gitlab_token``) silently resolved to ``""``. Snapshot the
+            # non-field entries and restore any the rebuild dropped.
+            fields = type(self).model_fields
+            plain_entries = {
+                key: kept for key, kept in self.__dict__.items() if key not in fields and not key.startswith("__")
+            }
             super().__setattr__(name, value)
+            for key, kept in plain_entries.items():
+                if key not in self.__dict__:
+                    object.__setattr__(self, key, kept)
 
     def _load_settings(self, module_path: str) -> None:
         mod = import_module(module_path)
