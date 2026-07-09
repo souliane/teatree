@@ -33,22 +33,18 @@ def _seed_config_db(db_path: Path, rows: dict) -> None:
         conn.close()
 
 
-def _stage_hook_config(tmp_path: Path, terms: list[str]) -> tuple[Path, Path, Path]:
-    """Stage the banned-terms config for the pre-commit hook subprocess.
+def _stage_hook_config(tmp_path: Path, terms: list[str]) -> tuple[Path, Path]:
+    """Stage the DB-home banned-terms config for the pre-commit hook subprocess.
 
-    Returns ``(home, db, config)``. ``db`` is the DB-home config store (the
-    ``check-banned-terms.sh`` CLI resolves it via ``T3_CONFIG_DB``); ``config`` is
-    a plain file passed to the still-required ``--config`` arg. The scanner reads
-    the term list from whichever tier the installed CLI consults, so both carry it.
+    Returns ``(home, db)``. ``db`` is the DB-home config store the
+    ``check-banned-terms.sh`` CLI resolves via ``T3_CONFIG_DB`` — the only tier
+    the CLI consults for the term list.
     """
     home = tmp_path / "home"
     home.mkdir(exist_ok=True)
     db = home / "config.sqlite3"
     _seed_config_db(db, {"banned_terms": terms})
-    config = tmp_path / "banned.toml"
-    entries = ", ".join(f'"{t}"' for t in terms)
-    config.write_text(f"[teatree]\nbanned_terms = [{entries}]\n", encoding="utf-8")
-    return home, db, config
+    return home, db
 
 
 @pytest.fixture(autouse=True)
@@ -69,7 +65,7 @@ def _public_teatree_probe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> No
 
 @pytest.mark.integration
 def test_banned_terms_hook_flags_a_configured_term(tmp_path: Path) -> None:
-    home, db, config = _stage_hook_config(tmp_path, ["acme"])
+    home, db = _stage_hook_config(tmp_path, ["acme"])
 
     sample = tmp_path / "README.md"
     sample.write_text("acme overlay\n", encoding="utf-8")
@@ -82,7 +78,7 @@ def test_banned_terms_hook_flags_a_configured_term(tmp_path: Path) -> None:
     env["T3_CONFIG_DB"] = str(db)
 
     result = subprocess.run(
-        [str(script), "--config", str(config), str(sample)],
+        [str(script), str(sample)],
         capture_output=True,
         check=False,
         env=env,
@@ -95,7 +91,7 @@ def test_banned_terms_hook_flags_a_configured_term(tmp_path: Path) -> None:
 
 @pytest.mark.integration
 def test_banned_terms_hook_ignores_matches_inside_email_addresses(tmp_path: Path) -> None:
-    home, db, config = _stage_hook_config(tmp_path, ["internalterm"])
+    home, db = _stage_hook_config(tmp_path, ["internalterm"])
 
     sample = tmp_path / "AGENTS.md"
     sample.write_text("Git author: adrien <adrien.cossa@internalterm.example>\n", encoding="utf-8")
@@ -108,7 +104,7 @@ def test_banned_terms_hook_ignores_matches_inside_email_addresses(tmp_path: Path
     env["T3_CONFIG_DB"] = str(db)
 
     result = subprocess.run(
-        [str(script), "--config", str(config), str(sample)],
+        [str(script), str(sample)],
         capture_output=True,
         check=False,
         env=env,
