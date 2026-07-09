@@ -325,3 +325,23 @@ class TestIterTermMatches:
     def test_multi_token_glued_single_token_is_matched(self) -> None:
         matches = term_match.iter_term_matches("uses acmecorp here", "acme-corp")
         assert [m[0] for m in matches] == ["acmecorp"]
+
+
+class TestBareSlugInCliShapedTextIsCaught:
+    """A bare org-slug token in CLI-shaped text is a whole-token hit.
+
+    ``t3 <slug> tasks ...`` tokenizes to ``[t3, <slug>, tasks, ...]`` — a space
+    and a hyphen tokenize identically — so the bare ``<slug>`` is present and
+    matchable. With an EMPTY allowlist it is caught. A ``t3-<slug>`` allowlist
+    entry (tokens ``[t3, <slug>]``) is a contiguous run in that SAME CLI text,
+    so the carve-out consumes the slug and it never reaches matching. ``op`` is
+    the file's synthetic stand-in for an org slug.
+    """
+
+    _CLI_TEXT = "t3 op tasks work-next-headless"
+
+    def test_empty_allowlist_catches_the_bare_slug(self) -> None:
+        assert term_match.matched_term(self._CLI_TEXT, ("op",)) == "op"
+
+    def test_t3_slug_allowlist_run_consumes_the_slug(self) -> None:
+        assert term_match.matched_term(self._CLI_TEXT, ("op",), ("t3-op",)) is None
