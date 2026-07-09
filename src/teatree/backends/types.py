@@ -6,7 +6,25 @@ protocol implementations.  They do NOT replace the Protocol signatures
 """
 
 from collections.abc import Mapping
+from enum import StrEnum
 from typing import TypedDict, cast
+
+
+class Service(StrEnum):
+    """A third-party service teatree can wrap as an MCP tool group.
+
+    Overlays declare the services they need via
+    ``OverlayConfig.required_third_party_services``; the MCP server registers a
+    service's tool group only when at least one registered overlay declares it
+    (fail-closed — no declaration, no tools). Members exist only for services a
+    registered overlay needs wrapped today; add a member when a declarer appears.
+    """
+
+    GITHUB = "github"
+    GITLAB = "gitlab"
+    SLACK = "slack"
+    NOTION = "notion"
+    SENTRY = "sentry"
 
 
 def dig(data: object, *keys: str) -> object:

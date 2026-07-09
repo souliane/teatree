@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
+from teatree.backends.types import Service
 from teatree.core.gates.merge_guard import MergeGuard
 from teatree.core.overlay_metadata import OverlayMetadata
 from teatree.core.provision.variant import Variant
@@ -187,6 +188,14 @@ class OverlayConfig(BaseModel):
     # The single skill injected alongside ``/t3:review`` for a reviewer
     # sub-agent; empty string disables injection without dropping the skill.
     pr_review_companion: str = "code-review"
+    # The third-party services this overlay needs wrapped as MCP tool groups.
+    # Code default per overlay (settings.py tier), DB-overridable via the
+    # ``overlays`` registry row; a JSON list of service names validates against
+    # the ``Service`` enum and fails loud on an unknown one. Empty default =
+    # an undeclared overlay wraps nothing (fail-closed).
+    required_third_party_services: frozenset[Service] = Field(default_factory=frozenset)
+    sentry_org: str = ""
+    sentry_url: str = "https://sentry.io"
 
     def __init__(self, settings_module: str = "", overlay_name: str = "", **data: object) -> None:
         super().__init__(**data)
@@ -288,6 +297,9 @@ class OverlayConfig(BaseModel):
         # Wired via ``notion_token_pass_key`` in ~/.teatree.toml; default empty
         # means the runtime Notion status-sync is a clean no-op.
         return self._read_secret("notion_token")
+
+    def get_sentry_token(self) -> str:
+        return self._read_secret("sentry_token")
 
     # ── Structured getters (need logic, can't be plain constants) ────
 

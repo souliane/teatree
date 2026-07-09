@@ -11,16 +11,43 @@ The server exposes read-only tools only. Mutations stay on the FSM-guarded
 ``t3`` CLI so the orchestrator-decides / loop-executes topology is preserved.
 """
 
+from collections.abc import Callable
 from typing import Any
 
 from asgiref.sync import sync_to_async
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
+from teatree.backends.types import Service
 from teatree.config import get_effective_settings
-from teatree.mcp import introspection, search
+from teatree.core.overlay_loader import get_all_overlays
+from teatree.mcp import introspection, search, services_sentry
 
 _READ_ONLY = ToolAnnotations(readOnlyHint=True)
+
+# Per-service tool groups, registered iff the service is in the union of
+# ``required_third_party_services`` across all registered overlays. Each entry
+# is ``(register, instructions)``; the instructions block is appended to the
+# server instructions only when the group registers, so the instructions never
+# advertise an unregistered tool.
+_SERVICE_GROUPS: dict[Service, tuple[Callable[[FastMCP], None], str]] = {
+    Service.SENTRY: (services_sentry.register, services_sentry.INSTRUCTIONS),
+}
+
+
+def _required_services() -> frozenset[Service]:
+    """The union of declared third-party services across all registered overlays.
+
+    Reads the resolved ``OverlayConfig`` per overlay, so a DB ``overlays``-row
+    override is already applied. Resolved once per server build — an overlay or
+    override change needs an MCP server restart (same staleness contract as the
+    flag-gated ``factory_score`` tool).
+    """
+    overlays = get_all_overlays()
+    if not overlays:
+        return frozenset()
+    return frozenset().union(*(o.config.required_third_party_services for o in overlays.values()))
+
 
 _INSTRUCTIONS = (
     "Read-only structured search over teatree's internal model. Prefer these "
@@ -263,7 +290,13 @@ def build_server() -> FastMCP:
     build and introspect a server in isolation. Django must already be
     configured (the ``t3 mcp serve`` entry point calls ``ensure_django`` first).
     """
-    server: FastMCP = FastMCP("teatree", instructions=_INSTRUCTIONS)
+    declared = _required_services()
+    instructions = _INSTRUCTIONS + "".join(
+        f"\n\nDeclared-service tools ({service}):\n{group_instructions}"
+        for service, (_, group_instructions) in sorted(_SERVICE_GROUPS.items())
+        if service in declared
+    )
+    server: FastMCP = FastMCP("teatree", instructions=instructions)
     server.add_tool(_command_search, name="command_search", annotations=_READ_ONLY)
     server.add_tool(_ticket_search, name="ticket_search", annotations=_READ_ONLY)
     server.add_tool(_ticket_list, name="ticket_list", annotations=_READ_ONLY)
@@ -282,4 +315,7 @@ def build_server() -> FastMCP:
     # exposes no factory_score tool at all).
     if get_effective_settings().factory_score_enabled:
         server.add_tool(_factory_score, name="factory_score", annotations=_READ_ONLY)
+    for service, (register_group, _) in sorted(_SERVICE_GROUPS.items()):
+        if service in declared:
+            register_group(server)
     return server
