@@ -212,8 +212,12 @@ Usage: t3 tokens [OPTIONS]
  Show per-account Anthropic 5h / weekly token utilization + status.
 
 ╭─ Options ────────────────────────────────────────────────────────────────────╮
-│ --json          Emit the structured report as JSON.                          │
-│ --help          Show this message and exit.                                  │
+│ --json               Emit the structured report as JSON.                     │
+│ --token        TEXT  Ad-hoc Anthropic token to health-probe as an extra row  │
+│                      (repeatable) — for checking a freshly-minted token      │
+│                      before saving it. Warning: a token on the command line  │
+│                      is visible in 'ps' output and your shell history.       │
+│ --help               Show this message and exit.                             │
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 

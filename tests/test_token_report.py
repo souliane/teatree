@@ -22,7 +22,14 @@ from teatree.core.models.anthropic_token_usage import AnthropicTokenUsage, Token
 from teatree.core.models.config_setting import ConfigSetting
 from teatree.credential_config import LIST_SETTING, TokenKind
 from teatree.llm.rate_limits import MeteredKeySnapshot, RateLimitProbeError, RateLimitSnapshot
-from teatree.token_report import TokenAccountPayload, TokenAccountRow, TokenReport, TokenStatus, render_table
+from teatree.token_report import (
+    TokenAccountPayload,
+    TokenAccountRow,
+    TokenReport,
+    TokenSource,
+    TokenStatus,
+    render_table,
+)
 
 
 def _snapshot(*, org: str, u5h: float = 0.1, u7d: float = 0.1, status_7d: str = "allowed") -> RateLimitSnapshot:
@@ -111,8 +118,9 @@ class TestTokenAccountPayloadShape:
 
     def _row(self, **overrides: object) -> TokenAccountRow:
         base: dict[str, object] = {
-            "pass_path": "anthropic/x/oauth",
+            "account": "anthropic/x/oauth",
             "kind": TokenKind.OAUTH,
+            "source": TokenSource.STORE,
             "scopes": ("",),
             "organization_id": "org-x",
             "utilization_5h": 0.1,
@@ -125,6 +133,12 @@ class TestTokenAccountPayloadShape:
     def test_as_dict_keys_match_the_payload_typeddict(self) -> None:
         payload: TokenAccountPayload = self._row().as_dict()
         assert set(payload) == set(TokenAccountPayload.__annotations__)
+
+    def test_pass_row_carries_the_pass_source_discriminator(self) -> None:
+        payload = self._row().as_dict()
+        assert payload["account"] == "anthropic/x/oauth"
+        assert payload["source"] == "pass"
+        assert "pass_path" not in payload
 
     def test_oauth_row_payload_carries_utilization_not_per_minute_fields(self) -> None:
         payload = self._row().as_dict()
@@ -161,7 +175,7 @@ class TokenReportRowsTest(TestCase):
         api_key_reader = FakeApiKeyReader({}, unreachable={"TOK-unreachable"})
 
         report = TokenReport(reader=reader, secret_reader=secrets, api_key_reader=api_key_reader)
-        rows = {row.pass_path: row for row in report.rows()}
+        rows = {row.account: row for row in report.rows()}
 
         assert rows["anthropic/oauth/healthy"].status is TokenStatus.HEALTHY
         assert rows["anthropic/oauth/warning"].status is TokenStatus.WARNING
@@ -170,6 +184,7 @@ class TokenReportRowsTest(TestCase):
         assert rows["anthropic/apikey/unreachable"].status is TokenStatus.UNREACHABLE
         assert rows["anthropic/oauth/healthy"].overlays_label == "global"
         assert rows["anthropic/oauth/exhausted"].overlays_label == "teatree"
+        assert rows["anthropic/oauth/healthy"].source is TokenSource.STORE
         assert rows["anthropic/oauth/healthy"].organization_id == "org-healthy"
         # OAuth accounts probe with the oauth beta header; metered keys go through their own reader.
         assert ("TOK-healthy", True) in reader.calls
@@ -365,8 +380,10 @@ class TokensCommandTest(TestCase):
     def test_json_output_is_token_free(self) -> None:
         out = self._run(json_output=True)
         payload = json.loads(out)
-        assert payload[0]["pass_path"] == "anthropic/oauth/exhausted"
+        assert payload[0]["account"] == "anthropic/oauth/exhausted"
+        assert payload[0]["source"] == "pass"
         assert payload[0]["status"] == "exhausted"
+        assert "pass_path" not in payload[0]
         assert "SECRET-CLI-TOKEN" not in out
 
     def test_api_key_json_reports_credit_state_and_hides_key(self) -> None:
@@ -386,3 +403,193 @@ class TokensCommandTest(TestCase):
         assert payload[0]["tokens_remaining"] == 990000
         assert payload[0]["utilization_5h"] is None
         assert "SECRET-CLI-API-KEY" not in buf.getvalue()
+
+
+_OAUTH_TOKEN = "sk-ant-oat01-ADHOC-SUPER-SECRET"
+_API_KEY_TOKEN = "sk-ant-api03-ADHOC-SUPER-SECRET"
+
+
+class AdHocTokenRowsTest(TestCase):
+    """``--token`` ad-hoc rows: probed fresh, labelled ``token[N]``, never cache-backed.
+
+    An ad-hoc token is health-probed BEFORE it is written into ``pass`` (the re-mint
+    recovery flow). The token is passed directly (never resolved from the secret store),
+    so the secret reader is asserted untouched throughout.
+    """
+
+    def _report(
+        self,
+        tokens: list[str] | None,
+        *,
+        snapshots: dict[str, RateLimitSnapshot] | None = None,
+        oauth_unreachable: set[str] | None = None,
+        metered: dict[str, MeteredKeySnapshot] | None = None,
+        metered_unreachable: set[str] | None = None,
+    ) -> tuple[TokenReport, RecordingSecretReader, FakeReader, FakeApiKeyReader]:
+        secrets = RecordingSecretReader({})
+        reader = FakeReader(snapshots or {}, unreachable=oauth_unreachable)
+        api_key_reader = FakeApiKeyReader(metered or {}, unreachable=metered_unreachable)
+        report = TokenReport(reader=reader, secret_reader=secrets, api_key_reader=api_key_reader, ad_hoc_tokens=tokens)
+        return report, secrets, reader, api_key_reader
+
+    def test_single_oauth_token_probes_fresh_and_is_healthy(self) -> None:
+        report, secrets, reader, _ = self._report(
+            [_OAUTH_TOKEN], snapshots={_OAUTH_TOKEN: _snapshot(org="org-adhoc", u5h=0.1, u7d=0.1)}
+        )
+        rows = report.rows()
+        assert len(rows) == 1
+        assert rows[0].account == "token[1]"
+        assert rows[0].source is TokenSource.AD_HOC
+        assert rows[0].status is TokenStatus.HEALTHY
+        assert rows[0].organization_id == "org-adhoc"
+        assert rows[0].overlays_label == "—"
+        assert reader.calls == [(_OAUTH_TOKEN, True)]
+        assert secrets.calls == []
+
+    def test_oauth_token_probe_failure_is_unreachable(self) -> None:
+        report, _, _, _ = self._report([_OAUTH_TOKEN], oauth_unreachable={_OAUTH_TOKEN})
+        assert report.rows()[0].status is TokenStatus.UNREACHABLE
+
+    def test_three_tokens_render_three_rows_in_option_order(self) -> None:
+        t1, t2, t3 = "sk-ant-oat01-A", "sk-ant-oat01-B", "sk-ant-api03-C"
+        report, _, _, _ = self._report(
+            [t1, t2, t3],
+            snapshots={t1: _snapshot(org="org-a"), t2: _snapshot(org="org-b")},
+            metered={t3: _metered(org="org-c")},
+        )
+        rows = report.rows()
+        assert [row.account for row in rows] == ["token[1]", "token[2]", "token[3]"]
+        assert [row.organization_id for row in rows] == ["org-a", "org-b", "org-c"]
+
+    def test_duplicate_tokens_are_deduped_preserving_first_seen_order(self) -> None:
+        t1, t2 = "sk-ant-oat01-A", "sk-ant-oat01-B"
+        report, _, _, _ = self._report([t1, t2, t1], snapshots={t1: _snapshot(org="org-a"), t2: _snapshot(org="org-b")})
+        rows = report.rows()
+        assert [row.account for row in rows] == ["token[1]", "token[2]"]
+        assert [row.organization_id for row in rows] == ["org-a", "org-b"]
+
+    def test_api_key_token_is_metered_and_shows_the_caption(self) -> None:
+        report, _, _, _ = self._report([_API_KEY_TOKEN], metered={_API_KEY_TOKEN: _metered(org="org-metered")})
+        rows = report.rows()
+        assert rows[0].status is TokenStatus.HEALTHY
+        assert rows[0].requests_remaining == 4999
+        assert rows[0].tokens_remaining == 990000
+        out = render_table(rows)
+        assert "req 4999/5000" in out
+        assert "tok 990000" in out
+        assert "prepaid" in out  # the api_key caption (its only occurrence of the word)
+
+    def test_unrecognised_prefix_is_unreachable_and_never_transmitted(self) -> None:
+        token = "not-an-anthropic-token-SUPER-SECRET"
+        report, _, reader, api_key_reader = self._report([token])
+        rows = report.rows()
+        assert rows[0].status is TokenStatus.UNREACHABLE
+        assert rows[0].account == "token[1]"
+        assert reader.calls == []
+        assert api_key_reader.calls == []
+        assert token not in render_table(rows)
+        assert token not in json.dumps([row.as_dict() for row in rows])
+
+    def test_empty_string_token_is_missing(self) -> None:
+        report, _, reader, api_key_reader = self._report([""])
+        row = report.rows()[0]
+        assert row.account == "token[1]"
+        assert row.status is TokenStatus.MISSING
+        assert row.source is TokenSource.AD_HOC
+        assert reader.calls == []
+        assert api_key_reader.calls == []
+
+    def test_token_value_never_appears_in_table_or_json(self) -> None:
+        report, _, _, _ = self._report(
+            [_OAUTH_TOKEN, _API_KEY_TOKEN],
+            snapshots={_OAUTH_TOKEN: _snapshot(org="org-o")},
+            metered={_API_KEY_TOKEN: _metered(org="org-k")},
+        )
+        rows = report.rows()
+        out = render_table(rows)
+        blob = json.dumps([row.as_dict() for row in rows])
+        for secret in (_OAUTH_TOKEN, _API_KEY_TOKEN):
+            assert secret not in out
+            assert secret not in blob
+
+    def test_ad_hoc_rows_never_read_or_write_the_usage_cache(self) -> None:
+        assert AnthropicTokenUsage.objects.count() == 0
+        report, _, reader, _ = self._report([_OAUTH_TOKEN], snapshots={_OAUTH_TOKEN: _snapshot(org="org-o")})
+        report.rows()
+        assert AnthropicTokenUsage.objects.count() == 0
+        assert reader.calls == [(_OAUTH_TOKEN, True)]
+
+    def test_json_shape_uses_account_and_source_not_pass_path(self) -> None:
+        report, _, _, _ = self._report([_OAUTH_TOKEN], snapshots={_OAUTH_TOKEN: _snapshot(org="org-o")})
+        payload = report.rows()[0].as_dict()
+        assert payload["account"] == "token[1]"
+        assert payload["source"] == "token"
+        assert "pass_path" not in payload
+
+    def test_ad_hoc_rows_render_alongside_the_pass_rows(self) -> None:
+        _configure(TokenKind.OAUTH, ["anthropic/oauth/configured"])
+        secrets = RecordingSecretReader({"anthropic/oauth/configured": "PASS-TOKEN"})
+        reader = FakeReader({"PASS-TOKEN": _snapshot(org="org-pass"), _OAUTH_TOKEN: _snapshot(org="org-adhoc")})
+        report = TokenReport(reader=reader, secret_reader=secrets, ad_hoc_tokens=[_OAUTH_TOKEN])
+        rows = report.rows()
+        assert [row.account for row in rows] == ["anthropic/oauth/configured", "token[1]"]
+        assert [row.source for row in rows] == [TokenSource.STORE, TokenSource.AD_HOC]
+
+    def test_no_ad_hoc_option_leaves_only_the_pass_rows(self) -> None:
+        _configure(TokenKind.OAUTH, ["anthropic/oauth/configured"])
+        for ad_hoc in (None, []):
+            reader = FakeReader({"PASS-TOKEN": _snapshot(org="org-pass")})
+            rows = TokenReport(
+                reader=reader,
+                secret_reader=RecordingSecretReader({"anthropic/oauth/configured": "PASS-TOKEN"}),
+                ad_hoc_tokens=ad_hoc,
+            ).rows()
+            assert [row.account for row in rows] == ["anthropic/oauth/configured"]
+            assert rows[0].source is TokenSource.STORE
+
+
+class TokensCommandAdHocTest(TestCase):
+    """``call_command('tokens', tokens=[...])`` threads the repeatable option end to end."""
+
+    def _run(self, tokens: list[str], **kwargs: object) -> str:
+        secrets = RecordingSecretReader({})
+        reader = FakeReader({_OAUTH_TOKEN: _snapshot(org="org-cli-adhoc", u5h=0.1, u7d=0.1)})
+        api_key_reader = FakeApiKeyReader({_API_KEY_TOKEN: _metered(org="org-cli-metered")})
+        buf = StringIO()
+        with (
+            patch("teatree.token_report.read_pass", secrets),
+            patch("teatree.token_report.read_rate_limits", reader),
+            patch("teatree.token_report.read_api_key_status", api_key_reader),
+        ):
+            call_command("tokens", stdout=buf, tokens=tokens, **kwargs)
+        return buf.getvalue()
+
+    def test_table_renders_ad_hoc_row_and_hides_the_token(self) -> None:
+        out = self._run([_OAUTH_TOKEN])
+        assert "token[1]" in out
+        assert "HEALTHY" in out
+        assert _OAUTH_TOKEN not in out
+
+    def test_json_reports_ad_hoc_row_with_source_and_hides_the_token(self) -> None:
+        payload = json.loads(self._run([_API_KEY_TOKEN], json_output=True))
+        assert payload[0]["account"] == "token[1]"
+        assert payload[0]["source"] == "token"
+        assert payload[0]["kind"] == "api_key"
+        assert payload[0]["requests_remaining"] == 4999
+        assert _API_KEY_TOKEN not in json.dumps(payload)
+
+    def test_explicit_none_tokens_behaves_like_the_option_absent(self) -> None:
+        # The CLI always threads ``tokens=<value>``; the zero-``--token`` case passes
+        # ``None`` — django-typer's ``call_command`` must accept it and add no ad-hoc row.
+        _configure(TokenKind.OAUTH, ["anthropic/oauth/only-pass"])
+        secrets = RecordingSecretReader({"anthropic/oauth/only-pass": "PASS-TOK"})
+        reader = FakeReader({"PASS-TOK": _snapshot(org="org-pass")})
+        buf = StringIO()
+        with (
+            patch("teatree.token_report.read_pass", secrets),
+            patch("teatree.token_report.read_rate_limits", reader),
+        ):
+            call_command("tokens", stdout=buf, tokens=None)
+        out = buf.getvalue()
+        assert "anthropic/oauth/only-pass" in out
+        assert "token[1]" not in out
