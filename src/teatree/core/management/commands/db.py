@@ -120,10 +120,13 @@ class Command(TyperCommand):
         converges on one DB.
 
         Unlike ``resetdb`` this drops nothing — live ticket/session/lease
-        rows survive. Unlike the old ``uv --directory <clone>`` wrapper it
-        cannot target a different (auto-isolated) DB than the runtime
-        resolves. Dispatched via teatree-core (``python -m teatree``) so it
-        reaches the runtime self-DB regardless of which overlay invokes it.
+        rows survive. It applies every pending migration in ``INSTALLED_APPS``,
+        so it brings BOTH the teatree-core apps AND the active overlay's own
+        Django app current in one pass. When the overlay ships its own settings
+        module the ``t3`` bridge runs this in the overlay ``manage.py`` context
+        (where the overlay app is in ``INSTALLED_APPS``); an overlay on the base
+        ``teatree.settings`` reaches it via ``python -m teatree``. Either way it
+        targets the same canonical control DB the merge gate reads.
 
         Fail-closed: a real migrate failure exits non-zero with the captured
         error, never leaving a half-migrated DB look like a success.
