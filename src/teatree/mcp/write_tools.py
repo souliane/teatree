@@ -18,9 +18,11 @@ approvals) are deliberately NOT exposed as tools — exposing them would let the
 agent self-approve (maker≠checker).
 """
 
+import io
 from fnmatch import fnmatch
 from typing import Any, cast
 
+import typer
 from asgiref.sync import sync_to_async
 from django.core.management import call_command
 from mcp.server.fastmcp import FastMCP
@@ -34,6 +36,27 @@ from teatree.mcp.review_seam import review_post_seam
 
 _WRITE = ToolAnnotations(readOnlyHint=False, destructiveHint=False)
 _DESTRUCTIVE = ToolAnnotations(readOnlyHint=False, destructiveHint=True)
+
+
+def _run_command(command: str, *args: object, **kwargs: object) -> object:
+    """Run a management command as the CLI does, but surface its error primitive.
+
+    The wrapped commands signal input errors with ``SystemExit`` / ``typer.Exit``
+    — a ``BaseException``. FastMCP only converts ``Exception`` to a structured
+    ``ToolError``, so an unguarded exit would crash the whole tool call instead of
+    returning the documented refusal. Capture the command's stderr and re-raise as
+    a plain ``RuntimeError`` so the caller gets the message, not a dead session.
+    """
+    err = io.StringIO()
+    try:
+        return call_command(command, *args, stderr=err, **kwargs)
+    except (SystemExit, typer.Exit) as exc:
+        code = getattr(exc, "code", None)
+        if code is None:
+            code = getattr(exc, "exit_code", 1)
+        message = err.getvalue().strip() or f"command failed (exit {code})"
+        raise RuntimeError(message) from exc
+
 
 # Safety-gate keys an MCP caller may never flip: cold-hook gate wires,
 # feature flags (directive-/lifecycle-governed), the opt-in ``require_*``
@@ -75,8 +98,8 @@ INSTRUCTIONS = (
     "task bookkeeping (complete advances the ticket FSM).\n"
     "- question_answer(question_id, text, resolver): answer a pending "
     "DeferredQuestion (single-use, audited).\n"
-    "- worktree_teardown(path, force): tear down one worktree (refuses live or "
-    "dirty trees unless forced).\n"
+    "- worktree_teardown(path, force): tear down the ticket workspace *path* "
+    "resolves to (every worktree in it; refuses live or dirty trees unless forced).\n"
     "- review_post_draft_note(repo, mr, note): colleague-INVISIBLE MR-level "
     "draft note — always safe, gate-exempt by design.\n"
     "- review_post_comment(repo, mr, note, live): MR-level, DRAFT by default; "
@@ -107,7 +130,7 @@ async def _pr_create(ticket: str, *, title: str = "") -> dict[str, Any]:
     blocked gate returns the structured failure naming the missing evidence.
     """
     return await sync_to_async(
-        lambda: cast("dict[str, Any]", call_command("pr", "create", ticket, title=title, sync=True)),
+        lambda: cast("dict[str, Any]", _run_command("pr", "create", ticket, title=title, sync=True)),
         thread_sensitive=True,
     )()
 
@@ -121,7 +144,7 @@ async def _pr_merge(clear_id: int) -> dict[str, Any]:
     records MergeAudit + FSM advance. Issuing a CLEAR is NOT possible over MCP.
     """
     return await sync_to_async(
-        lambda: cast("dict[str, Any]", call_command("ticket", "merge", str(clear_id))),
+        lambda: cast("dict[str, Any]", _run_command("ticket", "merge", str(clear_id))),
         thread_sensitive=True,
     )()
 
@@ -134,7 +157,7 @@ async def _ticket_visit_phase(ticket: str, phase: str, *, agent_id: str = "") ->
     ``reviewing``); an illegal transition reports the resulting state loudly.
     """
     return await sync_to_async(
-        lambda: {"message": str(call_command("lifecycle", "visit-phase", ticket, phase, agent_id=agent_id))},
+        lambda: {"message": str(_run_command("lifecycle", "visit-phase", ticket, phase, agent_id=agent_id))},
         thread_sensitive=True,
     )()
 
@@ -156,7 +179,7 @@ async def _record_e2e_run(
     return await sync_to_async(
         lambda: cast(
             "dict[str, Any]",
-            call_command(
+            _run_command(
                 "lifecycle",
                 "record-e2e-run",
                 ticket,
@@ -183,7 +206,7 @@ async def _config_setting_set(key: str, value: str, *, overlay: str = "") -> dic
         raise ValueError(msg)
 
     def _set() -> dict[str, Any]:
-        call_command("config_setting", "set", key, value, overlay=overlay)
+        _run_command("config_setting", "set", key, value, overlay=overlay)
         return {"ok": True, "key": key, "overlay": overlay}
 
     return await sync_to_async(_set, thread_sensitive=True)()
@@ -219,20 +242,22 @@ async def _question_answer(question_id: int, text: str, *, resolver: str = "mcp"
     """
 
     def _answer() -> dict[str, Any]:
-        call_command("questions", "answer", question_id, text, resolver_id=resolver)
+        _run_command("questions", "answer", question_id, text, resolver_id=resolver)
         return {"ok": True, "question_id": question_id}
 
     return await sync_to_async(_answer, thread_sensitive=True)()
 
 
 async def _worktree_teardown(path: str, *, force: bool = False) -> str:
-    """Tear down one worktree by path (bounded-duration; provisioning stays CLI).
+    """Tear down the ticket workspace *path* resolves to (bounded-duration; provisioning stays CLI).
 
-    Wraps ``t3 <overlay> workspace teardown``: the FSM transition plus the
-    cleanup runner with its liveness, dirty-tree, and unpushed-commit guards.
+    Wraps ``t3 <overlay> workspace teardown``, which resolves the ticket from
+    *path* and tears down every worktree in that ticket's workspace — the FSM
+    transition plus the cleanup runner with its liveness, dirty-tree, and
+    unpushed-commit guards (a dirty tree without ``force`` refuses).
     """
     return await sync_to_async(
-        lambda: str(call_command("workspace", "teardown", path=path, force=force)),
+        lambda: str(_run_command("workspace", "teardown", path=path, force=force)),
         thread_sensitive=True,
     )()
 

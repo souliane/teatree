@@ -63,6 +63,25 @@ class TestConfigSettingSetGateRefusal(TestCase):
         assert write_tools.refuse_reason("clean_ignore") == ""
 
 
+class TestCliErrorPrimitiveSurfacesStructured(TestCase):
+    # The wrapped commands signal input errors with SystemExit/typer.Exit — a
+    # BaseException FastMCP does NOT wrap, so without the guard the tool call
+    # crashes. Each error path must instead surface as a caught error carrying the
+    # command's own message. (pytest.raises(Exception) would NOT catch a bare
+    # SystemExit, so these are RED on the unguarded code.)
+    def test_config_setting_unknown_key_surfaces_message(self) -> None:
+        with pytest.raises(Exception, match="not a known config setting"):
+            _call("config_setting_set", {"key": "totally_unknown_setting_xyz", "value": "1"})
+
+    def test_config_setting_invalid_json_surfaces_message(self) -> None:
+        with pytest.raises(Exception, match="invalid JSON"):
+            _call("config_setting_set", {"key": "loop_cadence_seconds", "value": "not-json{"})
+
+    def test_question_answer_unknown_id_surfaces_message(self) -> None:
+        with pytest.raises(Exception, match="not found or already resolved"):
+            _call("question_answer", {"question_id": 999999, "text": "yes"})
+
+
 class TestTaskBookkeeping(TestCase):
     def test_task_complete_marks_completed(self) -> None:
         task = TaskFactory(status=Task.Status.PENDING)
