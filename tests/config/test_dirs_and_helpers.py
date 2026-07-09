@@ -1,12 +1,11 @@
 """Directory resolution, data/logging helpers and e2e-repo config.
 
-Split verbatim from the former monolithic ``tests/test_config.py``
-(souliane/teatree#443). Covers ``workspace_dir``/``worktrees_dir``
-(Django-settings then config-file fallback), ``get_data_dir``,
-``default_logging``, ``_extract_settings_module`` and ``load_e2e_repos``.
+Covers ``worktree_root``/``worktrees_dir`` (env/Django override then the DB tier
+then the default), ``clone_root``, ``get_data_dir``, ``default_logging``,
+``_extract_settings_module`` and ``load_e2e_repos`` (DB-home ``e2e_repos`` registry).
 
-Integration-first per the Test-Writing Doctrine: real TOML fixtures
-and a real on-disk ``manage.py`` under ``tmp_path``.
+Integration-first per the Test-Writing Doctrine: a real on-disk ``manage.py`` and a
+real cold-path sqlite (``config_db``) under ``tmp_path``.
 """
 
 from pathlib import Path
@@ -25,7 +24,7 @@ from teatree.config import (
 )
 from teatree.paths import DATA_DIR
 
-from ._shared import _write_toml
+from ._shared import _seed_config_db
 
 
 class TestWorktreeRoot:
@@ -35,18 +34,10 @@ class TestWorktreeRoot:
         result = worktree_root()
         assert result == custom
 
-    def test_falls_back_to_per_overlay_default(
-        self, tmp_path: Path, config_file: Path, settings, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # workspace_dir is DB-home now: a ``[teatree] workspace_dir`` value is
-        # IGNORED on read; with no env/Django override and no DB row the per-overlay
-        # default ``~/workspace/t3-workspaces/<overlay>/`` stands. The DB and env
-        # tiers are covered in test_workspace_dir_per_overlay.py.
-        del config_file
-        _write_toml(
-            tmp_path / ".teatree.toml",
-            '[teatree]\nworkspace_dir = "/from/config"\n',
-        )
+    def test_falls_back_to_per_overlay_default(self, settings, monkeypatch: pytest.MonkeyPatch) -> None:
+        # With no env/Django override and no DB row the per-overlay default
+        # ``~/workspace/t3-workspaces/<overlay>/`` stands. The DB and env tiers are
+        # covered in test_workspace_dir_per_overlay.py.
         if hasattr(settings, "T3_WORKSPACE_DIR"):
             del settings.T3_WORKSPACE_DIR
         monkeypatch.delenv("T3_WORKSPACE_DIR", raising=False)
@@ -83,16 +74,9 @@ class TestWorktreesDir:
         result = worktrees_dir()
         assert result == custom
 
-    def test_ignores_toml_value_falls_back_to_default(self, tmp_path: Path, config_file: Path, settings) -> None:
-        # worktrees_dir is DB-home now (eliminate-~/.teatree.toml): a ``[teatree]
-        # worktrees_dir`` value is IGNORED on read; with no env/Django override and
-        # no DB row the default ``DATA_DIR/worktrees`` stands. The DB tier is
-        # covered in test_worktrees_dir_db.py.
-        del config_file
-        _write_toml(
-            tmp_path / ".teatree.toml",
-            '[teatree]\nworktrees_dir = "/from/config/wt"\n',
-        )
+    def test_falls_back_to_default(self, settings) -> None:
+        # With no env/Django override and no DB row the default ``DATA_DIR/worktrees``
+        # stands. The DB tier is covered in test_worktrees_dir_db.py.
         if hasattr(settings, "T3_WORKTREES_DIR"):
             del settings.T3_WORKTREES_DIR
 
@@ -134,18 +118,18 @@ def test_extract_settings_module_not_found(tmp_path: Path) -> None:
     assert _extract_settings_module(manage_py) == ""
 
 
-def test_load_e2e_repos_from_toml(tmp_path: Path) -> None:
-    config_path = tmp_path / ".teatree.toml"
-    _write_toml(
-        config_path,
-        """
-[e2e_repos.demo-svc]
-url = "git@example.com:org/microservice-demo.git"
-branch = "ac/demo-e2e"
-e2e_dir = "e2e"
-""",
+def test_load_e2e_repos_from_db_registry(config_db: Path) -> None:
+    _seed_config_db(
+        config_db,
+        e2e_repos={
+            "demo-svc": {
+                "url": "git@example.com:org/microservice-demo.git",
+                "branch": "ac/demo-e2e",
+                "e2e_dir": "e2e",
+            }
+        },
     )
-    repos = load_e2e_repos(config_path)
+    repos = load_e2e_repos()
     assert len(repos) == 1
     assert repos[0].name == "demo-svc"
     assert repos[0].url == "git@example.com:org/microservice-demo.git"
@@ -153,49 +137,41 @@ e2e_dir = "e2e"
     assert repos[0].e2e_dir == "e2e"
 
 
-def test_load_e2e_repos_missing_section(tmp_path: Path) -> None:
-    config_path = tmp_path / ".teatree.toml"
-    _write_toml(config_path, '[teatree]\nprivacy = "strict"\n')
-    assert load_e2e_repos(config_path) == []
+def test_load_e2e_repos_missing_registry(config_db: Path) -> None:
+    _seed_config_db(config_db, overlays={"x": {"class": "x.settings"}})
+    assert load_e2e_repos() == []
 
 
-def test_load_e2e_repos_default_e2e_dir(tmp_path: Path) -> None:
-    config_path = tmp_path / ".teatree.toml"
-    _write_toml(
-        config_path,
-        """
-[e2e_repos.my-service]
-url = "git@github.com:org/my-service.git"
-branch = "feature/e2e"
-""",
+def test_load_e2e_repos_default_e2e_dir(config_db: Path) -> None:
+    _seed_config_db(
+        config_db,
+        e2e_repos={"my-service": {"url": "git@github.com:org/my-service.git", "branch": "feature/e2e"}},
     )
-    repos = load_e2e_repos(config_path)
+    repos = load_e2e_repos()
     assert repos[0].e2e_dir == "e2e"
 
 
-def test_load_e2e_repos_multiple(tmp_path: Path) -> None:
-    config_path = tmp_path / ".teatree.toml"
-    _write_toml(
-        config_path,
-        """
-[e2e_repos.service-a]
-url = "git@github.com:org/service-a.git"
-branch = "main"
-
-[e2e_repos.service-b]
-url = "git@github.com:org/service-b.git"
-branch = "feature/tests"
-e2e_dir = "playwright"
-""",
+def test_load_e2e_repos_multiple(config_db: Path) -> None:
+    _seed_config_db(
+        config_db,
+        e2e_repos={
+            "service-a": {"url": "git@github.com:org/service-a.git", "branch": "main"},
+            "service-b": {
+                "url": "git@github.com:org/service-b.git",
+                "branch": "feature/tests",
+                "e2e_dir": "playwright",
+            },
+        },
     )
-    repos = load_e2e_repos(config_path)
+    repos = load_e2e_repos()
     by_name = {r.name: r for r in repos}
     assert set(by_name) == {"service-a", "service-b"}
     assert by_name["service-b"].e2e_dir == "playwright"
 
 
-def test_load_e2e_repos_missing_toml(tmp_path: Path) -> None:
-    assert load_e2e_repos(tmp_path / "nonexistent.toml") == []
+def test_load_e2e_repos_no_db(config_db: Path) -> None:
+    del config_db  # no rows seeded -> no e2e repos
+    assert load_e2e_repos() == []
 
 
 def test_e2e_repo_is_dataclass() -> None:

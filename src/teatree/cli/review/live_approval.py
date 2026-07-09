@@ -356,7 +356,10 @@ def register(review_app: typer.Typer) -> None:
 
         user_id = resolve_user_id()
         if not user_id:
-            typer.echo("Refused: no Slack user_id configured — set `teatree.slack_user_id` first")
+            typer.echo(
+                "Refused: no Slack user_id configured — "
+                "set it with `t3 <overlay> config_setting set slack_user_id <id>`"
+            )
             raise typer.Exit(code=1)
 
         token_ts, _ref, error = _resolve_authorization(

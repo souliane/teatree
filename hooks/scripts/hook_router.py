@@ -76,7 +76,6 @@ from loop_owner_db import db_owner_is_current_session as _db_owner_is_current_se
 from loop_registrations import emit_loop_registrations, is_bare_loop_tick_prompt
 from loop_state_self_pump_gate import db_loop_state_suppresses_self_pump
 from main_clone_guard import handle_block_main_clone_mutation
-from managed_repo import db_overlays_registry as _db_overlays_registry
 from managed_repo import file_is_inside_worktree as _file_is_inside_worktree
 from managed_repo import is_agent_state_path as _is_agent_state_path
 from managed_repo import load_protected_branches as _load_protected_branches
@@ -111,7 +110,7 @@ from raw_review_post_guard import handle_block_raw_review_post
 from raw_review_post_guard import is_raw_review_write as _is_raw_review_write  # noqa: F401
 from secret_file_print_guard import handle_block_secret_file_print
 from self_dm_destinations import SelfDmDestinations as _SelfDmDestinations
-from self_dm_destinations import resolve_self_dm_destinations as _resolve_self_dm_destinations
+from self_dm_destinations import read_self_dm_destinations as _read_self_dm_destinations
 from skill_suggestion_render import render_skill_suggestion_message
 from slack_mirror_wiring import build_dm_audio_enricher
 from slack_mirror_wiring import slack_http_poster as _slack_http_poster
@@ -693,11 +692,11 @@ def _loop_cadence_seconds() -> int:
     """Resolve the loop cadence the same way ``t3 loop`` does (#1036).
 
     Routes through the shared ``teatree.config.cadence_seconds()`` resolver
-    (``T3_LOOP_CADENCE`` env first, then ``~/.teatree.toml``
-    ``loop_cadence_seconds``) so the hook's tick-staleness window and the
-    loop-registration cron minutes can never diverge from the real slot
-    cadence. Best-effort: if ``teatree`` is not importable in this hook
-    process, fall back to the env-only read.
+    (``T3_LOOP_CADENCE`` env first, then the DB-home ``loop_cadence_seconds``
+    setting) so the hook's tick-staleness window and the loop-registration cron
+    minutes can never diverge from the real slot cadence. Best-effort: if
+    ``teatree`` is not importable in this hook process, fall back to the env-only
+    read.
     """
     try:
         with _teatree_src_on_path():
@@ -839,7 +838,7 @@ def handle_todo_freshness_nudge(data: dict) -> None:
 #
 # The gate blocks Bash/Edit/Write until every suggested-but-unloaded
 # skill is loaded. A suggestion lands in ``<session>.pending`` from the
-# supplementary keyword config (``~/.teatree-skills.yml``) or from
+# supplementary keyword config (``$HOME/.teatree-skills.yml``) or from
 # lifecycle/intent detection.
 #
 # Fail-open contract (the lockout class this closes): a config entry can
@@ -1429,8 +1428,8 @@ def handle_block_edit_before_planned(data: dict) -> bool:
 
     1. Per-call token ``[skip-plan-gate: <non-empty-reason>]`` in ``new_string``
         / ``content`` / ``file_path`` (first 512 chars) — the trivial escape.
-    2. Config kill-switch ``[teatree] plan_edit_gate_enabled = false`` in
-        ``~/.teatree.toml`` (flipped by ``t3 <overlay> gate plan disable``).
+    2. Config kill-switch — the DB-home ``plan_edit_gate_enabled = false`` setting
+        (flipped by ``t3 <overlay> gate plan disable``).
 
     The existing ``_fail_open_or_deny`` safety chain (self-rescue allowlist +
     master ``danger_gate_fail_open``) is unchanged — the escapes above are
@@ -2184,28 +2183,10 @@ def _self_dm_gate_enabled() -> bool:
     return _teatree_bool_setting("self_dm_gate_enabled", default=True)
 
 
-def _self_dm_toml_config() -> dict[str, Any] | None:
-    """Parse ``~/.teatree.toml`` to a dict; ``None`` on a missing/unparsable file.
-
-    The toml IO stays in the router (not the ``self_dm_destinations`` sibling)
-    because it reads ``Path.home()`` and the gate's tests patch ``router.Path``.
-    """
-    import tomllib  # noqa: PLC0415
-
-    config_path = Path.home() / ".teatree.toml"
-    if not config_path.is_file():
-        return None
-    try:
-        with config_path.open("rb") as f:
-            return tomllib.load(f)
-    except Exception:  # noqa: BLE001
-        return None
-
-
 def _self_dm_destination_ids() -> _SelfDmDestinations:
-    # DB-first (eliminate-~/.teatree.toml): the overlay registry resolves from the
-    # DB-home ``overlays`` row, so a DELETED toml still self-identifies the operator.
-    return _resolve_self_dm_destinations(_db_overlays_registry(), _self_dm_toml_config())
+    # DB-only: the overlay registry and the global ``slack_user_id`` resolve from the
+    # DB-home ``ConfigSetting`` store, so the gate self-identifies the operator there.
+    return _read_self_dm_destinations()
 
 
 def _self_dm_destination(tool_input: dict, dm_ids: frozenset[str]) -> str:
@@ -2238,12 +2219,11 @@ def handle_block_self_dm_via_mcp(data: dict) -> bool:
 
     Fail direction (user decision): FAIL-CLOSED. The hook cannot self-identify
     the author without the config (no MCP token or network in the hook
-    subprocess, and the tool-schema text is not part of the hook input), so a
-    missing/unreadable/unparsable config DENIES with an error naming the toml
-    problem and the fix. A genuinely-empty configuration (config readable,
-    nothing declared) is a real state, not an error, so it allows silently. The
-    ``[teatree] self_dm_gate_enabled = false`` setting is the sanctioned
-    explicit escape hatch (never a silent one).
+    subprocess, and the tool-schema text is not part of the hook input), so an
+    unreachable config store DENIES with an error naming the fix. A
+    genuinely-empty configuration (store readable, nothing declared) is a real
+    state, not an error, so it allows silently. The ``self_dm_gate_enabled = false``
+    setting is the sanctioned explicit escape hatch (never a silent one).
     """
     if not _self_dm_gate_enabled():
         return False
@@ -2258,12 +2238,13 @@ def handle_block_self_dm_via_mcp(data: dict) -> bool:
     if not destinations.resolved:
         return emit_pretooluse_deny(
             "SELF-DM REFUSED (fail-closed): could not read the bot↔user DM destination ids "
-            "from ~/.teatree.toml (the file is missing or not valid TOML), so this gate "
+            "from the config store (the DB is missing, locked, or unreadable), so this gate "
             "cannot confirm the Slack MCP write is not a self-DM under the USER's OAuth "
-            "token. Fix the ~/.teatree.toml so it parses (with the per-overlay "
-            "slack_dm_channel_id / slack_user_id keys), or set [teatree] "
-            "self_dm_gate_enabled = false to disable this gate explicitly. To DM the user "
-            "now, use the bot-token path: `t3 teatree notify send -` (reads the body from stdin)."
+            "token. Declare the per-overlay slack_dm_channel_id / slack_user_id keys via "
+            "`t3 <overlay> config_setting set`, or set self_dm_gate_enabled to false to "
+            "disable this gate explicitly (`t3 <overlay> config_setting set "
+            "self_dm_gate_enabled false`). To DM the user now, use the bot-token path: "
+            "`t3 teatree notify send -` (reads the body from stdin)."
         )
 
     destination = _self_dm_destination(tool_input, destinations.ids)
@@ -2442,7 +2423,7 @@ def handle_dispatch_prompt_quote_scanner_on_task_create(data: dict) -> bool:
     the off-ramps that keep the operator from being locked out are: the opt-in
     flag itself (unset/``false`` to disable), the ``[quote-ok: <reason>]`` token
     in the subject/description (reuses :func:`quote_scanner.dispatch_quote_ok_reason`),
-    a missing ``session_id`` (fail-open), a broken ``~/.teatree.toml``
+    a missing ``session_id`` (fail-open), an unreadable config store
     (fail-disabled), and ``main``'s per-handler exception swallow. The master
     ``danger_gate_fail_open`` switch still protects the operator because rescue
     commands run as ``Bash``, never as fanned-out ``Task``s.
@@ -2875,8 +2856,8 @@ def _deny_foreground_agent_dispatch(data: dict) -> bool:
         "Pass `run_in_background: true` to every Agent invocation "
         "from the main agent, add an explicit `[fg-ok: <reason>]` marker to the "
         "prompt if you truly need a foreground dispatch, or disable this "
-        "gate by setting "
-        "`[teatree] orchestrator_boundary_agent_gate_enabled = false` in `~/.teatree.toml`.\n"
+        "gate by setting the DB-home `orchestrator_boundary_agent_gate_enabled` to "
+        "false (`t3 <overlay> config_setting set orchestrator_boundary_agent_gate_enabled false`).\n"
         "Memory rule: "
         "feedback_always_run_in_background_for_sub_agent_dispatch "
         "(RED CARD recurrence).",
@@ -2980,9 +2961,9 @@ def _deny_heavy_main_agent_bash(data: dict) -> bool:
         "true` to run it without blocking the session, dispatch a "
         "sub-agent (Task/Agent) to do it, add an explicit "
         "`[fg-ok: <reason>]` marker if you truly need the output inline, "
-        "or — if this is a false positive — set "
-        "`orchestrator_bash_gate_enabled = false` under `[teatree]` in "
-        "~/.teatree.toml to disable the gate.",
+        "or — if this is a false positive — set the DB-home "
+        "`orchestrator_bash_gate_enabled` to false "
+        "(`t3 <overlay> config_setting set orchestrator_bash_gate_enabled false`) to disable the gate.",
     )
 
 
@@ -4392,9 +4373,9 @@ def _claim_session_handover_from_file() -> tuple[str, str]:
         if str(src_dir) not in sys.path:
             sys.path.insert(0, str(src_dir))
             added = True
-        # eliminate-~/.teatree.toml: ``handover_mirror_path`` is DB-home. Read it
-        # Django-free via ``cold_reader`` (the canonical sqlite); an absent row /
-        # unreachable DB fails open through the parser to the default bootstrap path.
+        # ``handover_mirror_path`` is DB-home. Read it Django-free via ``cold_reader``
+        # (the canonical sqlite); an absent row / unreachable DB fails open through
+        # the parser to the default bootstrap path.
         from teatree.config import _parse_handover_mirror_path, cold_reader  # noqa: PLC0415, PLC2701
 
         path = _parse_handover_mirror_path(cold_reader.str_setting("handover_mirror_path", default=""))
@@ -4536,8 +4517,7 @@ def _merge_session_start_context(context: str, session_id: str, source: str) -> 
 
 
 # #256 one-line how-to-start advisory for a default-off, not-yet-engaged session.
-# eliminate-~/.teatree.toml: autoload is DB-home, so the auto-start opt-in is set via
-# the ConfigSetting store, not a [teatree] TOML value (which is ignored on read).
+# autoload is DB-home: the auto-start opt-in is set via the ConfigSetting store.
 _TEATREE_NOT_ACTIVE_ADVISORY = (
     "teatree is installed but not active in this session — run /teatree to start it "
     "(or run `t3 <overlay> config_setting set autoload true` to start it automatically)."
@@ -4851,12 +4831,12 @@ _DISOWN_FALSEY: frozenset[str] = frozenset({"", "0", "false", "False"})
 
 
 def _bash_env_file() -> Path:
-    """Path to the shell-sourceable teatree env file (``~/.teatree``).
+    """Path to the shell-sourceable teatree env file (``$HOME/.teatree``).
 
     The harness spawns the Stop hook as a bare ``python3`` that does NOT
     source the user's shell profile, so ``export VAR=value`` lines in this
     file never reach ``os.environ`` (hooks don't source
-    ``.zshrc``/``.teatree``).
+    ``.zshrc`` or the env file).
     ``TEATREE_BASH_ENV_FILE`` overrides the location (tests / non-default
     HOME).
     """
@@ -6155,7 +6135,7 @@ def _current_turn_assistant_text(transcript_path: str) -> str:
 
 
 def _speak_settings() -> tuple[str, bool]:
-    """Read the global ``speak`` DB row → ``(local, slack)`` (#2060, eliminate-~/.teatree.toml).
+    """Read the global ``speak`` DB row → ``(local, slack)`` (#2060, DB-home).
 
     The hook-side mirror of :func:`teatree.config_speak.resolve_speak`. ``speak`` is
     DB-home (#1775): the Stop hook cannot cheaply boot the Django config, so it reads

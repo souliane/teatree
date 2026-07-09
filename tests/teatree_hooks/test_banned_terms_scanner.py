@@ -8,15 +8,17 @@ note|create``, the ``gh api`` / ``glab api`` REST paths). It is the
 sibling of the #1213 quote-scanner gate: it reuses the exact same
 ``_command_parser`` publish-surface detection + body extraction, then
 delegates the *matching* to the existing ``check-banned-terms.sh``
-against the ``~/.teatree.toml`` term list — it does NOT reimplement
-matching.
+against the DB-home term list — it does NOT reimplement matching.
 
 These tests exercise the gate via real hook invocation: a clean body
-passes, a banned-term body blocks, ``--body-file`` is read from disk.
+passes, a banned-term body blocks, ``--body-file`` is read from disk. The
+term list is DB-home, seeded into a ``teatree_config_setting`` sqlite DB and
+pinned via ``T3_CONFIG_DB``.
 """
 
 import json
 import os
+import sqlite3
 import subprocess
 from pathlib import Path
 
@@ -33,28 +35,45 @@ from teatree.hooks._command_parser import (
 from teatree.hooks.banned_terms_scanner import format_unavailable_body_source_message
 
 
+def _seed_config_db(tmp_path: Path, *, filename: str = "config.sqlite3", **settings: list[str]) -> Path:
+    """Seed a ``teatree_config_setting`` DB with each ``key=value-list`` at global scope."""
+    db = tmp_path / filename
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS teatree_config_setting ("
+        "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+    )
+    for key, values in settings.items():
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
+            (key, json.dumps(values)),
+        )
+    conn.commit()
+    conn.close()
+    return db
+
+
 @pytest.fixture
 def config(tmp_path: Path) -> Path:
-    """A ``~/.teatree.toml`` shaped config carrying one banned term.
+    """A DB-home config carrying one banned term.
 
-    Also declares the private-repo allowlist used by the #126 carve-out
-    tests; the banned-terms scanner ignores the extra key.
+    Also declares the private-repo allowlist used by the #126 carve-out tests
+    and the internal-namespace denylist; the banned-terms scanner ignores the
+    extra keys.
     """
-    cfg = tmp_path / ".teatree.toml"
-    cfg.write_text(
-        "[teatree]\n"
-        'banned_terms = ["acmecorp"]\n'
-        'private_repos = ["acmecorp-engineering"]\n'
-        'internal_publish_namespaces = ["internalcorp", "acme-internal"]\n',
-        encoding="utf-8",
+    return _seed_config_db(
+        tmp_path,
+        banned_terms=["acmecorp"],
+        private_repos=["acmecorp-engineering"],
+        internal_publish_namespaces=["internalcorp", "acme-internal"],
     )
-    return cfg
 
 
 @pytest.fixture(autouse=True)
 def _pin_config(config: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Point the scanner at the test config instead of the real one."""
-    monkeypatch.setenv("T3_BANNED_TERMS_CONFIG", str(config))
+    """Point the scanner's DB-home reader at the test config DB."""
+    monkeypatch.setenv("T3_CONFIG_DB", str(config))
+    monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -122,7 +141,7 @@ class TestScanText:
         assert banned_terms_scanner.scan_text("", config_path=config) is None
 
     def test_missing_config_returns_none(self, tmp_path: Path) -> None:
-        assert banned_terms_scanner.scan_text("acmecorp", config_path=tmp_path / "absent.toml") is None
+        assert banned_terms_scanner.scan_text("acmecorp", config_path=tmp_path / "absent.sqlite3") is None
 
     def test_fail_closed_sentinel_blocks(self, config: Path) -> None:
         # An unresolvable body (the sentinel) is not a configured term, so
@@ -131,7 +150,7 @@ class TestScanText:
         assert banned_terms_scanner.scan_text(FAIL_CLOSED_SENTINEL, config_path=config) is not None
 
     def test_fail_closed_sentinel_blocks_even_without_config(self, tmp_path: Path) -> None:
-        assert banned_terms_scanner.scan_text(FAIL_CLOSED_SENTINEL, config_path=tmp_path / "absent.toml") is not None
+        assert banned_terms_scanner.scan_text(FAIL_CLOSED_SENTINEL, config_path=tmp_path / "absent.sqlite3") is not None
 
 
 class TestWholeTokenMatching:
@@ -145,9 +164,7 @@ class TestWholeTokenMatching:
 
     @pytest.fixture
     def short_term_config(self, tmp_path: Path) -> Path:
-        cfg = tmp_path / ".teatree.toml"
-        cfg.write_text('[teatree]\nbanned_terms = ["acme", "acme-corp", "foo_bar"]\n', encoding="utf-8")
-        return cfg
+        return _seed_config_db(tmp_path, filename="short_terms.sqlite3", banned_terms=["acme", "acme-corp", "foo_bar"])
 
     @pytest.mark.parametrize("text", ["a cooperative effort", "pacme builds", "an acmeology lecture"])
     def test_single_word_substring_inside_a_word_does_not_block(self, short_term_config: Path, text: str) -> None:
@@ -184,8 +201,7 @@ class TestWholeTokenMatching:
         assert banned_terms_scanner.scan_text(text, config_path=short_term_config) == expected
 
     def test_isolated_multi_token_term_blocks_and_is_reported(self, tmp_path: Path) -> None:
-        cfg = tmp_path / ".teatree.toml"
-        cfg.write_text('[teatree]\nbanned_terms = ["acme-corp"]\n', encoding="utf-8")
+        cfg = _seed_config_db(tmp_path, filename="acme_corp.sqlite3", banned_terms=["acme-corp"])
         assert banned_terms_scanner.scan_text("the acme-corp account", config_path=cfg) == "acme-corp"
 
 
@@ -211,14 +227,12 @@ class TestCompanyIdentifierAllowlistGate:
 
     @pytest.fixture
     def config(self, tmp_path: Path) -> Path:
-        cfg = tmp_path / ".teatree.toml"
-        cfg.write_text(
-            "[teatree]\n"
-            'banned_terms = ["acme", "customercodename", "acme-engineering", "acme-product"]\n'
-            'banned_terms_allowlist = ["acme-engineering", "acme-product", "acme-client-workspace"]\n',
-            encoding="utf-8",
+        return _seed_config_db(
+            tmp_path,
+            filename="allowlist.sqlite3",
+            banned_terms=["acme", "customercodename", "acme-engineering", "acme-product"],
+            banned_terms_allowlist=["acme-engineering", "acme-product", "acme-client-workspace"],
         )
-        return cfg
 
     @pytest.mark.parametrize(
         "body",
@@ -254,8 +268,7 @@ class TestCompanyIdentifierAllowlistGate:
     def test_no_allowlist_preserves_over_block(self, tmp_path: Path) -> None:
         # Without the allow-list key the prior behaviour is unchanged: the short
         # term DOES surface inside the company identifier (the bug, opt-in fix).
-        cfg = tmp_path / ".teatree.toml"
-        cfg.write_text('[teatree]\nbanned_terms = ["acme", "acme-product"]\n', encoding="utf-8")
+        cfg = _seed_config_db(tmp_path, filename="no_allowlist.sqlite3", banned_terms=["acme", "acme-product"])
         assert banned_terms_scanner.scan_text("the acme-product repo", config_path=cfg) == "acme"
 
 
@@ -1219,7 +1232,7 @@ class TestScanTextNoOpWhenNothingToScan:
         assert banned_terms_scanner.scan_text("acmecorp", config_path=config) is None
 
     def test_missing_config_is_a_noop(self, tmp_path: Path) -> None:
-        assert banned_terms_scanner.scan_text("acmecorp", config_path=tmp_path / "absent.toml") is None
+        assert banned_terms_scanner.scan_text("acmecorp", config_path=tmp_path / "absent.sqlite3") is None
 
 
 class TestScanTextScannerCrashFailsClosed:
@@ -1460,7 +1473,7 @@ class TestHookHandlerEndToEnd:
     def test_missing_config_fails_open(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        monkeypatch.setenv("T3_BANNED_TERMS_CONFIG", "/nonexistent/.teatree.toml")
+        monkeypatch.setenv("T3_CONFIG_DB", "/nonexistent/config.sqlite3")
         blocked = handle_banned_terms_pretool(_bash('gh issue create --body "acmecorp"'))
         assert blocked is False
         assert capsys.readouterr().out == ""

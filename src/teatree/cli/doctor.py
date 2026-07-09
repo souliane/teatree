@@ -29,7 +29,6 @@ from teatree.cli._doctor_checks import (
     _check_entrypoint_is_primary_clone,
     _check_legacy_overlay_alias,
     _check_mcp_connectivity,
-    _check_registry_toml_drift,
     _check_single_db,
     _check_singletons,
     _check_skills,
@@ -79,7 +78,6 @@ __all__ = (
     "_check_entrypoint_is_primary_clone",
     "_check_legacy_overlay_alias",
     "_check_mcp_connectivity",
-    "_check_registry_toml_drift",
     "_check_single_db",
     "_check_singletons",
     "_check_skills",
@@ -298,10 +296,10 @@ class DoctorService:
 
     @staticmethod
     def check_editable_sanity() -> list[str]:
-        """Verify editable status matches ``contribute = true`` in config.
+        """Verify editable status matches the ``contribute`` setting.
 
-        When ``contribute = true`` in ``~/.teatree.toml``, both teatree core
-        and the active overlay should be editable.  Auto-fixes by running
+        When ``contribute`` is true in the DB config, both teatree core and the
+        active overlay should be editable.  Auto-fixes by running
         ``uv pip install -e <repo>``.
         """
         problems: list[str] = []
@@ -349,7 +347,7 @@ class DoctorService:
         # Reverse check: teatree editable but contribute=false
         if not contribute and teatree_is_editable:
             problems.append(
-                "teatree is editable but contribute=false in ~/.teatree.toml. "
+                "teatree is editable but contribute=false in the DB config. "
                 "If you are contributing to teatree, set contribute=true. "
                 "If not, run "
                 "`uv tool install --from git+https://github.com/souliane/teatree.git teatree` "
@@ -380,7 +378,7 @@ class DoctorService:
         config = load_config()
         workspace = clone_root()
 
-        # Check TOML overlay paths first — they're explicit and authoritative.
+        # Check DB-registry overlay paths first — they're explicit and authoritative.
         for overlay_cfg in (config.raw.get("overlays") or {}).values():
             path_str = overlay_cfg.get("path", "")
             if path_str:
@@ -550,10 +548,6 @@ def check() -> bool:
     ok = _check_editable_sanity() and ok
     ok = _check_skills() and ok
     ok = _check_single_db() and ok
-    # DB-home registry drift (#128): a lingering [overlays]/[e2e_repos] TOML table masked
-    # by a diverging ConfigSetting row is silently ignored on read — hard-FAIL with the
-    # reconcile command so a stale overlay path can never be operated on unnoticed.
-    ok = _check_registry_toml_drift() and ok
     ok = _check_stale_uv_venv() and ok
     ok = _check_stale_path_t3() and ok
     ok = _check_agent_session_pins() and ok

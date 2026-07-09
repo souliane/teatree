@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 from django.core.management import call_command
 
+from teatree.core.models import ConfigSetting
 from teatree.types import RawAPIDict
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -56,12 +57,8 @@ class _RouteAwareFake:
 
 
 def _gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
-    cfg = tmp_path / ".teatree.toml"
-    cfg.write_text(
-        f'[teatree]\nslack_user_id = "{_USER_ID}"\non_behalf_post_mode = "{mode}"\n',
-        encoding="utf-8",
-    )
-    monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+    ConfigSetting.objects.set_value("slack_user_id", _USER_ID)
+    ConfigSetting.objects.set_value("on_behalf_post_mode", mode)
     monkeypatch.setattr("teatree.core.notify.messaging_from_overlay", lambda _o=None: _RouteAwareFake())
 
 

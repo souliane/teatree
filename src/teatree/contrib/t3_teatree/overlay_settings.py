@@ -14,10 +14,10 @@ GITLAB_TOKEN_PASS_KEY: str = "gitlab/pat"  # noqa: S105 — pass key name, not a
 # One human, several forge handles. The first handle is the canonical
 # display name; a reassignment between two handles in a group is a
 # self-handoff and never surfaces on the statusline. The operator's own
-# private handles belong in ``~/.teatree.toml`` under
-# ``[overlays.t3-teatree] identity_aliases`` — applied at runtime via
-# ``OverlayConfig.apply_toml_overrides`` — so they stay out of this public
-# repo. The first group lists the public GitHub login alone.
+# private handles belong in the DB overlays registry, under the
+# ``t3-teatree`` entry's ``identity_aliases`` field — applied at runtime by
+# the per-overlay override step — so they stay out of this public repo. The
+# first group lists the public GitHub login alone.
 IDENTITY_ALIASES: list[list[str]] = [
     ["souliane"],
 ]
@@ -30,9 +30,9 @@ IDENTITY_ALIASES: list[list[str]] = [
 # ``"souliane"`` is a namespace-prefix wildcard covering souliane/teatree AND
 # every other souliane repo (no enumeration). A downstream overlay declares its
 # own private/customer namespaces in ITS OWN repo's ``OWNED_REPOS`` — they never
-# belong in this public overlay's scope. A ``[overlays.t3-teatree.owned_repos]``
-# TOML table REPLACES this dict (authoritative-and-complete), so the operator
-# adds any extra owned host/namespace there, out of the public repo.
+# belong in this public overlay's scope. A ``t3-teatree`` ``owned_repos`` value in
+# the DB overlays registry REPLACES this dict (authoritative-and-complete), so the
+# operator adds any extra owned host/namespace there, out of the public repo.
 OWNED_REPOS: dict[str, list[str]] = {
     "github.com": ["souliane"],
 }
@@ -42,11 +42,11 @@ OWNED_REPOS: dict[str, list[str]] = {
 # private/customer forge the operator merges on — because the gate fails CLOSED
 # on any repo no listed pattern owns. The public OWNED_REPOS above is scoped to
 # github.com/souliane only, so flipping this True here would hold the operator's
-# own private-forge keystone merges as "unknown". A path-only TOML overlay also
+# own private-forge keystone merges as "unknown". A path-only registry overlay also
 # cannot carry its own scope (it has no class, so overlay discovery skips it), so
-# its repos must be declared under THIS overlay's owned_repos. The operator opts
-# in from private ~/.teatree.toml — [overlays.t3-teatree.owned_repos] with the
-# full host list + require_owned_repo_approval = true — where brand strings are
+# its repos must be declared under THIS overlay's owned_repos. The operator opts in
+# from the DB overlays registry — the ``t3-teatree`` entry's ``owned_repos`` (full
+# host list) + ``require_owned_repo_approval = true`` — where brand strings are
 # allowed and never reach this public repo.
 REQUIRE_OWNED_REPO_APPROVAL: bool = False
 

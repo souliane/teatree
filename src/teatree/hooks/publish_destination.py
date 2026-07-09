@@ -25,13 +25,14 @@ consumers:
     affirmatively-public repo and never false-block a non-public one.
 
 The hook process is overlay-agnostic and cannot import ``OverlayConfig``; it
-reads the internal denylist from ``~/.teatree.toml`` DIRECTLY (the
+reads the internal denylist from the canonical ``ConfigSetting`` DB via the
+Django-free :mod:`teatree.config.cold_reader` (the
 ``internal_publish_namespaces`` / ``private_repos`` readers in
 :mod:`teatree.hooks._repo_visibility` and this module).
 
 The shared command-parsing helpers (``_extract_repo_flag``, the
 eligible-verb sets) live in :mod:`teatree.hooks.publish_surface` and the
-repo-target resolution (``slug_for_cwd``, ``_config_path``) in
+repo-target resolution (``slug_for_cwd``) in
 :mod:`teatree.hooks._repo_visibility`; this module reuses them so the
 repo-target resolution stays in one place across the private-repo carve-out,
 the FSM privacy gate, and the affirmative-public leak-gate scope.
@@ -43,11 +44,11 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Final
 
+from teatree.config import cold_reader
 from teatree.hooks._command_parser import first_segment_words
 from teatree.hooks._gh_glab_hiding import token_has_substitution_marker, token_is_transport_construct
 from teatree.hooks._python_rest_detection import find_python_forge_rest_urls, is_python_leader
 from teatree.hooks._repo_visibility import (
-    _config_path,
     forge_qualified_slug,
     slug_for_cwd,
     slug_is_allowlisted_private,
@@ -460,44 +461,34 @@ def _segment_is_skip_inert(words: list[str]) -> bool:
 
 
 def _teatree_list_setting(key: str, env_var: str, config_path: Path | None) -> list[str]:
-    """Return a ``[teatree] <key>`` list unioned with ``<env_var>`` (lower-cased).
+    """Return the DB-home ``<key>`` list unioned with the ``<env_var>`` override (lower-cased).
 
-    The env var (comma- or space-separated) supplements the TOML list, mirroring
+    The env var (comma- or space-separated) SUPPLEMENTS the DB list, mirroring
     the established ``internal_publish_namespaces`` / ``T3_INTERNAL_PUBLISH_NAMESPACES``
-    shape. Reads the TOML directly (no Django/config import) to stay importable
-    from the hook process.
+    shape. Reads the canonical ``ConfigSetting`` store via the Django-free
+    :mod:`teatree.config.cold_reader`; *config_path* overrides the DB path (else
+    the canonical DB / ``T3_CONFIG_DB``).
     """
     env_raw = os.environ.get(env_var, "")
     env_entries = [e.strip().lower() for e in re.split(r"[,\s]+", env_raw) if e.strip()]
-
-    import tomllib  # noqa: PLC0415
-
-    target = config_path if config_path is not None else _config_path()
-    toml_entries: list[str] = []
-    if target.is_file():
-        try:
-            raw = tomllib.loads(target.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            raw = {}
-        teatree = raw.get("teatree", {}) if isinstance(raw, dict) else {}
-        entries = teatree.get(key, []) if isinstance(teatree, dict) else []
-        if isinstance(entries, list):
-            toml_entries = [str(e).strip().lower() for e in entries if str(e).strip()]
-    return env_entries + toml_entries
+    db_entries = [
+        str(e).strip().lower() for e in cold_reader.list_setting(key, default=[], db_path=config_path) if str(e).strip()
+    ]
+    return env_entries + db_entries
 
 
 def _internal_publish_namespaces(config_path: Path | None = None) -> list[str]:
-    """Return the ``[teatree] internal_publish_namespaces`` denylist (lower-cased).
+    """Return the DB-home ``internal_publish_namespaces`` denylist (lower-cased).
 
     The list of host/namespace prefixes that are PROVABLY internal. Read
     from the ``T3_INTERNAL_PUBLISH_NAMESPACES`` env var first (comma- or
     space-separated, for a quick per-session override), then the
-    ``[teatree] internal_publish_namespaces`` key in ``~/.teatree.toml``.
+    ``internal_publish_namespaces`` row in the canonical ``ConfigSetting`` DB.
     DEFAULT is empty -- with nothing configured every destination stays PUBLIC
     (scanned), so behaviour is conservative for unconfigured users.
 
     No real company/customer namespace is hardcoded here; the denylist lives
-    only in the user's private config / env.
+    only in the operator's private DB / env.
     """
     return _teatree_list_setting("internal_publish_namespaces", "T3_INTERNAL_PUBLISH_NAMESPACES", config_path)
 
@@ -509,11 +500,11 @@ def is_public_destination(dest: Destination | None, *, config_path: Path | None 
     blocks) UNLESS it is PROVABLY internal. A destination is internal when ANY
     of these resolves its slug to private:
 
-    - the ``[teatree] internal_publish_namespaces`` /
+    - the ``internal_publish_namespaces`` /
         ``T3_INTERNAL_PUBLISH_NAMESPACES`` denylist, as a case-insensitive
         prefix-SEGMENT match (``internalcorp`` matches ``internalcorp/svc``
         and ``host/internalcorp/svc`` but not ``other/internalcorp-public``);
-    - the existing ``[teatree] private_repos`` allowlist that the
+    - the existing ``private_repos`` allowlist that the
         commit / pure-post carve-out already consults
         (:func:`_repo_visibility.slug_is_allowlisted_private`), so a user's
         CURRENT ``private_repos`` config makes their private namespaces skip the

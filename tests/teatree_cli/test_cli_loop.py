@@ -6,6 +6,8 @@ user-manual full-scan diagnostic (autonomous-lane redesign §7) — it delegates
 the ``loop_tick`` management command, not the master-tick-free ``loops_tick``.
 """
 
+import json
+import sqlite3
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -18,6 +20,23 @@ from teatree.cli.loop_drain_queue import _drain_cadence_for_loop_slot
 from teatree.cli.loop_slack_answer import _slack_answer_cadence_for_loop_slot
 
 runner = CliRunner()
+
+
+def _seed_config_db(db_path: Path, **rows: object) -> None:
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        for key, value in rows.items():
+            conn.execute(
+                "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
+                (key, json.dumps(value)),
+            )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 class TestTickCommandDelegation:
@@ -191,12 +210,24 @@ class TestStartCommandSessionPins:
     interactive `claude` os.execv argv, NOT into `claude -p` headless.
     """
 
-    def _spawn_argv(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, config_body: str) -> list[str]:
-        cfg = tmp_path / ".teatree.toml"
-        cfg.write_text(config_body, encoding="utf-8")
+    def _spawn_argv(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        *,
+        session_model: str = "",
+        session_effort: str = "",
+    ) -> list[str]:
+        rows: dict[str, object] = {}
+        if session_model:
+            rows["agent_session_model"] = session_model
+        if session_effort:
+            rows["agent_session_effort"] = session_effort
+        db = tmp_path / "config.sqlite3"
+        _seed_config_db(db, **rows)
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
         monkeypatch.delenv("CLAUDECODE", raising=False)
         monkeypatch.setenv("T3_LOOP_CADENCE", "600")
-        monkeypatch.setattr("teatree.config_agent.CONFIG_PATH", cfg)
         with (
             patch("teatree.cli.loop._stdin_is_terminal", return_value=True),
             patch("teatree.cli.loop.shutil.which", return_value="/usr/bin/claude"),
@@ -209,7 +240,8 @@ class TestStartCommandSessionPins:
         argv = self._spawn_argv(
             monkeypatch,
             tmp_path,
-            '[agent]\nsession_model = "opus"\nsession_effort = "xhigh"\n',
+            session_model="opus",
+            session_effort="xhigh",
         )
         assert argv[0] == "/usr/bin/claude"
         assert "--model" in argv
@@ -220,19 +252,19 @@ class TestStartCommandSessionPins:
         assert not any(str(a).startswith("/loop") for a in argv)
 
     def test_only_effort_injected_when_only_effort_set(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        argv = self._spawn_argv(monkeypatch, tmp_path, '[agent]\nsession_effort = "max"\n')
+        argv = self._spawn_argv(monkeypatch, tmp_path, session_effort="max")
         assert "--effort" in argv
         assert argv[argv.index("--effort") + 1] == "max"
         assert "--model" not in argv
 
     def test_only_model_injected_when_only_model_set(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        argv = self._spawn_argv(monkeypatch, tmp_path, '[agent]\nsession_model = "opus"\n')
+        argv = self._spawn_argv(monkeypatch, tmp_path, session_model="opus")
         assert "--model" in argv
         assert argv[argv.index("--model") + 1] == "opus"
         assert "--effort" not in argv
 
     def test_no_pins_when_unconfigured(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        argv = self._spawn_argv(monkeypatch, tmp_path, '[teatree]\nmode = "interactive"\n')
+        argv = self._spawn_argv(monkeypatch, tmp_path)
         assert "--model" not in argv
         assert "--effort" not in argv
         # #2650: no pins, no fat `/loop` slot — just the binary.
@@ -241,7 +273,7 @@ class TestStartCommandSessionPins:
     def test_session_model_passes_through_unchanged(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         # #2237 removal: no kill-switch downgrade step — session_model is emitted
         # exactly as configured, whatever value the operator wrote.
-        argv = self._spawn_argv(monkeypatch, tmp_path, '[agent]\nsession_model = "claude-sonnet-5"\n')
+        argv = self._spawn_argv(monkeypatch, tmp_path, session_model="claude-sonnet-5")
         assert argv[argv.index("--model") + 1] == "claude-sonnet-5"
 
 

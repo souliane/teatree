@@ -143,8 +143,8 @@ class TestMiniLoopCadenceMatchesMasterGate(django.test.TestCase):
         assert chunks == ["ship due"], chunks
 
 
-def test_config_loader_degrades_to_defaults_on_missing_file(tmp_path: Path) -> None:
-    """Sanity guard: the config loader degrades to defaults on a missing file."""
-    cfg = LoopsConfig.load(path=tmp_path / "absent.toml")
+def test_config_loader_degrades_to_defaults_on_missing_db(tmp_path: Path) -> None:
+    """Sanity guard: the config loader degrades to defaults on a missing DB."""
+    cfg = LoopsConfig.load(db_path=tmp_path / "absent.sqlite3")
     assert cfg.default_cadence == 300
     assert cfg.parallel is True

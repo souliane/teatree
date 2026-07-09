@@ -31,7 +31,7 @@ The overlay loader discovers all installed overlays from entry points at startup
 
 ## Configuration via `OverlayConfig`
 
-Overlay-specific configuration (tokens, URLs, service credentials) lives on `OverlayConfig`, accessed as `overlay.config`. Configure via an `overlay_settings` module (Django-style) or via `[overlays.<name>]` in `~/.teatree.toml`.
+Overlay-specific configuration (tokens, URLs, service credentials) lives on `OverlayConfig`, accessed as `overlay.config`. Configure via an `overlay_settings` module (Django-style) or via the overlay's `overlays` registry row in the DB `ConfigSetting` store.
 
 ### Static attributes
 

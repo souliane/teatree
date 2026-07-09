@@ -1,11 +1,12 @@
-"""Shared TOML/manage.py staging helpers for the teatree config test package.
+"""Shared staging helpers for the teatree config test package.
 
-Lifted verbatim from the former monolithic ``tests/test_config.py``
-(souliane/teatree#443). No behavior change: the same ``manage.py`` and
-``~/.teatree.toml`` writers every focused config test relies on, relocated
-so each split module imports them instead of redefining them.
+``_write_manage_py`` stages an on-disk ``manage.py`` (overlay-class discovery);
+``_seed_config_db`` builds a real ``teatree_config_setting`` sqlite the Django-free
+``cold_reader`` resolves via ``T3_CONFIG_DB`` (the DB-home config store).
 """
 
+import json
+import sqlite3
 from pathlib import Path
 
 
@@ -14,6 +15,18 @@ def _write_manage_py(project_path: Path, settings_module: str = "myapp.settings"
     (project_path / "manage.py").write_text(f'os.environ.setdefault("DJANGO_SETTINGS_MODULE", "{settings_module}")\n')
 
 
-def _write_toml(config_path: Path, content: str) -> None:
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(content, encoding="utf-8")
+def _seed_config_db(db_path: Path, *, scope: str = "", **rows: object) -> None:
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        for key, value in rows.items():
+            conn.execute(
+                "INSERT INTO teatree_config_setting (scope, key, value) VALUES (?, ?, ?)",
+                (scope, key, json.dumps(value)),
+            )
+        conn.commit()
+    finally:
+        conn.close()

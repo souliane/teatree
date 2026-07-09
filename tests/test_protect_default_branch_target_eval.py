@@ -11,11 +11,11 @@ state, never protected source.
 
 The sharpened scope: the gate protects ONLY teatree-MANAGED source
 repos (teatree core + the active overlay's registered repos, read from
-``~/.teatree.toml`` ``workspace_repos`` / ``frontend_repos`` /
-``public_repos`` plus each overlay ``path``). It keys on the TARGET
-FILE's repo, never on the cwd's branch, and never on "is the file in
-ANY git repo". An unmanaged git repo on ``main`` is allowed; the agent
-memory dir is explicitly exempt even when git-tracked.
+the DB-home ``overlays`` ConfigSetting row — ``workspace_repos`` /
+``frontend_repos`` / ``public_repos`` plus each overlay ``path``). It
+keys on the TARGET FILE's repo, never on the cwd's branch, and never on
+"is the file in ANY git repo". An unmanaged git repo on ``main`` is
+allowed; the agent memory dir is explicitly exempt even when git-tracked.
 
 Scenario matrix:
 
@@ -30,6 +30,7 @@ Scenario matrix:
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 from pathlib import Path
 
@@ -38,6 +39,25 @@ import pytest
 from hooks.scripts.hook_router import handle_protect_default_branch
 
 _GIT = shutil.which("git")
+
+
+def _seed_overlays_db(path: Path, overlays: dict[str, object]) -> None:
+    """Seed the DB-home ``overlays`` ConfigSetting row (global scope) into a real sqlite DB."""
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute(
+            "CREATE TABLE teatree_config_setting ("
+            "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', "
+            "key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'overlays', ?)",
+            (json.dumps(overlays),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
 
 # A remote whose slug is teatree-managed (core's own slug is always
 # managed per ``_overlay_managed_repo_signals``).
@@ -79,14 +99,16 @@ def _write(file_path: str) -> dict[str, object]:
 
 @pytest.fixture(autouse=True)
 def _no_overlay_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Pin HOME to an empty dir so only teatree-core's own slug is managed.
+    """Pin HOME to an empty dir and clear the config-DB env so only teatree-core's own slug is managed.
 
     Keeps the managed-repo classification deterministic — it does not
-    pick up the developer's real ``~/.teatree.toml`` overlay repos.
+    pick up the developer's real DB-home overlay repos.
     """
     home = tmp_path / "home"
     home.mkdir(exist_ok=True)
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("T3_CONFIG_DB", raising=False)
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
 
 
 @pytest.mark.skipif(_GIT is None, reason="git not on PATH")
@@ -155,10 +177,8 @@ class TestProtectedBranchManagedScoping:
     def test_managed_via_overlay_path_is_blocked(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         # A repo with no managed slug, but whose working tree is under an
         # overlay's registered ``path``, is managed too.
-        home = tmp_path / "home2"
-        home.mkdir(exist_ok=True)
         repo = _repo_on_branch(tmp_path, "main", remote=_UNMANAGED_REMOTE, name="overlay-repo")
-        cfg = home / ".teatree.toml"
-        cfg.write_text(f'[overlays.x]\npath = "{repo}"\n', encoding="utf-8")
-        monkeypatch.setenv("HOME", str(home))
+        db = tmp_path / "config.sqlite3"
+        _seed_overlays_db(db, {"x": {"path": str(repo)}})
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
         assert handle_protect_default_branch(_write(str(repo / "tracked.py"))) is True

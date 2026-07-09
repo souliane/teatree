@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from teatree.cli.doctor import DoctorService
 
-from ._shared import _stage_home, _write_teatree_toml
+from ._shared import _stage_home
 
 
 class TestFindTeatreeRepo:
@@ -50,7 +50,6 @@ class TestFindTeatreeRepo:
 class TestFindOverlayRepo:
     def test_finds_overlay_in_workspace(self, tmp_path, monkeypatch):
         _stage_home(tmp_path, monkeypatch)
-        _write_teatree_toml(tmp_path / ".teatree.toml", "[teatree]\n")
         # find_overlay_repo scans config.clone_root(), resolved from
         # T3_WORKSPACE_DIR — not the retired [teatree] workspace_dir TOML key.
         monkeypatch.setenv("T3_WORKSPACE_DIR", str(tmp_path))
@@ -62,7 +61,6 @@ class TestFindOverlayRepo:
 
     def test_returns_none_when_overlay_absent(self, tmp_path, monkeypatch):
         _stage_home(tmp_path, monkeypatch)
-        _write_teatree_toml(tmp_path / ".teatree.toml", "[teatree]\n")
         # find_overlay_repo scans config.clone_root(), resolved from
         # T3_WORKSPACE_DIR — not the retired [teatree] workspace_dir TOML key.
         monkeypatch.setenv("T3_WORKSPACE_DIR", str(tmp_path))

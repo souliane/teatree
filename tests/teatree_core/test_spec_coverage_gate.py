@@ -10,7 +10,7 @@ exercised directly; the FSM wiring is exercised through ``Ticket.mark_delivered`
 so a ticket with an uncovered AC cannot reach DELIVERED.
 
 ``require_spec_coverage`` is pinned per test by patching the gate's
-``get_effective_settings`` rather than the host ``~/.teatree.toml`` so the suite
+``get_effective_settings`` rather than the host machine's config so the suite
 is deterministic.
 """
 

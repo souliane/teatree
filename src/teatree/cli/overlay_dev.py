@@ -6,7 +6,7 @@ from pathlib import Path
 
 import typer
 
-from teatree.config import CONFIG_PATH, load_config
+from teatree.config import load_config
 from teatree.utils.run import run_allowed_to_fail, run_checked
 
 overlay_dev_app = typer.Typer(no_args_is_help=True, help="Dev-mode overlay install/uninstall.")
@@ -40,16 +40,15 @@ def _resolve_teatree_worktree(cwd: Path) -> Path:
     raise OverlayDevError(msg)
 
 
-def _resolve_overlay_source(name: str, config_path: Path | None = None) -> Path:
-    effective_path = config_path if config_path is not None else CONFIG_PATH
-    config = load_config(effective_path)
+def _resolve_overlay_source(name: str) -> Path:
+    config = load_config()
     overlay_cfg = config.raw.get("overlays", {}).get(name)
     if not overlay_cfg:
-        msg = f"Overlay {name!r} not configured in {effective_path}"
+        msg = f"Overlay {name!r} not configured in the DB overlays registry"
         raise OverlayDevError(msg)
     path = overlay_cfg.get("path", "")
     if not path:
-        msg = f"Overlay {name!r} has no path configured in {effective_path}"
+        msg = f"Overlay {name!r} has no path configured in the DB overlays registry"
         raise OverlayDevError(msg)
     return Path(path).expanduser().resolve()
 
@@ -116,7 +115,7 @@ def _save_state(worktree: Path, state: dict) -> None:
 
 
 @overlay_dev_app.command("install")
-def install(name: str = typer.Argument(..., help="Overlay name as configured in ~/.teatree.toml.")) -> None:
+def install(name: str = typer.Argument(..., help="Overlay name as configured in the DB overlays registry.")) -> None:
     """Install an overlay editable into the current teatree worktree for dogfooding."""
     try:
         worktree = _resolve_teatree_worktree(Path.cwd())

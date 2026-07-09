@@ -51,10 +51,10 @@ def _bare_python3_stop_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     """Reproduce the real bare-``python3`` Stop hook context, fully isolated.
 
     The in-process django bootstrap is forced to fail (as in production), and the
-    state dir / registry / bash-env / availability-schedule config are redirected
-    into ``tmp_path`` so a developer's real config never leaks into the test. An
-    EMPTY ``TEATREE_TOML`` means "no schedule windows", so the away probe never
-    falls back to the ``t3`` subprocess unless a test configures a window.
+    state dir / registry / bash-env are redirected into ``tmp_path`` so a
+    developer's real config never leaks into the test. With no ``availability_schedule``
+    row seeded, the away probe sees no schedule windows and never falls back to the
+    ``t3`` subprocess unless a test configures one.
     """
     state = tmp_path / "state"
     state.mkdir(parents=True, exist_ok=True)
@@ -62,8 +62,6 @@ def _bare_python3_stop_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setenv("T3_LOOP_REGISTRY_DIR", str(tmp_path / "data"))
     (tmp_path / "data").mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("TEATREE_BASH_ENV_FILE", str(tmp_path / "no-bash-env"))
-    (tmp_path / "teatree.toml").write_text("", encoding="utf-8")
-    monkeypatch.setenv("TEATREE_TOML", str(tmp_path / "teatree.toml"))
     # The router still imports the in-process bootstrap for OTHER handlers; force
     # it False to prove the levers do NOT depend on an in-process django.setup().
     monkeypatch.setattr(router, "bootstrap_teatree_django", lambda: False)
@@ -116,6 +114,24 @@ def _write_override(tmp_path: Path, mode: str, *, until: str | None = None) -> N
     if until is not None:
         doc["until"] = until
     (tmp_path / "availability_override.json").write_text(json.dumps(doc), encoding="utf-8")
+
+
+def _seed_availability_schedule(tmp_path: Path, windows: list[str]) -> None:
+    """Seed the DB-home ``availability_schedule`` ConfigSetting row into the primary config DB."""
+    conn = sqlite3.connect(tmp_path / "db.sqlite3")
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting ("
+            "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', "
+            "key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'availability_schedule', ?)",
+            (json.dumps({"windows": windows}),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 class TestDbPauseLeverReadsViaColdReader:
@@ -201,9 +217,7 @@ class TestAwayLeverReadsOverrideFileStdlib:
         # A configured cron window needs croniter (absent from the bare hook), so
         # the away probe delegates to the ``t3`` subprocess for an exact read.
         _config_db(tmp_path, monkeypatch)  # no override → falls to the schedule tier
-        (tmp_path / "teatree.toml").write_text(
-            '[teatree.availability]\nwindows = ["* 9-16 * * 1-5"]\n', encoding="utf-8"
-        )
+        _seed_availability_schedule(tmp_path, ["* 9-16 * * 1-5"])
         calls: list[list[str]] = []
 
         def _run(argv: list[str], *_a: object, **_k: object) -> SimpleNamespace:

@@ -39,11 +39,6 @@ def scan_tree(
         "--repo-root",
         help="Repository root to scan (defaults to the current directory).",
     ),
-    config: Path | None = typer.Option(
-        None,
-        "--config",
-        help="Override the ~/.teatree.toml term-list config (else resolved as the gate does).",
-    ),
     *,
     require_brands: bool = typer.Option(
         False,
@@ -54,10 +49,14 @@ def scan_tree(
         "empty list. CI passes it; local dev omits it.",
     ),
 ) -> None:
-    """Scan every git-tracked file for committed banned terms."""
+    """Scan every git-tracked file for committed banned terms.
+
+    The brand list is DB-home: ``$TEATREE_BANNED_BRANDS`` (a CI secret) or the
+    canonical ``banned_brands`` ``ConfigSetting`` row.
+    """
     root = repo_root if repo_root is not None else Path.cwd()
     try:
-        result = scan_committed_tree(root, config_path=config)
+        result = scan_committed_tree(root)
     except BannedTermsUnsetError as exc:
         # A genuinely-unset brand list (no config, no env, a missing key) is
         # refused LOUD (exit 2) — never a silent inert scan that hides a load

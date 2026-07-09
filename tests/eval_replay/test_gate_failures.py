@@ -277,8 +277,5 @@ class TestEscalate:
 
 
 @pytest.fixture
-def banned_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    cfg = tmp_path / ".teatree.toml"
-    cfg.write_text('[teatree]\nbanned_terms = ["acmecorp"]\n', encoding="utf-8")
-    monkeypatch.setenv("T3_BANNED_TERMS_CONFIG", str(cfg))
-    return cfg
+def banned_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("T3_BANNED_TERMS", "acmecorp")

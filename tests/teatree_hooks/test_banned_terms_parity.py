@@ -23,7 +23,9 @@ customer term; ``widget-margin`` for a glued multiword term. No real
 customer/overlay value appears, so this public test leaks nothing.
 """
 
+import json
 import os
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -42,6 +44,30 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 #   - ``acme``          single-token term.
 #   - ``widget-margin`` glued multiword term.
 _TERMS: tuple[str, ...] = ("acme", "widget-margin")
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_terms_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Drop any ambient ``T3_BANNED_TERMS`` so the seeded DB is the only source."""
+    monkeypatch.delenv("T3_BANNED_TERMS", raising=False)
+
+
+def _seed_db(tmp_path: Path) -> Path:
+    """Build a ``teatree_config_setting`` DB carrying the shared ``banned_terms`` list."""
+    db = tmp_path / "config.sqlite3"
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS teatree_config_setting ("
+        "id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+    )
+    conn.execute(
+        "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', 'banned_terms', ?)",
+        (json.dumps(list(_TERMS)),),
+    )
+    conn.commit()
+    conn.close()
+    return db
+
 
 # Strings that MUST flag under whole-token matching.
 _MUST_FLAG: tuple[str, ...] = (
@@ -72,16 +98,16 @@ _MUST_NOT_FLAG: tuple[str, ...] = (
 
 def _shell_verdict(tmp_path: Path, text: str) -> bool:
     """Whether ``check-banned-terms.sh`` flags *text* (exit 1)."""
-    config = tmp_path / "config.toml"
-    config.write_text("[teatree]\nbanned_terms = " + repr(list(_TERMS)) + "\n", encoding="utf-8")
+    db = _seed_db(tmp_path)
     sample = tmp_path / "sample.txt"
     sample.write_text(text + "\n", encoding="utf-8")
     script = _REPO_ROOT / "scripts" / "hooks" / "check-banned-terms.sh"
     result = subprocess.run(
-        [str(script), "--config", str(config), str(sample)],
+        [str(script), str(sample)],
         capture_output=True,
         text=True,
         check=False,
+        env={**os.environ, "T3_CONFIG_DB": str(db)},
     )
     assert result.returncode in {0, 1}, f"shell hook crashed: {result.returncode}\n{result.stderr}"
     return result.returncode == 1
@@ -89,15 +115,15 @@ def _shell_verdict(tmp_path: Path, text: str) -> bool:
 
 def _cli_verdict(tmp_path: Path, text: str) -> bool:
     """Whether the ``banned_terms_cli`` module flags *text* (exit 1)."""
-    config = tmp_path / "config.toml"
-    config.write_text("[teatree]\nbanned_terms = " + repr(list(_TERMS)) + "\n", encoding="utf-8")
+    db = _seed_db(tmp_path)
     sample = tmp_path / "sample.txt"
     sample.write_text(text + "\n", encoding="utf-8")
     result = subprocess.run(
-        [sys.executable, "-m", "teatree.hooks.banned_terms_cli", "--config", str(config), str(sample)],
+        [sys.executable, "-m", "teatree.hooks.banned_terms_cli", str(sample)],
         capture_output=True,
         text=True,
         check=False,
+        env={**os.environ, "T3_CONFIG_DB": str(db)},
     )
     assert result.returncode in {0, 1}, f"cli crashed: {result.returncode}\n{result.stderr}"
     return result.returncode == 1
@@ -105,9 +131,8 @@ def _cli_verdict(tmp_path: Path, text: str) -> bool:
 
 def _scanner_verdict(tmp_path: Path, text: str) -> bool:
     """Whether the posting gate ``banned_terms_scanner`` flags *text*."""
-    config = tmp_path / "config.toml"
-    config.write_text("[teatree]\nbanned_terms = " + repr(list(_TERMS)) + "\n", encoding="utf-8")
-    return banned_terms_scanner.scan_text(text, config_path=config) is not None
+    db = _seed_db(tmp_path)
+    return banned_terms_scanner.scan_text(text, config_path=db) is not None
 
 
 def _term_match_verdict(_tmp_path: Path, text: str) -> bool:

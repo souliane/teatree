@@ -21,6 +21,7 @@ each escape *actually relaxes the deny* at runtime.
 
 import json
 import os
+import sqlite3
 import subprocess
 from pathlib import Path
 
@@ -43,26 +44,26 @@ from hooks.scripts.hook_router import (
 # ── fixtures ──────────────────────────────────────────────────────────────────
 
 
-class _FakeHomePath:
-    """Pin ``router.Path.home()`` to a tmp dir for managed-repo slug resolution."""
-
-    def __init__(self, home: Path) -> None:
-        self._home = home
-
-    def __call__(self, *args: object, **kwargs: object) -> Path:
-        return Path(*args, **kwargs)
-
-    def home(self) -> Path:
-        return self._home
+def _seed_config_db(path: Path, rows: dict[str, object], scope: str = "") -> None:
+    conn = sqlite3.connect(str(path))
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+        "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+    )
+    for key, value in rows.items():
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES (?, ?, ?)",
+            (scope, key, json.dumps(value)),
+        )
+    conn.commit()
+    conn.close()
 
 
 def _write_managed_config(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     home.mkdir(exist_ok=True)
-    (home / ".teatree.toml").write_text(
-        '[overlays.example]\nworkspace_repos = ["example-org/repo"]\n',
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(router, "Path", _FakeHomePath(home))
+    db = home / "config.sqlite3"
+    _seed_config_db(db, {"overlays": {"example": {"workspace_repos": ["example-org/repo"]}}})
+    monkeypatch.setenv("T3_CONFIG_DB", str(db))
 
 
 def _git(cwd: Path, *args: str) -> None:
@@ -491,7 +492,7 @@ class TestSkillLoadingGateExemptDuringLoopBootstrap:
 class TestDefaultOffSessionNeverHardBlocks:
     """#256: a default-off (not-engaged) session never hard-blocks Bash/Edit/Write.
 
-    With ``[teatree] autoload`` unset and no teatree/``t3:`` skill loaded,
+    With the DB-home ``autoload`` switch unset and no teatree/``t3:`` skill loaded,
     ``handle_user_prompt_submit`` suppresses the suggester and writes an EMPTY
     ``<session>.pending``. The PreToolUse skill-loading gate then has nothing to
     demand, so a plain ``.py`` Edit and a Python-tooling Bash both pass. A
@@ -504,7 +505,7 @@ class TestDefaultOffSessionNeverHardBlocks:
         state = tmp_path / "state"
         state.mkdir()
         monkeypatch.setattr(router, "STATE_DIR", state)
-        # Hermetic, default-OFF: clean HOME (no [teatree] autoload) and no env opt-in.
+        # Hermetic, default-OFF: clean HOME (no autoload override) and no env opt-in.
         home = tmp_path / "home"
         home.mkdir(exist_ok=True)
         monkeypatch.setenv("HOME", str(home))
@@ -591,14 +592,14 @@ class TestPublishPrivacyGatesDoNotOverBlock:
         monkeypatch.setattr(Path, "home", classmethod(lambda _cls: home))
         monkeypatch.setenv("HOME", str(home))
         monkeypatch.setenv("T3_DATA_DIR", str(tmp_path / "data"))
-        self._home_dir = home
+        monkeypatch.setenv("T3_CONFIG_DB", str(home / "config.sqlite3"))
+        self._db = home / "config.sqlite3"
 
-    def _write_toml(self, body: str) -> None:
-        (self._home_dir / ".teatree.toml").write_text(body, encoding="utf-8")
+    def _enable(self, key: str) -> None:
+        _seed_config_db(self._db, {key: True})
 
     def test_clean_slack_mcp_send_is_not_blocked(self, capsys: pytest.CaptureFixture[str]) -> None:
-        # Default-ON Slack-MCP arm + a clean body (no verbatim quote) must pass.
-        self._write_toml("[teatree]\nmcp_privacy_gate_enabled = true\n")
+        self._enable("mcp_privacy_gate_enabled")
         data = {
             "session_id": "sess-corpus",
             "tool_name": "mcp__claude_ai_Slack__slack_send_message",
@@ -609,8 +610,7 @@ class TestPublishPrivacyGatesDoNotOverBlock:
         assert capsys.readouterr().out.strip() == ""
 
     def test_clean_fanout_task_is_not_blocked(self, capsys: pytest.CaptureFixture[str]) -> None:
-        # Flag enabled + a clean fan-out brief (no verbatim quote) must pass.
-        self._write_toml("[teatree]\ndispatch_quote_gate_on_task_create_enabled = true\n")
+        self._enable("dispatch_quote_gate_on_task_create_enabled")
         data = {
             "session_id": "sess-corpus",
             "task_subject": "implement the export endpoint",
@@ -673,19 +673,14 @@ class TestOrchestratorBoundaryAgentArmDoesNotOverBlock:
         home.mkdir(parents=True, exist_ok=True)
         monkeypatch.setattr(Path, "home", classmethod(lambda _cls: home))
         monkeypatch.setenv("HOME", str(home))
-        self._home_dir = home
+        monkeypatch.setenv("T3_CONFIG_DB", str(home / "config.sqlite3"))
+        self._db = home / "config.sqlite3"
 
     def _enable(self) -> None:
-        # The gate is default-ON; writing the flag explicitly is a no-op for the
-        # verdict but documents intent at the call site.
-        (self._home_dir / ".teatree.toml").write_text(
-            "[teatree]\norchestrator_boundary_agent_gate_enabled = true\n", encoding="utf-8"
-        )
+        _seed_config_db(self._db, {"orchestrator_boundary_agent_gate_enabled": True})
 
     def _disable(self) -> None:
-        (self._home_dir / ".teatree.toml").write_text(
-            "[teatree]\norchestrator_boundary_agent_gate_enabled = false\n", encoding="utf-8"
-        )
+        _seed_config_db(self._db, {"orchestrator_boundary_agent_gate_enabled": False})
 
     def _agent(self, *, run_in_background: bool = False, prompt: str = "implement", agent_id: str = "") -> dict:
         data: dict = {

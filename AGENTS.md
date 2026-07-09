@@ -42,7 +42,7 @@ It provides:
 ```
 src/teatree/           Python package (the Django app + CLI)
   cli/                 Typer CLI package — the `t3` entry point
-  config.py            ~/.teatree.toml parsing, overlay discovery
+  config.py            settings resolution (DB ConfigSetting store), overlay discovery
   skill_loading.py     Skill selection policy (phase → skills, companion resolution)
   skill_deps.py        Transitive dependency and companion resolution
   core/                Django app: models, managers, views, selectors, management commands
@@ -333,7 +333,7 @@ After modifying skills: `t3 tool verify-gates` (commit AND push-stage hooks — 
 - Teatree skills must never reference a specific project or overlay by name.
 - Project-specific knowledge belongs in the generated host project's overlay app.
 - User preferences belong in memory/config files, not skills.
-- Use extension points or `~/.teatree.toml` variables for project context.
+- Use extension points or DB config settings for project context.
 
 ## Things That Catch People
 

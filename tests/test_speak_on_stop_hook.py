@@ -4,8 +4,8 @@ The Stop-hook arm fires its detached ``t3 speak`` IFF ``local == all`` — in-cl
 turns are never Slack messages, so the ``slack`` attach is irrelevant and the v2
 no-double-speak suppression is gone (``local == all`` speaks the turn regardless
 of ``slack``). It NEVER blocks/denies (returns None), reads the DB-home ``speak``
-config via the Django-free ``cold_reader`` (eliminate-~/.teatree.toml — a
-``[teatree.speak]`` TOML value is ignored on read), and is crash-proof. Only the
+config via the Django-free ``cold_reader`` (the legacy file config tier is
+removed — the stored value comes only from the DB), and is crash-proof. Only the
 sandboxed sqlite, PATH lookup, and the detached subprocess are faked.
 """
 

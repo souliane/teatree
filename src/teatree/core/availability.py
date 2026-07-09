@@ -30,9 +30,9 @@ mystery):
     calls silently deferred). It only *upgrades* a schedule ``away`` to
     ``present`` — it never downgrades, and it never overrides an explicit
     manual override.
-3. **Cron-window schedule** — any active cron expression in
-    ``[teatree.availability].windows`` evaluated in the configured
-    timezone means ``present``; otherwise ``away``.
+3. **Cron-window schedule** — any active cron expression in the DB-home
+    ``availability_schedule`` setting's ``windows`` evaluated in the
+    configured timezone means ``present``; otherwise ``away``.
 4. **Default** — ``present`` when no windows are configured (the
     conservative default: an agent without an availability config is
     present, never silently muted).
@@ -46,7 +46,6 @@ import json
 import logging
 import os
 import tempfile
-import tomllib
 import warnings
 import zoneinfo
 from collections.abc import Callable, Iterable
@@ -54,6 +53,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from itertools import pairwise
 from pathlib import Path
+from typing import cast
 
 from croniter import croniter
 
@@ -171,14 +171,14 @@ class Override:
 
 @dataclass(frozen=True, slots=True)
 class Schedule:
-    """Parsed ``[teatree.availability]`` cron-window config."""
+    """Parsed availability cron-window config (the DB ``availability_schedule`` setting)."""
 
     timezone: str = ""
     windows: tuple[str, ...] = field(default_factory=tuple)
 
     @classmethod
-    def from_toml(cls, raw: dict | None) -> "Schedule":
-        """Parse a ``[teatree.availability]`` section into a schedule.
+    def from_table(cls, raw: object) -> "Schedule":
+        """Parse an ``availability_schedule`` table into a schedule.
 
         Invalid cron expressions are dropped silently rather than raising
         — a broken schedule must never lock the agent out of asking
@@ -186,9 +186,10 @@ class Schedule:
         """
         if not isinstance(raw, dict):
             return cls()
-        tz_raw = str(raw.get("timezone", "")).strip()
+        table = cast("dict[str, object]", raw)
+        tz_raw = str(table.get("timezone", "")).strip()
         tz = _validated_timezone(tz_raw)
-        raw_windows = raw.get("windows", [])
+        raw_windows = table.get("windows", [])
         if not isinstance(raw_windows, list):
             raw_windows = []
         validated: list[str] = []
@@ -303,20 +304,15 @@ def resolve_mode(
     return Resolution(mode=MODE_PRESENT, source="default")
 
 
-def load_schedule(path: Path | None = None) -> Schedule:
-    """Load the schedule from ``~/.teatree.toml``'s ``[teatree.availability]``."""
-    config_path = path or Path(os.environ.get("TEATREE_TOML", str(Path.home() / ".teatree.toml")))
-    if not config_path.is_file():
-        return Schedule()
-    try:
-        with config_path.open("rb") as fh:
-            data = tomllib.load(fh)
-    except (OSError, ValueError):
-        return Schedule()
-    section = data.get("teatree", {}).get("availability", {})
-    if not isinstance(section, dict):
-        return Schedule()
-    return Schedule.from_toml(section)
+def load_schedule(db_path: Path | None = None) -> Schedule:
+    """Load the schedule from the DB-home ``availability_schedule`` setting.
+
+    Absence (no row, no DB) resolves to an empty :class:`Schedule` — the
+    conservative ``present`` default.
+    """
+    from teatree.config import cold_reader  # noqa: PLC0415
+
+    return Schedule.from_table(cold_reader.read_setting("availability_schedule", db_path=db_path))
 
 
 def load_override(path: Path | None = None) -> Override | None:

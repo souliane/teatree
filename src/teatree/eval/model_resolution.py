@@ -18,13 +18,11 @@ Precedence, highest first:
 4.  ``DEFAULT_TIER`` — the conservative default, resolved through ``resolve_tier``.
 """
 
-from pathlib import Path
-
 from teatree.agents.model_tiering import DEFAULT_PHASE_MODELS, DEFAULT_TIER, resolve_tier
 from teatree.eval.models import EvalSpec
 
 
-def resolve_eval_model(spec: EvalSpec, *, config_path: Path | None = None) -> str:
+def resolve_eval_model(spec: EvalSpec) -> str:
     """Return the concrete model id (or ``model@effort`` pin) for *spec*.
 
     See the module docstring for the precedence. The result is a concrete model
@@ -35,8 +33,8 @@ def resolve_eval_model(spec: EvalSpec, *, config_path: Path | None = None) -> st
     if spec.model.strip():
         return spec.model
     if spec.tier.strip():
-        return resolve_tier(spec.tier.strip(), config_path=config_path)
+        return resolve_tier(spec.tier.strip())
     if spec.phase.strip():
         tier = DEFAULT_PHASE_MODELS.get(spec.phase.strip(), DEFAULT_TIER)
-        return resolve_tier(tier, config_path=config_path)
-    return resolve_tier(DEFAULT_TIER, config_path=config_path)
+        return resolve_tier(tier)
+    return resolve_tier(DEFAULT_TIER)

@@ -67,18 +67,19 @@ type AudioEnricher = Callable[[str, str, str], None]
 
 
 def slack_config_from_toml() -> tuple[str, str] | None:
-    """Return ``(bot_token_ref, user_id)`` from the first slack-enabled overlay."""
-    import tomllib  # noqa: PLC0415
+    """Return ``(bot_token_ref, user_id)`` from the first slack-enabled overlay.
 
-    config_path = Path.home() / ".teatree.toml"
-    if not config_path.is_file():
-        return None
+    Sources the per-overlay Slack wiring from the DB overlays registry.
+    """
+    from teatree.config import load_config  # noqa: PLC0415
+
     try:
-        with config_path.open("rb") as f:
-            config = tomllib.load(f)
+        overlays = load_config().raw.get("overlays") or {}
     except Exception:  # noqa: BLE001
         return None
-    for overlay_cfg in (config.get("overlays") or {}).values():
+    for overlay_cfg in overlays.values():
+        if not isinstance(overlay_cfg, dict):
+            continue
         if overlay_cfg.get("messaging_backend") == "slack":
             ref = overlay_cfg.get("slack_token_ref", "")
             uid = overlay_cfg.get("slack_user_id", "")

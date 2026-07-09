@@ -10,7 +10,7 @@ This module is the sibling of the #1213 quote-scanner gate. It reuses
 the *same* publish-surface detection and body extraction
 (``teatree.hooks._command_parser``) so a single token-aware parser feeds
 both gates, then delegates the *matching* to the existing
-``check-banned-terms.sh`` against the ``~/.teatree.toml`` term list — it
+``check-banned-terms.sh`` against the DB-home term list — it
 adds no new term config. The shell scanner and this module both match on
 WHOLE TOKENS (``teatree.hooks.term_match``): a configured term matches
 only when its own tokens appear as a contiguous run of whole tokens, so a
@@ -37,6 +37,7 @@ import tempfile
 from pathlib import Path
 from typing import TypedDict
 
+from teatree.config import cold_reader
 from teatree.hooks._command_parser import extract_bash_payload as _extract_bash_payload
 from teatree.hooks._command_parser import extract_secret_scan_text as _extract_secret_scan_text
 from teatree.hooks._command_parser import first_segment_words as _first_segment_words
@@ -79,6 +80,12 @@ SCANNER_UNAVAILABLE_MARKER: str = "<banned-terms-scanner-unavailable>"
 # hangs blocks the user, so the budget is deliberately tight.
 _SCAN_TIMEOUT_S = 10
 
+# DB-home term/allowlist keys and the ``T3_BANNED_TERMS`` env override that WINS
+# over the DB (mirroring ``banned_terms_cli``).
+_TERMS_KEY = "banned_terms"
+_ALLOWLIST_KEY = "banned_terms_allowlist"
+_TERMS_ENV = "T3_BANNED_TERMS"
+
 
 class ToolInput(TypedDict, total=False):
     """Subset of the PreToolUse ``tool_input`` payload this gate reads."""
@@ -87,17 +94,18 @@ class ToolInput(TypedDict, total=False):
     env: dict[str, str]
 
 
-def resolve_config() -> Path | None:
-    """Resolve the ``~/.teatree.toml`` term-list config.
+def _banned_terms_configured(config_path: Path | None) -> bool:
+    """Return True iff the DB-home ``banned_terms`` list (or the env override) is set.
 
-    ``T3_BANNED_TERMS_CONFIG`` overrides the default (used by tests to
-    avoid touching the real config). Returns ``None`` when no config file
-    exists — the gate then fails open, matching ``check-banned-terms.sh``
-    itself (no config ⇒ no-op).
+    The gate is a clean NO-OP when nothing is configured — matching the shell
+    hook's own "no terms ⇒ no-op" contract — so this decides whether to shell
+    out at all. A set ``T3_BANNED_TERMS`` env or a present ``banned_terms`` DB
+    row (even an explicit empty list) counts as configured; *config_path*
+    overrides the DB path (else the canonical DB / ``T3_CONFIG_DB``).
     """
-    override = os.environ.get("T3_BANNED_TERMS_CONFIG")
-    candidate = Path(override) if override else Path.home() / ".teatree.toml"
-    return candidate if candidate.is_file() else None
+    if os.environ.get(_TERMS_ENV, "").strip():
+        return True
+    return isinstance(cold_reader.read_setting(_TERMS_KEY, db_path=config_path), list)
 
 
 def _scanner_script() -> Path:
@@ -259,13 +267,13 @@ def scan_text(text: str, *, config_path: Path | None = None) -> str | None:
 def _run_shell_scanner(text: str, config_path: Path | None) -> str | None:
     """Delegate ``text`` to ``check-banned-terms.sh``; return the matched term, else ``None``.
 
-    Writes ``text`` to a temp file and invokes the shell scanner exactly as the
-    pre-commit hook does. Returns ``None`` on a genuine no-op (no config /
-    script). Returns :data:`SCANNER_UNAVAILABLE_MARKER` (the gate fails CLOSED)
-    when the scanner could not run.
+    Writes ``text`` to a temp file and invokes the shell scanner (which reads the
+    DB-home term list). Returns ``None`` on a genuine no-op (nothing configured /
+    no script). Returns :data:`SCANNER_UNAVAILABLE_MARKER` (the gate fails CLOSED)
+    when the scanner could not run. *config_path* overrides the DB path the shell
+    scanner reads (forwarded as ``T3_CONFIG_DB`` in the subprocess env).
     """
-    cfg = config_path if config_path is not None else resolve_config()
-    if cfg is None or not cfg.is_file():
+    if not _banned_terms_configured(config_path):
         return None
     script = _scanner_script()
     if not script.is_file():
@@ -274,15 +282,18 @@ def _run_shell_scanner(text: str, config_path: Path | None) -> str | None:
     with tempfile.NamedTemporaryFile("w", suffix=".txt", encoding="utf-8", delete=False) as fh:
         fh.write(text)
         scan_file = Path(fh.name)
+    env = {**os.environ, "T3_CONFIG_DB": str(config_path)} if config_path is not None else None
     try:
         # check-banned-terms.sh contract: exit 0 = clean, exit 1 = banned term
         # found (with a BANNED TERM report on stdout), exit 2 = the scanner
-        # could not run (an old interpreter / import crash). Any other code is
-        # also a scanner failure. A failed scanner fails CLOSED, never ALLOW.
+        # could not run (an old interpreter / import crash) OR the term list is
+        # genuinely unset. Any other code is also a scanner failure. A failed
+        # scanner fails CLOSED, never ALLOW.
         result = run_allowed_to_fail(
-            [str(script), "--config", str(cfg), str(scan_file)],
+            [str(script), str(scan_file)],
             expected_codes=(0, 1),
             timeout=_SCAN_TIMEOUT_S,
+            env=env,
         )
     except (TimeoutExpired, CommandFailedError, OSError):
         return SCANNER_UNAVAILABLE_MARKER
@@ -291,7 +302,7 @@ def _run_shell_scanner(text: str, config_path: Path | None) -> str | None:
 
     if result.returncode == 0:
         return None
-    term = _matched_term(result.stdout, _load_allowlist(cfg))
+    term = _matched_term(result.stdout, _load_allowlist(config_path))
     # Exit 1 with NO parseable BANNED TERM report is the import-crash shape: a
     # Python traceback exits 1 (colliding with "banned term found") but prints
     # nothing on stdout. There is no real match — the scanner crashed — so fail
@@ -302,29 +313,19 @@ def _run_shell_scanner(text: str, config_path: Path | None) -> str | None:
 
 
 def _load_allowlist(config_path: Path | None) -> tuple[str, ...]:
-    """Return the ``banned_terms_allowlist`` carve-out array from the TOML config.
+    """Return the DB-home ``banned_terms_allowlist`` carve-out array.
 
     Mirrors :func:`banned_terms_cli._load_allowlist` so the report-attribution
     path here and the shell scanner's matching path read the SAME carve-out. The
     shell scanner already blanks allow-listed identifier runs when flagging a
     line, so this is only used to keep the REPORTED term in sync — a line flagged
     for a genuine customer codename next to a company identifier must attribute
-    the codename, never the carved-out org slug. Empty (default) is a no-op.
+    the codename, never the carved-out org slug. Reads the canonical
+    ``ConfigSetting`` store via :mod:`teatree.config.cold_reader`; *config_path*
+    overrides the DB path. Empty (default) is a no-op.
     """
-    if config_path is None or not config_path.is_file():
-        return ()
-    import tomllib  # noqa: PLC0415
-
-    try:
-        data = tomllib.loads(config_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return ()
-    for value in [*data.values(), data]:
-        if isinstance(value, dict) and "banned_terms_allowlist" in value:
-            entries = value["banned_terms_allowlist"]
-            if isinstance(entries, list):
-                return tuple(str(e).strip() for e in entries if str(e).strip())
-    return ()
+    raw = cold_reader.list_setting(_ALLOWLIST_KEY, default=[], db_path=config_path)
+    return tuple(str(e).strip() for e in raw if str(e).strip())
 
 
 def _matched_term(report: str, allowlist: tuple[str, ...] = ()) -> str | None:

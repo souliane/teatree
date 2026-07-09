@@ -30,9 +30,6 @@ def _gate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, on: bool) -> None:
     # ``on_behalf_post_mode`` is DB-home (#1775) and drives the gate. Gate OFF =
     # ``immediate`` (the store row), gate ON = ``draft_or_ask`` (the dataclass
     # default — clear any row).
-    cfg = tmp_path / ".teatree.toml"
-    cfg.write_text("[teatree]\n", encoding="utf-8")
-    monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
     if on:
         ConfigSetting.objects.clear("on_behalf_post_mode")
     else:

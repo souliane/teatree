@@ -4,12 +4,10 @@
 store (+ the ``T3_AGENT_HARNESS`` env). The resolver defaults to ``claude_sdk``
 (today's behaviour) when no row is set, reads a stored backend, lets the env win
 over the store, and raises LOUD on a corrupt stored value so a silent transport
-switch never lands. ``CONFIG_PATH`` is isolated so the real ``~/.teatree.toml``
-never leaks in.
+switch never lands.
 """
 
 import os
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -21,8 +19,7 @@ from teatree.core.models import ConfigSetting
 
 class TestAgentHarnessResolution(TestCase):
     @pytest.fixture(autouse=True)
-    def _config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("teatree.config.CONFIG_PATH", tmp_path / ".teatree.toml")
+    def _config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("T3_OVERLAY_NAME", raising=False)
         monkeypatch.delenv("T3_AGENT_HARNESS", raising=False)
 

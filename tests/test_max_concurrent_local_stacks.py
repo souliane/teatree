@@ -22,7 +22,7 @@ import pytest
 from django.core.management import call_command
 from django.test import TestCase
 
-from teatree.config import get_effective_settings, load_config
+from teatree.config import get_effective_settings
 from teatree.core.gates import local_stack_gate as gate_mod
 from teatree.core.gates.local_stack_gate import LocalStackLimitExceededError, check_local_stack_limit
 from teatree.core.models import ConfigSetting, Ticket, Worktree
@@ -46,11 +46,6 @@ def _stacks_appear_live(request: pytest.FixtureRequest) -> "object":
         return
     with patch.object(gate_mod, "_running_container_count", return_value=1):
         yield
-
-
-def _write_toml(config_path: Path, content: str) -> None:
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(content, encoding="utf-8")
 
 
 def _make_worktree(
@@ -82,10 +77,8 @@ class TestConfigLoadsMaxConcurrentLocalStacks(TestCase):
     """``max_concurrent_local_stacks`` is DB-home (#1775): default 0, set in the store."""
 
     def test_default_is_zero_unbounded(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            config_path = Path(td) / ".teatree.toml"
-            _write_toml(config_path, "[teatree]\n")
-            assert load_config(config_path).user.max_concurrent_local_stacks == 0
+        # No row in the store -> the dataclass default (0 = unbounded) resolves.
+        assert get_effective_settings().max_concurrent_local_stacks == 0
 
     def test_global_setting_resolves_from_db_store(self) -> None:
         # DB-home under the partition: a GLOBAL ``ConfigSetting`` row supplies the

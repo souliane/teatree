@@ -71,7 +71,7 @@ def emit_banned_term_deny(tool_name: str, command: str, payload: str, term: str,
     if unknown_slug:
         sys.stderr.write(
             f"NOTE: banned-terms gate (#1415/#1657) — target '{unknown_slug}' visibility unknown in-hook "
-            "(probe unavailable). If private, add it to [teatree] private_repos in ~/.teatree.toml "
-            "for a reliable offline carve-out.\n"
+            "(probe unavailable). If private, add it to the private_repos config row "
+            "(t3 <overlay> config_setting set private_repos '[...]') for a reliable offline carve-out.\n"
         )
     return emit_pretooluse_deny(banned_terms_scanner.format_block_message(term))

@@ -1,20 +1,22 @@
-"""Loop-disabled state resolves via DB ``LoopState`` only, never env or ``[loops]`` toml.
+"""Loop-disabled state resolves via DB ``LoopState`` only, never env or the ``loops`` config.
 
 Loop control is DB-only: ``loops/config.py:is_enabled`` resolves purely through
 the DB ``LoopState`` tier — there is no ``T3_LOOPS_DISABLED`` env kill-switch and
-no ``[loops]``/``[loops.<name>]`` ``enabled`` toml fallback.
+no ``enabled`` key in the DB-home ``loops`` setting.
 
-These pin three things, anti-vacuously. First, a ``[loops] enabled = false`` toml
-file does NOT disable a loop (the toml ``enabled`` key is ignored; DB/default
-authoritative) — same for the per-loop key. Second, a DB ``LoopState``
-pause/disable IS honoured with no toml present (the DB tier is the authority —
-must not regress). Third, a set ``T3_LOOPS_DISABLED`` env var is INERT (RED on
-the pre-cutover env-tier code, which disabled the loop; GREEN now) while a DB
-``LoopState`` DISABLE still suppresses regardless of the (inert) env — the same
+These pin three things, anti-vacuously. First, an ``enabled = false`` key in the
+``loops`` setting does NOT disable a loop (the ``enabled`` key is ignored;
+DB/default authoritative) — same for the per-loop key. Second, a DB ``LoopState``
+pause/disable IS honoured with no ``loops`` setting present (the DB tier is the
+authority — must not regress). Third, a set ``T3_LOOPS_DISABLED`` env var is INERT
+(RED on the pre-cutover env-tier code, which disabled the loop; GREEN now) while a
+DB ``LoopState`` DISABLE still suppresses regardless of the (inert) env — the same
 control outcome the env tier used to provide, now DB-only.
 """
 
+import json
 import os
+import sqlite3
 import tempfile
 from pathlib import Path
 
@@ -33,44 +35,56 @@ def _loop(name: str) -> MiniLoop:
     return MiniLoop(name=name, default_cadence_seconds=60, build_jobs=_build)
 
 
-class _TomlTestCase(TestCase):
-    def _toml(self, body: str) -> Path:
-        path = Path(tempfile.mkdtemp()) / "t.toml"
-        path.write_text(body, encoding="utf-8")
-        return path
+class _LoopsSettingTestCase(TestCase):
+    def _loops_db(self, table: dict[str, object]) -> Path:
+        db = Path(tempfile.mkdtemp()) / "db.sqlite3"
+        conn = sqlite3.connect(str(db))
+        try:
+            conn.execute(
+                "CREATE TABLE teatree_config_setting "
+                "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+            )
+            conn.execute(
+                "INSERT INTO teatree_config_setting (scope, key, value) VALUES (?, ?, ?)",
+                ("", "loops", json.dumps(table)),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return db
 
 
-class TestTomlEnabledKeyNoLongerDisables(_TomlTestCase):
-    """The ``[loops]`` ``enabled`` toml keys are no longer read for the disabled decision."""
+class TestLoopsEnabledKeyNoLongerDisables(_LoopsSettingTestCase):
+    """The ``loops`` setting's ``enabled`` key is no longer read for the disabled decision."""
 
-    def test_global_loops_enabled_false_toml_does_not_disable(self) -> None:
-        config = LoopsConfig.load(self._toml("[loops]\nenabled = false\n"))
-        # No env, no DB row → loop runs; the toml `enabled = false` is ignored.
+    def test_global_loops_enabled_false_does_not_disable(self) -> None:
+        config = LoopsConfig.load(self._loops_db({"enabled": False}))
+        # No env, no DB LoopState row → loop runs; the `enabled = false` key is ignored.
         assert config.is_enabled(_loop("review")) is True
 
-    def test_per_loop_enabled_false_toml_does_not_disable(self) -> None:
-        config = LoopsConfig.load(self._toml("[loops.review]\nenabled = false\n"))
+    def test_per_loop_enabled_false_does_not_disable(self) -> None:
+        config = LoopsConfig.load(self._loops_db({"review": {"enabled": False}}))
         assert config.is_enabled(_loop("review")) is True
 
 
-class TestDbTierHonouredWithoutTomlOrEnv(TestCase):
-    """Loop-disabled state resolves via the DB tier with NO ``[loops]`` toml and NO env."""
+class TestDbTierHonouredWithoutConfigOrEnv(TestCase):
+    """Loop-disabled state resolves via the DB tier with NO ``loops`` setting and NO env."""
 
-    def test_db_pause_disables_with_no_toml_no_env(self) -> None:
+    def test_db_pause_disables_with_no_config_no_env(self) -> None:
         LoopState.objects.pause("review")
-        config = LoopsConfig()  # no toml file read, defaults only
+        config = LoopsConfig()  # no loops setting read, defaults only
         assert config.is_enabled(_loop("review")) is False
 
-    def test_db_disable_disables_with_no_toml_no_env(self) -> None:
+    def test_db_disable_disables_with_no_config_no_env(self) -> None:
         LoopState.objects.disable("review")
         config = LoopsConfig()
         assert config.is_enabled(_loop("review")) is False
 
-    def test_no_db_row_no_toml_no_env_defaults_to_enabled(self) -> None:
+    def test_no_db_row_no_config_no_env_defaults_to_enabled(self) -> None:
         config = LoopsConfig()
         assert config.is_enabled(_loop("review")) is True
 
-    def test_db_disable_skips_the_dispatch_loop_with_no_toml_no_env(self) -> None:
+    def test_db_disable_skips_the_dispatch_loop_with_no_config_no_env(self) -> None:
         # Even the core ``dispatch`` loop is stopped by a DB DISABLE (the env
         # tier that once exempted an ``always_on`` loop is gone).
         LoopState.objects.disable("dispatch")

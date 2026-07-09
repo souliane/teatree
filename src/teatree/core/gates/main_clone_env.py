@@ -23,7 +23,6 @@ two lanes' agreement across BOTH the classifier and this environmental resolutio
 is pinned mechanically by the full-gate parity test.
 """
 
-import tomllib
 from pathlib import Path
 from typing import Any, cast
 
@@ -34,28 +33,18 @@ DEFAULT_PROTECTED_BRANCHES = frozenset({"main", "master"})
 
 
 def _overlays_registry() -> dict[str, Any]:
-    """The effective overlay registry: the DB-home ``overlays`` row, else ``~/.teatree.toml``.
+    """The effective overlay registry: the DB-home ``overlays`` row (``{}`` when absent).
 
     Mirrors ``hooks/scripts/managed_repo.overlays_registry`` so both lanes read
-    the identical managed-repo signals; ``{}`` when neither source resolves.
+    the identical managed-repo signals.
     """
     from teatree.config.cold_reader import read_setting  # noqa: PLC0415
 
     try:
         db = read_setting("overlays")
-    except Exception:  # noqa: BLE001 — an unreadable/locked DB falls back to the toml.
+    except Exception:  # noqa: BLE001 — an unreadable/locked DB resolves to no registry.
         db = None
-    if isinstance(db, dict) and db:
-        return cast("dict[str, Any]", db)
-    config_path = Path.home() / ".teatree.toml"
-    if not config_path.is_file():
-        return {}
-    try:
-        with config_path.open("rb") as f:
-            overlays = tomllib.load(f).get("overlays")
-    except Exception:  # noqa: BLE001
-        return {}
-    return cast("dict[str, Any]", overlays) if isinstance(overlays, dict) else {}
+    return cast("dict[str, Any]", db) if isinstance(db, dict) else {}
 
 
 def _managed_repo_signals() -> tuple[list[str], list[Path]]:

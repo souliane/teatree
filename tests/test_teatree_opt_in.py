@@ -57,9 +57,9 @@ def _isolation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(router, "_TTY_PATH", str(tmp_path / "fake-tty"))
     monkeypatch.setenv("TEATREE_BASH_ENV_FILE", str(tmp_path / "no-bash-env"))
-    # Hermetic HOME: ``_autoload_enabled`` is DB-home (eliminate-~/.teatree.toml) —
-    # it reads ``T3_AUTOLOAD`` env first, else the canonical ConfigSetting sqlite. A
-    # clean home with no DB keeps the default-OFF (#256) path deterministic
+    # Hermetic HOME: ``autoload_enabled`` is DB-home (the legacy file tier is
+    # removed) — it reads ``T3_AUTOLOAD`` env first, else the canonical ConfigSetting
+    # sqlite. A clean home with no DB keeps the default-OFF (#256) path deterministic
     # regardless of the developer's own config.
     clean_home = tmp_path / "home"
     clean_home.mkdir(parents=True, exist_ok=True)
@@ -438,27 +438,6 @@ class TestRisk6MidSessionOwnershipClaim:
         assert owner is not None
         assert owner["session_id"] == "mid-sess"
 
-    def test_toml_loops_disabled_no_longer_prevents_ownership_claim(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        # The ``[loops] enabled = false`` toml kill-switch is removed — there is
-        # no ``[loops]`` toml disabled-state tier. Writing it is INERT and no
-        # longer prunes the ownership claim; loop pause/disable lives in the DB
-        # ``LoopState`` tier, and the in-process ``T3_LOOP_DISOWN`` knob is the
-        # orthogonal mitigation (test_loop_disown_prevents_ownership_claim).
-        _mark_active("mid-sess-disabled")
-        monkeypatch.setattr(router, "_tick_meta_stale", lambda: True)
-
-        toml_path = tmp_path / ".teatree.toml"
-        toml_path.write_text("[loops]\nenabled = false\n", encoding="utf-8")
-        monkeypatch.setenv("HOME", str(tmp_path))
-
-        handle_enforce_loop_on_prompt({"session_id": "mid-sess-disabled"})
-
-        owner = _read_loop_registry().get(_OWNER_LOOP)
-        assert owner is not None
-        assert owner["session_id"] == "mid-sess-disabled"
-
     def test_env_loops_disabled_all_no_longer_prevents_ownership_claim(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # ``T3_LOOPS_DISABLED`` is removed — it is INERT and no longer prunes the
         # ownership claim. Loop pause/disable lives in the DB ``LoopState`` tier;
@@ -567,8 +546,8 @@ def _seed_autoload_db(path: Path, *, autoload: object) -> None:
 
     Mirrors the Django-migration shape (JSON-encoded ``value``) so both the cold
     Python reader (``teatree_settings._cold_db_bool``) and the bash statusline gate
-    (``statusline.sh._autoload_db_value``) resolve it — autoload is DB-home now
-    (eliminate-~/.teatree.toml), read DB-only, never from ``[teatree] autoload`` TOML.
+    (``statusline.sh._autoload_db_value``) resolve it — autoload is DB-home now, read
+    DB-only.
     """
     conn = sqlite3.connect(path)
     try:
@@ -638,8 +617,8 @@ class TestStatuslineGating:
         assert out != ""
 
     def test_marker_and_db_opt_in_produces_output(self, tmp_path: Path) -> None:
-        # ``autoload`` is DB-home now (eliminate-~/.teatree.toml): the statusline gate
-        # reads the canonical ConfigSetting sqlite (via T3_CONFIG_DB), not TOML.
+        # ``autoload`` is DB-home now: the statusline gate reads the canonical
+        # ConfigSetting sqlite (via T3_CONFIG_DB).
         state_dir = tmp_path / "state"
         state_dir.mkdir(parents=True, exist_ok=True)
         (state_dir / "teatree-sess.teatree-active").touch()
@@ -655,9 +634,8 @@ class TestStatuslineGating:
 class TestAutoloadEnabledHelper:
     """``autoload_enabled`` — env-first, then the DB-home ``autoload`` ConfigSetting, default OFF, fail-closed.
 
-    eliminate-~/.teatree.toml: ``autoload`` is DB-home, read DB-only via the
-    Django-free ``_cold_db_bool`` — a ``[teatree] autoload`` TOML value is ignored on
-    read (no TOML fallback). ``T3_AUTOLOAD`` env still wins.
+    ``autoload`` is DB-home, read DB-only via the Django-free ``_cold_db_bool`` (the
+    legacy file tier is removed). ``T3_AUTOLOAD`` env still wins.
     """
 
     @pytest.fixture(autouse=True)
@@ -672,11 +650,12 @@ class TestAutoloadEnabledHelper:
         monkeypatch.setenv("T3_AUTOLOAD", "1")
         assert autoload_enabled() is True
 
-    def test_env_falsey_disables_over_toml_true(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        home = tmp_path / "h"
-        home.mkdir()
-        (home / ".teatree.toml").write_text("[teatree]\nautoload = true\n", encoding="utf-8")
-        monkeypatch.setenv("HOME", str(home))
+    def test_env_falsey_disables_over_db_true(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Env wins over the stored row: ``T3_AUTOLOAD=false`` disables even when a
+        # GLOBAL ``autoload`` row is true.
+        db = tmp_path / "db.sqlite3"
+        _seed_autoload_db(db, autoload=True)
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
         monkeypatch.setenv("T3_AUTOLOAD", "false")
         assert autoload_enabled() is False
 
@@ -762,8 +741,8 @@ class TestAutoloadSessionStart:
         handle_session_start_bootstrap({"session_id": "off-sess"})
         ctx = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
         assert "run /teatree" in ctx
-        # eliminate-~/.teatree.toml: autoload is DB-home, so the auto-start how-to
-        # points at the config_setting store, not a [teatree] TOML value.
+        # autoload is DB-home, so the auto-start how-to points at the config_setting
+        # store.
         assert "config_setting set autoload true" in ctx
         assert "t3 loops tick" not in ctx
         assert _read_loop_registry() == {}

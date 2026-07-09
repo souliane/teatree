@@ -7,7 +7,7 @@ carry many topic keywords that are NOT task intent — e.g. a MEMORY.md
 index line naming ``feedback_blog_no_invented_confession_arcs.md``
 contains the word ``blog``.
 
-Pre-fix, the supplementary keyword matcher (``~/.teatree-skills.yml``
+Pre-fix, the supplementary keyword matcher (``$HOME/.teatree-skills.yml``
 mapping ``\\bblog\\b`` → ``ac-writing-blog-posts``) matched that ambient
 line, wrote ``ac-writing-blog-posts`` into ``<session>.pending``, and the
 PreToolUse gate then hard-blocked EVERY Bash/Edit/Write for the rest of
@@ -22,7 +22,7 @@ real ``blog`` keyword in the prompt body still suggests the skill.
 Integration-style: the real ``_build_skill_loader_input`` +
 ``_strip_ambient_context``, the real ``suggest_skills`` engine, a real
 trigger index built from fixture ``SKILL.md`` files, and a real
-``~/.teatree-skills.yml``-shaped supplementary config on disk.
+``$HOME/.teatree-skills.yml``-shaped supplementary config on disk.
 """
 
 from __future__ import annotations  # noqa: TID251

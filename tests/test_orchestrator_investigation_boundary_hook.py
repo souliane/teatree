@@ -19,6 +19,8 @@ orchestrator_investigation_gate_enabled = false``.
 import ast
 import contextlib
 import io
+import json
+import sqlite3
 import sys
 from collections.abc import Iterator
 from datetime import timedelta
@@ -40,6 +42,22 @@ from hooks.scripts.orchestrator_investigation_gate import (
 from teatree.core.models import LoopLease
 
 _OWNER = "sess-owner"
+
+
+def _seed_config_db(path: Path, rows: dict[str, object]) -> None:
+    """Seed a DB-home ``teatree_config_setting`` store with JSON-encoded rows."""
+    conn = sqlite3.connect(str(path))
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+        "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+    )
+    for key, value in rows.items():
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
+            (key, json.dumps(value)),
+        )
+    conn.commit()
+    conn.close()
 
 
 @contextlib.contextmanager
@@ -301,29 +319,24 @@ class TestOrchestrationOkEscapeHatch:
 
 
 class TestGateKillSwitch:
-    def test_disabled_via_toml_suppresses_nudge(
+    def test_disabled_via_db_suppresses_nudge(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        (tmp_path / ".teatree.toml").write_text(
-            "[teatree]\norchestrator_investigation_gate_enabled = false\n", encoding="utf-8"
-        )
-        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        db = tmp_path / "config.sqlite3"
+        _seed_config_db(db, {"orchestrator_investigation_gate_enabled": False})
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
         monkeypatch.setattr(gate, "_session_is_loop_owner", lambda _sid: True)
         assert _orchestrator_investigation_gate_enabled() is False
         assert handle_enforce_orchestrator_investigation_boundary(_owner_bash("git show HEAD")) is False
         assert capsys.readouterr().err.strip() == ""
 
     def test_enabled_by_default_when_key_absent(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        (tmp_path / ".teatree.toml").write_text("[teatree]\n", encoding="utf-8")
-        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        db = tmp_path / "config.sqlite3"
+        _seed_config_db(db, {})
+        monkeypatch.setenv("T3_CONFIG_DB", str(db))
         assert _orchestrator_investigation_gate_enabled() is True
 
     def test_enabled_when_config_missing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
-        assert _orchestrator_investigation_gate_enabled() is True
-
-    def test_enabled_on_broken_toml(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        (tmp_path / ".teatree.toml").write_text("this is not = valid [[[", encoding="utf-8")
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
         assert _orchestrator_investigation_gate_enabled() is True
 

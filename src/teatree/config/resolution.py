@@ -25,20 +25,14 @@ import teatree.config as _facade
 from teatree.config.discovery import _active_overlay_entry
 from teatree.config.enums import Autonomy, Mode, OnBehalfPostMode
 from teatree.config.homes import SETTING_HOMES, SettingHome
-from teatree.config.settings import (
-    ENV_SETTING_OVERRIDES,
-    OVERLAY_OVERRIDABLE_SETTINGS,
-    OverlayEntry,
-    TeaTreeConfig,
-    UserSettings,
-)
+from teatree.config.settings import ENV_SETTING_OVERRIDES, OVERLAY_OVERRIDABLE_SETTINGS, OverlayEntry, UserSettings
 from teatree.config_mr_reminder import mr_reminder_from_table
 from teatree.config_speak import speak_from_subtable
 from teatree.types import SpeakConfig
 
 _logger = logging.getLogger("teatree.config")
 
-# The structured nested settings (#1775 eliminate-~/.teatree.toml): stored as a JSON
+# The structured nested settings: stored as a JSON
 # dict ConfigSetting, NOT a scalar. ``_coerce_db_rows`` SKIPS them — a bare dict
 # cannot flat-replace the dataclass field — and ``get_effective_settings`` resolves
 # them bespoke from the raw rows (``_apply_structured_db_settings``): ``mr_reminder``
@@ -141,7 +135,7 @@ def get_effective_settings(overlay_name: str | None = None) -> UserSettings:
     return _apply_autonomy(
         settings,
         hard_pinned=hard_pinned,
-        global_pinned=_global_pinned_fields(config),
+        global_pinned=set(global_rows),
     )
 
 
@@ -347,8 +341,11 @@ def _load_overlay_rows(overlay_name: str = "") -> dict[str, Any]:
 
     Matches the row's scope to *overlay_name* canonical-alias-tolerantly (a row
     under either the short alias or the ``t3-``-prefixed entry-point name resolves
-    for the active overlay). An exact-name match wins over an alias match. Same
-    fail-safe-to-``{}`` posture as :func:`_load_global_rows`.
+    for the active overlay) and MERGES every canonically-equivalent scope group —
+    a row scoped ``myovl`` and one scoped ``t3-myovl`` both apply. Alias groups
+    apply in sorted-scope order, then the exact-name group last, so on a key
+    collision the exact-name row wins. Same fail-safe-to-``{}`` posture as
+    :func:`_load_global_rows`.
     """
     if not overlay_name:
         return {}
@@ -361,9 +358,14 @@ def _load_overlay_rows(overlay_name: str = "") -> dict[str, Any]:
         for scope, key, value in model.objects.exclude(scope="").values_list("scope", "key", "value"):
             if scope == overlay_name or OverlayEntry.canonical_overlay_name(scope) == canonical:
                 scope_values.setdefault(scope, {})[key] = value
-        return scope_values.get(overlay_name) or next(iter(scope_values.values()), {})
+        merged: dict[str, Any] = {}
+        for scope in sorted(scope_values):
+            if scope != overlay_name:
+                merged.update(scope_values[scope])
+        merged.update(scope_values.get(overlay_name, {}))
     except Exception:  # noqa: BLE001 — fail safe: any read failure => no DB override tier.
         return {}
+    return merged
 
 
 def _overlay_overrides_by_name(overlay_name: str) -> dict[str, Any]:
@@ -430,10 +432,9 @@ def _drop_db_home_overlay_keys(overrides: dict[str, Any], overlay_name: str) -> 
     if dropped:
         scope = overlay_name or "(active overlay)"
         _logger.warning(
-            "Config keys in [overlays.%s] are DB-home settings (#1775), so their TOML value is "
+            "Config override keys for overlay %s are DB-home settings, so a stray non-DB value is "
             "IGNORED on read and had NO effect: %s. Their authoritative home is the ConfigSetting "
-            "store — set them with `t3 <overlay> config_setting set <key> <value> --overlay %s` or "
-            "migrate the file once with `t3 <overlay> config_setting import`.",
+            "store — set them with `t3 <overlay> config_setting set <key> <value> --overlay %s`.",
             scope,
             ", ".join(sorted(dropped)),
             scope,
@@ -441,7 +442,7 @@ def _drop_db_home_overlay_keys(overrides: dict[str, Any], overlay_name: str) -> 
     return kept
 
 
-def _global_pinned_fields(config: TeaTreeConfig) -> set[str]:
+def _global_pinned_fields() -> set[str]:
     """Names of settings the user explicitly pinned at the GLOBAL scope (#1775).
 
     A *global* explicit value is a deliberate per-gate opinion for the three
@@ -455,17 +456,10 @@ def _global_pinned_fields(config: TeaTreeConfig) -> set[str]:
     *per-overlay*/env ``mode`` arrives via the override layer (``hard_pinned``)
     and DOES win.
 
-    The three approval gates are now DB-home (#1775), so a *global* pin for them
-    is a GLOBAL-scope (``scope=""``) ``ConfigSetting`` row, NOT a ``[teatree]``
-    TOML key (a DB-home key left in ``[teatree]`` is ignored on read). A TOML-home
-    global key still counts via the ``[teatree]`` table.
+    Every setting is DB-home, so a *global* pin is a GLOBAL-scope (``scope=""``)
+    ``ConfigSetting`` row, read here via :func:`_load_global_rows`.
     """
-    pinned: set[str] = set()
-    teatree = config.raw.get("teatree", {})
-    if isinstance(teatree, dict):
-        pinned |= set(teatree)
-    pinned |= set(_load_global_rows())
-    return pinned
+    return set(_load_global_rows())
 
 
 def _apply_autonomy(settings: UserSettings, *, hard_pinned: set[str], global_pinned: set[str]) -> UserSettings:
@@ -532,9 +526,8 @@ def cadence_seconds() -> int:
     the generic effective-settings env layer. Layers, first match wins:
     first the ``T3_LOOP_CADENCE`` env var (the bespoke direct read), then
     ``get_effective_settings().loop_cadence_seconds`` which covers the
-    per-overlay ``[overlays.<name>]`` override, then the global
-    ``[teatree]`` value in ``~/.teatree.toml``, then the ``UserSettings``
-    default of 720.
+    per-overlay ``ConfigSetting`` overlay-scope row, then the global-scope
+    row, then the ``UserSettings`` default of 720.
 
     Any ``T3_LOOP_CADENCE`` parse failure falls back to 720. The result is
     clamped to a 60s minimum so a misconfigured tiny value cannot busy-loop

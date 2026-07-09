@@ -12,18 +12,25 @@ core-leak gate) runs the SAME :mod:`teatree.hooks.term_match` code. A parity
 meta-test pins them to identical verdicts on a golden corpus so they cannot
 drift again.
 
-Usage mirrors the old shell behaviour exactly::
+The term list is DB-home: it is read from the canonical ``ConfigSetting`` store
+via the Django-free :mod:`teatree.config.cold_reader` (the DB is PRIVATE to the
+operator). The ``T3_BANNED_TERMS`` env value (comma-separated) still WINS over
+the DB. Set the list with
+``t3 <overlay> config_setting set banned_terms '["acme","globex"]'``::
 
-    python -m teatree.hooks.banned_terms_cli --config <toml> <file> [<file> ...]
+    python -m teatree.hooks.banned_terms_cli <file> [<file> ...]
 
-- exit 0: no file contains a banned term (or no config / no terms ⇒ no-op).
+- exit 0: no file contains a banned term (or an explicit empty list ⇒ no-op).
 - exit 1: at least one file contains a banned term. The same
 ``BANNED TERM in <file>:`` report the shell hook printed is emitted, so the
 ``banned_terms_scanner`` report parser keeps working unchanged.
+- exit 2: the term list is genuinely UNSET (no ``banned_terms`` row AND no env
+value) — fail LOUD rather than silently scan as empty, since an unset list is
+indistinguishable from a load bug. An explicit ``banned_terms = []`` is the
+deliberate no-op (exit 0), not an unset.
 
-The TOML term list is read from the first section carrying a ``banned_terms``
-array (matching the old shell extractor), and the email carve-out lives in
-``term_match`` so it, too, is shared rather than duplicated.
+The email carve-out lives in ``term_match`` so it, too, is shared rather than
+duplicated.
 
 ``--diff-only`` scopes the scan to the staged DIFF's ADDED lines per file (the
 pre-commit hook entry passes it). Without it, the whole file is scanned — the
@@ -37,10 +44,11 @@ term is still caught before it leaves the machine.
 """
 
 import argparse
+import os
 import sys
-import tomllib
 from pathlib import Path
 
+from teatree.config import cold_reader
 from teatree.hooks.banned_terms_tree_scan import BannedTermsUnsetError
 from teatree.hooks.term_match import file_matches as _file_matches
 from teatree.hooks.term_match import line_matches, strip_emails
@@ -52,78 +60,65 @@ from teatree.utils.run import CommandFailedError, TimeoutExpired, run_allowed_to
 _GIT_DIFF_TIMEOUT_S = 10
 
 # The REQUIRED term-list key (an unset value fails loud) vs the OPTIONAL
-# allow-list key (an unset value defaults to empty). See ``_load_terms`` /
-# ``_load_allowlist`` for the split.
+# allow-list key (an unset value defaults to empty). See ``resolve_banned_terms``
+# / ``_load_allowlist`` for the split.
 _TERMS_KEY = "banned_terms"
 _ALLOWLIST_KEY = "banned_terms_allowlist"
 
+# The env override (comma-separated) that WINS over the DB — the
+# secret-from-CI-secret path where the DB row is not populated.
+_TERMS_ENV = "T3_BANNED_TERMS"
 
-def _load_array(config: Path, key: str) -> tuple[str, ...] | None:
-    """Return the first ``key`` array found in any TOML section, or ``None`` if unset.
 
-    Mirrors the old shell extractor: scan every top-level section (and the
-    document root) for *key* and use the first list found. ``None`` is the
-    distinct "unset" signal — the key appears as a list in NO section, or the
-    config is unloadable — that the caller turns into a LOUD failure for the
-    REQUIRED ``banned_terms`` key while leaving the OPTIONAL allowlist at its
-    empty default. An explicit empty array returns ``()`` (set, but
-    deliberately empty), never ``None``.
+def _db_array(key: str, db_path: Path | None) -> tuple[str, ...] | None:
+    """Return the DB-home ``key`` list, or ``None`` when the row is genuinely UNSET.
+
+    ``None`` is the distinct "unset" signal — no ``key`` row, or a wrong-typed
+    value — that the caller turns into a LOUD failure for the REQUIRED
+    ``banned_terms`` key while leaving the OPTIONAL allowlist at its empty
+    default. An explicit empty list returns ``()`` (set, but deliberately empty),
+    never ``None``. Reads the canonical ``ConfigSetting`` store via the
+    Django-free :mod:`teatree.config.cold_reader`; *db_path* overrides the DB
+    path (else the canonical DB / ``T3_CONFIG_DB``).
     """
-    try:
-        data = tomllib.loads(config.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError):
+    raw = cold_reader.read_setting(key, db_path=db_path)
+    if not isinstance(raw, list):
         return None
-    for value in [*data.values(), data]:
-        if isinstance(value, dict) and key in value:
-            entries = value[key]
-            if isinstance(entries, list):
-                return tuple(str(e).strip() for e in entries if str(e).strip())
-    return None
+    return tuple(str(e).strip() for e in raw if str(e).strip())
 
 
-def _load_terms(config: Path) -> tuple[str, ...]:
-    """Return the ``banned_terms`` array; RAISE when it is genuinely unset.
-
-    An explicit ``banned_terms = []`` is the operator's deliberate no-terms
-    choice and returns ``()``. A genuinely-absent key (or an unloadable config)
-    raises :class:`BannedTermsUnsetError` — an unset list is too
-    dangerous to scan as empty because a load bug would look identical to a
-    deliberate empty list.
-    """
-    terms = _load_array(config, _TERMS_KEY)
-    if terms is None:
-        raise BannedTermsUnsetError.for_key(_TERMS_KEY)
-    return terms
-
-
-def resolve_banned_terms(config_path: Path, *, env_value: str = "") -> tuple[str, ...]:
+def resolve_banned_terms(
+    config_path: Path | None = None, *, env_value: str = "", db_path: Path | None = None
+) -> tuple[str, ...]:
     """Resolve the canonical banned-terms list for a fail-closed scanner.
 
     The single source-resolution every banned-terms scanner shares, so they
-    cannot diverge on WHERE the term list comes from. It mirrors the config-unify
-    never-lockout order for a SECRET cold setting — env override → the
-    ``[teatree].banned_terms`` TOML home — with NO DB tier: the list carries
-    customer/brand terms that must never reach the exportable ``ConfigSetting``
-    store, so it stays env/TOML-sourced exactly like ``private_repos``
-    (``BOOTSTRAP_FILE_ONLY_SETTINGS``).
+    cannot diverge on WHERE the term list comes from. Resolution order:
+    ``T3_BANNED_TERMS`` env override → DB-home ``banned_terms`` row.
 
-    A non-empty *env_value* (the documented ``T3_BANNED_TERMS`` override, the
-    secret-from-CI-secret path) wins, comma-split. Else the
-    ``[teatree].banned_terms`` array from *config_path* via :func:`_load_terms`,
-    which RAISES :class:`BannedTermsUnsetError` when the config is present but the
-    key is genuinely unset (or unreadable) — the fail-closed signal that an
-    unreadable source must never silently degrade to an empty ban list. A missing
-    config file is a clean no-op (a machine with no teatree config).
+    A non-empty *env_value* (or the ``T3_BANNED_TERMS`` process env) wins,
+    comma-split. Else the ``banned_terms`` DB list, which RAISES
+    :class:`BannedTermsUnsetError` when the row is genuinely unset — the
+    fail-closed signal that an unreadable source must never silently degrade to
+    an empty ban list. An explicit ``banned_terms = []`` is a deliberate no-op
+    and returns ``()``.
+
+    *config_path* is accepted for the legacy pre-DB caller (``scripts/privacy_scan``)
+    and is not consulted — the term list is DB-home now. *db_path* overrides the
+    DB path (else the canonical DB / ``T3_CONFIG_DB``).
     """
-    if env_value.strip():
-        return tuple(t.strip() for t in env_value.split(",") if t.strip())
-    if not config_path.is_file():
-        return ()
-    return _load_terms(config_path)
+    del config_path  # legacy pre-DB arg; the term list is DB-home now
+    env = env_value if env_value.strip() else os.environ.get(_TERMS_ENV, "")
+    if env.strip():
+        return tuple(t.strip() for t in env.split(",") if t.strip())
+    terms = _db_array(_TERMS_KEY, db_path)
+    if terms is None:
+        raise BannedTermsUnsetError.for_key(_TERMS_KEY, _TERMS_ENV)
+    return terms
 
 
-def _load_allowlist(config: Path) -> tuple[str, ...]:
-    """Return the ``banned_terms_allowlist`` carve-out array from the TOML config.
+def _load_allowlist(db_path: Path | None = None) -> tuple[str, ...]:
+    """Return the DB-home ``banned_terms_allowlist`` carve-out array.
 
     The allow-list names the company's OWN identifiers (synthetic example:
     ``myorg-engineering`` / ``myorg-product``, internal-URL namespaces) that are
@@ -131,10 +126,11 @@ def _load_allowlist(config: Path) -> tuple[str, ...]:
     entry's token-run is removed from a line before banned-term matching, so a
     shorter banned term (a bare org slug) can no longer surface inside a longer
     company-owned identifier. Unlike ``banned_terms`` the allow-list is OPTIONAL:
-    an absent key defaults to empty (preserving the prior behaviour), never a
-    raise.
+    an absent row defaults to empty (preserving the prior behaviour), never a
+    raise. Reads the canonical ``ConfigSetting`` store via
+    :mod:`teatree.config.cold_reader`.
     """
-    return _load_array(config, _ALLOWLIST_KEY) or ()
+    return _db_array(_ALLOWLIST_KEY, db_path) or ()
 
 
 def staged_added_lines(repo: Path, file: str) -> list[str] | None:
@@ -229,7 +225,6 @@ def _full_file_report(files: list[str], terms: tuple[str, ...], allowlist: tuple
 
 def main(argv: list[str]) -> int:  # pragma: no cover — CLI entry point (orchestrates tested helpers)
     parser = argparse.ArgumentParser(description="Reject files containing banned terms.")
-    parser.add_argument("--config", required=True, help="TOML file with a banned_terms array.")
     parser.add_argument(
         "--diff-only",
         action="store_true",
@@ -239,21 +234,18 @@ def main(argv: list[str]) -> int:  # pragma: no cover — CLI entry point (orche
     parser.add_argument("files", nargs="*", help="Files to scan.")
     args = parser.parse_args(argv)
 
-    config = Path(args.config).expanduser()
-    if not config.is_file():
-        return 0  # no config file ⇒ no-op (a machine with no teatree config)
     try:
-        terms = _load_terms(config)
+        terms = resolve_banned_terms()
     except BannedTermsUnsetError as exc:
-        # The config EXISTS but omits banned_terms — fail LOUD (exit 2, the
-        # scanner's "could not run" code) rather than silently scan as empty:
-        # an unset list is indistinguishable from a load bug. An
-        # explicit ``banned_terms = []`` does not raise and is a clean no-op.
+        # The term list is genuinely UNSET (no banned_terms row AND no env) —
+        # fail LOUD (exit 2, the scanner's "could not run" code) rather than
+        # silently scan as empty: an unset list is indistinguishable from a load
+        # bug. An explicit ``banned_terms = []`` does not raise and is a no-op.
         sys.stderr.write(f"{exc}\n")
         return 2
     if not terms:
         return 0  # explicit empty list ⇒ deliberate no-op
-    allowlist = _load_allowlist(config)
+    allowlist = _load_allowlist()
 
     if args.diff_only:
         report = _diff_only_report(args.files, terms, Path.cwd(), allowlist)

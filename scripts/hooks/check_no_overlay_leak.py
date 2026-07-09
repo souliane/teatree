@@ -2,17 +2,17 @@
 
 BLUEPRINT § 1 ("Core stays generic"): no overlay-specific names appear
 in the scanned roots. Per-overlay specifics live in the overlay package
-and in `~/.teatree.toml`.
+and in the DB-home `ConfigSetting` store (PRIVATE to the operator).
 
 Two passes run over each scanned file.
 
 Pass 1 — configured term list. Forbidden tokens loaded at runtime from
-`$TEATREE_OVERLAY_LEAK_TERMS` (comma-separated) or from `~/.teatree.toml`
-under `[overlay_leak].terms`. The public repo ships with an empty default;
-each operator extends it locally. Whole-token matching
+`$TEATREE_OVERLAY_LEAK_TERMS` (comma-separated) or from the DB-home
+`overlay_leak_terms` `ConfigSetting` row. The public repo ships with an empty
+default; each operator extends it locally. Whole-token matching
 (`teatree.hooks.term_match`) is used so a generic word that merely contains
 a configured term as a substring does not trigger — the SAME matcher the
-`[teatree].banned_terms` posting gate uses.
+`banned_terms` posting gate uses.
 
 Pass 2 — opaque Slack/forge ID (always-on). A real-shaped channel/DM/user/
 app/team id (`C0`/`D0`/`U0`/`A0`/`T0`) is an internal reference that carries
@@ -34,9 +34,9 @@ Exit codes:
 import os
 import subprocess
 import sys
-import tomllib
 from pathlib import Path
 
+from teatree.config import cold_reader
 from teatree.hooks.opaque_id import find_opaque_ids
 from teatree.hooks.term_match import matched_term
 
@@ -45,21 +45,18 @@ _MISCONFIGURED_EXIT_CODE = 2
 
 
 def _load_terms() -> tuple[str, ...]:
-    """Load forbidden tokens from env var or ~/.teatree.toml."""
+    """Load forbidden tokens from the env override or the DB-home overlay_leak_terms list.
+
+    ``TEATREE_OVERLAY_LEAK_TERMS`` (comma-separated) wins; otherwise the
+    canonical ``overlay_leak_terms`` ``ConfigSetting`` row (read Django-free via
+    :mod:`teatree.config.cold_reader`). Empty (default) leaves the term-list pass
+    inert — the always-on opaque-ID pass still runs.
+    """
     env = os.environ.get("TEATREE_OVERLAY_LEAK_TERMS", "")
     if env:
         return tuple(t.strip() for t in env.split(",") if t.strip())
-
-    config_path = Path.home() / ".teatree.toml"
-    if config_path.is_file():
-        try:
-            data = tomllib.loads(config_path.read_text(encoding="utf-8"))
-        except (OSError, tomllib.TOMLDecodeError):
-            return ()
-        terms = data.get("overlay_leak", {}).get("terms", [])
-        if isinstance(terms, list):
-            return tuple(str(t) for t in terms if isinstance(t, str) and t.strip())
-    return ()
+    terms = cold_reader.list_setting("overlay_leak_terms", default=[])
+    return tuple(str(t) for t in terms if isinstance(t, str) and t.strip())
 
 
 OVERLAY_LEAK_TERMS: tuple[str, ...] = _load_terms()
@@ -171,7 +168,7 @@ def main(argv: list[str]) -> int:
     if require_terms and not OVERLAY_LEAK_TERMS:
         print(
             "Overlay-leak gate: MISCONFIGURED — term list INERT under --require-terms: "
-            "neither TEATREE_OVERLAY_LEAK_TERMS nor [overlay_leak].terms is populated."
+            "neither TEATREE_OVERLAY_LEAK_TERMS nor the overlay_leak_terms DB row is populated."
         )
         print("Configure the overlay-leak term list so the scan actually guards core.")
         return _MISCONFIGURED_EXIT_CODE
@@ -181,7 +178,7 @@ def main(argv: list[str]) -> int:
         # green that hides an unpopulated term list (#1591 sibling).
         print(
             "Overlay-leak gate: WARNING — term list INERT: neither "
-            "TEATREE_OVERLAY_LEAK_TERMS nor [overlay_leak].terms is populated "
+            "TEATREE_OVERLAY_LEAK_TERMS nor the overlay_leak_terms DB row is populated "
             "(the opaque-ID pass still runs; populate the term list to guard "
             "overlay names too)."
         )

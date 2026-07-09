@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 # Skills that conflict with teatree's multi-repo architecture.
 # Always excluded — not user-configurable.  Users can add extra
-# exclusions via ``excluded_skills`` in ``~/.teatree.toml``.
+# exclusions via the ``excluded_skills`` setting in the DB config store.
 CORE_EXCLUDED_SKILLS = ["using-superpowers", "using-git-worktrees"]
 
 

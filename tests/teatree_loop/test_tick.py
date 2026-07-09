@@ -393,24 +393,18 @@ def test_identity_alias_groups_reads_overlay_config_first(
     )
 
 
-def test_identity_alias_groups_falls_through_to_toml_override(
-    tmp_path: Path,
+def test_identity_alias_groups_falls_through_to_registry_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """No live config → reads ``[overlays.<name>] identity_aliases`` from TOML.
+    """No live config → reads ``identity_aliases`` from the overlays registry override.
 
-    TOML-only overlays (registered via ``[overlays.<name>]`` without a
-    Python class) never populate ``OverlayConfig``; the helper falls back
-    to ``discover_overlays`` overrides so the grouping still resolves.
+    A registry overlay entry without a Python class never populates
+    ``OverlayConfig``; the helper falls back to ``discover_overlays``
+    overrides so the grouping still resolves.
     """
     from teatree.config import OverlayEntry  # noqa: PLC0415
     from teatree.loop.tick import _identity_alias_groups_for_overlay  # noqa: PLC0415
 
-    config_path = tmp_path / ".teatree.toml"
-    config_path.write_text("[teatree]\n", encoding="utf-8")
-    import teatree.config as _config  # noqa: PLC0415
-
-    monkeypatch.setattr("teatree.loop.tick.load_config", lambda: _config.load_config(config_path))
     monkeypatch.setattr(
         "teatree.loop.tick_resolvers.discover_overlays",
         lambda: [
@@ -966,71 +960,64 @@ def test_repos_from_toml_extracts_path_and_workspace_repos(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from types import SimpleNamespace  # noqa: PLC0415
+    from unittest.mock import patch  # noqa: PLC0415
+
     from teatree.loop.tick import _repos_from_toml  # noqa: PLC0415
 
-    toml_path = tmp_path / ".teatree.toml"
-    toml_path.write_text(
-        '[teatree]\nworkspace_dir = "~/ws"\n'
-        '[overlays.acme]\npath = "~/code/acme"\nworkspace_repos = ["acme/api", "acme/web"]\n'
-        "[overlays.broken]\n",
-        encoding="utf-8",
-    )
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HOME", str(tmp_path))
-
-    repos = _repos_from_toml()
+    overlays = {
+        "acme": {"path": "~/code/acme", "workspace_repos": ["acme/api", "acme/web"]},
+        "broken": {},
+    }
+    fake_cfg = SimpleNamespace(raw={"overlays": overlays})
+    with patch("teatree.config.load_config", return_value=fake_cfg):
+        repos = _repos_from_toml()
 
     assert repos["acme"] == Path.home() / "code" / "acme"
     assert repos["api"].name == "api"
     assert repos["web"].name == "web"
 
 
-def test_repos_from_toml_returns_empty_on_invalid_toml(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_repos_from_toml_returns_empty_without_overlays() -> None:
+    from types import SimpleNamespace  # noqa: PLC0415
+    from unittest.mock import patch  # noqa: PLC0415
+
     from teatree.loop.tick import _repos_from_toml  # noqa: PLC0415
 
-    toml_path = tmp_path / ".teatree.toml"
-    toml_path.write_text("not = valid = toml = at = all", encoding="utf-8")
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-
-    assert _repos_from_toml() == {}
+    fake_cfg = SimpleNamespace(raw={})
+    with patch("teatree.config.load_config", return_value=fake_cfg):
+        assert _repos_from_toml() == {}
 
 
-def test_canonical_overlay_names_maps_toml_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_canonical_overlay_names_maps_registry_keys() -> None:
+    from types import SimpleNamespace  # noqa: PLC0415
     from unittest.mock import patch  # noqa: PLC0415
 
     from teatree.loop.tick import _canonical_overlay_names  # noqa: PLC0415
 
-    toml_path = tmp_path / ".teatree.toml"
-    toml_path.write_text(
-        '[teatree]\nworkspace_dir = "~/ws"\n[overlays.teatree]\n[overlays.acme]\n',
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    fake_cfg = SimpleNamespace(raw={"overlays": {"teatree": {}, "acme": {}}})
     overlays = {"t3-teatree": object(), "acme": object()}
-    with patch("teatree.core.overlay_loader.get_all_overlays", return_value=overlays):
+    with (
+        patch("teatree.config.load_config", return_value=fake_cfg),
+        patch("teatree.core.overlay_loader.get_all_overlays", return_value=overlays),
+    ):
         mapping = _canonical_overlay_names()
     assert mapping == {"teatree": "t3-teatree"}
 
 
-def test_canonical_overlay_names_returns_empty_without_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from teatree.loop.tick import _canonical_overlay_names  # noqa: PLC0415
-
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    assert _canonical_overlay_names() == {}
-
-
-def test_canonical_overlay_names_handles_invalid_toml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_canonical_overlay_names_returns_empty_without_overlays() -> None:
+    from types import SimpleNamespace  # noqa: PLC0415
     from unittest.mock import patch  # noqa: PLC0415
 
     from teatree.loop.tick import _canonical_overlay_names  # noqa: PLC0415
 
-    toml_path = tmp_path / ".teatree.toml"
-    toml_path.write_text("not = valid = toml = at = all\n", encoding="utf-8")
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    with patch("teatree.core.overlay_loader.get_all_overlays", return_value={"t3-teatree": object()}):
+    fake_cfg = SimpleNamespace(raw={})
+    with (
+        patch("teatree.config.load_config", return_value=fake_cfg),
+        patch("teatree.core.overlay_loader.get_all_overlays", return_value={"t3-teatree": object()}),
+    ):
         assert _canonical_overlay_names() == {}
 
 

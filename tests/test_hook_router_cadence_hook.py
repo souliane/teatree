@@ -3,12 +3,12 @@
 ``_tick_meta_stale`` (staleness window = cadence*2) and the
 loop-registration cron-minutes computation must resolve the loop cadence
 through the shared ``teatree.config.cadence_seconds`` resolver, so they
-honor ``~/.teatree.toml`` ``loop_cadence_seconds`` and never diverge from
+honor the DB-home ``loop_cadence_seconds`` setting and never diverge from
 the real slot cadence registered by ``t3 loop``.
 
 Integration-style: real ``hook_router`` helper, real ``teatree.config``
-loader pointed at a tmp ``.teatree.toml``; only the clock-dependent
-tick-meta mtime is staged on disk.
+resolver reading the DB-home ``loop_cadence_seconds`` row; only the
+clock-dependent tick-meta mtime is staged on disk.
 """
 
 import os

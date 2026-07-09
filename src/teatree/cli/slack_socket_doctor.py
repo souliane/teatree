@@ -21,7 +21,6 @@ funnelled through a patchable module-level name so tests never touch the network
 
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path
 
 import httpx
 
@@ -85,9 +84,9 @@ def _mint_app_token_message(app_id: str, pass_key: str) -> str:
     )
 
 
-def _check_app_token(config_path: Path, overlay: str) -> list[SocketModeFinding]:
-    token_ref = read_overlay_field(config_path, overlay, "slack_token_ref")
-    app_id = resolve_overlay_app_id(config_path, overlay)
+def _check_app_token(overlay: str) -> list[SocketModeFinding]:
+    token_ref = read_overlay_field(overlay, "slack_token_ref")
+    app_id = resolve_overlay_app_id(overlay)
     if not token_ref:
         return [SocketModeFinding(overlay, Level.WARN, "no slack_token_ref configured — run `t3 setup slack-bot`.")]
     slot = app_token_slot(token_ref)
@@ -154,8 +153,8 @@ def _no_config_token_message(app_id: str, gaps: ManifestSocketGaps) -> str:
     )
 
 
-def _check_manifest(config_path: Path, overlay: str) -> list[SocketModeFinding]:
-    app_id = resolve_overlay_app_id(config_path, overlay)
+def _check_manifest(overlay: str) -> list[SocketModeFinding]:
+    app_id = resolve_overlay_app_id(overlay)
     if not app_id:
         message = "no slack_app_id — cannot inspect the manifest; run `t3 setup slack-bot`."
         return [SocketModeFinding(overlay, Level.WARN, message)]
@@ -177,25 +176,17 @@ def _check_manifest(config_path: Path, overlay: str) -> list[SocketModeFinding]:
     return [SocketModeFinding(overlay, Level.OK, _fixed_message(gaps, app_id))]
 
 
-def check_slack_socket_mode(config_path: Path | None = None) -> SocketModeOutcome:
+def check_slack_socket_mode() -> SocketModeOutcome:
     """Validate + auto-fix Socket Mode readiness for every Slack overlay.
 
-    ``config_path`` defaults to the canonical ``CONFIG_PATH`` resolved at call
-    time (not an import-frozen constant), so a staged ``$HOME`` in tests reads
-    the sandboxed config — no Slack overlays there means no findings and no
-    live calls.
+    Sources the Slack-backed overlays from the DB ``overlays`` registry — an
+    install with none (the common case) yields no findings and no live calls.
     """
-    if config_path is not None:
-        resolved = config_path
-    else:
-        from teatree.config import CONFIG_PATH  # noqa: PLC0415 — cold import, matches sibling doctor checks
-
-        resolved = CONFIG_PATH
     findings: list[SocketModeFinding] = []
-    for overlay in _slack_overlays(resolved):
+    for overlay in _slack_overlays():
         try:
-            findings.extend(_check_app_token(resolved, overlay))
-            findings.extend(_check_manifest(resolved, overlay))
+            findings.extend(_check_app_token(overlay))
+            findings.extend(_check_manifest(overlay))
         except Exception as exc:  # noqa: BLE001 — one overlay's failure must not abort the rest
             findings.append(
                 SocketModeFinding(overlay, Level.WARN, f"Socket Mode check crashed: {exc.__class__.__name__}: {exc}")

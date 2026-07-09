@@ -163,20 +163,15 @@ class TestReviewPostDraftNoteBootstrapsDjango:
     """
 
     def test_post_draft_note_does_not_raise_improperly_configured(self, tmp_path: Path) -> None:
-        # An empty teatree.toml gate-off config so we exercise the gate
-        # chokepoint without needing a recorded approval row.
-        cfg = tmp_path / ".teatree.toml"
-        cfg.write_text('[teatree]\non_behalf_post_mode = "immediate"\n', encoding="utf-8")
-
+        # Gate off via the ``T3_ON_BEHALF_POST_MODE`` env override (DB-home mode,
+        # legacy file tier removed) so we exercise the gate chokepoint without a
+        # recorded approval row.
         probe = (
             "import os\n"
             f"os.environ['HOME'] = {str(tmp_path)!r}\n"
+            "os.environ['T3_ON_BEHALF_POST_MODE'] = 'immediate'\n"
             "from unittest.mock import patch\n"
             "from typer.testing import CliRunner\n"
-            "import teatree.config as cfg_mod\n"
-            f"cfg_mod.CONFIG_PATH = {str(cfg)!r}\n"
-            "from pathlib import Path as _P\n"
-            f"cfg_mod.CONFIG_PATH = _P({str(cfg)!r})\n"
             "from teatree.cli import app\n"
             "from teatree.cli.review import ReviewService\n"
             "\n"

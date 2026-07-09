@@ -183,27 +183,24 @@ class TestDefaultBranch:
 
 
 class TestOverlaysRegistry:
+    """``_overlays_registry`` reads the DB ``overlays`` row only (no config-file fallback)."""
+
     def test_db_row_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
         row = {"o": {"protected_branches": ["x"]}}
         monkeypatch.setattr("teatree.config.cold_reader.read_setting", lambda _key: row)
         assert env._load_protected_branches() >= {"main", "master", "x"}
 
-    def test_db_error_falls_back_to_toml(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_db_error_yields_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def _boom(_key: str) -> object:
             raise RuntimeError
 
         monkeypatch.setattr("teatree.config.cold_reader.read_setting", _boom)
-        monkeypatch.setenv("HOME", str(tmp_path))
-        (tmp_path / ".teatree.toml").write_text('[overlays.o]\nprotected_branches = ["dev"]\n')
-        assert "dev" in env._load_protected_branches()
-
-    def test_missing_toml_is_empty(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr("teatree.config.cold_reader.read_setting", lambda _key: None)
-        monkeypatch.setenv("HOME", str(tmp_path))
         assert env._load_protected_branches() == {"main", "master"}
 
-    def test_broken_toml_is_empty(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_absent_db_row_is_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("teatree.config.cold_reader.read_setting", lambda _key: None)
-        monkeypatch.setenv("HOME", str(tmp_path))
-        (tmp_path / ".teatree.toml").write_text("this is not = valid = toml [[[")
+        assert env._load_protected_branches() == {"main", "master"}
+
+    def test_non_dict_db_value_is_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("teatree.config.cold_reader.read_setting", lambda _key: "not-a-dict")
         assert env._load_protected_branches() == {"main", "master"}

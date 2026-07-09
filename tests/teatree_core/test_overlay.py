@@ -293,10 +293,11 @@ class TestOverlayConfig(TestCase):
 
     def test_entry_point_overlays_receive_toml_overrides(self) -> None:
         # _discover_overlays must call apply_toml_overrides on every
-        # entry-point overlay so [overlays.<name>] in ~/.teatree.toml wins
-        # over the overlay's settings module — same precedence as TOML-only
-        # overlays. Without this, every OverlayConfig subclass would have
-        # to opt in via super().__init__(overlay_name=...).
+        # entry-point overlay so the DB-home overlays registry entry
+        # ([overlays.<name>]) wins over the overlay's settings module — same
+        # precedence as registry-only overlays. Without this, every
+        # OverlayConfig subclass would have to opt in via
+        # super().__init__(overlay_name=...).
         from teatree.core.overlay_loader import _discover_overlays  # noqa: PLC0415
 
         # Use the existing DummyOverlay registered above as the entry-point target.

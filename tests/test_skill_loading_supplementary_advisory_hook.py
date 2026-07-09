@@ -1,6 +1,6 @@
 r"""Supplementary keyword skills must not hard-block tool calls (#1683).
 
-The supplementary keyword config (``~/.teatree-skills.yml``) maps loose
+The supplementary keyword config (``$HOME/.teatree-skills.yml``) maps loose
 regexes to skill names — e.g. ``ac-adopting-ruff: '\b(ruff|...)\b'``. The
 bare ``\bruff\b`` alternative matches ANY mention of the word ``ruff`` in a
 genuine prompt ("can you run ruff check on the changed files"), not just the
@@ -21,7 +21,7 @@ keep enforcing load-first. A skill that is ALSO an intent/framework skill
 stays in the demand set; only supplementary-ONLY skills are demoted.
 
 Integration-style: the real ``suggest_skills`` engine, a real trigger index
-built from fixture ``SKILL.md`` files, a real ``~/.teatree-skills.yml``-shaped
+built from fixture ``SKILL.md`` files, a real ``$HOME/.teatree-skills.yml``-shaped
 config on disk, and the real ``handle_user_prompt_submit`` pending writer.
 """
 

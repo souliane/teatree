@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 
 from teatree.cli.review import ReviewService
+from teatree.config import OnBehalfPostMode
 from teatree.core.models import ConfigSetting, OnBehalfApproval, OutboundClaim
 
 # ast-grep-ignore: ac-django-no-pytest-django-db
@@ -20,10 +21,6 @@ pytestmark = pytest.mark.django_db
 
 def _gate_off(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # ``on_behalf_post_mode`` is DB-home (#1775): IMMEDIATE turns the gate off.
-    # A TOML key would be ignored on read.
-    cfg = tmp_path / ".teatree.toml"
-    cfg.write_text("[teatree]\n", encoding="utf-8")
-    monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
     ConfigSetting.objects.set_value("on_behalf_post_mode", "immediate")
 
 
@@ -198,9 +195,8 @@ class TestApprovedRecordedReviewRecordsAClaim:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        cfg = tmp_path / ".teatree.toml"
-        cfg.write_text("[teatree]\nask_before_post_on_behalf = true\n", encoding="utf-8")
-        monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+        # Gate ON (approval-required): DRAFT_OR_ASK routes the post through the draft path.
+        ConfigSetting.objects.set_value("on_behalf_post_mode", OnBehalfPostMode.DRAFT_OR_ASK.value)
         # After #1207 the default-draft path is gated on ``post_draft_note``
         # (not ``post_comment``) — that's the action the recorded approval
         # must name to satisfy the gate on the live, default-draft branch.

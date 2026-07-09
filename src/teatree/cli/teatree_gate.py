@@ -8,31 +8,27 @@ misdetection, every sub-agent) can be locked out of Bash entirely.
 
 This module backs the always-reachable escape hatch. ``t3 <overlay> gate
 disable`` flips the durable ``orchestrator_bash_gate_enabled`` kill-switch — DB-home
-since eliminate-~/.teatree.toml, so it writes the canonical config DB via the
-Django-free cold writer (falling back to ``[teatree]`` in ``~/.teatree.toml`` when
-no DB tier exists yet, e.g. a fresh pre-``t3 setup`` cold state) and the reader
-resolves it DB-first. The cold writer needs no Django, so the self-rescue still works
-when the heavier overlay machinery is wedged.
+(every setting lives in the canonical config DB), so it writes and reads that DB
+via the Django-free cold writer/reader. The cold writer needs no Django, so the
+self-rescue still works when the heavier overlay machinery is wedged.
 The command is unconditionally runnable EVEN WHEN the gate is enabled, because
 the gate's heavy-Bash denylist (``_ORCHESTRATOR_HEAVY_BASH_RE``) does not match
 a ``t3 …`` command, and ``t3 …`` invocations are the orchestration prefix the
-gate is built to allow. The kill-switch lives out-of-repo so it survives
-``t3 update``.
+gate is built to allow.
 
 A second gate rides the same self-rescue surface: the skill-loading-on-task
 gate (``handle_enforce_skill_loading_on_task_create``, [#1488]) can deny a
 fanned-out ``TaskCreated`` until the matching teatree skill is loaded. If its
 detection ever misbehaves, ``t3 <overlay> gate skill-loading disable`` flips the
-``[teatree] skill_loading_gate_enabled = false`` kill-switch — reachable for the
-same reason (``t3 …`` is the orchestration prefix every gate allows; the
-``TaskCreated`` gate does not govern Bash at all).
+``skill_loading_gate_enabled`` kill-switch — reachable for the same reason
+(``t3 …`` is the orchestration prefix every gate allows; the ``TaskCreated``
+gate does not govern Bash at all).
 
-This is a pure-Python local read/modify/write of ``~/.teatree.toml`` — it does
-NOT route through Django or an overlay ``manage.py`` subprocess, so it stays
+Every read/write is a Django-free stdlib access of the canonical config DB — it
+does NOT route through Django or an overlay ``manage.py`` subprocess, so it stays
 runnable even when the heavier overlay machinery is wedged.
 """
 
-import tomllib
 from pathlib import Path
 
 import typer
@@ -53,43 +49,22 @@ STANDING_GOAL_GATE_KEY = "standing_goal_stop_gate_enabled"
 # default and reads ``is True`` — it must NEVER relax a gate by accident, only
 # by an explicit operator opt-in. When ON, every OVER-DENY gate flips to
 # fail-open at once; the PUBLIC-egress leak gate ignores it (fail-closed always).
-# The ``danger_`` prefix makes a forgotten override in ``~/.teatree.toml``
-# unmissable — this switch disables protective gates wholesale.
+# The ``danger_`` prefix makes a forgotten ``true`` unmissable — this switch
+# disables protective gates wholesale.
 DANGER_GATE_FAIL_OPEN_KEY = "danger_gate_fail_open"
 
 
-def _config_path() -> Path:
-    return Path.home() / ".teatree.toml"
-
-
 def _gate_key_is_enabled(key: str) -> bool:
-    """Resolve ``[teatree] <key>`` (default True), failing OPEN to enabled.
+    """Resolve the DB-home ``<key>`` gate (default True), failing OPEN to enabled.
 
-    Mirrors the hook layer's gate resolution: the gate is enabled unless an explicit
-    ``false`` is recorded. For a cold-hook gate key the resolution is DB-first then TOML —
-    matching the flipped hook reader (config-unify PR3) so ``t3 teatree gate status`` reports what
-    the gate actually does: a real DB bool wins, otherwise it falls through to the
-    ``[teatree]`` TOML value. Fails OPEN to enabled on a missing/broken config + DB so the
-    reported status matches the gate's own fail-open posture.
+    The gate is enabled unless an explicit ``false`` is recorded in the canonical
+    config DB. Reads via the Django-free cold reader, so ``t3 teatree gate status``
+    reports what the flipped hook reader sees. Fails OPEN to enabled on a
+    missing/broken DB so the reported status matches the gate's own fail-open posture.
     """
-    if _is_db_tier_gate_key(key):
-        from teatree.config import cold_reader  # noqa: PLC0415
+    from teatree.config import cold_reader  # noqa: PLC0415
 
-        db_value = cold_reader.read_setting(key, scope="")
-        if isinstance(db_value, bool):
-            return db_value
-    config_path = _config_path()
-    if not config_path.is_file():
-        return True
-    try:
-        with config_path.open("rb") as f:
-            config = tomllib.load(f)
-    except (OSError, tomllib.TOMLDecodeError):
-        return True
-    teatree = config.get("teatree") if isinstance(config, dict) else None
-    if not isinstance(teatree, dict):
-        return True
-    return teatree.get(key) is not False
+    return cold_reader.bool_setting(key, default=True)
 
 
 def gate_is_enabled() -> bool:
@@ -125,93 +100,42 @@ def memory_recall_gate_is_enabled() -> bool:
 def danger_gate_fail_open_is_enabled() -> bool:
     """Resolve the master fail-open switch (``DANGER_GATE_FAIL_OPEN_KEY``, default False).
 
-    Reads ``[teatree] danger_gate_fail_open`` and returns True ONLY when it is
-    an explicit ``true``. Fails CLOSED to disabled (the protective default) on a
-    missing/broken config or a non-table ``teatree`` section — the inverse
-    posture of :func:`gate_is_enabled`, because accidentally relaxing every
-    over-deny gate is exactly the failure this switch must never cause. The
-    over-deny gates consult this; the PUBLIC-egress leak gate never does.
+    Reads the DB-home ``danger_gate_fail_open`` setting and returns True ONLY when
+    it is an explicit ``true``. Fails CLOSED to disabled (the protective default) on
+    a missing/broken DB — the inverse posture of :func:`gate_is_enabled`, because
+    accidentally relaxing every over-deny gate is exactly the failure this switch
+    must never cause. The over-deny gates consult this; the PUBLIC-egress leak gate
+    never does.
     """
-    config_path = _config_path()
-    if not config_path.is_file():
-        return False
-    try:
-        with config_path.open("rb") as f:
-            config = tomllib.load(f)
-    except (OSError, tomllib.TOMLDecodeError):
-        return False
-    teatree = config.get("teatree") if isinstance(config, dict) else None
-    if not isinstance(teatree, dict):
-        return False
-    return teatree.get(DANGER_GATE_FAIL_OPEN_KEY) is True
+    from teatree.config import cold_reader  # noqa: PLC0415
 
-
-def _is_db_tier_gate_key(key: str) -> bool:
-    """Whether *key*'s authoritative tier is the canonical DB (vs TOML-only).
-
-    Two families resolve from the DB: the seeded cold-hook gates (``skill_loading`` /
-    ``plan_edit`` / ``config_overwrite`` / ``completion_claim`` / ``memory_recall``,
-    in ``COLD_HOOK_SETTINGS``) and — since eliminate-~/.teatree.toml — the DB-home
-    ``UserSettings`` gate ``orchestrator_bash_gate_enabled`` (``SETTING_HOMES`` ==
-    ``DB``). Both are seeded into the canonical DB by ``t3 setup`` and read DB-first,
-    so ``t3 <overlay> gate`` must read/write that SAME DB tier or its toggle is
-    shadowed by the seeded row. ``danger_gate_fail_open`` is neither a cold-hook key
-    nor a ``UserSettings`` field, so it stays TOML-only — the always-available
-    Bash/gate self-rescue. Membership is derived from the live registries (inline
-    import — this module is pulled by ``teatree.config`` at bootstrap) so it can
-    never drift. A genuinely absent DB tier (fresh, pre-``t3 setup`` cold state)
-    still falls back to the ``~/.teatree.toml`` write/read in the callers below.
-    """
-    from teatree.config import COLD_HOOK_SETTINGS, SETTING_HOMES, SettingHome  # noqa: PLC0415
-
-    return key in COLD_HOOK_SETTINGS or SETTING_HOMES.get(key) is SettingHome.DB
+    return cold_reader.bool_setting(DANGER_GATE_FAIL_OPEN_KEY, default=False)
 
 
 def _set_gate_key(key: str, *, enabled: bool) -> Path:
-    """Persist ``<key> = <enabled>`` to the tier the gate's reader consults; return that destination.
+    """Persist ``<key> = <enabled>`` to the canonical config DB; return the DB path.
 
-    For a cold-hook gate key the flipped reader is DB-first (config-unify PR3), so the write
-    goes to the canonical DB via the Django-free cold writer — making the toggle authoritative
-    over a seeded row, and the returned destination is the canonical DB path. A present-but-
-    locked DB (``WRITE_FAILED``) still returns the DB path WITHOUT a TOML fallback: the DB row
-    stays authoritative, so the caller's read-back-verify surfaces the locked write rather than
-    a dead, shadowed TOML row. Only a genuinely absent DB tier (a fresh, pre-``t3 setup`` cold
-    state) or a TOML-home gate key falls through to the ``~/.teatree.toml`` write.
+    Every gate key is DB-home, so the write goes to the canonical DB via the
+    Django-free cold writer and the returned destination is the canonical DB path.
+    A missing DB tier or a locked write is caught by the caller's read-back-verify —
+    the toggle does not silently land somewhere the reader ignores.
     """
-    if _is_db_tier_gate_key(key):
-        from teatree.config import cold_writer  # noqa: PLC0415
+    from teatree.config import cold_writer  # noqa: PLC0415
 
-        if cold_writer.write_setting(key, enabled) is not cold_writer.WriteResult.NO_DB_TIER:
-            return cold_writer.canonical_config_db()
-
-    # ``tomlkit`` is imported inline (matching ``slack_setup``) so loading this
-    # module — pulled transitively by ``teatree.config`` on every CLI bootstrap
-    # — never eagerly imports the toml-preserving dep.
-    import tomlkit  # noqa: PLC0415
-    from tomlkit import items as tomlkit_items  # noqa: PLC0415
-
-    config_path = _config_path()
-    document = tomlkit.parse(config_path.read_text(encoding="utf-8")) if config_path.is_file() else tomlkit.document()
-    teatree = document.get("teatree")
-    if not isinstance(teatree, tomlkit_items.Table):
-        teatree = tomlkit.table()
-        document["teatree"] = teatree
-    teatree[key] = enabled
-    config_path.write_text(tomlkit.dumps(document), encoding="utf-8")
-    return config_path
+    cold_writer.write_setting(key, enabled)
+    return cold_writer.canonical_config_db()
 
 
 def _write_gate_and_verify(key: str, *, enabled: bool) -> Path:
-    """Write ``<key>=<enabled>``, verify the toggle actually took, and return the real destination.
+    """Write ``<key>=<enabled>``, verify the toggle actually took, and return the DB destination.
 
-    After the write, read the gate back through :func:`_gate_key_is_enabled` — DB-first for a
-    cold-hook key, exactly as the flipped hook reader resolves it. If the observed state
-    disagrees with *enabled*, the canonical DB was locked (or the write otherwise failed) and
-    the toggle did NOT take: raise ``typer.Exit(1)`` with a loud message so the command never
-    prints a success line over a stale, still-effective gate. The returned destination lets the
-    caller report where the value ACTUALLY landed (the canonical DB vs the ``~/.teatree.toml``
-    fallback). Catching the mismatch by read-back rather than by classifying the write error
-    covers EVERY failure mode, regardless of cause.
+    After the write, read the gate back through :func:`_gate_key_is_enabled` (the same
+    canonical-DB read the flipped hook reader resolves). If the observed state disagrees
+    with *enabled*, the canonical DB was missing or locked (or the write otherwise
+    failed) and the toggle did NOT take: raise ``typer.Exit(1)`` with a loud message so
+    the command never prints a success line over a stale, still-effective gate. Catching
+    the mismatch by read-back rather than by classifying the write error covers EVERY
+    failure mode, regardless of cause.
     """
     destination = _set_gate_key(key, enabled=enabled)
     if _gate_key_is_enabled(key) != enabled:

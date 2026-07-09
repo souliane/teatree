@@ -51,9 +51,9 @@ Each ticket gets its own directory with one git worktree per affected repo and a
 
 None — this is the foundation skill.
 
-## Configuration (`~/.teatree`)
+## Configuration
 
-Key variables used by this skill (see `/t3:setup` for the full config reference):
+Key environment variables used by this skill (see `/t3:setup` for the full config reference):
 
 | Variable | Required | Purpose |
 |----------|----------|---------|
@@ -70,8 +70,7 @@ docker stack, language servers, browsers, and CI processes. On a memory-
 constrained host, running two stacks in parallel can OOM the machine and
 abort both. The DB-home setting `max_concurrent_local_stacks` caps how
 many distinct tickets can be in those states at once for a given overlay
-— set it in the `ConfigSetting` store (a value left in `~/.teatree.toml`
-is ignored on read):
+— set it in the `ConfigSetting` store:
 
 ```bash
 t3 <overlay> config_setting set max_concurrent_local_stacks 1   # 0 = unbounded (default, no behaviour change)
@@ -103,7 +102,7 @@ Teatree stores runtime data (ticket cache, PR reminders, followup state) in:
 $T3_DATA_DIR  (default: ${XDG_DATA_HOME:-$HOME/.local/share}/teatree)
 ```
 
-`~/.teatree` is the **config file** — never use it as a data directory. Set `T3_DATA_DIR` in `~/.teatree` to override the default location.
+`T3_DATA_DIR` (an environment variable) overrides the default data-directory location — it is data storage, not config; teatree's settings live in the DB `ConfigSetting` store.
 
 ## Setup Verification
 
@@ -287,11 +286,11 @@ Before any edit, confirm you are not in the main clone: `git rev-parse --show-to
 
 #### Urgent relief from a misbehaving gate — kill switch, never a live clone edit
 
-When a teatree gate running in the main clone is **actively blocking you** and you need immediate relief while the durable fix is prepared in a worktree, the answer is the **out-of-repo kill switch**, not a live edit to the clone's `src/` or `hooks/`. The kill switch flips a config flag in `~/.teatree.toml` — it touches no tracked file, so it gives instant relief without polluting the shared base:
+When a teatree gate running in the main clone is **actively blocking you** and you need immediate relief while the durable fix is prepared in a worktree, the answer is the **out-of-repo kill switch**, not a live edit to the clone's `src/` or `hooks/`. The kill switch flips a config flag in the DB `ConfigSetting` store (out-of-repo) — it touches no tracked file, so it gives instant relief without polluting the shared base:
 
 ```bash
 # RIGHT — disable the gate out-of-repo (kill switch / config), no clone edit:
-t3 <overlay> gate disable                  # flips [teatree] orchestrator_bash_gate_enabled = false in ~/.teatree.toml
+t3 <overlay> gate disable                  # sets orchestrator_bash_gate_enabled = false in the DB store
 # the command is unconditionally runnable EVEN WHEN the gate is enabled (it never
 # matches the heavy-Bash denylist), so it is the always-available self-rescue.
 # re-enable once the durable fix lands:
@@ -301,7 +300,7 @@ t3 <overlay> gate enable
 sed -i 's/raise/pass/' ~/workspace/<overlay>/teatree/hooks/gate.py   # FORBIDDEN — live clone edit
 ```
 
-If even `t3 … gate disable` is somehow blocked, set `orchestrator_bash_gate_enabled = false` under `[teatree]` in `~/.teatree.toml` from any external shell — the kill switch is a plain config line and needs no `t3` at all. Other gates have their own switches: `t3 <overlay> gate skill-loading disable` for the skill-loading gate. See [`references/troubleshooting.md`](references/troubleshooting.md) § self-rescue for the full recovery path. The durable fix still goes through a worktree off `origin/main` (above) — the kill switch buys time, it is not the fix.
+If even `t3 … gate disable` is somehow blocked, the kill-switch value can be written straight into the DB store (`~/.local/share/teatree/db.sqlite3`, table `teatree_config_setting`) with the `sqlite3` CLI — it is out-of-repo and needs no repo edit. Other gates have their own switches: `t3 <overlay> gate skill-loading disable` for the skill-loading gate. See [`references/troubleshooting.md`](references/troubleshooting.md) § self-rescue for the full recovery path. The durable fix still goes through a worktree off `origin/main` (above) — the kill switch buys time, it is not the fix.
 
 ### Full Worktree Isolation (Non-Negotiable)
 

@@ -32,11 +32,7 @@ pytestmark = pytest.mark.django_db
 
 def _gate_off(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # The on-behalf gate is OFF when the DB-home ``on_behalf_post_mode`` is
-    # IMMEDIATE (#1775). Staging it via TOML is a no-op on read, so the mode is
-    # set in the DB store.
-    cfg = tmp_path / ".teatree.toml"
-    cfg.write_text("[teatree]\n", encoding="utf-8")
-    monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+    # IMMEDIATE (#1775), resolved from the ``ConfigSetting`` store.
     ConfigSetting.objects.set_value("on_behalf_post_mode", OnBehalfPostMode.IMMEDIATE.value)
 
 
@@ -247,9 +243,7 @@ class TestVerifyFailRollsBackOnBehalfConsume:
     ) -> None:
         from teatree.core.models import OnBehalfApproval, OnBehalfAudit  # noqa: PLC0415
 
-        cfg = tmp_path / ".teatree.toml"
-        cfg.write_text('[teatree]\non_behalf_post_mode = "ask"\n', encoding="utf-8")
-        monkeypatch.setattr("teatree.config.CONFIG_PATH", cfg)
+        ConfigSetting.objects.set_value("on_behalf_post_mode", "ask")
         approval = OnBehalfApproval.record(target="org/repo!11", action="publish_draft_notes", approver_id="souliane")
 
         class _DraftsStillPresentAPI(_PhantomAPI):

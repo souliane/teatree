@@ -71,7 +71,7 @@
           "name": "flags"
         },
         {
-          "help": "Print the resolved value for *key* and name its source (DB vs file/env)",
+          "help": "Print the resolved value for *key* and name its source (DB vs env/default)",
           "name": "get"
         },
         {
@@ -81,10 +81,6 @@
         {
           "help": "List every DB config override row, naming each row's scope (read-only)",
           "name": "list"
-        },
-        {
-          "help": "Seed the DB store from the operational toml keys (one-time migration)",
-          "name": "import"
         }
       ]
     },

@@ -332,9 +332,9 @@ class Command(TyperCommand):
 
         Three sources for the Playwright working directory (first match wins):
 
-        - ``--repo <name>``: clone ``[e2e_repos.<name>]`` (``~/.teatree.toml``) and use its ``e2e_dir``.
+        - ``--repo <name>``: clone the named entry from the DB-home ``e2e_repos`` config and use its ``e2e_dir``.
         - else the overlay's ``get_e2e_config`` repo (its ``url`` cloned at ``ref``), when declared.
-        - else the ``T3_PRIVATE_TESTS`` env var / ``[teatree].private_tests`` directory.
+        - else the ``T3_PRIVATE_TESTS`` env var / the DB-home ``private_tests`` directory.
 
         ``--branch``/``--ref`` overrides a clone's specs ref (the ``--repo`` default or the
         overlay ``ref``) to run from an open MR's branch.

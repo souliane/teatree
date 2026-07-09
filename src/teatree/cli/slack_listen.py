@@ -2,6 +2,7 @@
 
 import logging
 from pathlib import Path
+from typing import cast
 
 import typer
 
@@ -16,20 +17,19 @@ slack_app = typer.Typer(name="slack", help="Slack integration commands.", no_arg
 
 
 def _resolve_overlays(restrict: str) -> list[tuple[str, str, str]]:
-    import tomllib  # noqa: PLC0415
+    from teatree.config import cold_reader  # noqa: PLC0415
 
-    config_path = Path.home() / ".teatree.toml"
-    if not config_path.is_file():
-        return []
-    with config_path.open("rb") as f:
-        config = tomllib.load(f)
+    registry = cold_reader.mapping_setting("overlays")
     result: list[tuple[str, str, str]] = []
-    for name, overlay_cfg in (config.get("overlays") or {}).items():
+    for name, overlay_cfg in registry.items():
         if restrict and name != restrict:
             continue
-        if overlay_cfg.get("messaging_backend") != "slack":
+        if not isinstance(overlay_cfg, dict):
             continue
-        token_ref = overlay_cfg.get("slack_token_ref", "")
+        cfg = cast("dict[str, object]", overlay_cfg)
+        if cfg.get("messaging_backend") != "slack":
+            continue
+        token_ref = cfg.get("slack_token_ref", "")
         if not token_ref:
             continue
         bot_token = read_pass(f"{token_ref}-bot")
@@ -65,7 +65,7 @@ def listen_command(
         with singleton("slack-listener", pid_path=pid_path):
             overlays = _resolve_overlays(overlay)
             if not overlays:
-                typer.echo("ERROR No slack-enabled overlays found in ~/.teatree.toml")
+                typer.echo("ERROR No slack-enabled overlays found in the DB overlays registry")
                 raise typer.Exit(code=1)
             for name, _app, _bot in overlays:
                 typer.echo(f"OK    Listening on {name}")

@@ -9,6 +9,7 @@ counts + links.
 """
 
 import json
+import sqlite3
 from io import StringIO
 from pathlib import Path
 from typing import cast
@@ -22,6 +23,24 @@ from teatree.core import overlay_loader as overlay_loader_mod
 from teatree.core.review import review_findings as rf_mod
 from teatree.core.review.review_findings import ReviewFinding
 from tests.teatree_core.conftest import CommandOverlay
+
+
+def _seed_cold_config(db: Path, key: str, value: object) -> None:
+    """Seed a single DB-home ``ConfigSetting`` row in a config-store sqlite the cold reader resolves."""
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS teatree_config_setting "
+            "(id INTEGER PRIMARY KEY, scope TEXT NOT NULL DEFAULT '', key TEXT NOT NULL, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO teatree_config_setting (scope, key, value) VALUES ('', ?, ?)",
+            (key, json.dumps(value)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
 
 _PR_URL = "https://github.com/souliane/teatree/pull/1573"
 _REPO = "souliane/teatree"
@@ -152,8 +171,8 @@ class RetroReviewFindingsTest(TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            cfg = tmp_path / ".teatree.toml"
-            cfg.write_text('[teatree]\nbanned_terms = ["acmecorp"]\n', encoding="utf-8")
+            db = tmp_path / "config.sqlite3"
+            _seed_cold_config(db, "banned_terms", ["acmecorp"])
             verdicts = tmp_path / "verdicts.json"
             verdicts.write_text(
                 json.dumps({_FP_C: {"class": "C", "enforcement": "Add a structural-design review test."}}),
@@ -171,7 +190,7 @@ class RetroReviewFindingsTest(TestCase):
                 call_command("retro", "review-findings", _PR_URL, classification=str(verdicts), stdout=StringIO())
 
             body = host.create_issue.call_args.kwargs["body"]
-            assert banned_terms_scanner.scan_text(body, config_path=cfg) is None
+            assert banned_terms_scanner.scan_text(body, config_path=db) is None
 
     def test_untrusted_finding_bare_refs_neutralized_in_filed_payload(self) -> None:
         """A finding body with bare refs files a payload that is bare-ref clean.
@@ -222,15 +241,15 @@ class RetroReviewFindingsTest(TestCase):
         fp = _fingerprint(str(comments[0]["body"]), path="c.py", line=9)
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            cfg = tmp_path / ".teatree.toml"
-            cfg.write_text('[teatree]\nbanned_terms = ["acmecorp"]\n', encoding="utf-8")
+            db = tmp_path / "config.sqlite3"
+            _seed_cold_config(db, "banned_terms", ["acmecorp"])
             verdicts = tmp_path / "verdicts.json"
             verdicts.write_text(json.dumps({fp: {"class": "C", "enforcement": "Add a gate."}}), encoding="utf-8")
             host = MagicMock()
             host.list_pr_comments.return_value = comments
             host.search_open_issues.return_value = []
             with (
-                patch.dict(os.environ, {"T3_BANNED_TERMS_CONFIG": str(cfg)}),
+                patch.dict(os.environ, {"T3_CONFIG_DB": str(db)}),
                 patch.object(rf_mod, "get_data_dir", return_value=tmp_path / "store"),
                 patch.object(overlay_loader_mod, "get_all_overlays", return_value=_MOCK_OVERLAY),
                 patch.object(loader_mod, "get_code_host_for_url", return_value=host),

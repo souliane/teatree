@@ -34,9 +34,8 @@ class TestBlocksSecretFilePrints:
         "command",
         [
             # cat of known secret files
-            "cat ~/.teatree.toml",
-            "cat $HOME/.teatree.toml",
-            'cat "${HOME}/.teatree.toml"',
+            "cat $HOME/.netrc",
+            'cat "${HOME}/.netrc"',
             "cat ~/.netrc",
             "cat ~/.config/gh/hosts.yml",
             'cat "~/Library/Application Support/glab-cli/config.yml"',
@@ -52,7 +51,7 @@ class TestBlocksSecretFilePrints:
             "cat server.pem",
             "cat client.key",
             # head/tail of secret files
-            "head ~/.teatree.toml",
+            "head ~/.netrc",
             "head -n 5 ~/.netrc",
             "tail -n 20 ~/.config/gh/hosts.yml",
             "tail ~/.ssh/id_rsa",
@@ -70,7 +69,7 @@ class TestBlocksSecretFilePrints:
             # printf of a token literal
             "printf glpat-secret",
             # cat with absolute path matching secret pattern
-            "cat /Users/user/.teatree.toml",
+            "cat /Users/user/.netrc",
             "cat /home/user/.netrc",
             "cat /root/.ssh/id_rsa",
         ],
@@ -82,7 +81,7 @@ class TestBlocksSecretFilePrints:
         assert deny["permissionDecision"] == "deny"
 
     def test_deny_message_is_actionable(self, capsys: pytest.CaptureFixture[str]) -> None:
-        handle_block_secret_file_print(_bash_event("cat ~/.teatree.toml"))
+        handle_block_secret_file_print(_bash_event("cat ~/.netrc"))
         deny = _parse_deny(capsys)
         assert deny is not None
         reason = deny["permissionDecisionReason"]
@@ -100,13 +99,13 @@ class TestAllowsBenignCommands:
             "TOKEN=$(pass show infra/api-key)",
             "export TOKEN=$(pass show infra/api-key)",
             "TOK=$(cat ~/.netrc | grep password | awk '{print $2}')",
-            "PASS=$(cat ~/.teatree.toml | grep token | cut -d= -f2)",
+            "PASS=$(cat ~/.netrc | grep token | cut -d= -f2)",
             # Piping to a file — value stays off stdout
             "pass show email/work > /tmp/pw.txt",
-            "cat ~/.teatree.toml > /tmp/cfg_backup.toml",
+            "cat ~/.netrc > /tmp/cfg_backup.toml",
             "cat ~/.netrc >> /tmp/backup.txt",
             # Redirecting to /dev/null (test/check pattern)
-            "cat ~/.teatree.toml > /dev/null",
+            "cat ~/.netrc > /dev/null",
             # curl using the token via env/header — value never echoed
             'curl -H "PRIVATE-TOKEN: $TOKEN" https://gitlab.com/api/v4/user',
             'curl -H "Authorization: Bearer $TOKEN" https://api.github.com/user',
@@ -119,21 +118,21 @@ class TestAllowsBenignCommands:
             "head -n 10 README.md",
             "tail -f /var/log/app.log",
             # echo of safe strings (mentioning secret file paths in prose)
-            "echo 'Do not cat ~/.teatree.toml'",
-            "echo 'The config lives at ~/.teatree.toml'",
+            "echo 'Do not cat ~/.netrc'",
+            "echo 'The config lives at ~/.netrc'",
             # echo of non-token strings
             "echo hello world",
             "echo 'manage.py runserver is not allowed'",
             # grep for patterns in secret files (doesn't print whole file)
-            "grep -c '' ~/.teatree.toml",
+            "grep -c '' ~/.netrc",
             # pass without show — list/edit/generate/etc. are safe
             "pass ls",
             "pass list",
             "pass generate email/new 20",
             "pass edit email/work",
             # wc, stat, ls on secret files — metadata only
-            "wc -l ~/.teatree.toml",
-            "stat ~/.teatree.toml",
+            "wc -l ~/.netrc",
+            "stat ~/.netrc",
             "ls -la ~/.ssh/",
             # git commands that happen to touch config paths
             "git config --global user.email",
@@ -149,7 +148,7 @@ class TestAllowsBenignCommands:
         assert capsys.readouterr().out.strip() == ""
 
     def test_ignores_non_bash_tools(self, capsys: pytest.CaptureFixture[str]) -> None:
-        assert handle_block_secret_file_print(_bash_event("cat ~/.teatree.toml", tool_name="Read")) is not True
+        assert handle_block_secret_file_print(_bash_event("cat ~/.netrc", tool_name="Read")) is not True
 
     def test_empty_command_passes_through(self, capsys: pytest.CaptureFixture[str]) -> None:
         assert handle_block_secret_file_print(_bash_event("")) is not True
@@ -177,7 +176,7 @@ class TestBlocksQuotedTokenLiterals:
         "command",
         [
             'echo "just some prose"',
-            "echo 'The config lives at ~/.teatree.toml'",
+            "echo 'The config lives at ~/.netrc'",
             'printf "hello world\\n"',
         ],
     )
@@ -193,10 +192,10 @@ class TestBlocksReEmitterPipes:
         "command",
         [
             "cat .env | grep -v '^#'",
-            "cat ~/.teatree.toml | less",
+            "cat ~/.netrc | less",
             "cat .env | tee /dev/tty",
             "cat ~/.netrc | cat",
-            "cat ~/.teatree.toml | more",
+            "cat ~/.netrc | more",
             "head ~/.netrc | tail -n 2",
             "cat .env | tee leak.txt",
         ],
@@ -212,7 +211,7 @@ class TestBlocksReEmitterPipes:
         [
             "cat .env > /tmp/x",
             "VAR=$(cat .env)",
-            "cat ~/.teatree.toml > /tmp/cfg_backup.toml",
+            "cat ~/.netrc > /tmp/cfg_backup.toml",
             "cat .env | gzip > /tmp/x.gz",
         ],
     )

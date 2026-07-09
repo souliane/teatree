@@ -128,7 +128,10 @@ class Command(TyperCommand):
 
         author = get_overlay().config.get_gitlab_username() or host.current_user()
         if not author:
-            return {"error": "Could not resolve author username — set <host>_username in ~/.teatree.toml"}
+            return {
+                "error": "Could not resolve author username — "
+                "set it with `t3 <overlay> config_setting set <host>_username <value>`",
+            }
 
         mrs = [
             self._with_review_status(

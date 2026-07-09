@@ -34,10 +34,10 @@
 
 ## Overlay Discovery Returns Empty Despite Config
 
-- **Symptom:** `t3 info` shows no installed overlays even though `~/.teatree.toml` has `[overlays.*]` sections.
-- **Cause:** `discover_overlays()` was only reading entry points, not the toml config.
-- **Fix:** `discover_overlays()` now reads `[overlays.<name>]` sections from `~/.teatree.toml` first, then falls back to entry points. Toml entries win on name conflict.
-- **Prevention:** When adding new discovery sources, test with both the toml config and entry points.
+- **Symptom:** `t3 info` shows no installed overlays even though the DB `overlays` registry row has overlay entries.
+- **Cause:** `discover_overlays()` was only reading entry points, not the DB registry row.
+- **Fix:** `discover_overlays()` now reads the DB `overlays` registry row first, then falls back to entry points. DB registry entries win on name conflict.
+- **Prevention:** When adding new discovery sources, test with both the DB registry row and entry points.
 
 ## prek Discovers Template Directory as Sub-Project
 

@@ -137,8 +137,8 @@ def _overlay_gitlab_credentials_from_toml(overlay_name: str) -> tuple[str, str]:
     """Resolve a TOML-only overlay's ``gitlab_token_ref`` via ``pass``.
 
     Path-only overlays (no Python class, opted in via
-    ``[overlays.<name>]`` in ``~/.teatree.toml``) keep their credentials
-    in the TOML table, mirroring ``backend_factory._hosts_from_toml``.
+    ``[overlays.<name>]`` in the DB overlays registry) keep their credentials
+    in that config table, mirroring ``backend_factory._hosts_from_toml``.
     """
     try:
         from teatree.config import load_config  # noqa: PLC0415

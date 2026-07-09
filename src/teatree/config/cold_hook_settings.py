@@ -1,13 +1,12 @@
-"""The pre-Django cold-hook import registry (config-unify PR2).
+"""The pre-Django cold-hook settings registry.
 
 Split out of ``settings.py`` (the module-health LOC cap) — these keys are a
 distinct concern from the ``UserSettings`` dataclass and its override registries:
 they have NO dataclass field at all. Each is a hook-leaf gate flag or integer
-budget the cold layer reads straight from ``~/.teatree.toml`` BEFORE any Django
-bootstrap. Because the TOML->DB import only walked ``OVERLAY_OVERRIDABLE_SETTINGS``,
-these keys were silently dropped on import, so a disabled gate or a raised
-threshold would reset to its in-code default the moment a later PR flips the cold
-reader onto the DB store. ``COLD_HOOK_SETTINGS`` closes that gap.
+budget the cold layer reads straight from the canonical config DB (via
+``cold_reader``) BEFORE any Django bootstrap. ``COLD_HOOK_SETTINGS`` registers each
+one with its parser + in-code default so a fitness test can pin the cold read
+sites against it.
 """
 
 from collections.abc import Callable
@@ -19,13 +18,13 @@ from teatree.config.settings import _parse_strict_bool, _parse_strict_int
 
 @dataclass(frozen=True)
 class ColdHookSetting:
-    """Import contract for a pre-Django, hook-only global ``[teatree]`` setting.
+    """Contract for a pre-Django, hook-only global gate/budget setting.
 
     ``parse`` coerces a stored value exactly as the read-side parser does, and
     ``default`` pins the cold reader's in-code fallback (asserted equal to the
     hook's own default by the no-silent-drop fitness test). ``scope`` is the
     GLOBAL store scope every one of these resolves from — they are NOT per-overlay
-    overridable, so the import writes them only from the global ``[teatree]`` table.
+    overridable.
     """
 
     parse: Callable[[Any], Any]
@@ -34,13 +33,11 @@ class ColdHookSetting:
 
 
 # Disjoint from ``OVERLAY_OVERRIDABLE_SETTINGS`` and from every ``UserSettings``
-# field. The TOML->DB import unions this with the overridable registry for the
-# global ``[teatree]`` table so a non-default value survives the cutover.
-# ``config_setting set`` still refuses these keys (they are not in the overridable
-# registry) and the cold readers still hit TOML this PR — the import is purely
-# additive, seeding the DB ahead of the reader flip. A fitness test enumerates the
-# live cold-read sites and asserts every one is registered here, so a new hook gate
-# flag added without an entry turns the suite red.
+# field. These keys are read cold from the canonical config DB (via ``cold_reader``)
+# by the pre-Django hook leaves; ``config_setting set`` refuses them (they are not in
+# the overridable registry). A fitness test enumerates the live cold-read sites and
+# asserts every one is registered here, so a new hook gate flag added without an
+# entry turns the suite red.
 COLD_HOOK_SETTINGS: dict[str, ColdHookSetting] = {
     # ``teatree_bool_setting`` gate kill-switches the hook leaves read cold.
     "memory_recall_enabled": ColdHookSetting(_parse_strict_bool, default=True),

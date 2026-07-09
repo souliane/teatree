@@ -32,6 +32,7 @@ graph TD
     teatree.update_check --> teatree.utils
     teatree.utils --> teatree.paths
     teatree.self_update --> teatree.utils
+    teatree.hooks --> teatree.config
     teatree.hooks --> teatree.utils
     teatree.timeouts --> teatree.config
     teatree.repo_mode --> teatree.paths

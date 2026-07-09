@@ -69,7 +69,7 @@ When any of these fail, fall back to the confirmation flow. Upstream issue creat
 
 ## Chain to Review Skill
 
-After committing and squashing, if `T3_REVIEW_SKILL` is configured in `~/.teatree`, offer to chain into the review skill:
+After committing and squashing, if a review skill is configured (the `review_skill` DB setting, or the `T3_REVIEW_SKILL` env var), offer to chain into the review skill:
 
 ```text
 Retro complete. Chain to cross-repo review? (T3_REVIEW_SKILL=ac-reviewing-codebase)
